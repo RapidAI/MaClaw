@@ -468,6 +468,16 @@ func (a *App) syncToClaudeSettings(config AppConfig) error {
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
+	case "阿里云", "aliyun":
+		env["ANTHROPIC_BASE_URL"] = "https://coding.dashscope.aliyuncs.com/apps/anthropic"
+		modelId := selectedModel.ModelId
+		if modelId == "" {
+			modelId = "glm-5"
+		}
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
+		env["ANTHROPIC_MODEL"] = modelId
 	default:
 		env["ANTHROPIC_BASE_URL"] = selectedModel.ModelUrl
 		env["ANTHROPIC_MODEL"] = selectedModel.ModelId
@@ -501,6 +511,7 @@ updateLegacyJson:
 		"approved": []string{selectedModel.ApiKey},
 		"rejected": []string{},
 	}
+	claudeJson["hasCompletedOnboarding"] = true
 	data2, err := json.MarshalIndent(claudeJson, "", "  ")
 	if err != nil {
 		return err
@@ -697,6 +708,27 @@ name = "coderelay"
 base_url = "%s"
 wire_api = "responses"
 `, modelId, baseUrl)
+	} else if strings.ToLower(selectedModel.ModelName) == "阿里云" || strings.ToLower(selectedModel.ModelName) == "aliyun" {
+		if baseUrl == "" {
+			baseUrl = "https://coding.dashscope.aliyuncs.com/v1"
+		}
+		modelId := selectedModel.ModelId
+		if modelId == "" {
+			modelId = "glm-5"
+		}
+		configToml = fmt.Sprintf(`model_provider = "aliyun"
+model = "%s"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+preferred_auth_method = "apikey"
+[model_providers.aliyun]
+name = "aliyun"
+base_url = "%s"
+wire_api = "chat"
+request_max_retries = 4
+stream_max_retries = 8
+stream_idle_timeout_ms = 120000
+`, modelId, baseUrl)
 	} else {
 		if baseUrl == "" {
 			baseUrl = "https://api.aicodemirror.com/api/codex/backend-api/codex"
@@ -723,6 +755,8 @@ wire_api = "responses"
 		strings.ToLower(selectedModel.ModelName) != "kimi" &&
 		strings.ToLower(selectedModel.ModelName) != "minimax" &&
 		strings.ToLower(selectedModel.ModelName) != "coderelay" &&
+		strings.ToLower(selectedModel.ModelName) != "阿里云" &&
+		strings.ToLower(selectedModel.ModelName) != "aliyun" &&
 		strings.ToLower(selectedModel.ModelName) != "aicodemirror") {
 		// --- CUSTOM OR OTHER PROVIDERS ---
 		wireApi := selectedModel.WireApi
@@ -806,6 +840,11 @@ func (a *App) syncToOpencodeSettings(config AppConfig) error {
 			modelId = "MiniMax-M2.1"
 			if baseUrl == "" {
 				baseUrl = "https://api.minimaxi.com/v1"
+			}
+		case "阿里云", "aliyun":
+			modelId = "glm-5"
+			if baseUrl == "" {
+				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
 			}
 		default:
 			modelId = "opencode-1.0"
@@ -959,6 +998,11 @@ func (a *App) syncToIFlowSettings(config AppConfig) error {
 			if baseUrl == "" {
 				baseUrl = "https://api.minimaxi.com/v1"
 			}
+		case "阿里云", "aliyun":
+			modelId = "glm-5"
+			if baseUrl == "" {
+				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
+			}
 		default:
 			modelId = "gpt-4o"
 		}
@@ -1044,6 +1088,11 @@ func (a *App) syncToKiloSettings(config AppConfig) error {
 			modelId = "mimo-v2-flash"
 			if baseUrl == "" {
 				baseUrl = "https://api.xiaomimimo.com/v1"
+			}
+		case "阿里云", "aliyun":
+			modelId = "glm-5"
+			if baseUrl == "" {
+				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
 			}
 		default:
 			modelId = "gpt-4o"
@@ -1636,6 +1685,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "ChatFire", ModelId: "sonnet", ModelUrl: "https://api.chatfire.cn", ApiKey: ""},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net", ApiKey: ""},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", ApiKey: ""},
+		{ModelName: "阿里云", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
@@ -1660,6 +1710,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: ""},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: ""},
+		{ModelName: "阿里云", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/v1", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
@@ -1673,6 +1724,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: ""},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: ""},
+		{ModelName: "阿里云", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
@@ -1690,6 +1742,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: ""},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: ""},
+		{ModelName: "阿里云", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
@@ -1704,6 +1757,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: ""},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: ""},
+		{ModelName: "阿里云", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
@@ -1717,6 +1771,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: ""},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: ""},
+		{ModelName: "阿里云", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
@@ -1960,6 +2015,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Claude.Models, "XiaoMi", "https://api.xiaomimimo.com/anthropic", "mimo-v2-flash", "")
 	ensureModel(&config.Claude.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net", "GLM-4.7", "")
 	ensureModel(&config.Claude.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "")
+	ensureModel(&config.Claude.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "")
 	// Deduplicate AiCodeMirror for Claude if both AICodeMirror and AiCodeMirror exist
 	dedupeAiCodeMirror := func(models *[]ModelConfig) {
 		var newModels []ModelConfig
@@ -1991,6 +2047,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Codex.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
 	ensureModel(&config.Codex.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "")
 	ensureModel(&config.Codex.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "")
+	ensureModel(&config.Codex.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/v1", "glm-5", "")
 	ensureModel(&config.Opencode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Opencode.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Opencode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
@@ -2000,6 +2057,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Opencode.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
 	ensureModel(&config.Opencode.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "")
 	ensureModel(&config.Opencode.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "")
+	ensureModel(&config.Opencode.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1", "glm-5", "")
 	ensureModel(&config.CodeBuddy.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.CodeBuddy.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.CodeBuddy.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
@@ -2008,6 +2066,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.CodeBuddy.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
 	ensureModel(&config.CodeBuddy.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "")
 	ensureModel(&config.CodeBuddy.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "")
+	ensureModel(&config.CodeBuddy.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1", "glm-5", "")
 	ensureModel(&config.IFlow.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.IFlow.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.IFlow.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
@@ -2016,6 +2075,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.IFlow.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
 	ensureModel(&config.IFlow.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "")
 	ensureModel(&config.IFlow.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "")
+	ensureModel(&config.IFlow.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1", "glm-5", "")
 	ensureModel(&config.Kilo.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Kilo.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Kilo.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
@@ -2025,6 +2085,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Kilo.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
 	ensureModel(&config.Kilo.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "")
 	ensureModel(&config.Kilo.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "")
+	ensureModel(&config.Kilo.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1", "glm-5", "")
 	ensureModel(&config.Kode.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Kode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Kode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
@@ -2034,6 +2095,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Kode.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
 	ensureModel(&config.Kode.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "")
 	ensureModel(&config.Kode.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "")
+	ensureModel(&config.Kode.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1", "glm-5", "")
 	// Ensure 'Original' is always present and first
 	ensureOriginal := func(models *[]ModelConfig) {
 		found := false

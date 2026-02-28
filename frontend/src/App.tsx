@@ -82,6 +82,34 @@ const knownProviderEndpoints: ProviderEndpoint[] = [
 ];
 
 
+
+// Recommended model IDs per provider (used for model name suggestions)
+const recommendedModels: { [provider: string]: { id: string; note?: string }[] } = {
+    "GLM": [{ id: "glm-4.7" }],
+    "Kimi": [{ id: "kimi-k2-thinking" }, { id: "kimi-for-coding" }],
+    "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
+    "MiniMax": [{ id: "MiniMax-M2.1" }],
+    "DeepSeek": [{ id: "deepseek-chat" }],
+    "AIgoCode": [{ id: "sonnet" }, { id: "gpt-5.2-codex" }, { id: "gemini-2.0-flash-exp" }],
+    "AiCodeMirror": [{ id: "sonnet" }, { id: "gpt-5.2-codex" }, { id: "gemini-2.0-flash-exp" }],
+    "GACCode": [{ id: "sonnet" }],
+    "CodeRelay": [{ id: "claude-3-5-sonnet-20241022" }, { id: "gpt-5.2-codex" }],
+    "ChatFire": [{ id: "sonnet" }, { id: "gpt-5.1-codex-mini" }, { id: "gpt-4o" }, { id: "gemini-2.5-pro" }],
+    "Noin.AI": [{ id: "sonnet" }],
+    "XiaoMi": [{ id: "mimo-v2-flash" }],
+    "摩尔线程": [{ id: "GLM-4.7" }],
+    "快手": [{ id: "kat-coder-pro-v1" }],
+    "阿里云": [
+        { id: "qwen3.5-plus", note: "支持图片理解" },
+        { id: "kimi-k2.5", note: "支持图片理解" },
+        { id: "glm-5" },
+        { id: "MiniMax-M2.5" },
+        { id: "qwen3-max-2026-01-23" },
+        { id: "qwen3-coder-next" },
+        { id: "qwen3-coder-plus" },
+        { id: "glm-4.7" },
+    ],
+};
 const APP_VERSION = "3.8.2.9200"
 
 // Tool name constants to avoid repeated string arrays
@@ -962,6 +990,7 @@ function App() {
 
     // Provider selector state
     const [showProviderSelector, setShowProviderSelector] = useState(false);
+    const [showModelRecommend, setShowModelRecommend] = useState(false);
     const [providerFilter, setProviderFilter] = useState<'all' | 'china' | 'global'>('all');
     const [selectedProviderForUrl, setSelectedProviderForUrl] = useState<ProviderEndpoint | null>(null);
     const [hoveredProvider, setHoveredProvider] = useState<{ provider: ProviderEndpoint, x: number, y: number } | null>(null);
@@ -3060,7 +3089,7 @@ ${instruction}`;
                                     />
                                     <span style={{ fontSize: '0.8rem', color: '#374151' }}>{t("showWelcomePage")}</span>
                                 </label>
-                                <p style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '24px', marginTop: '4px' }}>
+                                <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginLeft: '24px', marginTop: '4px' }}>
                                     {lang === 'zh-Hans' ? '开启后，程序启动时将显示新手教学和快速入门链接' :
                                         lang === 'zh-Hant' ? '開啟後，程序啟動時將顯示新手教學和快速入門鏈接' :
                                             'When enabled, a welcome popup with tutorial links will be shown at startup.'}
@@ -3178,7 +3207,7 @@ ${instruction}`;
                                 {lang === 'zh-Hans' || lang === 'zh-Hant' ? '真正的Vibe Coder只使用命令行。' : 'Real Vibe Coders only use the command line.'}
                             </div>
                             <div style={{ fontSize: '1rem', color: '#374151', marginBottom: '5px' }}>{t("version")} {APP_VERSION}</div>
-                            <div style={{ fontSize: '0.9rem', color: '#64748b', marginBottom: '5px' }}>{t("businessCooperation")}</div>
+                            <div style={{ fontSize: '0.9rem', color: '#9ca3af', marginBottom: '5px' }}>{t("businessCooperation")}</div>
                             <div style={{ fontSize: '0.9rem', color: '#6b7280', marginBottom: '20px' }}>{t("author")}: Dr. Daniel</div>
 
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
@@ -3290,17 +3319,9 @@ ${instruction}`;
                                             onChange={(e) => {
                                                 const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch);
                                                 if (proj) {
-                                                    const newProjects = config.projects.map((p: any) => {
-                                                        if (p.id === proj.id) {
-                                                            const updated = { ...p, team_mode: e.target.checked };
-                                                            // Team mode requires yolo mode
-                                                            if (e.target.checked) {
-                                                                updated.yolo_mode = true;
-                                                            }
-                                                            return updated;
-                                                        }
-                                                        return p;
-                                                    });
+                                                    const newProjects = config.projects.map((p: any) =>
+                                                        p.id === proj.id ? { ...p, team_mode: e.target.checked } : p
+                                                    );
                                                     const newConfig = new main.AppConfig({ ...config, projects: newProjects });
                                                     setConfig(newConfig);
                                                     SaveConfig(newConfig);
@@ -3643,7 +3664,7 @@ ${instruction}`;
                             className="elegant-scrollbar"
                             style={{
                                 backgroundColor: '#1e293b',
-                                color: '#e2e8f0',
+                                color: '#1f2937',
                                 padding: '15px',
                                 borderRadius: '8px',
                                 height: '250px',
@@ -3917,7 +3938,7 @@ ${instruction}`;
                                                         onClick={() => setTabStartIndex(Math.max(0, tabStartIndex - 1))}
                                                         style={{
                                                             border: 'none', background: 'transparent', cursor: 'pointer',
-                                                            padding: '6px 4px', color: '#64748b', fontSize: '1rem'
+                                                            padding: '6px 4px', color: '#9ca3af', fontSize: '1rem'
                                                         }}
                                                     >
                                                         ◀
@@ -3949,7 +3970,7 @@ ${instruction}`;
                                                         onClick={() => setTabStartIndex(Math.min(configurableModels.length - 4, tabStartIndex + 1))}
                                                         style={{
                                                             border: 'none', background: 'transparent', cursor: 'pointer',
-                                                            padding: '6px 4px', color: '#64748b', fontSize: '1rem'
+                                                            padding: '6px 4px', color: '#9ca3af', fontSize: '1rem'
                                                         }}
                                                     >
                                                         ▶
@@ -3986,39 +4007,77 @@ ${instruction}`;
                                         {t("modelName")}
                                         {(activeTool === 'codebuddy' || activeTool === 'qoder') && <span style={{ fontSize: '0.7rem', color: '#94a3b8', marginLeft: '5px' }}>(Supports multiple, separated by comma)</span>}
                                     </label>
+                                    <div style={{ position: 'relative' }}>
+                                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                            <input
+                                                type="text"
+                                                className="form-input"
+                                                data-field="model-id"
+                                                style={{ flex: 1 }}
+                                                value={(config as any)[activeTool].models[activeTab].model_id}
+                                                onChange={(e) => handleModelIdChange(e.target.value)}
+                                                onContextMenu={(e) => handleContextMenu(e, e.currentTarget)}
+                                                placeholder={(activeTool === 'codebuddy' || activeTool === 'qoder') ? "e.g. gpt-4,gpt-3.5-turbo" : (getDefaultModelId(activeTool, (config as any)[activeTool].models[activeTab].model_name) || "e.g. gpt-4")}
+                                                spellCheck={false}
+                                                autoComplete="off"
+                                            />
+                                            {(() => {
+                                                const providerName = (config as any)[activeTool].models[activeTab].model_name;
+                                                const models = recommendedModels[providerName];
+                                                if (!models || models.length === 0) return null;
+                                                return (
+                                                    <button
+                                                        style={{ border: '1px solid #d1d5db', background: '#ffffff', color: '#374151', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0 }}
+                                                        onClick={() => setShowModelRecommend(!showModelRecommend)}
+                                                        title="推荐模型"
+                                                    >...</button>
+                                                );
+                                            })()}
+                                        </div>
+                                        {showModelRecommend && (() => {
+                                            const providerName = (config as any)[activeTool].models[activeTab].model_name;
+                                            const models = recommendedModels[providerName];
+                                            if (!models || models.length === 0) return null;
+                                            return (
+                                                <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 100, marginTop: '4px', background: '#ffffff', border: '1px solid #d1d5db', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', minWidth: '200px', maxHeight: '240px', overflowY: 'auto', padding: '4px 0' }}>
+                                                    {models.map((m: any, i: number) => (
+                                                        <div
+                                                            key={i}
+                                                            style={{ padding: '6px 12px', cursor: 'pointer', fontSize: '0.82rem', color: '#1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}
+                                                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
+                                                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                                                            onClick={() => { handleModelIdChange(m.id); setShowModelRecommend(false); }}
+                                                        >
+                                                            <span>{m.id}</span>
+                                                            {m.note && <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>{m.note}</span>}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            );
+                                        })()}
+                                    </div>
+                                </div>
+                            )}
+                        
+                            {activeTool === "codex" && (
+                                <div className="form-group" style={{ flex: 0, minWidth: '140px' }}>
+                                    <label className="form-label">Wire API</label>
                                     <input
                                         type="text"
                                         className="form-input"
-                                        data-field="model-id"
-                                        value={(config as any)[activeTool].models[activeTab].model_id}
-                                        onChange={(e) => handleModelIdChange(e.target.value)}
+                                        data-field="wire-api"
+                                        value={(config as any)[activeTool].models[activeTab].wire_api || ""}
+                                        onChange={(e) => handleWireApiChange(e.target.value)}
                                         onContextMenu={(e) => handleContextMenu(e, e.currentTarget)}
-                                        placeholder={(activeTool === 'codebuddy' || activeTool === 'qoder') ? "e.g. gpt-4,gpt-3.5-turbo" : (getDefaultModelId(activeTool, (config as any)[activeTool].models[activeTab].model_name) || "e.g. gpt-4")}
+                                        placeholder="chat"
                                         spellCheck={false}
                                         autoComplete="off"
                                     />
                                 </div>
-                            )}
-                        </div>
+                            )}</div>
 
                         {(config as any)[activeTool].models[activeTab].model_name !== "Original" && (
                             <>
-                                {activeTool === "codex" && (
-                                    <div className="form-group">
-                                        <label className="form-label">Wire API</label>
-                                        <input
-                                            type="text"
-                                            className="form-input"
-                                            data-field="wire-api"
-                                            value={(config as any)[activeTool].models[activeTab].wire_api || ""}
-                                            onChange={(e) => handleWireApiChange(e.target.value)}
-                                            onContextMenu={(e) => handleContextMenu(e, e.currentTarget)}
-                                            placeholder="e.g. chat (default) or responses"
-                                            spellCheck={false}
-                                            autoComplete="off"
-                                        />
-                                    </div>
-                                )}
 
                                 <div className="form-group">
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
@@ -4193,7 +4252,7 @@ ${instruction}`;
                             top: hoveredProvider.y,
                             transform: 'translate(-50%, -100%)',
                             backgroundColor: '#1e293b',
-                            color: '#e2e8f0',
+                            color: '#1f2937',
                             padding: '6px 12px',
                             borderRadius: '8px',
                             fontSize: '0.75rem',
@@ -4242,7 +4301,7 @@ ${instruction}`;
                             <button
                                 className="modal-close"
                                 onClick={() => setShowStartupPopup(false)}
-                                style={{ color: '#64748b', opacity: 0.8, top: '10px', right: '15px', zIndex: 10 }}
+                                style={{ color: '#9ca3af', opacity: 0.8, top: '10px', right: '15px', zIndex: 10 }}
                             >&times;</button>
                             <div style={{
                                 fontSize: '2.5rem',
@@ -4311,7 +4370,7 @@ ${instruction}`;
                                         borderRadius: '10px',
                                         fontSize: '0.95rem',
                                         fontWeight: '500',
-                                        color: '#64748b',
+                                        color: '#9ca3af',
                                         backgroundColor: '#ffffff',
                                         display: 'flex',
                                         alignItems: 'center',
