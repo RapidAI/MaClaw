@@ -25,16 +25,12 @@ const subscriptionUrls: { [key: string]: string } = {
     "MiniMax": "https://platform.minimaxi.com/user-center/payment/coding-plan",
     "Codex": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
     "Gemini": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
-    "AiCodeMirror": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
-    "AIgoCode": "https://aigocode.com/invite/TCFQQCCK",
-    "Noin.AI": "https://ai.ourines.com",
-    "GACCode": "https://gaccode.com/signup?ref=FVMCU97H",
     "DeepSeek": "https://platform.deepseek.com/api_keys",
-    "CodeRelay": "https://api.code-relay.com/register?aff=0ZtO",
     "ChatFire": "https://api.chatfire.cn/register?aff=jira",
     "XiaoMi": "https://platform.xiaomimimo.com/#/console/api-keys",
     "摩尔线程": "https://code.mthreads.com/",
-    "快手": "https://www.streamlake.com/marketing/coding-plan"
+    "快手": "https://www.streamlake.com/marketing/coding-plan",
+    "阿里云": "https://coding.dashscope.aliyuncs.com/"
 };
 
 // Known provider API endpoints database
@@ -52,19 +48,12 @@ const knownProviderEndpoints: ProviderEndpoint[] = [
     { name: "Claude Official", url: "https://api.anthropic.com/v1", protocol: "anthropic", region: "global", description: "Official Claude API" },
     { name: "MiniMax", url: "https://api.minimaxi.com/anthropic", protocol: "anthropic", region: "china" },
     { name: "DeepSeek", url: "https://api.deepseek.com/anthropic", protocol: "anthropic", region: "china" },
-    { name: "AICodeMirror", url: "https://api.aicodemirror.com/api/claudecode", protocol: "anthropic", region: "china" },
-    { name: "AIgoCode", url: "https://api.aigocode.com/api", protocol: "anthropic", region: "china" },
-    { name: "GACCode", url: "https://gaccode.com/claudecode", protocol: "anthropic", region: "china" },
-    { name: "CodeRelay", url: "https://api.code-relay.com/v1", protocol: "anthropic", region: "china" },
     { name: "ChatFire", url: "https://api.chatfire.cn/v1", protocol: "anthropic", region: "china" },
-    { name: "Noin.AI", url: "https://api.ourines.com/v1", protocol: "anthropic", region: "china" },
-    { name: "OpenRouter", url: "https://openrouter.ai/api/v1", protocol: "anthropic", region: "global" },
+    { name: "OpenRouter", url: "https://openrouter.ai/api", protocol: "anthropic", region: "global" },
     
     // Gemini Protocol
     { name: "Google Gemini Official", url: "https://generativelanguage.googleapis.com/v1beta", protocol: "gemini", region: "global", description: "Official Google Gemini API" },
-    { name: "AICodeMirror Gemini", url: "https://api.aicodemirror.com/api/gemini", protocol: "gemini", region: "china" },
-    { name: "AIgoCode Gemini", url: "https://api.aigocode.com/gemini", protocol: "gemini", region: "china" },
-    
+
     // OpenAI Protocol (Codex)
     { name: "OpenAI Official", url: "https://api.openai.com/v1", protocol: "openai", region: "global", description: "Official OpenAI API" },
     { name: "xAI (Grok)", url: "https://api.x.ai/v1", protocol: "openai", region: "global", description: "xAI Grok API" },
@@ -72,8 +61,6 @@ const knownProviderEndpoints: ProviderEndpoint[] = [
     { name: "Kimi", url: "https://api.kimi.com/coding/v1", protocol: "openai", region: "china" },
     { name: "Doubao", url: "https://ark.cn-beijing.volces.com/api/coding", protocol: "openai", region: "china" },
     { name: "Doubao Codex", url: "https://ark.cn-beijing.volces.com/api/coding/v3", protocol: "openai", region: "china" },
-    { name: "AICodeMirror Codex", url: "https://api.aicodemirror.com/api/codex/backend-api/codex", protocol: "openai", region: "china" },
-    { name: "AIgoCode Codex", url: "https://api.aigocode.com/openai", protocol: "openai", region: "china" },
     { name: "DeepSeek Codex", url: "https://api.aicodemirror.com/api/codex/backend-api/codex", protocol: "openai", region: "china" },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", protocol: "openai", region: "global" },
     { name: "Together AI", url: "https://api.together.xyz/v1", protocol: "openai", region: "global" },
@@ -90,12 +77,7 @@ const recommendedModels: { [provider: string]: { id: string; note?: string }[] }
     "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
     "MiniMax": [{ id: "MiniMax-M2.1" }],
     "DeepSeek": [{ id: "deepseek-chat" }],
-    "AIgoCode": [{ id: "sonnet" }, { id: "gpt-5.2-codex" }, { id: "gemini-2.0-flash-exp" }],
-    "AiCodeMirror": [{ id: "sonnet" }, { id: "gpt-5.2-codex" }, { id: "gemini-2.0-flash-exp" }],
-    "GACCode": [{ id: "sonnet" }],
-    "CodeRelay": [{ id: "claude-3-5-sonnet-20241022" }, { id: "gpt-5.2-codex" }],
     "ChatFire": [{ id: "sonnet" }, { id: "gpt-5.1-codex-mini" }, { id: "gpt-4o" }, { id: "gemini-2.5-pro" }],
-    "Noin.AI": [{ id: "sonnet" }],
     "XiaoMi": [{ id: "mimo-v2-flash" }],
     "摩尔线程": [{ id: "GLM-4.7" }],
     "快手": [{ id: "kat-coder-pro-v1" }],
@@ -110,7 +92,7 @@ const recommendedModels: { [provider: string]: { id: string; note?: string }[] }
         { id: "glm-4.7" },
     ],
 };
-const APP_VERSION = "3.8.2.9200"
+const APP_VERSION = "4.0.0.9100"
 
 // Tool name constants to avoid repeated string arrays
 const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'qoder', 'iflow', 'kilo', 'kode'] as const;
@@ -227,6 +209,10 @@ const translations: any = {
         "pythonProjectLabel": "Python Project",
         "pythonEnvLabel": "Env",
         "customProviderPlaceholder": "Custom Provider Name",
+        "addCustomProvider": "Add Custom Provider",
+        "removeCustomProvider": "Remove This Provider",
+        "maxCustomProviders": "Maximum 6 custom providers allowed",
+        "cannotRemoveLastCustom": "Cannot remove the last custom provider",
         "version": "Version",
         "author": "Author",
         "checkingUpdate": "Checking for updates...",
@@ -434,6 +420,10 @@ const translations: any = {
         "pythonProjectLabel": "Python 项目",
         "pythonEnvLabel": "环境",
         "customProviderPlaceholder": "自定义服务商名称",
+        "addCustomProvider": "添加自定义服务商",
+        "removeCustomProvider": "删除此服务商",
+        "maxCustomProviders": "最多只能添加6个自定义服务商",
+        "cannotRemoveLastCustom": "不能删除最后一个自定义服务商",
         "version": "版本",
         "author": "作者",
         "checkingUpdate": "正在检查更新...",
@@ -638,6 +628,10 @@ const translations: any = {
         "pythonProjectLabel": "Python 項目",
         "pythonEnvLabel": "環境",
         "customProviderPlaceholder": "自定義服務商名稱",
+        "addCustomProvider": "添加自定義服務商",
+        "removeCustomProvider": "刪除此服務商",
+        "maxCustomProviders": "最多只能添加6個自定義服務商",
+        "cannotRemoveLastCustom": "不能刪除最後一個自定義服務商",
         "version": "版本",
         "author": "作者",
         "checkingUpdate": "正在檢查更新...",
@@ -2524,17 +2518,16 @@ ${instruction}`;
                                     paddingBottom: '20px'
                                 }}>
                                     {[
-                                        { name: 'AIgoCode', url: 'https://aigocode.com/invite/TCFQQCCK', isRelay: true, hasSubscription: false },
-                                        { name: 'Noin.AI', url: 'https://ai.ourines.com', isRelay: true, hasSubscription: false },
-                                        { name: 'AiCodeMirror', url: 'https://www.aicodemirror.com/register?invitecode=CZPPWZ', isRelay: true, hasSubscription: false },
-                                        { name: 'GACCode', url: 'https://gaccode.com/signup?ref=FVMCU97H', isRelay: true, hasSubscription: false },
-                                        { name: 'CodeRelay', url: 'https://api.code-relay.com/register?aff=0ZtO', isRelay: true, hasSubscription: false },
                                         { name: 'ChatFire', url: 'https://api.chatfire.cn/register?aff=jira', isRelay: true, hasSubscription: false },
                                         { name: '智谱', url: 'https://bigmodel.cn/glm-coding', isRelay: false, hasSubscription: true },
                                         { name: '月之暗面', url: 'https://www.kimi.com/membership/pricing?from=upgrade_plan&track_id=1d2446f5-f45f-4ae5-961e-c0afe936a115', isRelay: false, hasSubscription: true },
                                         { name: '豆包', url: 'https://www.volcengine.com/activity/codingplan', isRelay: false, hasSubscription: true },
                                         { name: 'MiniMax', url: 'https://platform.minimaxi.com/user-center/payment/coding-plan', isRelay: false, hasSubscription: true },
-                                        { name: 'DeepSeek', url: 'https://platform.deepseek.com', isRelay: false, hasSubscription: false, isBilling: true },
+                                        { name: 'DeepSeek', url: 'https://platform.deepseek.com/api_keys', isRelay: false, hasSubscription: false, isBilling: true },
+                                        { name: '小米', url: 'https://platform.xiaomimimo.com/#/console/api-keys', isRelay: false, hasSubscription: false, isBilling: true },
+                                        { name: '摩尔线程', url: 'https://code.mthreads.com/', isRelay: false, hasSubscription: true },
+                                        { name: '快手', url: 'https://www.streamlake.com/marketing/coding-plan', isRelay: false, hasSubscription: true },
+                                        { name: '阿里云', url: 'https://coding.dashscope.aliyuncs.com/', isRelay: false, hasSubscription: true },
                                     ].map((provider, index) => (
                                         <div
                                             key={index}
@@ -3926,7 +3919,12 @@ ${instruction}`;
                         <div style={{ marginBottom: '16px' }}>
                             {(() => {
                                 const allModels = (config as any)[activeTool].models;
-                                const configurableModels = allModels.filter((m: any) => m.model_name !== "Original");
+                                // Filter: show only non-Original models
+                                const customModels = allModels.filter((m: any) => m.is_custom);
+                                const nonCustomModels = allModels.filter((m: any) => !m.is_custom && m.model_name !== "Original");
+
+                                // Always show all custom models (user can add/remove them)
+                                const configurableModels = [...nonCustomModels, ...customModels];
                                 const showArrows = configurableModels.length >= 5;
 
                                 return (
@@ -4153,6 +4151,76 @@ ${instruction}`;
 
                         <div style={{ display: 'flex', gap: '10px', marginTop: '24px' }}>
                             <button className="btn-primary" style={{ flex: 1 }} onClick={save}>{t("saveChanges")}</button>
+                            {(config as any)[activeTool].models[activeTab].is_custom && (
+                                <button
+                                    className="btn-hide"
+                                    style={{ flex: 0.5, backgroundColor: '#fca5a5', color: '#991b1b', border: '1px solid #fca5a5' }}
+                                    onClick={() => {
+                                        const allModels = (config as any)[activeTool].models;
+                                        const customModels = allModels.filter((m: any) => m.is_custom);
+                                        if (customModels.length <= 1) {
+                                            showToastMessage(t("cannotRemoveLastCustom") || "Cannot remove the last custom provider");
+                                            return;
+                                        }
+                                        setConfirmDialog({
+                                            show: true,
+                                            title: t("confirmDelete"),
+                                            message: t("removeCustomProvider"),
+                                            onConfirm: () => {
+                                                const newModels = allModels.filter((_: any, idx: number) => idx !== activeTab);
+                                                const toolCfg = { ...(config as any)[activeTool], models: newModels };
+                                                const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+                                                setConfig(newConfig);
+                                                setActiveTab(0);
+                                                setConfirmDialog({ ...confirmDialog, show: false });
+                                            }
+                                        });
+                                    }}
+                                >
+                                    {t("delete")}
+                                </button>
+                            )}
+                            {(() => {
+                                const allModels = (config as any)[activeTool].models;
+                                const customModels = allModels.filter((m: any) => m.is_custom);
+                                const canAddMore = customModels.length < 6;
+                                return canAddMore && (
+                                    <button
+                                        className="btn-hide"
+                                        style={{ flex: 0.5, backgroundColor: '#93c5fd', color: '#1e40af', border: '1px solid #93c5fd' }}
+                                        onClick={() => {
+                                            const customCount = customModels.length;
+                                            if (customCount >= 6) {
+                                                showToastMessage(t("maxCustomProviders"));
+                                                return;
+                                            }
+                                            const newCustomName = customCount === 1 ? "Custom1" : `Custom${customCount}`;
+                                            const newCustom = {
+                                                model_name: newCustomName,
+                                                model_id: "",
+                                                model_url: "",
+                                                api_key: "",
+                                                wire_api: "",
+                                                is_custom: true
+                                            };
+                                            // Ensure custom models are always at the end
+                                            const nonCustom = allModels.filter((m: any) => !m.is_custom);
+                                            const existingCustom = allModels.filter((m: any) => m.is_custom);
+                                            const newModels = [...nonCustom, ...existingCustom, newCustom];
+                                            const toolCfg = { ...(config as any)[activeTool], models: newModels };
+                                            const newConfig = new main.AppConfig({ ...config, [activeTool]: toolCfg });
+                                            setConfig(newConfig);
+                                            // Switch to the newly added custom provider
+                                            setActiveTab(newModels.length - 1);
+                                            // Reset tab scroll to show the new tab
+                                            const configurableCount = newModels.filter((m: any) => m.model_name !== "Original").length;
+                                            setTabStartIndex(Math.max(0, configurableCount - 4));
+                                        }}
+                                    >
+                                        + {t("addCustomProvider")}
+                                    </button>
+                                );
+                            })()}
                             <button className="btn-hide" style={{ flex: 1 }} onClick={() => setShowModelSettings(false)}>{t("close")}</button>
                         </div>
                     </div>
@@ -4469,60 +4537,96 @@ ${instruction}`;
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+                    backdropFilter: 'blur(4px)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    zIndex: 10000
+                    zIndex: 10000,
+                    animation: 'fadeIn 0.2s ease-out'
                 }}>
                     <div style={{
-                        backgroundColor: 'var(--surface-color)',
+                        backgroundColor: '#ffffff',
                         borderRadius: '12px',
                         padding: '24px',
-                        minWidth: '400px',
-                        maxWidth: '500px',
-                        boxShadow: '0 10px 30px rgba(0, 0, 0, 0.3)',
-                        border: '1px solid var(--border-color)'
+                        minWidth: '360px',
+                        maxWidth: '420px',
+                        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 0, 0, 0.05)',
+                        border: 'none',
+                        animation: 'slideUp 0.3s ease-out',
+                        position: 'relative'
                     }}>
-                        <h3 style={{
-                            margin: '0 0 16px 0',
-                            fontSize: '1.2rem',
-                            color: 'var(--text-color)',
-                            fontWeight: '600'
+                        {/* Icon */}
+                        <div style={{
+                            width: '48px',
+                            height: '48px',
+                            borderRadius: '50%',
+                            backgroundColor: '#fef2f2',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            marginBottom: '16px',
+                            border: '2px solid #fee2e2'
                         }}>
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="8" x2="12" y2="12"></line>
+                                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                            </svg>
+                        </div>
+
+                        {/* Title */}
+                        <h3 style={{
+                            margin: '0 0 8px 0',
+                            fontSize: '1.15rem',
+                            color: '#1f2937',
+                            fontWeight: '700',
+                            letterSpacing: '-0.02em'                    }}>
                             {confirmDialog.title}
                         </h3>
+
+                        {/* Message */}
                         <p style={{
-                            margin: '0 0 24px 0',
-                            color: 'var(--text-secondary)',
-                            fontSize: '0.95rem',
-                            lineHeight: '1.5'
+                            margin: '0 0 20px 0',
+                            color: '#6b7280',
+                            fontSize: '0.9rem',
+                            lineHeight: '1.5',
+                            fontWeight: '400'
                         }}>
                             {confirmDialog.message}
                         </p>
+
+                        {/* Buttons */}
                         <div style={{
                             display: 'flex',
                             justifyContent: 'flex-end',
-                            gap: '12px'
+                            gap: '10px'
                         }}>
                             <button
                                 onClick={() => setConfirmDialog({ ...confirmDialog, show: false })}
                                 style={{
                                     padding: '8px 20px',
-                                    backgroundColor: 'transparent',
-                                    color: 'var(--text-secondary)',
-                                    border: '1px solid var(--border-color)',
-                                    borderRadius: '6px',
+                                    backgroundColor: '#f9fafb',
+                                    color: '#374151',
+                                    border: '1px solid #e5e7eb',
+                                    borderRadius: '8px',
                                     cursor: 'pointer',
-                                    fontSize: '0.9rem',
-                                    fontWeight: '500',
-                                    transition: 'all 0.2s'
+                                    fontSize: '0.875rem',
+                                    fontWeight: '600',
+                                    transition: 'all 0.2s',
+                                    boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)'
                                 }}
                                 onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = 'var(--accent-bg)';
+                                    e.currentTarget.style.backgroundColor = '#f3f4f6';
+                                    e.currentTarget.style.borderColor = '#d1d5db';
+                                    e.currentTarget.style.transform = 'translateY(-1px)';
+                                    e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.1)';
                                 }}
                                 onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = 'transparent';
+                                    e.currentTarget.style.backgroundColor = '#f9fafb';
+                                    e.currentTarget.style.borderColor = '#e5e7eb';
+                                    e.currentTarget.style.transform = 'translateY(0)';
+                                    e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
                                 }}
                             >
                                 {t("cancel")}
@@ -4534,17 +4638,22 @@ ${instruction}`;
                                     backgroundColor: '#ef4444',
                                     color: 'white',
                                     border: 'none',
-                                    borderRadius: '6px',
+                                    borderRadius: '8px',
                                     cursor: 'pointer',
-                                    fontSize: '0.9rem',
-                                    fontWeight: '500',
-                                    transition: 'all 0.2s'
+                                    fontSize: '0.875rem',
+                                    fontWeight: '600',
+                                    transition: 'all 0.2s',
+                                    boxShadow: '0 2px 4px rgba(239, 68, 68, 0.3)'
                                 }}
                                 onMouseEnter={(e) => {
                                     e.currentTarget.style.backgroundColor = '#dc2626';
+                                    e.currentTarget.style.transform = 'translateY(-1px)';
+                                    e.currentTarget.style.boxShadow = '0 4px 8px rgba(239, 68, 68, 0.4)';
                                 }}
                                 onMouseLeave={(e) => {
                                     e.currentTarget.style.backgroundColor = '#ef4444';
+                                    e.currentTarget.style.transform = 'translateY(0)';
+                                    e.currentTarget.style.boxShadow = '0 2px 4px rgba(239, 68, 68, 0.3)';
                                 }}
                             >
                                 {t("confirm")}

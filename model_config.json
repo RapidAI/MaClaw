@@ -55,55 +55,6 @@
       "api_key": "",
       "temperature": 0.7,
       "max_tokens": 8192
-    },
-    {
-      "model_name": "AICodeMirror-Claude",
-      "model_url": "https://api.aicodemirror.com/api/claudecode",
-      "api_key": "",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    },
-    {
-      "model_name": "AICodeMirror-Gemini",
-      "model_url": "https://api.aicodemirror.com/api/gemini",
-      "api_key": "",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    },
-    {
-      "model_name": "AICodeMirror-Codex",
-      "model_url": "https://api.aicodemirror.com/api/codex/backend-api/codex",
-      "api_key": "",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    },
-    {
-      "model_name": "AIgoCode-Claude",
-      "model_url": "https://api.aigocode.com/api",
-      "api_key": "",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    },
-    {
-      "model_name": "AIgoCode-Gemini",
-      "model_url": "https://api.aigocode.com/gemini",
-      "api_key": "",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    },
-    {
-      "model_name": "AIgoCode-Codex",
-      "model_url": "https://api.aigocode.com/openai",
-      "api_key": "",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    },
-    {
-      "model_name": "GACCode",
-      "model_url": "https://gaccode.com/claudecode",
-      "api_key": "",
-      "temperature": 0.7,
-      "max_tokens": 4096
     }
   ]
 }

@@ -601,7 +601,7 @@ preferred_auth_method = "apikey"
 [model_providers.deepseek]
 name = "deepseek"
 base_url = "%s"
-wire_api = "chat"
+wire_api = "responses"
 request_max_retries = 4
 stream_max_retries = 8
 stream_idle_timeout_ms = 120000
@@ -622,7 +622,7 @@ preferred_auth_method = "apikey"
 [model_providers.glm]
 name = "glm"
 base_url = "%s"
-wire_api = "chat"
+wire_api = "responses"
 request_max_retries = 4
 stream_max_retries = 8
 stream_idle_timeout_ms = 120000
@@ -643,7 +643,7 @@ preferred_auth_method = "apikey"
 [model_providers.doubao]
 name = "doubao"
 base_url = "%s"
-wire_api = "chat"
+wire_api = "responses"
 request_max_retries = 4
 stream_max_retries = 8
 stream_idle_timeout_ms = 120000
@@ -664,7 +664,7 @@ preferred_auth_method = "apikey"
 [model_providers.kimi]
 name = "kimi"
 base_url = "%s"
-wire_api = "chat"
+wire_api = "responses"
 request_max_retries = 4
 stream_max_retries = 8
 stream_idle_timeout_ms = 120000
@@ -685,7 +685,7 @@ preferred_auth_method = "apikey"
 [model_providers.minimax]
 name = "minimax"
 base_url = "%s"
-wire_api = "chat"
+wire_api = "responses"
 request_max_retries = 4
 stream_max_retries = 8
 stream_idle_timeout_ms = 120000
@@ -724,7 +724,7 @@ preferred_auth_method = "apikey"
 [model_providers.aliyun]
 name = "aliyun"
 base_url = "%s"
-wire_api = "chat"
+wire_api = "responses"
 request_max_retries = 4
 stream_max_retries = 8
 stream_idle_timeout_ms = 120000
@@ -761,7 +761,7 @@ wire_api = "responses"
 		// --- CUSTOM OR OTHER PROVIDERS ---
 		wireApi := selectedModel.WireApi
 		if wireApi == "" {
-			wireApi = "chat"
+			wireApi = "responses"
 		}
 		providerName := strings.ToLower(selectedModel.ModelName)
 		if providerName == "" || providerName == "custom" {
@@ -1677,31 +1677,29 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/anthropic", ApiKey: ""},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/anthropic", ApiKey: ""},
-		{ModelName: "AIgoCode", ModelId: "sonnet", ModelUrl: "https://api.aigocode.com/api", ApiKey: ""},
-		{ModelName: "Noin.AI", ModelId: "sonnet", ModelUrl: "https://ai.ourines.com/api", ApiKey: ""},
-		{ModelName: "AiCodeMirror", ModelId: "sonnet", ModelUrl: "https://api.aicodemirror.com/api/claudecode", ApiKey: ""},
-		{ModelName: "GACCode", ModelId: "sonnet", ModelUrl: "https://gaccode.com/claudecode", ApiKey: ""},
-		{ModelName: "CodeRelay", ModelId: "claude-3-5-sonnet-20241022", ModelUrl: "https://api.code-relay.com/", ApiKey: ""},
 		{ModelName: "ChatFire", ModelId: "sonnet", ModelUrl: "https://api.chatfire.cn", ApiKey: ""},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net", ApiKey: ""},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", ApiKey: ""},
 		{ModelName: "阿里云", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
 	defaultGeminiModels := []ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: ""},
-		{ModelName: "AIgoCode", ModelId: "gemini-2.0-flash-exp", ModelUrl: "https://api.aigocode.com/gemini", ApiKey: ""},
-		{ModelName: "AiCodeMirror", ModelId: "gemini-2.0-flash-exp", ModelUrl: "https://api.aicodemirror.com/api/gemini", ApiKey: ""},
 		{ModelName: "ChatFire", ModelId: "gemini-2.5-pro", ModelUrl: "https://api.chatfire.cn/v1beta/models/gemini-2.5-pro:generateContent", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
 	defaultCodexModels := []ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: ""},
-		{ModelName: "AIgoCode", ModelId: "gpt-5.2-codex", ModelUrl: "https://api.aigocode.com/openai", ApiKey: ""},
-		{ModelName: "AiCodeMirror", ModelId: "gpt-5.2-codex", ModelUrl: "https://api.aicodemirror.com/api/codex/backend-api/codex", ApiKey: ""},
-		{ModelName: "CodeRelay", ModelId: "gpt-5.2-codex", ModelUrl: "https://api.code-relay.com/v1", ApiKey: ""},
 		{ModelName: "ChatFire", ModelId: "gpt-5.1-codex-mini", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: "", WireApi: "responses"},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
@@ -1712,6 +1710,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
 	defaultOpencodeModels := []ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: ""},
@@ -1725,10 +1727,20 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
 	defaultQoderModels := []ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: ""},
 		{ModelName: "Qoder", ModelId: "qoder-1.0", ModelUrl: "https://api.qoder.com/v1", ApiKey: ""},
+		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
 	defaultIFlowModels := []ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: ""},
@@ -1756,6 +1768,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
 	defaultKodeModels := []ModelConfig{
 		{ModelName: "ChatFire", ModelId: "gpt-4o", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: ""},
@@ -1769,6 +1785,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: ""},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		// Check for old config file for migration
@@ -1799,11 +1819,11 @@ func (a *App) LoadConfig() (AppConfig, error) {
 							Models:       defaultCodexModels,
 						},
 						Opencode: ToolConfig{
-							CurrentModel: "AiCodeMirror",
+							CurrentModel: "Original",
 							Models:       defaultOpencodeModels,
 						},
 						CodeBuddy: ToolConfig{
-							CurrentModel: "AiCodeMirror",
+							CurrentModel: "Original",
 							Models:       defaultOpencodeModels,
 						},
 						Qoder: ToolConfig{
@@ -1976,19 +1996,19 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	}
 	if config.Gemini.Models == nil || len(config.Gemini.Models) == 0 {
 		config.Gemini.Models = defaultGeminiModels
-		config.Gemini.CurrentModel = "AiCodeMirror"
+		config.Gemini.CurrentModel = "Original"
 	}
 	if config.Codex.Models == nil || len(config.Codex.Models) == 0 {
 		config.Codex.Models = defaultCodexModels
-		config.Codex.CurrentModel = "AiCodeMirror"
+		config.Codex.CurrentModel = "Original"
 	}
 	if config.Opencode.Models == nil || len(config.Opencode.Models) == 0 {
 		config.Opencode.Models = defaultOpencodeModels
-		config.Opencode.CurrentModel = "AiCodeMirror"
+		config.Opencode.CurrentModel = "Original"
 	}
 	if config.CodeBuddy.Models == nil || len(config.CodeBuddy.Models) == 0 {
 		config.CodeBuddy.Models = defaultOpencodeModels
-		config.CodeBuddy.CurrentModel = "AiCodeMirror"
+		config.CodeBuddy.CurrentModel = "Original"
 	}
 	if config.Qoder.Models == nil || len(config.Qoder.Models) == 0 {
 		config.Qoder.Models = defaultQoderModels
@@ -2006,12 +2026,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		config.Kode.Models = defaultKodeModels
 		config.Kode.CurrentModel = "ChatFire"
 	}
-	ensureModel(&config.Claude.Models, "AiCodeMirror", "https://api.aicodemirror.com/api/claudecode", "sonnet", "")
-	ensureModel(&config.Claude.Models, "Noin.AI", "https://ai.ourines.com/api", "sonnet", "")
-	ensureModel(&config.Claude.Models, "AIgoCode", "https://api.aigocode.com/api", "sonnet", "")
-	ensureModel(&config.Claude.Models, "CodeRelay", "https://api.code-relay.com/", "claude-3-5-sonnet-20241022", "")
 	ensureModel(&config.Claude.Models, "ChatFire", "https://api.chatfire.cn", "sonnet", "")
-	ensureModel(&config.Claude.Models, "GACCode", "https://gaccode.com/claudecode", "sonnet", "")
 	ensureModel(&config.Claude.Models, "DeepSeek", "https://api.deepseek.com/anthropic", "deepseek-chat", "")
 	ensureModel(&config.Claude.Models, "Kimi", "https://api.kimi.com/coding", "kimi-k2-thinking", "")
 	ensureModel(&config.Claude.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding", "doubao-seed-code-preview-latest", "")
@@ -2021,28 +2036,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Claude.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net", "GLM-4.7", "")
 	ensureModel(&config.Claude.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "")
 	ensureModel(&config.Claude.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "")
-	// Deduplicate AiCodeMirror for Claude if both AICodeMirror and AiCodeMirror exist
-	dedupeAiCodeMirror := func(models *[]ModelConfig) {
-		var newModels []ModelConfig
-		foundAi := false
-		for _, m := range *models {
-			if strings.EqualFold(m.ModelName, "AiCodeMirror") {
-				if !foundAi {
-					m.ModelName = "AiCodeMirror" // Standardize
-					newModels = append(newModels, m)
-					foundAi = true
-				}
-			} else {
-				newModels = append(newModels, m)
-			}
-		}
-		*models = newModels
-	}
-	dedupeAiCodeMirror(&config.Claude.Models)
-	ensureModel(&config.Gemini.Models, "AiCodeMirror", "https://api.aicodemirror.com/api/gemini", "gemini-2.0-flash-exp", "")
 	ensureModel(&config.Gemini.Models, "ChatFire", "https://api.chatfire.cn/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro", "")
-	ensureModel(&config.Codex.Models, "AiCodeMirror", "https://api.aicodemirror.com/api/codex/backend-api/codex", "gpt-5.2-codex", "responses")
-	ensureModel(&config.Codex.Models, "CodeRelay", "https://api.code-relay.com/v1", "gpt-5.2-codex", "responses")
 	ensureModel(&config.Codex.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
 	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
@@ -2146,7 +2140,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	cleanOpencodeModels(&config.Opencode.Models)
 	cleanOpencodeModels(&config.CodeBuddy.Models)
 	cleanOpencodeModels(&config.IFlow.Models)
-	// Ensure at least 2 custom models are always present
+	// Ensure at least 2 custom models are always present, and at most 6
 	// Custom models are identified by IsCustom flag, not by name
 	ensureCustom := func(models *[]ModelConfig) {
 		customCount := 0
@@ -2163,6 +2157,22 @@ func (a *App) LoadConfig() (AppConfig, error) {
 				name = fmt.Sprintf("Custom%d", customCount-1)
 			}
 			*models = append(*models, ModelConfig{ModelName: name, ModelUrl: "", ApiKey: "", IsCustom: true})
+		}
+		// Ensure at most 6 custom models exist
+		if customCount > 6 {
+			var newModels []ModelConfig
+			customAdded := 0
+			for _, m := range *models {
+				if m.IsCustom {
+					if customAdded < 6 {
+						newModels = append(newModels, m)
+						customAdded++
+					}
+				} else {
+					newModels = append(newModels, m)
+				}
+			}
+			*models = newModels
 		}
 	}
 	ensureCustom(&config.Claude.Models)
