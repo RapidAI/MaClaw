@@ -1,8 +1,0 @@
-./consts.go
-./cursor.go
-./icon.go
-./keyboard.go
-./menu.go
-./structs.go
-./theme.go
-./window.go

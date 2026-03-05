@@ -1,4 +1,0 @@
-# github.com/energye/systray
-systray_darwin.m:258:42: warning: null passed to a callee that requires a non-null argument [-Wnonnull]
-/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/MacTypes.h:96:19: note: expanded from macro 'nil'
-/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types.h:64:23: note: expanded from macro '__DARWIN_NULL'

@@ -1,8 +1,0 @@
-./app.go
-./common.go
-./env_check_api.go
-./main.go
-./platform_darwin.go
-./resources_darwin.go
-./tool_manager.go
-./tray_darwin.go
