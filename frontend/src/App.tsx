@@ -2360,6 +2360,25 @@ ${instruction}`;
                                                                             navTab === 'api-store' ? t("apiStore") :
                                                                                 navTab === 'settings' ? t("globalSettings") : t("about")}
                             </span>
+                            {navTab === 'projects' && (
+                                <>
+                                    <button
+                                        onClick={() => switchTool(activeTool)}
+                                        className="btn-link"
+                                        style={{
+                                            marginLeft: '10px',
+                                            fontSize: '0.8rem',
+                                            padding: '4px 12px'
+                                        }}
+                                        title="Back"
+                                    >&lt;&lt; {t("back") || "返回"}</button>
+                                    <button
+                                        className="btn-primary"
+                                        style={{ marginLeft: '10px', padding: '4px 12px', fontSize: '0.8rem' }}
+                                        onClick={handleAddNewProject}
+                                    >{t("addNewProject")}</button>
+                                </>
+                            )}
                             {navTab === 'message' && (
                                 <>
                                     <button
@@ -2961,22 +2980,6 @@ ${instruction}`;
                     )}
                     {navTab === 'projects' && (
                         <div className="project-manager-panel">
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-                                <button
-                                    onClick={() => switchTool(activeTool)}
-                                    style={{
-                                        background: 'none',
-                                        border: 'none',
-                                        cursor: 'pointer',
-                                        fontSize: '1.2rem',
-                                        color: 'var(--primary-color)',
-                                        padding: '0 4px'
-                                    }}
-                                    title="Back"
-                                >&lt;&lt;</button>
-                                <button className="btn-primary" style={{ padding: '3px 12px', fontSize: '0.85rem' }} onClick={handleAddNewProject}>{t("addNewProject")}</button>
-                            </div>
-
                             <div className="project-manager-toolbar">
                                 <input
                                     type="text"
