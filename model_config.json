@@ -36,6 +36,13 @@
       "max_tokens": 1000
     },
     {
+      "model_name": "讯飞星辰",
+      "model_url": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+      "api_key": "your_xfyun_api_key_here",
+      "temperature": 0.7,
+      "max_tokens": 1000
+    },
+    {
       "model_name": "MiniMax",
       "model_url": "https://api.minimaxi.com/anthropic",
       "api_key": "your_minimax_api_key_here",

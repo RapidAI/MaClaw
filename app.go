@@ -1,4 +1,5 @@
 package main
+
 import (
 	"archive/zip"
 	"bytes"
@@ -6,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/fsnotify/fsnotify"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"io"
 	"net/http"
 	"os"
@@ -15,9 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"github.com/fsnotify/fsnotify"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
 // App struct
 type App struct {
 	ctx               context.Context
@@ -27,16 +29,18 @@ type App struct {
 	downloadCancelers map[string]context.CancelFunc
 	downloadMutex     sync.Mutex
 	IsInitMode        bool
-	installingNode    bool               // Flag to prevent concurrent Node.js installation
-	installingGit     bool               // Flag to prevent concurrent Git installation
-	nodeInstallDone   chan bool          // Channel to signal Node.js installation completion
+	installingNode    bool      // Flag to prevent concurrent Node.js installation
+	installingGit     bool      // Flag to prevent concurrent Git installation
+	nodeInstallDone   chan bool // Channel to signal Node.js installation completion
 	installMutex      sync.Mutex
-	toolInstallLocks  map[string]bool    // Track which tools are currently being installed
-	toolLockMutex     sync.Mutex         // Mutex for toolInstallLocks map
+	toolInstallLocks  map[string]bool // Track which tools are currently being installed
+	toolLockMutex     sync.Mutex      // Mutex for toolInstallLocks map
 }
+
 var OnConfigChanged func(AppConfig)
 var UpdateTrayMenu func(string)
 var UpdateTrayVisibility func(bool)
+
 type ModelConfig struct {
 	ModelName       string `json:"model_name"`
 	ModelId         string `json:"model_id"`
@@ -126,10 +130,11 @@ type AppConfig struct {
 type Skill struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Type        string `json:"type"`     // "address" or "zip"
-	Value       string `json:"value"`    // Address string or zip filename
+	Type        string `json:"type"`      // "address" or "zip"
+	Value       string `json:"value"`     // Address string or zip filename
 	Installed   bool   `json:"installed"` // Whether this skill is already installed
 }
+
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{
@@ -144,7 +149,7 @@ func NewApp() *App {
 func (a *App) tryLockTool(toolName string) bool {
 	a.toolLockMutex.Lock()
 	defer a.toolLockMutex.Unlock()
-	
+
 	if a.toolInstallLocks[toolName] {
 		return false // Already being installed
 	}
@@ -186,6 +191,7 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 }
+
 // domReady is called after the frontend Dom has been loaded
 func (a *App) domReady(ctx context.Context) {
 	// Trigger environment check on startup
@@ -246,6 +252,7 @@ func (a *App) SetLanguage(lang string) {
 		UpdateTrayMenu(lang)
 	}
 }
+
 // Greet returns a greeting for the given name
 func (a *App) ResizeWindow(width, height int) {
 	runtime.WindowSetSize(a.ctx, width, height)
@@ -433,6 +440,10 @@ func (a *App) clearKodeConfig() {
 func (a *App) clearEnvVars() {
 	vars := []string{
 		"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+		"MAX_THINKING_TOKENS", "API_TIMEOUT_MS",
 		"OPENAI_API_KEY", "OPENAI_BASE_URL", "WIRE_API",
 		"GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL",
 		"OPENCODE_API_KEY", "OPENCODE_BASE_URL",
@@ -491,6 +502,16 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_MODEL"] = selectedModel.ModelId
+	case "讯飞星辰", "xfyun":
+		modelId := selectedModel.ModelId
+		if modelId == "" {
+			modelId = "astron-code-latest"
+		}
+		env["ANTHROPIC_BASE_URL"] = "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic"
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
+		env["ANTHROPIC_MODEL"] = modelId
 	case "minimax":
 		env["ANTHROPIC_BASE_URL"] = "https://api.minimaxi.com/anthropic"
 		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = selectedModel.ModelId
@@ -520,6 +541,16 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
+	case "腾讯云", "tencent", "tencentcloud":
+		env["ANTHROPIC_BASE_URL"] = "https://api.lkeap.cloud.tencent.com/coding/anthropic"
+		modelId := selectedModel.ModelId
+		if modelId == "" {
+			modelId = "glm-5"
+		}
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
+		env["ANTHROPIC_MODEL"] = modelId
 	case "阿里云", "aliyun":
 		env["ANTHROPIC_BASE_URL"] = "https://coding.dashscope.aliyuncs.com/apps/anthropic"
 		modelId := selectedModel.ModelId
@@ -530,6 +561,23 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
+	case "百度千帆", "qianfan":
+		modelId := selectedModel.ModelId
+		if modelId == "" {
+			modelId = "qianfan-code-latest"
+		}
+		env["ANTHROPIC_BASE_URL"] = "https://qianfan.baidubce.com/anthropic/coding"
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
+		env["ANTHROPIC_MODEL"] = modelId
+		env["ANTHROPIC_SMALL_FAST_MODEL"] = modelId
+		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+		env["API_TIMEOUT_MS"] = "600000"
+		settings["permissions"] = map[string][]string{
+			"allow": {},
+			"deny":  {},
+		}
 	default:
 		env["ANTHROPIC_BASE_URL"] = selectedModel.ModelUrl
 		env["ANTHROPIC_MODEL"] = selectedModel.ModelId
@@ -700,6 +748,27 @@ request_max_retries = 4
 stream_max_retries = 8
 stream_idle_timeout_ms = 120000
 `, modelId, baseUrl)
+	} else if strings.ToLower(selectedModel.ModelName) == "讯飞星辰" || strings.ToLower(selectedModel.ModelName) == "xfyun" {
+		if baseUrl == "" {
+			baseUrl = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+		}
+		modelId := selectedModel.ModelId
+		if modelId == "" {
+			modelId = "astron-code-latest"
+		}
+		configToml = fmt.Sprintf(`model_provider = "xfyun"
+model = "%s"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+preferred_auth_method = "apikey"
+[model_providers.xfyun]
+name = "xfyun"
+base_url = "%s"
+wire_api = "responses"
+request_max_retries = 4
+stream_max_retries = 8
+stream_idle_timeout_ms = 120000
+`, modelId, baseUrl)
 	} else if strings.ToLower(selectedModel.ModelName) == "kimi" {
 		if baseUrl == "" {
 			baseUrl = "https://api.kimi.com/coding/v1"
@@ -804,6 +873,8 @@ wire_api = "responses"
 		strings.ToLower(selectedModel.ModelName) != "deepseek" &&
 		strings.ToLower(selectedModel.ModelName) != "glm" &&
 		strings.ToLower(selectedModel.ModelName) != "doubao" &&
+		strings.ToLower(selectedModel.ModelName) != "讯飞星辰" &&
+		strings.ToLower(selectedModel.ModelName) != "xfyun" &&
 		strings.ToLower(selectedModel.ModelName) != "kimi" &&
 		strings.ToLower(selectedModel.ModelName) != "minimax" &&
 		strings.ToLower(selectedModel.ModelName) != "coderelay" &&
@@ -883,6 +954,11 @@ func (a *App) syncToOpencodeSettings(config AppConfig, projectDir string, instan
 			if baseUrl == "" {
 				baseUrl = "https://ark.cn-beijing.volces.com/api/coding/v3"
 			}
+		case "讯飞星辰", "xfyun":
+			modelId = "astron-code-latest"
+			if baseUrl == "" {
+				baseUrl = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+			}
 		case "kimi":
 			modelId = "kimi-for-coding"
 			if baseUrl == "" {
@@ -897,6 +973,11 @@ func (a *App) syncToOpencodeSettings(config AppConfig, projectDir string, instan
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
+			}
+		case "腾讯云", "tencent", "tencentcloud":
+			modelId = "glm-5"
+			if baseUrl == "" {
+				baseUrl = "https://api.lkeap.cloud.tencent.com/coding/v3"
 			}
 		default:
 			modelId = "opencode-1.0"
@@ -1054,6 +1135,11 @@ func (a *App) syncToIFlowSettings(config AppConfig, projectDir string, instanceI
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
+			}
+		case "腾讯云", "tencent", "tencentcloud":
+			modelId = "glm-5"
+			if baseUrl == "" {
+				baseUrl = "https://api.lkeap.cloud.tencent.com/coding/v3"
 			}
 		default:
 			modelId = "gpt-4o"
@@ -1216,9 +1302,9 @@ func (a *App) syncToKodeSettings(config AppConfig, projectDir string, instanceID
 			"compact": selectedModel.ModelId,
 			"quick":   selectedModel.ModelId,
 		},
-		"defaultModelName":        selectedModel.ModelId,
-		"hasCompletedOnboarding":  true,
-		"lastOnboardingVersion":   "2.0.3",
+		"defaultModelName":       selectedModel.ModelId,
+		"hasCompletedOnboarding": true,
+		"lastOnboardingVersion":  "2.0.3",
 	}
 
 	// Write config file
@@ -1399,12 +1485,16 @@ func getBaseUrl(selectedModel *ModelConfig) string {
 		baseUrl = "https://open.bigmodel.cn/api/anthropic"
 	case "doubao":
 		baseUrl = "https://ark.cn-beijing.volces.com/api/coding"
+	case "讯飞星辰", "xfyun":
+		baseUrl = "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic"
 	case "minimax":
 		baseUrl = "https://api.minimaxi.com/anthropic"
 	case "deepseek":
 		baseUrl = "https://api.deepseek.com/anthropic"
 	case "gaccode":
 		baseUrl = "https://gaccode.com/claudecode"
+	case "百度千帆", "qianfan":
+		baseUrl = "https://qianfan.baidubce.com/anthropic/coding"
 	}
 	return baseUrl
 }
@@ -1492,7 +1582,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 	}
 	if selectedModel == nil || toolCfg.CurrentModel == "" {
 		title := "提示"
-        message := "请先选择一个服务商。"
+		message := "请先选择一个服务商。"
 		if a.CurrentLanguage == "en" {
 			title = "Notice"
 			message = "Please select a provider first."
@@ -1585,6 +1675,21 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 				env["IFLOW_MODEL"] = selectedModel.ModelId
 			case "kilo":
 				env["KILO_MODEL"] = selectedModel.ModelId
+			}
+		}
+		if strings.ToLower(toolName) == "claude" {
+			switch strings.ToLower(selectedModel.ModelName) {
+			case "百度千帆", "qianfan":
+				modelId := selectedModel.ModelId
+				if modelId == "" {
+					modelId = "qianfan-code-latest"
+				}
+				env["ANTHROPIC_AUTH_TOKEN"] = selectedModel.ApiKey
+				env["ANTHROPIC_BASE_URL"] = "https://qianfan.baidubce.com/anthropic/coding"
+				env["ANTHROPIC_MODEL"] = modelId
+				env["ANTHROPIC_SMALL_FAST_MODEL"] = modelId
+				env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+				env["API_TIMEOUT_MS"] = "600000"
 			}
 		}
 		// Tool-specific configurations
@@ -1706,9 +1811,12 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/anthropic", ApiKey: ""},
 		{ModelName: "Kimi", ModelId: "kimi-k2-thinking", ModelUrl: "https://api.kimi.com/coding", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding", ApiKey: ""},
+		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic", ApiKey: "", HasSubscription: true},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/anthropic", ApiKey: ""},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/anthropic", ApiKey: ""},
+		{ModelName: "百度千帆", ModelId: "qianfan-code-latest", ModelUrl: "https://qianfan.baidubce.com/anthropic/coding", ApiKey: "", HasSubscription: true},
 		{ModelName: "ChatFire", ModelId: "sonnet", ModelUrl: "https://api.chatfire.cn", ApiKey: ""},
+		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/anthropic", ApiKey: "", HasSubscription: true},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net", ApiKey: "", HasSubscription: true},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", ApiKey: "", HasSubscription: true},
 		{ModelName: "阿里云", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic", ApiKey: "", HasSubscription: true},
@@ -1735,8 +1843,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
+		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
+		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -1752,8 +1862,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
+		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
+		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -1766,21 +1878,17 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	defaultQoderModels := []ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: ""},
 		{ModelName: "Qoder", ModelId: "qoder-1.0", ModelUrl: "https://api.qoder.com/v1", ApiKey: ""},
-		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
 	defaultIFlowModels := []ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: ""},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
+		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
 		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
+		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -1792,9 +1900,11 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
+		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
 		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
+		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -1809,9 +1919,11 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
+		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
 		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
+		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -1869,17 +1981,17 @@ func (a *App) LoadConfig() (AppConfig, error) {
 							CurrentModel: "Original",
 							Models:       defaultKiloModels,
 						},
-					Kode: ToolConfig{
-						CurrentModel: "ChatFire",
-						Models:       defaultKodeModels,
-					},
+						Kode: ToolConfig{
+							CurrentModel: "ChatFire",
+							Models:       defaultKodeModels,
+						},
 						Projects:       oldConfig.Projects,
 						CurrentProject: oldConfig.CurrentProj,
 						ActiveTool:     "claude",
 						ShowGemini:     true,
 						ShowCodex:      true,
 						ShowOpenCode:   true,
-						ShowKode:      true,
+						ShowKode:       true,
 						ShowCodeBuddy:  true,
 						ShowQoder:      true,
 						ShowIFlow:      true,
@@ -1925,10 +2037,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 				CurrentModel: "Original",
 				Models:       defaultKiloModels,
 			},
-		Kode: ToolConfig{
-			CurrentModel: "ChatFire",
-			Models:       defaultKodeModels,
-		},
+			Kode: ToolConfig{
+				CurrentModel: "ChatFire",
+				Models:       defaultKodeModels,
+			},
 			Projects: []ProjectConfig{
 				{
 					Id:       "default",
@@ -1937,17 +2049,17 @@ func (a *App) LoadConfig() (AppConfig, error) {
 					YoloMode: false,
 				},
 			},
-			CurrentProject:   "default",
-			ActiveTool:       "claude",
-			ShowGemini:       true,
-			ShowCodex:        true,
-			ShowOpenCode:     true,
-			ShowCodeBuddy:    true,
-			ShowQoder:        true,
-			ShowIFlow:        true,
-			ShowKilo:         true,
-			ShowKode:         true,
-			EnvCheckInterval: 7, // Default to 7 days
+			CurrentProject:     "default",
+			ActiveTool:         "claude",
+			ShowGemini:         true,
+			ShowCodex:          true,
+			ShowOpenCode:       true,
+			ShowCodeBuddy:      true,
+			ShowQoder:          true,
+			ShowIFlow:          true,
+			ShowKilo:           true,
+			ShowKode:           true,
+			EnvCheckInterval:   7,    // Default to 7 days
 			UseWindowsTerminal: true, // Default to true, will only work if Windows Terminal is installed
 		}
 		err = a.SaveConfig(defaultConfig)
@@ -2066,9 +2178,12 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Claude.Models, "DeepSeek", "https://api.deepseek.com/anthropic", "deepseek-chat", "")
 	ensureModel(&config.Claude.Models, "Kimi", "https://api.kimi.com/coding", "kimi-k2-thinking", "")
 	ensureModel(&config.Claude.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding", "doubao-seed-code-preview-latest", "")
+	ensureModel(&config.Claude.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic", "astron-code-latest", "", true)
 	ensureModel(&config.Claude.Models, "GLM", "https://open.bigmodel.cn/api/anthropic", "glm-4.7", "")
 	ensureModel(&config.Claude.Models, "MiniMax", "https://api.minimaxi.com/anthropic", "MiniMax-M2.1", "")
+	ensureModel(&config.Claude.Models, "百度千帆", "https://qianfan.baidubce.com/anthropic/coding", "qianfan-code-latest", "", true)
 	ensureModel(&config.Claude.Models, "XiaoMi", "https://api.xiaomimimo.com/anthropic", "mimo-v2-flash", "")
+	ensureModel(&config.Claude.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/anthropic", "glm-5", "", true)
 	ensureModel(&config.Claude.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net", "GLM-4.7", "", true)
 	ensureModel(&config.Claude.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.Claude.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "", true)
@@ -2077,52 +2192,64 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.Codex.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
+	ensureModel(&config.Codex.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
 	ensureModel(&config.Codex.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.Codex.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.Codex.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
+	ensureModel(&config.Codex.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
 	ensureModel(&config.Codex.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.Codex.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.Opencode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Opencode.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Opencode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.Opencode.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
+	ensureModel(&config.Opencode.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.Opencode.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.Opencode.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.Opencode.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
+	ensureModel(&config.Opencode.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
 	ensureModel(&config.Opencode.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.Opencode.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.CodeBuddy.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.CodeBuddy.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.CodeBuddy.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
+	ensureModel(&config.CodeBuddy.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.CodeBuddy.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.CodeBuddy.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.CodeBuddy.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
+	ensureModel(&config.CodeBuddy.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
 	ensureModel(&config.CodeBuddy.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.CodeBuddy.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.IFlow.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.IFlow.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.IFlow.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
+	ensureModel(&config.IFlow.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.IFlow.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.IFlow.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.IFlow.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
+	ensureModel(&config.IFlow.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
 	ensureModel(&config.IFlow.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.IFlow.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.Kilo.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Kilo.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Kilo.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.Kilo.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
+	ensureModel(&config.Kilo.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.Kilo.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.Kilo.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.Kilo.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
+	ensureModel(&config.Kilo.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
 	ensureModel(&config.Kilo.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.Kilo.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.Kode.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Kode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Kode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.Kode.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
+	ensureModel(&config.Kode.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.Kode.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.Kode.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.Kode.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
+	ensureModel(&config.Kode.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
 	ensureModel(&config.Kode.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.Kode.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 
@@ -2131,6 +2258,13 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	removeModel(&config.Codex.Models, "阿里云")
 	removeModel(&config.Opencode.Models, "阿里云")
 	removeModel(&config.CodeBuddy.Models, "阿里云")
+	removeModel(&config.Gemini.Models, "百度千帆")
+	removeModel(&config.Codex.Models, "百度千帆")
+	removeModel(&config.Opencode.Models, "百度千帆")
+	removeModel(&config.CodeBuddy.Models, "百度千帆")
+	removeModel(&config.IFlow.Models, "百度千帆")
+	removeModel(&config.Kilo.Models, "百度千帆")
+	removeModel(&config.Kode.Models, "百度千帆")
 	removeModel(&config.IFlow.Models, "阿里云")
 	removeModel(&config.Kilo.Models, "阿里云")
 	removeModel(&config.Kode.Models, "阿里云")
@@ -2237,6 +2371,9 @@ func (a *App) LoadConfig() (AppConfig, error) {
 			}
 		}
 	}
+	if !strings.EqualFold(config.Qoder.CurrentModel, "Original") && !strings.EqualFold(config.Qoder.CurrentModel, "Qoder") {
+		config.Qoder.CurrentModel = "Original"
+	}
 	// Ensure custom models are always last for all tools
 	// Custom models are identified by IsCustom flag, not by name
 	moveCustomToLast := func(models *[]ModelConfig) {
@@ -2340,6 +2477,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	normalizeCurrentModel(&config.Kode)
 	return config, nil
 }
+
 // getProviderModel gets the model for a specific provider name from a tool config
 func getProviderModel(toolConfig *ToolConfig, providerName string) *ModelConfig {
 	for i := range toolConfig.Models {
@@ -2349,6 +2487,7 @@ func getProviderModel(toolConfig *ToolConfig, providerName string) *ModelConfig 
 	}
 	return nil
 }
+
 // syncAllProviderApiKeys synchronizes apikeys of all providers (except 'Original' and 'Custom') across all tools
 func syncAllProviderApiKeys(a *App, oldConfig, newConfig *AppConfig) {
 	// Map of tools for easy access
@@ -2472,6 +2611,7 @@ func (a *App) saveToPath(path string, config AppConfig) error {
 	}
 	return os.WriteFile(path, data, 0644)
 }
+
 type UpdateResult struct {
 	HasUpdate     bool   `json:"has_update"`
 	LatestVersion string `json:"latest_version"`
@@ -2479,6 +2619,7 @@ type UpdateResult struct {
 	TagName       string `json:"tag_name"`
 	DownloadUrl   string `json:"download_url"`
 }
+
 func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	// Use GitHub API instead of web scraping
 	// Updated URL: aicoder instead of cceasy
@@ -2641,6 +2782,7 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 		DownloadUrl:   downloadUrl,
 	}, nil
 }
+
 // Helper function to get map keys
 func getMapKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
@@ -2649,6 +2791,7 @@ func getMapKeys(m map[string]interface{}) []string {
 	}
 	return keys
 }
+
 type DownloadProgress struct {
 	Percentage float64 `json:"percentage"`
 	Downloaded int64   `json:"downloaded"`
@@ -2656,6 +2799,7 @@ type DownloadProgress struct {
 	Status     string  `json:"status"` // "downloading", "completed", "error", "cancelled"
 	Error      string  `json:"error,omitempty"`
 }
+
 func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 	a.log(fmt.Sprintf("DownloadUpdate: Starting download from %s", url))
 	downloadsDir, err := a.GetDownloadsFolder()
@@ -2928,6 +3072,7 @@ func (a *App) ReadTutorial() (string, error) {
 func (a *App) ReadThanks() (string, error) {
 	return a.fetchRemoteMarkdown("rapidaicoder/msg", "thanks.md")
 }
+
 // compareVersions returns 1 if v1 > v2, -1 if v1 < v2, 0 if equal
 func compareVersions(v1, v2 string) int {
 	parts1 := strings.Split(v1, ".")
@@ -3008,6 +3153,7 @@ func (a *App) getLatestNpmVersion(npmPath string, packageName string) (string, e
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
 // ListPythonEnvironments returns a list of all available Python environments
 func (a *App) ListPythonEnvironments() []PythonEnvironment {
 	envs := []PythonEnvironment{}
@@ -3023,6 +3169,7 @@ func (a *App) ListPythonEnvironments() []PythonEnvironment {
 	// Could add detection for virtualenv, venv, etc. here
 	return envs
 }
+
 // detectCondaEnvironments finds all Anaconda/Miniconda environments
 func (a *App) detectCondaEnvironments() []PythonEnvironment {
 	envs := []PythonEnvironment{}
@@ -3134,6 +3281,7 @@ func (a *App) detectCondaEnvironments() []PythonEnvironment {
 	}
 	return envs
 }
+
 // findCondaCommand tries to locate the conda executable
 func (a *App) findCondaCommand() string {
 	// Try common conda command names (include .bat for Windows)
@@ -3189,6 +3337,7 @@ func (a *App) findCondaCommand() string {
 	// No need to log if conda not found - it's normal if user doesn't use conda
 	return ""
 }
+
 // getCommonCondaPaths returns platform-specific common conda installation paths
 func (a *App) getCommonCondaPaths() []string {
 	paths := []string{}
@@ -3265,6 +3414,7 @@ func (a *App) getCommonCondaPaths() []string {
 	}
 	return paths
 }
+
 // getCondaRoot finds the conda installation root directory
 func (a *App) getCondaRoot() string {
 	// First try to get from conda command location
@@ -3297,11 +3447,13 @@ func (a *App) getCondaRoot() string {
 	}
 	return ""
 }
+
 type SystemInfo struct {
 	OS        string `json:"os"`
 	Arch      string `json:"arch"`
 	OSVersion string `json:"os_version"`
 }
+
 func (a *App) GetSystemInfo() SystemInfo {
 	return SystemInfo{
 		OS:        goruntime.GOOS,
@@ -3380,7 +3532,7 @@ func (a *App) GetSkillsDir(toolName string) string {
 	home, _ := os.UserHomeDir()
 	baseDir := filepath.Join(home, ".cceasy", "skills")
 	storageDir := filepath.Join(baseDir, "storage")
-	
+
 	// Migration: If storage doesn't exist but claude does, rename claude to storage
 	// This ensures existing skills are preserved and shared
 	if _, err := os.Stat(storageDir); os.IsNotExist(err) {
@@ -3389,7 +3541,7 @@ func (a *App) GetSkillsDir(toolName string) string {
 			os.Rename(oldDir, storageDir)
 		}
 	}
-	
+
 	return storageDir
 }
 func (a *App) SelectSkillFile() string {
@@ -3404,6 +3556,7 @@ func (a *App) SelectSkillFile() string {
 	}
 	return selection
 }
+
 // getInstalledSkillDirs returns a list of installed skill directory names for both user and project locations
 func (a *App) getInstalledSkillDirs(toolName string, location string, projectPath string) []string {
 	var installedDirs []string
@@ -3449,20 +3602,20 @@ func (a *App) getInstalledSkillDirs(toolName string, location string, projectPat
 func (a *App) ListSkills(toolName string) []Skill {
 	skillsDir := a.GetSkillsDir(toolName)
 	metadataPath := filepath.Join(skillsDir, "metadata.json")
-	
+
 	var defaultSkills []Skill
 	// Add default skills for all tools
 	defaultSkills = append(defaultSkills, Skill{
-		Name: "Claude Official Documentation Skill Package",
+		Name:        "Claude Official Documentation Skill Package",
 		Description: "Claude Official Documentation Skill Package",
-		Type: "address",
-		Value: "document-skills@anthropic-agent-skills",
+		Type:        "address",
+		Value:       "document-skills@anthropic-agent-skills",
 	})
 	defaultSkills = append(defaultSkills, Skill{
-		Name: "超能力技能包",
+		Name:        "超能力技能包",
 		Description: "包含各种方便技能，包括头脑风暴等。",
-		Type: "address",
-		Value: "superpowers@superpowers-marketplace",
+		Type:        "address",
+		Value:       "superpowers@superpowers-marketplace",
 	})
 
 	if _, err := os.Stat(metadataPath); os.IsNotExist(err) {
@@ -3474,17 +3627,17 @@ func (a *App) ListSkills(toolName string) []Skill {
 	}
 	var skills []Skill
 	json.Unmarshal(data, &skills)
-	
+
 	// Filter out duplicates of default skills if they exist in JSON
 	// AND filter out 'address' type skills for gemini/codex
 	isGeminiOrCodex := strings.ToLower(toolName) == "gemini" || strings.ToLower(toolName) == "codex"
-	
+
 	filteredSkills := defaultSkills
 	for _, s := range skills {
 		if isGeminiOrCodex && s.Type == "address" {
 			continue
 		}
-		
+
 		isDefault := false
 		for _, ds := range defaultSkills {
 			if s.Name == ds.Name {
@@ -3671,10 +3824,10 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 				}
 			}
 			skills[i] = Skill{
-				Name: name,
+				Name:        name,
 				Description: description,
-				Type: skillType,
-				Value: finalValue,
+				Type:        skillType,
+				Value:       finalValue,
 			}
 			found = true
 			break
@@ -3703,10 +3856,10 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 			finalValue = fileName
 		}
 		newSkill := Skill{
-			Name: name,
+			Name:        name,
 			Description: description,
-			Type: skillType,
-			Value: finalValue,
+			Type:        skillType,
+			Value:       finalValue,
 		}
 		skills = append(skills, newSkill)
 	}
@@ -3937,6 +4090,7 @@ func (a *App) DeleteSkill(name, toolName string) error {
 	}
 	return os.WriteFile(metadataPath, data, 0644)
 }
+
 // Translation logic
 var translations = map[string]map[string]string{
 	"Checking Node.js installation...": {
@@ -4333,6 +4487,7 @@ var translations = map[string]map[string]string{
 		"zh-Hant": "發現 conda 位於: ",
 	},
 }
+
 func (a *App) tr(key string, args ...interface{}) string {
 	lang := strings.ToLower(a.CurrentLanguage)
 	if strings.HasPrefix(lang, "zh-hans") || strings.HasPrefix(lang, "zh-cn") {
@@ -4374,5 +4529,3 @@ func (a *App) OpenSystemUrl(url string) error {
 	}
 	return cmd.Start()
 }
-
-

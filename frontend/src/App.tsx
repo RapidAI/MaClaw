@@ -22,7 +22,10 @@ const subscriptionUrls: { [key: string]: string } = {
     "GLM": "https://bigmodel.cn/glm-coding",
     "Kimi": "https://www.kimi.com/membership/pricing?from=upgrade_plan&track_id=1d2446f5-f45f-4ae5-961e-c0afe936a115",
     "Doubao": "https://www.volcengine.com/activity/codingplan",
+    "腾讯云": "https://cloud.tencent.com/document/product/1772/128947",
+    "讯飞星辰": "https://www.xfyun.cn/doc/spark/CodingPlan.html",
     "MiniMax": "https://platform.minimaxi.com/user-center/payment/coding-plan",
+    "百度千帆": "https://cloud.baidu.com/product/codingplan.html",
     "Codex": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
     "Gemini": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
     "DeepSeek": "https://platform.deepseek.com/api_keys",
@@ -50,6 +53,7 @@ const knownProviderEndpoints: ProviderEndpoint[] = [
     { name: "Claude Official", url: "https://api.anthropic.com/v1", protocol: "anthropic", region: "global", description: "Official Claude API" },
     { name: "MiniMax", url: "https://api.minimaxi.com/anthropic", protocol: "anthropic", region: "china" },
     { name: "DeepSeek", url: "https://api.deepseek.com/anthropic", protocol: "anthropic", region: "china" },
+    { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/anthropic", protocol: "anthropic", region: "china", description: "Tencent Cloud Claude-compatible endpoint" },
     { name: "ChatFire", url: "https://api.chatfire.cn/v1", protocol: "anthropic", region: "china" },
     { name: "OpenRouter", url: "https://openrouter.ai/api", protocol: "anthropic", region: "global" },
     
@@ -62,6 +66,7 @@ const knownProviderEndpoints: ProviderEndpoint[] = [
     { name: "GLM", url: "https://open.bigmodel.cn/api/paas/v4", protocol: "openai", region: "china" },
     { name: "Kimi", url: "https://api.kimi.com/coding/v1", protocol: "openai", region: "china" },
     { name: "Doubao", url: "https://ark.cn-beijing.volces.com/api/coding", protocol: "openai", region: "china" },
+    { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/v3", protocol: "openai", region: "china", description: "Tencent Cloud OpenAI-compatible endpoint" },
     { name: "Doubao Codex", url: "https://ark.cn-beijing.volces.com/api/coding/v3", protocol: "openai", region: "china" },
     { name: "DeepSeek Codex", url: "https://api.aicodemirror.com/api/codex/backend-api/codex", protocol: "openai", region: "china" },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", protocol: "openai", region: "global" },
@@ -83,6 +88,16 @@ const recommendedModels: { [provider: string]: { id: string; note?: string }[] }
     "XiaoMi": [{ id: "mimo-v2-flash" }],
     "摩尔线程": [{ id: "GLM-4.7" }],
     "快手": [{ id: "kat-coder-pro-v1" }],
+    "腾讯云": [
+        { id: "glm-5", note: "默认" },
+        { id: "tc-code-latest", note: "Auto" },
+        { id: "hunyuan-2.0-instruct" },
+        { id: "hunyuan-2.0-thinking" },
+        { id: "hunyuan-t1" },
+        { id: "hunyuan-turbos" },
+        { id: "minimax-m2.5" },
+        { id: "kimi-k2.5" },
+    ],
     "阿里云": [
         { id: "qwen3.5-plus", note: "支持图片理解" },
         { id: "kimi-k2.5", note: "支持图片理解" },
@@ -2674,7 +2689,10 @@ ${instruction}`;
                                         { name: '智谱', url: 'https://bigmodel.cn/glm-coding', isRelay: false, hasSubscription: true },
                                         { name: '月之暗面', url: 'https://www.kimi.com/membership/pricing?from=upgrade_plan&track_id=1d2446f5-f45f-4ae5-961e-c0afe936a115', isRelay: false, hasSubscription: true },
                                         { name: '豆包', url: 'https://www.volcengine.com/activity/codingplan', isRelay: false, hasSubscription: true },
+                                        { name: '腾讯云', url: 'https://cloud.tencent.com/act/pro/codingplan', isRelay: false, hasSubscription: true },
+                                        { name: '讯飞星辰', url: 'https://www.xfyun.cn/doc/spark/CodingPlan.html', isRelay: false, hasSubscription: true },
                                         { name: 'MiniMax', url: 'https://platform.minimaxi.com/user-center/payment/coding-plan', isRelay: false, hasSubscription: true },
+                                        { name: '百度千帆', url: 'https://cloud.baidu.com/product/codingplan.html', isRelay: false, hasSubscription: true },
                                         { name: 'DeepSeek', url: 'https://platform.deepseek.com/api_keys', isRelay: false, hasSubscription: false, isBilling: true },
                                         { name: '小米', url: 'https://platform.xiaomimimo.com/#/console/api-keys', isRelay: false, hasSubscription: false, isBilling: true },
                                         { name: '摩尔线程', url: 'https://code.mthreads.com/', isRelay: false, hasSubscription: true },
@@ -4410,7 +4428,7 @@ ${instruction}`;
                                     {t("delete")}
                                 </button>
                             )}
-                            {(() => {
+                            {activeTool !== 'qoder' && (() => {
                                 const allModels = (config as any)[activeTool].models;
                                 const customModels = allModels.filter((m: any) => m.is_custom);
                                 const canAddMore = customModels.length < 6;
