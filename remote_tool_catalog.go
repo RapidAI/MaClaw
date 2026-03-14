@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 type RemoteToolMetadata struct {
@@ -163,7 +164,14 @@ func remoteToolDisplayName(toolName string) string {
 	if ok {
 		return meta.DisplayName
 	}
-	return strings.Title(normalizeRemoteToolName(toolName))
+	name := normalizeRemoteToolName(toolName)
+	if len(name) == 0 {
+		return name
+	}
+	// strings.Title is deprecated; capitalize first rune manually.
+	r := []rune(name)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
 }
 
 func remoteToolConfig(cfg AppConfig, toolName string) (ToolConfig, error) {

@@ -327,6 +327,10 @@ func (h *SDKExecutionHandle) readStdout() {
 			}
 		}
 	}
+
+	if err := scanner.Err(); err != nil {
+		h.outputCh <- []byte(fmt.Sprintf("[sdk-read-error] %v\n", err))
+	}
 }
 
 func (h *SDKExecutionHandle) readStderr() {

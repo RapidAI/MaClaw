@@ -3271,7 +3271,6 @@ ${instruction}`;
                                     remoteSessions={remoteSessions}
                                     remoteInputDrafts={remoteInputDrafts}
                                     setRemoteInputDrafts={setRemoteInputDrafts}
-                                    sendRemoteInput={sendRemoteInput}
                                     interruptRemoteSession={interruptRemoteSession}
                                     killRemoteSession={killRemoteSession}
                                     refreshSessionsOnly={refreshSessionsOnly}

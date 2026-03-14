@@ -434,12 +434,11 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         if (!text) return false;
         try {
             console.log(`[remote] sending input to ${sessionID}: ${JSON.stringify(text)}`);
-            await SendRemoteSessionInput(sessionID, text + "\r\n");
+            await SendRemoteSessionInput(sessionID, text + "\n");
             console.log(`[remote] input sent successfully to ${sessionID}`);
             setRemoteInputDrafts((prev) => ({ ...prev, [sessionID]: "" }));
             // Staggered refreshes so the user sees the tool's response sooner.
-            const delays = [300, 1000, 2500];
-            delays.forEach((d) => setTimeout(() => refreshSessionsOnly(), d));
+            for (const d of [300, 1000, 2500]) setTimeout(() => refreshSessionsOnly(), d);
             return true;
         } catch (err) {
             console.error("Failed to send remote input:", err);

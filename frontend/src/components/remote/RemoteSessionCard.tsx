@@ -26,6 +26,8 @@ type Props = {
     showToastMessage: (message: string, duration?: number) => void;
     translate: (key: string) => string;
     formatText: (key: string, values?: Record<string, string>) => string;
+    /** Called when the user clicks the preview area to open the fullscreen console */
+    onOpenConsole?: (sessionID: string) => void;
 };
 
 const genericTitles = new Set(["参考文献", "Reference", "Untitled", "Project"]);
@@ -93,6 +95,7 @@ export function RemoteSessionCard(props: Props) {
         showToastMessage,
         translate,
         formatText,
+        onOpenConsole,
     } = props;
 
     const [sendStatus, setSendStatus] = useState<SendStatus>("idle");
@@ -345,9 +348,13 @@ export function RemoteSessionCard(props: Props) {
                 </div>
             </div>
 
-            {/* Output preview panel (terminal-like) */}
+            {/* Output preview panel (terminal-like) — click to open fullscreen console */}
             {showOutput && (
-                <div style={{ borderTop: `1px solid ${colors.border}` }}>
+                <div
+                    style={{ borderTop: `1px solid ${colors.border}`, cursor: onOpenConsole ? "pointer" : undefined }}
+                    onClick={onOpenConsole ? () => onOpenConsole(session.id) : undefined}
+                    title={onOpenConsole ? "点击打开全屏终端" : undefined}
+                >
                     {/* Terminal title bar */}
                     <div style={{
                         display: "flex", alignItems: "center", gap: "8px",
@@ -360,6 +367,11 @@ export function RemoteSessionCard(props: Props) {
                         <span style={{ flex: 1, textAlign: "center", fontSize: "0.68rem", color: "#888", fontFamily: "monospace" }}>
                             {session.tool || "terminal"} — {previewLines.length} lines
                         </span>
+                        {onOpenConsole && (
+                            <span style={{ fontSize: "0.68rem", color: "#6a9955", fontFamily: "monospace", flexShrink: 0 }}>
+                                ⛶ 全屏
+                            </span>
+                        )}
                     </div>
                     {/* Terminal body */}
                     <div className="terminal-output">

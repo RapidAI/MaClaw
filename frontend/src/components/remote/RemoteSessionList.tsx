@@ -1,13 +1,18 @@
-import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import React, { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { colors, radius } from "./styles";
 import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
 import { RemoteSessionConsole } from "./RemoteSessionConsole";
+
+// Strip ANSI escape sequences and non-printable control characters from terminal output
+const ansiRe = /\x1b(?:\[[0-9;?]*[a-zA-Z~^$]|\].*?(?:\x07|\x1b\\)|[()#][A-Z0-9]?|[a-zA-Z])/g;
+const controlRe = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+const multiSpaceRe = / {2,}/g;
+const stripAnsi = (s: string): string => s.replace(ansiRe, " ").replace(controlRe, "").replace(multiSpaceRe, " ");
 
 type Props = {
     remoteSessions: RemoteSessionView[];
     remoteInputDrafts: Record<string, string>;
     setRemoteInputDrafts: Dispatch<SetStateAction<Record<string, string>>>;
-    sendRemoteInput: (sessionID: string) => Promise<boolean>;
     interruptRemoteSession: (sessionID: string) => Promise<void>;
     killRemoteSession: (sessionID: string) => Promise<void>;
     refreshSessionsOnly: () => Promise<void>;
@@ -45,7 +50,6 @@ export function RemoteSessionList(props: Props) {
         remoteSessions,
         remoteInputDrafts,
         setRemoteInputDrafts,
-        sendRemoteInput,
         interruptRemoteSession,
         killRemoteSession,
         refreshSessionsOnly,
@@ -57,6 +61,7 @@ export function RemoteSessionList(props: Props) {
     const [showHistory, setShowHistory] = useState(false);
     const [hiddenSessionIds, setHiddenSessionIds] = useState<string[]>([]);
     const [consoleSessionId, setConsoleSessionId] = useState<string | null>(null);
+    const [previewSessionIds, setPreviewSessionIds] = useState<Set<string>>(new Set());
 
     const visibleSessions = useMemo(
         () => remoteSessions.filter((s) => !hiddenSessionIds.includes(s.id)),
@@ -75,6 +80,14 @@ export function RemoteSessionList(props: Props) {
     const hideSession = (id: string) => {
         setHiddenSessionIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
         if (consoleSessionId === id) setConsoleSessionId(null);
+    };
+
+    const togglePreview = (id: string) => {
+        setPreviewSessionIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
     };
 
     const handleKill = async (id: string) => {
@@ -160,67 +173,140 @@ export function RemoteSessionList(props: Props) {
                     const statusInfo = getStatusBadge(session.status || session.summary?.status);
                     const sourceInfo = getLaunchSourceTag(session.launch_source || session.summary?.source);
                     const isTerminal = terminalStatuses.has(String(session.status || session.summary?.status || "").toLowerCase());
+                    const rawPreviewLines = session.raw_output_lines || session.preview?.preview_lines || [];
+                    const previewLines = rawPreviewLines.map((l) => stripAnsi(l).trimEnd()).filter((l) => l.length > 0);
+                    const hasPreview = previewLines.length > 0;
+                    const isPreviewOpen = previewSessionIds.has(session.id);
 
                     return (
-                        <tr
-                            key={session.id}
-                            style={{
-                                background: colors.surface,
-                                opacity: muted ? 0.6 : 1,
-                                transition: "background 0.15s",
-                            }}
-                            onMouseEnter={(e) => { if (!muted) e.currentTarget.style.background = colors.accentBg; }}
-                            onMouseLeave={(e) => { if (!muted) e.currentTarget.style.background = colors.surface; }}
-                        >
-                            <td style={tdStyle}>
-                                <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={session.project_path}>
-                                    {projectName}
-                                </div>
-                            </td>
-                            <td style={tdStyle}>
-                                <div style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                    {session.tool || "-"}
-                                </div>
-                                <div style={{ fontSize: "0.65rem", color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={session.id}>
-                                    {session.id.length > 20 ? session.id.slice(0, 18) + "…" : session.id}
-                                </div>
-                            </td>
-                            <td style={tdStyle}>
-                                <span style={badgeStyle(statusInfo.bg, statusInfo.color)}>{statusInfo.label}</span>
-                            </td>
-                            <td style={tdStyle}>
-                                <span style={badgeStyle(sourceInfo.bg, sourceInfo.color)}>{sourceInfo.label}</span>
-                            </td>
-                            <td style={{ ...tdStyle, textAlign: "right" }}>
-                                <div style={{ display: "inline-flex", gap: "4px", alignItems: "center", flexWrap: "nowrap" }}>
-                                    {!isTerminal && (
-                                        <>
-                                            <button
-                                                style={{ ...iconBtnStyle, color: colors.primary }}
-                                                title="打开控制台"
-                                                onClick={() => setConsoleSessionId(session.id)}
-                                            >
-                                                🖥
-                                            </button>
-                                            <button
-                                                style={{ ...iconBtnStyle, color: colors.warning }}
-                                                title="中断实例"
-                                                onClick={() => handleInterrupt(session.id)}
-                                            >
-                                                ⏸
-                                            </button>
-                                        </>
-                                    )}
-                                    <button
-                                        style={{ ...iconBtnStyle, color: colors.danger }}
-                                        title={isTerminal ? "移除" : "停止实例"}
-                                        onClick={() => isTerminal ? hideSession(session.id) : handleKill(session.id)}
+                        <React.Fragment key={session.id}>
+                            <tr
+                                style={{
+                                    background: colors.surface,
+                                    opacity: muted ? 0.6 : 1,
+                                    transition: "background 0.15s",
+                                }}
+                                onMouseEnter={(e) => { if (!muted) e.currentTarget.style.background = colors.accentBg; }}
+                                onMouseLeave={(e) => { if (!muted) e.currentTarget.style.background = colors.surface; }}
+                            >
+                                <td style={tdStyle}>
+                                    <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={session.project_path}>
+                                        {projectName}
+                                    </div>
+                                </td>
+                                <td style={tdStyle}>
+                                    <div style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                        {session.tool || "-"}
+                                    </div>
+                                    <div style={{ fontSize: "0.65rem", color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={session.id}>
+                                        {session.id.length > 20 ? session.id.slice(0, 18) + "…" : session.id}
+                                    </div>
+                                </td>
+                                <td style={tdStyle}>
+                                    <span style={badgeStyle(statusInfo.bg, statusInfo.color)}>{statusInfo.label}</span>
+                                </td>
+                                <td style={tdStyle}>
+                                    <span style={badgeStyle(sourceInfo.bg, sourceInfo.color)}>{sourceInfo.label}</span>
+                                </td>
+                                <td style={{ ...tdStyle, textAlign: "right" }}>
+                                    <div style={{ display: "inline-flex", gap: "4px", alignItems: "center", flexWrap: "nowrap" }}>
+                                        <button
+                                            style={{ ...iconBtnStyle, color: hasPreview ? colors.primary : colors.textMuted }}
+                                            title={isPreviewOpen ? "收起预览" : "展开预览"}
+                                            onClick={() => togglePreview(session.id)}
+                                        >
+                                            {isPreviewOpen ? "▼" : "▶"}
+                                        </button>
+                                        {!isTerminal && (
+                                            <>
+                                                <button
+                                                    style={{ ...iconBtnStyle, color: colors.primary }}
+                                                    title="打开控制台"
+                                                    onClick={() => setConsoleSessionId(session.id)}
+                                                >
+                                                    🖥
+                                                </button>
+                                                <button
+                                                    style={{ ...iconBtnStyle, color: colors.warning }}
+                                                    title="中断实例"
+                                                    onClick={() => handleInterrupt(session.id)}
+                                                >
+                                                    ⏸
+                                                </button>
+                                            </>
+                                        )}
+                                        <button
+                                            style={{ ...iconBtnStyle, color: colors.danger }}
+                                            title={isTerminal ? "移除" : "停止实例"}
+                                            onClick={() => isTerminal ? hideSession(session.id) : handleKill(session.id)}
+                                        >
+                                            {isTerminal ? "✕" : "⏹"}
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            {/* Inline preview row — click to open fullscreen console */}
+                            {isPreviewOpen && (
+                                <tr>
+                                    <td
+                                        colSpan={5}
+                                        style={{
+                                            padding: 0,
+                                            borderBottom: `1px solid ${colors.border}`,
+                                        }}
                                     >
-                                        {isTerminal ? "✕" : "⏹"}
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
+                                        <div
+                                            style={{
+                                                cursor: "pointer",
+                                                background: "#1e1e1e",
+                                                transition: "background 0.15s",
+                                            }}
+                                            onClick={() => setConsoleSessionId(session.id)}
+                                            title="点击打开全屏终端"
+                                            onMouseEnter={(e) => { e.currentTarget.style.background = "#252526"; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.background = "#1e1e1e"; }}
+                                        >
+                                            {/* Mini terminal title bar */}
+                                            <div style={{
+                                                display: "flex", alignItems: "center", gap: "8px",
+                                                padding: "4px 12px", background: "#2d2d2d",
+                                                borderBottom: "1px solid #3a3a3a",
+                                            }}>
+                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ff5f57", display: "inline-block" }} />
+                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#febc2e", display: "inline-block" }} />
+                                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#28c840", display: "inline-block" }} />
+                                                <span style={{ flex: 1, textAlign: "center", fontSize: "0.65rem", color: "#888", fontFamily: "monospace" }}>
+                                                    {session.tool || "terminal"} — {previewLines.length} lines
+                                                </span>
+                                                <span style={{ fontSize: "0.65rem", color: "#6a9955", fontFamily: "monospace", flexShrink: 0 }}>
+                                                    ⛶ 点击全屏
+                                                </span>
+                                            </div>
+                                            {/* Preview body (max 12 lines) */}
+                                            <div style={{
+                                                padding: "6px 12px",
+                                                maxHeight: "180px",
+                                                overflowY: "auto",
+                                                fontSize: "0.72rem",
+                                                fontFamily: "Consolas, 'Courier New', monospace",
+                                                color: "#d4d4d4",
+                                                lineHeight: 1.5,
+                                            }}>
+                                                {previewLines.length === 0 ? (
+                                                    <span style={{ color: "#555" }}>$ _</span>
+                                                ) : (
+                                                    previewLines.slice(-12).map((line, i) => (
+                                                        <div key={i} style={{ minHeight: "1.2em" }}>
+                                                            {line || "\u00A0"}
+                                                        </div>
+                                                    ))
+                                                )}
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            )}
+                        </React.Fragment>
                     );
                 })}
             </tbody>
@@ -276,13 +362,8 @@ export function RemoteSessionList(props: Props) {
                         session={session}
                         remoteInputDrafts={remoteInputDrafts}
                         setRemoteInputDrafts={setRemoteInputDrafts}
-                        sendRemoteInput={sendRemoteInput}
-                        interruptRemoteSession={interruptRemoteSession}
                         killRemoteSession={killRemoteSession}
                         refreshSessionsOnly={refreshSessionsOnly}
-                        showToastMessage={showToastMessage}
-                        translate={translate}
-                        formatText={formatText}
                         onClose={() => setConsoleSessionId(null)}
                     />
                 );
