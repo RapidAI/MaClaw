@@ -2759,7 +2759,7 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '仅配置远程服务器地址' : lang === 'zh-Hant' ? '僅配置遠端伺服器位址' : 'Server addresses only',
         },
     ];
-    const remoteCapableTools = ['claude', 'codex', 'opencode', 'iflow', 'kilo', 'kode'] as const;
+    const remoteCapableTools = ['claude', 'codex', 'opencode', 'iflow', 'kilo', 'kode', 'gemini', 'cursor'] as const;
     const isRemoteCapableActiveTool = remoteCapableTools.includes(activeTool as typeof remoteCapableTools[number]);
 
     return (
