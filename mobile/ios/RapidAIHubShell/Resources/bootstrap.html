@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RapidAI Hub Shell</title>
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const center = (params.get("hubcenter") || "").replace(/\/+$/, "");
+    const prefillEmail = params.get("prefill_email") || "";
+    const appTitle = "RapidAI Hub Shell";
+    function render(message) {
+      document.getElementById("app").innerHTML = '' +
+        '<div style="max-width:420px;margin:24px auto;padding:24px;border:1px solid #d6deeb;border-radius:20px;font-family:Segoe UI,sans-serif;background:#fff">' +
+        '<h1 style="margin:0 0 8px;color:#132238;">' + appTitle + '</h1>' +
+        '<p style="margin:0 0 16px;color:#5c708c;">Enter your remote email. The shell app will try public Hub Center discovery first, then optionally probe a private hub.</p>' +
+        '<input id="email" type="email" value="' + prefillEmail + '" placeholder="name@example.com" style="width:100%;height:44px;padding:0 12px;border-radius:12px;border:1px solid #d6deeb;box-sizing:border-box;">' +
+        '<input id="hub-url" type="url" placeholder="https://hub.example.com" style="width:100%;height:44px;padding:0 12px;border-radius:12px;border:1px solid #d6deeb;box-sizing:border-box;margin-top:12px;">' +
+        '<button id="submit" style="width:100%;height:44px;margin-top:12px;border:0;border-radius:12px;background:#0f6fff;color:#fff;">Open PWA</button>' +
+        '<div id="status" style="min-height:20px;margin-top:12px;color:#5c708c;">' + (message || '') + '</div>' +
+        '<div style="margin-top:12px;font-size:12px;color:#5c708c;word-break:break-all;">Hub Center: ' + (center || '(not configured)') + '</div>' +
+        '</div>';
+      document.getElementById("submit").addEventListener("click", resolveEntry);
+      document.getElementById("email").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") resolveEntry();
+      });
+    }
+    function normalizeBaseURL(value) {
+      return (value || '').trim().replace(/\/+$/, '');
+    }
+    function buildEntryURL(target, email) {
+      const entryURL = new URL(target, window.location.href);
+      if (!entryURL.searchParams.get("email")) entryURL.searchParams.set("email", email);
+      if (!entryURL.searchParams.get("entry")) entryURL.searchParams.set("entry", "app");
+      return entryURL.toString();
+    }
+    async function resolveViaCenter(email) {
+      if (!center) return '';
+      const response = await fetch(center + "/api/entry/resolve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || response.statusText || "Resolve failed");
+      const hubs = Array.isArray(payload.hubs) ? payload.hubs : [];
+      let target = (payload.default_pwa_url || "").trim();
+      if (!target && payload.default_hub_id) {
+        const preferred = hubs.find((hub) => hub && hub.hub_id === payload.default_hub_id && hub.pwa_url);
+        if (preferred) target = String(preferred.pwa_url).trim();
+      }
+      if (!target) {
+        const first = hubs.find((hub) => hub && hub.pwa_url);
+        if (first) target = String(first.pwa_url).trim();
+      }
+      return target;
+    }
+    async function resolveViaPrivateHub(hubURL, email) {
+      const response = await fetch(hubURL + "/api/entry/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || response.statusText || "Private hub probe failed");
+      if (payload.status === "bound" && payload.pwa_url) return String(payload.pwa_url).trim();
+      throw new Error(payload.message || "Email is not bound to this hub");
+    }
+    async function resolveEntry() {
+      const emailInput = document.getElementById("email");
+      const hubInput = document.getElementById("hub-url");
+      const status = document.getElementById("status");
+      const email = (emailInput.value || "").trim();
+      const hubURL = normalizeBaseURL(hubInput.value || "");
+      if (!email) { status.textContent = "Please enter your remote email."; emailInput.focus(); return; }
+      status.textContent = "Resolving PWA entry...";
+      try {
+        let target = '';
+        if (center) {
+          target = await resolveViaCenter(email);
+          if (target) {
+            window.location.replace(buildEntryURL(target, email));
+            return;
+          }
+        }
+        if (!hubURL) {
+          status.textContent = center ? "No public hub found. Enter a private Hub URL to continue." : "Enter a private Hub URL to continue.";
+          hubInput.focus();
+          return;
+        }
+        target = await resolveViaPrivateHub(hubURL, email);
+        window.location.replace(buildEntryURL(target, email));
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : String(error);
+      }
+    }
+    render("");
+  </script>
+</body>
+</html>

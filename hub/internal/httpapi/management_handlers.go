@@ -28,6 +28,7 @@ type InviteEmailRequest struct {
 
 type CenterConfigRequest struct {
 	BaseURL        string `json:"base_url"`
+	PublicBaseURL  string `json:"public_base_url"`
 	Visibility     string `json:"visibility"`
 	EnrollmentMode string `json:"enrollment_mode"`
 }
@@ -230,8 +231,8 @@ func UpdateCenterConfigHandler(centerSvc *center.Service, identity *auth.Identit
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if req.BaseURL == "" && req.Visibility == "" && req.EnrollmentMode == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Base URL, visibility, or enrollment mode is required")
+		if req.BaseURL == "" && req.PublicBaseURL == "" && req.Visibility == "" && req.EnrollmentMode == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Base URL, public base URL, visibility, or enrollment mode is required")
 			return
 		}
 		var (
@@ -240,6 +241,13 @@ func UpdateCenterConfigHandler(centerSvc *center.Service, identity *auth.Identit
 		)
 		if req.BaseURL != "" {
 			status, err = centerSvc.SetBaseURL(r.Context(), req.BaseURL)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "CENTER_CONFIG_FAILED", err.Error())
+				return
+			}
+		}
+		if req.PublicBaseURL != "" {
+			status, err = centerSvc.SetPublicBaseURL(r.Context(), req.PublicBaseURL)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "CENTER_CONFIG_FAILED", err.Error())
 				return

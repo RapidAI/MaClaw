@@ -3,6 +3,7 @@ package device
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ var ErrMachineOffline = errors.New("machine is offline")
 type MachineRepository interface {
 	GetByID(ctx context.Context, id string) (*store.Machine, error)
 	ListByUserID(ctx context.Context, userID string) ([]*store.Machine, error)
+	UpdateMetadata(ctx context.Context, machineID string, metadata store.MachineMetadata) error
 	UpdateStatus(ctx context.Context, machineID string, status string) error
 	UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error
 }
@@ -23,6 +25,8 @@ type Runtime struct {
 	mu sync.RWMutex
 
 	desktopsByMachine map[string]*ws.ConnContext
+	metadataByMachine map[string]MachineRuntimeInfo
+	lastHeartbeatAt   map[string]time.Time
 	events            []MachineEvent
 }
 
@@ -39,14 +43,19 @@ func (s *Service) IsMachineOnline(machineID string) bool {
 }
 
 type MachineRuntimeInfo struct {
-	MachineID  string     `json:"machine_id"`
-	UserID     string     `json:"user_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
-	Platform   string     `json:"platform,omitempty"`
-	Status     string     `json:"status,omitempty"`
-	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
-	Role       string     `json:"role,omitempty"`
-	Online     bool       `json:"online"`
+	MachineID            string     `json:"machine_id"`
+	UserID               string     `json:"user_id,omitempty"`
+	Name                 string     `json:"name,omitempty"`
+	Platform             string     `json:"platform,omitempty"`
+	Hostname             string     `json:"hostname,omitempty"`
+	Arch                 string     `json:"arch,omitempty"`
+	AppVersion           string     `json:"app_version,omitempty"`
+	HeartbeatIntervalSec int        `json:"heartbeat_interval_sec,omitempty"`
+	ActiveSessions       int        `json:"active_sessions,omitempty"`
+	Status               string     `json:"status,omitempty"`
+	LastSeenAt           *time.Time `json:"last_seen_at,omitempty"`
+	Role                 string     `json:"role,omitempty"`
+	Online               bool       `json:"online"`
 }
 
 type MachineEvent struct {
@@ -60,6 +69,8 @@ type MachineEvent struct {
 func NewRuntime() *Runtime {
 	return &Runtime{
 		desktopsByMachine: map[string]*ws.ConnContext{},
+		metadataByMachine: map[string]MachineRuntimeInfo{},
+		lastHeartbeatAt:   map[string]time.Time{},
 		events:            make([]MachineEvent, 0, 128),
 	}
 }
@@ -102,11 +113,25 @@ func (s *Service) UnbindDesktop(ctx context.Context, machineID string, conn *ws.
 	return s.repo.UpdateStatus(ctx, machineID, "offline")
 }
 
-func (s *Service) MarkOnline(ctx context.Context, machineID string) error {
+func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.MachineHelloPayload) error {
+	now := time.Now()
 	s.runtime.mu.Lock()
 	conn := s.runtime.desktopsByMachine[machineID]
+	info := s.runtime.metadataByMachine[machineID]
+	info.MachineID = machineID
+	info.Name = defaultMachineName(hello.Name)
+	info.Platform = defaultMachinePlatform(hello.Platform)
+	info.Hostname = strings.TrimSpace(hello.Hostname)
+	info.Arch = strings.TrimSpace(hello.Arch)
+	info.AppVersion = strings.TrimSpace(hello.AppVersion)
+	info.HeartbeatIntervalSec = normalizeHeartbeatInterval(hello.HeartbeatIntervalSec)
+	info.Online = true
+	info.Status = "online"
+	info.LastSeenAt = &now
+	s.runtime.metadataByMachine[machineID] = info
+	s.runtime.lastHeartbeatAt[machineID] = now
 	s.appendEventLocked(MachineEvent{
-		Timestamp: time.Now().Unix(),
+		Timestamp: now.Unix(),
 		MachineID: machineID,
 		UserID:    safeConnUserID(conn),
 		Type:      "online",
@@ -117,28 +142,70 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string) error {
 	if s.repo == nil {
 		return nil
 	}
+	if err := s.repo.UpdateMetadata(ctx, machineID, store.MachineMetadata{
+		Name:                 info.Name,
+		Platform:             info.Platform,
+		Hostname:             info.Hostname,
+		Arch:                 info.Arch,
+		AppVersion:           info.AppVersion,
+		HeartbeatIntervalSec: info.HeartbeatIntervalSec,
+	}); err != nil {
+		return err
+	}
 	if err := s.repo.UpdateStatus(ctx, machineID, "online"); err != nil {
 		return err
 	}
-	return s.repo.UpdateHeartbeat(ctx, machineID, time.Now())
+	return s.repo.UpdateHeartbeat(ctx, machineID, now)
 }
 
-func (s *Service) Heartbeat(ctx context.Context, machineID string) error {
+func (s *Service) Heartbeat(ctx context.Context, machineID string, heartbeat ws.MachineHeartbeatPayload) error {
+	now := time.Now()
 	s.runtime.mu.Lock()
 	conn := s.runtime.desktopsByMachine[machineID]
+	info := s.runtime.metadataByMachine[machineID]
+	info.MachineID = machineID
+	info.ActiveSessions = heartbeat.ActiveSessions
+	if strings.TrimSpace(heartbeat.AppVersion) != "" {
+		info.AppVersion = strings.TrimSpace(heartbeat.AppVersion)
+	}
+	if heartbeat.HeartbeatIntervalSec > 0 {
+		info.HeartbeatIntervalSec = normalizeHeartbeatInterval(heartbeat.HeartbeatIntervalSec)
+	}
+	info.Online = true
+	info.Status = "online"
+	lastAccepted := s.runtime.lastHeartbeatAt[machineID]
+	shouldAccept := lastAccepted.IsZero() || now.Sub(lastAccepted) >= 30*time.Second
+	if shouldAccept {
+		info.LastSeenAt = &now
+		s.runtime.lastHeartbeatAt[machineID] = now
+	}
+	s.runtime.metadataByMachine[machineID] = info
 	s.appendEventLocked(MachineEvent{
-		Timestamp: time.Now().Unix(),
+		Timestamp: now.Unix(),
 		MachineID: machineID,
 		UserID:    safeConnUserID(conn),
-		Type:      "heartbeat",
-		Message:   "machine heartbeat received",
+		Type:      heartbeatEventType(shouldAccept),
+		Message:   heartbeatEventMessage(shouldAccept),
 	})
 	s.runtime.mu.Unlock()
 
 	if s.repo == nil {
 		return nil
 	}
-	return s.repo.UpdateHeartbeat(ctx, machineID, time.Now())
+	if err := s.repo.UpdateMetadata(ctx, machineID, store.MachineMetadata{
+		Name:                 defaultMachineName(info.Name),
+		Platform:             defaultMachinePlatform(info.Platform),
+		Hostname:             info.Hostname,
+		Arch:                 info.Arch,
+		AppVersion:           info.AppVersion,
+		HeartbeatIntervalSec: info.HeartbeatIntervalSec,
+	}); err != nil {
+		return err
+	}
+	if !shouldAccept {
+		return nil
+	}
+	return s.repo.UpdateHeartbeat(ctx, machineID, now)
 }
 
 func (s *Service) SendToMachine(machineID string, msg any) error {
@@ -174,6 +241,17 @@ func (s *Service) ListOnlineMachines() []MachineRuntimeInfo {
 			MachineID: machineID,
 			Online:    true,
 		}
+		if meta, ok := s.runtime.metadataByMachine[machineID]; ok {
+			info.Name = meta.Name
+			info.Platform = meta.Platform
+			info.Hostname = meta.Hostname
+			info.Arch = meta.Arch
+			info.AppVersion = meta.AppVersion
+			info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
+			info.ActiveSessions = meta.ActiveSessions
+			info.LastSeenAt = meta.LastSeenAt
+			info.Status = meta.Status
+		}
 		if conn != nil {
 			info.UserID = conn.UserID
 			info.Role = conn.Role
@@ -199,12 +277,40 @@ func (s *Service) ListMachines(ctx context.Context, userID string) ([]MachineRun
 	out := make([]MachineRuntimeInfo, 0, len(items))
 	for _, item := range items {
 		info := MachineRuntimeInfo{
-			MachineID:  item.ID,
-			UserID:     item.UserID,
-			Name:       item.Name,
-			Platform:   item.Platform,
-			Status:     item.Status,
-			LastSeenAt: item.LastSeenAt,
+			MachineID:            item.ID,
+			UserID:               item.UserID,
+			Name:                 item.Name,
+			Platform:             item.Platform,
+			Hostname:             item.Hostname,
+			Arch:                 item.Arch,
+			AppVersion:           item.AppVersion,
+			HeartbeatIntervalSec: item.HeartbeatSec,
+			Status:               item.Status,
+			LastSeenAt:           item.LastSeenAt,
+		}
+		if meta, ok := s.runtime.metadataByMachine[item.ID]; ok {
+			if info.Name == "" {
+				info.Name = meta.Name
+			}
+			if info.Platform == "" {
+				info.Platform = meta.Platform
+			}
+			if info.Hostname == "" {
+				info.Hostname = meta.Hostname
+			}
+			if info.Arch == "" {
+				info.Arch = meta.Arch
+			}
+			if info.AppVersion == "" {
+				info.AppVersion = meta.AppVersion
+			}
+			if info.HeartbeatIntervalSec == 0 {
+				info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
+			}
+			info.ActiveSessions = meta.ActiveSessions
+			if meta.LastSeenAt != nil {
+				info.LastSeenAt = meta.LastSeenAt
+			}
 		}
 		if conn, ok := s.runtime.desktopsByMachine[item.ID]; ok && conn != nil && conn.Conn != nil {
 			info.Role = conn.Role
@@ -252,4 +358,39 @@ func safeConnUserID(ctx *ws.ConnContext) string {
 		return ""
 	}
 	return ctx.UserID
+}
+
+func defaultMachineName(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "CodeClaw Desktop"
+	}
+	return strings.TrimSpace(v)
+}
+
+func defaultMachinePlatform(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "unknown"
+	}
+	return strings.TrimSpace(v)
+}
+
+func normalizeHeartbeatInterval(v int) int {
+	if v < 30 {
+		return 60
+	}
+	return v
+}
+
+func heartbeatEventType(accepted bool) string {
+	if accepted {
+		return "heartbeat"
+	}
+	return "heartbeat.ignored"
+}
+
+func heartbeatEventMessage(accepted bool) string {
+	if accepted {
+		return "machine heartbeat received"
+	}
+	return "machine heartbeat ignored because it arrived too quickly"
 }

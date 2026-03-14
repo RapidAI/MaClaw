@@ -72,13 +72,15 @@ func runAdminReset(args []string) error {
 		MaxReadIdleConns:  cfg.Database.MaxReadIdleConns,
 		MaxWriteOpenConns: cfg.Database.MaxWriteOpenConns,
 		MaxWriteIdleConns: cfg.Database.MaxWriteIdleConns,
+		BatchFlushMS:      cfg.Database.BatchFlushMS,
+		BatchMaxSize:      cfg.Database.BatchMaxSize,
+		BatchQueueSize:    cfg.Database.BatchQueueSize,
 	})
 	if err != nil {
 		return err
 	}
 	defer func() {
-		_ = provider.Read.Close()
-		_ = provider.Write.Close()
+		_ = provider.Close()
 	}()
 
 	if err := sqlite.RunMigrations(provider.Write); err != nil {

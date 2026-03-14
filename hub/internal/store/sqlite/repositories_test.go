@@ -25,8 +25,7 @@ func newTestStore(t *testing.T) *store.Store {
 		t.Fatalf("new provider: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = provider.Write.Close()
-		_ = provider.Read.Close()
+		_ = provider.Close()
 	})
 
 	if err := RunMigrations(provider.Write); err != nil {

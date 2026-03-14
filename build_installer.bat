@@ -45,21 +45,26 @@ echo [INFO] Building Version: %VERSION%
 
 REM -- Sync version with frontend --
 echo [Step 3/7] Syncing version with frontend...
-powershell -Command "$filePath = '%~dp0frontend\src\App.tsx'; $content = [System.IO.File]::ReadAllText($filePath); $newContent = [System.Text.RegularExpressions.Regex]::Replace($content, 'const APP_VERSION = \".*?\";?', 'const APP_VERSION = \"%VERSION%\"'); [System.IO.File]::WriteAllText($filePath, $newContent, [System.Text.UTF8Encoding]::new($false))"
-powershell -Command "\"export const buildNumber = `\"%BUILD_NUM%`\";\" | Set-Content -Path '%~dp0frontend\src\version.ts' -Encoding Utf8"
+powershell -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0frontend\src\version.ts' -Encoding Utf8"
 
 REM -- Build Frontend --
 echo [Step 4/8] Building frontend...
 cd "%~dp0frontend"
-call npm.cmd install --cache ./.npm_cache
-if !errorlevel! neq 0 (
-    echo [ERROR] npm install failed.
-    goto :error
-)
-call npm.cmd run build
-if !errorlevel! neq 0 (
-    echo [ERROR] Frontend build failed.
-    goto :error
+if exist "dist\index.html" (
+    echo [INFO] Reusing existing frontend dist build.
+) else (
+    if not exist "node_modules" (
+        call npm.cmd install --cache ./.npm_cache
+        if !errorlevel! neq 0 (
+            echo [ERROR] npm install failed.
+            goto :error
+        )
+    )
+    %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "npm run build"
+    if !errorlevel! neq 0 (
+        echo [ERROR] Frontend build failed.
+        goto :error
+    )
 )
 cd "%~dp0"
 

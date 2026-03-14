@@ -16,6 +16,9 @@ import {
     RunRemoteToolSmoke,
     SaveConfig,
     SendRemoteSessionInput,
+    InterruptRemoteSession as InterruptRemoteSessionAPI,
+    KillRemoteSession as KillRemoteSessionAPI,
+    StartRemoteHandoffSession,
     StartRemoteSession,
 } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
@@ -266,7 +269,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         }
     };
 
-    const quickStartRemoteSession = async (tool: RemoteToolName) => {
+    const quickStartRemoteSession = async (tool: RemoteToolName, launchSource: "desktop" | "handoff" = "desktop") => {
         const projectDir = getSelectedProjectForRemote();
         if (!projectDir) {
             showToastMessage(translate("remoteSelectProjectFirst"), 3000);
@@ -288,7 +291,11 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         setSelectedRemoteTool(tool);
         setRemoteBusy("quick-start");
         try {
-            await StartRemoteSession(tool, projectDir, getUseProxy());
+            if (launchSource === "handoff") {
+                await StartRemoteHandoffSession(tool, projectDir, getUseProxy());
+            } else {
+                await StartRemoteSession(tool, projectDir, getUseProxy());
+            }
             await refreshRemotePanel();
             showToastMessage(formatText("remoteStartTool", { tool: getRemoteToolLabel(tool) }), 3000);
         } catch (err) {
@@ -357,6 +364,31 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         }
     };
 
+    const interruptRemoteSession = async (sessionID: string) => {
+        await InterruptRemoteSessionAPI(sessionID);
+        setRemoteSessions((prev) => prev.map((session) => (
+            session.id === sessionID
+                ? {
+                    ...session,
+                    status: "waiting_input",
+                    summary: { ...session.summary, status: "waiting_input" },
+                }
+                : session
+        )));
+        void refreshRemotePanel();
+    };
+
+    const killRemoteSession = async (sessionID: string) => {
+        await KillRemoteSessionAPI(sessionID);
+        setRemoteSessions((prev) => prev.filter((session) => session.id !== sessionID));
+        setRemoteInputDrafts((prev) => {
+            const next = { ...prev };
+            delete next[sessionID];
+            return next;
+        });
+        void refreshRemotePanel();
+    };
+
     const clearRemoteActivationState = async () => {
         setRemoteBusy("clear");
         try {
@@ -375,7 +407,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     };
 
     useEffect(() => {
-        if (navTab !== "settings") return;
+        if (navTab !== "settings" && navTab !== "remote") return;
         ListRemoteToolMetadata()
             .then((list) => {
                 const tools = list || [];
@@ -437,6 +469,8 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         installSelectedRemoteTool,
         saveRemoteConfigField,
         sendRemoteInput,
+        interruptRemoteSession,
+        killRemoteSession,
         clearRemoteActivationState,
         onDemandInstallingTool,
     };

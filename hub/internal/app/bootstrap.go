@@ -21,6 +21,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		MaxReadIdleConns:  cfg.Database.MaxReadIdleConns,
 		MaxWriteOpenConns: cfg.Database.MaxWriteOpenConns,
 		MaxWriteIdleConns: cfg.Database.MaxWriteIdleConns,
+		BatchFlushMS:      cfg.Database.BatchFlushMS,
+		BatchMaxSize:      cfg.Database.BatchMaxSize,
+		BatchQueueSize:    cfg.Database.BatchQueueSize,
 	})
 	if err != nil {
 		return nil, err

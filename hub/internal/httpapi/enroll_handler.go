@@ -9,9 +9,13 @@ import (
 )
 
 type EnrollStartRequest struct {
-	Email       string `json:"email"`
-	MachineName string `json:"machine_name"`
-	Platform    string `json:"platform"`
+	Email                string `json:"email"`
+	MachineName          string `json:"machine_name"`
+	Platform             string `json:"platform"`
+	Hostname             string `json:"hostname"`
+	Arch                 string `json:"arch"`
+	AppVersion           string `json:"app_version"`
+	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec"`
 }
 
 type EmailRequestLoginRequest struct {
@@ -46,6 +50,17 @@ func EnrollStartHandler(identity *auth.IdentityService) http.HandlerFunc {
 				writeError(w, http.StatusInternalServerError, "ENROLL_FAILED", err.Error())
 			}
 			return
+		}
+
+		if resp != nil && resp.MachineID != "" {
+			_ = identity.UpdateMachineMetadata(r.Context(), resp.MachineID, auth.MachineMetadata{
+				Name:                 req.MachineName,
+				Platform:             req.Platform,
+				Hostname:             req.Hostname,
+				Arch:                 req.Arch,
+				AppVersion:           req.AppVersion,
+				HeartbeatIntervalSec: req.HeartbeatIntervalSec,
+			})
 		}
 
 		writeJSON(w, http.StatusOK, resp)

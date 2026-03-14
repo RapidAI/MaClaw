@@ -18,11 +18,15 @@ type Config struct {
 	MaxReadIdleConns  int
 	MaxWriteOpenConns int
 	MaxWriteIdleConns int
+	BatchFlushMS      int
+	BatchMaxSize      int
+	BatchQueueSize    int
 }
 
 type Provider struct {
 	Write *sql.DB
 	Read  *sql.DB
+	batch *writeBatcher
 }
 
 func NewProvider(cfg Config) (*Provider, error) {
@@ -50,13 +54,33 @@ func NewProvider(cfg Config) (*Provider, error) {
 	readDB.SetConnMaxLifetime(30 * time.Minute)
 
 	if err := applyPragmas(writeDB, cfg); err != nil {
+		_ = readDB.Close()
+		_ = writeDB.Close()
 		return nil, err
 	}
 	if err := applyPragmas(readDB, cfg); err != nil {
+		_ = readDB.Close()
+		_ = writeDB.Close()
 		return nil, err
 	}
 
-	return &Provider{Write: writeDB, Read: readDB}, nil
+	return &Provider{Write: writeDB, Read: readDB, batch: newWriteBatcher(writeDB, cfg)}, nil
+}
+
+func (p *Provider) Close() error {
+	if p == nil {
+		return nil
+	}
+	if p.batch != nil {
+		p.batch.Close()
+	}
+	if p.Read != nil {
+		_ = p.Read.Close()
+	}
+	if p.Write != nil {
+		_ = p.Write.Close()
+	}
+	return nil
 }
 
 func applyPragmas(db *sql.DB, cfg Config) error {

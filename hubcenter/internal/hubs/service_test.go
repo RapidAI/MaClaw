@@ -3,12 +3,39 @@ package hubs
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
 )
+
+type testMailer struct {
+	lastTo         string
+	lastConfirmURL string
+}
+
+func tokenFromURL(url string) string {
+	parts := strings.SplitN(url, "token=", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[1]
+}
+
+func (m *testMailer) Send(ctx context.Context, to []string, subject string, body string) error {
+	return nil
+}
+
+func (m *testMailer) SendHubRegistrationConfirmation(ctx context.Context, to string, confirmURL string, hubName string) error {
+	m.lastTo = to
+	m.lastConfirmURL = confirmURL
+	return nil
+}
+
+var _ mail.Mailer = (*testMailer)(nil)
 
 func newTestStore(t *testing.T) *sqlite.Provider {
 	t.Helper()
@@ -31,8 +58,7 @@ func newTestStore(t *testing.T) *sqlite.Provider {
 	}
 
 	t.Cleanup(func() {
-		_ = provider.Read.Close()
-		_ = provider.Write.Close()
+		_ = provider.Close()
 	})
 
 	return provider
@@ -41,7 +67,8 @@ func newTestStore(t *testing.T) *sqlite.Provider {
 func TestRegisterAndHeartbeatHub(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
-	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
+	mailer := &testMailer{}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	result, err := svc.RegisterHub(ctx, RegisterHubRequest{
@@ -68,7 +95,7 @@ func TestRegisterAndHeartbeatHub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
-	if hub == nil || hub.OwnerEmail != "owner@example.com" || hub.Status != "online" {
+	if hub == nil || hub.OwnerEmail != "owner@example.com" || hub.Status != "pending_confirmation" {
 		t.Fatalf("unexpected hub row: %+v", hub)
 	}
 	if hub.Host != "teamhub.example.com" || hub.Port != 9399 {
@@ -86,6 +113,11 @@ func TestRegisterAndHeartbeatHub(t *testing.T) {
 		t.Fatalf("expected default hub link for owner, got %+v", link)
 	}
 
+	token := tokenFromURL(mailer.lastConfirmURL)
+	if err := svc.ConfirmRegistration(ctx, token); err != nil {
+		t.Fatalf("ConfirmRegistration: %v", err)
+	}
+
 	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret); err != nil {
 		t.Fatalf("HeartbeatHubWithSecret: %v", err)
 	}
@@ -95,10 +127,63 @@ func TestRegisterAndHeartbeatHub(t *testing.T) {
 	}
 }
 
+func TestRegisterHubUsesConfiguredPublicBaseURLForConfirmation(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+
+	if _, err := svc.SetPublicBaseURL(ctx, "https://center.example.com"); err != nil {
+		t.Fatalf("SetPublicBaseURL: %v", err)
+	}
+	if _, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		OwnerEmail: "owner@example.com",
+		Name:       "CodeClaw Team Hub",
+		BaseURL:    "https://teamhub.example.com",
+	}); err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+	if len(mailer.lastConfirmURL) == 0 || mailer.lastConfirmURL[:len("https://center.example.com")] != "https://center.example.com" {
+		t.Fatalf("expected confirm url to use configured public base url, got %s", mailer.lastConfirmURL)
+	}
+}
+
+func TestConfirmHubRegistrationByAdmin(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+
+	result, err := svc.RegisterHub(ctx, RegisterHubRequest{
+		OwnerEmail: "owner@example.com",
+		Name:       "Pending Hub",
+		BaseURL:    "https://teamhub.example.com",
+		Host:       "teamhub.example.com",
+		Port:       9399,
+	})
+	if err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+
+	if err := svc.ConfirmHubRegistrationByAdmin(ctx, result.HubID); err != nil {
+		t.Fatalf("ConfirmHubRegistrationByAdmin: %v", err)
+	}
+
+	hub, err := st.Hubs.GetByID(ctx, result.HubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub == nil || hub.Status != "online" {
+		t.Fatalf("expected hub to be online after manual confirm, got %+v", hub)
+	}
+}
+
 func TestRegisterHubRejectsBlockedEmailAndIP(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
-	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	now := time.Now()
@@ -150,7 +235,8 @@ func TestRegisterHubRejectsBlockedEmailAndIP(t *testing.T) {
 func TestDisabledHubStaysDisabledAfterHeartbeat(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
-	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
+	mailer := &testMailer{}
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{
@@ -165,13 +251,17 @@ func TestDisabledHubStaysDisabledAfterHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterHub: %v", err)
 	}
+	token := tokenFromURL(mailer.lastConfirmURL)
+	if err := hubService.ConfirmRegistration(ctx, token); err != nil {
+		t.Fatalf("ConfirmRegistration: %v", err)
+	}
 
 	if err := hubService.DisableHub(ctx, result.HubID, "maintenance"); err != nil {
 		t.Fatalf("DisableHub: %v", err)
 	}
 
-	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret); err != nil {
-		t.Fatalf("HeartbeatHubWithSecret: %v", err)
+	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret); err != ErrHubDisabled {
+		t.Fatalf("expected ErrHubDisabled, got %v", err)
 	}
 
 	hub, err := st.Hubs.GetByID(ctx, result.HubID)
@@ -189,10 +279,54 @@ func TestDisabledHubStaysDisabledAfterHeartbeat(t *testing.T) {
 	}
 }
 
+func TestDisabledHubCannotReregister(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+
+	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{
+		InstallationID: "inst_disabled_again",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Disable Again",
+		BaseURL:        "https://disabled.example.com",
+		Host:           "disabled.example.com",
+		Port:           9399,
+		Visibility:     "private",
+		EnrollmentMode: "open",
+	})
+	if err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+
+	token := tokenFromURL(mailer.lastConfirmURL)
+	if err := hubService.ConfirmRegistration(ctx, token); err != nil {
+		t.Fatalf("ConfirmRegistration: %v", err)
+	}
+	if err := hubService.DisableHub(ctx, result.HubID, "maintenance"); err != nil {
+		t.Fatalf("DisableHub: %v", err)
+	}
+
+	_, err = hubService.RegisterHub(ctx, RegisterHubRequest{
+		InstallationID: "inst_disabled_again",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Disable Again",
+		BaseURL:        "https://disabled.example.com",
+		Host:           "disabled.example.com",
+		Port:           9399,
+		Visibility:     "private",
+		EnrollmentMode: "open",
+	})
+	if err != ErrHubDisabled {
+		t.Fatalf("expected ErrHubDisabled, got %v", err)
+	}
+}
+
 func TestDeleteHubRemovesRegistrationAndLinks(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
-	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	result, err := hubService.RegisterHub(ctx, RegisterHubRequest{
@@ -236,7 +370,7 @@ func TestDeleteHubRemovesRegistrationAndLinks(t *testing.T) {
 func TestRegisterHubReusesExistingInstallationID(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
-	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
 	ctx := context.Background()
 
 	first, err := hubService.RegisterHub(ctx, RegisterHubRequest{
@@ -287,5 +421,57 @@ func TestRegisterHubReusesExistingInstallationID(t *testing.T) {
 	}
 	if hub.InstallationID != "inst_same_machine" {
 		t.Fatalf("expected installation id to persist, got %+v", hub)
+	}
+}
+
+func TestRegisterHubKeepsRecentConfirmationLinksValid(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	mailer := &testMailer{}
+	hubService := NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
+	ctx := context.Background()
+
+	first, err := hubService.RegisterHub(ctx, RegisterHubRequest{
+		InstallationID: "inst_retry_confirmation",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Retry Hub",
+		BaseURL:        "https://retry.example.com",
+		Host:           "retry.example.com",
+		Port:           9399,
+		Visibility:     "private",
+		EnrollmentMode: "open",
+	})
+	if err != nil {
+		t.Fatalf("first RegisterHub: %v", err)
+	}
+	firstToken := tokenFromURL(mailer.lastConfirmURL)
+
+	second, err := hubService.RegisterHub(ctx, RegisterHubRequest{
+		InstallationID: "inst_retry_confirmation",
+		OwnerEmail:     "owner@example.com",
+		Name:           "Retry Hub",
+		BaseURL:        "https://retry.example.com",
+		Host:           "retry.example.com",
+		Port:           9399,
+		Visibility:     "private",
+		EnrollmentMode: "open",
+	})
+	if err != nil {
+		t.Fatalf("second RegisterHub: %v", err)
+	}
+	if first.HubID != second.HubID {
+		t.Fatalf("expected same hub id, got %q and %q", first.HubID, second.HubID)
+	}
+
+	if err := hubService.ConfirmRegistration(ctx, firstToken); err != nil {
+		t.Fatalf("ConfirmRegistration with earlier token: %v", err)
+	}
+
+	hub, err := st.Hubs.GetByID(ctx, first.HubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub == nil || hub.Status != "online" {
+		t.Fatalf("expected hub to be online after confirming earlier token, got %+v", hub)
 	}
 }

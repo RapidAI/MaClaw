@@ -19,7 +19,7 @@ func TestAdminServiceSetupAndLogin(t *testing.T) {
 		t.Fatal("expected hub admin to be uninitialized")
 	}
 
-	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err != nil {
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
 		t.Fatalf("SetupInitialAdmin: %v", err)
 	}
 
@@ -42,7 +42,7 @@ func TestAdminServiceSetupAndLogin(t *testing.T) {
 	if token == "" {
 		t.Fatal("expected admin login token")
 	}
-	if admin == nil || admin.Email != "admin@local.admin" {
+	if admin == nil || admin.Email != "admin@example.com" {
 		t.Fatalf("unexpected admin: %+v", admin)
 	}
 
@@ -51,12 +51,22 @@ func TestAdminServiceSetupAndLogin(t *testing.T) {
 	}
 }
 
+func TestAdminServiceSetupRequiresEmail(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
+	ctx := context.Background()
+
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err == nil {
+		t.Fatal("expected setup to require admin email")
+	}
+}
+
 func TestAdminServiceResetAdminCredentials(t *testing.T) {
 	deps := newTestStore(t)
 	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
 	ctx := context.Background()
 
-	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err != nil {
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
 		t.Fatalf("SetupInitialAdmin: %v", err)
 	}
 
@@ -90,7 +100,7 @@ func TestAdminServiceTokenSurvivesServiceRestart(t *testing.T) {
 	ctx := context.Background()
 
 	first := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
-	if err := first.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err != nil {
+	if err := first.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
 		t.Fatalf("SetupInitialAdmin: %v", err)
 	}
 
@@ -114,7 +124,7 @@ func TestAdminServiceChangePassword(t *testing.T) {
 	svc := NewAdminService(deps.store.Admins, deps.store.System, deps.store.AdminAudit)
 	ctx := context.Background()
 
-	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err != nil {
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
 		t.Fatalf("SetupInitialAdmin: %v", err)
 	}
 	oldToken, _, err := svc.Login(ctx, "admin", "pass123456")

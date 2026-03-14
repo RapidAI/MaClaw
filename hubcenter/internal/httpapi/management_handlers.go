@@ -95,6 +95,21 @@ func EnableHubHandler(service *hubs.Service) http.HandlerFunc {
 	}
 }
 
+func ConfirmHubHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hubID := r.PathValue("id")
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		if err := service.ConfirmHubRegistrationByAdmin(r.Context(), hubID); err != nil {
+			writeError(w, http.StatusInternalServerError, "CONFIRM_HUB_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "online"})
+	}
+}
+
 func DeleteHubHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hubID := r.PathValue("id")

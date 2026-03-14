@@ -49,6 +49,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
 	originalProjectPath := spec.ProjectPath
 	spec.SessionID = sessionID
+	spec.LaunchSource = normalizeRemoteLaunchSource(spec.LaunchSource)
 
 	workspace, err := m.workspacePreparer.Prepare(sessionID, spec)
 	if err != nil {
@@ -100,6 +101,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		ID:             sessionID,
 		Tool:           spec.Tool,
 		Title:          spec.Title,
+		LaunchSource:   spec.LaunchSource,
 		ProjectPath:    originalProjectPath,
 		WorkspacePath:  workspace.ProjectPath,
 		WorkspaceRoot:  workspace.RootPath,
@@ -116,6 +118,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 			SessionID: sessionID,
 			Tool:      spec.Tool,
 			Title:     spec.Title,
+			Source:    string(spec.LaunchSource),
 			Status:    string(SessionStarting),
 			Severity:  "info",
 			UpdatedAt: now.Unix(),
@@ -160,20 +163,22 @@ func (m *RemoteSessionManager) newFailedSession(
 
 	message := createErr.Error()
 	session := &RemoteSession{
-		ID:          sessionID,
-		Tool:        spec.Tool,
-		Title:       title,
-		ProjectPath: spec.ProjectPath,
-		ModelID:     spec.ModelID,
-		Status:      SessionError,
-		PID:         0,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Provider:    provider,
+		ID:           sessionID,
+		Tool:         spec.Tool,
+		Title:        title,
+		LaunchSource: normalizeRemoteLaunchSource(spec.LaunchSource),
+		ProjectPath:  spec.ProjectPath,
+		ModelID:      spec.ModelID,
+		Status:       SessionError,
+		PID:          0,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Provider:     provider,
 		Summary: SessionSummary{
 			SessionID:       sessionID,
 			Tool:            spec.Tool,
 			Title:           title,
+			Source:          string(normalizeRemoteLaunchSource(spec.LaunchSource)),
 			Status:          string(SessionError),
 			Severity:        "error",
 			CurrentTask:     "Starting Claude session",
@@ -198,6 +203,7 @@ func (m *RemoteSessionManager) storeSession(session *RemoteSession) {
 	m.sessions[session.ID] = session
 	m.mu.Unlock()
 
+	m.app.refreshPowerOptimizationState()
 	m.app.emitRemoteStateChanged()
 }
 
@@ -234,6 +240,21 @@ func (m *RemoteSessionManager) List() []*RemoteSession {
 		out = append(out, s)
 	}
 	return out
+}
+
+func (m *RemoteSessionManager) HasActiveSessions() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, s := range m.sessions {
+		if s == nil {
+			continue
+		}
+		if isActiveRemoteSessionStatus(s.Status) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
@@ -314,6 +335,7 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 		}
 
 		if changed {
+			m.app.refreshPowerOptimizationState()
 			m.app.emitRemoteStateChanged()
 		}
 	}
@@ -385,7 +407,17 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 		s.workspaceRelease()
 		s.workspaceRelease = nil
 	}
+	m.app.refreshPowerOptimizationState()
 	m.app.emitRemoteStateChanged()
+}
+
+func isActiveRemoteSessionStatus(status SessionStatus) bool {
+	switch status {
+	case SessionStarting, SessionRunning, SessionBusy, SessionWaitingInput:
+		return true
+	default:
+		return false
+	}
 }
 
 func sessionOutput(session *RemoteSession) <-chan []byte {

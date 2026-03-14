@@ -9,32 +9,73 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
-type adminRepo struct{ db *sql.DB }
-type systemRepo struct{ db *sql.DB }
-type adminAuditRepo struct{ db *sql.DB }
-type userRepo struct{ db *sql.DB }
-type enrollmentRepo struct{ db *sql.DB }
-type emailBlockRepo struct{ db *sql.DB }
-type emailInviteRepo struct{ db *sql.DB }
-type machineRepo struct{ db *sql.DB }
-type viewerTokenRepo struct{ db *sql.DB }
-type loginTokenRepo struct{ db *sql.DB }
-type sessionRepo struct{ db *sql.DB }
+type adminRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type systemRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type adminAuditRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type userRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type enrollmentRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type emailBlockRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type emailInviteRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type machineRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type viewerTokenRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type loginTokenRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type sessionRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
-		Admins:       &adminRepo{db: p.Write},
-		System:       &systemRepo{db: p.Write},
-		AdminAudit:   &adminAuditRepo{db: p.Write},
-		Users:        &userRepo{db: p.Write},
-		Enrollments:  &enrollmentRepo{db: p.Write},
-		EmailBlocks:  &emailBlockRepo{db: p.Write},
-		EmailInvites: &emailInviteRepo{db: p.Write},
-		Machines:     &machineRepo{db: p.Write},
-		ViewerTokens: &viewerTokenRepo{db: p.Write},
-		LoginTokens:  &loginTokenRepo{db: p.Write},
-		Sessions:     &sessionRepo{db: p.Write},
+		Admins:       &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		System:       &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		AdminAudit:   &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Users:        &userRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Enrollments:  &enrollmentRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		EmailBlocks:  &emailBlockRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		EmailInvites: &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Machines:     &machineRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		ViewerTokens: &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		LoginTokens:  &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Sessions:     &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
+}
+
+func execWrite(ctx context.Context, batch *writeBatcher, db *sql.DB, query string, args ...any) error {
+	if batch != nil {
+		return batch.ExecContext(ctx, query, args...)
+	}
+	_, err := db.ExecContext(ctx, query, args...)
+	return err
 }
 
 func (r *adminRepo) Create(ctx context.Context, admin *store.AdminUser) error {
@@ -54,7 +95,7 @@ func (r *adminRepo) Create(ctx context.Context, admin *store.AdminUser) error {
 }
 
 func (r *adminRepo) GetByUsername(ctx context.Context, username string) (*store.AdminUser, error) {
-	row := r.db.QueryRowContext(
+	row := r.readDB.QueryRowContext(
 		ctx,
 		`SELECT id, username, password_hash, email, status, created_at, updated_at
 		 FROM admin_users WHERE username = ?`,
@@ -86,7 +127,7 @@ func (r *adminRepo) GetByUsername(ctx context.Context, username string) (*store.
 }
 
 func (r *adminRepo) Count(ctx context.Context) (int, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM admin_users`)
+	row := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM admin_users`)
 	var count int
 	if err := row.Scan(&count); err != nil {
 		return 0, err
@@ -110,6 +151,17 @@ func (r *adminRepo) UpdatePassword(ctx context.Context, username, passwordHash s
 	return err
 }
 
+func (r *adminRepo) UpdateEmail(ctx context.Context, username, email string, updatedAt time.Time) error {
+	_, err := r.db.ExecContext(
+		ctx,
+		`UPDATE admin_users SET email = ?, updated_at = ? WHERE username = ?`,
+		email,
+		updatedAt.Format(time.RFC3339),
+		username,
+	)
+	return err
+}
+
 func (r *systemRepo) Set(ctx context.Context, key, valueJSON string) error {
 	_, err := r.db.ExecContext(
 		ctx,
@@ -124,7 +176,7 @@ func (r *systemRepo) Set(ctx context.Context, key, valueJSON string) error {
 }
 
 func (r *systemRepo) Get(ctx context.Context, key string) (string, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key = ?`, key)
+	row := r.readDB.QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key = ?`, key)
 	var value string
 	if err := row.Scan(&value); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -166,7 +218,7 @@ func (r *userRepo) Create(ctx context.Context, user *store.User) error {
 }
 
 func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) {
-	row := r.db.QueryRowContext(
+	row := r.readDB.QueryRowContext(
 		ctx,
 		`SELECT id, email, sn, status, enrollment_status, created_at, updated_at
 		 FROM users WHERE id = ?`,
@@ -198,7 +250,7 @@ func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) 
 }
 
 func (r *userRepo) GetByEmail(ctx context.Context, email string) (*store.User, error) {
-	row := r.db.QueryRowContext(
+	row := r.readDB.QueryRowContext(
 		ctx,
 		`SELECT id, email, sn, status, enrollment_status, created_at, updated_at
 		 FROM users WHERE email = ?`,
@@ -230,7 +282,7 @@ func (r *userRepo) GetByEmail(ctx context.Context, email string) (*store.User, e
 }
 
 func (r *userRepo) List(ctx context.Context) ([]*store.User, error) {
-	rows, err := r.db.QueryContext(
+	rows, err := r.readDB.QueryContext(
 		ctx,
 		`SELECT id, email, sn, status, enrollment_status, created_at, updated_at
 		 FROM users
@@ -281,7 +333,7 @@ func (r *enrollmentRepo) Create(ctx context.Context, item *store.UserEnrollment)
 }
 
 func (r *enrollmentRepo) GetPendingByEmail(ctx context.Context, email string) (*store.UserEnrollment, error) {
-	row := r.db.QueryRowContext(
+	row := r.readDB.QueryRowContext(
 		ctx,
 		`SELECT id, email, status, note, created_at, updated_at
 		 FROM user_enrollments WHERE email = ? AND status = 'pending'
@@ -302,7 +354,7 @@ func (r *enrollmentRepo) GetPendingByEmail(ctx context.Context, email string) (*
 }
 
 func (r *enrollmentRepo) ListPending(ctx context.Context) ([]*store.UserEnrollment, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, email, status, note, created_at, updated_at FROM user_enrollments WHERE status = 'pending' ORDER BY created_at ASC`)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, status, note, created_at, updated_at FROM user_enrollments WHERE status = 'pending' ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +405,7 @@ func (r *emailBlockRepo) DeleteByEmail(ctx context.Context, email string) error 
 }
 
 func (r *emailBlockRepo) GetByEmail(ctx context.Context, email string) (*store.EmailBlockItem, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT id, email, reason, created_at, updated_at FROM email_blocklist WHERE email = ?`, email)
+	row := r.readDB.QueryRowContext(ctx, `SELECT id, email, reason, created_at, updated_at FROM email_blocklist WHERE email = ?`, email)
 	var item store.EmailBlockItem
 	var createdAt, updatedAt string
 	if err := row.Scan(&item.ID, &item.Email, &item.Reason, &createdAt, &updatedAt); err != nil {
@@ -368,7 +420,7 @@ func (r *emailBlockRepo) GetByEmail(ctx context.Context, email string) (*store.E
 }
 
 func (r *emailBlockRepo) List(ctx context.Context) ([]*store.EmailBlockItem, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, email, reason, created_at, updated_at FROM email_blocklist ORDER BY email ASC`)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, reason, created_at, updated_at FROM email_blocklist ORDER BY email ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +461,7 @@ func (r *emailInviteRepo) UpdateStatus(ctx context.Context, id string, status st
 }
 
 func (r *emailInviteRepo) GetByEmail(ctx context.Context, email string) ([]*store.EmailInvite, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, email, role, status, created_at, updated_at FROM email_invites WHERE email = ? ORDER BY created_at DESC`, email)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, role, status, created_at, updated_at FROM email_invites WHERE email = ? ORDER BY created_at DESC`, email)
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +470,7 @@ func (r *emailInviteRepo) GetByEmail(ctx context.Context, email string) ([]*stor
 }
 
 func (r *emailInviteRepo) List(ctx context.Context) ([]*store.EmailInvite, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, email, role, status, created_at, updated_at FROM email_invites ORDER BY created_at DESC`)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, role, status, created_at, updated_at FROM email_invites ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -448,12 +500,16 @@ func (r *machineRepo) Create(ctx context.Context, machine *store.Machine) error 
 	}
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO machines (id, user_id, name, platform, machine_token_hash, status, last_seen_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO machines (id, user_id, name, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		machine.ID,
 		machine.UserID,
 		machine.Name,
 		machine.Platform,
+		machine.Hostname,
+		machine.Arch,
+		machine.AppVersion,
+		machine.HeartbeatSec,
 		machine.MachineTokenHash,
 		machine.Status,
 		lastSeen,
@@ -464,9 +520,9 @@ func (r *machineRepo) Create(ctx context.Context, machine *store.Machine) error 
 }
 
 func (r *machineRepo) GetByID(ctx context.Context, id string) (*store.Machine, error) {
-	row := r.db.QueryRowContext(
+	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, user_id, name, platform, machine_token_hash, status, last_seen_at, created_at, updated_at
+		`SELECT id, user_id, name, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
 		 FROM machines WHERE id = ?`,
 		id,
 	)
@@ -480,6 +536,10 @@ func (r *machineRepo) GetByID(ctx context.Context, id string) (*store.Machine, e
 		&machine.UserID,
 		&machine.Name,
 		&machine.Platform,
+		&machine.Hostname,
+		&machine.Arch,
+		&machine.AppVersion,
+		&machine.HeartbeatSec,
 		&machine.MachineTokenHash,
 		&machine.Status,
 		&lastSeen,
@@ -506,9 +566,9 @@ func (r *machineRepo) GetByID(ctx context.Context, id string) (*store.Machine, e
 }
 
 func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store.Machine, error) {
-	rows, err := r.db.QueryContext(
+	rows, err := r.readDB.QueryContext(
 		ctx,
-		`SELECT id, user_id, name, platform, machine_token_hash, status, last_seen_at, created_at, updated_at
+		`SELECT id, user_id, name, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
 		 FROM machines WHERE user_id = ? ORDER BY updated_at DESC`,
 		userID,
 	)
@@ -528,6 +588,10 @@ func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store
 			&machine.UserID,
 			&machine.Name,
 			&machine.Platform,
+			&machine.Hostname,
+			&machine.Arch,
+			&machine.AppVersion,
+			&machine.HeartbeatSec,
 			&machine.MachineTokenHash,
 			&machine.Status,
 			&lastSeen,
@@ -552,26 +616,51 @@ func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store
 	return items, rows.Err()
 }
 
-func (r *machineRepo) UpdateStatus(ctx context.Context, machineID string, status string) error {
-	_, err := r.db.ExecContext(
+func (r *machineRepo) UpdateMetadata(ctx context.Context, machineID string, metadata store.MachineMetadata) error {
+	heartbeatSec := metadata.HeartbeatIntervalSec
+	if heartbeatSec < 30 {
+		heartbeatSec = 60
+	}
+	return execWrite(
 		ctx,
+		r.batch,
+		r.db,
+		`UPDATE machines
+		 SET name = ?, platform = ?, hostname = ?, arch = ?, app_version = ?, heartbeat_sec = ?, updated_at = ?
+		 WHERE id = ?`,
+		metadata.Name,
+		metadata.Platform,
+		metadata.Hostname,
+		metadata.Arch,
+		metadata.AppVersion,
+		heartbeatSec,
+		time.Now().Format(time.RFC3339),
+		machineID,
+	)
+}
+
+func (r *machineRepo) UpdateStatus(ctx context.Context, machineID string, status string) error {
+	return execWrite(
+		ctx,
+		r.batch,
+		r.db,
 		`UPDATE machines SET status = ?, updated_at = ? WHERE id = ?`,
 		status,
 		time.Now().Format(time.RFC3339),
 		machineID,
 	)
-	return err
 }
 
 func (r *machineRepo) UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error {
-	_, err := r.db.ExecContext(
+	return execWrite(
 		ctx,
+		r.batch,
+		r.db,
 		`UPDATE machines SET last_seen_at = ?, updated_at = ? WHERE id = ?`,
 		at.Format(time.RFC3339),
 		at.Format(time.RFC3339),
 		machineID,
 	)
-	return err
 }
 
 func (r *viewerTokenRepo) Create(ctx context.Context, token *store.ViewerToken) error {
@@ -594,7 +683,7 @@ func (r *viewerTokenRepo) Create(ctx context.Context, token *store.ViewerToken) 
 }
 
 func (r *viewerTokenRepo) GetByTokenHash(ctx context.Context, tokenHash string) (*store.ViewerToken, error) {
-	row := r.db.QueryRowContext(
+	row := r.readDB.QueryRowContext(
 		ctx,
 		`SELECT id, user_id, token_hash, expires_at, created_at, revoked_at
 		 FROM viewer_tokens WHERE token_hash = ?`,
@@ -653,7 +742,7 @@ func (r *loginTokenRepo) Create(ctx context.Context, token *store.LoginToken) er
 }
 
 func (r *loginTokenRepo) GetByTokenHash(ctx context.Context, tokenHash string) (*store.LoginToken, error) {
-	row := r.db.QueryRowContext(
+	row := r.readDB.QueryRowContext(
 		ctx,
 		`SELECT id, email, token_hash, purpose, expires_at, consumed_at, created_at
 		 FROM login_tokens WHERE token_hash = ?`,
@@ -731,38 +820,41 @@ func (r *sessionRepo) Create(ctx context.Context, session *store.Session) error 
 }
 
 func (r *sessionRepo) UpdateSummary(ctx context.Context, sessionID string, summaryJSON string, status string, updatedAt time.Time) error {
-	_, err := r.db.ExecContext(
+	return execWrite(
 		ctx,
+		r.batch,
+		r.db,
 		`UPDATE sessions SET summary_json = ?, status = ?, updated_at = ? WHERE id = ?`,
 		summaryJSON,
 		status,
 		updatedAt.Format(time.RFC3339),
 		sessionID,
 	)
-	return err
 }
 
 func (r *sessionRepo) UpdatePreview(ctx context.Context, sessionID string, previewText string, outputSeq int64, updatedAt time.Time) error {
-	_, err := r.db.ExecContext(
+	return execWrite(
 		ctx,
+		r.batch,
+		r.db,
 		`UPDATE sessions SET preview_text = ?, output_seq = ?, updated_at = ? WHERE id = ?`,
 		previewText,
 		outputSeq,
 		updatedAt.Format(time.RFC3339),
 		sessionID,
 	)
-	return err
 }
 
 func (r *sessionRepo) UpdateHostOnline(ctx context.Context, sessionID string, hostOnline bool, updatedAt time.Time) error {
-	_, err := r.db.ExecContext(
+	return execWrite(
 		ctx,
+		r.batch,
+		r.db,
 		`UPDATE sessions SET host_online = ?, updated_at = ? WHERE id = ?`,
 		boolToInt(hostOnline),
 		updatedAt.Format(time.RFC3339),
 		sessionID,
 	)
-	return err
 }
 
 func (r *sessionRepo) Close(ctx context.Context, sessionID string, exitCode *int, endedAt time.Time, status string) error {

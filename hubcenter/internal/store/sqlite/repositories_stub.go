@@ -9,24 +9,53 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
-type adminRepo struct{ db *sql.DB }
-type systemRepo struct{ db *sql.DB }
-type adminAuditRepo struct{ db *sql.DB }
-type hubRepo struct{ db *sql.DB }
-type hubUserLinkRepo struct{ db *sql.DB }
-type blockedEmailRepo struct{ db *sql.DB }
-type blockedIPRepo struct{ db *sql.DB }
+type adminRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type systemRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type adminAuditRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type hubRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type hubUserLinkRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type blockedEmailRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+type blockedIPRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
-		Admins:        &adminRepo{db: p.Write},
-		System:        &systemRepo{db: p.Write},
-		AdminAudit:    &adminAuditRepo{db: p.Write},
-		Hubs:          &hubRepo{db: p.Write},
-		HubUserLinks:  &hubUserLinkRepo{db: p.Write},
-		BlockedEmails: &blockedEmailRepo{db: p.Write},
-		BlockedIPs:    &blockedIPRepo{db: p.Write},
+		Admins:        &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		System:        &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		AdminAudit:    &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Hubs:          &hubRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		HubUserLinks:  &hubUserLinkRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		BlockedEmails: &blockedEmailRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		BlockedIPs:    &blockedIPRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
+}
+
+func execWrite(ctx context.Context, batch *writeBatcher, db *sql.DB, query string, args ...any) error {
+	if batch != nil {
+		return batch.ExecContext(ctx, query, args...)
+	}
+	_, err := db.ExecContext(ctx, query, args...)
+	return err
 }
 
 func (r *adminRepo) Create(ctx context.Context, admin *store.AdminUser) error {
@@ -45,7 +74,7 @@ func (r *adminRepo) Create(ctx context.Context, admin *store.AdminUser) error {
 	return err
 }
 func (r *adminRepo) GetByUsername(ctx context.Context, username string) (*store.AdminUser, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, username, password_hash, email, status, created_at, updated_at
 		FROM admin_users
 		WHERE username = ?
@@ -72,7 +101,7 @@ func (r *adminRepo) GetByUsername(ctx context.Context, username string) (*store.
 	return &item, nil
 }
 func (r *adminRepo) Count(ctx context.Context) (int, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM admin_users`)
+	row := r.readDB.QueryRowContext(ctx, `SELECT COUNT(1) FROM admin_users`)
 	var count int
 	if err := row.Scan(&count); err != nil {
 		return 0, err
@@ -94,6 +123,15 @@ func (r *adminRepo) UpdatePassword(ctx context.Context, username, passwordHash s
 	return err
 }
 
+func (r *adminRepo) UpdateEmail(ctx context.Context, username, email string, updatedAt time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE admin_users
+		SET email = ?, updated_at = ?
+		WHERE username = ?
+	`, email, updatedAt.Format(time.RFC3339), username)
+	return err
+}
+
 func (r *systemRepo) Set(ctx context.Context, key, valueJSON string) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO system_settings (key, value_json, updated_at)
@@ -105,7 +143,7 @@ func (r *systemRepo) Set(ctx context.Context, key, valueJSON string) error {
 	return err
 }
 func (r *systemRepo) Get(ctx context.Context, key string) (string, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.readDB.QueryRowContext(ctx, `
 		SELECT value_json
 		FROM system_settings
 		WHERE key = ?
@@ -164,7 +202,7 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 	return err
 }
 func (r *hubRepo) GetByID(ctx context.Context, id string) (*store.HubInstance, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
 		       status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
 		       last_seen_at, created_at, updated_at
@@ -214,7 +252,7 @@ func (r *hubRepo) GetByID(ctx context.Context, id string) (*store.HubInstance, e
 	return &item, nil
 }
 func (r *hubRepo) GetByInstallationID(ctx context.Context, installationID string) (*store.HubInstance, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
 		       status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
 		       last_seen_at, created_at, updated_at
@@ -264,16 +302,15 @@ func (r *hubRepo) GetByInstallationID(ctx context.Context, installationID string
 	return &item, nil
 }
 func (r *hubRepo) UpdateHeartbeat(ctx context.Context, hubID string, at time.Time) error {
-	_, err := r.db.ExecContext(ctx, `
+	return execWrite(ctx, r.batch, r.db, `
 		UPDATE hub_instances
 		SET status = CASE WHEN is_disabled = 1 THEN 'disabled' ELSE 'online' END,
 		    last_seen_at = ?, updated_at = ?
 		WHERE id = ?
 	`, at.Format(time.RFC3339), at.Format(time.RFC3339), hubID)
-	return err
 }
 func (r *hubRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubInstance, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT DISTINCT h.id, h.installation_id, h.owner_email, h.name, h.description, h.base_url, h.host, h.port, h.visibility,
 		       h.enrollment_mode, h.status, h.is_disabled, h.disabled_reason,
 		       h.capabilities_json, h.hub_secret_hash, h.last_seen_at, h.created_at, h.updated_at
@@ -331,7 +368,7 @@ func (r *hubRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubIn
 }
 
 func (r *hubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
 		       status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
 		       last_seen_at, created_at, updated_at
@@ -447,7 +484,7 @@ func (r *hubRepo) DeleteByID(ctx context.Context, hubID string) error {
 }
 
 func (r *hubUserLinkRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubUserLink, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT id, hub_id, email, is_default, created_at, updated_at
 		FROM hub_user_links
 		WHERE email = ?
@@ -491,7 +528,7 @@ func (r *hubUserLinkRepo) Create(ctx context.Context, link *store.HubUserLink) e
 }
 
 func (r *hubUserLinkRepo) GetDefaultByEmail(ctx context.Context, email string) (*store.HubUserLink, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, hub_id, email, is_default, created_at, updated_at
 		FROM hub_user_links
 		WHERE email = ? AND is_default = 1
@@ -523,7 +560,7 @@ func (r *hubUserLinkRepo) DeleteByHubID(ctx context.Context, hubID string) error
 }
 
 func (r *blockedEmailRepo) GetByEmail(ctx context.Context, email string) (*store.BlockedEmail, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, email, reason, created_at, updated_at
 		FROM blocked_emails
 		WHERE email = ?
@@ -560,7 +597,7 @@ func (r *blockedEmailRepo) DeleteByEmail(ctx context.Context, email string) erro
 }
 
 func (r *blockedEmailRepo) List(ctx context.Context) ([]*store.BlockedEmail, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT id, email, reason, created_at, updated_at
 		FROM blocked_emails
 		ORDER BY updated_at DESC
@@ -585,7 +622,7 @@ func (r *blockedEmailRepo) List(ctx context.Context) ([]*store.BlockedEmail, err
 }
 
 func (r *blockedIPRepo) GetByIP(ctx context.Context, ip string) (*store.BlockedIP, error) {
-	row := r.db.QueryRowContext(ctx, `
+	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, ip, reason, created_at, updated_at
 		FROM blocked_ips
 		WHERE ip = ?
@@ -622,7 +659,7 @@ func (r *blockedIPRepo) DeleteByIP(ctx context.Context, ip string) error {
 }
 
 func (r *blockedIPRepo) List(ctx context.Context) ([]*store.BlockedIP, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT id, ip, reason, created_at, updated_at
 		FROM blocked_ips
 		ORDER BY updated_at DESC

@@ -19,6 +19,6 @@ type App struct {
 	AdminService *auth.AdminService
 	HubService   *hubs.Service
 	EntryService *entry.Service
-	Mailer       mail.Mailer
+	Mailer       *mail.Service
 	HTTPHandler  http.Handler
 }

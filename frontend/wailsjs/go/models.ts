@@ -113,6 +113,7 @@ export namespace main {
 	    show_kilo: boolean;
 	    show_kode: boolean;
 	    language: string;
+	    power_optimization: boolean;
 	    check_update_on_startup: boolean;
 	    pause_env_check: boolean;
 	    env_check_done: boolean;
@@ -131,6 +132,7 @@ export namespace main {
 	    remote_user_id: string;
 	    remote_machine_id: string;
 	    remote_machine_token: string;
+	    remote_heartbeat_sec: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -160,6 +162,7 @@ export namespace main {
 	        this.show_kilo = source["show_kilo"];
 	        this.show_kode = source["show_kode"];
 	        this.language = source["language"];
+	        this.power_optimization = source["power_optimization"];
 	        this.check_update_on_startup = source["check_update_on_startup"];
 	        this.pause_env_check = source["pause_env_check"];
 	        this.env_check_done = source["env_check_done"];
@@ -178,6 +181,7 @@ export namespace main {
 	        this.remote_user_id = source["remote_user_id"];
 	        this.remote_machine_id = source["remote_machine_id"];
 	        this.remote_machine_token = source["remote_machine_token"];
+	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

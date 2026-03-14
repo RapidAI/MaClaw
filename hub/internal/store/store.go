@@ -64,11 +64,24 @@ type Machine struct {
 	UserID           string
 	Name             string
 	Platform         string
+	Hostname         string
+	Arch             string
+	AppVersion       string
+	HeartbeatSec     int
 	MachineTokenHash string
 	Status           string
 	LastSeenAt       *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+}
+
+type MachineMetadata struct {
+	Name                 string
+	Platform             string
+	Hostname             string
+	Arch                 string
+	AppVersion           string
+	HeartbeatIntervalSec int
 }
 
 type ViewerToken struct {
@@ -113,6 +126,7 @@ type AdminUserRepository interface {
 	GetByUsername(ctx context.Context, username string) (*AdminUser, error)
 	Count(ctx context.Context) (int, error)
 	UpdatePassword(ctx context.Context, username, passwordHash string, updatedAt time.Time) error
+	UpdateEmail(ctx context.Context, username, email string, updatedAt time.Time) error
 	DeleteAll(ctx context.Context) error
 }
 
@@ -158,6 +172,7 @@ type MachineRepository interface {
 	Create(ctx context.Context, machine *Machine) error
 	GetByID(ctx context.Context, id string) (*Machine, error)
 	ListByUserID(ctx context.Context, userID string) ([]*Machine, error)
+	UpdateMetadata(ctx context.Context, machineID string, metadata MachineMetadata) error
 	UpdateStatus(ctx context.Context, machineID string, status string) error
 	UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error
 }

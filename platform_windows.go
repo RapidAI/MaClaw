@@ -19,6 +19,11 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+const (
+	esContinuous     = 0x80000000
+	esSystemRequired = 0x00000001
+)
+
 // compareVersions compares two semantic version strings
 // Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
 func (a *App) compareVersions(v1, v2 string) int {
@@ -80,6 +85,30 @@ func (a *App) compareVersions(v1, v2 string) int {
 }
 
 func (a *App) platformStartup() {
+}
+
+func (a *App) platformShutdown() {
+	a.allowSystemSleep()
+}
+
+func (a *App) setPowerOptimizationEnabled(enabled bool) {
+	if enabled {
+		a.preventSystemSleep()
+		return
+	}
+	a.allowSystemSleep()
+}
+
+func (a *App) preventSystemSleep() {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	setThreadExecutionState := kernel32.NewProc("SetThreadExecutionState")
+	setThreadExecutionState.Call(uintptr(esContinuous | esSystemRequired))
+}
+
+func (a *App) allowSystemSleep() {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	setThreadExecutionState := kernel32.NewProc("SetThreadExecutionState")
+	setThreadExecutionState.Call(uintptr(esContinuous))
 }
 
 func (a *App) platformInitConsole() {
@@ -1663,7 +1692,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			codexBatchContent += "  echo ========================================\r\n"
 			codexBatchContent += ")\r\n"
 
-	codexBatchPath := filepath.Join(os.TempDir(), fmt.Sprintf("codeclaw_codex_%d.bat", time.Now().UnixNano()))
+			codexBatchPath := filepath.Join(os.TempDir(), fmt.Sprintf("codeclaw_codex_%d.bat", time.Now().UnixNano()))
 			if err := os.WriteFile(codexBatchPath, []byte(codexBatchContent), 0644); err != nil {
 				a.log("Error creating codex batch file: " + err.Error())
 				a.ShowMessage("Launch Error", "Failed to create temporary batch file")
@@ -1682,15 +1711,15 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				wtPath := a.getWindowsTerminalPath()
 				if wtPath == "" {
 					a.log("Windows Terminal path not found, falling back to cmd")
-		cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`,
+					cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`,
 						binaryName, projectDir, codexBatchPath)
 				} else {
 					// Use start command to properly handle paths with spaces
-		cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "CodeClaw - %s" cmd /k "%s"`,
+					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "CodeClaw - %s" cmd /k "%s"`,
 						wtPath, projectDir, binaryName, codexBatchPath)
 				}
 			} else {
-		cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`,
+				cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`,
 					binaryName, projectDir, codexBatchPath)
 			}
 
@@ -1710,14 +1739,14 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				wtPath := a.getWindowsTerminalPath()
 				if wtPath == "" {
 					a.log("Windows Terminal path not found, falling back to cmd")
-	cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
+					cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
 				} else {
 					// Use start command to properly handle paths with spaces
-		cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "CodeClaw - %s" cmd /k "%s"`,
+					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "CodeClaw - %s" cmd /k "%s"`,
 						wtPath, projectDir, binaryName, tempBatchPath)
 				}
 			} else {
-		cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
+				cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
 			}
 
 			cmd := exec.Command("cmd")
@@ -1904,4 +1933,3 @@ func (a *App) getWindowsTerminalPath() string {
 func (a *App) IsWindowsTerminalAvailable() bool {
 	return a.isWindowsTerminalAvailable()
 }
-

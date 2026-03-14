@@ -37,8 +37,7 @@ func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService)
 		t.Fatalf("run migrations: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = provider.Read.Close()
-		_ = provider.Write.Close()
+		_ = provider.Close()
 	})
 
 	st := sqlite.NewStore(provider)
@@ -131,6 +130,21 @@ func TestAdminStatusHandlerReflectsInitialization(t *testing.T) {
 	}
 	if !bytes.Contains(resp.Body.Bytes(), []byte(`"initialized":true`)) {
 		t.Fatalf("expected initialized response, got %s", resp.Body.String())
+	}
+}
+
+func TestAdminSetupHandlerRequiresEmail(t *testing.T) {
+	router, _ := newAdminRouterTestServices(t)
+
+	resp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/setup", map[string]any{
+		"username": "admin",
+		"password": "StrongPassword123!",
+	}, "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"INVALID_INPUT"`)) {
+		t.Fatalf("expected invalid input response, got %s", resp.Body.String())
 	}
 }
 

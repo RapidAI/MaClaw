@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	goruntime "runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -97,6 +95,7 @@ func (c *RemoteHubClient) Connect() error {
 	go c.readLoop()
 	go c.heartbeatLoop()
 	go c.SyncSessions()
+	go c.SyncLaunchProjects()
 
 	return nil
 }
@@ -158,14 +157,19 @@ func (c *RemoteHubClient) sendMachineAuthLocked() error {
 }
 
 func (c *RemoteHubClient) sendMachineHelloLocked() error {
+	cfg, _ := c.app.LoadConfig()
+	profile := c.app.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
 	msg := HubEnvelope{
 		Type:      "machine.hello",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
 		Payload: map[string]interface{}{
-			"name":        c.machineName(),
-			"platform":    goruntime.GOOS,
-			"app_version": c.appVersion(),
+			"name":                   profile.Name,
+			"platform":               profile.Platform,
+			"hostname":               profile.Hostname,
+			"arch":                   profile.Arch,
+			"app_version":            profile.AppVersion,
+			"heartbeat_interval_sec": profile.HeartbeatSec,
 			"capabilities": map[string]interface{}{
 				"remote_sessions": true,
 				"pty":             true,
@@ -191,6 +195,7 @@ func (c *RemoteHubClient) SendSessionCreated(s *RemoteSession) error {
 		Payload: map[string]interface{}{
 			"tool":         s.Tool,
 			"title":        s.Title,
+			"source":       string(normalizeRemoteLaunchSource(s.LaunchSource)),
 			"project_path": s.ProjectPath,
 			"status":       string(s.Status),
 			"started_at":   s.CreatedAt.Unix(),
@@ -298,6 +303,30 @@ func (c *RemoteHubClient) SyncSessions() {
 	}
 }
 
+func (c *RemoteHubClient) SyncLaunchProjects() {
+	projects, err := c.app.ListRemoteLaunchProjects()
+	if err != nil {
+		c.setLastError(err.Error())
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return
+	}
+
+	msg := HubEnvelope{
+		Type:      "machine.projects",
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload: map[string]interface{}{
+			"projects": projects,
+		},
+	}
+	_ = c.conn.WriteJSON(msg)
+}
+
 func (c *RemoteHubClient) SendHeartbeat() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -309,13 +338,17 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 	if c.manager != nil {
 		activeSessions = len(c.manager.List())
 	}
+	cfg, _ := c.app.LoadConfig()
+	profile := c.app.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, activeSessions)
 
 	msg := HubEnvelope{
 		Type:      "machine.heartbeat",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
 		Payload: map[string]interface{}{
-			"active_sessions": activeSessions,
+			"active_sessions":        activeSessions,
+			"heartbeat_interval_sec": profile.HeartbeatSec,
+			"app_version":            profile.AppVersion,
 		},
 	}
 	return c.conn.WriteJSON(msg)
@@ -339,6 +372,8 @@ func (c *RemoteHubClient) readLoop() {
 		switch msg.Type {
 		case "error":
 			c.storeHubError(msg.Payload)
+		case "session.start":
+			c.handleSessionStart(msg)
 		case "session.input":
 			c.handleSessionInput(msg)
 		case "session.interrupt":
@@ -347,6 +382,44 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleSessionKill(msg)
 		}
 	}
+}
+
+func (c *RemoteHubClient) handleSessionStart(msg inboundHubEnvelope) {
+	var payload RemoteStartSessionRequest
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		c.replyStartError(msg.RequestID, err)
+		return
+	}
+	if strings.TrimSpace(payload.Tool) == "" {
+		c.replyStartError(msg.RequestID, fmt.Errorf("tool is required"))
+		return
+	}
+
+	session, err := c.app.StartRemoteSessionForProject(payload)
+	if err != nil {
+		c.replyStartError(msg.RequestID, err)
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return
+	}
+	_ = c.conn.WriteJSON(HubEnvelope{
+		Type:      "session.start.result",
+		RequestID: msg.RequestID,
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		SessionID: session.ID,
+		Payload: map[string]interface{}{
+			"status":       "ok",
+			"session_id":   session.ID,
+			"tool":         session.Tool,
+			"title":        session.Title,
+			"project_path": session.ProjectPath,
+		},
+	})
 }
 
 func (c *RemoteHubClient) handleSessionInput(msg inboundHubEnvelope) {
@@ -399,6 +472,28 @@ func (c *RemoteHubClient) storeHubError(payload json.RawMessage) {
 	}
 }
 
+func (c *RemoteHubClient) replyStartError(requestID string, err error) {
+	if err == nil {
+		return
+	}
+	c.setLastError(err.Error())
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return
+	}
+	_ = c.conn.WriteJSON(HubEnvelope{
+		Type:      "error",
+		RequestID: requestID,
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload: map[string]string{
+			"message": err.Error(),
+		},
+	})
+}
+
 func (c *RemoteHubClient) setLastError(message string) {
 	c.mu.Lock()
 	c.lastError = message
@@ -408,18 +503,29 @@ func (c *RemoteHubClient) setLastError(message string) {
 }
 
 func (c *RemoteHubClient) heartbeatLoop() {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
+	for {
+		interval := c.currentHeartbeatInterval()
+		timer := time.NewTimer(interval)
+		<-timer.C
 		if !c.IsConnected() {
+			timer.Stop()
 			return
 		}
 		if err := c.SendHeartbeat(); err != nil {
+			timer.Stop()
 			c.handleConnectionLoss(err)
 			return
 		}
+		timer.Stop()
 	}
+}
+
+func (c *RemoteHubClient) currentHeartbeatInterval() time.Duration {
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		return time.Duration(defaultRemoteHeartbeatSec) * time.Second
+	}
+	return time.Duration(normalizeRemoteHeartbeatIntervalSec(cfg.RemoteHeartbeatSec)) * time.Second
 }
 
 func (c *RemoteHubClient) IsConnected() bool {
@@ -508,14 +614,6 @@ func (c *RemoteHubClient) reconnectLoop() {
 	}
 }
 
-func (c *RemoteHubClient) machineName() string {
-	name, err := os.Hostname()
-	if err != nil || name == "" {
-		return "CodeClaw Desktop"
-	}
-	return name
-}
-
 func (c *RemoteHubClient) appVersion() string {
-	return "1.0.0"
+	return remoteAppVersion()
 }

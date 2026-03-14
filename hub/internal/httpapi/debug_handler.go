@@ -1,14 +1,25 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
-func DebugListMachinesHandler(devices *device.Service) http.HandlerFunc {
+type machineUserLookup interface {
+	GetByID(ctx context.Context, id string) (*store.User, error)
+}
+
+type machineListItem struct {
+	device.MachineRuntimeInfo
+	UserEmail string `json:"user_email,omitempty"`
+}
+
+func DebugListMachinesHandler(devices *device.Service, users machineUserLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
 		if userID != "" {
@@ -19,15 +30,36 @@ func DebugListMachinesHandler(devices *device.Service) http.HandlerFunc {
 			}
 
 			writeJSON(w, http.StatusOK, map[string]any{
-				"machines": items,
+				"machines": enrichMachineList(r.Context(), items, users),
 			})
 			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"machines": devices.ListOnlineMachines(),
+			"machines": enrichMachineList(r.Context(), devices.ListOnlineMachines(), users),
 		})
 	}
+}
+
+func enrichMachineList(ctx context.Context, items []device.MachineRuntimeInfo, users machineUserLookup) []machineListItem {
+	if len(items) == 0 {
+		return []machineListItem{}
+	}
+	out := make([]machineListItem, 0, len(items))
+	cache := map[string]string{}
+	for _, item := range items {
+		enriched := machineListItem{MachineRuntimeInfo: item}
+		if users != nil && strings.TrimSpace(item.UserID) != "" {
+			if email, ok := cache[item.UserID]; ok {
+				enriched.UserEmail = email
+			} else if user, err := users.GetByID(ctx, item.UserID); err == nil && user != nil {
+				enriched.UserEmail = strings.TrimSpace(user.Email)
+				cache[item.UserID] = enriched.UserEmail
+			}
+		}
+		out = append(out, enriched)
+	}
+	return out
 }
 
 func DebugListMachineEventsHandler(devices *device.Service) http.HandlerFunc {

@@ -3,6 +3,7 @@ package main
 import "time"
 
 type SessionStatus string
+type RemoteLaunchSource string
 
 const (
 	SessionStarting     SessionStatus = "starting"
@@ -13,14 +14,30 @@ const (
 	SessionExited       SessionStatus = "exited"
 )
 
+const (
+	RemoteLaunchSourceDesktop RemoteLaunchSource = "desktop"
+	RemoteLaunchSourceMobile  RemoteLaunchSource = "mobile"
+	RemoteLaunchSourceHandoff RemoteLaunchSource = "handoff"
+)
+
+func normalizeRemoteLaunchSource(source RemoteLaunchSource) RemoteLaunchSource {
+	switch source {
+	case RemoteLaunchSourceMobile, RemoteLaunchSourceHandoff:
+		return source
+	default:
+		return RemoteLaunchSourceDesktop
+	}
+}
+
 type LaunchSpec struct {
-	SessionID   string
-	Tool        string
-	ProjectPath string
-	ModelName   string
-	ModelID     string
-	BinaryName  string
-	Title       string
+	SessionID    string
+	Tool         string
+	ProjectPath  string
+	ModelName    string
+	ModelID      string
+	BinaryName   string
+	Title        string
+	LaunchSource RemoteLaunchSource
 
 	YoloMode  bool
 	AdminMode bool
@@ -45,6 +62,7 @@ type SessionSummary struct {
 	MachineID       string   `json:"machine_id"`
 	Tool            string   `json:"tool"`
 	Title           string   `json:"title"`
+	Source          string   `json:"source,omitempty"`
 	Status          string   `json:"status"`
 	Severity        string   `json:"severity"`
 	WaitingForUser  bool     `json:"waiting_for_user"`
@@ -107,6 +125,7 @@ type RemoteSession struct {
 	ID             string
 	Tool           string
 	Title          string
+	LaunchSource   RemoteLaunchSource
 	ProjectPath    string
 	WorkspacePath  string
 	WorkspaceRoot  string

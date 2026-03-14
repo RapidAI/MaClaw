@@ -34,8 +34,7 @@ func newTestStore(t *testing.T) *testDeps {
 	}
 
 	t.Cleanup(func() {
-		_ = provider.Read.Close()
-		_ = provider.Write.Close()
+		_ = provider.Close()
 	})
 
 	return &testDeps{

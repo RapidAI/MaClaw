@@ -72,6 +72,12 @@ func AdminSendTestMailHandler(mailer mail.Mailer) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "MAIL_SEND_FAILED", fmt.Sprintf("Failed to send test email: %v", err))
 			return
 		}
+		if svc, ok := mailer.(*mail.Service); ok {
+			if _, err := svc.MarkTestSuccess(r.Context()); err != nil {
+				writeError(w, http.StatusInternalServerError, "MAIL_TEST_MARK_FAILED", err.Error())
+				return
+			}
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,

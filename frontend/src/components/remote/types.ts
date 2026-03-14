@@ -22,6 +22,7 @@ export interface RemoteSessionSummaryView {
     machine_id?: string;
     tool?: string;
     title?: string;
+    source?: string;
     status?: string;
     severity?: string;
     waiting_for_user?: boolean;
@@ -38,6 +39,7 @@ export interface RemoteSessionView {
     id: string;
     tool: string;
     title: string;
+    launch_source?: string;
     project_path: string;
     workspace_path?: string;
     workspace_root?: string;

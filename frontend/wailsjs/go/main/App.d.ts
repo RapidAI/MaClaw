@@ -50,6 +50,8 @@ export function StartRemoteClaudeSession(arg1:string,arg2:boolean):Promise<any>;
 
 export function StartRemoteSession(arg1:string,arg2:string,arg3:boolean):Promise<any>;
 
+export function StartRemoteHandoffSession(arg1:string,arg2:string,arg3:boolean):Promise<any>;
+
 export function GetSkillsDir(arg1:string):Promise<string>;
 
 export function GetSystemInfo():Promise<main.SystemInfo>;

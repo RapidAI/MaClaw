@@ -51,6 +51,15 @@ type MachinePrincipal struct {
 	MachineID string
 }
 
+type MachineMetadata struct {
+	Name                 string
+	Platform             string
+	Hostname             string
+	Arch                 string
+	AppVersion           string
+	HeartbeatIntervalSec int
+}
+
 type ViewerPrincipal struct {
 	UserID string
 	Email  string
@@ -69,6 +78,27 @@ type IdentityService struct {
 	allowSelfEnroll bool
 	mailer          mail.Mailer
 	publicBaseURL   string
+}
+
+func (s *IdentityService) UsersRepo() store.UserRepository {
+	if s == nil {
+		return nil
+	}
+	return s.users
+}
+
+func (s *IdentityService) UpdateMachineMetadata(ctx context.Context, machineID string, metadata MachineMetadata) error {
+	if s == nil || s.machines == nil || strings.TrimSpace(machineID) == "" {
+		return nil
+	}
+	return s.machines.UpdateMetadata(ctx, machineID, store.MachineMetadata{
+		Name:                 defaultIfEmpty(metadata.Name, "CodeClaw Desktop"),
+		Platform:             defaultIfEmpty(metadata.Platform, "unknown"),
+		Hostname:             strings.TrimSpace(metadata.Hostname),
+		Arch:                 strings.TrimSpace(metadata.Arch),
+		AppVersion:           strings.TrimSpace(metadata.AppVersion),
+		HeartbeatIntervalSec: metadata.HeartbeatIntervalSec,
+	})
 }
 
 func NewIdentityService(
@@ -288,6 +318,33 @@ func (s *IdentityService) LookupUserByEmail(ctx context.Context, email string) (
 		return nil, ErrInvalidEmail
 	}
 	return s.users.GetByEmail(ctx, email)
+}
+
+func (s *IdentityService) IsEmailBlocked(ctx context.Context, email string) (bool, error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return false, ErrInvalidEmail
+	}
+	if s.blocks == nil {
+		return false, nil
+	}
+	item, err := s.blocks.GetByEmail(ctx, email)
+	if err != nil {
+		return false, err
+	}
+	return item != nil, nil
+}
+
+func (s *IdentityService) BuildPWAEntryURL(email string) string {
+	base := s.publicBaseURL
+	if base == "" {
+		base = "http://127.0.0.1:9399"
+	}
+	return fmt.Sprintf(
+		"%s/app?email=%s&entry=app&autologin=1",
+		base,
+		url.QueryEscape(normalizeEmail(email)),
+	)
 }
 
 func (s *IdentityService) ListUsers(ctx context.Context) ([]*store.User, error) {

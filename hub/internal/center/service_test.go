@@ -280,6 +280,69 @@ func TestSendHeartbeatClearsRegistrationWhenHubIsUnregistered(t *testing.T) {
 	}
 }
 
+func TestSendHeartbeatMarksHubDisabledWhenCenterLocksHub(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"code":"HUB_DISABLED","message":"Hub has been disabled by Hub Center"}`, http.StatusLocked)
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.Enabled = true
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+	err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true,
+		HubID:      "hub_disabled",
+		HubSecret:  "secret_disabled",
+	}))
+	if err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := svc.sendHeartbeat(context.Background()); err != nil {
+		t.Fatalf("sendHeartbeat() error = %v", err)
+	}
+
+	raw, err := settings.Get(context.Background(), systemKeyCenterRegistration)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	var record registrationRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if !record.Disabled || record.Registered || record.PendingConfirmation {
+		t.Fatalf("expected disabled registration state, got %+v", record)
+	}
+	if record.HubID == "" || record.HubSecret == "" {
+		t.Fatalf("expected hub credentials to be retained, got %+v", record)
+	}
+}
+
+func TestRegisterFailsWhenHubWasDisabledByCenter(t *testing.T) {
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Center.BaseURL = "http://127.0.0.1:9388"
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	_ = settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Disabled:   true,
+		HubID:      "hub_disabled",
+		HubSecret:  "secret_disabled",
+		LastError:  "hub has been disabled by Hub Center",
+	}))
+	_ = settings.Set(context.Background(), systemKeyAdminEmail, mustJSON(map[string]string{"value": "admin@example.com"}))
+
+	svc := NewService(cfg, settings)
+	if _, err := svc.Register(context.Background(), "admin@example.com"); err == nil {
+		t.Fatal("expected Register to fail while hub is disabled")
+	}
+}
+
 func TestInstallationIDIsGeneratedOnceAndReused(t *testing.T) {
 	cfg := config.Default()
 	settings := newFakeSettingsRepo()

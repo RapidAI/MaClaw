@@ -20,11 +20,28 @@ type ConnContext struct {
 	ViewerID  string
 }
 
+type MachineHelloPayload struct {
+	Name                 string         `json:"name"`
+	Platform             string         `json:"platform"`
+	Hostname             string         `json:"hostname,omitempty"`
+	Arch                 string         `json:"arch,omitempty"`
+	AppVersion           string         `json:"app_version,omitempty"`
+	HeartbeatIntervalSec int            `json:"heartbeat_interval_sec,omitempty"`
+	Capabilities         map[string]any `json:"capabilities,omitempty"`
+}
+
+type MachineHeartbeatPayload struct {
+	ActiveSessions       int    `json:"active_sessions,omitempty"`
+	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec,omitempty"`
+	AppVersion           string `json:"app_version,omitempty"`
+}
+
 type DeviceBinder interface {
 	BindDesktop(machineID string, ctx *ConnContext)
 	UnbindDesktop(ctx context.Context, machineID string, conn *ConnContext) error
-	MarkOnline(ctx context.Context, machineID string) error
-	Heartbeat(ctx context.Context, machineID string) error
+	MarkOnline(ctx context.Context, machineID string, hello MachineHelloPayload) error
+	Heartbeat(ctx context.Context, machineID string, heartbeat MachineHeartbeatPayload) error
+	SendToMachine(machineID string, msg any) error
 }
 
 type SessionService interface {
@@ -48,18 +65,20 @@ type Gateway struct {
 	Devices  DeviceBinder
 	Sessions SessionService
 
-	mu               sync.RWMutex
-	viewersByMachine map[string]map[*ConnContext]struct{}
-	viewersBySession map[string]map[*ConnContext]struct{}
+	mu                sync.RWMutex
+	viewersByMachine  map[string]map[*ConnContext]struct{}
+	viewersBySession  map[string]map[*ConnContext]struct{}
+	projectsByMachine map[string][]map[string]any
 }
 
 func NewGateway(identity identityService, devices DeviceBinder, sessions SessionService) *Gateway {
 	return &Gateway{
-		Identity:         identity,
-		Devices:          devices,
-		Sessions:         sessions,
-		viewersByMachine: map[string]map[*ConnContext]struct{}{},
-		viewersBySession: map[string]map[*ConnContext]struct{}{},
+		Identity:          identity,
+		Devices:           devices,
+		Sessions:          sessions,
+		viewersByMachine:  map[string]map[*ConnContext]struct{}{},
+		viewersBySession:  map[string]map[*ConnContext]struct{}{},
+		projectsByMachine: map[string][]map[string]any{},
 	}
 }
 
@@ -93,6 +112,10 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			if err := g.handleViewerSubscribeMachine(ctx, msg); err != nil {
 				return
 			}
+		case "viewer.start_session":
+			if err := g.handleViewerStartSession(ctx, msg); err != nil {
+				return
+			}
 		case "viewer.unsubscribe_machine":
 			if err := g.handleViewerUnsubscribeMachine(ctx, msg); err != nil {
 				return
@@ -111,6 +134,10 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "machine.heartbeat":
 			if err := g.handleMachineHeartbeat(ctx, msg); err != nil {
+				return
+			}
+		case "machine.projects":
+			if err := g.handleMachineProjects(ctx, msg); err != nil {
 				return
 			}
 		case "session.created":
@@ -314,8 +341,58 @@ func (g *Gateway) handleViewerSubscribeMachine(ctx *ConnContext, msg Envelope) e
 		"machine_id": payload.MachineID,
 		"payload": map[string]any{
 			"sessions": sessionsPayload,
+			"projects": g.getProjectsForMachine(payload.MachineID),
 		},
 	})
+}
+
+func (g *Gateway) handleViewerStartSession(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "viewer" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Viewer role required")
+	}
+	var payload struct {
+		MachineID   string `json:"machine_id"`
+		Tool        string `json:"tool"`
+		ProjectID   string `json:"project_id,omitempty"`
+		ProjectPath string `json:"project_path,omitempty"`
+		UseProxy    *bool  `json:"use_proxy,omitempty"`
+		YoloMode    *bool  `json:"yolo_mode,omitempty"`
+		AdminMode   *bool  `json:"admin_mode,omitempty"`
+		PythonEnv   string `json:"python_env,omitempty"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid viewer.start_session payload")
+	}
+	if payload.MachineID == "" || payload.Tool == "" {
+		return writeWSError(ctx.Conn, "INVALID_INPUT", "machine_id and tool are required")
+	}
+
+	command := map[string]any{
+		"type":       "session.start",
+		"request_id": msg.RequestID,
+		"ts":         time.Now().Unix(),
+		"machine_id": payload.MachineID,
+		"payload": map[string]any{
+			"tool":         payload.Tool,
+			"project_id":   payload.ProjectID,
+			"project_path": payload.ProjectPath,
+			"python_env":   payload.PythonEnv,
+		},
+	}
+	commandPayload := command["payload"].(map[string]any)
+	if payload.UseProxy != nil {
+		commandPayload["use_proxy"] = *payload.UseProxy
+	}
+	if payload.YoloMode != nil {
+		commandPayload["yolo_mode"] = *payload.YoloMode
+	}
+	if payload.AdminMode != nil {
+		commandPayload["admin_mode"] = *payload.AdminMode
+	}
+	if err := g.Devices.SendToMachine(payload.MachineID, command); err != nil {
+		return writeWSError(ctx.Conn, "MACHINE_OFFLINE", err.Error())
+	}
+	return writeAck(ctx.Conn, msg.RequestID)
 }
 
 func (g *Gateway) handleViewerUnsubscribeMachine(ctx *ConnContext, msg Envelope) error {
@@ -363,16 +440,47 @@ func (g *Gateway) handleViewerUnsubscribeSession(ctx *ConnContext, msg Envelope)
 }
 
 func (g *Gateway) handleMachineHello(ctx *ConnContext, msg Envelope) error {
-	if err := g.Devices.MarkOnline(context.Background(), ctx.MachineID); err != nil {
+	var payload MachineHelloPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid machine.hello payload")
+	}
+	if err := g.Devices.MarkOnline(context.Background(), ctx.MachineID, payload); err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
 }
 
 func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
-	if err := g.Devices.Heartbeat(context.Background(), ctx.MachineID); err != nil {
+	var payload MachineHeartbeatPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid machine.heartbeat payload")
+	}
+	if err := g.Devices.Heartbeat(context.Background(), ctx.MachineID, payload); err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
+	return writeAck(ctx.Conn, msg.RequestID)
+}
+
+func (g *Gateway) handleMachineProjects(ctx *ConnContext, msg Envelope) error {
+	var payload struct {
+		Projects []map[string]any `json:"projects"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid machine.projects payload")
+	}
+
+	g.mu.Lock()
+	g.projectsByMachine[ctx.MachineID] = cloneProjects(payload.Projects)
+	g.mu.Unlock()
+
+	g.broadcastMachineEvent(ctx.MachineID, map[string]any{
+		"type":       "machine.projects",
+		"machine_id": ctx.MachineID,
+		"ts":         time.Now().Unix(),
+		"payload": map[string]any{
+			"projects": cloneProjects(payload.Projects),
+		},
+	})
 	return writeAck(ctx.Conn, msg.RequestID)
 }
 
@@ -469,6 +577,27 @@ func (g *Gateway) removeViewer(ctx *ConnContext) {
 			delete(g.viewersBySession, sessionID)
 		}
 	}
+}
+
+func (g *Gateway) getProjectsForMachine(machineID string) []map[string]any {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return cloneProjects(g.projectsByMachine[machineID])
+}
+
+func cloneProjects(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		cloned := make(map[string]any, len(item))
+		for k, v := range item {
+			cloned[k] = v
+		}
+		out = append(out, cloned)
+	}
+	return out
 }
 
 func writeWSJSON(conn *websocket.Conn, v any) error { return conn.WriteJSON(v) }

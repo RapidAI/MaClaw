@@ -53,8 +53,7 @@ func newHTTPAPITestServices(t *testing.T) (*auth.IdentityService, *device.Servic
 		t.Fatalf("run migrations: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = provider.Read.Close()
-		_ = provider.Write.Close()
+		_ = provider.Close()
 	})
 
 	st := sqlite.NewStore(provider)
@@ -99,7 +98,14 @@ func TestListMachinesHandlerReturnsViewerMachines(t *testing.T) {
 	viewerToken, enroll := issueViewerToken(t, identity, "viewer@example.com")
 
 	deviceSvc.BindDesktop(enroll.MachineID, &ws.ConnContext{UserID: enroll.UserID, Role: "machine"})
-	if err := deviceSvc.MarkOnline(context.Background(), enroll.MachineID); err != nil {
+	if err := deviceSvc.MarkOnline(context.Background(), enroll.MachineID, ws.MachineHelloPayload{
+		Name:                 "office-pc",
+		Platform:             "windows",
+		Hostname:             "office-host",
+		Arch:                 "amd64",
+		AppVersion:           "1.0.0",
+		HeartbeatIntervalSec: 60,
+	}); err != nil {
 		t.Fatalf("MarkOnline: %v", err)
 	}
 
@@ -118,6 +124,9 @@ func TestListMachinesHandlerReturnsViewerMachines(t *testing.T) {
 	}
 	if !strings.Contains(body, "office-pc") {
 		t.Fatalf("expected machine name in response, body=%s", body)
+	}
+	if !strings.Contains(body, `"platform":"windows"`) {
+		t.Fatalf("expected platform in response, body=%s", body)
 	}
 }
 

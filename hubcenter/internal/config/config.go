@@ -16,17 +16,21 @@ type Config struct {
 		MaxReadIdleConns  int    `yaml:"max_read_idle_conns"`
 		MaxWriteOpenConns int    `yaml:"max_write_open_conns"`
 		MaxWriteIdleConns int    `yaml:"max_write_idle_conns"`
+		BatchFlushMS      int    `yaml:"batch_flush_ms"`
+		BatchMaxSize      int    `yaml:"batch_max_size"`
+		BatchQueueSize    int    `yaml:"batch_queue_size"`
 	} `yaml:"database"`
 
 	Mail struct {
-		Enabled   bool   `yaml:"enabled"`
-		Provider  string `yaml:"provider"`
-		SMTPHost  string `yaml:"smtp_host"`
-		SMTPPort  int    `yaml:"smtp_port"`
-		Username  string `yaml:"smtp_username"`
-		Password  string `yaml:"smtp_password"`
-		FromName  string `yaml:"from_name"`
-		FromEmail string `yaml:"from_email"`
+		Enabled    bool   `yaml:"enabled"`
+		Provider   string `yaml:"provider"`
+		SMTPHost   string `yaml:"smtp_host"`
+		SMTPPort   int    `yaml:"smtp_port"`
+		Encryption string `yaml:"smtp_encryption"`
+		Username   string `yaml:"smtp_username"`
+		Password   string `yaml:"smtp_password"`
+		FromName   string `yaml:"from_name"`
+		FromEmail  string `yaml:"from_email"`
 	} `yaml:"mail"`
 
 	Logging struct {
@@ -48,6 +52,9 @@ func Default() *Config {
 	cfg.Database.MaxReadIdleConns = 4
 	cfg.Database.MaxWriteOpenConns = 1
 	cfg.Database.MaxWriteIdleConns = 1
+	cfg.Database.BatchFlushMS = 250
+	cfg.Database.BatchMaxSize = 64
+	cfg.Database.BatchQueueSize = 1024
 	cfg.Mail.Provider = "smtp"
 	cfg.Mail.FromName = "CodeClaw Hub Center"
 	cfg.Logging.Level = "info"

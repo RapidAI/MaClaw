@@ -8,11 +8,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store/sqlite"
 )
@@ -23,7 +25,23 @@ type hubCenterHTTPTestServices struct {
 	hubs    *hubs.Service
 	entry   *entry.Service
 	handler http.Handler
+	mailer  *httpTestMailer
 }
+
+type httpTestMailer struct {
+	lastConfirmURL string
+}
+
+func (m *httpTestMailer) Send(ctx context.Context, to []string, subject string, body string) error {
+	return nil
+}
+
+func (m *httpTestMailer) SendHubRegistrationConfirmation(ctx context.Context, to string, confirmURL string, hubName string) error {
+	m.lastConfirmURL = confirmURL
+	return nil
+}
+
+var _ mail.Mailer = (*httpTestMailer)(nil)
 
 func newHubCenterHTTPTestServices(t *testing.T) *hubCenterHTTPTestServices {
 	t.Helper()
@@ -46,13 +64,13 @@ func newHubCenterHTTPTestServices(t *testing.T) *hubCenterHTTPTestServices {
 	}
 
 	t.Cleanup(func() {
-		_ = provider.Read.Close()
-		_ = provider.Write.Close()
+		_ = provider.Close()
 	})
 
 	st := sqlite.NewStore(provider)
 	adminService := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
-	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
+	mailer := &httpTestMailer{}
+	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, "http://127.0.0.1:9388")
 	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
 
 	return &hubCenterHTTPTestServices{
@@ -61,6 +79,7 @@ func newHubCenterHTTPTestServices(t *testing.T) *hubCenterHTTPTestServices {
 		hubs:    hubService,
 		entry:   entryService,
 		handler: NewRouter(adminService, hubService, entryService, nil),
+		mailer:  mailer,
 	}
 }
 
@@ -122,6 +141,18 @@ func issueAdminToken(t *testing.T, svc *hubCenterHTTPTestServices) string {
 func TestAdminSetupAndLoginHandlers(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 	_ = issueAdminToken(t, svc)
+}
+
+func TestAdminSetupRequiresEmail(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/setup", map[string]any{
+		"username": "admin",
+		"password": "StrongPassword123!",
+	}, "")
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
 }
 
 func TestAdminChangePasswordHandler(t *testing.T) {
@@ -211,6 +242,14 @@ func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 		t.Fatalf("unexpected register result: %+v", registerResult)
 	}
 
+	token := svc.mailer.lastConfirmURL[len("http://127.0.0.1:9388/hub-registration/confirm?token="):]
+	confirmReq := httptest.NewRequest(http.MethodGet, "/hub-registration/confirm?token="+token, nil)
+	confirmResp := httptest.NewRecorder()
+	svc.handler.ServeHTTP(confirmResp, confirmReq)
+	if confirmResp.Code != http.StatusOK {
+		t.Fatalf("confirm status = %d, body = %s", confirmResp.Code, confirmResp.Body.String())
+	}
+
 	heartbeatResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
 		"hub_secret": hubSecret,
 	}, "")
@@ -234,6 +273,73 @@ func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 	}
 	if resolveResult.DefaultPWA == "" {
 		t.Fatalf("expected default pwa url, got %+v", resolveResult)
+	}
+}
+
+func TestAdminServerConfigUpdatesConfirmationBaseURL(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/server/config", map[string]any{
+		"public_base_url": "https://center.example.com",
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	registerResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/register", map[string]any{
+		"owner_email":     "owner@example.com",
+		"name":            "CodeClaw Team Hub",
+		"base_url":        "https://teamhub.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	}, "")
+	if registerResp.Code != http.StatusOK {
+		t.Fatalf("register status = %d, body = %s", registerResp.Code, registerResp.Body.String())
+	}
+
+	if !strings.HasPrefix(svc.mailer.lastConfirmURL, "https://center.example.com/hub-registration/confirm?token=") {
+		t.Fatalf("expected confirm url to use configured public base url, got %s", svc.mailer.lastConfirmURL)
+	}
+}
+
+func TestConfirmHubHandlerManuallyActivatesPendingHub(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	registerResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/register", map[string]any{
+		"owner_email":     "owner@example.com",
+		"name":            "Pending Hub",
+		"base_url":        "https://teamhub.example.com",
+		"host":            "teamhub.example.com",
+		"port":            9399,
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	}, "")
+	if registerResp.Code != http.StatusOK {
+		t.Fatalf("register status = %d, body = %s", registerResp.Code, registerResp.Body.String())
+	}
+
+	var registerResult map[string]any
+	if err := json.Unmarshal(registerResp.Body.Bytes(), &registerResult); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	hubID, _ := registerResult["hub_id"].(string)
+	if hubID == "" {
+		t.Fatalf("expected hub id, got %+v", registerResult)
+	}
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/confirm", map[string]any{}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	hub, err := svc.store.Hubs.GetByID(context.Background(), hubID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if hub == nil || hub.Status != "online" {
+		t.Fatalf("expected hub to be online after manual confirm, got %+v", hub)
 	}
 }
 
@@ -408,6 +514,16 @@ func TestManagementHandlersBlockEmailAndDisableHub(t *testing.T) {
 	}
 	if resolveResult.Mode != "none" {
 		t.Fatalf("expected disabled hub to be filtered, got %+v", resolveResult)
+	}
+
+	heartbeatResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+registerResult.HubID+"/heartbeat", map[string]any{
+		"hub_secret": registerResult.HubSecret,
+	}, "")
+	if heartbeatResp.Code != http.StatusLocked {
+		t.Fatalf("expected disabled hub heartbeat to be locked, got %d body=%s", heartbeatResp.Code, heartbeatResp.Body.String())
+	}
+	if !bytes.Contains(heartbeatResp.Body.Bytes(), []byte(`"code":"HUB_DISABLED"`)) {
+		t.Fatalf("expected HUB_DISABLED, body=%s", heartbeatResp.Body.String())
 	}
 }
 

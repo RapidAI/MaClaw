@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,47 @@ import (
 )
 
 func (a *App) platformStartup() {
+}
+
+func (a *App) platformShutdown() {
+	a.setPowerOptimizationEnabled(false)
+}
+
+func (a *App) setPowerOptimizationEnabled(enabled bool) {
+	a.powerStateMutex.Lock()
+	defer a.powerStateMutex.Unlock()
+
+	if !enabled {
+		if a.powerStateProcess != nil && a.powerStateProcess.Process != nil {
+			_ = a.powerStateProcess.Process.Kill()
+			_, _ = a.powerStateProcess.Process.Wait()
+		}
+		a.powerStateProcess = nil
+		return
+	}
+
+	if a.powerStateProcess != nil && a.powerStateProcess.Process != nil && a.powerStateProcess.ProcessState == nil {
+		return
+	}
+
+	if _, err := exec.LookPath("systemd-inhibit"); err != nil {
+		a.log("systemd-inhibit not found; power optimization is unavailable on this Linux system")
+		return
+	}
+
+	cmd := exec.Command(
+		"systemd-inhibit",
+		"--what=sleep",
+		"--why=AICoder remote task active",
+		"sh",
+		"-c",
+		"while kill -0 "+strconv.Itoa(os.Getpid())+" 2>/dev/null; do sleep 60; done",
+	)
+	if err := cmd.Start(); err != nil {
+		a.log("Failed to start systemd-inhibit: " + err.Error())
+		return
+	}
+	a.powerStateProcess = cmd
 }
 
 // platformInitConsole is a no-op on Linux (console is already available)
@@ -150,7 +192,7 @@ func (a *App) CheckEnvironment(force bool) {
 			wails_runtime.EventsEmit(a.ctx, "env-check-done")
 			return
 		}
-		
+
 		// Get npm version
 		npmCmd := exec.Command(npmPath, "--version")
 		if out, err := npmCmd.Output(); err == nil {
@@ -160,7 +202,7 @@ func (a *App) CheckEnvironment(force bool) {
 		}
 
 		a.log(a.tr("✓ Base environment check complete."))
-		
+
 		// Update config to mark base env check done
 		if cfg, err := a.LoadConfig(); err == nil {
 			needsSave := false
@@ -173,9 +215,9 @@ func (a *App) CheckEnvironment(force bool) {
 				a.SaveConfig(cfg)
 			}
 		}
-		
+
 		a.emitEvent("env-check-done")
-		
+
 		// Always start background tool check/update after base environment is ready
 		go a.installToolsInBackground()
 	}()
@@ -185,10 +227,10 @@ func (a *App) CheckEnvironment(force bool) {
 // This runs on every application startup
 func (a *App) installToolsInBackground() {
 	a.log(a.tr("Starting background tool check/update..."))
-	
+
 	home, _ := os.UserHomeDir()
 	localBinDir := filepath.Join(home, ".cceasy", "tools", "bin")
-	
+
 	// Find npm
 	npmPath, err := exec.LookPath("npm")
 	if err != nil {
@@ -197,7 +239,7 @@ func (a *App) installToolsInBackground() {
 			npmPath = localNpmPath
 		}
 	}
-	
+
 	if npmPath == "" {
 		a.log(a.tr("npm not found. Cannot install tools in background."))
 		return
@@ -228,7 +270,7 @@ func (a *App) installToolsInBackground() {
 			}
 		} else {
 			a.log(a.tr("Background: %s found at %s (version: %s).", tool, status.Path, status.Version))
-			
+
 			// Check for updates
 			a.log(a.tr("Background: Checking for %s updates...", tool))
 			latest, err := a.getLatestNpmVersion(npmPath, tm.GetPackageName(tool))
@@ -281,20 +323,20 @@ func (a *App) InstallToolOnDemand(toolName string) error {
 
 	tm := NewToolManager(a)
 	status := tm.GetToolStatus(toolName)
-	
+
 	if status.Installed {
 		return nil // Already installed
 	}
-	
+
 	a.log(a.tr("On-demand installation: Installing %s...", toolName))
 	if err := tm.InstallTool(toolName); err != nil {
 		a.log(a.tr("On-demand installation: ERROR: Failed to install %s: %v", toolName, err))
 		return err
 	}
-	
+
 	// Update PATH to include newly installed tool
 	a.updatePathForNode()
-	
+
 	a.log(a.tr("On-demand installation: %s installed successfully.", toolName))
 	a.emitEvent("tool-installed", toolName)
 	return nil
@@ -331,7 +373,7 @@ func (a *App) installNodeJSManually(targetDir string) error {
 	if runtime.GOARCH == "arm64" {
 		arch = "arm64"
 	}
-	
+
 	fileName := fmt.Sprintf("node-v%s-linux-%s.tar.gz", nodeVersion, arch)
 	url := fmt.Sprintf("https://nodejs.org/dist/v%s/%s", nodeVersion, fileName)
 	if strings.HasPrefix(strings.ToLower(a.CurrentLanguage), "zh") {
@@ -350,7 +392,7 @@ func (a *App) installNodeJSManually(targetDir string) error {
 	defer os.Remove(tarPath)
 
 	a.log(a.tr("Extracting Node.js..."))
-	
+
 	// Ensure target dir exists
 	os.MkdirAll(targetDir, 0755)
 
@@ -443,7 +485,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		wails_runtime.EventsEmit(a.ctx, "tool-repair-success", binaryName, status.Version)
 		a.log(fmt.Sprintf("Tool %s installed successfully. Version: %s", binaryName, status.Version))
 	}
-	
+
 	cmdArgs := []string{}
 	if binaryName == "codebuddy" && modelId != "" {
 		cmdArgs = append(cmdArgs, "--model", modelId)
@@ -467,7 +509,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			cmdArgs = append(cmdArgs, "--yolo")
 		}
 	}
-	
+
 	// Create shell script wrapper
 	scriptPath := filepath.Join(os.TempDir(), fmt.Sprintf("codeclaw_launch_%d.sh", time.Now().UnixNano()))
 	scriptContent := "#!/bin/bash\n"
@@ -475,17 +517,17 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	for k, v := range env {
 		scriptContent += fmt.Sprintf("export %s=\"%s\"\n", k, v)
 	}
-	
+
 	// Add local node to PATH
 	home, _ := os.UserHomeDir()
 	localBin := filepath.Join(home, ".cceasy", "tools", "bin")
 	scriptContent += fmt.Sprintf("export PATH=\"%s:$PATH\"\n", localBin)
-	
+
 	scriptContent += fmt.Sprintf("\"%s\" %s\n", status.Path, strings.Join(cmdArgs, " "))
 	scriptContent += "echo 'Press Enter to close...'\nread\n"
-	
+
 	os.WriteFile(scriptPath, []byte(scriptContent), 0755)
-	
+
 	// Try to open terminal
 	terminals := []string{"x-terminal-emulator", "gnome-terminal", "konsole", "xterm"}
 	var cmd *exec.Cmd
@@ -499,7 +541,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			break
 		}
 	}
-	
+
 	if cmd != nil {
 		cmd.Start()
 	} else {

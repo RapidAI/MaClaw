@@ -5,13 +5,33 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+func TestNormalizedRemotePlatform(t *testing.T) {
+	original := remotePlatformGOOS
+	defer func() {
+		remotePlatformGOOS = original
+	}()
+
+	cases := map[string]string{
+		"windows": "windows",
+		"darwin":  "mac",
+		"linux":   "linux",
+		"freebsd": "linux",
+	}
+
+	for goos, want := range cases {
+		remotePlatformGOOS = func() string { return goos }
+		if got := normalizedRemotePlatform(); got != want {
+			t.Fatalf("normalizedRemotePlatform() for %q = %q, want %q", goos, got, want)
+		}
+	}
+}
 
 func TestResolveProjectProxyURL_ProjectSpecificPreferred(t *testing.T) {
 	app := &App{}
@@ -281,13 +301,39 @@ func TestResolveRemoteHubURL_FallsBackToFirstUsableHub(t *testing.T) {
 }
 
 func TestResolveRemoteHubURL_UsesDefaultCenterWhenUnset(t *testing.T) {
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+	}()
+
+	center := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/entry/resolve" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"email": "user@example.com",
+			"mode":  "single",
+			"hubs": []map[string]any{
+				{
+					"hub_id":   "hub-default",
+					"base_url": "https://hub-default.example.com",
+					"pwa_url":  "https://hub-default.example.com/app",
+				},
+			},
+		})
+	}))
+	defer center.Close()
+
+	defaultRemoteHubCenterURL = center.URL
+
 	app := &App{}
-	_, err := app.resolveRemoteHubURL(AppConfig{}, "user@example.com")
-	if err == nil {
-		t.Fatal("expected resolveRemoteHubURL() to fail when default center is unreachable")
+	got, err := app.resolveRemoteHubURL(AppConfig{}, "user@example.com")
+	if err != nil {
+		t.Fatalf("resolveRemoteHubURL() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "127.0.0.1:9388") && !strings.Contains(strings.ToLower(err.Error()), "no available hubs found") {
-		t.Fatalf("unexpected error: %v", err)
+	if got != "https://hub-default.example.com" {
+		t.Fatalf("resolveRemoteHubURL() = %q", got)
 	}
 }
 
@@ -440,6 +486,51 @@ func TestActivateRemote_ReusesExistingRemoteSessionsAndConnectsHubClient(t *test
 
 	t.Fatalf("hub client did not connect after activation: connected=%v authCount=%d",
 		app.remoteSessions.hubClient.IsConnected(), authCount.Load())
+}
+
+func TestActivateRemote_SendsNormalizedPlatform(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	original := remotePlatformGOOS
+	remotePlatformGOOS = func() string { return "darwin" }
+	defer func() {
+		remotePlatformGOOS = original
+	}()
+
+	var enrollPayload map[string]any
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/start" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&enrollPayload); err != nil {
+			t.Fatalf("decode enroll body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":        "approved",
+			"user_id":       "u_345",
+			"email":         "user@example.com",
+			"sn":            "SN-2026-000345",
+			"machine_id":    "m_345",
+			"machine_token": "mt_345",
+		})
+	}))
+	defer hub.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(AppConfig{RemoteHubURL: hub.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if _, err := app.ActivateRemote("user@example.com"); err != nil {
+		t.Fatalf("ActivateRemote() error = %v", err)
+	}
+
+	if got := enrollPayload["platform"]; got != "mac" {
+		t.Fatalf("platform = %v, want mac", got)
+	}
 }
 
 func TestClearRemoteActivation_DisconnectsHubClient(t *testing.T) {

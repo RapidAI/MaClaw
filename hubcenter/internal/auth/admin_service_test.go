@@ -25,8 +25,7 @@ func newTestStore(t *testing.T) *store.Store {
 		t.Fatalf("new provider: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = provider.Read.Close()
-		_ = provider.Write.Close()
+		_ = provider.Close()
 	})
 
 	if err := sqlite.RunMigrations(provider.Write); err != nil {
@@ -41,13 +40,13 @@ func TestAdminServiceSetupLoginAndReset(t *testing.T) {
 	svc := NewAdminService(st.Admins, st.System, st.AdminAudit)
 	ctx := context.Background()
 
-	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err != nil {
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
 		t.Fatalf("SetupInitialAdmin: %v", err)
 	}
 
 	if _, admin, err := svc.Login(ctx, "admin", "pass123456"); err != nil {
 		t.Fatalf("Login: %v", err)
-	} else if admin == nil || admin.Email != "admin@local.admin" {
+	} else if admin == nil || admin.Email != "admin@example.com" {
 		t.Fatalf("unexpected admin: %+v", admin)
 	}
 
@@ -66,12 +65,22 @@ func TestAdminServiceSetupLoginAndReset(t *testing.T) {
 	}
 }
 
+func TestAdminServiceSetupRequiresEmail(t *testing.T) {
+	st := newTestStore(t)
+	svc := NewAdminService(st.Admins, st.System, st.AdminAudit)
+	ctx := context.Background()
+
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err == nil {
+		t.Fatal("expected setup to require admin email")
+	}
+}
+
 func TestAdminServiceTokenSurvivesServiceRestart(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
 	first := NewAdminService(st.Admins, st.System, st.AdminAudit)
-	if err := first.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err != nil {
+	if err := first.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
 		t.Fatalf("SetupInitialAdmin: %v", err)
 	}
 
@@ -95,7 +104,7 @@ func TestAdminServiceChangePassword(t *testing.T) {
 	svc := NewAdminService(st.Admins, st.System, st.AdminAudit)
 	ctx := context.Background()
 
-	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", ""); err != nil {
+	if err := svc.SetupInitialAdmin(ctx, "admin", "pass123456", "admin@example.com"); err != nil {
 		t.Fatalf("SetupInitialAdmin: %v", err)
 	}
 	oldToken, _, err := svc.Login(ctx, "admin", "pass123456")

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from 'react';
+﻿import { useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
 import { buildNumber } from './version';
 import appIcon from './assets/images/appicon.png';
@@ -136,12 +136,13 @@ const badgeBaseStyle: React.CSSProperties = {
     right: '0px',
     color: 'white',
     fontSize: '10px',
-    padding: '1px 5px',
-    borderRadius: '4px',
+    padding: '1px 6px',
+    borderRadius: '999px',
     fontWeight: 'bold',
     zIndex: 10,
     transform: 'scale(0.85)',
-    boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+    boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
+    letterSpacing: '0.02em'
 };
 
 // Reusable markdown link component
@@ -152,7 +153,7 @@ const MarkdownLink = ({ node, ...props }: any) => (
             e.preventDefault();
             if (props.href) BrowserOpenURL(props.href);
         }}
-        style={{ cursor: 'pointer', color: '#3b82f6', textDecoration: 'underline' }}
+        style={{ cursor: 'pointer', color: '#6366f1', textDecoration: 'underline' }}
     />
 );
 
@@ -1222,7 +1223,7 @@ const ToolConfiguration = ({
 
     const getBadge = (model: any): { bg: string; label: string } | null => {
         const name = model.model_name.toLowerCase();
-        if (model.model_name === "Original") return { bg: '#3b82f6', label: t("originalFlag") };
+        if (model.model_name === "Original") return { bg: '#6366f1', label: t("originalFlag") };
         if (model.has_subscription) return { bg: '#ec4899', label: t("subscription") };
         if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax"))
             return { bg: '#ec4899', label: t("monthly") };
@@ -1236,10 +1237,10 @@ const ToolConfiguration = ({
 
     return (
         <div style={{
-            backgroundColor: '#f8faff',
+            backgroundColor: '#fafbff',
             padding: '10px 12px',
             borderRadius: '12px',
-            border: '1px solid rgba(96, 165, 250, 0.1)',
+            border: '1px solid rgba(99, 102, 241, 0.08)',
             marginBottom: '10px'
         }}>
             <div className="model-switcher" style={{
@@ -1262,7 +1263,7 @@ const ToolConfiguration = ({
                                 minWidth: '94px',
                                 padding: '3px 4px',
                                 fontSize: '0.75rem',
-                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '3px solid #60a5fa' : '1px solid var(--border-color)',
+                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '3px solid var(--primary-color)' : '1px solid var(--border-color)',
                                 position: 'relative',
                                 overflow: 'visible'
                             }}
@@ -2635,7 +2636,7 @@ ${instruction}`;
                     '--wails-draggable': 'drag'
                 } as any}></div>
                 <h2 style={{
-                    background: 'linear-gradient(to right, #60a5fa, #a855f7, #ec4899)',
+                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
                     WebkitBackgroundClip: 'text',
                     WebkitTextFillColor: 'transparent',
                     marginBottom: '20px',
@@ -2646,7 +2647,7 @@ ${instruction}`;
                     <div style={{
                         width: '50%',
                         height: '100%',
-                        backgroundColor: '#60a5fa',
+                        backgroundColor: '#6366f1',
                         borderRadius: '2px',
                         animation: 'indeterminate 1.5s infinite linear'
                     }}></div>
@@ -2684,7 +2685,7 @@ ${instruction}`;
                         style={{
                             background: 'none',
                             border: 'none',
-                            color: '#60a5fa',
+                            color: '#6366f1',
                             fontSize: '0.8rem',
                             cursor: 'pointer',
                             textDecoration: 'underline'
@@ -2698,7 +2699,7 @@ ${instruction}`;
                             <button onClick={() => {
                                 setIsLoading(false);
                                 setIsManualCheck(false);
-                            }} className="btn-hide" style={{ borderColor: '#60a5fa', color: '#60a5fa', padding: '4px 12px' }}>
+                            }} className="btn-hide" style={{ borderColor: '#6366f1', color: '#6366f1', padding: '4px 12px' }}>
                                 {t("close")}
                             </button>
                         ) : (
@@ -2767,7 +2768,7 @@ ${instruction}`;
                     flexDirection: 'column',
                     alignItems: 'center',
                     padding: '10px 0',
-                    backgroundColor: '#f8fafc',
+                    backgroundColor: '#fafbff',
                     flexShrink: 0
                 }}>
                     <div className="sidebar-header" style={{ padding: '0 0 10px 0', justifyContent: 'center', width: '100%' }}>
@@ -2778,7 +2779,7 @@ ${instruction}`;
                         fontWeight: 'bold',
                         textAlign: 'center',
                         marginBottom: '15px',
-                        background: 'linear-gradient(to right, #60a5fa, #a855f7, #ec4899)',
+                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
                         WebkitBackgroundClip: 'text',
                         WebkitTextFillColor: 'transparent',
                         display: 'inline-block',
@@ -2846,7 +2847,7 @@ ${instruction}`;
                 </div>
 
                 {/* Right Tool List */}
-                <div style={{ flex: 1, padding: '10px', overflowY: 'auto', backgroundColor: '#fff', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                <div style={{ flex: 1, padding: '10px', overflowY: 'auto', backgroundColor: '#fafbff', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                     <div className="tool-grid" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '4px' }}>
                         <div className={`sidebar-item ${navTab === 'claude' ? 'active' : ''}`} onClick={() => switchTool('claude')}>
                             <span className="sidebar-icon">
@@ -2916,7 +2917,7 @@ ${instruction}`;
             <div className="main-container">
                 <div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                        <h2 style={{ margin: 0, fontSize: '1.1rem', color: '#60a5fa', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
+                        <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--text-color)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
                             <span>
                                 {navTab === 'message' ? t("message") :
                                     navTab === 'claude' ? 'Claude Code' :
@@ -3021,8 +3022,8 @@ ${instruction}`;
                                             marginLeft: '10px',
                                             padding: '2px 8px',
                                             fontSize: '0.8rem',
-                                            borderColor: '#60a5fa',
-                                            color: '#60a5fa',
+                                            borderColor: '#6366f1',
+                                            color: '#6366f1',
                                             '--wails-draggable': 'no-drag'
                                         } as any}
                                     >
@@ -3065,8 +3066,8 @@ ${instruction}`;
                                         style={{
                                             padding: '2px 8px',
                                             fontSize: '0.8rem',
-                                            borderColor: '#60a5fa',
-                                            color: '#60a5fa',
+                                            borderColor: '#6366f1',
+                                            color: '#6366f1',
                                             '--wails-draggable': 'no-drag'
                                         } as any}
                                     >
@@ -3288,7 +3289,7 @@ ${instruction}`;
                                                     position: 'absolute',
                                                     top: '-6px',
                                                     right: '-6px',
-                                                    backgroundColor: '#3b82f6',
+                                                    backgroundColor: '#6366f1',
                                                     color: '#fff',
                                                     padding: '3px 10px',
                                                     borderRadius: '4px',
@@ -3334,7 +3335,7 @@ ${instruction}`;
                                             <div style={{
                                                 fontSize: '0.85rem',
                                                 fontWeight: 600,
-                                                color: '#3b82f6',
+                                                color: '#6366f1',
                                                 marginBottom: '8px'
                                             }}>
                                                 {provider.name}
@@ -3368,7 +3369,7 @@ ${instruction}`;
                                                     border: selectedSkill === skill.name ? '2px solid var(--primary-color)' : '1px solid var(--border-color)',
                                                     borderRadius: '8px',
                                                     padding: '10px',
-                                                    backgroundColor: selectedSkill === skill.name ? '#f0f9ff' : '#fff',
+                                                    backgroundColor: selectedSkill === skill.name ? '#eef2ff' : '#fff',
                                                     display: 'flex',
                                                     flexDirection: 'column',
                                                     gap: '4px',
@@ -3383,7 +3384,7 @@ ${instruction}`;
                                                         position: 'absolute',
                                                         top: '-8px',
                                                         right: '4px',
-                                                        backgroundColor: '#3b82f6',
+                                                        backgroundColor: '#6366f1',
                                                         color: 'white',
                                                         fontSize: '10px',
                                                         padding: '1px 6px',
@@ -3736,7 +3737,7 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
                             <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                <h4 style={{ fontSize: '0.8rem', color: '#60a5fa', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '工具显示' : lang === 'zh-Hant' ? '工具顯示' : 'Tool Visibility'}</h4>
+                                <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '工具显示' : lang === 'zh-Hant' ? '工具顯示' : 'Tool Visibility'}</h4>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                         <input
@@ -3969,7 +3970,7 @@ ${instruction}`;
                             <img src={appIcon} alt="Logo" style={{ width: '64px', height: '64px', marginBottom: '15px' }} />
                             <h2 style={{
                                 margin: '0 0 4px 0',
-                                background: 'linear-gradient(to right, #60a5fa, #a855f7, #ec4899)',
+                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
                                 display: 'inline-block',
@@ -3978,7 +3979,7 @@ ${instruction}`;
                             <div style={{
                                 fontSize: '1rem',
                                 fontWeight: 'bold',
-                                background: 'linear-gradient(to right, #60a5fa, #a855f7, #ec4899)',
+                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
                                 marginBottom: '4px',
@@ -3990,7 +3991,7 @@ ${instruction}`;
                             <div style={{
                                 fontSize: '0.9rem',
                                 fontWeight: 'bold',
-                                background: 'linear-gradient(to right, #60a5fa, #a855f7, #ec4899)',
+                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
                                 marginBottom: '12px',
@@ -4048,7 +4049,7 @@ ${instruction}`;
                             <div style={{ display: 'flex', alignItems: 'center', gap: '20px', justifyContent: 'flex-start' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>{t("runnerStatus")}:</span>
-                                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#60a5fa', textTransform: 'capitalize' }}>{activeTool}</span>
+                                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--primary-color)', textTransform: 'capitalize' }}>{activeTool}</span>
                                     <span style={{ color: '#d1d5db' }}>|</span>
                                     <span
                                         style={{ fontSize: '0.85rem', fontWeight: 600, color: '#374151' }}
@@ -4136,7 +4137,7 @@ ${instruction}`;
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '15px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>{t("launchModeLabel")}:</span>
-                                    <div style={{ display: 'inline-flex', padding: '3px', borderRadius: '999px', border: '1px solid #dbeafe', background: '#eff6ff' }}>
+                                    <div style={{ display: 'inline-flex', padding: '3px', borderRadius: '999px', border: '1px solid #e0e7ff', background: '#eef2ff' }}>
                                         <button
                                             type="button"
                                             onClick={() => {
@@ -4148,7 +4149,7 @@ ${instruction}`;
                                                 border: 'none',
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
-                                                background: !config?.remote_enabled ? '#2563eb' : 'transparent',
+                                                background: !config?.remote_enabled ? '#6366f1' : 'transparent',
                                                 color: !config?.remote_enabled ? '#ffffff' : '#475569',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
@@ -4170,7 +4171,7 @@ ${instruction}`;
                                                 border: 'none',
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
-                                                background: config?.remote_enabled ? '#2563eb' : 'transparent',
+                                                background: config?.remote_enabled ? '#6366f1' : 'transparent',
                                                 color: config?.remote_enabled ? '#ffffff' : (isRemoteCapableActiveTool ? '#475569' : '#94a3b8'),
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
@@ -4578,7 +4579,7 @@ ${instruction}`;
                 <div className="modal-overlay" onClick={() => setShowInstallLog(false)}>
                     <div className="modal-content" style={{ width: '600px', maxWidth: '90vw' }} onClick={e => e.stopPropagation()}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                            <h3 style={{ margin: 0, color: '#60a5fa' }}>{t("installLogTitle")}</h3>
+                            <h3 style={{ margin: 0, color: '#6366f1' }}>{t("installLogTitle")}</h3>
                             <button className="modal-close" onClick={() => setShowInstallLog(false)}>&times;</button>
                         </div>
                         <div
@@ -4678,7 +4679,7 @@ ${instruction}`;
                                     width: '24px',
                                     height: '24px',
                                     border: '3px solid #e2e8f0',
-                                    borderTop: '3px solid #3b82f6',
+                                    borderTop: '3px solid #6366f1',
                                     borderRadius: '50%',
                                     animation: 'spin 0.8s linear infinite',
                                     flexShrink: 0
@@ -4756,9 +4757,9 @@ ${instruction}`;
                         <h3>{t("foundNewVersion")}</h3>
                         {updateResult.has_update ? (
                             <>
-                                <div style={{ backgroundColor: '#f0f9ff', padding: '12px', borderRadius: '6px', marginBottom: '15px', border: '1px solid #e0f2fe' }}>
+                                <div style={{ backgroundColor: '#eef2ff', padding: '12px', borderRadius: '6px', marginBottom: '15px', border: '1px solid #e0e7ff' }}>
                                     <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: '#1e40af', marginBottom: '12px' }}>v{APP_VERSION}</div>
+                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{APP_VERSION}</div>
                                     <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("latestVersion")}</div>
                                     <div style={{ fontSize: '1rem', fontWeight: '600', color: '#059669' }}>{updateResult.latest_version}</div>
                                 </div>
@@ -4771,7 +4772,7 @@ ${instruction}`;
                                                 <span>{downloadProgress}%</span>
                                             </div>
                                             <div style={{ width: '100%', height: '10px', backgroundColor: '#e2e8f0', borderRadius: '5px', overflow: 'hidden' }}>
-                                                <div style={{ width: `${downloadProgress}%`, height: '100%', backgroundColor: '#3b82f6', transition: 'width 0.2s ease' }}></div>
+                                                <div style={{ width: `${downloadProgress}%`, height: '100%', backgroundColor: '#6366f1', transition: 'width 0.2s ease' }}></div>
                                             </div>
                                             <button
                                                 className="btn-link"
@@ -4811,9 +4812,9 @@ ${instruction}`;
                                 </div>
                             </>
                         ) : (
-                            <div style={{ backgroundColor: '#f0f9ff', padding: '12px', borderRadius: '6px', border: '1px solid #e0f2fe' }}>
+                            <div style={{ backgroundColor: '#eef2ff', padding: '12px', borderRadius: '6px', border: '1px solid #e0e7ff' }}>
                                 <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                                <div style={{ fontSize: '1rem', fontWeight: '600', color: '#1e40af', marginBottom: '12px' }}>v{APP_VERSION}</div>
+                                <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{APP_VERSION}</div>
                                 <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("latestVersion")}</div>
                                 <div style={{ fontSize: '1rem', fontWeight: '600', color: '#059669', marginBottom: '12px' }}>{updateResult.latest_version}</div>
                                 <p style={{ margin: '0', fontSize: '0.9rem', color: '#059669', fontWeight: '500' }}>✓ {t("isLatestVersion")}</p>
@@ -4840,7 +4841,7 @@ ${instruction}`;
                 <div className="modal-overlay">
                     <div className="modal-content" style={{ width: '529px', textAlign: 'left' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                            <h3 style={{ margin: 0, color: '#60a5fa' }}>{t("modelSettings")}</h3>
+                            <h3 style={{ margin: 0, color: '#6366f1' }}>{t("modelSettings")}</h3>
                             <button className="modal-close" onClick={() => setShowModelSettings(false)}>&times;</button>
                         </div>
 
@@ -5149,7 +5150,7 @@ ${instruction}`;
                                 return canAddMore && (
                                     <button
                                         className="btn-hide"
-                                        style={{ flex: 0.5, backgroundColor: '#93c5fd', color: '#1e40af', border: '1px solid #93c5fd' }}
+                                        style={{ flex: 0.5, backgroundColor: '#93c5fd', color: '#4338ca', border: '1px solid #93c5fd' }}
                                         onClick={() => {
                                             const customCount = customModels.length;
                                             if (customCount >= 6) {
@@ -5223,7 +5224,7 @@ ${instruction}`;
                                     onClick={() => setProviderFilter(f)}
                                     style={{
                                         padding: '5px 16px', fontSize: '0.8rem', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 600,
-                                        backgroundColor: providerFilter === f ? '#3b82f6' : '#f1f5f9',
+                                        backgroundColor: providerFilter === f ? '#6366f1' : '#f1f5f9',
                                         color: providerFilter === f ? '#fff' : '#64748b',
                                         transition: 'all 0.2s'
                                     }}
@@ -5250,14 +5251,14 @@ ${instruction}`;
                                             onMouseLeave={() => setHoveredProvider(null)}
                                             style={{
                                                 padding: '10px 8px', borderRadius: '10px', cursor: 'pointer', textAlign: 'center',
-                                                border: isSelected ? '2px solid #3b82f6' : '1.5px solid #e8ecf1',
-                                                backgroundColor: isSelected ? '#eff6ff' : '#fff',
+                                                border: isSelected ? '2px solid #6366f1' : '1.5px solid #e8ecf1',
+                                                backgroundColor: isSelected ? '#eef2ff' : '#fff',
                                                 transition: 'all 0.15s ease',
                                                 boxShadow: isSelected ? '0 2px 8px rgba(59,130,246,0.15)' : '0 1px 3px rgba(0,0,0,0.04)',
                                                 position: 'relative'
                                             }}
                                         >
-                                            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: isSelected ? '#2563eb' : '#334155', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px' }}>
+                                            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: isSelected ? '#6366f1' : '#334155', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px' }}>
                                                 <span title={provider.region === 'china' ? (lang === 'en' ? 'China' : '国内') : (lang === 'en' ? 'Global' : '国外')} style={{ fontSize: '0.7rem', flexShrink: 0 }}>{provider.region === 'china' ? '🇨🇳' : '🌐'}</span>
                                                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{provider.name}</span>
                                             </div>
@@ -5322,7 +5323,7 @@ ${instruction}`;
                         boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
                     }}>
                         <div style={{
-                            background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)',
+                            background: 'linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)',
                             padding: '25px 20px',
                             color: '#1e293b',
                             position: 'relative',
@@ -5336,7 +5337,7 @@ ${instruction}`;
                             <div style={{
                                 fontSize: '2.5rem',
                                 marginBottom: '10px',
-                                background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
+                                background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
                                 fontWeight: '900',
@@ -5346,7 +5347,7 @@ ${instruction}`;
                             <h3 style={{ margin: 0, color: '#0f172a', fontSize: '1.2rem', fontWeight: 'bold' }}>{t("startupTitle")}</h3>
                             <p style={{
                                 margin: '6px 0 0 0',
-                                background: 'linear-gradient(to right, #2563eb, #9333ea, #db2777)',
+                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
                                 fontSize: '0.95rem',
@@ -5356,7 +5357,7 @@ ${instruction}`;
                             </p>
                             <p style={{
                                 margin: '4px 0 0 0',
-                                background: 'linear-gradient(to right, #2563eb, #9333ea, #db2777)',
+                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
                                 fontSize: '0.85rem',
@@ -5379,9 +5380,9 @@ ${instruction}`;
                                         alignItems: 'center',
                                         justifyContent: 'center',
                                         gap: '8px',
-                                        background: 'linear-gradient(135deg, #eff6ff, #dbeafe)',
-                                        color: '#1e40af',
-                                        border: '1px solid #bfdbfe',
+                                        background: 'linear-gradient(135deg, #eef2ff, #e0e7ff)',
+                                        color: '#4338ca',
+                                        border: '1px solid #c7d2fe',
                                         boxShadow: '0 2px 4px rgba(59, 130, 246, 0.1)',
                                         cursor: 'pointer',
                                         transition: 'all 0.2s'
@@ -5461,7 +5462,7 @@ ${instruction}`;
             {showThanksModal && (
                 <div className="modal-overlay">
                     <div className="modal-content elegant-scrollbar" style={{ maxWidth: '600px', maxHeight: '80vh', overflowY: 'auto' }}>
-                        <h3 style={{ marginTop: 0, marginBottom: '15px', color: '#60a5fa' }}>{t("thanks")}</h3>
+                        <h3 style={{ marginTop: 0, marginBottom: '15px', color: '#6366f1' }}>{t("thanks")}</h3>
                         <div className="markdown-content" style={{
                             backgroundColor: '#fff',
                             padding: '10px',
@@ -5630,14 +5631,14 @@ ${instruction}`;
                 <div className="modal-overlay">
                     <div className="modal-content" style={{ width: '500px', textAlign: 'left' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                            <h3 style={{ margin: 0, color: '#60a5fa' }}>
+                            <h3 style={{ margin: 0, color: '#6366f1' }}>
                                 {proxyEditMode === 'global' ? t("proxySettings") + " - " + (lang === 'zh-Hans' ? '全局默认' : lang === 'zh-Hant' ? '全局預設' : 'Global Default') : t("proxySettings")}
                             </h3>
                             <button className="modal-close" onClick={() => setShowProxySettings(false)}>&times;</button>
                         </div>
 
                         {proxyEditMode === 'project' && config?.default_proxy_host && (
-                            <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#f0f9ff', borderRadius: '6px', fontSize: '0.85rem' }}>
+                            <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#eef2ff', borderRadius: '6px', fontSize: '0.85rem' }}>
                                 <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
                                     <input
                                         type="checkbox"
@@ -5969,7 +5970,7 @@ ${instruction}`;
                                 <button 
                                     className="btn-link" 
                                     style={{ 
-                                        color: '#3b82f6', 
+                                        color: '#6366f1', 
                                         fontSize: '0.85rem', 
                                         padding: '4px 15px', 
                                         display: 'flex', 
@@ -5996,7 +5997,7 @@ ${instruction}`;
                                         <div style={{
                                             width: '12px',
                                             height: '12px',
-                                            border: '2px solid #3b82f6',
+                                            border: '2px solid #6366f1',
                                             borderTopColor: 'transparent',
                                             borderRadius: '50%',
                                             animation: 'spin 1s linear infinite'

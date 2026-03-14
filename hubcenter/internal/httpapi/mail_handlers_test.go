@@ -25,6 +25,10 @@ func (m *testMailer) Send(ctx context.Context, to []string, subject string, body
 	return nil
 }
 
+func (m *testMailer) SendHubRegistrationConfirmation(ctx context.Context, to string, confirmURL string, hubName string) error {
+	return nil
+}
+
 func TestAdminSendTestMailHandlerRequiresMailer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/mail/test", bytes.NewBufferString(`{"email":"admin@example.com"}`))
 	req.Header.Set("Content-Type", "application/json")

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	goruntime "runtime"
 	"strings"
 )
 
@@ -76,11 +75,16 @@ func (a *App) ActivateRemote(email string) (RemoteActivationResult, error) {
 		cfg.RemoteHubURL = hubURL
 	}
 
-	body := map[string]string{
+	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
+	body := map[string]any{
 		"email":        email,
-		"machine_name": "CodeClaw Desktop",
-		"platform":     goruntime.GOOS,
+		"machine_name": profile.Name,
+		"platform":     profile.Platform,
+		"hostname":     profile.Hostname,
+		"arch":         profile.Arch,
+		"app_version":  profile.AppVersion,
 	}
+	body["heartbeat_interval_sec"] = profile.HeartbeatSec
 	data, err := json.Marshal(body)
 	if err != nil {
 		return RemoteActivationResult{}, err
@@ -128,6 +132,19 @@ func (a *App) ActivateRemote(email string) (RemoteActivationResult, error) {
 	a.emitRemoteStateChanged()
 
 	return result, nil
+}
+
+func normalizedRemotePlatform() string {
+	switch remotePlatformGOOS() {
+	case "windows":
+		return "windows"
+	case "darwin":
+		return "mac"
+	case "linux":
+		return "linux"
+	default:
+		return "linux"
+	}
 }
 
 func (a *App) GetRemoteActivationStatus() RemoteActivationStatus {
@@ -243,7 +260,7 @@ func (a *App) resolveRemoteHubCenter(centerURL string, email string, cfg AppConf
 		centerURL = strings.TrimSpace(cfg.RemoteHubCenterURL)
 	}
 	if centerURL == "" {
-		centerURL = "http://127.0.0.1:9388"
+		centerURL = defaultRemoteHubCenterURL
 	}
 
 	payload := map[string]string{

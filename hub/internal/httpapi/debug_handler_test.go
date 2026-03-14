@@ -17,14 +17,21 @@ func TestDebugListMachinesHandlerReturnsMachinesForUser(t *testing.T) {
 	_, enroll := issueViewerToken(t, identity, "debug-machines@example.com")
 
 	deviceSvc.BindDesktop(enroll.MachineID, &ws.ConnContext{UserID: enroll.UserID, Role: "machine"})
-	if err := deviceSvc.MarkOnline(context.Background(), enroll.MachineID); err != nil {
+	if err := deviceSvc.MarkOnline(context.Background(), enroll.MachineID, ws.MachineHelloPayload{
+		Name:                 "office-pc",
+		Platform:             "windows",
+		Hostname:             "office-host",
+		Arch:                 "amd64",
+		AppVersion:           "1.0.0",
+		HeartbeatIntervalSec: 60,
+	}); err != nil {
 		t.Fatalf("MarkOnline: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/debug/machines?user_id="+url.QueryEscape(enroll.UserID), nil)
 	rr := httptest.NewRecorder()
 
-	DebugListMachinesHandler(deviceSvc).ServeHTTP(rr, req)
+	DebugListMachinesHandler(deviceSvc, identity.UsersRepo()).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body=%s", rr.Code, rr.Body.String())
@@ -33,6 +40,12 @@ func TestDebugListMachinesHandlerReturnsMachinesForUser(t *testing.T) {
 	body := rr.Body.String()
 	if !strings.Contains(body, enroll.MachineID) || !strings.Contains(body, "office-pc") {
 		t.Fatalf("unexpected body=%s", body)
+	}
+	if !strings.Contains(body, `"user_email":"debug-machines@example.com"`) {
+		t.Fatalf("expected bound email in body=%s", body)
+	}
+	if !strings.Contains(body, `"hostname":"office-host"`) || !strings.Contains(body, `"arch":"amd64"`) {
+		t.Fatalf("expected machine metadata in body=%s", body)
 	}
 	if !strings.Contains(body, `"status":"online"`) {
 		t.Fatalf("expected online status in body=%s", body)
@@ -46,7 +59,7 @@ func TestDebugListMachinesHandlerFallsBackToOnlineRuntimeSnapshot(t *testing.T) 
 	req := httptest.NewRequest(http.MethodGet, "/api/debug/machines", nil)
 	rr := httptest.NewRecorder()
 
-	DebugListMachinesHandler(deviceSvc).ServeHTTP(rr, req)
+	DebugListMachinesHandler(deviceSvc, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body=%s", rr.Code, rr.Body.String())

@@ -4,14 +4,18 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/smtp"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 )
 
 const systemKeyMailConfig = "mail_config"
+const defaultSendTimeout = 12 * time.Second
 
 type Mailer interface {
 	Send(ctx context.Context, to []string, subject string, body string) error
@@ -33,6 +37,8 @@ type ConfigState struct {
 	Password   string `json:"smtp_password"`
 	FromName   string `json:"from_name"`
 	FromEmail  string `json:"from_email"`
+	Tested     bool   `json:"tested"`
+	TestedAt   int64  `json:"tested_at"`
 }
 
 type Service struct {
@@ -81,6 +87,25 @@ func (s *Service) CurrentConfig(ctx context.Context) (ConfigState, error) {
 
 func (s *Service) SaveConfig(ctx context.Context, cfg ConfigState) (ConfigState, error) {
 	cfg = normalizeConfig(cfg)
+	cfg.Tested = false
+	cfg.TestedAt = 0
+	if s == nil || s.settings == nil {
+		s.fallback = cfg
+		return cfg, nil
+	}
+	if err := s.settings.Set(ctx, systemKeyMailConfig, mustJSON(cfg)); err != nil {
+		return ConfigState{}, err
+	}
+	return cfg, nil
+}
+
+func (s *Service) MarkTestSuccess(ctx context.Context) (ConfigState, error) {
+	cfg, err := s.CurrentConfig(ctx)
+	if err != nil {
+		return ConfigState{}, err
+	}
+	cfg.Tested = true
+	cfg.TestedAt = time.Now().Unix()
 	if s == nil || s.settings == nil {
 		s.fallback = cfg
 		return cfg, nil
@@ -104,6 +129,11 @@ func (s *Service) Send(ctx context.Context, to []string, subject string, body st
 	if len(to) == 0 {
 		return fmt.Errorf("mail recipient is required")
 	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultSendTimeout)
+		defer cancel()
+	}
 	cfg, err := s.CurrentConfig(ctx)
 	if err != nil {
 		return err
@@ -126,9 +156,9 @@ func (s *Service) Send(ctx context.Context, to []string, subject string, body st
 	message := buildMessage(cfg.FromName, fromEmail, to, subject, body)
 	addr := fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort)
 	if useImplicitTLS(cfg) {
-		return sendWithImplicitTLS(addr, cfg, fromEmail, to, message)
+		return sendWithImplicitTLS(ctx, addr, cfg, fromEmail, to, message)
 	}
-	return sendWithSMTP(addr, cfg, fromEmail, to, message)
+	return sendWithSMTP(ctx, addr, cfg, fromEmail, to, message)
 }
 
 func buildMessage(fromName, fromEmail string, to []string, subject string, body string) []byte {
@@ -143,62 +173,97 @@ func buildMessage(fromName, fromEmail string, to []string, subject string, body 
 	return []byte(strings.Join(headers, "\r\n") + body)
 }
 
-func sendWithSMTP(addr string, cfg ConfigState, fromEmail string, to []string, message []byte) error {
-	var auth smtp.Auth
-	if cfg.Username != "" {
-		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.SMTPHost)
+func sendWithSMTP(ctx context.Context, addr string, cfg ConfigState, fromEmail string, to []string, message []byte) error {
+	dialer := &net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return wrapMailError(err)
 	}
-	return smtp.SendMail(addr, auth, fromEmail, to, message)
+	return sendWithConn(ctx, conn, cfg, fromEmail, to, message, false)
 }
 
-func sendWithImplicitTLS(addr string, cfg ConfigState, fromEmail string, to []string, message []byte) error {
-	conn, err := tls.Dial("tcp", addr, &tls.Config{
+func sendWithImplicitTLS(ctx context.Context, addr string, cfg ConfigState, fromEmail string, to []string, message []byte) error {
+	dialer := &net.Dialer{}
+	rawConn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return wrapMailError(err)
+	}
+	tlsConn := tls.Client(rawConn, &tls.Config{
 		ServerName:         cfg.SMTPHost,
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: false,
 	})
-	if err != nil {
-		return err
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = tlsConn.SetDeadline(deadline)
+	}
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = tlsConn.Close()
+		return wrapMailError(err)
+	}
+	return sendWithConn(ctx, tlsConn, cfg, fromEmail, to, message, true)
+}
+
+func sendWithConn(ctx context.Context, conn net.Conn, cfg ConfigState, fromEmail string, to []string, message []byte, implicitTLS bool) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
 	}
 	defer conn.Close()
-
 	client, err := smtp.NewClient(conn, cfg.SMTPHost)
 	if err != nil {
-		return err
+		return wrapMailError(err)
 	}
 	defer client.Close()
+
+	if !implicitTLS && shouldStartTLS(cfg) {
+		ok, _ := client.Extension("STARTTLS")
+		if !ok {
+			if cfg.Encryption == "starttls" {
+				return fmt.Errorf("smtp server does not support STARTTLS")
+			}
+		} else if err := client.StartTLS(&tls.Config{
+			ServerName:         cfg.SMTPHost,
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: false,
+		}); err != nil {
+			return wrapMailError(err)
+		}
+	}
 
 	if cfg.Username != "" {
 		if ok, _ := client.Extension("AUTH"); ok {
 			if err := client.Auth(smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.SMTPHost)); err != nil {
-				return err
+				return wrapMailError(err)
 			}
 		}
 	}
 	if err := client.Mail(fromEmail); err != nil {
-		return err
+		return wrapMailError(err)
 	}
 	for _, recipient := range to {
 		if err := client.Rcpt(recipient); err != nil {
-			return err
+			return wrapMailError(err)
 		}
 	}
 	writer, err := client.Data()
 	if err != nil {
-		return err
+		return wrapMailError(err)
 	}
 	if _, err := writer.Write(message); err != nil {
 		_ = writer.Close()
-		return err
+		return wrapMailError(err)
 	}
 	if err := writer.Close(); err != nil {
-		return err
+		return wrapMailError(err)
 	}
-	return client.Quit()
+	return wrapMailError(client.Quit())
 }
 
 func useImplicitTLS(cfg ConfigState) bool {
 	return cfg.Encryption == "ssl" || (cfg.Encryption == "auto" && cfg.SMTPPort == 465)
+}
+
+func shouldStartTLS(cfg ConfigState) bool {
+	return cfg.Encryption == "starttls" || (cfg.Encryption == "auto" && cfg.SMTPPort != 465)
 }
 
 func normalizeConfig(cfg ConfigState) ConfigState {
@@ -244,6 +309,20 @@ func formatFrom(name, email string) string {
 		return email
 	}
 	return fmt.Sprintf("%s <%s>", name, email)
+}
+
+func wrapMailError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("mail delivery timed out: %w", err)
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("mail delivery timed out: %w", err)
+	}
+	return err
 }
 
 func mustJSON(v any) string {

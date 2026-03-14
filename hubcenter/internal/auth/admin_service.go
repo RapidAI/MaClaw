@@ -75,7 +75,7 @@ func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password
 	now := time.Now()
 	email = normalizeEmail(email)
 	if email == "" {
-		email = synthesizeAdminEmail(username)
+		return errors.New("admin email is required")
 	}
 	admin := &store.AdminUser{
 		ID:           newID("adm"),
@@ -91,6 +91,9 @@ func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password
 		return err
 	}
 	if err := s.settings.Set(ctx, "admin_initialized", mustJSON(map[string]bool{"value": true})); err != nil {
+		return err
+	}
+	if err := s.settings.Set(ctx, "admin_email", mustJSON(map[string]string{"value": admin.Email})); err != nil {
 		return err
 	}
 
@@ -131,6 +134,9 @@ func (s *AdminService) ResetAdminCredentials(ctx context.Context, username, pass
 		return err
 	}
 	if err := s.settings.Set(ctx, "admin_initialized", mustJSON(map[string]bool{"value": true})); err != nil {
+		return err
+	}
+	if err := s.settings.Set(ctx, "admin_email", mustJSON(map[string]string{"value": admin.Email})); err != nil {
 		return err
 	}
 
@@ -233,6 +239,51 @@ func (s *AdminService) ChangePassword(ctx context.Context, username, currentPass
 			AdminUserID: admin.ID,
 			Action:      "admin.change_password",
 			PayloadJSON: mustJSON(map[string]string{"username": admin.Username}),
+			CreatedAt:   now,
+		})
+	}
+	token, err := s.issueToken(ctx, admin)
+	if err != nil {
+		return "", nil, err
+	}
+	return token, admin, nil
+}
+
+func (s *AdminService) UpdateEmail(ctx context.Context, username, email string) (string, *store.AdminUser, error) {
+	admin, err := s.admins.GetByUsername(ctx, strings.TrimSpace(username))
+	if err != nil {
+		return "", nil, err
+	}
+	if admin == nil || admin.Status != "active" {
+		return "", nil, ErrInvalidAdminCredentials
+	}
+
+	email = normalizeEmail(email)
+	if email == "" {
+		return "", nil, errors.New("admin email is required")
+	}
+
+	now := time.Now()
+	if err := s.admins.UpdateEmail(ctx, admin.Username, email, now); err != nil {
+		return "", nil, err
+	}
+	if err := s.settings.Set(ctx, "admin_email", mustJSON(map[string]string{"value": email})); err != nil {
+		return "", nil, err
+	}
+
+	admin, err = s.admins.GetByUsername(ctx, admin.Username)
+	if err != nil {
+		return "", nil, err
+	}
+	if admin == nil {
+		return "", nil, ErrInvalidAdminCredentials
+	}
+	if s.audit != nil {
+		_ = s.audit.Create(ctx, &store.AdminAuditLog{
+			ID:          newID("aa"),
+			AdminUserID: admin.ID,
+			Action:      "admin.update_email",
+			PayloadJSON: mustJSON(map[string]string{"username": admin.Username, "email": admin.Email}),
 			CreatedAt:   now,
 		})
 	}
@@ -355,7 +406,7 @@ func (s *AdminService) tokenSecret(ctx context.Context) (string, error) {
 }
 
 func adminTokenSignature(admin *store.AdminUser) string {
-	sum := sha256.Sum256([]byte(admin.PasswordHash + "|" + admin.Status))
+	sum := sha256.Sum256([]byte(admin.PasswordHash + "|" + admin.Status + "|" + normalizeEmail(admin.Email)))
 	return hex.EncodeToString(sum[:])
 }
 

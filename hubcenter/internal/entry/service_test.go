@@ -31,8 +31,7 @@ func newTestStore(t *testing.T) *store.Store {
 	}
 
 	t.Cleanup(func() {
-		_ = provider.Read.Close()
-		_ = provider.Write.Close()
+		_ = provider.Close()
 	})
 
 	return sqlite.NewStore(provider)

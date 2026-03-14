@@ -98,6 +98,10 @@ export function StartRemoteSession(arg1, arg2, arg3) {
   return window['go']['main']['App']['StartRemoteSession'](arg1, arg2, arg3);
 }
 
+export function StartRemoteHandoffSession(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StartRemoteHandoffSession'](arg1, arg2, arg3);
+}
+
 export function GetSkillsDir(arg1) {
   return window['go']['main']['App']['GetSkillsDir'](arg1);
 }

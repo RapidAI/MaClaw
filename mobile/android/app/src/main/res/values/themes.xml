@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.RapidAIHubShell" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/rapidai_shell_primary</item>
+        <item name="colorOnPrimary">@color/rapidai_shell_on_primary</item>
+        <item name="android:statusBarColor">@color/rapidai_shell_primary</item>
+        <item name="android:navigationBarColor">@color/rapidai_shell_background</item>
+        <item name="android:windowBackground">@color/rapidai_shell_background</item>
+        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="p">shortEdges</item>
+    </style>
+</resources>

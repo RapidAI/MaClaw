@@ -27,6 +27,14 @@ func main() {
 			code := runRemoteSmoke(app, args[2:])
 			os.Exit(code)
 		}
+		if args[1] == "generate-mobile-pwa-shell" {
+			code := runMobilePWAShellGenerator(app, args[2:])
+			os.Exit(code)
+		}
+		if args[1] == "generate-android-pwa-shell" {
+			code := runAndroidPWAShellGenerator(app, args[2:])
+			os.Exit(code)
+		}
 		for _, arg := range args[1:] {
 			if arg == "init" {
 				app.IsInitMode = true
@@ -40,19 +48,20 @@ func main() {
 
 	// Create application with options
 	appOptions := &options.App{
-		Title:     "CodeClaw",
-		Frameless: true,
-		Width:     510,
-		Height:    259,
-		OnStartup: app.startup,
+		Title:      "CodeClaw",
+		Frameless:  true,
+		Width:      510,
+		Height:     259,
+		OnStartup:  app.startup,
 		OnDomReady: app.domReady,
+		OnShutdown: app.shutdown,
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId: "codeclaw-lock",
 			OnSecondInstanceLaunch: func(secondInstanceData options.SecondInstanceData) {
 				if app.ctx == nil {
 					return
 				}
-				
+
 				// Check if init argument was passed to the second instance
 				for _, arg := range secondInstanceData.Args {
 					if arg == "init" {

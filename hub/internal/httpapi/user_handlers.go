@@ -21,6 +21,17 @@ type SessionControlRequest struct {
 	Text      string `json:"text,omitempty"`
 }
 
+type SessionStartRequest struct {
+	MachineID   string `json:"machine_id"`
+	Tool        string `json:"tool"`
+	ProjectID   string `json:"project_id,omitempty"`
+	ProjectPath string `json:"project_path,omitempty"`
+	PythonEnv   string `json:"python_env,omitempty"`
+	UseProxy    *bool  `json:"use_proxy,omitempty"`
+	YoloMode    *bool  `json:"yolo_mode,omitempty"`
+	AdminMode   *bool  `json:"admin_mode,omitempty"`
+}
+
 type viewerMachineDTO struct {
 	ID         string `json:"id"`
 	MachineID  string `json:"machine_id"`
@@ -34,15 +45,15 @@ type viewerMachineDTO struct {
 }
 
 type viewerSessionDTO struct {
-	ID           string                    `json:"id"`
-	SessionID    string                    `json:"session_id"`
-	MachineID    string                    `json:"machine_id"`
-	UserID       string                    `json:"user_id,omitempty"`
-	Summary      session.SessionSummary    `json:"summary"`
-	Preview      session.SessionPreview    `json:"preview"`
-	RecentEvents []session.ImportantEvent  `json:"recent_events"`
-	HostOnline   bool                      `json:"host_online"`
-	UpdatedAt    int64                     `json:"updated_at"`
+	ID           string                   `json:"id"`
+	SessionID    string                   `json:"session_id"`
+	MachineID    string                   `json:"machine_id"`
+	UserID       string                   `json:"user_id,omitempty"`
+	Summary      session.SessionSummary   `json:"summary"`
+	Preview      session.SessionPreview   `json:"preview"`
+	RecentEvents []session.ImportantEvent `json:"recent_events"`
+	HostOnline   bool                     `json:"host_online"`
+	UpdatedAt    int64                    `json:"updated_at"`
 }
 
 func authenticateViewerRequest(r *http.Request, identity *auth.IdentityService) (*auth.ViewerPrincipal, error) {
@@ -177,6 +188,65 @@ func SessionInterruptHandler(identity *auth.IdentityService, sessionSvc *session
 
 func SessionKillHandler(identity *auth.IdentityService, sessionSvc *session.Service, devices machineCommandSender) http.HandlerFunc {
 	return sessionControlHandler(identity, sessionSvc, devices, "session.kill")
+}
+
+func SessionStartHandler(identity *auth.IdentityService, devices machineCommandSender) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+
+		var req SessionStartRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		req.MachineID = strings.TrimSpace(req.MachineID)
+		req.Tool = strings.TrimSpace(req.Tool)
+		req.ProjectID = strings.TrimSpace(req.ProjectID)
+		req.ProjectPath = strings.TrimSpace(req.ProjectPath)
+		req.PythonEnv = strings.TrimSpace(req.PythonEnv)
+		if req.MachineID == "" || req.Tool == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "machine_id and tool are required")
+			return
+		}
+
+		payload := map[string]any{
+			"tool":         req.Tool,
+			"project_id":   req.ProjectID,
+			"project_path": req.ProjectPath,
+			"python_env":   req.PythonEnv,
+		}
+		if req.UseProxy != nil {
+			payload["use_proxy"] = *req.UseProxy
+		}
+		if req.YoloMode != nil {
+			payload["yolo_mode"] = *req.YoloMode
+		}
+		if req.AdminMode != nil {
+			payload["admin_mode"] = *req.AdminMode
+		}
+
+		msg := map[string]any{
+			"type":       "session.start",
+			"request_id": "http-start-" + req.MachineID + "-" + req.Tool,
+			"ts":         time.Now().Unix(),
+			"machine_id": req.MachineID,
+			"payload":    payload,
+		}
+		if err := devices.SendToMachine(req.MachineID, msg); err != nil {
+			writeError(w, http.StatusConflict, "MACHINE_OFFLINE", err.Error())
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         true,
+			"machine_id": req.MachineID,
+			"tool":       req.Tool,
+		})
+	}
 }
 
 func sessionControlHandler(identity *auth.IdentityService, sessionSvc *session.Service, devices machineCommandSender, msgType string) http.HandlerFunc {

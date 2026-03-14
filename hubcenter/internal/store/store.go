@@ -74,6 +74,7 @@ type AdminUserRepository interface {
 	GetByUsername(ctx context.Context, username string) (*AdminUser, error)
 	Count(ctx context.Context) (int, error)
 	UpdatePassword(ctx context.Context, username, passwordHash string, updatedAt time.Time) error
+	UpdateEmail(ctx context.Context, username, email string, updatedAt time.Time) error
 	DeleteAll(ctx context.Context) error
 }
 

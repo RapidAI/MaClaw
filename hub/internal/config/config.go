@@ -16,6 +16,9 @@ type Config struct {
 		MaxReadIdleConns  int    `yaml:"max_read_idle_conns"`
 		MaxWriteOpenConns int    `yaml:"max_write_open_conns"`
 		MaxWriteIdleConns int    `yaml:"max_write_idle_conns"`
+		BatchFlushMS      int    `yaml:"batch_flush_ms"`
+		BatchMaxSize      int    `yaml:"batch_max_size"`
+		BatchQueueSize    int    `yaml:"batch_queue_size"`
 	} `yaml:"database"`
 
 	Identity struct {
@@ -72,6 +75,9 @@ func Default() *Config {
 	cfg.Database.MaxReadIdleConns = 4
 	cfg.Database.MaxWriteOpenConns = 1
 	cfg.Database.MaxWriteIdleConns = 1
+	cfg.Database.BatchFlushMS = 250
+	cfg.Database.BatchMaxSize = 64
+	cfg.Database.BatchQueueSize = 1024
 
 	cfg.Identity.EnrollmentMode = "open"
 	cfg.Identity.AllowSelfEnroll = true

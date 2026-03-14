@@ -36,6 +36,8 @@ type App struct {
 	toolInstallLocks  map[string]bool // Track which tools are currently being installed
 	toolLockMutex     sync.Mutex      // Mutex for toolInstallLocks map
 	remoteSessions    *RemoteSessionManager
+	powerStateMutex   sync.Mutex
+	powerStateProcess *exec.Cmd
 }
 
 var OnConfigChanged func(AppConfig)
@@ -114,6 +116,7 @@ type AppConfig struct {
 	ShowKilo             bool            `json:"show_kilo"`
 	ShowKode             bool            `json:"show_kode"`
 	Language             string          `json:"language"`
+	PowerOptimization    bool            `json:"power_optimization"`
 	CheckUpdateOnStartup bool            `json:"check_update_on_startup"`
 	// Environment check settings
 	PauseEnvCheck    bool   `json:"pause_env_check"`     // Whether to skip environment checks
@@ -135,6 +138,7 @@ type AppConfig struct {
 	RemoteUserID       string `json:"remote_user_id"`
 	RemoteMachineID    string `json:"remote_machine_id"`
 	RemoteMachineToken string `json:"remote_machine_token"`
+	RemoteHeartbeatSec int    `json:"remote_heartbeat_sec"`
 }
 type Skill struct {
 	Name        string `json:"name"`
@@ -204,7 +208,10 @@ func (a *App) startup(ctx context.Context) {
 			a.remoteSessions.SetHubClient(hubClient)
 			_ = hubClient.Connect()
 		}
+		a.refreshPowerOptimizationStateFromConfig(config)
+		return
 	}
+	a.setPowerOptimizationEnabled(false)
 }
 
 // domReady is called after the frontend Dom has been loaded
@@ -212,6 +219,30 @@ func (a *App) domReady(ctx context.Context) {
 	// Trigger environment check on startup
 	// IsInitMode and PauseEnvCheck logic is handled inside CheckEnvironment
 	a.CheckEnvironment(false)
+}
+
+func (a *App) shutdown(ctx context.Context) {
+	a.platformShutdown()
+}
+
+func (a *App) refreshPowerOptimizationStateFromConfig(config AppConfig) {
+	a.setPowerOptimizationEnabled(config.PowerOptimization && a.hasActiveRemoteTasks())
+}
+
+func (a *App) refreshPowerOptimizationState() {
+	config, err := a.LoadConfig()
+	if err != nil {
+		a.setPowerOptimizationEnabled(false)
+		return
+	}
+	a.refreshPowerOptimizationStateFromConfig(config)
+}
+
+func (a *App) hasActiveRemoteTasks() bool {
+	if a.remoteSessions == nil {
+		return false
+	}
+	return a.remoteSessions.HasActiveSessions()
 }
 
 func (a *App) resolveProjectProxyURL(config AppConfig, projectDir string) string {
@@ -589,18 +620,19 @@ func (a *App) buildRemoteLaunchSpec(
 	}
 
 	return LaunchSpec{
-		Tool:        tool,
-		ProjectPath: projectDir,
-		ModelName:   selectedModel.ModelName,
-		ModelID:     selectedModel.ModelId,
-		BinaryName:  meta.BinaryName,
-		Title:       title,
-		YoloMode:    yoloMode,
-		AdminMode:   adminMode,
-		PythonEnv:   pythonEnv,
-		UseProxy:    useProxy,
-		TeamMode:    teamMode,
-		Env:         env,
+		Tool:         tool,
+		ProjectPath:  projectDir,
+		ModelName:    selectedModel.ModelName,
+		ModelID:      selectedModel.ModelId,
+		BinaryName:   meta.BinaryName,
+		Title:        title,
+		LaunchSource: RemoteLaunchSourceDesktop,
+		YoloMode:     yoloMode,
+		AdminMode:    adminMode,
+		PythonEnv:    pythonEnv,
+		UseProxy:     useProxy,
+		TeamMode:     teamMode,
+		Env:          env,
 	}, nil
 }
 
@@ -632,6 +664,7 @@ func (a *App) startConfigWatcher() {
 					// Let's assume for now this is for external edits.
 					config, err := a.LoadConfig()
 					if err == nil {
+						a.refreshPowerOptimizationStateFromConfig(config)
 						a.emitEvent("config-updated", config)
 					}
 				}
@@ -2427,14 +2460,16 @@ func (a *App) LoadConfig() (AppConfig, error) {
 						ShowQoder:          true,
 						ShowIFlow:          true,
 						ShowKilo:           true,
+						PowerOptimization:  true,
 						RemoteEnabled:      false,
 						RemoteHubURL:       "",
-						RemoteHubCenterURL: "http://127.0.0.1:9388",
+						RemoteHubCenterURL: defaultRemoteHubCenterURL,
 						RemoteEmail:        "",
 						RemoteSN:           "",
 						RemoteUserID:       "",
 						RemoteMachineID:    "",
 						RemoteMachineToken: "",
+						RemoteHeartbeatSec: 60,
 					}
 					a.SaveConfig(config)
 					// Optional: os.Remove(oldPath)
@@ -2498,16 +2533,18 @@ func (a *App) LoadConfig() (AppConfig, error) {
 			ShowIFlow:          true,
 			ShowKilo:           true,
 			ShowKode:           true,
+			PowerOptimization:  true,
 			EnvCheckInterval:   7,    // Default to 7 days
 			UseWindowsTerminal: true, // Default to true, will only work if Windows Terminal is installed
 			RemoteEnabled:      false,
 			RemoteHubURL:       "",
-			RemoteHubCenterURL: "http://127.0.0.1:9388",
+			RemoteHubCenterURL: defaultRemoteHubCenterURL,
 			RemoteEmail:        "",
 			RemoteSN:           "",
 			RemoteUserID:       "",
 			RemoteMachineID:    "",
 			RemoteMachineToken: "",
+			RemoteHeartbeatSec: 60,
 		}
 		err = a.SaveConfig(defaultConfig)
 		return defaultConfig, err
@@ -2521,7 +2558,9 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		ShowIFlow:          true,
 		ShowKilo:           true,
 		ShowKode:           true,
-		RemoteHubCenterURL: "http://127.0.0.1:9388",
+		PowerOptimization:  true,
+		RemoteHubCenterURL: defaultRemoteHubCenterURL,
+		RemoteHeartbeatSec: 60,
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -2536,6 +2575,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	if _, ok := rawConfig["show_kilo"]; ok {
 		hasShowKilo = true
 	}
+	hasPowerOptimization := false
+	if _, ok := rawConfig["power_optimization"]; ok {
+		hasPowerOptimization = true
+	}
 
 	err = json.Unmarshal(data, &config)
 	if err != nil {
@@ -2545,6 +2588,12 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	// Set default values for new fields if not present in old configs
 	if !hasShowKilo {
 		config.ShowKilo = true
+	}
+	if !hasPowerOptimization {
+		config.PowerOptimization = true
+	}
+	if config.RemoteHeartbeatSec < 30 {
+		config.RemoteHeartbeatSec = 60
 	}
 
 	// Set default values for new fields if not present or invalid
@@ -3047,8 +3096,12 @@ func (a *App) SaveConfig(config AppConfig) error {
 	if err := a.saveToPath(path, config); err != nil {
 		return err
 	}
+	a.refreshPowerOptimizationStateFromConfig(config)
 	if OnConfigChanged != nil {
 		OnConfigChanged(config)
+	}
+	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil && a.remoteSessions.hubClient.IsConnected() {
+		go a.remoteSessions.hubClient.SyncLaunchProjects()
 	}
 	return nil
 }

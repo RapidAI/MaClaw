@@ -7,7 +7,7 @@ html {
 body {
     margin: 0;
     color: white;
-    font-family: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Roboto",
     "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
     sans-serif;
 }
@@ -23,4 +23,24 @@ body {
 #app {
     height: 100vh;
     text-align: center;
+}
+
+/* Global selection color */
+::selection {
+    background-color: rgba(99, 102, 241, 0.2);
+    color: inherit;
+}
+
+/* Smooth focus transitions */
+*:focus-visible {
+    outline: 2px solid rgba(99, 102, 241, 0.5);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+    outline: none;
 }

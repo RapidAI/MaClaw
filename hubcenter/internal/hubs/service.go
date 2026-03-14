@@ -11,12 +11,28 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
 var ErrHubUnauthorized = errors.New("hub unauthorized")
+var ErrHubPendingConfirmation = errors.New("hub pending confirmation")
+var ErrHubDisabled = errors.New("hub disabled")
 var ErrEmailBlocked = errors.New("email blocked")
 var ErrIPBlocked = errors.New("ip blocked")
+var ErrInvalidConfirmationToken = errors.New("invalid confirmation token")
+
+const hubConfirmationPrefix = "hub_registration_confirm:"
+const systemKeyPublicBaseURL = "server_public_base_url"
+
+type confirmationTokenRecord struct {
+	TokenHash string `json:"token_hash"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+type confirmationTokenState struct {
+	Tokens []confirmationTokenRecord `json:"tokens"`
+}
 
 type BlockedEmailRepository interface {
 	GetByEmail(ctx context.Context, email string) (*store.BlockedEmail, error)
@@ -46,8 +62,10 @@ type RegisterHubRequest struct {
 }
 
 type RegisterHubResult struct {
-	HubID     string `json:"hub_id"`
-	HubSecret string `json:"hub_secret"`
+	HubID               string `json:"hub_id"`
+	HubSecret           string `json:"hub_secret"`
+	PendingConfirmation bool   `json:"pending_confirmation"`
+	Message             string `json:"message,omitempty"`
 }
 
 type Service struct {
@@ -55,14 +73,20 @@ type Service struct {
 	links         store.HubUserLinkRepository
 	blockedEmails BlockedEmailRepository
 	blockedIPs    BlockedIPRepository
+	settings      store.SystemSettingsRepository
+	mailer        mail.Mailer
+	publicBaseURL string
 }
 
-func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, blockedEmails BlockedEmailRepository, blockedIPs BlockedIPRepository) *Service {
+func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, blockedEmails BlockedEmailRepository, blockedIPs BlockedIPRepository, settings store.SystemSettingsRepository, mailer mail.Mailer, publicBaseURL string) *Service {
 	return &Service{
 		hubs:          hubs,
 		links:         links,
 		blockedEmails: blockedEmails,
 		blockedIPs:    blockedIPs,
+		settings:      settings,
+		mailer:        mailer,
+		publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
 	}
 }
 
@@ -78,13 +102,15 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if err := s.checkIPAllowed(ctx, clientIP); err != nil {
 		return nil, err
 	}
+	if s.mailer == nil || s.settings == nil {
+		return nil, fmt.Errorf("mail delivery is not configured")
+	}
 
 	now := time.Now()
 	rawSecret, err := randomToken()
 	if err != nil {
 		return nil, err
 	}
-
 	capJSON, err := json.Marshal(req.Capabilities)
 	if err != nil {
 		return nil, err
@@ -97,6 +123,9 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			return nil, err
 		}
 		if existing != nil {
+			if existing.IsDisabled {
+				return nil, ErrHubDisabled
+			}
 			existing.OwnerEmail = ownerEmail
 			existing.Name = strings.TrimSpace(req.Name)
 			existing.Description = strings.TrimSpace(req.Description)
@@ -104,7 +133,7 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			existing.Host = strings.TrimSpace(req.Host)
 			existing.Port = req.Port
 			existing.Visibility = normalizeVisibility(req.Visibility)
-			existing.EnrollmentMode = defaultIfEmpty(strings.TrimSpace(req.EnrollmentMode), "open")
+			existing.EnrollmentMode = normalizeEnrollmentMode(req.EnrollmentMode)
 			existing.CapabilitiesJSON = string(capJSON)
 			existing.HubSecretHash = hashToken(rawSecret)
 			existing.LastSeenAt = &now
@@ -112,27 +141,23 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			if existing.IsDisabled {
 				existing.Status = "disabled"
 			} else {
-				existing.Status = "online"
+				existing.Status = "pending_confirmation"
 			}
 
 			if err := s.hubs.UpdateRegistration(ctx, existing); err != nil {
 				return nil, err
 			}
-			if s.links != nil && existing.OwnerEmail != "" {
-				_ = s.links.DeleteByHubID(ctx, existing.ID)
-				_ = s.links.Create(ctx, &store.HubUserLink{
-					ID:        newID("hul"),
-					HubID:     existing.ID,
-					Email:     existing.OwnerEmail,
-					IsDefault: true,
-					CreatedAt: now,
-					UpdatedAt: now,
-				})
+			if err := s.syncOwnerLink(ctx, existing.ID, existing.OwnerEmail, now); err != nil {
+				return nil, err
 			}
-
+			if err := s.sendConfirmation(ctx, existing.ID, existing.OwnerEmail, existing.Name); err != nil {
+				return nil, err
+			}
 			return &RegisterHubResult{
-				HubID:     existing.ID,
-				HubSecret: rawSecret,
+				HubID:               existing.ID,
+				HubSecret:           rawSecret,
+				PendingConfirmation: true,
+				Message:             "Hub registration confirmation sent",
 			}, nil
 		}
 	}
@@ -147,8 +172,8 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 		Host:             strings.TrimSpace(req.Host),
 		Port:             req.Port,
 		Visibility:       normalizeVisibility(req.Visibility),
-		EnrollmentMode:   defaultIfEmpty(strings.TrimSpace(req.EnrollmentMode), "open"),
-		Status:           "online",
+		EnrollmentMode:   normalizeEnrollmentMode(req.EnrollmentMode),
+		Status:           "pending_confirmation",
 		IsDisabled:       false,
 		DisabledReason:   "",
 		CapabilitiesJSON: string(capJSON),
@@ -161,20 +186,18 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if err := s.hubs.Create(ctx, hub); err != nil {
 		return nil, err
 	}
-	if s.links != nil && hub.OwnerEmail != "" {
-		_ = s.links.Create(ctx, &store.HubUserLink{
-			ID:        newID("hul"),
-			HubID:     hub.ID,
-			Email:     hub.OwnerEmail,
-			IsDefault: true,
-			CreatedAt: now,
-			UpdatedAt: now,
-		})
+	if err := s.syncOwnerLink(ctx, hub.ID, hub.OwnerEmail, now); err != nil {
+		return nil, err
+	}
+	if err := s.sendConfirmation(ctx, hub.ID, hub.OwnerEmail, hub.Name); err != nil {
+		return nil, err
 	}
 
 	return &RegisterHubResult{
-		HubID:     hub.ID,
-		HubSecret: rawSecret,
+		HubID:               hub.ID,
+		HubSecret:           rawSecret,
+		PendingConfirmation: true,
+		Message:             "Hub registration confirmation sent",
 	}, nil
 }
 
@@ -193,7 +216,99 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 	if rawSecret != "" && hub.HubSecretHash != hashToken(rawSecret) {
 		return ErrHubUnauthorized
 	}
-	return s.hubs.UpdateHeartbeat(ctx, hubID, time.Now())
+	if hub.Status == "pending_confirmation" {
+		return ErrHubPendingConfirmation
+	}
+	if err := s.hubs.UpdateHeartbeat(ctx, hubID, time.Now()); err != nil {
+		return err
+	}
+	if hub.IsDisabled || hub.Status == "disabled" {
+		return ErrHubDisabled
+	}
+	return nil
+}
+
+func (s *Service) ConfirmRegistration(ctx context.Context, token string) error {
+	hubID, secret, ok := strings.Cut(strings.TrimSpace(token), ".")
+	if !ok || strings.TrimSpace(hubID) == "" || strings.TrimSpace(secret) == "" {
+		return ErrInvalidConfirmationToken
+	}
+
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return err
+	}
+	if hub == nil {
+		return ErrInvalidConfirmationToken
+	}
+
+	raw, err := s.settings.Get(ctx, hubConfirmationPrefix+hubID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return ErrInvalidConfirmationToken
+	}
+
+	var payload confirmationTokenState
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return err
+	}
+	if len(payload.Tokens) == 0 {
+		return ErrInvalidConfirmationToken
+	}
+
+	nowUnix := time.Now().Unix()
+	matched := false
+	activeTokens := make([]confirmationTokenRecord, 0, len(payload.Tokens))
+	secretHash := hashToken(secret)
+	for _, candidate := range payload.Tokens {
+		if candidate.TokenHash == "" || candidate.ExpiresAt <= nowUnix {
+			continue
+		}
+		activeTokens = append(activeTokens, candidate)
+		if candidate.TokenHash == secretHash {
+			matched = true
+		}
+	}
+	if !matched {
+		return ErrInvalidConfirmationToken
+	}
+
+	return s.confirmHubRegistration(ctx, hub, hubID)
+}
+
+func (s *Service) ConfirmHubRegistrationByAdmin(ctx context.Context, hubID string) error {
+	hubID = strings.TrimSpace(hubID)
+	if hubID == "" {
+		return errors.New("hub id is required")
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return err
+	}
+	if hub == nil {
+		return ErrInvalidConfirmationToken
+	}
+	return s.confirmHubRegistration(ctx, hub, hubID)
+}
+
+func (s *Service) confirmHubRegistration(ctx context.Context, hub *store.HubInstance, hubID string) error {
+	if hub.IsDisabled {
+		hub.Status = "disabled"
+	} else {
+		hub.Status = "online"
+	}
+	hub.UpdatedAt = time.Now()
+	if err := s.hubs.UpdateRegistration(ctx, hub); err != nil {
+		return err
+	}
+	if s.settings != nil {
+		if err := s.settings.Set(ctx, hubConfirmationPrefix+hubID, mustJSON(confirmationTokenState{Tokens: []confirmationTokenRecord{}})); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) ListHubs(ctx context.Context) ([]*store.HubInstance, error) {
@@ -280,6 +395,120 @@ func (s *Service) RemoveBlockedIP(ctx context.Context, ip string) error {
 	return s.blockedIPs.DeleteByIP(ctx, strings.TrimSpace(ip))
 }
 
+func (s *Service) sendConfirmation(ctx context.Context, hubID, ownerEmail, hubName string) error {
+	confirmURL, err := s.prepareConfirmation(ctx, hubID)
+	if err != nil {
+		return err
+	}
+	return s.mailer.SendHubRegistrationConfirmation(ctx, ownerEmail, confirmURL, hubName)
+}
+
+func (s *Service) prepareConfirmation(ctx context.Context, hubID string) (string, error) {
+	tokenSecret, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	expiresAt := time.Now().Add(24 * time.Hour).Unix()
+	state := confirmationTokenState{
+		Tokens: []confirmationTokenRecord{{
+			TokenHash: hashToken(tokenSecret),
+			ExpiresAt: expiresAt,
+		}},
+	}
+
+	if s.settings != nil {
+		raw, err := s.settings.Get(ctx, hubConfirmationPrefix+hubID)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(raw) != "" {
+			var existing confirmationTokenState
+			if err := json.Unmarshal([]byte(raw), &existing); err == nil {
+				nowUnix := time.Now().Unix()
+				for _, token := range existing.Tokens {
+					if token.TokenHash == "" || token.ExpiresAt <= nowUnix {
+						continue
+					}
+					state.Tokens = append(state.Tokens, token)
+				}
+			}
+		}
+	}
+
+	if len(state.Tokens) > 5 {
+		state.Tokens = state.Tokens[:5]
+	}
+	if err := s.settings.Set(ctx, hubConfirmationPrefix+hubID, mustJSON(state)); err != nil {
+		return "", err
+	}
+	baseURL, err := s.PublicBaseURL(ctx)
+	if err != nil {
+		return "", err
+	}
+	if baseURL == "" {
+		baseURL = strings.TrimRight(strings.TrimSpace(s.publicBaseURL), "/")
+	}
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:9388"
+	}
+	return baseURL + "/hub-registration/confirm?token=" + hubID + "." + tokenSecret, nil
+}
+
+func (s *Service) PublicBaseURL(ctx context.Context) (string, error) {
+	if s.settings == nil {
+		return strings.TrimRight(strings.TrimSpace(s.publicBaseURL), "/"), nil
+	}
+	raw, err := s.settings.Get(ctx, systemKeyPublicBaseURL)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return strings.TrimRight(strings.TrimSpace(s.publicBaseURL), "/"), nil
+	}
+	var payload struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(payload.Value) == "" {
+		return strings.TrimRight(strings.TrimSpace(s.publicBaseURL), "/"), nil
+	}
+	return strings.TrimRight(strings.TrimSpace(payload.Value), "/"), nil
+}
+
+func (s *Service) SetPublicBaseURL(ctx context.Context, publicBaseURL string) (string, error) {
+	publicBaseURL = strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")
+	if publicBaseURL == "" {
+		return "", fmt.Errorf("hub center public base url is required")
+	}
+	if s.settings == nil {
+		s.publicBaseURL = publicBaseURL
+		return publicBaseURL, nil
+	}
+	if err := s.settings.Set(ctx, systemKeyPublicBaseURL, mustJSON(map[string]string{"value": publicBaseURL})); err != nil {
+		return "", err
+	}
+	return publicBaseURL, nil
+}
+
+func (s *Service) syncOwnerLink(ctx context.Context, hubID, ownerEmail string, now time.Time) error {
+	if s.links == nil || ownerEmail == "" {
+		return nil
+	}
+	if err := s.links.DeleteByHubID(ctx, hubID); err != nil {
+		return err
+	}
+	return s.links.Create(ctx, &store.HubUserLink{
+		ID:        newID("hul"),
+		HubID:     hubID,
+		Email:     ownerEmail,
+		IsDefault: true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+}
+
 func (s *Service) checkEmailAllowed(ctx context.Context, email string) error {
 	if s.blockedEmails == nil || email == "" {
 		return nil
@@ -332,15 +561,34 @@ func hashToken(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func mustJSON(v any) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return `{}`
+	}
+	return string(data)
+}
+
 func normalizeEmail(email string) string {
 	return strings.TrimSpace(strings.ToLower(email))
 }
 
 func defaultIfEmpty(v, fallback string) string {
-	if v == "" {
+	if strings.TrimSpace(v) == "" {
 		return fallback
 	}
 	return v
+}
+
+func normalizeEnrollmentMode(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "approval":
+		return "approval"
+	case "manual":
+		return "manual"
+	default:
+		return "open"
+	}
 }
 
 func normalizeVisibility(v string) string {

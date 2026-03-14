@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="rapidai_shell_primary">#0F6FFF</color>
+    <color name="rapidai_shell_on_primary">#FFFFFF</color>
+    <color name="rapidai_shell_background">#F4F7FB</color>
+</resources>

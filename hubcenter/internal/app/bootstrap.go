@@ -19,6 +19,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		MaxReadIdleConns:  cfg.Database.MaxReadIdleConns,
 		MaxWriteOpenConns: cfg.Database.MaxWriteOpenConns,
 		MaxWriteIdleConns: cfg.Database.MaxWriteIdleConns,
+		BatchFlushMS:      cfg.Database.BatchFlushMS,
+		BatchMaxSize:      cfg.Database.BatchMaxSize,
+		BatchQueueSize:    cfg.Database.BatchQueueSize,
 	})
 	if err != nil {
 		return nil, err
@@ -30,9 +33,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 
 	st := sqlite.NewStore(provider)
 	adminService := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
-	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
+	mailer := mail.New(*cfg, st.System)
+	hubService := hubs.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs, st.System, mailer, cfg.Server.PublicBaseURL)
 	entryService := entry.NewService(st.Hubs, st.HubUserLinks, st.BlockedEmails, st.BlockedIPs)
-	mailer := mail.New(*cfg)
 	router := httpapi.NewRouter(adminService, hubService, entryService, mailer)
 
 	return &App{

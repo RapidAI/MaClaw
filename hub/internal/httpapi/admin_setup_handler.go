@@ -34,8 +34,8 @@ func SetupAdminHandler(admins *auth.AdminService) http.HandlerFunc {
 			return
 		}
 
-		if req.Username == "" || req.Password == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Username and password are required")
+		if req.Username == "" || req.Password == "" || req.Email == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Username, password, and email are required")
 			return
 		}
 

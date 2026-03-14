@@ -34,6 +34,7 @@ type RemoteSessionView struct {
 	ID             string           `json:"id"`
 	Tool           string           `json:"tool"`
 	Title          string           `json:"title"`
+	LaunchSource   string           `json:"launch_source,omitempty"`
 	ProjectPath    string           `json:"project_path"`
 	WorkspacePath  string           `json:"workspace_path"`
 	WorkspaceRoot  string           `json:"workspace_root"`
@@ -62,6 +63,7 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 		ID:             s.ID,
 		Tool:           s.Tool,
 		Title:          s.Title,
+		LaunchSource:   string(normalizeRemoteLaunchSource(s.LaunchSource)),
 		ProjectPath:    s.ProjectPath,
 		WorkspacePath:  s.WorkspacePath,
 		WorkspaceRoot:  s.WorkspaceRoot,
@@ -87,6 +89,7 @@ func sanitizeSessionSummary(summary *SessionSummary) {
 	summary.MachineID = sanitizeRemoteText(summary.MachineID)
 	summary.Tool = sanitizeRemoteText(summary.Tool)
 	summary.Title = sanitizeRemoteText(summary.Title)
+	summary.Source = sanitizeRemoteText(summary.Source)
 	summary.Status = sanitizeRemoteText(summary.Status)
 	summary.Severity = sanitizeRemoteText(summary.Severity)
 	summary.CurrentTask = sanitizeRemoteText(summary.CurrentTask)
@@ -347,6 +350,53 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool) (Re
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
+
+	session, err := a.remoteSessions.Create(spec)
+	if err != nil && session == nil {
+		return RemoteSessionView{}, err
+	}
+
+	a.emitRemoteStateChanged()
+	if session == nil {
+		return RemoteSessionView{}, err
+	}
+	return toRemoteSessionView(session), err
+}
+
+func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bool) (RemoteSessionView, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteSessionView{}, err
+	}
+	if !cfg.RemoteEnabled {
+		return RemoteSessionView{}, fmt.Errorf("remote mode is disabled")
+	}
+
+	if projectDir == "" {
+		projectDir = a.GetCurrentProjectPath()
+	}
+
+	if a.remoteSessions == nil {
+		a.remoteSessions = NewRemoteSessionManager(a)
+	}
+
+	hubClient := a.remoteSessions.hubClient
+	if hubClient == nil {
+		hubClient = NewRemoteHubClient(a, a.remoteSessions)
+		a.remoteSessions.SetHubClient(hubClient)
+	}
+
+	if cfg.RemoteHubURL != "" && cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "" && !hubClient.IsConnected() {
+		if err := hubClient.Connect(); err != nil {
+			a.log("remote hub connect before handoff failed: " + err.Error())
+		}
+	}
+
+	spec, err := a.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, useProxy)
+	if err != nil {
+		return RemoteSessionView{}, err
+	}
+	spec.LaunchSource = RemoteLaunchSourceHandoff
 
 	session, err := a.remoteSessions.Create(spec)
 	if err != nil && session == nil {

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 func RunMigrations(db *sql.DB) error {
@@ -130,6 +131,18 @@ func RunMigrations(db *sql.DB) error {
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("run migration: %w", err)
+		}
+	}
+
+	alterStmts := []string{
+		`ALTER TABLE machines ADD COLUMN hostname TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE machines ADD COLUMN arch TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE machines ADD COLUMN app_version TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE machines ADD COLUMN heartbeat_sec INTEGER NOT NULL DEFAULT 60`,
+	}
+	for _, stmt := range alterStmts {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return fmt.Errorf("run alter migration: %w", err)
 		}
 	}
 

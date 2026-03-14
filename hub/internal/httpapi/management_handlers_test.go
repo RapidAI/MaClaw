@@ -155,6 +155,7 @@ func TestCenterConfigAndRegisterHandlers(t *testing.T) {
 
 	saveResp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/center/config", map[string]any{
 		"base_url":        centerServer.URL,
+		"public_base_url": "https://hub.example.com",
 		"enrollment_mode": "manual",
 	}, token)
 	if saveResp.Code != http.StatusOK {
@@ -165,7 +166,7 @@ func TestCenterConfigAndRegisterHandlers(t *testing.T) {
 	if statusResp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", statusResp.Code, statusResp.Body.String())
 	}
-	if body := statusResp.Body.String(); !containsAll(body, centerServer.URL, `"registered":false`, `"host":"`, `"port":`, `"register_on_startup":true`, `"admin_email_present":true`, `"enrollment_mode":"manual"`) {
+	if body := statusResp.Body.String(); !containsAll(body, centerServer.URL, `"public_base_url":"https://hub.example.com"`, `"registered":false`, `"host":"`, `"port":`, `"register_on_startup":true`, `"admin_email_present":true`, `"enrollment_mode":"manual"`) {
 		t.Fatalf("unexpected status body=%s", body)
 	}
 
@@ -184,6 +185,9 @@ func TestCenterConfigAndRegisterHandlers(t *testing.T) {
 	}
 	if capturedRegisterBody["base_url"] == "" {
 		t.Fatalf("expected base_url to be reported, got %#v", capturedRegisterBody)
+	}
+	if capturedRegisterBody["base_url"] != "https://hub.example.com" {
+		t.Fatalf("expected configured public base url to be reported, got %#v", capturedRegisterBody)
 	}
 	if capturedRegisterBody["enrollment_mode"] != "manual" {
 		t.Fatalf("expected manual enrollment mode to be reported, got %#v", capturedRegisterBody)

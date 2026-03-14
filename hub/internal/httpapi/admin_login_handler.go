@@ -17,6 +17,10 @@ type AdminChangePasswordRequest struct {
 	NewPassword     string `json:"new_password"`
 }
 
+type AdminUpdateProfileRequest struct {
+	Email string `json:"email"`
+}
+
 func AdminLoginHandler(admins *auth.AdminService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req AdminLoginRequest
@@ -71,6 +75,41 @@ func AdminChangePasswordHandler(admins *auth.AdminService) http.HandlerFunc {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "CHANGE_PASSWORD_FAILED", err.Error())
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":           true,
+			"access_token": token,
+			"admin": map[string]any{
+				"username": updatedAdmin.Username,
+				"email":    updatedAdmin.Email,
+			},
+		})
+	}
+}
+
+func AdminUpdateProfileHandler(admins *auth.AdminService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		admin := AdminFromContext(r.Context())
+		if admin == nil {
+			writeError(w, http.StatusUnauthorized, "ADMIN_UNAUTHORIZED", "Admin authorization required")
+			return
+		}
+
+		var req AdminUpdateProfileRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if req.Email == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
+			return
+		}
+
+		token, updatedAdmin, err := admins.UpdateEmail(r.Context(), admin.Username, req.Email)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "UPDATE_PROFILE_FAILED", err.Error())
 			return
 		}
 
