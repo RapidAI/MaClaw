@@ -97,11 +97,11 @@ export function RemoteSettingsPanel({
                     <input
                         className="form-input"
                         type="number"
-                        min={30}
+                        min={5}
                         step={1}
-                        value={config?.remote_heartbeat_sec || 60}
-                        onChange={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Number(e.target.value || 60) })}
-                        onBlur={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Math.max(30, Number(e.target.value || 60)) })}
+                        value={config?.remote_heartbeat_sec || 10}
+                        onChange={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Number(e.target.value || 10) })}
+                        onBlur={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Math.max(5, Number(e.target.value || 10)) })}
                     />
                 </div>
             </div>

@@ -626,8 +626,8 @@ func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store
 
 func (r *machineRepo) UpdateMetadata(ctx context.Context, machineID string, metadata store.MachineMetadata) error {
 	heartbeatSec := metadata.HeartbeatIntervalSec
-	if heartbeatSec < 30 {
-		heartbeatSec = 60
+	if heartbeatSec < 5 {
+		heartbeatSec = 10
 	}
 	return execWrite(
 		ctx,

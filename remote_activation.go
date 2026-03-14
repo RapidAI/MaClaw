@@ -98,6 +98,24 @@ func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, er
 	return result, nil
 }
 
+// autoRegisterOnStartup re-registers a previously registered machine using saved config.
+// Called in a goroutine during startup when email and hub URL are present but machine credentials are missing.
+func (a *App) autoRegisterOnStartup(cfg AppConfig) {
+	email := strings.TrimSpace(cfg.RemoteEmail)
+	hubURL := strings.TrimSpace(cfg.RemoteHubURL)
+	if email == "" || hubURL == "" {
+		return
+	}
+	result, err := a.ActivateRemote(email, "")
+	if err != nil {
+		fmt.Printf("auto-register on startup failed: %v\n", err)
+		return
+	}
+	if result.MachineID != "" {
+		fmt.Printf("auto-register on startup succeeded: machine_id=%s\n", result.MachineID)
+	}
+}
+
 func (a *App) ActivateRemote(email string, invitationCode string) (RemoteActivationResult, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -162,7 +180,7 @@ func (a *App) ActivateRemote(email string, invitationCode string) (RemoteActivat
 		if result.Message != "" {
 			return RemoteActivationResult{}, fmt.Errorf("%s", result.Message)
 		}
-		return RemoteActivationResult{}, fmt.Errorf("remote activation failed: %s", resp.Status)
+		return RemoteActivationResult{}, fmt.Errorf("remote registration failed: %s", resp.Status)
 	}
 
 	cfg.RemoteEmail = result.Email

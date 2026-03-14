@@ -95,6 +95,10 @@ type Service struct {
 // terminalStatuses lists session statuses that indicate the session is no
 // longer running.  Sessions in these states are eligible for reaping after
 // the stale-session TTL expires.
+//
+// IMPORTANT: keep in sync with the canonical list in
+//   - frontend/src/components/remote/types.ts  → TERMINAL_SESSION_STATUSES
+//   - hub/web/dist/_pwa_syntax_check.js        → sessionClosed array
 var terminalStatuses = map[string]bool{
 	"stopped":    true,
 	"finished":   true,
@@ -103,6 +107,7 @@ var terminalStatuses = map[string]bool{
 	"exited":     true,
 	"closed":     true,
 	"done":       true,
+	"error":      true,
 	"completed":  true,
 	"terminated": true,
 }
@@ -194,6 +199,10 @@ func (s *Service) OnSessionSummary(ctx context.Context, machineID, userID, sessi
 	entry := s.ensureEntry(machineID, userID, sessionID)
 	summary.SessionID = sessionID
 	summary.MachineID = machineID
+	// Prevent a stale summary from reverting an already-exited session back to running/busy.
+	if entry.Summary.Status == "exited" && summary.Status != "exited" && summary.Status != "error" {
+		summary.Status = "exited"
+	}
 	entry.Summary = summary
 	entry.HostOnline = true
 	entry.UpdatedAt = time.Now()

@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	defaultRemoteHeartbeatSec = 60
-	minRemoteHeartbeatSec     = 30
+	defaultRemoteHeartbeatSec = 5
+	minRemoteHeartbeatSec     = 5
 )
 
 type remoteMachineProfile struct {

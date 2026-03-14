@@ -3,6 +3,7 @@ package device
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -87,8 +88,14 @@ func NewService(repo MachineRepository, runtime *Runtime) *Service {
 }
 
 func (s *Service) BindDesktop(machineID string, ctx *ws.ConnContext) {
+	log.Printf("[device] BindDesktop: machine_id=%s user_id=%s conn=%v", machineID, safeConnUserID(ctx), ctx.Conn != nil)
 	s.runtime.mu.Lock()
+	prev := s.runtime.desktopsByMachine[machineID]
+	if prev != nil {
+		log.Printf("[device] BindDesktop: replacing existing connection for machine_id=%s (prev_user=%s)", machineID, safeConnUserID(prev))
+	}
 	s.runtime.desktopsByMachine[machineID] = ctx
+	log.Printf("[device] BindDesktop: runtime now has %d machines in desktopsByMachine", len(s.runtime.desktopsByMachine))
 	s.appendEventLocked(MachineEvent{
 		Timestamp: time.Now().Unix(),
 		MachineID: machineID,
@@ -100,10 +107,12 @@ func (s *Service) BindDesktop(machineID string, ctx *ws.ConnContext) {
 }
 
 func (s *Service) UnbindDesktop(ctx context.Context, machineID string, conn *ws.ConnContext) error {
+	log.Printf("[device] UnbindDesktop: machine_id=%s user_id=%s", machineID, safeConnUserID(conn))
 	s.runtime.mu.Lock()
 	current := s.runtime.desktopsByMachine[machineID]
 	if current == conn || conn == nil {
 		delete(s.runtime.desktopsByMachine, machineID)
+		log.Printf("[device] UnbindDesktop: removed machine_id=%s from runtime (match=%v, conn_nil=%v)", machineID, current == conn, conn == nil)
 		s.appendEventLocked(MachineEvent{
 			Timestamp: time.Now().Unix(),
 			MachineID: machineID,
@@ -111,19 +120,30 @@ func (s *Service) UnbindDesktop(ctx context.Context, machineID string, conn *ws.
 			Type:      "unbind",
 			Message:   "machine websocket unbound",
 		})
+	} else {
+		log.Printf("[device] UnbindDesktop: skipped removal for machine_id=%s (conn mismatch: current=%p, provided=%p)", machineID, current, conn)
 	}
+	log.Printf("[device] UnbindDesktop: runtime now has %d machines in desktopsByMachine", len(s.runtime.desktopsByMachine))
 	s.runtime.mu.Unlock()
 
 	if s.repo == nil {
 		return nil
 	}
+	log.Printf("[device] UnbindDesktop: updating DB status to 'offline' for machine_id=%s", machineID)
 	return s.repo.UpdateStatus(ctx, machineID, "offline")
 }
 
 func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.MachineHelloPayload) error {
+	log.Printf("[device] MarkOnline: machine_id=%s name=%s platform=%s hostname=%s arch=%s version=%s heartbeat=%d",
+		machineID, hello.Name, hello.Platform, hello.Hostname, hello.Arch, hello.AppVersion, hello.HeartbeatIntervalSec)
 	now := time.Now()
 	s.runtime.mu.Lock()
 	conn := s.runtime.desktopsByMachine[machineID]
+	if conn == nil {
+		log.Printf("[device] MarkOnline WARNING: no connection in desktopsByMachine for machine_id=%s", machineID)
+	} else {
+		log.Printf("[device] MarkOnline: connection found for machine_id=%s user_id=%s conn_valid=%v", machineID, safeConnUserID(conn), conn.Conn != nil)
+	}
 	info := s.runtime.metadataByMachine[machineID]
 	info.MachineID = machineID
 	info.Name = defaultMachineName(hello.Name)
@@ -147,6 +167,7 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 	s.runtime.mu.Unlock()
 
 	if s.repo == nil {
+		log.Printf("[device] MarkOnline: no repo, skipping DB update for machine_id=%s", machineID)
 		return nil
 	}
 	if err := s.repo.UpdateMetadata(ctx, machineID, store.MachineMetadata{
@@ -157,11 +178,14 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 		AppVersion:           info.AppVersion,
 		HeartbeatIntervalSec: info.HeartbeatIntervalSec,
 	}); err != nil {
+		log.Printf("[device] MarkOnline ERROR: UpdateMetadata failed for machine_id=%s: %v", machineID, err)
 		return err
 	}
 	if err := s.repo.UpdateStatus(ctx, machineID, "online"); err != nil {
+		log.Printf("[device] MarkOnline ERROR: UpdateStatus failed for machine_id=%s: %v", machineID, err)
 		return err
 	}
+	log.Printf("[device] MarkOnline: DB status set to 'online' for machine_id=%s", machineID)
 	return s.repo.UpdateHeartbeat(ctx, machineID, now)
 }
 
@@ -181,7 +205,7 @@ func (s *Service) Heartbeat(ctx context.Context, machineID string, heartbeat ws.
 	info.Online = true
 	info.Status = "online"
 	lastAccepted := s.runtime.lastHeartbeatAt[machineID]
-	shouldAccept := lastAccepted.IsZero() || now.Sub(lastAccepted) >= 30*time.Second
+	shouldAccept := lastAccepted.IsZero() || now.Sub(lastAccepted) >= 5*time.Second
 	if shouldAccept {
 		info.LastSeenAt = &now
 		s.runtime.lastHeartbeatAt[machineID] = now
@@ -242,6 +266,7 @@ func (s *Service) ListOnlineMachines() []MachineRuntimeInfo {
 	s.runtime.mu.RLock()
 	defer s.runtime.mu.RUnlock()
 
+	log.Printf("[device] ListOnlineMachines: desktopsByMachine has %d entries", len(s.runtime.desktopsByMachine))
 	out := make([]MachineRuntimeInfo, 0, len(s.runtime.desktopsByMachine))
 	for machineID, conn := range s.runtime.desktopsByMachine {
 		info := MachineRuntimeInfo{
@@ -342,6 +367,11 @@ func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, er
 	s.runtime.mu.RLock()
 	defer s.runtime.mu.RUnlock()
 
+	log.Printf("[device] ListAllMachines: DB returned %d machines, runtime has %d in desktopsByMachine", len(items), len(s.runtime.desktopsByMachine))
+	for mid, conn := range s.runtime.desktopsByMachine {
+		log.Printf("[device] ListAllMachines: runtime entry machine_id=%s conn_nil=%v ws_nil=%v user_id=%s", mid, conn == nil, conn != nil && conn.Conn == nil, safeConnUserID(conn))
+	}
+
 	out := make([]MachineRuntimeInfo, 0, len(items))
 	for _, item := range items {
 		info := MachineRuntimeInfo{
@@ -384,6 +414,10 @@ func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, er
 		if conn, ok := s.runtime.desktopsByMachine[item.ID]; ok && conn != nil && conn.Conn != nil {
 			info.Role = conn.Role
 			info.Online = true
+			log.Printf("[device] ListAllMachines: machine_id=%s -> ONLINE (conn found, ws valid)", item.ID)
+		} else {
+			log.Printf("[device] ListAllMachines: machine_id=%s -> OFFLINE (in_map=%v, conn_nil=%v, ws_nil=%v, db_status=%s)",
+				item.ID, ok, !ok || conn == nil, ok && conn != nil && conn.Conn == nil, item.Status)
 		}
 		out = append(out, info)
 	}
@@ -509,8 +543,8 @@ func defaultMachinePlatform(v string) string {
 }
 
 func normalizeHeartbeatInterval(v int) int {
-	if v < 30 {
-		return 60
+	if v < 5 {
+		return 5
 	}
 	return v
 }

@@ -20,6 +20,7 @@ import rehypeRaw from 'rehype-raw';
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
 import { RemoteSessionList } from './components/remote/RemoteSessionList';
 import { useRemotePanel } from './components/remote/useRemotePanel';
+import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
 
 const subscriptionUrls: { [key: string]: string } = {
     "GLM": "https://bigmodel.cn/glm-coding",
@@ -333,9 +334,9 @@ const translations: any = {
         "remoteRunConpty": "Run ConPTY Probe",
         "remoteRunLaunchProbe": "Run {tool} Launch Probe",
         "remoteRunFullSmoke": "Run Full Smoke",
-        "remoteActivation": "Activation",
-        "remoteActivated": "Activated",
-        "remoteNotActivated": "Not Activated",
+        "remoteActivation": "Registration",
+        "remoteActivated": "Registered",
+        "remoteNotActivated": "Not Registered",
         "remoteRegister": "Register",
         "remoteEmailNotConfigured": "Remote email not configured",
         "remoteHub": "Hub",
@@ -357,8 +358,8 @@ const translations: any = {
         "remoteEmail": "Remote Email",
         "remoteBindEmail": "Bind Email",
         "remoteNotInstalled": "Not installed",
-        "remoteActivating": "Activating...",
-        "remoteActivate": "Activate Remote",
+        "remoteActivating": "Registering...",
+        "remoteActivate": "Register Remote",
         "remoteStarting": "Starting...",
         "remoteStartTool": "Start Remote",
         "remoteStopTool": "Stop Remote",
@@ -368,7 +369,7 @@ const translations: any = {
         "remoteReconnecting": "Reconnecting...",
         "remoteReconnectHub": "Reconnect Hub",
         "remoteClearing": "Clearing...",
-        "remoteClearActivation": "Clear Activation",
+        "remoteClearActivation": "Clear Registration",
         "remoteToolPath": "Tool path",
         "remoteNextStep": "Next Step",
         "remoteLaunchProject": "Launch project",
@@ -428,27 +429,27 @@ const translations: any = {
         "remoteSmokeFailed": "Remote {tool} smoke failed: {error}",
         "remoteEmailRequired": "Remote email is required",
         "remoteServerRequired": "Remote server is required",
-        "remoteActivateFirst": "Please activate remote access first",
-        "remoteActivationDialogTitle": "Activate Remote",
+        "remoteActivateFirst": "Please register remote access first",
+        "remoteActivationDialogTitle": "Register Remote",
         "remoteActivationDialogDesc": "Enter a Hub URL directly, or load your registered Hubs from HubCenter and choose one.",
-        "remoteActivateAndLaunch": "Activate and Launch",
+        "remoteActivateAndLaunch": "Register and Launch",
         "remoteLoadRegisteredHubs": "Load Registered Hubs",
         "remoteLoadingRegisteredHubs": "Loading Hubs...",
         "remoteSelectRegisteredHub": "Registered Hub",
         "remoteNoRegisteredHubs": "No registered Hubs found",
         "remoteLoadHubListFailed": "Failed to load Hub list: {error}",
         "remoteHubManualOrSelect": "You can paste a Hub URL directly, or pick one from the HubCenter list above.",
-        "remoteActivationCompleted": "Remote activation completed",
-        "remoteActivationFailed": "Remote activation failed: {error}",
+        "remoteActivationCompleted": "Remote registration completed",
+        "remoteActivationFailed": "Remote registration failed: {error}",
         "remoteReconnectFailed": "Reconnect failed: {error}",
         "remoteSelectProjectFirst": "Please select a launch project first",
         "remoteStartFailed": "Start failed: {error}",
         "remoteInstallFailed": "Install failed: {error}",
         "remoteSaveFailed": "Save failed: {error}",
         "remoteSendFailed": "Send failed: {error}",
-        "remoteActivationCleared": "Remote activation cleared",
+        "remoteActivationCleared": "Remote registration cleared",
         "remoteClearFailed": "Clear failed: {error}",
-        "remoteActivateStep": "Activate Remote",
+        "remoteActivateStep": "Register Remote",
         "remoteActivateStepDesc": "Register the selected email and machine before starting remote sessions.",
         "remoteReconnectStep": "Reconnect Hub",
         "remoteReconnectStepDesc": "Hub URL is configured but the connection is currently offline.",
@@ -691,9 +692,9 @@ const translations: any = {
         "remoteRunConpty": "运行 ConPTY 检测",
         "remoteRunLaunchProbe": "运行 {tool} 启动探测",
         "remoteRunFullSmoke": "运行完整冒烟测试",
-        "remoteActivation": "激活状态",
-        "remoteActivated": "已激活",
-        "remoteNotActivated": "未激活",
+        "remoteActivation": "注册状态",
+        "remoteActivated": "已注册",
+        "remoteNotActivated": "未注册",
         "remoteRegister": "注册",
         "remoteEmailNotConfigured": "尚未配置远程邮箱",
         "remoteHub": "Hub 连接",
@@ -715,8 +716,8 @@ const translations: any = {
         "remoteEmail": "远程邮箱",
         "remoteBindEmail": "绑定邮件",
         "remoteNotInstalled": "未安装",
-        "remoteActivating": "激活中...",
-        "remoteActivate": "激活远程控制",
+        "remoteActivating": "注册中...",
+        "remoteActivate": "注册远程控制",
         "remoteStarting": "启动中...",
         "remoteStartTool": "启动远程",
         "remoteStopTool": "停止远程",
@@ -726,7 +727,7 @@ const translations: any = {
         "remoteReconnecting": "重连中...",
         "remoteReconnectHub": "重连 Hub",
         "remoteClearing": "清除中...",
-        "remoteClearActivation": "清除激活状态",
+        "remoteClearActivation": "清除注册状态",
         "remoteToolPath": "工具路径",
         "remoteNextStep": "下一步",
         "remoteLaunchProject": "启动项目",
@@ -766,27 +767,27 @@ const translations: any = {
         "remoteSmokeFailed": "远程 {tool} 冒烟测试失败：{error}",
         "remoteEmailRequired": "必须填写远程邮箱",
         "remoteServerRequired": "必须先配置远程服务器地址",
-        "remoteActivateFirst": "请先激活远程控制",
-        "remoteActivationDialogTitle": "激活远程控制",
+        "remoteActivateFirst": "请先注册远程控制",
+        "remoteActivationDialogTitle": "注册远程控制",
         "remoteActivationDialogDesc": "你可以直接输入 Hub 地址，或者先从 HubCenter 加载已注册的 Hub 再选择一个。",
-        "remoteActivateAndLaunch": "激活并启动",
+        "remoteActivateAndLaunch": "注册并启动",
         "remoteLoadRegisteredHubs": "加载已注册 Hub",
         "remoteLoadingRegisteredHubs": "正在加载 Hub...",
         "remoteSelectRegisteredHub": "已注册 Hub",
         "remoteNoRegisteredHubs": "没有可用的已注册 Hub",
         "remoteLoadHubListFailed": "加载 Hub 列表失败：{error}",
         "remoteHubManualOrSelect": "你可以直接粘贴 Hub 地址，也可以从上面的 HubCenter 列表中选择。",
-        "remoteActivationCompleted": "远程激活已完成",
-        "remoteActivationFailed": "远程激活失败：{error}",
+        "remoteActivationCompleted": "远程注册已完成",
+        "remoteActivationFailed": "远程注册失败：{error}",
         "remoteReconnectFailed": "重连失败：{error}",
         "remoteSelectProjectFirst": "请先选择一个启动项目",
         "remoteStartFailed": "启动失败：{error}",
         "remoteInstallFailed": "安装失败：{error}",
         "remoteSaveFailed": "保存失败：{error}",
         "remoteSendFailed": "发送失败：{error}",
-        "remoteActivationCleared": "远程激活状态已清除",
+        "remoteActivationCleared": "远程注册状态已清除",
         "remoteClearFailed": "清除失败：{error}",
-        "remoteActivateStep": "激活远程控制",
+        "remoteActivateStep": "注册远程控制",
         "remoteActivateStepDesc": "启动远程会话前，先登记邮箱和设备信息。",
         "remoteReconnectStep": "重连 Hub",
         "remoteReconnectStepDesc": "已配置 Hub 地址，但当前连接处于离线状态。",
@@ -1027,9 +1028,9 @@ const translations: any = {
         "remoteRunConpty": "執行 ConPTY 檢測",
         "remoteRunLaunchProbe": "執行 {tool} 啟動探測",
         "remoteRunFullSmoke": "執行完整冒煙測試",
-        "remoteActivation": "啟用狀態",
-        "remoteActivated": "已啟用",
-        "remoteNotActivated": "未啟用",
+        "remoteActivation": "註冊狀態",
+        "remoteActivated": "已註冊",
+        "remoteNotActivated": "未註冊",
         "remoteRegister": "註冊",
         "remoteEmailNotConfigured": "尚未設定遠端信箱",
         "remoteHub": "Hub 連線",
@@ -1051,8 +1052,8 @@ const translations: any = {
         "remoteEmail": "遠端信箱",
         "remoteBindEmail": "綁定郵件",
         "remoteNotInstalled": "未安裝",
-        "remoteActivating": "啟用中...",
-        "remoteActivate": "啟用遠端控制",
+        "remoteActivating": "註冊中...",
+        "remoteActivate": "註冊遠端控制",
         "remoteStarting": "啟動中...",
         "remoteStartTool": "啟動遠端",
         "remoteStopTool": "停止遠端",
@@ -1062,7 +1063,7 @@ const translations: any = {
         "remoteReconnecting": "重新連線中...",
         "remoteReconnectHub": "重新連線 Hub",
         "remoteClearing": "清除中...",
-        "remoteClearActivation": "清除啟用狀態",
+        "remoteClearActivation": "清除註冊狀態",
         "remoteToolPath": "工具路徑",
         "remoteNextStep": "下一步",
         "remoteLaunchProject": "啟動專案",
@@ -1102,27 +1103,27 @@ const translations: any = {
         "remoteSmokeFailed": "遠端 {tool} 冒煙測試失敗：{error}",
         "remoteEmailRequired": "必須填寫遠端信箱",
         "remoteServerRequired": "必須先設定遠端伺服器位址",
-        "remoteActivateFirst": "請先啟用遠端控制",
-        "remoteActivationDialogTitle": "啟用遠端控制",
+        "remoteActivateFirst": "請先註冊遠端控制",
+        "remoteActivationDialogTitle": "註冊遠端控制",
         "remoteActivationDialogDesc": "你可以直接輸入 Hub 位址，或先從 HubCenter 載入已註冊的 Hub 再選擇一個。",
-        "remoteActivateAndLaunch": "啟用並啟動",
+        "remoteActivateAndLaunch": "註冊並啟動",
         "remoteLoadRegisteredHubs": "載入已註冊 Hub",
         "remoteLoadingRegisteredHubs": "正在載入 Hub...",
         "remoteSelectRegisteredHub": "已註冊 Hub",
         "remoteNoRegisteredHubs": "沒有可用的已註冊 Hub",
         "remoteLoadHubListFailed": "載入 Hub 清單失敗：{error}",
         "remoteHubManualOrSelect": "你可以直接貼上 Hub 位址，也可以從上方的 HubCenter 清單中選擇。",
-        "remoteActivationCompleted": "遠端啟用已完成",
-        "remoteActivationFailed": "遠端啟用失敗：{error}",
+        "remoteActivationCompleted": "遠端註冊已完成",
+        "remoteActivationFailed": "遠端註冊失敗：{error}",
         "remoteReconnectFailed": "重新連線失敗：{error}",
         "remoteSelectProjectFirst": "請先選擇一個啟動專案",
         "remoteStartFailed": "啟動失敗：{error}",
         "remoteInstallFailed": "安裝失敗：{error}",
         "remoteSaveFailed": "儲存失敗：{error}",
         "remoteSendFailed": "傳送失敗：{error}",
-        "remoteActivationCleared": "遠端啟用狀態已清除",
+        "remoteActivationCleared": "遠端註冊狀態已清除",
         "remoteClearFailed": "清除失敗：{error}",
-        "remoteActivateStep": "啟用遠端控制",
+        "remoteActivateStep": "註冊遠端控制",
         "remoteActivateStepDesc": "啟動遠端會話前，先登記信箱與裝置資訊。",
         "remoteReconnectStep": "重新連線 Hub",
         "remoteReconnectStepDesc": "已設定 Hub 位址，但目前連線處於離線狀態。",
@@ -2112,11 +2113,10 @@ function App() {
         setOnDemandInstallingTool,
     });
     const activeRemoteSessionForTool = useMemo(() => {
-        const inactiveStatuses = new Set(["stopped", "finished", "failed", "killed", "exited", "closed", "done"]);
         return remoteSessions.find((session) => {
             if (session.tool !== activeTool) return false;
             const status = String(session.status || session.summary?.status || "").toLowerCase();
-            return !inactiveStatuses.has(status);
+            return !TERMINAL_SESSION_STATUSES.has(status);
         }) || null;
     }, [remoteSessions, activeTool]);
     const hasActiveRemoteSessionForTool = !!activeRemoteSessionForTool;
@@ -3285,9 +3285,9 @@ ${instruction}`;
                                             </div>
                                             <div className="settings-panel-desc">
                                                 {localizeText(
-                                                    "Activate this device and adjust Hub settings in Settings.",
-                                                    "如需激活当前设备或修改 Hub 配置，请进入设置中的远程标签。",
-                                                    "如需啟用目前裝置或修改 Hub 設定，請進入設定中的遠端分頁。"
+                                                    "Register this device and adjust Hub settings in Settings.",
+                                                    "如需注册当前设备或修改 Hub 配置，请进入设置中的远程标签。",
+                                                    "如需註冊目前裝置或修改 Hub 設定，請進入設定中的遠端分頁。"
                                                 )}
                                             </div>
                                         </div>
@@ -3298,7 +3298,7 @@ ${instruction}`;
                                                 setSettingsTab('remote');
                                             }}
                                         >
-                                            {lang === 'zh-Hans' ? '激活远程' : lang === 'zh-Hant' ? '啟用遠端' : 'Activate Remote'}
+                                            {lang === 'zh-Hans' ? '注册远程' : lang === 'zh-Hant' ? '註冊遠端' : 'Register Remote'}
                                         </button>
                                     </div>
                                 </div>

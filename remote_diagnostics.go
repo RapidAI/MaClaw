@@ -170,7 +170,7 @@ func (a *App) CheckRemoteToolReadiness(toolName, projectDir string, useProxy boo
 		readiness.Warnings = append(readiness.Warnings, "remote hub URL is not configured yet")
 	}
 	if strings.TrimSpace(cfg.RemoteMachineID) == "" || strings.TrimSpace(cfg.RemoteMachineToken) == "" {
-		readiness.Warnings = append(readiness.Warnings, "remote machine is not activated yet")
+		readiness.Warnings = append(readiness.Warnings, "remote machine is not registered yet")
 	}
 
 	readiness.Ready = len(readiness.Issues) == 0

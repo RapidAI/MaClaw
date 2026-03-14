@@ -151,7 +151,7 @@ func RunMigrations(db *sql.DB) error {
 		`ALTER TABLE machines ADD COLUMN hostname TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE machines ADD COLUMN arch TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE machines ADD COLUMN app_version TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE machines ADD COLUMN heartbeat_sec INTEGER NOT NULL DEFAULT 60`,
+		`ALTER TABLE machines ADD COLUMN heartbeat_sec INTEGER NOT NULL DEFAULT 10`,
 		`ALTER TABLE machines ADD COLUMN client_id TEXT NOT NULL DEFAULT ''`,
 	}
 	alterStmts = append(alterStmts, `ALTER TABLE machines ADD COLUMN alias TEXT NOT NULL DEFAULT ''`)

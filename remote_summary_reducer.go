@@ -94,7 +94,7 @@ func (r *ClaudeSummaryReducer) Apply(current SessionSummary, events []ImportantE
 
 	if len(events) == 0 && len(lines) > 0 {
 		joined := strings.ToLower(strings.Join(lines, " "))
-		if next.Status != string(SessionWaitingInput) && next.Status != string(SessionError) {
+		if next.Status != string(SessionWaitingInput) && next.Status != string(SessionError) && next.Status != string(SessionExited) {
 			if strings.Contains(joined, "running") || strings.Contains(joined, "reading") || strings.Contains(joined, "editing") {
 				next.Status = string(SessionBusy)
 			} else {

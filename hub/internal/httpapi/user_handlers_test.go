@@ -104,7 +104,7 @@ func TestListMachinesHandlerReturnsViewerMachines(t *testing.T) {
 		Hostname:             "office-host",
 		Arch:                 "amd64",
 		AppVersion:           "1.0.0",
-		HeartbeatIntervalSec: 60,
+		HeartbeatIntervalSec: 10,
 	}); err != nil {
 		t.Fatalf("MarkOnline: %v", err)
 	}

@@ -72,10 +72,10 @@ func runRemoteSmoke(app *App, args []string) int {
 	toolName := fs.String("tool", "claude", "tool name for remote smoke")
 	projectDir := fs.String("project", "", "project directory for remote smoke")
 	useProxy := fs.Bool("use-proxy", false, "enable proxy resolution")
-	email := fs.String("email", "", "email for remote activation")
+	email := fs.String("email", "", "email for remote registration")
 	hubURL := fs.String("hub-url", "", "override remote hub url for local smoke")
 	centerURL := fs.String("center-url", "", "override remote hub center url for local smoke")
-	doActivate := fs.Bool("activate", false, "activate remote machine before checks")
+	doActivate := fs.Bool("activate", false, "register remote machine before checks")
 	doPTYProbe := fs.Bool("pty-probe", false, "run interactive ConPTY probe")
 	doLaunchProbe := fs.Bool("launch-probe", false, "run remote launch probe")
 	doStart := fs.Bool("start", false, "start a real remote session")
@@ -139,8 +139,8 @@ func runRemoteSmoke(app *App, args []string) int {
 		}
 		result, err := app.ActivateRemote(*email, "")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "remote-smoke: activate failed: %v\n", err)
-			report.Phase = "activation_failed"
+			fmt.Fprintf(os.Stderr, "remote-smoke: register failed: %v\n", err)
+			report.Phase = "registration_failed"
 			report.LastUpdated = time.Now().Format(time.RFC3339)
 			report.RecommendedNext = "Check Hub / Hub Center health and remote email configuration."
 			writeRemoteSmokeProgress(*progressFile, report)
@@ -149,7 +149,7 @@ func runRemoteSmoke(app *App, args []string) int {
 		report.Activation = &result
 		report.Connection = app.GetRemoteConnectionStatus()
 		report.Readiness = app.GetRemoteToolReadiness(*toolName, *projectDir, *useProxy)
-		report.Phase = "activated"
+		report.Phase = "registered"
 		report.LastUpdated = time.Now().Format(time.RFC3339)
 		report.RecommendedNext = "Run PTY and launch probes, then start a real remote session."
 		writeRemoteSmokeProgress(*progressFile, report)
@@ -355,7 +355,7 @@ func printRemoteSmokeReport(report RemoteSmokeReport) {
 	}
 
 	if report.Activation != nil {
-		fmt.Println("Activation")
+		fmt.Println("Registration")
 		fmt.Printf("  Status: %s\n", report.Activation.Status)
 		fmt.Printf("  Email: %s\n", report.Activation.Email)
 		fmt.Printf("  SN: %s\n", report.Activation.SN)

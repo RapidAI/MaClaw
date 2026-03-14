@@ -208,6 +208,9 @@ func (a *App) startup(ctx context.Context) {
 			hubClient := NewRemoteHubClient(a, a.remoteSessions)
 			a.remoteSessions.SetHubClient(hubClient)
 			_ = hubClient.Connect()
+		} else if config.RemoteEmail != "" && config.RemoteHubURL != "" {
+			// Auto-register on startup: saved email + hub but no machine credentials yet
+			go a.autoRegisterOnStartup(config)
 		}
 		a.refreshPowerOptimizationStateFromConfig(config)
 		return
@@ -2470,7 +2473,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 						RemoteUserID:       "",
 						RemoteMachineID:    "",
 						RemoteMachineToken: "",
-						RemoteHeartbeatSec: 60,
+						RemoteHeartbeatSec: 10,
 					}
 					a.SaveConfig(config)
 					// Optional: os.Remove(oldPath)
@@ -2545,7 +2548,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 			RemoteUserID:       "",
 			RemoteMachineID:    "",
 			RemoteMachineToken: "",
-			RemoteHeartbeatSec: 60,
+			RemoteHeartbeatSec: 10,
 		}
 		err = a.SaveConfig(defaultConfig)
 		return defaultConfig, err
@@ -2561,7 +2564,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		ShowKode:           true,
 		PowerOptimization:  true,
 		RemoteHubCenterURL: defaultRemoteHubCenterURL,
-		RemoteHeartbeatSec: 60,
+		RemoteHeartbeatSec: 10,
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -2593,8 +2596,8 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	if !hasPowerOptimization {
 		config.PowerOptimization = true
 	}
-	if config.RemoteHeartbeatSec < 30 {
-		config.RemoteHeartbeatSec = 60
+	if config.RemoteHeartbeatSec < 5 {
+		config.RemoteHeartbeatSec = 10
 	}
 
 	// Set default values for new fields if not present or invalid

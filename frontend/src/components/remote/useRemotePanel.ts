@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import {
     ActivateRemote,
     CheckToolsStatus,
@@ -35,16 +36,17 @@ import {
     getRemoteToolSmokeHint as buildRemoteToolSmokeHint,
     getSelectedRemoteToolBadges,
 } from "./helpers";
-import type {
-    RemoteActivationStatus,
-    RemoteConnectionStatus,
-    RemoteSessionView,
-    RemoteSmokeReportView,
-    RemoteSuggestedAction,
-    RemoteToolLaunchProbeView,
-    RemoteToolMetadataView,
-    RemoteToolName,
-    RemoteToolReadinessView,
+import {
+    TERMINAL_SESSION_STATUSES,
+    type RemoteActivationStatus,
+    type RemoteConnectionStatus,
+    type RemoteSessionView,
+    type RemoteSmokeReportView,
+    type RemoteSuggestedAction,
+    type RemoteToolLaunchProbeView,
+    type RemoteToolMetadataView,
+    type RemoteToolName,
+    type RemoteToolReadinessView,
 } from "./types";
 
 type Translate = (key: string) => string;
@@ -160,13 +162,12 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             ]);
             setRemoteActivationStatus(activation);
             setRemoteConnectionStatus(connection);
-            const inactiveStatuses = new Set(["stopped", "finished", "failed", "killed", "exited", "closed", "done"]);
             const sessionList = Array.isArray(sessions) ? sessions : [];
             // Remove killed IDs from the tracking set once the backend confirms
             // they are truly inactive (or gone), so the set doesn't grow forever.
             for (const id of killedSessionIdsRef.current) {
                 const s = sessionList.find((sess: RemoteSessionView) => sess.id === id);
-                if (!s || inactiveStatuses.has(String(s.status || s.summary?.status || "").toLowerCase())) {
+                if (!s || TERMINAL_SESSION_STATUSES.has(String(s.status || s.summary?.status || "").toLowerCase())) {
                     killedSessionIdsRef.current.delete(id);
                 }
             }
@@ -479,6 +480,33 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             refreshRemotePTYProbe();
         }
     }, [navTab]);
+
+    // Auto-poll remote panel status every 5 seconds (only on settings/remote tab)
+    useEffect(() => {
+        if (navTab !== "settings" && navTab !== "remote") return;
+        const timer = setInterval(() => {
+            refreshRemotePanel();
+        }, 5000);
+        return () => {
+            clearInterval(timer);
+        };
+    }, [navTab]);
+
+    // Listen for real-time session change events from the Go backend
+    // whenever remote is enabled, regardless of the active tab.  This
+    // ensures the main-page launch button immediately reflects session
+    // terminations that happen on other clients (e.g. PWA) without
+    // relying on polling.
+    useEffect(() => {
+        if (!config?.remote_enabled) return;
+        const cleanup = EventsOn("remote-session-changed", () => {
+            refreshRemotePanel();
+        });
+        return () => {
+            if (typeof cleanup === "function") cleanup();
+            else EventsOff("remote-session-changed");
+        };
+    }, [config?.remote_enabled]);
 
     // Auto-restore activation status on startup when remote was previously enabled
     useEffect(() => {

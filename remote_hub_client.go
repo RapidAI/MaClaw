@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -100,6 +101,9 @@ func (c *RemoteHubClient) Connect() error {
 	return nil
 }
 
+// errHubAuthFailed is returned when the hub rejects machine credentials.
+var errHubAuthFailed = fmt.Errorf("hub authentication failed")
+
 func (c *RemoteHubClient) connectLocked() error {
 	if err := c.loadConfig(); err != nil {
 		c.lastError = err.Error()
@@ -122,6 +126,27 @@ func (c *RemoteHubClient) connectLocked() error {
 		c.connected = false
 		c.lastError = err.Error()
 		return err
+	}
+
+	// Read auth response synchronously so we can detect credential rejection
+	// before proceeding with the hello handshake.
+	var authResp inboundHubEnvelope
+	_ = c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if err := c.conn.ReadJSON(&authResp); err != nil {
+		_ = c.conn.Close()
+		c.conn = nil
+		c.connected = false
+		c.lastError = "failed to read auth response"
+		return fmt.Errorf("read auth response: %w", err)
+	}
+	_ = c.conn.SetReadDeadline(time.Time{}) // clear deadline
+
+	if authResp.Type == "error" {
+		_ = c.conn.Close()
+		c.conn = nil
+		c.connected = false
+		c.lastError = "Machine authentication failed"
+		return errHubAuthFailed
 	}
 
 	if err := c.sendMachineHelloLocked(); err != nil {
@@ -201,7 +226,11 @@ func (c *RemoteHubClient) SendSessionCreated(s *RemoteSession) error {
 			"started_at":   s.CreatedAt.Unix(),
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	err := c.conn.WriteJSON(msg)
+	if err == nil {
+		c.app.emitEvent("remote-session-changed", "created", s.ID)
+	}
+	return err
 }
 
 func (c *RemoteHubClient) SendSessionSummary(summary SessionSummary) error {
@@ -219,7 +248,11 @@ func (c *RemoteHubClient) SendSessionSummary(summary SessionSummary) error {
 		SessionID: summary.SessionID,
 		Payload:   summary,
 	}
-	return c.conn.WriteJSON(msg)
+	err := c.conn.WriteJSON(msg)
+	if err == nil {
+		c.app.emitEvent("remote-session-changed", "summary", summary.SessionID)
+	}
+	return err
 }
 
 func (c *RemoteHubClient) SendImportantEvent(event ImportantEvent) error {
@@ -237,7 +270,11 @@ func (c *RemoteHubClient) SendImportantEvent(event ImportantEvent) error {
 		SessionID: event.SessionID,
 		Payload:   event,
 	}
-	return c.conn.WriteJSON(msg)
+	err := c.conn.WriteJSON(msg)
+	if err == nil {
+		c.app.emitEvent("remote-session-changed", "important_event", event.SessionID)
+	}
+	return err
 }
 
 func (c *RemoteHubClient) SendPreviewDelta(delta SessionPreviewDelta) error {
@@ -254,7 +291,11 @@ func (c *RemoteHubClient) SendPreviewDelta(delta SessionPreviewDelta) error {
 		SessionID: delta.SessionID,
 		Payload:   delta,
 	}
-	return c.conn.WriteJSON(msg)
+	err := c.conn.WriteJSON(msg)
+	if err == nil {
+		c.app.emitEvent("remote-session-changed", "preview_delta", delta.SessionID)
+	}
+	return err
 }
 
 func (c *RemoteHubClient) SendSessionClosed(s *RemoteSession) error {
@@ -275,7 +316,11 @@ func (c *RemoteHubClient) SendSessionClosed(s *RemoteSession) error {
 			"ended_at":  time.Now().Unix(),
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	err := c.conn.WriteJSON(msg)
+	if err == nil {
+		c.app.emitEvent("remote-session-changed", "closed", s.ID)
+	}
+	return err
 }
 
 func (c *RemoteHubClient) SyncSessions() {
@@ -439,6 +484,7 @@ func (c *RemoteHubClient) handleSessionInput(msg inboundHubEnvelope) {
 	if err := c.manager.WriteInput(msg.SessionID, payload.Text); err != nil {
 		c.setLastError(err.Error())
 	}
+	c.app.emitEvent("remote-session-changed", "input", msg.SessionID)
 }
 
 func (c *RemoteHubClient) handleSessionInterrupt(msg inboundHubEnvelope) {
@@ -448,6 +494,7 @@ func (c *RemoteHubClient) handleSessionInterrupt(msg inboundHubEnvelope) {
 	if err := c.manager.Interrupt(msg.SessionID); err != nil {
 		c.setLastError(err.Error())
 	}
+	c.app.emitEvent("remote-session-changed", "interrupt", msg.SessionID)
 }
 
 func (c *RemoteHubClient) handleSessionKill(msg inboundHubEnvelope) {
@@ -457,6 +504,7 @@ func (c *RemoteHubClient) handleSessionKill(msg inboundHubEnvelope) {
 	if err := c.manager.Kill(msg.SessionID); err != nil {
 		c.setLastError(err.Error())
 	}
+	c.app.emitEvent("remote-session-changed", "kill", msg.SessionID)
 }
 
 func (c *RemoteHubClient) storeHubError(payload json.RawMessage) {
@@ -600,8 +648,18 @@ func (c *RemoteHubClient) reconnectLoop() {
 			return
 		}
 
-		if err := c.Connect(); err == nil {
+		err := c.Connect()
+		if err == nil {
 			return
+		}
+
+		// If the hub rejected our credentials, attempt re-enrollment so the
+		// machine obtains fresh machine_id / machine_token before retrying.
+		if errors.Is(err, errHubAuthFailed) {
+			if c.tryReEnroll() {
+				// Re-enrollment succeeded; retry connect immediately with new creds.
+				continue
+			}
 		}
 
 		time.Sleep(backoff)
@@ -612,6 +670,20 @@ func (c *RemoteHubClient) reconnectLoop() {
 			}
 		}
 	}
+}
+
+// tryReEnroll attempts to re-enroll with the hub using the saved email and
+// client_id. Returns true if new credentials were obtained and persisted.
+func (c *RemoteHubClient) tryReEnroll() bool {
+	cfg, err := c.app.LoadConfig()
+	if err != nil || cfg.RemoteEmail == "" {
+		return false
+	}
+	result, err := c.app.ActivateRemote(cfg.RemoteEmail, "")
+	if err != nil {
+		return false
+	}
+	return result.MachineID != "" && result.MachineToken != ""
 }
 
 func (c *RemoteHubClient) appVersion() string {

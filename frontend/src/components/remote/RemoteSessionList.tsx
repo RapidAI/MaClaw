@@ -1,6 +1,6 @@
 import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { colors, radius } from "./styles";
-import type { RemoteSessionView } from "./types";
+import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
 
 type Props = {
     remoteSessions: RemoteSessionView[];
@@ -15,9 +15,7 @@ type Props = {
     localizeText: (en: string, zhHans: string, zhHant: string) => string;
 };
 
-const terminalStatuses = new Set([
-    "stopped", "finished", "failed", "killed", "exited", "closed", "done", "completed", "terminated",
-]);
+const terminalStatuses = TERMINAL_SESSION_STATUSES;
 
 const getPathLeaf = (value?: string) => {
     if (!value) return "";

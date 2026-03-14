@@ -3,6 +3,8 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -86,16 +88,19 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("[ws] HandleWS: upgrade failed: %v", err)
 		return
 	}
 	defer conn.Close()
 
+	log.Printf("[ws] HandleWS: new WebSocket connection from %s", r.RemoteAddr)
 	ctx := &ConnContext{Conn: conn}
 	defer g.cleanupConnection(ctx)
 
 	for {
 		var msg Envelope
 		if err := conn.ReadJSON(&msg); err != nil {
+			log.Printf("[ws] HandleWS: ReadJSON error (role=%s machine_id=%s): %v", ctx.Role, ctx.MachineID, err)
 			return
 		}
 
@@ -232,15 +237,20 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 		MachineToken string `json:"machine_token"`
 	}
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[ws] handleMachineAuth: invalid payload: %v", err)
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid auth.machine payload")
 	}
+	log.Printf("[ws] handleMachineAuth: authenticating machine_id=%s", payload.MachineID)
 	principal, err := g.Identity.AuthenticateMachine(context.Background(), payload.MachineID, payload.MachineToken)
 	if err != nil {
-		return writeWSError(ctx.Conn, "UNAUTHORIZED", "Machine authentication failed")
+		log.Printf("[ws] handleMachineAuth: auth FAILED for machine_id=%s: %v", payload.MachineID, err)
+		_ = writeWSError(ctx.Conn, "UNAUTHORIZED", "Machine authentication failed")
+		return fmt.Errorf("machine auth failed: %w", err)
 	}
 	ctx.Role = "machine"
 	ctx.UserID = principal.UserID
 	ctx.MachineID = principal.MachineID
+	log.Printf("[ws] handleMachineAuth: auth OK machine_id=%s user_id=%s, calling BindDesktop", principal.MachineID, principal.UserID)
 	g.Devices.BindDesktop(principal.MachineID, ctx)
 	return writeWSJSON(ctx.Conn, map[string]any{"type": "auth.ok", "payload": map[string]any{"role": "machine", "machine_id": principal.MachineID}})
 }
@@ -442,20 +452,27 @@ func (g *Gateway) handleViewerUnsubscribeSession(ctx *ConnContext, msg Envelope)
 func (g *Gateway) handleMachineHello(ctx *ConnContext, msg Envelope) error {
 	var payload MachineHelloPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[ws] handleMachineHello: invalid payload for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid machine.hello payload")
 	}
+	log.Printf("[ws] handleMachineHello: machine_id=%s name=%s platform=%s hostname=%s", ctx.MachineID, payload.Name, payload.Platform, payload.Hostname)
 	if err := g.Devices.MarkOnline(context.Background(), ctx.MachineID, payload); err != nil {
+		log.Printf("[ws] handleMachineHello: MarkOnline FAILED for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
+	log.Printf("[ws] handleMachineHello: machine_id=%s marked online successfully", ctx.MachineID)
 	return writeAck(ctx.Conn, msg.RequestID)
 }
 
 func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 	var payload MachineHeartbeatPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[ws] handleMachineHeartbeat: invalid payload for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid machine.heartbeat payload")
 	}
+	log.Printf("[ws] handleMachineHeartbeat: machine_id=%s sessions=%d interval=%d", ctx.MachineID, payload.ActiveSessions, payload.HeartbeatIntervalSec)
 	if err := g.Devices.Heartbeat(context.Background(), ctx.MachineID, payload); err != nil {
+		log.Printf("[ws] handleMachineHeartbeat: Heartbeat FAILED for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
@@ -543,7 +560,9 @@ func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 	if ctx == nil {
 		return
 	}
+	log.Printf("[ws] cleanupConnection: role=%s machine_id=%s user_id=%s", ctx.Role, ctx.MachineID, ctx.UserID)
 	if ctx.Role == "machine" && ctx.MachineID != "" {
+		log.Printf("[ws] cleanupConnection: unbinding machine_id=%s and marking offline", ctx.MachineID)
 		_ = g.Devices.UnbindDesktop(context.Background(), ctx.MachineID, ctx)
 		_ = g.Sessions.MarkMachineOffline(context.Background(), ctx.MachineID)
 		g.broadcastMachineEvent(ctx.MachineID, map[string]any{

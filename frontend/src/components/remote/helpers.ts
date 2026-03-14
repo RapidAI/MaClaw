@@ -18,32 +18,32 @@ export const fallbackRemoteToolMeta: Record<string, { label: string; configHint:
     claude: {
         label: "Claude",
         configHint: "Checks Anthropic-compatible auth, Claude launch command, and remote PTY readiness.",
-        smokeHint: "Runs activation, PTY, launch, real session start, and Hub visibility verification for Claude.",
+        smokeHint: "Runs registration, PTY, launch, real session start, and Hub visibility verification for Claude.",
     },
     codex: {
         label: "Codex",
         configHint: "Checks OpenAI-compatible auth, Codex command resolution, and remote PTY readiness.",
-        smokeHint: "Runs activation, PTY, launch, real session start, and Hub visibility verification for Codex.",
+        smokeHint: "Runs registration, PTY, launch, real session start, and Hub visibility verification for Codex.",
     },
     opencode: {
         label: "OpenCode",
         configHint: "Checks OpenCode config sync, OpenAI-compatible endpoints, and isolated session config.",
-        smokeHint: "Runs activation, PTY, launch, real session start, and Hub visibility verification for OpenCode.",
+        smokeHint: "Runs registration, PTY, launch, real session start, and Hub visibility verification for OpenCode.",
     },
     iflow: {
         label: "iFlow",
         configHint: "Checks iFlow config sync plus IFLOW and OpenAI-compatible environment wiring.",
-        smokeHint: "Runs activation, PTY, launch, real session start, and Hub visibility verification for iFlow.",
+        smokeHint: "Runs registration, PTY, launch, real session start, and Hub visibility verification for iFlow.",
     },
     kilo: {
         label: "Kilo",
         configHint: "Checks Kilo config sync plus KILO and OpenAI-compatible environment wiring.",
-        smokeHint: "Runs activation, PTY, launch, real session start, and Hub visibility verification for Kilo.",
+        smokeHint: "Runs registration, PTY, launch, real session start, and Hub visibility verification for Kilo.",
     },
     kode: {
         label: "Kode",
         configHint: "Checks Kode profile generation and OpenAI-compatible endpoint wiring.",
-        smokeHint: "Runs activation, PTY, launch, real session start, and Hub visibility verification for Kode.",
+        smokeHint: "Runs registration, PTY, launch, real session start, and Hub visibility verification for Kode.",
     },
 };
 
@@ -89,9 +89,9 @@ export function getRemoteToolSmokeHint(
     localizeText: LocalizeText,
 ): string {
     return remoteToolMetaByName[tool]?.smoke_hint ?? localizeText(
-        `Runs activation, PTY, launch, real session start, and Hub visibility verification for ${getRemoteToolLabel(tool, remoteToolMetaByName)}.`,
-        `执行 ${getRemoteToolLabel(tool, remoteToolMetaByName)} 的激活、PTY、启动、真实会话启动与 Hub 可见性验证。`,
-        `執行 ${getRemoteToolLabel(tool, remoteToolMetaByName)} 的啟用、PTY、啟動、真實會話啟動與 Hub 可見性驗證。`,
+        `Runs registration, PTY, launch, real session start, and Hub visibility verification for ${getRemoteToolLabel(tool, remoteToolMetaByName)}.`,
+        `执行 ${getRemoteToolLabel(tool, remoteToolMetaByName)} 的注册、PTY、启动、真实会话启动与 Hub 可见性验证。`,
+        `執行 ${getRemoteToolLabel(tool, remoteToolMetaByName)} 的註冊、PTY、啟動、真實會話啟動與 Hub 可見性驗證。`,
     );
 }
 
