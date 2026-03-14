@@ -20,6 +20,10 @@ func (a *ClaudeAdapter) ProviderName() string {
 	return "claude"
 }
 
+func (a *ClaudeAdapter) ExecutionMode() ExecutionMode {
+	return ExecModeSDK
+}
+
 func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	tm := NewToolManager(a.app)
 	status := tm.GetToolStatus("claude")
@@ -27,12 +31,30 @@ func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		return CommandSpec{}, fmt.Errorf("claude is not installed")
 	}
 
+	// Ensure Claude Code's onboarding/first-run wizard has been marked
+	// as complete so it doesn't block the session with interactive prompts.
+	if err := ensureClaudeOnboardingComplete(a.app, spec.ProjectPath); err != nil {
+		if a.app != nil {
+			a.app.log(fmt.Sprintf("[claude-adapter] onboarding pre-check warning: %v", err))
+		}
+	}
+
 	commandPath := a.resolveClaudeExecutable(status.Path)
 	env := a.buildCommandEnv(spec.Env)
 
-	args := make([]string, 0, 2)
+	// SDK mode: use stream-json for structured communication
+	args := []string{
+		"--output-format", "stream-json",
+		"--input-format", "stream-json",
+		"--verbose",
+	}
+
+	// Permission handling via SDK protocol
 	if spec.YoloMode {
 		args = append(args, "--dangerously-skip-permissions")
+	} else {
+		// Use stdio permission prompt tool so we can handle approvals
+		args = append(args, "--permission-prompt-tool", "stdio")
 	}
 
 	return CommandSpec{
@@ -93,6 +115,9 @@ func (a *ClaudeAdapter) buildCommandEnv(base map[string]string) map[string]strin
 	}
 	if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "" {
 		env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "64000"
+	}
+	if env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] == "" {
+		env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] = "1"
 	}
 
 	return env

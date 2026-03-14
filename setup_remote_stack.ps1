@@ -23,10 +23,10 @@ if ([string]::IsNullOrWhiteSpace($HubCenterAdminUser)) {
     $HubCenterAdminUser = if ($env:HUBCENTER_ADMIN_USER) { $env:HUBCENTER_ADMIN_USER } else { 'admin' }
 }
 if ([string]::IsNullOrWhiteSpace($HubCenterAdminPass)) {
-    $HubCenterAdminPass = if ($env:HUBCENTER_ADMIN_PASS) { $env:HUBCENTER_ADMIN_PASS } else { 'CodeClaw123!' }
+    $HubCenterAdminPass = if ($env:HUBCENTER_ADMIN_PASS) { $env:HUBCENTER_ADMIN_PASS } else { 'MaClaw123!' }
 }
 if ([string]::IsNullOrWhiteSpace($HubCenterAdminEmail)) {
-    $HubCenterAdminEmail = if ($env:HUBCENTER_ADMIN_EMAIL) { $env:HUBCENTER_ADMIN_EMAIL } else { 'admin@local.codeclaw' }
+    $HubCenterAdminEmail = if ($env:HUBCENTER_ADMIN_EMAIL) { $env:HUBCENTER_ADMIN_EMAIL } else { 'admin@local.maclaw' }
 }
 
 if ([string]::IsNullOrWhiteSpace($HubAdminUser)) {
@@ -161,14 +161,14 @@ function Test-DefaultAdminCreds {
 
     return (
         $Username -eq 'admin' -and
-        $Password -eq 'CodeClaw123!' -and
-        $Email -eq 'admin@local.codeclaw'
+        $Password -eq 'MaClaw123!' -and
+        $Email -eq 'admin@local.maclaw'
     )
 }
 
 function Initialize-RemoteStack {
     Write-Host ''
-    Write-Host 'Initializing CodeClaw remote stack...'
+    Write-Host 'Initializing MaClaw remote stack...'
     Write-Host ('Hub Center: ' + $HubCenterUrl)
     Write-Host ('Hub:        ' + $HubUrl)
     Write-Host ''

@@ -2,12 +2,12 @@
 set -eu
 
 APP_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-BIN_NAME="codeclaw-hubcenter"
+BIN_NAME="maclaw-hubcenter"
 CONFIG_PATH="$APP_DIR/configs/config.yaml"
 EXAMPLE_CONFIG_PATH="$APP_DIR/configs/config.example.yaml"
-PID_FILE="$APP_DIR/data/codeclaw-hubcenter.pid"
+PID_FILE="$APP_DIR/data/maclaw-hubcenter.pid"
 LOG_DIR="$APP_DIR/data/logs"
-LOG_FILE="$LOG_DIR/codeclaw-hubcenter.out.log"
+LOG_FILE="$LOG_DIR/maclaw-hubcenter.out.log"
 
 mkdir -p "$APP_DIR/data" "$LOG_DIR"
 

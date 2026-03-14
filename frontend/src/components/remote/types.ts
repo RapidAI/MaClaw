@@ -1,6 +1,6 @@
 import { main } from "../../../wailsjs/go/models";
 
-export type RemoteToolName = "claude" | "codex" | "opencode" | "iflow" | "kilo" | "kode";
+export type RemoteToolName = "claude" | "gemini" | "codex" | "opencode" | "cursor" | "iflow" | "kilo" | "kode";
 
 export interface ImportantEventView {
     event_id?: string;
@@ -58,6 +58,7 @@ export interface RemoteSessionView {
     summary?: RemoteSessionSummaryView;
     preview?: SessionPreviewView;
     events?: ImportantEventView[];
+    raw_output_lines?: string[];
 }
 
 export interface RemoteToolReadinessView {

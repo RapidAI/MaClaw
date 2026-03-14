@@ -106,7 +106,7 @@ func (p *DefaultWorkspacePreparer) prepareGitWorktree(sessionID, projectPath, gi
 		return nil, err
 	}
 
-	branchName := "codeclaw/" + sanitizeWorkspaceName(sessionID)
+	branchName := "maclaw/" + sanitizeWorkspaceName(sessionID)
 	worktreePath := filepath.Join(worktreeRoot, sanitizeWorkspaceName(sessionID))
 	if err := os.RemoveAll(worktreePath); err != nil {
 		return nil, fmt.Errorf("cleanup stale worktree path: %w", err)
@@ -216,7 +216,7 @@ func gitRepoHasCommits(path string) bool {
 }
 
 func ensureWorktreeRootDir() (string, error) {
-	root := filepath.Join(os.TempDir(), "codeclaw-worktrees")
+	root := filepath.Join(os.TempDir(), "maclaw-worktrees")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", fmt.Errorf("create worktree root: %w", err)
 	}

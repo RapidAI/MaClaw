@@ -48,6 +48,7 @@ type RemoteSessionView struct {
 	Summary        SessionSummary   `json:"summary"`
 	Preview        SessionPreview   `json:"preview"`
 	Events         []ImportantEvent `json:"events"`
+	RawOutputLines []string         `json:"raw_output_lines"`
 }
 
 func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
@@ -58,6 +59,11 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 	sanitizeSessionSummary(&summary)
 	sanitizeSessionPreview(&preview)
 	sanitizeImportantEvents(events)
+
+	rawLines := append([]string(nil), s.RawOutputLines...)
+	for i := range rawLines {
+		rawLines[i] = sanitizeRawOutputLine(rawLines[i])
+	}
 
 	return RemoteSessionView{
 		ID:             s.ID,
@@ -77,6 +83,7 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 		Summary:        summary,
 		Preview:        preview,
 		Events:         events,
+		RawOutputLines: rawLines,
 	}
 }
 
@@ -150,6 +157,29 @@ func sanitizeRemoteText(value string) string {
 
 	value = strings.TrimSpace(value)
 	value = strings.Join(strings.Fields(value), " ")
+	return value
+}
+
+// sanitizeRawOutputLine performs minimal sanitization for raw terminal
+// output lines — only ensures valid UTF-8 and strips remaining control
+// characters.  Unlike sanitizeRemoteText it does NOT collapse whitespace
+// or replace newlines, preserving the original terminal layout.
+func sanitizeRawOutputLine(value string) string {
+	if value == "" {
+		return ""
+	}
+	if !utf8.ValidString(value) {
+		value = strings.ToValidUTF8(value, "?")
+	}
+	value = strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return r // preserve tabs
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value)
 	return value
 }
 
@@ -309,7 +339,7 @@ func (a *App) ListRemoteSessions() []RemoteSessionView {
 			continue
 		}
 		view := toRemoteSessionView(s)
-		a.log(fmt.Sprintf("[remote-list] session %s: status=%s, preview_lines=%d", view.ID, view.Status, len(view.Preview.PreviewLines)))
+		a.log(fmt.Sprintf("[remote-list] session %s: status=%s, preview_lines=%d, raw_lines=%d", view.ID, view.Status, len(view.Preview.PreviewLines), len(view.RawOutputLines)))
 		out = append(out, view)
 	}
 	return out
@@ -436,9 +466,34 @@ func (a *App) SendRemoteSessionInput(sessionID, text string) error {
 	if err != nil {
 		a.log(fmt.Sprintf("[remote-input] write failed for session %s: %v", sessionID, err))
 	} else {
-		a.log(fmt.Sprintf("[remote-input] write succeeded for session %s", sessionID))
+		// Log post-write state for debugging
+		if s, ok := a.remoteSessions.Get(sessionID); ok {
+			a.log(fmt.Sprintf("[remote-input] write OK session=%s, status=%s, raw_lines=%d, pid=%d",
+				sessionID, s.Status, len(s.RawOutputLines), s.PID))
+		} else {
+			a.log(fmt.Sprintf("[remote-input] write OK but session %s not found in map", sessionID))
+		}
 	}
 	return err
+}
+
+// SendRemoteSessionRawInput writes raw bytes to the PTY without any
+// line-ending normalization.  Use this for sending individual keystrokes
+// or control sequences to TUI applications like Claude Code.
+// For SDK sessions, this is equivalent to SendRemoteSessionInput.
+func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
+	if a.remoteSessions == nil {
+		return ErrRemoteSessionsUnavailable
+	}
+	s, ok := a.remoteSessions.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	if s.Exec == nil {
+		return fmt.Errorf("session execution not available: %s", sessionID)
+	}
+	a.log(fmt.Sprintf("[remote-raw-input] session=%s, len=%d, text=%q", sessionID, len(text), text))
+	return s.Exec.Write([]byte(text))
 }
 
 func (a *App) InterruptRemoteSession(sessionID string) error {

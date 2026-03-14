@@ -1,7 +1,7 @@
-# CodeClaw Deployment And Config
+# MaClaw Deployment And Config
 
 ## 1. Goal
-This document defines how CodeClaw services are laid out, configured, and deployed.
+This document defines how MaClaw services are laid out, configured, and deployed.
 
 ## 2. Monorepo Layout
 
@@ -28,8 +28,8 @@ This should be the built-in default for:
 Recommended deployable structure:
 
 ```text
-codeclaw-hub/
-  codeclaw-hub(.exe)
+maclaw-hub/
+  maclaw-hub(.exe)
   configs/config.yaml
   web/dist/
   data/
@@ -40,8 +40,8 @@ codeclaw-hub/
 Recommended deployable structure:
 
 ```text
-codeclaw-hubcenter/
-  codeclaw-hubcenter(.exe)
+maclaw-hubcenter/
+  maclaw-hubcenter(.exe)
   configs/config.yaml
   data/
 ```

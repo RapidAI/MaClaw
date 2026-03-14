@@ -14,7 +14,7 @@ fi
 
 SRC_ROOT="$REMOTE_TMP_DIR/src"
 BUILD_ROOT="$REMOTE_TMP_DIR/build"
-ARCHIVE_PATH="$REMOTE_TMP_DIR/codeclaw-src.tar.gz"
+ARCHIVE_PATH="$REMOTE_TMP_DIR/maclaw-src.tar.gz"
 
 rm -rf "$SRC_ROOT" "$BUILD_ROOT"
 mkdir -p "$SRC_ROOT" "$BUILD_ROOT"
@@ -22,9 +22,9 @@ tar -xzf "$ARCHIVE_PATH" -C "$SRC_ROOT"
 cd "$SRC_ROOT"
 
 echo "[remote] Building hub..."
-GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -o "$BUILD_ROOT/codeclaw-hub" ./hub/cmd/hub
+GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -o "$BUILD_ROOT/maclaw-hub" ./hub/cmd/hub
 echo "[remote] Building hubcenter..."
-GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -o "$BUILD_ROOT/codeclaw-hubcenter" ./hubcenter/cmd/hubcenter
+GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -o "$BUILD_ROOT/maclaw-hubcenter" ./hubcenter/cmd/hubcenter
 
 deploy_one() {
   source_dir="$1"
@@ -57,9 +57,9 @@ deploy_one() {
 }
 
 echo "[remote] Deploying hub files..."
-deploy_one "$SRC_ROOT/hub" "$REMOTE_HUB_DIR" "$BUILD_ROOT/codeclaw-hub" "codeclaw-hub"
+deploy_one "$SRC_ROOT/hub" "$REMOTE_HUB_DIR" "$BUILD_ROOT/maclaw-hub" "maclaw-hub"
 echo "[remote] Deploying hubcenter files..."
-deploy_one "$SRC_ROOT/hubcenter" "$REMOTE_HUBCENTER_DIR" "$BUILD_ROOT/codeclaw-hubcenter" "codeclaw-hubcenter"
+deploy_one "$SRC_ROOT/hubcenter" "$REMOTE_HUBCENTER_DIR" "$BUILD_ROOT/maclaw-hubcenter" "maclaw-hubcenter"
 
 echo "[remote] Restarting hub..."
 if [ -x "$REMOTE_HUB_DIR/start.sh" ]; then

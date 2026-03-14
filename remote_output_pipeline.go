@@ -333,3 +333,29 @@ func isNoiseLine(s string) bool {
 	}
 	return boxDrawingOnly.MatchString(trimmed)
 }
+
+// rawChunkLines splits a PTY output chunk into lines with only ANSI
+// stripping applied.  No noise filtering, no length truncation — this
+// is the "terminal-like" raw view used by the desktop console.
+//
+// Empty lines (after ANSI stripping) are preserved as blank strings so
+// that TUI screen redraws are still counted and the frontend can detect
+// new output arriving even when the visible content hasn't changed.
+func rawChunkLines(chunk []byte) []string {
+	text := string(chunk)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+
+	rawLines := strings.Split(text, "\n")
+	out := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		cleaned := strings.TrimRight(stripANSI(line), " \t")
+		out = append(out, cleaned)
+	}
+	// Trim trailing empty lines that are just artifacts of the final
+	// newline in the chunk, but keep interior blanks.
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return out
+}

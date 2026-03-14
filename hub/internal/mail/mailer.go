@@ -117,9 +117,9 @@ func (s *Service) MarkTestSuccess(ctx context.Context) (ConfigState, error) {
 }
 
 func (s *Service) SendLoginConfirmation(ctx context.Context, to string, confirmURL string) error {
-	subject := "CodeClaw Hub sign-in confirmation"
+	subject := "MaClaw Hub sign-in confirmation"
 	body := fmt.Sprintf(
-		"Hello,\r\n\r\nUse the link below to sign in to CodeClaw Hub:\r\n\r\n%s\r\n\r\nIf this was not you, you can ignore this email.\r\n",
+		"Hello,\r\n\r\nUse the link below to sign in to MaClaw Hub:\r\n\r\n%s\r\n\r\nIf this was not you, you can ignore this email.\r\n",
 		confirmURL,
 	)
 	return s.Send(ctx, []string{to}, subject, body)

@@ -22,8 +22,8 @@ func setupTray(app *App, appOptions *options.App) {
 			
 			systray.Run(func() {
 				systray.SetIcon(icon)
-	systray.SetTitle("CodeClaw")
-	systray.SetTooltip("CodeClaw Dashboard")
+	systray.SetTitle("MaClaw")
+	systray.SetTooltip("MaClaw Dashboard")
 				systray.SetOnDClick(func(menu systray.IMenu) {
 					go func() {
 						runtime.WindowShow(app.ctx)

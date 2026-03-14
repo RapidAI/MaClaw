@@ -17,6 +17,7 @@ type fakeProviderAdapter struct {
 }
 
 func (f *fakeProviderAdapter) ProviderName() string { return "claude" }
+func (f *fakeProviderAdapter) ExecutionMode() ExecutionMode { return ExecModePTY }
 func (f *fakeProviderAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	f.lastSpec = spec
 	if f.buildErr != nil {
@@ -226,7 +227,8 @@ func TestRemoteSessionManagerCreateUsesFactoriesAndStoresSession(t *testing.T) {
 	if err := manager.WriteInput(session.ID, "continue\n"); err != nil {
 		t.Fatalf("WriteInput() error = %v", err)
 	}
-	if len(execHandle.writes) != 1 || string(execHandle.writes[0]) != "continue\n" {
+	// PTY mode normalizes \n → \r\n for ConPTY compatibility.
+	if len(execHandle.writes) != 1 || string(execHandle.writes[0]) != "continue\r\n" {
 		t.Fatalf("unexpected execution writes: %#v", execHandle.writes)
 	}
 
@@ -305,6 +307,51 @@ func TestRemoteSessionManagerDefaultProviderFactorySupportsKode(t *testing.T) {
 	}
 	if provider.ProviderName() != "kode" {
 		t.Fatalf("provider.ProviderName() = %q, want %q", provider.ProviderName(), "kode")
+	}
+}
+
+func TestRemoteSessionManagerDefaultProviderFactorySupportsGemini(t *testing.T) {
+	manager := NewRemoteSessionManager(&App{})
+
+	provider, err := manager.providerFactory("gemini")
+	if err != nil {
+		t.Fatalf("providerFactory(gemini) error = %v", err)
+	}
+	if provider.ProviderName() != "gemini" {
+		t.Fatalf("provider.ProviderName() = %q, want %q", provider.ProviderName(), "gemini")
+	}
+	if provider.ExecutionMode() != ExecModePTY {
+		t.Fatalf("provider.ExecutionMode() = %q, want %q", provider.ExecutionMode(), ExecModePTY)
+	}
+}
+
+func TestRemoteSessionManagerDefaultProviderFactorySupportsClaudeSDK(t *testing.T) {
+	manager := NewRemoteSessionManager(&App{})
+
+	provider, err := manager.providerFactory("claude")
+	if err != nil {
+		t.Fatalf("providerFactory(claude) error = %v", err)
+	}
+	if provider.ProviderName() != "claude" {
+		t.Fatalf("provider.ProviderName() = %q, want %q", provider.ProviderName(), "claude")
+	}
+	if provider.ExecutionMode() != ExecModeSDK {
+		t.Fatalf("provider.ExecutionMode() = %q, want %q", provider.ExecutionMode(), ExecModeSDK)
+	}
+}
+
+func TestRemoteSessionManagerDefaultProviderFactorySupportsCursor(t *testing.T) {
+	manager := NewRemoteSessionManager(&App{})
+
+	provider, err := manager.providerFactory("cursor")
+	if err != nil {
+		t.Fatalf("providerFactory(cursor) error = %v", err)
+	}
+	if provider.ProviderName() != "cursor" {
+		t.Fatalf("provider.ProviderName() = %q, want %q", provider.ProviderName(), "cursor")
+	}
+	if provider.ExecutionMode() != ExecModePTY {
+		t.Fatalf("provider.ExecutionMode() = %q, want %q", provider.ExecutionMode(), ExecModePTY)
 	}
 }
 

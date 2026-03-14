@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CodeClaw APP</title>
+  <title>MaClaw APP</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f4f7fb; }
@@ -36,7 +36,7 @@
     const params = new URLSearchParams(window.location.search);
     const center = (params.get("hubcenter") || "").replace(/\/+$/, "");
     const prefillEmail = params.get("prefill_email") || "";
-    const appTitle = "CodeClaw APP";
+    const appTitle = "MaClaw APP";
     let currentEmail = prefillEmail;
     let discoveredHubs = [];
 

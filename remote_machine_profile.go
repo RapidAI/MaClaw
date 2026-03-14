@@ -32,7 +32,7 @@ func remoteAppVersion() string {
 }
 
 func (a *App) currentRemoteMachineProfile(heartbeatSec int, activeSessions int) remoteMachineProfile {
-	name := "CodeClaw Desktop"
+	name := "MaClaw Desktop"
 	hostname, err := os.Hostname()
 	if err == nil && hostname != "" {
 		name = hostname

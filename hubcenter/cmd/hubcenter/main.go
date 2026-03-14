@@ -27,7 +27,7 @@ func run(args []string) error {
 		return runAdminReset(args[2:])
 	}
 
-	configPath := flag.String("config", "", "Path to CodeClaw Hub Center config file")
+	configPath := flag.String("config", "", "Path to MaClaw Hub Center config file")
 	if err := flag.CommandLine.Parse(args); err != nil {
 		return err
 	}
@@ -42,13 +42,13 @@ func run(args []string) error {
 		return err
 	}
 	addr := cfg.Server.ListenHost + ":" + strconv.Itoa(cfg.Server.ListenPort)
-	log.Printf("CodeClaw Hub Center listening on %s", addr)
+	log.Printf("MaClaw Hub Center listening on %s", addr)
 	return http.ListenAndServe(addr, a.HTTPHandler)
 }
 
 func runAdminReset(args []string) error {
 	fs := flag.NewFlagSet("admin reset", flag.ContinueOnError)
-	configPath := fs.String("config", "", "Path to CodeClaw Hub Center config file")
+	configPath := fs.String("config", "", "Path to MaClaw Hub Center config file")
 	username := fs.String("username", "", "New admin username")
 	password := fs.String("password", "", "New admin password")
 	fs.SetOutput(os.Stdout)
@@ -93,6 +93,6 @@ func runAdminReset(args []string) error {
 		return err
 	}
 
-	log.Printf("CodeClaw Hub Center admin credentials reset for username %q", strings.TrimSpace(*username))
+	log.Printf("MaClaw Hub Center admin credentials reset for username %q", strings.TrimSpace(*username))
 	return nil
 }

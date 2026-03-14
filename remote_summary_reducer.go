@@ -114,11 +114,39 @@ func (r *ClaudeSummaryReducer) Apply(current SessionSummary, events []ImportantE
 
 	if len(events) == 0 && len(lines) > 0 {
 		joined := strings.ToLower(strings.Join(lines, " "))
+		// Only update status from raw output lines when the session is in an
+		// active (non-terminal, non-waiting) state.  Once the session reaches
+		// waiting_input, error, or exited, raw output should NOT reset it back
+		// to running/busy — only a recognized event can change the status.
 		if next.Status != string(SessionWaitingInput) && next.Status != string(SessionError) && next.Status != string(SessionExited) {
 			if strings.Contains(joined, "running") || strings.Contains(joined, "reading") || strings.Contains(joined, "editing") {
 				next.Status = string(SessionBusy)
-			} else {
-				next.Status = string(SessionRunning)
+			}
+			// Otherwise keep the current status (don't force it to "running")
+		}
+
+		// Heuristic: detect idle/waiting patterns from raw output even when
+		// no structured event was extracted.  Claude Code shows a prompt
+		// character (e.g. ">") or certain phrases when it finishes a task.
+		if next.Status == string(SessionRunning) || next.Status == string(SessionBusy) {
+			waitingHints := []string{
+				"what would you like",
+				"what do you want",
+				"how can i help",
+				"what should i do",
+				"waiting for",
+				"your turn",
+				"enter a command",
+				"type a message",
+				"send a message",
+			}
+			for _, hint := range waitingHints {
+				if strings.Contains(joined, hint) {
+					next.Status = string(SessionWaitingInput)
+					next.WaitingForUser = true
+					next.SuggestedAction = "Review results and send next instruction"
+					break
+				}
 			}
 		}
 	}

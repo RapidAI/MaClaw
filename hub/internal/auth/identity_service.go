@@ -111,7 +111,7 @@ func (s *IdentityService) UpdateMachineMetadata(ctx context.Context, machineID s
 		return nil
 	}
 	return s.machines.UpdateMetadata(ctx, machineID, store.MachineMetadata{
-		Name:                 defaultIfEmpty(metadata.Name, "CodeClaw Desktop"),
+		Name:                 defaultIfEmpty(metadata.Name, "MaClaw Desktop"),
 		Platform:             defaultIfEmpty(metadata.Platform, "unknown"),
 		Hostname:             strings.TrimSpace(metadata.Hostname),
 		Arch:                 strings.TrimSpace(metadata.Arch),
@@ -841,7 +841,7 @@ func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.U
 		ID:               machineID,
 		UserID:           user.ID,
 		ClientID:         clientID,
-		Name:             defaultIfEmpty(machineName, "CodeClaw Desktop"),
+		Name:             defaultIfEmpty(machineName, "MaClaw Desktop"),
 		Platform:         defaultIfEmpty(platform, "unknown"),
 		MachineTokenHash: hashToken(rawToken),
 		Status:           "offline",

@@ -1,6 +1,6 @@
-﻿# CodeClaw Hub Center
+# MaClaw Hub Center
 
-CodeClaw Hub Center is the directory and entry service for CodeClaw Hubs.
+MaClaw Hub Center is the directory and entry service for MaClaw Hubs.
 
 ## Responsibilities
 
@@ -35,4 +35,4 @@ build.cmd
 build.cmd build
 ```
 
-The packaged output is created under `.\package\codeclaw-hubcenter`.
+The packaged output is created under `.\package\MaClaw-hubcenter`.

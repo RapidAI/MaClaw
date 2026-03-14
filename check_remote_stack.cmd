@@ -17,12 +17,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 
 if errorlevel 1 (
   echo.
-  echo One or more CodeClaw remote services are not healthy yet.
+  echo One or more MaClaw remote services are not healthy yet.
   exit /b 1
 )
 
 echo.
-echo All CodeClaw remote services are healthy.
+echo All MaClaw remote services are healthy.
 echo Hub Center admin: http://127.0.0.1:9388/admin
 echo Hub admin:        http://127.0.0.1:9399/admin
 echo Hub PWA:          http://127.0.0.1:9399/app

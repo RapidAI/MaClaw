@@ -67,8 +67,8 @@ func AdminSendTestMailHandler(mailer mail.Mailer) http.HandlerFunc {
 			return
 		}
 
-		body := "This is a CodeClaw Hub Center test email.\r\n\r\nYour mail configuration is working."
-		if err := mailer.Send(r.Context(), []string{email}, "CodeClaw Hub Center test email", body); err != nil {
+		body := "This is a MaClaw Hub Center test email.\r\n\r\nYour mail configuration is working."
+		if err := mailer.Send(r.Context(), []string{email}, "MaClaw Hub Center test email", body); err != nil {
 			writeError(w, http.StatusInternalServerError, "MAIL_SEND_FAILED", fmt.Sprintf("Failed to send test email: %v", err))
 			return
 		}

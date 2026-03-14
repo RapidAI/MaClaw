@@ -31,11 +31,11 @@ if errorlevel 1 (
   echo      set HUB_ADMIN_PASS=YourExistingPassword
   echo      setup_remote_stack.cmd
   echo   3. Or pass explicit arguments:
-  echo      setup_remote_stack.cmd %HUBCENTER_URL% %HUB_URL% admin YourPass admin@local.codeclaw admin YourPass admin@local.codeclaw
+  echo      setup_remote_stack.cmd %HUBCENTER_URL% %HUB_URL% admin YourPass admin@local.maclaw admin YourPass admin@local.maclaw
   exit /b 1
 )
 
 echo.
-echo CodeClaw remote stack initialization completed.
+echo MaClaw remote stack initialization completed.
 endlocal
 exit /b 0

@@ -10,6 +10,7 @@ type Props = {
     sendRemoteInput: (sessionID: string) => Promise<boolean>;
     interruptRemoteSession: (sessionID: string) => Promise<void>;
     killRemoteSession: (sessionID: string) => Promise<void>;
+    refreshSessionsOnly: () => Promise<void>;
     showToastMessage: (message: string, duration?: number) => void;
     translate: (key: string) => string;
     formatText: (key: string, values?: Record<string, string>) => string;
@@ -47,6 +48,7 @@ export function RemoteSessionList(props: Props) {
         sendRemoteInput,
         interruptRemoteSession,
         killRemoteSession,
+        refreshSessionsOnly,
         showToastMessage,
         translate,
         formatText,
@@ -277,6 +279,7 @@ export function RemoteSessionList(props: Props) {
                         sendRemoteInput={sendRemoteInput}
                         interruptRemoteSession={interruptRemoteSession}
                         killRemoteSession={killRemoteSession}
+                        refreshSessionsOnly={refreshSessionsOnly}
                         showToastMessage={showToastMessage}
                         translate={translate}
                         formatText={formatText}

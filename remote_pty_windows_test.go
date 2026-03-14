@@ -90,11 +90,11 @@ func TestWindowsPTYSessionInteractiveWrite(t *testing.T) {
 }
 
 func TestBuildEnvListMergesProcessEnv(t *testing.T) {
-	t.Setenv("CODECLAW_TEST_BASE", "from-process")
+	t.Setenv("MACLAW_TEST_BASE", "from-process")
 
 	items := buildEnvList(map[string]string{
-		"CODECLAW_TEST_EXTRA": "from-extra",
-		"CODECLAW_TEST_BASE":  "overridden",
+		"MACLAW_TEST_EXTRA": "from-extra",
+		"MACLAW_TEST_BASE":  "overridden",
 	})
 
 	values := map[string]string{}
@@ -105,11 +105,11 @@ func TestBuildEnvListMergesProcessEnv(t *testing.T) {
 		}
 	}
 
-	if values["CODECLAW_TEST_EXTRA"] != "from-extra" {
-		t.Fatalf("CODECLAW_TEST_EXTRA = %q, want %q", values["CODECLAW_TEST_EXTRA"], "from-extra")
+	if values["MACLAW_TEST_EXTRA"] != "from-extra" {
+		t.Fatalf("MACLAW_TEST_EXTRA = %q, want %q", values["MACLAW_TEST_EXTRA"], "from-extra")
 	}
-	if values["CODECLAW_TEST_BASE"] != "overridden" {
-		t.Fatalf("CODECLAW_TEST_BASE = %q, want %q", values["CODECLAW_TEST_BASE"], "overridden")
+	if values["MACLAW_TEST_BASE"] != "overridden" {
+		t.Fatalf("MACLAW_TEST_BASE = %q, want %q", values["MACLAW_TEST_BASE"], "overridden")
 	}
 	if values["PATH"] == "" {
 		t.Fatal("PATH should be preserved when merging env")

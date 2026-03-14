@@ -32,7 +32,7 @@ func remotePTYInteractiveSmokeProbe() (bool, string) {
 	defer func() { _ = pty.Kill() }()
 	defer func() { _ = pty.Close() }()
 
-	if err := pty.Write([]byte("echo codeclaw-conpty-probe\r\n")); err != nil {
+	if err := pty.Write([]byte("echo maclaw-conpty-probe\r\n")); err != nil {
 		return false, "ConPTY interactive probe failed to write: " + err.Error()
 	}
 
@@ -46,7 +46,7 @@ func remotePTYInteractiveSmokeProbe() (bool, string) {
 				return false, "ConPTY interactive probe output closed before echo completed"
 			}
 			output.Write(chunk)
-			if strings.Contains(strings.ToLower(output.String()), "codeclaw-conpty-probe") {
+			if strings.Contains(strings.ToLower(output.String()), "maclaw-conpty-probe") {
 				return true, "ConPTY interactive probe succeeded"
 			}
 		case exit := <-pty.Exit():

@@ -48,7 +48,7 @@ func main() {
 
 	// Create application with options
 	appOptions := &options.App{
-		Title:      "CodeClaw",
+		Title:      "MaClaw",
 		Frameless:  true,
 		Width:      510,
 		Height:     259,
@@ -56,7 +56,7 @@ func main() {
 		OnDomReady: app.domReady,
 		OnShutdown: app.shutdown,
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId: "codeclaw-lock",
+			UniqueId: "maclaw-lock",
 			OnSecondInstanceLaunch: func(secondInstanceData options.SecondInstanceData) {
 				if app.ctx == nil {
 					return

@@ -1,7 +1,7 @@
-# CodeClaw Pocket Entry App
+# MaClaw Pocket Entry App
 
 ## 1. Goal
-CodeClaw Pocket is the lightweight Android/iOS entry app for the remote-control system.
+MaClaw Pocket is the lightweight Android/iOS entry app for the remote-control system.
 
 It should help users:
 

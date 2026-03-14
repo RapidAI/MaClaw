@@ -1,11 +1,11 @@
-﻿server:
+server:
   listen_host: 0.0.0.0
   listen_port: 9399
   public_base_url: https://hub.example.com
 
 database:
   driver: sqlite
-  dsn: ./data/codeclaw-hub.db
+  dsn: ./data/maclaw-hub.db
   wal: true
   busy_timeout_ms: 5000
   max_read_open_conns: 8
@@ -28,8 +28,8 @@ center:
   heartbeat_interval_sec: 30
 
 hub:
-  name: CodeClaw Hub
-  description: Self-hosted CodeClaw remote hub
+  name: MaClaw Hub
+  description: Self-hosted MaClaw remote hub
   visibility: private
 
 mail:
@@ -39,7 +39,7 @@ mail:
   smtp_port: 587
   smtp_username: no-reply@example.com
   smtp_password: change-me
-  from_name: CodeClaw Hub
+  from_name: MaClaw Hub
   from_email: no-reply@example.com
 
 logging:

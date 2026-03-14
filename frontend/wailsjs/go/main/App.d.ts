@@ -120,6 +120,8 @@ export function SelectSkillFile():Promise<string>;
 
 export function SendRemoteSessionInput(arg1:string,arg2:string):Promise<void>;
 
+export function SendRemoteSessionRawInput(arg1:string,arg2:string):Promise<void>;
+
 export function SetEnvCheckInterval(arg1:number):Promise<void>;
 
 export function SetLanguage(arg1:string):Promise<void>;

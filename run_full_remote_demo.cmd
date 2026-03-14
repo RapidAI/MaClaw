@@ -5,7 +5,7 @@ set ROOT_DIR=%~dp0
 set PROJECT_DIR=%ROOT_DIR:~0,-1%
 set HUBCENTER_URL=http://127.0.0.1:9388
 set HUB_URL=http://127.0.0.1:9399
-set EMAIL=admin@local.codeclaw
+set EMAIL=admin@local.maclaw
 set HOLD_SECONDS=60
 set PROGRESS_FILE=%ROOT_DIR%.last_remote_demo.json
 set EXTRA_ARGS=
@@ -24,7 +24,7 @@ if /I "%~8"=="interrupt" set VERIFY_MODE=interrupt
 if /I "%~8"=="kill" set VERIFY_MODE=kill
 
 echo.
-echo Running full CodeClaw remote demo...
+echo Running full MaClaw remote demo...
 echo Email:        %EMAIL%
 echo Project:      %PROJECT_DIR%
 echo Hub Center:   %HUBCENTER_URL%
@@ -66,7 +66,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [OK] Full CodeClaw remote demo completed.
+echo [OK] Full MaClaw remote demo completed.
 echo.
 echo Inspect:
 echo   Hub admin:    %HUB_URL%/admin

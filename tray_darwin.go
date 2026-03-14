@@ -26,7 +26,7 @@ func setupTray(app *App, appOptions *options.App) {
 		go systray.Run(func() {
 			systray.SetIcon(icon)
 			// Do not set title for macOS as requested
-	systray.SetTooltip("CodeClaw Dashboard")
+	systray.SetTooltip("MaClaw Dashboard")
 
 			// Ensure clicking the icon shows the menu immediately on macOS
 			systray.CreateMenu()

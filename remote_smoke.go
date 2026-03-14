@@ -293,7 +293,7 @@ func writeRemoteSmokeProgress(path string, report RemoteSmokeReport) {
 }
 
 func printRemoteSmokeReport(report RemoteSmokeReport) {
-	fmt.Println("CodeClaw Remote Smoke")
+	fmt.Println("MaClaw Remote Smoke")
 	fmt.Println("=====================")
 	fmt.Printf("Tool: %s\n", remoteToolDisplayName(report.Tool))
 	fmt.Printf("Project: %s\n", report.ProjectPath)

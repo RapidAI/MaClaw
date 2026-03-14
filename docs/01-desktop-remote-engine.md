@@ -1,7 +1,7 @@
-# CodeClaw Desktop Remote Engine
+# MaClaw Desktop Remote Engine
 
 ## 1. Goal
-CodeClaw Desktop Remote Engine turns Desktop from a launcher into a session host.
+MaClaw Desktop Remote Engine turns Desktop from a launcher into a session host.
 
 It is responsible for:
 
@@ -9,7 +9,7 @@ It is responsible for:
 - managing remote session lifecycle
 - collecting PTY output
 - generating compressed session state
-- syncing that state to CodeClaw Hub
+- syncing that state to MaClaw Hub
 
 ## 2. Core Modules
 

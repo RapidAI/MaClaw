@@ -8,9 +8,9 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $distDir = Join-Path $root $OutputDir
 $pkgDir = Join-Path $root $PackageDir
-$pkgRoot = Join-Path $pkgDir "codeclaw-hubcenter"
+$pkgRoot = Join-Path $pkgDir "maclaw-hubcenter"
 
-if (!(Test-Path (Join-Path $distDir "codeclaw-hubcenter.exe"))) {
+if (!(Test-Path (Join-Path $distDir "maclaw-hubcenter.exe"))) {
     & (Join-Path $PSScriptRoot "build.ps1") -OutputDir $OutputDir
 }
 
@@ -20,7 +20,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $pkgRoot "configs") | Out-N
 New-Item -ItemType Directory -Force -Path (Join-Path $pkgRoot "data") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $pkgRoot "data\logs") | Out-Null
 
-Copy-Item (Join-Path $distDir "codeclaw-hubcenter.exe") (Join-Path $pkgRoot "codeclaw-hubcenter.exe") -Force
+Copy-Item (Join-Path $distDir "maclaw-hubcenter.exe") (Join-Path $pkgRoot "maclaw-hubcenter.exe") -Force
 Copy-Item (Join-Path $root "configs\config.example.yaml") (Join-Path $pkgRoot "configs\config.yaml") -Force
 
 if (Test-Path (Join-Path $root "web\admin")) {
@@ -28,4 +28,4 @@ if (Test-Path (Join-Path $root "web\admin")) {
     Copy-Item (Join-Path $root "web\admin") (Join-Path $pkgRoot "web\admin") -Recurse -Force
 }
 
-Write-Host "Packaged CodeClaw Hub Center to $pkgRoot"
+Write-Host "Packaged MaClaw Hub Center to $pkgRoot"

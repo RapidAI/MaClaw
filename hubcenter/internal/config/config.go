@@ -45,7 +45,7 @@ func Default() *Config {
 	cfg.Server.ListenPort = 9388
 	cfg.Server.PublicBaseURL = "http://127.0.0.1:9388"
 	cfg.Database.Driver = "sqlite"
-	cfg.Database.DSN = "./data/codeclaw-hubcenter.db"
+	cfg.Database.DSN = "./data/MaClaw-hubcenter.db"
 	cfg.Database.WAL = true
 	cfg.Database.BusyTimeoutMS = 5000
 	cfg.Database.MaxReadOpenConns = 8
@@ -56,7 +56,7 @@ func Default() *Config {
 	cfg.Database.BatchMaxSize = 64
 	cfg.Database.BatchQueueSize = 1024
 	cfg.Mail.Provider = "smtp"
-	cfg.Mail.FromName = "CodeClaw Hub Center"
+	cfg.Mail.FromName = "MaClaw Hub Center"
 	cfg.Logging.Level = "info"
 	cfg.Logging.Dir = "./data/logs"
 	return cfg

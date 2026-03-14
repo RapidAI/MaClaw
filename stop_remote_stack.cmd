@@ -2,16 +2,16 @@
 setlocal
 
 echo.
-echo Stopping local CodeClaw remote stack...
+echo Stopping local MaClaw remote stack...
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference = 'SilentlyContinue';" ^
-  "$windowPatterns = @('CodeClaw Hub Center*', 'CodeClaw Hub*');" ^
+  "$windowPatterns = @('MaClaw Hub Center*', 'MaClaw Hub*');" ^
   "foreach ($pattern in $windowPatterns) {" ^
   "  taskkill /FI ('WINDOWTITLE eq ' + $pattern) /T /F | Out-Null" ^
   "}" ^
-  "$targets = @(@{ Port = 9388; Label = 'CodeClaw Hub Center' }, @{ Port = 9399; Label = 'CodeClaw Hub' });" ^
+  "$targets = @(@{ Port = 9388; Label = 'MaClaw Hub Center' }, @{ Port = 9399; Label = 'MaClaw Hub' });" ^
   "foreach ($target in $targets) {" ^
   "  $pids = Get-NetTCPConnection -State Listen -LocalPort $target.Port -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique;" ^
   "  if (-not $pids) {" ^
@@ -29,7 +29,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "}"
 
 echo.
-echo CodeClaw remote stack stop sequence finished.
+echo MaClaw remote stack stop sequence finished.
 echo.
 
 endlocal

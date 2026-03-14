@@ -4,7 +4,7 @@ setlocal
 set ROOT_DIR=%~dp0
 
 echo.
-echo Resetting local CodeClaw remote stack and running the full demo...
+echo Resetting local MaClaw remote stack and running the full demo...
 echo.
 
 call "%ROOT_DIR%clean_remote_stack.cmd"

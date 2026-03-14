@@ -60,6 +60,12 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 	if name == "kode" {
 		binaryNames = []string{"kode"}
 	}
+	if name == "cursor" {
+		binaryNames = []string{"cursor-agent", "agent"}
+	}
+	if name == "gemini" {
+		binaryNames = []string{"gemini"}
+	}
 
 	tm.app.log(fmt.Sprintf("GetToolStatus: Looking for binary names: %v", binaryNames))
 
@@ -688,6 +694,8 @@ func (tm *ToolManager) GetPackageName(name string) string {
 		return "@kilocode/cli"
 	case "kode":
 		return "@shareai-lab/kode"
+	case "cursor":
+		return "" // Cursor Agent is not an npm package
 	default:
 		return ""
 	}
@@ -729,7 +737,7 @@ func (a *App) UpdateTool(name string) error {
 func (a *App) CheckToolsStatus() []ToolStatus {
 	tm := NewToolManager(a)
 	// Check kilo first, then other tools
-	tools := []string{"kilo", "claude", "gemini", "codex", "opencode", "codebuddy", "qoder", "kode", "iflow"}
+	tools := []string{"kilo", "claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "qoder", "kode", "iflow"}
 	statuses := make([]ToolStatus, len(tools))
 	for i, name := range tools {
 		statuses[i] = tm.GetToolStatus(name)

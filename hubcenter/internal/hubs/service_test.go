@@ -73,7 +73,7 @@ func TestRegisterAndHeartbeatHub(t *testing.T) {
 
 	result, err := svc.RegisterHub(ctx, RegisterHubRequest{
 		OwnerEmail:     "owner@example.com",
-		Name:           "CodeClaw Team Hub",
+		Name:           "MaClaw Team Hub",
 		Description:    "Team remote coding hub",
 		BaseURL:        "https://teamhub.example.com",
 		Host:           "teamhub.example.com",
@@ -139,7 +139,7 @@ func TestRegisterHubUsesConfiguredPublicBaseURLForConfirmation(t *testing.T) {
 	}
 	if _, err := svc.RegisterHub(ctx, RegisterHubRequest{
 		OwnerEmail: "owner@example.com",
-		Name:       "CodeClaw Team Hub",
+		Name:       "MaClaw Team Hub",
 		BaseURL:    "https://teamhub.example.com",
 	}); err != nil {
 		t.Fatalf("RegisterHub: %v", err)

@@ -90,6 +90,13 @@ func (e *ClaudeEventExtractor) detectInputRequired(session *RemoteSession, line 
 		"choose an option",
 		"approve",
 		"yes/no",
+		"y/n",
+		"do you want to",
+		"would you like to",
+		"proceed?",
+		"accept?",
+		"allow?",
+		"permission",
 	}
 	for _, kw := range keywords {
 		if strings.Contains(lower, kw) {
@@ -162,6 +169,17 @@ func (e *ClaudeEventExtractor) detectTaskCompleted(session *RemoteSession, line 
 		"let me know if", "let me know when",
 		"is there anything else", "anything else you'd like",
 		"shall i", "would you like me to",
+		"what would you like", "what do you want me to",
+		"how can i help", "what should i do next",
+		"what's next", "next steps",
+		"i'm done", "i am done",
+		"changes have been", "updates have been",
+		"i've made the", "i have made the",
+		"i've updated", "i have updated",
+		"i've added", "i have added",
+		"i've fixed", "i have fixed",
+		"i've created", "i have created",
+		"i've implemented", "i have implemented",
 	}
 	for _, kw := range completionKeywords {
 		if strings.Contains(lower, kw) {

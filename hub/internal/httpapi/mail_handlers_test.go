@@ -95,7 +95,7 @@ func TestMailConfigHandlersSaveAndLoad(t *testing.T) {
 		"smtp_encryption": "starttls",
 		"smtp_username":   "admin@gmail.com",
 		"smtp_password":   "app-password",
-		"from_name":       "CodeClaw Hub",
+		"from_name":       "MaClaw Hub",
 		"from_email":      "admin@gmail.com",
 	})
 

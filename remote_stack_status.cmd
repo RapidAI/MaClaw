@@ -8,7 +8,7 @@ set DEMO_EMAIL=
 if not "%~1"=="" set PROGRESS_FILE=%~1
 
 echo.
-echo CodeClaw Remote Stack Status
+echo MaClaw Remote Stack Status
 echo ============================
 echo Root:          %ROOT_DIR%
 echo Progress File: %PROGRESS_FILE%

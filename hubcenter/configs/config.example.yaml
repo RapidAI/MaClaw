@@ -1,11 +1,11 @@
-﻿server:
+server:
   listen_host: 0.0.0.0
   listen_port: 9388
   public_base_url: http://127.0.0.1:9388
 
 database:
   driver: sqlite
-  dsn: ./data/codeclaw-hubcenter.db
+  dsn: ./data/maclaw-hubcenter.db
   wal: true
   busy_timeout_ms: 5000
   max_read_open_conns: 8
@@ -20,7 +20,7 @@ mail:
   smtp_port: 587
   smtp_username: no-reply@example.com
   smtp_password: change-me
-  from_name: CodeClaw Hub Center
+  from_name: MaClaw Hub Center
   from_email: no-reply@example.com
 
 logging:

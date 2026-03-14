@@ -331,8 +331,8 @@ func TestListRemoteSessionsIncludesWorkspaceFields(t *testing.T) {
 		Tool:           "claude",
 		Title:          "demo",
 		ProjectPath:    `D:\workprj\demo`,
-		WorkspacePath:  `D:\tmp\codeclaw-worktrees\sess-1`,
-		WorkspaceRoot:  `D:\tmp\codeclaw-worktrees\sess-1`,
+		WorkspacePath:  `D:\tmp\maclaw-worktrees\sess-1`,
+		WorkspaceRoot:  `D:\tmp\maclaw-worktrees\sess-1`,
 		WorkspaceMode:  WorkspaceModeGitWorktree,
 		WorkspaceIsGit: true,
 		ModelID:        "m1",
@@ -349,7 +349,7 @@ func TestListRemoteSessionsIncludesWorkspaceFields(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("session count = %d, want 1", len(sessions))
 	}
-	if sessions[0].WorkspacePath != `D:\tmp\codeclaw-worktrees\sess-1` {
+	if sessions[0].WorkspacePath != `D:\tmp\maclaw-worktrees\sess-1` {
 		t.Fatalf("workspace path = %q", sessions[0].WorkspacePath)
 	}
 	if sessions[0].WorkspaceMode != WorkspaceModeGitWorktree {

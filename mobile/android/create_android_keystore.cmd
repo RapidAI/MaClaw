@@ -3,9 +3,9 @@ setlocal
 
 cd /d "%~dp0"
 
-set "KEYSTORE_PATH=%CD%\codeclaw-release.jks"
+set "KEYSTORE_PATH=%CD%\maclaw-release.jks"
 if not "%~1"=="" set "KEYSTORE_PATH=%~1"
-set "KEY_ALIAS=codeclaw"
+set "KEY_ALIAS=maclaw"
 if not "%~2"=="" set "KEY_ALIAS=%~2"
 
 set "KEYTOOL="

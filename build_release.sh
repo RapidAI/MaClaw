@@ -8,7 +8,7 @@ export MACOSX_DEPLOYMENT_TARGET=10.15
 export GOCACHE="${PWD}/.gocache"
 mkdir -p "$GOCACHE"
 
-APP_NAME="CodeClaw"
+APP_NAME="MaClaw"
 # Read version from build_number if exists, else default
 if [ -f "build_number" ]; then
     BUILD_NUM=$(cat build_number)
@@ -23,7 +23,7 @@ echo "Syncing version $VERSION to frontend..."
 sed -i '' "s/const APP_VERSION = \".*\";/const APP_VERSION = \"$VERSION\";/" frontend/src/App.tsx
 echo "export const buildNumber = \"$BUILD_NUM\";" > frontend/src/version.ts
 
-IDENTIFIER="com.wails.CodeClaw"
+IDENTIFIER="com.wails.MaClaw"
 OUTPUT_DIR="dist"
 BIN_DIR="build/bin"
 
@@ -136,13 +136,13 @@ build_linux() {
         mkdir -p "$APP_DIR/usr/share/icons/hicolor/512x512/apps"
         
         # Copy binary
-        cp "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" "$APP_DIR/usr/bin/codeclaw"
+        cp "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" "$APP_DIR/usr/bin/maclaw"
         
         # Copy desktop file
-        cp "build/linux/codeclaw.desktop" "$APP_DIR/"
+        cp "build/linux/maclaw.desktop" "$APP_DIR/"
         
         # Copy icon
-        cp "build/appicon.png" "$APP_DIR/codeclaw.png"
+        cp "build/appicon.png" "$APP_DIR/maclaw.png"
         cp "build/appicon.png" "$APP_DIR/.DirIcon"
         
         # Create AppRun
@@ -150,7 +150,7 @@ build_linux() {
 #!/bin/bash
 HERE="\$(dirname "\$(readlink -f "\${0}")")"
 export PATH="\${HERE}/usr/bin:\${PATH}"
-exec codeclaw "\$@"
+exec maclaw "\$@"
 EOF
         chmod +x "$APP_DIR/AppRun"
         
@@ -172,9 +172,9 @@ EOF
             if [ "$ARCH" == "arm64" ]; then AI_ARCH="aarch64"; fi
             
             # Try running normally, if fails (no FUSE), try extract-and-run
-if ! ARCH=$AI_ARCH appimagetool "$APP_DIR" "${OUTPUT_DIR}/CodeClaw-${VERSION}-${AI_ARCH}.AppImage"; then
+if ! ARCH=$AI_ARCH appimagetool "$APP_DIR" "${OUTPUT_DIR}/MaClaw-${VERSION}-${AI_ARCH}.AppImage"; then
                 echo "    Standard run failed (likely no FUSE), trying --appimage-extract-and-run..."
-  ARCH=$AI_ARCH appimagetool --appimage-extract-and-run "$APP_DIR" "${OUTPUT_DIR}/CodeClaw-${VERSION}-${AI_ARCH}.AppImage"
+  ARCH=$AI_ARCH appimagetool --appimage-extract-and-run "$APP_DIR" "${OUTPUT_DIR}/MaClaw-${VERSION}-${AI_ARCH}.AppImage"
             fi
         else
             echo "    Skipping AppImage generation: appimagetool not found (and could not be downloaded/run on this OS)."
@@ -251,7 +251,7 @@ create_app_bundle() {
     <key>CFBundleVersion</key>
     <string>${VERSION}</string>
     <key>CFBundleGetInfoString</key>
-<string>CodeClaw</string>
+<string>MaClaw</string>
     <key>CFBundleShortVersionString</key>
     <string>${VERSION}</string>
     <key>CFBundleIconFile</key>

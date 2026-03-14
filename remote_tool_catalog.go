@@ -43,8 +43,8 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		BinaryName:      "claude",
 		DefaultTitle:    "Claude Session",
 		SupportsProxy:   true,
-		ReadinessHint:   "Checks Anthropic-compatible auth, Claude launch command, and remote PTY readiness.",
-		SmokeHint:       "Runs registration, PTY, launch, real session start, and Hub visibility verification for Claude.",
+		ReadinessHint:   "Checks Anthropic-compatible auth, Claude launch command, and SDK stream-json readiness.",
+		SmokeHint:       "Runs registration, launch, real session start, and Hub visibility verification for Claude (SDK mode).",
 		ConfigSelector:  func(cfg AppConfig) ToolConfig { return cfg.Claude },
 		ProviderFactory: func(app *App) ProviderAdapter { return NewClaudeAdapter(app) },
 	},
@@ -112,6 +112,28 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.Kode },
 		ProviderFactory:       func(app *App) ProviderAdapter { return NewKodeAdapter(app) },
 	},
+	"gemini": {
+		Name:           "gemini",
+		DisplayName:    "Gemini",
+		BinaryName:     "gemini",
+		DefaultTitle:   "Gemini Session",
+		SupportsProxy:  true,
+		ReadinessHint:  "Checks Gemini CLI installation, API key, and remote PTY readiness.",
+		SmokeHint:      "Runs registration, PTY, launch, real session start, and Hub visibility verification for Gemini.",
+		ConfigSelector: func(cfg AppConfig) ToolConfig { return cfg.Gemini },
+		ProviderFactory: func(app *App) ProviderAdapter { return NewGeminiAdapter(app) },
+	},
+	"cursor": {
+		Name:           "cursor",
+		DisplayName:    "Cursor Agent",
+		BinaryName:     "cursor-agent",
+		DefaultTitle:   "Cursor Session",
+		SupportsProxy:  true,
+		ReadinessHint:  "Checks Cursor Agent CLI installation and remote PTY readiness.",
+		SmokeHint:      "Runs registration, PTY, launch, real session start, and Hub visibility verification for Cursor Agent.",
+		ConfigSelector: func(cfg AppConfig) ToolConfig { return cfg.Cursor },
+		ProviderFactory: func(app *App) ProviderAdapter { return NewCursorAdapter(app) },
+	},
 }
 
 func normalizeRemoteToolName(toolName string) string {
@@ -178,19 +200,25 @@ func remoteToolVisible(cfg AppConfig, toolName string) bool {
 		return cfg.ShowKilo
 	case "kode":
 		return cfg.ShowKode
+	case "gemini":
+		return cfg.ShowGemini
+	case "cursor":
+		return cfg.ShowCursor
 	default:
 		return false
 	}
 }
 
 func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
-	order := []string{"claude", "codex", "opencode", "iflow", "kilo", "kode"}
+	order := []string{"claude", "gemini", "codex", "opencode", "cursor", "iflow", "kilo", "kode"}
 	out := make([]RemoteToolMetadataView, 0, len(order))
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		cfg = AppConfig{
+			ShowGemini:   true,
 			ShowCodex:    true,
 			ShowOpenCode: true,
+			ShowCursor:   true,
 			ShowIFlow:    true,
 			ShowKilo:     true,
 			ShowKode:     true,

@@ -1,7 +1,7 @@
-# CodeClaw Hub Center Architecture
+# MaClaw Hub Center Architecture
 
 ## 1. Goal
-CodeClaw Hub Center is the directory and entry service for multiple hubs.
+MaClaw Hub Center is the directory and entry service for multiple hubs.
 
 Its default official address is:
 

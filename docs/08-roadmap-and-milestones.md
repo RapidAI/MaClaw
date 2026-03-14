@@ -1,4 +1,4 @@
-# CodeClaw Roadmap And Milestones
+# MaClaw Roadmap And Milestones
 
 ## 1. Priority Order
 

@@ -221,13 +221,13 @@
     }
 
     function saveLastHub(email, url, name) {
-      try { localStorage.setItem("codeclaw_last_hub", JSON.stringify({ email: email, url: url, name: name })); } catch(_) {}
+      try { localStorage.setItem("maclaw_last_hub", JSON.stringify({ email: email, url: url, name: name })); } catch(_) {}
     }
     function loadLastHub() {
-      try { var v = localStorage.getItem("codeclaw_last_hub"); return v ? JSON.parse(v) : null; } catch(_) { return null; }
+      try { var v = localStorage.getItem("maclaw_last_hub"); return v ? JSON.parse(v) : null; } catch(_) { return null; }
     }
     function clearLastHub() {
-      try { localStorage.removeItem("codeclaw_last_hub"); } catch(_) {}
+      try { localStorage.removeItem("maclaw_last_hub"); } catch(_) {}
     }
 
     // Auto-reconnect: if we have a saved hub, jump straight to it.

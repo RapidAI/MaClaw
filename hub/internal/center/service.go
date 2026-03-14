@@ -265,7 +265,7 @@ func (s *Service) Register(ctx context.Context, ownerEmail string) (*Registratio
 			"supports_remote_control": true,
 			"supports_pwa":            true,
 			"supports_tools":          []string{"claude"},
-			"brand":                   "CodeClaw",
+			"brand":                   "MaClaw",
 		},
 	}
 

@@ -7,7 +7,7 @@ Unicode true
     !define INFO_COMPANYNAME "RapidAI"
 !endif
 !ifndef INFO_PRODUCTNAME
-!define INFO_PRODUCTNAME "CodeClaw"
+!define INFO_PRODUCTNAME "MaClaw"
 !endif
 !ifndef INFO_PRODUCTVERSION
     !define INFO_PRODUCTVERSION "4.1.0.9200"

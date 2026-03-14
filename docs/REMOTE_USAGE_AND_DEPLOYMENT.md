@@ -1,13 +1,13 @@
-# CodeClaw Remote Usage And Deployment Guide
+# MaClaw Remote Usage And Deployment Guide
 
 ## 1. Overview
 
-CodeClaw remote mode consists of four parts:
+MaClaw remote mode consists of four parts:
 
-- `CodeClaw Desktop`: hosts Claude Code locally and reports session state.
-- `CodeClaw Hub`: manages users, machines, sessions, PWA, and admin backend.
-- `CodeClaw Hub Center`: registers hubs and resolves entry URLs.
-- `CodeClaw PWA / Pocket`: mobile-facing remote control entry and session UI.
+- `MaClaw Desktop`: hosts Claude Code locally and reports session state.
+- `MaClaw Hub`: manages users, machines, sessions, PWA, and admin backend.
+- `MaClaw Hub Center`: registers hubs and resolves entry URLs.
+- `MaClaw PWA / Pocket`: mobile-facing remote control entry and session UI.
 
 For local joint debugging in this repository, the default ports are:
 
@@ -107,7 +107,7 @@ verify_remote_controls.cmd http://127.0.0.1:9399 D:\workprj\aicoder\.last_remote
 Default local admin credentials used by helper scripts:
 
 - Username: `admin`
-- Password: `CodeClaw123!`
+- Password: `MaClaw123!`
 
 If you need to override them for setup scripts, you can use environment variables:
 

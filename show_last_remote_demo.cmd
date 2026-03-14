@@ -8,7 +8,7 @@ set HAS_PWA_URL=
 if not "%~1"=="" set PROGRESS_FILE=%~1
 
 echo.
-echo CodeClaw Remote Demo Status
+echo MaClaw Remote Demo Status
 echo Progress file: %PROGRESS_FILE%
 echo.
 

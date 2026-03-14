@@ -103,6 +103,7 @@ type AppConfig struct {
 	IFlow                ToolConfig      `json:"iflow"`
 	Kilo                 ToolConfig      `json:"kilo"`
 	Kode                 ToolConfig      `json:"kode"`
+	Cursor               ToolConfig      `json:"cursor"`
 	Projects             []ProjectConfig `json:"projects"`
 	CurrentProject       string          `json:"current_project"` // ID of the current project
 	ActiveTool           string          `json:"active_tool"`     // "claude", "gemini", or "codex"
@@ -115,6 +116,7 @@ type AppConfig struct {
 	ShowIFlow            bool            `json:"show_iflow"`
 	ShowKilo             bool            `json:"show_kilo"`
 	ShowKode             bool            `json:"show_kode"`
+	ShowCursor           bool            `json:"show_cursor"`
 	Language             string          `json:"language"`
 	PowerOptimization    bool            `json:"power_optimization"`
 	CheckUpdateOnStartup bool            `json:"check_update_on_startup"`
@@ -546,6 +548,72 @@ func (a *App) buildKodeLaunchEnv(
 	return env, nil
 }
 
+func (a *App) buildGeminiLaunchEnv(
+	config AppConfig,
+	selectedModel *ModelConfig,
+	projectDir string,
+	useProxy bool,
+) (map[string]string, error) {
+	if selectedModel == nil {
+		return nil, fmt.Errorf("selected gemini model is nil")
+	}
+
+	env := map[string]string{}
+	if selectedModel.ApiKey != "" {
+		env["GEMINI_API_KEY"] = selectedModel.ApiKey
+		env["GOOGLE_API_KEY"] = selectedModel.ApiKey
+	}
+	if selectedModel.ModelUrl != "" {
+		env["GOOGLE_GEMINI_BASE_URL"] = selectedModel.ModelUrl
+	}
+	if selectedModel.ModelId != "" {
+		env["GEMINI_MODEL"] = selectedModel.ModelId
+	}
+
+	if useProxy {
+		proxyURL := a.resolveProjectProxyURL(config, projectDir)
+		if proxyURL != "" {
+			env["HTTP_PROXY"] = proxyURL
+			env["HTTPS_PROXY"] = proxyURL
+			env["http_proxy"] = proxyURL
+			env["https_proxy"] = proxyURL
+		}
+	}
+
+	return env, nil
+}
+
+func (a *App) buildCursorLaunchEnv(
+	config AppConfig,
+	selectedModel *ModelConfig,
+	projectDir string,
+	useProxy bool,
+) (map[string]string, error) {
+	if selectedModel == nil {
+		return nil, fmt.Errorf("selected cursor model is nil")
+	}
+
+	env := map[string]string{}
+	if selectedModel.ApiKey != "" {
+		env["CURSOR_API_KEY"] = selectedModel.ApiKey
+	}
+	if selectedModel.ModelUrl != "" {
+		env["CURSOR_BASE_URL"] = selectedModel.ModelUrl
+	}
+
+	if useProxy {
+		proxyURL := a.resolveProjectProxyURL(config, projectDir)
+		if proxyURL != "" {
+			env["HTTP_PROXY"] = proxyURL
+			env["HTTPS_PROXY"] = proxyURL
+			env["http_proxy"] = proxyURL
+			env["https_proxy"] = proxyURL
+		}
+	}
+
+	return env, nil
+}
+
 func (a *App) buildRemoteLaunchEnvForTool(
 	toolName string,
 	config AppConfig,
@@ -566,6 +634,10 @@ func (a *App) buildRemoteLaunchEnvForTool(
 		return a.buildKiloLaunchEnv(config, selectedModel, projectDir, useProxy)
 	case "kode":
 		return a.buildKodeLaunchEnv(config, selectedModel, projectDir, useProxy)
+	case "gemini":
+		return a.buildGeminiLaunchEnv(config, selectedModel, projectDir, useProxy)
+	case "cursor":
+		return a.buildCursorLaunchEnv(config, selectedModel, projectDir, useProxy)
 	default:
 		return nil, fmt.Errorf("remote launch is not supported for tool: %s", toolName)
 	}
@@ -2460,6 +2532,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 						ShowCodex:          true,
 						ShowOpenCode:       true,
 						ShowKode:           true,
+						ShowCursor:         true,
 						ShowCodeBuddy:      true,
 						ShowQoder:          true,
 						ShowIFlow:          true,
@@ -2537,6 +2610,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 			ShowIFlow:          true,
 			ShowKilo:           true,
 			ShowKode:           true,
+			ShowCursor:         true,
 			PowerOptimization:  true,
 			EnvCheckInterval:   7,    // Default to 7 days
 			UseWindowsTerminal: true, // Default to true, will only work if Windows Terminal is installed
@@ -2557,6 +2631,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		ShowGemini:         true,
 		ShowCodex:          true,
 		ShowOpenCode:       true,
+		ShowCursor:         true,
 		ShowCodeBuddy:      true,
 		ShowQoder:          true,
 		ShowIFlow:          true,
@@ -2579,6 +2654,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	if _, ok := rawConfig["show_kilo"]; ok {
 		hasShowKilo = true
 	}
+	hasShowCursor := false
+	if _, ok := rawConfig["show_cursor"]; ok {
+		hasShowCursor = true
+	}
 	hasPowerOptimization := false
 	if _, ok := rawConfig["power_optimization"]; ok {
 		hasPowerOptimization = true
@@ -2592,6 +2671,9 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	// Set default values for new fields if not present in old configs
 	if !hasShowKilo {
 		config.ShowKilo = true
+	}
+	if !hasShowCursor {
+		config.ShowCursor = true
 	}
 	if !hasPowerOptimization {
 		config.PowerOptimization = true
@@ -3128,14 +3210,14 @@ type UpdateResult struct {
 func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	// Use GitHub API instead of web scraping
 	// Updated URL: aicoder instead of cceasy
-	url := "https://api.github.com/repos/RapidAI/CodeClaw/releases/latest"
+	url := "https://api.github.com/repos/RapidAI/MaClaw/releases/latest"
 	a.log(a.tr("CheckUpdate: Starting check against %s", url))
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		a.log(a.tr("CheckUpdate: Failed to create request: %v", err))
 		return UpdateResult{LatestVersion: "检查失败", ReleaseUrl: ""}, err
 	}
-	req.Header.Set("User-Agent", "CodeClaw")
+	req.Header.Set("User-Agent", "MaClaw")
 	// Add GitHub token for authentication (helps avoid rate limiting)
 	// Priority: 1) GITHUB_TOKEN environment variable, 2) Built-in default token (base64 encoded 3 times)
 	const defaultGitHubTokenEncoded = "V2pKb2QxZ3hjREJPVmtZeVVXNXNUV0ZZVmtOaFZFSktWbXBuTWxsWVNrOVNhbWhYWTI1a1ZsRlVUbXBWZWtaUVlsWk9TR1IzUFQwPQ=="
@@ -3232,9 +3314,9 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	var downloadUrl string
 	var targetFileName string
 	if goruntime.GOOS == "darwin" {
-		targetFileName = "CodeClaw-Universal.pkg"
+		targetFileName = "MaClaw-Universal.pkg"
 	} else {
-		targetFileName = "CodeClaw-Setup.exe"
+		targetFileName = "MaClaw-Setup.exe"
 	}
 	// Parse assets array from GitHub API response
 	if assets, ok := release["assets"].([]interface{}); ok && len(assets) > 0 {
@@ -3332,7 +3414,7 @@ func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "CodeClaw-App")
+	req.Header.Set("User-Agent", "MaClaw-App")
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -3529,7 +3611,7 @@ func (a *App) fetchRemoteMarkdown(repo, file string) (string, error) {
 	}
 	// GitHub API headers - request raw content directly
 	req.Header.Set("Accept", "application/vnd.github.v3.raw")
-	req.Header.Set("User-Agent", "CodeClaw-App")
+	req.Header.Set("User-Agent", "MaClaw-App")
 	req.Header.Set("Cache-Control", "no-cache, no-store")
 	req.Header.Set("Pragma", "no-cache")
 	// Add GitHub token for authentication (helps avoid rate limiting)
@@ -3993,7 +4075,7 @@ func (a *App) getOSVersion() string {
 func (a *App) PackLog(logContent string) (string, error) {
 	// Create a temp file for the zip
 	timestamp := time.Now().Format("20060102_150405")
-	fileName := fmt.Sprintf("codeclaw_log_%s.zip", timestamp)
+	fileName := fmt.Sprintf("maclaw_log_%s.zip", timestamp)
 	tempDir := os.TempDir()
 	zipPath := filepath.Join(tempDir, fileName)
 	// Create the zip file

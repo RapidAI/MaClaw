@@ -1,4 +1,4 @@
-# CodeClaw Remote Quick Start
+# MaClaw Remote Quick Start
 
 ## Full Guide
 
@@ -13,8 +13,8 @@ Double-click:
 
 This starts:
 
-- `CodeClaw Hub Center` on `http://127.0.0.1:9388`
-- `CodeClaw Hub` on `http://127.0.0.1:9399`
+- `MaClaw Hub Center` on `http://127.0.0.1:9388`
+- `MaClaw Hub` on `http://127.0.0.1:9399`
 
 Main URLs:
 
@@ -92,30 +92,30 @@ clean_remote_stack.cmd
 Default local admin credentials created by `setup_remote_stack.cmd`:
 
 - Username: `admin`
-- Password: `CodeClaw123!`
-- Email: `admin@local.codeclaw`
+- Password: `MaClaw123!`
+- Email: `admin@local.maclaw`
 
 If either admin backend has already been initialized with a different password, override the defaults before running `setup_remote_stack.cmd`:
 
 ```bat
 set HUBCENTER_ADMIN_USER=admin
 set HUBCENTER_ADMIN_PASS=YourExistingPassword
-set HUBCENTER_ADMIN_EMAIL=admin@local.codeclaw
+set HUBCENTER_ADMIN_EMAIL=admin@local.maclaw
 set HUB_ADMIN_USER=admin
 set HUB_ADMIN_PASS=YourExistingPassword
-set HUB_ADMIN_EMAIL=admin@local.codeclaw
+set HUB_ADMIN_EMAIL=admin@local.maclaw
 setup_remote_stack.cmd
 ```
 
 You can also pass explicit credentials as arguments:
 
 ```bat
-setup_remote_stack.cmd http://127.0.0.1:9388 http://127.0.0.1:9399 admin YourPass admin@local.codeclaw admin YourPass admin@local.codeclaw
+setup_remote_stack.cmd http://127.0.0.1:9388 http://127.0.0.1:9399 admin YourPass admin@local.maclaw admin YourPass admin@local.maclaw
 ```
 
 ## Desktop remote activation
 
-1. Open CodeClaw Desktop
+1. Open MaClaw Desktop
 2. Open the `Claude Remote` panel
 3. Set:
    - `Hub URL` to your Hub, for example `http://127.0.0.1:9399`
@@ -183,7 +183,7 @@ This will:
 
 Defaults:
 
-- email: `admin@local.codeclaw`
+- email: `admin@local.maclaw`
 - project: current repo root
 - hold seconds: `60`
 - progress file: `D:\workprj\aicoder\.last_remote_demo.json`
@@ -203,7 +203,7 @@ run_full_remote_demo_auto_open.cmd
 You can also ask the full demo to send one test input through the viewer API, and optionally issue an `interrupt` or `kill` afterwards:
 
 ```bat
-run_full_remote_demo.cmd admin@local.codeclaw D:\workprj\aicoder 15 D:\workprj\aicoder\.last_remote_demo.json "" auto-open "Summarize current status in one sentence." interrupt
+run_full_remote_demo.cmd admin@local.maclaw D:\workprj\aicoder 15 D:\workprj\aicoder\.last_remote_demo.json "" auto-open "Summarize current status in one sentence." interrupt
 ```
 
 If you want to start from a clean local state and immediately run the full auto-open demo:

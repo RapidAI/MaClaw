@@ -82,7 +82,7 @@ func SetupAdminHandler(admins *auth.AdminService) http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,
-			"message": "CodeClaw Hub Center admin initialized",
+			"message": "MaClaw Hub Center admin initialized",
 		})
 	}
 }

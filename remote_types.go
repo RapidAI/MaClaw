@@ -143,6 +143,11 @@ type RemoteSession struct {
 	Preview SessionPreview
 	Events  []ImportantEvent
 
+	// RawOutputLines stores the most recent PTY output lines with only
+	// ANSI stripping applied (no noise filtering, no event extraction).
+	// Used by the desktop console for a terminal-like raw view.
+	RawOutputLines []string
+
 	Exec     ExecutionHandle
 	Provider ProviderAdapter
 

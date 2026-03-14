@@ -238,6 +238,10 @@ export function SendRemoteSessionInput(arg1, arg2) {
   return window['go']['main']['App']['SendRemoteSessionInput'](arg1, arg2);
 }
 
+export function SendRemoteSessionRawInput(arg1, arg2) {
+  return window['go']['main']['App']['SendRemoteSessionRawInput'](arg1, arg2);
+}
+
 export function SetEnvCheckInterval(arg1) {
   return window['go']['main']['App']['SetEnvCheckInterval'](arg1);
 }

@@ -35,7 +35,7 @@ func NewRouter(
 		userLookup = identity.UsersRepo()
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", HealthHandler("codeclaw-hub"))
+	mux.HandleFunc("GET /healthz", HealthHandler("maclaw-hub"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(admins))
 	mux.HandleFunc("POST /api/admin/setup", SetupAdminHandler(admins))
 	mux.HandleFunc("POST /api/admin/login", AdminLoginHandler(admins))

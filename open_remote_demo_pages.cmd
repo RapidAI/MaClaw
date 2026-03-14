@@ -4,8 +4,8 @@ setlocal
 set ROOT_DIR=%~dp0
 set HUBCENTER_URL=http://127.0.0.1:9388
 set HUB_URL=http://127.0.0.1:9399
-set DEMO_EMAIL=admin@local.codeclaw
-set ENCODED_EMAIL=admin%%40local.codeclaw
+set DEMO_EMAIL=admin@local.maclaw
+set ENCODED_EMAIL=admin%%40local.maclaw
 set PROGRESS_FILE=%ROOT_DIR%.last_remote_demo.json
 
 if not "%~1"=="" set HUBCENTER_URL=%~1
@@ -23,7 +23,7 @@ for /f "usebackq delims=" %%U in (`powershell -NoProfile -ExecutionPolicy Bypass
 )
 set "PWA_URL=%HUB_URL%/app?email=%ENCODED_EMAIL%^&entry=app^&autologin=1"
 
-echo Opening CodeClaw remote demo pages...
+echo Opening MaClaw remote demo pages...
 echo   Hub admin:    %HUB_URL%/admin
 echo   Hub PWA:      %PWA_URL%
 echo   Center admin: %HUBCENTER_URL%/admin

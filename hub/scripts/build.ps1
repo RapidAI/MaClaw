@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$OutputDir = ".\dist"
 )
 
@@ -18,10 +18,10 @@ Push-Location $projectRoot
 try {
     $env:GOCACHE = $goCacheDir
     $env:GOMODCACHE = $goModCacheDir
-    go build -o (Join-Path $targetDir "codeclaw-hub.exe") .\hub\cmd\hub
+    go build -o (Join-Path $targetDir "maclaw-hub.exe") .\hub\cmd\hub
 }
 finally {
     Pop-Location
 }
 
-Write-Host "Built CodeClaw Hub to $targetDir"
+Write-Host "Built MaClaw Hub to $targetDir"

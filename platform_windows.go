@@ -117,7 +117,7 @@ func (a *App) platformInitConsole() {
 	allocConsole.Call()
 
 	setConsoleTitle := kernel32.NewProc("SetConsoleTitleW")
-	title, _ := syscall.UTF16PtrFromString("CodeClaw - Environment Setup")
+	title, _ := syscall.UTF16PtrFromString("MaClaw - Environment Setup")
 	setConsoleTitle.Call(uintptr(unsafe.Pointer(title)))
 }
 
@@ -1606,7 +1606,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	batchContent += "  echo ========================================\r\n"
 	batchContent += ")\r\n"
 
-	tempBatchPath := filepath.Join(os.TempDir(), fmt.Sprintf("codeclaw_launch_%d.bat", time.Now().UnixNano()))
+	tempBatchPath := filepath.Join(os.TempDir(), fmt.Sprintf("maclaw_launch_%d.bat", time.Now().UnixNano()))
 	err := os.WriteFile(tempBatchPath, []byte(batchContent), 0644)
 	if err != nil {
 		a.log("Error creating batch file: " + err.Error())
@@ -1692,7 +1692,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			codexBatchContent += "  echo ========================================\r\n"
 			codexBatchContent += ")\r\n"
 
-			codexBatchPath := filepath.Join(os.TempDir(), fmt.Sprintf("codeclaw_codex_%d.bat", time.Now().UnixNano()))
+			codexBatchPath := filepath.Join(os.TempDir(), fmt.Sprintf("maclaw_codex_%d.bat", time.Now().UnixNano()))
 			if err := os.WriteFile(codexBatchPath, []byte(codexBatchContent), 0644); err != nil {
 				a.log("Error creating codex batch file: " + err.Error())
 				a.ShowMessage("Launch Error", "Failed to create temporary batch file")
@@ -1711,15 +1711,15 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				wtPath := a.getWindowsTerminalPath()
 				if wtPath == "" {
 					a.log("Windows Terminal path not found, falling back to cmd")
-					cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`,
+					cmdLine = fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`,
 						binaryName, projectDir, codexBatchPath)
 				} else {
 					// Use start command to properly handle paths with spaces
-					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "CodeClaw - %s" cmd /k "%s"`,
+					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "MaClaw - %s" cmd /k "%s"`,
 						wtPath, projectDir, binaryName, codexBatchPath)
 				}
 			} else {
-				cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`,
+				cmdLine = fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`,
 					binaryName, projectDir, codexBatchPath)
 			}
 
@@ -1739,14 +1739,14 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				wtPath := a.getWindowsTerminalPath()
 				if wtPath == "" {
 					a.log("Windows Terminal path not found, falling back to cmd")
-					cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
+					cmdLine = fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
 				} else {
 					// Use start command to properly handle paths with spaces
-					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "CodeClaw - %s" cmd /k "%s"`,
+					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "MaClaw - %s" cmd /k "%s"`,
 						wtPath, projectDir, binaryName, tempBatchPath)
 				}
 			} else {
-				cmdLine = fmt.Sprintf(`cmd /c start "CodeClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
+				cmdLine = fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
 			}
 
 			cmd := exec.Command("cmd")

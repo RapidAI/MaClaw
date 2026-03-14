@@ -7,7 +7,7 @@ SDK=iphonesimulator
 DIST_DIR="$(CDPATH= cd -- "$(dirname "$0")/../dist" && pwd)"
 DERIVED_DATA_DIR="$DIST_DIR/ios-deriveddata"
 APP_BUNDLE="$DERIVED_DATA_DIR/Build/Products/${CONFIGURATION}-iphonesimulator/RapidAIHubShell.app"
-COPIED_APP="$DIST_DIR/codeclaw-ios-simulator-release.app"
+COPIED_APP="$DIST_DIR/maclaw-ios-simulator-release.app"
 
 if ! command -v xcodebuild >/dev/null 2>&1; then
   echo "[ERROR] xcodebuild was not found."

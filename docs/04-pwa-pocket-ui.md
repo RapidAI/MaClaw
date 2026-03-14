@@ -1,7 +1,7 @@
-# CodeClaw PWA Pocket UI
+# MaClaw PWA Pocket UI
 
 ## 1. Goal
-CodeClaw PWA is the mobile-facing remote-control UI. It is designed for phone usage, not for full desktop IDE parity.
+MaClaw PWA is the mobile-facing remote-control UI. It is designed for phone usage, not for full desktop IDE parity.
 
 ## 2. Pocket-First Principle
 

@@ -118,11 +118,11 @@ func (s *Service) MarkTestSuccess(ctx context.Context) (ConfigState, error) {
 
 func (s *Service) SendHubRegistrationConfirmation(ctx context.Context, to string, confirmURL string, hubName string) error {
 	if strings.TrimSpace(hubName) == "" {
-		hubName = "CodeClaw Hub"
+		hubName = "MaClaw Hub"
 	}
 	subject := fmt.Sprintf("%s registration confirmation", hubName)
 	body := fmt.Sprintf(
-		"Hello,\r\n\r\nA Hub requested registration with CodeClaw Hub Center.\r\n\r\nHub: %s\r\nConfirm registration:\r\n%s\r\n\r\nIf you did not request this, you can ignore this email.\r\n",
+		"Hello,\r\n\r\nA Hub requested registration with MaClaw Hub Center.\r\n\r\nHub: %s\r\nConfirm registration:\r\n%s\r\n\r\nIf you did not request this, you can ignore this email.\r\n",
 		hubName,
 		confirmURL,
 	)

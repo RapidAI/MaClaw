@@ -68,7 +68,7 @@ func Default() *Config {
 	cfg.Server.ListenPort = 9399
 
 	cfg.Database.Driver = "sqlite"
-	cfg.Database.DSN = "./data/codeclaw-hub.db"
+	cfg.Database.DSN = "./data/maclaw-hub.db"
 	cfg.Database.WAL = true
 	cfg.Database.BusyTimeoutMS = 5000
 	cfg.Database.MaxReadOpenConns = 8
@@ -90,13 +90,13 @@ func Default() *Config {
 	cfg.Center.RegisterOnStartup = true
 	cfg.Center.HeartbeatIntervalSec = 30
 
-	cfg.Hub.Name = "CodeClaw Hub"
-	cfg.Hub.Description = "Self-hosted CodeClaw remote hub"
+	cfg.Hub.Name = "MaClaw Hub"
+	cfg.Hub.Description = "Self-hosted MaClaw remote hub"
 	cfg.Hub.Visibility = "private"
 
 	cfg.Mail.Provider = "smtp"
 	cfg.Mail.Encryption = "auto"
-	cfg.Mail.FromName = "CodeClaw Hub"
+	cfg.Mail.FromName = "MaClaw Hub"
 
 	cfg.Logging.Level = "info"
 	cfg.Logging.Dir = "./data/logs"

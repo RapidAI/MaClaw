@@ -129,7 +129,7 @@ func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 
 func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", HealthHandler("codeclaw-hubcenter"))
+	mux.HandleFunc("GET /healthz", HealthHandler("MaClaw-hubcenter"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(adminService))
 	mux.HandleFunc("POST /api/admin/setup", SetupAdminHandler(adminService))
 	mux.HandleFunc("POST /api/admin/login", AdminLoginHandler(adminService))

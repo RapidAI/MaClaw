@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CodeClaw APP</title>
+  <title>MaClaw APP</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f4f7fb; }
@@ -36,7 +36,7 @@
     const params = new URLSearchParams(window.location.search);
     const center = (params.get("hubcenter") || "").replace(/\/+$/, "");
     const prefillEmail = params.get("prefill_email") || "";
-    const appTitle = "CodeClaw APP";
+    const appTitle = "MaClaw APP";
     let currentEmail = prefillEmail;
     let discoveredHubs = [];
 
@@ -186,13 +186,13 @@
     }
 
     function saveLastHub(email, url, name) {
-      try { localStorage.setItem("codeclaw_last_hub", JSON.stringify({ email: email, url: url, name: name })); } catch(_) {}
+      try { localStorage.setItem("maclaw_last_hub", JSON.stringify({ email: email, url: url, name: name })); } catch(_) {}
     }
     function loadLastHub() {
-      try { var v = localStorage.getItem("codeclaw_last_hub"); return v ? JSON.parse(v) : null; } catch(_) { return null; }
+      try { var v = localStorage.getItem("maclaw_last_hub"); return v ? JSON.parse(v) : null; } catch(_) { return null; }
     }
     function clearLastHub() {
-      try { localStorage.removeItem("codeclaw_last_hub"); } catch(_) {}
+      try { localStorage.removeItem("maclaw_last_hub"); } catch(_) {}
     }
 
     // Auto-reconnect: if we have a saved hub, jump straight to it.

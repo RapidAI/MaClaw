@@ -62,7 +62,7 @@ func TestPTYEnvironmentVariablePassthrough(t *testing.T) {
 		Cols:    120,
 		Rows:    32,
 		Env: map[string]string{
-			"CODECLAW_TEST_VAR": "pty-env-check-ok",
+			"MACLAW_TEST_VAR": "pty-env-check-ok",
 		},
 	})
 	if err != nil {
@@ -71,7 +71,7 @@ func TestPTYEnvironmentVariablePassthrough(t *testing.T) {
 	defer func() { _ = pty.Kill() }()
 	defer func() { _ = pty.Close() }()
 
-	if err := pty.Write([]byte("echo %CODECLAW_TEST_VAR%\r\n")); err != nil {
+	if err := pty.Write([]byte("echo %MACLAW_TEST_VAR%\r\n")); err != nil {
 		t.Fatalf("write env echo: %v", err)
 	}
 

@@ -219,7 +219,7 @@ func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 
 	registerResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/register", map[string]any{
 		"owner_email":     "owner@example.com",
-		"name":            "CodeClaw Team Hub",
+		"name":            "MaClaw Team Hub",
 		"description":     "Team remote coding hub",
 		"base_url":        "https://teamhub.example.com",
 		"visibility":      "shared",
@@ -289,7 +289,7 @@ func TestAdminServerConfigUpdatesConfirmationBaseURL(t *testing.T) {
 
 	registerResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/register", map[string]any{
 		"owner_email":     "owner@example.com",
-		"name":            "CodeClaw Team Hub",
+		"name":            "MaClaw Team Hub",
 		"base_url":        "https://teamhub.example.com",
 		"visibility":      "shared",
 		"enrollment_mode": "approval",

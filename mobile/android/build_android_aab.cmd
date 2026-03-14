@@ -30,7 +30,7 @@ if exist "%AAB_DIR%" (
     if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
     if exist "%AAB_DIR%\*.aab" (
         for %%F in ("%AAB_DIR%\*.aab") do (
-            copy /y "%%~fF" "%DIST_DIR%\codeclaw-release.aab" >nul
+            copy /y "%%~fF" "%DIST_DIR%\maclaw-release.aab" >nul
         )
     )
     echo.
@@ -38,7 +38,7 @@ if exist "%AAB_DIR%" (
     echo AAB output directory:
     echo   %AAB_DIR%
     echo Copied AAB to:
-    echo   %DIST_DIR%\codeclaw-release.aab
+    echo   %DIST_DIR%\maclaw-release.aab
     dir /b "%AAB_DIR%\*.aab" 2>nul
 ) else (
     echo.

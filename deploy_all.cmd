@@ -20,7 +20,7 @@ if "%CGO_ENABLED%"=="" (
 )
 
 set "BUILD_ROOT=%ROOT_DIR%build\deploy"
-set "ARCHIVE_PATH=%BUILD_ROOT%\codeclaw-src.tar.gz"
+set "ARCHIVE_PATH=%BUILD_ROOT%\maclaw-src.tar.gz"
 set "REMOTE_SCRIPT=%BUILD_ROOT%\remote_deploy.sh"
 set "PASSWORD_FILE=%TEMP%\deploy_all_password_%RANDOM%_%RANDOM%.txt"
 
@@ -118,7 +118,7 @@ if errorlevel 1 (
 )
 
 echo [4/5] Uploading source archive...
-"%PSCP_EXE%" -batch -hostkey "%REMOTE_HOSTKEY%" -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%ARCHIVE_PATH%" "%REMOTE_USER%@%REMOTE_HOST%:%REMOTE_TMP_DIR%/codeclaw-src.tar.gz"
+"%PSCP_EXE%" -batch -hostkey "%REMOTE_HOSTKEY%" -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%ARCHIVE_PATH%" "%REMOTE_USER%@%REMOTE_HOST%:%REMOTE_TMP_DIR%/maclaw-src.tar.gz"
 if errorlevel 1 (
   echo [ERROR] Upload failed for source archive.
   goto :fail
@@ -210,7 +210,7 @@ setlocal DisableDelayedExpansion
   echo.
   echo SRC_ROOT="$REMOTE_TMP_DIR/src"
   echo BUILD_ROOT="$REMOTE_TMP_DIR/build"
-  echo ARCHIVE_PATH="$REMOTE_TMP_DIR/codeclaw-src.tar.gz"
+  echo ARCHIVE_PATH="$REMOTE_TMP_DIR/maclaw-src.tar.gz"
   echo.
   echo rm -rf "$SRC_ROOT" "$BUILD_ROOT"
   echo mkdir -p "$SRC_ROOT" "$BUILD_ROOT"
@@ -218,9 +218,9 @@ setlocal DisableDelayedExpansion
   echo cd "$SRC_ROOT"
   echo.
   echo echo "[remote] Building hub..."
-  echo GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -o "$BUILD_ROOT/codeclaw-hub" ./hub/cmd/hub
+  echo GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -o "$BUILD_ROOT/maclaw-hub" ./hub/cmd/hub
   echo echo "[remote] Building hubcenter..."
-  echo GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -o "$BUILD_ROOT/codeclaw-hubcenter" ./hubcenter/cmd/hubcenter
+  echo GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -o "$BUILD_ROOT/maclaw-hubcenter" ./hubcenter/cmd/hubcenter
   echo.
   echo deploy_one^(^) {
   echo   source_dir="$1"
@@ -253,9 +253,9 @@ setlocal DisableDelayedExpansion
   echo }
   echo.
   echo echo "[remote] Deploying hub files..."
-  echo deploy_one "$SRC_ROOT/hub" "$REMOTE_HUB_DIR" "$BUILD_ROOT/codeclaw-hub" "codeclaw-hub"
+  echo deploy_one "$SRC_ROOT/hub" "$REMOTE_HUB_DIR" "$BUILD_ROOT/maclaw-hub" "maclaw-hub"
   echo echo "[remote] Deploying hubcenter files..."
-  echo deploy_one "$SRC_ROOT/hubcenter" "$REMOTE_HUBCENTER_DIR" "$BUILD_ROOT/codeclaw-hubcenter" "codeclaw-hubcenter"
+  echo deploy_one "$SRC_ROOT/hubcenter" "$REMOTE_HUBCENTER_DIR" "$BUILD_ROOT/maclaw-hubcenter" "maclaw-hubcenter"
   echo.
   echo echo "[remote] Restarting hub..."
   echo if [ -x "$REMOTE_HUB_DIR/start.sh" ]; then

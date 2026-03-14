@@ -101,7 +101,7 @@ func TestHubRepositoriesRoundTrip(t *testing.T) {
 	hub := &store.HubInstance{
 		ID:               "hub_1",
 		OwnerEmail:       "owner@example.com",
-		Name:             "CodeClaw Hub",
+		Name:             "MaClaw Hub",
 		Description:      "Primary hub",
 		BaseURL:          "https://hub.example.com",
 		Visibility:       "private",

@@ -1,17 +1,17 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "CodeClaw",
-  "outputfilename": "CodeClaw",
+  "name": "MaClaw",
+  "outputfilename": "MaClaw",
   "frontend:install": "npm install --cache ./.npm_cache",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "info": {
-    "productName": "CodeClaw",
+    "productName": "MaClaw",
     "productVersion": "5.0.0.9300",
     "companyName": "RapidAI",
     "copyright": "Copyright (C) 2026 RapidAI",
-    "comments": "CodeClaw - AI Coding Assistant"
+    "comments": "MaClaw: Master your code, seize the machine."
   },
   "author": {
     "name": "mayong",

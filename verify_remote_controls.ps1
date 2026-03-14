@@ -101,7 +101,7 @@ if ([string]::IsNullOrWhiteSpace($sessionId)) {
 $hubUrl = $HubUrl.TrimEnd('/')
 
 Write-Host ""
-Write-Host "Verifying CodeClaw remote controls..." -ForegroundColor Cyan
+Write-Host "Verifying MaClaw remote controls..." -ForegroundColor Cyan
 Write-Host "Hub:          $hubUrl"
 Write-Host "Email:        $email"
 Write-Host "Machine ID:   $machineId"

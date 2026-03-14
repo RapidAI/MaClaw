@@ -85,12 +85,12 @@ function Ensure-Service {
     Start-ServiceProcess -Label $Label -ServiceDir $ServiceDir -Command $Command
 }
 
-Ensure-Service -Port 9388 -Label 'CodeClaw Hub Center' -HealthUrl ($HubCenterUrl.TrimEnd('/') + '/healthz') -ServiceDir $hubCenterDir -Command 'go run .\cmd\hubcenter --config .\configs\config.yaml'
+Ensure-Service -Port 9388 -Label 'MaClaw Hub Center' -HealthUrl ($HubCenterUrl.TrimEnd('/') + '/healthz') -ServiceDir $hubCenterDir -Command 'go run .\cmd\hubcenter --config .\configs\config.yaml'
 Start-Sleep -Seconds 2
-Ensure-Service -Port 9399 -Label 'CodeClaw Hub' -HealthUrl ($HubUrl.TrimEnd('/') + '/healthz') -ServiceDir $hubDir -Command 'go run .\cmd\hub --config .\configs\config.yaml'
+Ensure-Service -Port 9399 -Label 'MaClaw Hub' -HealthUrl ($HubUrl.TrimEnd('/') + '/healthz') -ServiceDir $hubDir -Command 'go run .\cmd\hub --config .\configs\config.yaml'
 
 Write-Host ''
-Write-Host 'CodeClaw remote stack launch requested.'
+Write-Host 'MaClaw remote stack launch requested.'
 Write-Host ('Hub Center:   ' + $HubCenterUrl)
 Write-Host ('Hub:          ' + $HubUrl)
 Write-Host ('Hub PWA:      ' + $HubUrl.TrimEnd('/') + '/app')

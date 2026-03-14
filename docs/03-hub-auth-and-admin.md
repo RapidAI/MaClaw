@@ -1,7 +1,7 @@
-# CodeClaw Hub Auth And Admin
+# MaClaw Hub Auth And Admin
 
 ## 1. Goal
-This document defines how CodeClaw Hub handles:
+This document defines how MaClaw Hub handles:
 
 - user identity
 - SN issuance

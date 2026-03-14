@@ -131,8 +131,8 @@ func initGitRepoWithCommit(t *testing.T, dir string) {
 
 	initGitRepo(t, dir)
 
-	runGitTest(t, dir, "config", "user.email", "codeclaw@example.com")
-	runGitTest(t, dir, "config", "user.name", "CodeClaw Test")
+	runGitTest(t, dir, "config", "user.email", "maclaw@example.com")
+	runGitTest(t, dir, "config", "user.name", "MaClaw Test")
 
 	readmePath := filepath.Join(dir, "README.md")
 	if err := os.WriteFile(readmePath, []byte("seed"), 0o644); err != nil {

@@ -530,7 +530,7 @@ func safeConnUserID(ctx *ws.ConnContext) string {
 
 func defaultMachineName(v string) string {
 	if strings.TrimSpace(v) == "" {
-		return "CodeClaw Desktop"
+		return "MaClaw Desktop"
 	}
 	return strings.TrimSpace(v)
 }

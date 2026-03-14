@@ -1,6 +1,6 @@
-﻿# CodeClaw Hub
+# MaClaw Hub
 
-CodeClaw Hub is the self-hosted remote control service for CodeClaw Desktop.
+MaClaw Hub is the self-hosted remote control service for MaClaw Desktop.
 
 ## Responsibilities
 
@@ -35,4 +35,4 @@ build.cmd
 build.cmd build
 ```
 
-The packaged output is created under `.\package\codeclaw-hub`.
+The packaged output is created under `.\package\maclaw-hub`.

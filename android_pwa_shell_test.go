@@ -13,7 +13,7 @@ func TestGenerateAndroidPWAShell_UsesMobileDirDefaults(t *testing.T) {
 
 	result, err := app.GenerateAndroidPWAShell(AndroidPWAShellRequest{
 		OutputDir: filepath.Join(tempDir, "mobile", "android"),
-		AppName:   "CodeClaw APP",
+		AppName:   "MaClaw APP",
 	})
 	if err != nil {
 		t.Fatalf("GenerateAndroidPWAShell() error = %v", err)
@@ -34,8 +34,8 @@ func TestGenerateAndroidPWAShell_UsesMobileDirDefaults(t *testing.T) {
 	if !strings.Contains(string(buildGradle), defaultRemoteHubCenterURL) {
 		t.Fatalf("app/build.gradle does not contain default hub center url")
 	}
-	if !strings.Contains(string(buildGradle), `codeclaw-${variant.buildType.name}.apk`) {
-		t.Fatalf("app/build.gradle does not configure codeclaw APK naming")
+	if !strings.Contains(string(buildGradle), `maclaw-${variant.buildType.name}.apk`) {
+		t.Fatalf("app/build.gradle does not configure maclaw APK naming")
 	}
 	if !strings.Contains(string(buildGradle), "RELEASE_STORE_FILE") {
 		t.Fatalf("app/build.gradle does not support release signing configuration")
@@ -70,7 +70,7 @@ func TestGenerateAndroidPWAShell_UsesMobileDirDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", aabCmdPath, err)
 	}
-	if !strings.Contains(string(aabCmd), "bundleRelease") || !strings.Contains(string(aabCmd), "codeclaw-release.aab") {
+	if !strings.Contains(string(aabCmd), "bundleRelease") || !strings.Contains(string(aabCmd), "maclaw-release.aab") {
 		t.Fatalf("build_android_aab.cmd does not build or rename release AAB output")
 	}
 
@@ -129,7 +129,7 @@ func TestGenerateMobilePWAShell_CreatesAndroidAndIOSProjects(t *testing.T) {
 
 	result, err := app.GenerateMobilePWAShell(MobilePWAShellRequest{
 		OutputDir: filepath.Join(tempDir, "mobile"),
-		AppName:   "CodeClaw APP",
+		AppName:   "MaClaw APP",
 	})
 	if err != nil {
 		t.Fatalf("GenerateMobilePWAShell() error = %v", err)
@@ -155,7 +155,7 @@ func TestGenerateMobilePWAShell_CreatesAndroidAndIOSProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", distReadmePath, err)
 	}
-	if !strings.Contains(string(distReadme), "codeclaw-release.apk") || !strings.Contains(string(distReadme), "codeclaw-ios-simulator.app") {
+	if !strings.Contains(string(distReadme), "maclaw-release.apk") || !strings.Contains(string(distReadme), "maclaw-ios-simulator.app") {
 		t.Fatalf("dist README is missing expected mobile deliverable entries")
 	}
 
@@ -191,7 +191,7 @@ func TestGenerateMobilePWAShell_CreatesAndroidAndIOSProjects(t *testing.T) {
 	if !strings.Contains(string(iosBuildScript), "ios-deriveddata") {
 		t.Fatalf("build_ios_simulator.sh does not write derived data under mobile/dist")
 	}
-	if !strings.Contains(string(iosBuildScript), "codeclaw-ios-simulator.app") {
+	if !strings.Contains(string(iosBuildScript), "maclaw-ios-simulator.app") {
 		t.Fatalf("build_ios_simulator.sh does not copy the simulator app into mobile/dist")
 	}
 
@@ -200,7 +200,7 @@ func TestGenerateMobilePWAShell_CreatesAndroidAndIOSProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", iosReleaseBuildScriptPath, err)
 	}
-	if !strings.Contains(string(iosReleaseBuildScript), "CONFIGURATION=Release") || !strings.Contains(string(iosReleaseBuildScript), "codeclaw-ios-simulator-release.app") {
+	if !strings.Contains(string(iosReleaseBuildScript), "CONFIGURATION=Release") || !strings.Contains(string(iosReleaseBuildScript), "maclaw-ios-simulator-release.app") {
 		t.Fatalf("build_ios_simulator_release.sh does not configure release simulator output")
 	}
 }

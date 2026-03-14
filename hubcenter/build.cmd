@@ -12,15 +12,15 @@ if /I "%~1"=="build" (
 
 if errorlevel 1 (
     echo.
-    echo CodeClaw Hub Center build failed.
+    echo MaClaw Hub Center build failed.
     exit /b %errorlevel%
 )
 
 echo.
 if /I "%~1"=="build" (
-    echo CodeClaw Hub Center build completed.
+    echo MaClaw Hub Center build completed.
 ) else (
-    echo CodeClaw Hub Center package completed.
+    echo MaClaw Hub Center package completed.
 )
 
 endlocal

@@ -1,7 +1,7 @@
-# CodeClaw Hub Architecture
+# MaClaw Hub Architecture
 
 ## 1. Goal
-CodeClaw Hub is the live work hub for remote sessions. It receives compressed state from Desktop and exposes the mobile-facing control plane.
+MaClaw Hub is the live work hub for remote sessions. It receives compressed state from Desktop and exposes the mobile-facing control plane.
 
 ## 2. Responsibilities
 

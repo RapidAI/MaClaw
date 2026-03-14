@@ -63,7 +63,7 @@ android {
 
     applicationVariants.configureEach { variant ->
         variant.outputs.configureEach {
-            outputFileName = "codeclaw-${variant.buildType.name}.apk"
+            outputFileName = "maclaw-${variant.buildType.name}.apk"
         }
     }
 }

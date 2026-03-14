@@ -82,12 +82,19 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		return session, err
 	}
 
-	strategy, err := m.executionFactory(spec)
-	if err != nil {
-		session := m.newFailedSession(sessionID, spec, provider, now, err)
-		m.storeSession(session)
-		m.syncFailedSession(session)
-		return session, err
+	// Choose execution strategy based on provider mode
+	var strategy ExecutionStrategy
+	if provider.ExecutionMode() == ExecModeSDK {
+		strategy = NewSDKExecutionStrategy()
+	} else {
+		var err2 error
+		strategy, err2 = m.executionFactory(spec)
+		if err2 != nil {
+			session := m.newFailedSession(sessionID, spec, provider, now, err2)
+			m.storeSession(session)
+			m.syncFailedSession(session)
+			return session, err2
+		}
 	}
 
 	execHandle, err := strategy.Start(cmd)
@@ -141,7 +148,12 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		_ = m.hubClient.SendImportantEvent(initEvent)
 	}
 
-	go m.runOutputLoop(session)
+	// SDK sessions get a dedicated output loop that handles structured messages
+	if _, isSDK := session.Exec.(*SDKExecutionHandle); isSDK {
+		go m.runSDKOutputLoop(session)
+	} else {
+		go m.runOutputLoop(session)
+	}
 	go m.runExitLoop(session)
 
 	return session, nil
@@ -159,7 +171,7 @@ func (m *RemoteSessionManager) newFailedSession(
 		title = filepath.Base(spec.ProjectPath)
 	}
 	if title == "" || title == "." || title == string(filepath.Separator) {
-		title = "Claude Session"
+		title = remoteToolDisplayName(spec.Tool) + " Session"
 	}
 
 	message := createErr.Error()
@@ -182,8 +194,8 @@ func (m *RemoteSessionManager) newFailedSession(
 			Source:          string(normalizeRemoteLaunchSource(spec.LaunchSource)),
 			Status:          string(SessionError),
 			Severity:        "error",
-			CurrentTask:     "Starting Claude session",
-			ProgressSummary: "Claude remote launch failed before the session became interactive",
+			CurrentTask:     fmt.Sprintf("Starting %s session", remoteToolDisplayName(spec.Tool)),
+			ProgressSummary: fmt.Sprintf("%s remote launch failed before the session became interactive", remoteToolDisplayName(spec.Tool)),
 			LastResult:      message,
 			SuggestedAction: "Review the launch diagnostics and try again",
 			UpdatedAt:       now.Unix(),
@@ -266,6 +278,18 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 	if s.Exec == nil {
 		return fmt.Errorf("session execution not available: %s", sessionID)
 	}
+
+	// SDK handles accept JSON messages — skip PTY line-ending normalization.
+	if _, isSDK := s.Exec.(*SDKExecutionHandle); isSDK {
+		m.app.log(fmt.Sprintf("[remote-write-sdk] session=%s, len=%d, text=%q",
+			sessionID, len(text), text))
+		err := s.Exec.Write([]byte(text))
+		if err != nil {
+			m.app.log(fmt.Sprintf("[remote-write-sdk] FAILED session=%s: %v", sessionID, err))
+		}
+		return err
+	}
+
 	// ConPTY on Windows requires "\r\n" (or "\r") to simulate pressing Enter.
 	// A bare "\n" is treated as a literal linefeed and does NOT trigger command
 	// execution.  Normalize all line endings to "\r\n" so that input from any
@@ -273,7 +297,15 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 	// ending the client sends.
 	normalized := strings.ReplaceAll(text, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\n", "\r\n")
-	return s.Exec.Write([]byte(normalized))
+	m.app.log(fmt.Sprintf("[remote-write] session=%s, raw_len=%d, normalized_len=%d, normalized=%q, raw_output_count=%d",
+		sessionID, len(text), len(normalized), normalized, len(s.RawOutputLines)))
+	err := s.Exec.Write([]byte(normalized))
+	if err != nil {
+		m.app.log(fmt.Sprintf("[remote-write] FAILED session=%s: %v", sessionID, err))
+	} else {
+		m.app.log(fmt.Sprintf("[remote-write] OK session=%s", sessionID))
+	}
+	return err
 }
 
 func (m *RemoteSessionManager) Interrupt(sessionID string) error {
@@ -300,6 +332,7 @@ func (m *RemoteSessionManager) Kill(sessionID string) error {
 
 func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 	pipeline := m.pipelineFactory()
+	responder := newStartupAutoResponder(m.app, s)
 
 	output := sessionOutput(s)
 	if output == nil {
@@ -307,9 +340,30 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 	}
 
 	for chunk := range output {
+		// Capture raw output (ANSI-stripped only, no filtering) for terminal view
+		rawLines := rawChunkLines(chunk)
+		if len(rawLines) > 0 {
+			s.RawOutputLines = append(s.RawOutputLines, rawLines...)
+			if len(s.RawOutputLines) > 500 {
+				s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-500:]
+			}
+			m.app.log(fmt.Sprintf("[remote-output] session=%s, chunk_bytes=%d, new_raw_lines=%d, total_raw_lines=%d",
+				s.ID, len(chunk), len(rawLines), len(s.RawOutputLines)))
+
+			// Check for startup prompts and auto-respond
+			responder.feed(rawLines)
+		} else if len(chunk) > 0 {
+			// Chunk had bytes but produced no raw lines (all ANSI/control)
+			m.app.log(fmt.Sprintf("[remote-output] session=%s, chunk_bytes=%d (all control/ANSI, no visible lines), total_raw_lines=%d",
+				s.ID, len(chunk), len(s.RawOutputLines)))
+		}
+
 		result := pipeline.Consume(s, chunk)
 		s.UpdatedAt = time.Now()
-		changed := false
+		// Always notify the UI when any PTY output arrives, even if the
+		// pipeline filters everything out.  The raw terminal view needs
+		// every chunk to stay responsive.
+		changed := true
 
 		if result.Summary != nil {
 			s.Summary = *result.Summary
@@ -344,6 +398,168 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 
 		if changed {
 			m.app.refreshPowerOptimizationState()
+			m.app.emitRemoteStateChanged()
+		}
+	}
+}
+
+// runSDKOutputLoop handles output for SDK-mode sessions (Claude Code stream-json).
+// It reads from the Output() channel for text preview and also processes
+// structured SDK messages from Messages() for proper event generation.
+func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
+	sdkHandle, ok := s.Exec.(*SDKExecutionHandle)
+	if !ok {
+		// Fallback to PTY loop if somehow not an SDK handle
+		m.runOutputLoop(s)
+		return
+	}
+
+	// Enable auto-approve for yolo mode sessions
+	// (The adapter already passes --dangerously-skip-permissions, but
+	// if permission-prompt-tool is used, we auto-approve here too)
+
+	pipeline := m.pipelineFactory()
+	output := sdkHandle.Output()
+	messages := sdkHandle.Messages()
+	ctrlReqs := sdkHandle.ControlRequests()
+
+	// Mark session as running once we start receiving output
+	sessionStarted := false
+
+	for {
+		select {
+		case chunk, ok := <-output:
+			if !ok {
+				output = nil
+				if messages == nil {
+					return
+				}
+				continue
+			}
+
+			// Store raw lines for terminal view
+			rawLines := rawChunkLines(chunk)
+			if len(rawLines) > 0 {
+				s.RawOutputLines = append(s.RawOutputLines, rawLines...)
+				if len(s.RawOutputLines) > 500 {
+					s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-500:]
+				}
+			}
+
+			// Use the existing pipeline for preview and summary
+			result := pipeline.Consume(s, chunk)
+			s.UpdatedAt = time.Now()
+
+			if result.Summary != nil {
+				s.Summary = *result.Summary
+				s.Status = SessionStatus(result.Summary.Status)
+				if m.hubClient != nil {
+					_ = m.hubClient.SendSessionSummary(s.Summary)
+				}
+			}
+
+			if result.PreviewDelta != nil {
+				s.Preview.SessionID = s.ID
+				s.Preview.OutputSeq = result.PreviewDelta.OutputSeq
+				s.Preview.UpdatedAt = result.PreviewDelta.UpdatedAt
+				s.Preview.PreviewLines = append(s.Preview.PreviewLines, result.PreviewDelta.AppendLines...)
+				if len(s.Preview.PreviewLines) > 100 {
+					s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-100:]
+				}
+				if m.hubClient != nil {
+					_ = m.hubClient.SendPreviewDelta(*result.PreviewDelta)
+				}
+			}
+
+			for _, evt := range result.Events {
+				s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
+				if m.hubClient != nil {
+					_ = m.hubClient.SendImportantEvent(evt)
+				}
+			}
+
+			m.app.refreshPowerOptimizationState()
+			m.app.emitRemoteStateChanged()
+
+		case msg, ok := <-messages:
+			if !ok {
+				messages = nil
+				if output == nil {
+					return
+				}
+				continue
+			}
+
+			now := time.Now()
+			s.UpdatedAt = now
+
+			// Update session status based on SDK message types
+			switch msg.Type {
+			case "system":
+				if msg.Subtype == "init" {
+					if !sessionStarted {
+						sessionStarted = true
+						s.Status = SessionRunning
+						s.Summary.Status = string(SessionRunning)
+						s.Summary.Severity = "info"
+						s.Summary.CurrentTask = "Session initialized"
+						s.Summary.UpdatedAt = now.Unix()
+						if m.hubClient != nil {
+							_ = m.hubClient.SendSessionSummary(s.Summary)
+						}
+					}
+				}
+
+			case "assistant":
+				s.Status = SessionBusy
+				s.Summary.Status = string(SessionBusy)
+				s.Summary.UpdatedAt = now.Unix()
+
+				// Generate events from tool_use blocks
+				if msg.Message != nil {
+					for _, block := range msg.Message.Content {
+						if block.Type == "tool_use" && block.Name != "" {
+							evt := buildSDKToolUseEvent(s, block)
+							s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
+							if m.hubClient != nil {
+								_ = m.hubClient.SendImportantEvent(evt)
+							}
+						}
+					}
+				}
+				if m.hubClient != nil {
+					_ = m.hubClient.SendSessionSummary(s.Summary)
+				}
+
+			case "result":
+				s.Status = SessionWaitingInput
+				s.Summary.Status = string(SessionWaitingInput)
+				s.Summary.WaitingForUser = true
+				s.Summary.UpdatedAt = now.Unix()
+				if msg.Result != nil {
+					s.Summary.ProgressSummary = fmt.Sprintf("Completed in %.1fs, %d turns", msg.Result.Duration/1000, msg.Result.NumTurns)
+				}
+				if m.hubClient != nil {
+					_ = m.hubClient.SendSessionSummary(s.Summary)
+				}
+			}
+
+			m.app.refreshPowerOptimizationState()
+			m.app.emitRemoteStateChanged()
+
+		case req, ok := <-ctrlReqs:
+			if !ok {
+				ctrlReqs = nil
+				continue
+			}
+
+			// For now, auto-approve all control requests.
+			// In the future, this could be forwarded to the UI for user decision.
+			m.app.log(fmt.Sprintf("[sdk-control] session=%s, request_id=%s, tool=%s — auto-approving",
+				s.ID, req.RequestID, req.Request.ToolName))
+			_ = sdkHandle.RespondToControlRequest(req.RequestID, true)
+
+			s.UpdatedAt = time.Now()
 			m.app.emitRemoteStateChanged()
 		}
 	}
@@ -440,4 +656,53 @@ func sessionExit(session *RemoteSession) <-chan PTYExit {
 		return nil
 	}
 	return session.Exec.Exit()
+}
+
+// buildSDKToolUseEvent creates an ImportantEvent from an SDK tool_use content block.
+func buildSDKToolUseEvent(s *RemoteSession, block SDKContentBlock) ImportantEvent {
+	now := time.Now()
+	eventType := "tool.use"
+	title := fmt.Sprintf("Tool: %s", block.Name)
+	summary := title
+
+	// Map well-known tool names to file/command events
+	switch block.Name {
+	case "Read", "ReadFile", "View":
+		eventType = "file.read"
+		if input, ok := block.Input.(map[string]interface{}); ok {
+			if file, ok := input["file_path"].(string); ok {
+				title = fmt.Sprintf("Read %s", filepath.Base(file))
+				summary = fmt.Sprintf("Inspected %s", file)
+			}
+		}
+	case "Write", "WriteFile", "Edit", "MultiEdit":
+		eventType = "file.change"
+		if input, ok := block.Input.(map[string]interface{}); ok {
+			if file, ok := input["file_path"].(string); ok {
+				title = fmt.Sprintf("Edited %s", filepath.Base(file))
+				summary = fmt.Sprintf("Modified %s", file)
+			}
+		}
+	case "Bash", "Execute":
+		eventType = "command.started"
+		if input, ok := block.Input.(map[string]interface{}); ok {
+			if cmd, ok := input["command"].(string); ok {
+				title = fmt.Sprintf("Running: %s", cmd)
+				summary = cmd
+				if len(summary) > 120 {
+					summary = summary[:120] + "..."
+				}
+			}
+		}
+	}
+
+	return ImportantEvent{
+		EventID:   fmt.Sprintf("sdk_%s_%d", block.ID, now.UnixNano()),
+		SessionID: s.ID,
+		Type:      eventType,
+		Severity:  "info",
+		Title:     title,
+		Summary:   summary,
+		CreatedAt: now.Unix(),
+	}
 }

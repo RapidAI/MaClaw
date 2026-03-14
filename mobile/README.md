@@ -18,13 +18,13 @@ This folder contains all generated mobile shell projects and mobile-only artifac
 
 Artifacts currently present in `dist/`:
 
-- `codeclaw-release.apk`
-- `codeclaw-release.aab`
+- `maclaw-release.apk`
+- `maclaw-release.aab`
 - `README.md`
 
 Future Android debug builds also land here as:
 
-- `codeclaw-debug.apk`
+- `maclaw-debug.apk`
 
 ## Defaults
 

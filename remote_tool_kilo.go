@@ -20,6 +20,10 @@ func (a *KiloAdapter) ProviderName() string {
 	return "kilo"
 }
 
+func (a *KiloAdapter) ExecutionMode() ExecutionMode {
+	return ExecModePTY
+}
+
 func (a *KiloAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	if spec.SessionID == "" {
 		return CommandSpec{}, fmt.Errorf("kilo session id is required")
@@ -61,6 +65,10 @@ func NewKodeAdapter(app *App) *KodeAdapter {
 
 func (a *KodeAdapter) ProviderName() string {
 	return "kode"
+}
+
+func (a *KodeAdapter) ExecutionMode() ExecutionMode {
+	return ExecModePTY
 }
 
 func (a *KodeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {

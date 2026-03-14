@@ -182,7 +182,7 @@ const getModelDisplayName = (modelName: string, lang: string): string => {
 
 const translations: any = {
     "en": {
-        "title": "CodeClaw",
+        "title": "MaClaw",
         "about": "About",
         "cs146s": "Course",
         "introVideo": "Beginner",
@@ -303,20 +303,21 @@ const translations: any = {
         "refreshSuccess": "✅ Refresh successful!",
         "refreshFailed": "❌ Refresh failed: ",
         "lastUpdate": "Last Update: ",
-        "startupTitle": "Welcome to CodeClaw",
+        "startupTitle": "Welcome to MaClaw",
+
         "showMore": "Show More",
         "showLess": "Show Less",
         "installLog": "View Log",
         "installLogTitle": "Installation Logs",
         "sendLog": "Send Log",
-        "sendLogSubject": "CodeClaw Environment Log",
+        "sendLogSubject": "MaClaw Environment Log",
         "confirmDelete": "Confirm Delete",
         "confirmDeleteMessage": "Are you sure you want to delete provider \"{name}\"?",
         "confirmSendLog": "Confirm Send",
         "confirmSendLogMessage": "No errors detected in logs. Send anyway?",
         "cancel": "Cancel",
         "confirm": "Confirm",
-        "slogan": "AI programmers get the job!",
+        "slogan": "Master your code, seize the machine.",
         "proxySettings": "Proxy",
         "proxyHost": "Proxy Host",
         "proxyPort": "Proxy Port",
@@ -328,7 +329,7 @@ const translations: any = {
         "proxyHostPlaceholder": "e.g., 192.168.1.1 or proxy.company.com",
         "proxyPortPlaceholder": "e.g., 8080",
         "remoteControl": "Remote Control",
-        "remoteControlDesc": "Configure CodeClaw remote diagnostics, Hub connection, and remote session control.",
+        "remoteControlDesc": "Configure MaClaw remote diagnostics, Hub connection, and remote session control.",
         "remoteRefresh": "Refresh",
         "remoteRunReadiness": "Run Readiness",
         "remoteRunConpty": "Run ConPTY Probe",
@@ -513,7 +514,7 @@ const translations: any = {
         "placeholderZip": "Select .zip file",
         "cannotDeleteSystemSkill": "System skill package cannot be deleted.",
         "systemDefault": "System Default",
-        "envCheckTitle": "CodeClaw Environment Setup",
+        "envCheckTitle": "MaClaw Environment Setup",
         "envCheckExitWarningTitle": "Warning: Exit During Environment Setup",
         "envCheckExitWarningMessage": "Exiting now will result in incomplete environment setup, and the application may not function properly.\n\nOnly exit in extreme cases (such as infinite loops or unresponsive behavior).\n\nAre you sure you want to exit?",
         "envCheckExitConfirm": "Yes, Exit",
@@ -540,7 +541,7 @@ const translations: any = {
         "nextPage": "Next"
     },
     "zh-Hans": {
-        "title": "CodeClaw",
+        "title": "码卡龙",
         "about": "关于",
         "manual": "文档指南",
         "cs146s": "在线课程",
@@ -661,20 +662,20 @@ const translations: any = {
         "officialWebsite": "官方网站",
         "dontShowAgain": "下次不再显示",
         "showWelcomePage": "显示欢迎页",
-        "startupTitle": "欢迎使用 CodeClaw",
+        "startupTitle": "欢迎使用码卡龙",
         "showMore": "更多",
         "showLess": "收起",
         "installLog": "查看日志",
         "installLogTitle": "环境检查与安装日志",
         "sendLog": "发送日志",
-        "sendLogSubject": "CodeClaw环境安装日志",
+        "sendLogSubject": "MaClaw环境安装日志",
         "confirmDelete": "确认删除",
         "confirmDeleteMessage": "确定要删除服务商 \"{name}\" 吗？",
         "confirmSendLog": "确认发送",
         "confirmSendLogMessage": "日志中没有检测到错误，是否仍要发送日志？",
         "cancel": "取消",
         "confirm": "确定",
-        "slogan": "会AI编程者得工作！",
+        "slogan": "让远程编程像品尝甜点一样丝滑。",
         "proxySettings": "代理设置",
         "proxyHost": "代理主机",
         "proxyPort": "代理端口",
@@ -686,7 +687,7 @@ const translations: any = {
         "proxyHostPlaceholder": "例如：192.168.1.1 或 proxy.company.com",
         "proxyPortPlaceholder": "例如：8080",
         "remoteControl": "远程控制",
-        "remoteControlDesc": "配置 CodeClaw 远程诊断、Hub 连接和远程会话控制。",
+        "remoteControlDesc": "配置 MaClaw 远程诊断、Hub 连接和远程会话控制。",
         "remoteRefresh": "刷新",
         "remoteRunReadiness": "运行就绪检查",
         "remoteRunConpty": "运行 ConPTY 检测",
@@ -851,7 +852,7 @@ const translations: any = {
         "placeholderZip": "选择 .zip 文件",
         "cannotDeleteSystemSkill": "系统技能包不能删除。",
         "systemDefault": "系统默认",
-        "envCheckTitle": "CodeClaw 运行环境检测安装",
+        "envCheckTitle": "MaClaw 运行环境检测安装",
         "envCheckExitWarningTitle": "警告：退出环境安装",
         "envCheckExitWarningMessage": "退出将导致环境安装不完整，程序无法正常运行。\n\n只有在程序死循环等极端情况下才建议退出。\n\n确定要退出吗？",
         "envCheckExitConfirm": "是的，退出",
@@ -878,7 +879,7 @@ const translations: any = {
         "nextPage": "下一页"
     },
     "zh-Hant": {
-        "title": "CodeClaw",
+        "title": "碼卡龍",
         "about": "關於",
         "manual": "文檔指南",
         "cs146s": "線上課程",
@@ -997,20 +998,20 @@ const translations: any = {
         "officialWebsite": "官方網站",
         "dontShowAgain": "下次不再顯示",
         "showWelcomePage": "顯示歡迎頁",
-        "startupTitle": "歡迎使用 CodeClaw",
+        "startupTitle": "歡迎使用碼卡龍",
         "showMore": "更多",
         "showLess": "收起",
         "installLog": "查看日誌",
         "installLogTitle": "環境檢查與安裝日誌",
         "sendLog": "發送日誌",
-        "sendLogSubject": "CodeClaw環境安裝日誌",
+        "sendLogSubject": "MaClaw環境安裝日誌",
         "confirmDelete": "確認刪除",
         "confirmDeleteMessage": "確定要刪除服務商 \"{name}\" 嗎？",
         "confirmSendLog": "確認發送",
         "confirmSendLogMessage": "日誌中沒有檢測到錯誤，是否仍要發送日誌？",
         "cancel": "取消",
         "confirm": "確定",
-        "slogan": "會AI編程者得工作！",
+        "slogan": "讓遠程編程像品嚐甜點一樣絲滑。",
         "proxySettings": "代理設置",
         "proxyHost": "代理主機",
         "proxyPort": "代理端口",
@@ -1022,7 +1023,7 @@ const translations: any = {
         "proxyHostPlaceholder": "例如：192.168.1.1 或 proxy.company.com",
         "proxyPortPlaceholder": "例如：8080",
         "remoteControl": "遠端控制",
-        "remoteControlDesc": "設定 CodeClaw 遠端診斷、Hub 連線與遠端會話控制。",
+        "remoteControlDesc": "設定 MaClaw 遠端診斷、Hub 連線與遠端會話控制。",
         "remoteRefresh": "重新整理",
         "remoteRunReadiness": "執行就緒檢查",
         "remoteRunConpty": "執行 ConPTY 檢測",
@@ -1187,7 +1188,7 @@ const translations: any = {
         "placeholderZip": "選擇 .zip 文件",
         "cannotDeleteSystemSkill": "系統技能包不能刪除。",
         "systemDefault": "系統默認",
-        "envCheckTitle": "CodeClaw 運行環境檢測安裝",
+        "envCheckTitle": "MaClaw 運行環境檢測安裝",
         "selectProvider": "選擇服務商",
         "knownProviders": "已知服務商",
         "providerList": "服務商列表",
@@ -1511,7 +1512,7 @@ function App() {
         setDownloadError("");
         setInstallerPath("");
 
-        const fileName = isWindows ? "CodeClaw-Setup.exe" : "CodeClaw-Universal.pkg";
+        const fileName = isWindows ? "MaClaw-Setup.exe" : "MaClaw-Universal.pkg";
 
         try {
             const path = await DownloadUpdate(downloadUrl, fileName);
@@ -1523,7 +1524,7 @@ function App() {
     };
 
     const handleCancelDownload = () => {
-        const fileName = isWindows ? "CodeClaw-Setup.exe" : "CodeClaw-Universal.pkg";
+        const fileName = isWindows ? "MaClaw-Setup.exe" : "MaClaw-Universal.pkg";
         CancelDownload(fileName);
     };
 
@@ -2093,6 +2094,7 @@ function App() {
         sendRemoteInput,
         killRemoteSession,
         interruptRemoteSession,
+        refreshSessionsOnly,
         clearRemoteActivationState,
         invitationCodeRequired,
         invitationCode,
@@ -2604,7 +2606,7 @@ function App() {
                     ? `請將剛剛打開的文件夾中的壓縮包（aicoder_log_....zip）作為附件添加到此郵件中發送。\n\n`
                     : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
 
-            const body = `Product: CodeClaw
+            const body = `Product: MaClaw
 Version: ${APP_VERSION}
 
 System Information:
@@ -2797,7 +2799,7 @@ ${instruction}`;
                         WebkitTextFillColor: 'transparent',
                         display: 'inline-block',
                         width: '100%'
-                    }}>CodeClaw</div>
+                    }}>MaClaw</div>
 
                     <div
                         className={`sidebar-item ${navTab === 'message' ? 'active' : ''}`}
@@ -3272,6 +3274,7 @@ ${instruction}`;
                                     sendRemoteInput={sendRemoteInput}
                                     interruptRemoteSession={interruptRemoteSession}
                                     killRemoteSession={killRemoteSession}
+                                    refreshSessionsOnly={refreshSessionsOnly}
                                     showToastMessage={showToastMessage}
                                     translate={translate}
                                     formatText={formatText}
@@ -4048,7 +4051,7 @@ ${instruction}`;
                                 WebkitTextFillColor: 'transparent',
                                 display: 'inline-block',
                                 fontWeight: 'bold'
-                            }}>RapidAI CodeClaw</h2>
+                            }}>码卡龙 MaClaw</h2>
                             <div style={{
                                 fontSize: '1rem',
                                 fontWeight: 'bold',
@@ -4060,25 +4063,13 @@ ${instruction}`;
                             }}>
                                 {t("slogan")}
                             </div>
-                            <br />
-                            <div style={{
-                                fontSize: '0.9rem',
-                                fontWeight: 'bold',
-                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                marginBottom: '12px',
-                                display: 'inline-block'
-                            }}>
-                                {lang === 'zh-Hans' || lang === 'zh-Hant' ? '真正的Vibe Coder只使用命令行。' : 'Real Vibe Coders only use the command line.'}
-                            </div>
                             <div style={{ fontSize: '1rem', color: '#374151', marginBottom: '5px' }}>{t("version")} {APP_VERSION}</div>
                             <div style={{ fontSize: '0.9rem', color: '#9ca3af', marginBottom: '5px' }}>{t("businessCooperation")}</div>
                             <div style={{ fontSize: '0.9rem', color: '#6b7280', marginBottom: '20px' }}>{t("author")}: Dr. Daniel</div>
 
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
                                 <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://codeclaw.rapidai.tech/")}>{t("officialWebsite")}</button>
+                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://maclaw.rapidai.tech/")}>{t("officialWebsite")}</button>
                                     <button
                                         className="btn-link"
                                         style={{ fontSize: '0.75rem', padding: '2px 6px' }}
@@ -4107,8 +4098,8 @@ ${instruction}`;
                                         {t("onlineUpdate")}
                                     </button>
                                     <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => setShowInstallLog(true)}>{t("installLog")}</button>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/RapidAI/codeclaw/issues/new")}>{t("bugReport")}</button>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/RapidAI/codeclaw")}>GitHub</button>
+                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/RapidAI/maclaw/issues/new")}>{t("bugReport")}</button>
+                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/RapidAI/maclaw")}>GitHub</button>
                                 </div>
                             </div>
                         </div>
@@ -5482,16 +5473,6 @@ ${instruction}`;
                             }}>
                                 {t("slogan")}
                             </p>
-                            <p style={{
-                                margin: '4px 0 0 0',
-                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                fontSize: '0.85rem',
-                                fontWeight: '700'
-                            }}>
-                                {lang === 'zh-Hans' || lang === 'zh-Hant' ? '真正的Vibe Coder只使用命令行。' : 'Real Vibe Coders only use the command line.'}
-                            </p>
                         </div>
 
                         <div style={{ padding: '20px 25px' }}>
@@ -5538,8 +5519,8 @@ ${instruction}`;
                                     }}
                                     onClick={() => {
                                         const manualUrl = (lang === 'zh-Hans' || lang === 'zh-Hant')
-                                            ? "https://github.com/RapidAI/codeclaw/blob/main/UserManual_CN.md"
-                                            : "https://github.com/RapidAI/codeclaw/blob/main/UserManual_EN.md";
+                                            ? "https://github.com/RapidAI/maclaw/blob/main/UserManual_CN.md"
+                                            : "https://github.com/RapidAI/maclaw/blob/main/UserManual_EN.md";
                                         BrowserOpenURL(manualUrl);
                                     }}
                                 >

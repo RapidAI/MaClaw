@@ -1,9 +1,9 @@
-# CodeClaw Remote Control System Overview
+# MaClaw Remote Control System Overview
 
 ## 1. Goal
-CodeClaw remote control supports this core scenario:
+MaClaw remote control supports this core scenario:
 
-- The user runs Claude Code on their computer through CodeClaw Desktop.
+- The user runs Claude Code on their computer through MaClaw Desktop.
 - The user temporarily leaves the computer or local network.
 - The user continues to inspect progress and send commands from a phone.
 - The real coding session always stays on the user's own machine.
@@ -13,16 +13,16 @@ The first fully supported tool is **Claude Code**.
 ## 2. Design Principles
 
 ### 2.1 Desktop is the session host
-CodeClaw Desktop is responsible for:
+MaClaw Desktop is responsible for:
 
 - launching and hosting Claude Code
 - managing session lifecycle
 - collecting output
 - generating compressed session state
-- connecting to CodeClaw Hub
+- connecting to MaClaw Hub
 
 ### 2.2 Hub is the work control plane
-CodeClaw Hub is responsible for:
+MaClaw Hub is responsible for:
 
 - issuing user identity inside the hub
 - managing machines and sessions
@@ -33,7 +33,7 @@ CodeClaw Hub is responsible for:
 Hub does not execute Claude Code itself.
 
 ### 2.3 Hub Center is only the entry center
-CodeClaw Hub Center is responsible for:
+MaClaw Hub Center is responsible for:
 
 - hub registration
 - hub discovery
@@ -60,7 +60,7 @@ Hub stores compressed session state rather than raw transcript:
 
 ## 3. System Components
 
-### 3.1 CodeClaw Desktop
+### 3.1 MaClaw Desktop
 Desktop session host:
 
 - hosts Claude Code
@@ -68,7 +68,7 @@ Desktop session host:
 - produces compressed state
 - connects to Hub
 
-### 3.2 CodeClaw Hub
+### 3.2 MaClaw Hub
 Work Hub:
 
 - self-issues SN
@@ -76,7 +76,7 @@ Work Hub:
 - hosts the PWA
 - provides admin backend
 
-### 3.3 CodeClaw Hub Center
+### 3.3 MaClaw Hub Center
 Official and self-hosted hub directory:
 
 - default official address: `https://hubs.mypapers.top`
@@ -84,7 +84,7 @@ Official and self-hosted hub directory:
 - tracks registered hubs
 - provides platform governance
 
-### 3.4 CodeClaw PWA
+### 3.4 MaClaw PWA
 Mobile remote-control UI:
 
 - login
@@ -92,7 +92,7 @@ Mobile remote-control UI:
 - session list
 - pocket-style session detail
 
-### 3.5 CodeClaw Pocket
+### 3.5 MaClaw Pocket
 Lightweight Android/iOS entry app:
 
 - input email
@@ -106,21 +106,21 @@ Claude Code
    ^
    | PTY / ConPTY
    v
-CodeClaw Desktop
+MaClaw Desktop
    |
    | WSS
    v
-CodeClaw Hub
+MaClaw Hub
    ^
    | HTTPS / WSS
    |
-CodeClaw PWA
+MaClaw PWA
 
-CodeClaw Pocket
+MaClaw Pocket
    |
    | HTTPS
    v
-CodeClaw Hub Center
+MaClaw Hub Center
 ```
 
 ## 5. Identity Model
