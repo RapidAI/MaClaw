@@ -118,11 +118,11 @@ func TestRegisterAndHeartbeatHub(t *testing.T) {
 		t.Fatalf("ConfirmRegistration: %v", err)
 	}
 
-	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret); err != nil {
+	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil); err != nil {
 		t.Fatalf("HeartbeatHubWithSecret: %v", err)
 	}
 
-	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, "wrong-secret"); err != ErrHubUnauthorized {
+	if err := svc.HeartbeatHubWithSecret(ctx, result.HubID, "wrong-secret", nil); err != ErrHubUnauthorized {
 		t.Fatalf("expected ErrHubUnauthorized, got %v", err)
 	}
 }
@@ -260,7 +260,7 @@ func TestDisabledHubStaysDisabledAfterHeartbeat(t *testing.T) {
 		t.Fatalf("DisableHub: %v", err)
 	}
 
-	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret); err != ErrHubDisabled {
+	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil); err != ErrHubDisabled {
 		t.Fatalf("expected ErrHubDisabled, got %v", err)
 	}
 
@@ -362,7 +362,7 @@ func TestDeleteHubRemovesRegistrationAndLinks(t *testing.T) {
 		t.Fatalf("expected default link to be removed, got %+v", link)
 	}
 
-	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret); err != ErrHubUnauthorized {
+	if err := hubService.HeartbeatHubWithSecret(ctx, result.HubID, result.HubSecret, nil); err != ErrHubUnauthorized {
 		t.Fatalf("expected deleted hub heartbeat to be unauthorized, got %v", err)
 	}
 }

@@ -12,6 +12,7 @@ import {
     InstallToolOnDemand,
     ListRemoteSessions,
     ListRemoteToolMetadata,
+    ProbeRemoteHub,
     ReconnectRemoteHub,
     RunRemoteToolSmoke,
     SaveConfig,
@@ -93,6 +94,14 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     const [remoteInputDrafts, setRemoteInputDrafts] = useState<Record<string, string>>({});
     const [remoteBusy, setRemoteBusy] = useState<string>("");
     const [selectedRemoteTool, setSelectedRemoteTool] = useState<RemoteToolName>("claude");
+    const [invitationCodeRequired, setInvitationCodeRequired] = useState(false);
+    const [invitationCode, setInvitationCodeRaw] = useState("");
+    const [invitationCodeError, setInvitationCodeError] = useState("");
+
+    const setInvitationCode = (code: string) => {
+        setInvitationCodeRaw(code);
+        if (invitationCodeError) setInvitationCodeError("");
+    };
 
     const remoteToolMetaByName = useMemo(() => buildRemoteToolMetaByName(remoteToolMetadata), [remoteToolMetadata]);
     const visibleRemoteTools = useMemo(() => buildVisibleRemoteTools(remoteToolMetadata), [remoteToolMetadata]);
@@ -149,6 +158,18 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             setRemoteSessions(Array.isArray(sessions) ? sessions : []);
             if (smokeSnapshot?.exists && smokeSnapshot?.report) {
                 setRemoteSmokeReport(smokeSnapshot.report);
+            }
+
+            // Probe hub for invitation code requirement
+            const hubURL = config?.remote_hub_url?.trim();
+            const email = config?.remote_email?.trim();
+            if (hubURL && email && !activation?.activated) {
+                try {
+                    const probeResult = await ProbeRemoteHub(hubURL, email);
+                    setInvitationCodeRequired(!!probeResult?.invitation_code_required);
+                } catch {
+                    // Probe failure is non-critical; don't block the panel
+                }
             }
         } catch (err) {
             console.error("Failed to refresh remote panel:", err);
@@ -218,14 +239,24 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             return false;
         }
         setRemoteBusy("activate");
+        setInvitationCodeError("");
         try {
-            await ActivateRemote(config.remote_email.trim());
+            await ActivateRemote(config.remote_email.trim(), invitationCode.trim());
             await refreshRemotePanel();
             showToastMessage(translate("remoteActivationCompleted"), 3000);
             return true;
         } catch (err) {
-            console.error("Failed to activate remote:", err);
-            showToastMessage(formatText("remoteActivationFailed", { error: String(err) }), 4000);
+            const errMsg = String(err);
+            if (errMsg.includes("INVITATION_CODE_REQUIRED")) {
+                setInvitationCodeRequired(true);
+                showToastMessage("请输入邀请码后重试", 3000);
+            } else if (errMsg.includes("INVALID_INVITATION_CODE")) {
+                setInvitationCodeRequired(true);
+                setInvitationCodeError("邀请码无效或已被使用");
+            } else {
+                console.error("Failed to activate remote:", err);
+                showToastMessage(formatText("remoteActivationFailed", { error: errMsg }), 4000);
+            }
             return false;
         } finally {
             setRemoteBusy("");
@@ -379,7 +410,11 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     };
 
     const killRemoteSession = async (sessionID: string) => {
-        await KillRemoteSessionAPI(sessionID);
+        try {
+            await KillRemoteSessionAPI(sessionID);
+        } catch (err) {
+            console.warn("KillRemoteSession error (may already be stopped):", err);
+        }
         setRemoteSessions((prev) => prev.filter((session) => session.id !== sessionID));
         setRemoteInputDrafts((prev) => {
             const next = { ...prev };
@@ -424,6 +459,15 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             refreshRemotePTYProbe();
         }
     }, [navTab]);
+
+    // Auto-restore activation status on startup when remote was previously enabled
+    useEffect(() => {
+        if (config?.remote_enabled) {
+            GetRemoteActivationStatus()
+                .then((activation) => setRemoteActivationStatus(activation))
+                .catch((err) => console.error("Failed to check remote activation on startup:", err));
+        }
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         setRemoteToolReadiness(null);
@@ -473,5 +517,9 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         killRemoteSession,
         clearRemoteActivationState,
         onDemandInstallingTool,
+        invitationCodeRequired,
+        invitationCode,
+        setInvitationCode,
+        invitationCodeError,
     };
 }

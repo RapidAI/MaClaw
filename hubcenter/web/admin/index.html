@@ -286,6 +286,7 @@
       const baseRefreshAdminHeader = refreshAdminHeader;
       refreshAdminHeader = function() {
         baseRefreshAdminHeader();
+        if (!token()) setupGateSuppressed = false;
         const profile = adminProfile();
         document.getElementById('adminEmailInput').value = profile?.email || '';
         document.getElementById('adminUsernameInput').value = profile?.username || '';

@@ -7,6 +7,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
+	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
@@ -20,10 +21,15 @@ func NewRouter(
 	gateway *ws.Gateway,
 	deviceSvc *device.Service,
 	sessionSvc *session.Service,
+	invitationSvc *invitation.Service,
 	staticDir string,
 	routePrefix string,
 ) http.Handler {
-	entrySvc := entry.NewService(identity)
+	var invChecker entry.InvitationCodeChecker
+	if invitationSvc != nil {
+		invChecker = invitationSvc
+	}
+	entrySvc := entry.NewService(identity, invChecker)
 	var userLookup machineUserLookup
 	if identity != nil {
 		userLookup = identity.UsersRepo()
@@ -37,6 +43,9 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/profile", RequireAdmin(admins, AdminUpdateProfileHandler(admins)))
 	mux.HandleFunc("GET /api/admin/debug/machines", RequireAdmin(admins, DebugListMachinesHandler(deviceSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/debug/machine-events", RequireAdmin(admins, DebugListMachineEventsHandler(deviceSvc)))
+	mux.HandleFunc("DELETE /api/admin/machines", RequireAdmin(admins, DeleteMachineHandler(deviceSvc)))
+	mux.HandleFunc("POST /api/admin/machines/clear-offline", RequireAdmin(admins, ClearOfflineMachinesHandler(deviceSvc)))
+	mux.HandleFunc("DELETE /api/admin/machines/by-email", RequireAdmin(admins, DeleteMachinesByEmailHandler(deviceSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/debug/sessions", RequireAdmin(admins, DebugListSessionsHandler(sessionSvc)))
 	mux.HandleFunc("GET /api/admin/debug/session", RequireAdmin(admins, DebugGetSessionHandler(sessionSvc)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", RequireAdmin(admins, ManualBindHandler(identity)))
@@ -47,6 +56,10 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/blocklist/{email}", RequireAdmin(admins, RemoveBlockedEmailHandler(identity)))
 	mux.HandleFunc("GET /api/admin/invites", RequireAdmin(admins, ListInvitesHandler(identity)))
 	mux.HandleFunc("POST /api/admin/invites", RequireAdmin(admins, AddInviteHandler(identity)))
+	mux.HandleFunc("POST /api/admin/invitation-codes/generate", RequireAdmin(admins, GenerateInvitationCodesHandler(invitationSvc)))
+	mux.HandleFunc("GET /api/admin/invitation-codes", RequireAdmin(admins, ListInvitationCodesHandler(invitationSvc)))
+	mux.HandleFunc("POST /api/admin/invitation-codes/toggle", RequireAdmin(admins, ToggleInvitationCodeHandler(invitationSvc)))
+	mux.HandleFunc("GET /api/admin/invitation-codes/status", RequireAdmin(admins, InvitationCodeStatusHandler(invitationSvc)))
 	mux.HandleFunc("GET /api/admin/center/status", RequireAdmin(admins, GetCenterStatusHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/center/config", RequireAdmin(admins, UpdateCenterConfigHandler(centerSvc, identity)))
 	mux.HandleFunc("GET /api/admin/mail/config", RequireAdmin(admins, GetMailConfigHandler(mailer)))

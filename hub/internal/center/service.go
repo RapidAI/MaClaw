@@ -24,8 +24,9 @@ const (
 	systemKeyAdminEmail         = "admin_email"
 	systemKeyInstallationID     = "hub_installation_id"
 	systemKeyHubVisibility      = "hub_visibility"
-	systemKeyHubEnrollmentMode  = "hub_enrollment_mode"
-	systemKeyPublicBaseURL      = "server_public_base_url"
+	systemKeyHubEnrollmentMode          = "hub_enrollment_mode"
+	systemKeyPublicBaseURL              = "server_public_base_url"
+	systemKeyInvitationCodeRequired     = "invitation_code_required"
 )
 
 type SystemSettingsRepository interface {
@@ -466,6 +467,24 @@ func (s *Service) enrollmentMode(ctx context.Context) (string, error) {
 	return normalizeEnrollmentMode(payload.Value), nil
 }
 
+func (s *Service) invitationCodeRequired(ctx context.Context) (bool, error) {
+	raw, err := s.settings.Get(ctx, systemKeyInvitationCodeRequired)
+	if err != nil {
+		return false, err
+	}
+	if raw == "" {
+		return false, nil
+	}
+
+	var payload struct {
+		Value bool `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return false, err
+	}
+	return payload.Value, nil
+}
+
 func (s *Service) loadRegistration(ctx context.Context) (registrationRecord, error) {
 	raw, err := s.settings.Get(ctx, systemKeyCenterRegistration)
 	if err != nil {
@@ -491,10 +510,6 @@ func (s *Service) updateRegistrationError(ctx context.Context, message string) e
 	if err != nil {
 		return err
 	}
-	record.Registered = false
-	record.PendingConfirmation = false
-	record.Disabled = false
-	record.DisabledReason = ""
 	record.LastError = strings.TrimSpace(message)
 	return s.saveRegistration(ctx, record)
 }
@@ -555,8 +570,11 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 		return nil
 	}
 
-	payload, err := json.Marshal(map[string]string{
-		"hub_secret": record.HubSecret,
+	invCodeRequired, _ := s.invitationCodeRequired(ctx)
+
+	payload, err := json.Marshal(map[string]any{
+		"hub_secret":               record.HubSecret,
+		"invitation_code_required": invCodeRequired,
 	})
 	if err != nil {
 		return err

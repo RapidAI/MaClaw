@@ -50,21 +50,18 @@ powershell -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';',
 REM -- Build Frontend --
 echo [Step 4/8] Building frontend...
 cd "%~dp0frontend"
-if exist "dist\index.html" (
-    echo [INFO] Reusing existing frontend dist build.
-) else (
-    if not exist "node_modules" (
-        call npm.cmd install --cache ./.npm_cache
-        if !errorlevel! neq 0 (
-            echo [ERROR] npm install failed.
-            goto :error
-        )
-    )
-    %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "npm run build"
+if not exist "node_modules" (
+    call npm.cmd install --cache ./.npm_cache
     if !errorlevel! neq 0 (
-        echo [ERROR] Frontend build failed.
+        echo [ERROR] npm install failed.
         goto :error
     )
+)
+if exist "dist" ( rmdir /s /q "dist" )
+%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "npm run build"
+if !errorlevel! neq 0 (
+    echo [ERROR] Frontend build failed.
+    goto :error
 )
 cd "%~dp0"
 

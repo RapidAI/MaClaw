@@ -17,6 +17,7 @@ func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
 		deps.store.ViewerTokens,
 		deps.store.LoginTokens,
 		deps.store.System,
+		nil,
 		"open",
 		true,
 		nil,
@@ -24,7 +25,7 @@ func TestIdentityServiceEnrollmentAndEmailLogin(t *testing.T) {
 	)
 	ctx := context.Background()
 
-	enroll, err := svc.StartEnrollment(ctx, "user@example.com", "office-pc", "windows")
+	enroll, err := svc.StartEnrollment(ctx, "user@example.com", "office-pc", "windows", "", "")
 	if err != nil {
 		t.Fatalf("StartEnrollment: %v", err)
 	}
@@ -96,13 +97,14 @@ func TestIdentityServiceApprovalModeCreatesPendingEnrollment(t *testing.T) {
 		deps.store.ViewerTokens,
 		deps.store.LoginTokens,
 		deps.store.System,
+		nil,
 		"approval",
 		true,
 		nil,
 		"http://127.0.0.1:9399",
 	)
 
-	result, err := svc.StartEnrollment(context.Background(), "pending@example.com", "office-pc", "windows")
+	result, err := svc.StartEnrollment(context.Background(), "pending@example.com", "office-pc", "windows", "", "")
 	if err != nil {
 		t.Fatalf("StartEnrollment: %v", err)
 	}
@@ -130,13 +132,14 @@ func TestIdentityServiceManualModeRequiresExistingBinding(t *testing.T) {
 		deps.store.ViewerTokens,
 		deps.store.LoginTokens,
 		deps.store.System,
+		nil,
 		"manual",
 		true,
 		nil,
 		"http://127.0.0.1:9399",
 	)
 
-	result, err := svc.StartEnrollment(context.Background(), "manual-only@example.com", "office-pc", "windows")
+	result, err := svc.StartEnrollment(context.Background(), "manual-only@example.com", "office-pc", "windows", "", "")
 	if err != nil {
 		t.Fatalf("StartEnrollment: %v", err)
 	}

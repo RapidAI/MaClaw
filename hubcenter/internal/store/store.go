@@ -39,9 +39,10 @@ type HubInstance struct {
 	DisabledReason   string     `json:"disabled_reason"`
 	CapabilitiesJSON string     `json:"capabilities_json,omitempty"`
 	HubSecretHash    string     `json:"hub_secret_hash,omitempty"`
-	LastSeenAt       *time.Time `json:"last_seen_at"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	InvitationCodeRequired bool       `json:"invitation_code_required"`
+	LastSeenAt             *time.Time `json:"last_seen_at"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
 type HubUserLink struct {
@@ -97,6 +98,7 @@ type HubRepository interface {
 	UpdateVisibility(ctx context.Context, hubID string, visibility string, updatedAt time.Time) error
 	SetDisabled(ctx context.Context, hubID string, disabled bool, reason string, updatedAt time.Time) error
 	UpdateRegistration(ctx context.Context, hub *HubInstance) error
+	UpdateInvitationCodeRequired(ctx context.Context, hubID string, required bool, updatedAt time.Time) error
 	DeleteByID(ctx context.Context, hubID string) error
 }
 

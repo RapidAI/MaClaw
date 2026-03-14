@@ -17,7 +17,8 @@ type EntryResolveRequest struct {
 }
 
 type HubHeartbeatRequest struct {
-	HubSecret string `json:"hub_secret"`
+	HubSecret              string `json:"hub_secret"`
+	InvitationCodeRequired *bool  `json:"invitation_code_required,omitempty"`
 }
 
 func RegisterHubHandler(service *hubs.Service) http.HandlerFunc {
@@ -66,7 +67,7 @@ func HubHeartbeatHandler(service *hubs.Service) http.HandlerFunc {
 			return
 		}
 
-		if err := service.HeartbeatHubWithSecret(r.Context(), hubID, req.HubSecret); err != nil {
+		if err := service.HeartbeatHubWithSecret(r.Context(), hubID, req.HubSecret, req.InvitationCodeRequired); err != nil {
 			if errors.Is(err, hubs.ErrHubUnauthorized) {
 				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
 				return

@@ -139,6 +139,7 @@ type AppConfig struct {
 	RemoteMachineID    string `json:"remote_machine_id"`
 	RemoteMachineToken string `json:"remote_machine_token"`
 	RemoteHeartbeatSec int    `json:"remote_heartbeat_sec"`
+	RemoteClientID     string `json:"remote_client_id"`
 }
 type Skill struct {
 	Name        string `json:"name"`

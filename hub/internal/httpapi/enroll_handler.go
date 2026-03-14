@@ -16,6 +16,8 @@ type EnrollStartRequest struct {
 	Arch                 string `json:"arch"`
 	AppVersion           string `json:"app_version"`
 	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec"`
+	ClientID             string `json:"client_id"`
+	InvitationCode       string `json:"invitation_code"`
 }
 
 type EmailRequestLoginRequest struct {
@@ -39,9 +41,13 @@ func EnrollStartHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
-		resp, err := identity.StartEnrollment(r.Context(), req.Email, req.MachineName, req.Platform)
+		resp, err := identity.StartEnrollment(r.Context(), req.Email, req.MachineName, req.Platform, req.ClientID, req.InvitationCode)
 		if err != nil {
 			switch {
+			case errors.Is(err, auth.ErrInvitationCodeRequired):
+				writeError(w, http.StatusBadRequest, "INVITATION_CODE_REQUIRED", err.Error())
+			case errors.Is(err, auth.ErrInvalidInvitationCode):
+				writeError(w, http.StatusBadRequest, "INVALID_INVITATION_CODE", err.Error())
 			case errors.Is(err, auth.ErrEmailBlocked):
 				writeError(w, http.StatusForbidden, "EMAIL_BLOCKED", err.Error())
 			case errors.Is(err, auth.ErrInvalidEmail):

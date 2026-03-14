@@ -4,6 +4,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 set "ROOT_DIR=%~dp0"
 set "ROOT_DIR_TRIM=%ROOT_DIR:~0,-1%"
 set "POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+set "PROMPT_SCRIPT=%ROOT_DIR%prompt_password.ps1"
 set "REMOTE_HOST=hubs.rapidai.tech"
 set "REMOTE_PORT=22"
 set "REMOTE_USER=root"
@@ -11,6 +12,9 @@ set "REMOTE_HOSTKEY=ssh-ed25519 255 SHA256:i4dErlVhnE3VDG7s6lOJ/cg3wfyqf1bgRXSqI
 set "REMOTE_HUB_DIR=/data/soft/hub"
 set "REMOTE_HUBCENTER_DIR=/data/soft/hubcenter"
 set "REMOTE_TMP_DIR=/tmp/aicoder_deploy"
+if not defined REMOTE_PASS (
+  set "PAUSE_ON_EXIT=1"
+)
 if "%CGO_ENABLED%"=="" (
   set "CGO_ENABLED=0"
 )
@@ -18,38 +22,51 @@ if "%CGO_ENABLED%"=="" (
 set "BUILD_ROOT=%ROOT_DIR%build\deploy"
 set "ARCHIVE_PATH=%BUILD_ROOT%\codeclaw-src.tar.gz"
 set "REMOTE_SCRIPT=%BUILD_ROOT%\remote_deploy.sh"
+set "PASSWORD_FILE=%TEMP%\deploy_all_password_%RANDOM%_%RANDOM%.txt"
+
+goto :main
+
+:exit_with
+set "EXIT_CODE=%~1"
+if defined PAUSE_ON_EXIT (
+  echo.
+  pause
+)
+exit /b %EXIT_CODE%
+
+:main
 
 if not exist "%ROOT_DIR%go.mod" (
   echo [ERROR] Missing go.mod
-  exit /b 1
+  goto :fail
 )
 
 if not exist "%ROOT_DIR%go.sum" (
   echo [ERROR] Missing go.sum
-  exit /b 1
+  goto :fail
 )
 
 if not exist "%ROOT_DIR%hub\cmd\hub" (
   echo [ERROR] Missing hub source: %ROOT_DIR%hub\cmd\hub
-  exit /b 1
+  goto :fail
 )
 
 if not exist "%ROOT_DIR%hubcenter\cmd\hubcenter" (
   echo [ERROR] Missing hubcenter source: %ROOT_DIR%hubcenter\cmd\hubcenter
-  exit /b 1
+  goto :fail
 )
 
 call :resolve_tool PLINK_EXE plink.exe
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 
 call :resolve_tool PSCP_EXE pscp.exe
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 
 call :resolve_tool TAR_EXE tar.exe
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 
 call :prompt_password
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 
 echo.
 echo [1/5] Preparing connection info
@@ -86,39 +103,39 @@ echo [2/5] Creating source archive...
   -C "%ROOT_DIR_TRIM%" .
 if errorlevel 1 (
   echo [ERROR] Failed to create source archive.
-  exit /b 1
+  goto :fail
 )
 
 echo [3/5] Writing remote deploy script...
 call :write_remote_script
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 
 echo [4/5] Creating remote temp directory...
 "%PLINK_EXE%" -batch -hostkey "%REMOTE_HOSTKEY%" -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "mkdir -p %REMOTE_TMP_DIR%"
 if errorlevel 1 (
   echo [ERROR] Failed to create remote temp directory.
-  exit /b 1
+  goto :fail
 )
 
 echo [4/5] Uploading source archive...
 "%PSCP_EXE%" -batch -hostkey "%REMOTE_HOSTKEY%" -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%ARCHIVE_PATH%" "%REMOTE_USER%@%REMOTE_HOST%:%REMOTE_TMP_DIR%/codeclaw-src.tar.gz"
 if errorlevel 1 (
   echo [ERROR] Upload failed for source archive.
-  exit /b 1
+  goto :fail
 )
 
 echo [4/5] Uploading remote deploy script...
 "%PSCP_EXE%" -batch -hostkey "%REMOTE_HOSTKEY%" -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_SCRIPT%" "%REMOTE_USER%@%REMOTE_HOST%:%REMOTE_TMP_DIR%/remote_deploy.sh"
 if errorlevel 1 (
   echo [ERROR] Upload failed for remote deploy script.
-  exit /b 1
+  goto :fail
 )
 
 echo [5/5] Running remote build and deployment...
 "%PLINK_EXE%" -batch -hostkey "%REMOTE_HOSTKEY%" -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "sed -i 's/\r$//' %REMOTE_TMP_DIR%/remote_deploy.sh && chmod +x %REMOTE_TMP_DIR%/remote_deploy.sh && CGO_ENABLED=%CGO_ENABLED% REMOTE_HUB_DIR=%REMOTE_HUB_DIR% REMOTE_HUBCENTER_DIR=%REMOTE_HUBCENTER_DIR% REMOTE_TMP_DIR=%REMOTE_TMP_DIR% %REMOTE_TMP_DIR%/remote_deploy.sh"
 if errorlevel 1 (
   echo [ERROR] Remote deployment failed.
-  exit /b 1
+  goto :fail
 )
 
 echo.
@@ -126,13 +143,34 @@ echo Deployment completed successfully.
 echo   Hub       -^> %REMOTE_HOST%:%REMOTE_HUB_DIR%
 echo   HubCenter -^> %REMOTE_HOST%:%REMOTE_HUBCENTER_DIR%
 echo   Mode      -^> upload source, build on remote host, keep config/data
-exit /b 0
+goto :success
+
+:fail
+goto :finalize_fail
+
+:success
+goto :finalize_success
+
+:finalize_fail
+call :exit_with 1
+goto :eof
+
+:finalize_success
+call :exit_with 0
+goto :eof
 
 :prompt_password
 if defined REMOTE_PASS exit /b 0
+if not exist "%PROMPT_SCRIPT%" (
+  echo [ERROR] Missing password prompt helper: %PROMPT_SCRIPT%
+  exit /b 1
+)
 echo Please enter SSH password for %REMOTE_USER%@%REMOTE_HOST%.
-for /f "usebackq delims=" %%I in (`"%POWERSHELL%" -NoProfile -Command "$p = Read-Host 'Password' -AsSecureString; $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($p); try { [Runtime.InteropServices.Marshal]::PtrToStringAuto($b) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }"`) do (
-  set "REMOTE_PASS=%%I"
+del /q "%PASSWORD_FILE%" >nul 2>nul
+"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%PROMPT_SCRIPT%" -Prompt "Password" > "%PASSWORD_FILE%"
+if exist "%PASSWORD_FILE%" (
+  set /p REMOTE_PASS=<"%PASSWORD_FILE%"
+  del /q "%PASSWORD_FILE%" >nul 2>nul
 )
 if not defined REMOTE_PASS (
   echo [ERROR] Password input was empty.

@@ -126,6 +126,9 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			if existing.IsDisabled {
 				return nil, ErrHubDisabled
 			}
+
+			alreadyConfirmed := existing.Status == "online"
+
 			existing.OwnerEmail = ownerEmail
 			existing.Name = strings.TrimSpace(req.Name)
 			existing.Description = strings.TrimSpace(req.Description)
@@ -138,9 +141,8 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			existing.HubSecretHash = hashToken(rawSecret)
 			existing.LastSeenAt = &now
 			existing.UpdatedAt = now
-			if existing.IsDisabled {
-				existing.Status = "disabled"
-			} else {
+
+			if !alreadyConfirmed {
 				existing.Status = "pending_confirmation"
 			}
 
@@ -150,6 +152,16 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			if err := s.syncOwnerLink(ctx, existing.ID, existing.OwnerEmail, now); err != nil {
 				return nil, err
 			}
+
+			if alreadyConfirmed {
+				return &RegisterHubResult{
+					HubID:               existing.ID,
+					HubSecret:           rawSecret,
+					PendingConfirmation: false,
+					Message:             "Hub re-registered successfully, already confirmed",
+				}, nil
+			}
+
 			if err := s.sendConfirmation(ctx, existing.ID, existing.OwnerEmail, existing.Name); err != nil {
 				return nil, err
 			}
@@ -202,10 +214,10 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 }
 
 func (s *Service) HeartbeatHub(ctx context.Context, hubID string) error {
-	return s.HeartbeatHubWithSecret(ctx, hubID, "")
+	return s.HeartbeatHubWithSecret(ctx, hubID, "", nil)
 }
 
-func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret string) error {
+func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret string, invitationCodeRequired *bool) error {
 	hub, err := s.hubs.GetByID(ctx, hubID)
 	if err != nil {
 		return err
@@ -221,6 +233,11 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 	}
 	if err := s.hubs.UpdateHeartbeat(ctx, hubID, time.Now()); err != nil {
 		return err
+	}
+	if invitationCodeRequired != nil {
+		if err := s.hubs.UpdateInvitationCodeRequired(ctx, hubID, *invitationCodeRequired, time.Now()); err != nil {
+			return err
+		}
 	}
 	if hub.IsDisabled || hub.Status == "disabled" {
 		return ErrHubDisabled

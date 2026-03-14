@@ -50,6 +50,15 @@ type EmailBlockItem struct {
 	UpdatedAt time.Time
 }
 
+type InvitationCode struct {
+	ID          string
+	Code        string
+	Status      string // "unused" | "used"
+	UsedByEmail string
+	UsedAt      *time.Time
+	CreatedAt   time.Time
+}
+
 type EmailInvite struct {
 	ID        string
 	Email     string
@@ -62,6 +71,7 @@ type EmailInvite struct {
 type Machine struct {
 	ID               string
 	UserID           string
+	ClientID         string
 	Name             string
 	Platform         string
 	Hostname         string
@@ -168,13 +178,26 @@ type EmailInviteRepository interface {
 	List(ctx context.Context) ([]*EmailInvite, error)
 }
 
+type InvitationCodeRepository interface {
+	Create(ctx context.Context, item *InvitationCode) error
+	GetByCode(ctx context.Context, code string) (*InvitationCode, error)
+	List(ctx context.Context, status string, search string) ([]*InvitationCode, error)
+	MarkUsed(ctx context.Context, id string, email string, usedAt time.Time) error
+}
+
 type MachineRepository interface {
 	Create(ctx context.Context, machine *Machine) error
 	GetByID(ctx context.Context, id string) (*Machine, error)
+	GetByUserAndClientID(ctx context.Context, userID, clientID string) (*Machine, error)
 	ListByUserID(ctx context.Context, userID string) ([]*Machine, error)
+	ListAll(ctx context.Context) ([]*Machine, error)
+	Delete(ctx context.Context, machineID string) error
+	DeleteByUserID(ctx context.Context, userID string) (int64, error)
+	DeleteOffline(ctx context.Context) (int64, error)
 	UpdateMetadata(ctx context.Context, machineID string, metadata MachineMetadata) error
 	UpdateStatus(ctx context.Context, machineID string, status string) error
 	UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error
+	UpdateTokenHash(ctx context.Context, machineID string, tokenHash string) error
 }
 
 type ViewerTokenRepository interface {
@@ -197,15 +220,16 @@ type SessionRepository interface {
 }
 
 type Store struct {
-	Admins       AdminUserRepository
-	System       SystemSettingsRepository
-	AdminAudit   AdminAuditRepository
-	Users        UserRepository
-	Enrollments  EnrollmentRepository
-	EmailBlocks  EmailBlocklistRepository
-	EmailInvites EmailInviteRepository
-	Machines     MachineRepository
-	ViewerTokens ViewerTokenRepository
-	LoginTokens  LoginTokenRepository
-	Sessions     SessionRepository
+	Admins          AdminUserRepository
+	System          SystemSettingsRepository
+	AdminAudit      AdminAuditRepository
+	Users           UserRepository
+	Enrollments     EnrollmentRepository
+	EmailBlocks     EmailBlocklistRepository
+	EmailInvites    EmailInviteRepository
+	InvitationCodes InvitationCodeRepository
+	Machines        MachineRepository
+	ViewerTokens    ViewerTokenRepository
+	LoginTokens     LoginTokenRepository
+	Sessions        SessionRepository
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,11 +12,17 @@ import (
 type RemoteActivationResult struct {
 	Status       string `json:"status"`
 	Message      string `json:"message,omitempty"`
+	Code         string `json:"code,omitempty"`
 	UserID       string `json:"user_id,omitempty"`
 	Email        string `json:"email,omitempty"`
 	SN           string `json:"sn,omitempty"`
 	MachineID    string `json:"machine_id,omitempty"`
 	MachineToken string `json:"machine_token,omitempty"`
+}
+
+type RemoteProbeResult struct {
+	InvitationCodeRequired bool   `json:"invitation_code_required"`
+	Message                string `json:"message,omitempty"`
 }
 
 type RemoteActivationStatus struct {
@@ -55,7 +62,43 @@ type hubCenterResolveHub struct {
 	Status         string `json:"status"`
 }
 
-func (a *App) ActivateRemote(email string) (RemoteActivationResult, error) {
+func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, error) {
+	hubURL = strings.TrimSpace(hubURL)
+	if hubURL == "" {
+		return RemoteProbeResult{}, fmt.Errorf("hub URL is required")
+	}
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return RemoteProbeResult{}, fmt.Errorf("email is required")
+	}
+
+	payload := map[string]string{"email": email}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return RemoteProbeResult{}, err
+	}
+
+	resp, err := http.Post(strings.TrimRight(hubURL, "/")+"/api/entry/probe", "application/json", bytes.NewReader(data))
+	if err != nil {
+		return RemoteProbeResult{}, err
+	}
+	defer resp.Body.Close()
+
+	var result RemoteProbeResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return RemoteProbeResult{}, err
+	}
+	if resp.StatusCode >= 300 {
+		if result.Message != "" {
+			return RemoteProbeResult{}, fmt.Errorf("%s", result.Message)
+		}
+		return RemoteProbeResult{}, fmt.Errorf("probe failed: %s", resp.Status)
+	}
+
+	return result, nil
+}
+
+func (a *App) ActivateRemote(email string, invitationCode string) (RemoteActivationResult, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteActivationResult{}, err
@@ -85,6 +128,18 @@ func (a *App) ActivateRemote(email string) (RemoteActivationResult, error) {
 		"app_version":  profile.AppVersion,
 	}
 	body["heartbeat_interval_sec"] = profile.HeartbeatSec
+	if invitationCode != "" {
+		body["invitation_code"] = invitationCode
+	}
+
+	// Generate a stable client_id on first run so re-enrollment reuses the same machine record
+	if cfg.RemoteClientID == "" {
+		cfg.RemoteClientID = generateClientID()
+		if err := a.SaveConfig(cfg); err != nil {
+			return RemoteActivationResult{}, err
+		}
+	}
+	body["client_id"] = cfg.RemoteClientID
 	data, err := json.Marshal(body)
 	if err != nil {
 		return RemoteActivationResult{}, err
@@ -101,6 +156,9 @@ func (a *App) ActivateRemote(email string) (RemoteActivationResult, error) {
 		return RemoteActivationResult{}, err
 	}
 	if resp.StatusCode >= 300 {
+		if result.Code != "" {
+			return RemoteActivationResult{}, fmt.Errorf("%s: %s", result.Code, result.Message)
+		}
 		if result.Message != "" {
 			return RemoteActivationResult{}, fmt.Errorf("%s", result.Message)
 		}
@@ -289,4 +347,14 @@ func (a *App) resolveRemoteHubCenter(centerURL string, email string, cfg AppConf
 	}
 
 	return result, nil
+}
+
+// generateClientID produces a UUID v4 string used to stably identify this desktop instance.
+func generateClientID() string {
+	var buf [16]byte
+	_, _ = rand.Read(buf[:])
+	buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
+	buf[8] = (buf[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }

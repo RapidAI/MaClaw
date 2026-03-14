@@ -49,6 +49,10 @@ type loginTokenRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+type invitationCodeRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 type sessionRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
@@ -63,7 +67,8 @@ func NewStore(p *Provider) *store.Store {
 		Enrollments:  &enrollmentRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		EmailBlocks:  &emailBlockRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		EmailInvites: &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Machines:     &machineRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		InvitationCodes: &invitationCodeRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Machines:        &machineRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		ViewerTokens: &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		LoginTokens:  &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Sessions:     &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
@@ -500,10 +505,11 @@ func (r *machineRepo) Create(ctx context.Context, machine *store.Machine) error 
 	}
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO machines (id, user_id, name, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO machines (id, user_id, client_id, name, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		machine.ID,
 		machine.UserID,
+		machine.ClientID,
 		machine.Name,
 		machine.Platform,
 		machine.Hostname,
@@ -661,6 +667,134 @@ func (r *machineRepo) UpdateHeartbeat(ctx context.Context, machineID string, at 
 		at.Format(time.RFC3339),
 		machineID,
 	)
+}
+
+func (r *machineRepo) GetByUserAndClientID(ctx context.Context, userID, clientID string) (*store.Machine, error) {
+	row := r.readDB.QueryRowContext(
+		ctx,
+		`SELECT id, user_id, name, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		 FROM machines WHERE user_id = ? AND client_id = ?`,
+		userID, clientID,
+	)
+
+	var (
+		machine                        store.Machine
+		lastSeen, createdAt, updatedAt sql.NullString
+	)
+	if err := row.Scan(
+		&machine.ID,
+		&machine.UserID,
+		&machine.Name,
+		&machine.Platform,
+		&machine.Hostname,
+		&machine.Arch,
+		&machine.AppVersion,
+		&machine.HeartbeatSec,
+		&machine.MachineTokenHash,
+		&machine.Status,
+		&lastSeen,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if lastSeen.Valid {
+		t := mustParseTime(lastSeen.String)
+		machine.LastSeenAt = &t
+	}
+	if createdAt.Valid {
+		machine.CreatedAt = mustParseTime(createdAt.String)
+	}
+	if updatedAt.Valid {
+		machine.UpdatedAt = mustParseTime(updatedAt.String)
+	}
+	machine.ClientID = clientID
+	return &machine, nil
+}
+
+func (r *machineRepo) UpdateTokenHash(ctx context.Context, machineID string, tokenHash string) error {
+	return execWrite(
+		ctx,
+		r.batch,
+		r.db,
+		`UPDATE machines SET machine_token_hash = ?, updated_at = ? WHERE id = ?`,
+		tokenHash,
+		time.Now().Format(time.RFC3339),
+		machineID,
+	)
+}
+
+func (r *machineRepo) ListAll(ctx context.Context) ([]*store.Machine, error) {
+	rows, err := r.readDB.QueryContext(
+		ctx,
+		`SELECT id, user_id, name, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		 FROM machines ORDER BY updated_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*store.Machine
+	for rows.Next() {
+		var (
+			machine                        store.Machine
+			lastSeen, createdAt, updatedAt sql.NullString
+		)
+		if err := rows.Scan(
+			&machine.ID,
+			&machine.UserID,
+			&machine.Name,
+			&machine.Platform,
+			&machine.Hostname,
+			&machine.Arch,
+			&machine.AppVersion,
+			&machine.HeartbeatSec,
+			&machine.MachineTokenHash,
+			&machine.Status,
+			&lastSeen,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if lastSeen.Valid {
+			t := mustParseTime(lastSeen.String)
+			machine.LastSeenAt = &t
+		}
+		if createdAt.Valid {
+			machine.CreatedAt = mustParseTime(createdAt.String)
+		}
+		if updatedAt.Valid {
+			machine.UpdatedAt = mustParseTime(updatedAt.String)
+		}
+		items = append(items, &machine)
+	}
+	return items, rows.Err()
+}
+
+func (r *machineRepo) Delete(ctx context.Context, machineID string) error {
+	return execWrite(ctx, r.batch, r.db, `DELETE FROM machines WHERE id = ?`, machineID)
+}
+
+func (r *machineRepo) DeleteByUserID(ctx context.Context, userID string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE user_id = ? AND status != 'online'`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (r *machineRepo) DeleteOffline(ctx context.Context) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE status != 'online'`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (r *viewerTokenRepo) Create(ctx context.Context, token *store.ViewerToken) error {
@@ -866,6 +1000,102 @@ func (r *sessionRepo) Close(ctx context.Context, sessionID string, exitCode *int
 		exitCode,
 		endedAt.Format(time.RFC3339),
 		sessionID,
+	)
+	return err
+}
+
+func (r *invitationCodeRepo) Create(ctx context.Context, item *store.InvitationCode) error {
+	_, err := r.db.ExecContext(
+		ctx,
+		`INSERT INTO invitation_codes (id, code, status, used_by_email, used_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		item.ID,
+		item.Code,
+		item.Status,
+		item.UsedByEmail,
+		nil,
+		item.CreatedAt.Format(time.RFC3339),
+	)
+	return err
+}
+
+func (r *invitationCodeRepo) GetByCode(ctx context.Context, code string) (*store.InvitationCode, error) {
+	row := r.readDB.QueryRowContext(
+		ctx,
+		`SELECT id, code, status, used_by_email, used_at, created_at
+		 FROM invitation_codes WHERE code = ?`,
+		code,
+	)
+	var item store.InvitationCode
+	var usedAt sql.NullString
+	var createdAt string
+	if err := row.Scan(&item.ID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if usedAt.Valid {
+		t := mustParseTime(usedAt.String)
+		item.UsedAt = &t
+	}
+	item.CreatedAt = mustParseTime(createdAt)
+	return &item, nil
+}
+
+func (r *invitationCodeRepo) List(ctx context.Context, status string, search string) ([]*store.InvitationCode, error) {
+	query := `SELECT id, code, status, used_by_email, used_at, created_at FROM invitation_codes`
+	var conditions []string
+	var args []any
+
+	if status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, status)
+	}
+	if search != "" {
+		conditions = append(conditions, "code LIKE ?")
+		args = append(args, "%"+search+"%")
+	}
+
+	if len(conditions) > 0 {
+		query += " WHERE " + conditions[0]
+		for _, c := range conditions[1:] {
+			query += " AND " + c
+		}
+	}
+	query += " ORDER BY created_at DESC"
+
+	rows, err := r.readDB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*store.InvitationCode
+	for rows.Next() {
+		var item store.InvitationCode
+		var usedAt sql.NullString
+		var createdAt string
+		if err := rows.Scan(&item.ID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &createdAt); err != nil {
+			return nil, err
+		}
+		if usedAt.Valid {
+			t := mustParseTime(usedAt.String)
+			item.UsedAt = &t
+		}
+		item.CreatedAt = mustParseTime(createdAt)
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
+func (r *invitationCodeRepo) MarkUsed(ctx context.Context, id string, email string, usedAt time.Time) error {
+	_, err := r.db.ExecContext(
+		ctx,
+		`UPDATE invitation_codes SET status = 'used', used_by_email = ?, used_at = ? WHERE id = ?`,
+		email,
+		usedAt.Format(time.RFC3339),
+		id,
 	)
 	return err
 }

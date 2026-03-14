@@ -137,7 +137,7 @@ func runRemoteSmoke(app *App, args []string) int {
 			fmt.Fprintln(os.Stderr, "remote-smoke: -email is required with -activate")
 			return 2
 		}
-		result, err := app.ActivateRemote(*email)
+		result, err := app.ActivateRemote(*email, "")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "remote-smoke: activate failed: %v\n", err)
 			report.Phase = "activation_failed"

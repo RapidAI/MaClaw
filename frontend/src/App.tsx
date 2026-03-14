@@ -336,6 +336,7 @@ const translations: any = {
         "remoteActivation": "Activation",
         "remoteActivated": "Activated",
         "remoteNotActivated": "Not Activated",
+        "remoteRegister": "Register",
         "remoteEmailNotConfigured": "Remote email not configured",
         "remoteHub": "Hub",
         "remoteConnected": "Connected",
@@ -693,6 +694,7 @@ const translations: any = {
         "remoteActivation": "激活状态",
         "remoteActivated": "已激活",
         "remoteNotActivated": "未激活",
+        "remoteRegister": "注册",
         "remoteEmailNotConfigured": "尚未配置远程邮箱",
         "remoteHub": "Hub 连接",
         "remoteConnected": "已连接",
@@ -1028,6 +1030,7 @@ const translations: any = {
         "remoteActivation": "啟用狀態",
         "remoteActivated": "已啟用",
         "remoteNotActivated": "未啟用",
+        "remoteRegister": "註冊",
         "remoteEmailNotConfigured": "尚未設定遠端信箱",
         "remoteHub": "Hub 連線",
         "remoteConnected": "已連線",
@@ -2088,6 +2091,10 @@ function App() {
         saveRemoteConfigField,
         sendRemoteInput,
         clearRemoteActivationState,
+        invitationCodeRequired,
+        invitationCode,
+        setInvitationCode,
+        invitationCodeError,
     } = useRemotePanel({
         config,
         setConfig,
@@ -3262,11 +3269,11 @@ ${instruction}`;
                                     setRemoteInputDrafts={setRemoteInputDrafts}
                                     sendRemoteInput={sendRemoteInput}
                                     interruptRemoteSession={async (sessionID: string) => {
-                                        await InterruptRemoteSession(sessionID);
+                                        try { await InterruptRemoteSession(sessionID); } catch (err) { console.warn("InterruptRemoteSession error:", err); }
                                         await refreshRemotePanel();
                                     }}
                                     killRemoteSession={async (sessionID: string) => {
-                                        await KillRemoteSession(sessionID);
+                                        try { await KillRemoteSession(sessionID); } catch (err) { console.warn("KillRemoteSession error:", err); }
                                         await refreshRemotePanel();
                                     }}
                                     showToastMessage={showToastMessage}
@@ -3798,6 +3805,10 @@ ${instruction}`;
                                     remoteBusy={remoteBusy}
                                     remoteActivationStatus={remoteActivationStatus}
                                     activateRemoteWithEmail={activateRemoteWithEmail}
+                                    invitationCodeRequired={invitationCodeRequired}
+                                    invitationCode={invitationCode}
+                                    setInvitationCode={setInvitationCode}
+                                    invitationCodeError={invitationCodeError}
                                 />
                             </div>
 
@@ -4251,9 +4262,17 @@ ${instruction}`;
                                     </div>
                                 </div>
                                 {config?.remote_enabled && (
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '999px' }}>
+                                    <div
+                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', background: remoteActivationStatus?.activated ? '#f0fdf4' : '#fffbeb', border: `1px solid ${remoteActivationStatus?.activated ? '#bbf7d0' : '#fde68a'}`, borderRadius: '999px', cursor: remoteActivationStatus?.activated ? 'default' : 'pointer' }}
+                                        onClick={() => {
+                                            if (!remoteActivationStatus?.activated) {
+                                                openRemoteActivationModal(activeTool);
+                                            }
+                                        }}
+                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '点击注册' : lang === 'zh-Hant' ? '點擊註冊' : 'Click to register')}
+                                    >
                                         <span style={{ fontSize: '0.75rem', color: remoteActivationStatus?.activated ? '#16a34a' : '#d97706', whiteSpace: 'nowrap' }}>
-                                            {remoteActivationStatus?.activated ? t("remoteActivated") : t("remoteNotActivated")}
+                                            {remoteActivationStatus?.activated ? t("remoteActivated") : t("remoteRegister")}
                                         </span>
                                     </div>
                                 )}
@@ -4346,39 +4365,39 @@ ${instruction}`;
                                                 <option value="" disabled>{t("projectNoResults")}</option>
                                             )}
                                         </select>
+                                        <button
+                                            onClick={() => switchTool('projects')}
+                                            style={{
+                                                padding: '0',
+                                                height: '20px',
+                                                borderRadius: '6px',
+                                                border: '1px solid #d1d5db',
+                                                backgroundColor: '#f3f4f6',
+                                                color: '#6b7280',
+                                                fontSize: '0.85rem',
+                                                fontWeight: '500',
+                                                cursor: 'pointer',
+                                                transition: 'all 0.2s',
+                                                whiteSpace: 'nowrap',
+                                                textAlign: 'center',
+                                                width: '32px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                flexShrink: 0
+                                            }}
+                                            onMouseEnter={(e) => {
+                                                e.currentTarget.style.backgroundColor = '#e5e7eb';
+                                                e.currentTarget.style.color = '#4b5563';
+                                            }}
+                                            onMouseLeave={(e) => {
+                                                e.currentTarget.style.backgroundColor = '#f3f4f6';
+                                                e.currentTarget.style.color = '#6b7280';
+                                            }}
+                                        >
+                                            ...
+                                        </button>
                                     </div>
-                                    <button
-                                        onClick={() => switchTool('projects')}
-                                        style={{
-                                            padding: '0',
-                                            height: '20px',
-                                            borderRadius: '6px',
-                                            border: '1px solid #d1d5db',
-                                            backgroundColor: '#f3f4f6',
-                                            color: '#6b7280',
-                                            fontSize: '0.85rem',
-                                            fontWeight: '500',
-                                            cursor: 'pointer',
-                                            transition: 'all 0.2s',
-                                            whiteSpace: 'nowrap',
-                                            textAlign: 'center',
-                                            width: '32px',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            flexShrink: 0
-                                        }}
-                                        onMouseEnter={(e) => {
-                                            e.currentTarget.style.backgroundColor = '#e5e7eb';
-                                            e.currentTarget.style.color = '#4b5563';
-                                        }}
-                                        onMouseLeave={(e) => {
-                                            e.currentTarget.style.backgroundColor = '#f3f4f6';
-                                            e.currentTarget.style.color = '#6b7280';
-                                        }}
-                                    >
-                                        ...
-                                    </button>
                                 </div>
                                 <button
                                     className="btn-launch"
@@ -4390,13 +4409,12 @@ ${instruction}`;
                                             setLaunchingTool(activeTool);
                                             try {
                                                 await KillRemoteSession(activeRemoteSessionForTool.id);
-                                                await refreshRemotePanel();
-                                                setStatus(lang === 'zh-Hans' ? '远程已停止' : lang === 'zh-Hant' ? '遠端已停止' : 'Remote stopped');
-                                                setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                             } catch (err) {
-                                                setStatus("Error: " + err);
-                                                setLaunchingTool("");
+                                                console.warn("KillRemoteSession error (may already be stopped):", err);
                                             }
+                                            await refreshRemotePanel();
+                                            setStatus(lang === 'zh-Hans' ? '远程已停止' : lang === 'zh-Hant' ? '遠端已停止' : 'Remote stopped');
+                                            setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
                                             return;
                                         }
                                         const selectedProj = resolvedLaunchProject;

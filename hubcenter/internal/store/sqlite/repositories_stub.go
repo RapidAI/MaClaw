@@ -177,8 +177,8 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 		INSERT INTO hub_instances (
 			id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
 			status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
-			last_seen_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			invitation_code_required, last_seen_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		hub.ID,
 		hub.InstallationID,
@@ -195,6 +195,7 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 		hub.DisabledReason,
 		hub.CapabilitiesJSON,
 		hub.HubSecretHash,
+		boolToInt(hub.InvitationCodeRequired),
 		timePtrString(hub.LastSeenAt),
 		hub.CreatedAt.Format(time.RFC3339),
 		hub.UpdatedAt.Format(time.RFC3339),
@@ -205,13 +206,14 @@ func (r *hubRepo) GetByID(ctx context.Context, id string) (*store.HubInstance, e
 	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
 		       status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
-		       last_seen_at, created_at, updated_at
+		       invitation_code_required, last_seen_at, created_at, updated_at
 		FROM hub_instances
 		WHERE id = ?
 	`, id)
 
 	var item store.HubInstance
 	var isDisabled int
+	var invitationCodeRequired int
 	var lastSeen sql.NullString
 	var createdAt string
 	var updatedAt string
@@ -231,6 +233,7 @@ func (r *hubRepo) GetByID(ctx context.Context, id string) (*store.HubInstance, e
 		&item.DisabledReason,
 		&item.CapabilitiesJSON,
 		&item.HubSecretHash,
+		&invitationCodeRequired,
 		&lastSeen,
 		&createdAt,
 		&updatedAt,
@@ -241,6 +244,7 @@ func (r *hubRepo) GetByID(ctx context.Context, id string) (*store.HubInstance, e
 		return nil, err
 	}
 	item.IsDisabled = isDisabled == 1
+	item.InvitationCodeRequired = invitationCodeRequired == 1
 	if lastSeen.Valid {
 		ts, err := time.Parse(time.RFC3339, lastSeen.String)
 		if err == nil {
@@ -255,13 +259,14 @@ func (r *hubRepo) GetByInstallationID(ctx context.Context, installationID string
 	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
 		       status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
-		       last_seen_at, created_at, updated_at
+		       invitation_code_required, last_seen_at, created_at, updated_at
 		FROM hub_instances
 		WHERE installation_id = ?
 	`, installationID)
 
 	var item store.HubInstance
 	var isDisabled int
+	var invitationCodeRequired int
 	var lastSeen sql.NullString
 	var createdAt string
 	var updatedAt string
@@ -281,6 +286,7 @@ func (r *hubRepo) GetByInstallationID(ctx context.Context, installationID string
 		&item.DisabledReason,
 		&item.CapabilitiesJSON,
 		&item.HubSecretHash,
+		&invitationCodeRequired,
 		&lastSeen,
 		&createdAt,
 		&updatedAt,
@@ -291,6 +297,7 @@ func (r *hubRepo) GetByInstallationID(ctx context.Context, installationID string
 		return nil, err
 	}
 	item.IsDisabled = isDisabled == 1
+	item.InvitationCodeRequired = invitationCodeRequired == 1
 	if lastSeen.Valid {
 		ts, err := time.Parse(time.RFC3339, lastSeen.String)
 		if err == nil {
@@ -313,7 +320,7 @@ func (r *hubRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubIn
 	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT DISTINCT h.id, h.installation_id, h.owner_email, h.name, h.description, h.base_url, h.host, h.port, h.visibility,
 		       h.enrollment_mode, h.status, h.is_disabled, h.disabled_reason,
-		       h.capabilities_json, h.hub_secret_hash, h.last_seen_at, h.created_at, h.updated_at
+		       h.capabilities_json, h.hub_secret_hash, h.invitation_code_required, h.last_seen_at, h.created_at, h.updated_at
 		FROM hub_instances h
 		LEFT JOIN hub_user_links l ON l.hub_id = h.id
 		WHERE h.owner_email = ? OR l.email = ?
@@ -328,6 +335,7 @@ func (r *hubRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubIn
 	for rows.Next() {
 		var item store.HubInstance
 		var isDisabled int
+		var invitationCodeRequired int
 		var lastSeen sql.NullString
 		var createdAt string
 		var updatedAt string
@@ -347,6 +355,7 @@ func (r *hubRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubIn
 			&item.DisabledReason,
 			&item.CapabilitiesJSON,
 			&item.HubSecretHash,
+			&invitationCodeRequired,
 			&lastSeen,
 			&createdAt,
 			&updatedAt,
@@ -354,6 +363,7 @@ func (r *hubRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubIn
 			return nil, err
 		}
 		item.IsDisabled = isDisabled == 1
+		item.InvitationCodeRequired = invitationCodeRequired == 1
 		if lastSeen.Valid {
 			ts, err := time.Parse(time.RFC3339, lastSeen.String)
 			if err == nil {
@@ -371,7 +381,7 @@ func (r *hubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
 	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode,
 		       status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
-		       last_seen_at, created_at, updated_at
+		       invitation_code_required, last_seen_at, created_at, updated_at
 		FROM hub_instances
 		ORDER BY updated_at DESC
 	`)
@@ -384,6 +394,7 @@ func (r *hubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
 	for rows.Next() {
 		var item store.HubInstance
 		var isDisabled int
+		var invitationCodeRequired int
 		var lastSeen sql.NullString
 		var createdAt string
 		var updatedAt string
@@ -403,6 +414,7 @@ func (r *hubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
 			&item.DisabledReason,
 			&item.CapabilitiesJSON,
 			&item.HubSecretHash,
+			&invitationCodeRequired,
 			&lastSeen,
 			&createdAt,
 			&updatedAt,
@@ -410,6 +422,7 @@ func (r *hubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
 			return nil, err
 		}
 		item.IsDisabled = isDisabled == 1
+		item.InvitationCodeRequired = invitationCodeRequired == 1
 		if lastSeen.Valid {
 			ts, err := time.Parse(time.RFC3339, lastSeen.String)
 			if err == nil {
@@ -472,6 +485,15 @@ func (r *hubRepo) UpdateRegistration(ctx context.Context, hub *store.HubInstance
 		hub.UpdatedAt.Format(time.RFC3339),
 		hub.ID,
 	)
+	return err
+}
+
+func (r *hubRepo) UpdateInvitationCodeRequired(ctx context.Context, hubID string, required bool, updatedAt time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE hub_instances
+		SET invitation_code_required = ?, updated_at = ?
+		WHERE id = ?
+	`, boolToInt(required), updatedAt.Format(time.RFC3339), hubID)
 	return err
 }
 

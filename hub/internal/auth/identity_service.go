@@ -20,10 +20,19 @@ var (
 	ErrEmailBlocked           = errors.New("email blocked")
 	ErrInvalidUserCredentials = errors.New("invalid user credentials")
 	ErrMachineUnauthorized    = errors.New("machine unauthorized")
+	ErrInvitationCodeRequired = errors.New("invitation code is required")
+	ErrInvalidInvitationCode  = errors.New("invalid or used invitation code")
 )
+
+// InvitationCodeValidator abstracts the invitation code service to avoid circular imports.
+type InvitationCodeValidator interface {
+	IsRequired(ctx context.Context) (bool, error)
+	ValidateAndConsume(ctx context.Context, code string, email string) error
+}
 
 const (
 	systemKeyEnrollmentMode = "identity_enrollment_mode"
+	systemKeyPublicBaseURL  = "server_public_base_url"
 )
 
 type EnrollmentResult struct {
@@ -74,6 +83,7 @@ type IdentityService struct {
 	viewerTok       store.ViewerTokenRepository
 	loginTok        store.LoginTokenRepository
 	settings        SystemSettingsRepository
+	invitationSvc   InvitationCodeValidator
 	enrollmentMode  string
 	allowSelfEnroll bool
 	mailer          mail.Mailer
@@ -110,6 +120,7 @@ func NewIdentityService(
 	viewerTok store.ViewerTokenRepository,
 	loginTok store.LoginTokenRepository,
 	settings SystemSettingsRepository,
+	invitationSvc InvitationCodeValidator,
 	enrollmentMode string,
 	allowSelfEnroll bool,
 	mailer mail.Mailer,
@@ -124,6 +135,7 @@ func NewIdentityService(
 		viewerTok:       viewerTok,
 		loginTok:        loginTok,
 		settings:        settings,
+		invitationSvc:   invitationSvc,
 		enrollmentMode:  normalizeEnrollmentMode(enrollmentMode),
 		allowSelfEnroll: allowSelfEnroll,
 		mailer:          mailer,
@@ -131,13 +143,29 @@ func NewIdentityService(
 	}
 }
 
-func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineName, platform string) (*EnrollmentResult, error) {
+func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineName, platform, clientID, invitationCode string) (*EnrollmentResult, error) {
 	email = normalizeEmail(email)
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
 	if err := s.ensureEmailAllowed(ctx, email); err != nil {
 		return nil, err
+	}
+
+	// Invitation code validation
+	if s.invitationSvc != nil {
+		required, err := s.invitationSvc.IsRequired(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if required {
+			if strings.TrimSpace(invitationCode) == "" {
+				return nil, ErrInvitationCodeRequired
+			}
+			if err := s.invitationSvc.ValidateAndConsume(ctx, invitationCode, email); err != nil {
+				return nil, ErrInvalidInvitationCode
+			}
+		}
 	}
 
 	user, err := s.users.GetByEmail(ctx, email)
@@ -173,7 +201,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 		}
 	}
 
-	return s.issueMachineForUser(ctx, user, machineName, platform)
+	return s.issueMachineForUser(ctx, user, machineName, platform, clientID)
 }
 
 func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (*EmailLoginRequestResult, error) {
@@ -513,7 +541,33 @@ func (s *IdentityService) ensurePendingApproval(ctx context.Context, email strin
 	}, nil
 }
 
-func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.User, machineName, platform string) (*EnrollmentResult, error) {
+func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.User, machineName, platform, clientID string) (*EnrollmentResult, error) {
+	// If a client_id is provided, try to find an existing machine for this user
+	if clientID != "" {
+		existing, err := s.machines.GetByUserAndClientID(ctx, user.ID, clientID)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			// Reissue a new token for the existing machine
+			rawToken, err := randomToken(32)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.machines.UpdateTokenHash(ctx, existing.ID, hashToken(rawToken)); err != nil {
+				return nil, err
+			}
+			return &EnrollmentResult{
+				Status:       "approved",
+				UserID:       user.ID,
+				Email:        user.Email,
+				SN:           user.SN,
+				MachineID:    existing.ID,
+				MachineToken: rawToken,
+			}, nil
+		}
+	}
+
 	rawToken, err := randomToken(32)
 	if err != nil {
 		return nil, err
@@ -522,6 +576,7 @@ func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.U
 	machine := &store.Machine{
 		ID:               newID("m"),
 		UserID:           user.ID,
+		ClientID:         clientID,
 		Name:             defaultIfEmpty(machineName, "CodeClaw Desktop"),
 		Platform:         defaultIfEmpty(platform, "unknown"),
 		MachineTokenHash: hashToken(rawToken),
@@ -612,9 +667,25 @@ func settingsJSON(v any) string {
 }
 
 func (s *IdentityService) buildConfirmURL(rawToken string) string {
-	base := s.publicBaseURL
+	base := s.resolvePublicBaseURL()
 	if base == "" {
 		base = "http://127.0.0.1:9399"
 	}
 	return fmt.Sprintf("%s/app/auth/confirm?token=%s", base, url.QueryEscape(rawToken))
+}
+
+// resolvePublicBaseURL reads the dynamic public base URL from settings,
+// falling back to the static config value passed at construction time.
+func (s *IdentityService) resolvePublicBaseURL() string {
+	raw, err := s.settings.Get(context.Background(), systemKeyPublicBaseURL)
+	if err != nil || raw == "" {
+		return s.publicBaseURL
+	}
+	var payload struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil || payload.Value == "" {
+		return s.publicBaseURL
+	}
+	return strings.TrimRight(payload.Value, "/")
 }

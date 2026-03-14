@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -311,8 +312,10 @@ func normalizeChunkLines(chunk []byte) []string {
 	return out
 }
 
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x1b\\|\x07)|\x1b[^[\]()]`)
+
 func stripANSI(s string) string {
-	return s
+	return ansiPattern.ReplaceAllString(s, "")
 }
 
 func isNoiseLine(s string) bool {

@@ -86,7 +86,7 @@ func Default() *Config {
 	cfg.PWA.RoutePrefix = "/app"
 
 	cfg.Center.Enabled = true
-	cfg.Center.BaseURL = "http://127.0.0.1:9388"
+	cfg.Center.BaseURL = "http://hubs.rapidai.tech:9388"
 	cfg.Center.RegisterOnStartup = true
 	cfg.Center.HeartbeatIntervalSec = 30
 

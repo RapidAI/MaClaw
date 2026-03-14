@@ -91,11 +91,11 @@ func TestSendHeartbeatUsesStoredRegistration(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		var payload map[string]string
+		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("Decode() error = %v", err)
 		}
-		gotSecret = payload["hub_secret"]
+		gotSecret, _ = payload["hub_secret"].(string)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"status":"online"}`))
 	}))

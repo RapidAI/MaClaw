@@ -16,6 +16,10 @@ var ErrMachineOffline = errors.New("machine is offline")
 type MachineRepository interface {
 	GetByID(ctx context.Context, id string) (*store.Machine, error)
 	ListByUserID(ctx context.Context, userID string) ([]*store.Machine, error)
+	ListAll(ctx context.Context) ([]*store.Machine, error)
+	Delete(ctx context.Context, machineID string) error
+	DeleteByUserID(ctx context.Context, userID string) (int64, error)
+	DeleteOffline(ctx context.Context) (int64, error)
 	UpdateMetadata(ctx context.Context, machineID string, metadata store.MachineMetadata) error
 	UpdateStatus(ctx context.Context, machineID string, status string) error
 	UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error
@@ -319,6 +323,90 @@ func (s *Service) ListMachines(ctx context.Context, userID string) ([]MachineRun
 		out = append(out, info)
 	}
 	return out, nil
+}
+
+func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, error) {
+	if s.repo == nil {
+		return s.ListOnlineMachines(), nil
+	}
+
+	items, err := s.repo.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.runtime.mu.RLock()
+	defer s.runtime.mu.RUnlock()
+
+	out := make([]MachineRuntimeInfo, 0, len(items))
+	for _, item := range items {
+		info := MachineRuntimeInfo{
+			MachineID:            item.ID,
+			UserID:               item.UserID,
+			Name:                 item.Name,
+			Platform:             item.Platform,
+			Hostname:             item.Hostname,
+			Arch:                 item.Arch,
+			AppVersion:           item.AppVersion,
+			HeartbeatIntervalSec: item.HeartbeatSec,
+			Status:               item.Status,
+			LastSeenAt:           item.LastSeenAt,
+		}
+		if meta, ok := s.runtime.metadataByMachine[item.ID]; ok {
+			if info.Name == "" {
+				info.Name = meta.Name
+			}
+			if info.Platform == "" {
+				info.Platform = meta.Platform
+			}
+			if info.Hostname == "" {
+				info.Hostname = meta.Hostname
+			}
+			if info.Arch == "" {
+				info.Arch = meta.Arch
+			}
+			if info.AppVersion == "" {
+				info.AppVersion = meta.AppVersion
+			}
+			if info.HeartbeatIntervalSec == 0 {
+				info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
+			}
+			info.ActiveSessions = meta.ActiveSessions
+			if meta.LastSeenAt != nil {
+				info.LastSeenAt = meta.LastSeenAt
+			}
+		}
+		if conn, ok := s.runtime.desktopsByMachine[item.ID]; ok && conn != nil && conn.Conn != nil {
+			info.Role = conn.Role
+			info.Online = true
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
+func (s *Service) DeleteMachine(ctx context.Context, machineID string) error {
+	if s.repo == nil {
+		return errors.New("no repository configured")
+	}
+	if s.IsMachineOnline(machineID) {
+		return errors.New("cannot delete an online machine")
+	}
+	return s.repo.Delete(ctx, machineID)
+}
+
+func (s *Service) ClearOfflineMachines(ctx context.Context) (int64, error) {
+	if s.repo == nil {
+		return 0, errors.New("no repository configured")
+	}
+	return s.repo.DeleteOffline(ctx)
+}
+
+func (s *Service) DeleteMachinesByUser(ctx context.Context, userID string) (int64, error) {
+	if s.repo == nil {
+		return 0, errors.New("no repository configured")
+	}
+	return s.repo.DeleteByUserID(ctx, userID)
 }
 
 func (s *Service) ListEvents(limit int) []MachineEvent {

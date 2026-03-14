@@ -6,6 +6,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/httpapi"
+	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
@@ -35,7 +36,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	st := sqlite.NewStore(provider)
 	adminService := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
 	mailer := mail.New(*cfg, st.System)
-	identityService := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.EmailInvites, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, cfg.Identity.EnrollmentMode, cfg.Identity.AllowSelfEnroll, mailer, cfg.Server.PublicBaseURL)
+	invitationService := invitation.NewService(st.InvitationCodes, st.System)
+
+	identityService := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.EmailInvites, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, invitationService, cfg.Identity.EnrollmentMode, cfg.Identity.AllowSelfEnroll, mailer, cfg.Server.PublicBaseURL)
 	centerService := center.NewService(cfg, st.System)
 	deviceRuntime := device.NewRuntime()
 	deviceService := device.NewService(st.Machines, deviceRuntime)
@@ -52,6 +55,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		gateway,
 		deviceService,
 		sessionService,
+		invitationService,
 		cfg.PWA.StaticDir,
 		cfg.PWA.RoutePrefix,
 	)

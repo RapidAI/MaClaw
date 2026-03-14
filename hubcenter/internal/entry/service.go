@@ -14,13 +14,14 @@ import (
 var ErrIPBlocked = errors.New("ip blocked")
 
 type HubAccessView struct {
-	HubID          string `json:"hub_id"`
-	Name           string `json:"name"`
-	BaseURL        string `json:"base_url"`
-	PWAURL         string `json:"pwa_url"`
-	Visibility     string `json:"visibility"`
-	EnrollmentMode string `json:"enrollment_mode"`
-	Status         string `json:"status"`
+	HubID                  string `json:"hub_id"`
+	Name                   string `json:"name"`
+	BaseURL                string `json:"base_url"`
+	PWAURL                 string `json:"pwa_url"`
+	Visibility             string `json:"visibility"`
+	EnrollmentMode         string `json:"enrollment_mode"`
+	Status                 string `json:"status"`
+	InvitationCodeRequired bool   `json:"invitation_code_required"`
 }
 
 type ResolveResult struct {
@@ -142,13 +143,14 @@ func BuildPWAURL(baseURL, email string) string {
 
 func hubToAccessView(hub *store.HubInstance, email string) HubAccessView {
 	return HubAccessView{
-		HubID:          hub.ID,
-		Name:           hub.Name,
-		BaseURL:        hub.BaseURL,
-		PWAURL:         BuildPWAURL(hub.BaseURL, email),
-		Visibility:     hub.Visibility,
-		EnrollmentMode: hub.EnrollmentMode,
-		Status:         hub.Status,
+		HubID:                  hub.ID,
+		Name:                   hub.Name,
+		BaseURL:                hub.BaseURL,
+		PWAURL:                 BuildPWAURL(hub.BaseURL, email),
+		Visibility:             hub.Visibility,
+		EnrollmentMode:         hub.EnrollmentMode,
+		Status:                 hub.Status,
+		InvitationCodeRequired: hub.InvitationCodeRequired,
 	}
 }
 

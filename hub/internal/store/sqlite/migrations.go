@@ -126,6 +126,19 @@ func RunMigrations(db *sql.DB) error {
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			created_at TEXT NOT NULL
 		);`,
+
+		`CREATE TABLE IF NOT EXISTS invitation_codes (
+			id TEXT PRIMARY KEY,
+			code TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL DEFAULT 'unused',
+			used_by_email TEXT NOT NULL DEFAULT '',
+			used_at DATETIME,
+			created_at DATETIME NOT NULL
+		);`,
+
+		`CREATE INDEX IF NOT EXISTS idx_invitation_codes_code ON invitation_codes(code);`,
+
+		`CREATE INDEX IF NOT EXISTS idx_invitation_codes_status ON invitation_codes(status);`,
 	}
 
 	for _, stmt := range stmts {
@@ -139,6 +152,7 @@ func RunMigrations(db *sql.DB) error {
 		`ALTER TABLE machines ADD COLUMN arch TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE machines ADD COLUMN app_version TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE machines ADD COLUMN heartbeat_sec INTEGER NOT NULL DEFAULT 60`,
+		`ALTER TABLE machines ADD COLUMN client_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {

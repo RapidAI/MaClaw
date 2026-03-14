@@ -391,7 +391,7 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	result, err := app.ActivateRemote("user@example.com")
+	result, err := app.ActivateRemote("user@example.com", "")
 	if err != nil {
 		t.Fatalf("ActivateRemote() error = %v", err)
 	}
@@ -465,7 +465,7 @@ func TestActivateRemote_ReusesExistingRemoteSessionsAndConnectsHubClient(t *test
 	}
 
 	app.remoteSessions = NewRemoteSessionManager(app)
-	result, err := app.ActivateRemote("user@example.com")
+	result, err := app.ActivateRemote("user@example.com", "")
 	if err != nil {
 		t.Fatalf("ActivateRemote() error = %v", err)
 	}
@@ -524,7 +524,7 @@ func TestActivateRemote_SendsNormalizedPlatform(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	if _, err := app.ActivateRemote("user@example.com"); err != nil {
+	if _, err := app.ActivateRemote("user@example.com", ""); err != nil {
 		t.Fatalf("ActivateRemote() error = %v", err)
 	}
 

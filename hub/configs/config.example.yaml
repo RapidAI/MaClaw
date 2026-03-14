@@ -23,7 +23,7 @@ pwa:
 
 center:
   enabled: true
-  base_url: http://127.0.0.1:9388
+  base_url: http://hubs.rapidai.tech:9388
   register_on_startup: true
   heartbeat_interval_sec: 30
 

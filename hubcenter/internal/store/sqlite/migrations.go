@@ -82,6 +82,9 @@ func RunMigrations(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_instances_installation_id ON hub_instances(installation_id) WHERE installation_id <> ''`); err != nil {
 		return fmt.Errorf("create hub installation index: %w", err)
 	}
+	if err := ensureInvitationCodeRequiredColumn(db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -114,6 +117,39 @@ func ensureHubInstallationIDColumn(db *sql.DB) error {
 
 	if _, err := db.Exec(`ALTER TABLE hub_instances ADD COLUMN installation_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add hub installation_id column: %w", err)
+	}
+	return nil
+}
+
+func ensureInvitationCodeRequiredColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(hub_instances)`)
+	if err != nil {
+		return fmt.Errorf("inspect hub_instances columns: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return fmt.Errorf("scan hub_instances column: %w", err)
+		}
+		if name == "invitation_code_required" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate hub_instances columns: %w", err)
+	}
+
+	if _, err := db.Exec(`ALTER TABLE hub_instances ADD COLUMN invitation_code_required BOOLEAN NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add hub invitation_code_required column: %w", err)
 	}
 	return nil
 }

@@ -33,8 +33,8 @@ func newEntryTestService(t *testing.T) *Service {
 	})
 
 	st := sqlite.NewStore(provider)
-	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.EmailInvites, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, "open", true, nil, "http://127.0.0.1:8080")
-	return NewService(identity)
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.EmailInvites, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	return NewService(identity, nil)
 }
 
 func TestProbeByEmailReturnsNotFound(t *testing.T) {
