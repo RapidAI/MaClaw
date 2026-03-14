@@ -379,6 +379,27 @@ func (r *enrollmentRepo) ListPending(ctx context.Context) ([]*store.UserEnrollme
 	return items, rows.Err()
 }
 
+func (r *enrollmentRepo) ListAll(ctx context.Context) ([]*store.UserEnrollment, error) {
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, status, note, created_at, updated_at FROM user_enrollments ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*store.UserEnrollment
+	for rows.Next() {
+		var item store.UserEnrollment
+		var createdAt, updatedAt string
+		if err := rows.Scan(&item.ID, &item.Email, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = mustParseTime(createdAt)
+		item.UpdatedAt = mustParseTime(updatedAt)
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
 func (r *enrollmentRepo) Approve(ctx context.Context, id string, updatedAt time.Time) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE user_enrollments SET status = 'approved', updated_at = ? WHERE id = ?`, updatedAt.Format(time.RFC3339), id)
 	return err
@@ -1044,6 +1065,53 @@ func (r *loginTokenRepo) GetPendingByEmail(ctx context.Context, email string) (*
 		token.CreatedAt = mustParseTime(createdAt.String)
 	}
 	return &token, nil
+}
+
+func (r *loginTokenRepo) ListPending(ctx context.Context) ([]*store.LoginToken, error) {
+	rows, err := r.readDB.QueryContext(
+		ctx,
+		`SELECT id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at
+		 FROM login_tokens
+		 WHERE consumed_at IS NULL AND expires_at > ?
+		 ORDER BY created_at DESC`,
+		time.Now().Format(time.RFC3339),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tokens []*store.LoginToken
+	for rows.Next() {
+		var (
+			token                            store.LoginToken
+			expiresAt, consumedAt, createdAt sql.NullString
+		)
+		if err := rows.Scan(
+			&token.ID,
+			&token.Email,
+			&token.TokenHash,
+			&token.PollTokenHash,
+			&token.Purpose,
+			&expiresAt,
+			&consumedAt,
+			&createdAt,
+		); err != nil {
+			return nil, err
+		}
+		if expiresAt.Valid {
+			token.ExpiresAt = mustParseTime(expiresAt.String)
+		}
+		if consumedAt.Valid {
+			t := mustParseTime(consumedAt.String)
+			token.ConsumedAt = &t
+		}
+		if createdAt.Valid {
+			token.CreatedAt = mustParseTime(createdAt.String)
+		}
+		tokens = append(tokens, &token)
+	}
+	return tokens, rows.Err()
 }
 
 func (r *loginTokenRepo) RefreshToken(ctx context.Context, tokenID string, tokenHash string, pollTokenHash string) error {

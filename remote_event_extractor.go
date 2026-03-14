@@ -32,6 +32,14 @@ func (e *ClaudeEventExtractor) Consume(session *RemoteSession, lines []string) [
 			events = append(events, *evt)
 			continue
 		}
+		if evt := e.detectCommandResult(session, line); evt != nil {
+			events = append(events, *evt)
+			continue
+		}
+		if evt := e.detectTaskCompleted(session, line); evt != nil {
+			events = append(events, *evt)
+			continue
+		}
 		if evt := e.detectInputRequired(session, line); evt != nil {
 			events = append(events, *evt)
 			continue
@@ -103,6 +111,64 @@ func (e *ClaudeEventExtractor) detectError(session *RemoteSession, line string) 
 			return newEvent(session, "session.error", "error", "Error detected", line, "", "")
 		}
 	}
+	return nil
+}
+
+func (e *ClaudeEventExtractor) detectCommandResult(session *RemoteSession, line string) *ImportantEvent {
+	lower := strings.ToLower(line)
+
+	// If the line starts with an error indicator, let detectError handle it
+	if strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "error ") {
+		return nil
+	}
+
+	// Detect successful command completion
+	successKeywords := []string{
+		"tests passed", "all tests pass", "test passed",
+		"build succeeded", "build successful", "compiled successfully",
+		"linting passed", "no issues found", "0 warnings",
+		"exit code 0", "exited with 0",
+	}
+	for _, kw := range successKeywords {
+		if strings.Contains(lower, kw) {
+			return newEvent(session, "command.success", "info", "Command succeeded", line, "", "")
+		}
+	}
+
+	// Detect failed command completion
+	failKeywords := []string{
+		"tests failed", "test failed", "build failed",
+		"compilation failed", "lint failed", "linting failed",
+		"exit code 1", "exited with 1", "non-zero exit",
+	}
+	for _, kw := range failKeywords {
+		if strings.Contains(lower, kw) {
+			return newEvent(session, "command.failed", "error", "Command failed", line, "", "")
+		}
+	}
+
+	return nil
+}
+
+func (e *ClaudeEventExtractor) detectTaskCompleted(session *RemoteSession, line string) *ImportantEvent {
+	lower := strings.ToLower(line)
+
+	completionKeywords := []string{
+		"task completed", "task complete", "task is complete",
+		"i've completed", "i have completed", "i've finished", "i have finished",
+		"all done", "changes are complete", "implementation is complete",
+		"successfully completed", "done!", "that's done",
+		"ready for review", "ready for your review",
+		"let me know if", "let me know when",
+		"is there anything else", "anything else you'd like",
+		"shall i", "would you like me to",
+	}
+	for _, kw := range completionKeywords {
+		if strings.Contains(lower, kw) {
+			return newEvent(session, "task.completed", "info", "Task completed", line, "", "")
+		}
+	}
+
 	return nil
 }
 

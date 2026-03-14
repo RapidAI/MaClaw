@@ -1,12 +1,13 @@
 import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { colors, radius } from "./styles";
 import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
+import { RemoteSessionConsole } from "./RemoteSessionConsole";
 
 type Props = {
     remoteSessions: RemoteSessionView[];
     remoteInputDrafts: Record<string, string>;
     setRemoteInputDrafts: Dispatch<SetStateAction<Record<string, string>>>;
-    sendRemoteInput: (sessionID: string) => void;
+    sendRemoteInput: (sessionID: string) => Promise<boolean>;
     interruptRemoteSession: (sessionID: string) => Promise<void>;
     killRemoteSession: (sessionID: string) => Promise<void>;
     showToastMessage: (message: string, duration?: number) => void;
@@ -53,7 +54,7 @@ export function RemoteSessionList(props: Props) {
 
     const [showHistory, setShowHistory] = useState(false);
     const [hiddenSessionIds, setHiddenSessionIds] = useState<string[]>([]);
-    const [expandedId, setExpandedId] = useState<string | null>(null);
+    const [consoleSessionId, setConsoleSessionId] = useState<string | null>(null);
 
     const visibleSessions = useMemo(
         () => remoteSessions.filter((s) => !hiddenSessionIds.includes(s.id)),
@@ -71,7 +72,7 @@ export function RemoteSessionList(props: Props) {
 
     const hideSession = (id: string) => {
         setHiddenSessionIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-        if (expandedId === id) setExpandedId(null);
+        if (consoleSessionId === id) setConsoleSessionId(null);
     };
 
     const handleKill = async (id: string) => {
@@ -157,18 +158,17 @@ export function RemoteSessionList(props: Props) {
                     const statusInfo = getStatusBadge(session.status || session.summary?.status);
                     const sourceInfo = getLaunchSourceTag(session.launch_source || session.summary?.source);
                     const isTerminal = terminalStatuses.has(String(session.status || session.summary?.status || "").toLowerCase());
-                    const isExpanded = expandedId === session.id;
 
                     return (
                         <tr
                             key={session.id}
                             style={{
-                                background: isExpanded ? colors.accentBg : colors.surface,
+                                background: colors.surface,
                                 opacity: muted ? 0.6 : 1,
                                 transition: "background 0.15s",
                             }}
                             onMouseEnter={(e) => { if (!muted) e.currentTarget.style.background = colors.accentBg; }}
-                            onMouseLeave={(e) => { if (!muted && !isExpanded) e.currentTarget.style.background = colors.surface; }}
+                            onMouseLeave={(e) => { if (!muted) e.currentTarget.style.background = colors.surface; }}
                         >
                             <td style={tdStyle}>
                                 <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={session.project_path}>
@@ -195,10 +195,10 @@ export function RemoteSessionList(props: Props) {
                                         <>
                                             <button
                                                 style={{ ...iconBtnStyle, color: colors.primary }}
-                                                title="展开输入"
-                                                onClick={() => setExpandedId(isExpanded ? null : session.id)}
+                                                title="打开控制台"
+                                                onClick={() => setConsoleSessionId(session.id)}
                                             >
-                                                {isExpanded ? "▲" : "✎"}
+                                                🖥
                                             </button>
                                             <button
                                                 style={{ ...iconBtnStyle, color: colors.warning }}
@@ -217,28 +217,6 @@ export function RemoteSessionList(props: Props) {
                                         {isTerminal ? "✕" : "⏹"}
                                     </button>
                                 </div>
-                                {isExpanded && !isTerminal && (
-                                    <div
-                                        style={{ display: "flex", gap: "4px", marginTop: "6px", justifyContent: "flex-end" }}
-                                        onClick={(e) => e.stopPropagation()}
-                                    >
-                                        <input
-                                            className="form-input"
-                                            style={{ flex: 1, fontSize: "0.74rem", padding: "4px 8px", minWidth: 0 }}
-                                            value={remoteInputDrafts[session.id] || ""}
-                                            onChange={(e) => setRemoteInputDrafts((prev) => ({ ...prev, [session.id]: e.target.value }))}
-                                            onKeyDown={(e) => { if (e.key === "Enter") sendRemoteInput(session.id); }}
-                                            placeholder="输入指令后回车发送"
-                                        />
-                                        <button
-                                            className="btn-primary"
-                                            style={{ fontSize: "0.72rem", padding: "4px 10px", whiteSpace: "nowrap" }}
-                                            onClick={() => sendRemoteInput(session.id)}
-                                        >
-                                            发送
-                                        </button>
-                                    </div>
-                                )}
                             </td>
                         </tr>
                     );
@@ -286,6 +264,26 @@ export function RemoteSessionList(props: Props) {
                     {renderTable(historySessions, true)}
                 </div>
             )}
+
+            {/* Console modal */}
+            {consoleSessionId && (() => {
+                const session = remoteSessions.find((s) => s.id === consoleSessionId);
+                if (!session) return null;
+                return (
+                    <RemoteSessionConsole
+                        session={session}
+                        remoteInputDrafts={remoteInputDrafts}
+                        setRemoteInputDrafts={setRemoteInputDrafts}
+                        sendRemoteInput={sendRemoteInput}
+                        interruptRemoteSession={interruptRemoteSession}
+                        killRemoteSession={killRemoteSession}
+                        showToastMessage={showToastMessage}
+                        translate={translate}
+                        formatText={formatText}
+                        onClose={() => setConsoleSessionId(null)}
+                    />
+                );
+            })()}
         </div>
     );
 }

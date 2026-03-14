@@ -312,13 +312,24 @@ func normalizeChunkLines(chunk []byte) []string {
 	return out
 }
 
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x1b\\|\x07)|\x1b[^[\]()]`)
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z~^$]|\x1b\].*?(?:\x1b\\|\x07)|\x1b[()#][A-Z0-9]?|\x1b[a-zA-Z]`)
+var controlPattern = regexp.MustCompile(`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`)
+var multiSpacePattern = regexp.MustCompile(`\s{2,}`)
 
 func stripANSI(s string) string {
-	return ansiPattern.ReplaceAllString(s, "")
+	s = ansiPattern.ReplaceAllString(s, " ")
+	s = controlPattern.ReplaceAllString(s, "")
+	return multiSpacePattern.ReplaceAllString(s, " ")
 }
 
+// boxDrawingOnly matches lines composed entirely of box-drawing, block-element,
+// and common ASCII separator characters (dashes, equals, pipes, etc.).
+var boxDrawingOnly = regexp.MustCompile(`^[\s\x{2500}-\x{259F}\x{2550}-\x{256C}\-=_*+|]+$`)
+
 func isNoiseLine(s string) bool {
-	lower := strings.ToLower(strings.TrimSpace(s))
-	return lower == "" || lower == "." || lower == ".." || lower == "..."
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" || trimmed == "." || trimmed == ".." || trimmed == "..." {
+		return true
+	}
+	return boxDrawingOnly.MatchString(trimmed)
 }

@@ -27,6 +27,7 @@ hubcenter/package/
 hub/bin/
 hubcenter/bin/
 hubcenter.exe
+CodeClaw.exe
 build/deploy/*.tar.gz
 build/deploy_last.log
 mobile/.gradle-user-home/

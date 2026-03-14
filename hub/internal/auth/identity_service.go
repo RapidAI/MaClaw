@@ -243,9 +243,17 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 			if err != nil {
 				return nil, err
 			}
+			// Create a login token with a long expiry so the PWA can poll for approval.
+			// When the admin approves the enrollment, the token will be consumed
+			// and the poll will return "confirmed".
+			pollResult, err := s.createLoginTokenForPoll(ctx, email, 24*time.Hour)
+			if err != nil {
+				return nil, err
+			}
 			return &EmailLoginRequestResult{
 				Status:  result.Status,
 				Message: result.Message,
+				PollID:  pollResult.PollID,
 			}, nil
 		default:
 			if !s.allowSelfEnroll {
@@ -261,6 +269,32 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		}
 	}
 
+	// User exists and is active. Try to send a login email, but if the mailer
+	// fails (network issues, misconfiguration, etc.) fall back to creating a
+	// pre-consumed poll token so the PWA can still auto-login via polling.
+	result, err := s.createLoginTokenAndNotify(ctx, email)
+	if err != nil && user.Status == "active" {
+		// Email delivery failed, but the user is already approved.
+		// Create a poll token and immediately consume it so the PWA
+		// poll returns "confirmed" right away.
+		pollResult, pollErr := s.createLoginTokenForPoll(ctx, email, 15*time.Minute)
+		if pollErr != nil {
+			return nil, err // return original mailer error
+		}
+		s.consumePendingLoginToken(ctx, email)
+		return &EmailLoginRequestResult{
+			Status:  "pending_email_confirmation",
+			Message: "Email delivery failed, but your account is approved. Please wait a moment.",
+			PollID:  pollResult.PollID,
+		}, nil
+	}
+	return result, err
+}
+
+// createLoginTokenAndNotify creates (or refreshes) a login token for the given
+// email, sends the confirmation email if a mailer is configured, and returns
+// the result with a poll_id so the client can poll for confirmation.
+func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email string) (*EmailLoginRequestResult, error) {
 	rawToken, err := randomToken(32)
 	if err != nil {
 		return nil, err
@@ -310,6 +344,49 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		Status:  "pending_email_confirmation",
 		Message: message,
 		PollID:  rawPollToken,
+	}, nil
+}
+
+// createLoginTokenForPoll creates (or refreshes) a login token for the given
+// email with a custom expiry, without sending a confirmation email. This is
+// used for approval-mode enrollments where the PWA needs to poll until the
+// admin approves.
+func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email string, expiry time.Duration) (*EmailLoginRequestResult, error) {
+	rawPollToken, err := randomToken(32)
+	if err != nil {
+		return nil, err
+	}
+	rawToken, err := randomToken(32)
+	if err != nil {
+		return nil, err
+	}
+
+	existing, err := s.loginTok.GetPendingByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		if err := s.loginTok.RefreshToken(ctx, existing.ID, hashToken(rawToken), hashToken(rawPollToken)); err != nil {
+			return nil, err
+		}
+	} else {
+		now := time.Now()
+		if err := s.loginTok.Create(ctx, &store.LoginToken{
+			ID:            newID("lt"),
+			Email:         email,
+			TokenHash:     hashToken(rawToken),
+			PollTokenHash: hashToken(rawPollToken),
+			Purpose:       "login",
+			ExpiresAt:     now.Add(expiry),
+			CreatedAt:     now,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	return &EmailLoginRequestResult{
+		Status: "pending_approval",
+		PollID: rawPollToken,
 	}, nil
 }
 
@@ -609,6 +686,11 @@ func (s *IdentityService) ListPendingEnrollments(ctx context.Context) ([]*store.
 	return s.enrollments.ListPending(ctx)
 }
 
+// ListAllEnrollments returns all enrollment requests regardless of status.
+func (s *IdentityService) ListAllEnrollments(ctx context.Context) ([]*store.UserEnrollment, error) {
+	return s.enrollments.ListAll(ctx)
+}
+
 // ApproveEnrollment approves a pending enrollment and creates an active user.
 func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*store.User, error) {
 	// We need to find the enrollment to get the email — list all pending and find by ID
@@ -634,14 +716,70 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 	if existing != nil {
 		existing.EnrollmentStatus = "approved"
 		existing.Status = "active"
+		// Consume any pending login token so the PWA poll returns "confirmed".
+		s.consumePendingLoginToken(ctx, target.Email)
 		return existing, nil
 	}
-	return s.createApprovedUser(ctx, target.Email)
+	user, err := s.createApprovedUser(ctx, target.Email)
+	if err != nil {
+		return nil, err
+	}
+	// Consume any pending login token so the PWA poll returns "confirmed".
+	s.consumePendingLoginToken(ctx, target.Email)
+	return user, nil
 }
 
 // RejectEnrollment rejects a pending enrollment request.
 func (s *IdentityService) RejectEnrollment(ctx context.Context, id string) error {
 	return s.enrollments.Reject(ctx, id, time.Now())
+}
+
+// ListPendingLoginTokens returns all unconsumed, non-expired login tokens.
+func (s *IdentityService) ListPendingLoginTokens(ctx context.Context) ([]*store.LoginToken, error) {
+	return s.loginTok.ListPending(ctx)
+}
+
+// AdminConfirmLoginByEmail consumes the pending login token for the given email
+// so that the PWA poll will see it as confirmed. If the user does not exist yet,
+// it creates an approved user first.
+func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email string) (*store.User, error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return nil, ErrInvalidEmail
+	}
+
+	// Ensure the user exists (create if needed).
+	user, err := s.users.GetByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		user, err = s.createApprovedUser(ctx, email)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Also approve any pending enrollment for this email.
+	if pendingEnr, _ := s.enrollments.GetPendingByEmail(ctx, email); pendingEnr != nil {
+		_ = s.enrollments.Approve(ctx, pendingEnr.ID, time.Now())
+	}
+
+	// Consume the pending login token so the PWA poll returns "confirmed".
+	s.consumePendingLoginToken(ctx, email)
+
+	return user, nil
+}
+
+// consumePendingLoginToken consumes the pending login token for the given email
+// (best-effort, errors are ignored). This allows the PWA poll to see the token
+// as consumed and return "confirmed" with an access token.
+func (s *IdentityService) consumePendingLoginToken(ctx context.Context, email string) {
+	pending, err := s.loginTok.GetPendingByEmail(ctx, email)
+	if err != nil || pending == nil {
+		return
+	}
+	_ = s.loginTok.Consume(ctx, pending.ID, time.Now())
 }
 
 func (s *IdentityService) ensurePendingApproval(ctx context.Context, email string, message string) (*EnrollmentResult, error) {
@@ -670,39 +808,37 @@ func (s *IdentityService) ensurePendingApproval(ctx context.Context, email strin
 }
 
 func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.User, machineName, platform, clientID string) (*EnrollmentResult, error) {
-	// If a client_id is provided, try to find an existing machine for this user
-	if clientID != "" {
-		existing, err := s.machines.GetByUserAndClientID(ctx, user.ID, clientID)
-		if err != nil {
-			return nil, err
-		}
-		if existing != nil {
-			// Reissue a new token for the existing machine
-			rawToken, err := randomToken(32)
-			if err != nil {
-				return nil, err
-			}
-			if err := s.machines.UpdateTokenHash(ctx, existing.ID, hashToken(rawToken)); err != nil {
-				return nil, err
-			}
-			return &EnrollmentResult{
-				Status:       "approved",
-				UserID:       user.ID,
-				Email:        user.Email,
-				SN:           user.SN,
-				MachineID:    existing.ID,
-				MachineToken: rawToken,
-			}, nil
-		}
-	}
+	// Derive a deterministic machine ID from user_id + client_id so the same
+	// physical machine always maps to the same record regardless of re-enrollment.
+	machineID := deriveMachineID(user.ID, clientID)
 
 	rawToken, err := randomToken(32)
 	if err != nil {
 		return nil, err
 	}
+
+	existing, err := s.machines.GetByID(ctx, machineID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		// Reissue a new token for the existing machine
+		if err := s.machines.UpdateTokenHash(ctx, machineID, hashToken(rawToken)); err != nil {
+			return nil, err
+		}
+		return &EnrollmentResult{
+			Status:       "approved",
+			UserID:       user.ID,
+			Email:        user.Email,
+			SN:           user.SN,
+			MachineID:    machineID,
+			MachineToken: rawToken,
+		}, nil
+	}
+
 	now := time.Now()
 	machine := &store.Machine{
-		ID:               newID("m"),
+		ID:               machineID,
 		UserID:           user.ID,
 		ClientID:         clientID,
 		Name:             defaultIfEmpty(machineName, "CodeClaw Desktop"),
@@ -723,6 +859,15 @@ func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.U
 		MachineID:    machine.ID,
 		MachineToken: rawToken,
 	}, nil
+}
+
+// deriveMachineID produces a stable, deterministic machine ID from user and client identifiers.
+func deriveMachineID(userID, clientID string) string {
+	h := sha256.New()
+	h.Write([]byte(userID))
+	h.Write([]byte(":"))
+	h.Write([]byte(clientID))
+	return "m_" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func (s *IdentityService) ensureEmailAllowed(ctx context.Context, email string) error {

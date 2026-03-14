@@ -4121,7 +4121,7 @@ ${instruction}`;
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', width: '100%', padding: '2px 0', '--wails-draggable': 'no-drag' } as any}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '20px', justifyContent: 'flex-start' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>{t("runnerStatus")}:</span>
+                                    {/* runnerStatus label removed */}
                                     <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--primary-color)', textTransform: 'capitalize' }}>{activeTool}</span>
                                     <span style={{ color: '#d1d5db' }}>|</span>
                                     <span
@@ -4226,7 +4226,7 @@ ${instruction}`;
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '15px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>{t("launchModeLabel")}:</span>
+                                    {/* launchModeLabel removed */}
                                     <div style={{ display: 'inline-flex', padding: '3px', borderRadius: '999px', border: '1px solid #e0e7ff', background: '#eef2ff' }}>
                                         <button
                                             type="button"
@@ -4396,6 +4396,57 @@ ${instruction}`;
                                         </button>
                                     </div>
                                 </div>
+                                {/* Handoff: local → remote icon button */}
+                                {!config?.remote_enabled && isRemoteCapableActiveTool && (
+                                    <button
+                                        type="button"
+                                        title={lang === 'zh-Hans' ? '转为远程' : lang === 'zh-Hant' ? '轉為遠端' : 'Switch to Remote'}
+                                        style={{
+                                            width: '36px',
+                                            height: '36px',
+                                            borderRadius: '50%',
+                                            border: '1px solid #c4b5fd',
+                                            background: 'linear-gradient(135deg, #ede9fe, #f5f3ff)',
+                                            color: '#7c3aed',
+                                            fontSize: '1rem',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            cursor: 'pointer',
+                                            flexShrink: 0,
+                                            transition: 'all 0.2s',
+                                            padding: 0,
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            e.currentTarget.style.background = 'linear-gradient(135deg, #ddd6fe, #ede9fe)';
+                                            e.currentTarget.style.borderColor = '#a78bfa';
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.currentTarget.style.background = 'linear-gradient(135deg, #ede9fe, #f5f3ff)';
+                                            e.currentTarget.style.borderColor = '#c4b5fd';
+                                        }}
+                                        onClick={async () => {
+                                            if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
+                                                openRemoteActivationModal(activeTool);
+                                                return;
+                                            }
+                                            setStatus(lang === 'zh-Hans' ? '正在转为远程...' : lang === 'zh-Hant' ? '正在轉為遠端...' : 'Switching to remote...');
+                                            setLaunchingTool(activeTool);
+                                            try {
+                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: true });
+                                                setConfig(newConfig);
+                                                await SaveConfig(newConfig);
+                                                await quickStartRemoteSession(activeTool as any, "handoff");
+                                                setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
+                                            } catch (err) {
+                                                setStatus("Error: " + err);
+                                                setLaunchingTool("");
+                                            }
+                                        }}
+                                    >
+                                        ☁
+                                    </button>
+                                )}
                                 <button
                                     className="btn-launch"
                                     style={{ padding: '8px 20px', textAlign: 'center', '--wails-draggable': 'no-drag', pointerEvents: 'auto', flexShrink: 0 } as any}

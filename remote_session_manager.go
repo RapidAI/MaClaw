@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -265,7 +266,14 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 	if s.Exec == nil {
 		return fmt.Errorf("session execution not available: %s", sessionID)
 	}
-	return s.Exec.Write([]byte(text))
+	// ConPTY on Windows requires "\r\n" (or "\r") to simulate pressing Enter.
+	// A bare "\n" is treated as a literal linefeed and does NOT trigger command
+	// execution.  Normalize all line endings to "\r\n" so that input from any
+	// client (desktop, PWA, mobile) works correctly regardless of what line
+	// ending the client sends.
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\n", "\r\n")
+	return s.Exec.Write([]byte(normalized))
 }
 
 func (m *RemoteSessionManager) Interrupt(sessionID string) error {

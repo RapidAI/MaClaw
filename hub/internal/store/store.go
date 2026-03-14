@@ -162,6 +162,7 @@ type EnrollmentRepository interface {
 	Create(ctx context.Context, item *UserEnrollment) error
 	GetPendingByEmail(ctx context.Context, email string) (*UserEnrollment, error)
 	ListPending(ctx context.Context) ([]*UserEnrollment, error)
+	ListAll(ctx context.Context) ([]*UserEnrollment, error)
 	Approve(ctx context.Context, id string, updatedAt time.Time) error
 	Reject(ctx context.Context, id string, updatedAt time.Time) error
 }
@@ -216,6 +217,7 @@ type LoginTokenRepository interface {
 	GetByTokenHash(ctx context.Context, tokenHash string) (*LoginToken, error)
 	GetByPollTokenHash(ctx context.Context, pollTokenHash string) (*LoginToken, error)
 	GetPendingByEmail(ctx context.Context, email string) (*LoginToken, error)
+	ListPending(ctx context.Context) ([]*LoginToken, error)
 	RefreshToken(ctx context.Context, tokenID string, tokenHash string, pollTokenHash string) error
 	Consume(ctx context.Context, tokenID string, consumedAt time.Time) error
 }

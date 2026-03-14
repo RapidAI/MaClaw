@@ -338,16 +338,15 @@ func (s *Service) GetSnapshot(userID, machineID, sessionID string) (*SessionCach
 func (s *Service) ListByMachine(ctx context.Context, userID, machineID string) ([]*SessionCacheEntry, error) {
 	_ = ctx
 
-	now := time.Now()
 	s.cache.mu.RLock()
 	defer s.cache.mu.RUnlock()
 
 	out := make([]*SessionCacheEntry, 0)
 	for _, entry := range s.cache.sessions {
 		if entry.UserID == userID && entry.MachineID == machineID {
-			// Skip terminal sessions that have been idle longer than the TTL
-			// so the PWA does not show stale closed sessions.
-			if terminalStatuses[strings.ToLower(entry.Summary.Status)] && now.Sub(entry.UpdatedAt) > staleSessionTTL {
+			// Skip terminal (exited) sessions entirely – they are no longer
+			// useful in the machine session list, hub admin, or PWA.
+			if terminalStatuses[strings.ToLower(entry.Summary.Status)] {
 				continue
 			}
 			out = append(out, cloneSessionCacheEntry(entry))

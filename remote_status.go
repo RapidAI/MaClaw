@@ -308,7 +308,9 @@ func (a *App) ListRemoteSessions() []RemoteSessionView {
 		if s == nil {
 			continue
 		}
-		out = append(out, toRemoteSessionView(s))
+		view := toRemoteSessionView(s)
+		a.log(fmt.Sprintf("[remote-list] session %s: status=%s, preview_lines=%d", view.ID, view.Status, len(view.Preview.PreviewLines)))
+		out = append(out, view)
 	}
 	return out
 }
@@ -429,7 +431,14 @@ func (a *App) SendRemoteSessionInput(sessionID, text string) error {
 	if a.remoteSessions == nil {
 		return ErrRemoteSessionsUnavailable
 	}
-	return a.remoteSessions.WriteInput(sessionID, text)
+	a.log(fmt.Sprintf("[remote-input] writing to session %s: %q", sessionID, text))
+	err := a.remoteSessions.WriteInput(sessionID, text)
+	if err != nil {
+		a.log(fmt.Sprintf("[remote-input] write failed for session %s: %v", sessionID, err))
+	} else {
+		a.log(fmt.Sprintf("[remote-input] write succeeded for session %s", sessionID))
+	}
+	return err
 }
 
 func (a *App) InterruptRemoteSession(sessionID string) error {

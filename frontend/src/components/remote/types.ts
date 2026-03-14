@@ -35,6 +35,13 @@ export interface RemoteSessionSummaryView {
     updated_at?: number;
 }
 
+export interface SessionPreviewView {
+    session_id?: string;
+    output_seq?: number;
+    preview_lines?: string[];
+    updated_at?: number;
+}
+
 export interface RemoteSessionView {
     id: string;
     tool: string;
@@ -49,6 +56,7 @@ export interface RemoteSessionView {
     status?: string;
     pid?: number;
     summary?: RemoteSessionSummaryView;
+    preview?: SessionPreviewView;
     events?: ImportantEventView[];
 }
 

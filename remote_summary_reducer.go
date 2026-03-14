@@ -54,6 +54,26 @@ func (r *ClaudeSummaryReducer) Apply(current SessionSummary, events []ImportantE
 			next.CurrentTask = "Running validation command"
 			next.ProgressSummary = evt.Summary
 			next.SuggestedAction = "Continue"
+		case "command.success":
+			next.Status = string(SessionRunning)
+			next.Severity = "info"
+			next.LastResult = evt.Summary
+			next.ProgressSummary = "Command completed successfully"
+			next.SuggestedAction = "Continue"
+		case "command.failed":
+			next.Status = string(SessionRunning)
+			next.Severity = "warn"
+			next.LastResult = evt.Summary
+			next.ProgressSummary = "Command failed — reviewing results"
+			next.SuggestedAction = "Check the error and decide next step"
+		case "task.completed":
+			next.Status = string(SessionWaitingInput)
+			next.Severity = "info"
+			next.WaitingForUser = true
+			next.CurrentTask = "Task completed"
+			next.LastResult = evt.Summary
+			next.ProgressSummary = "Waiting for next instruction"
+			next.SuggestedAction = "Review results and send next instruction"
 		case "input.required":
 			next.Status = string(SessionWaitingInput)
 			next.Severity = "warn"

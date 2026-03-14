@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type PreviewBuffer interface {
 	Append(sessionID string, lines []string) *SessionPreviewDelta
@@ -42,10 +45,11 @@ func (b *RingPreviewBuffer) Append(sessionID string, lines []string) *SessionPre
 func compressPreviewLines(lines []string) []string {
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if line == "" {
+		cleaned := strings.TrimRight(line, " \t")
+		if cleaned == "" || isNoiseLine(cleaned) {
 			continue
 		}
-		out = append(out, line)
+		out = append(out, cleaned)
 	}
 	return out
 }

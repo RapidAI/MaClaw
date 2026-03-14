@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import {
     ActivateRemote,
@@ -152,6 +152,29 @@ export function useRemotePanel(params: UseRemotePanelParams) {
 
     const getUseProxy = (): boolean => !!config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.use_proxy;
 
+    // Lightweight refresh: only fetches session list (used for high-frequency events)
+    const refreshSessionsOnly = useCallback(async () => {
+        try {
+            const sessions = await ListRemoteSessions();
+            const sessionList = Array.isArray(sessions) ? sessions : [];
+            for (const id of killedSessionIdsRef.current) {
+                const s = sessionList.find((sess: RemoteSessionView) => sess.id === id);
+                if (!s || TERMINAL_SESSION_STATUSES.has(String(s.status || s.summary?.status || "").toLowerCase())) {
+                    killedSessionIdsRef.current.delete(id);
+                }
+            }
+            setRemoteSessions(
+                sessionList.filter((sess: RemoteSessionView) => {
+                    if (killedSessionIdsRef.current.has(sess.id)) return false;
+                    const st = String(sess.status || sess.summary?.status || "").toLowerCase();
+                    return !TERMINAL_SESSION_STATUSES.has(st);
+                })
+            );
+        } catch (err) {
+            console.error("Failed to refresh sessions:", err);
+        }
+    }, []);
+
     const refreshRemotePanel = async () => {
         try {
             const [activation, connection, sessions, smokeSnapshot] = await Promise.all([
@@ -172,9 +195,14 @@ export function useRemotePanel(params: UseRemotePanelParams) {
                 }
             }
             // Filter out sessions that were killed locally but the backend
-            // still reports as active (race condition).
+            // still reports as active (race condition), and also filter out
+            // terminal (exited) sessions which are no longer meaningful.
             setRemoteSessions(
-                sessionList.filter((sess: RemoteSessionView) => !killedSessionIdsRef.current.has(sess.id))
+                sessionList.filter((sess: RemoteSessionView) => {
+                    if (killedSessionIdsRef.current.has(sess.id)) return false;
+                    const st = String(sess.status || sess.summary?.status || "").toLowerCase();
+                    return !TERMINAL_SESSION_STATUSES.has(st);
+                })
             );
             if (smokeSnapshot?.exists && smokeSnapshot?.report) {
                 setRemoteSmokeReport(smokeSnapshot.report);
@@ -403,15 +431,26 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         }
     };
 
-    const sendRemoteInput = async (sessionID: string) => {
+    const sendRemoteInput = async (sessionID: string): Promise<boolean> => {
         const text = (remoteInputDrafts[sessionID] || "").trim();
-        if (!text) return;
+        if (!text) return false;
         try {
-            await SendRemoteSessionInput(sessionID, text + "\n");
+            console.log(`[remote] sending input to ${sessionID}: ${JSON.stringify(text)}`);
+            await SendRemoteSessionInput(sessionID, text + "\r\n");
+            console.log(`[remote] input sent successfully to ${sessionID}`);
             setRemoteInputDrafts((prev) => ({ ...prev, [sessionID]: "" }));
+            // Trigger multiple quick session refreshes so the user sees the
+            // tool's response sooner.  The backend events will also arrive,
+            // but these give a head start and cover cases where events are
+            // delayed or debounced.
+            setTimeout(() => refreshSessionsOnly(), 300);
+            setTimeout(() => refreshSessionsOnly(), 1000);
+            setTimeout(() => refreshSessionsOnly(), 2500);
+            return true;
         } catch (err) {
             console.error("Failed to send remote input:", err);
             showToastMessage(formatText("remoteSendFailed", { error: String(err) }), 4000);
+            return false;
         }
     };
 
@@ -426,7 +465,8 @@ export function useRemotePanel(params: UseRemotePanelParams) {
                 }
                 : session
         )));
-        void refreshRemotePanel();
+        // Lightweight refresh to pick up the actual state after interrupt
+        setTimeout(() => refreshSessionsOnly(), 800);
     };
 
     const killRemoteSession = async (sessionID: string) => {
@@ -442,7 +482,9 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             delete next[sessionID];
             return next;
         });
-        void refreshRemotePanel();
+        // Lightweight refresh — the "closed" event from backend will also
+        // trigger a full refresh, but this ensures immediate UI cleanup.
+        setTimeout(() => refreshSessionsOnly(), 500);
     };
 
     const clearRemoteActivationState = async () => {
@@ -481,41 +523,104 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         }
     }, [navTab]);
 
-    // Auto-poll remote panel status every 5 seconds (only on settings/remote tab)
+    // Auto-poll remote panel status every 10 seconds as a fallback
+    // (real-time updates are driven by the event listener below)
     useEffect(() => {
         if (navTab !== "settings" && navTab !== "remote") return;
         const timer = setInterval(() => {
             refreshRemotePanel();
-        }, 5000);
+        }, 10000);
         return () => {
             clearInterval(timer);
         };
     }, [navTab]);
 
-    // Listen for real-time session change events from the Go backend
-    // whenever remote is enabled, regardless of the active tab.  This
-    // ensures the main-page launch button immediately reflects session
-    // terminations that happen on other clients (e.g. PWA) without
-    // relying on polling.
+    // Listen for real-time session change events from the Go backend.
+    // The backend emits: ("remote-session-changed", eventType, sessionID)
+    // where eventType is one of: "created", "summary", "preview_delta",
+    // "important_event", "input", "interrupt", "kill", "closed".
+    //
+    // Strategy:
+    //  - "input" / "interrupt" / "kill": already handled optimistically, skip
+    //  - "preview_delta" / "summary" / "important_event": lightweight session
+    //    refresh with debounce (high frequency, only need session data)
+    //  - "created" / "closed": full panel refresh (affects counts, connection)
+    const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
     useEffect(() => {
         if (!config?.remote_enabled) return;
-        const cleanup = EventsOn("remote-session-changed", () => {
-            refreshRemotePanel();
+        const cleanup = EventsOn("remote-session-changed", (...args: any[]) => {
+            const eventType = typeof args[0] === "string" ? args[0] : "";
+
+            // Skip events that are already handled optimistically by the UI
+            if (eventType === "input" || eventType === "interrupt" || eventType === "kill") {
+                return;
+            }
+
+            // Structural changes: full refresh
+            if (eventType === "created" || eventType === "closed") {
+                refreshRemotePanel();
+                return;
+            }
+
+            // High-frequency data events: debounced lightweight refresh
+            // (preview_delta, summary, important_event)
+            if (sessionRefreshTimerRef.current) {
+                clearTimeout(sessionRefreshTimerRef.current);
+            }
+            sessionRefreshTimerRef.current = setTimeout(() => {
+                sessionRefreshTimerRef.current = null;
+                refreshSessionsOnly();
+            }, 300);
         });
         return () => {
+            if (sessionRefreshTimerRef.current) {
+                clearTimeout(sessionRefreshTimerRef.current);
+                sessionRefreshTimerRef.current = null;
+            }
             if (typeof cleanup === "function") cleanup();
             else EventsOff("remote-session-changed");
         };
-    }, [config?.remote_enabled]);
+    }, [config?.remote_enabled, refreshSessionsOnly]);
 
-    // Auto-restore activation status on startup when remote was previously enabled
+    // Listen for local PTY output changes.  The Go backend emits
+    // "remote-state-changed" whenever a local session's output, summary,
+    // or events change.  This fires *before* the hub relay, so it is the
+    // fastest path for updating the UI when the desktop app owns the
+    // session.  We debounce at 200ms to avoid excessive re-renders.
+    const localStateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+        if (!config?.remote_enabled) return;
+        const cleanup = EventsOn("remote-state-changed", () => {
+            if (localStateTimerRef.current) {
+                clearTimeout(localStateTimerRef.current);
+            }
+            localStateTimerRef.current = setTimeout(() => {
+                localStateTimerRef.current = null;
+                refreshSessionsOnly();
+            }, 200);
+        });
+        return () => {
+            if (localStateTimerRef.current) {
+                clearTimeout(localStateTimerRef.current);
+                localStateTimerRef.current = null;
+            }
+            if (typeof cleanup === "function") cleanup();
+            else EventsOff("remote-state-changed");
+        };
+    }, [config?.remote_enabled, refreshSessionsOnly]);
+
+    // Auto-restore activation status on startup when remote was previously enabled.
+    // Depends on config?.remote_enabled so that it fires once config is loaded
+    // (config is null on initial mount because LoadConfig is async).
     useEffect(() => {
         if (config?.remote_enabled) {
             GetRemoteActivationStatus()
                 .then((activation) => setRemoteActivationStatus(activation))
                 .catch((err) => console.error("Failed to check remote activation on startup:", err));
         }
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [config?.remote_enabled]);
 
     useEffect(() => {
         setRemoteToolReadiness(null);
@@ -550,6 +655,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         getRemoteLaunchDetail,
         getRemoteSmokeDetail,
         refreshRemotePanel,
+        refreshSessionsOnly,
         refreshRemoteReadiness,
         refreshRemotePTYProbe,
         refreshRemoteLaunchProbe,
