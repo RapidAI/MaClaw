@@ -1,5 +1,12 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { RemoteSessionView } from "./types";
+import {
+    colors,
+    radius,
+    remoteSubLabelStyle,
+    remoteInfoCardStyle,
+    remoteSidePanelStyle,
+} from "./styles";
 
 type Props = {
     session: RemoteSessionView;
@@ -23,12 +30,12 @@ const getLaunchSourceLabel = (source?: string) => {
 
 const getStatusStyle = (status?: string) => {
     const value = String(status || "").toLowerCase();
-    if (value === "error" || value === "failed") return { background: "#fee2e2", color: "#b91c1c" };
-    if (value === "waiting_input") return { background: "#fef3c7", color: "#b45309" };
+    if (value === "error" || value === "failed") return { background: colors.dangerBg, color: "#9b2c2c" };
+    if (value === "waiting_input") return { background: colors.warningBg, color: colors.warning };
     if (["stopped", "finished", "killed", "closed", "done", "completed", "terminated", "exited"].includes(value)) {
-        return { background: "#e5e7eb", color: "#475569" };
+        return { background: colors.bg, color: colors.textSecondary };
     }
-    return { background: "#dbeafe", color: "#1d4ed8" };
+    return { background: colors.accentBg, color: colors.primaryDark };
 };
 
 const getPathLeaf = (value?: string) => {
@@ -44,6 +51,12 @@ const getDisplayTitle = (session: RemoteSessionView) => {
     if (pathLeaf) return pathLeaf;
     if (rawTitle && !genericTitles.has(rawTitle)) return rawTitle;
     return session.tool || session.id;
+};
+
+const getLaunchSourceStyle = (source: string) => {
+    if (source === "mobile") return { background: colors.successBg, color: "#276749" };
+    if (source === "handoff") return { background: "#f3f0ff", color: "#553c9a" };
+    return { background: colors.bg, color: colors.textSecondary };
 };
 
 export function RemoteSessionCard(props: Props) {
@@ -63,6 +76,7 @@ export function RemoteSessionCard(props: Props) {
     const launchSourceLabel = getLaunchSourceLabel(launchSource);
     const statusText = session.status || session.summary?.status || translate("remoteStatusUnknown");
     const statusStyle = getStatusStyle(statusText);
+    const sourceStyle = getLaunchSourceStyle(launchSource);
     const currentTask = session.summary?.current_task || "-";
     const lastResult = session.summary?.last_result || "-";
     const progressSummary = session.summary?.progress_summary || "-";
@@ -71,47 +85,47 @@ export function RemoteSessionCard(props: Props) {
     return (
         <div
             style={{
-                border: "1px solid rgba(148, 163, 184, 0.2)",
-                borderRadius: "14px",
-                background: "#ffffff",
+                border: `1px solid ${colors.border}`,
+                borderRadius: radius.lg,
+                background: colors.surface,
                 overflow: "hidden",
             }}
         >
             <div
                 style={{
                     display: "grid",
-                    gridTemplateColumns: "minmax(0, 2.2fr) minmax(260px, 1fr)",
+                    gridTemplateColumns: "minmax(0, 2.2fr) minmax(220px, 1fr)",
                 }}
             >
-                <div style={{ padding: "14px 16px", minWidth: 0 }}>
+                <div style={{ padding: "10px 12px", minWidth: 0 }}>
                     <div
                         style={{
                             display: "grid",
-                            gridTemplateColumns: "minmax(180px, 1.2fr) minmax(110px, 0.7fr) minmax(100px, 0.7fr) minmax(0, 1.4fr)",
-                            gap: "12px",
+                            gridTemplateColumns: "minmax(160px, 1.2fr) minmax(90px, 0.7fr) minmax(80px, 0.7fr) minmax(0, 1.4fr)",
+                            gap: "8px",
                             alignItems: "start",
                         }}
                     >
                         <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "6px" }}>实例</div>
-                            <div style={{ fontSize: "0.92rem", fontWeight: 700, color: "#0f172a", marginBottom: "4px", wordBreak: "break-word" }}>
+                            <div style={remoteSubLabelStyle}>实例</div>
+                            <div style={{ fontSize: "0.84rem", fontWeight: 600, color: colors.text, marginBottom: "2px", wordBreak: "break-word" }}>
                                 {displayTitle}
                             </div>
-                            <div style={{ fontSize: "0.72rem", color: "#64748b", wordBreak: "break-word" }}>{session.id}</div>
+                            <div style={{ fontSize: "0.68rem", color: colors.textSecondary, wordBreak: "break-word" }}>{session.id}</div>
                         </div>
 
                         <div>
-                            <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "6px" }}>类型</div>
+                            <div style={remoteSubLabelStyle}>类型</div>
                             <span
                                 style={{
                                     display: "inline-flex",
                                     alignItems: "center",
-                                    padding: "4px 10px",
-                                    borderRadius: "999px",
-                                    fontSize: "0.74rem",
-                                    fontWeight: 700,
-                                    background: launchSource === "mobile" ? "#dcfce7" : launchSource === "handoff" ? "#ede9fe" : "#e2e8f0",
-                                    color: launchSource === "mobile" ? "#15803d" : launchSource === "handoff" ? "#6d28d9" : "#475569",
+                                    padding: "2px 8px",
+                                    borderRadius: radius.pill,
+                                    fontSize: "0.7rem",
+                                    fontWeight: 600,
+                                    background: sourceStyle.background,
+                                    color: sourceStyle.color,
                                 }}
                             >
                                 {launchSourceLabel}
@@ -119,15 +133,15 @@ export function RemoteSessionCard(props: Props) {
                         </div>
 
                         <div>
-                            <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "6px" }}>状态</div>
+                            <div style={remoteSubLabelStyle}>状态</div>
                             <span
                                 style={{
                                     display: "inline-flex",
                                     alignItems: "center",
-                                    padding: "4px 10px",
-                                    borderRadius: "999px",
-                                    fontSize: "0.74rem",
-                                    fontWeight: 700,
+                                    padding: "2px 8px",
+                                    borderRadius: radius.pill,
+                                    fontSize: "0.7rem",
+                                    fontWeight: 600,
                                     background: statusStyle.background,
                                     color: statusStyle.color,
                                 }}
@@ -137,9 +151,9 @@ export function RemoteSessionCard(props: Props) {
                         </div>
 
                         <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "6px" }}>项目与工具</div>
-                            <div style={{ fontSize: "0.8rem", color: "#334155", lineHeight: 1.5, wordBreak: "break-word" }}>{session.project_path || "-"}</div>
-                            <div style={{ fontSize: "0.72rem", color: "#64748b", marginTop: "4px" }}>工具: {session.tool || "-"}</div>
+                            <div style={remoteSubLabelStyle}>项目与工具</div>
+                            <div style={{ fontSize: "0.74rem", color: colors.text, lineHeight: 1.4, wordBreak: "break-word" }}>{session.project_path || "-"}</div>
+                            <div style={{ fontSize: "0.68rem", color: colors.textSecondary, marginTop: "2px" }}>工具: {session.tool || "-"}</div>
                         </div>
                     </div>
 
@@ -147,39 +161,29 @@ export function RemoteSessionCard(props: Props) {
                         style={{
                             display: "grid",
                             gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                            gap: "10px",
-                            marginTop: "14px",
+                            gap: "6px",
+                            marginTop: "8px",
                         }}
                     >
-                        <div style={{ borderRadius: "10px", border: "1px solid #e2e8f0", background: "#f8fafc", padding: "10px 12px" }}>
-                            <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "6px" }}>当前任务</div>
-                            <div style={{ fontSize: "0.8rem", color: "#0f172a", lineHeight: 1.5, wordBreak: "break-word" }}>{currentTask}</div>
+                        <div style={remoteInfoCardStyle}>
+                            <div style={remoteSubLabelStyle}>当前任务</div>
+                            <div style={{ fontSize: "0.74rem", color: colors.text, lineHeight: 1.4, wordBreak: "break-word" }}>{currentTask}</div>
                         </div>
-                        <div style={{ borderRadius: "10px", border: "1px solid #e2e8f0", background: "#f8fafc", padding: "10px 12px" }}>
-                            <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "6px" }}>最近结果</div>
-                            <div style={{ fontSize: "0.8rem", color: "#334155", lineHeight: 1.5, wordBreak: "break-word" }}>{lastResult}</div>
+                        <div style={remoteInfoCardStyle}>
+                            <div style={remoteSubLabelStyle}>最近结果</div>
+                            <div style={{ fontSize: "0.74rem", color: colors.text, lineHeight: 1.4, wordBreak: "break-word" }}>{lastResult}</div>
                         </div>
-                        <div style={{ borderRadius: "10px", border: "1px solid #e2e8f0", background: "#f8fafc", padding: "10px 12px" }}>
-                            <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "6px" }}>进度</div>
-                            <div style={{ fontSize: "0.8rem", color: "#334155", lineHeight: 1.5, wordBreak: "break-word" }}>{progressSummary}</div>
+                        <div style={remoteInfoCardStyle}>
+                            <div style={remoteSubLabelStyle}>进度</div>
+                            <div style={{ fontSize: "0.74rem", color: colors.text, lineHeight: 1.4, wordBreak: "break-word" }}>{progressSummary}</div>
                         </div>
                     </div>
                 </div>
 
-                <div
-                    style={{
-                        borderLeft: "1px solid #eef2f7",
-                        background: "#fbfdff",
-                        padding: "14px 16px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "12px",
-                        justifyContent: "space-between",
-                    }}
-                >
+                <div style={remoteSidePanelStyle}>
                     <div>
-                        <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "8px" }}>操作</div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                        <div style={{ ...remoteSubLabelStyle, marginBottom: "6px" }}>操作</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
                             <button className="btn-primary" onClick={() => sendRemoteInput(session.id)}>
                                 发送指令
                             </button>
@@ -198,7 +202,7 @@ export function RemoteSessionCard(props: Props) {
                             </button>
                             <button
                                 className="btn-secondary"
-                                style={{ background: "#fff1f2", color: "#be123c", borderColor: "#fecdd3" }}
+                                style={{ background: colors.dangerBg, color: "#9b2c2c", borderColor: "#feb2b2" }}
                                 onClick={async () => {
                                     try {
                                         await killRemoteSession(session.id);
@@ -214,7 +218,7 @@ export function RemoteSessionCard(props: Props) {
                     </div>
 
                     <div>
-                        <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "8px" }}>快速输入</div>
+                        <div style={{ ...remoteSubLabelStyle, marginBottom: "6px" }}>快速输入</div>
                         <input
                             className="form-input"
                             style={{ width: "100%" }}

@@ -29,7 +29,7 @@ export function RemoteSettingsPanel({
                 </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "14px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label">{translate("remoteHubUrl")}</label>
                     <input
@@ -70,7 +70,7 @@ export function RemoteSettingsPanel({
 
             <div className="remote-activation-row">
                 <div className="form-group remote-activation-field" style={{ marginBottom: 0 }}>
-                    <label className="form-label">{translate("remoteEmail")}</label>
+                    <label className="form-label">{translate("remoteBindEmail")}</label>
                     <input
                         className="form-input"
                         value={config?.remote_email || ""}
@@ -85,7 +85,7 @@ export function RemoteSettingsPanel({
                 </button>
             </div>
 
-            <div className="info-text" style={{ marginTop: "14px", textAlign: "left" }}>
+            <div className="info-text" style={{ marginTop: "10px", textAlign: "left" }}>
                 {remoteActivationStatus?.activated
                     ? `${translate("remoteActivation")}: ${translate("remoteActivated")} ${remoteActivationStatus.email ? `(${remoteActivationStatus.email})` : ""}`
                     : `${translate("remoteActivation")}: ${translate("remoteNotActivated")}`}{" | "}{translate("remoteModeDesc")}

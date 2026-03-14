@@ -1,6 +1,15 @@
 import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { RemoteSessionCard } from "./RemoteSessionCard";
-import { remoteBodyTextStyle, remoteCardStyle, remoteMutedCardStyle, remotePanelGridStyle, remoteSectionTitleStyle } from "./styles";
+import {
+    colors,
+    remoteBodyTextStyle,
+    remoteCardStyle,
+    remoteMutedCardStyle,
+    remotePanelGridStyle,
+    remoteSectionTitleStyle,
+    remoteSubLabelStyle,
+    remoteDescTextStyle,
+} from "./styles";
 import type { RemoteSessionView } from "./types";
 
 type Props = {
@@ -75,7 +84,7 @@ export function RemoteSessionList(props: Props) {
     };
 
     const renderSessions = (sessions: RemoteSessionView[]) => (
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
             {sessions.map((session) => (
                 <RemoteSessionCard
                     key={session.id}
@@ -94,58 +103,58 @@ export function RemoteSessionList(props: Props) {
     );
 
     return (
-        <div style={{ ...remoteCardStyle, marginBottom: "14px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "12px", flexWrap: "wrap" }}>
+        <div style={{ ...remoteCardStyle, marginBottom: "10px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px", flexWrap: "wrap" }}>
                 <div>
                     <div style={{ ...remoteSectionTitleStyle, marginBottom: 0 }}>远程实例管理</div>
-                    <div style={{ fontSize: "0.74rem", color: "#64748b" }}>信息状态集中在左侧，操作按钮集中在右侧。实例停止后会立即从当前列表隐藏。</div>
+                    <div style={remoteDescTextStyle}>信息状态集中在左侧，操作按钮集中在右侧。实例停止后会立即从当前列表隐藏。</div>
                 </div>
                 <div style={remoteBodyTextStyle}>共 {visibleSessions.length} 个实例</div>
             </div>
 
             <div style={remotePanelGridStyle}>
                 <div style={remoteMutedCardStyle}>
-                    <div style={{ fontSize: "0.72rem", color: "#64748b", marginBottom: "6px" }}>运行中</div>
-                    <div style={{ fontSize: "1rem", fontWeight: 800, color: "#0f172a" }}>{runningSessions.length}</div>
+                    <div style={remoteSubLabelStyle}>运行中</div>
+                    <div style={{ fontSize: "0.92rem", fontWeight: 700, color: colors.text }}>{runningSessions.length}</div>
                 </div>
                 <div style={remoteMutedCardStyle}>
-                    <div style={{ fontSize: "0.72rem", color: "#64748b", marginBottom: "6px" }}>需处理</div>
-                    <div style={{ fontSize: "1rem", fontWeight: 800, color: attentionSessions.length > 0 ? "#b45309" : "#0f172a" }}>{attentionSessions.length}</div>
+                    <div style={remoteSubLabelStyle}>需处理</div>
+                    <div style={{ fontSize: "0.92rem", fontWeight: 700, color: attentionSessions.length > 0 ? colors.warning : colors.text }}>{attentionSessions.length}</div>
                 </div>
                 <div style={remoteMutedCardStyle}>
-                    <div style={{ fontSize: "0.72rem", color: "#64748b", marginBottom: "6px" }}>类型分布</div>
-                    <div style={{ fontSize: "0.82rem", fontWeight: 700, color: "#0f172a", lineHeight: 1.6 }}>
+                    <div style={remoteSubLabelStyle}>类型分布</div>
+                    <div style={{ fontSize: "0.76rem", fontWeight: 600, color: colors.text, lineHeight: 1.5 }}>
                         远程 {instanceTypeStats.remote} / 本地转远程 {instanceTypeStats.handoff} / 手机启动 {instanceTypeStats.mobile}
                     </div>
                 </div>
             </div>
 
             {visibleSessions.length === 0 ? (
-                <div style={{ fontSize: "0.78rem", color: "#94a3b8", padding: "8px 0" }}>当前没有远程实例。</div>
+                <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "6px 0" }}>当前没有远程实例。</div>
             ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                     {attentionSessions.length > 0 ? (
                         <div>
-                            <div style={{ ...remoteSectionTitleStyle, fontSize: "0.8rem", marginBottom: "8px", color: "#b45309" }}>需处理实例</div>
-                            <div style={{ fontSize: "0.74rem", color: "#7c6f64", marginBottom: "10px" }}>等待输入或报错的实例优先排到上方。</div>
+                            <div style={{ ...remoteSectionTitleStyle, fontSize: "0.76rem", marginBottom: "6px", color: colors.warning }}>需处理实例</div>
+                            <div style={remoteDescTextStyle}>等待输入或报错的实例优先排到上方。</div>
                             {renderSessions(attentionSessions)}
                         </div>
                     ) : null}
 
                     {runningSessions.length > 0 ? (
                         <div>
-                            <div style={{ ...remoteSectionTitleStyle, fontSize: "0.8rem", marginBottom: "8px" }}>运行中实例</div>
-                            <div style={{ fontSize: "0.74rem", color: "#7c6f64", marginBottom: "10px" }}>当前仍在运行、可继续查看和控制的实例。</div>
+                            <div style={{ ...remoteSectionTitleStyle, fontSize: "0.76rem", marginBottom: "6px" }}>运行中实例</div>
+                            <div style={remoteDescTextStyle}>当前仍在运行、可继续查看和控制的实例。</div>
                             {renderSessions(runningSessions)}
                         </div>
                     ) : null}
 
                     {historySessions.length > 0 ? (
-                        <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: "10px" }}>
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: showHistory ? "10px" : 0 }}>
+                        <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: "8px" }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginBottom: showHistory ? "8px" : 0 }}>
                                 <div>
-                                    <div style={{ ...remoteSectionTitleStyle, fontSize: "0.8rem", marginBottom: "4px" }}>历史实例</div>
-                                    <div style={{ fontSize: "0.74rem", color: "#7c6f64" }}>已结束的实例默认收起，界面会更清爽。</div>
+                                    <div style={{ ...remoteSectionTitleStyle, fontSize: "0.76rem", marginBottom: "2px" }}>历史实例</div>
+                                    <div style={remoteDescTextStyle}>已结束的实例默认收起，界面会更清爽。</div>
                                 </div>
                                 <button className="btn-link" onClick={() => setShowHistory((prev) => !prev)}>
                                     {showHistory ? "收起历史" : "展开历史"}

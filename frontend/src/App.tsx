@@ -18,6 +18,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
+import { RemoteSessionList } from './components/remote/RemoteSessionList';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 
 const subscriptionUrls: { [key: string]: string } = {
@@ -180,7 +181,7 @@ const getModelDisplayName = (modelName: string, lang: string): string => {
 
 const translations: any = {
     "en": {
-        "title": "AICoder",
+        "title": "CodeClaw",
         "about": "About",
         "cs146s": "Course",
         "introVideo": "Beginner",
@@ -301,13 +302,13 @@ const translations: any = {
         "refreshSuccess": "✅ Refresh successful!",
         "refreshFailed": "❌ Refresh failed: ",
         "lastUpdate": "Last Update: ",
-        "startupTitle": "Welcome to AICoder",
+        "startupTitle": "Welcome to CodeClaw",
         "showMore": "Show More",
         "showLess": "Show Less",
         "installLog": "View Log",
         "installLogTitle": "Installation Logs",
         "sendLog": "Send Log",
-        "sendLogSubject": "AICoder Environment Log",
+        "sendLogSubject": "CodeClaw Environment Log",
         "confirmDelete": "Confirm Delete",
         "confirmDeleteMessage": "Are you sure you want to delete provider \"{name}\"?",
         "confirmSendLog": "Confirm Send",
@@ -353,6 +354,7 @@ const translations: any = {
         "remoteHubUrl": "Hub URL",
         "remoteHubCenterUrl": "Hub Center URL",
         "remoteEmail": "Remote Email",
+        "remoteBindEmail": "Bind Email",
         "remoteNotInstalled": "Not installed",
         "remoteActivating": "Activating...",
         "remoteActivate": "Activate Remote",
@@ -509,7 +511,7 @@ const translations: any = {
         "placeholderZip": "Select .zip file",
         "cannotDeleteSystemSkill": "System skill package cannot be deleted.",
         "systemDefault": "System Default",
-        "envCheckTitle": "AICoder Environment Setup",
+        "envCheckTitle": "CodeClaw Environment Setup",
         "envCheckExitWarningTitle": "Warning: Exit During Environment Setup",
         "envCheckExitWarningMessage": "Exiting now will result in incomplete environment setup, and the application may not function properly.\n\nOnly exit in extreme cases (such as infinite loops or unresponsive behavior).\n\nAre you sure you want to exit?",
         "envCheckExitConfirm": "Yes, Exit",
@@ -536,7 +538,7 @@ const translations: any = {
         "nextPage": "Next"
     },
     "zh-Hans": {
-        "title": "AICoder",
+        "title": "CodeClaw",
         "about": "关于",
         "manual": "文档指南",
         "cs146s": "在线课程",
@@ -657,13 +659,13 @@ const translations: any = {
         "officialWebsite": "官方网站",
         "dontShowAgain": "下次不再显示",
         "showWelcomePage": "显示欢迎页",
-        "startupTitle": "欢迎使用 AICoder",
+        "startupTitle": "欢迎使用 CodeClaw",
         "showMore": "更多",
         "showLess": "收起",
         "installLog": "查看日志",
         "installLogTitle": "环境检查与安装日志",
         "sendLog": "发送日志",
-        "sendLogSubject": "AICoder环境安装日志",
+        "sendLogSubject": "CodeClaw环境安装日志",
         "confirmDelete": "确认删除",
         "confirmDeleteMessage": "确定要删除服务商 \"{name}\" 吗？",
         "confirmSendLog": "确认发送",
@@ -709,6 +711,7 @@ const translations: any = {
         "remoteHubUrl": "Hub 地址",
         "remoteHubCenterUrl": "Hub Center 地址",
         "remoteEmail": "远程邮箱",
+        "remoteBindEmail": "绑定邮件",
         "remoteNotInstalled": "未安装",
         "remoteActivating": "激活中...",
         "remoteActivate": "激活远程控制",
@@ -845,7 +848,7 @@ const translations: any = {
         "placeholderZip": "选择 .zip 文件",
         "cannotDeleteSystemSkill": "系统技能包不能删除。",
         "systemDefault": "系统默认",
-        "envCheckTitle": "AICoder 运行环境检测安装",
+        "envCheckTitle": "CodeClaw 运行环境检测安装",
         "envCheckExitWarningTitle": "警告：退出环境安装",
         "envCheckExitWarningMessage": "退出将导致环境安装不完整，程序无法正常运行。\n\n只有在程序死循环等极端情况下才建议退出。\n\n确定要退出吗？",
         "envCheckExitConfirm": "是的，退出",
@@ -872,7 +875,7 @@ const translations: any = {
         "nextPage": "下一页"
     },
     "zh-Hant": {
-        "title": "AICoder",
+        "title": "CodeClaw",
         "about": "關於",
         "manual": "文檔指南",
         "cs146s": "線上課程",
@@ -991,13 +994,13 @@ const translations: any = {
         "officialWebsite": "官方網站",
         "dontShowAgain": "下次不再顯示",
         "showWelcomePage": "顯示歡迎頁",
-        "startupTitle": "歡迎使用 AICoder",
+        "startupTitle": "歡迎使用 CodeClaw",
         "showMore": "更多",
         "showLess": "收起",
         "installLog": "查看日誌",
         "installLogTitle": "環境檢查與安裝日誌",
         "sendLog": "發送日誌",
-        "sendLogSubject": "AICoder環境安裝日誌",
+        "sendLogSubject": "CodeClaw環境安裝日誌",
         "confirmDelete": "確認刪除",
         "confirmDeleteMessage": "確定要刪除服務商 \"{name}\" 嗎？",
         "confirmSendLog": "確認發送",
@@ -1043,6 +1046,7 @@ const translations: any = {
         "remoteHubUrl": "Hub 位址",
         "remoteHubCenterUrl": "Hub Center 位址",
         "remoteEmail": "遠端信箱",
+        "remoteBindEmail": "綁定郵件",
         "remoteNotInstalled": "未安裝",
         "remoteActivating": "啟用中...",
         "remoteActivate": "啟用遠端控制",
@@ -1179,7 +1183,7 @@ const translations: any = {
         "placeholderZip": "選擇 .zip 文件",
         "cannotDeleteSystemSkill": "系統技能包不能刪除。",
         "systemDefault": "系統默認",
-        "envCheckTitle": "AICoder 運行環境檢測安裝",
+        "envCheckTitle": "CodeClaw 運行環境檢測安裝",
         "selectProvider": "選擇服務商",
         "knownProviders": "已知服務商",
         "providerList": "服務商列表",
@@ -1503,7 +1507,7 @@ function App() {
         setDownloadError("");
         setInstallerPath("");
 
-        const fileName = isWindows ? "AICoder-Setup.exe" : "AICoder-Universal.pkg";
+        const fileName = isWindows ? "CodeClaw-Setup.exe" : "CodeClaw-Universal.pkg";
 
         try {
             const path = await DownloadUpdate(downloadUrl, fileName);
@@ -1515,7 +1519,7 @@ function App() {
     };
 
     const handleCancelDownload = () => {
-        const fileName = isWindows ? "AICoder-Setup.exe" : "AICoder-Universal.pkg";
+        const fileName = isWindows ? "CodeClaw-Setup.exe" : "CodeClaw-Universal.pkg";
         CancelDownload(fileName);
     };
 
@@ -2591,7 +2595,7 @@ function App() {
                     ? `請將剛剛打開的文件夾中的壓縮包（aicoder_log_....zip）作為附件添加到此郵件中發送。\n\n`
                     : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
 
-            const body = `Product: AICoder
+            const body = `Product: CodeClaw
 Version: ${APP_VERSION}
 
 System Information:
@@ -2784,7 +2788,7 @@ ${instruction}`;
                         WebkitTextFillColor: 'transparent',
                         display: 'inline-block',
                         width: '100%'
-                    }}>AICoder</div>
+                    }}>CodeClaw</div>
 
                     <div
                         className={`sidebar-item ${navTab === 'message' ? 'active' : ''}`}
@@ -2805,13 +2809,13 @@ ${instruction}`;
                         <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("tutorial")}</span>
                     </div>
                     <div
-                        className={`sidebar-item ${navTab === 'api-store' ? 'active' : ''}`}
-                        onClick={() => switchTool('api-store')}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'api-store' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={t("apiStore")}
+                        className={`sidebar-item ${navTab === 'remote' ? 'active' : ''}`}
+                        onClick={() => switchTool('remote')}
+                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        title={lang === 'zh-Hans' ? '远程' : lang === 'zh-Hant' ? '遠端' : 'Remote'}
                     >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🛒</span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("apiStore")}</span>
+                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>📡</span>
+                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '远程' : lang === 'zh-Hant' ? '遠端' : 'Remote'}</span>
                     </div>
 
                     <div style={{ flex: 1 }}></div>
@@ -2932,8 +2936,9 @@ ${instruction}`;
                                                                         navTab === 'projects' ? t("projectManagement") :
                                                                     navTab === 'skills' ? t("skills") :
                                                                         navTab === 'tutorial' ? t("tutorial") :
-                                                                            navTab === 'api-store' ? t("apiStore") :
-                                                                                navTab === 'settings' ? t("globalSettings") : t("about")}
+                                                                            navTab === 'remote' ? (lang === 'zh-Hans' ? '远程管理' : lang === 'zh-Hant' ? '遠端管理' : 'Remote Management') :
+                                                                                navTab === 'api-store' ? t("apiStore") :
+                                                                                    navTab === 'settings' ? t("globalSettings") : t("about")}
                             </span>
                             {navTab === 'projects' && (
                                 <>
@@ -3048,6 +3053,20 @@ ${instruction}`;
                                             {t("installSkills")}
                                         </button>
                                     )}
+                                    <button
+                                        className="btn-link"
+                                        onClick={() => switchTool('api-store')}
+                                        style={{
+                                            marginLeft: '10px',
+                                            padding: '2px 8px',
+                                            fontSize: '0.8rem',
+                                            borderColor: '#c65c37',
+                                            color: '#c65c37',
+                                            '--wails-draggable': 'no-drag'
+                                        } as any}
+                                    >
+                                        {t("apiStore")}
+                                    </button>
                                 </>
                             )}
                             {navTab === 'skills' && (
@@ -3231,6 +3250,55 @@ ${instruction}`;
                                 >
                                     {tutorialContent}
                                 </ReactMarkdown>
+                            </div>
+                        </div>
+                    )}
+                    {navTab === 'remote' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                            <div style={{ flex: 1, overflowY: 'auto', padding: '20px', overflowX: 'hidden' }}>
+                                <RemoteSessionList
+                                    remoteSessions={remoteSessions}
+                                    remoteInputDrafts={remoteInputDrafts}
+                                    setRemoteInputDrafts={setRemoteInputDrafts}
+                                    sendRemoteInput={sendRemoteInput}
+                                    interruptRemoteSession={async (sessionID: string) => {
+                                        await InterruptRemoteSession(sessionID);
+                                        await refreshRemotePanel();
+                                    }}
+                                    killRemoteSession={async (sessionID: string) => {
+                                        await KillRemoteSession(sessionID);
+                                        await refreshRemotePanel();
+                                    }}
+                                    showToastMessage={showToastMessage}
+                                    translate={translate}
+                                    formatText={formatText}
+                                    localizeText={localizeText}
+                                />
+                                <div className="settings-panel" style={{ marginTop: '12px' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                                        <div>
+                                            <div className="settings-panel-title" style={{ marginBottom: '6px' }}>
+                                                {lang === 'zh-Hans' ? '远程接入' : lang === 'zh-Hant' ? '遠端接入' : 'Remote Access'}
+                                            </div>
+                                            <div className="settings-panel-desc">
+                                                {localizeText(
+                                                    "Activate this device and adjust Hub settings in Settings.",
+                                                    "如需激活当前设备或修改 Hub 配置，请进入设置中的远程标签。",
+                                                    "如需啟用目前裝置或修改 Hub 設定，請進入設定中的遠端分頁。"
+                                                )}
+                                            </div>
+                                        </div>
+                                        <button
+                                            className="btn-primary"
+                                            onClick={() => {
+                                                switchTool('settings');
+                                                setSettingsTab('remote');
+                                            }}
+                                        >
+                                            {lang === 'zh-Hans' ? '激活远程' : lang === 'zh-Hant' ? '啟用遠端' : 'Activate Remote'}
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     )}
@@ -3729,8 +3797,6 @@ ${instruction}`;
                                     translate={translate}
                                     remoteBusy={remoteBusy}
                                     remoteActivationStatus={remoteActivationStatus}
-                                    remoteSmokeReport={remoteSmokeReport}
-                                    getRemoteSmokeDetail={getRemoteSmokeDetail}
                                     activateRemoteWithEmail={activateRemoteWithEmail}
                                 />
                             </div>
@@ -3975,7 +4041,7 @@ ${instruction}`;
                                 WebkitTextFillColor: 'transparent',
                                 display: 'inline-block',
                                 fontWeight: 'bold'
-                            }}>RapidAI AICoder</h2>
+                            }}>RapidAI CodeClaw</h2>
                             <div style={{
                                 fontSize: '1rem',
                                 fontWeight: 'bold',
@@ -4005,7 +4071,7 @@ ${instruction}`;
 
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
                                 <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://aicoder.rapidai.tech/")}>{t("officialWebsite")}</button>
+                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://codeclaw.rapidai.tech/")}>{t("officialWebsite")}</button>
                                     <button
                                         className="btn-link"
                                         style={{ fontSize: '0.75rem', padding: '2px 6px' }}
@@ -4034,8 +4100,8 @@ ${instruction}`;
                                         {t("onlineUpdate")}
                                     </button>
                                     <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => setShowInstallLog(true)}>{t("installLog")}</button>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/RapidAI/aicoder/issues/new")}>{t("bugReport")}</button>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/RapidAI/aicoder")}>GitHub</button>
+                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/RapidAI/codeclaw/issues/new")}>{t("bugReport")}</button>
+                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/RapidAI/codeclaw")}>GitHub</button>
                                 </div>
                             </div>
                         </div>
@@ -5411,8 +5477,8 @@ ${instruction}`;
                                     }}
                                     onClick={() => {
                                         const manualUrl = (lang === 'zh-Hans' || lang === 'zh-Hant')
-                                            ? "https://github.com/RapidAI/aicoder/blob/main/UserManual_CN.md"
-                                            : "https://github.com/RapidAI/aicoder/blob/main/UserManual_EN.md";
+                                            ? "https://github.com/RapidAI/codeclaw/blob/main/UserManual_CN.md"
+                                            : "https://github.com/RapidAI/codeclaw/blob/main/UserManual_EN.md";
                                         BrowserOpenURL(manualUrl);
                                     }}
                                 >

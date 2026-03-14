@@ -78,7 +78,7 @@ export function RemoteDiagnosticsPanel(props: Props) {
     } = props;
 
     return (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "12px", marginBottom: "14px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "8px", marginBottom: "10px" }}>
             <RemoteRoutingCard
                 config={config}
                 remoteBusy={remoteBusy}

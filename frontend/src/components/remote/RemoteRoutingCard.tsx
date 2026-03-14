@@ -1,6 +1,6 @@
 import { main } from "../../../wailsjs/go/models";
 import type { RemoteSuggestedAction, RemoteToolMetadataView, RemoteToolName } from "./types";
-import { remoteCardStyle, remoteLabelStyle, remoteMetaLabelStyle, remoteMutedCardStyle, remoteSectionTitleStyle } from "./styles";
+import { colors, radius, remoteCardStyle, remoteLabelStyle, remoteMetaLabelStyle, remoteMutedCardStyle, remoteSectionTitleStyle } from "./styles";
 
 type Props = {
     config: main.AppConfig | null;
@@ -57,16 +57,16 @@ export function RemoteRoutingCard(props: Props) {
         <div style={remoteCardStyle}>
             <div style={remoteSectionTitleStyle}>{translate("remoteRouting")}</div>
 
-            <label style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px", cursor: "pointer", padding: "10px 12px", borderRadius: "12px", background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px", cursor: "pointer", padding: "6px 10px", borderRadius: radius.md, background: colors.bg, border: `1px solid ${colors.border}` }}>
                 <input
                     type="checkbox"
                     checked={!!config?.remote_enabled}
                     onChange={(e) => saveRemoteConfigField({ remote_enabled: e.target.checked })}
                 />
-                <span style={{ fontSize: "0.8rem", color: "#475569", fontWeight: 600 }}>{translate("remoteEnableLaunchPath")}</span>
+                <span style={{ fontSize: "0.74rem", color: colors.textSecondary, fontWeight: 600 }}>{translate("remoteEnableLaunchPath")}</span>
             </label>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "10px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px" }}>
                 <div>
                     <div style={remoteLabelStyle}>{translate("remoteHubUrl")}</div>
                     <input className="form-input" value={config?.remote_hub_url || ""} onChange={(e) => saveRemoteConfigField({ remote_hub_url: e.target.value })} onBlur={(e) => saveRemoteConfigField({ remote_hub_url: e.target.value.trim() })} placeholder="https://hub.example.com" />
@@ -81,7 +81,7 @@ export function RemoteRoutingCard(props: Props) {
                 </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 220px) 1fr", gap: "10px", marginTop: "12px", alignItems: "start" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(160px, 200px) 1fr", gap: "8px", marginTop: "8px", alignItems: "start" }}>
                 <div>
                     <div style={remoteLabelStyle}>{translate("remoteTool")}</div>
                     <select className="form-input" value={selectedRemoteTool} onChange={(e) => setSelectedRemoteTool(e.target.value as RemoteToolName)} disabled={!!remoteBusy}>
@@ -92,7 +92,7 @@ export function RemoteRoutingCard(props: Props) {
                         ))}
                     </select>
                 </div>
-                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                     <button className="btn-primary" disabled={!!remoteBusy} onClick={activateRemoteWithEmail}>
                         {remoteBusy === "activate" ? translate("remoteActivating") : translate("remoteActivate")}
                     </button>
@@ -119,22 +119,22 @@ export function RemoteRoutingCard(props: Props) {
                 </div>
             </div>
 
-            <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+            <div style={{ marginTop: "8px", display: "flex", flexDirection: "column", gap: "5px" }}>
+                <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
                     {selectedRemoteToolBadges.map((badge) => (
-                        <span key={badge} style={{ fontSize: "0.68rem", fontWeight: 700, padding: "3px 8px", borderRadius: "999px", background: "#eef2ff", color: "#3730a3", border: "1px solid #c7d2fe" }}>{badge}</span>
+                        <span key={badge} style={{ fontSize: "0.64rem", fontWeight: 600, padding: "2px 6px", borderRadius: radius.pill, background: colors.bg, color: colors.primaryDark, border: `1px solid ${colors.border}` }}>{badge}</span>
                     ))}
                 </div>
-                <div style={{ fontSize: "0.74rem", color: "#64748b", wordBreak: "break-word" }}>
-                    {translate("remoteToolPath")}: <span style={{ color: "#334155", fontWeight: 600 }}>{selectedRemoteToolInfo?.tool_path || translate("remoteNotInstalled")}</span>
+                <div style={{ fontSize: "0.7rem", color: colors.textSecondary, wordBreak: "break-word" }}>
+                    {translate("remoteToolPath")}: <span style={{ color: colors.text, fontWeight: 600 }}>{selectedRemoteToolInfo?.tool_path || translate("remoteNotInstalled")}</span>
                 </div>
-                {!selectedRemoteToolCanStart && <div style={{ fontSize: "0.74rem", color: "#b45309" }}>{formatText("remoteUnavailable", { reason: selectedRemoteToolUnavailableReason })}</div>}
+                {!selectedRemoteToolCanStart && <div style={{ fontSize: "0.7rem", color: colors.warning }}>{formatText("remoteUnavailable", { reason: selectedRemoteToolUnavailableReason })}</div>}
                 {remoteSuggestedAction && (
-                    <div style={{ ...remoteMutedCardStyle, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+                    <div style={{ ...remoteMutedCardStyle, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
                         <div style={{ minWidth: 0 }}>
-                            <div style={{ ...remoteMetaLabelStyle, marginBottom: "4px" }}>{translate("remoteNextStep")}</div>
-                            <div style={{ fontSize: "0.8rem", fontWeight: 700, color: "#334155", marginBottom: "2px" }}>{remoteSuggestedAction.label}</div>
-                            <div style={{ fontSize: "0.74rem", color: "#64748b", wordBreak: "break-word" }}>{remoteSuggestedAction.description}</div>
+                            <div style={{ ...remoteMetaLabelStyle, marginBottom: "2px" }}>{translate("remoteNextStep")}</div>
+                            <div style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text, marginBottom: "1px" }}>{remoteSuggestedAction.label}</div>
+                            <div style={{ fontSize: "0.7rem", color: colors.textSecondary, wordBreak: "break-word" }}>{remoteSuggestedAction.description}</div>
                         </div>
                         <button
                             className="btn-primary"

@@ -1,4 +1,4 @@
-import { remoteCardStyle, remoteMetaLabelStyle } from "./styles";
+import { colors, remoteCardStyle, remoteMetaLabelStyle } from "./styles";
 
 type StatusCard = {
     label: string;
@@ -18,7 +18,7 @@ export function RemoteStatusCards({ cards }: Props) {
                 <div key={item.label} style={remoteCardStyle}>
                     <div style={remoteMetaLabelStyle}>{item.label}</div>
                     <div style={{ fontSize: '1rem', fontWeight: 700, color: item.tone, marginBottom: '6px' }}>{item.value}</div>
-                    <div style={{ fontSize: '0.76rem', color: '#64748b', wordBreak: 'break-word' }}>{item.detail}</div>
+                    <div style={{ fontSize: '0.76rem', color: colors.textSecondary, wordBreak: 'break-word' }}>{item.detail}</div>
                 </div>
             ))}
         </div>

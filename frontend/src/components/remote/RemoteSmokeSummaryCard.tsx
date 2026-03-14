@@ -1,3 +1,5 @@
+import { colors, radius } from "./styles";
+
 type Props = {
     remoteSmokeReport: any;
     getRemoteSmokeDetail: () => string;
@@ -8,26 +10,26 @@ export function RemoteSmokeSummaryCard({ remoteSmokeReport, getRemoteSmokeDetail
         <div
             style={{
                 marginTop: "16px",
-                border: "1px solid rgba(15, 23, 42, 0.12)",
-                borderRadius: "14px",
+                border: `1px solid ${colors.borderLight}`,
+                borderRadius: radius.lg,
                 padding: "14px 16px",
                 background: "rgba(248, 250, 252, 0.92)",
             }}
         >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                 <div>
-                    <div style={{ fontWeight: 700, color: "#0f172a" }}>Latest Full Demo</div>
-                    <div style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
+                    <div style={{ fontWeight: 700, color: colors.text }}>Latest Full Demo</div>
+                    <div style={{ fontSize: "12px", color: colors.textSecondary, marginTop: "4px" }}>
                         {remoteSmokeReport?.last_updated || "No recorded full demo yet"}
                     </div>
                 </div>
                 <div
                     style={{
                         padding: "4px 10px",
-                        borderRadius: "999px",
+                        borderRadius: radius.pill,
                         fontSize: "12px",
                         fontWeight: 700,
-                        color: remoteSmokeReport?.success ? "#166534" : "#9f1239",
+                        color: remoteSmokeReport?.success ? colors.success : colors.danger,
                         background: remoteSmokeReport?.success ? "rgba(34,197,94,0.12)" : "rgba(244,63,94,0.12)",
                     }}
                 >
@@ -35,7 +37,7 @@ export function RemoteSmokeSummaryCard({ remoteSmokeReport, getRemoteSmokeDetail
                 </div>
             </div>
 
-            <div style={{ marginTop: "12px", fontSize: "13px", color: "#334155", lineHeight: 1.6 }}>
+            <div style={{ marginTop: "12px", fontSize: "13px", color: colors.text, lineHeight: 1.6 }}>
                 <div><strong>Phase:</strong> {remoteSmokeReport?.phase || "idle"}</div>
                 <div><strong>Summary:</strong> {getRemoteSmokeDetail()}</div>
                 {remoteSmokeReport?.recommended_next ? (
