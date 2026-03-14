@@ -210,7 +210,16 @@ func (p *OutputPipeline) coalesceAcrossBursts(session *RemoteSession, events []I
 }
 
 func buildEventDedupeKey(event ImportantEvent) string {
-	return fmt.Sprintf("%s|%s|%s|%s", event.Type, event.RelatedFile, event.Command, event.Summary)
+	var b strings.Builder
+	b.Grow(len(event.Type) + len(event.RelatedFile) + len(event.Command) + len(event.Summary) + 3)
+	b.WriteString(event.Type)
+	b.WriteByte('|')
+	b.WriteString(event.RelatedFile)
+	b.WriteByte('|')
+	b.WriteString(event.Command)
+	b.WriteByte('|')
+	b.WriteString(event.Summary)
+	return b.String()
 }
 
 func buildMergedEventTitle(eventType string, count int) string {

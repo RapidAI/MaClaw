@@ -229,13 +229,12 @@ func buildWindowsCommandLine(command string, args []string) string {
 }
 
 func buildEnvList(env map[string]string) []string {
-	merged := map[string]string{}
-	for _, item := range os.Environ() {
-		parts := strings.SplitN(item, "=", 2)
-		if len(parts) != 2 {
-			continue
+	base := os.Environ()
+	merged := make(map[string]string, len(base)+len(env))
+	for _, item := range base {
+		if k, v, ok := strings.Cut(item, "="); ok {
+			merged[k] = v
 		}
-		merged[parts[0]] = parts[1]
 	}
 	for key, value := range env {
 		merged[key] = value

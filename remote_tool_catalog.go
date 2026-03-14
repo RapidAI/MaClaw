@@ -182,6 +182,7 @@ func (a *App) remoteProviderAdapter(toolName string) (ProviderAdapter, error) {
 	return meta.ProviderFactory(a), nil
 }
 
+// listRemoteToolMetadata is unused dead code — use listRemoteToolMetadataForApp instead.
 func listRemoteToolMetadata() []RemoteToolMetadataView {
 	return nil
 }

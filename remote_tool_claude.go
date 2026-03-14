@@ -47,6 +47,7 @@ func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
+		"--include-partial-messages",
 	}
 
 	// Permission handling via SDK protocol

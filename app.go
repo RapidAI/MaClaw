@@ -307,6 +307,7 @@ func (a *App) buildClaudeLaunchEnv(
 	env := map[string]string{}
 	env["CLAUDE_CODE_USE_COLORS"] = "true"
 	env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "64000"
+	env["MAX_THINKING_TOKENS"] = "10000"
 
 	if strings.ToLower(selectedModel.ModelName) != "original" {
 		if selectedModel.ApiKey != "" {

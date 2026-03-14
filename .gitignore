@@ -6,6 +6,7 @@ frontend/.npm_cache
 build/windows/installer/tmp
 .kode/
 .kiro/
+dev/
 nul
 .codex_tmp/
 .gocache/

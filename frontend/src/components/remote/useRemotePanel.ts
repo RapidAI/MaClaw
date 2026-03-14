@@ -165,9 +165,9 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             }
             setRemoteSessions(
                 sessionList.filter((sess: RemoteSessionView) => {
+                    // Only filter out sessions that were killed locally (optimistic removal)
                     if (killedSessionIdsRef.current.has(sess.id)) return false;
-                    const st = String(sess.status || sess.summary?.status || "").toLowerCase();
-                    return !TERMINAL_SESSION_STATUSES.has(st);
+                    return true;
                 })
             );
         } catch (err) {
@@ -195,13 +195,11 @@ export function useRemotePanel(params: UseRemotePanelParams) {
                 }
             }
             // Filter out sessions that were killed locally but the backend
-            // still reports as active (race condition), and also filter out
-            // terminal (exited) sessions which are no longer meaningful.
+            // still reports as active (race condition).
             setRemoteSessions(
                 sessionList.filter((sess: RemoteSessionView) => {
                     if (killedSessionIdsRef.current.has(sess.id)) return false;
-                    const st = String(sess.status || sess.summary?.status || "").toLowerCase();
-                    return !TERMINAL_SESSION_STATUSES.has(st);
+                    return true;
                 })
             );
             if (smokeSnapshot?.exists && smokeSnapshot?.report) {
@@ -439,13 +437,9 @@ export function useRemotePanel(params: UseRemotePanelParams) {
             await SendRemoteSessionInput(sessionID, text + "\r\n");
             console.log(`[remote] input sent successfully to ${sessionID}`);
             setRemoteInputDrafts((prev) => ({ ...prev, [sessionID]: "" }));
-            // Trigger multiple quick session refreshes so the user sees the
-            // tool's response sooner.  The backend events will also arrive,
-            // but these give a head start and cover cases where events are
-            // delayed or debounced.
-            setTimeout(() => refreshSessionsOnly(), 300);
-            setTimeout(() => refreshSessionsOnly(), 1000);
-            setTimeout(() => refreshSessionsOnly(), 2500);
+            // Staggered refreshes so the user sees the tool's response sooner.
+            const delays = [300, 1000, 2500];
+            delays.forEach((d) => setTimeout(() => refreshSessionsOnly(), d));
             return true;
         } catch (err) {
             console.error("Failed to send remote input:", err);

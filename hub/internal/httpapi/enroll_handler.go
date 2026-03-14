@@ -63,13 +63,17 @@ func EnrollStartHandler(identity *auth.IdentityService) http.HandlerFunc {
 		}
 
 		if resp != nil && resp.MachineID != "" {
+			heartbeat := req.HeartbeatIntervalSec
+			if heartbeat < 5 || heartbeat > 3600 {
+				heartbeat = 10
+			}
 			_ = identity.UpdateMachineMetadata(r.Context(), resp.MachineID, auth.MachineMetadata{
 				Name:                 req.MachineName,
 				Platform:             req.Platform,
 				Hostname:             req.Hostname,
 				Arch:                 req.Arch,
 				AppVersion:           req.AppVersion,
-				HeartbeatIntervalSec: req.HeartbeatIntervalSec,
+				HeartbeatIntervalSec: heartbeat,
 			})
 		}
 

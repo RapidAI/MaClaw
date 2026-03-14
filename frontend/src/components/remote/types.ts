@@ -53,6 +53,7 @@ export interface RemoteSessionView {
     workspace_mode?: string;
     workspace_is_git?: boolean;
     model_id?: string;
+    execution_mode?: string;
     status?: string;
     pid?: number;
     summary?: RemoteSessionSummaryView;

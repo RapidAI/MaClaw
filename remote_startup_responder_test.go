@@ -31,6 +31,7 @@ func TestStartupResponderThemeSelection(t *testing.T) {
 		Exec:      exec,
 	}
 	r := newStartupAutoResponder(app, session)
+	r.done = false // Enable the responder for testing
 
 	// Simulate Claude Code theme selection output
 	r.feed([]string{
@@ -62,6 +63,7 @@ func TestStartupResponderNumberedMenu(t *testing.T) {
 		Exec:      exec,
 	}
 	r := newStartupAutoResponder(app, session)
+	r.done = false // Enable the responder for testing
 
 	r.feed([]string{
 		"Please select an option:",
@@ -110,6 +112,7 @@ func TestStartupResponderDetectsNormalMode(t *testing.T) {
 		Exec:      exec,
 	}
 	r := newStartupAutoResponder(app, session)
+	r.done = false // Enable the responder for testing
 
 	// First feed normal mode indicator
 	r.feed([]string{"How can I help you today?"})
@@ -136,6 +139,7 @@ func TestStartupResponderDoesNotRepeat(t *testing.T) {
 		Exec:      exec,
 	}
 	r := newStartupAutoResponder(app, session)
+	r.done = false // Enable the responder for testing
 
 	r.feed([]string{
 		"Choose a theme:",

@@ -173,6 +173,9 @@ func generateCode() (string, error) {
 // randomShortID generates a random 16-character hex string for use as an ID suffix.
 func randomShortID() string {
 	var buf [8]byte
-	_, _ = rand.Read(buf[:])
+	if _, err := rand.Read(buf[:]); err != nil {
+		// Fallback to timestamp-based ID if crypto/rand fails
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
 	return fmt.Sprintf("%x", buf)
 }

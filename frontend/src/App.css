@@ -1088,3 +1088,39 @@ body {
 .btn-secondary.btn-danger:hover {
     filter: brightness(0.97);
 }
+
+/* Terminal-style output panel */
+.terminal-output {
+    background: #0c0c0c;
+    color: #cccccc;
+    font-family: 'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace;
+    font-size: 0.73rem;
+    line-height: 1.5;
+    padding: 8px 12px;
+    max-height: 300px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    white-space: pre-wrap;
+    word-break: break-all;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: auto;
+    scrollbar-color: #555 #1a1a1a;
+}
+
+.terminal-output::-webkit-scrollbar {
+    width: 10px;
+}
+
+.terminal-output::-webkit-scrollbar-track {
+    background: #1a1a1a;
+}
+
+.terminal-output::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 5px;
+    border: 2px solid #1a1a1a;
+}
+
+.terminal-output::-webkit-scrollbar-thumb:hover {
+    background: #777;
+}

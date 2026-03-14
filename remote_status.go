@@ -41,6 +41,7 @@ type RemoteSessionView struct {
 	WorkspaceMode  WorkspaceMode    `json:"workspace_mode"`
 	WorkspaceIsGit bool             `json:"workspace_is_git"`
 	ModelID        string           `json:"model_id"`
+	ExecutionMode  string           `json:"execution_mode"`
 	Status         SessionStatus    `json:"status"`
 	PID            int              `json:"pid"`
 	CreatedAt      time.Time        `json:"created_at"`
@@ -52,17 +53,29 @@ type RemoteSessionView struct {
 }
 
 func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
+	s.mu.RLock()
 	summary := s.Summary
 	preview := s.Preview
 	events := append([]ImportantEvent(nil), s.Events...)
+	rawLines := append([]string(nil), s.RawOutputLines...)
+	status := s.Status
+	pid := s.PID
+	updatedAt := s.UpdatedAt
+	createdAt := s.CreatedAt
+	exec := s.Exec
+	s.mu.RUnlock()
 
 	sanitizeSessionSummary(&summary)
 	sanitizeSessionPreview(&preview)
 	sanitizeImportantEvents(events)
 
-	rawLines := append([]string(nil), s.RawOutputLines...)
 	for i := range rawLines {
 		rawLines[i] = sanitizeRawOutputLine(rawLines[i])
+	}
+
+	execMode := "pty"
+	if _, isSDK := exec.(*SDKExecutionHandle); isSDK {
+		execMode = "sdk"
 	}
 
 	return RemoteSessionView{
@@ -76,10 +89,11 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 		WorkspaceMode:  s.WorkspaceMode,
 		WorkspaceIsGit: s.WorkspaceIsGit,
 		ModelID:        s.ModelID,
-		Status:         s.Status,
-		PID:            s.PID,
-		CreatedAt:      s.CreatedAt,
-		UpdatedAt:      s.UpdatedAt,
+		ExecutionMode:  execMode,
+		Status:         status,
+		PID:            pid,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
 		Summary:        summary,
 		Preview:        preview,
 		Events:         events,
@@ -480,7 +494,7 @@ func (a *App) SendRemoteSessionInput(sessionID, text string) error {
 // SendRemoteSessionRawInput writes raw bytes to the PTY without any
 // line-ending normalization.  Use this for sending individual keystrokes
 // or control sequences to TUI applications like Claude Code.
-// For SDK sessions, this is equivalent to SendRemoteSessionInput.
+// For SDK sessions, raw input is not supported — use SendRemoteSessionInput instead.
 func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
 	if a.remoteSessions == nil {
 		return ErrRemoteSessionsUnavailable
@@ -492,6 +506,14 @@ func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
 	if s.Exec == nil {
 		return fmt.Errorf("session execution not available: %s", sessionID)
 	}
+
+	// SDK sessions don't support raw keystroke input — route through
+	// the normal WriteInput path which wraps text in a JSON user message.
+	if _, isSDK := s.Exec.(*SDKExecutionHandle); isSDK {
+		a.log(fmt.Sprintf("[remote-raw-input] session=%s is SDK, routing to WriteInput", sessionID))
+		return a.remoteSessions.WriteInput(sessionID, text)
+	}
+
 	a.log(fmt.Sprintf("[remote-raw-input] session=%s, len=%d, text=%q", sessionID, len(text), text))
 	return s.Exec.Write([]byte(text))
 }

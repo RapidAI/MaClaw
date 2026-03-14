@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 type SessionStatus string
 type RemoteLaunchSource string
@@ -122,6 +125,11 @@ type PTYSession interface {
 }
 
 type RemoteSession struct {
+	// mu protects mutable fields that are written by output/exit loop
+	// goroutines and read by the UI thread (via toRemoteSessionView).
+	// Immutable fields (ID, Tool, Title, etc.) do not need locking.
+	mu sync.RWMutex
+
 	ID             string
 	Tool           string
 	Title          string

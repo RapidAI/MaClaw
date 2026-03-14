@@ -263,7 +263,10 @@ func (m *RemoteSessionManager) HasActiveSessions() bool {
 		if s == nil {
 			continue
 		}
-		if isActiveRemoteSessionStatus(s.Status) {
+		s.mu.RLock()
+		active := isActiveRemoteSessionStatus(s.Status)
+		s.mu.RUnlock()
+		if active {
 			return true
 		}
 	}
@@ -342,36 +345,31 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 	for chunk := range output {
 		// Capture raw output (ANSI-stripped only, no filtering) for terminal view
 		rawLines := rawChunkLines(chunk)
+
+		s.mu.Lock()
 		if len(rawLines) > 0 {
 			s.RawOutputLines = append(s.RawOutputLines, rawLines...)
 			if len(s.RawOutputLines) > 500 {
 				s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-500:]
 			}
-			m.app.log(fmt.Sprintf("[remote-output] session=%s, chunk_bytes=%d, new_raw_lines=%d, total_raw_lines=%d",
-				s.ID, len(chunk), len(rawLines), len(s.RawOutputLines)))
+		}
+		s.mu.Unlock()
 
+		if len(rawLines) > 0 {
+			m.app.log(fmt.Sprintf("[remote-output] session=%s, chunk_bytes=%d, new_raw_lines=%d",
+				s.ID, len(chunk), len(rawLines)))
 			// Check for startup prompts and auto-respond
 			responder.feed(rawLines)
-		} else if len(chunk) > 0 {
-			// Chunk had bytes but produced no raw lines (all ANSI/control)
-			m.app.log(fmt.Sprintf("[remote-output] session=%s, chunk_bytes=%d (all control/ANSI, no visible lines), total_raw_lines=%d",
-				s.ID, len(chunk), len(s.RawOutputLines)))
 		}
 
 		result := pipeline.Consume(s, chunk)
+
+		s.mu.Lock()
 		s.UpdatedAt = time.Now()
-		// Always notify the UI when any PTY output arrives, even if the
-		// pipeline filters everything out.  The raw terminal view needs
-		// every chunk to stay responsive.
-		changed := true
 
 		if result.Summary != nil {
 			s.Summary = *result.Summary
 			s.Status = SessionStatus(result.Summary.Status)
-			changed = true
-			if m.hubClient != nil {
-				_ = m.hubClient.SendSessionSummary(s.Summary)
-			}
 		}
 
 		if result.PreviewDelta != nil {
@@ -382,24 +380,28 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 			if len(s.Preview.PreviewLines) > 100 {
 				s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-100:]
 			}
-			changed = true
-			if m.hubClient != nil {
-				_ = m.hubClient.SendPreviewDelta(*result.PreviewDelta)
-			}
 		}
 
 		for _, evt := range result.Events {
 			s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
-			changed = true
+		}
+		s.mu.Unlock()
+
+		// Hub sync and UI notification outside the lock
+		if result.Summary != nil && m.hubClient != nil {
+			_ = m.hubClient.SendSessionSummary(*result.Summary)
+		}
+		if result.PreviewDelta != nil && m.hubClient != nil {
+			_ = m.hubClient.SendPreviewDelta(*result.PreviewDelta)
+		}
+		for _, evt := range result.Events {
 			if m.hubClient != nil {
 				_ = m.hubClient.SendImportantEvent(evt)
 			}
 		}
 
-		if changed {
-			m.app.refreshPowerOptimizationState()
-			m.app.emitRemoteStateChanged()
-		}
+		m.app.refreshPowerOptimizationState()
+		m.app.emitRemoteStateChanged()
 	}
 }
 
@@ -409,53 +411,84 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 	sdkHandle, ok := s.Exec.(*SDKExecutionHandle)
 	if !ok {
-		// Fallback to PTY loop if somehow not an SDK handle
 		m.runOutputLoop(s)
 		return
 	}
-
-	// Enable auto-approve for yolo mode sessions
-	// (The adapter already passes --dangerously-skip-permissions, but
-	// if permission-prompt-tool is used, we auto-approve here too)
 
 	pipeline := m.pipelineFactory()
 	output := sdkHandle.Output()
 	messages := sdkHandle.Messages()
 	ctrlReqs := sdkHandle.ControlRequests()
 
-	// Mark session as running once we start receiving output
 	sessionStarted := false
+
+	// streamAccum accumulates streaming text_delta fragments into the
+	// current line.  The in-progress text is kept as the last element of
+	// RawOutputLines so the frontend always sees it.  When a newline
+	// arrives the line is "committed" and a new empty accumulator starts.
+	streamAccum := ""
+	// streamAccumActive tracks whether the last element of RawOutputLines
+	// is the in-progress accumulator (needs updating) vs a committed line.
+	streamAccumActive := false
+
+	// appendStreamText must be called with s.mu held.
+	appendStreamText := func(text string) {
+		parts := strings.Split(text, "\n")
+		for i, part := range parts {
+			if i > 0 {
+				streamAccum = ""
+				streamAccumActive = false
+			}
+			streamAccum += part
+			if streamAccum == "" && i > 0 {
+				s.RawOutputLines = append(s.RawOutputLines, "")
+				streamAccumActive = false
+				continue
+			}
+			if streamAccumActive && len(s.RawOutputLines) > 0 {
+				s.RawOutputLines[len(s.RawOutputLines)-1] = streamAccum
+			} else if streamAccum != "" {
+				s.RawOutputLines = append(s.RawOutputLines, streamAccum)
+				streamAccumActive = true
+			}
+		}
+		if len(s.RawOutputLines) > 500 {
+			s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-500:]
+		}
+	}
+
+	// flushStreamAccum must be called with s.mu held.
+	flushStreamAccum := func() {
+		if streamAccum != "" {
+			streamAccum = ""
+			streamAccumActive = false
+		}
+	}
 
 	for {
 		select {
 		case chunk, ok := <-output:
 			if !ok {
 				output = nil
+				s.mu.Lock()
+				flushStreamAccum()
+				s.mu.Unlock()
 				if messages == nil {
 					return
 				}
 				continue
 			}
 
-			// Store raw lines for terminal view
-			rawLines := rawChunkLines(chunk)
-			if len(rawLines) > 0 {
-				s.RawOutputLines = append(s.RawOutputLines, rawLines...)
-				if len(s.RawOutputLines) > 500 {
-					s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-500:]
-				}
-			}
-
-			// Use the existing pipeline for preview and summary
+			text := string(chunk)
 			result := pipeline.Consume(s, chunk)
+
+			s.mu.Lock()
+			appendStreamText(text)
 			s.UpdatedAt = time.Now()
 
 			if result.Summary != nil {
 				s.Summary = *result.Summary
 				s.Status = SessionStatus(result.Summary.Status)
-				if m.hubClient != nil {
-					_ = m.hubClient.SendSessionSummary(s.Summary)
-				}
 			}
 
 			if result.PreviewDelta != nil {
@@ -466,13 +499,20 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				if len(s.Preview.PreviewLines) > 100 {
 					s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-100:]
 				}
-				if m.hubClient != nil {
-					_ = m.hubClient.SendPreviewDelta(*result.PreviewDelta)
-				}
 			}
 
 			for _, evt := range result.Events {
 				s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
+			}
+			s.mu.Unlock()
+
+			if result.Summary != nil && m.hubClient != nil {
+				_ = m.hubClient.SendSessionSummary(*result.Summary)
+			}
+			if result.PreviewDelta != nil && m.hubClient != nil {
+				_ = m.hubClient.SendPreviewDelta(*result.PreviewDelta)
+			}
+			for _, evt := range result.Events {
 				if m.hubClient != nil {
 					_ = m.hubClient.SendImportantEvent(evt)
 				}
@@ -491,47 +531,47 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			}
 
 			now := time.Now()
+
+			// Collect hub events to send after releasing the lock
+			var summaryToSync *SessionSummary
+			var eventsToSync []ImportantEvent
+
+			s.mu.Lock()
 			s.UpdatedAt = now
 
-			// Update session status based on SDK message types
 			switch msg.Type {
 			case "system":
-				if msg.Subtype == "init" {
-					if !sessionStarted {
-						sessionStarted = true
-						s.Status = SessionRunning
-						s.Summary.Status = string(SessionRunning)
-						s.Summary.Severity = "info"
-						s.Summary.CurrentTask = "Session initialized"
-						s.Summary.UpdatedAt = now.Unix()
-						if m.hubClient != nil {
-							_ = m.hubClient.SendSessionSummary(s.Summary)
-						}
-					}
+				if msg.Subtype == "init" && !sessionStarted {
+					sessionStarted = true
+					s.Status = SessionRunning
+					s.Summary.Status = string(SessionRunning)
+					s.Summary.Severity = "info"
+					s.Summary.CurrentTask = "Session initialized"
+					s.Summary.UpdatedAt = now.Unix()
+					snap := s.Summary
+					summaryToSync = &snap
 				}
 
 			case "assistant":
 				s.Status = SessionBusy
 				s.Summary.Status = string(SessionBusy)
 				s.Summary.UpdatedAt = now.Unix()
+				flushStreamAccum()
 
-				// Generate events from tool_use blocks
 				if msg.Message != nil {
 					for _, block := range msg.Message.Content {
 						if block.Type == "tool_use" && block.Name != "" {
 							evt := buildSDKToolUseEvent(s, block)
 							s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
-							if m.hubClient != nil {
-								_ = m.hubClient.SendImportantEvent(evt)
-							}
+							eventsToSync = append(eventsToSync, evt)
 						}
 					}
 				}
-				if m.hubClient != nil {
-					_ = m.hubClient.SendSessionSummary(s.Summary)
-				}
+				snap := s.Summary
+				summaryToSync = &snap
 
 			case "result":
+				flushStreamAccum()
 				s.Status = SessionWaitingInput
 				s.Summary.Status = string(SessionWaitingInput)
 				s.Summary.WaitingForUser = true
@@ -539,8 +579,17 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				if msg.Result != nil {
 					s.Summary.ProgressSummary = fmt.Sprintf("Completed in %.1fs, %d turns", msg.Result.Duration/1000, msg.Result.NumTurns)
 				}
+				snap := s.Summary
+				summaryToSync = &snap
+			}
+			s.mu.Unlock()
+
+			if summaryToSync != nil && m.hubClient != nil {
+				_ = m.hubClient.SendSessionSummary(*summaryToSync)
+			}
+			for _, evt := range eventsToSync {
 				if m.hubClient != nil {
-					_ = m.hubClient.SendSessionSummary(s.Summary)
+					_ = m.hubClient.SendImportantEvent(evt)
 				}
 			}
 
@@ -553,24 +602,28 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				continue
 			}
 
-			// For now, auto-approve all control requests.
-			// In the future, this could be forwarded to the UI for user decision.
 			m.app.log(fmt.Sprintf("[sdk-control] session=%s, request_id=%s, tool=%s — auto-approving",
 				s.ID, req.RequestID, req.Request.ToolName))
-			_ = sdkHandle.RespondToControlRequest(req.RequestID, true)
+			_ = sdkHandle.RespondToControlRequest(req.RequestID, true, req.Request.Input)
 
+			s.mu.Lock()
 			s.UpdatedAt = time.Now()
+			s.mu.Unlock()
 			m.app.emitRemoteStateChanged()
 		}
 	}
 }
+
 
 func appendRecentEvents(events []ImportantEvent, event ImportantEvent, limit int) []ImportantEvent {
 	if event.EventID == "" && event.Type == "" && event.Summary == "" && event.Title == "" {
 		return events
 	}
 
-	out := append(events, event)
+	// Use explicit copy to avoid slice aliasing when trimming
+	out := make([]ImportantEvent, len(events), len(events)+1)
+	copy(out, events)
+	out = append(out, event)
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]
 	}
@@ -589,6 +642,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	}
 	now := time.Now()
 
+	s.mu.Lock()
 	s.UpdatedAt = now
 	if exit.Code != nil {
 		s.ExitCode = exit.Code
@@ -621,9 +675,11 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	}
 	closedEvent := buildSessionClosedEvent(s, exit)
 	s.Events = appendRecentEvents(s.Events, closedEvent, maxRecentImportantEvents)
+	summarySnap := s.Summary
+	s.mu.Unlock()
 
 	if m.hubClient != nil {
-		_ = m.hubClient.SendSessionSummary(s.Summary)
+		_ = m.hubClient.SendSessionSummary(summarySnap)
 		_ = m.hubClient.SendImportantEvent(closedEvent)
 		_ = m.hubClient.SendSessionClosed(s)
 	}

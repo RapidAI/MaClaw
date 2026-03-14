@@ -44,6 +44,7 @@ func (s *SDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
 	c := exec.Command(execPath, args...)
 	c.Dir = cmd.Cwd
 	c.Env = buildSDKEnvList(cmd.Env)
+	hideCommandWindow(c)
 
 	stdin, err := c.StdinPipe()
 	if err != nil {
@@ -190,16 +191,28 @@ func (h *SDKExecutionHandle) ControlRequests() <-chan SDKControlRequest {
 }
 
 // RespondToControlRequest sends a permission response back to Claude Code.
-func (h *SDKExecutionHandle) RespondToControlRequest(requestID string, approved bool) error {
+func (h *SDKExecutionHandle) RespondToControlRequest(requestID string, approved bool, originalInput interface{}) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
 		return fmt.Errorf("sdk session closed")
 	}
 
-	behavior := "deny"
 	if approved {
-		behavior = "allow"
+		// Claude Code SDK requires updatedInput when allowing a tool request.
+		updatedInput, _ := originalInput.(map[string]interface{})
+		resp := SDKControlResponse{
+			Type: "control_response",
+			Response: SDKControlResponseBody{
+				Subtype:   "success",
+				RequestID: requestID,
+				Response: &SDKPermissionResult{
+					Behavior:     "allow",
+					UpdatedInput: updatedInput,
+				},
+			},
+		}
+		return h.writeJSON(resp)
 	}
 
 	resp := SDKControlResponse{
@@ -207,7 +220,10 @@ func (h *SDKExecutionHandle) RespondToControlRequest(requestID string, approved 
 		Response: SDKControlResponseBody{
 			Subtype:   "success",
 			RequestID: requestID,
-			Behavior:  behavior,
+			Response: &SDKPermissionResult{
+				Behavior: "deny",
+				Message:  "User denied the request",
+			},
 		},
 	}
 	return h.writeJSON(resp)
@@ -287,6 +303,16 @@ func (h *SDKExecutionHandle) readStdout() {
 					h.claudeSessionID.Store(msg.SessionID)
 				}
 
+				// Handle stream_event: extract streaming text and emit immediately
+				if msg.Type == "stream_event" && msg.Event != nil {
+					text := extractStreamEventText(msg.Event)
+					if text != "" {
+						h.outputCh <- []byte(text)
+					}
+					// Don't send stream_events to msgCh — they're too noisy
+					continue
+				}
+
 				// Send to structured channel (non-blocking)
 				select {
 				case h.msgCh <- msg:
@@ -340,7 +366,7 @@ func (h *SDKExecutionHandle) handleControlRequest(data []byte) {
 
 	// Auto-approve if enabled (yolo mode)
 	if h.autoApprove.Load() {
-		_ = h.RespondToControlRequest(req.RequestID, true)
+		_ = h.RespondToControlRequest(req.RequestID, true, req.Request.Input)
 
 		// Emit a synthetic output line
 		toolName := req.Request.ToolName
@@ -353,7 +379,7 @@ func (h *SDKExecutionHandle) handleControlRequest(data []byte) {
 	case h.ctrlReqCh <- req:
 	default:
 		// Channel full — auto-approve to avoid blocking Claude
-		_ = h.RespondToControlRequest(req.RequestID, true)
+		_ = h.RespondToControlRequest(req.RequestID, true, req.Request.Input)
 		h.outputCh <- []byte(fmt.Sprintf("[auto-approved-overflow] Tool: %s\n", req.Request.ToolName))
 	}
 }
@@ -373,11 +399,14 @@ func sdkMessageToText(msg SDKMessage) string {
 	switch msg.Type {
 	case "system":
 		if msg.Subtype == "init" {
-			return fmt.Sprintf("Session initialized (id: %s)", msg.SessionID)
+			return "" // init message is handled by runSDKOutputLoop status update
 		}
 		return ""
 
 	case "assistant":
+		// With --include-partial-messages, text is already streamed via
+		// stream_event messages. Only emit tool_use summaries from the
+		// complete assistant message to avoid duplicating text output.
 		if msg.Message == nil {
 			return ""
 		}
@@ -385,20 +414,21 @@ func sdkMessageToText(msg SDKMessage) string {
 		for _, block := range msg.Message.Content {
 			switch block.Type {
 			case "text":
-				if block.Text != "" {
-					parts = append(parts, block.Text)
-				}
+				// Skip — already streamed incrementally via stream_event
 			case "tool_use":
-				inputStr := ""
-				if block.Input != nil {
-					if b, err := json.Marshal(block.Input); err == nil {
-						inputStr = string(b)
-						if len(inputStr) > 200 {
-							inputStr = inputStr[:200] + "..."
+				summary := block.Name
+				if input, ok := block.Input.(map[string]interface{}); ok {
+					// Show key details for common tools
+					if file, ok := input["file_path"].(string); ok {
+						summary += " " + file
+					} else if cmd, ok := input["command"].(string); ok {
+						if len(cmd) > 80 {
+							cmd = cmd[:80] + "..."
 						}
+						summary += " " + cmd
 					}
 				}
-				parts = append(parts, fmt.Sprintf("[tool_use] %s: %s", block.Name, inputStr))
+				parts = append(parts, fmt.Sprintf("⚡ %s", summary))
 			}
 		}
 		return strings.Join(parts, "\n")
@@ -409,24 +439,64 @@ func sdkMessageToText(msg SDKMessage) string {
 		}
 		for _, block := range msg.Message.Content {
 			if block.Type == "tool_result" {
-				status := "ok"
 				if block.IsError {
-					status = "error"
+					result := block.Content
+					if len(result) > 150 {
+						result = result[:150] + "..."
+					}
+					return fmt.Sprintf("✗ %s", result)
 				}
-				result := block.Content
-				if len(result) > 200 {
-					result = result[:200] + "..."
-				}
-				return fmt.Sprintf("[tool_result] %s (%s): %s", block.ToolUseID, status, result)
+				// Suppress successful tool results — they're verbose
+				return ""
 			}
 		}
 		return ""
 
 	case "result":
-		if msg.Result != nil {
-			return fmt.Sprintf("[result] Completed in %.1fs, %d turns", msg.Result.Duration/1000, msg.Result.NumTurns)
+		return "" // result status is shown via session status badge
+
+	default:
+		return ""
+	}
+}
+
+// extractStreamEventText extracts displayable text from a raw Claude API
+// streaming event (delivered via stream_event messages when
+// --include-partial-messages is enabled).
+//
+// Supported event types:
+//   - content_block_delta with delta.type == "text_delta" → streaming text
+//   - content_block_start with content_block.type == "tool_use" → tool start indicator
+func extractStreamEventText(event map[string]interface{}) string {
+	eventType, _ := event["type"].(string)
+
+	switch eventType {
+	case "content_block_delta":
+		delta, ok := event["delta"].(map[string]interface{})
+		if !ok {
+			return ""
 		}
-		return "[result] Completed"
+		deltaType, _ := delta["type"].(string)
+		if deltaType == "text_delta" {
+			text, _ := delta["text"].(string)
+			return text // raw text chunk — no newline, accumulates naturally
+		}
+		// input_json_delta for tool inputs — skip (too noisy)
+		return ""
+
+	case "content_block_start":
+		block, ok := event["content_block"].(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		blockType, _ := block["type"].(string)
+		if blockType == "tool_use" {
+			name, _ := block["name"].(string)
+			if name != "" {
+				return fmt.Sprintf("\n⚡ %s", name)
+			}
+		}
+		return ""
 
 	default:
 		return ""
@@ -434,13 +504,12 @@ func sdkMessageToText(msg SDKMessage) string {
 }
 
 func buildSDKEnvList(env map[string]string) []string {
-	merged := map[string]string{}
-	for _, item := range os.Environ() {
-		parts := strings.SplitN(item, "=", 2)
-		if len(parts) != 2 {
-			continue
+	base := os.Environ()
+	merged := make(map[string]string, len(base)+len(env))
+	for _, item := range base {
+		if k, v, ok := strings.Cut(item, "="); ok {
+			merged[k] = v
 		}
-		merged[parts[0]] = parts[1]
 	}
 	for key, value := range env {
 		merged[key] = value

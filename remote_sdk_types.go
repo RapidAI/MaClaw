@@ -20,6 +20,10 @@ type SDKMessage struct {
 
 	// For tool_use within assistant content
 	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
+
+	// For stream_event messages (type=stream_event) — partial streaming
+	// Contains raw Claude API streaming events (content_block_delta, etc.)
+	Event map[string]interface{} `json:"event,omitempty"`
 }
 
 type SDKAssistantPayload struct {
@@ -65,13 +69,17 @@ type SDKControlResponse struct {
 }
 
 type SDKControlResponseBody struct {
-	Subtype   string `json:"subtype"` // "success" or "error"
-	RequestID string `json:"request_id"`
-	Error     string `json:"error,omitempty"`
+	Subtype   string                  `json:"subtype"` // "success" or "error"
+	RequestID string                  `json:"request_id"`
+	Error     string                  `json:"error,omitempty"`
+	Response  *SDKPermissionResult    `json:"response,omitempty"`
+}
 
-	// Permission result fields
-	Behavior  string `json:"behavior,omitempty"`  // "allow", "deny", "ask"
-	ToolName  string `json:"tool_name,omitempty"`
+// SDKPermissionResult is the nested permission result inside a control response.
+type SDKPermissionResult struct {
+	Behavior     string                 `json:"behavior"`                // "allow", "deny"
+	UpdatedInput map[string]interface{} `json:"updatedInput,omitempty"`
+	Message      string                 `json:"message,omitempty"`       // for deny
 }
 
 // SDKControlCancelRequest is sent FROM Claude Code to cancel a pending request.
@@ -81,13 +89,14 @@ type SDKControlCancelRequest struct {
 }
 
 // SDKUserInput is sent TO Claude Code via stdin to provide user messages.
-// The session_id field is required by the stream-json protocol to route
-// the message to the correct conversation.
+// Matches the format used by the official Claude Code SDK:
+// {"type":"user","message":{"role":"user","content":"..."}}
+// Note: session_id and parent_tool_use_id are NOT included — the official
+// SDK (hapi) does not send them, and Claude Code handles session routing
+// internally when using --input-format stream-json.
 type SDKUserInput struct {
-	Type            string         `json:"type"`              // "user"
-	Message         SDKUserMessage `json:"message"`
-	SessionID       string         `json:"session_id"`
-	ParentToolUseID *string        `json:"parent_tool_use_id"`
+	Type    string         `json:"type"` // "user"
+	Message SDKUserMessage `json:"message"`
 }
 
 type SDKUserMessage struct {

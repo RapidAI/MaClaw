@@ -31,7 +31,9 @@ type startupAutoResponder struct {
 	done bool
 
 	// Accumulated text from raw output for pattern matching.
+	// Capped to prevent unbounded growth during the startup window.
 	accum strings.Builder
+	accumLen int
 }
 
 func newStartupAutoResponder(app *App, session *RemoteSession) *startupAutoResponder {
@@ -65,8 +67,13 @@ func (r *startupAutoResponder) feed(rawLines []string) {
 	}
 
 	for _, line := range rawLines {
-		r.accum.WriteString(strings.ToLower(line))
-		r.accum.WriteString(" ")
+		lower := strings.ToLower(line)
+		// Cap accumulator at 8KB to prevent unbounded growth
+		if r.accumLen+len(lower)+1 <= 8192 {
+			r.accum.WriteString(lower)
+			r.accum.WriteString(" ")
+			r.accumLen += len(lower) + 1
+		}
 	}
 
 	accumulated := r.accum.String()
@@ -96,12 +103,15 @@ func (r *startupAutoResponder) sendResponse(keys string, delay time.Duration) {
 	if delay > 0 {
 		time.Sleep(delay)
 	}
-	if r.session.Exec == nil {
+	r.mu.Lock()
+	exec := r.session.Exec
+	r.mu.Unlock()
+	if exec == nil {
 		return
 	}
 	// Send each character individually for TUI compatibility.
 	for _, ch := range keys {
-		if err := r.session.Exec.Write([]byte(string(ch))); err != nil {
+		if err := exec.Write([]byte(string(ch))); err != nil {
 			r.app.log(fmt.Sprintf("[startup-responder] write error session=%s: %v", r.session.ID, err))
 			return
 		}

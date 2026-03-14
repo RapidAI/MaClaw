@@ -101,6 +101,13 @@ export function RemoteSessionCard(props: Props) {
     const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const outputEndRef = useRef<HTMLDivElement | null>(null);
 
+    // Cleanup send-status timer on unmount
+    useEffect(() => {
+        return () => {
+            if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+        };
+    }, []);
+
     const handleSend = useCallback(async () => {
         const text = (remoteInputDrafts[session.id] || "").trim();
         if (!text || sendStatus === "sending") return;
@@ -341,23 +348,23 @@ export function RemoteSessionCard(props: Props) {
             {/* Output preview panel (terminal-like) */}
             {showOutput && (
                 <div style={{ borderTop: `1px solid ${colors.border}` }}>
-                    <div
-                        style={{
-                            background: "#1a202c",
-                            color: "#e2e8f0",
-                            fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
-                            fontSize: "0.72rem",
-                            lineHeight: 1.6,
-                            padding: "10px 14px",
-                            maxHeight: "280px",
-                            overflowY: "auto",
-                            overflowX: "auto",
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-all",
-                        }}
-                    >
+                    {/* Terminal title bar */}
+                    <div style={{
+                        display: "flex", alignItems: "center", gap: "8px",
+                        padding: "5px 12px", background: "#2d2d2d",
+                        borderBottom: "1px solid #3a3a3a",
+                    }}>
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#ff5f57", display: "inline-block" }} />
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#febc2e", display: "inline-block" }} />
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#28c840", display: "inline-block" }} />
+                        <span style={{ flex: 1, textAlign: "center", fontSize: "0.68rem", color: "#888", fontFamily: "monospace" }}>
+                            {session.tool || "terminal"} — {previewLines.length} lines
+                        </span>
+                    </div>
+                    {/* Terminal body */}
+                    <div className="terminal-output">
                         {previewLines.length === 0 ? (
-                            <span style={{ color: "#718096", fontStyle: "italic" }}>暂无输出，等待工具响应…</span>
+                            <span style={{ color: "#555" }}>$ _</span>
                         ) : (
                             previewLines.map((line, i) => (
                                 <div key={i} style={{ minHeight: "1.2em" }}>
