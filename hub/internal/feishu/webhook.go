@@ -817,18 +817,30 @@ func replyText(n *Notifier, openID, text string) {
 	if n == nil || n.bot == nil {
 		return
 	}
-	// Send as an interactive card with markdown so Feishu renders formatting
-	// (bold, code, line breaks) properly. Plain MsgText ignores markdown.
-	cardJSON := buildSimpleCard(text)
-	msg := lark.NewMsgBuffer(lark.MsgInteractive).
+	// Use "post" (rich text) message type so Feishu renders line breaks
+	// properly. Each \n becomes a separate content row.
+	lines := strings.Split(text, "\n")
+	var rows [][]lark.PostElem
+	for _, line := range lines {
+		t := line
+		rows = append(rows, []lark.PostElem{
+			{Tag: "text", Text: &t},
+		})
+	}
+	pc := lark.PostContent{
+		"zh_cn": {Content: rows},
+	}
+	msg := lark.NewMsgBuffer(lark.MsgPost).
 		BindOpenID(openID).
-		Card(cardJSON).
+		Post(&pc).
 		Build()
 	ctx := context.Background()
 	if _, err := n.bot.PostMessage(ctx, msg); err != nil {
 		log.Printf("[feishu/webhook] reply failed (open_id=%s): %v", openID, err)
 	}
 }
+
+// buildPost is no longer needed — post content is built inline in replyText.
 
 // buildSimpleCard wraps text in a minimal interactive card with a single
 // markdown element. Feishu renders markdown inside cards (bold, code, etc.).

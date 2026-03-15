@@ -532,9 +532,9 @@ export function RemoteSessionConsole(props: Props) {
 
     // ── Build output elements ──
     const outputElements = useMemo((): React.ReactNode[] => {
-        // Pre-process: merge lines that start with "/" into the previous line
-        // when they look like word fragments from SDK streaming (e.g. "/ON/AC"
-        // split from "OFF/ON/AC"), not actual file paths.
+        // Pre-process: merge lines that are SDK streaming fragments into the previous line.
+        // 1. Lines starting with "/" that look like word fragments (e.g. "/ON/AC")
+        // 2. Windows path continuations (e.g. "D:\" followed by "workprj\test")
         const merged: string[] = [];
         for (let i = 0; i < rawLines.length; i++) {
             const cleaned = stripAnsi(rawLines[i]);
@@ -545,6 +545,12 @@ export function RemoteSessionConsole(props: Props) {
                 cleaned[0] === "/" &&
                 cleaned.length <= 30 &&
                 !/^\/[a-z][\w.\-]*\//.test(cleaned)
+            ) {
+                merged[merged.length - 1] += cleaned;
+            } else if (
+                /[A-Z]:\\$/.test(prev) &&
+                cleaned.length > 0 &&
+                /^[\w.\-\\]/.test(cleaned)
             ) {
                 merged[merged.length - 1] += cleaned;
             } else {

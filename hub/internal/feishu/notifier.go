@@ -592,13 +592,25 @@ func (n *Notifier) flushPreview(sid string) {
 		return
 	}
 
-	// Clean lines and collect non-empty ones.
+	// Clean lines, strip ANSI, and merge short lines into paragraphs.
+	// Terminal output wraps at column width (e.g. 80 cols), splitting Chinese
+	// text into tiny fragments. We merge consecutive non-empty lines into
+	// paragraphs, breaking only at blank lines.
 	var cleaned []string
+	var current strings.Builder
 	for _, line := range lines {
 		c := stripAnsi(line)
-		if c != "" {
-			cleaned = append(cleaned, c)
+		if c == "" {
+			if current.Len() > 0 {
+				cleaned = append(cleaned, current.String())
+				current.Reset()
+			}
+			continue
 		}
+		current.WriteString(c)
+	}
+	if current.Len() > 0 {
+		cleaned = append(cleaned, current.String())
 	}
 	if len(cleaned) == 0 {
 		return
@@ -608,15 +620,14 @@ func (n *Notifier) flushPreview(sid string) {
 	var sb strings.Builder
 	sb.WriteString("📺 ")
 	sb.WriteString(alias)
-	sb.WriteString("\n```\n")
-	for _, line := range cleaned {
-		sb.WriteString(line)
+	sb.WriteString("\n")
+	for _, para := range cleaned {
+		sb.WriteString(para)
 		sb.WriteString("\n")
 	}
-	sb.WriteString("```")
 	text := sb.String()
 	if len(text) > 4000 {
-		text = text[:4000] + "\n```"
+		text = text[:4000] + "\n..."
 	}
 	replyText(n, watcherOpenID, text)
 }

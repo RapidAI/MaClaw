@@ -326,7 +326,7 @@ var controlPattern = regexp.MustCompile(`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`)
 var multiSpacePattern = regexp.MustCompile(`\s{2,}`)
 
 func stripANSI(s string) string {
-	s = ansiPattern.ReplaceAllString(s, " ")
+	s = ansiPattern.ReplaceAllString(s, "")
 	s = controlPattern.ReplaceAllString(s, "")
 	return multiSpacePattern.ReplaceAllString(s, " ")
 }
