@@ -31,6 +31,8 @@ hubcenter.exe
 CodeClaw.exe
 build/deploy/*.tar.gz
 build/deploy_last.log
+build/windows/*.tmp
+resource_windows_arm64.syso
 mobile/.gradle-user-home/
 mobile/.gradle/
 mobile/android/.gradle/
