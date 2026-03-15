@@ -133,6 +133,8 @@ export namespace main {
 	    remote_machine_id: string;
 	    remote_machine_token: string;
 	    remote_heartbeat_sec: number;
+	    remote_client_id: string;
+	    default_launch_mode: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -182,6 +184,8 @@ export namespace main {
 	        this.remote_machine_id = source["remote_machine_id"];
 	        this.remote_machine_token = source["remote_machine_token"];
 	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
+	        this.remote_client_id = source["remote_client_id"];
+	        this.default_launch_mode = source["default_launch_mode"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

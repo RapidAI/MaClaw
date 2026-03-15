@@ -45,15 +45,16 @@ type viewerMachineDTO struct {
 }
 
 type viewerSessionDTO struct {
-	ID           string                   `json:"id"`
-	SessionID    string                   `json:"session_id"`
-	MachineID    string                   `json:"machine_id"`
-	UserID       string                   `json:"user_id,omitempty"`
-	Summary      session.SessionSummary   `json:"summary"`
-	Preview      session.SessionPreview   `json:"preview"`
-	RecentEvents []session.ImportantEvent `json:"recent_events"`
-	HostOnline   bool                     `json:"host_online"`
-	UpdatedAt    int64                    `json:"updated_at"`
+	ID            string                   `json:"id"`
+	SessionID     string                   `json:"session_id"`
+	MachineID     string                   `json:"machine_id"`
+	UserID        string                   `json:"user_id,omitempty"`
+	ExecutionMode string                   `json:"execution_mode"`
+	Summary       session.SessionSummary   `json:"summary"`
+	Preview       session.SessionPreview   `json:"preview"`
+	RecentEvents  []session.ImportantEvent `json:"recent_events"`
+	HostOnline    bool                     `json:"host_online"`
+	UpdatedAt     int64                    `json:"updated_at"`
 }
 
 func authenticateViewerRequest(r *http.Request, identity *auth.IdentityService) (*auth.ViewerPrincipal, error) {
@@ -126,15 +127,16 @@ func ListSessionsHandler(identity *auth.IdentityService, sessionSvc *session.Ser
 		out := make([]viewerSessionDTO, 0, len(items))
 		for _, item := range items {
 			out = append(out, viewerSessionDTO{
-				ID:           item.SessionID,
-				SessionID:    item.SessionID,
-				MachineID:    item.MachineID,
-				UserID:       item.UserID,
-				Summary:      item.Summary,
-				Preview:      item.Preview,
-				RecentEvents: item.RecentEvents,
-				HostOnline:   item.HostOnline,
-				UpdatedAt:    item.UpdatedAt.Unix(),
+				ID:            item.SessionID,
+				SessionID:     item.SessionID,
+				MachineID:     item.MachineID,
+				UserID:        item.UserID,
+				ExecutionMode: item.ExecutionMode,
+				Summary:       item.Summary,
+				Preview:       item.Preview,
+				RecentEvents:  item.RecentEvents,
+				HostOnline:    item.HostOnline,
+				UpdatedAt:     item.UpdatedAt.Unix(),
 			})
 		}
 
@@ -166,14 +168,15 @@ func GetSessionHandler(identity *auth.IdentityService, sessionSvc *session.Servi
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"session_id":    item.SessionID,
-			"machine_id":    item.MachineID,
-			"user_id":       item.UserID,
-			"summary":       item.Summary,
-			"preview":       item.Preview,
-			"recent_events": item.RecentEvents,
-			"host_online":   item.HostOnline,
-			"updated_at":    item.UpdatedAt.Unix(),
+			"session_id":     item.SessionID,
+			"machine_id":     item.MachineID,
+			"user_id":        item.UserID,
+			"execution_mode": item.ExecutionMode,
+			"summary":        item.Summary,
+			"preview":        item.Preview,
+			"recent_events":  item.RecentEvents,
+			"host_online":    item.HostOnline,
+			"updated_at":     item.UpdatedAt.Unix(),
 		})
 	}
 }

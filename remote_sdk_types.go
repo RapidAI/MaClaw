@@ -1,5 +1,10 @@
 package main
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // Claude Code SDK message types for stream-json protocol.
 // When launched with --output-format stream-json --input-format stream-json,
 // Claude Code communicates via structured JSON messages on stdin/stdout.
@@ -42,6 +47,23 @@ type SDKContentBlock struct {
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Content   string `json:"content,omitempty"`
 	IsError   bool   `json:"is_error,omitempty"`
+
+	// Image fields (type="image")
+	Source *SDKImageSource `json:"source,omitempty"`
+}
+
+// SDKImageSource represents the source data for an image content block.
+type SDKImageSource struct {
+	Type      string `json:"type"`       // "base64"
+	MediaType string `json:"media_type"` // "image/png", "image/jpeg", etc.
+	Data      string `json:"data"`       // base64-encoded image data
+}
+
+// SDKUserContentPart represents a single part in a multi-part user message content.
+type SDKUserContentPart struct {
+	Type   string          `json:"type"`             // "text" or "image"
+	Text   string          `json:"text,omitempty"`   // type="text"
+	Source *SDKImageSource `json:"source,omitempty"` // type="image"
 }
 
 type SDKResultPayload struct {
@@ -100,8 +122,88 @@ type SDKUserInput struct {
 }
 
 type SDKUserMessage struct {
-	Role    string `json:"role"` // "user"
-	Content string `json:"content"`
+	Role    string      `json:"role"`    // "user"
+	Content interface{} `json:"content"` // string (text) or []SDKUserContentPart (multi-part)
+}
+
+// MarshalJSON implements custom JSON serialization for SDKUserMessage.
+// When Content is a string, the "content" field is serialized as a JSON string.
+// When Content is []SDKUserContentPart, it is serialized as a JSON array.
+func (m SDKUserMessage) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+
+	a := alias{Role: m.Role}
+
+	switch v := m.Content.(type) {
+	case string:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("marshal string content: %w", err)
+		}
+		a.Content = raw
+	case []SDKUserContentPart:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("marshal multi-part content: %w", err)
+		}
+		a.Content = raw
+	default:
+		// Fallback: marshal whatever Content is directly
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("marshal content: %w", err)
+		}
+		a.Content = raw
+	}
+
+	return json.Marshal(a)
+}
+
+// UnmarshalJSON implements custom JSON deserialization for SDKUserMessage.
+// It detects the JSON token type of the "content" field:
+// - JSON string → Content is set as a Go string
+// - JSON array  → Content is parsed as []SDKUserContentPart
+func (m *SDKUserMessage) UnmarshalJSON(data []byte) error {
+	type alias struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+
+	m.Role = a.Role
+
+	if len(a.Content) == 0 {
+		m.Content = ""
+		return nil
+	}
+
+	// Detect token type by first non-whitespace byte
+	switch a.Content[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(a.Content, &s); err != nil {
+			return fmt.Errorf("unmarshal string content: %w", err)
+		}
+		m.Content = s
+	case '[':
+		var parts []SDKUserContentPart
+		if err := json.Unmarshal(a.Content, &parts); err != nil {
+			return fmt.Errorf("unmarshal multi-part content: %w", err)
+		}
+		m.Content = parts
+	default:
+		// Fallback: store as raw string
+		m.Content = string(a.Content)
+	}
+
+	return nil
 }
 
 // SDKInterruptRequest is sent TO Claude Code to interrupt current processing.

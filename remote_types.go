@@ -167,3 +167,12 @@ type OutputResult struct {
 	PreviewDelta *SessionPreviewDelta
 	Events       []ImportantEvent
 }
+
+// ImageTransferMessage represents an image being transferred between desktop and mobile via Hub.
+type ImageTransferMessage struct {
+	ImageID   string `json:"image_id"`
+	SessionID string `json:"session_id"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`      // base64-encoded image data
+	Timestamp int64  `json:"timestamp"` // Unix timestamp
+}

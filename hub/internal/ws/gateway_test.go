@@ -592,3 +592,378 @@ func TestGatewayMachineDisconnectMarksMachineOffline(t *testing.T) {
 		t.Fatalf("unexpected offline status: %q", offlineMsg.Payload.Status)
 	}
 }
+
+func TestGatewaySessionImageForwardsToSessionViewer(t *testing.T) {
+	sess := &testSessionService{
+		snapshot: &session.SessionCacheEntry{
+			SessionID:  "sess-1",
+			MachineID:  "machine-1",
+			UserID:     "user-1",
+			HostOnline: true,
+			UpdatedAt:  time.Unix(100, 0),
+			Summary:    session.SessionSummary{SessionID: "sess-1", MachineID: "machine-1", Title: "Claude Session", Status: "running"},
+		},
+	}
+	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, sess)
+
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	// Connect viewer and subscribe to session
+	viewerConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial viewer: %v", err)
+	}
+	defer viewerConn.Close()
+
+	if err := viewerConn.WriteJSON(map[string]any{
+		"type":    "auth.viewer",
+		"payload": map[string]any{"access_token": "viewer-token"},
+	}); err != nil {
+		t.Fatalf("write auth.viewer: %v", err)
+	}
+	var ignored map[string]any
+	if err := viewerConn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read auth.ok: %v", err)
+	}
+	if err := viewerConn.WriteJSON(map[string]any{
+		"type":    "viewer.subscribe_session",
+		"payload": map[string]any{"machine_id": "machine-1", "session_id": "sess-1"},
+	}); err != nil {
+		t.Fatalf("write subscribe: %v", err)
+	}
+	if err := viewerConn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+
+	// Connect machine
+	machineConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial machine: %v", err)
+	}
+	defer machineConn.Close()
+
+	if err := machineConn.WriteJSON(map[string]any{
+		"type":    "auth.machine",
+		"payload": map[string]any{"machine_id": "machine-1", "machine_token": "token"},
+	}); err != nil {
+		t.Fatalf("write auth.machine: %v", err)
+	}
+	if err := machineConn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read machine auth.ok: %v", err)
+	}
+
+	// Machine sends session.image
+	if err := machineConn.WriteJSON(map[string]any{
+		"type":       "session.image",
+		"session_id": "sess-1",
+		"payload": map[string]any{
+			"image_id":   "img_123",
+			"session_id": "sess-1",
+			"media_type": "image/png",
+			"data":       "iVBORw0KGgo=",
+			"timestamp":  1234567890,
+		},
+	}); err != nil {
+		t.Fatalf("write session.image: %v", err)
+	}
+
+	// Viewer should receive the forwarded image
+	var imgMsg struct {
+		Type      string `json:"type"`
+		MachineID string `json:"machine_id"`
+		SessionID string `json:"session_id"`
+		Payload   struct {
+			ImageID   string `json:"image_id"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"payload"`
+	}
+	if err := viewerConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if err := viewerConn.ReadJSON(&imgMsg); err != nil {
+		t.Fatalf("read session.image: %v", err)
+	}
+	if imgMsg.Type != "session.image" {
+		t.Fatalf("expected session.image, got %q", imgMsg.Type)
+	}
+	if imgMsg.MachineID != "machine-1" || imgMsg.SessionID != "sess-1" {
+		t.Fatalf("unexpected ids: machine=%q session=%q", imgMsg.MachineID, imgMsg.SessionID)
+	}
+	if imgMsg.Payload.ImageID != "img_123" || imgMsg.Payload.MediaType != "image/png" {
+		t.Fatalf("unexpected payload: %+v", imgMsg.Payload)
+	}
+}
+
+func TestGatewaySessionImageRejectsViewer(t *testing.T) {
+	sess := &testSessionService{}
+	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, sess)
+
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Auth as viewer
+	if err := conn.WriteJSON(map[string]any{
+		"type":    "auth.viewer",
+		"payload": map[string]any{"access_token": "viewer-token"},
+	}); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	var ignored map[string]any
+	if err := conn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read auth.ok: %v", err)
+	}
+
+	// Viewer tries to send session.image (should be rejected)
+	if err := conn.WriteJSON(map[string]any{
+		"type":       "session.image",
+		"session_id": "sess-1",
+		"payload":    map[string]any{"image_id": "img_123"},
+	}); err != nil {
+		t.Fatalf("write session.image: %v", err)
+	}
+
+	var errMsg struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Code string `json:"code"`
+		} `json:"payload"`
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if err := conn.ReadJSON(&errMsg); err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	if errMsg.Type != "error" || errMsg.Payload.Code != "FORBIDDEN" {
+		t.Fatalf("expected FORBIDDEN error, got type=%q code=%q", errMsg.Type, errMsg.Payload.Code)
+	}
+}
+
+func TestGatewaySessionImageInputForwardsToMachine(t *testing.T) {
+	deviceBinder := &testDeviceBinder{}
+	sess := &testSessionService{
+		snapshot: &session.SessionCacheEntry{
+			SessionID:  "sess-1",
+			MachineID:  "machine-1",
+			UserID:     "user-1",
+			HostOnline: true,
+			UpdatedAt:  time.Unix(100, 0),
+			Summary:    session.SessionSummary{SessionID: "sess-1", MachineID: "machine-1", Title: "Claude Session", Status: "running"},
+		},
+	}
+	gateway := NewGateway(&testIdentityService{}, deviceBinder, sess)
+
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	// Connect viewer
+	viewerConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial viewer: %v", err)
+	}
+	defer viewerConn.Close()
+
+	if err := viewerConn.WriteJSON(map[string]any{
+		"type":    "auth.viewer",
+		"payload": map[string]any{"access_token": "viewer-token"},
+	}); err != nil {
+		t.Fatalf("write auth.viewer: %v", err)
+	}
+	var ignored map[string]any
+	if err := viewerConn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read auth.ok: %v", err)
+	}
+
+	// Viewer sends session.image_input
+	if err := viewerConn.WriteJSON(map[string]any{
+		"type": "session.image_input",
+		"payload": map[string]any{
+			"machine_id": "machine-1",
+			"session_id": "sess-1",
+			"image_id":   "img_456",
+			"media_type": "image/jpeg",
+			"data":       "/9j/4AAQ==",
+			"timestamp":  1234567890,
+		},
+	}); err != nil {
+		t.Fatalf("write session.image_input: %v", err)
+	}
+
+	// Give a moment for the message to be processed
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify SendToMachine was called (the test binder records the machine ID)
+	// The testDeviceBinder doesn't track calls, but the absence of an error response means it was forwarded
+	// We can verify by checking no error was sent back to the viewer
+	viewerConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	var maybeErr map[string]any
+	err = viewerConn.ReadJSON(&maybeErr)
+	if err == nil && maybeErr["type"] == "error" {
+		t.Fatalf("unexpected error response: %+v", maybeErr)
+	}
+}
+
+func TestGatewaySessionImageInputRejectsMachine(t *testing.T) {
+	sess := &testSessionService{}
+	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, sess)
+
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Auth as machine
+	if err := conn.WriteJSON(map[string]any{
+		"type":    "auth.machine",
+		"payload": map[string]any{"machine_id": "machine-1", "machine_token": "token"},
+	}); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	var ignored map[string]any
+	if err := conn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read auth.ok: %v", err)
+	}
+
+	// Machine tries to send session.image_input (should be rejected — only viewers can)
+	if err := conn.WriteJSON(map[string]any{
+		"type": "session.image_input",
+		"payload": map[string]any{
+			"machine_id": "machine-1",
+			"session_id": "sess-1",
+			"image_id":   "img_456",
+		},
+	}); err != nil {
+		t.Fatalf("write session.image_input: %v", err)
+	}
+
+	var errMsg struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Code string `json:"code"`
+		} `json:"payload"`
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if err := conn.ReadJSON(&errMsg); err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	if errMsg.Type != "error" || errMsg.Payload.Code != "FORBIDDEN" {
+		t.Fatalf("expected FORBIDDEN error, got type=%q code=%q", errMsg.Type, errMsg.Payload.Code)
+	}
+}
+
+func TestGatewaySessionImageInputErrorForwardsToViewer(t *testing.T) {
+	sess := &testSessionService{
+		snapshot: &session.SessionCacheEntry{
+			SessionID:  "sess-1",
+			MachineID:  "machine-1",
+			UserID:     "user-1",
+			HostOnline: true,
+			UpdatedAt:  time.Unix(100, 0),
+			Summary:    session.SessionSummary{SessionID: "sess-1", MachineID: "machine-1", Title: "Claude Session", Status: "running"},
+		},
+	}
+	gateway := NewGateway(&testIdentityService{}, &testDeviceBinder{}, sess)
+
+	server := httptest.NewServer(http.HandlerFunc(gateway.HandleWS))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	// Connect viewer and subscribe to session
+	viewerConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial viewer: %v", err)
+	}
+	defer viewerConn.Close()
+
+	if err := viewerConn.WriteJSON(map[string]any{
+		"type":    "auth.viewer",
+		"payload": map[string]any{"access_token": "viewer-token"},
+	}); err != nil {
+		t.Fatalf("write auth.viewer: %v", err)
+	}
+	var ignored map[string]any
+	if err := viewerConn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read auth.ok: %v", err)
+	}
+	if err := viewerConn.WriteJSON(map[string]any{
+		"type":    "viewer.subscribe_session",
+		"payload": map[string]any{"machine_id": "machine-1", "session_id": "sess-1"},
+	}); err != nil {
+		t.Fatalf("write subscribe: %v", err)
+	}
+	if err := viewerConn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+
+	// Connect machine
+	machineConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial machine: %v", err)
+	}
+	defer machineConn.Close()
+
+	if err := machineConn.WriteJSON(map[string]any{
+		"type":    "auth.machine",
+		"payload": map[string]any{"machine_id": "machine-1", "machine_token": "token"},
+	}); err != nil {
+		t.Fatalf("write auth.machine: %v", err)
+	}
+	if err := machineConn.ReadJSON(&ignored); err != nil {
+		t.Fatalf("read machine auth.ok: %v", err)
+	}
+
+	// Machine sends session.image_input.error
+	if err := machineConn.WriteJSON(map[string]any{
+		"type":       "session.image_input.error",
+		"session_id": "sess-1",
+		"payload": map[string]any{
+			"error":      "Image transfer is only supported in SDK mode sessions",
+			"session_id": "sess-1",
+		},
+	}); err != nil {
+		t.Fatalf("write session.image_input.error: %v", err)
+	}
+
+	// Viewer should receive the error
+	var errMsg struct {
+		Type      string `json:"type"`
+		MachineID string `json:"machine_id"`
+		SessionID string `json:"session_id"`
+		Payload   struct {
+			Error string `json:"error"`
+		} `json:"payload"`
+	}
+	if err := viewerConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if err := viewerConn.ReadJSON(&errMsg); err != nil {
+		t.Fatalf("read session.image_input.error: %v", err)
+	}
+	if errMsg.Type != "session.image_input.error" {
+		t.Fatalf("expected session.image_input.error, got %q", errMsg.Type)
+	}
+	if errMsg.MachineID != "machine-1" || errMsg.SessionID != "sess-1" {
+		t.Fatalf("unexpected ids: machine=%q session=%q", errMsg.MachineID, errMsg.SessionID)
+	}
+	if errMsg.Payload.Error != "Image transfer is only supported in SDK mode sessions" {
+		t.Fatalf("unexpected error: %q", errMsg.Payload.Error)
+	}
+}

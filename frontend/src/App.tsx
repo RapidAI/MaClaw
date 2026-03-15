@@ -464,6 +464,8 @@ const translations: any = {
         "remoteModeDesc": "Start this tool through Hub for phone control",
         "localModeLabel": "Local",
         "launchModeLabel": "Mode",
+        "defaultLaunchModeLabel": "Default Launch Mode",
+        "defaultLaunchModeDesc": "Choose the default working mode for the tool launch area",
         "freeload": "Free",
         "bigSpender": "Big Spender",
         "skills": "Skills",
@@ -802,6 +804,8 @@ const translations: any = {
         "remoteModeDesc": "通过 Hub 启动此工具，便于手机控制",
         "localModeLabel": "本地",
         "launchModeLabel": "方式",
+        "defaultLaunchModeLabel": "默认启动模式",
+        "defaultLaunchModeDesc": "选择工具启动区的默认工作模式",
         "freeload": "白嫖中",
         "bigSpender": "大力氪金",
         "skills": "技能",
@@ -1138,6 +1142,8 @@ const translations: any = {
         "remoteModeDesc": "透過 Hub 啟動此工具，方便手機控制",
         "localModeLabel": "本機",
         "launchModeLabel": "方式",
+        "defaultLaunchModeLabel": "預設啟動模式",
+        "defaultLaunchModeDesc": "選擇工具啟動區的預設工作模式",
         "freeload": "白嫖中",
         "bigSpender": "大力氪金",
         "skills": "技能",
@@ -1758,6 +1764,12 @@ function App() {
 
         // Config Logic
         LoadConfig().then((cfg) => {
+            // Apply default launch mode setting on startup
+            if (cfg.default_launch_mode === 'remote') {
+                cfg.remote_enabled = true;
+            } else if (cfg.default_launch_mode === 'local') {
+                cfg.remote_enabled = false;
+            }
             setConfig(cfg);
 
             if (!cfg.pause_env_check) {
@@ -3757,12 +3769,6 @@ ${instruction}`;
                                 ))}
                             </div>
                             <div className="settings-panel" style={{ display: settingsTab === 'general' ? 'block' : 'none' }}>
-                                <div className="settings-panel-header">
-                                    <div>
-                                        <h3 className="settings-panel-title">{settingsTabOptions[0].label}</h3>
-                                        <p className="settings-panel-desc">{settingsTabOptions[0].desc}</p>
-                                    </div>
-                                </div>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '20px', marginBottom: '15px' }}>
                                 <div className="form-group" style={{ flex: '1', marginBottom: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
                                     <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("language")}</label>
@@ -3772,13 +3778,17 @@ ${instruction}`;
                                         <option value="zh-Hant">繁體中文</option>
                                     </select>
                                 </div>
-                                <button
-                                    className="btn-link"
-                                    onClick={() => switchTool('projects')}
-                                    style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '2px 12px', border: '1px solid var(--border-color)', height: '24px', borderRadius: '12px', fontSize: '0.7rem' }}
-                                >
-                                    <span>📂</span> {t("manageProjects")}
-                                </button>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                                    <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("defaultLaunchModeLabel")}</label>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                                        <input type="radio" name="launchMode" checked={!config?.default_launch_mode || config.default_launch_mode === 'local'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'local' }); setConfig(c); SaveConfig(c); } }} />
+                                        {t("localModeLabel")}
+                                    </label>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                                        <input type="radio" name="launchMode" checked={config?.default_launch_mode === 'remote'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'remote' }); setConfig(c); SaveConfig(c); } }} />
+                                        {t("remoteModeLabel")}
+                                    </label>
+                                </div>
                                 {!isWindows && (
                                     <button
                                         className="btn-link"
@@ -3936,6 +3946,8 @@ ${instruction}`;
                                     </label>
                                 </div>
                             </div>
+
+
 
                             </div>
 

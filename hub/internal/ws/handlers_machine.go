@@ -165,6 +165,18 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			if err := g.handleSessionClosed(ctx, msg); err != nil {
 				return
 			}
+		case "session.image":
+			if err := g.handleSessionImage(ctx, msg); err != nil {
+				return
+			}
+		case "session.image_input.error":
+			if err := g.handleSessionImageInputError(ctx, msg); err != nil {
+				return
+			}
+		case "session.image_input":
+			if err := g.handleSessionImageInput(ctx, msg); err != nil {
+				return
+			}
 		default:
 			_ = writeWSError(conn, "UNKNOWN_MESSAGE", "Unsupported message type")
 		}
@@ -301,11 +313,12 @@ func (g *Gateway) handleViewerSubscribeSession(ctx *ConnContext, msg Envelope) e
 		"machine_id": payload.MachineID,
 		"session_id": payload.SessionID,
 		"payload": map[string]any{
-			"summary":       entry.Summary,
-			"preview":       entry.Preview,
-			"recent_events": entry.RecentEvents,
-			"host_online":   entry.HostOnline,
-			"updated_at":    entry.UpdatedAt.Unix(),
+			"execution_mode": entry.ExecutionMode,
+			"summary":        entry.Summary,
+			"preview":        entry.Preview,
+			"recent_events":  entry.RecentEvents,
+			"host_online":    entry.HostOnline,
+			"updated_at":     entry.UpdatedAt.Unix(),
 		},
 	})
 }
@@ -336,13 +349,14 @@ func (g *Gateway) handleViewerSubscribeMachine(ctx *ConnContext, msg Envelope) e
 	sessionsPayload := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
 		sessionsPayload = append(sessionsPayload, map[string]any{
-			"session_id":  entry.SessionID,
-			"machine_id":  entry.MachineID,
-			"user_id":     entry.UserID,
-			"summary":     entry.Summary,
-			"preview":     entry.Preview,
-			"host_online": entry.HostOnline,
-			"updated_at":  entry.UpdatedAt.Unix(),
+			"session_id":     entry.SessionID,
+			"machine_id":     entry.MachineID,
+			"user_id":        entry.UserID,
+			"execution_mode": entry.ExecutionMode,
+			"summary":        entry.Summary,
+			"preview":        entry.Preview,
+			"host_online":    entry.HostOnline,
+			"updated_at":     entry.UpdatedAt.Unix(),
 		})
 	}
 
@@ -554,6 +568,100 @@ func (g *Gateway) handleSessionClosed(ctx *ConnContext, msg Envelope) error {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
+}
+
+// handleSessionImage handles session.image from a machine and forwards to viewers subscribed to that session.
+func (g *Gateway) handleSessionImage(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+	}
+	if msg.SessionID == "" {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "session_id is required")
+	}
+
+	g.mu.RLock()
+	watchers := make([]*ConnContext, 0, len(g.viewersBySession[msg.SessionID]))
+	for watcher := range g.viewersBySession[msg.SessionID] {
+		watchers = append(watchers, watcher)
+	}
+	g.mu.RUnlock()
+
+	fwd := map[string]any{
+		"type":       "session.image",
+		"ts":         time.Now().Unix(),
+		"machine_id": ctx.MachineID,
+		"session_id": msg.SessionID,
+		"payload":    json.RawMessage(msg.Payload),
+	}
+	for _, watcher := range watchers {
+		_ = writeWSJSON(watcher.Conn, fwd)
+	}
+	return nil
+}
+
+// handleSessionImageInputError handles session.image_input.error from a machine and forwards to viewers subscribed to that session.
+func (g *Gateway) handleSessionImageInputError(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+	}
+	if msg.SessionID == "" {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "session_id is required")
+	}
+
+	g.mu.RLock()
+	watchers := make([]*ConnContext, 0, len(g.viewersBySession[msg.SessionID]))
+	for watcher := range g.viewersBySession[msg.SessionID] {
+		watchers = append(watchers, watcher)
+	}
+	g.mu.RUnlock()
+
+	fwd := map[string]any{
+		"type":       "session.image_input.error",
+		"ts":         time.Now().Unix(),
+		"machine_id": ctx.MachineID,
+		"session_id": msg.SessionID,
+		"payload":    json.RawMessage(msg.Payload),
+	}
+	for _, watcher := range watchers {
+		_ = writeWSJSON(watcher.Conn, fwd)
+	}
+	return nil
+}
+
+// handleSessionImageInput handles session.image_input from a viewer and forwards to the machine that owns the session.
+func (g *Gateway) handleSessionImageInput(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "viewer" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Viewer role required")
+	}
+
+	var payload struct {
+		SessionID string `json:"session_id"`
+		MachineID string `json:"machine_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid session.image_input payload")
+	}
+	if payload.MachineID == "" {
+		payload.MachineID = msg.MachineID
+	}
+	if payload.SessionID == "" {
+		payload.SessionID = msg.SessionID
+	}
+	if payload.MachineID == "" || payload.SessionID == "" {
+		return writeWSError(ctx.Conn, "INVALID_INPUT", "machine_id and session_id are required")
+	}
+
+	command := map[string]any{
+		"type":       "session.image_input",
+		"ts":         time.Now().Unix(),
+		"machine_id": payload.MachineID,
+		"session_id": payload.SessionID,
+		"payload":    json.RawMessage(msg.Payload),
+	}
+	if err := g.Devices.SendToMachine(payload.MachineID, command); err != nil {
+		return writeWSError(ctx.Conn, "MACHINE_OFFLINE", err.Error())
+	}
+	return nil
 }
 
 func (g *Gateway) cleanupConnection(ctx *ConnContext) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -311,6 +312,57 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 	return err
 }
 
+// WriteImageInput constructs a multi-part SDKUserInput containing an image
+// content block and writes it to the SDK session's stdin. Only SDK-mode
+// sessions support image input; PTY sessions return an error.
+func (m *RemoteSessionManager) WriteImageInput(sessionID string, img ImageTransferMessage) error {
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	if s.Exec == nil {
+		return fmt.Errorf("session execution not available: %s", sessionID)
+	}
+
+	// Only SDK sessions support image input.
+	sdkHandle, isSDK := s.Exec.(*SDKExecutionHandle)
+	if !isSDK {
+		return fmt.Errorf("Image transfer is only supported in SDK mode sessions")
+	}
+
+	// Validate the image message (media type, base64 data, size limit).
+	if err := ValidateImageTransferMessage(img, ImageUploadSizeLimit); err != nil {
+		return err
+	}
+
+	// Construct multi-part SDKUserInput with image content block.
+	msg := SDKUserInput{
+		Type: "user",
+		Message: SDKUserMessage{
+			Role: "user",
+			Content: []SDKUserContentPart{
+				{
+					Type: "image",
+					Source: &SDKImageSource{
+						Type:      "base64",
+						MediaType: img.MediaType,
+						Data:      img.Data,
+					},
+				},
+			},
+		},
+	}
+
+	m.app.log(fmt.Sprintf("[remote-write-image] session=%s, media_type=%s, b64_len=%d",
+		sessionID, img.MediaType, len(img.Data)))
+
+	if err := sdkHandle.WriteUserInput(msg); err != nil {
+		m.app.log(fmt.Sprintf("[remote-write-image] FAILED session=%s: %v", sessionID, err))
+		return err
+	}
+	return nil
+}
+
 func (m *RemoteSessionManager) Interrupt(sessionID string) error {
 	s, ok := m.Get(sessionID)
 	if !ok {
@@ -344,13 +396,21 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 
 	for chunk := range output {
 		// Capture raw output (ANSI-stripped only, no filtering) for terminal view
-		rawLines := rawChunkLines(chunk)
+		rawResult := rawChunkLines(chunk)
+		rawLines := rawResult.Lines
 
 		s.mu.Lock()
 		if len(rawLines) > 0 {
-			s.RawOutputLines = append(s.RawOutputLines, rawLines...)
-			if len(s.RawOutputLines) > 500 {
-				s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-500:]
+			if rawResult.IsScreenRefresh {
+				// TUI screen redraw detected — replace the buffer so we
+				// don't accumulate stale screen frames.
+				s.RawOutputLines = make([]string, len(rawLines))
+				copy(s.RawOutputLines, rawLines)
+			} else {
+				s.RawOutputLines = append(s.RawOutputLines, rawLines...)
+			}
+			if len(s.RawOutputLines) > 2000 {
+				s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-2000:]
 			}
 		}
 		s.mu.Unlock()
@@ -377,8 +437,8 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 			s.Preview.OutputSeq = result.PreviewDelta.OutputSeq
 			s.Preview.UpdatedAt = result.PreviewDelta.UpdatedAt
 			s.Preview.PreviewLines = append(s.Preview.PreviewLines, result.PreviewDelta.AppendLines...)
-			if len(s.Preview.PreviewLines) > 100 {
-				s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-100:]
+			if len(s.Preview.PreviewLines) > 500 {
+				s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
 			}
 		}
 
@@ -433,6 +493,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 
 	// appendStreamText must be called with s.mu held.
 	appendStreamText := func(text string) {
+		beforeCount := len(s.RawOutputLines)
 		parts := strings.Split(text, "\n")
 		for i, part := range parts {
 			if i > 0 {
@@ -452,8 +513,13 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				streamAccumActive = true
 			}
 		}
-		if len(s.RawOutputLines) > 500 {
-			s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-500:]
+		if len(s.RawOutputLines) > 2000 {
+			s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-2000:]
+		}
+		afterCount := len(s.RawOutputLines)
+		if afterCount < beforeCount {
+			m.app.log(fmt.Sprintf("[sdk-stream-WARNING] session=%s raw_lines DECREASED: %d -> %d, text=%q",
+				s.ID, beforeCount, afterCount, text))
 		}
 	}
 
@@ -496,8 +562,8 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				s.Preview.OutputSeq = result.PreviewDelta.OutputSeq
 				s.Preview.UpdatedAt = result.PreviewDelta.UpdatedAt
 				s.Preview.PreviewLines = append(s.Preview.PreviewLines, result.PreviewDelta.AppendLines...)
-				if len(s.Preview.PreviewLines) > 100 {
-					s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-100:]
+				if len(s.Preview.PreviewLines) > 500 {
+					s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
 				}
 			}
 
@@ -535,6 +601,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			// Collect hub events to send after releasing the lock
 			var summaryToSync *SessionSummary
 			var eventsToSync []ImportantEvent
+			var imagesToSync []ImageTransferMessage
 
 			s.mu.Lock()
 			s.UpdatedAt = now
@@ -565,6 +632,23 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 							s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
 							eventsToSync = append(eventsToSync, evt)
 						}
+						if block.Type == "image" && block.Source != nil {
+							if !IsValidImageMediaType(block.Source.MediaType) {
+								m.app.log(fmt.Sprintf("[sdk-image] session=%s: skipping image with unsupported media_type %q", s.ID, block.Source.MediaType))
+								continue
+							}
+							decoded, err := base64.StdEncoding.DecodeString(block.Source.Data)
+							if err != nil {
+								m.app.log(fmt.Sprintf("[sdk-image] session=%s: skipping image with invalid base64 data: %v", s.ID, err))
+								continue
+							}
+							if len(decoded) > ImageOutputSizeLimit {
+								m.app.log(fmt.Sprintf("[sdk-image] session=%s: skipping image exceeding size limit (%d > %d)", s.ID, len(decoded), ImageOutputSizeLimit))
+								continue
+							}
+							img := NewImageTransferMessage(s.ID, block.Source.MediaType, block.Source.Data)
+							imagesToSync = append(imagesToSync, img)
+						}
 					}
 				}
 				snap := s.Summary
@@ -590,6 +674,11 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			for _, evt := range eventsToSync {
 				if m.hubClient != nil {
 					_ = m.hubClient.SendImportantEvent(evt)
+				}
+			}
+			for _, img := range imagesToSync {
+				if m.hubClient != nil {
+					_ = m.hubClient.SendSessionImage(img)
 				}
 			}
 

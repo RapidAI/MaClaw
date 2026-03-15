@@ -69,16 +69,7 @@ export function RemoteSettingsPanel({
     };
 
     return (
-        <div className="settings-panel">
-            <div className="settings-panel-header">
-                <div>
-                    <h3 className="settings-panel-title">远程接入设置</h3>
-                    <p className="settings-panel-desc">
-                        配置 Hub Center、Hub 地址、邮箱和心跳参数，用于接入和维护远程实例。
-                    </p>
-                </div>
-            </div>
-
+        <>
             {/* Row 1: Hub Center + 心跳间隔 */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 160px", gap: "10px" }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
@@ -193,6 +184,6 @@ export function RemoteSettingsPanel({
                     ? `${translate("remoteActivation")}: ${translate("remoteActivated")} ${remoteActivationStatus.email ? `(${remoteActivationStatus.email})` : ""}`
                     : `${translate("remoteActivation")}: ${translate("remoteNotActivated")}`}{" | "}{translate("remoteModeDesc")}
             </div>
-        </div>
+        </>
     );
 }

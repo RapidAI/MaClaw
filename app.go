@@ -142,6 +142,7 @@ type AppConfig struct {
 	RemoteMachineToken string `json:"remote_machine_token"`
 	RemoteHeartbeatSec int    `json:"remote_heartbeat_sec"`
 	RemoteClientID     string `json:"remote_client_id"`
+	DefaultLaunchMode  string `json:"default_launch_mode"` // "local" or "remote", default launch mode for tool area
 }
 type Skill struct {
 	Name        string `json:"name"`

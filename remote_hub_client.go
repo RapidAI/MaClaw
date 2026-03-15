@@ -212,18 +212,24 @@ func (c *RemoteHubClient) SendSessionCreated(s *RemoteSession) error {
 		return nil
 	}
 
+	execMode := "pty"
+	if _, isSDK := s.Exec.(*SDKExecutionHandle); isSDK {
+		execMode = "sdk"
+	}
+
 	msg := HubEnvelope{
 		Type:      "session.created",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
 		SessionID: s.ID,
 		Payload: map[string]interface{}{
-			"tool":         s.Tool,
-			"title":        s.Title,
-			"source":       string(normalizeRemoteLaunchSource(s.LaunchSource)),
-			"project_path": s.ProjectPath,
-			"status":       string(s.Status),
-			"started_at":   s.CreatedAt.Unix(),
+			"tool":           s.Tool,
+			"title":          s.Title,
+			"source":         string(normalizeRemoteLaunchSource(s.LaunchSource)),
+			"project_path":   s.ProjectPath,
+			"status":         string(s.Status),
+			"execution_mode": execMode,
+			"started_at":     s.CreatedAt.Unix(),
 		},
 	}
 	err := c.conn.WriteJSON(msg)
@@ -322,6 +328,25 @@ func (c *RemoteHubClient) SendSessionClosed(s *RemoteSession) error {
 	}
 	return err
 }
+
+// SendSessionImage sends an image extracted from SDK output to the Hub for delivery to mobile clients.
+func (c *RemoteHubClient) SendSessionImage(img ImageTransferMessage) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return nil
+	}
+
+	msg := HubEnvelope{
+		Type:      "session.image",
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		SessionID: img.SessionID,
+		Payload:   img,
+	}
+	return c.conn.WriteJSON(msg)
+}
+
 
 func (c *RemoteHubClient) SyncSessions() {
 	if c.manager == nil {
@@ -425,6 +450,8 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleSessionInterrupt(msg)
 		case "session.kill":
 			c.handleSessionKill(msg)
+		case "session.image_input":
+			c.handleSessionImageInput(msg)
 		}
 	}
 }
@@ -505,6 +532,46 @@ func (c *RemoteHubClient) handleSessionKill(msg inboundHubEnvelope) {
 		c.setLastError(err.Error())
 	}
 	c.app.emitEvent("remote-session-changed", "kill", msg.SessionID)
+}
+
+func (c *RemoteHubClient) handleSessionImageInput(msg inboundHubEnvelope) {
+	if c.manager == nil || msg.SessionID == "" {
+		return
+	}
+	var img ImageTransferMessage
+	if err := json.Unmarshal(msg.Payload, &img); err != nil {
+		c.setLastError(err.Error())
+		_ = c.SendSessionImageError(msg.SessionID, err.Error())
+		return
+	}
+	// Ensure the session ID from the envelope is used.
+	img.SessionID = msg.SessionID
+	if err := c.manager.WriteImageInput(msg.SessionID, img); err != nil {
+		c.setLastError(err.Error())
+		_ = c.SendSessionImageError(msg.SessionID, err.Error())
+		return
+	}
+	c.app.emitEvent("remote-session-changed", "image_input", msg.SessionID)
+}
+
+// SendSessionImageError sends an error response to the Hub when image input injection fails.
+func (c *RemoteHubClient) SendSessionImageError(sessionID, errorMsg string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return nil
+	}
+
+	msg := HubEnvelope{
+		Type:      "session.image_input.error",
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		SessionID: sessionID,
+		Payload: map[string]string{
+			"message": errorMsg,
+		},
+	}
+	return c.conn.WriteJSON(msg)
 }
 
 func (c *RemoteHubClient) storeHubError(payload json.RawMessage) {

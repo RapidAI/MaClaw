@@ -149,6 +149,18 @@ func (h *SDKExecutionHandle) Write(data []byte) error {
 	return h.writeJSON(msg)
 }
 
+// WriteUserInput sends a pre-constructed SDKUserInput message to Claude Code
+// via stdin. This is used for multi-part messages (e.g. image input) where
+// the caller needs full control over the message content structure.
+func (h *SDKExecutionHandle) WriteUserInput(msg SDKUserInput) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return fmt.Errorf("sdk session closed")
+	}
+	return h.writeJSON(msg)
+}
+
 // Interrupt sends an interrupt control request to Claude Code.
 func (h *SDKExecutionHandle) Interrupt() error {
 	h.mu.Lock()
@@ -433,6 +445,12 @@ func sdkMessageToText(msg SDKMessage) string {
 					}
 				}
 				parts = append(parts, fmt.Sprintf("⚡ %s", summary))
+			case "image":
+				if block.Source != nil && block.Source.MediaType != "" {
+					parts = append(parts, fmt.Sprintf("🖼 Image (%s)", block.Source.MediaType))
+				} else {
+					parts = append(parts, "🖼 Image")
+				}
 			}
 		}
 		return strings.Join(parts, "\n")
@@ -499,6 +517,16 @@ func extractStreamEventText(event map[string]interface{}) string {
 			if name != "" {
 				return fmt.Sprintf("\n⚡ %s", name)
 			}
+		}
+		if blockType == "image" {
+			source, _ := block["source"].(map[string]interface{})
+			if source != nil {
+				mediaType, _ := source["media_type"].(string)
+				if mediaType != "" {
+					return fmt.Sprintf("\n🖼 Image (%s)", mediaType)
+				}
+			}
+			return "\n🖼 Image"
 		}
 		return ""
 

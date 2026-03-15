@@ -337,11 +337,30 @@ var boxDrawingOnly = regexp.MustCompile(`^[\s\x{2500}-\x{259F}\x{2550}-\x{256C}\
 
 func isNoiseLine(s string) bool {
 	trimmed := strings.TrimSpace(s)
-	if trimmed == "" || trimmed == "." || trimmed == ".." || trimmed == "..." {
+	if trimmed == "" || trimmed == ".." || trimmed == "..." {
 		return true
 	}
 	return boxDrawingOnly.MatchString(trimmed)
 }
+
+// rawChunkResult holds the parsed lines from a PTY chunk along with a
+// flag indicating whether the chunk contained a screen-clear sequence
+// (e.g. ESC[2J, ESC[H at the start, or ED/EL sequences that wipe the
+// display).  When IsScreenRefresh is true the caller should *replace*
+// the accumulated RawOutputLines instead of appending.
+type rawChunkResult struct {
+	Lines          []string
+	IsScreenRefresh bool
+}
+
+// screenClearPattern matches common ANSI sequences that clear the screen
+// or move the cursor to the home position, indicating a full TUI redraw.
+//   \x1b[2J  – Erase entire display
+//   \x1b[H   – Cursor home (row 1, col 1)
+//   \x1b[1;1H – Cursor to (1,1)
+//   \x1b[?1049h – Switch to alternate screen buffer
+//   \x1b[?1049l – Switch back from alternate screen buffer
+var screenClearPattern = regexp.MustCompile(`\x1b\[2J|\x1b\[H|\x1b\[1;1H|\x1b\[\?1049[hl]`)
 
 // rawChunkLines splits a PTY output chunk into lines with only ANSI
 // stripping applied.  No noise filtering, no length truncation — this
@@ -350,9 +369,14 @@ func isNoiseLine(s string) bool {
 // Empty lines (after ANSI stripping) are preserved as blank strings so
 // that TUI screen redraws are still counted and the frontend can detect
 // new output arriving even when the visible content hasn't changed.
-func rawChunkLines(chunk []byte) []string {
-	text := string(chunk)
-	text = strings.ReplaceAll(text, "\r\n", "\n")
+//
+// If the chunk contains a screen-clear sequence the result is flagged as
+// a screen refresh so the caller can replace (not append) the output buffer.
+func rawChunkLines(chunk []byte) rawChunkResult {
+	raw := string(chunk)
+	isRefresh := screenClearPattern.MatchString(raw)
+
+	text := strings.ReplaceAll(raw, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 
 	rawLines := strings.Split(text, "\n")
@@ -366,5 +390,5 @@ func rawChunkLines(chunk []byte) []string {
 	for len(out) > 0 && out[len(out)-1] == "" {
 		out = out[:len(out)-1]
 	}
-	return out
+	return rawChunkResult{Lines: out, IsScreenRefresh: isRefresh}
 }

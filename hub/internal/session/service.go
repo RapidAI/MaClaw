@@ -55,14 +55,15 @@ type ImportantEvent struct {
 }
 
 type SessionCacheEntry struct {
-	SessionID    string
-	MachineID    string
-	UserID       string
-	Summary      SessionSummary
-	Preview      SessionPreview
-	RecentEvents []ImportantEvent
-	HostOnline   bool
-	UpdatedAt    time.Time
+	SessionID     string
+	MachineID     string
+	UserID        string
+	ExecutionMode string
+	Summary       SessionSummary
+	Preview       SessionPreview
+	RecentEvents  []ImportantEvent
+	HostOnline    bool
+	UpdatedAt     time.Time
 }
 
 type Cache struct {
@@ -151,11 +152,13 @@ func (s *Service) OnSessionCreated(ctx context.Context, machineID, userID, sessi
 	title, _ := payload["title"].(string)
 	projectPath, _ := payload["project_path"].(string)
 	status, _ := payload["status"].(string)
+	executionMode, _ := payload["execution_mode"].(string)
 
 	entry := &SessionCacheEntry{
-		SessionID: sessionID,
-		MachineID: machineID,
-		UserID:    userID,
+		SessionID:     sessionID,
+		MachineID:     machineID,
+		UserID:        userID,
+		ExecutionMode: executionMode,
 		Summary: SessionSummary{
 			SessionID: sessionID,
 			MachineID: machineID,
@@ -227,8 +230,8 @@ func (s *Service) OnSessionPreviewDelta(ctx context.Context, machineID, userID, 
 	entry.Preview.SessionID = sessionID
 	entry.Preview.OutputSeq = delta.OutputSeq
 	entry.Preview.PreviewLines = append(entry.Preview.PreviewLines, delta.AppendLines...)
-	if len(entry.Preview.PreviewLines) > 100 {
-		entry.Preview.PreviewLines = entry.Preview.PreviewLines[len(entry.Preview.PreviewLines)-100:]
+	if len(entry.Preview.PreviewLines) > 500 {
+		entry.Preview.PreviewLines = entry.Preview.PreviewLines[len(entry.Preview.PreviewLines)-500:]
 	}
 	entry.Preview.UpdatedAt = time.Now().Unix()
 	entry.HostOnline = true

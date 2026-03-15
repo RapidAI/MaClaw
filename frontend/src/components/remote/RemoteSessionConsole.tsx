@@ -152,6 +152,17 @@ const inputBtnStyle: React.CSSProperties = {
 /** Duration (ms) before the send-status feedback auto-clears. */
 const SEND_INFO_TIMEOUT = 3000;
 
+// ── ANSI stripping (module-level for reuse) ──
+const _ansiRe = /\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[()][A-Z0-9]|[a-zA-Z])/g;
+function stripAnsi(s: string): string { return s.replace(_ansiRe, ""); }
+
+// ── Static Q&A styles ──
+const promptStyleQA: React.CSSProperties = {
+    color: "#4ec9b0", fontWeight: 600, padding: "3px 0",
+    overflowWrap: "break-word",
+};
+const lineStyleQA: React.CSSProperties = { minHeight: "1.4em" };
+
 export function RemoteSessionConsole(props: Props) {
     const {
         session,
@@ -172,13 +183,19 @@ export function RemoteSessionConsole(props: Props) {
     const prevRawCountRef = useRef(0);
     const prevLastLineRef = useRef("");
     const sendInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [clearOffset, setClearOffset] = useState(0);
+
+    // Track user prompts for Q&A interleaved display
+    type UserPrompt = { text: string; atLine: number; answerLines: string[] | null };
+    const userPromptsRef = useRef<UserPrompt[]>([]);
 
     const status = (session.summary?.status || session.status || "unknown").toLowerCase();
     const sessionClosed = TERMINAL_STATUSES.has(status);
     const disabled = sessionClosed || sending;
     const isSDK = session.execution_mode === "sdk";
 
-    const rawLines = session.raw_output_lines || session.preview?.preview_lines || [];
+    const allRawLines = session.raw_output_lines || session.preview?.preview_lines || [];
+    const rawLines = allRawLines.slice(clearOffset);
 
     // Helper: set status feedback with auto-clear
     const showSendInfo = useCallback((msg: string) => {
@@ -217,6 +234,26 @@ export function RemoteSessionConsole(props: Props) {
         return () => window.removeEventListener("keydown", handler);
     }, [onClose]);
 
+    // ── Record user prompt when send succeeds ──
+    // Uses allRawLines.length at call time (captured via closure over render scope)
+    const recordPrompt = useCallback((text: string) => {
+        const currentLen = allRawLines.length;
+        const prompts = userPromptsRef.current;
+        // Snapshot previous prompt's answer
+        if (prompts.length > 0) {
+            const prev = prompts[prompts.length - 1];
+            if (!prev.answerLines) {
+                const from = Math.min(prev.atLine, currentLen);
+                prev.answerLines = allRawLines.slice(from).map(stripAnsi);
+            }
+        }
+        prompts.push({ text, atLine: currentLen, answerLines: null });
+        // Keep last 20
+        if (prompts.length > 20) {
+            userPromptsRef.current = prompts.slice(-20);
+        }
+    }, [allRawLines]);
+
     const handleSend = useCallback(async () => {
         const text = inputValueRef.current.trim();
         if (!text || sending) return;
@@ -224,6 +261,7 @@ export function RemoteSessionConsole(props: Props) {
         setLastSendInfo("");
         try {
             await SendRemoteSessionInput(session.id, text + "\n");
+            recordPrompt(text);
             showSendInfo(`✓ "${text}"`);
             inputValueRef.current = "";
             setRemoteInputDrafts((prev) => ({ ...prev, [session.id]: "" }));
@@ -235,7 +273,7 @@ export function RemoteSessionConsole(props: Props) {
             showSendInfo(`✗ ${String(e)}`);
         }
         setSending(false);
-    }, [session.id, sending, setRemoteInputDrafts, refreshSessionsOnly, showSendInfo]);
+    }, [session.id, sending, setRemoteInputDrafts, refreshSessionsOnly, showSendInfo, recordPrompt]);
 
     const handleSendRaw = useCallback(async () => {
         const text = inputValueRef.current;
@@ -293,8 +331,63 @@ export function RemoteSessionConsole(props: Props) {
         try { await killRemoteSession(session.id); onClose(); } catch { /* already stopped */ }
     }, [session.id, killRemoteSession, onClose]);
 
+    const handleClear = useCallback(() => {
+        const all = session.raw_output_lines || session.preview?.preview_lines || [];
+        setClearOffset(all.length);
+        userPromptsRef.current = [];
+    }, [session]);
+
     const statusColor = status === "running" || status === "busy" ? "#4ec9b0"
         : status === "waiting_input" ? "#dcdcaa" : "#808080";
+
+    // ── Build Q&A interleaved elements ──
+    const buildQAElements = useCallback((): React.ReactNode[] => {
+        const prompts = userPromptsRef.current;
+        const lines = rawLines;
+        const elements: React.ReactNode[] = [];
+
+        const promptStyleQA: React.CSSProperties = {
+            color: "#4ec9b0", fontWeight: 600, padding: "3px 0",
+            overflowWrap: "break-word",
+        };
+        const lineStyleQA: React.CSSProperties = { minHeight: "1.4em" };
+
+        const renderOutputLines = (outputLines: string[], keyPrefix: string) => {
+            for (let i = 0; i < outputLines.length; i++) {
+                const cleaned = stripAnsi(outputLines[i]);
+                elements.push(
+                    <div key={`${keyPrefix}-${i}`} style={lineStyleQA}>
+                        {cleaned || "\u00A0"}
+                    </div>
+                );
+            }
+        };
+
+        if (prompts.length === 0) {
+            renderOutputLines(lines, "raw");
+            return elements;
+        }
+
+        for (let pi = 0; pi < prompts.length; pi++) {
+            const p = prompts[pi];
+            elements.push(
+                <div key={`prompt-${pi}`} style={promptStyleQA}>
+                    {">> "}{p.text}
+                </div>
+            );
+            if (pi < prompts.length - 1) {
+                if (p.answerLines && p.answerLines.length > 0) {
+                    renderOutputLines(p.answerLines, `ans-${pi}`);
+                }
+            } else {
+                const absFrom = Math.min(p.atLine, allRawLines.length);
+                const relFrom = Math.max(0, absFrom - clearOffset);
+                const liveLines = lines.slice(relFrom);
+                renderOutputLines(liveLines, `live-${pi}`);
+            }
+        }
+        return elements;
+    }, [rawLines, allRawLines, clearOffset, stripAnsi]);
 
     return (
         <div style={overlayStyle}>
@@ -313,6 +406,11 @@ export function RemoteSessionConsole(props: Props) {
                 </div>
 
                 <div style={titleRightStyle}>
+                    <button onClick={handleClear}
+                        style={{ ...actionBtnStyle, color: "#569cd6" }}
+                        title="清屏">
+                        ⌧
+                    </button>
                     {!isSDK && (
                         <button onClick={handleEsc} disabled={sessionClosed}
                             style={actionBtnStyle} title="Escape">
@@ -343,12 +441,10 @@ export function RemoteSessionConsole(props: Props) {
                 className="terminal-output"
                 style={outputAreaStyle}
             >
-                {rawLines.length === 0 ? (
+                {rawLines.length === 0 && userPromptsRef.current.length === 0 ? (
                     <span style={{ color: "#555" }}>$ _</span>
                 ) : (
-                    rawLines.map((line, i) => (
-                        <div key={i} style={{ minHeight: "1.4em" }}>{line || "\u00A0"}</div>
-                    ))
+                    buildQAElements()
                 )}
                 <div ref={outputEndRef} />
             </div>
