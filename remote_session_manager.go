@@ -290,6 +290,32 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 		err := s.Exec.Write([]byte(text))
 		if err != nil {
 			m.app.log(fmt.Sprintf("[remote-write-sdk] FAILED session=%s: %v", sessionID, err))
+		} else {
+			// Echo user input into the raw output and preview so it appears
+			// in both the desktop terminal and PWA as a Q&A conversation.
+			userText := strings.TrimSpace(text)
+			if userText != "" {
+				echoLine := fmt.Sprintf("❯ %s", userText)
+				s.mu.Lock()
+				s.RawOutputLines = append(s.RawOutputLines, "", echoLine, "")
+				s.Preview.PreviewLines = append(s.Preview.PreviewLines, "", echoLine, "")
+				if len(s.RawOutputLines) > 2000 {
+					s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-2000:]
+				}
+				if len(s.Preview.PreviewLines) > 500 {
+					s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
+				}
+				s.mu.Unlock()
+				// Send preview delta to Hub so PWA sees the echo
+				if m.hubClient != nil {
+					_ = m.hubClient.SendPreviewDelta(SessionPreviewDelta{
+						SessionID:   sessionID,
+						OutputSeq:   s.Preview.OutputSeq,
+						AppendLines: []string{"", echoLine, ""},
+						UpdatedAt:   s.Preview.UpdatedAt,
+					})
+				}
+			}
 		}
 		return err
 	}
@@ -360,6 +386,28 @@ func (m *RemoteSessionManager) WriteImageInput(sessionID string, img ImageTransf
 		m.app.log(fmt.Sprintf("[remote-write-image] FAILED session=%s: %v", sessionID, err))
 		return err
 	}
+
+	// Echo image send into the raw output and preview so it appears in the terminal view.
+	echoLine := fmt.Sprintf("❯ 📷 [Image: %s]", img.MediaType)
+	s.mu.Lock()
+	s.RawOutputLines = append(s.RawOutputLines, "", echoLine, "")
+	s.Preview.PreviewLines = append(s.Preview.PreviewLines, "", echoLine, "")
+	if len(s.RawOutputLines) > 2000 {
+		s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-2000:]
+	}
+	if len(s.Preview.PreviewLines) > 500 {
+		s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
+	}
+	s.mu.Unlock()
+	if m.hubClient != nil {
+		_ = m.hubClient.SendPreviewDelta(SessionPreviewDelta{
+			SessionID:   sessionID,
+			OutputSeq:   s.Preview.OutputSeq,
+			AppendLines: []string{"", echoLine, ""},
+			UpdatedAt:   s.Preview.UpdatedAt,
+		})
+	}
+
 	return nil
 }
 

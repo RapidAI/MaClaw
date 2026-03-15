@@ -185,10 +185,6 @@ export function RemoteSessionConsole(props: Props) {
     const sendInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [clearOffset, setClearOffset] = useState(0);
 
-    // Track user prompts for Q&A interleaved display
-    type UserPrompt = { text: string; atLine: number; answerLines: string[] | null };
-    const userPromptsRef = useRef<UserPrompt[]>([]);
-
     const status = (session.summary?.status || session.status || "unknown").toLowerCase();
     const sessionClosed = TERMINAL_STATUSES.has(status);
     const disabled = sessionClosed || sending;
@@ -196,9 +192,6 @@ export function RemoteSessionConsole(props: Props) {
 
     const allRawLines = session.raw_output_lines || session.preview?.preview_lines || [];
     const rawLines = allRawLines.slice(clearOffset);
-    // Keep a ref to allRawLines so recordPrompt doesn't need it as a dep
-    const allRawLinesRef = useRef(allRawLines);
-    allRawLinesRef.current = allRawLines;
 
     // Helper: set status feedback with auto-clear
     const showSendInfo = useCallback((msg: string) => {
@@ -237,26 +230,6 @@ export function RemoteSessionConsole(props: Props) {
         return () => window.removeEventListener("keydown", handler);
     }, [onClose]);
 
-    // ── Record user prompt when send succeeds ──
-    const recordPrompt = useCallback((text: string) => {
-        const lines = allRawLinesRef.current;
-        const currentLen = lines.length;
-        const prompts = userPromptsRef.current;
-        // Snapshot previous prompt's answer
-        if (prompts.length > 0) {
-            const prev = prompts[prompts.length - 1];
-            if (!prev.answerLines) {
-                const from = Math.min(prev.atLine, currentLen);
-                prev.answerLines = lines.slice(from).map(stripAnsi);
-            }
-        }
-        prompts.push({ text, atLine: currentLen, answerLines: null });
-        // Keep last 20
-        if (prompts.length > 20) {
-            userPromptsRef.current = prompts.slice(-20);
-        }
-    }, []);
-
     const handleSend = useCallback(async () => {
         const text = inputValueRef.current.trim();
         if (!text || sending) return;
@@ -264,7 +237,6 @@ export function RemoteSessionConsole(props: Props) {
         setLastSendInfo("");
         try {
             await SendRemoteSessionInput(session.id, text + "\n");
-            recordPrompt(text);
             showSendInfo(`✓ "${text}"`);
             inputValueRef.current = "";
             setRemoteInputDrafts((prev) => ({ ...prev, [session.id]: "" }));
@@ -276,7 +248,7 @@ export function RemoteSessionConsole(props: Props) {
             showSendInfo(`✗ ${String(e)}`);
         }
         setSending(false);
-    }, [session.id, sending, setRemoteInputDrafts, refreshSessionsOnly, showSendInfo, recordPrompt]);
+    }, [session.id, sending, setRemoteInputDrafts, refreshSessionsOnly, showSendInfo]);
 
     const handleSendRaw = useCallback(async () => {
         const text = inputValueRef.current;
@@ -337,54 +309,26 @@ export function RemoteSessionConsole(props: Props) {
     const handleClear = useCallback(() => {
         const all = session.raw_output_lines || session.preview?.preview_lines || [];
         setClearOffset(all.length);
-        userPromptsRef.current = [];
     }, [session]);
 
     const statusColor = status === "running" || status === "busy" ? "#4ec9b0"
         : status === "waiting_input" ? "#dcdcaa" : "#808080";
 
-    // ── Build Q&A interleaved elements ──
-    const qaElements = useMemo((): React.ReactNode[] => {
-        const prompts = userPromptsRef.current;
-        const lines = rawLines;
+    // ── Build output elements ──
+    const outputElements = useMemo((): React.ReactNode[] => {
         const elements: React.ReactNode[] = [];
-
-        const renderOutputLines = (outputLines: string[], keyPrefix: string) => {
-            for (let i = 0; i < outputLines.length; i++) {
-                const cleaned = stripAnsi(outputLines[i]);
-                elements.push(
-                    <div key={`${keyPrefix}-${i}`} style={lineStyleQA}>
-                        {cleaned || "\u00A0"}
-                    </div>
-                );
-            }
-        };
-
-        if (prompts.length === 0) {
-            renderOutputLines(lines, "raw");
-            return elements;
-        }
-
-        for (let pi = 0; pi < prompts.length; pi++) {
-            const p = prompts[pi];
+        for (let i = 0; i < rawLines.length; i++) {
+            const cleaned = stripAnsi(rawLines[i]);
+            // Highlight user input lines (echoed by backend with ❯ prefix)
+            const isUserInput = cleaned.startsWith("❯ ");
             elements.push(
-                <div key={`prompt-${pi}`} style={promptStyleQA}>
-                    {">> "}{p.text}
+                <div key={`line-${i}`} style={isUserInput ? promptStyleQA : lineStyleQA}>
+                    {cleaned || "\u00A0"}
                 </div>
             );
-            if (pi < prompts.length - 1) {
-                if (p.answerLines && p.answerLines.length > 0) {
-                    renderOutputLines(p.answerLines, `ans-${pi}`);
-                }
-            } else {
-                const absFrom = Math.min(p.atLine, allRawLinesRef.current.length);
-                const relFrom = Math.max(0, absFrom - clearOffset);
-                const liveLines = lines.slice(relFrom);
-                renderOutputLines(liveLines, `live-${pi}`);
-            }
         }
         return elements;
-    }, [rawLines, clearOffset]);
+    }, [rawLines]);
 
     return (
         <div style={overlayStyle}>
@@ -438,10 +382,10 @@ export function RemoteSessionConsole(props: Props) {
                 className="terminal-output"
                 style={outputAreaStyle}
             >
-                {rawLines.length === 0 && userPromptsRef.current.length === 0 ? (
+                {rawLines.length === 0 ? (
                     <span style={{ color: "#555" }}>$ _</span>
                 ) : (
-                    qaElements
+                    outputElements
                 )}
                 <div ref={outputEndRef} />
             </div>
