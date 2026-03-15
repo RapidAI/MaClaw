@@ -77,8 +77,9 @@ type Notifier struct {
 
 	// throttle preview delta pushes per session to avoid flooding.
 	previewMu       sync.Mutex
-	previewLastPush map[string]time.Time // session_id → last push time
-	previewBuf      map[string][]string  // session_id → buffered lines
+	previewLastPush map[string]time.Time   // session_id → last push time
+	previewBuf      map[string][]string    // session_id → buffered lines
+	previewTimers   map[string]*time.Timer // session_id → idle flush timer
 
 	// pending email verification for open_id binding (open_id → pendingBind).
 	pendMu  sync.Mutex
@@ -99,6 +100,7 @@ func New(appID, appSecret string, users store.UserRepository, system store.Syste
 		activeSession:   make(map[string]string),
 		previewLastPush: make(map[string]time.Time),
 		previewBuf:      make(map[string][]string),
+		previewTimers:   make(map[string]*time.Timer),
 		pending:         make(map[string]*pendingBind),
 	}
 	if appID != "" && appSecret != "" {
@@ -339,10 +341,14 @@ func (n *Notifier) onImportantEvent(event session.Event) {
 
 // previewPushInterval is the minimum interval between preview pushes for the
 // same session to avoid flooding the Feishu chat.
-const previewPushInterval = 3 * time.Second
+const previewPushInterval = 8 * time.Second
+
+// previewIdleFlush is the idle timeout: if no new lines arrive within this
+// duration, the buffer is flushed as a "complete paragraph".
+const previewIdleFlush = 3 * time.Second
 
 // maxPreviewLines caps the number of buffered lines sent in one message.
-const maxPreviewLines = 30
+const maxPreviewLines = 60
 
 func (n *Notifier) onPreviewDelta(event session.Event) {
 	if event.PreviewDelta == nil || len(event.PreviewDelta.AppendLines) == 0 {
@@ -351,43 +357,72 @@ func (n *Notifier) onPreviewDelta(event session.Event) {
 	sid := event.SessionID
 
 	// Find which open_id is watching this session.
-	n.activeMu.RLock()
-	var watcherOpenID string
-	for oid, activeSID := range n.activeSession {
-		// activeSession stores full session ID; match exactly or by prefix.
-		if strings.EqualFold(sid, activeSID) || strings.HasPrefix(strings.ToLower(sid), strings.ToLower(activeSID)) {
-			watcherOpenID = oid
-			break
-		}
-	}
-	n.activeMu.RUnlock()
+	watcherOpenID := n.findWatcher(sid)
 	if watcherOpenID == "" {
-		return // nobody is watching this session
+		return
 	}
 
-	// Buffer lines and throttle pushes.
+	// Buffer lines.
 	n.previewMu.Lock()
 	n.previewBuf[sid] = append(n.previewBuf[sid], event.PreviewDelta.AppendLines...)
-	// Cap buffer size.
 	if len(n.previewBuf[sid]) > maxPreviewLines {
 		n.previewBuf[sid] = n.previewBuf[sid][len(n.previewBuf[sid])-maxPreviewLines:]
 	}
+
+	// Reset or start the idle flush timer for this session.
+	if t, ok := n.previewTimers[sid]; ok {
+		t.Stop()
+	}
+	n.previewTimers[sid] = time.AfterFunc(previewIdleFlush, func() {
+		n.flushPreview(sid)
+	})
+
+	// Also check the hard interval cap — if enough time has passed, flush now.
 	lastPush := n.previewLastPush[sid]
 	now := time.Now()
-	if now.Sub(lastPush) < previewPushInterval {
+	if !lastPush.IsZero() && now.Sub(lastPush) < previewPushInterval {
 		n.previewMu.Unlock()
-		return // too soon, lines are buffered for next push
+		return
 	}
+	n.previewMu.Unlock()
+
+	// Enough time has passed — flush immediately.
+	n.flushPreview(sid)
+}
+
+// findWatcher returns the open_id of the user watching the given session, or "".
+func (n *Notifier) findWatcher(sessionID string) string {
+	n.activeMu.RLock()
+	defer n.activeMu.RUnlock()
+	for oid, activeSID := range n.activeSession {
+		if strings.EqualFold(sessionID, activeSID) {
+			return oid
+		}
+	}
+	return ""
+}
+
+// flushPreview sends all buffered preview lines for a session to the watcher.
+func (n *Notifier) flushPreview(sid string) {
+	watcherOpenID := n.findWatcher(sid)
+	if watcherOpenID == "" {
+		return
+	}
+
+	n.previewMu.Lock()
 	lines := n.previewBuf[sid]
 	n.previewBuf[sid] = nil
-	n.previewLastPush[sid] = now
+	n.previewLastPush[sid] = time.Now()
+	if t, ok := n.previewTimers[sid]; ok {
+		t.Stop()
+		delete(n.previewTimers, sid)
+	}
 	n.previewMu.Unlock()
 
 	if len(lines) == 0 {
 		return
 	}
 
-	// Strip ANSI and build message.
 	var sb strings.Builder
 	sb.WriteString("📺 ")
 	sb.WriteString(shortID(sid))
@@ -401,8 +436,8 @@ func (n *Notifier) onPreviewDelta(event session.Event) {
 		sb.WriteString("\n")
 	}
 	text := sb.String()
-	if len(text) > 2000 {
-		text = text[:2000] + "\n..."
+	if len(text) > 4000 {
+		text = text[:4000] + "\n..."
 	}
 	replyText(n, watcherOpenID, text)
 }
@@ -459,10 +494,14 @@ func (n *Notifier) onSessionClosed(event session.Event) {
 	}
 	n.activeMu.Unlock()
 
-	// Clean up preview buffers.
+	// Clean up preview buffers and timers.
 	n.previewMu.Lock()
 	delete(n.previewBuf, event.SessionID)
 	delete(n.previewLastPush, event.SessionID)
+	if t, ok := n.previewTimers[event.SessionID]; ok {
+		t.Stop()
+		delete(n.previewTimers, event.SessionID)
+	}
 	n.previewMu.Unlock()
 
 	status := ""
