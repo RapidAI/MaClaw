@@ -459,20 +459,26 @@ func sdkMessageToText(msg SDKMessage) string {
 		if msg.Message == nil {
 			return ""
 		}
+		var parts []string
 		for _, block := range msg.Message.Content {
-			if block.Type == "tool_result" {
+			switch block.Type {
+			case "tool_result":
 				if block.IsError {
 					result := block.Content
 					if len(result) > 150 {
 						result = result[:150] + "..."
 					}
-					return fmt.Sprintf("✗ %s", result)
+					parts = append(parts, fmt.Sprintf("✗ %s", result))
 				}
 				// Suppress successful tool results — they're verbose
-				return ""
+			case "text":
+				text := strings.TrimSpace(block.Text)
+				if text != "" {
+					parts = append(parts, fmt.Sprintf("\n❯ %s\n", text))
+				}
 			}
 		}
-		return ""
+		return strings.Join(parts, "\n")
 
 	case "result":
 		return "" // result status is shown via session status badge
