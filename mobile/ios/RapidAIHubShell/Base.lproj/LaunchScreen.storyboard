@@ -8,7 +8,7 @@
                     <view key="view" contentMode="scaleToFill" id="RootView">
                         <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                         <subviews>
-                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="RapidAIHubShell" textAlignment="center" translatesAutoresizingMaskIntoConstraints="NO" id="TitleLabel">
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="MaClaw Pocket" textAlignment="center" translatesAutoresizingMaskIntoConstraints="NO" id="TitleLabel">
                                 <fontDescription key="fontDescription" type="boldSystem" pointSize="28"/>
                                 <color key="textColor" red="0.05882352941" green="0.4352941176" blue="1" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                             </label>

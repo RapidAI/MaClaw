@@ -8,7 +8,6 @@
 		A1002 = {isa = PBXBuildFile; fileRef = A2002; };
 		A1003 = {isa = PBXBuildFile; fileRef = A2003; };
 		A1004 = {isa = PBXBuildFile; fileRef = A2004; };
-		A1005 = {isa = PBXBuildFile; fileRef = A2005; };
 		A1006 = {isa = PBXBuildFile; fileRef = A2006; };
 		A1007 = {isa = PBXBuildFile; fileRef = A2007; };
 		A1008 = {isa = PBXBuildFile; fileRef = A2008; };

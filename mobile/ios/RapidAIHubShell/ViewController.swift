@@ -62,9 +62,11 @@ final class ViewController: UIViewController, UITextFieldDelegate {
 
     private func configureWebView() {
         webView.allowsBackForwardNavigationGestures = true
+        #if DEBUG
         if #available(iOS 16.4, *) {
             webView.isInspectable = true
         }
+        #endif
     }
 
     private func loadInitialPage(prefillEmail: String?) {
@@ -74,7 +76,9 @@ final class ViewController: UIViewController, UITextFieldDelegate {
             return
         }
 
-        guard let bootstrapURL = Bundle.main.url(forResource: "bootstrap", withExtension: "html", subdirectory: "Resources"),
+        // Try bundle root first (Xcode flattens resources), then fall back to subdirectory
+        guard let bootstrapURL = Bundle.main.url(forResource: "bootstrap", withExtension: "html")
+                ?? Bundle.main.url(forResource: "bootstrap", withExtension: "html", subdirectory: "Resources"),
               let htmlData = try? Data(contentsOf: bootstrapURL),
               var htmlString = String(data: htmlData, encoding: .utf8)
         else {
@@ -140,17 +144,23 @@ final class ViewController: UIViewController, UITextFieldDelegate {
     }
 
     @objc private func refreshPage() {
-        // Clear website caches from the webView's own data store, then reload
         let dataStore = webView.configuration.websiteDataStore
         let dataTypes: Set<String> = [
             WKWebsiteDataTypeDiskCache,
             WKWebsiteDataTypeMemoryCache,
-            WKWebsiteDataTypeOfflineWebApplicationCache,
             WKWebsiteDataTypeFetchCache
         ]
         dataStore.removeData(ofTypes: dataTypes, modifiedSince: .distantPast) { [weak self] in
             DispatchQueue.main.async {
-                self?.webView.reloadFromOrigin()
+                guard let self else { return }
+                // If the current page was loaded via loadHTMLString (bootstrap),
+                // reloadFromOrigin won't work — re-load from scratch instead.
+                if self.webView.url == nil || self.webView.url?.absoluteString == "about:blank" {
+                    let email = self.textField.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.loadInitialPage(prefillEmail: (email?.isEmpty == false) ? email : nil)
+                } else {
+                    self.webView.reloadFromOrigin()
+                }
             }
         }
     }

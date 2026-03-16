@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>MaClaw APP</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -36,7 +36,7 @@
     const params = new URLSearchParams(window.location.search);
     const center = (window.__injectedHubCenter || params.get("hubcenter") || "").replace(/\/+$/, "");
     const prefillEmail = window.__injectedPrefillEmail || params.get("prefill_email") || "";
-    const appTitle = "MaClaw APP";
+    const appTitle = "MaClaw Pocket";
     let currentEmail = prefillEmail;
     let discoveredHubs = [];
 
