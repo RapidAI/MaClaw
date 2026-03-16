@@ -13,7 +13,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let window = UIWindow(windowScene: windowScene)
         let navigationController = UINavigationController(rootViewController: ViewController())
         navigationController.navigationBar.prefersLargeTitles = true
-        navigationController.topViewController?.title = "RapidAIHubShell"
+        navigationController.topViewController?.title = "MaClaw Pocket"
         window.rootViewController = navigationController
         self.window = window
         window.makeKeyAndVisible()
