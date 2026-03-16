@@ -90,6 +90,7 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/feishu/bindings", RequireAdmin(admins, DeleteFeishuBindingHandler(feishuNotifier)))
 	mux.HandleFunc("GET /api/admin/settings/openclaw_im", RequireAdmin(admins, GetOpenclawIMConfigHandler(system)))
 	mux.HandleFunc("POST /api/admin/settings/openclaw_im", RequireAdmin(admins, UpdateOpenclawIMConfigHandler(system)))
+	mux.HandleFunc("POST /api/admin/settings/openclaw_im/test", RequireAdmin(admins, TestOpenclawIMWebhookHandler(system)))
 	mux.HandleFunc("/api/feishu/webhook", feishu.WebhookHandler(feishuNotifier))
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity))
 	mux.HandleFunc("POST /api/auth/email-request", EmailRequestLoginHandler(identity))

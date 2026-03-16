@@ -1,10 +1,16 @@
 package httpapi
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -75,4 +81,59 @@ func loadOpenclawIMConfig(r *http.Request, system store.SystemSettingsRepository
 	var cfg OpenclawIMConfigState
 	_ = json.Unmarshal([]byte(raw), &cfg)
 	return cfg
+}
+
+// TestOpenclawIMWebhookHandler sends a ping request to the configured webhook URL
+// to verify connectivity and HMAC signature compatibility.
+func TestOpenclawIMWebhookHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cfg := loadOpenclawIMConfig(r, system)
+		if cfg.WebhookURL == "" {
+			writeError(w, http.StatusBadRequest, "NO_WEBHOOK_URL", "Webhook URL is not configured")
+			return
+		}
+
+		payload := map[string]any{
+			"type":      "ping",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"hub":       "maclaw-hub",
+		}
+		body, _ := json.Marshal(payload)
+
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, cfg.WebhookURL, bytes.NewReader(body))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_WEBHOOK_URL", fmt.Sprintf("Cannot create request: %v", err))
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-OpenClaw-Event", "ping")
+
+		if cfg.Secret != "" {
+			mac := hmac.New(sha256.New, []byte(cfg.Secret))
+			mac.Write(body)
+			sig := hex.EncodeToString(mac.Sum(nil))
+			req.Header.Set("X-OpenClaw-Signature", "sha256="+sig)
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":      false,
+				"status":  0,
+				"message": fmt.Sprintf("Connection failed: %v", err),
+			})
+			return
+		}
+		defer resp.Body.Close()
+
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      resp.StatusCode >= 200 && resp.StatusCode < 300,
+			"status":  resp.StatusCode,
+			"message": fmt.Sprintf("HTTP %d", resp.StatusCode),
+			"body":    string(respBody),
+		})
+	}
 }
