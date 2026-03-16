@@ -114,6 +114,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/nl-skills", RequireAdmin(admins, CreateNLSkillHandler(skillExec)))
 	mux.HandleFunc("POST /api/admin/nl-skills/update", RequireAdmin(admins, UpdateNLSkillHandler(skillExec)))
 	mux.HandleFunc("DELETE /api/admin/nl-skills/{name}", RequireAdmin(admins, DeleteNLSkillHandler(skillExec)))
+	mux.HandleFunc("POST /api/admin/nl-skills/upload", RequireAdmin(admins, UploadNLSkillPackageHandler(skillExec)))
 	mux.HandleFunc("GET /api/admin/nl-skills/candidates", RequireAdmin(admins, ListCandidateSkillsHandler(skillCryst)))
 	mux.HandleFunc("POST /api/admin/nl-skills/candidates/confirm", RequireAdmin(admins, ConfirmCandidateSkillHandler(skillCryst)))
 	mux.HandleFunc("POST /api/admin/nl-skills/candidates/ignore", RequireAdmin(admins, IgnoreCandidateSkillHandler(skillCryst)))
@@ -124,6 +125,8 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/mcp-servers/{id}", RequireAdmin(admins, UnregisterMCPServerHandler(mcpReg)))
 	mux.HandleFunc("GET /api/admin/mcp-servers/{id}/tools", RequireAdmin(admins, GetMCPServerToolsHandler(mcpReg)))
 	mux.HandleFunc("POST /api/admin/mcp-servers/{id}/health", RequireAdmin(admins, CheckMCPServerHealthHandler(mcpReg)))
+	mux.HandleFunc("GET /api/shortcuts", GetShortcutsHandler(identity, system))
+	mux.HandleFunc("PUT /api/shortcuts", PutShortcutsHandler(identity, system))
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	return mux

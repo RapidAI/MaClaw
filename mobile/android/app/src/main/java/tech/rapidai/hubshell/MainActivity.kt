@@ -49,6 +49,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = lp
             alpha = 0.85f
             setPadding(0, 0, 0, 0)
+            visibility = android.view.View.GONE
             setOnClickListener {
                 webView.clearCache(true)
                 webView.reload()

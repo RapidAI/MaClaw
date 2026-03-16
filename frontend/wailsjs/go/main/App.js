@@ -323,6 +323,10 @@ export function IgnoreCandidateSkill(arg1) {
   return window['go']['main']['App']['IgnoreCandidateSkill'](arg1);
 }
 
+export function UploadNLSkillPackage() {
+  return window['go']['main']['App']['UploadNLSkillPackage']();
+}
+
 // MCP management bindings
 export function ListMCPServers() {
   return window['go']['main']['App']['ListMCPServers']();

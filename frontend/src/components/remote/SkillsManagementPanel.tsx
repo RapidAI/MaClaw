@@ -7,6 +7,7 @@ import {
     ListCandidateSkills,
     ConfirmCandidateSkill,
     IgnoreCandidateSkill,
+    UploadNLSkillPackage,
 } from "../../../wailsjs/go/main/App";
 
 interface NLSkillStep {
@@ -57,6 +58,9 @@ export function SkillsManagementPanel({ translate }: Props) {
 
     // Candidate editing
     const [editingCandidate, setEditingCandidate] = useState<NLSkillDefinition | null>(null);
+
+    // Upload state
+    const [uploadResult, setUploadResult] = useState<{ imported: string[]; errors: string[] } | null>(null);
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -235,16 +239,40 @@ export function SkillsManagementPanel({ translate }: Props) {
         }
     };
 
+    const handleUploadPackage = async () => {
+        setBusy(true);
+        setError("");
+        setUploadResult(null);
+        try {
+            const result = await UploadNLSkillPackage();
+            if (!result) {
+                // User cancelled the file dialog
+                return;
+            }
+            setUploadResult({ imported: result.imported || [], errors: result.errors || [] });
+            await loadData();
+        } catch (err) {
+            setError(String(err));
+        } finally {
+            setBusy(false);
+        }
+    };
+
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {/* Header with create button */}
+            {/* Header with create and upload buttons */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "0.78rem", color: "#5a6577" }}>
                     {skills.length} {translate("skillsRegistered") || "个已注册 Skill"}
                 </span>
-                <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
-                    + 新建 Skill
-                </button>
+                <div style={{ display: "flex", gap: "6px" }}>
+                    <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleUploadPackage} disabled={busy}>
+                        📦 上传技能包
+                    </button>
+                    <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
+                        + 新建 Skill
+                    </button>
+                </div>
             </div>
 
             {/* Loading */}
@@ -258,6 +286,36 @@ export function SkillsManagementPanel({ translate }: Props) {
             {error && (
                 <div style={{ fontSize: "0.78rem", color: "#c53030", background: "#fff5f5", padding: "6px 10px", borderRadius: "4px", border: "1px solid #fecdd3" }}>
                     {error}
+                </div>
+            )}
+
+            {/* Upload result */}
+            {uploadResult && (
+                <div style={{
+                    fontSize: "0.78rem",
+                    padding: "6px 10px",
+                    borderRadius: "4px",
+                    background: uploadResult.errors.length > 0 ? "#fffbeb" : "#f0fdf4",
+                    border: uploadResult.errors.length > 0 ? "1px solid #fbbf24" : "1px solid #86efac",
+                    color: "#1a202c",
+                }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span>
+                            {uploadResult.imported.length > 0
+                                ? `✅ 已导入 ${uploadResult.imported.length} 个 Skill: ${uploadResult.imported.join(", ")}`
+                                : "未导入任何 Skill"}
+                        </span>
+                        <button
+                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.8rem", color: "#8b95a5", padding: "0 2px" }}
+                            onClick={() => setUploadResult(null)}
+                            aria-label="关闭"
+                        >×</button>
+                    </div>
+                    {uploadResult.errors.length > 0 && (
+                        <div style={{ color: "#c53030", marginTop: "4px", fontSize: "0.74rem" }}>
+                            ⚠️ {uploadResult.errors.join("; ")}
+                        </div>
+                    )}
                 </div>
             )}
 

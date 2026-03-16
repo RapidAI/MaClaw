@@ -75,19 +75,37 @@ final class ViewController: UIViewController, UITextFieldDelegate {
         }
 
         guard let bootstrapURL = Bundle.main.url(forResource: "bootstrap", withExtension: "html", subdirectory: "Resources"),
-              var components = URLComponents(url: bootstrapURL, resolvingAgainstBaseURL: false)
+              let htmlData = try? Data(contentsOf: bootstrapURL),
+              var htmlString = String(data: htmlData, encoding: .utf8)
         else {
             return
         }
 
-        var queryItems = [URLQueryItem(name: "hubcenter", value: AppConfiguration.hubCenterURL)]
+        // Inject hubcenter and prefill_email as JS variables so the page works
+        // without relying on query parameters (which don't exist under loadHTMLString).
+        var injection = "window.__injectedHubCenter = \(jsStringLiteral(AppConfiguration.hubCenterURL));"
         if let prefillEmail, !prefillEmail.isEmpty {
-            queryItems.append(URLQueryItem(name: "prefill_email", value: prefillEmail))
+            injection += "\nwindow.__injectedPrefillEmail = \(jsStringLiteral(prefillEmail));"
         }
-        components.queryItems = queryItems
-        if let url = components.url {
-            webView.loadFileURL(url, allowingReadAccessTo: bootstrapURL.deletingLastPathComponent())
-        }
+        htmlString = htmlString.replacingOccurrences(
+            of: "<script>",
+            with: "<script>\n\(injection)\n",
+            options: [],
+            range: htmlString.range(of: "<script>")
+        )
+
+        // Use the hubCenterURL as baseURL so fetch() calls are not blocked by
+        // cross-origin restrictions (file:// → http:// is forbidden in WKWebView).
+        let baseURL = URL(string: AppConfiguration.hubCenterURL) ?? URL(string: "about:blank")!
+        webView.loadHTMLString(htmlString, baseURL: baseURL)
+    }
+
+    private func jsStringLiteral(_ s: String) -> String {
+        let escaped = s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        return "\"\(escaped)\""
     }
 
     @objc private func openUsingEmail() {

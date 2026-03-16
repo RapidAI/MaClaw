@@ -4,6 +4,7 @@ import {
     SaveMaclawLLMConfig,
     TestMaclawLLM,
 } from "../../../wailsjs/go/main/App";
+import { colors } from "./styles";
 
 interface LLMConfig {
     url: string;
@@ -105,12 +106,12 @@ export function LLMConfigPanel({ lang }: Props) {
 
     const inputStyle: React.CSSProperties = {
         width: "100%", padding: "7px 10px", fontSize: "0.8rem",
-        border: "1px solid var(--border-color)", borderRadius: 4,
-        background: "var(--input-bg, #1e1e2e)", color: "var(--text-color)",
+        border: `1px solid ${colors.border}`, borderRadius: 4,
+        background: colors.surface, color: colors.text,
         boxSizing: "border-box",
     };
     const labelStyle: React.CSSProperties = {
-        fontSize: "0.76rem", color: "#aaa", marginBottom: 4, display: "block",
+        fontSize: "0.76rem", color: colors.textSecondary, marginBottom: 4, display: "block",
     };
     const sectionStyle: React.CSSProperties = { marginBottom: 16 };
     const rowHover = {
@@ -136,8 +137,8 @@ export function LLMConfigPanel({ lang }: Props) {
                     onClick={() => { setShowProviders(!showProviders); setPendingProvider(null); }}
                     style={{
                         fontSize: "0.74rem", padding: "5px 12px", cursor: "pointer",
-                        background: "var(--button-bg, #2d2d3d)", color: "var(--text-color)",
-                        border: "1px solid var(--border-color)", borderRadius: 4,
+                        background: colors.bg, color: colors.text,
+                        border: `1px solid ${colors.border}`, borderRadius: 4,
                     }}
                 >
                     {t("从已知服务商复制", "Copy from Provider")} {showProviders ? "▲" : "▼"}
@@ -145,8 +146,8 @@ export function LLMConfigPanel({ lang }: Props) {
 
                 {showProviders && !pendingProvider && (
                     <div style={{
-                        marginTop: 8, border: "1px solid var(--border-color)", borderRadius: 4,
-                        background: "var(--input-bg, #1e1e2e)", maxHeight: 200, overflowY: "auto",
+                        marginTop: 8, border: `1px solid ${colors.border}`, borderRadius: 4,
+                        background: colors.surface, maxHeight: 200, overflowY: "auto",
                     }}>
                         {codexProviders.map((p) => (
                             <div
@@ -154,7 +155,7 @@ export function LLMConfigPanel({ lang }: Props) {
                                 onClick={() => handleProviderClick(p)}
                                 style={{
                                     padding: "6px 12px", cursor: "pointer", fontSize: "0.74rem",
-                                    borderBottom: "1px solid var(--border-color)",
+                                    borderBottom: `1px solid ${colors.border}`,
                                     display: "flex", justifyContent: "space-between", alignItems: "center",
                                 }}
                                 {...rowHover}
@@ -171,10 +172,10 @@ export function LLMConfigPanel({ lang }: Props) {
                 {/* Model picker for multi-model providers */}
                 {showProviders && pendingProvider && (
                     <div style={{
-                        marginTop: 8, border: "1px solid var(--border-color)", borderRadius: 4,
-                        background: "var(--input-bg, #1e1e2e)",
+                        marginTop: 8, border: `1px solid ${colors.border}`, borderRadius: 4,
+                        background: colors.surface,
                     }}>
-                        <div style={{ padding: "6px 12px", fontSize: "0.72rem", color: "#888", borderBottom: "1px solid var(--border-color)" }}>
+                        <div style={{ padding: "6px 12px", fontSize: "0.72rem", color: colors.textMuted, borderBottom: `1px solid ${colors.border}` }}>
                             <span style={{ cursor: "pointer", marginRight: 8 }} onClick={() => setPendingProvider(null)}>← </span>
                             {pendingProvider.name} — {t("选择模型", "Select Model")}
                         </div>
@@ -184,7 +185,7 @@ export function LLMConfigPanel({ lang }: Props) {
                                 onClick={() => applyProvider(pendingProvider, m)}
                                 style={{
                                     padding: "6px 12px", cursor: "pointer", fontSize: "0.74rem",
-                                    borderBottom: "1px solid var(--border-color)",
+                                    borderBottom: `1px solid ${colors.border}`,
                                 }}
                                 {...rowHover}
                             >
@@ -236,8 +237,8 @@ export function LLMConfigPanel({ lang }: Props) {
                     disabled={saving || !dirty}
                     style={{
                         fontSize: "0.76rem", padding: "6px 18px", cursor: dirty ? "pointer" : "default",
-                        background: dirty ? "#6366f1" : "var(--button-bg, #2d2d3d)",
-                        color: dirty ? "#fff" : "#888",
+                        background: dirty ? "#6366f1" : colors.bg,
+                        color: dirty ? "#fff" : colors.textMuted,
                         border: "none", borderRadius: 4, opacity: saving ? 0.6 : 1,
                     }}
                 >
@@ -248,8 +249,8 @@ export function LLMConfigPanel({ lang }: Props) {
                     disabled={testing || !config.url || !config.model}
                     style={{
                         fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
-                        background: "var(--button-bg, #2d2d3d)", color: "var(--text-color)",
-                        border: "1px solid var(--border-color)", borderRadius: 4,
+                        background: colors.bg, color: colors.text,
+                        border: `1px solid ${colors.border}`, borderRadius: 4,
                         opacity: (testing || !config.url || !config.model) ? 0.6 : 1,
                     }}
                 >

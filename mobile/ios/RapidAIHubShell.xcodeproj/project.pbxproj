@@ -12,6 +12,7 @@
 		A1006 = {isa = PBXBuildFile; fileRef = A2006; };
 		A1007 = {isa = PBXBuildFile; fileRef = A2007; };
 		A1008 = {isa = PBXBuildFile; fileRef = A2008; };
+		A1009 = {isa = PBXBuildFile; fileRef = A2009; };
 		A2001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A2002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		A2003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
@@ -22,8 +23,8 @@
 		A2008 = {isa = PBXFileReference; lastKnownFileType = text.html; path = Resources/bootstrap.html; sourceTree = "<group>"; };
 		A2009 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		A2010 = {isa = PBXFileReference; explicitFileType = wrapper.application; path = RapidAIHubShell.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A3001 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A1008, ); runOnlyForDeploymentPostprocessing = 0; };
-		A3002 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A1005, A1006, A1007, ); runOnlyForDeploymentPostprocessing = 0; };
+		A3001 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A1009, ); runOnlyForDeploymentPostprocessing = 0; };
+		A3002 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A1006, A1007, A1008, ); runOnlyForDeploymentPostprocessing = 0; };
 		A3003 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1001, A1002, A1003, A1004, ); runOnlyForDeploymentPostprocessing = 0; };
 		A4001 = {isa = PBXGroup; children = (A4002, A4003, A4004, ); sourceTree = "<group>"; };
 		A4002 = {isa = PBXGroup; path = RapidAIHubShell; sourceTree = "<group>"; children = (A2001, A2002, A2003, A2004, A2005, A2006, A2007, A2008, ); };

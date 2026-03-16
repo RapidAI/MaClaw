@@ -49,8 +49,8 @@
     }
 
     const params = new URLSearchParams(window.location.search);
-    const center = (params.get("hubcenter") || "").replace(/\/+$/, "");
-    const prefillEmail = params.get("prefill_email") || "";
+    const center = (window.__injectedHubCenter || params.get("hubcenter") || "").replace(/\/+$/, "");
+    const prefillEmail = window.__injectedPrefillEmail || params.get("prefill_email") || "";
     const appTitle = __APP_NAME_JS__;
     let currentEmail = prefillEmail;
     let discoveredHubs = [];

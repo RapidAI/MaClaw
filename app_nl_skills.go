@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // NLSkillStep represents a single action within an NL Skill.
@@ -148,4 +153,69 @@ func (a *App) ConfirmCandidateSkill(def NLSkillDefinition) error {
 // IgnoreCandidateSkill ignores a candidate Skill, removing it from the candidates list.
 func (a *App) IgnoreCandidateSkill(name string) error {
 	return a.nlSkillPost("/api/admin/nl-skills/candidates/ignore", map[string]string{"name": name})
+}
+
+// UploadNLSkillPackageResult holds the result of a skill package upload.
+type UploadNLSkillPackageResult struct {
+	OK       bool     `json:"ok"`
+	Imported []string `json:"imported"`
+	Errors   []string `json:"errors"`
+	Total    int      `json:"total"`
+}
+
+// UploadNLSkillPackage opens a file dialog for the user to select a .zip skill
+// package, then uploads it to the hub for import.
+func (a *App) UploadNLSkillPackage() (*UploadNLSkillPackageResult, error) {
+	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "选择技能包 (Zip)",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Zip Files (*.zip)", Pattern: "*.zip"},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("file dialog error: %w", err)
+	}
+	if selection == "" {
+		return nil, nil // user cancelled
+	}
+
+	hubURL, err := a.nlSkillHubURL()
+	if err != nil {
+		return nil, err
+	}
+
+	// Read the selected file.
+	fileData, err := os.ReadFile(selection)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Build multipart form.
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filepath.Base(selection))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create form file: %w", err)
+	}
+	if _, err := part.Write(fileData); err != nil {
+		return nil, fmt.Errorf("failed to write form file: %w", err)
+	}
+	writer.Close()
+
+	resp, err := http.Post(hubURL+"/api/admin/nl-skills/upload", writer.FormDataContentType(), body)
+	if err != nil {
+		return nil, fmt.Errorf("hub request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("hub returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result UploadNLSkillPackageResult
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &result, nil
 }

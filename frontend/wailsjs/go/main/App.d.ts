@@ -163,6 +163,8 @@ export function ConfirmCandidateSkill(arg1:any):Promise<void>;
 
 export function IgnoreCandidateSkill(arg1:string):Promise<void>;
 
+export function UploadNLSkillPackage():Promise<any>;
+
 // MCP management bindings
 export function ListMCPServers():Promise<Array<any>>;
 
