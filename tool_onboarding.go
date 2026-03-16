@@ -205,3 +205,88 @@ func ensureClaudeCodeForkOnboarding(app *App, configFileName, logTag, projectPat
 	}
 	return nil
 }
+
+// backupSuffix is the extension appended to config files when backing up
+// the user's original configuration before onboarding modifications.
+// Using ".cceasy.bak" to avoid collision with the ".bak" suffix used
+// for corrupt-file recovery in ensureClaudeCodeForkOnboarding.
+const backupSuffix = ".cceasy.bak"
+
+// toolConfigPaths returns the config file paths that onboarding may modify
+// for the given tool.  Returns nil for tools that don't need onboarding.
+func toolConfigPaths(toolName string) []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	switch toolName {
+	case "claude":
+		return []string{filepath.Join(home, ".claude.json")}
+	case "kode":
+		return []string{filepath.Join(home, ".kode.json")}
+	case "codebuddy":
+		return []string{filepath.Join(home, ".codebuddy.json")}
+	case "gemini":
+		return []string{filepath.Join(home, ".gemini", "settings.json")}
+	default:
+		return nil
+	}
+}
+
+// backupToolConfigs creates backup copies of the tool's config files before
+// onboarding modifies them.  It returns a restore function that copies the
+// backups back, removing the backup files afterward.
+//
+// If a config file does not exist yet (first-run), no backup is created and
+// the restore function will remove the file that onboarding created, leaving
+// the system in its original state.
+//
+// This ensures the user's native tool configuration (auth tokens, theme
+// preferences, etc.) is not permanently altered by our onboarding changes.
+func backupToolConfigs(app *App, toolName string) func() {
+	paths := toolConfigPaths(toolName)
+	if len(paths) == 0 {
+		return func() {}
+	}
+
+	type snapshot struct {
+		path    string
+		data    []byte // nil means file did not exist
+		existed bool
+	}
+
+	var snaps []snapshot
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			// File doesn't exist or unreadable — record as non-existent.
+			snaps = append(snaps, snapshot{path: p, existed: false})
+		} else {
+			snaps = append(snaps, snapshot{path: p, data: data, existed: true})
+		}
+	}
+
+	return func() {
+		for _, s := range snaps {
+			if s.existed {
+				// Restore original content.
+				if err := os.WriteFile(s.path, s.data, 0o644); err != nil {
+					if app != nil {
+						app.log(fmt.Sprintf("[tool-onboarding] restore %s failed: %v", s.path, err))
+					}
+				} else if app != nil {
+					app.log(fmt.Sprintf("[tool-onboarding] restored original %s", s.path))
+				}
+			} else {
+				// File didn't exist before — remove the one onboarding created.
+				if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+					if app != nil {
+						app.log(fmt.Sprintf("[tool-onboarding] cleanup %s failed: %v", s.path, err))
+					}
+				} else if app != nil {
+					app.log(fmt.Sprintf("[tool-onboarding] removed onboarding-created %s", s.path))
+				}
+			}
+		}
+	}
+}

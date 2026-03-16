@@ -167,6 +167,7 @@ type RemoteSession struct {
 	Provider ProviderAdapter
 
 	workspaceRelease func()
+	configCleanup    func() // restores tool config files modified by onboarding
 }
 
 type OutputResult struct {

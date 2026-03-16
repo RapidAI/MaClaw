@@ -1,0 +1,5 @@
+@echo off
+set "RELEASE_STORE_FILE=%~dp0maclaw-release.jks"
+set "RELEASE_STORE_PASSWORD=GHS03Frz9fiTZEX5PMdJ"
+set "RELEASE_KEY_ALIAS=maclaw"
+set "RELEASE_KEY_PASSWORD=GHS03Frz9fiTZEX5PMdJ"

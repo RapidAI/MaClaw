@@ -75,8 +75,15 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		m.syncFailedSession(session)
 		return session, err
 	}
+
+	// Backup tool config files before BuildCommand runs onboarding.
+	// The restore function is stored on the session and called when
+	// the session exits, so the user's native config is preserved.
+	configRestore := backupToolConfigs(m.app, spec.Tool)
+
 	cmd, err := provider.BuildCommand(spec)
 	if err != nil {
+		configRestore() // restore immediately on failure
 		session := m.newFailedSession(sessionID, spec, provider, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
@@ -90,6 +97,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	var strategy ExecutionStrategy
 	strategy, err = m.executionFactory(spec)
 	if err != nil {
+		configRestore()
 		session := m.newFailedSession(sessionID, spec, provider, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
@@ -115,6 +123,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 
 	execHandle, err := strategy.Start(cmd)
 	if err != nil {
+		configRestore()
 		session := m.newFailedSession(sessionID, spec, provider, now, err)
 		m.storeSession(session)
 		m.syncFailedSession(session)
@@ -152,6 +161,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 			UpdatedAt: now.Unix(),
 		},
 		workspaceRelease: workspace.Release,
+		configCleanup:    configRestore,
 	}
 	initEvent := buildSessionInitEvent(session)
 	session.Events = []ImportantEvent{initEvent}
@@ -1045,6 +1055,10 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	if s.workspaceRelease != nil {
 		s.workspaceRelease()
 		s.workspaceRelease = nil
+	}
+	if s.configCleanup != nil {
+		s.configCleanup()
+		s.configCleanup = nil
 	}
 	m.app.refreshPowerOptimizationState()
 	m.app.emitRemoteStateChanged()
