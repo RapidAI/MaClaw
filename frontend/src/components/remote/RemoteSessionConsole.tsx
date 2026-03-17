@@ -86,6 +86,7 @@ const outputAreaStyle: React.CSSProperties = {
     overflowY: "auto",
     overflowX: "hidden",
     textAlign: "left",
+    color: "#d4d4d4",
 };
 
 const inputBarStyle: React.CSSProperties = {
@@ -268,6 +269,7 @@ const responseBlockStyle: React.CSSProperties = {
     padding: "4px 0 4px 8px",
     borderLeft: "2px solid #333",
     margin: "2px 0",
+    color: "#d4d4d4",
 };
 
 export function RemoteSessionConsole(props: Props) {

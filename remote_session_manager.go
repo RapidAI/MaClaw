@@ -118,6 +118,8 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 			strategy = NewOpenCodeSDKExecutionStrategy()
 		case ExecModeKiloSDK:
 			strategy = NewKiloSDKExecutionStrategy()
+		case ExecModeGeminiACP:
+			strategy = NewGeminiACPExecutionStrategy()
 		}
 	}
 
@@ -163,6 +165,14 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		workspaceRelease: workspace.Release,
 		configCleanup:    configRestore,
 	}
+
+	// Initialize permission handler based on YoloMode setting.
+	permMode := PermissionModeDefault
+	if spec.YoloMode {
+		permMode = PermissionModeAutoApprove
+	}
+	session.Permissions = NewPermissionHandler(permMode, nil, nil)
+
 	initEvent := buildSessionInitEvent(session)
 	session.Events = []ImportantEvent{initEvent}
 	workspace = nil
@@ -177,10 +187,16 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	// SDK sessions get a dedicated output loop that handles structured messages.
 	// iFlow/OpenCode/Kilo emit pre-formatted text on Output(), so the generic
 	// runOutputLoop (which reads from Output() and feeds the pipeline) works.
+	// Gemini ACP emits pre-formatted text but also needs session state tracking.
 	if _, isSDK := session.Exec.(*SDKExecutionHandle); isSDK {
 		go m.runSDKOutputLoop(session)
 	} else if _, isCodex := session.Exec.(*CodexSDKExecutionHandle); isCodex {
 		go m.runCodexSDKOutputLoop(session)
+	} else if acpHandle, isACP := session.Exec.(*GeminiACPExecutionHandle); isACP {
+		// Wire the session's permission handler into the ACP handle so
+		// permission requests from Gemini CLI are routed through it.
+		acpHandle.Permissions = session.Permissions
+		go m.runGeminiACPOutputLoop(session)
 	} else {
 		go m.runOutputLoop(session)
 	}
@@ -320,6 +336,18 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 	// Codex SDK sessions — write prompt text directly, echo to output.
 	if _, isCodex := s.Exec.(*CodexSDKExecutionHandle); isCodex {
 		return m.writeSDKInput(s, sessionID, text, "codex")
+	}
+
+	// Gemini ACP sessions — Write() handles echo internally via outputCh,
+	// so we only need to skip PTY normalization and call Write directly.
+	if _, isACP := s.Exec.(*GeminiACPExecutionHandle); isACP {
+		m.app.log(fmt.Sprintf("[remote-write-gemini-acp] session=%s, len=%d, text=%q",
+			sessionID, len(text), text))
+		err := s.Exec.Write([]byte(text))
+		if err != nil {
+			m.app.log(fmt.Sprintf("[remote-write-gemini-acp] FAILED session=%s: %v", sessionID, err))
+		}
+		return err
 	}
 
 	// ConPTY on Windows requires "\r\n" (or "\r") to simulate pressing Enter.
@@ -519,40 +547,10 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 		result := pipeline.Consume(s, chunk)
 
 		s.mu.Lock()
-		s.UpdatedAt = time.Now()
-
-		if result.Summary != nil {
-			s.Summary = *result.Summary
-			s.Status = SessionStatus(result.Summary.Status)
-		}
-
-		if result.PreviewDelta != nil {
-			s.Preview.SessionID = s.ID
-			s.Preview.OutputSeq = result.PreviewDelta.OutputSeq
-			s.Preview.UpdatedAt = result.PreviewDelta.UpdatedAt
-			s.Preview.PreviewLines = append(s.Preview.PreviewLines, result.PreviewDelta.AppendLines...)
-			if len(s.Preview.PreviewLines) > 500 {
-				s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
-			}
-		}
-
-		for _, evt := range result.Events {
-			s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
-		}
+		applyOutputResult(s, result)
 		s.mu.Unlock()
 
-		// Hub sync and UI notification outside the lock
-		if result.Summary != nil && m.hubClient != nil {
-			_ = m.hubClient.SendSessionSummary(*result.Summary)
-		}
-		if result.PreviewDelta != nil && m.hubClient != nil {
-			_ = m.hubClient.SendPreviewDelta(*result.PreviewDelta)
-		}
-		for _, evt := range result.Events {
-			if m.hubClient != nil {
-				_ = m.hubClient.SendImportantEvent(evt)
-			}
-		}
+		syncOutputResult(m.hubClient, result)
 
 		m.app.refreshPowerOptimizationState()
 		m.app.emitRemoteStateChanged()
@@ -644,35 +642,9 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 					result := pipeline.Consume(s, []byte(previewAccum))
 					previewAccum = ""
 					s.mu.Lock()
-					s.UpdatedAt = time.Now()
-					if result.Summary != nil {
-						s.Summary = *result.Summary
-						s.Status = SessionStatus(result.Summary.Status)
-					}
-					if result.PreviewDelta != nil {
-						s.Preview.SessionID = s.ID
-						s.Preview.OutputSeq = result.PreviewDelta.OutputSeq
-						s.Preview.UpdatedAt = result.PreviewDelta.UpdatedAt
-						s.Preview.PreviewLines = append(s.Preview.PreviewLines, result.PreviewDelta.AppendLines...)
-						if len(s.Preview.PreviewLines) > 500 {
-							s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
-						}
-					}
-					for _, evt := range result.Events {
-						s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
-					}
+					applyOutputResult(s, result)
 					s.mu.Unlock()
-					if result.Summary != nil && m.hubClient != nil {
-						_ = m.hubClient.SendSessionSummary(*result.Summary)
-					}
-					if result.PreviewDelta != nil && m.hubClient != nil {
-						_ = m.hubClient.SendPreviewDelta(*result.PreviewDelta)
-					}
-					for _, evt := range result.Events {
-						if m.hubClient != nil {
-							_ = m.hubClient.SendImportantEvent(evt)
-						}
-					}
+					syncOutputResult(m.hubClient, result)
 				}
 				if messages == nil {
 					return
@@ -710,40 +682,10 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			result := pipeline.Consume(s, []byte(toSend))
 
 			s.mu.Lock()
-			appendStreamText(text)
-			s.UpdatedAt = time.Now()
-
-			if result.Summary != nil {
-				s.Summary = *result.Summary
-				s.Status = SessionStatus(result.Summary.Status)
-			}
-
-			if result.PreviewDelta != nil {
-				s.Preview.SessionID = s.ID
-				s.Preview.OutputSeq = result.PreviewDelta.OutputSeq
-				s.Preview.UpdatedAt = result.PreviewDelta.UpdatedAt
-				s.Preview.PreviewLines = append(s.Preview.PreviewLines, result.PreviewDelta.AppendLines...)
-				if len(s.Preview.PreviewLines) > 500 {
-					s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
-				}
-			}
-
-			for _, evt := range result.Events {
-				s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
-			}
+			applyOutputResult(s, result)
 			s.mu.Unlock()
 
-			if result.Summary != nil && m.hubClient != nil {
-				_ = m.hubClient.SendSessionSummary(*result.Summary)
-			}
-			if result.PreviewDelta != nil && m.hubClient != nil {
-				_ = m.hubClient.SendPreviewDelta(*result.PreviewDelta)
-			}
-			for _, evt := range result.Events {
-				if m.hubClient != nil {
-					_ = m.hubClient.SendImportantEvent(evt)
-				}
-			}
+			syncOutputResult(m.hubClient, result)
 
 			m.app.refreshPowerOptimizationState()
 			m.app.emitRemoteStateChanged()
@@ -763,19 +705,9 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				pResult := pipeline.Consume(s, []byte(previewAccum))
 				previewAccum = ""
 				s.mu.Lock()
-				if pResult.PreviewDelta != nil {
-					s.Preview.SessionID = s.ID
-					s.Preview.OutputSeq = pResult.PreviewDelta.OutputSeq
-					s.Preview.UpdatedAt = pResult.PreviewDelta.UpdatedAt
-					s.Preview.PreviewLines = append(s.Preview.PreviewLines, pResult.PreviewDelta.AppendLines...)
-					if len(s.Preview.PreviewLines) > 500 {
-						s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
-					}
-				}
+				applyOutputResult(s, pResult)
 				s.mu.Unlock()
-				if pResult.PreviewDelta != nil && m.hubClient != nil {
-					_ = m.hubClient.SendPreviewDelta(*pResult.PreviewDelta)
-				}
+				syncOutputResult(m.hubClient, pResult)
 			}
 
 			now := time.Now()
@@ -882,9 +814,20 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				continue
 			}
 
-			m.app.log(fmt.Sprintf("[sdk-control] session=%s, request_id=%s, tool=%s — auto-approving",
-				s.ID, req.RequestID, req.Request.ToolName))
-			_ = sdkHandle.RespondToControlRequest(req.RequestID, true, req.Request.Input)
+			// Use the session's permission handler to decide approval.
+			permReq := PermissionRequest{
+				RequestID: req.RequestID,
+				SessionID: s.ID,
+				ToolName:  req.Request.ToolName,
+				Input:     req.Request.Input,
+				CreatedAt: time.Now(),
+			}
+			comp := s.Permissions.HandleRequest(permReq)
+
+			approved := comp.Decision == PermissionApproved || comp.Decision == PermissionApprovedForSession
+			m.app.log(fmt.Sprintf("[sdk-control] session=%s, request_id=%s, tool=%s — decision=%s",
+				s.ID, req.RequestID, req.Request.ToolName, comp.Decision))
+			_ = sdkHandle.RespondToControlRequest(req.RequestID, approved, req.Request.Input)
 
 			s.mu.Lock()
 			s.UpdatedAt = time.Now()
@@ -908,6 +851,7 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 	pipeline := m.pipelineFactory()
 	output := codexHandle.Output()
 	sessionStarted := false
+	gotRealOutput := false
 
 	for chunk := range output {
 		text := string(chunk)
@@ -928,59 +872,156 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 			}
 		}
 
+		// Track whether we got any real (non-diagnostic) output from codex.
+		if !strings.HasPrefix(text, "[codex-") {
+			gotRealOutput = true
+		}
+
 		// Codex emits complete lines — split and append directly.
 		lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 		s.mu.Lock()
-		s.RawOutputLines = append(s.RawOutputLines, lines...)
-		if len(s.RawOutputLines) > 2000 {
-			s.RawOutputLines = s.RawOutputLines[len(s.RawOutputLines)-2000:]
-		}
+		appendRawOutputLines(s, lines)
 		s.mu.Unlock()
 
 		result := pipeline.Consume(s, chunk)
 
 		s.mu.Lock()
-		s.UpdatedAt = time.Now()
-
-		if result.Summary != nil {
-			s.Summary = *result.Summary
-			s.Status = SessionStatus(result.Summary.Status)
-		}
-
-		if result.PreviewDelta != nil {
-			s.Preview.SessionID = s.ID
-			s.Preview.OutputSeq = result.PreviewDelta.OutputSeq
-			s.Preview.UpdatedAt = result.PreviewDelta.UpdatedAt
-			s.Preview.PreviewLines = append(s.Preview.PreviewLines, result.PreviewDelta.AppendLines...)
-			if len(s.Preview.PreviewLines) > 500 {
-				s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
-			}
-		}
-
-		for _, evt := range result.Events {
-			s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
-		}
+		applyOutputResult(s, result)
 		s.mu.Unlock()
 
-		if result.Summary != nil && m.hubClient != nil {
-			_ = m.hubClient.SendSessionSummary(*result.Summary)
-		}
-		if result.PreviewDelta != nil && m.hubClient != nil {
-			_ = m.hubClient.SendPreviewDelta(*result.PreviewDelta)
-		}
-		for _, evt := range result.Events {
-			if m.hubClient != nil {
-				_ = m.hubClient.SendImportantEvent(evt)
-			}
-		}
+		syncOutputResult(m.hubClient, result)
 
 		m.app.refreshPowerOptimizationState()
+		m.app.emitRemoteStateChanged()
+	}
+
+	// If the output channel closed without any real codex output, the process
+	// likely crashed on startup.  Update the summary so the user sees the issue.
+	if !gotRealOutput {
+		s.mu.Lock()
+		s.Summary.Severity = "error"
+		s.Summary.CurrentTask = "Codex process exited without producing output"
+		s.Summary.SuggestedAction = "Check codex installation and API key configuration"
+		s.Summary.UpdatedAt = time.Now().Unix()
+		snap := s.Summary
+		s.mu.Unlock()
+		if m.hubClient != nil {
+			_ = m.hubClient.SendSessionSummary(snap)
+		}
 		m.app.emitRemoteStateChanged()
 	}
 
 	// `codex exec` is one-shot — the process exits after the output channel
 	// closes.  The exit loop (runExitLoop) handles the final status transition,
 	// so we don't set SessionWaitingInput here.
+}
+
+
+// runGeminiACPOutputLoop handles output for Gemini ACP sessions.
+// Gemini ACP emits pre-formatted text on Output() (no ANSI), so the
+// pipeline works like the generic loop.  Additionally, this loop tracks
+// session state transitions based on ACP-specific markers emitted by
+// the GeminiACPExecutionHandle.
+func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
+	acpHandle, ok := s.Exec.(*GeminiACPExecutionHandle)
+	if !ok {
+		m.runOutputLoop(s)
+		return
+	}
+
+	pipeline := m.pipelineFactory()
+	output := acpHandle.Output()
+	sessionStarted := false
+
+	for chunk := range output {
+		text := string(chunk)
+
+		// Mark session as running on first output
+		if !sessionStarted {
+			sessionStarted = true
+			s.mu.Lock()
+			s.Status = SessionRunning
+			s.Summary.Status = string(SessionRunning)
+			s.Summary.Severity = "info"
+			s.Summary.CurrentTask = "Gemini ACP session started"
+			s.Summary.UpdatedAt = time.Now().Unix()
+			snap := s.Summary
+			s.mu.Unlock()
+			if m.hubClient != nil {
+				_ = m.hubClient.SendSessionSummary(snap)
+			}
+		}
+
+		// Detect state transitions from ACP markers.
+		trimmedText := strings.TrimSpace(text)
+		if strings.HasPrefix(trimmedText, "❯ ") {
+			// User input echo — session is now busy processing
+			s.mu.Lock()
+			s.Status = SessionBusy
+			s.Summary.Status = string(SessionBusy)
+			s.Summary.WaitingForUser = false
+			s.Summary.UpdatedAt = time.Now().Unix()
+			snap := s.Summary
+			s.mu.Unlock()
+			if m.hubClient != nil {
+				_ = m.hubClient.SendSessionSummary(snap)
+			}
+		} else if strings.HasPrefix(trimmedText, "[gemini-acp] turn complete:") {
+			// Prompt completed — session is waiting for next input
+			s.mu.Lock()
+			s.Status = SessionWaitingInput
+			s.Summary.Status = string(SessionWaitingInput)
+			s.Summary.WaitingForUser = true
+			s.Summary.UpdatedAt = time.Now().Unix()
+			snap := s.Summary
+			s.mu.Unlock()
+			if m.hubClient != nil {
+				_ = m.hubClient.SendSessionSummary(snap)
+			}
+		} else if strings.HasPrefix(trimmedText, "[gemini-acp] prompt error:") {
+			// Prompt failed — session is waiting for next input
+			s.mu.Lock()
+			s.Status = SessionWaitingInput
+			s.Summary.Status = string(SessionWaitingInput)
+			s.Summary.WaitingForUser = true
+			s.Summary.Severity = "warn"
+			s.Summary.LastResult = trimmedText
+			s.Summary.UpdatedAt = time.Now().Unix()
+			snap := s.Summary
+			s.mu.Unlock()
+			if m.hubClient != nil {
+				_ = m.hubClient.SendSessionSummary(snap)
+			}
+		} else if strings.HasPrefix(trimmedText, "[gemini-acp] session error:") {
+			// Session-level error from Gemini
+			s.mu.Lock()
+			s.Summary.Severity = "warn"
+			s.Summary.LastResult = trimmedText
+			s.Summary.UpdatedAt = time.Now().Unix()
+			snap := s.Summary
+			s.mu.Unlock()
+			if m.hubClient != nil {
+				_ = m.hubClient.SendSessionSummary(snap)
+			}
+		}
+
+		// Append to raw output lines
+		lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+		s.mu.Lock()
+		appendRawOutputLines(s, lines)
+		s.mu.Unlock()
+
+		result := pipeline.Consume(s, chunk)
+
+		s.mu.Lock()
+		applyOutputResult(s, result)
+		s.mu.Unlock()
+
+		syncOutputResult(m.hubClient, result)
+
+		m.app.refreshPowerOptimizationState()
+		m.app.emitRemoteStateChanged()
+	}
 }
 
 
@@ -1006,6 +1047,10 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 		if s.configCleanup != nil {
 			s.configCleanup()
 			s.configCleanup = nil
+		}
+		// Reset permission handler to abort any pending requests.
+		if s.Permissions != nil {
+			s.Permissions.Reset()
 		}
 	}()
 

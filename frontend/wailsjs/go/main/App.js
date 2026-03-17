@@ -311,22 +311,6 @@ export function DeleteNLSkill(arg1) {
   return window['go']['main']['App']['DeleteNLSkill'](arg1);
 }
 
-export function ListCandidateSkills() {
-  return window['go']['main']['App']['ListCandidateSkills']();
-}
-
-export function ConfirmCandidateSkill(arg1) {
-  return window['go']['main']['App']['ConfirmCandidateSkill'](arg1);
-}
-
-export function IgnoreCandidateSkill(arg1) {
-  return window['go']['main']['App']['IgnoreCandidateSkill'](arg1);
-}
-
-export function UploadNLSkillPackage() {
-  return window['go']['main']['App']['UploadNLSkillPackage']();
-}
-
 // MCP management bindings
 export function ListMCPServers() {
   return window['go']['main']['App']['ListMCPServers']();
@@ -361,6 +345,18 @@ export function SaveMaclawLLMConfig(arg1) {
   return window['go']['main']['App']['SaveMaclawLLMConfig'](arg1);
 }
 
+export function GetMaclawLLMProviders() {
+  return window['go']['main']['App']['GetMaclawLLMProviders']();
+}
+
+export function SaveMaclawLLMProviders(arg1, arg2) {
+  return window['go']['main']['App']['SaveMaclawLLMProviders'](arg1, arg2);
+}
+
 export function TestMaclawLLM(arg1) {
   return window['go']['main']['App']['TestMaclawLLM'](arg1);
+}
+
+export function PingMaclawLLM() {
+  return window['go']['main']['App']['PingMaclawLLM']();
 }

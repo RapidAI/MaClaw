@@ -36,6 +36,7 @@ type MachineHeartbeatPayload struct {
 	ActiveSessions       int    `json:"active_sessions,omitempty"`
 	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec,omitempty"`
 	AppVersion           string `json:"app_version,omitempty"`
+	LLMConfigured        *bool  `json:"llm_configured,omitempty"`
 }
 
 type DeviceBinder interface {
@@ -63,10 +64,19 @@ type identityService interface {
 	AuthenticateViewer(ctx context.Context, rawToken string) (*auth.ViewerPrincipal, error)
 }
 
+// IMAgentResponseHandler handles agent responses routed back from MaClaw clients.
+type IMAgentResponseHandler interface {
+	HandleAgentResponse(requestID string, resp json.RawMessage)
+}
+
 type Gateway struct {
 	Identity identityService
 	Devices  DeviceBinder
 	Sessions SessionService
+
+	// IMResponder handles im.agent_response messages from MaClaw clients.
+	// Set via SetIMResponder after construction to avoid circular deps.
+	IMResponder IMAgentResponseHandler
 
 	mu                sync.RWMutex
 	viewersByMachine  map[string]map[*ConnContext]struct{}
@@ -83,6 +93,11 @@ func NewGateway(identity identityService, devices DeviceBinder, sessions Session
 		viewersBySession:  map[string]map[*ConnContext]struct{}{},
 		projectsByMachine: map[string][]map[string]any{},
 	}
+}
+
+// SetIMResponder wires the handler for im.agent_response messages.
+func (g *Gateway) SetIMResponder(h IMAgentResponseHandler) {
+	g.IMResponder = h
 }
 
 func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
@@ -180,6 +195,10 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "session.screenshot":
 			if err := g.handleSessionScreenshot(ctx, msg); err != nil {
+				return
+			}
+		case "im.agent_response":
+			if err := g.handleIMAgentResponse(ctx, msg); err != nil {
 				return
 			}
 		default:
@@ -715,6 +734,24 @@ func (g *Gateway) handleSessionScreenshot(ctx *ConnContext, msg Envelope) error 
 	if err := g.Devices.SendToMachine(payload.MachineID, command); err != nil {
 		return writeWSError(ctx.Conn, "MACHINE_OFFLINE", err.Error())
 	}
+	return nil
+}
+
+// handleIMAgentResponse handles im.agent_response from a MaClaw client and
+// routes it to the MessageRouter so the waiting IM request can be fulfilled.
+func (g *Gateway) handleIMAgentResponse(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+	}
+	if g.IMResponder == nil {
+		log.Printf("[ws] handleIMAgentResponse: no IMResponder configured, dropping message")
+		return nil
+	}
+	if msg.RequestID == "" {
+		log.Printf("[ws] handleIMAgentResponse: missing request_id, dropping message")
+		return nil
+	}
+	g.IMResponder.HandleAgentResponse(msg.RequestID, msg.Payload)
 	return nil
 }
 

@@ -124,13 +124,20 @@ func handleBotMessage(n *Notifier, raw json.RawMessage) {
 		// Email binding and verification code flows are always handled by
 		// the legacy path — they are Feishu-specific onboarding flows that
 		// the generic IM Adapter does not handle.
+		// Agent conversation commands (/new, /reset, /clear) are routed to
+		// the adapter so the agent can handle them directly.
 		if text != "" && !looksLikeEmail(text) && !isVerifyCode(text) {
-			msgType := event.Message.MessageType
-			if msgType == "" {
-				msgType = "text"
-			}
-			if n.plugin.DispatchBotMessage(openID, msgType, text, raw) {
-				return
+			// Legacy slash commands stay in the legacy path, except for
+			// agent conversation reset commands which the adapter handles.
+			isAgentCmd := text == "/new" || text == "/reset" || text == "/clear"
+			if isAgentCmd || !strings.HasPrefix(text, "/") {
+				msgType := event.Message.MessageType
+				if msgType == "" {
+					msgType = "text"
+				}
+				if n.plugin.DispatchBotMessage(openID, msgType, text, raw) {
+					return
+				}
 			}
 		}
 	}
@@ -302,6 +309,9 @@ func handleListMachines(n *Notifier, openID string) {
 			name = m.MachineID[:8]
 		}
 		sb.WriteString(fmt.Sprintf("%s %s [%s]\n  ID: %s\n", status, name, m.Platform, shortID(m.MachineID)))
+		if m.Online && !m.LLMConfigured {
+			sb.WriteString("  ⚠️ LLM 未配置，Agent 无法运行\n")
+		}
 		if m.ActiveSessions > 0 {
 			sb.WriteString(fmt.Sprintf("  活跃会话: %d\n", m.ActiveSessions))
 		}
@@ -797,26 +807,6 @@ func handleEmailSubmit(n *Notifier, openID, email string) {
 	// Generate a 6-digit verification code.
 	code := generateCode()
 
-	// Send the code via email.
-	if n.mailer == nil {
-		replyText(n, openID, "Hub 邮件服务未配置，无法发送验证码。请联系管理员。\nHub mail service is not configured.")
-		return
-	}
-	subject := "MaClaw Hub 飞书绑定验证码 / Feishu Binding Verification Code"
-	body := fmt.Sprintf(
-		"您的飞书绑定验证码是 / Your Feishu binding verification code is:\r\n\r\n    %s\r\n\r\n"+
-			"该验证码 %d 分钟内有效。如非本人操作请忽略。\r\n"+
-			"This code expires in %d minutes. Ignore this email if you did not request it.\r\n",
-		code, int(verifyCodeTTL.Minutes()), int(verifyCodeTTL.Minutes()),
-	)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := n.mailer.Send(ctx, []string{email}, subject, body); err != nil {
-		log.Printf("[feishu/webhook] send verification email failed (email=%s): %v", email, err)
-		replyText(n, openID, "验证码邮件发送失败，请稍后重试或联系管理员。\nFailed to send verification email.")
-		return
-	}
-
 	// Store pending verification (and clean expired entries).
 	n.pendMu.Lock()
 	now := time.Now()
@@ -831,6 +821,50 @@ func handleEmailSubmit(n *Notifier, openID, email string) {
 		Expiry: now.Add(verifyCodeTTL),
 	}
 	n.pendMu.Unlock()
+
+	// Use cross-IM broadcaster if available, otherwise fall back to email-only.
+	if n.broadcaster != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		sentTo, err := n.broadcaster.BroadcastVerifyCode(ctx, email, code, "feishu")
+		if err != nil {
+			log.Printf("[feishu/webhook] broadcast verification code for %s failed: %v", email, err)
+			replyText(n, openID, fmt.Sprintf("验证码发送失败: %v", err))
+			n.pendMu.Lock()
+			delete(n.pending, openID)
+			n.pendMu.Unlock()
+			return
+		}
+		replyText(n, openID,
+			fmt.Sprintf("验证码已发送到: %s\n请查看验证码，在此对话中回复 6 位验证码完成绑定。\nVerification code sent to: %s. Reply with the 6-digit code.", sentTo, sentTo))
+		return
+	}
+
+	// Fallback: email-only
+	if n.mailer == nil {
+		replyText(n, openID, "Hub 邮件服务未配置，无法发送验证码。请联系管理员。\nHub mail service is not configured.")
+		n.pendMu.Lock()
+		delete(n.pending, openID)
+		n.pendMu.Unlock()
+		return
+	}
+	subject := "MaClaw Hub 飞书绑定验证码 / Feishu Binding Verification Code"
+	body := fmt.Sprintf(
+		"您的飞书绑定验证码是 / Your Feishu binding verification code is:\r\n\r\n    %s\r\n\r\n"+
+			"该验证码 %d 分钟内有效。如非本人操作请忽略。\r\n"+
+			"This code expires in %d minutes. Ignore this email if you did not request it.\r\n",
+		code, int(verifyCodeTTL.Minutes()), int(verifyCodeTTL.Minutes()),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := n.mailer.Send(ctx, []string{email}, subject, body); err != nil {
+		log.Printf("[feishu/webhook] send verification email failed (email=%s): %v", email, err)
+		replyText(n, openID, "验证码邮件发送失败，请稍后重试或联系管理员。\nFailed to send verification email.")
+		n.pendMu.Lock()
+		delete(n.pending, openID)
+		n.pendMu.Unlock()
+		return
+	}
 
 	replyText(n, openID,
 		fmt.Sprintf("验证码已发送到 %s，请在飞书中回复 6 位验证码完成绑定。\nVerification code sent to %s. Reply with the 6-digit code to complete binding.", email, email))

@@ -14,8 +14,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -185,6 +187,8 @@ func (p *WebhookIMPlugin) postToAdapter(ctx context.Context, event string, paylo
 		return fmt.Errorf("openclaw_im: post to adapter: %w", err)
 	}
 	defer resp.Body.Close()
+	// Drain body to allow connection reuse.
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 300 {
 		log.Printf("[openclaw_im/%s] adapter returned HTTP %d", p.platformName, resp.StatusCode)
@@ -204,7 +208,7 @@ func VerifySignature(body []byte, signature, secret string) bool {
 	}
 	// Strip "sha256=" prefix if present.
 	const prefix = "sha256="
-	if len(signature) > len(prefix) && signature[:len(prefix)] == prefix {
+	if strings.HasPrefix(signature, prefix) {
 		signature = signature[len(prefix):]
 	}
 

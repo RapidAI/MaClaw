@@ -7,44 +7,15 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/RapidAI/CodeClaw/hub/internal/nlrouter"
 )
 
 // ---------------------------------------------------------------------------
-// Abstraction interfaces (avoid circular imports)
+// Abstraction interfaces
 // ---------------------------------------------------------------------------
-
-// IntentRouter abstracts the NL Router to avoid circular imports.
-type IntentRouter interface {
-	Parse(ctx context.Context, userID, text string) (*nlrouter.Intent, error)
-}
-
-// IntentExecutor abstracts the intent execution bridge.
-type IntentExecutor interface {
-	Execute(ctx context.Context, userID string, intent *nlrouter.Intent) (*GenericResponse, error)
-}
 
 // IdentityResolver abstracts the Identity_Service for user mapping.
 type IdentityResolver interface {
 	ResolveUser(ctx context.Context, platformName, platformUID string) (string, error)
-}
-
-// ---------------------------------------------------------------------------
-// Shell injection detection
-// ---------------------------------------------------------------------------
-
-// shellMetaChars are patterns that indicate potential shell injection.
-var shellMetaChars = []string{";", "|", "&&", "`", "$(", "${"}
-
-// containsInjection returns true if text contains any shell metacharacter.
-func containsInjection(text string) bool {
-	for _, mc := range shellMetaChars {
-		if strings.Contains(text, mc) {
-			return true
-		}
-	}
-	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -66,10 +37,42 @@ type rateBucket struct {
 type rateLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*rateBucket
+	stopCh  chan struct{}
 }
 
 func newRateLimiter() *rateLimiter {
-	return &rateLimiter{buckets: make(map[string]*rateBucket)}
+	rl := &rateLimiter{
+		buckets: make(map[string]*rateBucket),
+		stopCh:  make(chan struct{}),
+	}
+	go rl.cleanupLoop()
+	return rl
+}
+
+// cleanupLoop 定期清理过期的 rate limiter bucket，防止内存无限增长
+func (rl *rateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			rl.evictStale()
+		case <-rl.stopCh:
+			return
+		}
+	}
+}
+
+// evictStale 移除超过 10 分钟未活跃的 bucket
+func (rl *rateLimiter) evictStale() {
+	cutoff := time.Now().Add(-10 * time.Minute)
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	for uid, b := range rl.buckets {
+		if b.refillAt.Before(cutoff) {
+			delete(rl.buckets, uid)
+		}
+	}
 }
 
 // allow returns true if the user has remaining tokens. It refills the bucket
@@ -102,78 +105,28 @@ func (rl *rateLimiter) allow(userID string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// High-risk confirmation
-// ---------------------------------------------------------------------------
-
-// PendingConfirmation represents a high-risk operation awaiting user confirmation.
-type PendingConfirmation struct {
-	ID        string
-	UserID    string
-	Intent    *nlrouter.Intent
-	ExpiresAt time.Time
-	Confirmed bool
-}
-
-// confirmationTokens that the user can reply with to confirm.
-var confirmationTokens = []string{"确认", "yes", "1"}
-
-// isConfirmationReply checks if text is a confirmation reply.
-func isConfirmationReply(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	for _, tok := range confirmationTokens {
-		if lower == tok {
-			return true
-		}
-	}
-	return false
-}
-
-// isHighRiskIntent returns true for intents that require user confirmation.
-func isHighRiskIntent(intent *nlrouter.Intent) bool {
-	if intent.Name == nlrouter.IntentKillSession {
-		return true
-	}
-	if intent.Name == nlrouter.IntentLaunchSession {
-		// High risk if the launch contains a system command (prompt param).
-		if prompt, ok := intent.Params["prompt"]; ok {
-			if s, ok := prompt.(string); ok && strings.TrimSpace(s) != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// ---------------------------------------------------------------------------
-// Adapter — the IM Adapter Core
+// Adapter — the IM Adapter Core (Agent Passthrough mode)
 // ---------------------------------------------------------------------------
 
 // Adapter is the central IM adapter that manages registered IM plugins,
-// routes incoming messages through identity mapping, rate limiting,
-// injection detection, NL Router parsing, intent execution, and
-// response formatting.
+// routes incoming messages through identity mapping, rate limiting, and
+// then transparently relays to the MaClaw Agent via MessageRouter.
 type Adapter struct {
-	mu       sync.RWMutex
-	plugins  map[string]IMPlugin
+	mu      sync.RWMutex
+	plugins map[string]IMPlugin
 
-	router   IntentRouter
-	executor IntentExecutor
-	identity IdentityResolver
-
-	limiter      *rateLimiter
-	confirmMu    sync.Mutex
-	confirmations map[string]*PendingConfirmation // userID → pending
+	messageRouter *MessageRouter
+	identity      IdentityResolver
+	limiter       *rateLimiter
 }
 
-// NewAdapter creates a new IM Adapter with the given dependencies.
-func NewAdapter(router IntentRouter, executor IntentExecutor, identity IdentityResolver) *Adapter {
+// NewAdapter creates a new IM Adapter with the given MessageRouter.
+func NewAdapter(router *MessageRouter, identity IdentityResolver) *Adapter {
 	return &Adapter{
 		plugins:       make(map[string]IMPlugin),
-		router:        router,
-		executor:      executor,
+		messageRouter: router,
 		identity:      identity,
 		limiter:       newRateLimiter(),
-		confirmations: make(map[string]*PendingConfirmation),
 	}
 }
 
@@ -218,16 +171,12 @@ func (a *Adapter) GetPlugin(name string) IMPlugin {
 }
 
 // HandleMessage is the main entry point called by IM plugins when they
-// receive a message. It orchestrates the full pipeline:
+// receive a message. It orchestrates the Agent Passthrough pipeline:
 //
 //  1. Identity mapping (platformUID → unifiedUserID)
 //  2. Rate limiting (30 req/min per user)
-//  3. Pending confirmation check
-//  4. Injection detection
-//  5. NL Router intent parsing
-//  6. High-risk confirmation prompt (if needed)
-//  7. Intent execution
-//  8. Response formatting & delivery based on CapabilityDeclaration
+//  3. Route to MaClaw Agent via MessageRouter
+//  4. Response formatting & delivery based on CapabilityDeclaration
 func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	plugin := a.GetPlugin(msg.PlatformName)
 	if plugin == nil {
@@ -263,139 +212,24 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	}
 
 	text := strings.TrimSpace(msg.Text)
-
-	// 3. Check for pending confirmation reply
-	if a.handleConfirmationReply(ctx, plugin, target, unifiedID, text) {
+	if text == "" {
 		return
 	}
 
-	// 4. Injection detection
-	if containsInjection(text) {
-		a.sendResponse(ctx, plugin, target, &GenericResponse{
-			StatusCode: 400,
-			StatusIcon: "🚫",
-			Title:      "输入包含不安全字符",
-			Body:       "检测到输入中包含 shell 元字符（如 ;、|、&&、`、$() 等），已拒绝处理。请使用纯文本描述您的操作。",
-		})
-		return
-	}
-
-	// 5. NL Router intent parsing
-	intent, err := a.router.Parse(ctx, unifiedID, text)
+	// 3. Route to MaClaw Agent via MessageRouter
+	resp, err := a.messageRouter.RouteToAgent(ctx, unifiedID, msg.PlatformName, text)
 	if err != nil {
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 500,
 			StatusIcon: "❌",
-			Title:      "意图解析失败",
-			Body:       fmt.Sprintf("无法解析您的请求: %s", err.Error()),
+			Title:      "路由失败",
+			Body:       fmt.Sprintf("无法将消息路由到 Agent: %s", err.Error()),
 		})
 		return
 	}
 
-	// 6. High-risk confirmation prompt
-	if isHighRiskIntent(intent) {
-		a.requestConfirmation(ctx, plugin, target, unifiedID, intent)
-		return
-	}
-
-	// 7. Execute intent
-	resp, err := a.executor.Execute(ctx, unifiedID, intent)
-	if err != nil {
-		a.sendResponse(ctx, plugin, target, &GenericResponse{
-			StatusCode: 500,
-			StatusIcon: "❌",
-			Title:      "执行失败",
-			Body:       fmt.Sprintf("操作执行出错: %s\n建议: 请检查参数后重试，或发送 /help 查看帮助。", err.Error()),
-		})
-		return
-	}
-
-	// 8. Format and deliver response
+	// 4. Format and deliver response
 	a.sendResponse(ctx, plugin, target, resp)
-}
-
-// ---------------------------------------------------------------------------
-// Confirmation flow helpers
-// ---------------------------------------------------------------------------
-
-// requestConfirmation stores a pending confirmation and sends a prompt.
-func (a *Adapter) requestConfirmation(ctx context.Context, plugin IMPlugin, target UserTarget, userID string, intent *nlrouter.Intent) {
-	a.confirmMu.Lock()
-	a.confirmations[userID] = &PendingConfirmation{
-		ID:        fmt.Sprintf("confirm_%s_%d", userID, time.Now().UnixNano()),
-		UserID:    userID,
-		Intent:    intent,
-		ExpiresAt: time.Now().Add(60 * time.Second),
-	}
-	a.confirmMu.Unlock()
-
-	desc := intent.Name
-	if intent.Name == nlrouter.IntentKillSession {
-		desc = "终止会话 (kill_session)"
-	} else if intent.Name == nlrouter.IntentLaunchSession {
-		desc = "启动含系统命令的会话 (launch_session)"
-	}
-
-	a.sendResponse(ctx, plugin, target, &GenericResponse{
-		StatusCode: 200,
-		StatusIcon: "⚠️",
-		Title:      "高风险操作确认",
-		Body:       fmt.Sprintf("您即将执行高风险操作: %s\n\n请在 60 秒内回复 \"确认\"、\"yes\" 或 \"1\" 以继续，否则操作将自动取消。", desc),
-	})
-}
-
-// handleConfirmationReply checks if the user has a pending confirmation and
-// processes the reply. Returns true if a confirmation was handled.
-func (a *Adapter) handleConfirmationReply(ctx context.Context, plugin IMPlugin, target UserTarget, userID, text string) bool {
-	a.confirmMu.Lock()
-	pending, ok := a.confirmations[userID]
-	if !ok {
-		a.confirmMu.Unlock()
-		return false
-	}
-
-	// Check expiry
-	if time.Now().After(pending.ExpiresAt) {
-		delete(a.confirmations, userID)
-		a.confirmMu.Unlock()
-		a.sendResponse(ctx, plugin, target, &GenericResponse{
-			StatusCode: 408,
-			StatusIcon: "⏰",
-			Title:      "确认超时",
-			Body:       "高风险操作确认已超时（60 秒），操作已取消。",
-		})
-		return true
-	}
-
-	if !isConfirmationReply(text) {
-		delete(a.confirmations, userID)
-		a.confirmMu.Unlock()
-		a.sendResponse(ctx, plugin, target, &GenericResponse{
-			StatusCode: 200,
-			StatusIcon: "ℹ️",
-			Title:      "操作已取消",
-			Body:       "高风险操作已取消。",
-		})
-		return true
-	}
-
-	// Confirmed — execute the intent.
-	intent := pending.Intent
-	delete(a.confirmations, userID)
-	a.confirmMu.Unlock()
-
-	resp, err := a.executor.Execute(ctx, userID, intent)
-	if err != nil {
-		a.sendResponse(ctx, plugin, target, &GenericResponse{
-			StatusCode: 500,
-			StatusIcon: "❌",
-			Title:      "执行失败",
-			Body:       fmt.Sprintf("操作执行出错: %s", err.Error()),
-		})
-		return true
-	}
-	a.sendResponse(ctx, plugin, target, resp)
-	return true
 }
 
 // ---------------------------------------------------------------------------

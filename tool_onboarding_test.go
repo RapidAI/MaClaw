@@ -94,8 +94,17 @@ func TestEnsureGeminiOnboardingIdempotent(t *testing.T) {
 	configPath := filepath.Join(dir, "settings.json")
 
 	existing := map[string]any{
+		"selectedAuthType": "oauth-personal",
 		"ui": map[string]any{
-			"theme": "GitHub",
+			"theme":                     "GitHub",
+			"autoThemeSwitching":        false,
+			"hideTips":                  true,
+			"showShortcutsHint":         false,
+			"dynamicWindowTitle":        false,
+			"showStatusInTitle":         false,
+			"hideWindowTitle":           true,
+			"showCompatibilityWarnings": false,
+			"showHomeDirectoryWarning":  false,
 		},
 	}
 	data, _ := json.MarshalIndent(existing, "", "  ")
@@ -145,137 +154,6 @@ func TestEnsureGeminiOnboardingHandlesCorruptFile(t *testing.T) {
 	}
 }
 
-func TestEnsureKodeOnboardingCreatesConfig(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	app := &App{}
-	if err := ensureKodeOnboardingComplete(app, `D:\projects\myapp`); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	configPath := filepath.Join(tmpHome, ".kode.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("config file not created: %v", err)
-	}
-
-	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-
-	if !isTruthy(config["hasCompletedOnboarding"]) {
-		t.Error("hasCompletedOnboarding should be true")
-	}
-	if config["theme"] != "dark" {
-		t.Errorf("theme = %v, want dark", config["theme"])
-	}
-
-	projects, ok := config["projects"].(map[string]any)
-	if !ok {
-		t.Fatal("projects map missing")
-	}
-	entry, ok := projects["D:/projects/myapp"].(map[string]any)
-	if !ok {
-		t.Fatal("project entry missing")
-	}
-	if !isTruthy(entry["hasTrustDialogAccepted"]) {
-		t.Error("hasTrustDialogAccepted should be true")
-	}
-}
-
-func TestEnsureKodeOnboardingPreservesExisting(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	configPath := filepath.Join(tmpHome, ".kode.json")
-	existing := map[string]any{
-		"hasCompletedOnboarding": true,
-		"theme":                  "light",
-		"customKey":              "keep-me",
-	}
-	data, _ := json.Marshal(existing)
-	os.WriteFile(configPath, data, 0o644)
-
-	app := &App{}
-	if err := ensureKodeOnboardingComplete(app, ""); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	updated, _ := os.ReadFile(configPath)
-	var config map[string]any
-	json.Unmarshal(updated, &config)
-
-	if config["theme"] != "light" {
-		t.Errorf("theme was overwritten: got %v, want light", config["theme"])
-	}
-	if config["customKey"] != "keep-me" {
-		t.Error("customKey was lost")
-	}
-}
-
-func TestEnsureKodeOnboardingIdempotent(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	configPath := filepath.Join(tmpHome, ".kode.json")
-	existing := map[string]any{
-		"hasCompletedOnboarding": true,
-		"theme":                  "dark",
-		"projects": map[string]any{
-			"D:/test": map[string]any{
-				"hasTrustDialogAccepted": true,
-			},
-		},
-	}
-	data, _ := json.MarshalIndent(existing, "", "  ")
-	os.WriteFile(configPath, data, 0o644)
-
-	beforeStat, _ := os.Stat(configPath)
-
-	app := &App{}
-	if err := ensureKodeOnboardingComplete(app, `D:\test`); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	afterStat, _ := os.Stat(configPath)
-	if !afterStat.ModTime().Equal(beforeStat.ModTime()) {
-		t.Error("file was rewritten even though no changes were needed")
-	}
-}
-
-func TestEnsureKodeOnboardingHandlesCorruptFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	configPath := filepath.Join(tmpHome, ".kode.json")
-	os.WriteFile(configPath, []byte("not valid json{{{"), 0o644)
-
-	app := &App{}
-	if err := ensureKodeOnboardingComplete(app, `D:\test`); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	backupPath := configPath + ".bak"
-	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
-		t.Error("corrupt file was not backed up")
-	}
-
-	data, _ := os.ReadFile(configPath)
-	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("new config is not valid JSON: %v", err)
-	}
-	if !isTruthy(config["hasCompletedOnboarding"]) {
-		t.Error("hasCompletedOnboarding should be true")
-	}
-}
-
 func TestEnsureToolOnboardingDispatch(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -296,12 +174,6 @@ func TestEnsureToolOnboardingDispatch(t *testing.T) {
 	ensureToolOnboardingComplete(app, "gemini", "")
 	if _, err := os.Stat(filepath.Join(tmpHome, ".gemini", "settings.json")); os.IsNotExist(err) {
 		t.Error("gemini onboarding should have created settings.json")
-	}
-
-	// Should handle kode.
-	ensureToolOnboardingComplete(app, "kode", `D:\test`)
-	if _, err := os.Stat(filepath.Join(tmpHome, ".kode.json")); os.IsNotExist(err) {
-		t.Error("kode onboarding should have created .kode.json")
 	}
 
 	// Should handle codebuddy.
@@ -500,35 +372,6 @@ func TestBackupToolConfigsRestoresExistingFile(t *testing.T) {
 	}
 }
 
-func TestBackupToolConfigsRemovesNewlyCreatedFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("HOME", tmpHome)
-
-	configPath := filepath.Join(tmpHome, ".kode.json")
-
-	// No config file exists yet.
-	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
-		t.Fatal("config should not exist before test")
-	}
-
-	app := &App{}
-	restore := backupToolConfigs(app, "kode")
-
-	// Onboarding creates the file.
-	ensureKodeOnboardingComplete(app, `D:\test`)
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		t.Fatal("onboarding should have created config")
-	}
-
-	// Restore removes the file.
-	restore()
-
-	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
-		t.Error("config file should be removed after restore (it didn't exist before)")
-	}
-}
-
 func TestBackupToolConfigsGeminiRestore(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -618,7 +461,6 @@ func TestToolConfigPathsReturnsCorrectPaths(t *testing.T) {
 		contains string
 	}{
 		{"claude", false, ".claude.json"},
-		{"kode", false, ".kode.json"},
 		{"codebuddy", false, ".codebuddy.json"},
 		{"gemini", false, "settings.json"},
 		{"codex", true, ""},

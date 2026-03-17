@@ -229,7 +229,7 @@ func (a *App) installToolsInBackground() {
 	}
 
 	tm := NewToolManager(a)
-	tools := []string{"kilo", "claude", "gemini", "codex", "opencode", "codebuddy", "kode", "iflow"}
+	tools := []string{"kilo", "claude", "gemini", "codex", "opencode", "codebuddy", "kode", "iflow", "cursor"}
 
 	for _, tool := range tools {
 		// Try to acquire lock for this tool
@@ -255,17 +255,24 @@ func (a *App) installToolsInBackground() {
 		} else {
 			a.log(a.tr("Background: %s found at %s (version: %s).", tool, status.Path, status.Version))
 
-			// Check for updates
-			a.log(a.tr("Background: Checking for %s updates...", tool))
-			latest, err := a.getLatestNpmVersion(npmPath, tm.GetPackageName(tool))
-			if err == nil && latest != "" && latest != status.Version {
-				a.log(a.tr("Background: New version available for %s: %s (current: %s). Updating...", tool, latest, status.Version))
-				a.emitEvent("tool-updating", tool)
-				if err := tm.UpdateTool(tool); err != nil {
-					a.log(a.tr("Background: ERROR: Failed to update %s: %v", tool, err))
-				} else {
-					a.log(a.tr("Background: %s updated successfully to %s.", tool, latest))
-					a.emitEvent("tool-updated", tool)
+			// Check for updates (skip for non-npm tools like claude and cursor)
+			pkgName := tm.GetPackageName(tool)
+			if pkgName == "" {
+				// Non-npm tools (claude, cursor) manage their own updates;
+				// skip automatic re-download on every startup to avoid unnecessary traffic.
+				a.log(a.tr("Background: %s uses native installer, skipping automatic update check.", tool))
+			} else {
+				a.log(a.tr("Background: Checking for %s updates...", tool))
+				latest, err := a.getLatestNpmVersion(npmPath, pkgName)
+				if err == nil && latest != "" && latest != status.Version {
+					a.log(a.tr("Background: New version available for %s: %s (current: %s). Updating...", tool, latest, status.Version))
+					a.emitEvent("tool-updating", tool)
+					if err := tm.UpdateTool(tool); err != nil {
+						a.log(a.tr("Background: ERROR: Failed to update %s: %v", tool, err))
+					} else {
+						a.log(a.tr("Background: %s updated successfully to %s.", tool, latest))
+						a.emitEvent("tool-updated", tool)
+					}
 				}
 			}
 		}

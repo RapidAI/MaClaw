@@ -9,17 +9,13 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
-	"github.com/RapidAI/CodeClaw/hub/internal/discovery"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
+	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
-	"github.com/RapidAI/CodeClaw/hub/internal/mcp"
-	"github.com/RapidAI/CodeClaw/hub/internal/memory"
-	"github.com/RapidAI/CodeClaw/hub/internal/nlrouter"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
-	"github.com/RapidAI/CodeClaw/hub/internal/skill"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
@@ -59,8 +55,6 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	sessionService.RegisterListener(gateway.HandleSessionEvent)
 
 	// Feishu notifier: push session events to users via Feishu cards.
-	// Config can come from YAML (cfg.Feishu) or from the admin UI (stored in DB
-	// under the "feishu_config" key). DB settings take precedence when present.
 	feishuAppID, feishuAppSecret := cfg.Feishu.AppID, cfg.Feishu.AppSecret
 	if raw, err := st.System.Get(context.Background(), "feishu_config"); err == nil && raw != "" {
 		var dbCfg struct {
@@ -77,78 +71,85 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	feishuNotifier.SetServices(&feishu.DeviceServiceAdapter{Svc: deviceService}, sessionService)
 
 	// -----------------------------------------------------------------------
-	// New NL / IM modules — initialised in dependency order
+	// Agent Passthrough IM modules
 	// -----------------------------------------------------------------------
 
-	// 1. Memory_Store
-	memoryStore := memory.NewStore(st.System)
+	// 1. MessageRouter — routes IM messages to MaClaw Agent via WebSocket
+	deviceFinder := &im.DeviceServiceFinder{Svc: deviceService}
+	messageRouter := im.NewMessageRouter(deviceFinder)
 
-	// 2. Tool_Discovery_Protocol
-	discoveryProtocol := discovery.NewProtocol()
-
-	// 3. MCP_Registry (depends on SystemSettings + Discovery)
-	mcpRegistry, err := mcp.NewRegistry(st.System, discoveryProtocol)
-	if err != nil {
-		log.Printf("[bootstrap] MCP registry init failed (non-fatal): %v", err)
-		mcpRegistry = nil
-	}
-
-	// 4. Skill_Executor (depends on SystemSettings + Discovery + ActionHandler)
-	//    ActionHandler is nil at this point; we wire it later via SetActionHandler.
-	skillExecutor, err := skill.NewExecutor(st.System, discoveryProtocol, nil)
-	if err != nil {
-		log.Printf("[bootstrap] Skill executor init failed (non-fatal): %v", err)
-		skillExecutor = nil
-	}
-
-	// 5. Context_Window_Manager
-	contextWindowMgr := nlrouter.NewContextWindowManager()
-
-	// 6. Skill_Crystallizer (depends on Memory, Executor, ContextWindow, SystemSettings)
-	var skillCrystallizer *skill.Crystallizer
-	if skillExecutor != nil {
-		skillCrystallizer = skill.NewCrystallizer(memoryStore, skillExecutor, contextWindowMgr, st.System)
-	}
-
-	// 7. NL_Router (depends on RuleEngine, MemoryStore, ContextWindowManager)
-	ruleEngine := nlrouter.NewRuleEngine()
-	nlRouter := nlrouter.NewRouter(ruleEngine, memoryStore, contextWindowMgr)
-
-	// 8. BridgeExecutor — maps intents to concrete operations.
-	//    Many dependencies are nil for now; the BridgeExecutor handles nil
-	//    dependencies gracefully by returning "service not configured" errors.
-	bridgeExecutor := im.NewBridgeExecutor(
-		nil, // SessionManager — no direct adapter yet
-		nil, // DeviceManager — no direct adapter yet
-		nil, // ScreenshotService
-		nil, // MCPRegistry
-		nil, // SkillExecutor
-		nil, // SkillCrystallizer
-		nil, // MemoryStoreOps
-		nil, // ContextManager
-		nil, // ToolCatalogChecker
-	)
-
-	// 9. IM_Adapter — create with a temporary nil identity resolver; we wire
+	// 2. IM_Adapter — create with a temporary nil identity resolver; we wire
 	//    the real one (PluginIdentityResolver) after plugin registration.
-	imAdapter := im.NewAdapter(nlRouter, bridgeExecutor, nil)
+	imAdapter := im.NewAdapter(messageRouter, nil)
 
 	// Wire the PluginIdentityResolver now that the adapter exists.
 	pluginIdentity := im.NewPluginIdentityResolver(imAdapter)
 	imAdapter.SetIdentityResolver(pluginIdentity)
 
-	// 10. Feishu_Plugin
+	// 3. Wire MessageRouter's agent response handler into the WebSocket Gateway
+	//    so im.agent_response messages from MaClaw clients are routed back.
+	wsResponder := &im.WSAgentResponder{Router: messageRouter}
+	gateway.SetIMResponder(wsResponder)
+
+	// 4. Feishu_Plugin
 	feishuPlugin := feishu.NewPlugin(feishuNotifier)
 
-	// 11. Register Feishu_Plugin with IM_Adapter
+	// 5. Register Feishu_Plugin with IM_Adapter
 	if err := imAdapter.RegisterPlugin(feishuPlugin); err != nil {
 		log.Printf("[bootstrap] failed to register feishu plugin: %v", err)
 	}
 
-	// 12. Wire the plugin back to the notifier so handleBotMessage routes
+	// 6. Wire the plugin back to the notifier so handleBotMessage routes
 	//     through the IM Adapter pipeline.
 	feishuNotifier.SetPlugin(feishuPlugin)
 	feishuPlugin.SetAdapter(imAdapter)
+
+	// 7. OpenClaw IM Webhook Plugin — enables external IM adapters to
+	//     communicate with Hub via the OpenClaw IM protocol.
+	openclawIMPlugin := im.NewWebhookIMPlugin("openclaw", func() im.WebhookConfig {
+		raw, err := st.System.Get(context.Background(), "openclaw_im_config")
+		if err != nil || raw == "" {
+			return im.WebhookConfig{}
+		}
+		var cfg struct {
+			Enabled    bool   `json:"enabled"`
+			WebhookURL string `json:"webhook_url"`
+			Secret     string `json:"secret"`
+		}
+		if json.Unmarshal([]byte(raw), &cfg) != nil || !cfg.Enabled {
+			return im.WebhookConfig{}
+		}
+		return im.WebhookConfig{WebhookURL: cfg.WebhookURL, Secret: cfg.Secret}
+	})
+	if err := imAdapter.RegisterPlugin(openclawIMPlugin); err != nil {
+		log.Printf("[bootstrap] failed to register openclaw IM plugin: %v", err)
+	}
+
+	// 8. QQBot Plugin — connects to QQ Bot via WebSocket gateway
+	qqbotPlugin := qqbot.New(func() qqbot.Config {
+		raw, err := st.System.Get(context.Background(), "qqbot_config")
+		if err != nil || raw == "" {
+			return qqbot.Config{}
+		}
+		var cfg qqbot.Config
+		if json.Unmarshal([]byte(raw), &cfg) != nil {
+			return qqbot.Config{}
+		}
+		return cfg
+	}, st.Users, st.System, mailer)
+	if err := imAdapter.RegisterPlugin(qqbotPlugin); err != nil {
+		log.Printf("[bootstrap] failed to register qqbot plugin: %v", err)
+	}
+	// Start QQBot WebSocket gateway if configured
+	if err := qqbotPlugin.Start(context.Background()); err != nil {
+		log.Printf("[bootstrap] failed to start qqbot plugin: %v", err)
+	}
+
+	// 9. Cross-IM NotifyBroadcaster — sends verification codes to all
+	//    reachable channels (email + any already-bound IM platforms).
+	broadcaster := im.NewNotifyBroadcaster(imAdapter, mailer)
+	qqbotPlugin.SetBroadcaster(broadcaster)
+	feishuNotifier.SetBroadcaster(broadcaster)
 
 	// Register session event listener — routes through IM Adapter when available,
 	// falls back to legacy notifier path.
@@ -165,9 +166,8 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		invitationService,
 		st.System,
 		feishuNotifier,
-		skillExecutor,
-		skillCrystallizer,
-		mcpRegistry,
+		openclawIMPlugin,
+		qqbotPlugin,
 		cfg.PWA.StaticDir,
 		cfg.PWA.RoutePrefix,
 	)
@@ -184,15 +184,11 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		WSGateway:       gateway,
 		HTTPHandler:     router,
 
-		// New NL / IM modules
-		MemoryStore:       memoryStore,
-		DiscoveryProtocol: discoveryProtocol,
-		MCPRegistry:       mcpRegistry,
-		SkillExecutor:     skillExecutor,
-		SkillCrystallizer: skillCrystallizer,
-		NLRouter:          nlRouter,
-		ContextWindowMgr:  contextWindowMgr,
-		IMAdapter:         imAdapter,
-		FeishuPlugin:      feishuPlugin,
+		// Agent Passthrough IM modules
+		MessageRouter:    messageRouter,
+		IMAdapter:        imAdapter,
+		FeishuPlugin:     feishuPlugin,
+		OpenclawIMPlugin: openclawIMPlugin,
+		QQBotPlugin:      qqbotPlugin,
 	}, nil
 }

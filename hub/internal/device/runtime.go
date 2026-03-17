@@ -64,6 +64,7 @@ type MachineRuntimeInfo struct {
 	LastSeenAt           *time.Time `json:"last_seen_at,omitempty"`
 	Role                 string     `json:"role,omitempty"`
 	Online               bool       `json:"online"`
+	LLMConfigured        bool       `json:"llm_configured"`
 }
 
 type MachineEvent struct {
@@ -155,6 +156,12 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 	info.Online = true
 	info.Status = "online"
 	info.LastSeenAt = &now
+	// Extract LLM configuration status from capabilities.
+	if caps, ok := hello.Capabilities["llm_configured"]; ok {
+		if v, ok := caps.(bool); ok {
+			info.LLMConfigured = v
+		}
+	}
 	s.runtime.metadataByMachine[machineID] = info
 	s.runtime.lastHeartbeatAt[machineID] = now
 	s.appendEventLocked(MachineEvent{
@@ -204,6 +211,9 @@ func (s *Service) Heartbeat(ctx context.Context, machineID string, heartbeat ws.
 	}
 	info.Online = true
 	info.Status = "online"
+	if heartbeat.LLMConfigured != nil {
+		info.LLMConfigured = *heartbeat.LLMConfigured
+	}
 	lastAccepted := s.runtime.lastHeartbeatAt[machineID]
 	shouldAccept := lastAccepted.IsZero() || now.Sub(lastAccepted) >= 5*time.Second
 	if shouldAccept {

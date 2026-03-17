@@ -497,6 +497,21 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         }
     };
 
+    // Load remote tool metadata for any tool tab so the local/remote toggle renders correctly
+    useEffect(() => {
+        if (remoteToolMetadata.length > 0) return; // already loaded
+        ListRemoteToolMetadata()
+            .then((list) => {
+                const tools = list || [];
+                setRemoteToolMetadata(tools);
+                const nextVisibleTools = tools.filter((tool) => tool.visible !== false);
+                if (nextVisibleTools.length > 0 && !nextVisibleTools.some((tool) => tool.name === selectedRemoteTool)) {
+                    setSelectedRemoteTool(nextVisibleTools[0].name as RemoteToolName);
+                }
+            })
+            .catch((err) => console.error("Failed to load remote tool metadata:", err));
+    }, []);
+
     useEffect(() => {
         if (navTab !== "settings" && navTab !== "remote") return;
         ListRemoteToolMetadata()

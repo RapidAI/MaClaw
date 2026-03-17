@@ -6,12 +6,16 @@ import (
 )
 
 // GeminiAdapter launches the Gemini CLI (google-gemini/gemini-cli).
-// Gemini CLI's headless mode (--output-format stream-json) is single-shot:
-// it requires a prompt via -p or stdin, executes once, then exits.
-// Unlike Claude Code, it does NOT support --input-format stream-json for
-// persistent stdin-based multi-turn interaction.
-// Therefore Gemini runs in PTY mode (interactive TUI) so the process stays
-// alive and accepts user input continuously.
+// Gemini CLI supports --experimental-acp which exposes a JSON-RPC based
+// Agent Communication Protocol on stdin/stdout for structured bidirectional
+// communication.  This is similar to Claude Code's --input-format stream-json
+// but uses JSON-RPC instead of stream-json.
+//
+// The ACP protocol flow:
+//  1. initialize → handshake with protocol version
+//  2. session/new → create a new session
+//  3. session/prompt → send user messages (streams session/update notifications)
+//  4. session/cancel → interrupt current prompt
 type GeminiAdapter struct {
 	app *App
 }
@@ -25,7 +29,7 @@ func (a *GeminiAdapter) ProviderName() string {
 }
 
 func (a *GeminiAdapter) ExecutionMode() ExecutionMode {
-	return ExecModePTY
+	return ExecModeGeminiACP
 }
 
 func (a *GeminiAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
@@ -35,8 +39,8 @@ func (a *GeminiAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		return CommandSpec{}, fmt.Errorf("gemini is not installed")
 	}
 
-	// Ensure Gemini CLI's first-run theme selection is pre-configured
-	// so it doesn't block the remote PTY session with interactive prompts.
+	// Ensure Gemini CLI's first-run settings are pre-configured
+	// so it doesn't block with interactive prompts.
 	if err := ensureGeminiOnboardingComplete(a.app); err != nil {
 		if a.app != nil {
 			a.app.log(fmt.Sprintf("[gemini-adapter] onboarding pre-check warning: %v", err))
@@ -47,18 +51,16 @@ func (a *GeminiAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	// so Gemini CLI uses its own Google OAuth login and default settings.
 	isOriginal := strings.ToLower(strings.TrimSpace(spec.ModelName)) == "original"
 
-	extra := map[string]string{}
-	if !isOriginal && spec.ModelID != "" {
-		extra["GEMINI_MODEL"] = spec.ModelID
-	}
-	env := buildOpenAICompatibleCommandEnv(spec.Env, extra)
+	env := buildOpenAICompatibleCommandEnv(spec.Env, map[string]string{})
 
-	args := make([]string, 0, 8)
+	// ACP mode: use --experimental-acp for structured JSON-RPC communication
+	args := []string{"--experimental-acp"}
+
 	if !isOriginal && spec.ModelID != "" {
 		args = append(args, "--model", spec.ModelID)
 	}
 	if spec.YoloMode {
-		args = append(args, "--sandbox", "none")
+		args = append(args, "--yolo")
 	}
 
 	return CommandSpec{
@@ -66,7 +68,5 @@ func (a *GeminiAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		Args:    args,
 		Cwd:     spec.ProjectPath,
 		Env:     env,
-		Cols:    120,
-		Rows:    32,
 	}, nil
 }

@@ -10,8 +10,9 @@ import iflowIcon from './assets/images/iflow.png';
 import opencodeIcon from './assets/images/opencode.png';
 import kiloIcon from './assets/images/KiloCode.png';
 import cursorIcon from './assets/images/qodercli.png';
-import kodeIcon from './assets/images/Kodecli.png';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs } from "../wailsjs/go/main/App";
+import lobsterOnline from './assets/images/lobster_online.svg';
+import lobsterOffline from './assets/images/lobster_offline.svg';
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -129,7 +130,7 @@ const recommendedModels: { [provider: string]: { id: string; note?: string }[] }
 const APP_VERSION = "5.0.0.9300"
 
 // Tool name constants to avoid repeated string arrays
-const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'cursor', 'iflow', 'kilo', 'kode'] as const;
+const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'cursor', 'iflow', 'kilo'] as const;
 const SKILL_TOOLS = ['claude', 'gemini', 'codex'] as const;
 const isToolTab = (tab: string): boolean => (TOOL_NAMES as readonly string[]).includes(tab);
 const isSkillTool = (tab: string): boolean => (SKILL_TOOLS as readonly string[]).includes(tab);
@@ -275,8 +276,6 @@ const translations: any = {
         "iflowDesc": "iFlow AI Programming Assistant",
         "kilo": "Kilo Code CLI",
         "kiloDesc": "Kilo Code AI Programming Assistant",
-        "kode": "Kode CLI",
-        "kodeDesc": "Kode AI Programming Assistant",
         "bugReport": "Problem Feedback",
         "businessCooperation": "Business: WeChat znsoft",
         "original": "Original",
@@ -637,8 +636,6 @@ const translations: any = {
         "iflowDesc": "iFlow AI 辅助编程",
         "kilo": "Kilo Code CLI",
         "kiloDesc": "Kilo Code AI 辅助编程",
-        "kode": "Kode CLI",
-        "kodeDesc": "Kode AI 辅助编程",
         "bugReport": "问题反馈",
         "businessCooperation": "商业合作：微信 znsoft",
         "original": "原厂",
@@ -975,8 +972,6 @@ const translations: any = {
         "iflowDesc": "iFlow AI 輔助編程",
         "kilo": "Kilo Code CLI",
         "kiloDesc": "Kilo Code AI 輔助編程",
-        "kode": "Kode CLI",
-        "kodeDesc": "Kode AI 輔助編程",
         "bugReport": "問題反饋",
         "businessCooperation": "商業合作：微信 znsoft",
         "original": "原廠",
@@ -1324,6 +1319,10 @@ function App() {
     const [showStartupPopup, setShowStartupPopup] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
+
+    // MaClaw LLM online status (lobster indicator)
+    const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
+    const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
 
     // Ref to prevent multiple hide clicks
     const isHidingRef = useRef(false);
@@ -1831,7 +1830,7 @@ function App() {
             // Sync with tray menu changes
             const tool = cfg.active_tool || "message";
             setNavTab(tool);
-            if (tool === 'claude' || tool === 'gemini' || tool === 'codex' || tool === 'opencode' || tool === 'codebuddy' || tool === 'cursor' || tool === 'iflow' || tool === 'kilo' || tool === 'kode') {
+            if (tool === 'claude' || tool === 'gemini' || tool === 'codex' || tool === 'opencode' || tool === 'codebuddy' || tool === 'cursor' || tool === 'iflow' || tool === 'kilo') {
                 setActiveTool(tool);
                 const toolCfg = (cfg as any)[tool];
                 if (toolCfg && toolCfg.models) {
@@ -1905,6 +1904,23 @@ function App() {
             EventsOff("tools-install-done");
         };
     }, []);
+
+    // Poll MaClaw LLM status every 60 seconds.
+    // Also re-ping immediately when the user navigates to/from the LLM settings
+    // tab (settingsTab changes), which covers the "just saved config" scenario.
+    useEffect(() => {
+        const pingLLM = () => {
+            PingMaclawLLM().then((s: any) => {
+                setMaclawLLMOnline(!!s.online);
+                setMaclawLLMConfigured(!!s.configured);
+            }).catch(() => {
+                setMaclawLLMOnline(false);
+            });
+        };
+        pingLLM();
+        const timer = setInterval(pingLLM, 60000);
+        return () => clearInterval(timer);
+    }, [settingsTab]);
 
     const checkTools = async () => {
         try {
@@ -2254,7 +2270,7 @@ function App() {
         } else if (activeTool === 'gemini') {
             return 'gemini';
         } else {
-            return 'openai'; // codex, opencode, codebuddy, iflow, kilo, kode
+            return 'openai'; // codex, opencode, codebuddy, iflow, kilo
         }
     };
 
@@ -2364,7 +2380,7 @@ function App() {
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
-        } else if (tool === "opencode" || tool === "codebuddy" || tool === "iflow" || tool === "kilo" || tool === "kode") {
+        } else if (tool === "opencode" || tool === "codebuddy" || tool === "iflow" || tool === "kilo") {
             if (p.includes("deepseek")) return "deepseek-chat";
             if (p.includes("glm")) return "glm-4.7";
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
@@ -2825,13 +2841,34 @@ ${instruction}`;
                         fontSize: '0.7rem',
                         fontWeight: 'bold',
                         textAlign: 'center',
-                        marginBottom: '15px',
+                        marginBottom: '4px',
                         background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
                         WebkitBackgroundClip: 'text',
                         WebkitTextFillColor: 'transparent',
                         display: 'inline-block',
                         width: '100%'
                     }}>MaClaw</div>
+                    <div
+                        title={maclawLLMOnline
+                            ? (lang?.startsWith('zh') ? 'MaClaw Agent 在线' : 'MaClaw Agent Online')
+                            : maclawLLMConfigured
+                                ? (lang?.startsWith('zh') ? 'MaClaw Agent 离线' : 'MaClaw Agent Offline')
+                                : (lang?.startsWith('zh') ? 'LLM 未配置' : 'LLM Not Configured')}
+                        style={{
+                            textAlign: 'center',
+                            marginBottom: '10px',
+                            cursor: 'pointer',
+                            opacity: maclawLLMOnline ? 1 : 0.6,
+                            transition: 'opacity 0.3s ease',
+                        }}
+                        onClick={() => { setNavTab('settings'); setSettingsTab('llm'); }}
+                    >
+                        <img
+                            src={maclawLLMOnline ? lobsterOnline : lobsterOffline}
+                            alt={maclawLLMOnline ? 'Online' : 'Offline'}
+                            style={{ width: '20px', height: '20px' }}
+                        />
+                    </div>
 
                     <div
                         className={`sidebar-item ${navTab === 'message' ? 'active' : ''}`}
@@ -2929,7 +2966,7 @@ ${instruction}`;
                                 </span> <span>CodeBuddy</span>
                             </div>
                         )}
-                        {(config as any)?.show_cursor !== false && (
+                        {!isWindows && config?.show_cursor !== false && (
                             <div className={`sidebar-item ${navTab === 'cursor' ? 'active' : ''}`} onClick={() => switchTool('cursor')}>
                                 <span className="sidebar-icon">
                                     <img src={cursorIcon} style={{ width: '1.1em', height: '1.1em', verticalAlign: 'middle' }} alt="Cursor" />
@@ -2948,13 +2985,6 @@ ${instruction}`;
                                 <span className="sidebar-icon">
                                     <img src={kiloIcon} style={{ width: '1.1em', height: '1.1em', verticalAlign: 'middle' }} alt="Kilo Code" />
                                 </span> <span>Kilo Code</span>
-                            </div>
-                        )}
-                        {config?.show_kode !== false && (
-                            <div className={`sidebar-item ${navTab === 'kode' ? 'active' : ''}`} onClick={() => switchTool('kode')}>
-                                <span className="sidebar-icon">
-                                    <img src={kodeIcon} style={{ width: '1.1em', height: '1.1em', verticalAlign: 'middle' }} alt="Kode CLI" />
-                                </span> <span>Kode CLI</span>
                             </div>
                         )}
 
@@ -2976,7 +3006,6 @@ ${instruction}`;
                                                         navTab === 'cursor' ? 'Cursor Agent' :
                                                                             navTab === 'iflow' ? 'iFlow CLI' :
                                                                 navTab === 'kilo' ? 'Kilo Code CLI' :
-                                                                    navTab === 'kode' ? 'Kode CLI' :
                                                                         navTab === 'projects' ? t("projectManagement") :
                                                                     navTab === 'skills' ? t("skills") :
                                                                         navTab === 'tutorial' ? t("tutorial") :
@@ -3850,7 +3879,7 @@ ${instruction}`;
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'llm' ? 'block' : 'none' }}>
-                                <LLMConfigPanel lang={lang} />
+                                <LLMConfigPanel lang={lang} codexModels={config?.codex?.models} />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
@@ -3917,12 +3946,13 @@ ${instruction}`;
                                         />
                                         <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>CodeBuddy</span>
                                     </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: isWindows ? 'not-allowed' : 'pointer', opacity: isWindows ? 0.5 : 1 }}>
                                         <input
                                             type="checkbox"
-                                            checked={(config as any)?.show_cursor !== false}
+                                            checked={isWindows ? false : config?.show_cursor !== false}
+                                            disabled={isWindows}
                                             onChange={(e) => {
-                                                if (config) {
+                                                if (config && !isWindows) {
                                                     const newConfig = new main.AppConfig({ ...config, show_cursor: e.target.checked });
                                                     setConfig(newConfig);
                                                     SaveConfig(newConfig);
@@ -3930,7 +3960,7 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>Cursor Agent</span>
+                                        <span style={{ fontSize: '0.8rem', color: isWindows ? '#9ca3af' : '#4b5563' }}>Cursor Agent{isWindows ? ' (macOS/Linux)' : ''}</span>
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                         <input
@@ -3961,21 +3991,6 @@ ${instruction}`;
                                             style={{ width: '16px', height: '16px' }}
                                         />
                                         <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>Kilo Code CLI</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_kode !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_kode: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>Kode CLI</span>
                                     </label>
                                 </div>
                             </div>
@@ -4260,9 +4275,7 @@ ${instruction}`;
                             </div>
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '15px' }}>
-                                {isRemoteCapableActiveTool && (
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    {/* launchModeLabel removed */}
                                     <div style={{ display: 'inline-flex', padding: '3px', borderRadius: '999px', border: '1px solid #e0e7ff', background: '#eef2ff' }}>
                                         <button
                                             type="button"
@@ -4287,6 +4300,7 @@ ${instruction}`;
                                         <button
                                             type="button"
                                             onClick={() => {
+                                                if (!isRemoteCapableActiveTool) return;
                                                 const newConfig = new main.AppConfig({ ...config, remote_enabled: true });
                                                 setConfig(newConfig);
                                                 SaveConfig(newConfig);
@@ -4299,15 +4313,15 @@ ${instruction}`;
                                                 color: config?.remote_enabled ? '#ffffff' : '#475569',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
-                                                cursor: 'pointer'
+                                                cursor: isRemoteCapableActiveTool ? 'pointer' : 'not-allowed',
+                                                opacity: isRemoteCapableActiveTool ? 1 : 0.4
                                             }}
-                                            title={t("remoteModeDesc")}
+                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : (lang === 'zh-Hans' ? '当前工具暂不支持远程' : lang === 'zh-Hant' ? '目前工具暫不支援遠端' : 'This tool does not support remote mode')}
                                         >
                                             {t("remoteModeLabel")}
                                         </button>
                                     </div>
                                 </div>
-                                )}
                                 {config?.remote_enabled && (
                                     <div
                                         style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', background: remoteActivationStatus?.activated ? '#f0fdf4' : '#fffbeb', border: `1px solid ${remoteActivationStatus?.activated ? '#bbf7d0' : '#fde68a'}`, borderRadius: '999px', cursor: remoteActivationStatus?.activated ? 'default' : 'pointer' }}
@@ -4497,7 +4511,7 @@ ${instruction}`;
                                         const selectedProj = resolvedLaunchProject;
                                         if (selectedProj && selectedProj.path && selectedProj.path.trim() !== "") {
                                             if (config?.remote_enabled) {
-                                                if (!isRemoteCapableActiveTool) {
+                                                if (remoteToolMetadata.length > 0 && !isRemoteCapableActiveTool) {
                                                     setStatus(lang === 'zh-Hans' ? '当前工具暂不支持远程启动' : lang === 'zh-Hant' ? '目前工具暫不支援遠端啟動' : 'This tool does not support remote launch');
                                                     return;
                                                 }
@@ -4624,7 +4638,20 @@ ${instruction}`;
                     <span key={status} style={{ color: (status.includes("Error") || status.includes("!") || status.includes("first")) ? '#ef4444' : '#10b981' }}>
                         {status}
                     </span>
-                    {backgroundInstallStatus && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        {!maclawLLMOnline && !(navTab === 'settings' && settingsTab === 'llm') && (
+                            <span
+                                style={{ fontSize: '0.72rem', color: '#f59e0b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
+                                onClick={() => { setNavTab('settings'); setSettingsTab('llm'); }}
+                                title={lang?.startsWith('zh') ? '点击配置 LLM' : 'Click to configure LLM'}
+                            >
+                                <img src={lobsterOffline} alt="" style={{ width: '14px', height: '14px' }} />
+                                {maclawLLMConfigured
+                                    ? (lang?.startsWith('zh') ? 'LLM 无法连接，无法响应远程命令' : 'LLM unreachable, remote commands unavailable')
+                                    : (lang?.startsWith('zh') ? 'MaClaw 未配置 LLM，无法响应远程命令' : 'LLM not configured, remote commands unavailable')}
+                            </span>
+                        )}
+                        {backgroundInstallStatus && (
                         <span style={{ 
                             fontSize: '0.75rem', 
                             color: backgroundInstallStatus.startsWith('✓') ? '#10b981' : '#9ca3af',
@@ -4646,6 +4673,7 @@ ${instruction}`;
                             {backgroundInstallStatus}
                         </span>
                     )}
+                    </div>
                 </div>
             </div>
 

@@ -157,14 +157,6 @@ export function UpdateNLSkill(arg1:any):Promise<void>;
 
 export function DeleteNLSkill(arg1:string):Promise<void>;
 
-export function ListCandidateSkills():Promise<Array<any>>;
-
-export function ConfirmCandidateSkill(arg1:any):Promise<void>;
-
-export function IgnoreCandidateSkill(arg1:string):Promise<void>;
-
-export function UploadNLSkillPackage():Promise<any>;
-
 // MCP management bindings
 export function ListMCPServers():Promise<Array<any>>;
 
@@ -183,4 +175,10 @@ export function GetMaclawLLMConfig():Promise<any>;
 
 export function SaveMaclawLLMConfig(arg1:any):Promise<void>;
 
+export function GetMaclawLLMProviders():Promise<any>;
+
+export function SaveMaclawLLMProviders(arg1:any, arg2:string):Promise<void>;
+
 export function TestMaclawLLM(arg1:any):Promise<string>;
+
+export function PingMaclawLLM():Promise<any>;

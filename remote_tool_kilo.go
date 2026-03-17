@@ -68,59 +68,6 @@ func (a *KiloAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	}, nil
 }
 
-type KodeAdapter struct {
-	app *App
-}
-
-func NewKodeAdapter(app *App) *KodeAdapter {
-	return &KodeAdapter{app: app}
-}
-
-func (a *KodeAdapter) ProviderName() string {
-	return "kode"
-}
-
-func (a *KodeAdapter) ExecutionMode() ExecutionMode {
-	return ExecModePTY
-}
-
-func (a *KodeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
-	if spec.SessionID == "" {
-		return CommandSpec{}, fmt.Errorf("kode session id is required")
-	}
-
-	// Ensure Kode's first-run onboarding wizard is pre-configured
-	// so it doesn't block the remote PTY session with interactive prompts.
-	if err := ensureKodeOnboardingComplete(a.app, spec.ProjectPath); err != nil {
-		if a.app != nil {
-			a.app.log(fmt.Sprintf("[kode-adapter] onboarding pre-check warning: %v", err))
-		}
-	}
-
-	cfg, err := a.app.LoadConfig()
-	if err != nil {
-		return CommandSpec{}, err
-	}
-	if err := a.app.syncToKodeSettings(cfg, spec.ProjectPath, spec.SessionID); err != nil {
-		return CommandSpec{}, err
-	}
-
-	tm := NewToolManager(a.app)
-	status := tm.GetToolStatus("kode")
-	if !status.Installed || status.Path == "" {
-		return CommandSpec{}, fmt.Errorf("kode is not installed")
-	}
-
-	env := buildOpenAICompatibleCommandEnv(spec.Env, nil)
-	return CommandSpec{
-		Command: resolveWindowsSidecarExecutable(status.Path, []string{"kode.exe"}),
-		Cwd:     spec.ProjectPath,
-		Env:     env,
-		Cols:    120,
-		Rows:    32,
-	}, nil
-}
-
 func buildOpenAICompatibleCommandEnv(base map[string]string, extra map[string]string) map[string]string {
 	env := map[string]string{}
 	for k, v := range base {

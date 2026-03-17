@@ -166,6 +166,10 @@ type RemoteSession struct {
 	Exec     ExecutionHandle
 	Provider ProviderAdapter
 
+	// Permissions manages tool-use permission requests for this session.
+	// Initialized based on the session's YoloMode setting.
+	Permissions *PermissionHandler
+
 	workspaceRelease func()
 	configCleanup    func() // restores tool config files modified by onboarding
 }

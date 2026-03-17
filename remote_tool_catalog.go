@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"unicode"
 )
@@ -73,6 +74,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		UsesOpenAICompat:      true,
 		RequiresSessionConfig: true,
 		SupportsProxy:         true,
+		SupportsRemote:        true,
 		ReadinessHint:         "Checks OpenCode config sync, OpenAI-compatible endpoints, and isolated session config.",
 		SmokeHint:             "Runs registration, PTY, launch, real session start, and Hub visibility verification for OpenCode.",
 		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.Opencode },
@@ -86,6 +88,7 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		UsesOpenAICompat:      true,
 		RequiresSessionConfig: true,
 		SupportsProxy:         true,
+		SupportsRemote:        true,
 		ReadinessHint:         "Checks iFlow config sync plus IFLOW and OpenAI-compatible environment wiring.",
 		SmokeHint:             "Runs registration, PTY, launch, real session start, and Hub visibility verification for iFlow.",
 		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.IFlow },
@@ -99,24 +102,13 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		UsesOpenAICompat:      true,
 		RequiresSessionConfig: true,
 		SupportsProxy:         true,
+		SupportsRemote:        true,
 		ReadinessHint:         "Checks Kilo config sync plus KILO and OpenAI-compatible environment wiring.",
 		SmokeHint:             "Runs registration, PTY, launch, real session start, and Hub visibility verification for Kilo.",
 		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.Kilo },
 		ProviderFactory:       func(app *App) ProviderAdapter { return NewKiloAdapter(app) },
 	},
-	"kode": {
-		Name:                  "kode",
-		DisplayName:           "Kode (Experimental)",
-		BinaryName:            "kode",
-		DefaultTitle:          "Kode Session",
-		UsesOpenAICompat:      true,
-		RequiresSessionConfig: true,
-		SupportsProxy:         true,
-		ReadinessHint:         "Checks Kode profile generation and OpenAI-compatible endpoint wiring.",
-		SmokeHint:             "Runs registration, PTY, launch, real session start, and Hub visibility verification for Kode.",
-		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.Kode },
-		ProviderFactory:       func(app *App) ProviderAdapter { return NewKodeAdapter(app) },
-	},
+
 	"gemini": {
 		Name:           "gemini",
 		DisplayName:    "Gemini",
@@ -124,8 +116,8 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		DefaultTitle:   "Gemini Session",
 		SupportsProxy:  true,
 		SupportsRemote: true,
-		ReadinessHint:  "Checks Gemini CLI installation, API key, and SDK stream-json readiness.",
-		SmokeHint:      "Runs registration, launch, real session start, and Hub visibility verification for Gemini (SDK mode).",
+		ReadinessHint:  "Checks Gemini CLI installation, API key, and ACP protocol readiness.",
+		SmokeHint:      "Runs registration, launch, real session start, and Hub visibility verification for Gemini (ACP mode).",
 		ConfigSelector: func(cfg AppConfig) ToolConfig { return cfg.Gemini },
 		ProviderFactory: func(app *App) ProviderAdapter { return NewGeminiAdapter(app) },
 	},
@@ -210,14 +202,7 @@ func (a *App) remoteProviderAdapter(toolName string) (ProviderAdapter, error) {
 	return meta.ProviderFactory(a), nil
 }
 
-// listRemoteToolMetadata is unused dead code — use listRemoteToolMetadataForApp instead.
-func listRemoteToolMetadata() []RemoteToolMetadataView {
-	return nil
-}
-
 // remoteToolSupported returns true if the tool supports remote mode.
-// Currently claude, codex, gemini, cursor, and codebuddy are supported;
-// others may be enabled after further investigation.
 func remoteToolSupported(toolName string) bool {
 	meta, ok := lookupRemoteToolMetadata(toolName)
 	if !ok {
@@ -238,12 +223,10 @@ func remoteToolVisible(cfg AppConfig, toolName string) bool {
 		return cfg.ShowIFlow
 	case "kilo":
 		return cfg.ShowKilo
-	case "kode":
-		return cfg.ShowKode
 	case "gemini":
 		return cfg.ShowGemini
 	case "cursor":
-		return cfg.ShowCursor
+		return cfg.ShowCursor && runtime.GOOS != "windows"
 	case "codebuddy":
 		return cfg.ShowCodeBuddy
 	default:
@@ -252,7 +235,7 @@ func remoteToolVisible(cfg AppConfig, toolName string) bool {
 }
 
 func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
-	order := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo", "kode"}
+	order := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo"}
 	out := make([]RemoteToolMetadataView, 0, len(order))
 	cfg, err := app.LoadConfig()
 	if err != nil {
@@ -264,7 +247,6 @@ func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
 			ShowCodeBuddy: true,
 			ShowIFlow:     true,
 			ShowKilo:      true,
-			ShowKode:      true,
 		}
 	}
 	toolManager := NewToolManager(app)

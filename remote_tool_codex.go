@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -31,7 +32,14 @@ func (a *CodexAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	tm := NewToolManager(a.app)
 	status := tm.GetToolStatus("codex")
 	if !status.Installed || status.Path == "" {
-		return CommandSpec{}, fmt.Errorf("codex is not installed")
+		return CommandSpec{}, fmt.Errorf("codex is not installed (installed=%v, path=%q)", status.Installed, status.Path)
+	}
+
+	resolvedPath := resolveWindowsSidecarExecutable(status.Path, []string{"codex.exe", "openai.exe"})
+	if info, err := os.Stat(resolvedPath); err != nil {
+		return CommandSpec{}, fmt.Errorf("codex binary not accessible: %s (resolved from %s): %w", resolvedPath, status.Path, err)
+	} else if info.IsDir() {
+		return CommandSpec{}, fmt.Errorf("codex path is a directory, not executable: %s", resolvedPath)
 	}
 
 	// In original (OpenAI native) mode, don't inject model or wire_api
@@ -49,6 +57,13 @@ func (a *CodexAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	}
 	env := buildOpenAICompatibleCommandEnv(spec.Env, extra)
 
+	// Validate project path exists.
+	if spec.ProjectPath != "" {
+		if _, err := os.Stat(spec.ProjectPath); err != nil {
+			return CommandSpec{}, fmt.Errorf("codex project path not accessible: %s: %w", spec.ProjectPath, err)
+		}
+	}
+
 	// Use `codex exec` sub-command for non-interactive structured output.
 	// --json streams JSONL events to stdout (thread.started, item.*, turn.*).
 	// --full-auto allows file edits and command execution without prompts.
@@ -63,7 +78,7 @@ func (a *CodexAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	}
 
 	return CommandSpec{
-		Command: resolveWindowsSidecarExecutable(status.Path, []string{"codex.exe", "openai.exe"}),
+		Command: resolvedPath,
 		Args:    args,
 		Cwd:     spec.ProjectPath,
 		Env:     env,

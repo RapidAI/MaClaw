@@ -183,6 +183,11 @@ func (tm *ToolManager) InstallTool(name string) error {
 		return tm.installClaudeNative("latest")
 	}
 
+	// Use native installation for Cursor Agent (not an npm package)
+	if name == "cursor" {
+		return tm.installCursorAgent()
+	}
+
 	npmPath := tm.getNpmPath()
 	if npmPath == "" {
 		return fmt.Errorf("npm not found. Please ensure Node.js is installed.")
@@ -363,6 +368,11 @@ func (tm *ToolManager) UpdateTool(name string) error {
 	// Use native update for Claude Code
 	if name == "claude" {
 		return tm.installClaudeNative("latest")
+	}
+
+	// Use native update for Cursor Agent
+	if name == "cursor" {
+		return tm.installCursorAgent()
 	}
 
 	// Verify the tool is installed in our private directory first
@@ -665,6 +675,166 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 	}
 
 	tm.app.log(tm.app.tr("✓ Claude Code %s installed successfully!", status.Version))
+	return nil
+}
+
+// installCursorAgent downloads and installs the Cursor Agent CLI binary.
+// Cursor Agent is distributed as a tar.gz package from downloads.cursor.com.
+// On Windows it is not officially supported natively, so we skip gracefully.
+func (tm *ToolManager) installCursorAgent() error {
+	home, _ := os.UserHomeDir()
+	installDir := filepath.Join(home, ".cceasy", "tools", "bin")
+
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		return fmt.Errorf("failed to create install directory: %w", err)
+	}
+
+	// Determine platform
+	var goos, arch string
+	switch runtime.GOOS {
+	case "linux":
+		goos = "linux"
+	case "darwin":
+		goos = "darwin"
+	default:
+		return fmt.Errorf("cursor agent CLI is currently only supported on macOS and Linux (see https://docs.cursor.com/en/cli/installation)")
+	}
+	switch runtime.GOARCH {
+	case "amd64":
+		arch = "x64"
+	case "arm64":
+		arch = "arm64"
+	default:
+		return fmt.Errorf("unsupported architecture for cursor agent: %s", runtime.GOARCH)
+	}
+
+	// Step 1: Fetch the install script to extract the latest version tag
+	tm.app.log(tm.app.tr("Fetching Cursor Agent install metadata..."))
+	resp, err := http.Get("https://cursor.com/install")
+	if err != nil {
+		return fmt.Errorf("failed to fetch cursor install script: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("cursor install script returned HTTP %d", resp.StatusCode)
+	}
+	scriptBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read cursor install script: %w", err)
+	}
+	script := string(scriptBytes)
+
+	// Extract version from the install script (e.g. "2026.03.11-6dfa30c")
+	version := ""
+	for _, line := range strings.Split(script, "\n") {
+		// Look for the DOWNLOAD_URL line which contains the version
+		if strings.Contains(line, "downloads.cursor.com/lab/") {
+			// e.g. DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.03.11-6dfa30c/${OS}/${ARCH}/..."
+			parts := strings.Split(line, "downloads.cursor.com/lab/")
+			if len(parts) >= 2 {
+				rest := parts[1]
+				// version ends at the next /
+				if idx := strings.Index(rest, "/"); idx > 0 {
+					version = rest[:idx]
+				}
+			}
+		}
+	}
+	if version == "" {
+		return fmt.Errorf("failed to detect cursor agent version from install script")
+	}
+
+	tm.app.log(tm.app.tr("Cursor Agent version: %s", version))
+
+	// Step 2: Download the tar.gz package
+	downloadURL := fmt.Sprintf("https://downloads.cursor.com/lab/%s/%s/%s/agent-cli-package.tar.gz", version, goos, arch)
+	tm.app.log(tm.app.tr("Downloading Cursor Agent from: %s", downloadURL))
+
+	dlResp, err := http.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("failed to download cursor agent: %w", err)
+	}
+	defer dlResp.Body.Close()
+	if dlResp.StatusCode != 200 {
+		return fmt.Errorf("cursor agent download returned HTTP %d", dlResp.StatusCode)
+	}
+
+	tmpFile, err := os.CreateTemp("", "cursor-agent-*.tar.gz")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmpFile, dlResp.Body); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to download cursor agent package: %w", err)
+	}
+	tmpFile.Close()
+
+	// Step 3: Extract the tar.gz to a temp directory
+	extractDir, err := os.MkdirTemp("", "cursor-agent-extract-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp extract dir: %w", err)
+	}
+	defer os.RemoveAll(extractDir)
+
+	tarCmd := exec.Command("tar", "--strip-components=1", "-xzf", tmpPath, "-C", extractDir)
+	if out, err := tarCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to extract cursor agent package: %w\nOutput: %s", err, string(out))
+	}
+
+	// Step 4: Find the cursor-agent binary in the extracted directory and copy to install dir
+	binaryName := "cursor-agent"
+	extractedBinary := filepath.Join(extractDir, binaryName)
+	if _, err := os.Stat(extractedBinary); err != nil {
+		return fmt.Errorf("cursor-agent binary not found in extracted package")
+	}
+
+	targetPath := filepath.Join(installDir, binaryName)
+
+	// Remove old version if exists
+	if _, err := os.Stat(targetPath); err == nil {
+		for i := 0; i < 3; i++ {
+			err = os.Remove(targetPath)
+			if err == nil {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+	}
+
+	srcFile, err := os.Open(extractedBinary)
+	if err != nil {
+		return fmt.Errorf("failed to open extracted binary: %w", err)
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return fmt.Errorf("failed to create target binary: %w", err)
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return fmt.Errorf("failed to copy cursor-agent binary: %w", err)
+	}
+
+	// Also create an "agent" symlink for compatibility
+	agentPath := filepath.Join(installDir, "agent")
+	os.Remove(agentPath) // best effort
+	os.Symlink(binaryName, agentPath)
+
+	// Verify installation
+	tm.app.log(tm.app.tr("Verifying Cursor Agent installation..."))
+	time.Sleep(500 * time.Millisecond)
+
+	status := tm.GetToolStatus("cursor")
+	if !status.Installed {
+		return fmt.Errorf("installation completed but verification failed - cursor-agent not found")
+	}
+
+	tm.app.log(tm.app.tr("✓ Cursor Agent %s installed successfully!", status.Version))
 	return nil
 }
 

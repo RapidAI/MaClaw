@@ -39,6 +39,21 @@ type App struct {
 	remoteSessions    *RemoteSessionManager
 	powerStateMutex   sync.Mutex
 	powerStateProcess *exec.Cmd
+	mcpRegistry       *MCPRegistry
+	skillExecutor     *SkillExecutor
+	// Maclaw capability evolution components
+	riskAssessor        *RiskAssessor
+	policyEngine        *PolicyEngine
+	auditLog            *AuditLog
+	llmSecurityReview   *LLMSecurityReview
+	mdnsScanner         *MDNSScanner
+	projectScanner      *ProjectScanner
+	toolDefGenerator    *ToolDefinitionGenerator
+	toolRouter          *ToolRouter
+	experienceExtractor *ExperienceExtractor
+	orchestrator        *Orchestrator
+	sharedContext       *SharedContextStore
+	toolSelector        *ToolSelector
 }
 
 var OnConfigChanged func(AppConfig)
@@ -102,7 +117,6 @@ type AppConfig struct {
 	CodeBuddy            ToolConfig      `json:"codebuddy"`
 	IFlow                ToolConfig      `json:"iflow"`
 	Kilo                 ToolConfig      `json:"kilo"`
-	Kode                 ToolConfig      `json:"kode"`
 	Cursor               ToolConfig      `json:"cursor"`
 	Projects             []ProjectConfig `json:"projects"`
 	CurrentProject       string          `json:"current_project"` // ID of the current project
@@ -114,7 +128,6 @@ type AppConfig struct {
 	ShowCodeBuddy        bool            `json:"show_codebuddy"`
 	ShowIFlow            bool            `json:"show_iflow"`
 	ShowKilo             bool            `json:"show_kilo"`
-	ShowKode             bool            `json:"show_kode"`
 	ShowCursor           bool            `json:"show_cursor"`
 	Language             string          `json:"language"`
 	PowerOptimization    bool            `json:"power_optimization"`
@@ -143,9 +156,15 @@ type AppConfig struct {
 	RemoteClientID     string `json:"remote_client_id"`
 	DefaultLaunchMode  string `json:"default_launch_mode"` // "local" or "remote", default launch mode for tool area
 	// MaClaw LLM configuration — used by the desktop agent for intent analysis
-	MaclawLLMUrl   string `json:"maclaw_llm_url"`
-	MaclawLLMKey   string `json:"maclaw_llm_key"`
-	MaclawLLMModel string `json:"maclaw_llm_model"`
+	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
+	MaclawLLMKey             string              `json:"maclaw_llm_key"`
+	MaclawLLMModel           string              `json:"maclaw_llm_model"`
+	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
+	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
+	// Client-side MCP Server registry (Agent Passthrough architecture)
+	MCPServers []MCPServerEntry `json:"mcp_servers,omitempty"`
+	// Client-side NL Skill definitions (Agent Passthrough architecture)
+	NLSkills []NLSkillEntry `json:"nl_skills,omitempty"`
 }
 type Skill struct {
 	Name        string `json:"name"`
@@ -161,6 +180,63 @@ func NewApp() *App {
 		downloadCancelers: make(map[string]context.CancelFunc),
 		nodeInstallDone:   make(chan bool, 1), // Buffered channel to signal Node.js installation completion
 		toolInstallLocks:  make(map[string]bool),
+	}
+}
+
+// ensureRemoteInfra initializes remoteSessions, mcpRegistry, and skillExecutor
+// if they haven't been created yet. Call this before any remote operation.
+func (a *App) ensureRemoteInfra() {
+	if a.remoteSessions == nil {
+		a.remoteSessions = NewRemoteSessionManager(a)
+	}
+	if a.mcpRegistry == nil {
+		a.mcpRegistry = NewMCPRegistry(a)
+	}
+	if a.skillExecutor == nil {
+		a.skillExecutor = NewSkillExecutor(a, a.mcpRegistry, a.remoteSessions)
+	}
+	// Initialize Maclaw capability evolution components
+	if a.riskAssessor == nil {
+		a.riskAssessor = &RiskAssessor{}
+	}
+	if a.policyEngine == nil {
+		a.policyEngine = NewPolicyEngine()
+	}
+	if a.auditLog == nil {
+		homeDir := a.GetUserHomeDir()
+		al, err := NewAuditLog(filepath.Join(homeDir, ".cc", "audit"))
+		if err == nil {
+			a.auditLog = al
+		}
+	}
+	if a.llmSecurityReview == nil {
+		cfg := a.GetMaclawLLMConfig()
+		a.llmSecurityReview = NewLLMSecurityReview(cfg)
+	}
+	if a.mdnsScanner == nil {
+		a.mdnsScanner = NewMDNSScanner(a.mcpRegistry)
+	}
+	if a.projectScanner == nil {
+		a.projectScanner = NewProjectScanner(a.mcpRegistry)
+	}
+	if a.toolDefGenerator == nil {
+		a.toolDefGenerator = NewToolDefinitionGenerator(a.mcpRegistry, nil)
+	}
+	if a.toolRouter == nil {
+		a.toolRouter = NewToolRouter(a.toolDefGenerator)
+	}
+	if a.sharedContext == nil {
+		a.sharedContext = NewSharedContextStore()
+	}
+	if a.toolSelector == nil {
+		a.toolSelector = NewToolSelector()
+	}
+	if a.experienceExtractor == nil {
+		cfg := a.GetMaclawLLMConfig()
+		a.experienceExtractor = NewExperienceExtractor(a, a.skillExecutor, cfg)
+	}
+	if a.orchestrator == nil {
+		a.orchestrator = NewOrchestrator(a, a.remoteSessions, a.sharedContext, a.toolSelector)
 	}
 }
 
@@ -210,7 +286,7 @@ func (a *App) startup(ctx context.Context) {
 			a.SetLanguage(config.Language)
 		}
 		if config.RemoteMachineID != "" && config.RemoteMachineToken != "" && config.RemoteHubURL != "" {
-			a.remoteSessions = NewRemoteSessionManager(a)
+			a.ensureRemoteInfra()
 			hubClient := NewRemoteHubClient(a, a.remoteSessions)
 			a.remoteSessions.SetHubClient(hubClient)
 			_ = hubClient.Connect()
@@ -232,6 +308,9 @@ func (a *App) domReady(ctx context.Context) {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	if a.mdnsScanner != nil {
+		a.mdnsScanner.Stop()
+	}
 	a.platformShutdown()
 }
 
@@ -537,37 +616,6 @@ func (a *App) buildKiloLaunchEnv(
 	return env, nil
 }
 
-func (a *App) buildKodeLaunchEnv(
-	config AppConfig,
-	selectedModel *ModelConfig,
-	projectDir string,
-	useProxy bool,
-) (map[string]string, error) {
-	if selectedModel == nil {
-		return nil, fmt.Errorf("selected kode model is nil")
-	}
-
-	env := map[string]string{}
-	if selectedModel.ApiKey != "" {
-		env["OPENAI_API_KEY"] = selectedModel.ApiKey
-	}
-	if selectedModel.ModelUrl != "" {
-		env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
-	}
-
-	if useProxy {
-		proxyURL := a.resolveProjectProxyURL(config, projectDir)
-		if proxyURL != "" {
-			env["HTTP_PROXY"] = proxyURL
-			env["HTTPS_PROXY"] = proxyURL
-			env["http_proxy"] = proxyURL
-			env["https_proxy"] = proxyURL
-		}
-	}
-
-	return env, nil
-}
-
 func (a *App) buildGeminiLaunchEnv(
 	config AppConfig,
 	selectedModel *ModelConfig,
@@ -661,8 +709,6 @@ func (a *App) buildRemoteLaunchEnvForTool(
 		return a.buildIFlowLaunchEnv(config, selectedModel, projectDir, useProxy)
 	case "kilo":
 		return a.buildKiloLaunchEnv(config, selectedModel, projectDir, useProxy)
-	case "kode":
-		return a.buildKodeLaunchEnv(config, selectedModel, projectDir, useProxy)
 	case "gemini":
 		return a.buildGeminiLaunchEnv(config, selectedModel, projectDir, useProxy)
 	case "cursor":
@@ -948,8 +994,6 @@ func (a *App) toolNativeConfigPaths(tool string) (dir string, extras []string) {
 		return filepath.Join(home, ".iflow"), nil
 	case "kilo":
 		return filepath.Join(home, ".kilocode", "cli"), nil
-	case "kode":
-		return filepath.Join(home, ".kode", "cli"), nil
 	default:
 		return filepath.Join(home, "."+strings.ToLower(tool)), nil
 	}
@@ -1094,23 +1138,6 @@ func (a *App) getKiloConfigPaths(projectDir string, instanceID string) (string, 
 func (a *App) clearKiloConfig() {
 	a.backupToolNativeConfig("kilo")
 	a.log("Cleared Kilo Code configuration file (backed up)")
-}
-func (a *App) getKodeConfigPaths(projectDir string, instanceID string) (string, string) {
-	// Use project-specific config directory with instance ID to avoid cross-contamination
-	if projectDir != "" && instanceID != "" {
-		dir := filepath.Join(projectDir, ".aicoder", "kode", "cli", instanceID)
-		config := filepath.Join(dir, "config.json")
-		return dir, config
-	}
-	// Fallback to home directory (for backward compatibility)
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".kode", "cli")
-	config := filepath.Join(dir, "config.json")
-	return dir, config
-}
-func (a *App) clearKodeConfig() {
-	a.backupToolNativeConfig("kode")
-	a.log("Cleared Kode CLI configuration file (backed up)")
 }
 func (a *App) clearEnvVars() {
 	vars := []string{
@@ -1386,7 +1413,7 @@ stream_idle_timeout_ms = 120000
 		}
 		modelId := selectedModel.ModelId
 		if modelId == "" {
-			modelId = "glm-4.7"
+			modelId = "glm-5-turbo"
 		}
 		configToml = fmt.Sprintf(`model_provider = "glm"
 model = "%s"
@@ -1928,71 +1955,6 @@ func (a *App) syncToKiloSettings(config AppConfig, projectDir string, instanceID
 	return os.WriteFile(configPath, data, 0644)
 }
 
-func (a *App) syncToKodeSettings(config AppConfig, projectDir string, instanceID string) error {
-	// Kode CLI uses .kode.json configuration file
-	var selectedModel *ModelConfig
-	for _, m := range config.Kode.Models {
-		if m.ModelName == config.Kode.CurrentModel {
-			selectedModel = &m
-			break
-		}
-	}
-	if selectedModel == nil {
-		return fmt.Errorf("selected kode model not found")
-	}
-
-	var kodeConfigPath string
-	if projectDir != "" && instanceID != "" {
-		// Use project-specific config with instance ID
-		kodeConfigPath = filepath.Join(projectDir, ".aicoder", "kode", instanceID, "kode.json")
-	} else {
-		// Fallback to home directory
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		kodeConfigPath = filepath.Join(home, ".kode.json")
-	}
-
-	if err := os.MkdirAll(filepath.Dir(kodeConfigPath), 0755); err != nil {
-		return err
-	}
-
-	// Create model profile
-	modelProfile := map[string]interface{}{
-		"name":          fmt.Sprintf("Custom OpenAI-Compatible API %s", selectedModel.ModelId),
-		"provider":      "custom-openai",
-		"modelName":     selectedModel.ModelId,
-		"baseURL":       selectedModel.ModelUrl,
-		"apiKey":        selectedModel.ApiKey,
-		"maxTokens":     4096,
-		"contextLength": 128000,
-		"createdAt":     time.Now().UnixMilli(),
-		"isActive":      true,
-	}
-
-	// Create full config structure
-	kodeConfig := map[string]interface{}{
-		"modelProfiles": []interface{}{modelProfile},
-		"modelPointers": map[string]string{
-			"main":    selectedModel.ModelId,
-			"task":    selectedModel.ModelId,
-			"compact": selectedModel.ModelId,
-			"quick":   selectedModel.ModelId,
-		},
-		"defaultModelName":       selectedModel.ModelId,
-		"hasCompletedOnboarding": true,
-		"lastOnboardingVersion":  "2.0.3",
-	}
-
-	// Write config file
-	data, err := json.MarshalIndent(kodeConfig, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(kodeConfigPath, data, 0644)
-}
 func (a *App) syncToCodeBuddySettings(config AppConfig, projectPath string) error {
 	if projectPath == "" {
 		projectPath = a.GetCurrentProjectPath()
@@ -2150,11 +2112,6 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		envKey = "KILO_API_KEY"
 		envBaseUrl = "KILO_BASE_URL"
 		binaryName = "kilo"
-	case "kode":
-		toolCfg = config.Kode
-		envKey = "OPENAI_API_KEY"
-		envBaseUrl = "OPENAI_BASE_URL"
-		binaryName = "kode"
 	case "opencode":
 		toolCfg = config.Opencode
 		envKey = "OPENCODE_API_KEY"
@@ -2327,9 +2284,6 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		case "kilo":
 			// Kilo needs config file - use instanceID for isolation
 			a.syncToKiloSettings(config, projectDir, instanceID)
-		case "kode":
-			// Kode needs config file - use instanceID for isolation
-			a.syncToKodeSettings(config, projectDir, instanceID)
 		}
 	} else {
 		// --- ORIGINAL MODE: RESTORE NATIVE CONFIG ---
@@ -2354,7 +2308,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 	}
 
-	if config.RemoteEnabled && (strings.ToLower(toolName) == "claude" || strings.ToLower(toolName) == "codex" || strings.ToLower(toolName) == "opencode" || strings.ToLower(toolName) == "iflow" || strings.ToLower(toolName) == "kilo" || strings.ToLower(toolName) == "kode") {
+	if config.RemoteEnabled && (strings.ToLower(toolName) == "claude" || strings.ToLower(toolName) == "codex" || strings.ToLower(toolName) == "opencode" || strings.ToLower(toolName) == "iflow" || strings.ToLower(toolName) == "kilo") {
 		spec, err := a.buildRemoteLaunchSpec(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy)
 		if err != nil {
 			a.log("build remote launch spec failed: " + err.Error())
@@ -2362,7 +2316,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 
 		if a.remoteSessions == nil {
-			a.remoteSessions = NewRemoteSessionManager(a)
+			a.ensureRemoteInfra()
 			hubClient := NewRemoteHubClient(a, a.remoteSessions)
 			a.remoteSessions.SetHubClient(hubClient)
 			_ = hubClient.Connect()
@@ -2441,7 +2395,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: ""},
 		{ModelName: "ChatFire", ModelId: "gpt-5.1-codex-mini", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: "", WireApi: "responses"},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
+		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
 		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
@@ -2510,15 +2464,16 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
-	defaultKodeModels := []ModelConfig{
-		{ModelName: "ChatFire", ModelId: "gpt-4o", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: ""},
+	// Cursor Agent uses OpenAI-compatible protocol, same providers as Codex
+	defaultCursorModels := []ModelConfig{
+		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: ""},
+		{ModelName: "ChatFire", ModelId: "gpt-5.1-codex-mini", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: "", WireApi: "responses"},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
-		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
+		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
-		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
 		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
 		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
@@ -2573,9 +2528,9 @@ func (a *App) LoadConfig() (AppConfig, error) {
 							CurrentModel: "Original",
 							Models:       defaultKiloModels,
 						},
-						Kode: ToolConfig{
-							CurrentModel: "ChatFire",
-							Models:       defaultKodeModels,
+						Cursor: ToolConfig{
+							CurrentModel: "Original",
+							Models:       defaultCursorModels,
 						},
 						Projects:           oldConfig.Projects,
 						CurrentProject:     oldConfig.CurrentProj,
@@ -2583,7 +2538,6 @@ func (a *App) LoadConfig() (AppConfig, error) {
 						ShowGemini:         true,
 						ShowCodex:          true,
 						ShowOpenCode:       true,
-						ShowKode:           true,
 						ShowCursor:         true,
 						ShowCodeBuddy:      true,
 						ShowIFlow:          true,
@@ -2635,9 +2589,9 @@ func (a *App) LoadConfig() (AppConfig, error) {
 				CurrentModel: "Original",
 				Models:       defaultKiloModels,
 			},
-			Kode: ToolConfig{
-				CurrentModel: "ChatFire",
-				Models:       defaultKodeModels,
+			Cursor: ToolConfig{
+				CurrentModel: "Original",
+				Models:       defaultCursorModels,
 			},
 			Projects: []ProjectConfig{
 				{
@@ -2655,7 +2609,6 @@ func (a *App) LoadConfig() (AppConfig, error) {
 			ShowCodeBuddy:      true,
 			ShowIFlow:          true,
 			ShowKilo:           true,
-			ShowKode:           true,
 			ShowCursor:         true,
 			PowerOptimization:  true,
 			EnvCheckInterval:   7,    // Default to 7 days
@@ -2681,7 +2634,6 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		ShowCodeBuddy:      true,
 		ShowIFlow:          true,
 		ShowKilo:           true,
-		ShowKode:           true,
 		PowerOptimization:  true,
 		RemoteHubCenterURL: defaultRemoteHubCenterURL,
 		RemoteHeartbeatSec: 10,
@@ -2794,9 +2746,9 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		config.Kilo.Models = defaultKiloModels
 		config.Kilo.CurrentModel = "Original"
 	}
-	if config.Kode.Models == nil || len(config.Kode.Models) == 0 {
-		config.Kode.Models = defaultKodeModels
-		config.Kode.CurrentModel = "ChatFire"
+	if config.Cursor.Models == nil || len(config.Cursor.Models) == 0 {
+		config.Cursor.Models = defaultCursorModels
+		config.Cursor.CurrentModel = "Original"
 	}
 	ensureModel(&config.Claude.Models, "ChatFire", "https://api.chatfire.cn", "sonnet", "")
 	ensureModel(&config.Claude.Models, "DeepSeek", "https://api.deepseek.com/anthropic", "deepseek-chat", "")
@@ -2814,7 +2766,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Gemini.Models, "ChatFire", "https://api.chatfire.cn/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro", "")
 	ensureModel(&config.Codex.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
 	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
+	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-5-turbo", "")
 	ensureModel(&config.Codex.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.Codex.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
 	ensureModel(&config.Codex.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
@@ -2865,17 +2817,18 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureModel(&config.Kilo.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
 	ensureModel(&config.Kilo.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
 	ensureModel(&config.Kilo.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
-	ensureModel(&config.Kode.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
-	ensureModel(&config.Kode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Kode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
-	ensureModel(&config.Kode.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
-	ensureModel(&config.Kode.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
-	ensureModel(&config.Kode.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
-	ensureModel(&config.Kode.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
-	ensureModel(&config.Kode.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
-	ensureModel(&config.Kode.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
-	ensureModel(&config.Kode.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
-	ensureModel(&config.Kode.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
+	// Cursor Agent uses OpenAI-compatible protocol, same providers as Codex
+	ensureModel(&config.Cursor.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
+	ensureModel(&config.Cursor.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
+	ensureModel(&config.Cursor.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
+	ensureModel(&config.Cursor.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
+	ensureModel(&config.Cursor.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
+	ensureModel(&config.Cursor.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
+	ensureModel(&config.Cursor.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
+	ensureModel(&config.Cursor.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
+	ensureModel(&config.Cursor.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
+	ensureModel(&config.Cursor.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
+	ensureModel(&config.Cursor.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 
 	// Purge Aliyun from other tools if it exists
 	removeModel(&config.Gemini.Models, "阿里云")
@@ -2888,17 +2841,17 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	removeModel(&config.CodeBuddy.Models, "百度千帆")
 	removeModel(&config.IFlow.Models, "百度千帆")
 	removeModel(&config.Kilo.Models, "百度千帆")
-	removeModel(&config.Kode.Models, "百度千帆")
 	removeModel(&config.IFlow.Models, "阿里云")
 	removeModel(&config.Kilo.Models, "阿里云")
-	removeModel(&config.Kode.Models, "阿里云")
+	removeModel(&config.Cursor.Models, "阿里云")
 	removeModel(&config.Gemini.Models, "aliyun")
 	removeModel(&config.Codex.Models, "aliyun")
 	removeModel(&config.Opencode.Models, "aliyun")
 	removeModel(&config.CodeBuddy.Models, "aliyun")
 	removeModel(&config.IFlow.Models, "aliyun")
 	removeModel(&config.Kilo.Models, "aliyun")
-	removeModel(&config.Kode.Models, "aliyun")
+	removeModel(&config.Cursor.Models, "aliyun")
+	removeModel(&config.Cursor.Models, "百度千帆")
 	// Ensure 'Original' is always present and first
 	ensureOriginal := func(models *[]ModelConfig) {
 		found := false
@@ -2930,6 +2883,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureOriginal(&config.CodeBuddy.Models)
 	ensureOriginal(&config.IFlow.Models)
 	ensureOriginal(&config.Kilo.Models)
+	ensureOriginal(&config.Cursor.Models)
 	cleanOpencodeModels(&config.Opencode.Models)
 	cleanOpencodeModels(&config.CodeBuddy.Models)
 	cleanOpencodeModels(&config.IFlow.Models)
@@ -2975,7 +2929,6 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	ensureCustom(&config.CodeBuddy.Models)
 	ensureCustom(&config.IFlow.Models)
 	ensureCustom(&config.Kilo.Models)
-	ensureCustom(&config.Kode.Models)
 	// Ensure custom models are always last for all tools
 	// Custom models are identified by IsCustom flag, not by name
 	moveCustomToLast := func(models *[]ModelConfig) {
@@ -3014,7 +2967,6 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	moveCustomToLast(&config.CodeBuddy.Models)
 	moveCustomToLast(&config.IFlow.Models)
 	moveCustomToLast(&config.Kilo.Models)
-	moveCustomToLast(&config.Kode.Models)
 	ensureOriginalFirst(&config.Claude.Models)
 	ensureOriginalFirst(&config.Gemini.Models)
 	ensureOriginalFirst(&config.Codex.Models)
@@ -3045,12 +2997,12 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	if config.Kilo.CurrentModel == "" {
 		config.Kilo.CurrentModel = "Original"
 	}
-	if config.Kode.Models == nil || len(config.Kode.Models) == 0 {
-		config.Kode.Models = defaultKodeModels
-		config.Kode.CurrentModel = "ChatFire"
+	if config.Cursor.Models == nil || len(config.Cursor.Models) == 0 {
+		config.Cursor.Models = defaultCursorModels
+		config.Cursor.CurrentModel = "Original"
 	}
-	if config.Kode.CurrentModel == "" {
-		config.Kode.CurrentModel = "ChatFire"
+	if config.Cursor.CurrentModel == "" {
+		config.Cursor.CurrentModel = "Original"
 	}
 	if config.ActiveTool == "" {
 		config.ActiveTool = "message"
@@ -3071,7 +3023,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	normalizeCurrentModel(&config.CodeBuddy)
 	normalizeCurrentModel(&config.IFlow)
 	normalizeCurrentModel(&config.Kilo)
-	normalizeCurrentModel(&config.Kode)
+	normalizeCurrentModel(&config.Cursor)
 	return config, nil
 }
 
@@ -3096,7 +3048,6 @@ func syncAllProviderApiKeys(a *App, oldConfig, newConfig *AppConfig) {
 		"codebuddy": &newConfig.CodeBuddy,
 		"iflow":     &newConfig.IFlow,
 		"kilo":      &newConfig.Kilo,
-		"kode":      &newConfig.Kode,
 	}
 	oldTools := map[string]*ToolConfig{
 		"claude":    &oldConfig.Claude,
@@ -3106,7 +3057,6 @@ func syncAllProviderApiKeys(a *App, oldConfig, newConfig *AppConfig) {
 		"codebuddy": &oldConfig.CodeBuddy,
 		"iflow":     &oldConfig.IFlow,
 		"kilo":      &oldConfig.Kilo,
-		"kode":      &oldConfig.Kode,
 	}
 	// providerName (lower) -> intended API key
 	intentions := make(map[string]string)
@@ -3181,7 +3131,6 @@ func (a *App) SaveConfig(config AppConfig) error {
 	sanitizeCustomNames(config.CodeBuddy.Models)
 	sanitizeCustomNames(config.IFlow.Models)
 	sanitizeCustomNames(config.Kilo.Models)
-	sanitizeCustomNames(config.Kode.Models)
 	// Load old config to compare for sync logic
 	var oldConfig AppConfig
 	path, _ := a.getConfigPath()

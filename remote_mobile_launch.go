@@ -75,7 +75,7 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", tool)
 	}
 	if a.remoteSessions == nil {
-		a.remoteSessions = NewRemoteSessionManager(a)
+		a.ensureRemoteInfra()
 	}
 
 	hubClient := a.remoteSessions.hubClient

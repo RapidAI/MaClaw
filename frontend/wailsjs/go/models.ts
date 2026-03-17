@@ -100,6 +100,7 @@ export namespace main {
 	    iflow: ToolConfig;
 	    kilo: ToolConfig;
 	    kode: ToolConfig;
+	    cursor: ToolConfig;
 	    projects: ProjectConfig[];
 	    current_project: string;
 	    active_tool: string;
@@ -112,6 +113,7 @@ export namespace main {
 	    show_iflow: boolean;
 	    show_kilo: boolean;
 	    show_kode: boolean;
+	    show_cursor: boolean;
 	    language: string;
 	    power_optimization: boolean;
 	    check_update_on_startup: boolean;
@@ -135,6 +137,9 @@ export namespace main {
 	    remote_heartbeat_sec: number;
 	    remote_client_id: string;
 	    default_launch_mode: string;
+	    maclaw_llm_url: string;
+	    maclaw_llm_key: string;
+	    maclaw_llm_model: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -151,6 +156,7 @@ export namespace main {
 	        this.iflow = this.convertValues(source["iflow"], ToolConfig);
 	        this.kilo = this.convertValues(source["kilo"], ToolConfig);
 	        this.kode = this.convertValues(source["kode"], ToolConfig);
+	        this.cursor = this.convertValues(source["cursor"], ToolConfig);
 	        this.projects = this.convertValues(source["projects"], ProjectConfig);
 	        this.current_project = source["current_project"];
 	        this.active_tool = source["active_tool"];
@@ -163,6 +169,7 @@ export namespace main {
 	        this.show_iflow = source["show_iflow"];
 	        this.show_kilo = source["show_kilo"];
 	        this.show_kode = source["show_kode"];
+	        this.show_cursor = source["show_cursor"];
 	        this.language = source["language"];
 	        this.power_optimization = source["power_optimization"];
 	        this.check_update_on_startup = source["check_update_on_startup"];
@@ -186,6 +193,9 @@ export namespace main {
 	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
 	        this.remote_client_id = source["remote_client_id"];
 	        this.default_launch_mode = source["default_launch_mode"];
+	        this.maclaw_llm_url = source["maclaw_llm_url"];
+	        this.maclaw_llm_key = source["maclaw_llm_key"];
+	        this.maclaw_llm_model = source["maclaw_llm_model"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

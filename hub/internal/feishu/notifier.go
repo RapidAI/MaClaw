@@ -42,6 +42,7 @@ type MachineInfo struct {
 	Hostname       string
 	Online         bool
 	ActiveSessions int
+	LLMConfigured  bool
 }
 
 // SessionLister lists and queries sessions.
@@ -105,6 +106,14 @@ type Notifier struct {
 	// plugin is the optional FeishuPlugin reference. When set, handleBotMessage
 	// will attempt to route messages through the IM Adapter pipeline first.
 	plugin *FeishuPlugin
+
+	// broadcaster sends verification codes to all reachable channels (cross-IM).
+	broadcaster NotifyBroadcaster
+}
+
+// NotifyBroadcaster sends verification codes to all reachable channels.
+type NotifyBroadcaster interface {
+	BroadcastVerifyCode(ctx context.Context, email, code, excludePlatform string) (sentTo string, err error)
 }
 
 // New creates a Notifier. The notifier is always returned (never nil) so that
@@ -167,6 +176,12 @@ func (n *Notifier) SetServices(devices DeviceLister, sessions SessionLister) {
 // messages through the IM Adapter pipeline when available.
 func (n *Notifier) SetPlugin(p *FeishuPlugin) {
 	n.plugin = p
+}
+
+// SetBroadcaster wires the cross-IM notification broadcaster.
+// Called from bootstrap after the IM Adapter is fully assembled.
+func (n *Notifier) SetBroadcaster(b NotifyBroadcaster) {
+	n.broadcaster = b
 }
 
 // Bot returns the underlying lark.Bot for use by the webhook handler.

@@ -285,4 +285,7 @@ const (
 
 	// ExecModeKiloSDK launches Kilo via HTTP server + SSE event stream (kilo serve).
 	ExecModeKiloSDK ExecutionMode = "kilo-sdk"
+
+	// ExecModeGeminiACP launches Gemini CLI via --experimental-acp (JSON-RPC on stdin/stdout).
+	ExecModeGeminiACP ExecutionMode = "gemini-acp"
 )

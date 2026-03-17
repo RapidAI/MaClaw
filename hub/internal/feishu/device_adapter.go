@@ -25,6 +25,7 @@ func (a *DeviceServiceAdapter) ListMachines(ctx context.Context, userID string) 
 			Hostname:       m.Hostname,
 			Online:         m.Online,
 			ActiveSessions: m.ActiveSessions,
+			LLMConfigured:  m.LLMConfigured,
 		}
 	}
 	return out, nil

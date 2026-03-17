@@ -4,10 +4,6 @@ import {
     CreateNLSkill,
     UpdateNLSkill,
     DeleteNLSkill,
-    ListCandidateSkills,
-    ConfirmCandidateSkill,
-    IgnoreCandidateSkill,
-    UploadNLSkillPackage,
 } from "../../../wailsjs/go/main/App";
 
 interface NLSkillStep {
@@ -40,7 +36,6 @@ const emptySkill: NLSkillDefinition = {
 
 export function SkillsManagementPanel({ translate }: Props) {
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
-    const [candidates, setCandidates] = useState<NLSkillDefinition[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
@@ -56,22 +51,12 @@ export function SkillsManagementPanel({ translate }: Props) {
     // Delete confirmation
     const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
-    // Candidate editing
-    const [editingCandidate, setEditingCandidate] = useState<NLSkillDefinition | null>(null);
-
-    // Upload state
-    const [uploadResult, setUploadResult] = useState<{ imported: string[]; errors: string[] } | null>(null);
-
     const loadData = useCallback(async () => {
         setLoading(true);
         setError("");
         try {
-            const [skillList, candidateList] = await Promise.all([
-                ListNLSkills(),
-                ListCandidateSkills(),
-            ]);
+            const skillList = await ListNLSkills();
             setSkills(Array.isArray(skillList) ? skillList : []);
-            setCandidates(Array.isArray(candidateList) ? candidateList : []);
         } catch (err) {
             setError(String(err));
         } finally {
@@ -214,50 +199,6 @@ export function SkillsManagementPanel({ translate }: Props) {
         }
     };
 
-    const handleConfirmCandidate = async (candidate: NLSkillDefinition) => {
-        setBusy(true);
-        try {
-            await ConfirmCandidateSkill(editingCandidate || candidate);
-            setEditingCandidate(null);
-            await loadData();
-        } catch (err) {
-            setError(String(err));
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    const handleIgnoreCandidate = async (name: string) => {
-        setBusy(true);
-        try {
-            await IgnoreCandidateSkill(name);
-            await loadData();
-        } catch (err) {
-            setError(String(err));
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    const handleUploadPackage = async () => {
-        setBusy(true);
-        setError("");
-        setUploadResult(null);
-        try {
-            const result = await UploadNLSkillPackage();
-            if (!result) {
-                // User cancelled the file dialog
-                return;
-            }
-            setUploadResult({ imported: result.imported || [], errors: result.errors || [] });
-            await loadData();
-        } catch (err) {
-            setError(String(err));
-        } finally {
-            setBusy(false);
-        }
-    };
-
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {/* Header with create and upload buttons */}
@@ -266,9 +207,6 @@ export function SkillsManagementPanel({ translate }: Props) {
                     {skills.length} {translate("skillsRegistered") || "个已注册 Skill"}
                 </span>
                 <div style={{ display: "flex", gap: "6px" }}>
-                    <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleUploadPackage} disabled={busy}>
-                        📦 上传技能包
-                    </button>
                     <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
                         + 新建 Skill
                     </button>
@@ -286,36 +224,6 @@ export function SkillsManagementPanel({ translate }: Props) {
             {error && (
                 <div style={{ fontSize: "0.78rem", color: "#c53030", background: "#fff5f5", padding: "6px 10px", borderRadius: "4px", border: "1px solid #fecdd3" }}>
                     {error}
-                </div>
-            )}
-
-            {/* Upload result */}
-            {uploadResult && (
-                <div style={{
-                    fontSize: "0.78rem",
-                    padding: "6px 10px",
-                    borderRadius: "4px",
-                    background: uploadResult.errors.length > 0 ? "#fffbeb" : "#f0fdf4",
-                    border: uploadResult.errors.length > 0 ? "1px solid #fbbf24" : "1px solid #86efac",
-                    color: "#1a202c",
-                }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span>
-                            {uploadResult.imported.length > 0
-                                ? `✅ 已导入 ${uploadResult.imported.length} 个 Skill: ${uploadResult.imported.join(", ")}`
-                                : "未导入任何 Skill"}
-                        </span>
-                        <button
-                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.8rem", color: "#8b95a5", padding: "0 2px" }}
-                            onClick={() => setUploadResult(null)}
-                            aria-label="关闭"
-                        >×</button>
-                    </div>
-                    {uploadResult.errors.length > 0 && (
-                        <div style={{ color: "#c53030", marginTop: "4px", fontSize: "0.74rem" }}>
-                            ⚠️ {uploadResult.errors.join("; ")}
-                        </div>
-                    )}
                 </div>
             )}
 
@@ -365,49 +273,6 @@ export function SkillsManagementPanel({ translate }: Props) {
             {!loading && skills.length === 0 && !error && (
                 <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: "#8b95a5" }}>
                     暂无已注册的 Skill
-                </div>
-            )}
-
-            {/* Candidate Skills section */}
-            {candidates.length > 0 && (
-                <div style={{ border: "1px solid #e1e4e8", borderRadius: "6px", padding: "10px", background: "#fffbeb" }}>
-                    <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#1a202c", marginBottom: "8px" }}>
-                        🔔 待确认的候选 Skill ({candidates.length})
-                    </div>
-                    {candidates.map((c) => (
-                        <div key={c.name} style={{ background: "#ffffff", border: "1px solid #e1e4e8", borderRadius: "4px", padding: "8px 10px", marginBottom: "6px" }}>
-                            {editingCandidate?.name === c.name ? (
-                                <CandidateEditForm
-                                    candidate={editingCandidate}
-                                    onChange={setEditingCandidate}
-                                    onConfirm={() => handleConfirmCandidate(c)}
-                                    onCancel={() => setEditingCandidate(null)}
-                                    busy={busy}
-                                    stepsToYaml={stepsToYaml}
-                                    yamlToSteps={yamlToSteps}
-                                />
-                            ) : (
-                                <div>
-                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-                                        <div>
-                                            <span style={{ fontWeight: 600, fontSize: "0.78rem" }}>{c.name}</span>
-                                            <span style={{ ...statusBadgeStyle, background: "#fffbeb", color: "#b7791f", border: "1px solid #fbbf24", marginLeft: "6px" }}>待确认</span>
-                                        </div>
-                                        <div style={{ display: "flex", gap: "4px" }}>
-                                            <button className="btn-primary" style={smallBtnStyle} onClick={() => setEditingCandidate({ ...c })} disabled={busy}>确认</button>
-                                            <button className="btn-secondary" style={smallBtnStyle} onClick={() => handleIgnoreCandidate(c.name)} disabled={busy}>忽略</button>
-                                        </div>
-                                    </div>
-                                    <div style={{ fontSize: "0.74rem", color: "#5a6577" }}>{c.description || "无描述"}</div>
-                                    {c.triggers && c.triggers.length > 0 && (
-                                        <div style={{ display: "flex", flexWrap: "wrap", gap: "3px", marginTop: "4px" }}>
-                                            {c.triggers.map((t, i) => <span key={i} style={tagStyle}>{t}</span>)}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    ))}
                 </div>
             )}
 
@@ -514,99 +379,6 @@ export function SkillsManagementPanel({ translate }: Props) {
                     </div>
                 </div>
             )}
-        </div>
-    );
-}
-
-/* Candidate inline edit form */
-function CandidateEditForm({
-    candidate,
-    onChange,
-    onConfirm,
-    onCancel,
-    busy,
-    stepsToYaml,
-    yamlToSteps,
-}: {
-    candidate: NLSkillDefinition;
-    onChange: (c: NLSkillDefinition) => void;
-    onConfirm: () => void;
-    onCancel: () => void;
-    busy: boolean;
-    stepsToYaml: (steps: NLSkillStep[]) => string;
-    yamlToSteps: (yaml: string) => NLSkillStep[];
-}) {
-    const [localTrigger, setLocalTrigger] = useState("");
-    const [localYaml, setLocalYaml] = useState(() => stepsToYaml(candidate.steps));
-
-    const addTrigger = () => {
-        const t = localTrigger.trim();
-        if (t && !candidate.triggers.includes(t)) {
-            onChange({ ...candidate, triggers: [...candidate.triggers, t] });
-        }
-        setLocalTrigger("");
-    };
-
-    return (
-        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">名称</label>
-                <input className="form-input" value={candidate.name} disabled spellCheck={false} />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">描述</label>
-                <input
-                    className="form-input"
-                    value={candidate.description}
-                    onChange={(e) => onChange({ ...candidate, description: e.target.value })}
-                    spellCheck={false}
-                />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">触发短语</label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "3px", marginBottom: "4px" }}>
-                    {candidate.triggers.map((t, i) => (
-                        <span
-                            key={i}
-                            style={{ ...tagStyle, cursor: "pointer" }}
-                            onClick={() => onChange({ ...candidate, triggers: candidate.triggers.filter((_, j) => j !== i) })}
-                        >
-                            {t} ×
-                        </span>
-                    ))}
-                </div>
-                <div style={{ display: "flex", gap: "4px" }}>
-                    <input
-                        className="form-input"
-                        value={localTrigger}
-                        onChange={(e) => setLocalTrigger(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTrigger(); } }}
-                        placeholder="输入后按 Enter 添加"
-                        spellCheck={false}
-                        style={{ flex: 1 }}
-                    />
-                    <button className="btn-secondary" style={{ fontSize: "0.76rem", padding: "3px 8px" }} onClick={addTrigger} type="button">添加</button>
-                </div>
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">操作步骤 (YAML)</label>
-                <textarea
-                    className="form-input"
-                    value={localYaml}
-                    onChange={(e) => {
-                        setLocalYaml(e.target.value);
-                        onChange({ ...candidate, steps: yamlToSteps(e.target.value) });
-                    }}
-                    spellCheck={false}
-                    style={{ minHeight: "80px", fontFamily: "monospace", fontSize: "0.76rem", resize: "vertical" }}
-                />
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "4px", marginTop: "4px" }}>
-                <button className="btn-secondary" style={smallBtnStyle} onClick={onCancel} disabled={busy}>取消</button>
-                <button className="btn-primary" style={smallBtnStyle} onClick={onConfirm} disabled={busy}>
-                    {busy ? "提交中..." : "确认并保存"}
-                </button>
-            </div>
         </div>
     );
 }

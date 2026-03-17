@@ -80,6 +80,10 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 		execMode = "sdk"
 	} else if _, isCodex := exec.(*CodexSDKExecutionHandle); isCodex {
 		execMode = "codex-sdk"
+	} else if _, isACP := exec.(*GeminiACPExecutionHandle); isACP {
+		execMode = "gemini-acp"
+	} else if _, isIFlow := exec.(*IFlowSDKExecutionHandle); isIFlow {
+		execMode = "iflow-acp"
 	}
 
 	return RemoteSessionView{
@@ -382,7 +386,7 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool) (Re
 	}
 
 	if a.remoteSessions == nil {
-		a.remoteSessions = NewRemoteSessionManager(a)
+		a.ensureRemoteInfra()
 	}
 
 	hubClient := a.remoteSessions.hubClient
@@ -428,7 +432,7 @@ func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bo
 	}
 
 	if a.remoteSessions == nil {
-		a.remoteSessions = NewRemoteSessionManager(a)
+		a.ensureRemoteInfra()
 	}
 
 	hubClient := a.remoteSessions.hubClient
@@ -463,7 +467,7 @@ func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bo
 
 func (a *App) ReconnectRemoteHub() error {
 	if a.remoteSessions == nil {
-		a.remoteSessions = NewRemoteSessionManager(a)
+		a.ensureRemoteInfra()
 	}
 
 	hubClient := a.remoteSessions.hubClient
@@ -520,6 +524,10 @@ func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
 	}
 	if _, isCodex := s.Exec.(*CodexSDKExecutionHandle); isCodex {
 		a.log(fmt.Sprintf("[remote-raw-input] session=%s is Codex SDK, routing to WriteInput", sessionID))
+		return a.remoteSessions.WriteInput(sessionID, text)
+	}
+	if _, isACP := s.Exec.(*GeminiACPExecutionHandle); isACP {
+		a.log(fmt.Sprintf("[remote-raw-input] session=%s is Gemini ACP, routing to WriteInput", sessionID))
 		return a.remoteSessions.WriteInput(sessionID, text)
 	}
 

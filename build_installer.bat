@@ -29,7 +29,7 @@ echo [Step 2/7] Updating version number...
 powershell -NoProfile -Command "if (Test-Path 'build_number') { $n = [int](Get-Content 'build_number') + 1 } else { $n = 1 }; Set-Content -Path 'build_number' -Value $n -NoNewline; Set-Content -Path 'temp_build_num.txt' -Value $n -NoNewline"
 set /p BUILD_NUM=<temp_build_num.txt
 del temp_build_num.txt
-%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "(Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json).info.productVersion | Set-Content -Path '%~dp0temp_version.txt' -NoNewline"
+%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "$ver = (Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json).info.productVersion; $parts = $ver.Split('.'); $bn = Get-Content '%~dp0build_number'; $parts[3] = $bn; $newVer = $parts -join '.'; Set-Content -Path '%~dp0temp_version.txt' -Value $newVer -NoNewline"
 set /p VERSION=<temp_version.txt
 del temp_version.txt
 %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "(Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json).info.productName | Set-Content -Path '%~dp0temp_product_name.txt' -NoNewline"
@@ -48,7 +48,7 @@ echo [Step 3/7] Syncing version with frontend...
 powershell -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0frontend\src\version.ts' -Encoding Utf8"
 
 REM -- Build Frontend --
-echo [Step 4/8] Building frontend...
+echo [Step 4/7] Building frontend...
 cd "%~dp0frontend"
 if not exist "node_modules" (
     call npm.cmd install --cache ./.npm_cache
@@ -66,7 +66,7 @@ if !errorlevel! neq 0 (
 cd "%~dp0"
 
 REM -- Generate Windows Resources (icon + version info) --
-echo [Step 5/8] Generating Windows resources...
+echo [Step 5/7] Generating Windows resources...
 del /q "%~dp0resource_windows_*.syso" 2>nul
 del /q "%~dp0tmp*.syso" 2>nul
 del /q "%~dp0tmp*.json" 2>nul
@@ -88,7 +88,7 @@ if !errorlevel! neq 0 (
 )
 
 REM -- Build Go Binaries --
-echo [Step 6/8] Compiling Go binaries...
+echo [Step 6/7] Compiling Go binaries...
 set "GOOS=windows"
 set "CGO_ENABLED=0"
 set "GOARCH=amd64"

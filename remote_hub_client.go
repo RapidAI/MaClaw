@@ -56,6 +56,9 @@ type RemoteHubClient struct {
 	// Summary throttling: avoid sending identical summaries repeatedly.
 	summaryMu   sync.Mutex
 	lastSummary map[string]string // sessionID → JSON of last sent summary
+
+	// IM message handler for Agent Passthrough.
+	imHandler *IMMessageHandler
 }
 
 // pendingPreviewDelta accumulates preview lines for a session between flushes.
@@ -79,6 +82,7 @@ func NewRemoteHubClient(app *App, manager *RemoteSessionManager) *RemoteHubClien
 		previewPending: make(map[string]*pendingPreviewDelta),
 		previewStopCh:  make(chan struct{}),
 		lastSummary:    make(map[string]string),
+		imHandler:      NewIMMessageHandler(app, manager),
 	}
 }
 
@@ -232,6 +236,7 @@ func (c *RemoteHubClient) sendMachineHelloLocked() error {
 				"remote_sessions": true,
 				"pty":             true,
 				"tools":           []string{"claude"},
+				"llm_configured":  c.app.isMaclawLLMConfigured(),
 			},
 		},
 	}
@@ -248,6 +253,8 @@ func (c *RemoteHubClient) SendSessionCreated(s *RemoteSession) error {
 	execMode := "pty"
 	if _, isSDK := s.Exec.(*SDKExecutionHandle); isSDK {
 		execMode = "sdk"
+	} else if _, isACP := s.Exec.(*GeminiACPExecutionHandle); isACP {
+		execMode = "gemini-acp"
 	}
 
 	msg := HubEnvelope{
@@ -545,6 +552,7 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 			"active_sessions":        activeSessions,
 			"heartbeat_interval_sec": profile.HeartbeatSec,
 			"app_version":            profile.AppVersion,
+			"llm_configured":         c.app.isMaclawLLMConfigured(),
 		},
 	}
 	return c.conn.WriteJSON(msg)
@@ -580,6 +588,8 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleSessionImageInput(msg)
 		case "session.screenshot":
 			c.handleSessionScreenshot(msg)
+		case "im.user_message":
+			c.handleIMUserMessage(msg)
 		}
 	}
 }
@@ -709,6 +719,44 @@ func (c *RemoteHubClient) handleSessionScreenshot(msg inboundHubEnvelope) {
 			_ = c.SendSessionImageError(sessionID, "screenshot failed: "+err.Error())
 		}
 	}()
+}
+
+// handleIMUserMessage processes an IM user message forwarded from Hub.
+// The Agent processing runs in a goroutine to avoid blocking the readLoop.
+func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
+	var payload IMUserMessage
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		c.setLastError(fmt.Sprintf("im.user_message parse error: %s", err.Error()))
+		return
+	}
+
+	requestID := msg.RequestID
+	go func() {
+		resp := c.imHandler.HandleIMMessage(payload)
+		if err := c.sendIMAgentResponse(requestID, resp); err != nil {
+			c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
+		}
+	}()
+}
+
+// sendIMAgentResponse sends the Agent's reply back to Hub.
+func (c *RemoteHubClient) sendIMAgentResponse(requestID string, resp *IMAgentResponse) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return nil
+	}
+
+	msg := HubEnvelope{
+		Type:      "im.agent_response",
+		RequestID: requestID,
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload: map[string]interface{}{
+			"response": resp,
+		},
+	}
+	return c.conn.WriteJSON(msg)
 }
 
 // SendSessionImageError sends an error response to the Hub when image input injection fails.

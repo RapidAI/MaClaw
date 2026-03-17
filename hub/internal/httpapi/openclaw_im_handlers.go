@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -135,5 +136,70 @@ func TestOpenclawIMWebhookHandler(system store.SystemSettingsRepository) http.Ha
 			"message": fmt.Sprintf("HTTP %d", resp.StatusCode),
 			"body":    string(respBody),
 		})
+	}
+}
+
+// OpenclawIMWebhookHandler receives inbound messages from external IM adapters
+// via the OpenClaw IM protocol. It validates the HMAC signature, parses the
+// incoming message, and injects it into the IM Adapter pipeline via the
+// WebhookIMPlugin.
+//
+// Protocol:
+//   POST /api/openclaw_im/webhook
+//   Headers:
+//     Content-Type: application/json
+//     X-OpenClaw-Signature: sha256=<hex HMAC-SHA256>
+//   Body: { "platform_uid": "...", "text": "...", "message_type": "text" }
+func OpenclawIMWebhookHandler(system store.SystemSettingsRepository, plugin *im.WebhookIMPlugin) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if plugin == nil {
+			writeError(w, http.StatusServiceUnavailable, "PLUGIN_NOT_CONFIGURED", "OpenClaw IM plugin is not initialized")
+			return
+		}
+
+		cfg := loadOpenclawIMConfig(r, system)
+		if !cfg.Enabled {
+			writeError(w, http.StatusForbidden, "OPENCLAW_IM_DISABLED", "OpenClaw IM integration is disabled")
+			return
+		}
+
+		// Read body with size limit (64 KB).
+		body, err := io.ReadAll(io.LimitReader(r.Body, 65536))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "READ_BODY_FAILED", "Failed to read request body")
+			return
+		}
+
+		// Verify HMAC signature.
+		signature := r.Header.Get("X-OpenClaw-Signature")
+		if !im.VerifySignature(body, signature, cfg.Secret) {
+			writeError(w, http.StatusUnauthorized, "INVALID_SIGNATURE", "HMAC signature verification failed")
+			return
+		}
+
+		// Parse incoming message.
+		var msg im.IncomingMessage
+		if err := json.Unmarshal(body, &msg); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Failed to parse message body")
+			return
+		}
+
+		// Basic validation.
+		if msg.PlatformUID == "" {
+			writeError(w, http.StatusBadRequest, "MISSING_PLATFORM_UID", "platform_uid is required")
+			return
+		}
+		if msg.Text == "" && msg.MessageType != "image" {
+			writeError(w, http.StatusBadRequest, "MISSING_TEXT", "text is required for non-image messages")
+			return
+		}
+
+		// Inject into the IM Adapter pipeline.
+		if err := plugin.InjectMessage(msg); err != nil {
+			writeError(w, http.StatusInternalServerError, "INJECT_FAILED", err.Error())
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }

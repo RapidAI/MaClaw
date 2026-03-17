@@ -103,15 +103,8 @@ func TestListRemoteToolMetadataReturnsKnownTools(t *testing.T) {
 	if !tools[0].Installed || !tools[0].CanStart {
 		t.Fatalf("claude metadata = %#v, want installed and can_start", tools[0])
 	}
-	foundKode := false
 	foundKilo := false
 	for _, tool := range tools {
-		if tool.Name == "kode" {
-			foundKode = true
-			if !tool.UsesOpenAICompat {
-				t.Fatal("expected kode to use openai compat")
-			}
-		}
 		if tool.Name == "kilo" {
 			foundKilo = true
 			if tool.Visible {
@@ -121,9 +114,6 @@ func TestListRemoteToolMetadataReturnsKnownTools(t *testing.T) {
 				t.Fatal("expected kilo can_start=false when hidden")
 			}
 		}
-	}
-	if !foundKode {
-		t.Fatal("expected kode metadata to be present")
 	}
 	if !foundKilo {
 		t.Fatal("expected kilo metadata to be present")
@@ -717,87 +707,6 @@ func TestStartRemoteSessionSupportsKilo(t *testing.T) {
 	}
 	if session.Tool != "kilo" {
 		t.Fatalf("session.Tool = %q, want %q", session.Tool, "kilo")
-	}
-}
-
-func TestBuildRemoteLaunchSpecSupportsKode(t *testing.T) {
-	tempHome := t.TempDir()
-	projectDir := filepath.Join(tempHome, "project")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(projectDir) error = %v", err)
-	}
-
-	app := &App{testHomeDir: tempHome}
-	cfg, err := app.LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	cfg.Kode.CurrentModel = "Original"
-	cfg.Kode.Models = []ModelConfig{{ModelName: "Original", ModelId: "gpt-4o"}}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
-	cfg.CurrentProject = "p1"
-
-	spec, err := app.buildRemoteLaunchSpec("kode", cfg, false, false, "", projectDir, false)
-	if err != nil {
-		t.Fatalf("buildRemoteLaunchSpec(kode) error = %v", err)
-	}
-	if spec.Tool != "kode" {
-		t.Fatalf("spec.Tool = %q, want %q", spec.Tool, "kode")
-	}
-	if spec.BinaryName != "kode" {
-		t.Fatalf("spec.BinaryName = %q, want %q", spec.BinaryName, "kode")
-	}
-}
-
-func TestStartRemoteSessionSupportsKode(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
-	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
-
-	toolsDir := filepath.Join(tempHome, ".cceasy", "tools")
-	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(toolsDir) error = %v", err)
-	}
-
-	kodeExe := "kode"
-	if runtime.GOOS == "windows" {
-		kodeExe = "kode.exe"
-	}
-	if err := os.WriteFile(filepath.Join(toolsDir, kodeExe), []byte("stub"), 0o644); err != nil {
-		t.Fatalf("WriteFile(kode) error = %v", err)
-	}
-
-	projectDir := filepath.Join(tempHome, "project")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(projectDir) error = %v", err)
-	}
-
-	app := &App{testHomeDir: tempHome}
-	cfg, err := app.LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	cfg.RemoteEnabled = true
-	cfg.Kode.CurrentModel = "Original"
-	cfg.Kode.Models = []ModelConfig{{ModelName: "Original", ModelId: "gpt-4o"}}
-	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
-	cfg.CurrentProject = "p1"
-	if err := app.SaveConfig(cfg); err != nil {
-		t.Fatalf("SaveConfig() error = %v", err)
-	}
-
-	app.remoteSessions = NewRemoteSessionManager(app)
-	app.remoteSessions.executionFactory = func(spec LaunchSpec) (ExecutionStrategy, error) {
-		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(103)}, nil
-	}
-
-	session, err := app.StartRemoteSession("kode", projectDir, false)
-	if err != nil {
-		t.Fatalf("StartRemoteSession(kode) error = %v", err)
-	}
-	if session.Tool != "kode" {
-		t.Fatalf("session.Tool = %q, want %q", session.Tool, "kode")
 	}
 }
 

@@ -194,7 +194,7 @@ func (a *App) ActivateRemote(email string, invitationCode string) (RemoteActivat
 	}
 
 	if a.remoteSessions == nil {
-		a.remoteSessions = NewRemoteSessionManager(a)
+		a.ensureRemoteInfra()
 	}
 	hubClient := a.remoteSessions.hubClient
 	if hubClient == nil {

@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // CodexSDKExecutionStrategy launches Codex in non-interactive SDK mode
@@ -26,63 +25,79 @@ func NewCodexSDKExecutionStrategy() *CodexSDKExecutionStrategy {
 }
 
 func (s *CodexSDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
-	execPath := cmd.Command
-	if !filepath.IsAbs(execPath) {
-		resolved, err := exec.LookPath(execPath)
-		if err != nil {
-			return nil, fmt.Errorf("codex-sdk: command not found: %s: %w", execPath, err)
-		}
-		execPath = resolved
-	}
-	if info, err := os.Stat(execPath); err != nil {
-		return nil, fmt.Errorf("codex-sdk: command not accessible: %w", err)
-	} else if info.IsDir() {
-		return nil, fmt.Errorf("codex-sdk: command is a directory: %s", execPath)
+	execPath, err := resolveExecutablePath(cmd.Command)
+	if err != nil {
+		return nil, fmt.Errorf("codex-sdk: %w", err)
 	}
 
 	args := append([]string{}, cmd.Args...)
-	c := exec.Command(execPath, args...)
-	c.Dir = cmd.Cwd
-	c.Env = buildSDKEnvList(cmd.Env)
-	hideCommandWindow(c)
+	c := buildExecCmd(execPath, args, cmd.Cwd, cmd.Env)
 
-	stdin, err := c.StdinPipe()
+	pipes, err := createProcessPipes(c)
 	if err != nil {
-		return nil, fmt.Errorf("codex-sdk: stdin pipe: %w", err)
-	}
-	stdout, err := c.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("codex-sdk: stdout pipe: %w", err)
-	}
-	stderr, err := c.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("codex-sdk: stderr pipe: %w", err)
+		return nil, fmt.Errorf("codex-sdk: %w", err)
 	}
 
 	if err := c.Start(); err != nil {
-		return nil, fmt.Errorf("codex-sdk: start: %w", err)
+		return nil, fmt.Errorf("codex-sdk: start failed: cmd=%s args=%v cwd=%s: %w",
+			execPath, args, cmd.Cwd, err)
 	}
 
+	rc := NewReaderCoordinator(128)
 	handle := &CodexSDKExecutionHandle{
-		cmd:      c,
-		stdin:    stdin,
-		stdout:   stdout,
-		stderr:   stderr,
-		pid:      c.Process.Pid,
-		outputCh: make(chan []byte, 128),
-		exitCh:   make(chan PTYExit, 1),
+		cmd:       c,
+		stdin:     pipes.Stdin,
+		stdout:    pipes.Stdout,
+		stderr:    pipes.Stderr,
+		pid:       c.Process.Pid,
+		startedAt: time.Now(),
+		outputCh:  rc.Output(),
+		exitCh:    make(chan PTYExit, 1),
+		readerRC:  rc,
 	}
 
-	handle.readerWg.Add(2)
+	// Emit launch diagnostics into the output channel so they appear in the
+	// session preview — this is critical for debugging headless remote launches.
+	launchInfo := fmt.Sprintf("[codex-launch] pid=%d cmd=%s args=%v cwd=%s",
+		handle.pid, execPath, args, cmd.Cwd)
+	handle.outputCh <- []byte(launchInfo + "\n")
+
+	// Log key environment variables (redact API keys).
+	envDiag := codexEnvDiagnostics(cmd.Env)
+	if envDiag != "" {
+		handle.outputCh <- []byte("[codex-env] " + envDiag + "\n")
+	}
+
+	rc.Add(2)
 	go handle.readStdout()
 	go handle.readStderr()
-	go func() {
-		handle.readerWg.Wait()
-		close(handle.outputCh)
-	}()
+	rc.CloseWhenDone()
 	go handle.waitProcess()
 
 	return handle, nil
+}
+
+// codexEnvDiagnostics returns a summary of key environment variables for
+// debugging, with API keys redacted.
+func codexEnvDiagnostics(env map[string]string) string {
+	keys := []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL", "WIRE_API",
+		"HTTP_PROXY", "HTTPS_PROXY"}
+	var parts []string
+	for _, k := range keys {
+		v := env[k]
+		if v == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(k), "key") || strings.Contains(strings.ToLower(k), "token") {
+			if len(v) > 8 {
+				v = v[:4] + "..." + v[len(v)-4:]
+			} else {
+				v = "***"
+			}
+		}
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, " ")
 }
 
 // CodexSDKExecutionHandle wraps a Codex process running in exec --json mode.
@@ -93,16 +108,20 @@ type CodexSDKExecutionHandle struct {
 	stderr io.ReadCloser
 	pid    int
 
-	outputCh chan []byte
-	exitCh   chan PTYExit
+	startedAt time.Time
+	outputCh  chan []byte
+	exitCh    chan PTYExit
 
-	readerWg sync.WaitGroup
+	readerRC *ReaderCoordinator
 
 	mu     sync.Mutex
 	closed bool
 
 	// threadID is the Codex thread/session ID reported in thread.started events.
 	threadID string
+
+	// stderrLines accumulates stderr output for diagnostics on early exit.
+	stderrLines []string
 }
 
 func (h *CodexSDKExecutionHandle) PID() int {
@@ -173,7 +192,7 @@ func (h *CodexSDKExecutionHandle) ThreadID() string {
 }
 
 func (h *CodexSDKExecutionHandle) readStdout() {
-	defer h.readerWg.Done()
+	defer h.readerRC.Done()
 
 	scanner := bufio.NewScanner(h.stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -213,12 +232,17 @@ func (h *CodexSDKExecutionHandle) readStdout() {
 }
 
 func (h *CodexSDKExecutionHandle) readStderr() {
-	defer h.readerWg.Done()
+	defer h.readerRC.Done()
 	scanner := bufio.NewScanner(h.stderr)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) != "" {
 			h.outputCh <- []byte("[stderr] " + line + "\n")
+			h.mu.Lock()
+			if len(h.stderrLines) < 50 {
+				h.stderrLines = append(h.stderrLines, line)
+			}
+			h.mu.Unlock()
 		}
 	}
 }
@@ -227,10 +251,35 @@ func (h *CodexSDKExecutionHandle) waitProcess() {
 	defer close(h.exitCh)
 
 	err := h.cmd.Wait()
+	elapsed := time.Since(h.startedAt)
 	var codePtr *int
 	if h.cmd.ProcessState != nil {
 		code := h.cmd.ProcessState.ExitCode()
 		codePtr = &code
+	}
+
+	// If the process exited very quickly (< 5s), it likely failed to start
+	// properly.  Emit a diagnostic summary so the user can see what happened.
+	if elapsed < 5*time.Second {
+		exitCode := -1
+		if codePtr != nil {
+			exitCode = *codePtr
+		}
+		diag := fmt.Sprintf("[codex-exit] process exited in %v with code %d", elapsed.Round(time.Millisecond), exitCode)
+		h.outputCh <- []byte(diag + "\n")
+
+		h.mu.Lock()
+		stderrCopy := append([]string{}, h.stderrLines...)
+		h.mu.Unlock()
+		if len(stderrCopy) > 0 {
+			h.outputCh <- []byte("[codex-exit] stderr summary:\n")
+			for _, line := range stderrCopy {
+				h.outputCh <- []byte("  " + line + "\n")
+			}
+		}
+		if err != nil {
+			h.outputCh <- []byte(fmt.Sprintf("[codex-exit] error: %v\n", err))
+		}
 	}
 
 	h.exitCh <- PTYExit{

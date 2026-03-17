@@ -286,18 +286,6 @@ func TestRemoteSessionManagerDefaultProviderFactorySupportsKilo(t *testing.T) {
 	}
 }
 
-func TestRemoteSessionManagerDefaultProviderFactorySupportsKode(t *testing.T) {
-	manager := NewRemoteSessionManager(&App{})
-
-	provider, err := manager.providerFactory("kode")
-	if err != nil {
-		t.Fatalf("providerFactory(kode) error = %v", err)
-	}
-	if provider.ProviderName() != "kode" {
-		t.Fatalf("provider.ProviderName() = %q, want %q", provider.ProviderName(), "kode")
-	}
-}
-
 func TestRemoteSessionManagerDefaultProviderFactorySupportsGemini(t *testing.T) {
 	manager := NewRemoteSessionManager(&App{})
 
@@ -308,8 +296,8 @@ func TestRemoteSessionManagerDefaultProviderFactorySupportsGemini(t *testing.T) 
 	if provider.ProviderName() != "gemini" {
 		t.Fatalf("provider.ProviderName() = %q, want %q", provider.ProviderName(), "gemini")
 	}
-	if provider.ExecutionMode() != ExecModePTY {
-		t.Fatalf("provider.ExecutionMode() = %q, want %q", provider.ExecutionMode(), ExecModePTY)
+	if provider.ExecutionMode() != ExecModeGeminiACP {
+		t.Fatalf("provider.ExecutionMode() = %q, want %q", provider.ExecutionMode(), ExecModeGeminiACP)
 	}
 }
 

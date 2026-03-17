@@ -25,8 +25,6 @@ func ensureToolOnboardingComplete(app *App, toolName string, projectPath string)
 		err = ensureClaudeOnboardingComplete(app, projectPath)
 	case "gemini":
 		err = ensureGeminiOnboardingComplete(app)
-	case "kode":
-		err = ensureKodeOnboardingComplete(app, projectPath)
 	case "codebuddy":
 		err = ensureCodeBuddyOnboardingComplete(app, projectPath)
 	default:
@@ -82,6 +80,61 @@ func ensureGeminiOnboardingComplete(app *App) error {
 		changed = true
 	}
 
+	// Disable auto theme switching — it polls terminal background color
+	// which can cause repeated redraws in ConPTY environments.
+	if ui["autoThemeSwitching"] == nil {
+		ui["autoThemeSwitching"] = false
+		changed = true
+	}
+
+	// Hide tips and shortcuts hints to reduce TUI noise.
+	if ui["hideTips"] == nil {
+		ui["hideTips"] = true
+		changed = true
+	}
+	if ui["showShortcutsHint"] == nil {
+		ui["showShortcutsHint"] = false
+		changed = true
+	}
+
+	// Disable dynamic window title updates that can cause extra output.
+	if ui["dynamicWindowTitle"] == nil {
+		ui["dynamicWindowTitle"] = false
+		changed = true
+	}
+	if ui["showStatusInTitle"] == nil {
+		ui["showStatusInTitle"] = false
+		changed = true
+	}
+	if ui["hideWindowTitle"] == nil {
+		ui["hideWindowTitle"] = true
+		changed = true
+	}
+
+	// Disable compatibility warnings that may trigger interactive prompts.
+	if ui["showCompatibilityWarnings"] == nil {
+		ui["showCompatibilityWarnings"] = false
+		changed = true
+	}
+
+	// Disable home directory warning.
+	if ui["showHomeDirectoryWarning"] == nil {
+		ui["showHomeDirectoryWarning"] = false
+		changed = true
+	}
+
+	// Pre-select auth type to prevent the interactive auth selection prompt
+	// from blocking the ACP process.  When GEMINI_API_KEY is set, use
+	// "gemini-api-key"; otherwise default to "oauth-personal".
+	if existing["selectedAuthType"] == nil || strings.TrimSpace(fmt.Sprint(existing["selectedAuthType"])) == "" {
+		if os.Getenv("GEMINI_API_KEY") != "" {
+			existing["selectedAuthType"] = "gemini-api-key"
+		} else {
+			existing["selectedAuthType"] = "oauth-personal"
+		}
+		changed = true
+	}
+
 	if !changed {
 		if app != nil {
 			app.log("[gemini-onboarding] settings already complete, no changes needed")
@@ -108,14 +161,6 @@ func ensureGeminiOnboardingComplete(app *App) error {
 	return nil
 }
 
-// ensureKodeOnboardingComplete ensures that Kode CLI's user-level config
-// file (~/.kode.json) has onboarding marked as complete so the first-run
-// wizard is skipped.  Kode is a fork of Claude Code and has a similar
-// onboarding flow.
-func ensureKodeOnboardingComplete(app *App, projectPath string) error {
-	return ensureClaudeCodeForkOnboarding(app, ".kode.json", "kode", projectPath)
-}
-
 // ensureCodeBuddyOnboardingComplete ensures that CodeBuddy CLI's user-level
 // config file (~/.codebuddy.json) has onboarding marked as complete so the
 // first-run login method selection prompt and any other interactive wizards
@@ -134,7 +179,7 @@ func ensureCodeBuddyOnboardingComplete(app *App, projectPath string) error {
 }
 
 // ensureClaudeCodeForkOnboarding is the shared implementation for Claude Code
-// forks (Kode, CodeBuddy, etc.) that use the same ~/.{tool}.json config
+// forks (CodeBuddy, etc.) that use the same ~/.{tool}.json config
 // format with hasCompletedOnboarding, theme, and project trust entries.
 //
 // configFileName is the basename of the config file (e.g. ".kode.json").
@@ -217,7 +262,6 @@ const backupSuffix = ".cceasy.bak"
 // by both toolConfigPaths and the onboarding functions.
 var toolConfigFiles = map[string][]string{
 	"claude":    {".claude.json"},
-	"kode":      {".kode.json"},
 	"codebuddy": {".codebuddy.json"},
 	"gemini":    {filepath.Join(".gemini", "settings.json")},
 }

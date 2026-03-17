@@ -144,6 +144,12 @@ func (p *FeishuPlugin) ResolveUser(ctx context.Context, platformUID string) (str
 	return userID, nil
 }
 
+// LookupByEmail returns the Feishu open_id bound to the given email, or "".
+// Implements im.BindingLookup for cross-IM verification.
+func (p *FeishuPlugin) LookupByEmail(email string) string {
+	return p.notifier.resolveOpenID(email)
+}
+
 // Capabilities declares that Feishu supports rich text cards, Markdown,
 // images, and button interactions.
 func (p *FeishuPlugin) Capabilities() im.CapabilityDeclaration {

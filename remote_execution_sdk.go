@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -26,63 +25,41 @@ func NewSDKExecutionStrategy() *SDKExecutionStrategy {
 }
 
 func (s *SDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
-	execPath := cmd.Command
-	if !filepath.IsAbs(execPath) {
-		resolved, err := exec.LookPath(execPath)
-		if err != nil {
-			return nil, fmt.Errorf("sdk: command not found: %s: %w", execPath, err)
-		}
-		execPath = resolved
-	}
-	if info, err := os.Stat(execPath); err != nil {
-		return nil, fmt.Errorf("sdk: command not accessible: %w", err)
-	} else if info.IsDir() {
-		return nil, fmt.Errorf("sdk: command is a directory: %s", execPath)
+	execPath, err := resolveExecutablePath(cmd.Command)
+	if err != nil {
+		return nil, fmt.Errorf("sdk: %w", err)
 	}
 
 	args := append([]string{}, cmd.Args...)
-	c := exec.Command(execPath, args...)
-	c.Dir = cmd.Cwd
-	c.Env = buildSDKEnvList(cmd.Env)
-	hideCommandWindow(c)
+	c := buildExecCmd(execPath, args, cmd.Cwd, cmd.Env)
 
-	stdin, err := c.StdinPipe()
+	pipes, err := createProcessPipes(c)
 	if err != nil {
-		return nil, fmt.Errorf("sdk: stdin pipe: %w", err)
-	}
-	stdout, err := c.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("sdk: stdout pipe: %w", err)
-	}
-	// Capture stderr for debugging but don't block on it
-	stderr, err := c.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("sdk: stderr pipe: %w", err)
+		return nil, fmt.Errorf("sdk: %w", err)
 	}
 
 	if err := c.Start(); err != nil {
 		return nil, fmt.Errorf("sdk: start: %w", err)
 	}
 
+	rc := NewReaderCoordinator(128)
 	handle := &SDKExecutionHandle{
 		cmd:       c,
-		stdin:     stdin,
-		stdout:    stdout,
-		stderr:    stderr,
+		stdin:     pipes.Stdin,
+		stdout:    pipes.Stdout,
+		stderr:    pipes.Stderr,
 		pid:       c.Process.Pid,
-		outputCh:  make(chan []byte, 128),
+		outputCh:  rc.Output(),
 		exitCh:    make(chan PTYExit, 1),
 		msgCh:     make(chan SDKMessage, 64),
 		ctrlReqCh: make(chan SDKControlRequest, 16),
+		readerRC:  rc,
 	}
 
-	handle.readerWg.Add(2)
+	rc.Add(2)
 	go handle.readStdout()
 	go handle.readStderr()
-	go func() {
-		handle.readerWg.Wait()
-		close(handle.outputCh)
-	}()
+	rc.CloseWhenDone()
 	go handle.waitProcess()
 
 	return handle, nil
@@ -108,9 +85,9 @@ type SDKExecutionHandle struct {
 	// ctrlReqCh receives permission requests from Claude Code.
 	ctrlReqCh chan SDKControlRequest
 
-	// readerWg tracks stdout/stderr reader goroutines so outputCh is
+	// readerRC coordinates stdout/stderr reader goroutines so outputCh is
 	// closed only after both finish, preventing send-on-closed-channel panics.
-	readerWg sync.WaitGroup
+	readerRC *ReaderCoordinator
 
 	mu     sync.Mutex
 	closed bool
@@ -277,7 +254,7 @@ func (h *SDKExecutionHandle) writeJSON(v interface{}) error {
 }
 
 func (h *SDKExecutionHandle) readStdout() {
-	defer h.readerWg.Done()
+	defer h.readerRC.Done()
 	defer close(h.msgCh)
 
 	scanner := bufio.NewScanner(h.stdout)
@@ -346,7 +323,7 @@ func (h *SDKExecutionHandle) readStdout() {
 }
 
 func (h *SDKExecutionHandle) readStderr() {
-	defer h.readerWg.Done()
+	defer h.readerRC.Done()
 	scanner := bufio.NewScanner(h.stderr)
 	for scanner.Scan() {
 		line := scanner.Text()

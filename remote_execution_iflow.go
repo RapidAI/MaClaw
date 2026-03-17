@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,18 +23,9 @@ func NewIFlowSDKExecutionStrategy() *IFlowSDKExecutionStrategy {
 }
 
 func (s *IFlowSDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
-	execPath := cmd.Command
-	if !filepath.IsAbs(execPath) {
-		resolved, err := exec.LookPath(execPath)
-		if err != nil {
-			return nil, fmt.Errorf("iflow-sdk: command not found: %s: %w", execPath, err)
-		}
-		execPath = resolved
-	}
-	if info, err := os.Stat(execPath); err != nil {
-		return nil, fmt.Errorf("iflow-sdk: command not accessible: %w", err)
-	} else if info.IsDir() {
-		return nil, fmt.Errorf("iflow-sdk: command is a directory: %s", execPath)
+	execPath, err := resolveExecutablePath(cmd.Command)
+	if err != nil {
+		return nil, fmt.Errorf("iflow-sdk: %w", err)
 	}
 
 	// Read the ACP port from the environment.
@@ -50,10 +39,7 @@ func (s *IFlowSDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, err
 	}
 
 	args := append([]string{}, cmd.Args...)
-	c := exec.Command(execPath, args...)
-	c.Dir = cmd.Cwd
-	c.Env = buildSDKEnvList(cmd.Env)
-	hideCommandWindow(c)
+	c := buildExecCmd(execPath, args, cmd.Cwd, cmd.Env)
 
 	if err := c.Start(); err != nil {
 		return nil, fmt.Errorf("iflow-sdk: start: %w", err)
