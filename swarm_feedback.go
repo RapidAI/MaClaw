@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -137,53 +134,7 @@ Test failures:
 }
 
 func (f *FeedbackLoop) callLLM(prompt string) ([]byte, error) {
-	if f.llmConfig.URL == "" {
-		return nil, fmt.Errorf("LLM not configured")
-	}
-
-	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model": f.llmConfig.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-		"temperature": 0.1,
-	})
-
-	req, err := http.NewRequest("POST", f.llmConfig.URL, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if f.llmConfig.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+f.llmConfig.Key)
-	}
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return body, nil
-	}
-	if len(result.Choices) > 0 {
-		return []byte(result.Choices[0].Message.Content), nil
-	}
-	return body, nil
+	return swarmCallLLM(f.llmConfig, prompt, 0.1, 60*time.Second)
 }
 
 func extractJSONArray(data []byte) []byte {

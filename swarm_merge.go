@@ -74,17 +74,25 @@ func (m *MergeController) MergeAll(projectPath string, branches []BranchInfo, co
 	return result, nil
 }
 
-// RevertBranch reverts the last merge commit (assumes it was a --no-ff merge).
+// RevertBranch reverts the last merge commit (assumes it was a --no-ff merge
+// that just happened). Uses git reset instead of revert for reliability.
 func (m *MergeController) RevertBranch(projectPath, branchName string) error {
-	// Find the merge commit and revert it
-	out, err := runGitOutput(projectPath, "log", "--oneline", "-1")
+	// Verify HEAD is a merge commit before resetting
+	out, err := runGitOutput(projectPath, "cat-file", "-p", "HEAD")
 	if err != nil {
-		return fmt.Errorf("get last commit: %w", err)
+		return fmt.Errorf("inspect HEAD: %w", err)
 	}
-	if !strings.Contains(out, "swarm: merge "+branchName) {
-		return fmt.Errorf("last commit is not the merge of %s", branchName)
+	// A merge commit has two or more "parent" lines
+	parentCount := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "parent ") {
+			parentCount++
+		}
 	}
-	return runGit(projectPath, "revert", "--no-edit", "-m", "1", "HEAD")
+	if parentCount < 2 {
+		return fmt.Errorf("HEAD is not a merge commit (expected merge of %s)", branchName)
+	}
+	return runGit(projectPath, "reset", "--hard", "HEAD~1")
 }
 
 // runCompile executes a compile command in the project directory.

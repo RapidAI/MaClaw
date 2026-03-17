@@ -1,8 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
-	"math/rand"
 	"time"
 )
 
@@ -79,6 +79,7 @@ type SwarmRun struct {
 	Phase       SwarmPhase  `json:"phase"`
 	ProjectPath string      `json:"project_path"`
 	TechStack   string      `json:"tech_stack,omitempty"`
+	Tool        string      `json:"tool"` // coding tool to use (e.g. "claude", "cursor")
 
 	// Tasks & Agents
 	Tasks      []SubTask    `json:"tasks"`
@@ -319,5 +320,8 @@ type PromptContext struct {
 // NewSwarmRunID generates a unique run ID using a timestamp and random suffix.
 // Format: swarm_{unix_timestamp}_{random_hex}
 func NewSwarmRunID() string {
-	return fmt.Sprintf("swarm_%d_%08x", time.Now().UnixNano(), rand.Int63n(0xFFFFFFFF))
+	var buf [4]byte
+	_, _ = rand.Read(buf[:])
+	return fmt.Sprintf("swarm_%d_%08x", time.Now().UnixNano(),
+		uint32(buf[0])<<24|uint32(buf[1])<<16|uint32(buf[2])<<8|uint32(buf[3]))
 }

@@ -1,8 +1,13 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 var errSwarmNotInit = fmt.Errorf("swarm orchestrator not initialised")
+
+var swarmInitOnce sync.Once
 
 // ---------------------------------------------------------------------------
 // Wails frontend bindings for SwarmOrchestrator
@@ -62,20 +67,19 @@ func (a *App) ProvideSwarmUserInput(runID, input string) error {
 	return a.swarmOrchestrator.ProvideUserInput(runID, input)
 }
 
-// ensureSwarmOrchestrator lazily initialises the SwarmOrchestrator.
+// ensureSwarmOrchestrator lazily initialises the SwarmOrchestrator (thread-safe).
 func (a *App) ensureSwarmOrchestrator() {
-	if a.swarmOrchestrator != nil {
-		return
-	}
-	a.ensureRemoteInfra()
-	llmCfg := a.GetMaclawLLMConfig()
-	notifier := NewDefaultSwarmNotifier(a)
-	a.swarmOrchestrator = NewSwarmOrchestrator(
-		a,
-		a.remoteSessions,
-		a.sharedContext,
-		a.projectScanner,
-		notifier,
-		llmCfg,
-	)
+	swarmInitOnce.Do(func() {
+		a.ensureRemoteInfra()
+		llmCfg := a.GetMaclawLLMConfig()
+		notifier := NewDefaultSwarmNotifier(a)
+		a.swarmOrchestrator = NewSwarmOrchestrator(
+			a,
+			a.remoteSessions,
+			a.sharedContext,
+			a.projectScanner,
+			notifier,
+			llmCfg,
+		)
+	})
 }

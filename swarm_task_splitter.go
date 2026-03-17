@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -145,54 +143,7 @@ func (s *TaskSplitter) parseGitHubIssues(repoURL string) ([]SubTask, error) {
 
 // callLLM sends a prompt to the configured LLM and returns the response text.
 func (s *TaskSplitter) callLLM(prompt string) ([]byte, error) {
-	if s.llmConfig.URL == "" {
-		return nil, fmt.Errorf("LLM not configured")
-	}
-
-	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model": s.llmConfig.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-		"temperature": 0.2,
-	})
-
-	req, err := http.NewRequest("POST", s.llmConfig.URL, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.llmConfig.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+s.llmConfig.Key)
-	}
-
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract content from OpenAI-compatible response
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return body, nil // return raw if not standard format
-	}
-	if len(result.Choices) > 0 {
-		return []byte(result.Choices[0].Message.Content), nil
-	}
-	return body, nil
+	return swarmCallLLM(s.llmConfig, prompt, 0.2, 120*time.Second)
 }
 
 // extractJSON tries to find a JSON array in the text (handles markdown fences).

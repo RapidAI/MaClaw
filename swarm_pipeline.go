@@ -44,6 +44,8 @@ func (o *SwarmOrchestrator) runMaintenance(run *SwarmRun, req SwarmRunRequest, m
 		log.Printf("[SwarmOrchestrator] merge phase had issues: %v", err)
 	}
 
+	o.setPhase(run, PhaseCompile)
+
 	// Phase 6: Test
 	o.setPhase(run, PhaseTest)
 	if err := o.runTestPhase(run, req); err != nil {
@@ -105,8 +107,9 @@ func (o *SwarmOrchestrator) runSingleDevTask(run *SwarmRun, task SubTask, req Sw
 		return
 	}
 
+	agentID := fmt.Sprintf("%s-dev-%d", run.ID, task.Index)
 	agent := SwarmAgent{
-		ID:           fmt.Sprintf("%s-dev-%d", run.ID, task.Index),
+		ID:           agentID,
 		Role:         RoleDeveloper,
 		TaskIndex:    task.Index,
 		WorktreePath: wt.Path,
@@ -116,7 +119,6 @@ func (o *SwarmOrchestrator) runSingleDevTask(run *SwarmRun, task SubTask, req Sw
 
 	o.mu.Lock()
 	run.Agents = append(run.Agents, agent)
-	agentIdx := len(run.Agents) - 1
 	o.mu.Unlock()
 
 	output, err := o.runSingleAgent(run, RoleDeveloper, task.Index, wt.Path, PromptContext{
@@ -126,15 +128,20 @@ func (o *SwarmOrchestrator) runSingleDevTask(run *SwarmRun, task SubTask, req Sw
 	})
 
 	o.mu.Lock()
-	if err != nil {
-		run.Agents[agentIdx].Status = "failed"
-		run.Agents[agentIdx].Error = err.Error()
-	} else {
-		run.Agents[agentIdx].Status = "completed"
-		run.Agents[agentIdx].Output = output
+	for i := range run.Agents {
+		if run.Agents[i].ID == agentID {
+			if err != nil {
+				run.Agents[i].Status = "failed"
+				run.Agents[i].Error = err.Error()
+			} else {
+				run.Agents[i].Status = "completed"
+				run.Agents[i].Output = output
+			}
+			now := time.Now()
+			run.Agents[i].CompletedAt = &now
+			break
+		}
 	}
-	now := time.Now()
-	run.Agents[agentIdx].CompletedAt = &now
 	o.mu.Unlock()
 }
 
@@ -154,12 +161,15 @@ func (o *SwarmOrchestrator) runSingleAgent(run *SwarmRun, role AgentRole, taskIn
 
 	// Create a RemoteSession via the existing manager
 	spec := LaunchSpec{
-		Tool:        "claude", // default, could be configurable
+		Tool:        run.Tool,
 		ProjectPath: projectPath,
 		Env: map[string]string{
 			"SWARM_SYSTEM_PROMPT": prompt,
 			"SWARM_ROLE":         string(role),
 		},
+	}
+	if spec.Tool == "" {
+		spec.Tool = "claude" // fallback default
 	}
 
 	session, err := o.manager.Create(spec)
@@ -179,6 +189,7 @@ func (o *SwarmOrchestrator) runSingleAgent(run *SwarmRun, role AgentRole, taskIn
 
 // runMergePhase collects all developer branches and merges them.
 func (o *SwarmOrchestrator) runMergePhase(run *SwarmRun) error {
+	o.mu.RLock()
 	var branches []BranchInfo
 	for i, agent := range run.Agents {
 		if agent.Role == RoleDeveloper && agent.Status == "completed" {
@@ -190,12 +201,12 @@ func (o *SwarmOrchestrator) runMergePhase(run *SwarmRun) error {
 			})
 		}
 	}
+	o.mu.RUnlock()
 
 	if len(branches) == 0 {
 		return nil
 	}
 
-	o.setPhase(run, PhaseCompile)
 	result, err := o.mergeCtrl.MergeAll(run.ProjectPath, branches, "")
 	if err != nil {
 		return err

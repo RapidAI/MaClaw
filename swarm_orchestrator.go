@@ -98,6 +98,7 @@ func (o *SwarmOrchestrator) StartSwarmRun(req SwarmRunRequest) (*SwarmRun, error
 		Status:       SwarmStatusPending,
 		ProjectPath:  req.ProjectPath,
 		TechStack:    req.TechStack,
+		Tool:         req.Tool,
 		MaxRounds:    maxRounds,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
@@ -152,17 +153,23 @@ func (o *SwarmOrchestrator) ResumeSwarmRun(runID string) error {
 func (o *SwarmOrchestrator) CancelSwarmRun(runID string) error {
 	o.mu.Lock()
 	run := o.activeRun
-	o.mu.Unlock()
-
 	if run == nil || run.ID != runID {
+		o.mu.Unlock()
 		return fmt.Errorf("run %s not found", runID)
 	}
 
-	// Kill all active agent sessions
+	// Snapshot active agent sessions under lock
+	var activeSessionIDs []string
 	for _, agent := range run.Agents {
 		if agent.Status == "running" && agent.SessionID != "" {
-			_ = o.manager.Kill(agent.SessionID)
+			activeSessionIDs = append(activeSessionIDs, agent.SessionID)
 		}
+	}
+	o.mu.Unlock()
+
+	// Kill all active agent sessions (outside lock — Kill may block)
+	for _, sid := range activeSessionIDs {
+		_ = o.manager.Kill(sid)
 	}
 
 	// Cleanup worktrees
@@ -243,7 +250,10 @@ func (o *SwarmOrchestrator) ProvideUserInput(runID, input string) error {
 }
 
 // addTimelineEvent appends an event to the run's timeline.
+// Caller must NOT hold o.mu — this method acquires it internally.
 func (o *SwarmOrchestrator) addTimelineEvent(run *SwarmRun, eventType, message string, agentID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	run.Timeline = append(run.Timeline, TimelineEvent{
 		Timestamp: time.Now(),
 		Type:      eventType,
@@ -254,10 +264,18 @@ func (o *SwarmOrchestrator) addTimelineEvent(run *SwarmRun, eventType, message s
 }
 
 // setPhase transitions the run to a new phase and notifies.
+// Caller must NOT hold o.mu — this method acquires it internally.
 func (o *SwarmOrchestrator) setPhase(run *SwarmRun, phase SwarmPhase) {
+	o.mu.Lock()
 	run.Phase = phase
 	run.UpdatedAt = time.Now()
-	o.addTimelineEvent(run, "phase_change", fmt.Sprintf("Entered phase: %s", phase), "")
+	run.Timeline = append(run.Timeline, TimelineEvent{
+		Timestamp: time.Now(),
+		Type:      "phase_change",
+		Message:   fmt.Sprintf("Entered phase: %s", phase),
+		Phase:     string(phase),
+	})
+	o.mu.Unlock()
 	_ = o.notifier.NotifyPhaseChange(run, phase)
 }
 
@@ -279,11 +297,14 @@ func (o *SwarmOrchestrator) runPipeline(run *SwarmRun, req SwarmRunRequest, maxA
 		err = fmt.Errorf("unknown mode: %s", run.Mode)
 	}
 
+	if err != nil {
+		o.addTimelineEvent(run, "run_error", err.Error(), "")
+		log.Printf("[SwarmOrchestrator] run %s failed: %v", run.ID, err)
+	}
+
 	o.mu.Lock()
 	if err != nil {
 		run.Status = SwarmStatusFailed
-		o.addTimelineEvent(run, "run_error", err.Error(), "")
-		log.Printf("[SwarmOrchestrator] run %s failed: %v", run.ID, err)
 	} else {
 		run.Status = SwarmStatusCompleted
 	}
