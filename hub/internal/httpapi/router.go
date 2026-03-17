@@ -34,6 +34,7 @@ func NewRouter(
 	skillStore *skill.SkillStore,
 	staticDir string,
 	routePrefix string,
+	bridgeDir string,
 ) http.Handler {
 	var invChecker entry.InvitationCodeChecker
 	if invitationSvc != nil {
@@ -90,9 +91,14 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/feishu/bindings", RequireAdmin(admins, GetFeishuBindingsHandler(feishuNotifier)))
 	mux.HandleFunc("DELETE /api/admin/feishu/bindings", RequireAdmin(admins, DeleteFeishuBindingHandler(feishuNotifier)))
 	mux.HandleFunc("GET /api/admin/settings/openclaw_im", RequireAdmin(admins, GetOpenclawIMConfigHandler(system)))
-	mux.HandleFunc("POST /api/admin/settings/openclaw_im", RequireAdmin(admins, UpdateOpenclawIMConfigHandler(system)))
+	mux.HandleFunc("POST /api/admin/settings/openclaw_im", RequireAdmin(admins, UpdateOpenclawIMConfigHandler(system, bridgeDir)))
 	mux.HandleFunc("POST /api/admin/settings/openclaw_im/test", RequireAdmin(admins, TestOpenclawIMWebhookHandler(system)))
 	mux.HandleFunc("POST /api/openclaw_im/webhook", OpenclawIMWebhookHandler(system, openclawIMPlugin))
+	// Bridge channel management
+	mux.HandleFunc("GET /api/admin/bridge/channels", RequireAdmin(admins, GetBridgeChannelsHandler(system, bridgeDir)))
+	mux.HandleFunc("POST /api/admin/bridge/channels", RequireAdmin(admins, SaveBridgeChannelHandler(system, bridgeDir)))
+	mux.HandleFunc("GET /api/admin/bridge/status", RequireAdmin(admins, BridgeStatusHandler(system)))
+	mux.HandleFunc("POST /api/admin/bridge/install", RequireAdmin(admins, InstallBridgeDepsHandler(bridgeDir)))
 	mux.HandleFunc("GET /api/admin/settings/qqbot", RequireAdmin(admins, GetQQBotConfigHandler(system)))
 	mux.HandleFunc("POST /api/admin/settings/qqbot", RequireAdmin(admins, UpdateQQBotConfigHandler(system, qqbotPlugin)))
 	mux.HandleFunc("GET /api/admin/qqbot/bindings", RequireAdmin(admins, GetQQBotBindingsHandler(qqbotPlugin)))

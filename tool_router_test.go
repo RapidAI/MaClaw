@@ -10,7 +10,7 @@ func makeDynamicTool(name, desc string) map[string]interface{} {
 	return toolDef(name, desc, nil, nil)
 }
 
-// makeAllTools creates a slice of 14 builtins + n dynamic tools.
+// makeAllTools creates a slice of 18 builtins + n dynamic tools.
 func makeAllTools(dynamicCount int) []map[string]interface{} {
 	builtins := makeBuiltinDefs()
 	for i := 0; i < dynamicCount; i++ {
@@ -23,8 +23,8 @@ func makeAllTools(dynamicCount int) []map[string]interface{} {
 }
 
 func TestToolRouter_BelowThreshold(t *testing.T) {
-	// 14 builtins + 5 dynamic = 19 total, below threshold of 20.
-	allTools := makeAllTools(5)
+	// 18 builtins + 1 dynamic = 19 total, below threshold of 20.
+	allTools := makeAllTools(1)
 	router := NewToolRouter(nil)
 	result := router.Route("hello world", allTools)
 
@@ -34,8 +34,8 @@ func TestToolRouter_BelowThreshold(t *testing.T) {
 }
 
 func TestToolRouter_ExactlyAtThreshold(t *testing.T) {
-	// 14 builtins + 6 dynamic = 20 total, at threshold.
-	allTools := makeAllTools(6)
+	// 18 builtins + 2 dynamic = 20 total, at threshold.
+	allTools := makeAllTools(2)
 	router := NewToolRouter(nil)
 	result := router.Route("test message", allTools)
 
@@ -45,23 +45,24 @@ func TestToolRouter_ExactlyAtThreshold(t *testing.T) {
 }
 
 func TestToolRouter_AboveThreshold_KeepsBuiltins(t *testing.T) {
-	// 14 builtins + 15 dynamic = 29 total, above threshold.
+	// 18 builtins + 15 dynamic = 33 total, above threshold.
 	allTools := makeAllTools(15)
 	router := NewToolRouter(nil)
 	result := router.Route("some query", allTools)
 
-	// Should have 14 builtins + up to 15 dynamic = 29 max.
+	// Should have 18 builtins + up to 15 dynamic = 33 max.
 	// Since we have exactly 15 dynamic, all should be kept.
-	if len(result) != 29 {
-		t.Errorf("expected 29 tools, got %d", len(result))
+	if len(result) != 33 {
+		t.Errorf("expected 33 tools, got %d", len(result))
 	}
 
-	// Verify first 14 are builtins.
+	// Verify first 18 are builtins.
 	builtinNames := []string{
 		"list_sessions", "create_session", "send_input", "get_session_output",
 		"get_session_events", "interrupt_session", "kill_session", "screenshot",
 		"list_mcp_tools", "call_mcp_tool", "list_skills", "run_skill",
 		"parallel_execute", "recommend_tool",
+		"bash", "read_file", "write_file", "list_directory",
 	}
 	for i, expected := range builtinNames {
 		actual := extractToolName(result[i])
@@ -72,14 +73,14 @@ func TestToolRouter_AboveThreshold_KeepsBuiltins(t *testing.T) {
 }
 
 func TestToolRouter_AboveThreshold_LimitsDynamic(t *testing.T) {
-	// 14 builtins + 20 dynamic = 34 total.
+	// 18 builtins + 20 dynamic = 38 total.
 	allTools := makeAllTools(20)
 	router := NewToolRouter(nil)
 	result := router.Route("some query", allTools)
 
-	// Should have 14 builtins + 15 dynamic = 29.
-	if len(result) != 29 {
-		t.Errorf("expected 29 tools (14 builtin + 15 dynamic), got %d", len(result))
+	// Should have 18 builtins + 15 dynamic = 33.
+	if len(result) != 33 {
+		t.Errorf("expected 33 tools (18 builtin + 15 dynamic), got %d", len(result))
 	}
 }
 
@@ -87,8 +88,8 @@ func TestToolRouter_RelevanceRanking(t *testing.T) {
 	builtins := makeBuiltinDefs()
 	dynamic := []map[string]interface{}{
 		makeDynamicTool("search_web", "Search the web for information"),
-		makeDynamicTool("read_file", "Read a file from disk"),
-		makeDynamicTool("write_file", "Write content to a file on disk"),
+		makeDynamicTool("custom_read", "Read a custom resource"),
+		makeDynamicTool("custom_write", "Write a custom resource"),
 		makeDynamicTool("run_tests", "Run unit tests for the project"),
 		makeDynamicTool("deploy_app", "Deploy the application to production"),
 		makeDynamicTool("lint_code", "Lint source code for style issues"),
@@ -102,13 +103,13 @@ func TestToolRouter_RelevanceRanking(t *testing.T) {
 	router := NewToolRouter(nil)
 	result := router.Route("search the web for golang tutorials", allTools)
 
-	// All tools should be returned since 24 > 20, but we have only 10 dynamic
+	// All tools should be returned since 28 > 20, but we have only 10 dynamic
 	// (below maxDynamicRouted=15), so all are kept.
 	if len(result) != len(allTools) {
 		t.Errorf("expected %d tools, got %d", len(allTools), len(result))
 	}
 
-	// The "search_web" tool should be ranked higher (closer to position 14).
+	// The "search_web" tool should be ranked higher (closer to position 18).
 	// Find its position in the result.
 	searchIdx := -1
 	for i := builtinToolCount; i < len(result); i++ {
@@ -130,9 +131,9 @@ func TestToolRouter_EmptyMessage(t *testing.T) {
 	router := NewToolRouter(nil)
 	result := router.Route("", allTools)
 
-	// Empty message → should still return 14 + 15 = 29.
-	if len(result) != 29 {
-		t.Errorf("expected 29 tools, got %d", len(result))
+	// Empty message → should still return 18 + 15 = 33.
+	if len(result) != 33 {
+		t.Errorf("expected 33 tools, got %d", len(result))
 	}
 }
 

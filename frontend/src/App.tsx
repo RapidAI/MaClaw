@@ -135,6 +135,7 @@ const SKILL_TOOLS = ['claude', 'gemini', 'codex'] as const;
 const DEFAULT_SKILLHUB_ENTRIES = [
     { label: 'OpenClaw Official', url: 'https://skillhub.openclaw.org' },
     { label: '腾讯云镜像', url: 'https://skillhub.tencent.openclaw.org' },
+    { label: '腾讯云 SkillHUB', url: 'https://skillhub.tencent.com/' },
 ];
 const isToolTab = (tab: string): boolean => (TOOL_NAMES as readonly string[]).includes(tab);
 const isSkillTool = (tab: string): boolean => (SKILL_TOOLS as readonly string[]).includes(tab);

@@ -231,7 +231,8 @@ func (a *App) ensureRemoteInfra() {
 		a.projectScanner = NewProjectScanner(a.mcpRegistry)
 	}
 	if a.toolDefGenerator == nil {
-		a.toolDefGenerator = NewToolDefinitionGenerator(a.mcpRegistry, nil)
+		builtins := (&IMMessageHandler{}).buildToolDefinitions()
+		a.toolDefGenerator = NewToolDefinitionGenerator(a.mcpRegistry, builtins)
 	}
 	if a.toolRouter == nil {
 		a.toolRouter = NewToolRouter(a.toolDefGenerator)

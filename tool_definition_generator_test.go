@@ -23,6 +23,10 @@ func makeBuiltinDefs() []map[string]interface{} {
 		toolDef("run_skill", "执行Skill", nil, nil),
 		toolDef("parallel_execute", "并行执行多个工具", nil, nil),
 		toolDef("recommend_tool", "推荐工具", nil, nil),
+		toolDef("bash", "执行shell命令", nil, nil),
+		toolDef("read_file", "读取文件", nil, nil),
+		toolDef("write_file", "写入文件", nil, nil),
+		toolDef("list_directory", "列出目录", nil, nil),
 	}
 }
 

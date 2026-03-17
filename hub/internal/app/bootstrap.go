@@ -181,6 +181,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		skillStore,
 		cfg.PWA.StaticDir,
 		cfg.PWA.RoutePrefix,
+		cfg.Bridge.Dir,
 	)
 
 	return &App{

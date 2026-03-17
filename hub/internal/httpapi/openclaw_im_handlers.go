@@ -18,6 +18,12 @@ import (
 
 const openclawIMConfigKey = "openclaw_im_config"
 
+// DefaultOpenclawIMSecret is the pre-shared HMAC secret used by both Hub and
+// the openclaw-bridge when running on the same machine (127.0.0.1).  Users may
+// change it via the admin UI, but the default lets everything work out of the
+// box without manual configuration.
+const DefaultOpenclawIMSecret = "maclaw-openclaw-local-secret"
+
 type OpenclawIMConfigState struct {
 	Enabled    bool   `json:"enabled"`
 	WebhookURL string `json:"webhook_url"`
@@ -28,12 +34,18 @@ func GetOpenclawIMConfigHandler(system store.SystemSettingsRepository) http.Hand
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw, err := system.Get(r.Context(), openclawIMConfigKey)
 		if err != nil || raw == "" {
-			writeJSON(w, http.StatusOK, OpenclawIMConfigState{})
+			// Return default config with localhost bridge address for same-machine deployment.
+			writeJSON(w, http.StatusOK, OpenclawIMConfigState{
+				WebhookURL: "http://127.0.0.1:3210/outbound",
+				Secret:     maskSecret(DefaultOpenclawIMSecret),
+			})
 			return
 		}
 		var cfg OpenclawIMConfigState
 		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-			writeJSON(w, http.StatusOK, OpenclawIMConfigState{})
+			writeJSON(w, http.StatusOK, OpenclawIMConfigState{
+				WebhookURL: "http://127.0.0.1:3210/outbound",
+			})
 			return
 		}
 		if cfg.Secret != "" {
@@ -43,7 +55,7 @@ func GetOpenclawIMConfigHandler(system store.SystemSettingsRepository) http.Hand
 	}
 }
 
-func UpdateOpenclawIMConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
+func UpdateOpenclawIMConfigHandler(system store.SystemSettingsRepository, bridgeDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var cfg OpenclawIMConfigState
 		if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&cfg); err != nil {
@@ -61,10 +73,18 @@ func UpdateOpenclawIMConfigHandler(system store.SystemSettingsRepository) http.H
 			old := loadOpenclawIMConfig(r, system)
 			cfg.Secret = old.Secret
 		}
+		if cfg.Secret == "" {
+			cfg.Secret = DefaultOpenclawIMSecret
+		}
 		data, _ := json.Marshal(cfg)
 		if err := system.Set(r.Context(), openclawIMConfigKey, string(data)); err != nil {
 			writeError(w, http.StatusInternalServerError, "OPENCLAW_IM_CONFIG_SAVE_FAILED", err.Error())
 			return
+		}
+		// Sync secret to bridge config.json if bridge directory exists
+		if bridgeDir != "" {
+			channels := loadChannelStates(r, system)
+			_ = writeBridgeConfig(r, system, bridgeDir, channels)
 		}
 		resp := cfg
 		if resp.Secret != "" {
@@ -77,10 +97,13 @@ func UpdateOpenclawIMConfigHandler(system store.SystemSettingsRepository) http.H
 func loadOpenclawIMConfig(r *http.Request, system store.SystemSettingsRepository) OpenclawIMConfigState {
 	raw, err := system.Get(r.Context(), openclawIMConfigKey)
 	if err != nil || raw == "" {
-		return OpenclawIMConfigState{}
+		return OpenclawIMConfigState{Secret: DefaultOpenclawIMSecret}
 	}
 	var cfg OpenclawIMConfigState
 	_ = json.Unmarshal([]byte(raw), &cfg)
+	if cfg.Secret == "" {
+		cfg.Secret = DefaultOpenclawIMSecret
+	}
 	return cfg
 }
 

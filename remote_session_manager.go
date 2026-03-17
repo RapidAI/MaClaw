@@ -81,6 +81,21 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	// the session exits, so the user's native config is preserved.
 	configRestore := backupToolConfigs(m.app, spec.Tool)
 
+	// Remote sessions (mobile/handoff) cannot show OS-level privilege
+	// escalation dialogs (UAC on Windows, sudo on Unix). If AdminMode
+	// is requested, check whether the current process already has
+	// elevated privileges. If it does, the child process inherits them
+	// automatically. If not, downgrade AdminMode and record a warning
+	// so the user knows why admin was skipped.
+	var adminDowngraded bool
+	if spec.AdminMode && !isProcessElevated() && isHeadlessLaunchSource(spec.LaunchSource) {
+		spec.AdminMode = false
+		adminDowngraded = true
+		if m.app != nil {
+			m.app.log(fmt.Sprintf("[remote-admin] session=%s: AdminMode downgraded — process is not elevated and remote launch cannot show UAC prompt", sessionID))
+		}
+	}
+
 	cmd, err := provider.BuildCommand(spec)
 	if err != nil {
 		configRestore() // restore immediately on failure
@@ -167,14 +182,34 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	}
 
 	// Initialize permission handler based on YoloMode setting.
+	// Remote sessions (mobile/handoff) have no local confirmation dialog,
+	// so auto-approve all permission requests to avoid blocking.
 	permMode := PermissionModeDefault
-	if spec.YoloMode {
+	if spec.YoloMode || isHeadlessLaunchSource(spec.LaunchSource) {
 		permMode = PermissionModeAutoApprove
 	}
 	session.Permissions = NewPermissionHandler(permMode, nil, nil)
 
 	initEvent := buildSessionInitEvent(session)
 	session.Events = []ImportantEvent{initEvent}
+
+	// If admin mode was downgraded, add a warning event so the user
+	// sees why the session is running without elevated privileges.
+	var adminWarningEvent *ImportantEvent
+	if adminDowngraded {
+		evt := ImportantEvent{
+			EventID:   fmt.Sprintf("evt_%d_admin_downgrade", now.UnixNano()),
+			SessionID: sessionID,
+			Type:      "admin_downgrade",
+			Severity:  "warning",
+			Title:     "Admin mode unavailable",
+			Summary:   "Remote launch cannot show OS privilege dialog. Session started without admin privileges. Restart the application as administrator if admin mode is required.",
+			CreatedAt: now.Unix(),
+		}
+		session.Events = append(session.Events, evt)
+		adminWarningEvent = &evt
+	}
+
 	workspace = nil
 
 	m.storeSession(session)
@@ -182,6 +217,9 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	if m.hubClient != nil {
 		_ = m.hubClient.SendSessionCreated(session)
 		_ = m.hubClient.SendImportantEvent(initEvent)
+		if adminWarningEvent != nil {
+			_ = m.hubClient.SendImportantEvent(*adminWarningEvent)
+		}
 	}
 
 	// SDK sessions get a dedicated output loop that handles structured messages.

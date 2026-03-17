@@ -693,8 +693,14 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
-	if _, isSDK := s.Exec.(*SDKExecutionHandle); !isSDK {
-		return fmt.Errorf("screenshot capture is only supported in SDK mode sessions")
+	// Screenshot capture works for SDK-mode and Gemini ACP sessions.
+	// The capture runs outside the CLI process (platform-native commands),
+	// so it doesn't depend on the CLI tool's own image support.
+	switch s.Exec.(type) {
+	case *SDKExecutionHandle, *GeminiACPExecutionHandle:
+		// supported
+	default:
+		return fmt.Errorf("screenshot capture is only supported in SDK and ACP mode sessions")
 	}
 
 	available, reason := DetectDisplayServer()

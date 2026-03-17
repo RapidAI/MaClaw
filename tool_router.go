@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	builtinToolCount = 14 // first 14 tools are always builtins (12 original + parallel_execute + recommend_tool)
+	builtinToolCount = 18 // builtin tools: 14 original + bash, read_file, write_file, list_directory
 	routeThreshold   = 20 // only filter when total tools exceed this
 	maxDynamicRouted = 15 // max dynamic tools to keep after filtering
 )

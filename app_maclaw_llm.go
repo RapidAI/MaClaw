@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -88,7 +89,29 @@ func (a *App) SaveMaclawLLMProviders(providers []MaclawLLMProvider, current stri
 			break
 		}
 	}
-	return a.SaveConfig(cfg)
+	if err := a.SaveConfig(cfg); err != nil {
+		return err
+	}
+	// Immediately notify Hub of the LLM configuration change via heartbeat
+	// so the Hub-side llm_configured flag is updated without waiting for the
+	// next periodic heartbeat cycle.
+	a.notifyHubLLMConfigChanged()
+	return nil
+}
+
+// notifyHubLLMConfigChanged sends an immediate heartbeat to the Hub so that
+// the llm_configured status is refreshed right after the user saves LLM config.
+func (a *App) notifyHubLLMConfigChanged() {
+	if a.remoteSessions == nil {
+		return
+	}
+	hc := a.remoteSessions.hubClient
+	if hc == nil || !hc.IsConnected() {
+		return
+	}
+	if err := hc.SendHeartbeat(); err != nil {
+		log.Printf("[LLM] failed to send immediate heartbeat after LLM config change: %v", err)
+	}
 }
 
 // GetMaclawLLMConfig returns the current MaClaw LLM configuration.
@@ -122,7 +145,11 @@ func (a *App) SaveMaclawLLMConfig(llm MaclawLLMConfig) error {
 	cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 	cfg.MaclawLLMKey = strings.TrimSpace(llm.Key)
 	cfg.MaclawLLMModel = strings.TrimSpace(llm.Model)
-	return a.SaveConfig(cfg)
+	if err := a.SaveConfig(cfg); err != nil {
+		return err
+	}
+	a.notifyHubLLMConfigChanged()
+	return nil
 }
 
 // TestMaclawLLM sends a "hello" message to the configured LLM endpoint

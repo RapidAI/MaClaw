@@ -66,6 +66,10 @@ type Config struct {
 		Level string `yaml:"level"`
 		Dir   string `yaml:"dir"`
 	} `yaml:"logging"`
+
+	Bridge struct {
+		Dir string `yaml:"dir"` // path to openclaw-bridge directory
+	} `yaml:"bridge"`
 }
 
 func Default() *Config {
@@ -106,6 +110,8 @@ func Default() *Config {
 
 	cfg.Logging.Level = "info"
 	cfg.Logging.Dir = "./data/logs"
+
+	cfg.Bridge.Dir = "./openclaw-bridge"
 
 	return cfg
 }

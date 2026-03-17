@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -508,10 +510,33 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 用户通过 IM（飞书/QBot）向你发送消息，你可以自主使用工具完成任务。
 
 ## 核心原则
-- 主动使用工具：不要只是描述步骤，直接执行。
+- 主动使用工具：不要只是描述步骤，直接执行。收到请求后立即调用对应工具。
+- 永远不要说"我没有某某工具"或"我无法执行"——先检查你的工具列表，大部分操作都有对应工具。
 - 多步推理：复杂任务可以连续调用多个工具，逐步完成。
-- 观察再行动：创建会话后用 get_session_output 观察输出，根据结果决定下一步。
 - 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
+- 智能推断参数：如果用户没有指定 session_id 等参数，查看当前会话列表自动选择。
+
+## ⚠️ 执行验证原则（极其重要，必须遵守）
+每次执行操作后，你必须验证操作是否真正成功，绝不能仅凭工具返回"已发送"就告诉用户执行成功。
+1. send_input 发送命令后 → 必须立即调用 get_session_output 查看实际输出，确认命令是否执行成功、有无报错。
+2. create_session 创建会话后 → 必须调用 get_session_output 确认会话正常启动。
+3. screenshot 截屏后 → 必须调用 get_session_events 确认截图是否成功发送。
+4. call_mcp_tool / run_skill 执行后 → 检查返回结果是否包含错误。
+绝对禁止在没有验证的情况下告诉用户"已完成"或"执行成功"。
+如果验证发现失败，如实告诉用户失败原因，并尝试修复。
+
+## 工具使用指南
+- 执行命令：用 bash 直接在本机执行 shell 命令（创建目录、安装软件、运行脚本等），不需要创建会话。
+- 文件操作：用 read_file 读文件、write_file 写文件、list_directory 列目录，这些都直接在本机执行。
+- 截屏：直接调用 screenshot 工具，如果只有一个会话会自动选择。
+- 创建会话：用 create_session，创建后必须用 get_session_output 确认启动。
+- 发送命令：用 send_input，发送后必须用 get_session_output 确认结果。
+- 查看输出：用 get_session_output 获取会话最近输出。
+- 并行任务：用 parallel_execute 同时执行多个任务。
+- MCP 工具：用 list_mcp_tools 查看可用工具，用 call_mcp_tool 调用。
+- Skill：用 list_skills 查看，用 run_skill 执行。
+
+注意：简单的文件操作和命令执行请直接用 bash/read_file/write_file/list_directory，不要绕道创建会话。
 
 `)
 	b.WriteString("## 当前设备状态\n")
@@ -609,10 +634,10 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
 			}, []string{"session_id"}),
-		toolDef("screenshot", "截取指定会话的屏幕",
+		toolDef("screenshot", "截取会话的屏幕截图并发送给用户。如果只有一个活跃会话，可以省略 session_id 自动选择。",
 			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-			}, []string{"session_id"}),
+				"session_id": map[string]string{"type": "string", "description": "会话 ID（可选，只有一个会话时自动选择）"},
+			}, nil),
 		toolDef("list_mcp_tools", "列出已注册的 MCP Server 及其工具", nil, nil),
 		toolDef("call_mcp_tool", "调用指定 MCP Server 上的工具",
 			map[string]interface{}{
@@ -644,6 +669,27 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"task_description": map[string]string{"type": "string", "description": "任务描述"},
 			}, []string{"task_description"}),
+		// --- 本机直接操作工具 ---
+		toolDef("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。",
+			map[string]interface{}{
+				"command":     map[string]string{"type": "string", "description": "要执行的 shell 命令"},
+				"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为用户主目录）"},
+				"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
+			}, []string{"command"}),
+		toolDef("read_file", "读取本机文件内容",
+			map[string]interface{}{
+				"path":  map[string]string{"type": "string", "description": "文件路径（绝对路径或相对于主目录的路径）"},
+				"lines": map[string]string{"type": "integer", "description": "最多读取行数（可选，默认 200）"},
+			}, []string{"path"}),
+		toolDef("write_file", "写入内容到本机文件（会创建不存在的目录）",
+			map[string]interface{}{
+				"path":    map[string]string{"type": "string", "description": "文件路径"},
+				"content": map[string]string{"type": "string", "description": "文件内容"},
+			}, []string{"path", "content"}),
+		toolDef("list_directory", "列出本机目录内容",
+			map[string]interface{}{
+				"path": map[string]string{"type": "string", "description": "目录路径（可选，默认为用户主目录）"},
+			}, nil),
 	}
 }
 
@@ -716,6 +762,14 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string) (result string) {
 		return h.toolParallelExecute(args)
 	case "recommend_tool":
 		return h.toolRecommendTool(args)
+	case "bash":
+		return h.toolBash(args)
+	case "read_file":
+		return h.toolReadFile(args)
+	case "write_file":
+		return h.toolWriteFile(args)
+	case "list_directory":
+		return h.toolListDirectory(args)
 	default:
 		return fmt.Sprintf("未知工具: %s", name)
 	}
@@ -760,7 +814,7 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 	if err != nil {
 		return fmt.Sprintf("创建会话失败: %s", err.Error())
 	}
-	return fmt.Sprintf("会话已创建: ID=%s 工具=%s 标题=%s\n提示: 可用 get_session_output 观察启动进度。", view.ID, view.Tool, view.Title)
+	return fmt.Sprintf("会话已创建: ID=%s 工具=%s 标题=%s\n⚠️ 你必须立即调用 get_session_output(session_id=%q) 确认会话是否正常启动，不要直接告诉用户已完成。", view.ID, view.Tool, view.Title, view.ID)
 }
 
 func (h *IMMessageHandler) toolSendInput(args map[string]interface{}) string {
@@ -775,7 +829,7 @@ func (h *IMMessageHandler) toolSendInput(args map[string]interface{}) string {
 	if err := h.manager.WriteInput(sessionID, text); err != nil {
 		return fmt.Sprintf("发送失败: %s", err.Error())
 	}
-	return fmt.Sprintf("已发送到会话 %s。可用 get_session_output 查看执行结果。", sessionID)
+	return fmt.Sprintf("已发送到会话 %s。⚠️ 你必须立即调用 get_session_output(session_id=%q) 验证命令是否执行成功，不要直接告诉用户已完成。", sessionID, sessionID)
 }
 
 func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) string {
@@ -905,8 +959,29 @@ func (h *IMMessageHandler) toolKillSession(args map[string]interface{}) string {
 
 func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
+
+	// 如果未指定 session_id，自动选择唯一活跃会话
+	if sessionID == "" && h.manager != nil {
+		sessions := h.manager.List()
+		if len(sessions) == 1 {
+			sessionID = sessions[0].ID
+		} else if len(sessions) > 1 {
+			var lines []string
+			lines = append(lines, "有多个活跃会话，请指定 session_id：")
+			for _, s := range sessions {
+				s.mu.RLock()
+				status := string(s.Status)
+				s.mu.RUnlock()
+				lines = append(lines, fmt.Sprintf("- %s (工具=%s, 状态=%s)", s.ID, s.Tool, status))
+			}
+			return strings.Join(lines, "\n")
+		} else {
+			return "当前没有活跃会话，请先用 create_session 创建一个会话，然后再截屏"
+		}
+	}
+
 	if sessionID == "" {
-		return "缺少 session_id 参数"
+		return "缺少 session_id 参数，且无法自动选择会话"
 	}
 	if h.manager == nil {
 		return "会话管理器未初始化"
@@ -914,7 +989,7 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	if err := h.manager.CaptureScreenshot(sessionID); err != nil {
 		return fmt.Sprintf("截图失败: %s", err.Error())
 	}
-	return "已请求截图，图片将通过会话事件发送"
+	return fmt.Sprintf("已请求截图。⚠️ 你必须立即调用 get_session_events(session_id=%q) 确认截图是否成功发送，不要直接告诉用户已完成。", sessionID)
 }
 
 func (h *IMMessageHandler) toolListMCPTools() string {
@@ -1067,4 +1142,205 @@ func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string
 	}
 	name, reason := selector.Recommend(desc, installed)
 	return fmt.Sprintf("推荐工具: %s\n理由: %s", name, reason)
+}
+
+// ---------------------------------------------------------------------------
+// 本机直接操作工具 (bash, read_file, write_file, list_directory)
+// ---------------------------------------------------------------------------
+
+const (
+	bashDefaultTimeout = 30
+	bashMaxTimeout     = 120
+	readFileMaxLines   = 200
+	writeFileMaxSize   = 1 << 20 // 1 MB
+)
+
+// resolvePath resolves a path, expanding ~ and making relative paths relative
+// to the user's home directory.
+func resolvePath(p string) string {
+	if p == "" {
+		home, _ := os.UserHomeDir()
+		return home
+	}
+	if strings.HasPrefix(p, "~") {
+		home, _ := os.UserHomeDir()
+		p = filepath.Join(home, p[1:])
+	}
+	if !filepath.IsAbs(p) {
+		home, _ := os.UserHomeDir()
+		p = filepath.Join(home, p)
+	}
+	return filepath.Clean(p)
+}
+
+func (h *IMMessageHandler) toolBash(args map[string]interface{}) string {
+	command, _ := args["command"].(string)
+	if command == "" {
+		return "缺少 command 参数"
+	}
+
+	timeout := bashDefaultTimeout
+	if t, ok := args["timeout"].(float64); ok && t > 0 {
+		timeout = int(t)
+		if timeout > bashMaxTimeout {
+			timeout = bashMaxTimeout
+		}
+	}
+
+	workDir := resolvePath(stringVal(args, "working_dir"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	var shellName string
+	var shellArgs []string
+	if runtime.GOOS == "windows" {
+		shellName = "powershell"
+		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", command}
+	} else {
+		shellName = "bash"
+		shellArgs = []string{"-c", command}
+	}
+
+	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd.Dir = workDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	var b strings.Builder
+	if stdout.Len() > 0 {
+		out := stdout.String()
+		if len(out) > 8192 {
+			out = out[:8192] + "\n... (输出已截断)"
+		}
+		b.WriteString(out)
+	}
+	if stderr.Len() > 0 {
+		errOut := stderr.String()
+		if len(errOut) > 4096 {
+			errOut = errOut[:4096] + "\n... (错误输出已截断)"
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("[stderr] ")
+		b.WriteString(errOut)
+	}
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			b.WriteString(fmt.Sprintf("\n[错误] 命令超时（%d 秒）", timeout))
+		} else {
+			b.WriteString(fmt.Sprintf("\n[错误] 退出码: %v", err))
+		}
+	}
+
+	if b.Len() == 0 {
+		return "(命令执行完成，无输出)"
+	}
+	return b.String()
+}
+
+func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
+	p, _ := args["path"].(string)
+	if p == "" {
+		return "缺少 path 参数"
+	}
+	absPath := resolvePath(p)
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Sprintf("文件不存在或无法访问: %s", err.Error())
+	}
+	if info.IsDir() {
+		return fmt.Sprintf("%s 是目录，请使用 list_directory 工具", absPath)
+	}
+
+	maxLines := readFileMaxLines
+	if n, ok := args["lines"].(float64); ok && n > 0 {
+		maxLines = int(n)
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return fmt.Sprintf("读取失败: %s", err.Error())
+	}
+
+	lines := strings.SplitAfter(string(data), "\n")
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		return strings.Join(lines, "") + fmt.Sprintf("\n... (已截断，共 %d 行，显示前 %d 行)", len(strings.SplitAfter(string(data), "\n")), maxLines)
+	}
+	return string(data)
+}
+
+func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
+	p, _ := args["path"].(string)
+	content, _ := args["content"].(string)
+	if p == "" || content == "" {
+		return "缺少 path 或 content 参数"
+	}
+	if len(content) > writeFileMaxSize {
+		return fmt.Sprintf("内容过大（%d 字节），最大允许 %d 字节", len(content), writeFileMaxSize)
+	}
+
+	absPath := resolvePath(p)
+
+	// 自动创建父目录
+	dir := filepath.Dir(absPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Sprintf("创建目录失败: %s", err.Error())
+	}
+
+	if err := os.WriteFile(absPath, []byte(content), 0644); err != nil {
+		return fmt.Sprintf("写入失败: %s", err.Error())
+	}
+
+	// 验证写入
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Sprintf("写入后验证失败: %s", err.Error())
+	}
+	return fmt.Sprintf("已写入 %s（%d 字节）", absPath, info.Size())
+}
+
+func (h *IMMessageHandler) toolListDirectory(args map[string]interface{}) string {
+	p, _ := args["path"].(string)
+	absPath := resolvePath(p)
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Sprintf("路径不存在或无法访问: %s", err.Error())
+	}
+	if !info.IsDir() {
+		return fmt.Sprintf("%s 不是目录", absPath)
+	}
+
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		return fmt.Sprintf("读取目录失败: %s", err.Error())
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("目录: %s（共 %d 项）\n", absPath, len(entries)))
+	shown := 0
+	for _, entry := range entries {
+		if shown >= 100 {
+			b.WriteString(fmt.Sprintf("... 还有 %d 项未显示\n", len(entries)-shown))
+			break
+		}
+		info, _ := entry.Info()
+		if entry.IsDir() {
+			b.WriteString(fmt.Sprintf("  📁 %s/\n", entry.Name()))
+		} else if info != nil {
+			b.WriteString(fmt.Sprintf("  📄 %s (%d bytes)\n", entry.Name(), info.Size()))
+		} else {
+			b.WriteString(fmt.Sprintf("  📄 %s\n", entry.Name()))
+		}
+		shown++
+	}
+	return b.String()
 }

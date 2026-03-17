@@ -1,0 +1,22 @@
+{
+  "name": "openclaw-im-bridge",
+  "version": "1.0.0",
+  "description": "Bridge between OpenClaw IM channel plugins and MaClaw Hub via OpenClaw IM webhook protocol",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "openclaw": "latest"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

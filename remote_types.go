@@ -32,6 +32,14 @@ func normalizeRemoteLaunchSource(source RemoteLaunchSource) RemoteLaunchSource {
 	}
 }
 
+// isHeadlessLaunchSource returns true for launch sources that have no
+// local desktop session (mobile PWA, handoff from Hub). These sources
+// cannot display OS-level dialogs such as UAC prompts or permission
+// confirmation windows.
+func isHeadlessLaunchSource(source RemoteLaunchSource) bool {
+	return source == RemoteLaunchSourceMobile || source == RemoteLaunchSourceHandoff
+}
+
 type LaunchSpec struct {
 	SessionID    string
 	Tool         string

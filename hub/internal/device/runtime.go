@@ -291,6 +291,7 @@ func (s *Service) ListOnlineMachines() []MachineRuntimeInfo {
 			info.AppVersion = meta.AppVersion
 			info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
 			info.ActiveSessions = meta.ActiveSessions
+			info.LLMConfigured = meta.LLMConfigured
 			info.LastSeenAt = meta.LastSeenAt
 			info.Status = meta.Status
 		}
@@ -351,6 +352,7 @@ func (s *Service) ListMachines(ctx context.Context, userID string) ([]MachineRun
 				info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
 			}
 			info.ActiveSessions = meta.ActiveSessions
+			info.LLMConfigured = meta.LLMConfigured
 			if meta.LastSeenAt != nil {
 				info.LastSeenAt = meta.LastSeenAt
 			}
@@ -417,6 +419,7 @@ func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, er
 				info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
 			}
 			info.ActiveSessions = meta.ActiveSessions
+			info.LLMConfigured = meta.LLMConfigured
 			if meta.LastSeenAt != nil {
 				info.LastSeenAt = meta.LastSeenAt
 			}
