@@ -153,8 +153,8 @@ export function RemoteSettingsPanel({
 
     return (
         <>
-            {/* Row 1: Hub Center + 心跳间隔 + 熄屏时间 */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 160px", gap: "10px" }}>
+            {/* Row 1: Hub Center */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "10px" }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label">{translate("remoteHubCenterUrl")}</label>
                     <input
@@ -164,31 +164,6 @@ export function RemoteSettingsPanel({
                         onBlur={(e) => saveRemoteConfigField({ remote_hubcenter_url: e.target.value.trim() })}
                         placeholder="http://hubs.mypapers.top:9388"
                         spellCheck={false}
-                    />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">心跳间隔（秒）</label>
-                    <input
-                        className="form-input"
-                        type="number"
-                        min={5}
-                        step={1}
-                        value={config?.remote_heartbeat_sec || 10}
-                        onChange={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Number(e.target.value || 10) })}
-                        onBlur={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Math.max(5, Number(e.target.value || 10)) })}
-                    />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">熄屏时间（分钟）</label>
-                    <input
-                        className="form-input"
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={(config as any)?.screen_dim_timeout_min ?? 3}
-                        onChange={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Number(e.target.value || 0) } as any)}
-                        onBlur={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Math.max(0, Number(e.target.value || 0)) } as any)}
-                        title="无键鼠操作多少分钟后熄屏节能（0=禁用）。防锁屏开启时有效。"
                     />
                 </div>
             </div>
@@ -415,10 +390,24 @@ export function RemoteSettingsPanel({
                 </div>
             )}
 
-            <div className="info-text" style={{ marginTop: "10px", textAlign: "left" }}>
-                {remoteActivationStatus?.activated
-                    ? `${translate("remoteActivation")}: ${translate("remoteActivated")} ${remoteActivationStatus.email ? `(${remoteActivationStatus.email})` : ""}`
-                    : `${translate("remoteActivation")}: ${translate("remoteNotActivated")}`}{" | "}{translate("remoteModeDesc")}
+            <div className="info-text" style={{ marginTop: "10px", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span>
+                    {remoteActivationStatus?.activated
+                        ? `${translate("remoteActivation")}: ${translate("remoteActivated")} ${remoteActivationStatus.email ? `(${remoteActivationStatus.email})` : ""}`
+                        : `${translate("remoteActivation")}: ${translate("remoteNotActivated")}`}
+                </span>
+                {remoteActivationStatus?.activated && config?.remote_hub_url && (
+                    <button
+                        className="btn-secondary"
+                        style={{ marginLeft: "10px", flexShrink: 0, fontSize: "0.8rem", padding: "2px 12px", height: "26px" }}
+                        onClick={() => {
+                            const hubUrl = (config.remote_hub_url || "").replace(/\/+$/, "");
+                            if (hubUrl) window.open(`${hubUrl}/bind`, "_blank");
+                        }}
+                    >
+                        绑定管理
+                    </button>
+                )}
             </div>
         </>
     );

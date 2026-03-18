@@ -1353,7 +1353,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role' | 'memory' | 'scheduler'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role' | 'memory' | 'scheduler' | 'system'>('general');
     const [installLocation, setInstallLocation] = useState<'user' | 'project'>('user');
     const [installProject, setInstallProject] = useState<string>("");
     const [isBatchInstalling, setIsBatchInstalling] = useState(false);
@@ -2951,6 +2951,11 @@ ${instruction}`;
             label: lang === 'zh-Hans' ? '计划任务' : lang === 'zh-Hant' ? '計劃任務' : 'Scheduler',
             desc: lang === 'zh-Hans' ? '定时让 MaClaw 自动执行任务' : lang === 'zh-Hant' ? '定時讓 MaClaw 自動執行任務' : 'Schedule MaClaw to run tasks automatically',
         },
+        {
+            id: 'system' as const,
+            label: lang === 'zh-Hans' ? '系统' : lang === 'zh-Hant' ? '系統' : 'System',
+            desc: lang === 'zh-Hans' ? '心跳、熄屏等系统级设置' : lang === 'zh-Hant' ? '心跳、熄屏等系統級設置' : 'Heartbeat, screen dimming and other system settings',
+        },
     ];
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
@@ -3954,6 +3959,41 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'scheduler' ? 'block' : 'none' }}>
                                 <ScheduledTasksPanel lang={lang} />
+                            </div>
+
+                            <div className="settings-panel" style={{ display: settingsTab === 'system' ? 'block' : 'none' }}>
+                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+                                        {lang === 'zh-Hans' ? '系统设置' : lang === 'zh-Hant' ? '系統設置' : 'System Settings'}
+                                    </h4>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label className="form-label">{lang === 'zh-Hans' ? '心跳间隔（秒）' : lang === 'zh-Hant' ? '心跳間隔（秒）' : 'Heartbeat Interval (sec)'}</label>
+                                            <input
+                                                className="form-input"
+                                                type="number"
+                                                min={5}
+                                                step={1}
+                                                value={config?.remote_heartbeat_sec || 10}
+                                                onChange={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Number(e.target.value || 10) })}
+                                                onBlur={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Math.max(5, Number(e.target.value || 10)) })}
+                                            />
+                                        </div>
+                                        <div className="form-group" style={{ marginBottom: 0 }}>
+                                            <label className="form-label">{lang === 'zh-Hans' ? '熄屏时间（分钟）' : lang === 'zh-Hant' ? '熄屏時間（分鐘）' : 'Screen Dim Timeout (min)'}</label>
+                                            <input
+                                                className="form-input"
+                                                type="number"
+                                                min={0}
+                                                step={1}
+                                                value={(config as any)?.screen_dim_timeout_min ?? 3}
+                                                onChange={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Number(e.target.value || 0) } as any)}
+                                                onBlur={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Math.max(0, Number(e.target.value || 0)) } as any)}
+                                                title={lang === 'zh-Hans' ? '无键鼠操作多少分钟后熄屏节能（0=禁用）。防锁屏开启时有效。' : 'Minutes of inactivity before screen dims (0=disabled). Effective when screen-lock prevention is on.'}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
