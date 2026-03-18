@@ -16,7 +16,7 @@ import lobsterHalf from './assets/images/lobster_half.svg';
 import globeOnline from './assets/images/globe_online.svg';
 import globeOffline from './assets/images/globe_offline.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, PingSkillHub, ValidateSkillHub } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, PingSkillHub, ValidateSkillHub, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -2016,6 +2016,39 @@ function App() {
             EventsOff("tools-install-done");
         };
     }, []);
+
+    // Poll ClawNet running status so the globe indicator lights up without
+    // requiring the user to visit the settings panel first.
+    // When the settings tab is active, ClawNetPanel also polls — but the
+    // lightweight ClawNetIsRunning() call is idempotent, so the overlap is
+    // harmless and keeps the globe indicator responsive on tab switches.
+    const clawNetAutoStarted = useRef(false);
+    useEffect(() => {
+        const checkClawNet = () => {
+            ClawNetIsRunning().then(up => setClawNetRunning(up)).catch(() => {});
+        };
+        checkClawNet();
+        const timer = setInterval(checkClawNet, 15000);
+        return () => clearInterval(timer);
+    }, []);
+
+    // Auto-start ClawNet daemon when enabled in config, so the user doesn't
+    // have to visit the settings panel to light up the globe icon.
+    useEffect(() => {
+        if (clawNetAutoStarted.current) return;
+        if (!config?.clawnet_enabled) return;
+        clawNetAutoStarted.current = true;
+        ClawNetIsRunning().then(up => {
+            if (!up) {
+                ClawNetEnsureDaemonWithDownload()
+                    .then(() => ClawNetIsRunning())
+                    .then(up2 => setClawNetRunning(up2))
+                    .catch(() => {});
+            } else {
+                setClawNetRunning(true);
+            }
+        }).catch(() => {});
+    }, [config?.clawnet_enabled]);
 
     // Poll MaClaw LLM status every 60 seconds.
     // Also re-ping immediately when the user navigates to/from the LLM settings

@@ -31,6 +31,10 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; label_zh: string
     cancelled: { bg: "#f8fafc", text: "#94a3b8", label_zh: "已取消", label_en: "Cancelled" },
 };
 
+const MAX_TASKS_LOCAL = 12;
+const MAX_TASKS_TOTAL = 24;
+const POLL_INTERVAL_MS = 30_000;
+
 type ViewMode = "all" | "matched" | "network";
 
 export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
@@ -42,6 +46,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
     const [actionBusy, setActionBusy] = useState<string | null>(null);
     const [actionMsg, setActionMsg] = useState<{ text: string; type: "success" | "info" | "error" } | null>(null);
     const msgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const refreshRef = useRef(0); // guard stale responses
     // Create task form
     const [showCreate, setShowCreate] = useState(false);
     const [newTitle, setNewTitle] = useState("");
@@ -51,28 +56,38 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
 
     const refresh = useCallback(async () => {
         if (!clawNetRunning) return;
+        const seq = ++refreshRef.current;
         setLoading(true);
         setError("");
         try {
-            let res: any;
-            if (viewMode === "matched") {
-                res = await ClawNetMatchTasks();
-            } else if (viewMode === "network") {
-                res = await ClawNetBrowseNetworkTasks();
-            } else {
-                res = await ClawNetListTasks("");
-            }
+            // Fire primary fetch + credits in parallel
+            const primaryFetch = viewMode === "matched"
+                ? ClawNetMatchTasks()
+                : viewMode === "network"
+                    ? ClawNetBrowseNetworkTasks()
+                    : ClawNetListTasks("");
+
+            const [res, creditsRes] = await Promise.all([
+                primaryFetch,
+                ClawNetGetCredits().catch(() => null),
+            ]);
+
+            // Stale guard: discard if a newer refresh was triggered
+            if (seq !== refreshRef.current) return;
 
             if (res.ok) {
-                let finalTasks: ClawNetTask[] = (res.tasks || []).slice(0, viewMode === "network" ? 24 : 12);
+                let finalTasks: ClawNetTask[] = (res.tasks || []).slice(
+                    0, viewMode === "network" ? MAX_TASKS_TOTAL : MAX_TASKS_LOCAL,
+                );
                 // In "all" mode, also fetch network tasks and merge
                 if (viewMode === "all") {
                     try {
                         const netRes = await ClawNetBrowseNetworkTasks();
+                        if (seq !== refreshRef.current) return;
                         if (netRes.ok && netRes.tasks?.length) {
                             const localIds = new Set(finalTasks.map((t) => t.id));
                             const netTasks = (netRes.tasks as ClawNetTask[]).filter(t => !localIds.has(t.id));
-                            finalTasks = [...finalTasks, ...netTasks].slice(0, 24);
+                            finalTasks = [...finalTasks, ...netTasks].slice(0, MAX_TASKS_TOTAL);
                         }
                     } catch { /* keep local tasks */ }
                 }
@@ -82,24 +97,24 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                 setError(res.error || "Failed to load tasks");
             }
 
-            const c = await ClawNetGetCredits();
-            if (c.ok) setCredits({ balance: c.balance, tier: c.tier });
+            if (creditsRes?.ok) setCredits({ balance: creditsRes.balance, tier: creditsRes.tier });
 
             // Publish local tasks to Hub in background
             if (viewMode !== "network") {
                 ClawNetPublishTasksToHub().catch(() => {});
             }
         } catch (e) {
+            if (seq !== refreshRef.current) return;
             setError(String(e));
         } finally {
-            setLoading(false);
+            if (seq === refreshRef.current) setLoading(false);
         }
     }, [clawNetRunning, viewMode]);
 
     useEffect(() => {
         refresh();
         if (!clawNetRunning) return;
-        const timer = setInterval(refresh, 30000);
+        const timer = setInterval(refresh, POLL_INTERVAL_MS);
         return () => clearInterval(timer);
     }, [refresh, clawNetRunning]);
 
@@ -110,13 +125,13 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         };
     }, []);
 
-    const showMsg = (text: string, type: "success" | "info" | "error", ms = 3000) => {
+    const showMsg = useCallback((text: string, type: "success" | "info" | "error", ms = 3000) => {
         if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
         setActionMsg({ text, type });
         msgTimerRef.current = setTimeout(() => setActionMsg(null), ms);
-    };
+    }, []);
 
-    const doAction = async (label: string, fn: () => Promise<any>) => {
+    const doAction = useCallback(async (label: string, fn: () => Promise<any>) => {
         setActionBusy(label);
         setActionMsg(null);
         try {
@@ -132,9 +147,9 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         } finally {
             setActionBusy(null);
         }
-    };
+    }, [zh, showMsg, refresh]);
 
-    const handleCreate = async () => {
+    const handleCreate = useCallback(async () => {
         if (!newTitle.trim()) return;
         const reward = Math.max(0, Math.floor(newReward));
         if (reward !== 0 && reward < 100) {
@@ -149,7 +164,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         setNewTitle("");
         setNewReward(100);
         setShowCreate(false);
-    };
+    }, [newTitle, newReward, credits, zh, showMsg, doAction]);
 
     if (!clawNetRunning) {
         return (
@@ -282,6 +297,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                             background: "#fff", border: "1px solid #e2e8f0", borderRadius: "7px",
                             padding: "7px 10px", display: "flex", flexDirection: "column", gap: "3px",
                             transition: "box-shadow 0.15s, border-color 0.15s",
+                            minWidth: 0, overflow: "hidden",
                         }}
                         onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 1px 8px rgba(99,102,241,0.10)"; e.currentTarget.style.borderColor = "#c7d2fe"; }}
                         onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "#e2e8f0"; }}
