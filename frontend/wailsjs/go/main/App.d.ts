@@ -159,6 +159,8 @@ export function UpdateNLSkill(arg1:any):Promise<void>;
 
 export function DeleteNLSkill(arg1:string):Promise<void>;
 
+export function ImportNLSkillZip():Promise<string>;
+
 // MCP management bindings
 export function ListMCPServers():Promise<Array<any>>;
 

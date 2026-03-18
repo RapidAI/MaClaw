@@ -112,9 +112,9 @@
     }
     // Show unbind warning
     var warn = document.getElementById('unbindWarning');
-    var msg = '⚠️ 解绑将删除所有设备绑定、IM 绑定（飞书/QQ等），且原邀请码将失效。';
+    var msg = '⚠️ 解绑将删除所有设备绑定、IM 绑定（飞书/QQ等）。';
     if (invCodeRequired) {
-      msg += '<br>当前服务器要求邀请码，解绑后需要获取新的邀请码才能重新绑定。';
+      msg += '<br>原邀请码将失效，解绑后需要获取新的邀请码才能重新绑定。';
     }
     warn.innerHTML = msg;
     warn.classList.remove('hidden');
@@ -261,9 +261,9 @@
     var code = document.getElementById('unbindCode').value.trim();
     if (!email || !code) return showResult('unbindResult', '请输入邮箱和验证码', 'error');
 
-    var confirmMsg = '确定要解除 ' + email + ' 的所有绑定吗？\n\n将会：\n• 删除所有设备绑定\n• 删除飞书/QQ等 IM 绑定\n• 原邀请码将失效';
+    var confirmMsg = '确定要解除 ' + email + ' 的所有绑定吗？\n\n将会：\n• 删除所有设备绑定\n• 删除飞书/QQ等 IM 绑定';
     if (invCodeRequired) {
-      confirmMsg += '\n\n⚠️ 当前服务器要求邀请码，解绑后需要获取新的邀请码才能重新绑定！';
+      confirmMsg += '\n• 原邀请码将失效\n\n⚠️ 解绑后需要获取新的邀请码才能重新绑定！';
     }
     if (!confirm(confirmMsg)) return;
 

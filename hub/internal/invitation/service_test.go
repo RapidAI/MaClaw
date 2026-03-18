@@ -285,6 +285,46 @@ func TestSetRequired_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestDeleteCodeByEmail(t *testing.T) {
+	repo := &memInvitationCodeRepo{}
+	svc := NewService(repo, newMemSettingsRepo())
+	ctx := context.Background()
+
+	codes, _ := svc.GenerateCodes(ctx, 3, 0)
+	_ = svc.ValidateAndConsume(ctx, codes[0].Code, "alice@example.com")
+	_ = svc.ValidateAndConsume(ctx, codes[1].Code, "alice@example.com")
+	// codes[2] stays unused
+
+	deleted, err := svc.DeleteCodeByEmail(ctx, "alice@example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("expected 2 deleted, got %d", deleted)
+	}
+
+	// The unused code should still exist
+	all, _ := svc.ListCodes(ctx, "", "")
+	if len(all) != 1 {
+		t.Errorf("expected 1 remaining code, got %d", len(all))
+	}
+
+	// Deleting again should return 0
+	deleted, err = svc.DeleteCodeByEmail(ctx, "alice@example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted on second call, got %d", deleted)
+	}
+
+	// Empty email should return 0
+	deleted, _ = svc.DeleteCodeByEmail(ctx, "")
+	if deleted != 0 {
+		t.Errorf("expected 0 for empty email, got %d", deleted)
+	}
+}
+
 func TestListCodes(t *testing.T) {
 	repo := &memInvitationCodeRepo{}
 	svc := NewService(repo, newMemSettingsRepo())

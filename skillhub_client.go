@@ -97,7 +97,7 @@ func (c *SkillHubClient) Search(ctx context.Context, query string) ([]HubSkillMe
 	// Load Hub URLs from config.
 	cfg, err := c.app.LoadConfig()
 	if err != nil || len(cfg.SkillHubURLs) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("未配置 SkillHub 地址，请在设置中添加 SkillHub URL")
 	}
 
 	type hubResult struct {

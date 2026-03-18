@@ -315,6 +315,10 @@ export function DeleteNLSkill(arg1) {
   return window['go']['main']['App']['DeleteNLSkill'](arg1);
 }
 
+export function ImportNLSkillZip() {
+  return window['go']['main']['App']['ImportNLSkillZip']();
+}
+
 // MCP management bindings
 export function ListMCPServers() {
   return window['go']['main']['App']['ListMCPServers']();

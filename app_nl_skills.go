@@ -1,9 +1,12 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -373,6 +376,79 @@ func (a *App) DeleteNLSkill(name string) error {
 		return fmt.Errorf("skill executor not initialized")
 	}
 	return a.skillExecutor.Delete(name)
+}
+
+// ImportNLSkillZip opens a file dialog to select a zip file, validates it as a
+// standard NL Skill package (must contain skill.json with valid NLSkillEntry),
+// and registers the skill. Returns the imported skill name on success.
+func (a *App) ImportNLSkillZip() (string, error) {
+	if a.skillExecutor == nil {
+		return "", fmt.Errorf("skill executor not initialized")
+	}
+
+	// Open file dialog to select zip
+	selection := a.SelectSkillFile()
+	if selection == "" {
+		return "", nil // user cancelled
+	}
+
+	// Open and validate zip
+	r, err := zip.OpenReader(selection)
+	if err != nil {
+		return "", fmt.Errorf("无法打开 zip 文件: %v", err)
+	}
+	defer r.Close()
+
+	// Find skill.json in the zip
+	var skillJSON []byte
+	for _, f := range r.File {
+		name := strings.ToValidUTF8(f.Name, "")
+		// Accept skill.json at root or inside a single top-level directory
+		base := name
+		if idx := strings.LastIndex(name, "/"); idx >= 0 {
+			base = name[idx+1:]
+		}
+		if strings.EqualFold(base, "skill.json") && !f.FileInfo().IsDir() {
+			rc, err := f.Open()
+			if err != nil {
+				return "", fmt.Errorf("无法读取 skill.json: %v", err)
+			}
+			skillJSON, err = io.ReadAll(io.LimitReader(rc, 1<<20)) // 1MB limit
+			rc.Close()
+			if err != nil {
+				return "", fmt.Errorf("读取 skill.json 失败: %v", err)
+			}
+			break
+		}
+	}
+
+	if skillJSON == nil {
+		return "", fmt.Errorf("zip 包中未找到 skill.json，不是有效的 Skill 包")
+	}
+
+	// Parse skill.json
+	var entry NLSkillEntry
+	if err := json.Unmarshal(skillJSON, &entry); err != nil {
+		return "", fmt.Errorf("skill.json 格式无效: %v", err)
+	}
+
+	// Validate required fields
+	if strings.TrimSpace(entry.Name) == "" {
+		return "", fmt.Errorf("skill.json 中缺少 name 字段")
+	}
+	if len(entry.Steps) == 0 {
+		return "", fmt.Errorf("skill.json 中缺少 steps 定义")
+	}
+
+	// Mark source as imported zip
+	entry.Source = "zip_import"
+
+	// Register the skill
+	if err := a.skillExecutor.Register(entry); err != nil {
+		return "", err
+	}
+
+	return entry.Name, nil
 }
 
 // executeBashStep runs a shell command as a skill step.

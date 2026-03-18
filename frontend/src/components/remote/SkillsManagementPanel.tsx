@@ -4,6 +4,7 @@ import {
     CreateNLSkill,
     UpdateNLSkill,
     DeleteNLSkill,
+    ImportNLSkillZip,
     SearchSkillHub,
     InstallHubSkill,
     CheckHubSkillUpdates,
@@ -89,6 +90,7 @@ export function SkillsManagementPanel({ translate }: Props) {
 
     // Delete confirmation
     const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+    const [importing, setImporting] = useState(false);
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -326,6 +328,21 @@ export function SkillsManagementPanel({ translate }: Props) {
         }
     };
 
+    const handleImportZip = async () => {
+        setImporting(true);
+        setError("");
+        try {
+            const name = await ImportNLSkillZip();
+            if (name) {
+                await loadData();
+            }
+        } catch (err) {
+            setError(String(err));
+        } finally {
+            setImporting(false);
+        }
+    };
+
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {/* Tab switcher */}
@@ -359,6 +376,9 @@ export function SkillsManagementPanel({ translate }: Props) {
                             {skills.length} {translate("skillsRegistered") || "个已注册 Skill"}
                         </span>
                         <div style={{ display: "flex", gap: "6px" }}>
+                            <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleImportZip} disabled={busy || importing}>
+                                {importing ? "导入中..." : "📦 上传 Skill 包"}
+                            </button>
                             <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
                                 + 新建 Skill
                             </button>
