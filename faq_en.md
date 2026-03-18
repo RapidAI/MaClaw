@@ -16,7 +16,7 @@ The preset shortcuts in MaClaw **may only support specific "Coding Plan" API Key
 If you are using a general-purpose API Key, please use the **"Custom"** mode and manually enter the corresponding model name and API endpoint.
 
 ## 4. Where is the configuration file saved?
-MaClaw's configuration is saved in your user home directory with the filename `.aicoder_config.json`.
+MaClaw's configuration is saved in your user home directory at `~/.maclaw/config.json`.
 Native settings for various AI tools (like Claude's `~/.claude/settings.json`) are also automatically synced based on your configuration.
 
 ## 5. How to update AI CLI tools?

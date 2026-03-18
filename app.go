@@ -72,6 +72,7 @@ type App struct {
 	memoryCompressor     *MemoryCompressor
 	compressorMu         sync.Mutex // guards lazy creation of memoryCompressor
 	scheduledTaskManager *ScheduledTaskManager
+	remoteInfraOnce      sync.Once // guards ensureRemoteInfra initialization
 }
 
 var OnConfigChanged func(AppConfig)
@@ -180,6 +181,7 @@ type AppConfig struct {
 	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
 	MaclawLLMKey             string              `json:"maclaw_llm_key"`
 	MaclawLLMModel           string              `json:"maclaw_llm_model"`
+	MaclawLLMProtocol        string              `json:"maclaw_llm_protocol,omitempty"` // "openai" (default) or "anthropic"
 	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
 	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
 	MaclawAgentMaxIterations int                 `json:"maclaw_agent_max_iterations,omitempty"` // 0/absent=default(12), >0=fixed limit, -1=unlimited
@@ -224,7 +226,16 @@ func NewApp() *App {
 
 // ensureRemoteInfra initializes remoteSessions, mcpRegistry, and skillExecutor
 // if they haven't been created yet. Call this before any remote operation.
+// Thread-safe: uses sync.Once-style check-lock-check to avoid races.
 func (a *App) ensureRemoteInfra() {
+	// Fast path: already initialized (no lock needed).
+	if a.remoteSessions != nil && a.mcpRegistry != nil && a.skillExecutor != nil {
+		return
+	}
+	a.remoteInfraOnce.Do(a.initRemoteInfra)
+}
+
+func (a *App) initRemoteInfra() {
 	if a.remoteSessions == nil {
 		a.remoteSessions = NewRemoteSessionManager(a)
 	}
@@ -367,6 +378,53 @@ func (a *App) ensureRemoteInfra() {
 	}
 }
 
+// createAndWireHubClient creates a new RemoteHubClient, wires all subsystem
+// handlers into it, and connects. This consolidates the repeated hub-client
+// setup code that was duplicated in startup() and LaunchTool().
+func (a *App) createAndWireHubClient() *RemoteHubClient {
+	a.ensureRemoteInfra()
+	hubClient := NewRemoteHubClient(a, a.remoteSessions)
+	a.remoteSessions.SetHubClient(hubClient)
+	if a.capabilityGapDetector != nil {
+		hubClient.imHandler.SetCapabilityGapDetector(a.capabilityGapDetector)
+	}
+	if a.toolDefGenerator != nil {
+		hubClient.imHandler.SetToolDefGenerator(a.toolDefGenerator)
+	}
+	if a.toolRouter != nil {
+		hubClient.imHandler.SetToolRouter(a.toolRouter)
+	}
+	if a.memoryStore != nil {
+		hubClient.imHandler.SetMemoryStore(a.memoryStore)
+	}
+	if a.configManager != nil {
+		hubClient.imHandler.SetConfigManager(a.configManager)
+	}
+	if a.templateManager != nil {
+		hubClient.imHandler.SetTemplateManager(a.templateManager)
+	}
+	if a.scheduledTaskManager != nil {
+		hubClient.imHandler.SetScheduledTaskManager(a.scheduledTaskManager)
+	}
+	if a.contextResolver != nil {
+		hubClient.imHandler.SetContextResolver(a.contextResolver)
+	}
+	if a.sessionPrecheck != nil {
+		hubClient.imHandler.SetSessionPrecheck(a.sessionPrecheck)
+	}
+	if a.startupFeedback != nil {
+		hubClient.imHandler.SetStartupFeedback(a.startupFeedback)
+	}
+	if a.conversationArchiver != nil {
+		hubClient.imHandler.memory.archiver = a.conversationArchiver
+	}
+	if a.ioRelay != nil {
+		hubClient.SetIORelay(a.ioRelay)
+	}
+	_ = hubClient.Connect()
+	return hubClient
+}
+
 // tryLockTool attempts to acquire a lock for installing a specific tool
 // Returns true if lock acquired, false if tool is already being installed
 func (a *App) tryLockTool(toolName string) bool {
@@ -413,48 +471,7 @@ func (a *App) startup(ctx context.Context) {
 			a.SetLanguage(config.Language)
 		}
 		if config.RemoteMachineID != "" && config.RemoteMachineToken != "" && config.RemoteHubURL != "" {
-			a.ensureRemoteInfra()
-			hubClient := NewRemoteHubClient(a, a.remoteSessions)
-			a.remoteSessions.SetHubClient(hubClient)
-			if a.capabilityGapDetector != nil {
-				hubClient.imHandler.SetCapabilityGapDetector(a.capabilityGapDetector)
-			}
-			if a.toolDefGenerator != nil {
-				hubClient.imHandler.SetToolDefGenerator(a.toolDefGenerator)
-			}
-			if a.toolRouter != nil {
-				hubClient.imHandler.SetToolRouter(a.toolRouter)
-			}
-			if a.memoryStore != nil {
-				hubClient.imHandler.SetMemoryStore(a.memoryStore)
-			} else {
-				fmt.Println("[startup] WARNING: memoryStore is nil, session will run without long-term memory")
-			}
-			if a.configManager != nil {
-				hubClient.imHandler.SetConfigManager(a.configManager)
-			}
-			if a.templateManager != nil {
-				hubClient.imHandler.SetTemplateManager(a.templateManager)
-			}
-			if a.scheduledTaskManager != nil {
-				hubClient.imHandler.SetScheduledTaskManager(a.scheduledTaskManager)
-			}
-			if a.contextResolver != nil {
-				hubClient.imHandler.SetContextResolver(a.contextResolver)
-			}
-			if a.sessionPrecheck != nil {
-				hubClient.imHandler.SetSessionPrecheck(a.sessionPrecheck)
-			}
-			if a.startupFeedback != nil {
-				hubClient.imHandler.SetStartupFeedback(a.startupFeedback)
-			}
-			if a.conversationArchiver != nil {
-				hubClient.imHandler.memory.archiver = a.conversationArchiver
-			}
-			if a.ioRelay != nil {
-				hubClient.SetIORelay(a.ioRelay)
-			}
-			_ = hubClient.Connect()
+			a.createAndWireHubClient()
 		} else if config.RemoteEmail != "" && config.RemoteHubURL != "" {
 			// Auto-register on startup: saved email + hub but no machine credentials yet
 			go a.autoRegisterOnStartup(config)
@@ -2523,48 +2540,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 
 		if a.remoteSessions == nil {
-			a.ensureRemoteInfra()
-			hubClient := NewRemoteHubClient(a, a.remoteSessions)
-			a.remoteSessions.SetHubClient(hubClient)
-			if a.capabilityGapDetector != nil {
-				hubClient.imHandler.SetCapabilityGapDetector(a.capabilityGapDetector)
-			}
-			if a.toolDefGenerator != nil {
-				hubClient.imHandler.SetToolDefGenerator(a.toolDefGenerator)
-			}
-			if a.toolRouter != nil {
-				hubClient.imHandler.SetToolRouter(a.toolRouter)
-			}
-			if a.memoryStore != nil {
-				hubClient.imHandler.SetMemoryStore(a.memoryStore)
-			} else {
-				fmt.Println("[LaunchTool] WARNING: memoryStore is nil, session will run without long-term memory")
-			}
-			if a.configManager != nil {
-				hubClient.imHandler.SetConfigManager(a.configManager)
-			}
-			if a.templateManager != nil {
-				hubClient.imHandler.SetTemplateManager(a.templateManager)
-			}
-			if a.scheduledTaskManager != nil {
-				hubClient.imHandler.SetScheduledTaskManager(a.scheduledTaskManager)
-			}
-			if a.contextResolver != nil {
-				hubClient.imHandler.SetContextResolver(a.contextResolver)
-			}
-			if a.sessionPrecheck != nil {
-				hubClient.imHandler.SetSessionPrecheck(a.sessionPrecheck)
-			}
-			if a.startupFeedback != nil {
-				hubClient.imHandler.SetStartupFeedback(a.startupFeedback)
-			}
-			if a.conversationArchiver != nil {
-				hubClient.imHandler.memory.archiver = a.conversationArchiver
-			}
-			if a.ioRelay != nil {
-				hubClient.SetIORelay(a.ioRelay)
-			}
-			_ = hubClient.Connect()
+			a.createAndWireHubClient()
 		}
 
 		_, err = a.remoteSessions.Create(spec)
@@ -3411,6 +3387,9 @@ func (a *App) SaveConfig(config AppConfig) error {
 func (a *App) saveToPath(path string, config AppConfig) error {
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)

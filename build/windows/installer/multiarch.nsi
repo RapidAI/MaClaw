@@ -147,7 +147,7 @@ Section "uninstall"
     DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${AUTOSTART_REG_NAME}"
 
     # Ask user if they want to delete user data
-    MessageBox MB_YESNO|MB_ICONQUESTION "Do you want to delete all user data (.cceasy and .cc folders)?$\n$\nThis will remove all AI tools, configurations and cache." IDYES deleteUserData IDNO skipUserData
+    MessageBox MB_YESNO|MB_ICONQUESTION "Do you want to delete all user data (.cceasy and .maclaw folders)?$\n$\nThis will remove all AI tools, configurations and cache." IDYES deleteUserData IDNO skipUserData
     
     deleteUserData:
     # Delete user data directories using cmd /c rd for faster deletion
@@ -155,8 +155,7 @@ Section "uninstall"
     # Using rd /s /q is much faster on Windows
     DetailPrint "Deleting user data directories..."
     nsExec::ExecToLog 'cmd /c rd /s /q "$PROFILE\.cceasy"'
-    # Also delete config file
-    Delete "$PROFILE\.maclaw\config.json"
+    nsExec::ExecToLog 'cmd /c rd /s /q "$PROFILE\.maclaw"'
     
     skipUserData:
 SectionEnd

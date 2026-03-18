@@ -555,7 +555,16 @@ type llmToolCall struct {
 }
 
 // doLLMRequest sends a chat completion request to the configured LLM.
+// Supports both OpenAI-compatible and Anthropic Messages API protocols.
 func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}) (*llmResponse, error) {
+	if cfg.Protocol == "anthropic" {
+		return h.doAnthropicLLMRequest(cfg, messages, tools)
+	}
+	return h.doOpenAILLMRequest(cfg, messages, tools)
+}
+
+// doOpenAILLMRequest sends a request using the OpenAI-compatible protocol.
+func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}) (*llmResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
 
 	reqBody := map[string]interface{}{
@@ -597,6 +606,228 @@ func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interfac
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 	return &result, nil
+}
+
+// doAnthropicLLMRequest sends a request using the Anthropic Messages API protocol
+// and converts the response to the internal llmResponse format for compatibility.
+func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}) (*llmResponse, error) {
+	endpoint := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
+
+	// Separate system message and convert messages to Anthropic format.
+	var systemText string
+	var anthropicMsgs []interface{}
+	for _, m := range messages {
+		mm, ok := m.(map[string]interface{})
+		if !ok {
+			// map[string]string — convert to map[string]interface{} first
+			if ms, ok2 := m.(map[string]string); ok2 {
+				mm = make(map[string]interface{}, len(ms))
+				for k, v := range ms {
+					mm[k] = v
+				}
+			} else {
+				anthropicMsgs = append(anthropicMsgs, m)
+				continue
+			}
+		}
+
+		role, _ := mm["role"].(string)
+
+		switch role {
+		case "system":
+			if content, _ := mm["content"].(string); content != "" {
+				systemText = content
+			}
+
+		case "assistant":
+			// Convert assistant message to Anthropic content block format.
+			// Anthropic expects content as an array of blocks, not a plain string.
+			var contentBlocks []interface{}
+			if text, _ := mm["content"].(string); text != "" {
+				contentBlocks = append(contentBlocks, map[string]interface{}{
+					"type": "text",
+					"text": text,
+				})
+			}
+			if tcs, ok := mm["tool_calls"].([]llmToolCall); ok {
+				for _, tc := range tcs {
+					var inputObj interface{}
+					_ = json.Unmarshal([]byte(tc.Function.Arguments), &inputObj)
+					if inputObj == nil {
+						inputObj = map[string]interface{}{}
+					}
+					contentBlocks = append(contentBlocks, map[string]interface{}{
+						"type":  "tool_use",
+						"id":    tc.ID,
+						"name":  tc.Function.Name,
+						"input": inputObj,
+					})
+				}
+			}
+			if len(contentBlocks) > 0 {
+				anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
+					"role":    "assistant",
+					"content": contentBlocks,
+				})
+			}
+
+		case "tool":
+			// Anthropic expects tool results as user messages with tool_result blocks.
+			// Batch consecutive tool results into a single user message.
+			toolCallID, _ := mm["tool_call_id"].(string)
+			content, _ := mm["content"].(string)
+			toolResultBlock := map[string]interface{}{
+				"type":        "tool_result",
+				"tool_use_id": toolCallID,
+				"content":     content,
+			}
+			// Check if the last message in anthropicMsgs is already a user message
+			// with tool_result blocks — if so, append to it.
+			merged := false
+			if len(anthropicMsgs) > 0 {
+				if lastMsg, ok := anthropicMsgs[len(anthropicMsgs)-1].(map[string]interface{}); ok {
+					if lastRole, _ := lastMsg["role"].(string); lastRole == "user" {
+						if blocks, ok := lastMsg["content"].([]interface{}); ok && len(blocks) > 0 {
+							if firstBlock, ok := blocks[0].(map[string]interface{}); ok {
+								if firstBlock["type"] == "tool_result" {
+									lastMsg["content"] = append(blocks, toolResultBlock)
+									merged = true
+								}
+							}
+						}
+					}
+				}
+			}
+			if !merged {
+				anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
+					"role":    "user",
+					"content": []interface{}{toolResultBlock},
+				})
+			}
+
+		default:
+			// user and other roles pass through
+			anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
+				"role":    role,
+				"content": mm["content"],
+			})
+		}
+	}
+
+	reqBody := map[string]interface{}{
+		"model":      cfg.Model,
+		"messages":   anthropicMsgs,
+		"max_tokens": 4096,
+	}
+	if systemText != "" {
+		reqBody["system"] = systemText
+	}
+
+	// Convert OpenAI-style tools to Anthropic tool format
+	if len(tools) > 0 {
+		var anthropicTools []map[string]interface{}
+		for _, t := range tools {
+			fn, _ := t["function"].(map[string]interface{})
+			if fn == nil {
+				continue
+			}
+			at := map[string]interface{}{
+				"name": fn["name"],
+			}
+			if desc, ok := fn["description"]; ok {
+				at["description"] = desc
+			}
+			if params, ok := fn["parameters"]; ok {
+				at["input_schema"] = params
+			} else {
+				at["input_schema"] = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+			}
+			anthropicTools = append(anthropicTools, at)
+		}
+		if len(anthropicTools) > 0 {
+			reqBody["tools"] = anthropicTools
+		}
+	}
+
+	data, _ := json.Marshal(reqBody)
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "OpenClaw/1.0")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if cfg.Key != "" {
+		req.Header.Set("x-api-key", cfg.Key)
+	}
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if resp.StatusCode != http.StatusOK {
+		msg := string(body)
+		if len(msg) > 512 {
+			msg = msg[:512] + "..."
+		}
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+	}
+
+	// Parse Anthropic response and convert to internal llmResponse format
+	var anthropicResp struct {
+		Content    []anthropicContentBlock `json:"content"`
+		StopReason string                 `json:"stop_reason"`
+	}
+	if err := json.Unmarshal(body, &anthropicResp); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	// Convert to llmResponse
+	msg := llmMessage{Role: "assistant"}
+	var textParts []string
+	for _, block := range anthropicResp.Content {
+		switch block.Type {
+		case "text":
+			textParts = append(textParts, block.Text)
+		case "tool_use":
+			argsJSON, _ := json.Marshal(block.Input)
+			msg.ToolCalls = append(msg.ToolCalls, llmToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{
+					Name:      block.Name,
+					Arguments: string(argsJSON),
+				},
+			})
+		}
+	}
+	msg.Content = strings.Join(textParts, "\n")
+
+	finishReason := "stop"
+	if anthropicResp.StopReason == "tool_use" {
+		finishReason = "tool_calls"
+	} else if anthropicResp.StopReason == "max_tokens" {
+		finishReason = "length"
+	}
+
+	return &llmResponse{
+		Choices: []llmChoice{{Message: msg, FinishReason: finishReason}},
+	}, nil
+}
+
+// anthropicContentBlock represents a content block in the Anthropic Messages API response.
+type anthropicContentBlock struct {
+	Type  string                 `json:"type"`
+	Text  string                 `json:"text,omitempty"`
+	ID    string                 `json:"id,omitempty"`
+	Name  string                 `json:"name,omitempty"`
+	Input map[string]interface{} `json:"input,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -734,13 +965,14 @@ func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []c
 				}
 			}
 
+			truncated := truncateToolResult(toolContent)
 			conversation = append(conversation, map[string]interface{}{
 				"role":         "tool",
 				"tool_call_id": tc.ID,
-				"content":      truncateToolResult(toolContent),
+				"content":      truncated,
 			})
 			history = append(history, conversationEntry{
-				Role: "tool", Content: truncateToolResult(toolContent), ToolCallID: tc.ID,
+				Role: "tool", Content: truncated, ToolCallID: tc.ID,
 			})
 		}
 

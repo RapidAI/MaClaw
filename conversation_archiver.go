@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -89,66 +87,20 @@ func (a *ConversationArchiver) Archive(userID string, entries []conversationEntr
 // callLLMForSummary sends the conversation text to the configured LLM and
 // asks it to extract user preferences, decisions, and important facts.
 func (a *ConversationArchiver) callLLMForSummary(cfg MaclawLLMConfig, conversationText string) (string, error) {
-	url := strings.TrimRight(strings.TrimSpace(cfg.URL), "/") + "/chat/completions"
-	model := strings.TrimSpace(cfg.Model)
-	key := strings.TrimSpace(cfg.Key)
-
 	prompt := "请从以下对话中提取关键信息，包括：用户偏好、决策结论、重要事实。" +
 		"请用简洁的中文列出要点，不要包含无关信息。如果对话中没有值得记录的信息，请回复「无」。\n\n" +
 		"对话内容：\n" + conversationText
 
-	reqBody := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-		"max_tokens": 500,
-	}
-	data, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "OpenClaw/1.0")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
+	messages := []interface{}{
+		map[string]string{"role": "user", "content": prompt},
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	result, err := doSimpleLLMRequest(cfg, messages, client, 30*time.Second)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return "", err
 	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no response from model")
-	}
-	return result.Choices[0].Message.Content, nil
+	return result.Content, nil
 }
 
 // formatEntryContent converts a conversationEntry's Content (which may be a

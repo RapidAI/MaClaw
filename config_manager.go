@@ -199,6 +199,11 @@ func (m *ConfigManager) formatMaclawLLMConfig(cfg AppConfig) string {
 	b.WriteString(fmt.Sprintf("maclaw_llm_url: %s\n", cfg.MaclawLLMUrl))
 	b.WriteString(fmt.Sprintf("maclaw_llm_key: %s\n", maskSensitive(cfg.MaclawLLMKey)))
 	b.WriteString(fmt.Sprintf("maclaw_llm_model: %s\n", cfg.MaclawLLMModel))
+	proto := cfg.MaclawLLMProtocol
+	if proto == "" {
+		proto = "openai"
+	}
+	b.WriteString(fmt.Sprintf("maclaw_llm_protocol: %s\n", proto))
 	b.WriteString(fmt.Sprintf("maclaw_llm_current_provider: %s\n", cfg.MaclawLLMCurrentProvider))
 	return b.String()
 }
@@ -631,6 +636,10 @@ func (m *ConfigManager) applyMaclawLLMChange(cfg *AppConfig, key, value string) 
 	case "maclaw_llm_model":
 		old := cfg.MaclawLLMModel
 		cfg.MaclawLLMModel = value
+		return old, nil
+	case "maclaw_llm_protocol":
+		old := cfg.MaclawLLMProtocol
+		cfg.MaclawLLMProtocol = value
 		return old, nil
 	case "maclaw_llm_current_provider":
 		old := cfg.MaclawLLMCurrentProvider

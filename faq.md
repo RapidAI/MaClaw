@@ -16,7 +16,7 @@
 如果您使用的是通用型 API Key，请使用 **“Custom”** 模式进行配置，并手动输入对应的模型名称和 API 端点地址。
 
 ## 4. 配置文件保存在哪里？
-MaClaw（码卡龙） 的配置文件保存在您的用户主目录下，文件名为 `.aicoder_config.json`。
+MaClaw（码卡龙） 的配置文件保存在您的用户主目录下，路径为 `~/.maclaw/config.json`。
 各个 AI 工具的原生设置（如 Claude 的 `~/.claude/settings.json`）也会根据配置进行自动同步。
 
 ## 5. 如何更新 AI 命令行工具？

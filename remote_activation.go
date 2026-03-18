@@ -201,10 +201,8 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	}
 	hubClient := a.remoteSessions.hubClient
 	if hubClient == nil {
-		hubClient = NewRemoteHubClient(a, a.remoteSessions)
-		a.remoteSessions.SetHubClient(hubClient)
-	}
-	if !hubClient.IsConnected() {
+		a.createAndWireHubClient()
+	} else if !hubClient.IsConnected() {
 		_ = hubClient.Connect()
 	}
 

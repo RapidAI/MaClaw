@@ -17,14 +17,16 @@ type MaclawLLMProvider struct {
 	URL      string `json:"url"`
 	Key      string `json:"key"`
 	Model    string `json:"model"`
+	Protocol string `json:"protocol,omitempty"` // "openai" (default) or "anthropic"
 	IsCustom bool   `json:"is_custom,omitempty"`
 }
 
 // MaclawLLMConfig is the LLM configuration for the MaClaw desktop agent.
 type MaclawLLMConfig struct {
-	URL   string `json:"url"`
-	Key   string `json:"key"`
-	Model string `json:"model"`
+	URL      string `json:"url"`
+	Key      string `json:"key"`
+	Model    string `json:"model"`
+	Protocol string `json:"protocol,omitempty"` // "openai" (default) or "anthropic"
 }
 
 // defaultMaclawLLMProviders returns the built-in provider list.
@@ -81,11 +83,13 @@ func (a *App) SaveMaclawLLMProviders(providers []MaclawLLMProvider, current stri
 	cfg.MaclawLLMUrl = ""
 	cfg.MaclawLLMKey = ""
 	cfg.MaclawLLMModel = ""
+	cfg.MaclawLLMProtocol = ""
 	for _, p := range providers {
 		if p.Name == current {
 			cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(p.URL), "/")
 			cfg.MaclawLLMKey = strings.TrimSpace(p.Key)
 			cfg.MaclawLLMModel = strings.TrimSpace(p.Model)
+			cfg.MaclawLLMProtocol = p.Protocol
 			break
 		}
 	}
@@ -121,9 +125,10 @@ func (a *App) GetMaclawLLMConfig() MaclawLLMConfig {
 		return MaclawLLMConfig{}
 	}
 	return MaclawLLMConfig{
-		URL:   cfg.MaclawLLMUrl,
-		Key:   cfg.MaclawLLMKey,
-		Model: cfg.MaclawLLMModel,
+		URL:      cfg.MaclawLLMUrl,
+		Key:      cfg.MaclawLLMKey,
+		Model:    cfg.MaclawLLMModel,
+		Protocol: cfg.MaclawLLMProtocol,
 	}
 }
 
@@ -145,6 +150,7 @@ func (a *App) SaveMaclawLLMConfig(llm MaclawLLMConfig) error {
 	cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 	cfg.MaclawLLMKey = strings.TrimSpace(llm.Key)
 	cfg.MaclawLLMModel = strings.TrimSpace(llm.Model)
+	cfg.MaclawLLMProtocol = llm.Protocol
 	if err := a.SaveConfig(cfg); err != nil {
 		return err
 	}
@@ -153,7 +159,7 @@ func (a *App) SaveMaclawLLMConfig(llm MaclawLLMConfig) error {
 }
 
 // TestMaclawLLM sends a "hello" message to the configured LLM endpoint
-// using the OpenAI-compatible chat completions API and returns the response.
+// using the OpenAI-compatible or Anthropic Messages API and returns the response.
 func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
 	url := strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 	if url == "" {
@@ -165,6 +171,15 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
 		return "", fmt.Errorf("model name is not configured")
 	}
 
+	protocol := strings.TrimSpace(llm.Protocol)
+	if protocol == "anthropic" {
+		return a.testAnthropicLLM(url, key, model)
+	}
+	return a.testOpenAILLM(url, key, model)
+}
+
+// testOpenAILLM tests an OpenAI-compatible endpoint.
+func (a *App) testOpenAILLM(url, key, model string) (string, error) {
 	// Build OpenAI-compatible chat completion request.
 	reqBody := map[string]interface{}{
 		"model": model,
@@ -195,7 +210,6 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024)) // cap at 64KB
 	if resp.StatusCode != http.StatusOK {
-		// Truncate error body for display.
 		msg := string(body)
 		if len(msg) > 512 {
 			msg = msg[:512] + "..."
@@ -203,7 +217,6 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 
-	// Parse the response to extract the assistant message.
 	var result struct {
 		Choices []struct {
 			Message struct {
@@ -218,6 +231,63 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
 		return "", fmt.Errorf("no response from model")
 	}
 	return result.Choices[0].Message.Content, nil
+}
+
+// testAnthropicLLM tests an Anthropic Messages API endpoint.
+func (a *App) testAnthropicLLM(url, key, model string) (string, error) {
+	reqBody := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]interface{}{
+			{"role": "user", "content": "hello"},
+		},
+		"max_tokens": 100,
+	}
+	data, _ := json.Marshal(reqBody)
+
+	endpoint := url + "/v1/messages"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "OpenClaw/1.0")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if key != "" {
+		req.Header.Set("x-api-key", key)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode != http.StatusOK {
+		msg := string(body)
+		if len(msg) > 512 {
+			msg = msg[:512] + "..."
+		}
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+	}
+
+	// Anthropic Messages API response format
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	for _, block := range result.Content {
+		if block.Type == "text" && block.Text != "" {
+			return block.Text, nil
+		}
+	}
+	return "", fmt.Errorf("no text response from model")
 }
 
 // defaultAgentMaxIterations is the fallback when the user has not configured a custom value.
@@ -289,22 +359,32 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	}
 
 	key := strings.TrimSpace(cfg.MaclawLLMKey)
+	protocol := strings.TrimSpace(cfg.MaclawLLMProtocol)
 
-	// Try GET /models first — most OpenAI-compatible APIs support this and
+	if protocol == "anthropic" {
+		// Anthropic: probe the messages endpoint
+		online, err := maclawAnthropicProbe(baseURL+"/v1/messages", key)
+		if err == nil {
+			return MaclawLLMStatus{Online: online, Configured: true}
+		}
+		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
+	}
+
+	// OpenAI-compatible: Try GET /models first — most OpenAI-compatible APIs support this and
 	// it costs zero tokens.
-	online, err := maclawLLMProbe(baseURL+"/models", key)
-	if err == nil {
+	online, err2 := maclawLLMProbe(baseURL+"/models", key)
+	if err2 == nil {
 		return MaclawLLMStatus{Online: online, Configured: true}
 	}
 
 	// Fallback: HEAD on the chat completions endpoint.  A 405 (Method Not
 	// Allowed) still proves the server is reachable and authenticated.
-	online, err = maclawLLMProbe(baseURL+"/chat/completions", key)
-	if err == nil {
+	online, err2 = maclawLLMProbe(baseURL+"/chat/completions", key)
+	if err2 == nil {
 		return MaclawLLMStatus{Online: online, Configured: true}
 	}
 
-	return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
+	return MaclawLLMStatus{Online: false, Configured: true, Error: err2.Error()}
 }
 
 // maclawLLMProbe sends a GET request to endpoint and returns true when the
@@ -330,6 +410,32 @@ func maclawLLMProbe(endpoint, key string) (bool, error) {
 
 	// 2xx or 4xx → server is alive (4xx = auth issue but reachable).
 	// 5xx → server error, treat as offline.
+	if resp.StatusCode < 500 {
+		return true, nil
+	}
+	return false, fmt.Errorf("HTTP %d", resp.StatusCode)
+}
+
+// maclawAnthropicProbe sends a GET request to the Anthropic endpoint with
+// the x-api-key header to verify connectivity.
+func maclawAnthropicProbe(endpoint, key string) (bool, error) {
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("User-Agent", "OpenClaw/1.0")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if key != "" {
+		req.Header.Set("x-api-key", key)
+	}
+
+	resp, err := maclawLLMPingClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(io.LimitReader(resp.Body, 1024))
+
 	if resp.StatusCode < 500 {
 		return true, nil
 	}

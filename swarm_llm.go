@@ -1,10 +1,7 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 )
@@ -16,48 +13,14 @@ func swarmCallLLM(cfg MaclawLLMConfig, prompt string, temperature float64, timeo
 		return nil, fmt.Errorf("LLM not configured")
 	}
 
-	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model": cfg.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-		"temperature": temperature,
-	})
-
-	req, err := http.NewRequest("POST", cfg.URL, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	messages := []interface{}{
+		map[string]string{"role": "user", "content": prompt},
 	}
 
 	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
+	result, err := doSimpleLLMRequest(cfg, messages, client, timeout)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract content from OpenAI-compatible response
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return body, nil // return raw if not standard format
-	}
-	if len(result.Choices) > 0 {
-		return []byte(result.Choices[0].Message.Content), nil
-	}
-	return body, nil
+	return []byte(result.Content), nil
 }

@@ -229,6 +229,38 @@ func TestTokenize(t *testing.T) {
 	}
 }
 
+func TestTokenize_CJK(t *testing.T) {
+	// CJK characters should be split into individual tokens.
+	result := tokenize("列出配置")
+	if len(result) == 0 {
+		t.Fatal("expected CJK tokens, got none")
+	}
+	// Each Chinese character should be a separate token.
+	found := make(map[string]bool)
+	for _, tok := range result {
+		found[tok] = true
+	}
+	if !found["列"] || !found["出"] || !found["配"] || !found["置"] {
+		t.Errorf("expected individual CJK chars as tokens, got %v", result)
+	}
+
+	// Mixed CJK + ASCII should produce both types of tokens.
+	result2 := tokenize("修改config配置")
+	hasASCII := false
+	hasCJK := false
+	for _, tok := range result2 {
+		if tok == "config" {
+			hasASCII = true
+		}
+		if tok == "修" || tok == "改" || tok == "配" || tok == "置" {
+			hasCJK = true
+		}
+	}
+	if !hasASCII || !hasCJK {
+		t.Errorf("mixed CJK+ASCII tokenize failed: %v", result2)
+	}
+}
+
 func TestExtractToolDescription(t *testing.T) {
 	def := toolDef("my_tool", "A useful tool", nil, nil)
 	desc := extractToolDescription(def)

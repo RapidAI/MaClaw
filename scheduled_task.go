@@ -137,26 +137,25 @@ func (m *ScheduledTaskManager) tick() {
 }
 
 func (m *ScheduledTaskManager) fireByID(id string, executor TaskExecutor) {
-	// Read the task action under lock.
+	// Read the full task under lock.
 	m.mu.RLock()
-	var action string
-	var found bool
+	var taskCopy *ScheduledTask
 	for _, t := range m.tasks {
 		if t.ID == id {
-			action = t.Action
-			found = true
+			cp := t // copy the struct
+			taskCopy = &cp
 			break
 		}
 	}
 	m.mu.RUnlock()
-	if !found {
+	if taskCopy == nil {
 		return
 	}
 
 	// Execute outside lock.
 	var result, errStr string
 	if executor != nil {
-		res, err := executor(&ScheduledTask{ID: id, Action: action})
+		res, err := executor(taskCopy)
 		result = res
 		if err != nil {
 			errStr = err.Error()

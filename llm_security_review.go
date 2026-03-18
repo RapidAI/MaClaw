@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -68,70 +65,22 @@ func (r *LLMSecurityReview) isConfigured() bool {
 func (r *LLMSecurityReview) callLLM(riskCtx RiskContext, assessment RiskAssessment) (LLMSecurityVerdict, string, error) {
 	prompt := buildSecurityPrompt(riskCtx, assessment)
 
-	reqBody := map[string]interface{}{
-		"model": r.llmConfig.Model,
-		"messages": []map[string]string{
-			{"role": "system", "content": "You are a security reviewer for an AI coding assistant. Evaluate the safety of tool calls and respond with a JSON object containing \"verdict\" (one of \"safe\", \"risky\", \"dangerous\") and \"explanation\" (a brief reason)."},
-			{"role": "user", "content": prompt},
-		},
-		"max_tokens": 256,
+	messages := []interface{}{
+		map[string]string{"role": "system", "content": "You are a security reviewer for an AI coding assistant. Evaluate the safety of tool calls and respond with a JSON object containing \"verdict\" (one of \"safe\", \"risky\", \"dangerous\") and \"explanation\" (a brief reason)."},
+		map[string]string{"role": "user", "content": prompt},
 	}
-	data, err := json.Marshal(reqBody)
+
+	result, err := doSimpleLLMRequest(r.llmConfig, messages, r.client, 5*time.Second)
 	if err != nil {
-		return "", "", fmt.Errorf("marshal request: %w", err)
+		return "", "", err
 	}
 
-	endpoint := strings.TrimRight(strings.TrimSpace(r.llmConfig.URL), "/") + "/chat/completions"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return "", "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "OpenClaw/1.0")
-	if key := strings.TrimSpace(r.llmConfig.Key); key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 256 {
-			msg = msg[:256] + "..."
-		}
-		return "", "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-
-	return parseLLMResponse(body)
+	return parseSecurityVerdict(result.Content)
 }
 
-// parseLLMResponse extracts the verdict and explanation from an OpenAI-compatible
-// chat completion response.
-func parseLLMResponse(body []byte) (LLMSecurityVerdict, string, error) {
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", "", fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", "", fmt.Errorf("no response from model")
-	}
-
-	content := strings.TrimSpace(result.Choices[0].Message.Content)
+// parseSecurityVerdict extracts the verdict and explanation from the LLM response content.
+func parseSecurityVerdict(content string) (LLMSecurityVerdict, string, error) {
+	content = strings.TrimSpace(content)
 
 	// Try to parse as JSON first.
 	var verdictResp struct {

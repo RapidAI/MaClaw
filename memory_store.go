@@ -42,6 +42,7 @@ type MemoryStore struct {
 	dirty    bool
 	saveCh   chan struct{}
 	stopCh   chan struct{}
+	stopOnce sync.Once
 	maxItems int
 }
 
@@ -406,19 +407,22 @@ func (s *MemoryStore) persistLoop() {
 
 // Stop gracefully shuts down the persistence loop. It flushes any dirty
 // data to disk, then signals the persistLoop goroutine to exit.
+// Safe to call multiple times.
 func (s *MemoryStore) Stop() {
-	s.mu.RLock()
-	dirty := s.dirty
-	s.mu.RUnlock()
+	s.stopOnce.Do(func() {
+		s.mu.RLock()
+		dirty := s.dirty
+		s.mu.RUnlock()
 
-	if dirty {
-		_ = s.flush()
-		s.mu.Lock()
-		s.dirty = false
-		s.mu.Unlock()
-	}
+		if dirty {
+			_ = s.flush()
+			s.mu.Lock()
+			s.dirty = false
+			s.mu.Unlock()
+		}
 
-	close(s.stopCh)
+		close(s.stopCh)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +475,9 @@ func (s *MemoryStore) flush() error {
 	if err := os.WriteFile(s.path, data, 0o644); err != nil {
 		return fmt.Errorf("memory_store: write file: %w", err)
 	}
+	s.mu.Lock()
+	s.dirty = false
+	s.mu.Unlock()
 	return nil
 }
 

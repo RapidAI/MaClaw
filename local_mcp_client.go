@@ -64,7 +64,6 @@ func (c *LocalMCPClient) Start(ctx context.Context) error {
 		c.stateMu.Unlock()
 		return nil
 	}
-	c.stateMu.Unlock()
 
 	childCtx, cancel := context.WithCancel(ctx)
 
@@ -78,17 +77,20 @@ func (c *LocalMCPClient) Start(ctx context.Context) error {
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
+		c.stateMu.Unlock()
 		cancel()
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
+		c.stateMu.Unlock()
 		cancel()
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		c.stateMu.Unlock()
 		cancel()
 		return fmt.Errorf("start command %q: %w", c.entry.Command, err)
 	}
@@ -97,8 +99,6 @@ func (c *LocalMCPClient) Start(ctx context.Context) error {
 	c.stdin = stdinPipe
 	c.stdout = bufio.NewReaderSize(stdoutPipe, 256*1024)
 	c.cancel = cancel
-
-	c.stateMu.Lock()
 	c.running = true
 	c.stateMu.Unlock()
 

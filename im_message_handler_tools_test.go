@@ -135,8 +135,8 @@ func TestRouteTools_WithRouterFilters(t *testing.T) {
 	router := NewToolRouter(gen)
 	handler.SetToolRouter(router)
 
-	// With total tools exceeding routeThreshold, router may filter dynamic tools.
-	// The router keeps builtinToolCount builtins + up to maxDynamicRouted dynamic tools.
+	// With total tools exceeding maxToolBudget, router may filter dynamic tools.
+	// Core tools are always kept; remaining budget goes to TF-IDF ranked candidates.
 	tools := handler.buildToolDefinitions()
 	routed := handler.routeTools("test message", tools)
 
@@ -658,7 +658,10 @@ func TestToolListProviders_NoValidProviders(t *testing.T) {
 			]
 		}
 	}`
-	configPath := filepath.Join(tempHome, ".aicoder_config.json")
+	configPath := filepath.Join(tempHome, ".maclaw", "config.json")
+	if err := os.MkdirAll(filepath.Join(tempHome, ".maclaw"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
 	if err := os.WriteFile(configPath, []byte(configJSON), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}

@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -181,57 +178,17 @@ func (d *CapabilityGapDetector) isLLMConfigured() bool {
 // doLLMChat sends a chat completion request following the same pattern as
 // IMMessageHandler.doLLMRequest.
 func (d *CapabilityGapDetector) doLLMChat(messages []map[string]interface{}) (string, error) {
-	endpoint := strings.TrimRight(d.llmConfig.URL, "/") + "/chat/completions"
-
-	reqBody := map[string]interface{}{
-		"model":      d.llmConfig.Model,
-		"messages":   messages,
-		"max_tokens": 256,
+	// Convert []map[string]interface{} to []interface{} for the shared helper
+	msgs := make([]interface{}, len(messages))
+	for i, m := range messages {
+		msgs[i] = m
 	}
-	data, _ := json.Marshal(reqBody)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	result, err := doSimpleLLMRequest(d.llmConfig, msgs, d.client, 30*time.Second)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "OpenClaw/1.0")
-	if d.llmConfig.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+d.llmConfig.Key)
-	}
-
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no response from model")
-	}
-	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	return strings.TrimSpace(result.Content), nil
 }
 
 // llmDetectGap asks the LLM whether the response indicates a capability gap.

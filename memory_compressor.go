@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -381,60 +379,16 @@ func (mc *MemoryCompressor) compressEntry(ctx context.Context, entry MemoryEntry
 	userPrompt := fmt.Sprintf("Category: %s\nTags: %s\n\nOriginal content to compress:\n%s",
 		entry.Category, strings.Join(entry.Tags, ", "), entry.Content)
 
-	reqBody := map[string]interface{}{
-		"model": llmCfg.Model,
-		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userPrompt},
-		},
-		"max_tokens":  1024,
-		"temperature": 0.2,
+	messages := []interface{}{
+		map[string]string{"role": "system", "content": systemPrompt},
+		map[string]string{"role": "user", "content": userPrompt},
 	}
-	data, err := json.Marshal(reqBody)
+
+	result, err := doSimpleLLMRequest(llmCfg, messages, mc.client, 30*time.Second)
 	if err != nil {
 		return "", err
 	}
-
-	endpoint := strings.TrimRight(strings.TrimSpace(llmCfg.URL), "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "OpenClaw/1.0")
-	if key := strings.TrimSpace(llmCfg.Key); key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-
-	resp, err := mc.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncStr(string(body), 256))
-	}
-
-	return mc.parseCompressedContent(body)
-}
-
-func (mc *MemoryCompressor) parseCompressedContent(body []byte) (string, error) {
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no response from model")
-	}
-	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	return strings.TrimSpace(result.Content), nil
 }
 
 func (mc *MemoryCompressor) isConfigured() bool {

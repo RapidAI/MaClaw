@@ -224,16 +224,46 @@ func searchAndInstallSkillHint() map[string]interface{} {
 // ---------------------------------------------------------------------------
 
 // tokenize splits text into lowercase tokens by whitespace and punctuation.
+// CJK characters are emitted as individual tokens so that Chinese tool
+// descriptions can participate in TF-IDF scoring.
 func tokenize(text string) []string {
 	lower := strings.ToLower(text)
+	// First pass: split on whitespace/punctuation/separators.
 	tokens := strings.FieldsFunc(lower, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsPunct(r) || r == '_' || r == '-'
 	})
-	// Filter out very short tokens (single char) that add noise.
+	// Second pass: break CJK characters out of mixed tokens.
 	result := make([]string, 0, len(tokens))
 	for _, t := range tokens {
-		if len(t) > 1 {
-			result = append(result, t)
+		hasCJK := false
+		for _, r := range t {
+			if unicode.Is(unicode.Han, r) {
+				hasCJK = true
+				break
+			}
+		}
+		if !hasCJK {
+			if len(t) > 1 {
+				result = append(result, t)
+			}
+			continue
+		}
+		// Split: consecutive non-CJK chars form one token, each CJK char
+		// is its own token.
+		var buf strings.Builder
+		for _, r := range t {
+			if unicode.Is(unicode.Han, r) {
+				if buf.Len() > 1 {
+					result = append(result, buf.String())
+				}
+				buf.Reset()
+				result = append(result, string(r))
+			} else {
+				buf.WriteRune(r)
+			}
+		}
+		if buf.Len() > 1 {
+			result = append(result, buf.String())
 		}
 	}
 	return result

@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -140,72 +137,17 @@ Return ONLY a JSON array of patterns. If no reusable patterns are found, return 
 
 	userPrompt := fmt.Sprintf("Analyse the following session history and extract reusable operation patterns:\n\n%s", history)
 
-	reqBody := map[string]interface{}{
-		"model": e.llmConfig.Model,
-		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userPrompt},
-		},
-		"max_tokens": 2048,
+	messages := []interface{}{
+		map[string]string{"role": "system", "content": systemPrompt},
+		map[string]string{"role": "user", "content": userPrompt},
 	}
-	data, err := json.Marshal(reqBody)
+
+	result, err := doSimpleLLMRequest(e.llmConfig, messages, e.client, 30*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, err
 	}
 
-	endpoint := strings.TrimRight(strings.TrimSpace(e.llmConfig.URL), "/") + "/chat/completions"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "OpenClaw/1.0")
-	if key := strings.TrimSpace(e.llmConfig.Key); key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 256 {
-			msg = msg[:256] + "..."
-		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-
-	return e.parseLLMPatterns(body)
-}
-
-// parseLLMPatterns extracts the patterns array from an OpenAI-compatible
-// chat completion response.
-func (e *ExperienceExtractor) parseLLMPatterns(body []byte) ([]extractedPattern, error) {
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return nil, fmt.Errorf("no response from model")
-	}
-
-	content := strings.TrimSpace(result.Choices[0].Message.Content)
-
-	// Strip markdown code fences if present.
+	content := strings.TrimSpace(result.Content)
 	content = stripCodeFences(content)
 
 	var patterns []extractedPattern

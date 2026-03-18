@@ -3,9 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -178,56 +176,15 @@ func generateScript(cfg MaclawLLMConfig, task, language string, client *http.Cli
 		map[string]string{"role": "user", "content": fmt.Sprintf("请生成一个 %s 脚本来完成以下任务：\n\n%s", language, task)},
 	}
 
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
-	reqBody := map[string]interface{}{
-		"model":    cfg.Model,
-		"messages": messages,
-	}
-	data, _ := json.Marshal(reqBody)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	result, err := doSimpleLLMRequest(cfg, messages, client, 60*time.Second)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "OpenClaw/1.0")
-	if cfg.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Key)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512]
-		}
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
+	if result.Content == "" {
 		return "", fmt.Errorf("LLM 未返回内容")
 	}
 
-	script := result.Choices[0].Message.Content
+	script := result.Content
 	// Strip markdown code fences if the LLM wrapped the output.
 	script = stripScriptCodeFences(script)
 	return script, nil
@@ -298,7 +255,13 @@ func executeScript(scriptPath, language string, timeout int) (string, error) {
 		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	default: // bash
 		if runtime.GOOS == "windows" {
-			cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+			// Prefer bash (e.g. Git Bash) for .sh scripts on Windows;
+			// fall back to powershell only if bash is not available.
+			if _, err := exec.LookPath("bash"); err == nil {
+				cmd = exec.CommandContext(ctx, "bash", scriptPath)
+			} else {
+				cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+			}
 		} else {
 			cmd = exec.CommandContext(ctx, "bash", scriptPath)
 		}
@@ -340,8 +303,14 @@ func detectScriptLanguage(task string) string {
 		return "python"
 	}
 	if strings.Contains(lower, "node") || strings.Contains(lower, "npm") ||
-		strings.Contains(lower, "javascript") || strings.Contains(lower, "js") {
+		strings.Contains(lower, "javascript") {
 		return "node"
+	}
+	// Check for standalone "js" — avoid matching "json", "adjusts", etc.
+	for _, word := range strings.Fields(lower) {
+		if word == "js" {
+			return "node"
+		}
 	}
 	if runtime.GOOS == "windows" {
 		return "powershell"
@@ -364,6 +333,8 @@ func scriptExtension(language string) string {
 }
 
 // sanitizeFilename removes characters that are invalid in filenames.
+// For CJK-only input (e.g. Chinese task descriptions), falls back to a
+// short hash to avoid producing a generic "script" name.
 func sanitizeFilename(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -377,7 +348,13 @@ func sanitizeFilename(s string) string {
 	}
 	result := b.String()
 	if result == "" {
-		return "script"
+		// Produce a short hash from the original string so different CJK
+		// inputs get distinct filenames instead of all mapping to "script".
+		var h uint32
+		for _, r := range s {
+			h = h*31 + uint32(r)
+		}
+		return fmt.Sprintf("task_%08x", h)
 	}
 	return result
 }

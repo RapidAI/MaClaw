@@ -161,8 +161,7 @@ func TestParseLLMResponse_PlainText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.content[:20], func(t *testing.T) {
-			body := mustMarshalChatResponse(tt.content)
-			verdict, _, err := parseLLMResponse(body)
+			verdict, _, err := parseSecurityVerdict(tt.content)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

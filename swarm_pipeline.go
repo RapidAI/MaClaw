@@ -180,11 +180,38 @@ func (o *SwarmOrchestrator) runSingleAgent(run *SwarmRun, role AgentRole, taskIn
 	o.addTimelineEvent(run, "agent_created",
 		fmt.Sprintf("Created %s agent for task %d", role, taskIndex), session.ID)
 
-	// Wait for session to complete (simplified — real implementation would
-	// monitor session status changes)
-	// TODO: implement proper session monitoring with timeout
-	_ = session
-	return "", nil
+	// Wait for session to complete with a timeout.
+	// Poll session status every 5 seconds until it reaches a terminal state.
+	const pollInterval = 5 * time.Second
+	const maxWait = 30 * time.Minute
+	deadline := time.After(maxWait)
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-deadline:
+			_ = o.manager.Kill(session.ID)
+			return "", fmt.Errorf("agent %s-%d timed out after %v", role, taskIndex, maxWait)
+		case <-ticker.C:
+			s, ok := o.manager.Get(session.ID)
+			if !ok {
+				return "", fmt.Errorf("session %s disappeared", session.ID)
+			}
+			s.mu.RLock()
+			status := s.Status
+			lastResult := s.Summary.LastResult
+			s.mu.RUnlock()
+			if !isActiveRemoteSessionStatus(status) {
+				// Session has reached a terminal state.
+				if status == SessionError {
+					return "", fmt.Errorf("agent session %s ended with status: %s", session.ID, status)
+				}
+				// Collect output from session summary.
+				return lastResult, nil
+			}
+		}
+	}
 }
 
 // runMergePhase collects all developer branches and merges them.
@@ -233,6 +260,15 @@ func (o *SwarmOrchestrator) runTestPhase(run *SwarmRun, req SwarmRunRequest) err
 		return err
 	}
 
-	// TODO: parse test output, classify failures, trigger feedback loop
+	// If the feedback loop has remaining rounds, it can be used by the
+	// caller to drive additional fix-test cycles. The tester agent's
+	// output would need to be parsed into TestFailure structs for
+	// ClassifyFailures — for now we log that the test phase completed.
+	if o.feedbackLoop != nil && o.feedbackLoop.ShouldContinue() {
+		o.addTimelineEvent(run, "test_complete",
+			fmt.Sprintf("Test phase completed (feedback round %d/%d available)",
+				o.feedbackLoop.Round(), o.feedbackLoop.MaxRounds()), "")
+	}
+
 	return nil
 }

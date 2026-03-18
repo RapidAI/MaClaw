@@ -13,6 +13,7 @@ interface LLMProvider {
     url: string;
     key: string;
     model: string;
+    protocol?: string; // "openai" (default) or "anthropic"
     is_custom?: boolean;
 }
 
@@ -138,7 +139,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         if (!ep || dlgSelectedIdx === null) return;
         setDlgProviders(prev => {
             const copy = [...prev];
-            copy[dlgSelectedIdx] = { ...copy[dlgSelectedIdx], name: ep.name, url: ep.url, model: ep.model };
+            copy[dlgSelectedIdx] = { ...copy[dlgSelectedIdx], name: ep.name, url: ep.url, model: ep.model, protocol: "openai" };
             return copy;
         });
         setDlgDirty(true);
@@ -167,7 +168,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgSaving(true);
         setDlgTestResult(null);
         try {
-            const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model });
+            const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai" });
             try {
                 const saveName = sp.name;
                 await SaveMaclawLLMProviders(dlgProviders, saveName);
@@ -197,8 +198,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             </h4>
             <p style={{ fontSize: "0.72rem", color: "#888", marginBottom: 16, lineHeight: 1.5 }}>
                 {t(
-                    "选择 MaClaw 桌面代理使用的 LLM 服务商（OpenAI 兼容接口）。",
-                    "Select the LLM provider (OpenAI-compatible) for the MaClaw desktop agent."
+                    "选择 MaClaw 桌面代理使用的 LLM 服务商（支持 OpenAI 兼容接口和 Anthropic 协议）。",
+                    "Select the LLM provider for the MaClaw desktop agent (OpenAI-compatible and Anthropic protocols supported)."
                 )}
             </p>
 
@@ -219,6 +220,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             <>
                                 <div><span style={{ color: colors.textSecondary }}>URL: </span>{selectedProvider.url || <span style={{ color: "#f59e0b" }}>{t("未配置", "Not set")}</span>}</div>
                                 <div><span style={{ color: colors.textSecondary }}>Model: </span>{selectedProvider.model || <span style={{ color: "#f59e0b" }}>{t("未配置", "Not set")}</span>}</div>
+                                <div><span style={{ color: colors.textSecondary }}>{t("协议: ", "Protocol: ")}</span>{(selectedProvider.protocol || "openai") === "anthropic" ? "Anthropic" : "OpenAI"}</div>
                                 <div><span style={{ color: colors.textSecondary }}>Key: </span>{selectedProvider.key ? "••••••" : <span style={{ color: "#f59e0b" }}>{t("未配置", "Not set")}</span>}</div>
                             </>
                         )}
@@ -337,6 +339,34 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     </div>
                                 )}
 
+                                {/* Protocol selection — only for custom providers */}
+                                {dlgProvider.is_custom && (
+                                    <div style={{ marginBottom: 12 }}>
+                                        <label style={labelStyle}>{t("API 协议", "API Protocol")}</label>
+                                        <div style={{ display: "flex", gap: 6 }}>
+                                            {(["openai", "anthropic"] as const).map(proto => {
+                                                const active = (dlgProvider.protocol || "openai") === proto;
+                                                return (
+                                                    <button key={proto} onClick={() => dlgUpdateField("protocol", proto)} style={{
+                                                        fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
+                                                        background: active ? "#6366f1" : colors.surface,
+                                                        color: active ? "#fff" : colors.text,
+                                                        border: `1px solid ${active ? "#6366f1" : colors.border}`,
+                                                        borderRadius: 4, transition: "all 0.15s",
+                                                    }}>
+                                                        {proto === "openai" ? "OpenAI" : "Anthropic"}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                                            {(dlgProvider.protocol || "openai") === "anthropic"
+                                                ? t("使用 Anthropic Messages API（x-api-key 鉴权）", "Uses Anthropic Messages API (x-api-key auth)")
+                                                : t("使用 OpenAI 兼容接口（Bearer Token 鉴权）", "Uses OpenAI-compatible API (Bearer token auth)")}
+                                        </p>
+                                    </div>
+                                )}
+
                                 {/* Custom: editable name */}
                                 {dlgProvider.is_custom && (
                                     <div style={{ marginBottom: 12 }}>
@@ -390,7 +420,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     <label style={labelStyle}>{t("API 密钥", "API Key")} <span style={{ color: "#ef4444" }}>*</span></label>
                                     <input style={inputStyle} type="password" value={dlgProvider.key}
                                         onChange={e => dlgUpdateField("key", e.target.value)}
-                                        placeholder="sk-..." autoComplete="off" />
+                                        placeholder={(dlgProvider.protocol || "openai") === "anthropic" ? "sk-ant-..." : "sk-..."} autoComplete="off" />
                                 </div>
                             </div>
                         )}

@@ -49,16 +49,23 @@ func NewPolicyEngine() *PolicyEngine {
 // rules in priority order and returning the action of the first matching rule.
 // If no rule matches, the default action is "ask".
 func (e *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, risk RiskLevel) PolicyAction {
-	e.mu.RLock()
+	e.mu.Lock()
 	if e.reCache == nil {
-		e.mu.RUnlock()
-		e.mu.Lock()
-		if e.reCache == nil {
-			e.reCache = make(map[string]*regexp.Regexp)
-		}
-		e.mu.Unlock()
-		e.mu.RLock()
+		e.reCache = make(map[string]*regexp.Regexp)
 	}
+	// Pre-compile any uncached regex patterns under write lock.
+	for _, rule := range e.rules {
+		if rule.ArgsPattern != "" {
+			if _, ok := e.reCache[rule.ArgsPattern]; !ok {
+				if re, err := regexp.Compile(rule.ArgsPattern); err == nil {
+					e.reCache[rule.ArgsPattern] = re
+				}
+			}
+		}
+	}
+	e.mu.Unlock()
+
+	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	argStr := flattenArgs(args)
@@ -204,6 +211,11 @@ func matchesRule(rule PolicyRule, toolName, argStr string, risk RiskLevel) bool 
 
 // matchesRuleLocked is like matchesRule but uses the engine's compiled regex
 // cache. Must be called with e.mu held (at least RLock).
+// Note: writes to reCache are safe because Evaluate ensures reCache is
+// initialized under a write lock before calling this method under RLock.
+// Concurrent reads of the same pattern may compile it twice, but the result
+// is identical and the map write is guarded by the fact that only one
+// goroutine holds the write lock at a time during cache init.
 func (e *PolicyEngine) matchesRuleLocked(rule PolicyRule, toolName, argStr string, risk RiskLevel) bool {
 	if rule.ToolPattern != "" && rule.ToolPattern != "*" {
 		matched, err := filepath.Match(rule.ToolPattern, toolName)
@@ -220,9 +232,9 @@ func (e *PolicyEngine) matchesRuleLocked(rule PolicyRule, toolName, argStr strin
 			if err != nil {
 				return false
 			}
-			if e.reCache != nil {
-				e.reCache[rule.ArgsPattern] = re
-			}
+			// Cache miss under RLock — skip caching to avoid data race.
+			// The regex will be recompiled on next call, which is acceptable
+			// since rule sets are small and this path is rare.
 		}
 		if !re.MatchString(argStr) {
 			return false
