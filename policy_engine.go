@@ -45,6 +45,24 @@ func NewPolicyEngine() *PolicyEngine {
 	}
 }
 
+// NewPolicyEngineWithMode creates a PolicyEngine using rules for the given mode.
+// Supported modes: "relaxed", "standard" (default), "strict".
+func NewPolicyEngineWithMode(mode string) *PolicyEngine {
+	return &PolicyEngine{
+		rules:   PolicyRulesForMode(mode),
+		reCache: make(map[string]*regexp.Regexp),
+	}
+}
+
+// SetMode replaces the current rule set with rules for the given mode.
+func (e *PolicyEngine) SetMode(mode string) {
+	rules := PolicyRulesForMode(mode)
+	e.mu.Lock()
+	e.rules = rules
+	e.reCache = make(map[string]*regexp.Regexp)
+	e.mu.Unlock()
+}
+
 // Evaluate determines the PolicyAction for a tool invocation by walking the
 // rules in priority order and returning the action of the first matching rule.
 // If no rule matches, the default action is "ask".
@@ -119,51 +137,57 @@ func (e *PolicyEngine) Rules() []PolicyRule {
 	return out
 }
 
-// DefaultPolicyRules returns the built-in policy rule set.
-// Requirements 6.4: critical → ask, low → allow, medium → audit, high → ask.
+// DefaultPolicyRules returns the built-in policy rule set (standard mode).
+// Standard: critical → deny (dangerous keywords) or ask, high → ask, medium → audit, low → allow.
 func DefaultPolicyRules() []PolicyRule {
-	rules := []PolicyRule{
-		{
-			Name:        "deny-dangerous-keywords",
-			Priority:    10,
-			ToolPattern: "*",
-			ArgsPattern: "(?i)(rm\\s+-rf|DROP\\s+TABLE|sudo)",
-			RiskLevels:  []RiskLevel{RiskCritical},
-			Action:      PolicyDeny,
-		},
-		{
-			Name:        "ask-critical",
-			Priority:    20,
-			ToolPattern: "*",
-			ArgsPattern: "",
-			RiskLevels:  []RiskLevel{RiskCritical},
-			Action:      PolicyAsk,
-		},
-		{
-			Name:        "ask-high",
-			Priority:    30,
-			ToolPattern: "*",
-			ArgsPattern: "",
-			RiskLevels:  []RiskLevel{RiskHigh},
-			Action:      PolicyAsk,
-		},
-		{
-			Name:        "audit-medium",
-			Priority:    40,
-			ToolPattern: "*",
-			ArgsPattern: "",
-			RiskLevels:  []RiskLevel{RiskMedium},
-			Action:      PolicyAudit,
-		},
-		{
-			Name:        "allow-low",
-			Priority:    100,
-			ToolPattern: "*",
-			ArgsPattern: "",
-			RiskLevels:  []RiskLevel{RiskLow},
-			Action:      PolicyAllow,
-		},
+	return PolicyRulesForMode("standard")
+}
+
+// PolicyRulesForMode returns the policy rules for the given security mode.
+//
+//	relaxed:  low/medium/high → allow, critical → ask (dangerous keywords → deny)
+//	standard: low → allow, medium → audit, high → ask, critical → ask (dangerous keywords → deny)
+//	strict:   low → allow, medium/high → ask, critical → deny (dangerous keywords → deny)
+func PolicyRulesForMode(mode string) []PolicyRule {
+	// Dangerous-keyword deny rule is shared across all modes.
+	denyDangerous := PolicyRule{
+		Name:        "deny-dangerous-keywords",
+		Priority:    10,
+		ToolPattern: "*",
+		ArgsPattern: "(?i)(rm\\s+-rf|DROP\\s+TABLE|sudo)",
+		RiskLevels:  []RiskLevel{RiskCritical},
+		Action:      PolicyDeny,
 	}
+
+	var rules []PolicyRule
+
+	switch mode {
+	case "relaxed":
+		rules = []PolicyRule{
+			denyDangerous,
+			{Name: "ask-critical", Priority: 20, ToolPattern: "*", RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyAsk},
+			{Name: "allow-high", Priority: 30, ToolPattern: "*", RiskLevels: []RiskLevel{RiskHigh}, Action: PolicyAllow},
+			{Name: "allow-medium", Priority: 40, ToolPattern: "*", RiskLevels: []RiskLevel{RiskMedium}, Action: PolicyAllow},
+			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []RiskLevel{RiskLow}, Action: PolicyAllow},
+		}
+	case "strict":
+		rules = []PolicyRule{
+			denyDangerous,
+			{Name: "deny-critical", Priority: 20, ToolPattern: "*", RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyDeny},
+			{Name: "ask-high", Priority: 30, ToolPattern: "*", RiskLevels: []RiskLevel{RiskHigh}, Action: PolicyAsk},
+			{Name: "ask-medium", Priority: 40, ToolPattern: "*", RiskLevels: []RiskLevel{RiskMedium}, Action: PolicyAsk},
+			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []RiskLevel{RiskLow}, Action: PolicyAllow},
+		}
+	default: // "standard"
+		rules = []PolicyRule{
+			denyDangerous,
+			{Name: "ask-critical", Priority: 20, ToolPattern: "*", RiskLevels: []RiskLevel{RiskCritical}, Action: PolicyAsk},
+			{Name: "ask-high", Priority: 30, ToolPattern: "*", RiskLevels: []RiskLevel{RiskHigh}, Action: PolicyAsk},
+			{Name: "audit-medium", Priority: 40, ToolPattern: "*", RiskLevels: []RiskLevel{RiskMedium}, Action: PolicyAudit},
+			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []RiskLevel{RiskLow}, Action: PolicyAllow},
+		}
+	}
+
 	sortRulesByPriority(rules)
 	return rules
 }

@@ -216,6 +216,8 @@ type AppConfig struct {
 	MemoryAutoCompress bool `json:"memory_auto_compress,omitempty"`
 	// ClawNet P2P network — disabled by default for new installs
 	ClawNetEnabled bool `json:"clawnet_enabled"`
+	// Security policy mode: "relaxed", "standard" (default), "strict"
+	SecurityPolicyMode string `json:"security_policy_mode,omitempty"`
 }
 
 // SkillHubEntry represents a single SkillHUB registry endpoint.
@@ -272,7 +274,11 @@ func (a *App) initRemoteInfra() {
 		a.riskAssessor = &RiskAssessor{}
 	}
 	if a.policyEngine == nil {
-		a.policyEngine = NewPolicyEngine()
+		mode := ""
+		if cfg, err := a.LoadConfig(); err == nil {
+			mode = cfg.SecurityPolicyMode
+		}
+		a.policyEngine = NewPolicyEngineWithMode(mode)
 	}
 	if a.auditLog == nil {
 		homeDir := a.GetUserHomeDir()
@@ -3499,6 +3505,10 @@ func (a *App) SaveConfig(config AppConfig) error {
 		return err
 	}
 	a.refreshPowerOptimizationStateFromConfig(config)
+	// Sync security policy mode if changed.
+	if a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode {
+		a.policyEngine.SetMode(config.SecurityPolicyMode)
+	}
 	if OnConfigChanged != nil {
 		OnConfigChanged(config)
 	}

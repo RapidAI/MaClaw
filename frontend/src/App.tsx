@@ -23,6 +23,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
+import { SecurityPolicyPanel } from './components/remote/SecurityPolicyPanel';
 import { RemoteSessionList } from './components/remote/RemoteSessionList';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
@@ -1358,7 +1359,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'system'>('general');
     const [installLocation, setInstallLocation] = useState<'user' | 'project'>('user');
     const [installProject, setInstallProject] = useState<string>("");
     const [isBatchInstalling, setIsBatchInstalling] = useState(false);
@@ -2970,6 +2971,11 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? 'ClawNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'ClawNet P2P 去中心化 Agent 網路' : 'ClawNet decentralized P2P agent network',
         },
         {
+            id: 'security' as const,
+            label: lang === 'zh-Hans' ? '安全策略' : lang === 'zh-Hant' ? '安全策略' : 'Security',
+            desc: lang === 'zh-Hans' ? '安全策略模式与审计日志' : lang === 'zh-Hant' ? '安全策略模式與審計日誌' : 'Security policy mode and audit log',
+        },
+        {
             id: 'system' as const,
             label: lang === 'zh-Hans' ? '系统' : lang === 'zh-Hant' ? '系統' : 'System',
             desc: lang === 'zh-Hans' ? '心跳、熄屏等系统级设置' : lang === 'zh-Hant' ? '心跳、熄屏等系統級設置' : 'Heartbeat, screen dimming and other system settings',
@@ -4022,6 +4028,10 @@ ${instruction}`;
                                     lang={lang}
                                     onRunningChange={setClawNetRunning}
                                 />
+                            </div>
+
+                            <div className="settings-panel" style={{ display: settingsTab === 'security' ? 'block' : 'none' }}>
+                                <SecurityPolicyPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'system' ? 'block' : 'none' }}>

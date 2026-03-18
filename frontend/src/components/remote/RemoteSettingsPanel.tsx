@@ -4,14 +4,6 @@ import { ListRemoteHubs } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { RemoteActivationStatus } from "./types";
 
-type SecurityPolicyMode = "relaxed" | "standard" | "strict";
-
-const SECURITY_MODES: { value: SecurityPolicyMode; label: string; desc: string }[] = [
-    { value: "relaxed", label: "宽松", desc: "仅拦截 critical 级别操作" },
-    { value: "standard", label: "标准", desc: "high 需确认，critical 拒绝" },
-    { value: "strict", label: "严格", desc: "medium 以上均需确认" },
-];
-
 const COUNTRY_CODES = [
     { code: "+86", label: "🇨🇳 +86" },
     { code: "+1", label: "🇺🇸 +1" },
@@ -93,10 +85,6 @@ export function RemoteSettingsPanel({
     const [hubProbeError, setHubProbeError] = useState("");
     const [showMobileConfirm, setShowMobileConfirm] = useState(false);
     const [showNoMobilePrompt, setShowNoMobilePrompt] = useState(false);
-    const [securityMode, setSecurityMode] = useState<SecurityPolicyMode>(
-        ((config as any)?.security_policy_mode as SecurityPolicyMode) || "standard"
-    );
-    const [showAuditInfo, setShowAuditInfo] = useState(false);
 
     // Track the user's country code selection separately so it persists
     // even when the local number is empty (parsed would default to +86).
@@ -423,51 +411,6 @@ export function RemoteSettingsPanel({
                 )}
             </div>
 
-            {/* Security Policy Configuration */}
-            {remoteActivationStatus?.activated && (
-                <div style={{ marginTop: "16px", padding: "12px", borderRadius: "8px", background: "#f8f9fa", border: "1px solid #e9ecef" }}>
-                    <div style={{ fontSize: "0.9rem", fontWeight: 600, marginBottom: "8px" }}>🛡️ 安全策略</div>
-                    <div className="form-group" style={{ marginBottom: "8px" }}>
-                        <label className="form-label" style={{ fontSize: "0.8rem" }}>策略模式</label>
-                        <div style={{ display: "flex", gap: "6px" }}>
-                            {SECURITY_MODES.map((mode) => (
-                                <button
-                                    key={mode.value}
-                                    className={securityMode === mode.value ? "btn-primary" : "btn-secondary"}
-                                    style={{ flex: 1, fontSize: "0.78rem", padding: "4px 8px", height: "28px" }}
-                                    onClick={() => {
-                                        setSecurityMode(mode.value);
-                                        saveRemoteConfigField({ security_policy_mode: mode.value } as any);
-                                    }}
-                                >
-                                    {mode.label}
-                                </button>
-                            ))}
-                        </div>
-                        <div style={{ fontSize: "0.72rem", color: "#888", marginTop: "4px" }}>
-                            {SECURITY_MODES.find((m) => m.value === securityMode)?.desc}
-                        </div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "4px" }}>
-                        <span style={{ fontSize: "0.78rem", color: "#666" }}>审计日志记录所有工具调用的安全评估</span>
-                        <button
-                            className="btn-secondary"
-                            style={{ fontSize: "0.75rem", padding: "2px 10px", height: "24px" }}
-                            onClick={() => setShowAuditInfo(!showAuditInfo)}
-                        >
-                            {showAuditInfo ? "收起" : "查看说明"}
-                        </button>
-                    </div>
-                    {showAuditInfo && (
-                        <div style={{ marginTop: "6px", fontSize: "0.75rem", color: "#666", lineHeight: 1.6, padding: "8px", background: "#fff", borderRadius: "6px" }}>
-                            <div>• 审计日志存储在 ~/.maclaw/audit/ 目录</div>
-                            <div>• 可通过 IM 发送消息调用 query_audit_log 工具查询</div>
-                            <div>• 日志按日期自动轮转，保留 30 天</div>
-                            <div>• 风险等级: low → medium → high → critical</div>
-                        </div>
-                    )}
-                </div>
-            )}
 
         </>
     );
