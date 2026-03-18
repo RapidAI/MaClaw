@@ -437,7 +437,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     <label style={labelStyle}>{t("上下文长度 (tokens)", "Context Length (tokens)")}</label>
                                     <input style={inputStyle} type="number" min={0} step={1000}
                                         value={dlgProvider.context_length || ""}
-                                        onChange={e => dlgUpdateField("context_length", e.target.value ? parseInt(e.target.value, 10) || 0 : 0)}
+                                        onChange={e => dlgUpdateField("context_length", e.target.value ? String(parseInt(e.target.value, 10) || 0) : "0")}
                                         placeholder="128000" />
                                     <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                         {t(

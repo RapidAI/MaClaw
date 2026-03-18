@@ -144,7 +144,7 @@ REM -- Create NSIS Installer --
 echo [Step 7/7] Creating NSIS installer...
 if not exist "%NSIS_PATH%" goto nsis_missing
 
-"%NSIS_PATH%" /DINFO_PRODUCTNAME="%PRODUCT_NAME%" /DINFO_COMPANYNAME="%COMPANY_NAME%" /DINFO_COPYRIGHT="%COPYRIGHT_TEXT%" /DINFO_PRODUCTVERSION="%VERSION%" /DARG_WAILS_AMD64_BINARY="%OUTPUT_DIR%\%APP_NAME%_amd64.exe" /DARG_WAILS_ARM64_BINARY="%OUTPUT_DIR%\%APP_NAME%_arm64.exe" "%~dp0build\windows\installer\multiarch.nsi"
+"%NSIS_PATH%" /DINFO_PROJECTNAME="%APP_NAME%" /DPRODUCT_EXECUTABLE="%APP_NAME%.exe" /DINFO_PRODUCTNAME="%PRODUCT_NAME%" /DINFO_COMPANYNAME="%COMPANY_NAME%" /DINFO_COPYRIGHT="%COPYRIGHT_TEXT%" /DINFO_PRODUCTVERSION="%VERSION%" /DARG_WAILS_AMD64_BINARY="%OUTPUT_DIR%\%APP_NAME%_amd64.exe" /DARG_WAILS_ARM64_BINARY="%OUTPUT_DIR%\%APP_NAME%_arm64.exe" "%~dp0build\windows\installer\multiarch.nsi"
 if !errorlevel! neq 0 (
     echo [ERROR] NSIS installer creation failed.
     goto :error
