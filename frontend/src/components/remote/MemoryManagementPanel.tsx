@@ -139,19 +139,29 @@ export function MemoryManagementPanel({ lang }: Props) {
     // MemoryEditTab can re-fetch without unmount/remount.
     const [revision, setRevision] = useState(0);
     const bumpRevision = useCallback(() => setRevision(r => r + 1), []);
+    const [entryCount, setEntryCount] = useState(0);
+    const createRef = useRef<(() => void) | null>(null);
 
     return (
         <div style={{ padding: 0 }}>
-            <div style={{ display: "flex", borderBottom: `1px solid ${colors.border}`, marginBottom: 10 }} role="tablist">
+            <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${colors.border}`, marginBottom: 10 }} role="tablist">
                 <button role="tab" aria-selected={tab === "edit"} style={tabBtnStyle(tab === "edit")} onClick={() => setTab("edit")}>
                     📝 {t("记忆编辑", "Memory Edit")}
                 </button>
                 <button role="tab" aria-selected={tab === "timemachine"} style={tabBtnStyle(tab === "timemachine")} onClick={() => setTab("timemachine")}>
                     ⏳ {t("时光机", "Time Machine")}
                 </button>
+                {tab === "edit" && (
+                    <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>{entryCount} {t("条记忆", "entries")}</span>
+                        <button onClick={() => createRef.current?.()} style={{ padding: "3px 12px", fontSize: "0.72rem", fontWeight: 600, background: "#6366f1", color: "#fff", border: "none", borderRadius: radius.md, cursor: "pointer" }}>
+                            + {t("新建", "New")}
+                        </button>
+                    </div>
+                )}
             </div>
             {tab === "edit"
-                ? <MemoryEditTab t={t} isZh={isZh} revision={revision} />
+                ? <MemoryEditTab t={t} isZh={isZh} revision={revision} onCountChange={setEntryCount} createRef={createRef} />
                 : <TimeMachineTab t={t} isZh={isZh} onDataChanged={bumpRevision} />}
         </div>
     );
@@ -165,9 +175,11 @@ type EditTabProps = {
     isZh: boolean;
     /** Incremented externally (e.g. after backup restore) to trigger re-fetch. */
     revision: number;
+    onCountChange: (count: number) => void;
+    createRef: React.MutableRefObject<(() => void) | null>;
 };
 
-function MemoryEditTab({ t, isZh, revision }: EditTabProps) {
+function MemoryEditTab({ t, isZh, revision, onCountChange, createRef }: EditTabProps) {
     const [entries, setEntries] = useState<MemoryEntry[]>([]);
     const [loading, setLoading] = useState(false);
     const [filterCat, setFilterCat] = useState("");
@@ -201,9 +213,15 @@ function MemoryEditTab({ t, isZh, revision }: EditTabProps) {
     // Re-fetch when filters change OR when external revision bumps.
     useEffect(() => { loadEntries(); }, [loadEntries, revision]);
 
+    // Report entry count to parent for tab-bar display.
+    useEffect(() => { onCountChange(entries.length); }, [entries.length, onCountChange]);
+
     const openCreate = () => {
         setEditEntry(null); setFormContent(""); setFormCategory("user_fact"); setFormTags(""); setError(""); setDlgOpen(true);
     };
+
+    // Expose openCreate to parent via ref.
+    useEffect(() => { createRef.current = openCreate; }, [createRef]);
     const openEdit = (entry: MemoryEntry) => {
         setEditEntry(entry); setFormContent(entry.content); setFormCategory(entry.category);
         setFormTags((entry.tags || []).join(", ")); setError(""); setDlgOpen(true);
@@ -229,13 +247,6 @@ function MemoryEditTab({ t, isZh, revision }: EditTabProps) {
 
     return (
         <>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <span style={{ fontSize: "0.76rem", color: colors.textSecondary }}>{entries.length} {t("条记忆", "entries")}</span>
-                <button onClick={openCreate} style={{ padding: "4px 14px", fontSize: "0.76rem", fontWeight: 600, background: "#6366f1", color: "#fff", border: "none", borderRadius: radius.md, cursor: "pointer" }}>
-                    + {t("新建", "New")}
-                </button>
-            </div>
-
             {/* Filters */}
             <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
                 <select value={filterCat} onChange={e => setFilterCat(e.target.value)} aria-label={t("分类筛选", "Filter by category")} style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: "0.76rem" }}>

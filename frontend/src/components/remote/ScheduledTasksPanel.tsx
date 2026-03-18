@@ -52,15 +52,21 @@ function fmtDate(s: string | null, isZh: boolean): string {
 function scheduleDesc(t: ScheduledTask, isZh: boolean): string {
     const weekdays = isZh ? WEEKDAYS_ZH : WEEKDAYS_EN;
     const time = `${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")}`;
+
+    // One-time task: start_date == end_date (both non-empty)
+    const isOneTime = t.start_date && t.end_date && t.start_date === t.end_date;
+
     let desc = "";
-    if (t.day_of_month > 0) {
+    if (isOneTime) {
+        desc = isZh ? `${t.start_date} ${time}（仅一次）` : `${t.start_date} ${time} (once)`;
+    } else if (t.day_of_month > 0) {
         desc = isZh ? `每月${t.day_of_month}号 ${time}` : `${t.day_of_month}th of month at ${time}`;
     } else if (t.day_of_week >= 0 && t.day_of_week <= 6) {
         desc = isZh ? `每${weekdays[t.day_of_week]} ${time}` : `Every ${weekdays[t.day_of_week]} at ${time}`;
     } else {
         desc = isZh ? `每天 ${time}` : `Daily at ${time}`;
     }
-    if (t.start_date || t.end_date) {
+    if (!isOneTime && (t.start_date || t.end_date)) {
         desc += ` (${t.start_date || "..."} ~ ${t.end_date || "..."})`;
     }
     return desc;
@@ -196,16 +202,11 @@ export function ScheduledTasksPanel({ lang }: Props) {
                                     }}>{task.status}</span>
                                     <span style={{ fontSize: "0.8rem", fontWeight: 600, color: colors.text }}>{task.name}</span>
                                 </div>
-                                <div style={{ fontSize: "0.76rem", color: colors.textSecondary, marginBottom: 2 }}>
+                                <div style={{ fontSize: "0.72rem", color: colors.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                     🎯 {task.action}
-                                </div>
-                                <div style={{ fontSize: "0.72rem", color: colors.textMuted }}>
-                                    ⏰ {scheduleDesc(task, isZh)}
-                                </div>
-                                <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: 2 }}>
-                                    {task.next_run_at && <>{t("下次", "Next")}: {fmtDate(task.next_run_at, isZh)} · </>}
-                                    {task.run_count > 0 && <>{t("已执行", "Runs")}: {task.run_count} · </>}
-                                    {task.last_run_at && <>{t("上次", "Last")}: {fmtDate(task.last_run_at, isZh)}</>}
+                                    {" · "}⏰ {scheduleDesc(task, isZh)}
+                                    {task.next_run_at && <>{" · "}{t("下次", "Next")}: {fmtDate(task.next_run_at, isZh)}</>}
+                                    {task.run_count > 0 && <>{" · "}{t("已执行", "Runs")}: {task.run_count}</>}
                                 </div>
                                 {task.last_error && (
                                     <div style={{ fontSize: "0.68rem", color: colors.danger, marginTop: 2 }}>⚠️ {task.last_error}</div>

@@ -55,12 +55,6 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
 
     return (
         <div>
-            <h4 style={{
-                fontSize: "0.8rem", color: "#6366f1", marginBottom: "12px",
-                marginTop: 0, textTransform: "uppercase", letterSpacing: "0.025em",
-            }}>
-                {t("MaClaw 角色设置", "MaClaw Role Settings")}
-            </h4>
             <p style={{ fontSize: "0.78rem", color: "#888", marginBottom: "14px", lineHeight: 1.5 }}>
                 {t(
                     "自定义 MaClaw Agent 的名字和角色描述。保存后立即生效。用户也可以在聊天中临时重新定义角色。",
@@ -68,20 +62,20 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
                 )}
             </p>
 
-            <div className="form-group" style={{ marginBottom: "12px" }}>
-                <label className="form-label">{t("角色名称", "Role Name")}</label>
+            <div className="form-group" style={{ marginBottom: "12px", display: "flex", alignItems: "center", gap: "10px" }}>
+                <label className="form-label" style={{ marginBottom: 0, whiteSpace: "nowrap", minWidth: "60px" }}>{t("角色名称", "Role Name")}</label>
                 <input
                     className="form-input"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder={DEFAULT_NAME}
                     spellCheck={false}
-                    style={{ maxWidth: "320px" }}
+                    style={{ maxWidth: "320px", flex: 1 }}
                 />
             </div>
 
-            <div className="form-group" style={{ marginBottom: "14px" }}>
-                <label className="form-label">{t("角色描述", "Role Description")}</label>
+            <div className="form-group" style={{ marginBottom: "14px", display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                <label className="form-label" style={{ marginBottom: 0, whiteSpace: "nowrap", minWidth: "60px", paddingTop: "6px" }}>{t("角色描述", "Role Description")}</label>
                 <textarea
                     className="form-input"
                     value={desc}
@@ -89,7 +83,7 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
                     placeholder={DEFAULT_DESC}
                     spellCheck={false}
                     rows={3}
-                    style={{ resize: "vertical", minHeight: "60px", fontFamily: "inherit" }}
+                    style={{ resize: "vertical", minHeight: "60px", fontFamily: "inherit", flex: 1 }}
                 />
             </div>
 
