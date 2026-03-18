@@ -8,7 +8,7 @@ REM ============================================================================
 echo [INFO] Starting the build process...
 
 REM -- Set Environment Variables --
-set "APP_NAME=CodeClaw"
+set "APP_NAME=MaClaw"
 set "OUTPUT_DIR=%~dp0dist"
 set "NSIS_PATH=C:\Program Files (x86)\NSIS\makensis.exe"
 set "GOVERSIONINFO_PATH=%USERPROFILE%\go\bin\goversioninfo.exe"
