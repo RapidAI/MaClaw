@@ -10,13 +10,21 @@ package systray
 void setInternalLoop(bool);
 
 // showNotification displays a macOS user notification with title and message.
+// Uses NSUserNotification for compatibility; on macOS 11+ this is a no-op
+// because NSUserNotification was removed.  A future improvement could use
+// UNUserNotificationCenter for newer systems.
 static void showNotification(const char* title, const char* message) {
     @autoreleasepool {
-        NSUserNotification *notification = [[NSUserNotification alloc] init];
-        notification.title = [NSString stringWithUTF8String:title];
-        notification.informativeText = [NSString stringWithUTF8String:message];
-        notification.soundName = NSUserNotificationDefaultSoundName;
-        [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:notification];
+        @try {
+            NSUserNotification *notification = [[NSUserNotification alloc] init];
+            notification.title = [NSString stringWithUTF8String:title];
+            notification.informativeText = [NSString stringWithUTF8String:message];
+            notification.soundName = NSUserNotificationDefaultSoundName;
+            [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:notification];
+        } @catch (NSException *exception) {
+            // NSUserNotification removed in macOS 11+; silently ignore.
+            NSLog(@"systray: notification failed: %@", exception);
+        }
     }
 }
 

@@ -92,18 +92,13 @@ func TestToolRouter_RelevanceRanking(t *testing.T) {
 		makeDynamicTool("custom_write", "Write a custom resource"),
 		makeDynamicTool("run_tests", "Run unit tests for the project"),
 		makeDynamicTool("deploy_app", "Deploy the application to production"),
-		makeDynamicTool("lint_code", "Lint source code for style issues"),
-		makeDynamicTool("format_code", "Format source code"),
-		makeDynamicTool("git_commit", "Commit changes to git repository"),
-		makeDynamicTool("docker_build", "Build a Docker container image"),
-		makeDynamicTool("database_query", "Query the database"),
 	}
 	allTools := append(builtins, dynamic...)
 
 	router := NewToolRouter(nil)
 	result := router.Route("search the web for golang tutorials", allTools)
 
-	// 30 total, at budget — all should be returned.
+	// total at or below budget — all should be returned.
 	if len(result) != len(allTools) {
 		t.Errorf("expected %d tools, got %d", len(allTools), len(result))
 	}
@@ -145,7 +140,7 @@ func TestToolRouter_NonCoreBuiltinCompetes(t *testing.T) {
 	builtins = append(builtins,
 		toolDef("get_config", "获取配置", nil, nil),
 		toolDef("update_config", "修改配置", nil, nil),
-		toolDef("save_memory", "保存记忆", nil, nil),
+		toolDef("craft_tool", "自动生成脚本", nil, nil),
 		toolDef("create_scheduled_task", "创建定时任务", nil, nil),
 	)
 	// Add enough dynamic tools to exceed budget.

@@ -202,7 +202,7 @@ export function ScheduledTasksPanel({ lang }: Props) {
                                     }}>{task.status}</span>
                                     <span style={{ fontSize: "0.8rem", fontWeight: 600, color: colors.text }}>{task.name}</span>
                                 </div>
-                                <div style={{ fontSize: "0.72rem", color: colors.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                <div style={{ fontSize: "0.72rem", color: colors.textMuted, wordBreak: "break-word" }}>
                                     🎯 {task.action}
                                     {" · "}⏰ {scheduleDesc(task, isZh)}
                                     {task.next_run_at && <>{" · "}{t("下次", "Next")}: {fmtDate(task.next_run_at, isZh)}</>}

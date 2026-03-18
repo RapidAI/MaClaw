@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/energye/systray"
@@ -26,6 +27,12 @@ func setupTray(app *App, appOptions *options.App) {
 		// systray.Run() would call setInternalLoop(true) and override Wails' AppDelegate,
 		// causing the app to crash on launch.
 		start, _ := systray.RunWithExternalLoop(func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[tray] panic in onReady: %v", r)
+				}
+			}()
+
 			systray.SetIcon(icon)
 			// Do not set title for macOS as requested
 			systray.SetTooltip("MaClaw Dashboard")
@@ -71,6 +78,7 @@ func setupTray(app *App, appOptions *options.App) {
 			mQuit.Click(func() {
 				go func() {
 					systray.Quit()
+					time.Sleep(100 * time.Millisecond) // let status item removal complete
 					runtime.Quit(app.ctx)
 				}()
 			})
@@ -88,6 +96,13 @@ func setupTray(app *App, appOptions *options.App) {
 		// nativeStart uses dispatch_async to schedule status bar creation on the main
 		// thread, so it returns immediately and the actual init happens once Wails'
 		// [NSApp run] starts processing the main queue.
-		go start()
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[tray] panic in nativeStart: %v", r)
+				}
+			}()
+			start()
+		}()
 	}
 }

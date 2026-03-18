@@ -111,7 +111,13 @@
         </ul>
       </div>
       <div class="form">
-        <div class="mini" data-i18n="adminAccess">Administrator Access</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div class="mini" data-i18n="adminAccess">Administrator Access</div>
+          <div class="lang-switch">
+            <button type="button" data-lang="en" onclick="setLanguage('en')">EN</button>
+            <button type="button" data-lang="zh" onclick="setLanguage('zh')">中文</button>
+          </div>
+        </div>
         <h2 data-i18n="loginTitle">Hub Admin Console</h2>
         <p class="subtle" id="authStageHint"></p>
         <div id="stageToggle" class="stage-toggle hidden">
@@ -135,7 +141,7 @@
           </div>
           <div class="actions"><button class="btn-secondary" onclick="setupAdmin()" data-i18n="saveInit">Save and initialize</button></div>
         </div>
-        <div id="loginStage" class="stage-card hidden">
+        <div id="loginStage" class="stage-card">
           <h3 data-i18n="adminLogin">Admin Login</h3>
           <p class="subtle" data-i18n="signinDesc">Regular sign-in only needs username and password.</p>
           <div>
@@ -148,7 +154,7 @@
           </div>
           <div class="actions"><button class="btn-primary" onclick="loginAdmin()" data-i18n="signIn">Sign In</button></div>
         </div>
-        <div id="loginOutput" class="console"></div>
+        <div id="loginOutput" class="console">Hub admin console ready. Complete setup or sign in.</div>
       </div>
     </div>
   </div>
@@ -179,7 +185,7 @@
         <div class="topbar">
           <div class="lang-switch">
             <button type="button" data-lang="en" onclick="setLanguage('en')">EN</button>
-            <button type="button" data-lang="zh" onclick="setLanguage('zh')"></button>
+            <button type="button" data-lang="zh" onclick="setLanguage('zh')">中文</button>
           </div>
           <div class="admin-chip"><strong id="adminDisplayName"></strong><span id="adminDisplayMeta"></span></div>
           <span id="authBadge" class="badge ok"></span>
@@ -202,13 +208,200 @@
       <section id="tab-console" class="panel card"><div class="head"><div><h3 data-i18n="consoleTitle"></h3><div class="desc" data-i18n="consoleDesc"></div></div><button class="btn-ghost" onclick="clearConsole()" data-i18n="clear"></button></div><div id="output" class="console"></div></section>
     </main>
   </div>
-  <script src="js/i18n.js"></script>
-  <script src="js/core.js"></script>
-  <script src="js/views.js"></script>
-  <script src="js/actions.js"></script>
-  <script src="js/invitation.js"></script>
-  <script src="js/pwa.js"></script>
-  <script src="js/im.js"></script>
+  <script src="js/i18n.js?v=3"></script>
+  <script src="js/core.js?v=3"></script>
+  <script src="js/views.js?v=3"></script>
+  <script src="js/actions.js?v=3"></script>
+  <script src="js/invitation.js?v=3"></script>
+  <script src="js/pwa.js?v=3"></script>
+  <script src="js/im.js?v=3"></script>
+  <script>
+  // Inline fallback: complete login, setup, i18n, and app view when external JS fails
+  (function() {
+    var _fb = typeof applyI18n !== 'function';
+    if (!_fb) return;
+
+    var _tk = 'maclawHubAdminToken', _pk = 'maclawHubAdminProfile', _lk = 'maclawHubAdminLang';
+    var _lang = localStorage.getItem(_lk);
+    if (_lang !== 'en' && _lang !== 'zh') {
+      var ls = navigator.languages || [navigator.language || 'en'];
+      _lang = ls.some(function(v){ return String(v).toLowerCase().startsWith('zh'); }) ? 'zh' : 'en';
+    }
+    var _zh = {
+      loginHeroTitle: '自托管 Hub 管理控制台', loginHeroDesc: '在一处管理 Hub Center 注册、用户治理、机器可见性和诊断。',
+      loginBullet1: '初始化第一个管理员', loginBullet2: '将此 Hub 注册到 Hub Center', loginBullet3: '查看机器、邀请和黑名单',
+      adminAccess: '管理员访问', loginTitle: 'Hub 管理控制台',
+      firstSetup: '首次设置', adminLogin: '管理员登录',
+      setupDesc: '首次使用只需用户名和密码。', signinDesc: '常规登录只需用户名和密码。',
+      adminUsername: '管理员用户名', adminPassword: '管理员密码', adminEmail: '管理员邮箱',
+      saveInit: '保存并初始化', signIn: '登录',
+      loginReady: 'Hub 管理控制台已就绪。请完成设置或登录。',
+      loginFailed: '登录失败：', setupFailed: '设置失败：', setupDone: '设置完成，请使用新账户登录。',
+      enterBoth: '请输入用户名和密码。', signingIn: '正在登录...', settingUp: '正在设置...',
+      noToken: '登录成功但未收到令牌。请检查服务端版本。',
+      brandTitle: '运营管理', brandDesc: '通过清晰的左侧导航管理 Hub 设置、注册、治理规则和机器活动。',
+      navOverview: '概览', navOverviewDesc: '状态、指标和摘要',
+      navCenter: 'Hub Center', navCenterDesc: '注册、公告主机和同步',
+      navGovernance: '用户治理', navGovernanceDesc: '绑定、黑名单和邀请',
+      navSystem: '系统设置', navSystemDesc: '邮件发送和管理员密码',
+      navMachines: '机器管理', navMachinesDesc: '设备清单和心跳状态',
+      navConsole: '控制台', navConsoleDesc: '管理请求追踪',
+      logout: '退出登录', administrator: '管理员', signedIn: '已登录', authenticated: '已认证',
+      overviewTabTitle: '概览', overviewTabSubtitle: 'Hub 的高级运营状态。',
+      refreshAll: '全部刷新', outputReady: 'MaClaw Hub 管理控制台已就绪。',
+      clear: '清空', defaultCenter: '默认 Hub Center：',
+      deployHint: '对于虚拟主机部署，请在 Hub 公共地址中配置域名，以便注册时公告主机名而非检测到的 IP。'
+    };
+    var _en = {
+      loginHeroTitle: 'Self-hosted Hub Admin Console', loginHeroDesc: 'Manage Hub Center registration, user governance, machine visibility, and diagnostics in one place.',
+      loginBullet1: 'Initialize the first administrator', loginBullet2: 'Register this hub with Hub Center', loginBullet3: 'Review machines, invites, and blocklists',
+      adminAccess: 'Administrator Access', loginTitle: 'Hub Admin Console',
+      firstSetup: 'First Setup', adminLogin: 'Admin Login',
+      setupDesc: 'On first use, only a username and password are required.', signinDesc: 'Regular sign-in only needs username and password.',
+      adminUsername: 'Admin username', adminPassword: 'Admin password', adminEmail: 'Admin email',
+      saveInit: 'Save and initialize', signIn: 'Sign In',
+      loginReady: 'Hub admin console ready. Complete setup or sign in.',
+      loginFailed: 'Login failed: ', setupFailed: 'Setup failed: ', setupDone: 'Setup complete. Please sign in now.',
+      enterBoth: 'Please enter username and password.', signingIn: 'Signing in...', settingUp: 'Setting up...',
+      noToken: 'Login succeeded but no token received. Check server version.',
+      brandTitle: 'Operations', brandDesc: 'Manage hub settings, registration, governance rules, and machine activity with a clear left navigation.',
+      navOverview: 'Overview', navOverviewDesc: 'Status, metrics, and summary',
+      navCenter: 'Hub Center', navCenterDesc: 'Registration, advertised host, and sync',
+      navGovernance: 'Governance', navGovernanceDesc: 'Bind, blocklist, and invites',
+      navSystem: 'System Settings', navSystemDesc: 'Mail delivery and admin password',
+      navMachines: 'Machines', navMachinesDesc: 'Inventory and heartbeat state',
+      navConsole: 'Console', navConsoleDesc: 'Administrative request trace',
+      logout: 'Log Out', administrator: 'Administrator', signedIn: 'Signed in', authenticated: 'Authenticated',
+      overviewTabTitle: 'Overview', overviewTabSubtitle: 'High-level operational state for this hub.',
+      refreshAll: 'Refresh All', outputReady: 'MaClaw Hub admin console ready.',
+      clear: 'Clear', defaultCenter: 'Default Hub Center:',
+      deployHint: 'For virtual-host deployments, configure a domain in the hub public URL so registration advertises the hostname instead of a detected IP.'
+    };
+    function _t(k) { return (_lang === 'zh' ? _zh[k] : _en[k]) || _en[k] || k; }
+
+    function _applyLang() {
+      document.querySelectorAll('[data-i18n]').forEach(function(el) {
+        var k = el.dataset.i18n; var v = _t(k);
+        if (v && v !== k) el.textContent = v;
+      });
+      document.querySelectorAll('.lang-switch button').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.lang === _lang);
+        if (btn.dataset.lang === 'en') btn.textContent = 'EN';
+        if (btn.dataset.lang === 'zh') btn.textContent = '中文';
+      });
+    }
+
+    function _authHeaders() { var t = localStorage.getItem(_tk); var h = {'Content-Type':'application/json'}; if (t) h['Authorization'] = 'Bearer ' + t; return h; }
+
+    function _switchToApp() {
+      var lv = document.getElementById('loginView'); if (lv) lv.classList.add('hidden');
+      var av = document.getElementById('appView'); if (av) av.classList.remove('hidden');
+      var prof; try { prof = JSON.parse(localStorage.getItem(_pk) || 'null'); } catch(e) { prof = null; }
+      var dn = document.getElementById('adminDisplayName'); if (dn) dn.textContent = (prof && prof.username) || _t('administrator');
+      var dm = document.getElementById('adminDisplayMeta'); if (dm) dm.textContent = (prof && prof.email) || _t('signedIn');
+      var ab = document.getElementById('authBadge'); if (ab) { ab.textContent = _t('authenticated'); ab.className = 'badge ok'; }
+      _applyLang();
+      if (typeof openTab === 'function') { openTab(localStorage.getItem('maclawHubActiveTab') || 'overview'); }
+      else { _fbOpenTab(localStorage.getItem('maclawHubActiveTab') || 'overview'); }
+    }
+
+    function _fbOpenTab(name) {
+      document.querySelectorAll('.nav button').forEach(function(v) { v.classList.toggle('active', v.dataset.tab === name); });
+      document.querySelectorAll('.panel').forEach(function(v) { v.classList.remove('active'); });
+      var panel = document.getElementById('tab-' + name); if (panel) panel.classList.add('active');
+      var pt = document.getElementById('pageTitle');
+      var ps = document.getElementById('pageSubtitle');
+      var meta = { overview:['overviewTabTitle','overviewTabSubtitle'], center:['centerTabTitle','centerTabSubtitle'], governance:['governanceTabTitle','governanceTabSubtitle'], system:['systemTabTitle','systemTabSubtitle'], machines:['machinesTabTitle','machinesTabSubtitle'], console:['consoleTabTitle','consoleTabSubtitle'] };
+      var m = meta[name];
+      if (pt) pt.textContent = m ? _t(m[0]) : name;
+      if (ps) ps.textContent = m ? _t(m[1]) : '';
+      localStorage.setItem('maclawHubActiveTab', name);
+    }
+    window.openTab = window.openTab || _fbOpenTab;
+
+    window.logoutAdmin = window.logoutAdmin || function() {
+      localStorage.removeItem(_tk); localStorage.removeItem(_pk);
+      var lv = document.getElementById('loginView'); if (lv) lv.classList.remove('hidden');
+      var av = document.getElementById('appView'); if (av) av.classList.add('hidden');
+      _applyLang();
+    };
+
+    window.setLanguage = function(lang) {
+      _lang = (lang === 'zh') ? 'zh' : 'en';
+      localStorage.setItem(_lk, _lang);
+      _applyLang();
+      // re-apply tab title
+      var at = localStorage.getItem('maclawHubActiveTab') || 'overview';
+      _fbOpenTab(at);
+    };
+
+    window.loginAdmin = async function() {
+      var u = document.getElementById('loginUsername').value.trim();
+      var p = document.getElementById('loginPassword').value;
+      var out = document.getElementById('loginOutput');
+      if (!u || !p) { out.textContent = _t('enterBoth'); return; }
+      out.textContent = _t('signingIn');
+      try {
+        var res = await fetch('/api/admin/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ username: u, password: p }) });
+        var data = await res.json();
+        if (!res.ok) { out.textContent = _t('loginFailed') + (data.message || res.statusText); return; }
+        var tok = data.access_token || data.token || '';
+        if (tok) {
+          localStorage.setItem(_tk, tok);
+          localStorage.setItem(_pk, JSON.stringify(data.admin || data.profile || {}));
+          _switchToApp();
+        } else {
+          out.textContent = _t('noToken') + ' keys: ' + Object.keys(data).join(',');
+        }
+      } catch (e) { out.textContent = _t('loginFailed') + e.message; }
+    };
+
+    window.setupAdmin = async function() {
+      var u = document.getElementById('setupUsername').value.trim();
+      var e = document.getElementById('setupEmail') ? document.getElementById('setupEmail').value.trim() : '';
+      var p = document.getElementById('setupPassword').value;
+      var out = document.getElementById('loginOutput');
+      if (!u || !p) { out.textContent = _t('enterBoth'); return; }
+      out.textContent = _t('settingUp');
+      try {
+        var res = await fetch('/api/admin/setup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ username: u, email: e, password: p }) });
+        var data = await res.json();
+        if (!res.ok) { out.textContent = _t('setupFailed') + (data.message || res.statusText); return; }
+        out.textContent = _t('setupDone');
+        var ss = document.getElementById('setupStage'); if (ss) ss.classList.add('hidden');
+        var ls = document.getElementById('loginStage'); if (ls) ls.classList.remove('hidden');
+      } catch (err) { out.textContent = _t('setupFailed') + err.message; }
+    };
+
+    window.showAuthStage = window.showAuthStage || function(stage) {
+      var ss = document.getElementById('setupStage'); var ls = document.getElementById('loginStage');
+      if (stage === 'setup') { if (ss) ss.classList.remove('hidden'); if (ls) ls.classList.add('hidden'); }
+      else { if (ss) ss.classList.add('hidden'); if (ls) ls.classList.remove('hidden'); }
+    };
+
+    window.refreshAll = window.refreshAll || function() {};
+    window.clearConsole = window.clearConsole || function() { var o = document.getElementById('output'); if (o) o.textContent = _t('outputReady'); };
+    window.closeSessionModal = window.closeSessionModal || function() { var o = document.getElementById('sessionModalOverlay'); if (o) o.classList.remove('show'); };
+    window.dismissSetupGate = window.dismissSetupGate || function() { var g = document.getElementById('setupGate'); if (g) g.classList.add('hidden'); };
+
+    // On load: check token and switch view
+    var existingToken = localStorage.getItem(_tk);
+    if (existingToken) {
+      fetch('/api/admin/status', { headers: { 'Authorization': 'Bearer ' + existingToken } })
+        .then(function(r) { if (!r.ok) throw new Error('expired'); return r.json(); })
+        .then(function() { _switchToApp(); })
+        .catch(function() { localStorage.removeItem(_tk); localStorage.removeItem(_pk); _applyLang(); });
+    } else {
+      fetch('/api/admin/status').then(function(r) { return r.json(); }).then(function(data) {
+        var initialized = !!data.initialized;
+        var toggle = document.getElementById('stageToggle');
+        if (initialized) { if (toggle) toggle.classList.add('hidden'); showAuthStage('login'); }
+        else { if (toggle) toggle.classList.remove('hidden'); showAuthStage('setup'); }
+      }).catch(function() {});
+      _applyLang();
+    }
+  })();
+  </script>
 </body>
 </html>
 

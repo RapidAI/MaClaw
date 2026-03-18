@@ -221,7 +221,13 @@ NSMenuItem *find_menu_item(NSMenu *ourMenu, NSNumber *menuId) {
 }
 
 - (void) quit {
-  [NSApp terminate:self];
+  // When running inside a host app (Wails), do NOT call [NSApp terminate:]
+  // because the host owns the application lifecycle.  Simply remove the
+  // status item from the menu bar so the tray disappears cleanly.
+  if (self->statusItem != nil) {
+    [[NSStatusBar systemStatusBar] removeStatusItem:self->statusItem];
+    self->statusItem = nil;
+  }
 }
 
 - (void) statusOnClick:(NSButton *)btn {
@@ -255,8 +261,10 @@ void setInternalLoop(bool i) {
 
 void registerSystray(void) {
   if (!internalLoop) { // with an external loop we don't take ownership of the app
+    NSLog(@"[systray] registerSystray: external loop mode, skipping");
     return;
   }
+  NSLog(@"[systray] registerSystray: internal loop mode, setting delegate");
   owner = [[SystrayDelegate alloc] init];
   [[NSApplication sharedApplication] setDelegate:owner];
 
@@ -281,20 +289,34 @@ int nativeLoop(void) {
 
 void nativeStart(void) {
   // When used with an external event loop (e.g. Wails), this function is called
-  // from a background goroutine.  AppKit requires all UI work on the main thread.
-  // Use dispatch_async so we don't block waiting for the main run loop to start
-  // (which may not have started yet when OnStartup fires).
+  // from a background goroutine.  We must initialise the status bar on the main
+  // thread after the host app has fully launched.
+  //
+  // dispatch_async queues the block for the main run-loop.  By the time the
+  // block executes, [NSApp run] is active and applicationDidFinishLaunching
+  // has already fired (Wails fires it before processing the dispatch queue),
+  // so it is safe to create NSStatusItem immediately.
+  NSLog(@"[systray] nativeStart: queuing dispatch_async on main queue");
   dispatch_async(dispatch_get_main_queue(), ^{
-    owner = [[SystrayDelegate alloc] init];
-    // Only create the status bar item — do NOT set NSApp delegate (Wails owns it).
-    [owner initStatusBar];
-    // Signal Go side that systray is ready.  This is safe to call from the main
-    // thread — it's a CGo export that simply closes a Go channel.
-    systray_ready();
+    @try {
+      NSLog(@"[systray] dispatch block executing on main thread");
+      owner = [[SystrayDelegate alloc] init];
+      NSLog(@"[systray] SystrayDelegate allocated");
+      [owner initStatusBar];
+      NSLog(@"[systray] initStatusBar done, calling systray_ready");
+      systray_ready();
+      NSLog(@"[systray] systray_ready returned");
+    } @catch (NSException *exception) {
+      NSLog(@"[systray] EXCEPTION in nativeStart: %@ — %@", exception.name, exception.reason);
+    }
   });
 }
 
 void runInMainThread(SEL method, id object) {
+  if (owner == nil) {
+    // Owner not yet initialized (systray not ready); silently skip.
+    return;
+  }
   [owner
     performSelectorOnMainThread:method
                      withObject:object
@@ -375,5 +397,13 @@ void enable_on_click(void) {
 }
 
 void quit() {
+  if (owner == nil) {
+    return;
+  }
+  if (!internalLoop) {
+    // External loop mode: just remove the status item, don't terminate the app.
+    runInMainThread(@selector(quit), nil);
+    return;
+  }
   runInMainThread(@selector(quit), nil);
 }

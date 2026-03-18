@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -124,6 +125,8 @@ func (c *SkillHubClient) Search(ctx context.Context, query string) ([]HubSkillMe
 				skills, searchErr = c.searchClawHub(hubCtx, hubEntry.URL, query)
 			case "clawhub_mirror":
 				skills, searchErr = c.searchClawHubMirror(hubCtx, hubEntry.URL, query)
+			case "skillhub_space":
+				skills, searchErr = c.searchSkillHubSpace(hubCtx, hubEntry.URL, query)
 			default: // "standard" or empty
 				skills, searchErr = c.searchStandard(hubCtx, hubEntry.URL, query)
 			}
@@ -185,6 +188,9 @@ func (c *SkillHubClient) Search(ctx context.Context, query string) ([]HubSkillMe
 // Install downloads a Skill from the specified Hub and converts it to an NLSkillEntry.
 // On failure it falls back to other Hubs sorted by latency.
 func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL string) (*NLSkillEntry, error) {
+	// Load config once for hub type lookups.
+	cfg, _ := c.app.LoadConfig()
+
 	// Try the specified Hub first, then fall back to others.
 	hubURLs := []string{hubURL}
 	fallbacks := c.selectBestHub(skillID)
@@ -196,7 +202,14 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 
 	var lastErr error
 	for _, hub := range hubURLs {
-		entry, err := c.downloadSkill(ctx, skillID, hub)
+		hubType := c.hubTypeFromConfig(cfg, hub)
+		var entry *NLSkillEntry
+		var err error
+		if hubType == "skillhub_space" {
+			entry, err = c.downloadSkillHubSpace(ctx, skillID, hub)
+		} else {
+			entry, err = c.downloadSkill(ctx, skillID, hub)
+		}
 		if err != nil {
 			lastErr = err
 			continue
@@ -208,6 +221,25 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 		return nil, fmt.Errorf("failed to install skill %s: %w", skillID, lastErr)
 	}
 	return nil, fmt.Errorf("no hubs available to install skill %s", skillID)
+}
+
+// getHubType returns the configured type for a given hub URL.
+func (c *SkillHubClient) getHubType(hubURL string) string {
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	return c.hubTypeFromConfig(cfg, hubURL)
+}
+
+// hubTypeFromConfig looks up the hub type from a pre-loaded config.
+func (c *SkillHubClient) hubTypeFromConfig(cfg AppConfig, hubURL string) string {
+	for _, entry := range cfg.SkillHubURLs {
+		if entry.URL == hubURL {
+			return entry.Type
+		}
+	}
+	return ""
 }
 
 // CheckUpdate checks whether a Hub Skill has a newer version available.
@@ -229,12 +261,38 @@ func (c *SkillHubClient) CheckUpdate(ctx context.Context, skillID string, curren
 
 	for _, entry := range cfg.SkillHubURLs {
 		wg.Add(1)
-		go func(hubURL string) {
+		go func(hubEntry SkillHubEntry) {
 			defer wg.Done()
 			hubCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 			defer cancel()
 
-			endpoint := strings.TrimRight(hubURL, "/") + "/api/v1/skills/" + url.PathEscape(skillID)
+			var endpoint string
+			switch hubEntry.Type {
+			case "skillhub_space":
+				// skillhub_space 的搜索接口返回的结果没有版本号，
+				// 需要通过详情接口获取，但我们没有 owner handle。
+				// 用搜索接口找到 skill 再取详情。
+				items, searchErr := c.searchSkillHubSpace(hubCtx, hubEntry.URL, skillID)
+				if searchErr != nil || len(items) == 0 {
+					return
+				}
+				for _, item := range items {
+					if item.ID == skillID {
+						// 版本信息需要从详情获取，这里用 Downloads 变化作为更新信号
+						resultsCh <- checkResult{meta: &HubSkillMeta{
+							ID:      item.ID,
+							Name:    item.Name,
+							Version: "", // skillhub_space 搜索不返回版本
+							HubURL:  hubEntry.URL,
+						}}
+						return
+					}
+				}
+				return
+			default:
+				endpoint = strings.TrimRight(hubEntry.URL, "/") + "/api/v1/skills/" + url.PathEscape(skillID)
+			}
+
 			req, reqErr := http.NewRequestWithContext(hubCtx, http.MethodGet, endpoint, nil)
 			if reqErr != nil {
 				return
@@ -255,9 +313,9 @@ func (c *SkillHubClient) CheckUpdate(ctx context.Context, skillID string, curren
 			if decErr := json.NewDecoder(resp.Body).Decode(&meta); decErr != nil {
 				return
 			}
-			meta.HubURL = hubURL
+			meta.HubURL = hubEntry.URL
 			resultsCh <- checkResult{meta: &meta}
-		}(entry.URL)
+		}(entry)
 	}
 
 	wg.Wait()
@@ -443,6 +501,11 @@ func (c *SkillHubClient) RefreshRecommendations(ctx context.Context) error {
 			case "clawhub":
 				// ClawHub 用列表接口获取
 				s, err := c.searchClawHub(hubCtx, hubEntry.URL, "")
+				if err == nil {
+					skills = s
+				}
+			case "skillhub_space":
+				s, err := c.fetchSkillHubSpaceTrending(hubCtx, hubEntry.URL)
 				if err == nil {
 					skills = s
 				}
@@ -760,4 +823,252 @@ func (c *SkillHubClient) fetchClawHubMirrorPopular(ctx context.Context, hubURL s
 		})
 	}
 	return skills, nil
+}
+
+// ---------------------------------------------------------------------------
+// 适配器: SkillHub.space / clawskillhub.com
+// API 格式:
+//   搜索: GET /api/skills?search=xxx&limit=20  (返回 JSON 数组)
+//   列表: GET /api/skills?sort=latest&limit=N
+//   热门: GET /api/skills/trending?limit=N
+//   详情: GET /api/skills/{owner}/{slug}
+//   下载: GET /api/skills/{owner}/{slug}/download/{version} (返回 markdown)
+// ---------------------------------------------------------------------------
+
+// skillHubSpaceItem 是 clawskillhub.com 返回的单个 Skill 结构
+type skillHubSpaceItem struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Slug            string   `json:"slug"`
+	Description     string   `json:"description"`
+	IsVerified      bool     `json:"isVerified"`
+	Stars           int      `json:"stars"`
+	Downloads       int      `json:"downloads"`
+	Tags            []string `json:"tags"`
+	ValidationScore int      `json:"validationScore"`
+	Owner           struct {
+		Handle string `json:"handle"`
+	} `json:"owner"`
+	Versions []struct {
+		Version string `json:"version"`
+	} `json:"versions,omitempty"`
+}
+
+// skillHubSpaceToMeta converts a skillHubSpaceItem to HubSkillMeta.
+func skillHubSpaceToMeta(item skillHubSpaceItem, hubURL string) HubSkillMeta {
+	trust := "community"
+	if item.IsVerified {
+		trust = "verified"
+	}
+	return HubSkillMeta{
+		ID:          item.Slug,
+		Name:        item.Name,
+		Description: item.Description,
+		Author:      item.Owner.Handle,
+		TrustLevel:  trust,
+		Downloads:   item.Downloads,
+		Tags:        item.Tags,
+		HubURL:      hubURL,
+	}
+}
+
+// searchSkillHubSpace 查询 clawskillhub.com 风格的 API
+func (c *SkillHubClient) searchSkillHubSpace(ctx context.Context, hubURL, query string) ([]HubSkillMeta, error) {
+	endpoint := strings.TrimRight(hubURL, "/") + "/api/skills?search=" + url.QueryEscape(query) + "&limit=20"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var items []skillHubSpaceItem
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return nil, err
+	}
+
+	skills := make([]HubSkillMeta, 0, len(items))
+	for _, item := range items {
+		skills = append(skills, skillHubSpaceToMeta(item, hubURL))
+	}
+	return skills, nil
+}
+
+// fetchSkillHubSpaceTrending 获取 clawskillhub.com 的热门 Skill
+func (c *SkillHubClient) fetchSkillHubSpaceTrending(ctx context.Context, hubURL string) ([]HubSkillMeta, error) {
+	endpoint := strings.TrimRight(hubURL, "/") + "/api/skills/trending?limit=20"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var items []skillHubSpaceItem
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return nil, err
+	}
+
+	skills := make([]HubSkillMeta, 0, len(items))
+	for _, item := range items {
+		skills = append(skills, skillHubSpaceToMeta(item, hubURL))
+	}
+	return skills, nil
+}
+
+// downloadSkillHubSpace 从 clawskillhub.com 下载 Skill 并转换为 NLSkillEntry。
+// 先搜索获取 owner handle，再获取详情（含版本列表），最后下载 skill.md。
+func (c *SkillHubClient) downloadSkillHubSpace(ctx context.Context, skillSlug string, hubURL string) (*NLSkillEntry, error) {
+	base := strings.TrimRight(hubURL, "/")
+
+	// 1. 搜索获取 owner handle
+	searchEndpoint := base + "/api/skills?search=" + url.QueryEscape(skillSlug) + "&limit=5"
+	searchReq, err := http.NewRequestWithContext(ctx, http.MethodGet, searchEndpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	searchReq.Header.Set("User-Agent", "MaClaw/1.0")
+
+	searchResp, err := c.client.Do(searchReq)
+	if err != nil {
+		return nil, err
+	}
+	defer searchResp.Body.Close()
+
+	if searchResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d searching for skill %s", searchResp.StatusCode, skillSlug)
+	}
+
+	var searchItems []skillHubSpaceItem
+	if err := json.NewDecoder(searchResp.Body).Decode(&searchItems); err != nil {
+		return nil, err
+	}
+
+	// 精确匹配 slug，否则取第一个
+	var matched *skillHubSpaceItem
+	for i, item := range searchItems {
+		if item.Slug == skillSlug {
+			matched = &searchItems[i]
+			break
+		}
+	}
+	if matched == nil && len(searchItems) > 0 {
+		matched = &searchItems[0]
+	}
+	if matched == nil {
+		return nil, fmt.Errorf("skill %s not found on %s", skillSlug, hubURL)
+	}
+
+	ownerHandle := matched.Owner.Handle
+	slug := matched.Slug
+
+	// 2. 获取详情（含版本列表）
+	detailEndpoint := base + "/api/skills/" + url.PathEscape(ownerHandle) + "/" + url.PathEscape(slug)
+	detailReq, err := http.NewRequestWithContext(ctx, http.MethodGet, detailEndpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	detailReq.Header.Set("User-Agent", "MaClaw/1.0")
+
+	detailResp, err := c.client.Do(detailReq)
+	if err != nil {
+		return nil, err
+	}
+	defer detailResp.Body.Close()
+
+	if detailResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d fetching skill detail %s/%s", detailResp.StatusCode, ownerHandle, slug)
+	}
+
+	var detail skillHubSpaceItem
+	if err := json.NewDecoder(detailResp.Body).Decode(&detail); err != nil {
+		return nil, err
+	}
+
+	version := "1.0.0"
+	if len(detail.Versions) > 0 {
+		version = detail.Versions[0].Version
+	}
+
+	// 3. 下载 skill.md（限制 1MB 防止异常响应）
+	dlEndpoint := base + "/api/skills/" + url.PathEscape(ownerHandle) + "/" + url.PathEscape(slug) + "/download/" + url.PathEscape(version)
+	dlReq, err := http.NewRequestWithContext(ctx, http.MethodGet, dlEndpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	dlReq.Header.Set("User-Agent", "MaClaw/1.0")
+
+	dlResp, err := c.client.Do(dlReq)
+	if err != nil {
+		return nil, err
+	}
+	defer dlResp.Body.Close()
+
+	if dlResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d downloading skill %s v%s", dlResp.StatusCode, slug, version)
+	}
+
+	const maxBodySize = 1 << 20 // 1 MB
+	body, err := io.ReadAll(io.LimitReader(dlResp.Body, maxBodySize))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read skill download body: %w", err)
+	}
+
+	skillMD := string(body)
+
+	// 从 skill.md 的 frontmatter 中提取 description（优先使用更详细的描述）
+	description := detail.Description
+	if strings.HasPrefix(skillMD, "---") {
+		parts := strings.SplitN(skillMD, "---", 3)
+		if len(parts) >= 3 {
+			for _, line := range strings.Split(parts[1], "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "description:") {
+					if d := strings.TrimSpace(strings.TrimPrefix(line, "description:")); d != "" {
+						description = d
+					}
+					break
+				}
+			}
+		}
+	}
+
+	trust := "community"
+	if detail.IsVerified {
+		trust = "verified"
+	}
+
+	entry := &NLSkillEntry{
+		Name:          detail.Name,
+		Description:   description,
+		Triggers:      []string{slug},
+		Steps:         []NLSkillStep{{Action: "skill_md", Params: map[string]interface{}{"content": skillMD}}},
+		Status:        "active",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		Source:        "hub",
+		SourceProject: hubURL,
+		HubSkillID:    slug,
+		HubVersion:    version,
+		TrustLevel:    trust,
+	}
+
+	return entry, nil
 }

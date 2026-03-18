@@ -29,6 +29,11 @@ func makeBuiltinDefs() []map[string]interface{} {
 		toolDef("read_file", "读取文件", nil, nil),
 		toolDef("write_file", "写入文件", nil, nil),
 		toolDef("list_directory", "列出目录", nil, nil),
+		toolDef("send_file", "发送文件", nil, nil),
+		toolDef("open", "打开文件或网址", nil, nil),
+		toolDef("save_memory", "保存记忆", nil, nil),
+		toolDef("list_memories", "列出记忆", nil, nil),
+		toolDef("delete_memory", "删除记忆", nil, nil),
 	}
 }
 

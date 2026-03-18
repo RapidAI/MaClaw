@@ -29,11 +29,14 @@ var coreToolNames = map[string]bool{
 	"interrupt_session": true, "kill_session": true,
 	// Local operations
 	"bash": true, "read_file": true, "write_file": true, "list_directory": true,
+	"send_file": true, "open": true,
 	// MCP & Skill essentials
 	"list_mcp_tools": true, "call_mcp_tool": true,
 	"list_skills": true, "run_skill": true,
 	// Screenshot (high frequency)
 	"screenshot": true,
+	// Long-term memory (agent needs these to proactively save/recall)
+	"save_memory": true, "list_memories": true, "delete_memory": true,
 }
 
 // builtinToolNames is the complete set of all builtin tool names (core + non-core).
@@ -66,7 +69,7 @@ func isBuiltinToolName(name string) bool {
 //
 // Strategy:
 //  1. Core tools (whitelist) are always included — they cover the basic
-//     interaction loop and cost ~15 tool slots.
+//     interaction loop and cost ~20 tool slots.
 //  2. All remaining tools (non-core builtins + MCP dynamic tools) compete
 //     for the remaining budget via TF-IDF cosine similarity against the
 //     user message.
