@@ -874,7 +874,7 @@ func (c *RemoteHubClient) SendIMProactiveMessage(text string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
-		return fmt.Errorf("not connected to hub")
+		return nil // silently drop when not connected, consistent with other Send* methods
 	}
 
 	msg := HubEnvelope{

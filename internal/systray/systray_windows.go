@@ -68,7 +68,6 @@ var (
 	pUpdateWindow          = u32.NewProc("UpdateWindow")
 	pFlashWindowEx         = u32.NewProc("FlashWindowEx")
 	pMessageBeep           = u32.NewProc("MessageBeep")
-	pFindWindow            = u32.NewProc("FindWindowW")
 
 	// ErrTrayNotReadyYet is returned by functions when they are called before the tray has been initialized.
 	ErrTrayNotReadyYet = errors.New("tray not ready yet")
@@ -1162,13 +1161,12 @@ func FlashAndBeep() {
 		return
 	}
 	const (
-		FLASHW_ALL       = 0x00000003 // flash both caption and taskbar button
-		FLASHW_TIMERNOFG = 0x0000000C // flash until window comes to foreground
+		FLASHW_ALL = 0x00000003 // flash both caption and taskbar button
 	)
 	fi := flashWindowInfo{
 		Hwnd:    wt.window,
-		DwFlags: FLASHW_ALL | FLASHW_TIMERNOFG,
-		UCount:  3,
+		DwFlags: FLASHW_ALL,
+		UCount:  5, // flash 5 times then stop
 	}
 	fi.CbSize = uint32(unsafe.Sizeof(fi))
 	pFlashWindowEx.Call(uintptr(unsafe.Pointer(&fi)))

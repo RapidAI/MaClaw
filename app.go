@@ -436,11 +436,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	if a.scheduledTaskManager != nil {
 		handler := hubClient.imHandler
 		a.scheduledTaskManager.SetExecutor(func(task *ScheduledTask) (string, error) {
-			// Play sound + flash taskbar icon to draw attention.
-			if FlashAndBeep != nil {
-				FlashAndBeep()
-			}
-			// Show system tray notification when a scheduled task fires.
+			// Show a quiet notification when the task starts executing.
 			if ShowNotification != nil {
 				ShowNotification(
 					"⏰ 定时任务执行",
@@ -459,15 +455,16 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			}
 
 			// Push the result to the user's IM channels (Feishu/QQ) via Hub.
+			// Silently ignore send errors — Hub may be temporarily disconnected.
 			resultText := resp.Text
 			if resultText != "" {
 				proactiveMsg := fmt.Sprintf("⏰ 定时任务「%s」执行结果:\n\n%s", task.Name, resultText)
 				if err := hubClient.SendIMProactiveMessage(proactiveMsg); err != nil {
-					a.log(fmt.Sprintf("[scheduled-task] proactive message send failed: %v", err))
+					a.log(fmt.Sprintf("[scheduled-task] proactive message send failed (will retry on next run): %v", err))
 				}
 			}
 
-			// Show local notification with the result + sound + flash.
+			// Play sound + flash + notification on completion to draw attention.
 			if resultText != "" {
 				if FlashAndBeep != nil {
 					FlashAndBeep()
