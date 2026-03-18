@@ -84,7 +84,10 @@ func setupTray(app *App, appOptions *options.App) {
 			}
 		}, func() {})
 
-		// Start the systray native integration (without taking over the event loop)
+		// Start the systray native integration (without taking over the event loop).
+		// nativeStart uses dispatch_async to schedule status bar creation on the main
+		// thread, so it returns immediately and the actual init happens once Wails'
+		// [NSApp run] starts processing the main queue.
 		go start()
 	}
 }

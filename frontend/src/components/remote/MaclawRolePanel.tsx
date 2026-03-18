@@ -50,9 +50,6 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
         showSaved();
     };
 
-    const displayName = name.trim() || DEFAULT_NAME;
-    const displayDesc = desc.trim() || DEFAULT_DESC;
-
     return (
         <div>
             <p style={{ fontSize: "0.78rem", color: "#888", marginBottom: "14px", lineHeight: 1.5 }}>
@@ -96,22 +93,7 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
                 </button>
             </div>
 
-            <div style={{
-                marginTop: "16px", padding: "10px 12px", background: "#f8f9ff",
-                borderRadius: "8px", fontSize: "0.76rem", color: "#666", lineHeight: 1.6,
-            }}>
-                <div style={{ marginBottom: "4px", fontWeight: 600, color: "#6366f1" }}>
-                    {t("当前角色预览", "Current Role Preview")}
-                </div>
-                <div>
-                    {t("名称", "Name")}:{" "}
-                    <span style={{ color: "#333", fontWeight: 500 }}>{displayName}</span>
-                </div>
-                <div>
-                    {t("描述", "Desc")}:{" "}
-                    <span style={{ color: "#333" }}>{displayDesc}</span>
-                </div>
-            </div>
+
         </div>
     );
 }

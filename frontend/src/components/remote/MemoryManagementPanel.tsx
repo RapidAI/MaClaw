@@ -259,7 +259,7 @@ function MemoryEditTab({ t, isZh, revision, onCountChange, createRef }: EditTabP
             {loading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("加载中…", "Loading…")}</div>}
 
             {/* Entry list */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "360px", overflowY: "auto", border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 6 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "calc(100vh - 310px)", overflowY: "auto", border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 6 }}>
                 {entries.length === 0 && !loading && (
                     <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>{t("暂无记忆条目", "No memory entries")}</div>
                 )}
@@ -414,48 +414,38 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
 
     return (
         <>
-            {/* Auto-compress service toggle */}
-            <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "12px 14px", background: colors.surface, marginBottom: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div>
-                        <div style={{ fontSize: "0.8rem", color: colors.text, fontWeight: 600 }}>🔄 {t("自动压缩服务", "Auto-Compress Service")}</div>
-                        <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginTop: 2 }}>
-                            {t("开启后每 6 小时自动去重 + LLM 压缩，压缩完自动加载", "When on, dedup + LLM compress runs every 6h automatically")}
-                        </div>
+            {/* Auto-compress + One-shot compress in one row */}
+            <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "10px 14px", background: colors.surface, marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.76rem", color: colors.text, fontWeight: 600, minWidth: 0 }}>
+                        🔄 {t("自动压缩", "Auto-Compress")}
+                        <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400 }}>
+                            {t("每6h去重+LLM压缩", "Every 6h dedup+LLM")}
+                        </span>
                         {serviceStatus?.last_run && (
-                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: 2 }}>
-                                {t("上次运行", "Last run")}: {fmtDate(serviceStatus.last_run, isZh)}
+                            <span style={{ fontSize: "0.66rem", color: colors.textMuted, fontWeight: 400 }}>
+                                · {fmtDate(serviceStatus.last_run, isZh)}
                                 {serviceStatus.last_error && <span style={{ color: colors.danger }}> · {serviceStatus.last_error}</span>}
-                            </div>
+                            </span>
                         )}
                     </div>
-                    <button onClick={handleToggleAuto} disabled={toggling} style={{
-                        padding: "5px 16px", fontSize: "0.76rem", fontWeight: 600, border: "none", borderRadius: radius.md, cursor: toggling ? "wait" : "pointer",
-                        background: autoEnabled ? "#059669" : colors.textMuted, color: "#fff", whiteSpace: "nowrap",
-                    }}>
-                        {autoEnabled ? t("已开启", "ON") : t("已关闭", "OFF")}
-                    </button>
-                </div>
-            </div>
-
-            {/* One-shot compress action */}
-            <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "12px 14px", background: colors.surface, marginBottom: 12 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                    <div>
-                        <div style={{ fontSize: "0.8rem", color: colors.text, fontWeight: 600 }}>🗜️ {t("一键压缩", "Compress Now")}</div>
-                        <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginTop: 2 }}>
-                            {t("去重 + LLM 精简过长记忆，压缩前自动备份", "Dedup + LLM compress long memories. Auto-backup before changes.")}
-                        </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                        <button onClick={handleToggleAuto} disabled={toggling} style={{
+                            padding: "4px 14px", fontSize: "0.74rem", fontWeight: 600, border: "none", borderRadius: radius.md, cursor: toggling ? "wait" : "pointer",
+                            background: autoEnabled ? "#059669" : colors.textMuted, color: "#fff", whiteSpace: "nowrap",
+                        }}>
+                            {autoEnabled ? t("已开启", "ON") : t("已关闭", "OFF")}
+                        </button>
+                        <button onClick={handleCompress} disabled={compressing} aria-label={t("立即压缩", "Compress Now")} style={{
+                            padding: "4px 14px", fontSize: "0.74rem", fontWeight: 600, border: "none", borderRadius: radius.md, cursor: compressing ? "wait" : "pointer",
+                            background: compressing ? colors.textMuted : "#6366f1", color: "#fff", opacity: compressing ? 0.6 : 1, whiteSpace: "nowrap",
+                        }}>
+                            {compressing ? t("压缩中…", "…") : t("立即压缩", "Compress")}
+                        </button>
                     </div>
-                    <button onClick={handleCompress} disabled={compressing} aria-label={t("立即压缩", "Compress Now")} style={{
-                        padding: "5px 16px", fontSize: "0.76rem", fontWeight: 600, border: "none", borderRadius: radius.md, cursor: compressing ? "wait" : "pointer",
-                        background: compressing ? colors.textMuted : "#6366f1", color: "#fff", opacity: compressing ? 0.6 : 1, whiteSpace: "nowrap",
-                    }}>
-                        {compressing ? t("压缩中…", "Compressing…") : t("立即压缩", "Compress Now")}
-                    </button>
                 </div>
                 {compressResult && (
-                    <div role="status" style={{ fontSize: "0.74rem", color: "#059669", background: "#ecfdf5", borderRadius: radius.sm, padding: "6px 10px", marginTop: 6 }}>
+                    <div role="status" style={{ fontSize: "0.72rem", color: "#059669", background: "#ecfdf5", borderRadius: radius.sm, padding: "5px 10px", marginTop: 6 }}>
                         {compressResult.dedup_count > 0 && <>{t("去重", "Dedup")}: {compressResult.dedup_count} {t("条移除", "removed")} · </>}
                         {t("压缩", "Compress")}: {compressResult.compressed_count} {t("条已压缩", "compressed")}, {compressResult.skipped_count} {t("条跳过", "skipped")}, {compressResult.error_count} {t("条失败", "errors")}, {t("节省", "saved")} {compressResult.saved_chars} {t("字符", "chars")}
                     </div>
@@ -467,7 +457,7 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
             {/* Backup list */}
             <div style={{ fontSize: "0.8rem", color: colors.text, fontWeight: 600, marginBottom: 8 }}>📦 {t("历史备份", "Backup History")}</div>
             {backupsLoading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("加载中…", "Loading…")}</div>}
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "320px", overflowY: "auto" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "calc(100vh - 390px)", overflowY: "auto" }}>
                 {backups.length === 0 && !backupsLoading && (
                     <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>{t("暂无备份", "No backups yet")}</div>
                 )}

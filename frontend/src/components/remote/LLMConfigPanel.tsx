@@ -200,8 +200,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             </div>
             <p style={{ fontSize: "0.72rem", color: "#888", marginBottom: 16, lineHeight: 1.5 }}>
                 {t(
-                    "选择 MaClaw 桌面代理使用的 LLM 服务商（支持 OpenAI 兼容接口和 Anthropic 协议）。",
-                    "Select the LLM provider for the MaClaw desktop agent (OpenAI-compatible and Anthropic protocols supported)."
+                    "选择 LLM 服务商（支持 OpenAI / Anthropic 协议）",
+                    "Select LLM provider (OpenAI / Anthropic supported)"
                 )}
             </p>
 
@@ -224,13 +224,14 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 marginBottom: 16, padding: "12px 16px", borderRadius: 6,
                 border: `1px solid ${colors.border}`, background: colors.surface,
             }}>
-                <label style={{ ...labelStyle, marginBottom: 2 }}>{t("Agent 最大推理轮数", "Agent Max Iterations")}</label>
-                <p style={{ fontSize: "0.7rem", color: "#888", margin: "0 0 8px 0", lineHeight: 1.4 }}>
-                    {t(
-                        "Agent 每次对话最多执行的推理轮数。设为 0 则由 Agent 自行判断（不限制）。默认 12。",
-                        "Max reasoning rounds per conversation. Set to 0 for unlimited (agent decides). Default 12."
-                    )}
-                </p>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <label style={{ ...labelStyle, marginBottom: 0 }}>
+                        {t("Agent 最大推理轮数", "Agent Max Iterations")}
+                        <span style={{ fontSize: "0.68rem", color: "#888", fontWeight: 400, marginLeft: 6 }}>
+                            {t("0=不限制，默认12", "0=unlimited, default 12")}
+                        </span>
+                    </label>
+                </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <input type="range" min={0} max={300} step={1} value={maxIter}
                         onChange={e => { const v = Number(e.target.value); setMaxIter(v); SetMaclawAgentMaxIterations(v).catch(() => {}); }}

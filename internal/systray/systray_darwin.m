@@ -281,18 +281,17 @@ int nativeLoop(void) {
 
 void nativeStart(void) {
   // When used with an external event loop (e.g. Wails), this function is called
-  // from a background goroutine.  AppKit requires all UI work on the main thread,
-  // so we use dispatch_sync to bounce there and block until initialization is done.
-  // This is safe because we are NOT on the main thread (called via `go start()`).
-  dispatch_sync(dispatch_get_main_queue(), ^{
+  // from a background goroutine.  AppKit requires all UI work on the main thread.
+  // Use dispatch_async so we don't block waiting for the main run loop to start
+  // (which may not have started yet when OnStartup fires).
+  dispatch_async(dispatch_get_main_queue(), ^{
     owner = [[SystrayDelegate alloc] init];
-    // Only create the status bar item — do NOT set NSApp delegate (Wails owns it)
-    // and do NOT call systray_ready from here (it's a CGo callback that must not
-    // be invoked inside dispatch_sync to avoid potential deadlocks).
+    // Only create the status bar item — do NOT set NSApp delegate (Wails owns it).
     [owner initStatusBar];
+    // Signal Go side that systray is ready.  This is safe to call from the main
+    // thread — it's a CGo export that simply closes a Go channel.
+    systray_ready();
   });
-  // Signal Go side that systray is ready (runs on the background goroutine)
-  systray_ready();
 }
 
 void runInMainThread(SEL method, id object) {

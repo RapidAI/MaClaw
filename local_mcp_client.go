@@ -89,6 +89,8 @@ func (c *LocalMCPClient) Start(ctx context.Context) error {
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 
+	hideCommandWindow(cmd)
+
 	if err := cmd.Start(); err != nil {
 		c.stateMu.Unlock()
 		cancel()

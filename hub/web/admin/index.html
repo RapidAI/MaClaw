@@ -102,51 +102,51 @@
     <div class="login-card card">
       <div class="hero">
         <div class="mini">MaClaw Hub</div>
-        <h1 data-i18n="loginHeroTitle"></h1>
-        <p data-i18n="loginHeroDesc"></p>
+        <h1 data-i18n="loginHeroTitle">Self-hosted Hub Admin Console</h1>
+        <p data-i18n="loginHeroDesc">Manage Hub Center registration, user governance, machine visibility, and diagnostics in one place.</p>
         <ul>
-          <li data-i18n="loginBullet1"></li>
-          <li data-i18n="loginBullet2"></li>
-          <li data-i18n="loginBullet3"></li>
+          <li data-i18n="loginBullet1">Initialize the first administrator</li>
+          <li data-i18n="loginBullet2">Register this hub with Hub Center</li>
+          <li data-i18n="loginBullet3">Review machines, invites, and blocklists</li>
         </ul>
       </div>
       <div class="form">
-        <div class="mini" data-i18n="adminAccess"></div>
-        <h2 data-i18n="loginTitle"></h2>
+        <div class="mini" data-i18n="adminAccess">Administrator Access</div>
+        <h2 data-i18n="loginTitle">Hub Admin Console</h2>
         <p class="subtle" id="authStageHint"></p>
         <div id="stageToggle" class="stage-toggle hidden">
-          <button id="setupStageButton" class="btn-secondary" type="button" onclick="showAuthStage('setup')" data-i18n="firstSetup"></button>
-          <button id="loginStageButton" class="btn-ghost" type="button" onclick="showAuthStage('login')" data-i18n="adminLogin"></button>
+          <button id="setupStageButton" class="btn-secondary" type="button" onclick="showAuthStage('setup')" data-i18n="firstSetup">First Setup</button>
+          <button id="loginStageButton" class="btn-ghost" type="button" onclick="showAuthStage('login')" data-i18n="adminLogin">Admin Login</button>
         </div>
         <div id="setupStage" class="stage-card hidden">
-          <h3 data-i18n="firstSetup"></h3>
-          <p class="subtle" data-i18n="setupDesc"></p>
+          <h3 data-i18n="firstSetup">First Setup</h3>
+          <p class="subtle" data-i18n="setupDesc">On first use, only a username and password are required.</p>
           <div>
-            <label for="setupUsername" data-i18n="adminUsername"></label>
+            <label for="setupUsername" data-i18n="adminUsername">Admin username</label>
             <input id="setupUsername" placeholder="admin">
           </div>
           <div>
-            <label for="setupEmail" data-i18n="adminEmail"></label>
+            <label for="setupEmail" data-i18n="adminEmail">Admin email</label>
             <input id="setupEmail" type="email" placeholder="admin@example.com">
           </div>
           <div>
-            <label for="setupPassword" data-i18n="adminPassword"></label>
+            <label for="setupPassword" data-i18n="adminPassword">Admin password</label>
             <input id="setupPassword" type="password">
           </div>
-          <div class="actions"><button class="btn-secondary" onclick="setupAdmin()" data-i18n="saveInit"></button></div>
+          <div class="actions"><button class="btn-secondary" onclick="setupAdmin()" data-i18n="saveInit">Save and initialize</button></div>
         </div>
         <div id="loginStage" class="stage-card hidden">
-          <h3 data-i18n="adminLogin"></h3>
-          <p class="subtle" data-i18n="signinDesc"></p>
+          <h3 data-i18n="adminLogin">Admin Login</h3>
+          <p class="subtle" data-i18n="signinDesc">Regular sign-in only needs username and password.</p>
           <div>
-            <label for="loginUsername" data-i18n="adminUsername"></label>
+            <label for="loginUsername" data-i18n="adminUsername">Admin username</label>
             <input id="loginUsername" placeholder="admin">
           </div>
           <div>
-            <label for="loginPassword" data-i18n="adminPassword"></label>
+            <label for="loginPassword" data-i18n="adminPassword">Admin password</label>
             <input id="loginPassword" type="password">
           </div>
-          <div class="actions"><button class="btn-primary" onclick="loginAdmin()" data-i18n="signIn"></button></div>
+          <div class="actions"><button class="btn-primary" onclick="loginAdmin()" data-i18n="signIn">Sign In</button></div>
         </div>
         <div id="loginOutput" class="console"></div>
       </div>
