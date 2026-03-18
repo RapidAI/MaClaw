@@ -36,6 +36,7 @@ type User struct {
 type UserEnrollment struct {
 	ID        string
 	Email     string
+	Mobile    string
 	Status    string
 	Note      string
 	CreatedAt time.Time
@@ -157,6 +158,7 @@ type EnrollmentRepository interface {
 	ListAll(ctx context.Context) ([]*UserEnrollment, error)
 	Approve(ctx context.Context, id string, updatedAt time.Time) error
 	Reject(ctx context.Context, id string, updatedAt time.Time) error
+	UpdateMobile(ctx context.Context, id string, mobile string) error
 }
 
 type EmailBlocklistRepository interface {

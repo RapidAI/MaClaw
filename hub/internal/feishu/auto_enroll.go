@@ -109,8 +109,8 @@ func (ae *AutoEnroller) apiBase() string {
 	return feishuAPIBase
 }
 
-// AddToFeishuOrg is called after a user successfully enrolls on the desktop
-// client. It adds the user to the Feishu organization so they can discover
+// AddToFeishuOrg is called after a user successfully enrolls (desktop or
+// mobile). It adds the user to the Feishu organization so they can discover
 // and interact with the bot.
 //
 // The method is safe to call even if the user already exists in Feishu — it

@@ -50,7 +50,7 @@ func EnrollStartHandler(identity *auth.IdentityService, feishuNotifier *feishu.N
 			return
 		}
 
-		resp, err := identity.StartEnrollment(r.Context(), req.Email, req.MachineName, req.Platform, req.ClientID, req.InvitationCode)
+		resp, err := identity.StartEnrollment(r.Context(), req.Email, req.MachineName, req.Platform, req.ClientID, req.InvitationCode, req.Mobile)
 		if err != nil {
 			switch {
 			case errors.Is(err, auth.ErrInvitationExpired):

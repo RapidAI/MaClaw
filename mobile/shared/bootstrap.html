@@ -71,6 +71,7 @@
           '<h1>' + appTitle + '</h1>' +
           '<p class="desc">Enter your email to discover available Hub servers via Hub Center.</p>' +
           '<input id="email" type="email" value="' + escapeHTML(currentEmail) + '" placeholder="name@example.com">' +
+          '<input id="mobile" class="mt" type="tel" placeholder="Mobile number (for Feishu invitation)">' +
           '<input id="hub-url" class="mt" type="url" placeholder="Or enter a private Hub URL directly">' +
           '<button class="btn" id="discover">Discover Hubs</button>' +
           '<div class="status' + (isError ? ' error' : '') + '" id="status">' + (message || '') + '</div>' +
@@ -117,9 +118,11 @@
 
     async function doDiscover() {
       var emailInput = document.getElementById("email");
+      var mobileInput = document.getElementById("mobile");
       var hubInput = document.getElementById("hub-url");
       var status = document.getElementById("status");
       var email = (emailInput.value || "").trim();
+      var mobile = (mobileInput ? mobileInput.value || "" : "").trim();
       var hubURL = normalizeBaseURL(hubInput.value || "");
       if (!email) { status.textContent = "Please enter your email."; status.className = "status error"; emailInput.focus(); return; }
       currentEmail = email;
@@ -128,7 +131,7 @@
         status.textContent = "Connecting to private hub...";
         status.className = "status";
         try {
-          var target = await resolveViaPrivateHub(hubURL, email);
+          var target = await resolveViaPrivateHub(hubURL, email, mobile);
           var url = buildEntryURL(target, email);
           saveLastHub(email, url, hubURL);
           window.location.replace(url);
@@ -182,7 +185,7 @@
       return payload;
     }
 
-    async function resolveViaPrivateHub(hubURL, email) {
+    async function resolveViaPrivateHub(hubURL, email, mobile) {
       var resp = await fetch(hubURL + "/api/entry/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.message || resp.statusText || "Private hub probe failed");
@@ -203,7 +206,7 @@
         var enrollResp = await fetch(hubURL + "/api/enroll/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: email, invitation_code: invCode })
+          body: JSON.stringify({ email: email, mobile: mobile, invitation_code: invCode })
         });
         var enrollData = await enrollResp.json();
         if (!enrollResp.ok) throw new Error(enrollData.message || "Enrollment request failed");

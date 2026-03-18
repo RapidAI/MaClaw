@@ -66,7 +66,7 @@ func newHTTPAPITestServices(t *testing.T) (*auth.IdentityService, *device.Servic
 func issueViewerToken(t *testing.T, identity *auth.IdentityService, email string) (string, *auth.EnrollmentResult) {
 	t.Helper()
 	ctx := context.Background()
-	enroll, err := identity.StartEnrollment(ctx, email, "office-pc", "windows", "", "")
+	enroll, err := identity.StartEnrollment(ctx, email, "office-pc", "windows", "", "", "")
 	if err != nil {
 		t.Fatalf("StartEnrollment: %v", err)
 	}

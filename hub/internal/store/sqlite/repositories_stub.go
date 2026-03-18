@@ -320,10 +320,11 @@ func (r *userRepo) List(ctx context.Context) ([]*store.User, error) {
 func (r *enrollmentRepo) Create(ctx context.Context, item *store.UserEnrollment) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO user_enrollments (id, email, status, note, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO user_enrollments (id, email, mobile, status, note, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		item.ID,
 		item.Email,
+		item.Mobile,
 		item.Status,
 		item.Note,
 		item.CreatedAt.Format(time.RFC3339),
@@ -335,14 +336,14 @@ func (r *enrollmentRepo) Create(ctx context.Context, item *store.UserEnrollment)
 func (r *enrollmentRepo) GetPendingByEmail(ctx context.Context, email string) (*store.UserEnrollment, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, email, status, note, created_at, updated_at
+		`SELECT id, email, mobile, status, note, created_at, updated_at
 		 FROM user_enrollments WHERE email = ? AND status = 'pending'
 		 ORDER BY created_at DESC LIMIT 1`,
 		email,
 	)
 	var item store.UserEnrollment
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.Email, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -354,7 +355,7 @@ func (r *enrollmentRepo) GetPendingByEmail(ctx context.Context, email string) (*
 }
 
 func (r *enrollmentRepo) ListPending(ctx context.Context) ([]*store.UserEnrollment, error) {
-	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, status, note, created_at, updated_at FROM user_enrollments WHERE status = 'pending' ORDER BY created_at ASC`)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, mobile, status, note, created_at, updated_at FROM user_enrollments WHERE status = 'pending' ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +365,7 @@ func (r *enrollmentRepo) ListPending(ctx context.Context) ([]*store.UserEnrollme
 	for rows.Next() {
 		var item store.UserEnrollment
 		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.Email, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		item.CreatedAt = mustParseTime(createdAt)
@@ -375,7 +376,7 @@ func (r *enrollmentRepo) ListPending(ctx context.Context) ([]*store.UserEnrollme
 }
 
 func (r *enrollmentRepo) ListAll(ctx context.Context) ([]*store.UserEnrollment, error) {
-	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, status, note, created_at, updated_at FROM user_enrollments ORDER BY created_at DESC`)
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, mobile, status, note, created_at, updated_at FROM user_enrollments ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +386,7 @@ func (r *enrollmentRepo) ListAll(ctx context.Context) ([]*store.UserEnrollment, 
 	for rows.Next() {
 		var item store.UserEnrollment
 		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.Email, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		item.CreatedAt = mustParseTime(createdAt)
@@ -402,6 +403,11 @@ func (r *enrollmentRepo) Approve(ctx context.Context, id string, updatedAt time.
 
 func (r *enrollmentRepo) Reject(ctx context.Context, id string, updatedAt time.Time) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE user_enrollments SET status = 'rejected', updated_at = ? WHERE id = ?`, updatedAt.Format(time.RFC3339), id)
+	return err
+}
+
+func (r *enrollmentRepo) UpdateMobile(ctx context.Context, id string, mobile string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE user_enrollments SET mobile = ? WHERE id = ?`, mobile, id)
 	return err
 }
 

@@ -83,7 +83,7 @@ func ApproveEnrollmentHandler(identity *auth.IdentityService, feishuNotifier *fe
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Enrollment ID is required")
 			return
 		}
-		user, err := identity.ApproveEnrollment(r.Context(), req.ID)
+		user, enrollment, err := identity.ApproveEnrollment(r.Context(), req.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "APPROVE_FAILED", err.Error())
 			return
@@ -94,10 +94,11 @@ func ApproveEnrollmentHandler(identity *auth.IdentityService, feishuNotifier *fe
 		if feishuNotifier != nil {
 			if ae := feishuNotifier.AutoEnroller(); ae != nil {
 				email := user.Email
+				mobile := enrollment.Mobile
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					if err := ae.AddToFeishuOrg(ctx, email, "", ""); err != nil {
+					if err := ae.AddToFeishuOrg(ctx, email, "", mobile); err != nil {
 						log.Printf("[enroll/approve] feishu auto-enroll failed for %s: %v", email, err)
 					}
 				}()
