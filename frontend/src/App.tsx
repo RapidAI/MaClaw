@@ -3384,7 +3384,7 @@ ${instruction}`;
                     </div>
                 </div>
 
-                <div className={`main-content ${navTab === 'tutorial' || navTab === 'message' || navTab === 'projects' || navTab === 'skills' ? 'elegant-scrollbar' : 'no-scrollbar'} ${navTab === 'settings' || navTab === 'about' ? '' : ''}`} style={{ overflowY: navTab === 'projects' ? 'hidden' : 'auto', paddingBottom: '20px', '--wails-draggable': 'no-drag' } as any}>
+                <div className="main-content elegant-scrollbar" style={{ overflowY: navTab === 'projects' ? 'hidden' : 'auto', paddingBottom: '20px', '--wails-draggable': 'no-drag' } as any}>
                     {navTab === 'message' && (
                         <div style={{
                             width: '100%',

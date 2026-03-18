@@ -179,26 +179,50 @@ body {
     display: none;
 }
 
-.elegant-scrollbar::-webkit-scrollbar {
-    width: 5px;
+/* ── Global custom scrollbar ── */
+*::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
 }
 
-.elegant-scrollbar::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track {
     background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: var(--primary-light);
+}
+
+*::-webkit-scrollbar-thumb:active {
+    background: var(--primary-color);
+}
+
+*::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* Firefox scrollbar */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+
+/* Accent variant — slightly more visible thumb for primary scroll areas */
+.elegant-scrollbar {
+    scrollbar-color: var(--primary-light) transparent;
 }
 
 .elegant-scrollbar::-webkit-scrollbar-thumb {
     background: var(--primary-light);
-    border-radius: 10px;
 }
 
 .elegant-scrollbar::-webkit-scrollbar-thumb:hover {
     background: var(--primary-color);
-}
-
-.elegant-scrollbar {
-    scrollbar-width: thin;
-    scrollbar-color: var(--primary-light) transparent;
 }
 
 .global-action-bar {
@@ -1112,25 +1136,28 @@ body {
     overflow-x: hidden;
     white-space: pre-wrap;
     word-break: break-all;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: auto;
-    scrollbar-color: #555 #1a1a1a;
+    scrollbar-width: thin;
+    scrollbar-color: #444 #1a1a1a;
 }
 
 .terminal-output::-webkit-scrollbar {
-    width: 10px;
+    width: 6px;
 }
 
 .terminal-output::-webkit-scrollbar-track {
     background: #1a1a1a;
+    border-radius: 3px;
 }
 
 .terminal-output::-webkit-scrollbar-thumb {
-    background: #555;
-    border-radius: 5px;
-    border: 2px solid #1a1a1a;
+    background: #444;
+    border-radius: 3px;
 }
 
 .terminal-output::-webkit-scrollbar-thumb:hover {
-    background: #777;
+    background: #666;
+}
+
+.terminal-output::-webkit-scrollbar-thumb:active {
+    background: #888;
 }

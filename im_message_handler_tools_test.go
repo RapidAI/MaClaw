@@ -512,9 +512,8 @@ func TestToolCreateSession_NoProviderBehaviorUnchanged(t *testing.T) {
 }
 
 // TestToolCreateSession_WithProviderPassedThrough verifies that the provider
-// parameter is extracted and passed to the request. Since the app is minimal,
-// session creation will fail, but we verify the error message includes
-// available providers hint when provider is specified.
+// parameter is extracted and resolved via ProviderResolver. When the specified
+// provider doesn't exist, the resolver returns an error before reaching session creation.
 func TestToolCreateSession_WithProviderPassedThrough(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{}}
 
@@ -522,9 +521,9 @@ func TestToolCreateSession_WithProviderPassedThrough(t *testing.T) {
 		"tool":     "claude",
 		"provider": "NonExistentProvider",
 	})
-	// Should fail at session creation.
-	if !contains(result, "创建会话失败") {
-		t.Errorf("expected session creation failure, got: %s", result)
+	// ProviderResolver should catch the invalid provider before session creation.
+	if !contains(result, "不存在") {
+		t.Errorf("expected provider not found error, got: %s", result)
 	}
 }
 
@@ -777,5 +776,421 @@ func TestToolListProviders_ModelIdTruncation(t *testing.T) {
 	}
 	if !contains(result, "...") {
 		t.Errorf("expected '...' after truncated model_id, got: %s", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests for Task 2: ProviderResolver integration in toolCreateSession
+// ---------------------------------------------------------------------------
+
+// TestToolCreateSession_NoProviderUsesDefault verifies that when no provider
+// is specified, the ProviderResolver uses the default provider from ToolConfig.
+func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	// Set up claude with a valid default provider (Original is always valid).
+	cfg.Claude = ToolConfig{
+		CurrentModel: "Original",
+		Models: []ModelConfig{
+			{ModelName: "Original", ModelId: "orig-id", ApiKey: ""},
+			{ModelName: "DeepSeek", ModelId: "ds-id", ApiKey: "sk-test"},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app}
+
+	// No provider specified — should use default (Original).
+	// Will fail at StartRemoteSessionForProject (remote not enabled), but
+	// should NOT fail at provider resolution.
+	result := handler.toolCreateSession(map[string]interface{}{
+		"tool": "claude",
+	})
+	// Should NOT contain provider resolution errors.
+	if contains(result, "无法创建会话") && contains(result, "服务商") {
+		t.Errorf("should not fail at provider resolution, got: %s", result)
+	}
+	// Should fail at session creation (remote disabled), not at provider resolution.
+	if contains(result, "加载配置失败") || contains(result, "获取工具配置失败") {
+		t.Errorf("should not fail at config loading, got: %s", result)
+	}
+}
+
+// TestToolCreateSession_DefaultUnavailableFallbackHint verifies that when the
+// default provider is unavailable, the resolver falls back to the next available
+// provider. Since the test environment has remote mode disabled, the session
+// creation will fail, but the provider resolution should succeed with fallback.
+func TestToolCreateSession_DefaultUnavailableFallbackHint(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	// Set default to a provider with no API key (not "Original").
+	// LoadConfig ensures "Original" is always present and valid.
+	// So fallback chain: BadDefault (invalid) → Original (valid, fallback target).
+	cfg.Claude = ToolConfig{
+		CurrentModel: "BadDefault",
+		Models: []ModelConfig{
+			{ModelName: "BadDefault", ModelId: "bad-id", ApiKey: ""},
+			{ModelName: "Original", ModelId: "orig-id", ApiKey: ""},
+			{ModelName: "DeepSeek", ModelId: "ds-id", ApiKey: "sk-test"},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app}
+
+	result := handler.toolCreateSession(map[string]interface{}{
+		"tool": "claude",
+	})
+	// Provider resolution should succeed (fallback), so the error
+	// should be about session creation, NOT about provider resolution.
+	if contains(result, "无法创建会话") {
+		t.Errorf("provider resolution should succeed via fallback, got: %s", result)
+	}
+
+	// Verify the ProviderResolver directly to confirm fallback behavior.
+	cfg2, _ := app.LoadConfig()
+	toolCfg, _ := remoteToolConfig(cfg2, "claude")
+	resolver := &ProviderResolver{}
+	resolveResult, resolveErr := resolver.Resolve(toolCfg, "")
+	if resolveErr != nil {
+		t.Fatalf("resolver should succeed with fallback, got error: %v", resolveErr)
+	}
+	if !resolveResult.Fallback {
+		t.Error("expected Fallback=true when default provider is unavailable")
+	}
+	if resolveResult.OriginalName != "BadDefault" {
+		t.Errorf("expected OriginalName=BadDefault, got %s", resolveResult.OriginalName)
+	}
+	// Fallback should go to Original (first valid after BadDefault).
+	if resolveResult.Provider.ModelName != "Original" {
+		t.Errorf("expected fallback to Original, got %s", resolveResult.Provider.ModelName)
+	}
+}
+
+// TestToolCreateSession_UserSpecifiedProviderUsed verifies that when the user
+// specifies a valid provider, it is used directly without fallback.
+func TestToolCreateSession_UserSpecifiedProviderUsed(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.Claude = ToolConfig{
+		CurrentModel: "Original",
+		Models: []ModelConfig{
+			{ModelName: "Original", ModelId: "orig-id", ApiKey: ""},
+			{ModelName: "DeepSeek", ModelId: "ds-id", ApiKey: "sk-test"},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app}
+
+	// Specify DeepSeek explicitly — should use it directly.
+	result := handler.toolCreateSession(map[string]interface{}{
+		"tool":     "claude",
+		"provider": "DeepSeek",
+	})
+	// Should NOT contain fallback hint.
+	if contains(result, "服务商已降级") {
+		t.Errorf("should not have fallback hint when provider is explicitly specified, got: %s", result)
+	}
+	// Should NOT fail at provider resolution.
+	if contains(result, "不存在") || contains(result, "未配置 API Key") {
+		t.Errorf("should not fail at provider resolution for valid provider, got: %s", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests for Task 3: create_session project_id parameter
+// ---------------------------------------------------------------------------
+
+// TestBuildToolDefinitions_CreateSessionHasProjectIDParam verifies that the
+// create_session tool definition includes the project_id parameter.
+func TestBuildToolDefinitions_CreateSessionHasProjectIDParam(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := handler.buildToolDefinitions()
+
+	var createSessionDef map[string]interface{}
+	for _, tool := range tools {
+		name := extractToolName(tool)
+		if name == "create_session" {
+			createSessionDef = tool
+			break
+		}
+	}
+	if createSessionDef == nil {
+		t.Fatal("create_session tool not found in buildToolDefinitions")
+	}
+
+	fn, _ := createSessionDef["function"].(map[string]interface{})
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if _, ok := props["project_id"]; !ok {
+		t.Error("create_session tool definition missing 'project_id' parameter")
+	}
+}
+
+// TestToolCreateSession_ProjectIDResolvesSuccessfully verifies that when
+// project_id matches a configured project, its path is used.
+func TestToolCreateSession_ProjectIDResolvesSuccessfully(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.Projects = []ProjectConfig{
+		{Id: "proj-1", Name: "MyProject", Path: "/tmp/my-project"},
+		{Id: "proj-2", Name: "OtherProject", Path: "/tmp/other-project"},
+	}
+	cfg.Claude = ToolConfig{
+		CurrentModel: "Original",
+		Models: []ModelConfig{
+			{ModelName: "Original", ModelId: "orig-id", ApiKey: ""},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app}
+	result := handler.toolCreateSession(map[string]interface{}{
+		"tool":       "claude",
+		"project_id": "proj-1",
+	})
+	// Should resolve project_id to /tmp/my-project.
+	// Session creation will fail (remote mode disabled), but project resolution
+	// should succeed — the error should NOT be about project_id not found.
+	if contains(result, "未找到") {
+		t.Errorf("project_id should resolve successfully, got: %s", result)
+	}
+}
+
+// TestToolCreateSession_ProjectIDNotFound verifies that when project_id
+// doesn't match any configured project, an error with available projects is returned.
+func TestToolCreateSession_ProjectIDNotFound(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.Projects = []ProjectConfig{
+		{Id: "proj-1", Name: "MyProject", Path: "/tmp/my-project"},
+		{Id: "proj-2", Name: "OtherProject", Path: "/tmp/other-project"},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app}
+	result := handler.toolCreateSession(map[string]interface{}{
+		"tool":       "claude",
+		"project_id": "nonexistent-id",
+	})
+	// Should return error with available project list.
+	if !contains(result, "未找到") {
+		t.Errorf("expected not found error, got: %s", result)
+	}
+	if !contains(result, "proj-1") || !contains(result, "proj-2") {
+		t.Errorf("expected available project IDs in error, got: %s", result)
+	}
+}
+
+// TestToolCreateSession_ProjectIDPriorityOverProjectPath verifies that
+// project_id takes priority over project_path when both are provided.
+func TestToolCreateSession_ProjectIDPriorityOverProjectPath(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.Projects = []ProjectConfig{
+		{Id: "proj-1", Name: "MyProject", Path: "/tmp/my-project"},
+	}
+	cfg.Claude = ToolConfig{
+		CurrentModel: "Original",
+		Models: []ModelConfig{
+			{ModelName: "Original", ModelId: "orig-id", ApiKey: ""},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app}
+	// Provide both project_id and project_path — project_id should win.
+	result := handler.toolCreateSession(map[string]interface{}{
+		"tool":         "claude",
+		"project_id":   "proj-1",
+		"project_path": "/tmp/should-be-ignored",
+	})
+	// project_id should take priority — should NOT report project_id not found.
+	if contains(result, "未找到") {
+		t.Errorf("project_id should resolve successfully, got: %s", result)
+	}
+	// The final output should reference the project_id path (/tmp/my-project),
+	// not the project_path (/tmp/should-be-ignored).
+	// Session creation will fail (remote mode disabled), but the error should
+	// NOT contain the ignored project_path.
+	if contains(result, "/tmp/should-be-ignored") {
+		t.Errorf("project_path should be overridden by project_id, got: %s", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests for Task 4: list_projects tool
+// ---------------------------------------------------------------------------
+
+// TestToolListProjects_WithProjects verifies that when projects exist,
+// toolListProjects returns a formatted list with project ID, name, path,
+// and current project marker.
+func TestToolListProjects_WithProjects(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.Projects = []ProjectConfig{
+		{Id: "proj-1", Name: "MyProject", Path: "/path/to/project"},
+		{Id: "proj-2", Name: "OtherProject", Path: "/path/to/other"},
+	}
+	cfg.CurrentProject = "proj-1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app}
+	result := handler.toolListProjects()
+
+	// Should contain header.
+	if !contains(result, "已配置项目列表") {
+		t.Errorf("expected header in result, got: %s", result)
+	}
+	// Should contain both projects.
+	if !contains(result, "proj-1") || !contains(result, "MyProject") || !contains(result, "/path/to/project") {
+		t.Errorf("expected proj-1 details in result, got: %s", result)
+	}
+	if !contains(result, "proj-2") || !contains(result, "OtherProject") || !contains(result, "/path/to/other") {
+		t.Errorf("expected proj-2 details in result, got: %s", result)
+	}
+	// Current project should be marked.
+	if !contains(result, "当前项目") {
+		t.Errorf("expected current project marker, got: %s", result)
+	}
+}
+
+// TestToolListProjects_NoProjects verifies that when no projects are configured,
+// toolListProjects returns a hint message.
+func TestToolListProjects_NoProjects(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.Projects = nil
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app}
+	result := handler.toolListProjects()
+
+	if result != "当前没有已配置的项目。请在桌面端添加项目。" {
+		t.Errorf("expected no projects hint, got: %s", result)
+	}
+}
+
+// TestBuildToolDefinitions_IncludesListProjects verifies that the tool
+// definitions include the list_projects tool.
+func TestBuildToolDefinitions_IncludesListProjects(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := handler.buildToolDefinitions()
+
+	var found bool
+	for _, tool := range tools {
+		name := extractToolName(tool)
+		if name == "list_projects" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("list_projects tool not found in buildToolDefinitions")
+	}
+}
+
+// TestExecuteTool_ListProjectsRouting verifies that executeTool routes
+// list_projects to the correct handler.
+func TestExecuteTool_ListProjectsRouting(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.Projects = nil
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app}
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+
+	result := handler.executeTool("list_projects", "", nil)
+	// Should NOT return "未知工具".
+	if contains(result, "未知工具") {
+		t.Errorf("list_projects should be routed, got: %s", result)
+	}
+	// With no projects, should return hint.
+	if !contains(result, "当前没有已配置的项目") {
+		t.Errorf("expected no projects hint, got: %s", result)
 	}
 }

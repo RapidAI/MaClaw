@@ -27,7 +27,7 @@ const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; contex
     { name: "GLM (智谱)", url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.7", context_length: 180000 },
     { name: "Kimi (月之暗面)", url: "https://api.kimi.com/coding/v1", model: "kimi-k2-thinking", context_length: 128000 },
     { name: "Doubao (豆包)", url: "https://ark.cn-beijing.volces.com/api/coding", model: "doubao-seed-code-preview-latest", context_length: 128000 },
-    { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.1", context_length: 128000 },
+    { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
     { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/v3", model: "glm-5", context_length: 128000 },
     { name: "xAI (Grok)", url: "https://api.x.ai/v1", model: "grok-3", context_length: 131072 },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o", context_length: 128000 },
@@ -285,6 +285,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                 {dlgProviders.map((p, i) => {
                                     const active = dlgSelectedIdx === i;
+                                    const badge: Record<string, string> = { "智谱": "聪明伶俐", "MiniMax": "憨厚老实" };
+                                    const tag = badge[p.name];
                                     return (
                                         <button key={i} onClick={() => dlgSelectProvider(i)} style={{
                                             fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
@@ -292,8 +294,18 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                             color: active ? "#fff" : colors.text,
                                             border: `1px solid ${active ? "#6366f1" : colors.border}`,
                                             borderRadius: 4, transition: "all 0.15s",
+                                            position: "relative" as const,
                                         }}>
                                             {p.name}
+                                            {tag && (
+                                                <span style={{
+                                                    position: "absolute", top: -8, right: -10,
+                                                    fontSize: "0.56rem", lineHeight: 1, padding: "2px 5px",
+                                                    borderRadius: 6, whiteSpace: "nowrap",
+                                                    background: active ? "#f59e0b" : "#6366f1",
+                                                    color: "#fff", fontWeight: 600, pointerEvents: "none",
+                                                }}>{tag}</span>
+                                            )}
                                         </button>
                                     );
                                 })}

@@ -36,6 +36,9 @@ var coreToolNames = map[string]bool{
 }
 
 // builtinToolNames is the complete set of all builtin tool names (core + non-core).
+// When a ToolRouter has a registry, it uses ToolRouter.isBuiltin() instead.
+// This static set is kept as a fallback for tests that create a ToolRouter
+// without a registry.
 var builtinToolNames = map[string]bool{
 	// Core (duplicated here for the isBuiltinToolName check)
 	"list_sessions": true, "create_session": true, "list_providers": true,
@@ -54,12 +57,14 @@ var builtinToolNames = map[string]bool{
 	"create_scheduled_task": true, "list_scheduled_tasks": true,
 	"delete_scheduled_task": true, "update_scheduled_task": true,
 	"search_and_install_skill": true,
+	"switch_llm_provider": true,
 	// Merged tools (optimized)
 	"send_and_observe": true, "control_session": true, "manage_config": true,
 	"query_audit_log": true,
 }
 
 // isBuiltinToolName returns true if the tool name is a known builtin tool.
+// This is the static fallback used when no registry is available.
 func isBuiltinToolName(name string) bool {
 	return builtinToolNames[name]
 }
@@ -76,6 +81,7 @@ func isBuiltinToolName(name string) bool {
 type ToolRouter struct {
 	generator *ToolDefinitionGenerator
 	hubClient *SkillHubClient
+	registry  *ToolRegistry
 }
 
 // NewToolRouter creates a new ToolRouter.
@@ -83,9 +89,53 @@ func NewToolRouter(generator *ToolDefinitionGenerator) *ToolRouter {
 	return &ToolRouter{generator: generator}
 }
 
+// SetRegistry sets the ToolRegistry used for dynamic builtin detection and
+// tag-based scoring. When set, isBuiltinToolName lookups use the registry
+// instead of the static builtinToolNames map.
+func (r *ToolRouter) SetRegistry(reg *ToolRegistry) {
+	r.registry = reg
+}
+
 // SetHubClient sets the SkillHubClient used for recommendation matching.
 func (r *ToolRouter) SetHubClient(client *SkillHubClient) {
 	r.hubClient = client
+}
+
+// isBuiltin checks whether a tool name is a builtin tool. If the router has
+// a registry, it queries the registry (category == builtin or non_code);
+// otherwise it falls back to the static builtinToolNames map.
+func (r *ToolRouter) isBuiltin(name string) bool {
+	if r.registry != nil {
+		if t, ok := r.registry.Get(name); ok {
+			return t.Category == ToolCategoryBuiltin || t.Category == ToolCategoryNonCode
+		}
+		return false
+	}
+	return isBuiltinToolName(name)
+}
+
+// tagsForTool returns the tags for a tool from the registry, or nil if
+// the registry is not set or the tool is not found.
+func (r *ToolRouter) tagsForTool(name string) []string {
+	if r.registry == nil {
+		return nil
+	}
+	if t, ok := r.registry.Get(name); ok {
+		return t.Tags
+	}
+	return nil
+}
+
+// toolTokensWithTags extracts tokens from a tool definition's name,
+// description, and registry tags (if available).
+func (r *ToolRouter) toolTokensWithTags(def map[string]interface{}) []string {
+	name := extractToolName(def)
+	desc := extractToolDescription(def)
+	combined := name + " " + desc
+	if tags := r.tagsForTool(name); len(tags) > 0 {
+		combined += " " + strings.Join(tags, " ")
+	}
+	return tokenize(combined)
 }
 
 // Route selects the most relevant tools for userMessage from allTools.
@@ -128,7 +178,7 @@ func (r *ToolRouter) Route(userMessage string, allTools []map[string]interface{}
 	// Build IDF from all candidate tool documents.
 	allDocs := make([][]string, len(candidates))
 	for i, tool := range candidates {
-		allDocs[i] = toolTokens(tool)
+		allDocs[i] = r.toolTokensWithTags(tool)
 	}
 	idf := computeIDF(allDocs)
 
@@ -156,7 +206,7 @@ func (r *ToolRouter) Route(userMessage string, allTools []map[string]interface{}
 			break
 		}
 		name := extractToolName(candidates[s.index])
-		if !isBuiltinToolName(name) {
+		if !r.isBuiltin(name) {
 			dynamicCount++
 			if dynamicCount > maxDynamicRouted {
 				continue
@@ -195,10 +245,20 @@ func (r *ToolRouter) matchRecommendations(msgTokens []string) map[string]interfa
 
 	for _, rec := range recommendations {
 		recTokens := tokenize(rec.Name + " " + rec.Description)
+		matchCount := 0
 		for _, rt := range recTokens {
 			if _, ok := msgSet[rt]; ok {
-				return searchAndInstallSkillHint()
+				matchCount++
+				if len([]rune(rt)) > 1 {
+					// A multi-char token match is strong enough on its own.
+					return searchAndInstallSkillHint()
+				}
 			}
+		}
+		// Require at least 2 single-char matches to avoid false positives
+		// from single CJK character overlap.
+		if matchCount >= 2 {
+			return searchAndInstallSkillHint()
 		}
 	}
 

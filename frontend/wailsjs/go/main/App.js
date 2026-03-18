@@ -692,3 +692,15 @@ export function ClawNetBrowseNetworkTasks() {
 export function ClawNetPublishTasksToHub() {
   return window['go']['main']['App']['ClawNetPublishTasksToHub']();
 }
+
+export function ClawNetAutoPickerGetStatus() {
+  return window['go']['main']['App']['ClawNetAutoPickerGetStatus']();
+}
+
+export function ClawNetAutoPickerConfigure(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ClawNetAutoPickerConfigure'](arg1, arg2, arg3, arg4);
+}
+
+export function ClawNetAutoPickerTriggerNow() {
+  return window['go']['main']['App']['ClawNetAutoPickerTriggerNow']();
+}

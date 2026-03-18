@@ -25,6 +25,8 @@ type ClawNetClient struct {
 	daemon  *exec.Cmd
 	binPath string
 	running bool
+
+	autoUpdateStop chan struct{} // signals the auto-update goroutine to stop
 }
 
 // ClawNet API response types
@@ -241,6 +243,7 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 
 // StopDaemon gracefully stops the daemon via `clawnet stop`.
 func (c *ClawNetClient) StopDaemon() {
+	c.StopAutoUpdate()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -732,6 +735,135 @@ func (c *ClawNetClient) SelfUpdate() error {
 		return fmt.Errorf("update failed: %w — %s", err, string(out))
 	}
 	return nil
+}
+
+// ---------- Auto-Update ----------
+
+const clawnetAutoUpdateInterval = 24 * time.Hour
+
+// clawnetLastUpdatePath returns the path to the timestamp file.
+func clawnetLastUpdatePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".openclaw", "clawnet", ".last_update")
+}
+
+// readLastUpdateTime reads the last successful update timestamp.
+func readLastUpdateTime() time.Time {
+	p := clawnetLastUpdatePath()
+	if p == "" {
+		return time.Time{}
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// writeLastUpdateTime persists the current time as the last update timestamp.
+func writeLastUpdateTime() {
+	p := clawnetLastUpdatePath()
+	if p == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	_ = os.WriteFile(p, []byte(time.Now().UTC().Format(time.RFC3339)), 0644)
+}
+
+// needsUpdate returns true if more than 24 hours have passed since the last update.
+func needsUpdate() bool {
+	last := readLastUpdateTime()
+	if last.IsZero() {
+		return true
+	}
+	return time.Since(last) > clawnetAutoUpdateInterval
+}
+
+// tryAutoUpdate runs SelfUpdate and records the timestamp on success.
+// Errors are logged but never propagated.
+func (c *ClawNetClient) tryAutoUpdate(logFn func(string)) {
+	if logFn != nil {
+		logFn("ClawNet: auto-update check started")
+	}
+	if err := c.SelfUpdate(); err != nil {
+		if logFn != nil {
+			logFn(fmt.Sprintf("ClawNet: auto-update failed (non-fatal): %v", err))
+		}
+		return
+	}
+	writeLastUpdateTime()
+	if logFn != nil {
+		logFn("ClawNet: auto-update completed successfully")
+	}
+	// SelfUpdate may replace the binary; verify daemon is still alive.
+	if !c.ping() && logFn != nil {
+		logFn("ClawNet: daemon unreachable after update — it may need a manual restart")
+	}
+}
+
+// StartAutoUpdate launches a background goroutine that:
+//  1. Checks on startup if >24h since last update and runs immediately if so.
+//  2. Then ticks every 24h to run SelfUpdate.
+//
+// Idempotent while running. After StopAutoUpdate/StopDaemon it can be
+// started again (e.g. daemon restart).
+func (c *ClawNetClient) StartAutoUpdate(logFn func(string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.autoUpdateStop != nil {
+		// Check if previous goroutine already exited.
+		select {
+		case <-c.autoUpdateStop:
+			// Closed — allow restart below.
+		default:
+			return // still running
+		}
+	}
+	c.autoUpdateStop = make(chan struct{})
+	go c.autoUpdateLoop(logFn, c.autoUpdateStop)
+}
+
+// StopAutoUpdate cancels the background auto-update goroutine.
+func (c *ClawNetClient) StopAutoUpdate() {
+	c.mu.Lock()
+	ch := c.autoUpdateStop
+	c.autoUpdateStop = nil
+	c.mu.Unlock()
+	if ch != nil {
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
+	}
+}
+
+func (c *ClawNetClient) autoUpdateLoop(logFn func(string), stop <-chan struct{}) {
+	// Immediate check on startup.
+	if needsUpdate() {
+		c.tryAutoUpdate(logFn)
+	}
+
+	ticker := time.NewTicker(clawnetAutoUpdateInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if needsUpdate() {
+				c.tryAutoUpdate(logFn)
+			}
+		case <-stop:
+			return
+		}
+	}
 }
 
 // ---------- Knowledge Replies ----------

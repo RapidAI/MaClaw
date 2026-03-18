@@ -79,6 +79,7 @@ type App struct {
 	securityRiskAnalyzer *SecurityRiskAnalyzer
 	contextBridge        *ContextBridge
 	taskOrchestrator2    *TaskOrchestrator2
+	autoTaskPicker       *ClawNetAutoTaskPicker
 }
 
 var OnConfigChanged func(AppConfig)
@@ -315,6 +316,10 @@ func (a *App) initRemoteInfra() {
 		cfg := a.GetMaclawLLMConfig()
 		a.experienceExtractor = NewExperienceExtractor(a, a.skillExecutor, cfg)
 	}
+	// Periodically clean up stale learned/crafted skills on startup.
+	if a.skillExecutor != nil {
+		go a.skillExecutor.CleanupStaleSkills()
+	}
 	if a.orchestrator == nil {
 		a.orchestrator = NewOrchestrator(a, a.remoteSessions, a.sharedContext, a.toolSelector)
 	}
@@ -497,11 +502,30 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 				)
 			}
 
-			resp := handler.HandleIMMessage(IMUserMessage{
-				UserID:   "scheduled_task",
-				Platform: "scheduler",
-				Text:     task.Action,
-			})
+			// Progress callback: relay intermediate status to IM so Hub
+			// doesn't 504 on long-running tasks, and user sees live updates.
+			// Rate-limited to at most once per 30s to avoid spamming IM.
+			var lastProgressAt time.Time
+			onProgress := func(text string) {
+				now := time.Now()
+				if now.Sub(lastProgressAt) < 30*time.Second {
+					return
+				}
+				lastProgressAt = now
+				progressMsg := fmt.Sprintf("⏰ 定时任务「%s」进度:\n%s", task.Name, text)
+				_ = hubClient.SendIMProactiveMessage(progressMsg)
+			}
+
+			// Prepend a hint so the agent knows this is an autonomous task
+			// that must complete in one shot (no user to "continue").
+			actionText := fmt.Sprintf("[自动定时任务 — 请一次性完成，不要等待用户输入]\n%s", task.Action)
+
+			resp := handler.HandleIMMessageWithProgress(IMUserMessage{
+				UserID:        "scheduled_task",
+				Platform:      "scheduler",
+				Text:          actionText,
+				MinIterations: 50, // complex tasks need more rounds
+			}, onProgress)
 			if resp == nil {
 				return "", fmt.Errorf("nil response from agent")
 			}
@@ -639,6 +663,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.clawNetClient != nil {
 		a.clawNetClient.StopDaemon()
+	}
+	if a.autoTaskPicker != nil {
+		a.autoTaskPicker.Stop()
 	}
 	a.platformShutdown()
 }

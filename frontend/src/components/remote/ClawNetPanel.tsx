@@ -16,6 +16,9 @@ import {
     ClawNetGetTransactions,
     ClawNetGetCreditsAudit,
     ClawNetGetLeaderboard,
+    ClawNetAutoPickerGetStatus,
+    ClawNetAutoPickerConfigure,
+    ClawNetAutoPickerTriggerNow,
 } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
 
@@ -53,6 +56,9 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
     const [onlineRestorePwd, setOnlineRestorePwd] = useState("");
     const [onlineBusy, setOnlineBusy] = useState(false);
     const [onlineMsg, setOnlineMsg] = useState("");
+    // Auto task picker
+    const [pickerStatus, setPickerStatus] = useState<any>(null);
+    const [pickerBusy, setPickerBusy] = useState(false);
 
     const zh = lang?.startsWith("zh");
     const enabled = !!config?.clawnet_enabled;
@@ -128,6 +134,20 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         const timer = setInterval(refreshStatus, 15000);
         return () => clearInterval(timer);
     }, [refreshStatus]);
+
+    // Auto-picker status polling & event listener
+    const refreshPickerStatus = useCallback(async () => {
+        try {
+            const res = await ClawNetAutoPickerGetStatus();
+            if (res.ok) setPickerStatus(res);
+        } catch {}
+    }, []);
+
+    useEffect(() => {
+        if (running) refreshPickerStatus();
+        EventsOn("clawnet:auto-picker-changed", refreshPickerStatus);
+        return () => { EventsOff("clawnet:auto-picker-changed"); };
+    }, [running, refreshPickerStatus]);
 
     // Listen for download progress events from backend
     useEffect(() => {
@@ -377,6 +397,75 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                     <span style={{ fontWeight: 600 }}>{credits.balance ?? 0}</span>
                     {credits.local_value && <span style={{ marginLeft: "6px", color: "#a16207", fontSize: "0.72rem" }}>({credits.local_value})</span>}
                     {credits.tier && <span style={{ marginLeft: "10px", color: "#888" }}>{zh ? "等级" : "Tier"}: {credits.tier}</span>}
+                </div>
+            )}
+
+            {/* Auto Task Picker — maClaw auto-earns credits */}
+            {running && (
+                <div style={{ marginBottom: "10px", padding: "10px 14px", background: "#fdf4ff", borderRadius: "8px", border: "1px solid #e9d5ff" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                        <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "#7c3aed" }}>
+                            🤖 {zh ? "自动接单" : "Auto Task Pickup"}
+                        </div>
+                        <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer", fontSize: "0.72rem" }}>
+                            <input
+                                type="checkbox"
+                                checked={!!pickerStatus?.enabled}
+                                disabled={pickerBusy}
+                                onChange={async (e) => {
+                                    setPickerBusy(true);
+                                    try {
+                                        await ClawNetAutoPickerConfigure(e.target.checked, 5, 0, []);
+                                        await refreshPickerStatus();
+                                    } catch {}
+                                    setPickerBusy(false);
+                                }}
+                            />
+                            <span style={{ color: pickerStatus?.enabled ? "#7c3aed" : "#94a3b8" }}>
+                                {pickerStatus?.enabled ? (zh ? "已开启" : "Enabled") : (zh ? "已关闭" : "Disabled")}
+                            </span>
+                        </label>
+                    </div>
+                    <div style={{ fontSize: "0.72rem", color: "#a78bfa", marginBottom: "6px" }}>
+                        {zh
+                            ? "开启后，maClaw 会自动从虾网寻找任务、完成并提交，赚取 🐚 Shell"
+                            : "When enabled, maClaw auto-discovers tasks from ClawNet, completes them, and earns 🐚 Shell"}
+                    </div>
+                    {pickerStatus?.enabled && (
+                        <div style={{ fontSize: "0.72rem", color: "#6d28d9" }}>
+                            <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "4px" }}>
+                                <span>{zh ? "已完成" : "Completed"}: {pickerStatus.completed_count ?? 0}</span>
+                                <span>{zh ? "失败" : "Failed"}: {pickerStatus.failed_count ?? 0}</span>
+                                <span>{zh ? "累计赚取" : "Earned"}: {pickerStatus.total_earned ?? 0} 🐚</span>
+                            </div>
+                            {pickerStatus.active_tasks?.length > 0 && (
+                                <div style={{ marginTop: "4px", padding: "4px 8px", background: "#f5f3ff", borderRadius: "4px" }}>
+                                    {zh ? "正在执行" : "Running"}: {pickerStatus.active_tasks.map((t: any) => t.title).join(", ")}
+                                </div>
+                            )}
+                            {pickerStatus.last_error && (
+                                <div style={{ marginTop: "4px", color: "#dc2626", fontSize: "0.68rem" }}>
+                                    {pickerStatus.last_error}
+                                </div>
+                            )}
+                            <button
+                                onClick={async () => {
+                                    setPickerBusy(true);
+                                    try { await ClawNetAutoPickerTriggerNow(); } catch {}
+                                    setPickerBusy(false);
+                                    setTimeout(refreshPickerStatus, 2000);
+                                }}
+                                disabled={pickerBusy}
+                                style={{
+                                    marginTop: "6px", background: "none", border: "1px solid #e9d5ff",
+                                    borderRadius: "6px", padding: "3px 10px", fontSize: "0.72rem",
+                                    cursor: pickerBusy ? "not-allowed" : "pointer", color: "#7c3aed",
+                                }}
+                            >
+                                {zh ? "立即寻找任务" : "Find Task Now"}
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 

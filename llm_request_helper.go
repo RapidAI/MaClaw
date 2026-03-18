@@ -75,7 +75,7 @@ func doSimpleOpenAIRequest(cfg MaclawLLMConfig, messages []interface{}, client *
 	if len(result.Choices) == 0 {
 		return nil, fmt.Errorf("no response from model")
 	}
-	return &llmSimpleResponse{Content: result.Choices[0].Message.Content}, nil
+	return &llmSimpleResponse{Content: stripThinkingTags(result.Choices[0].Message.Content)}, nil
 }
 
 func doSimpleAnthropicRequest(cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
@@ -151,7 +151,7 @@ func doSimpleAnthropicRequest(cfg MaclawLLMConfig, messages []interface{}, clien
 	}
 	for _, block := range result.Content {
 		if block.Type == "text" && block.Text != "" {
-			return &llmSimpleResponse{Content: block.Text}, nil
+			return &llmSimpleResponse{Content: stripThinkingTags(block.Text)}, nil
 		}
 	}
 	return nil, fmt.Errorf("no text response from model")

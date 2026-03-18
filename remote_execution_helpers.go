@@ -115,6 +115,13 @@ func (rc *ReaderCoordinator) CloseWhenDone() {
 	}()
 }
 
+// Wait blocks until all registered reader goroutines have called Done.
+// This is useful for ensuring all output has been captured before
+// processing the exit status of a process.
+func (rc *ReaderCoordinator) Wait() {
+	rc.wg.Wait()
+}
+
 
 
 // --- Output Result Application ---

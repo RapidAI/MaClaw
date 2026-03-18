@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
     ClawNetListTasks, ClawNetGetCredits,
     ClawNetBidOnTask, ClawNetSubmitTaskResult, ClawNetApproveTask,
@@ -45,7 +45,6 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
     // Create task form
     const [showCreate, setShowCreate] = useState(false);
     const [newTitle, setNewTitle] = useState("");
-    const [newDesc, setNewDesc] = useState("");
     const [newReward, setNewReward] = useState(100);
 
     const zh = lang?.startsWith("zh");
@@ -60,45 +59,36 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                 res = await ClawNetMatchTasks();
             } else if (viewMode === "network") {
                 res = await ClawNetBrowseNetworkTasks();
-                if (res.ok) {
-                    setTasks((res.tasks || []).slice(0, 24));
-                } else {
-                    setTasks([]);
-                    setError(res.error || "Failed to load network tasks");
-                }
-                const c = await ClawNetGetCredits();
-                if (c.ok) setCredits({ balance: c.balance, tier: c.tier });
-                setLoading(false);
-                return;
             } else {
                 res = await ClawNetListTasks("");
             }
+
             if (res.ok) {
-                const localTasks = (res.tasks || []).slice(0, 12);
+                let finalTasks: ClawNetTask[] = (res.tasks || []).slice(0, viewMode === "network" ? 24 : 12);
                 // In "all" mode, also fetch network tasks and merge
                 if (viewMode === "all") {
                     try {
                         const netRes = await ClawNetBrowseNetworkTasks();
                         if (netRes.ok && netRes.tasks?.length) {
-                            const localIds = new Set(localTasks.map((t: ClawNetTask) => t.id));
+                            const localIds = new Set(finalTasks.map((t) => t.id));
                             const netTasks = (netRes.tasks as ClawNetTask[]).filter(t => !localIds.has(t.id));
-                            setTasks([...localTasks, ...netTasks].slice(0, 24));
-                        } else {
-                            setTasks(localTasks);
+                            finalTasks = [...finalTasks, ...netTasks].slice(0, 24);
                         }
-                    } catch {
-                        setTasks(localTasks);
-                    }
-                } else {
-                    setTasks(localTasks);
+                    } catch { /* keep local tasks */ }
                 }
+                setTasks(finalTasks);
             } else {
+                setTasks([]);
                 setError(res.error || "Failed to load tasks");
             }
+
             const c = await ClawNetGetCredits();
             if (c.ok) setCredits({ balance: c.balance, tier: c.tier });
+
             // Publish local tasks to Hub in background
-            ClawNetPublishTasksToHub().catch(() => {});
+            if (viewMode !== "network") {
+                ClawNetPublishTasksToHub().catch(() => {});
+            }
         } catch (e) {
             setError(String(e));
         } finally {
@@ -112,6 +102,13 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         const timer = setInterval(refresh, 30000);
         return () => clearInterval(timer);
     }, [refresh, clawNetRunning]);
+
+    // Cleanup message timer on unmount
+    useEffect(() => {
+        return () => {
+            if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+        };
+    }, []);
 
     const showMsg = (text: string, type: "success" | "info" | "error", ms = 3000) => {
         if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
@@ -150,7 +147,6 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         }
         await doAction("create", () => ClawNetCreateTask(newTitle.trim(), reward));
         setNewTitle("");
-        setNewDesc("");
         setNewReward(100);
         setShowCreate(false);
     };
@@ -169,7 +165,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         );
     }
 
-    const btnStyle = (active?: boolean): React.CSSProperties => ({
+    const btnStyle = useMemo(() => (active?: boolean): React.CSSProperties => ({
         background: active ? "#6366f1" : "none",
         color: active ? "#fff" : "#64748b",
         border: active ? "1px solid #6366f1" : "1px solid #e2e8f0",
@@ -178,9 +174,9 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         fontSize: "0.72rem",
         cursor: "pointer",
         fontWeight: active ? 600 : 400,
-    });
+    }), []);
 
-    const smallBtn = (disabled?: boolean): React.CSSProperties => ({
+    const smallBtn = useMemo(() => (disabled?: boolean): React.CSSProperties => ({
         background: "none",
         border: "1px solid #e2e8f0",
         borderRadius: "4px",
@@ -189,7 +185,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         cursor: disabled ? "not-allowed" : "pointer",
         color: disabled ? "#cbd5e1" : "#6366f1",
         opacity: disabled ? 0.5 : 1,
-    });
+    }), []);
 
     return (
         <div style={{ padding: "0 15px", width: "100%", boxSizing: "border-box" }}>
@@ -251,12 +247,6 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                         placeholder={zh ? "任务标题..." : "Task title..."}
                         style={{ flex: 1, minWidth: "120px", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "4px 8px", fontSize: "0.78rem" }}
                     />
-                    <input
-                        value={newDesc}
-                        onChange={(e) => setNewDesc(e.target.value)}
-                        placeholder={zh ? "描述（可选）" : "Description (optional)"}
-                        style={{ flex: 2, minWidth: "140px", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "4px 8px", fontSize: "0.78rem" }}
-                    />
                     <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                         <span style={{ fontSize: "0.75rem" }}>🐚</span>
                         <input
@@ -283,49 +273,41 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                 </div>
             )}
 
-            {/* Task cards grid */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "10px" }}>
+            {/* Task cards – 2 per row */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
                 {tasks.map((task) => {
                     const sc = STATUS_COLORS[task.status] || STATUS_COLORS.open;
                     return (
                         <div key={task.id} style={{
-                            background: "#fff", border: "1px solid #e2e8f0", borderRadius: "10px",
-                            padding: "12px 14px", display: "flex", flexDirection: "column", gap: "6px",
-                            transition: "box-shadow 0.2s, border-color 0.2s",
+                            background: "#fff", border: "1px solid #e2e8f0", borderRadius: "7px",
+                            padding: "7px 10px", display: "flex", flexDirection: "column", gap: "3px",
+                            transition: "box-shadow 0.15s, border-color 0.15s",
                         }}
-                        onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 2px 12px rgba(99,102,241,0.10)"; e.currentTarget.style.borderColor = "#c7d2fe"; }}
+                        onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 1px 8px rgba(99,102,241,0.10)"; e.currentTarget.style.borderColor = "#c7d2fe"; }}
                         onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "#e2e8f0"; }}
                         >
-                            {/* Title + status */}
-                            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "6px" }}>
-                                <div style={{ fontSize: "0.82rem", fontWeight: 600, color: "#1e293b", lineHeight: 1.3, flex: 1, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                            {/* Row 1: title + status */}
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
+                                <div title={task.title} style={{ fontSize: "0.76rem", fontWeight: 600, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
                                     {task.title}
                                 </div>
-                                <span style={{ fontSize: "0.65rem", fontWeight: 500, background: sc.bg, color: sc.text, padding: "1px 6px", borderRadius: "8px", flexShrink: 0, whiteSpace: "nowrap" }}>
+                                <span style={{ fontSize: "0.6rem", fontWeight: 500, background: sc.bg, color: sc.text, padding: "0px 5px", borderRadius: "6px", flexShrink: 0, whiteSpace: "nowrap", lineHeight: "16px" }}>
                                     {zh ? sc.label_zh : sc.label_en}
                                 </span>
                             </div>
 
                             {task.description && (
-                                <div style={{ fontSize: "0.72rem", color: "#64748b", lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                                <div title={task.description} style={{ fontSize: "0.68rem", color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                     {task.description}
                                 </div>
                             )}
 
-                            {/* Reward + creator */}
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "auto" }}>
-                                <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "#b45309", display: "flex", alignItems: "center", gap: "3px" }}>
+                            {/* Row 2: reward + actions */}
+                            <div style={{ display: "flex", alignItems: "center", gap: "4px", marginTop: "auto" }}>
+                                <span style={{ fontSize: "0.7rem", fontWeight: 600, color: "#b45309" }}>
                                     🐚 {task.reward}
                                 </span>
-                                {task.creator && (
-                                    <span style={{ fontSize: "0.65rem", color: "#94a3b8", fontFamily: "monospace" }}>
-                                        {task.creator.slice(0, 8)}…
-                                    </span>
-                                )}
-                            </div>
-
-                            {/* Action buttons based on status */}
-                            <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "2px" }}>
+                                <span style={{ flex: 1 }} />
                                 {task.status === "open" && (
                                     <button style={smallBtn(!!actionBusy)} disabled={!!actionBusy}
                                         onClick={() => doAction("bid-" + task.id, () => ClawNetBidOnTask(task.id, 0, zh ? "我可以做" : "I can do this"))}>
@@ -342,24 +324,20 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                                     <>
                                         <button style={smallBtn(!!actionBusy)} disabled={!!actionBusy}
                                             onClick={() => doAction("approve-" + task.id, () => ClawNetApproveTask(task.id))}>
-                                            {zh ? "通过" : "Approve"}
+                                            ✓
                                         </button>
                                         <button style={smallBtn(!!actionBusy)} disabled={!!actionBusy}
                                             onClick={() => doAction("reject-" + task.id, () => ClawNetRejectTask(task.id))}>
-                                            {zh ? "拒绝" : "Reject"}
+                                            ✗
                                         </button>
                                     </>
                                 )}
                                 {(task.status === "open" || task.status === "assigned") && (
                                     <button style={smallBtn(!!actionBusy)} disabled={!!actionBusy}
                                         onClick={() => doAction("cancel-" + task.id, () => ClawNetCancelTask(task.id))}>
-                                        {zh ? "取消" : "Cancel"}
+                                        ✗
                                     </button>
                                 )}
-                            </div>
-
-                            <div style={{ fontSize: "0.6rem", color: "#cbd5e1", fontFamily: "monospace" }}>
-                                {task.id.slice(0, 12)}
                             </div>
                         </div>
                     );

@@ -582,8 +582,18 @@ func (n *Notifier) onSessionSummary(event session.Event) {
 		return
 	}
 
-	// Dedup: skip if we already pushed the same status+task for this session.
-	hash := fmt.Sprintf("%s|%s|%v|%s", s.Status, s.CurrentTask, s.WaitingForUser, s.SuggestedAction)
+	// Dedup: collapse notifications whose meaningful content hasn't changed.
+	// For transient statuses (waiting_input, busy, running) we exclude Status
+	// from the hash so that mere status flips with identical task/progress/action
+	// are suppressed — these transitions are noisy in the Feishu channel.
+	// For significant statuses (error, completed, exited, …) we include Status
+	// so that a genuine state change always produces a notification.
+	statusInHash := s.Status
+	switch s.Status {
+	case "waiting_input", "busy", "running":
+		statusInHash = "_transient"
+	}
+	hash := fmt.Sprintf("%s|%s|%s|%v|%s", statusInHash, s.CurrentTask, s.ProgressSummary, s.WaitingForUser, s.SuggestedAction)
 	if n.isDuplicate(event.SessionID, "summary", hash) {
 		return
 	}

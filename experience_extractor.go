@@ -43,7 +43,8 @@ type extractedStep struct {
 
 // Extract analyses the session history via LLM and registers any discovered
 // patterns as NL Skills.  It silently returns nil when the LLM is not
-// configured or the session has no meaningful output.
+// configured, the session has no meaningful output, or the session exited
+// with a non-zero code (failed sessions are poor pattern candidates).
 func (e *ExperienceExtractor) Extract(session *RemoteSession) error {
 	// Skip when LLM is not configured.
 	if !e.isConfigured() {
@@ -51,6 +52,24 @@ func (e *ExperienceExtractor) Extract(session *RemoteSession) error {
 	}
 
 	if session == nil {
+		return nil
+	}
+
+	// Skip sessions that exited with errors — they're unlikely to contain
+	// good reusable patterns.
+	session.mu.RLock()
+	var exitCodeVal int
+	hasExitCode := session.ExitCode != nil
+	if hasExitCode {
+		exitCodeVal = *session.ExitCode
+	}
+	eventCount := len(session.Events)
+	session.mu.RUnlock()
+	if hasExitCode && exitCodeVal != 0 {
+		return nil
+	}
+	// Skip sessions with no events — too little signal to extract from.
+	if eventCount == 0 {
 		return nil
 	}
 
@@ -82,7 +101,8 @@ func (e *ExperienceExtractor) isConfigured() bool {
 }
 
 // buildSessionHistory constructs a textual representation of the session
-// for the LLM prompt, combining raw output lines and important events.
+// for the LLM prompt, combining important events and a filtered subset of
+// raw output. Events are prioritized over raw output for better signal.
 func (e *ExperienceExtractor) buildSessionHistory(session *RemoteSession) string {
 	session.mu.RLock()
 	rawLines := make([]string, len(session.RawOutputLines))
@@ -92,13 +112,23 @@ func (e *ExperienceExtractor) buildSessionHistory(session *RemoteSession) string
 	tool := session.Tool
 	title := session.Title
 	projectPath := session.ProjectPath
+	var exitCode *int
+	if session.ExitCode != nil {
+		cp := *session.ExitCode
+		exitCode = &cp
+	}
 	session.mu.RUnlock()
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Tool: %s\n", tool))
 	sb.WriteString(fmt.Sprintf("Title: %s\n", title))
-	sb.WriteString(fmt.Sprintf("Project: %s\n\n", projectPath))
+	sb.WriteString(fmt.Sprintf("Project: %s\n", projectPath))
+	if exitCode != nil {
+		sb.WriteString(fmt.Sprintf("Exit Code: %d\n", *exitCode))
+	}
+	sb.WriteString("\n")
 
+	// Events are the most valuable signal for pattern extraction.
 	if len(events) > 0 {
 		sb.WriteString("=== Important Events ===\n")
 		for _, ev := range events {
@@ -107,15 +137,26 @@ func (e *ExperienceExtractor) buildSessionHistory(session *RemoteSession) string
 		sb.WriteString("\n")
 	}
 
+	// For raw output, only include the last 100 lines (reduced from 200)
+	// and skip empty/whitespace-only lines to reduce noise.
 	if len(rawLines) > 0 {
-		sb.WriteString("=== Session Output (last 200 lines) ===\n")
+		sb.WriteString("=== Session Output (filtered) ===\n")
 		start := 0
-		if len(rawLines) > 200 {
-			start = len(rawLines) - 200
+		if len(rawLines) > 100 {
+			start = len(rawLines) - 100
 		}
+		lineCount := 0
 		for _, line := range rawLines[start:] {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
 			sb.WriteString(line)
 			sb.WriteString("\n")
+			lineCount++
+		}
+		if lineCount == 0 {
+			sb.WriteString("(no meaningful output)\n")
 		}
 	}
 
@@ -126,14 +167,26 @@ func (e *ExperienceExtractor) buildSessionHistory(session *RemoteSession) string
 // response into a list of extracted patterns.
 func (e *ExperienceExtractor) callLLM(history string) ([]extractedPattern, error) {
 	systemPrompt := `You are an expert at analysing coding session histories and extracting reusable operation patterns.
-Given a session history, identify reusable patterns and return them as a JSON array.
-Each pattern must have:
-- "name": a short, descriptive kebab-case name
-- "description": what the pattern does
-- "triggers": list of keywords or phrases that would trigger this pattern
-- "steps": list of steps, each with "action" (create_session/send_input/call_mcp_tool), "params" (key-value map), and optional "on_error" ("stop" or "continue")
+Given a session history, identify patterns that are GENUINELY reusable — not one-off tasks.
 
-Return ONLY a JSON array of patterns. If no reusable patterns are found, return an empty array [].`
+A good reusable pattern:
+- Solves a recurring problem (e.g. "deploy to staging", "run test suite with coverage")
+- Has clear, parameterizable steps (not hardcoded to one specific file/project)
+- Would save time if automated
+
+A bad pattern (DO NOT extract):
+- One-off debugging sessions with no repeatable structure
+- Simple single-command operations (e.g. just "git pull")
+- Patterns too specific to one project's file paths
+
+Return a JSON array. Each pattern must have:
+- "name": a short, descriptive kebab-case name (e.g. "deploy-staging", "run-coverage-tests")
+- "description": what the pattern does and when to use it
+- "triggers": list of 3-5 keywords or phrases that would trigger this pattern
+- "steps": list of steps, each with "action" (create_session/send_input/call_mcp_tool/bash), "params" (key-value map), and optional "on_error" ("stop" or "continue")
+
+Return ONLY a JSON array. If no genuinely reusable patterns are found, return [].
+Quality over quantity — only extract patterns you're confident are reusable.`
 
 	userPrompt := fmt.Sprintf("Analyse the following session history and extract reusable operation patterns:\n\n%s", history)
 
@@ -176,10 +229,23 @@ func stripCodeFences(s string) string {
 
 // registerPattern converts an extracted pattern to an NLSkillEntry and
 // registers or updates it via the SkillExecutor.
+// Quality assessment: compares step count, description detail, and trigger
+// coverage to decide whether to update an existing skill.
 func (e *ExperienceExtractor) registerPattern(p extractedPattern, session *RemoteSession) error {
 	name := strings.TrimSpace(p.Name)
 	if name == "" || len(p.Steps) == 0 {
 		return nil // skip invalid patterns
+	}
+
+	// Validate step actions — reject patterns with unknown actions.
+	validActions := map[string]bool{
+		"create_session": true, "send_input": true,
+		"call_mcp_tool": true, "bash": true, "skill_md": true,
+	}
+	for _, s := range p.Steps {
+		if !validActions[s.Action] {
+			return nil // skip patterns with unknown actions
+		}
 	}
 
 	steps := make([]NLSkillStep, 0, len(p.Steps))
@@ -213,16 +279,47 @@ func (e *ExperienceExtractor) registerPattern(p extractedPattern, session *Remot
 	// Check if a skill with the same name already exists.
 	existing := e.findSkillByName(name)
 	if existing != nil {
-		// Only update if the new pattern has more steps (more detailed).
-		if len(steps) > len(existing.Steps) {
-			entry.CreatedAt = existing.CreatedAt // preserve original creation time
-			return e.skillExecutor.Update(entry)
+		// Quality comparison: new pattern must be meaningfully better.
+		if !e.isPatternBetter(p, existing) {
+			return nil
 		}
-		// Existing skill is equally or more detailed; skip.
-		return nil
+		entry.CreatedAt = existing.CreatedAt // preserve original creation time
+		entry.UsageCount = existing.UsageCount
+		entry.SuccessCount = existing.SuccessCount
+		entry.LastUsedAt = existing.LastUsedAt
+		return e.skillExecutor.Update(entry)
 	}
 
 	return e.skillExecutor.Register(entry)
+}
+
+// isPatternBetter returns true if the new pattern is meaningfully better
+// than the existing skill. Considers step count, description detail, and
+// trigger keyword coverage.
+func (e *ExperienceExtractor) isPatternBetter(newP extractedPattern, existing *NLSkillEntry) bool {
+	score := 0
+
+	// More steps = more detailed workflow.
+	if len(newP.Steps) > len(existing.Steps) {
+		score += 2
+	}
+
+	// Longer description = more context.
+	if len(newP.Description) > len(existing.Description)+20 {
+		score++
+	}
+
+	// More trigger keywords = better discoverability.
+	if len(newP.Triggers) > len(existing.Triggers) {
+		score++
+	}
+
+	// If existing skill has a poor success rate, prefer the new pattern.
+	if existing.UsageCount >= 3 && existing.SuccessCount*2 < existing.UsageCount {
+		score += 2
+	}
+
+	return score >= 2
 }
 
 // findSkillByName looks up an existing skill by name.

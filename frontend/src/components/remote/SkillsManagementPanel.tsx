@@ -27,6 +27,12 @@ interface NLSkillDefinition {
     source?: string;
     hub_skill_id?: string;
     hub_version?: string;
+    trust_level?: string;
+    usage_count?: number;
+    success_count?: number;
+    success_rate?: number;
+    last_used_at?: string;
+    last_error?: string;
 }
 
 interface HubSkillUpdateInfo {
@@ -408,6 +414,7 @@ export function SkillsManagementPanel({ translate }: Props) {
                                         <th style={thStyle}>名称</th>
                                         <th style={thStyle}>描述</th>
                                         <th style={thStyle}>触发短语</th>
+                                        <th style={thStyle}>使用统计</th>
                                         <th style={thStyle}>状态</th>
                                         <th style={{ ...thStyle, width: "100px" }}>操作</th>
                                     </tr>
@@ -423,6 +430,15 @@ export function SkillsManagementPanel({ translate }: Props) {
                                                         <span key={i} style={tagStyle}>{t}</span>
                                                     ))}
                                                 </div>
+                                            </td>
+                                            <td style={tdStyle}>
+                                                {(s.usage_count ?? 0) > 0 ? (
+                                                    <span style={{ fontSize: "0.72rem", color: "#5a6577" }}>
+                                                        {s.usage_count}次 / {Math.round((s.success_rate ?? 0) * 100)}%
+                                                    </span>
+                                                ) : (
+                                                    <span style={{ fontSize: "0.72rem", color: "#b0b8c4" }}>未使用</span>
+                                                )}
                                             </td>
                                             <td style={tdStyle}>
                                                 <span style={{ ...statusBadgeStyle, ...(s.status === "active" ? activeBadge : disabledBadge) }}>

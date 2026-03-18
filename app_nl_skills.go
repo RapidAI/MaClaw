@@ -22,11 +22,16 @@ type NLSkillEntry struct {
 	Steps         []NLSkillStep `json:"steps"`
 	Status        string        `json:"status"` // "active", "disabled"
 	CreatedAt     string        `json:"created_at"`
-	Source        string        `json:"source"`         // "manual" | "learned" | "hub"
+	Source        string        `json:"source"`         // "manual" | "learned" | "hub" | "crafted"
 	SourceProject string        `json:"source_project"` // originating project path
 	HubSkillID    string        `json:"hub_skill_id,omitempty"`
 	HubVersion    string        `json:"hub_version,omitempty"`
 	TrustLevel    string        `json:"trust_level,omitempty"`
+	// Usage tracking fields for skill quality assessment.
+	UsageCount   int    `json:"usage_count"`              // total execution count
+	SuccessCount int    `json:"success_count"`            // successful execution count
+	LastUsedAt   string `json:"last_used_at,omitempty"`   // RFC3339 timestamp of last execution
+	LastError    string `json:"last_error,omitempty"`     // last execution error message
 }
 
 // NLSkillStep represents a single action within an NL Skill.
@@ -49,6 +54,11 @@ type NLSkillDefinition struct {
 	HubSkillID    string        `json:"hub_skill_id,omitempty"`
 	HubVersion    string        `json:"hub_version,omitempty"`
 	TrustLevel    string        `json:"trust_level,omitempty"`
+	UsageCount    int           `json:"usage_count"`
+	SuccessCount  int           `json:"success_count"`
+	SuccessRate   float64       `json:"success_rate"` // computed: SuccessCount / UsageCount
+	LastUsedAt    *time.Time    `json:"last_used_at,omitempty"`
+	LastError     string        `json:"last_error,omitempty"`
 }
 
 // SkillExecutor manages and executes locally-defined NL Skills.
@@ -117,6 +127,9 @@ func (e *SkillExecutor) Register(entry NLSkillEntry) error {
 }
 
 // Update modifies an existing Skill definition.
+// Usage tracking fields (UsageCount, SuccessCount, LastUsedAt, LastError)
+// are preserved from the caller if non-zero, allowing the experience
+// extractor to carry forward stats when replacing a pattern.
 func (e *SkillExecutor) Update(entry NLSkillEntry) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -128,6 +141,14 @@ func (e *SkillExecutor) Update(entry NLSkillEntry) error {
 			skills[i].Triggers = entry.Triggers
 			skills[i].Steps = entry.Steps
 			skills[i].Status = entry.Status
+			// Preserve usage stats from caller if provided (experience extractor
+			// carries forward existing stats); otherwise keep what's on disk.
+			if entry.UsageCount > 0 {
+				skills[i].UsageCount = entry.UsageCount
+				skills[i].SuccessCount = entry.SuccessCount
+				skills[i].LastUsedAt = entry.LastUsedAt
+				skills[i].LastError = entry.LastError
+			}
 			return e.saveSkills(skills)
 		}
 	}
@@ -239,9 +260,20 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			HubSkillID:    s.HubSkillID,
 			HubVersion:    s.HubVersion,
 			TrustLevel:    s.TrustLevel,
+			UsageCount:    s.UsageCount,
+			SuccessCount:  s.SuccessCount,
+			LastError:     s.LastError,
+		}
+		if s.UsageCount > 0 {
+			d.SuccessRate = float64(s.SuccessCount) / float64(s.UsageCount)
 		}
 		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
 			d.CreatedAt = t
+		}
+		if s.LastUsedAt != "" {
+			if t, err := time.Parse(time.RFC3339, s.LastUsedAt); err == nil {
+				d.LastUsedAt = &t
+			}
 		}
 		defs = append(defs, d)
 	}
@@ -250,6 +282,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 
 // Execute runs a Skill by name. Steps are executed sequentially; if a step
 // fails and OnError is "stop" (default), execution halts.
+// Usage statistics (count, success rate, last error) are updated after execution.
 func (e *SkillExecutor) Execute(name string) (string, error) {
 	e.mu.RLock()
 	var target *NLSkillEntry
@@ -267,6 +300,7 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 	}
 
 	var results []string
+	var execErr error
 	for i, step := range target.Steps {
 		result, err := e.executeStep(step)
 		if err != nil {
@@ -276,11 +310,36 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 				continue
 			}
 			results = append(results, errMsg)
-			return strings.Join(results, "\n"), fmt.Errorf("skill execution stopped at step %d: %w", i+1, err)
+			execErr = fmt.Errorf("skill execution stopped at step %d: %w", i+1, err)
+			break
 		}
 		results = append(results, result)
 	}
-	return strings.Join(results, "\n"), nil
+
+	// Update usage statistics under write lock.
+	e.mu.Lock()
+	skills := e.loadSkills()
+	for i, s := range skills {
+		if s.Name == name {
+			skills[i].UsageCount++
+			skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
+			if execErr == nil {
+				skills[i].SuccessCount++
+				skills[i].LastError = ""
+			} else {
+				skills[i].LastError = execErr.Error()
+			}
+			_ = e.saveSkills(skills)
+			break
+		}
+	}
+	e.mu.Unlock()
+
+	output := strings.Join(results, "\n")
+	if execErr != nil {
+		return output, execErr
+	}
+	return output, nil
 }
 
 // executeStep runs a single skill step.
@@ -452,6 +511,59 @@ func (a *App) ImportNLSkillZip() (string, error) {
 	}
 
 	return entry.Name, nil
+}
+
+// CleanupStaleSkills disables learned/crafted Skills that have been unused
+// for over 30 days and have a success rate below 50% (or were never used).
+// Returns the names of disabled Skills.
+func (e *SkillExecutor) CleanupStaleSkills() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	skills := e.loadSkills()
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	var disabled []string
+
+	for i, s := range skills {
+		if s.Status != "active" {
+			continue
+		}
+		// Only auto-cleanup learned and crafted skills; manual and hub skills are user-managed.
+		if s.Source != "learned" && s.Source != "crafted" {
+			continue
+		}
+		// Never used and older than 30 days.
+		if s.UsageCount == 0 {
+			created, err := time.Parse(time.RFC3339, s.CreatedAt)
+			if err == nil && created.Before(cutoff) {
+				skills[i].Status = "disabled"
+				disabled = append(disabled, s.Name)
+			}
+			continue
+		}
+		// Used but low success rate and not recently used.
+		successRate := float64(s.SuccessCount) / float64(s.UsageCount)
+		if successRate < 0.5 {
+			lastUsed, err := time.Parse(time.RFC3339, s.LastUsedAt)
+			if err == nil && lastUsed.Before(cutoff) {
+				skills[i].Status = "disabled"
+				disabled = append(disabled, s.Name)
+			}
+		}
+	}
+
+	if len(disabled) > 0 {
+		_ = e.saveSkills(skills)
+	}
+	return disabled
+}
+
+// CleanupStaleNLSkills disables stale learned/crafted Skills (Wails binding).
+func (a *App) CleanupStaleNLSkills() []string {
+	if a.skillExecutor == nil {
+		return nil
+	}
+	return a.skillExecutor.CleanupStaleSkills()
 }
 
 // executeBashStep runs a shell command as a skill step.

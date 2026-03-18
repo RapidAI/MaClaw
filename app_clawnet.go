@@ -33,6 +33,8 @@ func (a *App) ClawNetEnsureDaemon() map[string]interface{} {
 	if err := c.EnsureDaemon(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
+	// Start background auto-update (24h cycle, immediate if stale).
+	c.StartAutoUpdate(func(msg string) { a.log(msg) })
 	return map[string]interface{}{"ok": true}
 }
 
@@ -242,6 +244,8 @@ func (a *App) ClawNetEnsureDaemonWithDownload() map[string]interface{} {
 	if err := c.EnsureDaemonWithProgress(emitter); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
+	// Start background auto-update (24h cycle, immediate if stale).
+	c.StartAutoUpdate(func(msg string) { a.log(msg) })
 	return map[string]interface{}{"ok": true}
 }
 
@@ -986,4 +990,127 @@ func (a *App) ClawNetPublishTasksToHub() map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
+}
+
+// ---------------------------------------------------------------------------
+// Auto Task Picker — maClaw automatically picks up ClawNet tasks for credits
+// ---------------------------------------------------------------------------
+
+// ClawNetAutoPickerGetStatus returns the current auto-task-picker status.
+func (a *App) ClawNetAutoPickerGetStatus() map[string]interface{} {
+	if a.autoTaskPicker == nil {
+		return map[string]interface{}{
+			"ok":      true,
+			"enabled": false,
+			"running": false,
+		}
+	}
+	status := a.autoTaskPicker.GetStatus()
+	status["ok"] = true
+	return status
+}
+
+// ClawNetAutoPickerConfigure enables/disables and configures the auto-task-picker.
+func (a *App) ClawNetAutoPickerConfigure(enabled bool, pollMinutes int, minReward float64, tags []string) map[string]interface{} {
+	a.ensureAutoTaskPicker()
+	if a.autoTaskPicker == nil {
+		return map[string]interface{}{"ok": false, "error": "auto-task-picker not initialized"}
+	}
+	a.autoTaskPicker.Configure(enabled, pollMinutes, minReward, tags)
+
+	if enabled {
+		a.autoTaskPicker.Start()
+		if ShowNotification != nil {
+			ShowNotification("🦐 虾网自动接单", "已开启自动接单模式，maClaw 将自动寻找并完成任务赚取 🐚", 1)
+		}
+	} else {
+		a.autoTaskPicker.Stop()
+	}
+
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetAutoPickerTriggerNow forces an immediate task poll (for testing/manual trigger).
+func (a *App) ClawNetAutoPickerTriggerNow() map[string]interface{} {
+	a.ensureAutoTaskPicker()
+	if a.autoTaskPicker == nil {
+		return map[string]interface{}{"ok": false, "error": "auto-task-picker not initialized"}
+	}
+	go a.autoTaskPicker.pollAndPickTask()
+	return map[string]interface{}{"ok": true}
+}
+
+// ensureAutoTaskPicker lazily creates and wires the auto-task-picker.
+// Thread-safe: uses the App-level clawNetClient as a serialization point
+// (initClawNet already serializes via its own mutex).
+func (a *App) ensureAutoTaskPicker() {
+	if a.autoTaskPicker != nil {
+		return
+	}
+	c := a.initClawNet()
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return
+	}
+
+	picker := NewClawNetAutoTaskPicker(c, cfg.RemoteHubURL)
+
+	// Wire the executor: send the task to the agent via the IM handler,
+	// similar to how scheduled tasks work.
+	picker.SetExecutor(func(taskTitle, taskDescription string) (string, error) {
+		a.ensureRemoteInfra()
+		hubClient := a.hubClient()
+		if hubClient == nil {
+			return "", fmt.Errorf("hub client not available")
+		}
+
+		// Prepend a hint so the agent knows this is an autonomous ClawNet task.
+		actionText := fmt.Sprintf("[虾网自动接单任务 — 请一次性完成，不要等待用户输入]\n任务: %s\n\n%s", taskTitle, taskDescription)
+
+		resp := hubClient.imHandler.HandleIMMessageWithProgress(IMUserMessage{
+			UserID:        "clawnet_auto_task",
+			Platform:      "clawnet",
+			Text:          actionText,
+			MinIterations: 30,
+		}, func(text string) {
+			// Progress callback — send to IM so user can see live updates.
+			progressMsg := fmt.Sprintf("🦐 虾网任务「%s」进度:\n%s", taskTitle, text)
+			_ = hubClient.SendIMProactiveMessage(progressMsg)
+		})
+
+		if resp == nil {
+			return "", fmt.Errorf("nil response from agent")
+		}
+
+		// Check for agent-level errors (same pattern as scheduled tasks).
+		if resp.Error != "" {
+			return resp.Text, fmt.Errorf("%s", resp.Error)
+		}
+
+		// Notify user of completion.
+		resultText := resp.Text
+		if resultText != "" {
+			proactiveMsg := fmt.Sprintf("🦐 虾网任务「%s」已完成:\n\n%s", taskTitle, resultText)
+			_ = hubClient.SendIMProactiveMessage(proactiveMsg)
+		}
+
+		return resultText, nil
+	})
+
+	// Wire onChange to emit Wails event for frontend reactivity.
+	picker.SetOnChange(func() {
+		if a.ctx != nil {
+			wailsrt.EventsEmit(a.ctx, "clawnet:auto-picker-changed")
+		}
+	})
+
+	a.autoTaskPicker = picker
+}
+
+// hubClient returns the current RemoteHubClient if available.
+func (a *App) hubClient() *RemoteHubClient {
+	if a.remoteSessions == nil {
+		return nil
+	}
+	return a.remoteSessions.GetHubClient()
 }

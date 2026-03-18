@@ -318,3 +318,8 @@ export function ClawNetOnlineRestoreKey(arg1:string):Promise<any>;
 // ClawNet Hub-relayed task discovery
 export function ClawNetBrowseNetworkTasks():Promise<any>;
 export function ClawNetPublishTasksToHub():Promise<any>;
+
+// ClawNet Auto Task Picker
+export function ClawNetAutoPickerGetStatus():Promise<any>;
+export function ClawNetAutoPickerConfigure(arg1:boolean, arg2:number, arg3:number, arg4:Array<string>):Promise<any>;
+export function ClawNetAutoPickerTriggerNow():Promise<any>;

@@ -44,6 +44,11 @@ func (m *RemoteSessionManager) SetHubClient(client *RemoteHubClient) {
 	m.hubClient = client
 }
 
+// GetHubClient returns the current RemoteHubClient, if set.
+func (m *RemoteSessionManager) GetHubClient() *RemoteHubClient {
+	return m.hubClient
+}
+
 // executionStrategyForMode returns the correct ExecutionStrategy for the
 // given provider execution mode. All current providers use SDK or headless
 // protocols; the PTY mode constant is retained only for backward compat.
@@ -1124,9 +1129,41 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	s.Summary.Status = string(s.Status)
 	s.Summary.UpdatedAt = now.Unix()
 	s.Summary.WaitingForUser = false
+
+	// When the session exits very quickly (within 10 seconds of creation),
+	// it usually means the tool binary failed to start properly (bad config,
+	// missing dependency, auth error, etc.).  Capture the last few lines of
+	// output so the error reason is visible in the summary and relayed to
+	// the IM user, who otherwise only sees a generic "exit code 1" message.
+	quickExit := now.Sub(s.CreatedAt) < 10*time.Second
+	var stderrHint string
+	if quickExit && len(s.RawOutputLines) > 0 {
+		tail := s.RawOutputLines
+		if len(tail) > 5 {
+			tail = tail[len(tail)-5:]
+		}
+		var meaningful []string
+		for _, line := range tail {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				meaningful = append(meaningful, trimmed)
+			}
+		}
+		if len(meaningful) > 0 {
+			stderrHint = strings.Join(meaningful, "; ")
+			// Cap at 200 chars to keep the summary concise.
+			if len(stderrHint) > 200 {
+				stderrHint = stderrHint[:200] + "..."
+			}
+		}
+	}
+
 	if exit.Err != nil {
 		s.Summary.Severity = "error"
 		s.Summary.LastResult = exit.Err.Error()
+		if stderrHint != "" {
+			s.Summary.LastResult = stderrHint
+		}
 		s.Summary.ProgressSummary = "Session terminated with an execution error"
 		s.Summary.SuggestedAction = "Review the error output and retry"
 	} else {
@@ -1135,22 +1172,42 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 			s.Summary.LastResult = fmt.Sprintf("Session exited with code %d", *exit.Code)
 			if *exit.Code != 0 {
 				s.Summary.Severity = "warn"
+				if stderrHint != "" {
+					s.Summary.LastResult += " — " + stderrHint
+				}
+				s.Summary.SuggestedAction = "Check tool installation and configuration, then retry"
 			}
 		} else {
 			s.Summary.LastResult = "Session exited"
 		}
-		s.Summary.ProgressSummary = "Session is no longer running"
-		s.Summary.SuggestedAction = "Start a new session when ready"
+		if s.Summary.SuggestedAction == "" {
+			s.Summary.ProgressSummary = "Session is no longer running"
+			s.Summary.SuggestedAction = "Start a new session when ready"
+		}
 	}
 	closedEvent := buildSessionClosedEvent(s, exit)
 	s.Events = appendRecentEvents(s.Events, closedEvent, maxRecentImportantEvents)
 	summarySnap := s.Summary
+	exitStatus := s.Status
+	var exitCodeVal *int
+	if s.ExitCode != nil {
+		cp := *s.ExitCode
+		exitCodeVal = &cp
+	}
 	s.mu.Unlock()
 
 	if m.hubClient != nil {
 		_ = m.hubClient.SendSessionSummary(summarySnap)
 		_ = m.hubClient.SendImportantEvent(closedEvent)
 		_ = m.hubClient.SendSessionClosed(s)
+	}
+	// Trigger experience extraction for successfully completed sessions
+	// (exited with code 0). Failed sessions are poor candidates for
+	// reusable patterns.
+	if exitStatus == SessionExited && exitCodeVal != nil && *exitCodeVal == 0 && m.app.experienceExtractor != nil {
+		go func() {
+			_ = m.app.experienceExtractor.Extract(s)
+		}()
 	}
 	if s.workspaceRelease != nil {
 		s.workspaceRelease()

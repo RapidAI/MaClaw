@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -24,9 +25,10 @@ import (
 
 // IMUserMessage is the payload of an "im.user_message" from Hub.
 type IMUserMessage struct {
-	UserID   string `json:"user_id"`
-	Platform string `json:"platform"`
-	Text     string `json:"text"`
+	UserID        string `json:"user_id"`
+	Platform      string `json:"platform"`
+	Text          string `json:"text"`
+	MinIterations int    `json:"min_iterations,omitempty"` // floor for agent loop iterations (used by scheduled tasks)
 }
 
 // IMAgentResponse is the structured reply sent back to Hub.
@@ -400,6 +402,22 @@ func truncateToolResultForTool(toolName, s string) string {
 	}
 }
 
+// thinkTagPattern matches <think>...</think> blocks (including multiline)
+// produced by reasoning models (DeepSeek, Kimi, QwQ, etc.) that should not
+// be shown to end users. Also handles unclosed <think> tags (e.g. when
+// output is truncated by max_tokens).
+var thinkTagPattern = regexp.MustCompile(`(?si)<think>.*?</think>|<think>.*$`)
+
+// stripThinkingTags removes <think>...</think> blocks from LLM output and
+// trims any leading whitespace left behind.
+func stripThinkingTags(s string) string {
+	if !strings.Contains(s, "<think>") {
+		return s
+	}
+	cleaned := thinkTagPattern.ReplaceAllString(s, "")
+	return strings.TrimSpace(cleaned)
+}
+
 // ---------------------------------------------------------------------------
 // IMMessageHandler
 // ---------------------------------------------------------------------------
@@ -511,6 +529,11 @@ func (h *IMMessageHandler) SetToolRouter(router *ToolRouter) {
 	h.toolsMu.Lock()
 	defer h.toolsMu.Unlock()
 	h.toolRouter = router
+	// Wire the registry into the router so it can dynamically resolve
+	// builtin tool names and use tags for TF-IDF scoring.
+	if router != nil && h.registry != nil {
+		router.SetRegistry(h.registry)
+	}
 }
 
 // SetContextResolver configures the session context resolver for auto-detecting
@@ -710,7 +733,7 @@ func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProg
 	} else {
 		systemPrompt = h.buildSystemPrompt()
 	}
-	return h.runAgentLoop(msg.UserID, systemPrompt, history, msg.Text, onProgress)
+	return h.runAgentLoop(msg.UserID, systemPrompt, history, msg.Text, onProgress, msg.MinIterations)
 }
 
 // handleExitCommand terminates all active sessions, resets conversation
@@ -1128,7 +1151,7 @@ type anthropicContentBlock struct {
 // Agentic Loop — multi-round tool calling
 // ---------------------------------------------------------------------------
 
-func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []conversationEntry, userText string, onProgress ProgressCallback) (result *IMAgentResponse) {
+func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []conversationEntry, userText string, onProgress ProgressCallback, minIterations int) (result *IMAgentResponse) {
 	// panic recovery — 防止工具执行异常导致 goroutine 崩溃
 	defer func() {
 		if r := recover(); r != nil {
@@ -1165,11 +1188,23 @@ func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []c
 	if effectiveMax <= 0 {
 		effectiveMax = maxAgentIterationsCap
 	}
+	// Apply minimum iterations floor (e.g. scheduled tasks need more rounds).
+	if minIterations > 0 && effectiveMax < minIterations {
+		effectiveMax = minIterations
+		if effectiveMax > maxAgentIterationsCap {
+			effectiveMax = maxAgentIterationsCap
+		}
+	}
 
 	for iteration := 0; ; iteration++ {
 		// Check dynamic override from set_max_iterations tool each iteration.
 		if h.loopMaxOverride > 0 {
-			effectiveMax = h.loopMaxOverride
+			override := h.loopMaxOverride
+			// Never let a dynamic override drop below the caller's floor.
+			if minIterations > 0 && override < minIterations {
+				override = minIterations
+			}
+			effectiveMax = override
 		}
 		if iteration >= effectiveMax {
 			break
@@ -1223,16 +1258,17 @@ func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []c
 				if skillName != "" && err == nil {
 					finalText := fmt.Sprintf("✅ 已自动安装并执行 Skill「%s」\n%s", skillName, result)
 					h.memory.save(userID, trimHistory(history))
-					return &IMAgentResponse{Text: finalText}
+					return &IMAgentResponse{Text: stripThinkingTags(finalText)}
 				}
 			}
 			h.memory.save(userID, trimHistory(history))
-			return &IMAgentResponse{Text: choice.Message.Content}
+			return &IMAgentResponse{Text: stripThinkingTags(choice.Message.Content)}
 		}
 
 		// Execute tool calls and feed results back.
 		var pendingImageKey string
 		var pendingFileData, pendingFileName, pendingFileMimeType string
+		screenshotAlreadySent := false
 		for _, tc := range choice.Message.ToolCalls {
 			sendProgress(fmt.Sprintf("⚙️ 正在执行工具: %s", tc.Function.Name))
 			result := h.executeTool(tc.Function.Name, tc.Function.Arguments, onProgress)
@@ -1243,6 +1279,14 @@ func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []c
 			if strings.HasPrefix(result, "[screenshot_base64]") {
 				pendingImageKey = strings.TrimPrefix(result, "[screenshot_base64]")
 				toolContent = "截图已成功捕获，将作为图片发送给用户。"
+			}
+
+			// Intercept session-based screenshot: image was already pushed
+			// via session.image WebSocket channel, so we just need to stop
+			// the agent loop — no image data to carry in the response.
+			if result == "[screenshot_sent]" {
+				screenshotAlreadySent = true
+				toolContent = "截图已成功捕获并发送给用户。"
 			}
 
 			// Intercept file send results: extract base64 file data
@@ -1279,6 +1323,13 @@ func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []c
 				Text:     "",
 				ImageKey: pendingImageKey,
 			}
+		}
+
+		// If screenshot was already delivered via session.image channel,
+		// stop the loop immediately — no further agent reasoning needed.
+		if screenshotAlreadySent {
+			h.memory.save(userID, trimHistory(history))
+			return &IMAgentResponse{Text: "📷 截图已发送"}
 		}
 
 		// If a file was prepared, return it immediately for IM delivery.
@@ -1342,6 +1393,7 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 - 截屏直接调用 screenshot，无需活跃会话也能截取本机桌面
 - 用 send_file 通过 IM 通道直接发送文件给用户
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
+- 创建会话时可用 project_id 参数指定预设项目，或用 list_projects 查看可用项目列表
 
 `)
 	b.WriteString("## 当前设备状态\n")
@@ -1394,7 +1446,11 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 			b.WriteString("\n## 已注册 Skill\n")
 			for _, s := range skills {
 				if s.Status == "active" {
-					b.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
+					b.WriteString(fmt.Sprintf("- %s: %s", s.Name, s.Description))
+					if s.UsageCount > 0 {
+						b.WriteString(fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, s.SuccessRate*100))
+					}
+					b.WriteString("\n")
 				}
 			}
 		}
@@ -1529,12 +1585,14 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"tool":         map[string]string{"type": "string", "description": "工具名称，如 claude, codex, cursor, gemini, opencode"},
 				"project_path": map[string]string{"type": "string", "description": "项目路径（可选）"},
+				"project_id":   map[string]string{"type": "string", "description": "预设项目 ID（可选，与 project_path 二选一）"},
 				"provider":     map[string]string{"type": "string", "description": "服务商名称（可选，如 Original, DeepSeek, 百度千帆）。不指定则使用桌面端当前选中的服务商"},
 			}, []string{"tool"}),
 		toolDef("list_providers", "列出指定编程工具的所有可用服务商（已过滤未配置的空服务商）",
 			map[string]interface{}{
 				"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, gemini"},
 			}, []string{"tool"}),
+		toolDef("list_projects", "列出已配置的项目列表，包含项目 ID、名称和路径", nil, nil),
 		toolDef("send_input", "向指定会话发送文本输入。发送后可用 get_session_output 观察结果。",
 			map[string]interface{}{
 				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
@@ -1846,6 +1904,7 @@ func (h *IMMessageHandler) toolListSessions() string {
 func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string {
 	tool, _ := args["tool"].(string)
 	projectPath, _ := args["project_path"].(string)
+	projectID, _ := args["project_id"].(string)
 	provider, _ := args["provider"].(string)
 
 	var hints []string
@@ -1860,6 +1919,33 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 	}
 	if tool == "" {
 		return "缺少 tool 参数，且无法自动推荐工具"
+	}
+
+	// Resolve project_id to project path (takes priority over project_path).
+	cfg, cfgErr := h.app.LoadConfig()
+	if cfgErr != nil {
+		return fmt.Sprintf("加载配置失败: %s", cfgErr.Error())
+	}
+	if projectID != "" {
+		var found bool
+		for _, p := range cfg.Projects {
+			if p.Id == projectID {
+				projectPath = p.Path
+				found = true
+				hints = append(hints, fmt.Sprintf("📁 通过项目 ID 解析: %s → %s", projectID, p.Path))
+				break
+			}
+		}
+		if !found {
+			var available []string
+			for _, p := range cfg.Projects {
+				available = append(available, fmt.Sprintf("%s(%s)", p.Id, p.Name))
+			}
+			if len(available) == 0 {
+				return fmt.Sprintf("项目 ID %q 未找到，当前没有已配置的项目", projectID)
+			}
+			return fmt.Sprintf("项目 ID %q 未找到，可用项目: %s", projectID, strings.Join(available, ", "))
+		}
 	}
 
 	// Smart project detection when project_path is empty.
@@ -1886,29 +1972,37 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		if result.AllPassed {
 			hints = append(hints, "✅ 环境预检全部通过")
 		}
+		// Block session creation when the tool binary is missing — launching
+		// a process that doesn't exist always exits immediately with code 1,
+		// wasting a session slot and confusing the user with a cryptic error.
+		if !result.ToolReady {
+			return strings.Join(hints, "\n") + "\n❌ 工具未安装，无法创建会话。请先在桌面端安装 " + tool + " 后重试。"
+		}
 	}
 
+	// ProviderResolver integration: resolve provider before starting session.
+	toolCfg, tcErr := remoteToolConfig(cfg, tool)
+	if tcErr != nil {
+		return fmt.Sprintf("获取工具配置失败: %s", tcErr.Error())
+	}
+
+	resolver := &ProviderResolver{}
+	resolveResult, resolveErr := resolver.Resolve(toolCfg, provider)
+	if resolveErr != nil {
+		errMsg := fmt.Sprintf("❌ 无法创建会话：%s\n请在桌面端为 %s 配置至少一个有效的服务商。", resolveErr.Error(), tool)
+		return errMsg
+	}
+	if resolveResult.Fallback {
+		hints = append(hints, fmt.Sprintf("⚡ 服务商已降级: %s → %s", resolveResult.OriginalName, resolveResult.Provider.ModelName))
+	}
+	resolvedProvider := resolveResult.Provider.ModelName
+
 	view, err := h.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-		Tool: tool, ProjectPath: projectPath, Provider: provider,
+		Tool: tool, ProjectPath: projectPath, Provider: resolvedProvider,
 	})
 	if err != nil {
-		errMsg := fmt.Sprintf("创建会话失败: %s", err.Error())
-		if provider != "" {
-			cfg, cfgErr := h.app.LoadConfig()
-			if cfgErr == nil {
-				toolCfg, tcErr := remoteToolConfig(cfg, tool)
-				if tcErr == nil {
-					valid := validProviders(toolCfg)
-					if len(valid) > 0 {
-						var names []string
-						for _, m := range valid {
-							names = append(names, m.ModelName)
-						}
-						errMsg += fmt.Sprintf("\n可用服务商: %s", strings.Join(names, ", "))
-					}
-				}
-			}
-		}
+		errMsg := fmt.Sprintf("❌ 创建会话失败: %s", err.Error())
+		errMsg += fmt.Sprintf("\n💡 修复建议:\n- 检查 %s 是否已安装并可正常运行\n- 确认项目路径 %s 存在且可访问\n- 使用 list_providers 查看可用服务商配置", tool, projectPath)
 		return errMsg
 	}
 
@@ -1926,7 +2020,9 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		b.WriteString(hint)
 		b.WriteString("\n")
 	}
-	b.WriteString(fmt.Sprintf("会话已创建: ID=%s 工具=%s 标题=%s\n⚠️ 你必须立即调用 get_session_output(session_id=%q) 确认会话是否正常启动，不要直接告诉用户已完成。", view.ID, view.Tool, view.Title, view.ID))
+	b.WriteString(fmt.Sprintf("✅ 会话已创建 [%s]\n", view.ID))
+	b.WriteString(fmt.Sprintf("🔧 工具: %s | 📦 服务商: %s | 📁 项目: %s\n", view.Tool, resolvedProvider, projectPath))
+	b.WriteString(fmt.Sprintf("⚠️ 你必须立即调用 get_session_output(session_id=%q) 确认会话是否正常启动，不要直接告诉用户已完成。", view.ID))
 	return b.String()
 }
 
@@ -1959,6 +2055,26 @@ func (h *IMMessageHandler) toolListProviders(args map[string]interface{}) string
 			modelId = modelId[:20] + "..."
 		}
 		b.WriteString(fmt.Sprintf("  - %s (model_id=%s)%s\n", m.ModelName, modelId, isDefault))
+	}
+	return b.String()
+}
+
+func (h *IMMessageHandler) toolListProjects() string {
+	cfg, err := h.app.LoadConfig()
+	if err != nil {
+		return fmt.Sprintf("加载配置失败: %s", err.Error())
+	}
+	if len(cfg.Projects) == 0 {
+		return "当前没有已配置的项目。请在桌面端添加项目。"
+	}
+	var b strings.Builder
+	b.WriteString("📋 已配置项目列表:\n")
+	for i, p := range cfg.Projects {
+		current := ""
+		if p.Id == cfg.CurrentProject {
+			current = " ⭐ 当前项目"
+		}
+		b.WriteString(fmt.Sprintf("%d. [%s] %s - %s%s\n", i+1, p.Id, p.Name, p.Path, current))
 	}
 	return b.String()
 }
@@ -2237,7 +2353,9 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	if err := h.manager.CaptureScreenshot(sessionID); err != nil {
 		return fmt.Sprintf("截图失败: %s", err.Error())
 	}
-	return fmt.Sprintf("已请求截图。⚠️ 你必须立即调用 get_session_events(session_id=%q) 确认截图是否成功发送，不要直接告诉用户已完成。", sessionID)
+	// 截图已通过 session.image 通道直接发送给用户，
+	// 返回特殊标记让 runAgentLoop 立即终止，避免 Agent 继续推理导致重复发图。
+	return "[screenshot_sent]"
 }
 
 func (h *IMMessageHandler) toolListMCPTools() string {
@@ -2324,6 +2442,9 @@ func (h *IMMessageHandler) toolListSkills() string {
 			line := fmt.Sprintf("- %s [%s]: %s", s.Name, s.Status, s.Description)
 			if s.Source == "hub" {
 				line += fmt.Sprintf(" (来源: Hub, trust: %s)", s.TrustLevel)
+			}
+			if s.UsageCount > 0 {
+				line += fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, s.SuccessRate*100)
 			}
 			b.WriteString(line + "\n")
 		}
@@ -3187,6 +3308,79 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 		return fmt.Sprintf("✅ 已将最大轮数调整为 %d（已持久化，原因: %s）", limit, reason)
 	}
 	return fmt.Sprintf("✅ 已将最大轮数调整为 %d（已持久化）", limit)
+}
+
+// ---------------------------------------------------------------------------
+// LLM provider switch tool
+// ---------------------------------------------------------------------------
+
+func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) string {
+	providerName := stringVal(args, "provider")
+	if providerName == "" {
+		// No provider specified — list available providers and current selection.
+		info := h.app.GetMaclawLLMProviders()
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("当前 LLM 服务商: %s\n可用服务商:\n", info.Current))
+		for _, p := range info.Providers {
+			if p.URL == "" && p.Key == "" && p.Model == "" {
+				continue // skip unconfigured custom slots
+			}
+			marker := ""
+			if p.Name == info.Current {
+				marker = " [当前]"
+			}
+			b.WriteString(fmt.Sprintf("  - %s (model=%s)%s\n", p.Name, p.Model, marker))
+		}
+		return b.String()
+	}
+
+	info := h.app.GetMaclawLLMProviders()
+
+	// Collect only configured providers for matching.
+	var configured []MaclawLLMProvider
+	for _, p := range info.Providers {
+		if p.URL != "" || p.Key != "" || p.Model != "" {
+			configured = append(configured, p)
+		}
+	}
+
+	// Match: exact (case-insensitive) first, then substring fallback.
+	needle := strings.ToLower(strings.TrimSpace(providerName))
+	var match *MaclawLLMProvider
+	for i := range configured {
+		if strings.ToLower(configured[i].Name) == needle {
+			match = &configured[i]
+			break
+		}
+	}
+	if match == nil {
+		// Fuzzy: check if provider name contains the needle (not the reverse,
+		// to avoid short provider names matching arbitrary long input).
+		for i := range configured {
+			lower := strings.ToLower(configured[i].Name)
+			if strings.Contains(lower, needle) {
+				match = &configured[i]
+				break
+			}
+		}
+	}
+
+	if match == nil {
+		var names []string
+		for _, p := range configured {
+			names = append(names, p.Name)
+		}
+		return fmt.Sprintf("未找到服务商 %q，可用: %s", providerName, strings.Join(names, ", "))
+	}
+
+	if match.Name == info.Current {
+		return fmt.Sprintf("当前已经是 %s，无需切换", match.Name)
+	}
+
+	if err := h.app.SaveMaclawLLMProviders(info.Providers, match.Name); err != nil {
+		return fmt.Sprintf("切换失败: %s", err.Error())
+	}
+	return fmt.Sprintf("✅ 已将 LLM 服务商切换为 %s (model=%s)", match.Name, match.Model)
 }
 
 // ---------------------------------------------------------------------------

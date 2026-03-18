@@ -337,10 +337,31 @@ func (h *SDKExecutionHandle) waitProcess() {
 	defer close(h.exitCh)
 
 	err := h.cmd.Wait()
+
+	// Wait for readStdout and readStderr goroutines to finish so that
+	// all output (including error messages on stderr) is captured before
+	// the exit signal is sent.  Without this, fast-exiting processes
+	// (e.g. exit code 1 due to missing config) may lose their error
+	// output, making it impossible for the user to diagnose the failure.
+	h.readerRC.Wait()
+
 	var codePtr *int
 	if h.cmd.ProcessState != nil {
 		code := h.cmd.ProcessState.ExitCode()
 		codePtr = &code
+	}
+
+	// Distinguish between a real execution error (e.g. signal, crash)
+	// and a normal non-zero exit code.  Go's exec package returns an
+	// *exec.ExitError for any non-zero exit, but that is not necessarily
+	// an unexpected failure — the tool may simply have rejected its
+	// arguments or encountered a configuration issue.  By clearing err
+	// when we have a valid exit code, runExitLoop will set the status to
+	// SessionExited (with a "warn" severity for non-zero codes) instead
+	// of SessionError, which better reflects the situation and avoids
+	// alarming "execution error" messages.
+	if err != nil && codePtr != nil {
+		err = nil
 	}
 
 	h.exitCh <- PTYExit{

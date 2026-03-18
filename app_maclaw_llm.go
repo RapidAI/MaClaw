@@ -35,6 +35,7 @@ type MaclawLLMConfig struct {
 func defaultMaclawLLMProviders() []MaclawLLMProvider {
 	return []MaclawLLMProvider{
 		{Name: "智谱", URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000},
+		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000},
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true},
 		{Name: "Custom2", URL: "", Model: "", IsCustom: true},
 	}

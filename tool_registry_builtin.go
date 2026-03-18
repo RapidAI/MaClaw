@@ -55,9 +55,15 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		map[string]interface{}{
 			"tool":         map[string]string{"type": "string", "description": "工具名称，如 claude, codex, cursor, gemini, opencode"},
 			"project_path": map[string]string{"type": "string", "description": "项目路径（可选）"},
+			"project_id":   map[string]string{"type": "string", "description": "预设项目 ID（可选，与 project_path 二选一）"},
 			"provider":     map[string]string{"type": "string", "description": "服务商名称（可选，如 Original, DeepSeek, 百度千帆）。不指定则使用桌面端当前选中的服务商"},
 		}, []string{"tool"},
 		func(args map[string]interface{}) string { return h.toolCreateSession(args) })
+
+	reg("list_projects", "列出已配置的项目列表，包含项目 ID、名称和路径",
+		ToolCategoryBuiltin, []string{"project", "list"},
+		nil, nil,
+		func(args map[string]interface{}) string { return h.toolListProjects() })
 
 	reg("list_providers", "列出指定编程工具的所有可用服务商（已过滤未配置的空服务商）",
 		ToolCategoryBuiltin, []string{"provider", "list", "model"},
@@ -367,6 +373,14 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"json_data": map[string]string{"type": "string", "description": "要导入的配置 JSON 字符串"},
 		}, []string{"json_data"},
 		func(args map[string]interface{}) string { return h.toolImportConfig(args) })
+
+	// --- LLM provider switch ---
+	reg("switch_llm_provider", "换脑子：查看或切换 MaClaw 自身使用的 LLM 服务商。当用户说'换智谱'、'换minimax'、'用智谱想一下'、'换个模型'时切换；当用户问'现在用的什么模型'、'当前脑子是啥'、'你现在用的哪个服务商'时查询。不传 provider 返回当前服务商和可选列表；传入名称则立即切换。",
+		ToolCategoryBuiltin, []string{"llm", "provider", "switch", "model", "brain"},
+		map[string]interface{}{
+			"provider": map[string]string{"type": "string", "description": "服务商名称，如 智谱、MiniMax、Custom1。支持模糊匹配，不区分大小写。不传则列出所有可用服务商。"},
+		}, nil,
+		func(args map[string]interface{}) string { return h.toolSwitchLLMProvider(args) })
 
 	// --- Agent self-management ---
 	reg("set_max_iterations", fmt.Sprintf("调整最大推理轮数。设置后会持久化保存，后续对话也会生效。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。上限不超过 %d。", maxAgentIterationsCap),
