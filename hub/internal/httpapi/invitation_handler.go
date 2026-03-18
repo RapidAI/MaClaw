@@ -152,6 +152,27 @@ func ExportInvitationCodesHandler(svc *invitation.Service) http.HandlerFunc {
 	}
 }
 
+func UnbindInvitationCodeHandler(svc *invitation.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if req.ID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
+			return
+		}
+		if err := svc.UnbindCode(r.Context(), req.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "UNBIND_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
 func toInvitationCodeResponse(c *store.InvitationCode) invitationCodeResponse {
 	resp := invitationCodeResponse{
 		ID:           c.ID,

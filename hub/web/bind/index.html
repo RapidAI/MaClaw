@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaClaw 绑定管理</title>
+  <style>
+    :root{--bg:#f0f5ff;--panel:#fff;--text:#1a2b42;--muted:#6b7f99;--primary:#2c6fca;--ok:#1f8f6a;--danger:#bf5648;--line:rgba(37,84,140,.15);--radius:14px;--shadow:0 12px 32px rgba(37,84,140,.1)}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{min-height:100vh;background:linear-gradient(180deg,#eef5ff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;display:flex;align-items:center;justify-content:center;padding:24px}
+    .container{width:min(520px,100%);background:var(--panel);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}
+    .header{padding:28px 28px 20px;background:linear-gradient(135deg,#d4e4f7 0%,#a8c8e8 100%);text-align:center}
+    .header h1{font-size:24px;color:#123456;margin-bottom:4px}.header p{color:rgba(18,52,86,.7);font-size:14px}
+    .tabs{display:flex;border-bottom:1px solid var(--line)}.tabs button{flex:1;padding:14px 0;background:none;border:none;font:inherit;font-size:14px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;transition:all .2s}
+    .tabs button.active{color:var(--primary);border-bottom-color:var(--primary)}
+    .tabs button:hover{color:var(--primary);background:rgba(44,111,202,.04)}
+    .panel{display:none;padding:24px}.panel.active{display:block}
+    label{display:block;margin-bottom:6px;font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.03em}
+    input{width:100%;height:44px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);font:inherit;background:#fff;color:var(--text);transition:border-color .2s,box-shadow .2s}
+    input:focus{outline:none;border-color:rgba(44,111,202,.5);box-shadow:0 0 0 3px rgba(44,111,202,.1)}
+    .field{margin-bottom:16px}
+    .btn{width:100%;height:44px;border:none;border-radius:var(--radius);font:inherit;font-weight:700;cursor:pointer;transition:transform .15s,box-shadow .15s}
+    .btn:hover{transform:translateY(-1px)}.btn:active{transform:translateY(0)}
+    .btn-primary{background:linear-gradient(135deg,#2c6fca,#558fd7);color:#fff;box-shadow:0 8px 20px rgba(44,111,202,.25)}
+    .btn-danger{background:#fff1ee;color:var(--danger);border:1px solid rgba(199,90,74,.2)}
+    .btn-secondary{background:#eef3fb;color:#234f87}
+    .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+    .result{margin-top:16px;padding:16px;border-radius:var(--radius);font-size:13px;line-height:1.7;word-break:break-all}
+    .result.success{background:rgba(31,143,106,.08);border:1px solid rgba(31,143,106,.2);color:var(--ok)}
+    .result.error{background:rgba(199,90,74,.08);border:1px solid rgba(199,90,74,.2);color:var(--danger)}
+    .result.info{background:rgba(44,111,202,.06);border:1px solid rgba(44,111,202,.15);color:var(--primary)}
+    .code-row{display:flex;gap:10px;align-items:flex-end}
+    .code-row .field{flex:1;margin-bottom:0}
+    .code-row .btn{width:auto;min-width:110px;flex-shrink:0;height:44px;font-size:13px}
+    .channel-select{display:flex;gap:8px;margin-bottom:16px}
+    .channel-select button{flex:1;padding:10px;border-radius:10px;border:1px solid var(--line);background:#fff;font:inherit;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;transition:all .2s}
+    .channel-select button.active{background:rgba(44,111,202,.08);border-color:rgba(44,111,202,.3);color:var(--primary)}
+    .hidden{display:none!important}
+    .info-grid{display:grid;gap:8px}.info-row{display:flex;gap:8px}.info-label{min-width:80px;color:var(--muted);font-size:12px;font-weight:700}.info-value{font-size:13px}
+    .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700}
+    .badge-ok{background:rgba(31,143,106,.12);color:var(--ok)}.badge-warn{background:rgba(185,130,25,.12);color:#b98219}
+    .countdown{font-size:12px;color:var(--muted);margin-left:4px}
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🔗 MaClaw 绑定管理</h1>
+    <p>绑定、查询或解绑您的设备</p>
+  </div>
+  <div class="tabs">
+    <button class="active" onclick="switchTab('bind')">绑定设备</button>
+    <button onclick="switchTab('query')">查询绑定</button>
+    <button onclick="switchTab('unbind')">解除绑定</button>
+  </div>
+
+  <!-- Tab 1: Bind -->
+  <div id="tab-bind" class="panel active">
+    <div class="field"><label>邮箱</label><input id="bindEmail" type="email" placeholder="your@email.com"></div>
+    <div class="field"><label>邀请码</label><input id="bindCode" type="text" placeholder="输入邀请码"></div>
+    <div class="field"><label>手机号（选填，用于飞书自动入组）</label><input id="bindMobile" type="text" placeholder="+86..."></div>
+    <button class="btn btn-primary" onclick="doBind()">绑定</button>
+    <div id="bindResult" class="result hidden"></div>
+  </div>
+
+  <!-- Tab 2: Query -->
+  <div id="tab-query" class="panel">
+    <div class="field"><label>邮箱</label><input id="queryEmail" type="email" placeholder="your@email.com"></div>
+    <button class="btn btn-secondary" onclick="doQuery()">查询</button>
+    <div id="queryResult" class="result hidden"></div>
+  </div>
+
+  <!-- Tab 3: Unbind -->
+  <div id="tab-unbind" class="panel">
+    <div class="field"><label>邮箱</label><input id="unbindEmail" type="email" placeholder="your@email.com"></div>
+    <label>发送验证码渠道</label>
+    <div class="channel-select">
+      <button class="active" onclick="selectChannel(this,'email')">📧 邮箱</button>
+      <button onclick="selectChannel(this,'feishu')">💬 飞书</button>
+      <button onclick="selectChannel(this,'both')">📧+💬 两者</button>
+    </div>
+    <div class="code-row">
+      <div class="field"><label>验证码</label><input id="unbindCode" type="text" placeholder="6位验证码" maxlength="6"></div>
+      <button id="sendCodeBtn" class="btn btn-secondary" onclick="doSendCode()">发送验证码</button>
+    </div>
+    <div style="height:16px"></div>
+    <button class="btn btn-danger" onclick="doUnbind()">确认解绑</button>
+    <div id="unbindResult" class="result hidden"></div>
+  </div>
+</div>
+
+<script>
+const API = location.origin;
+let selectedChannel = 'email';
+let countdownTimer = null;
+
+function switchTab(name) {
+  document.querySelectorAll('.tabs button').forEach((b,i) => {
+    b.classList.toggle('active', b.textContent.includes(
+      name === 'bind' ? '绑定设备' : name === 'query' ? '查询' : '解除'
+    ));
+  });
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+function selectChannel(btn, ch) {
+  selectedChannel = ch;
+  btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function showResult(id, msg, type) {
+  const el = document.getElementById(id);
+  el.className = 'result ' + type;
+  el.innerHTML = msg;
+  el.classList.remove('hidden');
+}
+
+async function api(path, body) {
+  const resp = await fetch(API + path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  return resp.json();
+}
+
+async function doBind() {
+  const email = document.getElementById('bindEmail').value.trim();
+  const code = document.getElementById('bindCode').value.trim();
+  const mobile = document.getElementById('bindMobile').value.trim();
+  if (!email) return showResult('bindResult', '请输入邮箱', 'error');
+
+  const data = await api('/api/enroll/start', {
+    email, invitation_code: code, mobile,
+    machine_name: 'WebBind', platform: 'web'
+  });
+
+  if (data.status === 'approved' || data.status === 'already_enrolled') {
+    let html = '<strong>✅ 绑定成功</strong><br>';
+    if (data.email) html += '邮箱: ' + data.email + '<br>';
+    if (data.sn) html += 'SN: ' + data.sn + '<br>';
+    if (data.machine_id) html += '设备ID: ' + data.machine_id + '<br>';
+    showResult('bindResult', html, 'success');
+  } else if (data.status === 'pending_approval') {
+    showResult('bindResult', '⏳ 已提交，等待管理员审批', 'info');
+  } else {
+    showResult('bindResult', '❌ ' + (data.message || data.code || '绑定失败'), 'error');
+  }
+}
+
+async function doQuery() {
+  const email = document.getElementById('queryEmail').value.trim();
+  if (!email) return showResult('queryResult', '请输入邮箱', 'error');
+
+  const data = await api('/api/bind/query', { email });
+
+  if (data.bound) {
+    let html = '<div class="info-grid">';
+    html += '<div class="info-row"><span class="info-label">状态</span><span class="info-value"><span class="badge badge-ok">已绑定</span></span></div>';
+    html += '<div class="info-row"><span class="info-label">邮箱</span><span class="info-value">' + data.email + '</span></div>';
+    html += '<div class="info-row"><span class="info-label">SN</span><span class="info-value">' + data.sn + '</span></div>';
+    html += '<div class="info-row"><span class="info-label">用户状态</span><span class="info-value">' + data.status + '</span></div>';
+    html += '<div class="info-row"><span class="info-label">注册时间</span><span class="info-value">' + new Date(data.created_at).toLocaleString() + '</span></div>';
+    html += '</div>';
+    showResult('queryResult', html, 'info');
+  } else {
+    showResult('queryResult', '该邮箱尚未绑定', 'info');
+  }
+}
+
+async function doSendCode() {
+  const email = document.getElementById('unbindEmail').value.trim();
+  if (!email) return showResult('unbindResult', '请输入邮箱', 'error');
+
+  const btn = document.getElementById('sendCodeBtn');
+  btn.disabled = true;
+  let sec = 60;
+  btn.textContent = sec + 's';
+  countdownTimer = setInterval(() => {
+    sec--;
+    btn.textContent = sec + 's';
+    if (sec <= 0) {
+      clearInterval(countdownTimer);
+      btn.disabled = false;
+      btn.textContent = '发送验证码';
+    }
+  }, 1000);
+
+  const data = await api('/api/bind/send-code', { email, channel: selectedChannel });
+
+  if (data.ok) {
+    showResult('unbindResult', '✅ 验证码已发送至: ' + (data.sent_via || []).join(', '), 'success');
+  } else {
+    clearInterval(countdownTimer);
+    btn.disabled = false;
+    btn.textContent = '发送验证码';
+    showResult('unbindResult', '❌ ' + (data.message || '发送失败'), 'error');
+  }
+}
+
+async function doUnbind() {
+  const email = document.getElementById('unbindEmail').value.trim();
+  const code = document.getElementById('unbindCode').value.trim();
+  if (!email || !code) return showResult('unbindResult', '请输入邮箱和验证码', 'error');
+
+  if (!confirm('确定要解除 ' + email + ' 的所有设备绑定吗？')) return;
+
+  const data = await api('/api/bind/unbind', { email, code });
+
+  if (data.ok) {
+    showResult('unbindResult', '✅ 解绑成功，已删除 ' + data.deleted_machines + ' 台设备', 'success');
+  } else {
+    showResult('unbindResult', '❌ ' + (data.message || '解绑失败'), 'error');
+  }
+}
+</script>
+</body>
+</html>

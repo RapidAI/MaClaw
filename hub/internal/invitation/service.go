@@ -23,9 +23,10 @@ const (
 )
 
 var (
-	ErrInvalidCount         = errors.New("count must be between 1 and 50")
-	ErrCodeConflict         = errors.New("failed to generate unique invitation code after retries")
+	ErrInvalidCount          = errors.New("count must be between 1 and 50")
+	ErrCodeConflict          = errors.New("failed to generate unique invitation code after retries")
 	ErrInvalidInvitationCode = errors.New("invalid or used invitation code")
+	ErrCodeNotFound          = errors.New("invitation code not found")
 )
 
 type Service struct {
@@ -109,6 +110,14 @@ func (s *Service) ValidateAndConsume(ctx context.Context, code string, email str
 	}
 
 	return s.repo.MarkUsed(ctx, item.ID, email, time.Now())
+}
+
+// UnbindCode clears the binding of an invitation code, resetting it to unused.
+func (s *Service) UnbindCode(ctx context.Context, id string) error {
+	if id == "" {
+		return ErrCodeNotFound
+	}
+	return s.repo.Unbind(ctx, id)
 }
 
 // CheckExpiry checks whether the invitation code associated with the given email has expired.

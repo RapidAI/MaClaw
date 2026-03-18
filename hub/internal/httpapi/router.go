@@ -76,6 +76,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/invitation-codes/toggle", RequireAdmin(admins, ToggleInvitationCodeHandler(invitationSvc)))
 	mux.HandleFunc("GET /api/admin/invitation-codes/status", RequireAdmin(admins, InvitationCodeStatusHandler(invitationSvc)))
 	mux.HandleFunc("GET /api/admin/invitation-codes/export", RequireAdmin(admins, ExportInvitationCodesHandler(invitationSvc)))
+	mux.HandleFunc("POST /api/admin/invitation-codes/unbind", RequireAdmin(admins, UnbindInvitationCodeHandler(invitationSvc)))
 	mux.HandleFunc("GET /api/admin/enrollments/pending", RequireAdmin(admins, ListPendingEnrollmentsHandler(identity)))
 	mux.HandleFunc("GET /api/admin/enrollments/all", RequireAdmin(admins, ListAllEnrollmentsHandler(identity)))
 	mux.HandleFunc("POST /api/admin/enrollments/approve", RequireAdmin(admins, ApproveEnrollmentHandler(identity, feishuNotifier)))
@@ -120,6 +121,11 @@ func NewRouter(
 	if feishuPlugin != nil {
 		mux.HandleFunc("GET /api/feishu/tempfile/{token}", feishuPlugin.ServeTempFile)
 	}
+	// Public binding page API (no auth required)
+	mux.HandleFunc("POST /api/bind/query", BindQueryHandler(identity))
+	mux.HandleFunc("POST /api/bind/send-code", BindSendCodeHandler(identity, mailer, feishuNotifier))
+	mux.HandleFunc("POST /api/bind/unbind", BindUnbindHandler(identity, deviceSvc))
+
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, feishuNotifier))
 	mux.HandleFunc("POST /api/auth/email-request", EmailRequestLoginHandler(identity))
 	mux.HandleFunc("POST /api/auth/email-confirm", EmailConfirmLoginHandler(identity))
@@ -152,5 +158,6 @@ func NewRouter(
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
+	registerStaticRoutes(mux, "./web/bind", "/bind")
 	return mux
 }

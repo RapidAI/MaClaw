@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,7 +50,7 @@ func (m *memInvitationCodeRepo) List(_ context.Context, status string, search st
 					break
 				}
 			}
-			if !found {
+			if !found && !strings.Contains(c.UsedByEmail, search) {
 				continue
 			}
 		}
@@ -80,6 +81,18 @@ func (m *memInvitationCodeRepo) MarkUsed(_ context.Context, id string, email str
 			c.Status = "used"
 			c.UsedByEmail = email
 			c.UsedAt = &usedAt
+			return nil
+		}
+	}
+	return errors.New("not found")
+}
+
+func (m *memInvitationCodeRepo) Unbind(_ context.Context, id string) error {
+	for _, c := range m.codes {
+		if c.ID == id {
+			c.Status = "unused"
+			c.UsedByEmail = ""
+			c.UsedAt = nil
 			return nil
 		}
 	}

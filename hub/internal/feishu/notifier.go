@@ -212,11 +212,41 @@ func (n *Notifier) SetBroadcaster(b NotifyBroadcaster) {
 // SetAutoEnroller wires the auto-enrollment handler.
 func (n *Notifier) SetAutoEnroller(ae *AutoEnroller) {
 	n.autoEnroller = ae
+	if ae != nil {
+		ae.SetWelcomeSender(func(openID string) {
+			n.sendWelcomeMessage(openID)
+		})
+	}
 }
 
 // AutoEnroller returns the auto-enroller, or nil if not configured.
 func (n *Notifier) AutoEnroller() *AutoEnroller {
 	return n.autoEnroller
+}
+
+// sendWelcomeMessage sends a welcome card to a newly enrolled user so the bot
+// appears in their Feishu chat list immediately.
+func (n *Notifier) sendWelcomeMessage(openID string) {
+	if n == nil || n.bot == nil || openID == "" {
+		return
+	}
+	card := buildCardJSON("👋 Welcome to MaClaw", "blue", []cardField{
+		{label: "Status", value: "Your account has been set up."},
+		{label: "Next", value: "Send me a message to get started."},
+	})
+	msg := lark.NewMsgBuffer(lark.MsgInteractive).
+		BindOpenID(openID).
+		Card(card).
+		Build()
+	ctx := context.Background()
+	resp, err := n.bot.PostMessage(ctx, msg)
+	if err != nil {
+		log.Printf("[feishu] welcome message failed (open_id=%s): %v", openID, err)
+		return
+	}
+	if resp != nil && resp.Code != 0 {
+		log.Printf("[feishu] welcome message API error (open_id=%s): code=%d msg=%s", openID, resp.Code, resp.Msg)
+	}
 }
 
 // Bot returns the underlying lark.Bot for use by the webhook handler.
@@ -1249,5 +1279,29 @@ func severityColor(severity string) string {
 		return "orange"
 	default:
 		return "blue"
+	}
+}
+
+// ResolveOpenIDByEmail returns the cached Feishu open_id for the given email.
+// Returns empty string if not found or notifier is nil.
+func (n *Notifier) ResolveOpenIDByEmail(email string) string {
+	if n == nil {
+		return ""
+	}
+	return n.resolveOpenID(strings.ToLower(strings.TrimSpace(email)))
+}
+
+// SendTextToOpenID sends a plain text message to a Feishu user by open_id.
+func (n *Notifier) SendTextToOpenID(openID, text string) {
+	if n == nil || n.bot == nil || openID == "" {
+		return
+	}
+	msg := lark.NewMsgBuffer(lark.MsgText).
+		BindOpenID(openID).
+		Text(text).
+		Build()
+	ctx := context.Background()
+	if _, err := n.bot.PostMessage(ctx, msg); err != nil {
+		log.Printf("[feishu] SendTextToOpenID failed (open_id=%s): %v", openID, err)
 	}
 }

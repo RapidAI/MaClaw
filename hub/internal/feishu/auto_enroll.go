@@ -19,20 +19,21 @@ import (
 // AutoEnroller — adds Hub users to the Feishu organization on enrollment
 // ---------------------------------------------------------------------------
 //
-// When a user registers on the desktop client (StartEnrollment), the
-// AutoEnroller calls the Feishu Contact v3 API to add them to the Feishu
-// organization. Once they are a member of the org, they can search for and
-// use the Feishu bot.
+// When a user registers (desktop or mobile), the AutoEnroller calls the
+// Feishu Contact v3 API to add them to the Feishu organization. Once they
+// are a member of the org, they can search for and use the Feishu bot.
 //
 // Flow:
-//   Desktop enrollment (email) → AutoEnroller.AddToFeishuOrg(email, name)
+//   Enrollment (email, mobile) → AutoEnroller.AddToFeishuOrg(email, name, mobile)
 //     1. Check if user already exists in Feishu org (GET contact/v3/users)
 //     2. If not, create user via POST /open-apis/contact/v3/users
-//     3. Optionally bind the new open_id for IM notifications
+//     3. Bind the new open_id for IM notifications
+//     4. Send a welcome message so the bot appears in the user's chat list
 //
 // Required Feishu app permissions:
 //   - contact:user (read & write users)
 //   - contact:user.email:readonly (read email)
+//   - im:message:send_as_bot (send messages)
 
 const (
 	settingsKeyAutoEnroll    = "feishu_auto_enroll"
@@ -60,8 +61,15 @@ type AutoEnroller struct {
 	// binder persists the email↔open_id mapping in the Notifier.
 	binder func(email, openID string)
 
+	// welcomeSender sends a welcome message to the user after enrollment.
+	// If nil, no welcome message is sent.
+	welcomeSender func(openID string)
+
 	// cooldown: email → last attempt time.
 	attempts map[string]time.Time
+
+	// welcomed tracks open_ids that already received a welcome message.
+	welcomed map[string]bool
 }
 
 // NewAutoEnroller creates an AutoEnroller. Starts disabled.
@@ -70,6 +78,7 @@ func NewAutoEnroller(botFunc func() *lark.Bot, binder func(email, openID string)
 		bot:      botFunc,
 		binder:   binder,
 		attempts: make(map[string]time.Time),
+		welcomed: make(map[string]bool),
 	}
 }
 
@@ -99,6 +108,28 @@ func (ae *AutoEnroller) SetEnabled(v bool) {
 	ae.mu.Lock()
 	ae.cfg.Enabled = v
 	ae.mu.Unlock()
+}
+
+// SetWelcomeSender sets the callback that sends a welcome message to a newly
+// enrolled user. The callback receives the user's open_id.
+func (ae *AutoEnroller) SetWelcomeSender(fn func(openID string)) {
+	ae.mu.Lock()
+	ae.welcomeSender = fn
+	ae.mu.Unlock()
+}
+
+// trySendWelcome sends a welcome message if one hasn't been sent to this
+// open_id yet (in-memory dedup, resets on restart — acceptable).
+func (ae *AutoEnroller) trySendWelcome(openID string) {
+	ae.mu.Lock()
+	if ae.welcomed[openID] || ae.welcomeSender == nil {
+		ae.mu.Unlock()
+		return
+	}
+	ae.welcomed[openID] = true
+	ws := ae.welcomeSender
+	ae.mu.Unlock()
+	ws(openID)
 }
 
 // apiBase returns the correct API base URL based on the UseLark setting.
@@ -200,6 +231,7 @@ func (ae *AutoEnroller) AddToFeishuOrg(ctx context.Context, email, displayName, 
 	// Step 3: Bind the new open_id.
 	if openID != "" {
 		ae.binder(email, openID)
+		ae.trySendWelcome(openID)
 	}
 
 	log.Printf("[feishu/auto-enroll] ✅ added %s to Feishu org (open_id=%s, dept=%s)", email, openID, deptID)

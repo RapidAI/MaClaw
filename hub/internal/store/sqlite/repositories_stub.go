@@ -1202,8 +1202,8 @@ func (r *invitationCodeRepo) List(ctx context.Context, status string, search str
 		args = append(args, status)
 	}
 	if search != "" {
-		conditions = append(conditions, "code LIKE ?")
-		args = append(args, "%"+search+"%")
+		conditions = append(conditions, "(code LIKE ? OR used_by_email LIKE ?)")
+		args = append(args, "%"+search+"%", "%"+search+"%")
 	}
 
 	if len(conditions) > 0 {
@@ -1248,8 +1248,8 @@ func (r *invitationCodeRepo) ListPaged(ctx context.Context, status string, searc
 		args = append(args, status)
 	}
 	if search != "" {
-		conditions = append(conditions, "code LIKE ?")
-		args = append(args, "%"+search+"%")
+		conditions = append(conditions, "(code LIKE ? OR used_by_email LIKE ?)")
+		args = append(args, "%"+search+"%", "%"+search+"%")
 	}
 	if len(conditions) > 0 {
 		baseWhere = " WHERE " + conditions[0]
@@ -1298,6 +1298,15 @@ func (r *invitationCodeRepo) MarkUsed(ctx context.Context, id string, email stri
 		`UPDATE invitation_codes SET status = 'used', used_by_email = ?, used_at = ? WHERE id = ?`,
 		email,
 		usedAt.Format(time.RFC3339),
+		id,
+	)
+	return err
+}
+
+func (r *invitationCodeRepo) Unbind(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(
+		ctx,
+		`UPDATE invitation_codes SET status = 'unused', used_by_email = '', used_at = NULL WHERE id = ?`,
 		id,
 	)
 	return err

@@ -28,6 +28,7 @@ import { LLMConfigPanel } from './components/remote/LLMConfigPanel';
 import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
+import { OnboardingWizard } from './components/remote/OnboardingWizard';
 
 const subscriptionUrls: { [key: string]: string } = {
     "GLM": "https://bigmodel.cn/glm-coding",
@@ -703,8 +704,8 @@ const translations: any = {
         "maclawLLMStep1Desc": "连接 LLM 服务商，让 MaClaw 能思考。",
         "maclawLLMApplyLobster": "免费领取龙虾套餐",
         "maclawLLMGoSettings": "我已有 API Key",
-        "maclawLLMStep2Title": "注册远程 & 绑定飞书",
-        "maclawLLMStep2Desc": "注册设备并绑定飞书，即可移动端注册。",
+        "maclawLLMStep2Title": "移动端注册 & 绑定飞书",
+        "maclawLLMStep2Desc": "注册设备并绑定飞书，即可通过移动端操控。",
         "maclawLLMGoRemote": "前往远程设置",
         "maclawLLMReadyHint": "左上角龙虾亮起，说明一切就绪。",
         "proxySettings": "代理设置",
@@ -811,15 +812,15 @@ const translations: any = {
         "remoteNoRegisteredHubs": "没有可用的已注册 Hub",
         "remoteLoadHubListFailed": "加载 Hub 列表失败：{error}",
         "remoteHubManualOrSelect": "你可以直接粘贴 Hub 地址，也可以从上面的 HubCenter 列表中选择。",
-        "remoteActivationCompleted": "远程注册已完成",
-        "remoteActivationFailed": "远程注册失败：{error}",
+        "remoteActivationCompleted": "移动端注册已完成",
+        "remoteActivationFailed": "移动端注册失败：{error}",
         "remoteReconnectFailed": "重连失败：{error}",
         "remoteSelectProjectFirst": "请先选择一个启动项目",
         "remoteStartFailed": "启动失败：{error}",
         "remoteInstallFailed": "安装失败：{error}",
         "remoteSaveFailed": "保存失败：{error}",
         "remoteSendFailed": "发送失败：{error}",
-        "remoteActivationCleared": "远程注册状态已清除",
+        "remoteActivationCleared": "移动端注册状态已清除",
         "remoteClearFailed": "清除失败：{error}",
         "remoteActivateStep": "移动端注册",
         "remoteActivateStepDesc": "启动远程会话前，先登记邮箱和设备信息。",
@@ -1051,8 +1052,8 @@ const translations: any = {
         "maclawLLMStep1Desc": "連接 LLM 服務商，讓 MaClaw 能思考。",
         "maclawLLMApplyLobster": "免費領取龍蝦套餐",
         "maclawLLMGoSettings": "我已有 API Key",
-        "maclawLLMStep2Title": "註冊遠端 & 綁定飛書",
-        "maclawLLMStep2Desc": "註冊裝置並綁定飛書，即可行動端註冊。",
+        "maclawLLMStep2Title": "行動端註冊 & 綁定飛書",
+        "maclawLLMStep2Desc": "註冊裝置並綁定飛書，即可透過行動端操控。",
         "maclawLLMGoRemote": "前往遠端設定",
         "maclawLLMReadyHint": "左上角龍蝦亮起，說明一切就緒。",
         "proxySettings": "代理設置",
@@ -1159,15 +1160,15 @@ const translations: any = {
         "remoteNoRegisteredHubs": "沒有可用的已註冊 Hub",
         "remoteLoadHubListFailed": "載入 Hub 清單失敗：{error}",
         "remoteHubManualOrSelect": "你可以直接貼上 Hub 位址，也可以從上方的 HubCenter 清單中選擇。",
-        "remoteActivationCompleted": "遠端註冊已完成",
-        "remoteActivationFailed": "遠端註冊失敗：{error}",
+        "remoteActivationCompleted": "行動端註冊已完成",
+        "remoteActivationFailed": "行動端註冊失敗：{error}",
         "remoteReconnectFailed": "重新連線失敗：{error}",
         "remoteSelectProjectFirst": "請先選擇一個啟動專案",
         "remoteStartFailed": "啟動失敗：{error}",
         "remoteInstallFailed": "安裝失敗：{error}",
         "remoteSaveFailed": "儲存失敗：{error}",
         "remoteSendFailed": "傳送失敗：{error}",
-        "remoteActivationCleared": "遠端註冊狀態已清除",
+        "remoteActivationCleared": "行動端註冊狀態已清除",
         "remoteClearFailed": "清除失敗：{error}",
         "remoteActivateStep": "行動端註冊",
         "remoteActivateStepDesc": "啟動遠端會話前，先登記信箱與裝置資訊。",
@@ -2029,10 +2030,12 @@ function App() {
     }, []);
 
     // Show the MaClaw LLM popup once both the first ping result AND config are available.
+    // Only checks LLM status here; registration check is done in a separate effect
+    // after useRemotePanel provides remoteActivationStatus.
     useEffect(() => {
         if (!config || !maclawLLMFirstPingResult.current) return;
         const { online } = maclawLLMFirstPingResult.current;
-        if (!online && !config.hide_maclaw_llm_popup) {
+        if (!online) {
             setShowMaclawLLMPopup(true);
             // Suppress the startup welcome popup to avoid two overlapping modals
             setShowStartupPopup(false);
@@ -2275,6 +2278,17 @@ function App() {
             return !TERMINAL_SESSION_STATUSES.has(status);
         }) || null;
     }, [remoteSessions, activeTool]);
+
+    // Show onboarding wizard if remote registration is not done (checked once on startup).
+    const onboardingRegCheckDone = useRef(false);
+    useEffect(() => {
+        if (onboardingRegCheckDone.current || !config || remoteActivationStatus === null) return;
+        onboardingRegCheckDone.current = true;
+        if (!remoteActivationStatus.activated) {
+            setShowMaclawLLMPopup(true);
+            setShowStartupPopup(false);
+        }
+    }, [config, remoteActivationStatus]);
     const hasActiveRemoteSessionForTool = !!activeRemoteSessionForTool;
 
     useEffect(() => {
@@ -3469,7 +3483,7 @@ ${instruction}`;
                                                 setSettingsTab('remote');
                                             }}
                                         >
-                                            {lang === 'zh-Hans' ? '注册远程' : lang === 'zh-Hant' ? '註冊遠端' : 'Register Remote'}
+                                            {lang === 'zh-Hans' ? '移动端注册' : lang === 'zh-Hant' ? '行動端註冊' : 'Register Remote'}
                                         </button>
                                     </div>
                                 </div>
@@ -5686,131 +5700,25 @@ ${instruction}`;
                 </div>
             )}
 
-            {/* MaClaw LLM Onboarding Guide */}
-            {showMaclawLLMPopup && (() => {
-                const stepBadge: React.CSSProperties = {
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    width: '20px', height: '20px', borderRadius: '50%',
-                    background: '#6366f1', color: '#fff', fontSize: '0.7rem', fontWeight: 700, flexShrink: 0,
-                };
-                const stepBtn: React.CSSProperties = {
-                    padding: '5px 12px', borderRadius: '6px', fontSize: '0.76rem', fontWeight: 500,
-                    background: '#f5f3ff', color: '#6366f1', border: '1px solid #c7d2fe',
-                    cursor: 'pointer', transition: 'all 0.15s',
-                };
-                return (
-                <div className="modal-overlay" style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)', backdropFilter: 'blur(3px)' }}>
-                    <div className="modal-content" style={{
-                        width: '330px',
-                        textAlign: 'center',
-                        padding: 0,
-                        borderRadius: '14px',
-                        overflow: 'hidden',
-                        border: '1px solid #e0e7ff',
-                        boxShadow: '0 8px 24px rgba(99, 102, 241, 0.12)'
-                    }}>
-                        {/* Header */}
-                        <div style={{
-                            background: 'linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)',
-                            padding: '14px 18px 12px',
-                            position: 'relative',
-                        }}>
-                            <button
-                                className="modal-close"
-                                onClick={() => setShowMaclawLLMPopup(false)}
-                                style={{ color: '#a5b4fc', opacity: 0.9, top: '8px', right: '12px', zIndex: 10, fontSize: '1.1rem' }}
-                            >&times;</button>
-                            <div style={{ fontSize: '1.4rem', marginBottom: '4px', lineHeight: 1 }}>👋</div>
-                            <h3 style={{ margin: 0, color: '#4338ca', fontSize: '0.92rem', fontWeight: 600 }}>{t("maclawLLMPopupTitle")}</h3>
-                            <p style={{ margin: '4px 0 0 0', fontSize: '0.74rem', color: '#6366f1', fontWeight: 400 }}>
-                                {t("maclawLLMPopupDesc")}
-                            </p>
-                        </div>
-
-                        {/* Steps */}
-                        <div style={{ padding: '14px 18px 12px', textAlign: 'left' }}>
-                            {/* Step 1 — Configure LLM */}
-                            <div style={{ marginBottom: '14px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                                    <span style={stepBadge}>1</span>
-                                    <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#1e293b' }}>{t("maclawLLMStep1Title")}</span>
-                                </div>
-                                <p style={{ margin: '0 0 8px 28px', fontSize: '0.72rem', color: '#94a3b8', lineHeight: 1.4 }}>
-                                    {t("maclawLLMStep1Desc")}
-                                </p>
-                                <div style={{ display: 'flex', gap: '6px', marginLeft: '28px' }}>
-                                    <button
-                                        style={{ ...stepBtn, background: '#6366f1', color: '#fff', border: 'none', fontWeight: 600 }}
-                                        onClick={() => BrowserOpenURL("https://bigmodel.cn/claw-plan-team")}
-                                    >
-                                        🦞 {t("maclawLLMApplyLobster")}
-                                    </button>
-                                    <button
-                                        style={stepBtn}
-                                        onClick={() => {
-                                            setShowMaclawLLMPopup(false);
-                                            switchTool('settings');
-                                            setSettingsTab('llm');
-                                        }}
-                                    >
-                                        ⚙️ {t("maclawLLMGoSettings")}
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Divider */}
-                            <div style={{ height: '1px', background: '#e0e7ff', margin: '0 0 14px 0' }} />
-
-                            {/* Step 2 — Register Remote & Bind Feishu */}
-                            <div style={{ marginBottom: '12px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                                    <span style={stepBadge}>2</span>
-                                    <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#1e293b' }}>{t("maclawLLMStep2Title")}</span>
-                                </div>
-                                <p style={{ margin: '0 0 8px 28px', fontSize: '0.72rem', color: '#94a3b8', lineHeight: 1.4 }}>
-                                    {t("maclawLLMStep2Desc")}
-                                </p>
-                                <div style={{ marginLeft: '28px' }}>
-                                    <button
-                                        style={stepBtn}
-                                        onClick={() => {
-                                            setShowMaclawLLMPopup(false);
-                                            setNavTab('settings');
-                                            setSettingsTab('remote');
-                                        }}
-                                    >
-                                        📡 {t("maclawLLMGoRemote")}
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Footer */}
-                            <p style={{ margin: '0 0 8px 0', fontSize: '0.68rem', color: '#b0b8c9', lineHeight: 1.5 }}>
-                                💡 {t("maclawLLMReadyHint")}
-                            </p>
-                            <label style={{
-                                display: 'flex', alignItems: 'center', gap: '5px',
-                                cursor: 'pointer', fontSize: '0.72rem', color: '#b0b8c9',
-                            }}>
-                                <input
-                                    type="checkbox"
-                                    checked={config?.hide_maclaw_llm_popup || false}
-                                    style={{ width: '13px', height: '13px', cursor: 'pointer' }}
-                                    onChange={(e) => {
-                                        if (config) {
-                                            const newConfig = new main.AppConfig({ ...config, hide_maclaw_llm_popup: e.target.checked });
-                                            setConfig(newConfig);
-                                            SaveConfig(newConfig);
-                                        }
-                                    }}
-                                />
-                                {t("dontShowAgain")}
-                            </label>
-                        </div>
-                    </div>
-                </div>
-                );
-            })()}
+            {/* MaClaw Onboarding Wizard */}
+            {showMaclawLLMPopup && (
+                <OnboardingWizard
+                    lang={lang}
+                    hubUrl={config?.remote_hub_url || ""}
+                    hubCenterUrl={config?.remote_hubcenter_url || ""}
+                    email={config?.remote_email || ""}
+                    mobile={(config as any)?.remote_mobile || ""}
+                    onClose={() => setShowMaclawLLMPopup(false)}
+                    onLLMConfigured={() => {
+                        setMaclawLLMOnline(true);
+                        setMaclawLLMConfigured(true);
+                    }}
+                    onRegistered={() => {
+                        refreshRemotePanel();
+                    }}
+                    onSaveField={(patch) => saveRemoteConfigField(patch as any)}
+                />
+            )}
 
             {/* Thanks Modal */}
             {showThanksModal && (
