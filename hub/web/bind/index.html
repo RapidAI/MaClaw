@@ -42,6 +42,25 @@
     .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700}
     .badge-ok{background:rgba(31,143,106,.12);color:var(--ok)}.badge-warn{background:rgba(185,130,25,.12);color:var(--warn)}
     .warn-box{padding:14px 16px;border-radius:var(--radius);background:rgba(185,130,25,.06);border:1px dashed rgba(185,130,25,.3);color:var(--warn);font-size:13px;line-height:1.6;margin-bottom:16px}
+    /* Compact mode for iframe embedding (?embed=1) */
+    body.embed{min-height:auto;padding:0;background:#fff;align-items:flex-start}
+    body.embed .container{border-radius:0;box-shadow:none;width:100%}
+    body.embed .header{padding:14px 20px 10px}
+    body.embed .header h1{font-size:18px}
+    body.embed .header p{font-size:12px}
+    body.embed .tabs button{padding:10px 0;font-size:13px}
+    body.embed .panel{padding:16px 20px}
+    body.embed .field{margin-bottom:10px}
+    body.embed label{margin-bottom:4px;font-size:11px}
+    body.embed input{height:36px;padding:0 10px;font-size:13px;border-radius:10px}
+    body.embed .btn{height:36px;font-size:13px;border-radius:10px}
+    body.embed .code-row .btn{min-width:90px;height:36px;font-size:12px}
+    body.embed .result{margin-top:10px;padding:10px 12px;font-size:12px;border-radius:10px}
+    body.embed .channel-select{gap:6px;margin-bottom:10px}
+    body.embed .channel-select button{padding:7px;font-size:12px;border-radius:8px}
+    body.embed .warn-box{padding:10px 12px;font-size:12px;margin-bottom:10px;border-radius:10px}
+    body.embed .info-label{font-size:11px}
+    body.embed .info-value{font-size:12px}
   </style>
 </head>
 <body>
@@ -92,9 +111,16 @@
 <script>
 (function() {
   'use strict';
+  // Detect embed mode from URL param
+  if (new URLSearchParams(window.location.search).get('embed') === '1') {
+    document.body.classList.add('embed');
+  }
   var selectedChannel = 'email';
   var countdownTimer = null;
   var invCodeRequired = false;
+
+  // Derive API base from current page URL so it works in both standalone and iframe modes
+  var apiBase = window.location.origin;
 
   function esc(s) {
     var d = document.createElement('div');
@@ -103,7 +129,7 @@
   }
 
   // Load server config on startup
-  fetch('/api/bind/config').then(function(r) { return r.json(); }).then(function(cfg) {
+  fetch(apiBase + '/api/bind/config').then(function(r) { return r.json(); }).then(function(cfg) {
     invCodeRequired = !!cfg.invitation_code_required;
     // Show/hide invitation code field on bind tab
     if (!invCodeRequired) {
@@ -153,7 +179,7 @@
   }
 
   async function api(path, body) {
-    var resp = await fetch(path, {
+    var resp = await fetch(apiBase + path, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)

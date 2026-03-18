@@ -5453,7 +5453,17 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 		return result
 	}
 
-	result["reason"] = "该地址没有实现标准 SkillHub API，也不是 ClawHub 兼容源"
+	// 探测 4: 无 API 但可达 — 作为下载镜像使用
+	if resp, err := client.Get(base); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			result["type"] = "mirror"
+			result["reason"] = "该地址可达，将作为下载镜像使用"
+			return result
+		}
+	}
+
+	result["reason"] = "该地址不可达或不支持"
 	return result
 }
 

@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo } from "react";
 import { main } from "../../../wailsjs/go/models";
 import { ListRemoteHubs } from "../../../wailsjs/go/main/App";
+import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { RemoteActivationStatus } from "./types";
 
 const COUNTRY_CODES = [
@@ -84,7 +85,6 @@ export function RemoteSettingsPanel({
     const [hubProbeError, setHubProbeError] = useState("");
     const [showMobileConfirm, setShowMobileConfirm] = useState(false);
     const [showNoMobilePrompt, setShowNoMobilePrompt] = useState(false);
-    const [showBindDialog, setShowBindDialog] = useState(false);
 
     // Track the user's country code selection separately so it persists
     // even when the local number is empty (parsed would default to +86).
@@ -401,56 +401,16 @@ export function RemoteSettingsPanel({
                     <button
                         className="btn-secondary"
                         style={{ marginLeft: "10px", flexShrink: 0, fontSize: "0.8rem", padding: "2px 12px", height: "26px" }}
-                        onClick={() => setShowBindDialog(true)}
+                        onClick={() => {
+                            const hubUrl = (config.remote_hub_url || "").replace(/\/+$/, "");
+                            if (hubUrl) BrowserOpenURL(`${hubUrl}/bind`);
+                        }}
                     >
                         绑定管理
                     </button>
                 )}
             </div>
 
-            {/* 绑定管理弹窗 */}
-            {showBindDialog && config?.remote_hub_url && (
-                <div
-                    style={{
-                        position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-                        background: "rgba(0,0,0,0.4)", display: "flex",
-                        alignItems: "center", justifyContent: "center", zIndex: 9999,
-                    }}
-                    onClick={() => setShowBindDialog(false)}
-                >
-                    <div
-                        style={{
-                            background: "#fff", borderRadius: "16px",
-                            width: "90%", maxWidth: "520px", height: "80vh", maxHeight: "700px",
-                            boxShadow: "0 16px 40px rgba(0,0,0,0.2)",
-                            display: "flex", flexDirection: "column", overflow: "hidden",
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                        <div style={{
-                            display: "flex", alignItems: "center", justifyContent: "space-between",
-                            padding: "14px 20px", borderBottom: "1px solid #eee", flexShrink: 0,
-                        }}>
-                            <span style={{ fontSize: "15px", fontWeight: 600 }}>绑定管理</span>
-                            <button
-                                onClick={() => setShowBindDialog(false)}
-                                style={{
-                                    background: "none", border: "none", cursor: "pointer",
-                                    fontSize: "20px", color: "#999", lineHeight: 1, padding: "2px 6px",
-                                }}
-                                aria-label="关闭"
-                            >
-                                ✕
-                            </button>
-                        </div>
-                        <iframe
-                            src={`${(config.remote_hub_url || "").replace(/\/+$/, "")}/bind`}
-                            style={{ flex: 1, border: "none", width: "100%" }}
-                            title="绑定管理"
-                        />
-                    </div>
-                </div>
-            )}
         </>
     );
 }

@@ -403,11 +403,14 @@ func (a *App) ImportNLSkillZip() (string, error) {
 	var skillJSON []byte
 	for _, f := range r.File {
 		name := strings.ToValidUTF8(f.Name, "")
-		// Accept skill.json at root or inside a single top-level directory
-		base := name
-		if idx := strings.LastIndex(name, "/"); idx >= 0 {
-			base = name[idx+1:]
+		name = strings.ReplaceAll(name, "\\", "/")
+		// Skip Mac/System junk
+		parts := strings.Split(name, "/")
+		if len(parts) > 0 && (strings.HasPrefix(parts[0], "__MACOSX") || strings.HasPrefix(parts[0], ".")) {
+			continue
 		}
+		// Accept skill.json at root or inside a single top-level directory
+		base := parts[len(parts)-1]
 		if strings.EqualFold(base, "skill.json") && !f.FileInfo().IsDir() {
 			rc, err := f.Open()
 			if err != nil {

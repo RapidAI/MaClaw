@@ -126,10 +126,23 @@ func NewRouter(
 	if qqbotPlugin != nil {
 		imCleaners = append(imCleaners, qqbotPlugin)
 	}
-	mux.HandleFunc("GET /api/bind/config", BindConfigHandler(invitationSvc))
-	mux.HandleFunc("POST /api/bind/query", BindQueryHandler(identity))
-	mux.HandleFunc("POST /api/bind/send-code", BindSendCodeHandler(identity, mailer, feishuNotifier))
-	mux.HandleFunc("POST /api/bind/unbind", BindUnbindHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners))
+	// Public binding page API (no auth required) — allow cross-origin for iframe embedding
+	bindCORS := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			h(w, r)
+		}
+	}
+	mux.HandleFunc("GET /api/bind/config", bindCORS(BindConfigHandler(invitationSvc)))
+	mux.HandleFunc("POST /api/bind/query", bindCORS(BindQueryHandler(identity)))
+	mux.HandleFunc("POST /api/bind/send-code", bindCORS(BindSendCodeHandler(identity, mailer, feishuNotifier)))
+	mux.HandleFunc("POST /api/bind/unbind", bindCORS(BindUnbindHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners)))
 
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, feishuNotifier))
 	mux.HandleFunc("POST /api/auth/email-request", EmailRequestLoginHandler(identity))
@@ -163,6 +176,6 @@ func NewRouter(
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
-	registerStaticRoutes(mux, "./web/bind", "/bind")
+	registerBindStaticRoutes(mux, "./web/bind", "/bind")
 	return mux
 }

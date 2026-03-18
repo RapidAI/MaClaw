@@ -15,6 +15,37 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
     registerStaticRoutes(mux, staticDir, routePrefix)
 }
 
+func registerBindStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
+    staticDir = strings.TrimSpace(staticDir)
+    if staticDir == "" {
+        return
+    }
+    if routePrefix == "" {
+        routePrefix = "/bind"
+    }
+    if !strings.HasPrefix(routePrefix, "/") {
+        routePrefix = "/" + routePrefix
+    }
+    routePrefix = strings.TrimRight(routePrefix, "/")
+    indexPath := filepath.Join(staticDir, "index.html")
+
+    allowIframe := func(next http.HandlerFunc) http.HandlerFunc {
+        return func(w http.ResponseWriter, r *http.Request) {
+            w.Header().Set("X-Frame-Options", "ALLOWALL")
+            w.Header().Set("Content-Security-Policy", "frame-ancestors *")
+            w.Header().Set("Access-Control-Allow-Origin", "*")
+            next(w, r)
+        }
+    }
+
+    mux.HandleFunc("GET "+routePrefix, allowIframe(func(w http.ResponseWriter, r *http.Request) {
+        serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
+    }))
+    mux.HandleFunc("GET "+routePrefix+"/{rest...}", allowIframe(func(w http.ResponseWriter, r *http.Request) {
+        serveStaticIndexFallback(w, r, staticDir, indexPath, routePrefix)
+    }))
+}
+
 func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
     staticDir = strings.TrimSpace(staticDir)
     if staticDir == "" {

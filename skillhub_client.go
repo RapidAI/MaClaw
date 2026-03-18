@@ -77,8 +77,9 @@ func NewSkillHubClient(app *App) *SkillHubClient {
 	}
 }
 
-// Search queries all configured Hubs concurrently and returns deduplicated results.
-// Returns an empty slice (not an error) when all Hubs are unreachable.
+// Search queries the built-in ClawSkillHub API and returns results.
+// Config entries are mirrors for download acceleration only — search is always
+// performed against the primary ClawSkillHub endpoint.
 func (c *SkillHubClient) Search(ctx context.Context, query string) ([]HubSkillMeta, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -94,64 +95,25 @@ func (c *SkillHubClient) Search(ctx context.Context, query string) ([]HubSkillMe
 	}
 	c.mu.RUnlock()
 
-	// Load Hub URLs from config.
-	cfg, err := c.app.LoadConfig()
-	if err != nil || len(cfg.SkillHubURLs) == 0 {
-		return nil, fmt.Errorf("未配置 SkillHub 地址，请在设置中添加 SkillHub URL")
+	// Search always uses the built-in ClawSkillHub API (the only source with a
+	// real REST search endpoint). Config entries are mirrors used for download
+	// acceleration only.
+	const primaryHubURL = "https://clawskillhub.com"
+
+	searchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	skills, err := c.searchSkillHubSpace(searchCtx, primaryHubURL, query)
+	if err != nil {
+		return nil, fmt.Errorf("搜索 ClawSkillHub 失败: %v", err)
 	}
 
-	type hubResult struct {
-		hubURL  string
-		skills  []HubSkillMeta
-		latency int64
+	// Tag every result with the primary hub URL so Install knows the origin.
+	for i := range skills {
+		skills[i].HubURL = primaryHubURL
 	}
 
-	var wg sync.WaitGroup
-	resultsCh := make(chan hubResult, len(cfg.SkillHubURLs))
-
-	for _, entry := range cfg.SkillHubURLs {
-		wg.Add(1)
-		go func(hubEntry SkillHubEntry) {
-			defer wg.Done()
-			hubCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			defer cancel()
-
-			start := time.Now()
-			var skills []HubSkillMeta
-			var searchErr error
-
-			switch hubEntry.Type {
-			case "clawhub":
-				skills, searchErr = c.searchClawHub(hubCtx, hubEntry.URL, query)
-			case "clawhub_mirror":
-				skills, searchErr = c.searchClawHubMirror(hubCtx, hubEntry.URL, query)
-			case "skillhub_space":
-				skills, searchErr = c.searchSkillHubSpace(hubCtx, hubEntry.URL, query)
-			default: // "standard" or empty
-				skills, searchErr = c.searchStandard(hubCtx, hubEntry.URL, query)
-			}
-
-			latency := time.Since(start).Milliseconds()
-			if searchErr != nil || len(skills) == 0 {
-				return
-			}
-
-			resultsCh <- hubResult{hubURL: hubEntry.URL, skills: skills, latency: latency}
-		}(entry)
-	}
-
-	wg.Wait()
-	close(resultsCh)
-
-	// Collect results per hub.
-	allResults := make(map[string][]hubSearchResponse)
-	latencies := make(map[string]int64)
-	for hr := range resultsCh {
-		allResults[hr.hubURL] = append(allResults[hr.hubURL], hubSearchResponse{Skills: hr.skills})
-		latencies[hr.hubURL] = hr.latency
-	}
-
-	merged := mergeResults(allResults, latencies)
+	merged := skills
 
 	// Cache the result (evict oldest entries if cache is full).
 	c.mu.Lock()
@@ -188,21 +150,39 @@ func (c *SkillHubClient) Search(ctx context.Context, query string) ([]HubSkillMe
 // Install downloads a Skill from the specified Hub and converts it to an NLSkillEntry.
 // On failure it falls back to other Hubs sorted by latency.
 func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL string) (*NLSkillEntry, error) {
-	// Load config once for hub type lookups.
+	// Load config once for mirror URLs.
 	cfg, _ := c.app.LoadConfig()
 
-	// Try the specified Hub first, then fall back to others.
-	hubURLs := []string{hubURL}
-	fallbacks := c.selectBestHub(skillID)
-	for _, u := range fallbacks {
-		if u != hubURL {
-			hubURLs = append(hubURLs, u)
+	// Build download order: configured mirrors first (for acceleration),
+	// then the primary ClawSkillHub as fallback.
+	const primaryHub = "https://clawskillhub.com"
+	var hubURLs []string
+	for _, entry := range cfg.SkillHubURLs {
+		hubURLs = append(hubURLs, entry.URL)
+	}
+	// Ensure primary hub is always in the list as final fallback.
+	hasPrimary := false
+	for _, u := range hubURLs {
+		if u == primaryHub {
+			hasPrimary = true
+			break
 		}
+	}
+	if !hasPrimary {
+		hubURLs = append(hubURLs, primaryHub)
 	}
 
 	var lastErr error
 	for _, hub := range hubURLs {
 		hubType := c.hubTypeFromConfig(cfg, hub)
+		// Primary hub is always skillhub_space type.
+		if hub == primaryHub {
+			hubType = "skillhub_space"
+		}
+		// Skip pure mirror entries — they don't have a download API.
+		if hubType == "mirror" {
+			continue
+		}
 		var entry *NLSkillEntry
 		var err error
 		if hubType == "skillhub_space" {
@@ -247,83 +227,19 @@ func (c *SkillHubClient) hubTypeFromConfig(cfg AppConfig, hubURL string) string 
 // returning the first result where the Hub version differs from currentVersion.
 // Returns nil, nil if versions match or no Hub is reachable.
 func (c *SkillHubClient) CheckUpdate(ctx context.Context, skillID string, currentVersion string) (*HubSkillMeta, error) {
-	cfg, err := c.app.LoadConfig()
-	if err != nil || len(cfg.SkillHubURLs) == 0 {
+	const primaryHub = "https://clawskillhub.com"
+
+	hubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	items, err := c.searchSkillHubSpace(hubCtx, primaryHub, skillID)
+	if err != nil || len(items) == 0 {
 		return nil, nil
 	}
 
-	type checkResult struct {
-		meta *HubSkillMeta
-	}
-
-	resultsCh := make(chan checkResult, len(cfg.SkillHubURLs))
-	var wg sync.WaitGroup
-
-	for _, entry := range cfg.SkillHubURLs {
-		wg.Add(1)
-		go func(hubEntry SkillHubEntry) {
-			defer wg.Done()
-			hubCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			defer cancel()
-
-			var endpoint string
-			switch hubEntry.Type {
-			case "skillhub_space":
-				// skillhub_space 的搜索接口返回的结果没有版本号，
-				// 需要通过详情接口获取，但我们没有 owner handle。
-				// 用搜索接口找到 skill 再取详情。
-				items, searchErr := c.searchSkillHubSpace(hubCtx, hubEntry.URL, skillID)
-				if searchErr != nil || len(items) == 0 {
-					return
-				}
-				for _, item := range items {
-					if item.ID == skillID {
-						// 版本信息需要从详情获取，这里用 Downloads 变化作为更新信号
-						resultsCh <- checkResult{meta: &HubSkillMeta{
-							ID:      item.ID,
-							Name:    item.Name,
-							Version: "", // skillhub_space 搜索不返回版本
-							HubURL:  hubEntry.URL,
-						}}
-						return
-					}
-				}
-				return
-			default:
-				endpoint = strings.TrimRight(hubEntry.URL, "/") + "/api/v1/skills/" + url.PathEscape(skillID)
-			}
-
-			req, reqErr := http.NewRequestWithContext(hubCtx, http.MethodGet, endpoint, nil)
-			if reqErr != nil {
-				return
-			}
-			req.Header.Set("User-Agent", "MaClaw/1.0")
-
-			resp, doErr := c.client.Do(req)
-			if doErr != nil {
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusOK {
-				return
-			}
-
-			var meta HubSkillMeta
-			if decErr := json.NewDecoder(resp.Body).Decode(&meta); decErr != nil {
-				return
-			}
-			meta.HubURL = hubEntry.URL
-			resultsCh <- checkResult{meta: &meta}
-		}(entry)
-	}
-
-	wg.Wait()
-	close(resultsCh)
-
-	for cr := range resultsCh {
-		if cr.meta != nil && cr.meta.Version != currentVersion {
-			return cr.meta, nil
+	for _, item := range items {
+		if item.ID == skillID && item.Version != currentVersion {
+			return &item, nil
 		}
 	}
 	return nil, nil
@@ -471,94 +387,18 @@ func mergeResults(results map[string][]hubSearchResponse, latencies map[string]i
 // and merges them into the in-memory recommendation index.
 // Errors from individual Hubs are silently ignored (best-effort).
 func (c *SkillHubClient) RefreshRecommendations(ctx context.Context) error {
-	cfg, err := c.app.LoadConfig()
-	if err != nil || len(cfg.SkillHubURLs) == 0 {
+	const primaryHub = "https://clawskillhub.com"
+
+	hubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	skills, err := c.fetchSkillHubSpaceTrending(hubCtx, primaryHub)
+	if err != nil {
 		return nil
 	}
 
-	var wg sync.WaitGroup
-	type hubPopularResult struct {
-		skills []HubSkillMeta
-	}
-	resultsCh := make(chan hubPopularResult, len(cfg.SkillHubURLs))
-
-	for _, entry := range cfg.SkillHubURLs {
-		wg.Add(1)
-		go func(hubEntry SkillHubEntry) {
-			defer wg.Done()
-			hubCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			defer cancel()
-
-			var skills []HubSkillMeta
-
-			switch hubEntry.Type {
-			case "clawhub_mirror":
-				// 镜像站用 top-downloads 获取热门
-				s, err := c.fetchClawHubMirrorPopular(hubCtx, hubEntry.URL)
-				if err == nil {
-					skills = s
-				}
-			case "clawhub":
-				// ClawHub 用列表接口获取
-				s, err := c.searchClawHub(hubCtx, hubEntry.URL, "")
-				if err == nil {
-					skills = s
-				}
-			case "skillhub_space":
-				s, err := c.fetchSkillHubSpaceTrending(hubCtx, hubEntry.URL)
-				if err == nil {
-					skills = s
-				}
-			default:
-				endpoint := strings.TrimRight(hubEntry.URL, "/") + "/api/v1/skills/popular"
-				req, reqErr := http.NewRequestWithContext(hubCtx, http.MethodGet, endpoint, nil)
-				if reqErr != nil {
-					return
-				}
-				req.Header.Set("User-Agent", "MaClaw/1.0")
-
-				resp, doErr := c.client.Do(req)
-				if doErr != nil {
-					return
-				}
-				defer resp.Body.Close()
-
-				if resp.StatusCode != http.StatusOK {
-					return
-				}
-
-				if decErr := json.NewDecoder(resp.Body).Decode(&skills); decErr != nil {
-					return
-				}
-
-				for i := range skills {
-					skills[i].HubURL = hubEntry.URL
-				}
-			}
-
-			if len(skills) > 0 {
-				resultsCh <- hubPopularResult{skills: skills}
-			}
-		}(entry)
-	}
-
-	wg.Wait()
-	close(resultsCh)
-
-	// Deduplicate by Skill ID, keeping the first occurrence.
-	seen := make(map[string]struct{})
-	var merged []HubSkillMeta
-	for hr := range resultsCh {
-		for _, sk := range hr.skills {
-			if _, exists := seen[sk.ID]; !exists {
-				seen[sk.ID] = struct{}{}
-				merged = append(merged, sk)
-			}
-		}
-	}
-
 	c.mu.Lock()
-	c.recIndex = merged
+	c.recIndex = skills
 	c.mu.Unlock()
 
 	return nil

@@ -137,8 +137,7 @@ const APP_VERSION = "5.0.0.9300"
 const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'cursor', 'iflow', 'kilo'] as const;
 const SKILL_TOOLS = ['claude', 'gemini', 'codex'] as const;
 const DEFAULT_SKILLHUB_ENTRIES = [
-    { label: 'ClawSkillHub', url: 'https://clawskillhub.com', type: 'skillhub_space' },
-    { label: '腾讯云 SkillHUB', url: 'https://skillhub.tencent.com/', type: '' },
+    { label: '腾讯云 SkillHUB 镜像', url: 'https://skillhub.tencent.com/', type: 'mirror' },
 ];
 const isToolTab = (tab: string): boolean => (TOOL_NAMES as readonly string[]).includes(tab);
 const isSkillTool = (tab: string): boolean => (SKILL_TOOLS as readonly string[]).includes(tab);
@@ -1388,7 +1387,12 @@ function App() {
         if (Array.isArray(saved) && saved.length > 0) {
             setSkillHubEntries(saved);
         } else if (skillHubEntries.length === 0) {
-            setSkillHubEntries([...DEFAULT_SKILLHUB_ENTRIES]);
+            // Persist defaults so backend Search() can read them
+            const defaults = [...DEFAULT_SKILLHUB_ENTRIES];
+            setSkillHubEntries(defaults);
+            const newConfig = new main.AppConfig({ ...config, skill_hub_urls: defaults });
+            setConfig(newConfig);
+            SaveConfig(newConfig);
         }
     }, [!!config]);
 
@@ -3823,9 +3827,9 @@ ${instruction}`;
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '6px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>SkillHUB</h4>
                                     <p style={{ fontSize: '0.78rem', color: '#6b7280', marginBottom: '12px' }}>
-                                        {lang === 'zh-Hans' ? '管理 SkillHUB 源地址，可从远程仓库搜索与下载技能包。' :
-                                         lang === 'zh-Hant' ? '管理 SkillHUB 來源位址，可從遠端倉庫搜尋與下載技能包。' :
-                                         'Manage SkillHUB registry URLs to search and download skill packages.'}
+                                        {lang === 'zh-Hans' ? '搜索默认使用 ClawSkillHub，此处配置镜像/加速地址用于下载加速。' :
+                                         lang === 'zh-Hant' ? '搜尋預設使用 ClawSkillHub，此處設定鏡像/加速位址用於下載加速。' :
+                                         'Search uses ClawSkillHub by default. Configure mirror URLs here for download acceleration.'}
                                     </p>
 
                                     {/* Existing entries */}
@@ -3842,8 +3846,8 @@ ${instruction}`;
                                                         <div style={{ fontSize: '0.8rem', fontWeight: 500, color: '#374151', display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                             {entry.label}
                                                             {entry.type && entry.type !== 'standard' && (
-                                                                <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: '4px', backgroundColor: entry.type === 'clawhub' ? '#dbeafe' : '#fef3c7', color: entry.type === 'clawhub' ? '#2563eb' : '#d97706', fontWeight: 400 }}>
-                                                                    {entry.type === 'clawhub' ? 'ClawHub' : entry.type === 'clawhub_mirror' ? 'ClawHub 镜像' : entry.type}
+                                                                <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: '4px', backgroundColor: entry.type === 'clawhub' ? '#dbeafe' : entry.type === 'mirror' ? '#ecfdf5' : '#fef3c7', color: entry.type === 'clawhub' ? '#2563eb' : entry.type === 'mirror' ? '#059669' : '#d97706', fontWeight: 400 }}>
+                                                                    {entry.type === 'clawhub' ? 'ClawHub' : entry.type === 'clawhub_mirror' ? 'ClawHub 镜像' : entry.type === 'mirror' ? '下载镜像' : entry.type}
                                                                 </span>
                                                             )}
                                                         </div>
@@ -3943,7 +3947,7 @@ ${instruction}`;
                                                 saveSkillHubEntries([...DEFAULT_SKILLHUB_ENTRIES]);
                                             }}
                                         >
-                                            {lang === 'zh-Hans' ? '恢复默认源' : lang === 'zh-Hant' ? '恢復預設來源' : 'Restore defaults'}
+                                            {lang === 'zh-Hans' ? '恢复默认镜像' : lang === 'zh-Hant' ? '恢復預設鏡像' : 'Restore default mirrors'}
                                         </button>
                                     </div>
                                 </div>
