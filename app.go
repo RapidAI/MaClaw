@@ -73,6 +73,7 @@ type App struct {
 	compressorMu         sync.Mutex // guards lazy creation of memoryCompressor
 	scheduledTaskManager *ScheduledTaskManager
 	remoteInfraOnce      sync.Once // guards ensureRemoteInfra initialization
+	clawNetClient        *ClawNetClient
 }
 
 var OnConfigChanged func(AppConfig)
@@ -208,6 +209,8 @@ type AppConfig struct {
 	SkillHubURLs []SkillHubEntry `json:"skill_hub_urls,omitempty"`
 	// Memory auto-compression service (runs periodically in background)
 	MemoryAutoCompress bool `json:"memory_auto_compress,omitempty"`
+	// ClawNet P2P network — enabled by default
+	ClawNetEnabled bool `json:"clawnet_enabled"`
 }
 
 // SkillHubEntry represents a single SkillHUB registry endpoint.
@@ -584,6 +587,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.auditLog != nil {
 		a.auditLog.Close()
+	}
+	if a.clawNetClient != nil {
+		a.clawNetClient.StopDaemon()
 	}
 	a.platformShutdown()
 }
@@ -2921,6 +2927,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 			RemoteMachineToken: "",
 			RemoteHeartbeatSec:  10,
 			ScreenDimTimeoutMin: 3, // Default: dim display after 3 minutes of inactivity
+			ClawNetEnabled:      true,
 		}
 		err = a.SaveConfig(defaultConfig)
 		return defaultConfig, err
@@ -2958,6 +2965,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	if _, ok := rawConfig["power_optimization"]; ok {
 		hasPowerOptimization = true
 	}
+	hasClawNetEnabled := false
+	if _, ok := rawConfig["clawnet_enabled"]; ok {
+		hasClawNetEnabled = true
+	}
 
 	err = json.Unmarshal(data, &config)
 	if err != nil {
@@ -2973,6 +2984,9 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	}
 	if !hasPowerOptimization {
 		config.PowerOptimization = true
+	}
+	if !hasClawNetEnabled {
+		config.ClawNetEnabled = true
 	}
 	if config.RemoteHeartbeatSec < 5 {
 		config.RemoteHeartbeatSec = 10

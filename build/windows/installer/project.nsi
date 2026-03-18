@@ -61,6 +61,10 @@ ManifestDPIAware true
 !define MUI_FINISHPAGE_NOAUTOCLOSE # Wait on the INSTFILES page so the user can take a look into the details of the installation steps
 !define MUI_ABORTWARNING # This will warn the user if they exit from the installer.
 
+# Launch app checkbox on finish page (checked by default)
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXECUTABLE}"
+!define MUI_FINISHPAGE_RUN_TEXT "$(LaunchAfterInstall)"
+
 !insertmacro MUI_PAGE_WELCOME # Welcome to the installer page.
 # !insertmacro MUI_PAGE_LICENSE "resources\eula.txt" # Adds a EULA page to the installer
 !insertmacro MUI_PAGE_DIRECTORY # In which folder install page.
@@ -69,7 +73,27 @@ ManifestDPIAware true
 
 !insertmacro MUI_UNPAGE_INSTFILES # Uinstalling page
 
-!insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
+# Languages - order matters: first language is the fallback default
+!insertmacro MUI_LANGUAGE "English"
+!insertmacro MUI_LANGUAGE "SimpChinese"
+!insertmacro MUI_LANGUAGE "TradChinese"
+!insertmacro MUI_LANGUAGE "Japanese"
+!insertmacro MUI_LANGUAGE "Korean"
+!insertmacro MUI_LANGUAGE "French"
+!insertmacro MUI_LANGUAGE "German"
+!insertmacro MUI_LANGUAGE "Spanish"
+!insertmacro MUI_LANGUAGE "Russian"
+
+# Localized strings for finish page
+LangString LaunchAfterInstall ${LANG_ENGLISH} "Launch ${INFO_PRODUCTNAME}"
+LangString LaunchAfterInstall ${LANG_SIMPCHINESE} "启动 ${INFO_PRODUCTNAME}"
+LangString LaunchAfterInstall ${LANG_TRADCHINESE} "啟動 ${INFO_PRODUCTNAME}"
+LangString LaunchAfterInstall ${LANG_JAPANESE} "${INFO_PRODUCTNAME} を起動"
+LangString LaunchAfterInstall ${LANG_KOREAN} "${INFO_PRODUCTNAME} 실행"
+LangString LaunchAfterInstall ${LANG_FRENCH} "Lancer ${INFO_PRODUCTNAME}"
+LangString LaunchAfterInstall ${LANG_GERMAN} "${INFO_PRODUCTNAME} starten"
+LangString LaunchAfterInstall ${LANG_SPANISH} "Iniciar ${INFO_PRODUCTNAME}"
+LangString LaunchAfterInstall ${LANG_RUSSIAN} "Запустить ${INFO_PRODUCTNAME}"
 
 ## The following two statements can be used to sign the installer and the uninstaller. The path to the binaries are provided in %1
 #!uninstfinalize 'signtool --file "%1"'
@@ -81,6 +105,46 @@ InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}" # Default i
 ShowInstDetails show # This will always show the installation details.
 
 Function .onInit
+   # Auto-detect system language (no dialog)
+   System::Call 'kernel32::GetUserDefaultUILanguage() i .r0'
+   StrCmp $0 "2052" lang_zh_cn
+   StrCmp $0 "1028" lang_zh_tw
+   StrCmp $0 "1041" lang_ja
+   StrCmp $0 "1042" lang_ko
+   StrCmp $0 "1036" lang_fr
+   StrCmp $0 "1031" lang_de
+   StrCmp $0 "3082" lang_es
+   StrCmp $0 "1049" lang_ru
+   Goto lang_en
+
+   lang_zh_cn:
+       StrCpy $LANGUAGE ${LANG_SIMPCHINESE}
+       Goto lang_done
+   lang_zh_tw:
+       StrCpy $LANGUAGE ${LANG_TRADCHINESE}
+       Goto lang_done
+   lang_ja:
+       StrCpy $LANGUAGE ${LANG_JAPANESE}
+       Goto lang_done
+   lang_ko:
+       StrCpy $LANGUAGE ${LANG_KOREAN}
+       Goto lang_done
+   lang_fr:
+       StrCpy $LANGUAGE ${LANG_FRENCH}
+       Goto lang_done
+   lang_de:
+       StrCpy $LANGUAGE ${LANG_GERMAN}
+       Goto lang_done
+   lang_es:
+       StrCpy $LANGUAGE ${LANG_SPANISH}
+       Goto lang_done
+   lang_ru:
+       StrCpy $LANGUAGE ${LANG_RUSSIAN}
+       Goto lang_done
+   lang_en:
+       StrCpy $LANGUAGE ${LANG_ENGLISH}
+   lang_done:
+
    !insertmacro wails.checkArchitecture
 FunctionEnd
 

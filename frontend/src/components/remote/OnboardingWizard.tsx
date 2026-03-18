@@ -76,6 +76,7 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, onClose, onLLMCo
     const [llmSaving, setLlmSaving] = useState(false);
     const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
+    const [llmFormVisible, setLlmFormVisible] = useState(true);
 
     // ── Step 2: Registration ──
     const [regEmail, setRegEmail] = useState(email || "");
@@ -136,6 +137,14 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, onClose, onLLMCo
             return () => clearTimeout(timer);
         }
     }, [llmDone, regDone, onClose]);
+
+    // Collapse the LLM form after successful test & save
+    useEffect(() => {
+        if (llmDone) {
+            const timer = setTimeout(() => setLlmFormVisible(false), 1500);
+            return () => clearTimeout(timer);
+        }
+    }, [llmDone]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
 
@@ -280,7 +289,7 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, onClose, onLLMCo
                         </div>
 
                         {/* Inline config form */}
-                        {selectedProvider && (
+                        {selectedProvider && llmFormVisible && (
                             <div style={{
                                 marginLeft: 30, padding: 14, borderRadius: 8,
                                 border: "1px solid #e2e8f0", background: "#f8fafc",

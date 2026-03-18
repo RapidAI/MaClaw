@@ -251,3 +251,63 @@ export function DeleteScheduledTask(arg1:string):Promise<void>;
 export function PauseScheduledTask(arg1:string):Promise<void>;
 
 export function ResumeScheduledTask(arg1:string):Promise<void>;
+
+// ClawNet P2P network bindings
+export function ClawNetEnsureDaemon():Promise<any>;
+
+export function ClawNetStopDaemon():Promise<void>;
+
+export function ClawNetIsRunning():Promise<boolean>;
+
+export function ClawNetGetStatus():Promise<any>;
+
+export function ClawNetGetPeers():Promise<any>;
+
+export function ClawNetGetCredits():Promise<any>;
+
+export function ClawNetCreateTask(arg1:string, arg2:number):Promise<any>;
+
+export function ClawNetSearchKnowledge(arg1:string):Promise<any>;
+export function ClawNetPublishKnowledge(arg1:string, arg2:string):Promise<any>;
+export function ClawNetSendDM(arg1:string, arg2:string):Promise<any>;
+export function ClawNetGetDMInbox():Promise<any>;
+export function ClawNetListSwarmSessions():Promise<any>;
+export function ClawNetCreateSwarmSession(arg1:string, arg2:string):Promise<any>;
+export function ClawNetGetResume():Promise<any>;
+export function ClawNetListPredictions():Promise<any>;
+
+export function ClawNetGetBinaryPath():Promise<string>;
+
+export function ClawNetInstallBinary():Promise<any>;
+
+export function ClawNetEnsureDaemonWithDownload():Promise<any>;
+
+export function ClawNetListTasks(arg1:string):Promise<any>;
+
+// ClawNet extended bindings
+export function ClawNetGetProfile():Promise<any>;
+export function ClawNetUpdateProfile(arg1:string, arg2:string):Promise<any>;
+export function ClawNetSetMotto(arg1:string):Promise<any>;
+export function ClawNetListTopics():Promise<any>;
+export function ClawNetCreateTopic(arg1:string, arg2:string):Promise<any>;
+export function ClawNetGetTopicMessages(arg1:string):Promise<any>;
+export function ClawNetPostTopicMessage(arg1:string, arg2:string):Promise<any>;
+export function ClawNetBidOnTask(arg1:string, arg2:number, arg3:string):Promise<any>;
+export function ClawNetSubmitTaskResult(arg1:string, arg2:string):Promise<any>;
+export function ClawNetApproveTask(arg1:string):Promise<any>;
+export function ClawNetRejectTask(arg1:string):Promise<any>;
+export function ClawNetCancelTask(arg1:string):Promise<any>;
+export function ClawNetGetTaskBids(arg1:string):Promise<any>;
+export function ClawNetMatchTasks():Promise<any>;
+export function ClawNetGetTaskBoard():Promise<any>;
+export function ClawNetGetTransactions():Promise<any>;
+export function ClawNetGetLeaderboard():Promise<any>;
+export function ClawNetGetDiagnostics():Promise<any>;
+export function ClawNetSelfUpdate():Promise<any>;
+export function ClawNetGetKnowledgeFeed(arg1:string, arg2:number):Promise<any>;
+export function ClawNetGetDMThread(arg1:string, arg2:number):Promise<any>;
+export function ClawNetHasIdentity():Promise<any>;
+export function ClawNetExportIdentity():Promise<any>;
+export function ClawNetImportIdentity():Promise<any>;
+export function ClawNetOnlineBackupKey(arg1:string):Promise<any>;
+export function ClawNetOnlineRestoreKey(arg1:string):Promise<any>;

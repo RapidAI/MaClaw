@@ -170,12 +170,14 @@ type EmailBlocklistRepository interface {
 
 type InvitationCodeRepository interface {
 	Create(ctx context.Context, item *InvitationCode) error
+	GetByID(ctx context.Context, id string) (*InvitationCode, error)
 	GetByCode(ctx context.Context, code string) (*InvitationCode, error)
 	GetByEmail(ctx context.Context, email string) (*InvitationCode, error)
 	List(ctx context.Context, status string, search string) ([]*InvitationCode, error)
 	ListPaged(ctx context.Context, status string, search string, offset, limit int) ([]*InvitationCode, int, error)
 	MarkUsed(ctx context.Context, id string, email string, usedAt time.Time) error
 	Unbind(ctx context.Context, id string) error
+	DeleteByID(ctx context.Context, id string) error
 	DeleteByEmail(ctx context.Context, email string) (int64, error)
 }
 

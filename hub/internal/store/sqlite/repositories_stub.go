@@ -1168,6 +1168,30 @@ func (r *invitationCodeRepo) Create(ctx context.Context, item *store.InvitationC
 	return err
 }
 
+func (r *invitationCodeRepo) GetByID(ctx context.Context, id string) (*store.InvitationCode, error) {
+	row := r.readDB.QueryRowContext(
+		ctx,
+		`SELECT id, code, status, used_by_email, used_at, validity_days, created_at
+		 FROM invitation_codes WHERE id = ?`,
+		id,
+	)
+	var item store.InvitationCode
+	var usedAt sql.NullString
+	var createdAt string
+	if err := row.Scan(&item.ID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if usedAt.Valid {
+		t := mustParseTime(usedAt.String)
+		item.UsedAt = &t
+	}
+	item.CreatedAt = mustParseTime(createdAt)
+	return &item, nil
+}
+
 func (r *invitationCodeRepo) GetByCode(ctx context.Context, code string) (*store.InvitationCode, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
@@ -1309,6 +1333,11 @@ func (r *invitationCodeRepo) Unbind(ctx context.Context, id string) error {
 		`UPDATE invitation_codes SET status = 'unused', used_by_email = '', used_at = NULL WHERE id = ?`,
 		id,
 	)
+	return err
+}
+
+func (r *invitationCodeRepo) DeleteByID(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM invitation_codes WHERE id = ?`, id)
 	return err
 }
 

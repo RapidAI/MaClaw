@@ -493,3 +493,185 @@ export function PauseScheduledTask(arg1) {
 export function ResumeScheduledTask(arg1) {
   return window['go']['main']['App']['ResumeScheduledTask'](arg1);
 }
+
+// ClawNet P2P network bindings
+export function ClawNetEnsureDaemon() {
+  return window['go']['main']['App']['ClawNetEnsureDaemon']();
+}
+
+export function ClawNetStopDaemon() {
+  return window['go']['main']['App']['ClawNetStopDaemon']();
+}
+
+export function ClawNetIsRunning() {
+  return window['go']['main']['App']['ClawNetIsRunning']();
+}
+
+export function ClawNetGetStatus() {
+  return window['go']['main']['App']['ClawNetGetStatus']();
+}
+
+export function ClawNetGetPeers() {
+  return window['go']['main']['App']['ClawNetGetPeers']();
+}
+
+export function ClawNetGetCredits() {
+  return window['go']['main']['App']['ClawNetGetCredits']();
+}
+
+export function ClawNetCreateTask(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetCreateTask'](arg1, arg2);
+}
+
+export function ClawNetSearchKnowledge(arg1) {
+  return window['go']['main']['App']['ClawNetSearchKnowledge'](arg1);
+}
+
+export function ClawNetPublishKnowledge(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetPublishKnowledge'](arg1, arg2);
+}
+
+export function ClawNetSendDM(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetSendDM'](arg1, arg2);
+}
+
+export function ClawNetGetDMInbox() {
+  return window['go']['main']['App']['ClawNetGetDMInbox']();
+}
+
+export function ClawNetListSwarmSessions() {
+  return window['go']['main']['App']['ClawNetListSwarmSessions']();
+}
+
+export function ClawNetCreateSwarmSession(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetCreateSwarmSession'](arg1, arg2);
+}
+
+export function ClawNetGetResume() {
+  return window['go']['main']['App']['ClawNetGetResume']();
+}
+
+export function ClawNetListPredictions() {
+  return window['go']['main']['App']['ClawNetListPredictions']();
+}
+
+export function ClawNetGetBinaryPath() {
+  return window['go']['main']['App']['ClawNetGetBinaryPath']();
+}
+
+export function ClawNetInstallBinary() {
+  return window['go']['main']['App']['ClawNetInstallBinary']();
+}
+
+export function ClawNetEnsureDaemonWithDownload() {
+  return window['go']['main']['App']['ClawNetEnsureDaemonWithDownload']();
+}
+
+export function ClawNetListTasks(arg1) {
+  return window['go']['main']['App']['ClawNetListTasks'](arg1);
+}
+
+// ClawNet extended bindings
+export function ClawNetGetProfile() {
+  return window['go']['main']['App']['ClawNetGetProfile']();
+}
+
+export function ClawNetUpdateProfile(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetUpdateProfile'](arg1, arg2);
+}
+
+export function ClawNetSetMotto(arg1) {
+  return window['go']['main']['App']['ClawNetSetMotto'](arg1);
+}
+
+export function ClawNetListTopics() {
+  return window['go']['main']['App']['ClawNetListTopics']();
+}
+
+export function ClawNetCreateTopic(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetCreateTopic'](arg1, arg2);
+}
+
+export function ClawNetGetTopicMessages(arg1) {
+  return window['go']['main']['App']['ClawNetGetTopicMessages'](arg1);
+}
+
+export function ClawNetPostTopicMessage(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetPostTopicMessage'](arg1, arg2);
+}
+
+export function ClawNetBidOnTask(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ClawNetBidOnTask'](arg1, arg2, arg3);
+}
+
+export function ClawNetSubmitTaskResult(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetSubmitTaskResult'](arg1, arg2);
+}
+
+export function ClawNetApproveTask(arg1) {
+  return window['go']['main']['App']['ClawNetApproveTask'](arg1);
+}
+
+export function ClawNetRejectTask(arg1) {
+  return window['go']['main']['App']['ClawNetRejectTask'](arg1);
+}
+
+export function ClawNetCancelTask(arg1) {
+  return window['go']['main']['App']['ClawNetCancelTask'](arg1);
+}
+
+export function ClawNetGetTaskBids(arg1) {
+  return window['go']['main']['App']['ClawNetGetTaskBids'](arg1);
+}
+
+export function ClawNetMatchTasks() {
+  return window['go']['main']['App']['ClawNetMatchTasks']();
+}
+
+export function ClawNetGetTaskBoard() {
+  return window['go']['main']['App']['ClawNetGetTaskBoard']();
+}
+
+export function ClawNetGetTransactions() {
+  return window['go']['main']['App']['ClawNetGetTransactions']();
+}
+
+export function ClawNetGetLeaderboard() {
+  return window['go']['main']['App']['ClawNetGetLeaderboard']();
+}
+
+export function ClawNetGetDiagnostics() {
+  return window['go']['main']['App']['ClawNetGetDiagnostics']();
+}
+
+export function ClawNetSelfUpdate() {
+  return window['go']['main']['App']['ClawNetSelfUpdate']();
+}
+
+export function ClawNetGetKnowledgeFeed(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetGetKnowledgeFeed'](arg1, arg2);
+}
+
+export function ClawNetGetDMThread(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetGetDMThread'](arg1, arg2);
+}
+
+export function ClawNetHasIdentity() {
+  return window['go']['main']['App']['ClawNetHasIdentity']();
+}
+
+export function ClawNetExportIdentity() {
+  return window['go']['main']['App']['ClawNetExportIdentity']();
+}
+
+export function ClawNetImportIdentity() {
+  return window['go']['main']['App']['ClawNetImportIdentity']();
+}
+
+export function ClawNetOnlineBackupKey(arg1) {
+  return window['go']['main']['App']['ClawNetOnlineBackupKey'](arg1);
+}
+
+export function ClawNetOnlineRestoreKey(arg1) {
+  return window['go']['main']['App']['ClawNetOnlineRestoreKey'](arg1);
+}

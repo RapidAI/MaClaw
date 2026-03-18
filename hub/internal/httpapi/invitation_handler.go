@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -152,7 +156,7 @@ func ExportInvitationCodesHandler(svc *invitation.Service) http.HandlerFunc {
 	}
 }
 
-func UnbindInvitationCodeHandler(svc *invitation.Service) http.HandlerFunc {
+func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.IdentityService, deviceSvc *device.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID string `json:"id"`
@@ -165,11 +169,64 @@ func UnbindInvitationCodeHandler(svc *invitation.Service) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
 			return
 		}
-		if err := svc.UnbindCode(r.Context(), req.ID); err != nil {
-			writeError(w, http.StatusInternalServerError, "UNBIND_FAILED", err.Error())
+
+		// Look up the invitation code to get the bound email before cleanup.
+		code, err := svc.GetCodeByID(r.Context(), req.ID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "invitation code not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+		email := code.UsedByEmail
+		var deletedMachines int64
+
+		// If the code was bound to an email, clean up all associated data.
+		if email != "" {
+			if identity != nil {
+				user, lookupErr := identity.LookupUserByEmail(r.Context(), email)
+				if lookupErr != nil {
+					log.Printf("[admin-unbind] lookup user %s failed: %v", email, lookupErr)
+				}
+				if user != nil && deviceSvc != nil {
+					deleted, delErr := deviceSvc.ForceDeleteMachinesByUser(r.Context(), user.ID)
+					if delErr != nil {
+						log.Printf("[admin-unbind] delete machines for user %s failed: %v", user.ID, delErr)
+					} else {
+						deletedMachines = deleted
+					}
+				}
+			}
+
+			// Remove all invitation codes bound to this email.
+			codesDeleted, delErr := svc.DeleteCodeByEmail(r.Context(), email)
+			if delErr != nil {
+				log.Printf("[admin-unbind] delete codes for %s failed: %v", email, delErr)
+			} else if codesDeleted > 0 {
+				log.Printf("[admin-unbind] deleted %d invitation code(s) for %s", codesDeleted, email)
+			}
+
+			// Remove IM bindings.
+			if feishuNotifier != nil {
+				feishuNotifier.RemoveOpenID(email)
+			}
+			for _, cleaner := range imCleaners {
+				if cleaner != nil {
+					cleaner.RemoveBindingByEmail(email)
+				}
+			}
+		}
+
+		// Delete the invitation code itself (if not already deleted by DeleteCodeByEmail above).
+		if delErr := svc.DeleteCode(r.Context(), req.ID); delErr != nil {
+			log.Printf("[admin-unbind] delete code %s: %v (may already be deleted)", req.ID, delErr)
+		}
+
+		log.Printf("[admin-unbind] code=%s email=%s machines_deleted=%d", code.Code, email, deletedMachines)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":               true,
+			"email":            email,
+			"deleted_machines": deletedMachines,
+		})
 	}
 }
 

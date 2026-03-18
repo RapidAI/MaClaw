@@ -1323,7 +1323,7 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, userMessage s
 // ---------------------------------------------------------------------------
 
 func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
-	return []map[string]interface{}{
+	defs := []map[string]interface{}{
 		toolDef("list_sessions", "列出当前所有远程会话及其状态", nil, nil),
 		toolDef("create_session", "创建新的远程会话。可指定 provider 选择服务商。创建后建议用 get_session_output 观察启动状态。",
 			map[string]interface{}{
@@ -1532,6 +1532,23 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"end_date":     map[string]string{"type": "string", "description": "新的结束日期（可选）"},
 			}, []string{"id"}),
 	}
+
+	// ---------- ClawNet tools (dynamic — only when daemon is running) ----------
+	if h.app.clawNetClient != nil && h.app.clawNetClient.IsRunning() {
+		defs = append(defs,
+			toolDef("clawnet_search", "在虾网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
+				map[string]interface{}{
+					"query": map[string]string{"type": "string", "description": "搜索关键词"},
+				}, []string{"query"}),
+			toolDef("clawnet_publish", "向虾网（ClawNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
+				map[string]interface{}{
+					"title": map[string]string{"type": "string", "description": "知识标题"},
+					"body":  map[string]string{"type": "string", "description": "知识内容（Markdown 格式）"},
+				}, []string{"title", "body"}),
+		)
+	}
+
+	return defs
 }
 
 func toolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
@@ -1657,6 +1674,10 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 		return h.toolDeleteScheduledTask(args)
 	case "update_scheduled_task":
 		return h.toolUpdateScheduledTask(args)
+	case "clawnet_search":
+		return h.toolClawNetSearch(args)
+	case "clawnet_publish":
+		return h.toolClawNetPublish(args)
 	default:
 		return fmt.Sprintf("未知工具: %s", name)
 	}
@@ -3090,4 +3111,66 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 		return fmt.Sprintf("✅ 定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
 	}
 	return "✅ 定时任务已更新"
+}
+
+// ---------- ClawNet Knowledge Tools ----------
+
+func (h *IMMessageHandler) toolClawNetSearch(args map[string]interface{}) string {
+	if h.app.clawNetClient == nil || !h.app.clawNetClient.IsRunning() {
+		return "虾网未连接，请先在设置中启用 ClawNet"
+	}
+	query := stringVal(args, "query")
+	if query == "" {
+		return "缺少 query 参数"
+	}
+	entries, err := h.app.clawNetClient.SearchKnowledge(query)
+	if err != nil {
+		return fmt.Sprintf("搜索失败: %s", err.Error())
+	}
+	if len(entries) == 0 {
+		return fmt.Sprintf("未找到与「%s」相关的知识条目", query)
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("🔍 虾网知识搜索「%s」— 找到 %d 条:\n\n", query, len(entries)))
+	for i, e := range entries {
+		if i >= 10 {
+			b.WriteString(fmt.Sprintf("... 还有 %d 条结果\n", len(entries)-10))
+			break
+		}
+		b.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, e.Title))
+		if e.Body != "" {
+			body := e.Body
+			if len(body) > 200 {
+				body = body[:200] + "…"
+			}
+			b.WriteString(fmt.Sprintf("   %s\n", body))
+		}
+		if e.Author != "" {
+			b.WriteString(fmt.Sprintf("   — %s", e.Author))
+		}
+		if e.Domain != "" {
+			b.WriteString(fmt.Sprintf(" [%s]", e.Domain))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (h *IMMessageHandler) toolClawNetPublish(args map[string]interface{}) string {
+	if h.app.clawNetClient == nil || !h.app.clawNetClient.IsRunning() {
+		return "虾网未连接，请先在设置中启用 ClawNet"
+	}
+	title := stringVal(args, "title")
+	body := stringVal(args, "body")
+	if title == "" {
+		return "缺少 title 参数"
+	}
+	if body == "" {
+		return "缺少 body 参数"
+	}
+	entry, err := h.app.clawNetClient.PublishKnowledge(title, body)
+	if err != nil {
+		return fmt.Sprintf("发布失败: %s", err.Error())
+	}
+	return fmt.Sprintf("✅ 知识已发布到虾网\nID: %s\n标题: %s", entry.ID, entry.Title)
 }

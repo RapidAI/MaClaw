@@ -120,6 +120,29 @@ func (s *Service) UnbindCode(ctx context.Context, id string) error {
 	return s.repo.Unbind(ctx, id)
 }
 
+// GetCodeByID returns the invitation code with the given ID.
+func (s *Service) GetCodeByID(ctx context.Context, id string) (*store.InvitationCode, error) {
+	if id == "" {
+		return nil, ErrCodeNotFound
+	}
+	item, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, ErrCodeNotFound
+	}
+	return item, nil
+}
+
+// DeleteCode permanently deletes a single invitation code by ID.
+func (s *Service) DeleteCode(ctx context.Context, id string) error {
+	if id == "" {
+		return ErrCodeNotFound
+	}
+	return s.repo.DeleteByID(ctx, id)
+}
+
 // DeleteCodeByEmail permanently deletes all invitation codes bound to the given email.
 // Returns the number of deleted codes.
 func (s *Service) DeleteCodeByEmail(ctx context.Context, email string) (int64, error) {

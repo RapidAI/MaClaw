@@ -345,8 +345,8 @@ export function SkillsManagementPanel({ translate }: Props) {
 
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {/* Tab switcher */}
-            <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e1e4e8" }}>
+            {/* Tab switcher — sticky so it stays visible while content scrolls */}
+            <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e1e4e8", position: "sticky", top: 0, backgroundColor: "var(--bg-color)", zIndex: 5, paddingTop: "2px" }}>
                 <button
                     style={{
                         ...tabBtnStyle,

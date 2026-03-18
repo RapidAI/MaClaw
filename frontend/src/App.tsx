@@ -15,6 +15,7 @@ import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import globeOnline from './assets/images/globe_online.svg';
 import globeOffline from './assets/images/globe_offline.svg';
+import clawnetIcon from './assets/images/clawnet.svg';
 import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, PingSkillHub, ValidateSkillHub } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
@@ -31,6 +32,8 @@ import { LLMConfigPanel } from './components/remote/LLMConfigPanel';
 import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
+import { ClawNetPanel } from './components/remote/ClawNetPanel';
+import { ClawNetTaskBoard } from './components/remote/ClawNetTaskBoard';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 
 const subscriptionUrls: { [key: string]: string } = {
@@ -1355,7 +1358,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role' | 'memory' | 'scheduler' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'system'>('general');
     const [installLocation, setInstallLocation] = useState<'user' | 'project'>('user');
     const [installProject, setInstallProject] = useState<string>("");
     const [isBatchInstalling, setIsBatchInstalling] = useState(false);
@@ -1371,6 +1374,9 @@ function App() {
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
     const maclawLLMFirstPingDone = useRef(false);
+
+    // ClawNet P2P network running status (globe indicator)
+    const [clawNetRunning, setClawNetRunning] = useState<boolean>(false);
     const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
 
     // SkillHUB management
@@ -2959,6 +2965,11 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '定时让 MaClaw 自动执行任务' : lang === 'zh-Hant' ? '定時讓 MaClaw 自動執行任務' : 'Schedule MaClaw to run tasks automatically',
         },
         {
+            id: 'clawnet' as const,
+            label: lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet',
+            desc: lang === 'zh-Hans' ? 'ClawNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'ClawNet P2P 去中心化 Agent 網路' : 'ClawNet decentralized P2P agent network',
+        },
+        {
             id: 'system' as const,
             label: lang === 'zh-Hans' ? '系统' : lang === 'zh-Hant' ? '系統' : 'System',
             desc: lang === 'zh-Hans' ? '心跳、熄屏等系统级设置' : lang === 'zh-Hant' ? '心跳、熄屏等系統級設置' : 'Heartbeat, screen dimming and other system settings',
@@ -3036,6 +3047,16 @@ ${instruction}`;
                         <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>MCP</span>
                     </div>
 
+                    <div
+                        className={`sidebar-item ${navTab === 'clawnet' ? 'active' : ''}`}
+                        onClick={() => switchTool('clawnet')}
+                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        title={lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}
+                    >
+                        <img src={clawnetIcon} alt="ClawNet" style={{ width: '22px', height: '22px', margin: 0 }} />
+                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}</span>
+                    </div>
+
                     <div style={{ flex: 1 }}></div>
 
                     <div
@@ -3092,16 +3113,19 @@ ${instruction}`;
                                 />
                             </div>
                             <div
-                                title={lang?.startsWith('zh') ? 'ClawNet 未接入' : 'ClawNet not connected'}
+                                title={clawNetRunning
+                                    ? (lang?.startsWith('zh') ? 'ClawNet 已连接' : 'ClawNet connected')
+                                    : (lang?.startsWith('zh') ? 'ClawNet 未接入' : 'ClawNet not connected')}
                                 style={{
-                                    cursor: 'default',
-                                    opacity: 0.6,
+                                    cursor: 'pointer',
+                                    opacity: clawNetRunning ? 1 : 0.6,
                                     transition: 'opacity 0.3s ease',
                                 }}
+                                onClick={() => { setNavTab('settings'); setSettingsTab('clawnet'); }}
                             >
                                 <img
-                                    src={globeOffline}
-                                    alt="ClawNet Offline"
+                                    src={clawNetRunning ? globeOnline : globeOffline}
+                                    alt={clawNetRunning ? "ClawNet Online" : "ClawNet Offline"}
                                     style={{ width: '18px', height: '18px' }}
                                 />
                             </div>
@@ -3354,7 +3378,7 @@ ${instruction}`;
                     </div>
                 </div>
 
-                <div className={`main-content ${navTab === 'tutorial' || navTab === 'message' || navTab === 'projects' ? 'elegant-scrollbar' : 'no-scrollbar'} ${navTab === 'settings' || navTab === 'about' ? '' : ''}`} style={{ overflowY: navTab === 'projects' ? 'hidden' : 'auto', paddingBottom: '20px', '--wails-draggable': 'no-drag' } as any}>
+                <div className={`main-content ${navTab === 'tutorial' || navTab === 'message' || navTab === 'projects' || navTab === 'skills' ? 'elegant-scrollbar' : 'no-scrollbar'} ${navTab === 'settings' || navTab === 'about' ? '' : ''}`} style={{ overflowY: navTab === 'projects' ? 'hidden' : 'auto', paddingBottom: '20px', '--wails-draggable': 'no-drag' } as any}>
                     {navTab === 'message' && (
                         <div style={{
                             width: '100%',
@@ -3991,6 +4015,15 @@ ${instruction}`;
                                 <ScheduledTasksPanel lang={lang} />
                             </div>
 
+                            <div className="settings-panel" style={{ display: settingsTab === 'clawnet' ? 'block' : 'none' }}>
+                                <ClawNetPanel
+                                    config={config}
+                                    saveRemoteConfigField={saveRemoteConfigField}
+                                    lang={lang}
+                                    onRunningChange={setClawNetRunning}
+                                />
+                            </div>
+
                             <div className="settings-panel" style={{ display: settingsTab === 'system' ? 'block' : 'none' }}>
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
@@ -4233,6 +4266,10 @@ ${instruction}`;
                             </div>
                             </div>
                         </div>
+                    )}
+
+                    {navTab === 'clawnet' && (
+                        <ClawNetTaskBoard lang={lang} clawNetRunning={clawNetRunning} />
                     )}
 
                     {navTab === 'about' && (

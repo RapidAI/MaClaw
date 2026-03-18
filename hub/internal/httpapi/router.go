@@ -46,6 +46,10 @@ func NewRouter(
 	if identity != nil {
 		userLookup = identity.UsersRepo()
 	}
+	var imCleaners []IMBindingCleaner
+	if qqbotPlugin != nil {
+		imCleaners = append(imCleaners, qqbotPlugin)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler("maclaw-hub"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(admins))
@@ -76,7 +80,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/invitation-codes/toggle", RequireAdmin(admins, ToggleInvitationCodeHandler(invitationSvc)))
 	mux.HandleFunc("GET /api/admin/invitation-codes/status", RequireAdmin(admins, InvitationCodeStatusHandler(invitationSvc)))
 	mux.HandleFunc("GET /api/admin/invitation-codes/export", RequireAdmin(admins, ExportInvitationCodesHandler(invitationSvc)))
-	mux.HandleFunc("POST /api/admin/invitation-codes/unbind", RequireAdmin(admins, UnbindInvitationCodeHandler(invitationSvc)))
+	mux.HandleFunc("POST /api/admin/invitation-codes/unbind", RequireAdmin(admins, UnbindInvitationCodeHandler(invitationSvc, identity, deviceSvc, feishuNotifier, imCleaners)))
 	mux.HandleFunc("GET /api/admin/enrollments/pending", RequireAdmin(admins, ListPendingEnrollmentsHandler(identity)))
 	mux.HandleFunc("GET /api/admin/enrollments/all", RequireAdmin(admins, ListAllEnrollmentsHandler(identity)))
 	mux.HandleFunc("POST /api/admin/enrollments/approve", RequireAdmin(admins, ApproveEnrollmentHandler(identity, feishuNotifier)))
@@ -120,11 +124,6 @@ func NewRouter(
 	mux.HandleFunc("/api/feishu/webhook", feishu.WebhookHandler(feishuNotifier))
 	if feishuPlugin != nil {
 		mux.HandleFunc("GET /api/feishu/tempfile/{token}", feishuPlugin.ServeTempFile)
-	}
-	// Public binding page API (no auth required)
-	var imCleaners []IMBindingCleaner
-	if qqbotPlugin != nil {
-		imCleaners = append(imCleaners, qqbotPlugin)
 	}
 	// Public binding page API (no auth required) — allow cross-origin for iframe embedding
 	bindCORS := func(h http.HandlerFunc) http.HandlerFunc {
@@ -173,6 +172,10 @@ func NewRouter(
 
 	// Webhook session endpoint (Bearer token auth handled internally)
 	mux.HandleFunc("POST /api/webhook/session", WebhookCreateSessionHandler(deviceSvc, sessionSvc))
+
+	// ClawNet identity key online backup/restore (no auth — protected by user password)
+	mux.HandleFunc("POST /api/clawnet/key/backup", ClawNetKeyBackupHandler())
+	mux.HandleFunc("POST /api/clawnet/key/restore", ClawNetKeyRestoreHandler())
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")

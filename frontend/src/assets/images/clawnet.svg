@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- P2P network ring -->
+  <circle cx="32" cy="32" r="26" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4 3" opacity="0.4"/>
+  <!-- Network nodes -->
+  <circle cx="32" cy="8" r="3" fill="#6366f1" opacity="0.6"/>
+  <circle cx="52" cy="22" r="3" fill="#8b5cf6" opacity="0.6"/>
+  <circle cx="52" cy="44" r="3" fill="#8b5cf6" opacity="0.6"/>
+  <circle cx="32" cy="56" r="3" fill="#6366f1" opacity="0.6"/>
+  <circle cx="12" cy="44" r="3" fill="#a855f7" opacity="0.6"/>
+  <circle cx="12" cy="22" r="3" fill="#a855f7" opacity="0.6"/>
+  <!-- Connection lines -->
+  <line x1="32" y1="8" x2="52" y2="22" stroke="#6366f1" stroke-width="0.8" opacity="0.3"/>
+  <line x1="52" y1="22" x2="52" y2="44" stroke="#8b5cf6" stroke-width="0.8" opacity="0.3"/>
+  <line x1="52" y1="44" x2="32" y2="56" stroke="#6366f1" stroke-width="0.8" opacity="0.3"/>
+  <line x1="32" y1="56" x2="12" y2="44" stroke="#a855f7" stroke-width="0.8" opacity="0.3"/>
+  <line x1="12" y1="44" x2="12" y2="22" stroke="#a855f7" stroke-width="0.8" opacity="0.3"/>
+  <line x1="12" y1="22" x2="32" y2="8" stroke="#6366f1" stroke-width="0.8" opacity="0.3"/>
+  <!-- Cross connections -->
+  <line x1="32" y1="8" x2="32" y2="56" stroke="#6366f1" stroke-width="0.5" opacity="0.15"/>
+  <line x1="12" y1="22" x2="52" y2="44" stroke="#8b5cf6" stroke-width="0.5" opacity="0.15"/>
+  <line x1="52" y1="22" x2="12" y2="44" stroke="#a855f7" stroke-width="0.5" opacity="0.15"/>
+  <!-- Lobster body (center) -->
+  <ellipse cx="32" cy="32" rx="8" ry="6" fill="#ef4444" opacity="0.9"/>
+  <!-- Lobster tail segments -->
+  <ellipse cx="32" cy="39" rx="6" ry="3" fill="#dc2626" opacity="0.8"/>
+  <ellipse cx="32" cy="43" rx="4.5" ry="2.2" fill="#b91c1c" opacity="0.7"/>
+  <path d="M28 44 Q32 49 36 44" stroke="#991b1b" stroke-width="1.2" fill="none" opacity="0.7"/>
+  <!-- Lobster claws -->
+  <path d="M24 30 Q18 24 16 27 Q14 30 20 31 Z" fill="#ef4444" stroke="#dc2626" stroke-width="0.5"/>
+  <path d="M40 30 Q46 24 48 27 Q50 30 44 31 Z" fill="#ef4444" stroke="#dc2626" stroke-width="0.5"/>
+  <!-- Lobster antennae -->
+  <path d="M29 27 Q24 18 20 16" stroke="#ef4444" stroke-width="1" fill="none" stroke-linecap="round"/>
+  <path d="M35 27 Q40 18 44 16" stroke="#ef4444" stroke-width="1" fill="none" stroke-linecap="round"/>
+  <!-- Lobster eyes -->
+  <circle cx="29" cy="29" r="1.5" fill="#1e1e1e"/>
+  <circle cx="35" cy="29" r="1.5" fill="#1e1e1e"/>
+  <circle cx="29.5" cy="28.5" r="0.5" fill="white"/>
+  <circle cx="35.5" cy="28.5" r="0.5" fill="white"/>
+</svg>

@@ -27,6 +27,15 @@ func (m *memInvitationCodeRepo) Create(_ context.Context, item *store.Invitation
 	return nil
 }
 
+func (m *memInvitationCodeRepo) GetByID(_ context.Context, id string) (*store.InvitationCode, error) {
+	for _, c := range m.codes {
+		if c.ID == id {
+			return c, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *memInvitationCodeRepo) GetByCode(_ context.Context, code string) (*store.InvitationCode, error) {
 	for _, c := range m.codes {
 		if c.Code == code {
@@ -93,6 +102,16 @@ func (m *memInvitationCodeRepo) Unbind(_ context.Context, id string) error {
 			c.Status = "unused"
 			c.UsedByEmail = ""
 			c.UsedAt = nil
+			return nil
+		}
+	}
+	return errors.New("not found")
+}
+
+func (m *memInvitationCodeRepo) DeleteByID(_ context.Context, id string) error {
+	for i, c := range m.codes {
+		if c.ID == id {
+			m.codes = append(m.codes[:i], m.codes[i+1:]...)
 			return nil
 		}
 	}
