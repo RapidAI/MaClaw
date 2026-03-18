@@ -114,27 +114,6 @@ func TestBlockedEmailHandlersPersistEntries(t *testing.T) {
 	}
 }
 
-func TestInviteHandlersPersistEntries(t *testing.T) {
-	router, _ := newAdminRouterTestServices(t)
-	token := issueHubAdminToken(t, router)
-
-	addResp := doHubAdminJSONRequest(t, router, http.MethodPost, "/api/admin/invites", map[string]any{
-		"email": "invite@example.com",
-		"role":  "member",
-	}, token)
-	if addResp.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", addResp.Code, addResp.Body.String())
-	}
-
-	listResp := doHubAdminJSONRequest(t, router, http.MethodGet, "/api/admin/invites", nil, token)
-	if listResp.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", listResp.Code, listResp.Body.String())
-	}
-	if body := listResp.Body.String(); body == "" || !containsAll(body, "invite@example.com", "member") {
-		t.Fatalf("unexpected body=%s", body)
-	}
-}
-
 func TestCenterConfigAndRegisterHandlers(t *testing.T) {
 	var capturedRegisterBody map[string]any
 	centerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

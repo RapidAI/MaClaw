@@ -57,7 +57,7 @@ func newHTTPAPITestServices(t *testing.T) (*auth.IdentityService, *device.Servic
 	})
 
 	st := sqlite.NewStore(provider)
-	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.EmailInvites, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
 	deviceSvc := device.NewService(st.Machines, device.NewRuntime())
 	sessionSvc := session.NewService(session.NewCache(), st.Sessions)
 	return identity, deviceSvc, sessionSvc

@@ -214,3 +214,38 @@ export function InstallHubSkill(arg1:string, arg2:string):Promise<void>;
 export function CheckHubSkillUpdates():Promise<Array<any>>;
 
 export function UpdateHubSkill(arg1:string):Promise<void>;
+
+// Memory management bindings
+export function ListMemories(arg1:string, arg2:string):Promise<Array<any>>;
+
+export function SaveMemory(arg1:string, arg2:string, arg3:Array<string>):Promise<void>;
+
+export function UpdateMemory(arg1:string, arg2:string, arg3:string, arg4:Array<string>):Promise<void>;
+
+export function DeleteMemory(arg1:string):Promise<void>;
+
+// Memory compression & backup bindings
+export function CompressMemories():Promise<any>;
+
+export function ListMemoryBackups():Promise<Array<any>>;
+
+export function RestoreMemoryBackup(arg1:string):Promise<void>;
+
+export function DeleteMemoryBackup(arg1:string):Promise<void>;
+
+export function SetAutoCompress(arg1:boolean):Promise<void>;
+
+export function GetAutoCompressStatus():Promise<any>;
+
+// Scheduled task management bindings
+export function ListScheduledTasks():Promise<Array<any>>;
+
+export function CreateScheduledTask(arg1:string, arg2:string, arg3:number, arg4:number, arg5:number, arg6:number, arg7:string, arg8:string):Promise<string>;
+
+export function UpdateScheduledTask(arg1:string, arg2:any):Promise<void>;
+
+export function DeleteScheduledTask(arg1:string):Promise<void>;
+
+export function PauseScheduledTask(arg1:string):Promise<void>;
+
+export function ResumeScheduledTask(arg1:string):Promise<void>;

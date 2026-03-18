@@ -22,9 +22,9 @@ func makeAllTools(dynamicCount int) []map[string]interface{} {
 	return builtins
 }
 
-func TestToolRouter_BelowThreshold(t *testing.T) {
-	// 20 builtins + 1 dynamic = 21 total, below threshold of 22.
-	allTools := makeAllTools(1)
+func TestToolRouter_BelowBudget(t *testing.T) {
+	// 20 builtins + 5 dynamic = 25 total, below maxToolBudget of 30.
+	allTools := makeAllTools(5)
 	router := NewToolRouter(nil)
 	result := router.Route("hello world", allTools)
 
@@ -33,55 +33,54 @@ func TestToolRouter_BelowThreshold(t *testing.T) {
 	}
 }
 
-func TestToolRouter_ExactlyAtThreshold(t *testing.T) {
-	// 20 builtins + 2 dynamic = 22 total, at threshold.
-	allTools := makeAllTools(2)
+func TestToolRouter_ExactlyAtBudget(t *testing.T) {
+	// 20 builtins + 10 dynamic = 30 total, at maxToolBudget.
+	allTools := makeAllTools(10)
 	router := NewToolRouter(nil)
 	result := router.Route("test message", allTools)
 
-	if len(result) != 22 {
-		t.Errorf("expected 22 tools (unchanged at threshold), got %d", len(result))
+	if len(result) != 30 {
+		t.Errorf("expected 30 tools (unchanged at budget), got %d", len(result))
 	}
 }
 
-func TestToolRouter_AboveThreshold_KeepsBuiltins(t *testing.T) {
-	// 20 builtins + 15 dynamic = 35 total, above threshold.
-	allTools := makeAllTools(15)
-	router := NewToolRouter(nil)
-	result := router.Route("some query", allTools)
-
-	// Should have 20 builtins + up to 15 dynamic = 35 max.
-	// Since we have exactly 15 dynamic, all should be kept.
-	if len(result) != 35 {
-		t.Errorf("expected 35 tools, got %d", len(result))
-	}
-
-	// Verify first 20 are builtins.
-	builtinNames := []string{
-		"list_sessions", "create_session", "send_input", "get_session_output",
-		"get_session_events", "interrupt_session", "kill_session", "screenshot",
-		"list_mcp_tools", "call_mcp_tool", "list_skills", "search_skill_hub",
-		"install_skill_hub", "run_skill",
-		"parallel_execute", "recommend_tool",
-		"bash", "read_file", "write_file", "list_directory",
-	}
-	for i, expected := range builtinNames {
-		actual := extractToolName(result[i])
-		if actual != expected {
-			t.Errorf("builtin[%d]: expected %q, got %q", i, expected, actual)
-		}
-	}
-}
-
-func TestToolRouter_AboveThreshold_LimitsDynamic(t *testing.T) {
-	// 20 builtins + 20 dynamic = 40 total.
+func TestToolRouter_AboveBudget_KeepsCoreTools(t *testing.T) {
+	// 20 builtins + 20 dynamic = 40 total, above maxToolBudget.
 	allTools := makeAllTools(20)
 	router := NewToolRouter(nil)
 	result := router.Route("some query", allTools)
 
-	// Should have 20 builtins + 15 dynamic = 35.
-	if len(result) != 35 {
-		t.Errorf("expected 35 tools (20 builtin + 15 dynamic), got %d", len(result))
+	if len(result) > maxToolBudget {
+		t.Errorf("expected at most %d tools, got %d", maxToolBudget, len(result))
+	}
+
+	// Verify all core tools are present.
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	for name := range coreToolNames {
+		if !resultNames[name] {
+			t.Errorf("core tool %q missing from result", name)
+		}
+	}
+}
+
+func TestToolRouter_AboveBudget_LimitsDynamic(t *testing.T) {
+	// 20 builtins + 25 dynamic = 45 total.
+	allTools := makeAllTools(25)
+	router := NewToolRouter(nil)
+	result := router.Route("some query", allTools)
+
+	// Count dynamic tools in result.
+	dynamicCount := 0
+	for _, tool := range result {
+		if !isBuiltinToolName(extractToolName(tool)) {
+			dynamicCount++
+		}
+	}
+	if dynamicCount > maxDynamicRouted {
+		t.Errorf("expected at most %d dynamic tools, got %d", maxDynamicRouted, dynamicCount)
 	}
 }
 
@@ -104,26 +103,72 @@ func TestToolRouter_RelevanceRanking(t *testing.T) {
 	router := NewToolRouter(nil)
 	result := router.Route("search the web for golang tutorials", allTools)
 
-	// All tools should be returned since 28 > 20, but we have only 10 dynamic
-	// (below maxDynamicRouted=15), so all are kept.
+	// 30 total, at budget — all should be returned.
 	if len(result) != len(allTools) {
 		t.Errorf("expected %d tools, got %d", len(allTools), len(result))
 	}
+}
 
-	// The "search_web" tool should be ranked higher (closer to position 18).
-	// Find its position in the result.
-	searchIdx := -1
-	for i := builtinToolCount; i < len(result); i++ {
-		if extractToolName(result[i]) == "search_web" {
-			searchIdx = i
+func TestToolRouter_RelevanceRanking_AboveBudget(t *testing.T) {
+	builtins := makeBuiltinDefs()
+	// Add enough dynamic tools to exceed budget.
+	var dynamic []map[string]interface{}
+	dynamic = append(dynamic, makeDynamicTool("search_web", "Search the web for information"))
+	for i := 0; i < 15; i++ {
+		dynamic = append(dynamic, makeDynamicTool(
+			fmt.Sprintf("filler_%d", i),
+			fmt.Sprintf("Filler tool %d does nothing useful", i),
+		))
+	}
+	allTools := append(builtins, dynamic...)
+
+	router := NewToolRouter(nil)
+	result := router.Route("search the web for golang tutorials", allTools)
+
+	// search_web should be included due to high relevance.
+	found := false
+	for _, tool := range result {
+		if extractToolName(tool) == "search_web" {
+			found = true
 			break
 		}
 	}
-	if searchIdx == -1 {
-		t.Error("search_web tool not found in result")
-	} else if searchIdx != builtinToolCount {
-		// search_web should be the first dynamic tool (highest relevance).
-		t.Logf("search_web at index %d (first dynamic at %d)", searchIdx, builtinToolCount)
+	if !found {
+		t.Error("search_web tool should be included due to high relevance")
+	}
+}
+
+func TestToolRouter_NonCoreBuiltinCompetes(t *testing.T) {
+	// Non-core builtins like config tools should be included when relevant.
+	builtins := makeBuiltinDefs()
+	// Add config tools (non-core builtins).
+	builtins = append(builtins,
+		toolDef("get_config", "获取配置", nil, nil),
+		toolDef("update_config", "修改配置", nil, nil),
+		toolDef("save_memory", "保存记忆", nil, nil),
+		toolDef("create_scheduled_task", "创建定时任务", nil, nil),
+	)
+	// Add enough dynamic tools to exceed budget.
+	for i := 0; i < 15; i++ {
+		builtins = append(builtins, makeDynamicTool(
+			fmt.Sprintf("filler_%d", i),
+			fmt.Sprintf("Filler tool %d", i),
+		))
+	}
+
+	router := NewToolRouter(nil)
+	result := router.Route("帮我修改配置", builtins)
+
+	// get_config and update_config should rank high due to "配置" match.
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	if !resultNames["get_config"] {
+		t.Error("get_config should be included when user mentions 配置")
+	}
+	if !resultNames["update_config"] {
+		t.Error("update_config should be included when user mentions 配置")
 	}
 }
 
@@ -132,9 +177,9 @@ func TestToolRouter_EmptyMessage(t *testing.T) {
 	router := NewToolRouter(nil)
 	result := router.Route("", allTools)
 
-	// Empty message → should still return 20 + 15 = 35.
-	if len(result) != 35 {
-		t.Errorf("expected 35 tools, got %d", len(result))
+	// Empty message → should cap at maxToolBudget.
+	if len(result) > maxToolBudget {
+		t.Errorf("expected at most %d tools, got %d", maxToolBudget, len(result))
 	}
 }
 
@@ -151,7 +196,6 @@ func TestToolRouter_EmptyTools(t *testing.T) {
 		t.Errorf("expected 0 tools for empty input, got %d", len(result))
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Tokenization tests
@@ -281,7 +325,6 @@ func TestTfidfSimilarity_EmptyInputs(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // Hub recommendation matching tests
 // ---------------------------------------------------------------------------
@@ -292,8 +335,6 @@ func TestToolRouter_SetHubClient(t *testing.T) {
 		t.Error("expected nil hubClient initially")
 	}
 
-	// We can't create a real SkillHubClient without an App, but we can
-	// verify the setter works with a nil value (no panic).
 	router.SetHubClient(nil)
 	if router.hubClient != nil {
 		t.Error("expected nil hubClient after SetHubClient(nil)")

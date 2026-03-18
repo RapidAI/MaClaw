@@ -140,6 +140,28 @@ func (a *App) ListMemories(category, keyword string) []MemoryEntry {
 	return a.memoryStore.List(MemoryCategory(category), keyword)
 }
 
+// SaveMemory creates a new memory entry (Wails binding).
+func (a *App) SaveMemory(content, category string, tags []string) error {
+	a.ensureRemoteInfra()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	return a.memoryStore.Save(MemoryEntry{
+		Content:  content,
+		Category: MemoryCategory(category),
+		Tags:     tags,
+	})
+}
+
+// UpdateMemory modifies an existing memory entry by ID (Wails binding).
+func (a *App) UpdateMemory(id, content, category string, tags []string) error {
+	a.ensureRemoteInfra()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	return a.memoryStore.Update(id, content, MemoryCategory(category), tags)
+}
+
 // DeleteMemory removes the memory entry with the given ID (Wails binding).
 func (a *App) DeleteMemory(id string) error {
 	a.ensureRemoteInfra()
@@ -147,6 +169,88 @@ func (a *App) DeleteMemory(id string) error {
 		return fmt.Errorf("memory store not initialized")
 	}
 	return a.memoryStore.Delete(id)
+}
+
+// CompressMemories runs dedup + LLM compression once and returns a summary (Wails binding).
+func (a *App) CompressMemories() (*CompressResult, error) {
+	a.ensureRemoteInfra()
+	if a.memoryStore == nil {
+		return nil, fmt.Errorf("memory store not initialized")
+	}
+	mc := a.getOrCreateCompressor()
+	return mc.Compress(context.Background())
+}
+
+// ListMemoryBackups returns all available memory backup snapshots (Wails binding).
+func (a *App) ListMemoryBackups() ([]MemoryBackupInfo, error) {
+	a.ensureRemoteInfra()
+	if a.memoryStore == nil {
+		return nil, fmt.Errorf("memory store not initialized")
+	}
+	mc := a.getOrCreateCompressor()
+	return mc.ListBackups()
+}
+
+// RestoreMemoryBackup replaces the current memory with the named backup and
+// takes effect immediately (Wails binding).
+func (a *App) RestoreMemoryBackup(backupName string) error {
+	a.ensureRemoteInfra()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	mc := a.getOrCreateCompressor()
+	return mc.RestoreBackup(backupName)
+}
+
+// DeleteMemoryBackup removes a backup file by name (Wails binding).
+func (a *App) DeleteMemoryBackup(backupName string) error {
+	a.ensureRemoteInfra()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	mc := a.getOrCreateCompressor()
+	return mc.DeleteBackup(backupName)
+}
+
+// SetAutoCompress enables or disables the background auto-compression service (Wails binding).
+func (a *App) SetAutoCompress(enabled bool) error {
+	a.ensureRemoteInfra()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	mc := a.getOrCreateCompressor()
+	if enabled {
+		mc.Start()
+	} else {
+		mc.Stop()
+	}
+	// Persist to config.
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.MemoryAutoCompress = enabled
+	return a.SaveConfig(cfg)
+}
+
+// GetAutoCompressStatus returns the current state of the auto-compression service (Wails binding).
+func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
+	a.ensureRemoteInfra()
+	if a.memoryCompressor == nil {
+		return MemoryCompressorStatus{}
+	}
+	return a.memoryCompressor.Status()
+}
+
+// getOrCreateCompressor returns the singleton MemoryCompressor, creating it if needed.
+func (a *App) getOrCreateCompressor() *MemoryCompressor {
+	a.compressorMu.Lock()
+	defer a.compressorMu.Unlock()
+	if a.memoryCompressor == nil {
+		cfg := a.GetMaclawLLMConfig()
+		a.memoryCompressor = NewMemoryCompressor(a.memoryStore, cfg, a)
+	}
+	return a.memoryCompressor
 }
 
 // ---------------------------------------------------------------------------
@@ -206,4 +310,71 @@ func (a *App) UpdateConfigBinding(section, key, value string) (string, error) {
 		return "", fmt.Errorf("config manager not initialized")
 	}
 	return a.configManager.UpdateConfig(section, key, value)
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled task Wails bindings
+// ---------------------------------------------------------------------------
+
+// ListScheduledTasks returns all scheduled tasks (Wails binding).
+func (a *App) ListScheduledTasks() []ScheduledTask {
+	a.ensureRemoteInfra()
+	if a.scheduledTaskManager == nil {
+		return nil
+	}
+	return a.scheduledTaskManager.List()
+}
+
+// CreateScheduledTask creates a new scheduled task (Wails binding).
+func (a *App) CreateScheduledTask(name, action string, hour, minute, dayOfWeek, dayOfMonth int, startDate, endDate string) (string, error) {
+	a.ensureRemoteInfra()
+	if a.scheduledTaskManager == nil {
+		return "", fmt.Errorf("scheduled task manager not initialized")
+	}
+	return a.scheduledTaskManager.Add(ScheduledTask{
+		Name:       name,
+		Action:     action,
+		Hour:       hour,
+		Minute:     minute,
+		DayOfWeek:  dayOfWeek,
+		DayOfMonth: dayOfMonth,
+		StartDate:  startDate,
+		EndDate:    endDate,
+	})
+}
+
+// UpdateScheduledTask modifies a scheduled task (Wails binding).
+func (a *App) UpdateScheduledTask(id string, fields map[string]interface{}) error {
+	a.ensureRemoteInfra()
+	if a.scheduledTaskManager == nil {
+		return fmt.Errorf("scheduled task manager not initialized")
+	}
+	return a.scheduledTaskManager.Update(id, fields)
+}
+
+// DeleteScheduledTask removes a scheduled task by ID (Wails binding).
+func (a *App) DeleteScheduledTask(id string) error {
+	a.ensureRemoteInfra()
+	if a.scheduledTaskManager == nil {
+		return fmt.Errorf("scheduled task manager not initialized")
+	}
+	return a.scheduledTaskManager.Delete(id)
+}
+
+// PauseScheduledTask pauses a scheduled task (Wails binding).
+func (a *App) PauseScheduledTask(id string) error {
+	a.ensureRemoteInfra()
+	if a.scheduledTaskManager == nil {
+		return fmt.Errorf("scheduled task manager not initialized")
+	}
+	return a.scheduledTaskManager.Pause(id)
+}
+
+// ResumeScheduledTask resumes a paused scheduled task (Wails binding).
+func (a *App) ResumeScheduledTask(id string) error {
+	a.ensureRemoteInfra()
+	if a.scheduledTaskManager == nil {
+		return fmt.Errorf("scheduled task manager not initialized")
+	}
+	return a.scheduledTaskManager.Resume(id)
 }

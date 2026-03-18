@@ -47,7 +47,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	mailer := mail.New(*cfg, st.System)
 	invitationService := invitation.NewService(st.InvitationCodes, st.System)
 
-	identityService := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.EmailInvites, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, invitationService, cfg.Identity.EnrollmentMode, cfg.Identity.AllowSelfEnroll, mailer, cfg.Server.PublicBaseURL)
+	identityService := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, invitationService, cfg.Identity.EnrollmentMode, cfg.Identity.AllowSelfEnroll, mailer, cfg.Server.PublicBaseURL)
 	centerService := center.NewService(cfg, st.System)
 	deviceRuntime := device.NewRuntime()
 	deviceService := device.NewService(st.Machines, deviceRuntime)

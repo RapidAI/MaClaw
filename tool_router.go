@@ -8,14 +8,69 @@ import (
 )
 
 const (
-	builtinToolCount = 20 // builtin tools: 14 original + bash, read_file, write_file, list_directory + search_skill_hub, install_skill_hub
-	routeThreshold   = 22 // only filter when total tools exceed this
-	maxDynamicRouted = 15 // max dynamic tools to keep after filtering
+	// maxToolBudget is the maximum number of tools to send to the LLM.
+	// Core tools are always included; remaining budget goes to the highest-
+	// scoring candidates ranked by TF-IDF similarity to the user message.
+	maxToolBudget = 30
+
+	// maxDynamicRouted caps how many MCP dynamic tools can be included.
+	maxDynamicRouted = 15
 )
 
+// ---------------------------------------------------------------------------
+// Core tool whitelist — these are always included regardless of the user
+// message because they cover the fundamental interaction loop.
+// ---------------------------------------------------------------------------
+
+var coreToolNames = map[string]bool{
+	// Session lifecycle
+	"list_sessions": true, "create_session": true, "send_input": true,
+	"get_session_output": true, "get_session_events": true,
+	"interrupt_session": true, "kill_session": true,
+	// Local operations
+	"bash": true, "read_file": true, "write_file": true, "list_directory": true,
+	// MCP & Skill essentials
+	"list_mcp_tools": true, "call_mcp_tool": true,
+	"list_skills": true, "run_skill": true,
+	// Screenshot (high frequency)
+	"screenshot": true,
+}
+
+// builtinToolNames is the complete set of all builtin tool names (core + non-core).
+var builtinToolNames = map[string]bool{
+	// Core (duplicated here for the isBuiltinToolName check)
+	"list_sessions": true, "create_session": true, "list_providers": true,
+	"send_input": true, "get_session_output": true, "get_session_events": true,
+	"interrupt_session": true, "kill_session": true, "screenshot": true,
+	"list_mcp_tools": true, "call_mcp_tool": true,
+	"list_skills": true, "search_skill_hub": true, "install_skill_hub": true, "run_skill": true,
+	"parallel_execute": true, "recommend_tool": true, "craft_tool": true,
+	"bash": true, "read_file": true, "write_file": true, "list_directory": true,
+	"send_file": true, "open": true,
+	"save_memory": true, "list_memories": true, "delete_memory": true,
+	"create_template": true, "list_templates": true, "launch_template": true,
+	"get_config": true, "update_config": true, "batch_update_config": true,
+	"list_config_schema": true, "export_config": true, "import_config": true,
+	"set_max_iterations": true,
+	"create_scheduled_task": true, "list_scheduled_tasks": true,
+	"delete_scheduled_task": true, "update_scheduled_task": true,
+	"search_and_install_skill": true,
+}
+
+// isBuiltinToolName returns true if the tool name is a known builtin tool.
+func isBuiltinToolName(name string) bool {
+	return builtinToolNames[name]
+}
+
 // ToolRouter selects the most relevant tools for a given user message.
-// When the total tool count exceeds routeThreshold, it keeps all builtin
-// tools and selects the top dynamic tools ranked by TF-IDF similarity.
+//
+// Strategy:
+//  1. Core tools (whitelist) are always included — they cover the basic
+//     interaction loop and cost ~15 tool slots.
+//  2. All remaining tools (non-core builtins + MCP dynamic tools) compete
+//     for the remaining budget via TF-IDF cosine similarity against the
+//     user message.
+//  3. MCP dynamic tools are additionally capped at maxDynamicRouted.
 type ToolRouter struct {
 	generator *ToolDefinitionGenerator
 	hubClient *SkillHubClient
@@ -31,58 +86,58 @@ func (r *ToolRouter) SetHubClient(client *SkillHubClient) {
 	r.hubClient = client
 }
 
-// Route filters allTools based on relevance to userMessage.
-// - If len(allTools) <= 20, returns allTools unchanged.
-// - Otherwise, keeps the first 14 builtins + top 15 dynamic tools ranked
-//   by keyword match + TF-IDF similarity to the user message.
+// Route selects the most relevant tools for userMessage from allTools.
+//
+// When len(allTools) <= maxToolBudget, all tools are returned unchanged.
+// Otherwise, core tools are kept unconditionally and the remaining budget
+// is filled by ranking all other tools (builtin + dynamic) via TF-IDF
+// cosine similarity to the user message.
 func (r *ToolRouter) Route(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
-	if len(allTools) <= routeThreshold {
+	if len(allTools) <= maxToolBudget {
 		return allTools
 	}
 
-	// Split into builtins and dynamic tools.
-	builtinCount := builtinToolCount
-	if builtinCount > len(allTools) {
-		builtinCount = len(allTools)
-	}
-	builtins := allTools[:builtinCount]
-	dynamicTools := allTools[builtinCount:]
-
-	if len(dynamicTools) == 0 {
-		return builtins
-	}
-
-	// Tokenize user message.
-	msgTokens := tokenize(userMessage)
-	if len(msgTokens) == 0 {
-		// No meaningful tokens — return builtins + first N dynamic tools.
-		limit := maxDynamicRouted
-		if limit > len(dynamicTools) {
-			limit = len(dynamicTools)
+	// Partition into core (always kept) and candidates (compete for budget).
+	var core, candidates []map[string]interface{}
+	for _, tool := range allTools {
+		if coreToolNames[extractToolName(tool)] {
+			core = append(core, tool)
+		} else {
+			candidates = append(candidates, tool)
 		}
-		result := make([]map[string]interface{}, len(builtins), len(builtins)+limit)
-		copy(result, builtins)
-		return append(result, dynamicTools[:limit]...)
 	}
 
-	// Build IDF from all dynamic tool documents.
-	allDocs := make([][]string, len(dynamicTools))
-	for i, tool := range dynamicTools {
+	remaining := maxToolBudget - len(core)
+	if remaining <= 0 || len(candidates) == 0 {
+		return core
+	}
+
+	// Tokenize user message for TF-IDF scoring.
+	msgTokens := tokenize(userMessage)
+
+	if len(msgTokens) == 0 {
+		// No meaningful tokens — take the first N candidates in original order.
+		if remaining > len(candidates) {
+			remaining = len(candidates)
+		}
+		return append(core, candidates[:remaining]...)
+	}
+
+	// Build IDF from all candidate tool documents.
+	allDocs := make([][]string, len(candidates))
+	for i, tool := range candidates {
 		allDocs[i] = toolTokens(tool)
 	}
 	idf := computeIDF(allDocs)
 
-	// Score each dynamic tool.
+	// Score each candidate.
 	type scored struct {
 		index int
 		score float64
 	}
-	scores := make([]scored, len(dynamicTools))
+	scores := make([]scored, len(candidates))
 	for i, doc := range allDocs {
-		scores[i] = scored{
-			index: i,
-			score: tfidfSimilarity(msgTokens, doc, idf),
-		}
+		scores[i] = scored{index: i, score: tfidfSimilarity(msgTokens, doc, idf)}
 	}
 
 	// Sort by score descending; stable sort preserves original order for ties.
@@ -90,16 +145,22 @@ func (r *ToolRouter) Route(userMessage string, allTools []map[string]interface{}
 		return scores[i].score > scores[j].score
 	})
 
-	// Take top N dynamic tools.
-	limit := maxDynamicRouted
-	if limit > len(scores) {
-		limit = len(scores)
-	}
-
-	result := make([]map[string]interface{}, len(builtins), len(builtins)+limit+1)
-	copy(result, builtins)
-	for i := 0; i < limit; i++ {
-		result = append(result, dynamicTools[scores[i].index])
+	// Fill remaining budget, respecting the MCP dynamic tool cap.
+	dynamicCount := 0
+	result := make([]map[string]interface{}, len(core), maxToolBudget+2)
+	copy(result, core)
+	for _, s := range scores {
+		if len(result) >= maxToolBudget {
+			break
+		}
+		name := extractToolName(candidates[s.index])
+		if !isBuiltinToolName(name) {
+			dynamicCount++
+			if dynamicCount > maxDynamicRouted {
+				continue
+			}
+		}
+		result = append(result, candidates[s.index])
 	}
 
 	// Check recommended Skills from Hub for keyword overlap with user message.
@@ -157,7 +218,6 @@ func searchAndInstallSkillHint() map[string]interface{} {
 		},
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Tokenization

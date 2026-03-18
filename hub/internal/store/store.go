@@ -59,15 +59,6 @@ type InvitationCode struct {
 	CreatedAt   time.Time
 }
 
-type EmailInvite struct {
-	ID        string
-	Email     string
-	Role      string
-	Status    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
-
 type Machine struct {
 	ID               string
 	UserID           string
@@ -174,13 +165,6 @@ type EmailBlocklistRepository interface {
 	List(ctx context.Context) ([]*EmailBlockItem, error)
 }
 
-type EmailInviteRepository interface {
-	Create(ctx context.Context, item *EmailInvite) error
-	UpdateStatus(ctx context.Context, id string, status string) error
-	GetByEmail(ctx context.Context, email string) ([]*EmailInvite, error)
-	List(ctx context.Context) ([]*EmailInvite, error)
-}
-
 type InvitationCodeRepository interface {
 	Create(ctx context.Context, item *InvitationCode) error
 	GetByCode(ctx context.Context, code string) (*InvitationCode, error)
@@ -237,7 +221,6 @@ type Store struct {
 	Users           UserRepository
 	Enrollments     EnrollmentRepository
 	EmailBlocks     EmailBlocklistRepository
-	EmailInvites    EmailInviteRepository
 	InvitationCodes InvitationCodeRepository
 	Machines        MachineRepository
 	ViewerTokens    ViewerTokenRepository

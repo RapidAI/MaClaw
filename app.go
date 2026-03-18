@@ -69,6 +69,9 @@ type App struct {
 	startupFeedback      *SessionStartupFeedback
 	ioRelay              *SessionIORelay
 	swarmOrchestrator    *SwarmOrchestrator
+	memoryCompressor     *MemoryCompressor
+	compressorMu         sync.Mutex // guards lazy creation of memoryCompressor
+	scheduledTaskManager *ScheduledTaskManager
 }
 
 var OnConfigChanged func(AppConfig)
@@ -191,6 +194,8 @@ type AppConfig struct {
 	NLSkills []NLSkillEntry `json:"nl_skills,omitempty"`
 	// SkillHUB registry URLs for searching and downloading skill packages
 	SkillHubURLs []SkillHubEntry `json:"skill_hub_urls,omitempty"`
+	// Memory auto-compression service (runs periodically in background)
+	MemoryAutoCompress bool `json:"memory_auto_compress,omitempty"`
 }
 
 // SkillHubEntry represents a single SkillHUB registry endpoint.
@@ -242,7 +247,7 @@ func (a *App) ensureRemoteInfra() {
 	}
 	if a.auditLog == nil {
 		homeDir := a.GetUserHomeDir()
-		al, err := NewAuditLog(filepath.Join(homeDir, ".cc", "audit"))
+		al, err := NewAuditLog(filepath.Join(homeDir, ".cceasy", "audit"))
 		if err == nil {
 			a.auditLog = al
 		}
@@ -307,8 +312,21 @@ func (a *App) ensureRemoteInfra() {
 	// Initialize smart session components
 	if a.memoryStore == nil {
 		homeDir := a.GetUserHomeDir()
-		ms, err := NewMemoryStore(filepath.Join(homeDir, ".maclaw", "memories.json"))
-		if err == nil {
+		memPath := filepath.Join(homeDir, ".maclaw", "memories.json")
+		ms, err := NewMemoryStore(memPath)
+		if err != nil {
+			fmt.Printf("[ensureRemoteInfra] WARNING: failed to load memory store from %s: %v\n", memPath, err)
+			// Retry once with a fresh file — rename the broken one aside so
+			// NewMemoryStore can create a clean store.
+			backupPath := memPath + ".bad." + time.Now().Format("20060102_150405")
+			_ = os.Rename(memPath, backupPath)
+			fmt.Printf("[ensureRemoteInfra] renamed problematic file to %s, retrying\n", backupPath)
+			ms, err = NewMemoryStore(memPath)
+			if err != nil {
+				fmt.Printf("[ensureRemoteInfra] ERROR: memory store still failed after retry: %v\n", err)
+			}
+		}
+		if ms != nil {
 			a.memoryStore = ms
 		}
 	}
@@ -336,6 +354,16 @@ func (a *App) ensureRemoteInfra() {
 	}
 	if a.ioRelay == nil {
 		a.ioRelay = NewSessionIORelay()
+	}
+	if a.scheduledTaskManager == nil {
+		homeDir := a.GetUserHomeDir()
+		stm, err := NewScheduledTaskManager(filepath.Join(homeDir, ".maclaw", "scheduled_tasks.json"))
+		if err == nil {
+			a.scheduledTaskManager = stm
+			a.scheduledTaskManager.Start()
+		} else {
+			fmt.Printf("[ensureRemoteInfra] WARNING: failed to init scheduled task manager: %v\n", err)
+		}
 	}
 }
 
@@ -399,12 +427,17 @@ func (a *App) startup(ctx context.Context) {
 			}
 			if a.memoryStore != nil {
 				hubClient.imHandler.SetMemoryStore(a.memoryStore)
+			} else {
+				fmt.Println("[startup] WARNING: memoryStore is nil, session will run without long-term memory")
 			}
 			if a.configManager != nil {
 				hubClient.imHandler.SetConfigManager(a.configManager)
 			}
 			if a.templateManager != nil {
 				hubClient.imHandler.SetTemplateManager(a.templateManager)
+			}
+			if a.scheduledTaskManager != nil {
+				hubClient.imHandler.SetScheduledTaskManager(a.scheduledTaskManager)
 			}
 			if a.contextResolver != nil {
 				hubClient.imHandler.SetContextResolver(a.contextResolver)
@@ -427,6 +460,11 @@ func (a *App) startup(ctx context.Context) {
 			go a.autoRegisterOnStartup(config)
 		}
 		a.refreshPowerOptimizationStateFromConfig(config)
+		// Auto-start memory compression service if enabled in config.
+		if config.MemoryAutoCompress && a.memoryStore != nil {
+			mc := a.getOrCreateCompressor()
+			mc.Start()
+		}
 		return
 	}
 	a.setPowerOptimizationEnabled(false)
@@ -448,6 +486,12 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.memoryStore != nil {
 		a.memoryStore.Stop()
+	}
+	if a.memoryCompressor != nil {
+		a.memoryCompressor.Stop()
+	}
+	if a.scheduledTaskManager != nil {
+		a.scheduledTaskManager.Stop()
 	}
 	if a.stopHubTicker != nil {
 		close(a.stopHubTicker)
@@ -1037,7 +1081,7 @@ func (a *App) GetLocalCacheDir() string {
 	home := a.GetUserHomeDir()
 	// Use shorter path to avoid Windows 260 character path limit
 	// npm's _cacache directory structure can create very long paths
-	return filepath.Join(home, ".cc", "cache")
+	return filepath.Join(home, ".cceasy", "cache")
 }
 func (a *App) GetCurrentProjectPath() string {
 	config, err := a.LoadConfig()
@@ -2493,12 +2537,17 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 			if a.memoryStore != nil {
 				hubClient.imHandler.SetMemoryStore(a.memoryStore)
+			} else {
+				fmt.Println("[LaunchTool] WARNING: memoryStore is nil, session will run without long-term memory")
 			}
 			if a.configManager != nil {
 				hubClient.imHandler.SetConfigManager(a.configManager)
 			}
 			if a.templateManager != nil {
 				hubClient.imHandler.SetTemplateManager(a.templateManager)
+			}
+			if a.scheduledTaskManager != nil {
+				hubClient.imHandler.SetScheduledTaskManager(a.scheduledTaskManager)
 			}
 			if a.contextResolver != nil {
 				hubClient.imHandler.SetContextResolver(a.contextResolver)
@@ -2542,13 +2591,24 @@ func (a *App) log(message string) {
 }
 func (a *App) getConfigPath() (string, error) {
 	if a.testHomeDir != "" {
-		return filepath.Join(a.testHomeDir, ".aicoder_config.json"), nil
+		return filepath.Join(a.testHomeDir, ".maclaw", "config.json"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".aicoder_config.json"), nil
+	newPath := filepath.Join(home, ".maclaw", "config.json")
+	// Migrate from legacy ~/.aicoder_config.json if new path doesn't exist yet
+	if _, err := os.Stat(newPath); os.IsNotExist(err) {
+		oldPath := filepath.Join(home, ".aicoder_config.json")
+		if _, err := os.Stat(oldPath); err == nil {
+			_ = os.MkdirAll(filepath.Dir(newPath), 0755)
+			if data, err := os.ReadFile(oldPath); err == nil {
+				_ = os.WriteFile(newPath, data, 0644)
+			}
+		}
+	}
+	return newPath, nil
 }
 func (a *App) LoadConfig() (AppConfig, error) {
 	path, err := a.getConfigPath()

@@ -93,7 +93,6 @@ type IdentityService struct {
 	users           store.UserRepository
 	enrollments     store.EnrollmentRepository
 	blocks          store.EmailBlocklistRepository
-	invites         store.EmailInviteRepository
 	machines        store.MachineRepository
 	viewerTok       store.ViewerTokenRepository
 	loginTok        store.LoginTokenRepository
@@ -131,7 +130,6 @@ func NewIdentityService(
 	users store.UserRepository,
 	enrollments store.EnrollmentRepository,
 	blocks store.EmailBlocklistRepository,
-	invites store.EmailInviteRepository,
 	machines store.MachineRepository,
 	viewerTok store.ViewerTokenRepository,
 	loginTok store.LoginTokenRepository,
@@ -146,7 +144,6 @@ func NewIdentityService(
 		users:           users,
 		enrollments:     enrollments,
 		blocks:          blocks,
-		invites:         invites,
 		machines:        machines,
 		viewerTok:       viewerTok,
 		loginTok:        loginTok,
@@ -628,35 +625,6 @@ func (s *IdentityService) RemoveBlockedEmail(ctx context.Context, email string) 
 		return nil
 	}
 	return s.blocks.DeleteByEmail(ctx, email)
-}
-
-func (s *IdentityService) AddInvite(ctx context.Context, email, role string) error {
-	email = normalizeEmail(email)
-	if email == "" {
-		return ErrInvalidEmail
-	}
-	if role == "" {
-		role = "viewer"
-	}
-	if s.invites == nil {
-		return nil
-	}
-	now := time.Now()
-	return s.invites.Create(ctx, &store.EmailInvite{
-		ID:        newID("inv"),
-		Email:     email,
-		Role:      role,
-		Status:    "active",
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-}
-
-func (s *IdentityService) ListInvites(ctx context.Context) ([]*store.EmailInvite, error) {
-	if s.invites == nil {
-		return []*store.EmailInvite{}, nil
-	}
-	return s.invites.List(ctx)
 }
 
 func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, rawToken string) (*MachinePrincipal, error) {

@@ -21,11 +21,6 @@ type BlockEmailRequest struct {
 	Reason string `json:"reason"`
 }
 
-type InviteEmailRequest struct {
-	Email string `json:"email"`
-	Role  string `json:"role"`
-}
-
 type CenterConfigRequest struct {
 	BaseURL        string `json:"base_url"`
 	PublicBaseURL  string `json:"public_base_url"`
@@ -111,37 +106,6 @@ func RemoveBlockedEmailHandler(identity *auth.IdentityService) http.HandlerFunc 
 
 		if err := identity.RemoveBlockedEmail(r.Context(), email); err != nil {
 			writeError(w, http.StatusInternalServerError, "REMOVE_BLOCKED_EMAIL_FAILED", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	}
-}
-
-func ListInvitesHandler(identity *auth.IdentityService) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := identity.ListInvites(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "LIST_INVITES_FAILED", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"invites": items})
-	}
-}
-
-func AddInviteHandler(identity *auth.IdentityService) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req InviteEmailRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
-			return
-		}
-		if req.Email == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
-			return
-		}
-
-		if err := identity.AddInvite(r.Context(), req.Email, req.Role); err != nil {
-			writeError(w, http.StatusInternalServerError, "ADD_INVITE_FAILED", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})

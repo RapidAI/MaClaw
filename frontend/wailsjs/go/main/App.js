@@ -422,3 +422,70 @@ export function CheckHubSkillUpdates() {
 export function UpdateHubSkill(arg1) {
   return window['go']['main']['App']['UpdateHubSkill'](arg1);
 }
+
+// Memory management bindings
+export function ListMemories(arg1, arg2) {
+  return window['go']['main']['App']['ListMemories'](arg1, arg2);
+}
+
+export function SaveMemory(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveMemory'](arg1, arg2, arg3);
+}
+
+export function UpdateMemory(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['UpdateMemory'](arg1, arg2, arg3, arg4);
+}
+
+export function DeleteMemory(arg1) {
+  return window['go']['main']['App']['DeleteMemory'](arg1);
+}
+
+// Memory compression & backup bindings
+export function CompressMemories() {
+  return window['go']['main']['App']['CompressMemories']();
+}
+
+export function ListMemoryBackups() {
+  return window['go']['main']['App']['ListMemoryBackups']();
+}
+
+export function RestoreMemoryBackup(arg1) {
+  return window['go']['main']['App']['RestoreMemoryBackup'](arg1);
+}
+
+export function DeleteMemoryBackup(arg1) {
+  return window['go']['main']['App']['DeleteMemoryBackup'](arg1);
+}
+
+export function SetAutoCompress(arg1) {
+  return window['go']['main']['App']['SetAutoCompress'](arg1);
+}
+
+export function GetAutoCompressStatus() {
+  return window['go']['main']['App']['GetAutoCompressStatus']();
+}
+
+// Scheduled task management bindings
+export function ListScheduledTasks() {
+  return window['go']['main']['App']['ListScheduledTasks']();
+}
+
+export function CreateScheduledTask(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['CreateScheduledTask'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+}
+
+export function UpdateScheduledTask(arg1, arg2) {
+  return window['go']['main']['App']['UpdateScheduledTask'](arg1, arg2);
+}
+
+export function DeleteScheduledTask(arg1) {
+  return window['go']['main']['App']['DeleteScheduledTask'](arg1);
+}
+
+export function PauseScheduledTask(arg1) {
+  return window['go']['main']['App']['PauseScheduledTask'](arg1);
+}
+
+export function ResumeScheduledTask(arg1) {
+  return window['go']['main']['App']['ResumeScheduledTask'](arg1);
+}

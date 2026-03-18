@@ -33,10 +33,6 @@ type emailBlockRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
-type emailInviteRepo struct {
-	db, readDB *sql.DB
-	batch      *writeBatcher
-}
 type machineRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
@@ -66,7 +62,6 @@ func NewStore(p *Provider) *store.Store {
 		Users:        &userRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Enrollments:  &enrollmentRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		EmailBlocks:  &emailBlockRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		EmailInvites: &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		InvitationCodes: &invitationCodeRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Machines:        &machineRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		ViewerTokens: &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
@@ -457,59 +452,6 @@ func (r *emailBlockRepo) List(ctx context.Context) ([]*store.EmailBlockItem, err
 		var item store.EmailBlockItem
 		var createdAt, updatedAt string
 		if err := rows.Scan(&item.ID, &item.Email, &item.Reason, &createdAt, &updatedAt); err != nil {
-			return nil, err
-		}
-		item.CreatedAt = mustParseTime(createdAt)
-		item.UpdatedAt = mustParseTime(updatedAt)
-		items = append(items, &item)
-	}
-	return items, rows.Err()
-}
-
-func (r *emailInviteRepo) Create(ctx context.Context, item *store.EmailInvite) error {
-	_, err := r.db.ExecContext(
-		ctx,
-		`INSERT INTO email_invites (id, email, role, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		item.ID,
-		item.Email,
-		item.Role,
-		item.Status,
-		item.CreatedAt.Format(time.RFC3339),
-		item.UpdatedAt.Format(time.RFC3339),
-	)
-	return err
-}
-
-func (r *emailInviteRepo) UpdateStatus(ctx context.Context, id string, status string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE email_invites SET status = ?, updated_at = ? WHERE id = ?`, status, time.Now().Format(time.RFC3339), id)
-	return err
-}
-
-func (r *emailInviteRepo) GetByEmail(ctx context.Context, email string) ([]*store.EmailInvite, error) {
-	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, role, status, created_at, updated_at FROM email_invites WHERE email = ? ORDER BY created_at DESC`, email)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanInvites(rows)
-}
-
-func (r *emailInviteRepo) List(ctx context.Context) ([]*store.EmailInvite, error) {
-	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, role, status, created_at, updated_at FROM email_invites ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanInvites(rows)
-}
-
-func scanInvites(rows *sql.Rows) ([]*store.EmailInvite, error) {
-	var items []*store.EmailInvite
-	for rows.Next() {
-		var item store.EmailInvite
-		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.Email, &item.Role, &item.Status, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		item.CreatedAt = mustParseTime(createdAt)

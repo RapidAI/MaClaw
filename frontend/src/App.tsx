@@ -26,6 +26,8 @@ import { SkillsManagementPanel } from './components/remote/SkillsManagementPanel
 import { MCPManagementPanel } from './components/remote/MCPManagementPanel';
 import { LLMConfigPanel } from './components/remote/LLMConfigPanel';
 import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
+import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
+import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
 
 const subscriptionUrls: { [key: string]: string } = {
     "GLM": "https://bigmodel.cn/glm-coding",
@@ -1350,7 +1352,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role' | 'memory' | 'scheduler'>('general');
     const [installLocation, setInstallLocation] = useState<'user' | 'project'>('user');
     const [installProject, setInstallProject] = useState<string>("");
     const [isBatchInstalling, setIsBatchInstalling] = useState(false);
@@ -2925,6 +2927,16 @@ ${instruction}`;
             label: lang === 'zh-Hans' ? 'MaClaw 角色' : lang === 'zh-Hant' ? 'MaClaw 角色' : 'MaClaw Role',
             desc: lang === 'zh-Hans' ? '自定义 MaClaw Agent 的名字与角色描述' : lang === 'zh-Hant' ? '自訂 MaClaw Agent 的名字與角色描述' : 'Customize MaClaw Agent name and role description',
         },
+        {
+            id: 'memory' as const,
+            label: lang === 'zh-Hans' ? '记忆管理' : lang === 'zh-Hant' ? '記憶管理' : 'Memory',
+            desc: lang === 'zh-Hans' ? '查看、编辑和管理 MaClaw 的长期记忆' : lang === 'zh-Hant' ? '查看、編輯和管理 MaClaw 的長期記憶' : 'View, edit and manage MaClaw long-term memory',
+        },
+        {
+            id: 'scheduler' as const,
+            label: lang === 'zh-Hans' ? '计划任务' : lang === 'zh-Hant' ? '計劃任務' : 'Scheduler',
+            desc: lang === 'zh-Hans' ? '定时让 MaClaw 自动执行任务' : lang === 'zh-Hant' ? '定時讓 MaClaw 自動執行任務' : 'Schedule MaClaw to run tasks automatically',
+        },
     ];
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
@@ -3920,6 +3932,14 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'role' ? 'block' : 'none' }}>
                                 <MaclawRolePanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
+                            </div>
+
+                            <div className="settings-panel" style={{ display: settingsTab === 'memory' ? 'block' : 'none' }}>
+                                <MemoryManagementPanel lang={lang} />
+                            </div>
+
+                            <div className="settings-panel" style={{ display: settingsTab === 'scheduler' ? 'block' : 'none' }}>
+                                <ScheduledTasksPanel lang={lang} />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>

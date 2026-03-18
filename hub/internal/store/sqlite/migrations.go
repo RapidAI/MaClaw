@@ -51,15 +51,6 @@ func RunMigrations(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		);`,
 
-		`CREATE TABLE IF NOT EXISTS email_invites (
-			id TEXT PRIMARY KEY,
-			email TEXT NOT NULL,
-			role TEXT NOT NULL DEFAULT 'viewer',
-			status TEXT NOT NULL DEFAULT 'active',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-
 		`CREATE TABLE IF NOT EXISTS machines (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,

@@ -155,9 +155,8 @@ Section "uninstall"
     # Using rd /s /q is much faster on Windows
     DetailPrint "Deleting user data directories..."
     nsExec::ExecToLog 'cmd /c rd /s /q "$PROFILE\.cceasy"'
-    nsExec::ExecToLog 'cmd /c rd /s /q "$PROFILE\.cc"'
     # Also delete config file
-    Delete "$PROFILE\.aicoder_config.json"
+    Delete "$PROFILE\.maclaw\config.json"
     
     skipUserData:
 SectionEnd

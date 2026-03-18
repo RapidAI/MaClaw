@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -326,6 +329,13 @@ func (e *SkillExecutor) executeStep(step NLSkillStep) (string, error) {
 		}
 		return e.mcpRegistry.CallTool(serverID, toolName, args)
 
+	case "bash":
+		command, _ := step.Params["command"].(string)
+		if command == "" {
+			return "", fmt.Errorf("missing command parameter")
+		}
+		return executeBashStep(command, step.Params)
+
 	default:
 		return "", fmt.Errorf("unknown action: %s", step.Action)
 	}
@@ -363,4 +373,73 @@ func (a *App) DeleteNLSkill(name string) error {
 		return fmt.Errorf("skill executor not initialized")
 	}
 	return a.skillExecutor.Delete(name)
+}
+
+// executeBashStep runs a shell command as a skill step.
+// Supports optional "working_dir" and "timeout" params.
+func executeBashStep(command string, params map[string]interface{}) (string, error) {
+	timeout := 30
+	if t, ok := params["timeout"].(float64); ok && t > 0 {
+		timeout = int(t)
+		if timeout > 120 {
+			timeout = 120
+		}
+	}
+
+	workDir, _ := params["working_dir"].(string)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	var shellName string
+	var shellArgs []string
+	if runtime.GOOS == "windows" {
+		shellName = "powershell"
+		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", command}
+	} else {
+		shellName = "bash"
+		shellArgs = []string{"-c", command}
+	}
+
+	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	var b strings.Builder
+	if stdout.Len() > 0 {
+		out := stdout.String()
+		if len(out) > 8192 {
+			out = out[:8192] + "\n... (truncated)"
+		}
+		b.WriteString(out)
+	}
+	if stderr.Len() > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		errOut := stderr.String()
+		if len(errOut) > 4096 {
+			errOut = errOut[:4096] + "\n... (truncated)"
+		}
+		b.WriteString("[stderr] ")
+		b.WriteString(errOut)
+	}
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			b.WriteString(fmt.Sprintf("\n[error] timeout after %ds", timeout))
+		} else {
+			b.WriteString(fmt.Sprintf("\n[error] %v", err))
+		}
+		return b.String(), err
+	}
+	if b.Len() == 0 {
+		return "(completed, no output)", nil
+	}
+	return b.String(), nil
 }

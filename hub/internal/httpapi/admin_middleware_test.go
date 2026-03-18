@@ -42,7 +42,7 @@ func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService)
 
 	st := sqlite.NewStore(provider)
 	admins := auth.NewAdminService(st.Admins, st.System, st.AdminAudit)
-	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.EmailInvites, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
+	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
 	centerSvc := center.NewService(config.Default(), st.System)
 	deviceSvc := device.NewService(st.Machines, device.NewRuntime())
 	sessionSvc := session.NewService(session.NewCache(), st.Sessions)

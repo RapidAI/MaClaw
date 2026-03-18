@@ -116,6 +116,39 @@ func (s *MemoryStore) Save(entry MemoryEntry) error {
 	return nil
 }
 
+// Update modifies an existing entry identified by ID. Only Content, Category
+// and Tags are updated; timestamps are refreshed automatically.
+// Returns an error if content is empty, the ID is not found, or the new
+// content collides with another existing entry (dedup).
+func (s *MemoryStore) Update(id string, content string, category MemoryCategory, tags []string) error {
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("memory_store: content must not be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Dedup check: reject if another entry already has the same content.
+	for _, e := range s.entries {
+		if e.ID != id && e.Content == content {
+			return fmt.Errorf("memory_store: duplicate content (matches entry %q)", e.ID)
+		}
+	}
+
+	for i, e := range s.entries {
+		if e.ID == id {
+			s.entries[i].Content = content
+			s.entries[i].Category = category
+			s.entries[i].Tags = tags
+			s.entries[i].UpdatedAt = time.Now()
+			s.dirty = true
+			s.signalSave()
+			return nil
+		}
+	}
+	return fmt.Errorf("memory_store: entry %q not found", id)
+}
+
 // Delete removes the entry with the given ID. Returns an error if not found.
 func (s *MemoryStore) Delete(id string) error {
 	s.mu.Lock()
@@ -414,7 +447,14 @@ func (s *MemoryStore) load() error {
 
 	var entries []MemoryEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
-		return fmt.Errorf("memory_store: unmarshal: %w", err)
+		// Memory file is corrupted — back it up and start fresh so the
+		// application can still launch with an empty memory store instead
+		// of failing entirely.
+		backupPath := s.path + ".corrupt." + time.Now().Format("20060102_150405")
+		_ = os.WriteFile(backupPath, data, 0o644)
+		fmt.Printf("[memory_store] WARNING: corrupted memory file backed up to %s, starting with empty memory\n", backupPath)
+		s.entries = make([]MemoryEntry, 0)
+		return nil
 	}
 	s.entries = entries
 	return nil

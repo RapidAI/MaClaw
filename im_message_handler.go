@@ -185,6 +185,23 @@ func trimHistory(entries []conversationEntry) []conversationEntry {
 	return entries[len(entries)-maxConversationTurns:]
 }
 
+// maxToolResultLen caps individual tool results to ~4KB before they enter
+// the conversation. This prevents a single verbose tool output (e.g. bash
+// stdout, large file read) from dominating the context window.
+const maxToolResultLen = 4096
+
+// truncateToolResult caps a tool result string to maxToolResultLen bytes.
+// If truncated, it keeps the first and last portions so the LLM sees both
+// the beginning (often headers/status) and the end (often the conclusion).
+func truncateToolResult(s string) string {
+	if len(s) <= maxToolResultLen {
+		return s
+	}
+	headLen := maxToolResultLen * 2 / 3
+	tailLen := maxToolResultLen - headLen - 40 // 40 bytes for the separator
+	return s[:headLen] + "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n" + s[len(s)-tailLen:]
+}
+
 // ---------------------------------------------------------------------------
 // IMMessageHandler
 // ---------------------------------------------------------------------------
@@ -222,6 +239,9 @@ type IMMessageHandler struct {
 
 	// Session template manager (lazily initialized via setter).
 	templateManager *SessionTemplateManager
+
+	// Scheduled task manager (lazily initialized via setter).
+	scheduledTaskManager *ScheduledTaskManager
 
 	// Smart session startup components (lazily initialized via setters).
 	contextResolver *SessionContextResolver
@@ -299,6 +319,11 @@ func (h *IMMessageHandler) SetMemoryStore(ms *MemoryStore) {
 // SetTemplateManager configures the session template manager.
 func (h *IMMessageHandler) SetTemplateManager(tm *SessionTemplateManager) {
 	h.templateManager = tm
+}
+
+// SetScheduledTaskManager configures the scheduled task manager.
+func (h *IMMessageHandler) SetScheduledTaskManager(stm *ScheduledTaskManager) {
+	h.scheduledTaskManager = stm
 }
 
 // getTools returns the current tool definitions, using the generator with
@@ -712,10 +737,10 @@ func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []c
 			conversation = append(conversation, map[string]interface{}{
 				"role":         "tool",
 				"tool_call_id": tc.ID,
-				"content":      toolContent,
+				"content":      truncateToolResult(toolContent),
 			})
 			history = append(history, conversationEntry{
-				Role: "tool", Content: toolContent, ToolCallID: tc.ID,
+				Role: "tool", Content: truncateToolResult(toolContent), ToolCallID: tc.ID,
 			})
 		}
 
@@ -775,44 +800,17 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 - 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
 - 智能推断参数：如果用户没有指定 session_id 等参数，查看当前会话列表自动选择。
 
-## ⚠️ 执行验证原则（极其重要，必须遵守）
-每次执行操作后，你必须验证操作是否真正成功，绝不能仅凭工具返回"已发送"就告诉用户执行成功。
-1. send_input 发送命令后 → 必须立即调用 get_session_output 查看实际输出，确认命令是否执行成功、有无报错。
-2. create_session 创建会话后 → 必须调用 get_session_output 确认会话正常启动。
-3. screenshot 截屏后 → 必须调用 get_session_events 确认截图是否成功发送。
-4. call_mcp_tool / run_skill 执行后 → 检查返回结果是否包含错误。
-绝对禁止在没有验证的情况下告诉用户"已完成"或"执行成功"。
-如果验证发现失败，如实告诉用户失败原因，并尝试修复。
+## ⚠️ 执行验证原则（极其重要）
+每次执行操作后，必须验证是否真正成功，绝不能仅凭工具返回"已发送"就告诉用户执行成功。
+- send_input 后 → 必须 get_session_output 确认
+- create_session 后 → 必须 get_session_output 确认启动
+- 验证失败如实告知用户并尝试修复
 
-## 工具使用指南
-- 执行命令：用 bash 直接在本机执行 shell 命令（创建目录、安装软件、运行脚本等），不需要创建会话。
-- 文件操作：用 read_file 读文件、write_file 写文件、list_directory 列目录，这些都直接在本机执行。
-- 发送文件：用 send_file 将本机文件直接发送给用户（通过 IM 通道），支持任意文件类型。
-- 打开文件/网址：用 open 工具，使用操作系统默认程序打开文件（如 PDF、Excel、图片等）或用默认浏览器打开网址。
-- 截屏：直接调用 screenshot 工具。无需活跃会话也能截取本机桌面，有会话时会自动选择。
-- 创建会话：用 create_session，创建后必须用 get_session_output 确认启动。
-- 发送命令：用 send_input，发送后必须用 get_session_output 确认结果。
-- 查看输出：用 get_session_output 获取会话最近输出。
-- 并行任务：用 parallel_execute 同时执行多个任务。
-- MCP 工具：用 list_mcp_tools 查看可用工具，用 call_mcp_tool 调用。
-- Skill：用 list_skills 查看本地已注册的 Skill，用 run_skill 执行。如果本地没有合适的 Skill，用 search_skill_hub 在 SkillHub 上搜索，找到后用 install_skill_hub 安装并自动执行（默认 auto_run=true，安装后立即运行）。
-
-注意：简单的文件操作和命令执行请直接用 bash/read_file/write_file/list_directory，不要绕道创建会话。
-
-## 会话恢复
-- 当用户发送"继续"、"恢复"、"resume"等意图时，调用 list_sessions 列出可恢复的会话（状态为 running 或 paused）
-- 展示最近 5 个可恢复会话的 ID、工具、项目和状态
-- 用户选择后，调用 get_session_output 获取最近输出摘要展示给用户
-- 恢复后自动进入该会话的交互模式，后续用户消息通过 send_input 转发
-- 如果会话已终止，提示用户并建议使用相同配置创建新会话
-
-## 自然语言启动
-当用户用自然语言描述编程任务时（如"帮我用 Claude 修复 myproject 的 bug"），你应该：
-1. 从消息中提取：工具名称（如 Claude/Codex/Gemini）、项目标识（项目名或路径）、任务描述
-2. 如果无法确定工具名称，使用 recommend_tool 工具推荐
-3. 如果无法确定项目路径，create_session 会自动推断（需求 1 自动项目检测）
-4. 在创建会话前，向用户确认解析出的参数（工具、项目、任务）
-5. 用户确认后，调用 create_session 创建会话，并将任务描述通过 send_input 发送到会话
+## 工具使用要点
+- 简单文件/命令操作直接用 bash/read_file/write_file/list_directory，不要绕道创建会话
+- 截屏直接调用 screenshot，无需活跃会话也能截取本机桌面
+- 用 send_file 通过 IM 通道直接发送文件给用户
+- 用 open 打开文件或网址（PDF、Excel、URL 等）
 
 `)
 	b.WriteString("## 当前设备状态\n")
@@ -869,27 +867,9 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 		}
 	}
 
-	b.WriteString("\n## 配置管理\n")
-	b.WriteString("- 用户可以通过自然语言修改配置，如\"把默认工具改成 Gemini\"、\"关闭省电模式\"\n")
-	b.WriteString("- 使用 list_config_schema 了解所有可配置项\n")
-	b.WriteString("- 修改前使用 get_config 查看当前值，修改后确认变更\n")
-	b.WriteString("- 批量修改使用 batch_update_config，确保原子性\n")
-	b.WriteString("- 导出配置使用 export_config，导入使用 import_config\n")
-	b.WriteString("- 敏感信息（API Key、Token）在展示时会自动脱敏\n")
-
-	b.WriteString("\n## 自管理能力\n")
-	b.WriteString("- 你可以使用 set_max_iterations 工具动态调整当前对话的最大推理轮数。\n")
-	b.WriteString("- 当你判断任务复杂、需要多步操作时，主动调用 set_max_iterations 扩展轮数上限。\n")
-	b.WriteString("- 当任务简单、即将完成时，无需调整。\n")
-	b.WriteString("- 此调整仅影响当前对话，不会修改全局配置。\n")
-
 	b.WriteString("\n## 对话管理\n")
-	b.WriteString("- 用户发送 /new 或 /reset 可重置对话\n")
-	b.WriteString("- 用户发送 /exit 或 /quit 可终止所有编程会话并退出编程模式，回到普通对话\n")
-	b.WriteString("- 用户发送 /sessions 可快速查看当前会话状态\n")
-	b.WriteString("- 用户发送 /help 可查看所有可用命令\n")
-	b.WriteString("- 当用户表达想退出、结束、不做了、回到普通聊天等意图时，提醒用户发送 /exit\n")
-	b.WriteString("- 你拥有多轮对话记忆，可以引用之前的上下文\n")
+	b.WriteString("- /new 或 /reset 重置对话 | /exit 或 /quit 终止所有会话 | /sessions 查看状态 | /help 帮助\n")
+	b.WriteString("- 用户表达退出意图时，提醒发送 /exit\n")
 	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
 
 	// Inject long-term memory section if memoryStore is available.
@@ -1058,6 +1038,14 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"task_description": map[string]string{"type": "string", "description": "任务描述"},
 			}, []string{"task_description"}),
+		toolDef("craft_tool", "当现有工具都无法完成任务时，自动研究问题并生成脚本来解决。会用 LLM 生成代码、执行、并注册为可复用的 Skill。适用于数据处理、API 调用、文件转换、系统管理等需要编程才能完成的任务。",
+			map[string]interface{}{
+				"task":          map[string]string{"type": "string", "description": "需要完成的任务描述（越详细越好）"},
+				"language":      map[string]string{"type": "string", "description": "脚本语言: python/bash/powershell/node（可选，自动检测）"},
+				"save_as_skill": map[string]string{"type": "boolean", "description": "执行成功后是否注册为 Skill 供下次复用（默认 true）"},
+				"skill_name":    map[string]string{"type": "string", "description": "Skill 名称（可选，自动生成）"},
+				"timeout":       map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
+			}, []string{"task"}),
 		// --- 本机直接操作工具 ---
 		toolDef("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。",
 			map[string]interface{}{
@@ -1149,6 +1137,36 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"max_iterations": map[string]string{"type": "integer", "description": "新的最大轮数（1-200）"},
 				"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},
 			}, []string{"max_iterations"}),
+		// --- 定时任务工具 ---
+		toolDef("create_scheduled_task", "创建定时任务。用户说 每天9点做XX、每周一下午3点做YY、从3月1号到15号每天上午10点做ZZ 时，解析出时间参数并调用此工具。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31=每月几号。",
+			map[string]interface{}{
+				"name":         map[string]string{"type": "string", "description": "任务名称（简短描述）"},
+				"action":       map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，会发送给 agent 执行）"},
+				"hour":         map[string]string{"type": "integer", "description": "执行时间-小时（0-23）"},
+				"minute":       map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0）"},
+				"day_of_week":  map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日, 1=周一...6=周六，默认-1）"},
+				"day_of_month": map[string]string{"type": "integer", "description": "每月几号（-1=不限, 1-31，默认-1）"},
+				"start_date":   map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02，可选）"},
+				"end_date":     map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02，可选）"},
+			}, []string{"name", "action", "hour"}),
+		toolDef("list_scheduled_tasks", "列出所有定时任务及其状态、下次执行时间", nil, nil),
+		toolDef("delete_scheduled_task", "删除定时任务（按 ID 或名称）",
+			map[string]interface{}{
+				"id":   map[string]string{"type": "string", "description": "任务 ID（优先）"},
+				"name": map[string]string{"type": "string", "description": "任务名称（ID 为空时按名称匹配）"},
+			}, nil),
+		toolDef("update_scheduled_task", "修改定时任务的时间或内容",
+			map[string]interface{}{
+				"id":           map[string]string{"type": "string", "description": "任务 ID（必填）"},
+				"name":         map[string]string{"type": "string", "description": "新名称（可选）"},
+				"action":       map[string]string{"type": "string", "description": "新的执行内容（可选）"},
+				"hour":         map[string]string{"type": "integer", "description": "新的小时（可选）"},
+				"minute":       map[string]string{"type": "integer", "description": "新的分钟（可选）"},
+				"day_of_week":  map[string]string{"type": "integer", "description": "新的星期几（可选）"},
+				"day_of_month": map[string]string{"type": "integer", "description": "新的每月几号（可选）"},
+				"start_date":   map[string]string{"type": "string", "description": "新的开始日期（可选）"},
+				"end_date":     map[string]string{"type": "string", "description": "新的结束日期（可选）"},
+			}, []string{"id"}),
 	}
 }
 
@@ -1227,6 +1245,8 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 		return h.toolParallelExecute(args)
 	case "recommend_tool":
 		return h.toolRecommendTool(args)
+	case "craft_tool":
+		return h.toolCraftTool(args, onProgress)
 	case "bash":
 		return h.toolBash(args, onProgress)
 	case "read_file":
@@ -1265,6 +1285,14 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 		return h.toolImportConfig(args)
 	case "set_max_iterations":
 		return h.toolSetMaxIterations(args)
+	case "create_scheduled_task":
+		return h.toolCreateScheduledTask(args)
+	case "list_scheduled_tasks":
+		return h.toolListScheduledTasks()
+	case "delete_scheduled_task":
+		return h.toolDeleteScheduledTask(args)
+	case "update_scheduled_task":
+		return h.toolUpdateScheduledTask(args)
 	default:
 		return fmt.Sprintf("未知工具: %s", name)
 	}
@@ -2537,4 +2565,144 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 		return fmt.Sprintf("✅ 已将当前对话最大轮数调整为 %d（原因: %s）", limit, reason)
 	}
 	return fmt.Sprintf("✅ 已将当前对话最大轮数调整为 %d", limit)
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled task tool implementations
+// ---------------------------------------------------------------------------
+
+func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) string {
+	if h.scheduledTaskManager == nil {
+		return "定时任务管理器未初始化"
+	}
+	name := stringVal(args, "name")
+	action := stringVal(args, "action")
+	if name == "" || action == "" {
+		return "缺少 name 或 action 参数"
+	}
+	hour := -1
+	if v, ok := args["hour"].(float64); ok {
+		hour = int(v)
+	}
+	if hour < 0 || hour > 23 {
+		return "hour 必须在 0-23 之间"
+	}
+	minute := 0
+	if v, ok := args["minute"].(float64); ok {
+		minute = int(v)
+	}
+	dow := -1
+	if v, ok := args["day_of_week"].(float64); ok {
+		dow = int(v)
+	}
+	dom := -1
+	if v, ok := args["day_of_month"].(float64); ok {
+		dom = int(v)
+	}
+
+	t := ScheduledTask{
+		Name:       name,
+		Action:     action,
+		Hour:       hour,
+		Minute:     minute,
+		DayOfWeek:  dow,
+		DayOfMonth: dom,
+		StartDate:  stringVal(args, "start_date"),
+		EndDate:    stringVal(args, "end_date"),
+	}
+
+	id, err := h.scheduledTaskManager.Add(t)
+	if err != nil {
+		return fmt.Sprintf("创建定时任务失败: %s", err.Error())
+	}
+
+	// Format next run time for display.
+	if task := h.scheduledTaskManager.Get(id); task != nil && task.NextRunAt != nil {
+		return fmt.Sprintf("✅ 定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s", id, name, action, task.NextRunAt.Format("2006-01-02 15:04"))
+	}
+	return fmt.Sprintf("✅ 定时任务已创建（ID: %s）", id)
+}
+
+func (h *IMMessageHandler) toolListScheduledTasks() string {
+	if h.scheduledTaskManager == nil {
+		return "定时任务管理器未初始化"
+	}
+	tasks := h.scheduledTaskManager.List()
+	if len(tasks) == 0 {
+		return "当前没有定时任务。"
+	}
+
+	weekdays := []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("共 %d 个定时任务：\n\n", len(tasks)))
+	for _, t := range tasks {
+		b.WriteString(fmt.Sprintf("📋 [%s] %s\n", t.ID, t.Name))
+		b.WriteString(fmt.Sprintf("   操作: %s\n", t.Action))
+
+		// Schedule description
+		sched := fmt.Sprintf("每天 %02d:%02d", t.Hour, t.Minute)
+		if t.DayOfWeek >= 0 && t.DayOfWeek <= 6 {
+			sched = fmt.Sprintf("每%s %02d:%02d", weekdays[t.DayOfWeek], t.Hour, t.Minute)
+		}
+		if t.DayOfMonth > 0 {
+			sched = fmt.Sprintf("每月%d号 %02d:%02d", t.DayOfMonth, t.Hour, t.Minute)
+		}
+		if t.StartDate != "" || t.EndDate != "" {
+			sched += fmt.Sprintf("（%s ~ %s）", t.StartDate, t.EndDate)
+		}
+		b.WriteString(fmt.Sprintf("   时间: %s\n", sched))
+		b.WriteString(fmt.Sprintf("   状态: %s", t.Status))
+		if t.NextRunAt != nil {
+			b.WriteString(fmt.Sprintf(" | 下次执行: %s", t.NextRunAt.Format("2006-01-02 15:04")))
+		}
+		if t.RunCount > 0 {
+			b.WriteString(fmt.Sprintf(" | 已执行 %d 次", t.RunCount))
+		}
+		b.WriteString("\n\n")
+	}
+	return b.String()
+}
+
+func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) string {
+	if h.scheduledTaskManager == nil {
+		return "定时任务管理器未初始化"
+	}
+	id := stringVal(args, "id")
+	name := stringVal(args, "name")
+	if id == "" && name == "" {
+		return "请提供 id 或 name 参数"
+	}
+	var err error
+	if id != "" {
+		err = h.scheduledTaskManager.Delete(id)
+	} else {
+		err = h.scheduledTaskManager.DeleteByName(name)
+	}
+	if err != nil {
+		return fmt.Sprintf("删除失败: %s", err.Error())
+	}
+	return "✅ 定时任务已删除"
+}
+
+func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) string {
+	if h.scheduledTaskManager == nil {
+		return "定时任务管理器未初始化"
+	}
+	id := stringVal(args, "id")
+	if id == "" {
+		return "缺少 id 参数"
+	}
+	err := h.scheduledTaskManager.Update(id, args)
+	if err != nil {
+		return fmt.Sprintf("更新失败: %s", err.Error())
+	}
+	// Show updated task info.
+	if t := h.scheduledTaskManager.Get(id); t != nil {
+		next := "-"
+		if t.NextRunAt != nil {
+			next = t.NextRunAt.Format("2006-01-02 15:04")
+		}
+		return fmt.Sprintf("✅ 定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
+	}
+	return "✅ 定时任务已更新"
 }
