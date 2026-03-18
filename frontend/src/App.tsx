@@ -5705,7 +5705,6 @@ ${instruction}`;
                 <OnboardingWizard
                     lang={lang}
                     hubUrl={config?.remote_hub_url || ""}
-                    hubCenterUrl={config?.remote_hubcenter_url || ""}
                     email={config?.remote_email || ""}
                     mobile={(config as any)?.remote_mobile || ""}
                     onClose={() => setShowMaclawLLMPopup(false)}

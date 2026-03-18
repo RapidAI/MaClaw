@@ -14,8 +14,15 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
+	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 )
+
+// IMBindingCleaner can remove IM bindings for a given email.
+// Implemented by qqbot.Plugin and any other IM plugin with email bindings.
+type IMBindingCleaner interface {
+	RemoveBindingByEmail(email string)
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // In-memory verification code store with rate limiting and auto-cleanup.
@@ -220,9 +227,10 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 	}
 }
 
-// BindUnbindHandler verifies code and deletes all machines for the email.
+// BindUnbindHandler verifies code, deletes all machines, invalidates the
+// invitation code, and removes IM bindings (Feishu, QQ Bot, etc.) for the email.
 // POST /api/bind/unbind  { "email": "...", "code": "..." }
-func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service) http.HandlerFunc {
+func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service, invitationSvc *invitation.Service, feishuNotifier *feishu.Notifier, imCleaners []IMBindingCleaner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Email string `json:"email"`
@@ -261,10 +269,49 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 			return
 		}
 
+		// Delete the invitation code bound to this email so it cannot be reused.
+		var codesDeleted int64
+		if invitationSvc != nil {
+			codesDeleted, err = invitationSvc.DeleteCodeByEmail(r.Context(), email)
+			if err != nil {
+				log.Printf("[bind] delete invitation code for %s failed: %v", email, err)
+			}
+		}
+
+		// Remove Feishu open_id binding.
+		if feishuNotifier != nil {
+			feishuNotifier.RemoveOpenID(email)
+			log.Printf("[bind] removed feishu binding for %s", email)
+		}
+
+		// Remove bindings from other IM plugins (QQ Bot, etc.).
+		for _, cleaner := range imCleaners {
+			if cleaner != nil {
+				cleaner.RemoveBindingByEmail(email)
+			}
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":               true,
 			"deleted_machines": deleted,
+			"codes_deleted":    codesDeleted,
 			"email":            email,
+		})
+	}
+}
+
+// BindConfigHandler returns public binding configuration (no auth required).
+// GET /api/bind/config
+func BindConfigHandler(invitationSvc *invitation.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		invRequired := false
+		if invitationSvc != nil {
+			if req, err := invitationSvc.IsRequired(r.Context()); err == nil {
+				invRequired = req
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"invitation_code_required": invRequired,
 		})
 	}
 }

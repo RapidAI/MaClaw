@@ -1258,6 +1258,22 @@ func (p *Plugin) LookupByEmail(email string) string {
 	return ""
 }
 
+// RemoveBindingByEmail removes all openid→email bindings for the given email.
+func (p *Plugin) RemoveBindingByEmail(email string) {
+	p.bindMu.Lock()
+	var removed bool
+	for openID, e := range p.bindings {
+		if strings.EqualFold(e, email) {
+			delete(p.bindings, openID)
+			removed = true
+		}
+	}
+	p.bindMu.Unlock()
+	if removed {
+		p.saveBindings()
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

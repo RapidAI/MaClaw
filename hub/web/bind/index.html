@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MaClaw 绑定管理</title>
   <style>
-    :root{--bg:#f0f5ff;--panel:#fff;--text:#1a2b42;--muted:#6b7f99;--primary:#2c6fca;--ok:#1f8f6a;--danger:#bf5648;--line:rgba(37,84,140,.15);--radius:14px;--shadow:0 12px 32px rgba(37,84,140,.1)}
+    :root{--bg:#f0f5ff;--panel:#fff;--text:#1a2b42;--muted:#6b7f99;--primary:#2c6fca;--ok:#1f8f6a;--danger:#bf5648;--warn:#b98219;--line:rgba(37,84,140,.15);--radius:14px;--shadow:0 12px 32px rgba(37,84,140,.1)}
     *{box-sizing:border-box;margin:0;padding:0}
     body{min-height:100vh;background:linear-gradient(180deg,#eef5ff 0%,var(--bg) 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;display:flex;align-items:center;justify-content:center;padding:24px}
     .container{width:min(520px,100%);background:var(--panel);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}
@@ -30,6 +30,7 @@
     .result.success{background:rgba(31,143,106,.08);border:1px solid rgba(31,143,106,.2);color:var(--ok)}
     .result.error{background:rgba(199,90,74,.08);border:1px solid rgba(199,90,74,.2);color:var(--danger)}
     .result.info{background:rgba(44,111,202,.06);border:1px solid rgba(44,111,202,.15);color:var(--primary)}
+    .result.warn{background:rgba(185,130,25,.06);border:1px solid rgba(185,130,25,.2);color:var(--warn)}
     .code-row{display:flex;gap:10px;align-items:flex-end}
     .code-row .field{flex:1;margin-bottom:0}
     .code-row .btn{width:auto;min-width:110px;flex-shrink:0;height:44px;font-size:13px}
@@ -39,7 +40,8 @@
     .hidden{display:none!important}
     .info-grid{display:grid;gap:8px}.info-row{display:flex;gap:8px}.info-label{min-width:80px;color:var(--muted);font-size:12px;font-weight:700}.info-value{font-size:13px}
     .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700}
-    .badge-ok{background:rgba(31,143,106,.12);color:var(--ok)}.badge-warn{background:rgba(185,130,25,.12);color:#b98219}
+    .badge-ok{background:rgba(31,143,106,.12);color:var(--ok)}.badge-warn{background:rgba(185,130,25,.12);color:var(--warn)}
+    .warn-box{padding:14px 16px;border-radius:var(--radius);background:rgba(185,130,25,.06);border:1px dashed rgba(185,130,25,.3);color:var(--warn);font-size:13px;line-height:1.6;margin-bottom:16px}
   </style>
 </head>
 <body>
@@ -56,7 +58,7 @@
 
   <div id="tab-bind" class="panel active" role="tabpanel">
     <div class="field"><label for="bindEmail">邮箱</label><input id="bindEmail" type="email" placeholder="your@email.com"></div>
-    <div class="field"><label for="bindCode">邀请码</label><input id="bindCode" type="text" placeholder="输入邀请码"></div>
+    <div id="bindCodeField" class="field"><label for="bindCode">邀请码</label><input id="bindCode" type="text" placeholder="输入邀请码"></div>
     <div class="field"><label for="bindMobile">手机号（选填，用于飞书自动入组）</label><input id="bindMobile" type="text" placeholder="+86..."></div>
     <button class="btn btn-primary" id="btnBind">绑定</button>
     <div id="bindResult" class="result hidden"></div>
@@ -69,6 +71,7 @@
   </div>
 
   <div id="tab-unbind" class="panel" role="tabpanel">
+    <div id="unbindWarning" class="warn-box hidden"></div>
     <div class="field"><label for="unbindEmail">邮箱</label><input id="unbindEmail" type="email" placeholder="your@email.com"></div>
     <label>发送验证码渠道</label>
     <div class="channel-select" role="radiogroup">
@@ -89,23 +92,41 @@
 <script>
 (function() {
   'use strict';
-  let selectedChannel = 'email';
-  let countdownTimer = null;
+  var selectedChannel = 'email';
+  var countdownTimer = null;
+  var invCodeRequired = false;
 
-  // Safe text escaping to prevent XSS
   function esc(s) {
-    const d = document.createElement('div');
+    var d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
   }
 
-  // Tab switching via data attributes
+  // Load server config on startup
+  fetch('/api/bind/config').then(function(r) { return r.json(); }).then(function(cfg) {
+    invCodeRequired = !!cfg.invitation_code_required;
+    // Show/hide invitation code field on bind tab
+    if (!invCodeRequired) {
+      var f = document.getElementById('bindCodeField');
+      if (f) f.classList.add('hidden');
+    }
+    // Show unbind warning
+    var warn = document.getElementById('unbindWarning');
+    var msg = '⚠️ 解绑将删除所有设备绑定、IM 绑定（飞书/QQ等），且原邀请码将失效。';
+    if (invCodeRequired) {
+      msg += '<br>当前服务器要求邀请码，解绑后需要获取新的邀请码才能重新绑定。';
+    }
+    warn.innerHTML = msg;
+    warn.classList.remove('hidden');
+  }).catch(function() {});
+
+  // Tab switching
   document.querySelector('.tabs').addEventListener('click', function(e) {
-    const btn = e.target.closest('[data-tab]');
+    var btn = e.target.closest('[data-tab]');
     if (!btn) return;
-    const name = btn.dataset.tab;
+    var name = btn.dataset.tab;
     document.querySelectorAll('.tabs [data-tab]').forEach(function(b) {
-      const active = b.dataset.tab === name;
+      var active = b.dataset.tab === name;
       b.classList.toggle('active', active);
       b.setAttribute('aria-selected', active);
     });
@@ -115,11 +136,11 @@
 
   // Channel selection
   document.querySelector('.channel-select').addEventListener('click', function(e) {
-    const btn = e.target.closest('[data-channel]');
+    var btn = e.target.closest('[data-channel]');
     if (!btn) return;
     selectedChannel = btn.dataset.channel;
     this.querySelectorAll('[data-channel]').forEach(function(b) {
-      const active = b.dataset.channel === selectedChannel;
+      var active = b.dataset.channel === selectedChannel;
       b.classList.toggle('active', active);
       b.setAttribute('aria-checked', active);
     });
@@ -239,12 +260,20 @@
     var email = document.getElementById('unbindEmail').value.trim();
     var code = document.getElementById('unbindCode').value.trim();
     if (!email || !code) return showResult('unbindResult', '请输入邮箱和验证码', 'error');
-    if (!confirm('确定要解除 ' + email + ' 的所有设备绑定吗？')) return;
+
+    var confirmMsg = '确定要解除 ' + email + ' 的所有绑定吗？\n\n将会：\n• 删除所有设备绑定\n• 删除飞书/QQ等 IM 绑定\n• 原邀请码将失效';
+    if (invCodeRequired) {
+      confirmMsg += '\n\n⚠️ 当前服务器要求邀请码，解绑后需要获取新的邀请码才能重新绑定！';
+    }
+    if (!confirm(confirmMsg)) return;
 
     try {
       var data = await api('/api/bind/unbind', { email: email, code: code });
       if (data.ok) {
-        showResult('unbindResult', '✅ 解绑成功，已删除 ' + esc(String(data.deleted_machines)) + ' 台设备', 'success');
+        var msg = '✅ 解绑成功，已删除 ' + esc(String(data.deleted_machines)) + ' 台设备';
+        if (data.codes_deleted > 0) msg += '，已删除 ' + esc(String(data.codes_deleted)) + ' 个邀请码';
+        if (invCodeRequired) msg += '<br><br>⚠️ 重新绑定需要获取新的邀请码';
+        showResult('unbindResult', msg, 'success');
       } else {
         showResult('unbindResult', '❌ ' + esc(data.message || '解绑失败'), 'error');
       }

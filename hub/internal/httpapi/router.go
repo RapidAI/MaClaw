@@ -122,9 +122,14 @@ func NewRouter(
 		mux.HandleFunc("GET /api/feishu/tempfile/{token}", feishuPlugin.ServeTempFile)
 	}
 	// Public binding page API (no auth required)
+	var imCleaners []IMBindingCleaner
+	if qqbotPlugin != nil {
+		imCleaners = append(imCleaners, qqbotPlugin)
+	}
+	mux.HandleFunc("GET /api/bind/config", BindConfigHandler(invitationSvc))
 	mux.HandleFunc("POST /api/bind/query", BindQueryHandler(identity))
 	mux.HandleFunc("POST /api/bind/send-code", BindSendCodeHandler(identity, mailer, feishuNotifier))
-	mux.HandleFunc("POST /api/bind/unbind", BindUnbindHandler(identity, deviceSvc))
+	mux.HandleFunc("POST /api/bind/unbind", BindUnbindHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners))
 
 	mux.HandleFunc("POST /api/enroll/start", EnrollStartHandler(identity, feishuNotifier))
 	mux.HandleFunc("POST /api/auth/email-request", EmailRequestLoginHandler(identity))

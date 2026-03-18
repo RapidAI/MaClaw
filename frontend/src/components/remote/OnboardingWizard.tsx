@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
     GetMaclawLLMProviders,
     SaveMaclawLLMProviders,
@@ -34,10 +34,12 @@ const COUNTRY_CODES = [
     { code: "+55", label: "🇧🇷 +55" },
 ] as const;
 
+// Pre-sorted by code length descending so +852 matches before +8x
+const COUNTRY_CODES_SORTED = [...COUNTRY_CODES].sort((a, b) => b.code.length - a.code.length);
+
 type Props = {
     lang: string;
     hubUrl: string;
-    hubCenterUrl: string;
     email: string;
     mobile: string;
     onClose: () => void;
@@ -46,16 +48,26 @@ type Props = {
     onSaveField: (patch: Record<string, any>) => void;
 };
 
+/* ── Hoisted style objects (avoid re-creation per render) ── */
 const inputStyle: React.CSSProperties = {
     width: "100%", padding: "7px 10px", fontSize: "0.8rem",
     border: "1px solid #e2e8f0", borderRadius: 4,
     background: "#fff", color: "#1e293b", boxSizing: "border-box",
 };
+const readonlyInputStyle: React.CSSProperties = {
+    ...inputStyle, background: "#f1f5f9", color: "#94a3b8", cursor: "default",
+};
 const labelStyle: React.CSSProperties = {
     fontSize: "0.76rem", color: "#64748b", marginBottom: 4, display: "block",
 };
+const stepBadge: React.CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: '22px', height: '22px', borderRadius: '50%',
+    background: '#6366f1', color: '#fff', fontSize: '0.72rem', fontWeight: 700, flexShrink: 0,
+};
+const doneBadge: React.CSSProperties = { ...stepBadge, background: '#22c55e' };
 
-export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
+export function OnboardingWizard({ lang, hubUrl, email, mobile, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
 
     // ── Step 1: LLM ──
@@ -84,12 +96,11 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
         }).catch(() => {});
     }, []);
 
-    // Parse mobile prop
+    // Parse mobile prop (runs once on mount)
     useEffect(() => {
         if (!mobile) return;
         const s = mobile.replace(/[\s-]/g, "");
-        const sorted = [...COUNTRY_CODES].sort((a, b) => b.code.length - a.code.length);
-        for (const cc of sorted) {
+        for (const cc of COUNTRY_CODES_SORTED) {
             if (s.startsWith(cc.code)) {
                 setCountryCode(cc.code);
                 setLocalNumber(s.slice(cc.code.length));
@@ -99,13 +110,32 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
         setLocalNumber(s.replace(/^\+?\d{1,4}/, ""));
     }, [mobile]);
 
-    // Probe hub for invitation code requirement
+    // Probe hub for invitation code requirement (only on mount / hubUrl change,
+    // NOT on every regEmail keystroke — use the initial email prop).
+    const initialEmailRef = useRef(email);
     useEffect(() => {
-        if (!hubUrl || !regEmail) return;
-        ProbeRemoteHub(hubUrl, regEmail).then(r => {
+        if (!hubUrl || !initialEmailRef.current) return;
+        ProbeRemoteHub(hubUrl, initialEmailRef.current).then(r => {
             if (r?.invitation_code_required) setInvRequired(true);
         }).catch(() => {});
-    }, [hubUrl, regEmail]);
+    }, [hubUrl]);
+
+    // Escape key to close wizard (but not if confirmation dialog is open)
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape" && !showConfirm) onClose();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onClose, showConfirm]);
+
+    // Auto-close when both steps are done
+    useEffect(() => {
+        if (llmDone && regDone) {
+            const timer = setTimeout(onClose, 1500);
+            return () => clearTimeout(timer);
+        }
+    }, [llmDone, regDone, onClose]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
 
@@ -125,6 +155,10 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
         const sp = selectedProvider;
         if (!sp.key?.trim()) {
             setLlmResult({ ok: false, msg: t("请输入 API Key", "Please enter API Key") });
+            return;
+        }
+        if (sp.is_custom && !sp.url?.trim()) {
+            setLlmResult({ ok: false, msg: t("请输入 API URL", "Please enter API URL") });
             return;
         }
         setLlmSaving(true);
@@ -147,7 +181,6 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
             setRegResult({ ok: false, msg: t("请输入邮箱", "Please enter email") });
             return;
         }
-        // Show confirmation dialog
         setShowConfirm(true);
     };
 
@@ -157,7 +190,6 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
         setRegResult(null);
         setInvError("");
         const fullMobile = localNumber ? countryCode + localNumber : "";
-        // Save fields to config
         onSaveField({ remote_email: regEmail.trim(), remote_mobile: fullMobile });
         try {
             await ActivateRemote(regEmail.trim(), invCode.trim(), fullMobile);
@@ -183,13 +215,6 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
         }
         setRegBusy(false);
     };
-
-    const stepBadge: React.CSSProperties = {
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        width: '22px', height: '22px', borderRadius: '50%',
-        background: '#6366f1', color: '#fff', fontSize: '0.72rem', fontWeight: 700, flexShrink: 0,
-    };
-    const doneBadge: React.CSSProperties = { ...stepBadge, background: '#22c55e' };
 
     return (
         <div style={{
@@ -260,11 +285,10 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
                                 marginLeft: 30, padding: 14, borderRadius: 8,
                                 border: "1px solid #e2e8f0", background: "#f8fafc",
                             }}>
-                                {/* Custom: URL */}
                                 {selectedProvider.is_custom ? (
                                     <>
                                         <div style={{ marginBottom: 10 }}>
-                                            <label style={labelStyle}>API URL</label>
+                                            <label style={labelStyle}>API URL <span style={{ color: "#ef4444" }}>*</span></label>
                                             <input style={inputStyle} value={selectedProvider.url}
                                                 onChange={e => updateField("url", e.target.value)}
                                                 placeholder="https://api.openai.com/v1" />
@@ -280,18 +304,16 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
                                     <>
                                         <div style={{ marginBottom: 10 }}>
                                             <label style={labelStyle}>API URL <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("预设", "preset")})</span></label>
-                                            <input style={{ ...inputStyle, background: "#f1f5f9", color: "#94a3b8", cursor: "default" }}
-                                                value={selectedProvider.url} readOnly tabIndex={-1} />
+                                            <input style={readonlyInputStyle} value={selectedProvider.url} readOnly tabIndex={-1} />
                                         </div>
                                         <div style={{ marginBottom: 10 }}>
                                             <label style={labelStyle}>{t("模型名称", "Model Name")} <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("预设", "preset")})</span></label>
-                                            <input style={{ ...inputStyle, background: "#f1f5f9", color: "#94a3b8", cursor: "default" }}
-                                                value={selectedProvider.model} readOnly tabIndex={-1} />
+                                            <input style={readonlyInputStyle} value={selectedProvider.model} readOnly tabIndex={-1} />
                                         </div>
                                     </>
                                 )}
 
-                                {/* API Key — always editable */}
+                                {/* API Key */}
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>API Key <span style={{ color: "#ef4444" }}>*</span></label>
                                     <input style={inputStyle} type="password" value={selectedProvider.key}
@@ -300,7 +322,7 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
                                         autoComplete="off" />
                                 </div>
 
-                                {/* Test & Save button */}
+                                {/* Test & Save */}
                                 <button onClick={handleLLMSave} disabled={llmSaving} style={{
                                     width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
                                     background: llmSaving ? "#a5b4fc" : "#6366f1", color: "#fff",
@@ -309,7 +331,6 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
                                     {llmSaving ? t("测试并保存中...", "Testing & Saving...") : t("测试并保存", "Test & Save")}
                                 </button>
 
-                                {/* Result */}
                                 {llmResult && (
                                     <div style={{
                                         marginTop: 8, padding: "6px 10px", borderRadius: 4, fontSize: "0.74rem",
@@ -401,7 +422,6 @@ export function OnboardingWizard({ lang, hubUrl, hubCenterUrl, email, mobile, on
                                 {regBusy ? t("注册中...", "Registering...") : regDone ? t("已注册", "Registered") : t("注册", "Register")}
                             </button>
 
-                            {/* Result */}
                             {regResult && (
                                 <div style={{
                                     marginTop: 8, padding: "6px 10px", borderRadius: 4, fontSize: "0.74rem",

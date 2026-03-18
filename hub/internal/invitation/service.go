@@ -120,6 +120,16 @@ func (s *Service) UnbindCode(ctx context.Context, id string) error {
 	return s.repo.Unbind(ctx, id)
 }
 
+// DeleteCodeByEmail permanently deletes all invitation codes bound to the given email.
+// Returns the number of deleted codes.
+func (s *Service) DeleteCodeByEmail(ctx context.Context, email string) (int64, error) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return 0, nil
+	}
+	return s.repo.DeleteByEmail(ctx, email)
+}
+
 // CheckExpiry checks whether the invitation code associated with the given email has expired.
 // Returns (expired, expiresAt, error).
 // If no code is found or validity_days == 0, returns (false, nil, nil).

@@ -99,6 +99,20 @@ func (m *memInvitationCodeRepo) Unbind(_ context.Context, id string) error {
 	return errors.New("not found")
 }
 
+func (m *memInvitationCodeRepo) DeleteByEmail(_ context.Context, email string) (int64, error) {
+	var kept []*store.InvitationCode
+	var count int64
+	for _, c := range m.codes {
+		if c.UsedByEmail == email && c.Status == "used" {
+			count++
+		} else {
+			kept = append(kept, c)
+		}
+	}
+	m.codes = kept
+	return count, nil
+}
+
 func (m *memInvitationCodeRepo) GetByEmail(_ context.Context, email string) (*store.InvitationCode, error) {
 	var latest *store.InvitationCode
 	for _, c := range m.codes {

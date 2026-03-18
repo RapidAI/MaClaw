@@ -176,6 +176,7 @@ type InvitationCodeRepository interface {
 	ListPaged(ctx context.Context, status string, search string, offset, limit int) ([]*InvitationCode, int, error)
 	MarkUsed(ctx context.Context, id string, email string, usedAt time.Time) error
 	Unbind(ctx context.Context, id string) error
+	DeleteByEmail(ctx context.Context, email string) (int64, error)
 }
 
 type MachineRepository interface {

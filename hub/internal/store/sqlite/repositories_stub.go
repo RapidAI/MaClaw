@@ -1312,6 +1312,18 @@ func (r *invitationCodeRepo) Unbind(ctx context.Context, id string) error {
 	return err
 }
 
+func (r *invitationCodeRepo) DeleteByEmail(ctx context.Context, email string) (int64, error) {
+	res, err := r.db.ExecContext(
+		ctx,
+		`DELETE FROM invitation_codes WHERE used_by_email = ? AND status = 'used'`,
+		email,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *invitationCodeRepo) GetByEmail(ctx context.Context, email string) (*store.InvitationCode, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
