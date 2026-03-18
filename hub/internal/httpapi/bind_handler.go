@@ -18,41 +18,88 @@ import (
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
-// In-memory verification code store (email → code+expiry). Codes expire after
-// 5 minutes and are single-use.
+// In-memory verification code store with rate limiting and auto-cleanup.
 // ──────────────────────────────────────────────────────────────────────────────
+
+const (
+	verifyCodeTTL      = 5 * time.Minute
+	verifyCooldown     = 60 * time.Second // min interval between send-code requests per email
+	verifyMaxAttempts  = 5                // max wrong code attempts before lockout
+	verifyCleanupEvery = 10 * time.Minute
+)
 
 type verifyEntry struct {
 	Code      string
 	ExpiresAt time.Time
+	SentAt    time.Time
+	Attempts  int
 }
 
 var (
-	verifyCodes   = map[string]*verifyEntry{}
-	verifyMu      sync.Mutex
-	verifyCodeTTL = 5 * time.Minute
+	verifyCodes      = map[string]*verifyEntry{}
+	verifyMu         sync.Mutex
+	verifyLastClean  = time.Now()
 )
 
-func generateVerifyCode() string {
-	n, _ := rand.Int(rand.Reader, big.NewInt(1000000))
-	return fmt.Sprintf("%06d", n.Int64())
+func generateVerifyCode() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
+	if err != nil {
+		return "", fmt.Errorf("generating verify code: %w", err)
+	}
+	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
-func storeVerifyCode(email, code string) {
+// storeVerifyCode stores a code and returns false if cooldown hasn't elapsed.
+func storeVerifyCode(email, code string) bool {
 	verifyMu.Lock()
 	defer verifyMu.Unlock()
-	verifyCodes[email] = &verifyEntry{Code: code, ExpiresAt: time.Now().Add(verifyCodeTTL)}
+	cleanupExpiredLocked()
+	if entry, ok := verifyCodes[email]; ok {
+		if time.Since(entry.SentAt) < verifyCooldown {
+			return false // rate limited
+		}
+	}
+	now := time.Now()
+	verifyCodes[email] = &verifyEntry{
+		Code:      code,
+		ExpiresAt: now.Add(verifyCodeTTL),
+		SentAt:    now,
+	}
+	return true
 }
 
-func consumeVerifyCode(email, code string) bool {
+func consumeVerifyCode(email, code string) (ok bool, locked bool) {
 	verifyMu.Lock()
 	defer verifyMu.Unlock()
-	entry, ok := verifyCodes[email]
-	if !ok || entry.Code != code || time.Now().After(entry.ExpiresAt) {
-		return false
+	entry, exists := verifyCodes[email]
+	if !exists || time.Now().After(entry.ExpiresAt) {
+		delete(verifyCodes, email)
+		return false, false
+	}
+	if entry.Attempts >= verifyMaxAttempts {
+		delete(verifyCodes, email) // force re-send
+		return false, true
+	}
+	if entry.Code != code {
+		entry.Attempts++
+		return false, entry.Attempts >= verifyMaxAttempts
 	}
 	delete(verifyCodes, email)
-	return true
+	return true, false
+}
+
+// cleanupExpiredLocked removes stale entries. Must be called with verifyMu held.
+func cleanupExpiredLocked() {
+	if time.Since(verifyLastClean) < verifyCleanupEvery {
+		return
+	}
+	now := time.Now()
+	for k, v := range verifyCodes {
+		if now.After(v.ExpiresAt) {
+			delete(verifyCodes, k)
+		}
+	}
+	verifyLastClean = now
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -104,7 +151,7 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Email   string `json:"email"`
-			Channel string `json:"channel"` // "email", "feishu", "both"
+			Channel string `json:"channel"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -116,28 +163,35 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 			return
 		}
 		channel := strings.TrimSpace(strings.ToLower(req.Channel))
-		if channel == "" {
+		if channel != "email" && channel != "feishu" && channel != "both" {
 			channel = "email"
 		}
 
-		// Must be a bound user to send unbind code
+		// Must be a bound user
 		user, err := identity.LookupUserByEmail(r.Context(), email)
 		if err != nil || user == nil {
 			writeError(w, http.StatusBadRequest, "NOT_BOUND", "This email is not bound")
 			return
 		}
 
-		code := generateVerifyCode()
-		storeVerifyCode(email, code)
+		code, err := generateVerifyCode()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CODE_GEN_FAILED", "Failed to generate verification code")
+			return
+		}
+
+		if !storeVerifyCode(email, code) {
+			writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "Please wait 60 seconds before requesting a new code")
+			return
+		}
 
 		sentVia := []string{}
-		subject := "MaClaw 解绑验证码"
-		body := fmt.Sprintf("您的解绑验证码是: %s\r\n\r\n验证码 %d 分钟内有效。如非本人操作，请忽略此消息。", code, int(verifyCodeTTL.Minutes()))
+		codeMsg := fmt.Sprintf("您的解绑验证码是: %s\r\n\r\n验证码 %d 分钟内有效。如非本人操作，请忽略此消息。", code, int(verifyCodeTTL.Minutes()))
 
 		if channel == "email" || channel == "both" {
 			if mailer != nil {
-				if err := mailer.Send(r.Context(), []string{email}, subject, body); err != nil {
-					log.Printf("[bind] send email verify code failed for %s: %v", email, err)
+				if sendErr := mailer.Send(r.Context(), []string{email}, "MaClaw 解绑验证码", codeMsg); sendErr != nil {
+					log.Printf("[bind] send email verify code failed for %s: %v", email, sendErr)
 				} else {
 					sentVia = append(sentVia, "email")
 				}
@@ -185,15 +239,13 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 			return
 		}
 
-		if !consumeVerifyCode(email, code) {
-			writeError(w, http.StatusBadRequest, "INVALID_CODE", "Verification code is invalid or expired")
+		ok, locked := consumeVerifyCode(email, code)
+		if locked {
+			writeError(w, http.StatusTooManyRequests, "TOO_MANY_ATTEMPTS", "Too many wrong attempts, please request a new code")
 			return
 		}
-
-		// Delete all machines for this user
-		users := identity.UsersRepo()
-		if users == nil {
-			writeError(w, http.StatusInternalServerError, "NO_USER_REPO", "User repository not available")
+		if !ok {
+			writeError(w, http.StatusBadRequest, "INVALID_CODE", "Verification code is invalid or expired")
 			return
 		}
 
@@ -216,5 +268,3 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 		})
 	}
 }
-
-
