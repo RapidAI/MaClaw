@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -19,6 +20,19 @@ import (
 // In production this would be backed by a database; here we use a sync.Map
 // keyed by normalized email.
 var clawnetKeyStore sync.Map
+
+// clawnetRestoreAttempts tracks failed restore attempts per email for rate limiting.
+var clawnetRestoreAttempts sync.Map // email -> *clawnetAttemptEntry
+
+type clawnetAttemptEntry struct {
+	Count    int
+	LastFail time.Time
+}
+
+const (
+	clawnetMaxRestoreAttempts = 5
+	clawnetLockoutDuration   = 15 * time.Minute
+)
 
 type clawnetKeyEntry struct {
 	Email         string `json:"email"`
@@ -156,14 +170,36 @@ func ClawNetKeyRestoreHandler() http.HandlerFunc {
 			clawnetJSONError(w, "no backup found for this email", http.StatusNotFound)
 			return
 		}
+
+		// Rate limit: check for too many failed attempts
+		if raw, exists := clawnetRestoreAttempts.Load(email); exists {
+			attempt := raw.(*clawnetAttemptEntry)
+			if attempt.Count >= clawnetMaxRestoreAttempts && time.Since(attempt.LastFail) < clawnetLockoutDuration {
+				clawnetJSONError(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
+				return
+			}
+			// Reset if lockout has expired
+			if time.Since(attempt.LastFail) >= clawnetLockoutDuration {
+				clawnetRestoreAttempts.Delete(email)
+			}
+		}
+
 		entry := val.(clawnetKeyEntry)
 
 		aesKey := deriveKey(req.Password, email)
 		plaintext, err := decryptKeyData(entry.EncryptedData, aesKey)
 		if err != nil {
+			// Track failed attempt
+			raw, _ := clawnetRestoreAttempts.LoadOrStore(email, &clawnetAttemptEntry{})
+			attempt := raw.(*clawnetAttemptEntry)
+			attempt.Count++
+			attempt.LastFail = time.Now()
 			clawnetJSONError(w, "wrong password or corrupted backup", http.StatusForbidden)
 			return
 		}
+
+		// Clear failed attempts on success
+		clawnetRestoreAttempts.Delete(email)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{

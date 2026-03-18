@@ -45,31 +45,37 @@ type ClawNetPeer struct {
 }
 
 type ClawNetTask struct {
-	ID          string  `json:"id"`
-	Title       string  `json:"title"`
-	Description string  `json:"description,omitempty"`
-	Status      string  `json:"status"` // open, assigned, submitted, approved, rejected, cancelled
-	Reward      float64 `json:"reward"`
-	Creator     string  `json:"creator,omitempty"`
-	Assignee    string  `json:"assignee,omitempty"`
-	CreatedAt   string  `json:"created_at,omitempty"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	Status      string   `json:"status"` // open, assigned, submitted, approved, rejected, cancelled
+	Reward      float64  `json:"reward"`
+	Creator     string   `json:"creator,omitempty"`
+	Assignee    string   `json:"assignee,omitempty"`
+	TargetPeer  string   `json:"target_peer,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	CreatedAt   string   `json:"created_at,omitempty"`
 }
 
 type ClawNetCredits struct {
-	Balance  float64 `json:"balance"`
-	Tier     string  `json:"tier"`
-	TierRank int     `json:"tier_rank,omitempty"`
-	Energy   float64 `json:"energy,omitempty"`
+	Balance      float64 `json:"balance"`
+	Tier         string  `json:"tier"`
+	TierRank     int     `json:"tier_rank,omitempty"`
+	Energy       float64 `json:"energy,omitempty"`
+	Currency     string  `json:"currency,omitempty"`
+	ExchangeRate float64 `json:"exchange_rate,omitempty"`
+	LocalValue   string  `json:"local_value,omitempty"`
 }
 
 type ClawNetKnowledgeEntry struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Body      string `json:"body,omitempty"`
-	Author    string `json:"author,omitempty"`
-	Domain    string `json:"domain,omitempty"`
-	Upvotes   int    `json:"upvotes,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Body      string   `json:"body,omitempty"`
+	Author    string   `json:"author,omitempty"`
+	Domain    string   `json:"domain,omitempty"`
+	Domains   []string `json:"domains,omitempty"`
+	Upvotes   int      `json:"upvotes,omitempty"`
+	CreatedAt string   `json:"created_at,omitempty"`
 }
 
 type ClawNetPrediction struct {
@@ -96,10 +102,11 @@ type ClawNetDM struct {
 }
 
 type ClawNetResume struct {
-	PeerID string   `json:"peer_id,omitempty"`
-	Name   string   `json:"name,omitempty"`
-	Skills []string `json:"skills,omitempty"`
-	Bio    string   `json:"bio,omitempty"`
+	PeerID  string   `json:"peer_id,omitempty"`
+	Name    string   `json:"name,omitempty"`
+	Skills  []string `json:"skills,omitempty"`
+	Domains []string `json:"domains,omitempty"`
+	Bio     string   `json:"bio,omitempty"`
 }
 
 // NewClawNetClient creates a client pointing at the default daemon port.
@@ -185,6 +192,9 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 	c.daemon = cmd
 	c.mu.Unlock()
 
+	// Reap the child process in the background to avoid zombie processes.
+	go func() { _ = cmd.Wait() }()
+
 	// Wait for daemon to become ready (up to 15s) without holding the lock
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
@@ -199,23 +209,29 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 	return fmt.Errorf("clawnet daemon started but not responding on %s", c.baseURL)
 }
 
-// StopDaemon gracefully stops the daemon.
+// StopDaemon gracefully stops the daemon via `clawnet stop`.
 func (c *ClawNetClient) StopDaemon() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.daemon != nil && c.daemon.Process != nil {
-		_ = c.daemon.Process.Kill()
-		_ = c.daemon.Wait()
-		c.daemon = nil
+	// Prefer using the CLI to stop the daemon gracefully.
+	bin := c.binPath
+	if bin == "" {
+		bin = c.findBinary()
 	}
+	if bin != "" {
+		cmd := exec.Command(bin, "stop")
+		_ = cmd.Run()
+	} else if c.daemon != nil && c.daemon.Process != nil {
+		// Fallback: kill the launcher process directly.
+		_ = c.daemon.Process.Kill()
+	}
+	c.daemon = nil
 	c.running = false
 }
 
 // IsRunning returns true if the daemon is reachable.
 func (c *ClawNetClient) IsRunning() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return c.ping()
 }
 
@@ -244,6 +260,7 @@ func (c *ClawNetClient) get(path string, out interface{}) error {
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
@@ -268,6 +285,7 @@ func (c *ClawNetClient) post(path string, payload interface{}, out interface{}) 
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
@@ -285,6 +303,7 @@ func (c *ClawNetClient) delete(path string) error {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("clawnet DELETE %s: status %d: %s", path, resp.StatusCode, string(b))
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
@@ -310,6 +329,7 @@ func (c *ClawNetClient) put(path string, payload interface{}, out interface{}) e
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
@@ -342,11 +362,26 @@ func (c *ClawNetClient) GetTaskBoard() (map[string]interface{}, error) {
 }
 
 func (c *ClawNetClient) CreateTask(title string, reward float64) (*ClawNetTask, error) {
-	var task ClawNetTask
-	return &task, c.post("/api/tasks", map[string]interface{}{
+	return c.CreateTaskFull(title, "", reward, nil, "")
+}
+
+// CreateTaskFull creates a task with all optional fields: description, tags, target_peer.
+func (c *ClawNetClient) CreateTaskFull(title, description string, reward float64, tags []string, targetPeer string) (*ClawNetTask, error) {
+	payload := map[string]interface{}{
 		"title":  title,
 		"reward": reward,
-	}, &task)
+	}
+	if description != "" {
+		payload["description"] = description
+	}
+	if len(tags) > 0 {
+		payload["tags"] = tags
+	}
+	if targetPeer != "" {
+		payload["target_peer"] = targetPeer
+	}
+	var task ClawNetTask
+	return &task, c.post("/api/tasks", payload, &task)
 }
 
 func (c *ClawNetClient) GetTask(id string) (*ClawNetTask, error) {
@@ -355,15 +390,18 @@ func (c *ClawNetClient) GetTask(id string) (*ClawNetTask, error) {
 }
 
 func (c *ClawNetClient) BidOnTask(id string, amount float64, message string) error {
-	return c.post("/api/tasks/"+id+"/bid", map[string]interface{}{
-		"amount":  amount,
+	payload := map[string]interface{}{
 		"message": message,
-	}, nil)
+	}
+	if amount > 0 {
+		payload["amount"] = amount
+	}
+	return c.post("/api/tasks/"+id+"/bid", payload, nil)
 }
 
 func (c *ClawNetClient) AssignTask(id, peerID string) error {
 	return c.post("/api/tasks/"+id+"/assign", map[string]interface{}{
-		"peer_id": peerID,
+		"bidder_id": peerID,
 	}, nil)
 }
 
@@ -419,16 +457,25 @@ func (c *ClawNetClient) SearchKnowledge(query string) ([]ClawNetKnowledgeEntry, 
 }
 
 func (c *ClawNetClient) PublishKnowledge(title, body string) (*ClawNetKnowledgeEntry, error) {
-	var entry ClawNetKnowledgeEntry
-	return &entry, c.post("/api/knowledge", map[string]interface{}{
+	return c.PublishKnowledgeFull(title, body, nil)
+}
+
+// PublishKnowledgeFull publishes knowledge with optional domain tags.
+func (c *ClawNetClient) PublishKnowledgeFull(title, body string, domains []string) (*ClawNetKnowledgeEntry, error) {
+	payload := map[string]interface{}{
 		"title": title,
 		"body":  body,
-	}, &entry)
+	}
+	if len(domains) > 0 {
+		payload["domains"] = domains
+	}
+	var entry ClawNetKnowledgeEntry
+	return &entry, c.post("/api/knowledge", payload, &entry)
 }
 
 func (c *ClawNetClient) ReactKnowledge(id, reaction string) error {
 	return c.post("/api/knowledge/"+id+"/react", map[string]interface{}{
-		"reaction": reaction,
+		"emoji": reaction,
 	}, nil)
 }
 
@@ -456,13 +503,13 @@ func (c *ClawNetClient) CreatePrediction(question string, options []string) (*Cl
 func (c *ClawNetClient) PlaceBet(predID, option string, stake float64) error {
 	return c.post("/api/predictions/"+predID+"/bet", map[string]interface{}{
 		"option": option,
-		"stake":  stake,
+		"amount": stake,
 	}, nil)
 }
 
 func (c *ClawNetClient) ResolvePrediction(predID, result string) error {
 	return c.post("/api/predictions/"+predID+"/resolve", map[string]interface{}{
-		"result": result,
+		"winning_option": result,
 	}, nil)
 }
 
@@ -470,31 +517,34 @@ func (c *ClawNetClient) ResolvePrediction(predID, result string) error {
 
 func (c *ClawNetClient) ListSwarmSessions() ([]ClawNetSwarmSession, error) {
 	var sessions []ClawNetSwarmSession
-	return sessions, c.get("/api/swarm/sessions", &sessions)
+	return sessions, c.get("/api/swarm", &sessions)
 }
 
 func (c *ClawNetClient) CreateSwarmSession(topic, question string) (*ClawNetSwarmSession, error) {
 	var session ClawNetSwarmSession
-	return &session, c.post("/api/swarm/sessions", map[string]interface{}{
-		"topic":    topic,
-		"question": question,
+	return &session, c.post("/api/swarm", map[string]interface{}{
+		"topic":       topic,
+		"description": question,
 	}, &session)
 }
 
 func (c *ClawNetClient) JoinSwarm(sessionID string) error {
-	return c.post("/api/swarm/sessions/"+sessionID+"/join", nil, nil)
+	return c.post("/api/swarm/"+sessionID+"/join", nil, nil)
 }
 
 func (c *ClawNetClient) ContributeToSwarm(sessionID, message, stance string) error {
-	return c.post("/api/swarm/sessions/"+sessionID+"/contribute", map[string]interface{}{
-		"message": message,
-		"stance":  stance,
-	}, nil)
+	payload := map[string]interface{}{
+		"body": message,
+	}
+	if stance != "" {
+		payload["stance"] = stance
+	}
+	return c.post("/api/swarm/"+sessionID+"/contribute", payload, nil)
 }
 
 func (c *ClawNetClient) SynthesizeSwarm(sessionID string) (map[string]interface{}, error) {
 	var result map[string]interface{}
-	return result, c.post("/api/swarm/sessions/"+sessionID+"/synthesize", nil, &result)
+	return result, c.post("/api/swarm/"+sessionID+"/synthesize", nil, &result)
 }
 
 // ---------- Direct Messages ----------
@@ -512,7 +562,10 @@ func (c *ClawNetClient) GetDMInbox() ([]ClawNetDM, error) {
 }
 
 func (c *ClawNetClient) GetDMThread(peerID string, limit int) ([]ClawNetDM, error) {
-	path := fmt.Sprintf("/api/dm/thread/%s?limit=%d", url.PathEscape(peerID), limit)
+	path := "/api/dm/thread/" + url.PathEscape(peerID)
+	if limit > 0 {
+		path += fmt.Sprintf("?limit=%d", limit)
+	}
 	var thread []ClawNetDM
 	return thread, c.get(path, &thread)
 }
@@ -528,9 +581,9 @@ func (c *ClawNetClient) UpdateResume(resume *ClawNetResume) error {
 	return c.put("/api/resume", resume, nil)
 }
 
+// MatchResume finds agents matching a task. Delegates to MatchAgentsForTask.
 func (c *ClawNetClient) MatchResume(taskID string) ([]ClawNetResume, error) {
-	var matches []ClawNetResume
-	return matches, c.get("/api/resume/match?task_id="+url.QueryEscape(taskID), &matches)
+	return c.MatchAgentsForTask(taskID)
 }
 
 // ---------- Profile ----------
@@ -647,4 +700,98 @@ func (c *ClawNetClient) SelfUpdate() error {
 		return fmt.Errorf("update failed: %w — %s", err, string(out))
 	}
 	return nil
+}
+
+// ---------- Knowledge Replies ----------
+
+// GetKnowledgeReplies returns replies for a knowledge entry.
+func (c *ClawNetClient) GetKnowledgeReplies(id string) ([]map[string]interface{}, error) {
+	var replies []map[string]interface{}
+	return replies, c.get("/api/knowledge/"+id+"/replies", &replies)
+}
+
+// ---------- Credits Audit ----------
+
+// GetCreditsAudit returns the credit audit log.
+func (c *ClawNetClient) GetCreditsAudit() ([]map[string]interface{}, error) {
+	var audit []map[string]interface{}
+	return audit, c.get("/api/credits/audit", &audit)
+}
+
+// ---------- Prediction Market (extended) ----------
+
+// AppealPrediction files an appeal against a prediction resolution.
+func (c *ClawNetClient) AppealPrediction(predID, reason string) error {
+	return c.post("/api/predictions/"+predID+"/appeal", map[string]interface{}{
+		"reason": reason,
+	}, nil)
+}
+
+// GetPredictionLeaderboard returns the prediction market leaderboard.
+func (c *ClawNetClient) GetPredictionLeaderboard() ([]map[string]interface{}, error) {
+	var lb []map[string]interface{}
+	return lb, c.get("/api/predictions/leaderboard", &lb)
+}
+
+// ---------- Auction House ----------
+
+// SubmitTaskWork submits work for an auction-style task (multi-worker).
+func (c *ClawNetClient) SubmitTaskWork(id, result string) error {
+	return c.post("/api/tasks/"+id+"/work", map[string]interface{}{
+		"result": result,
+	}, nil)
+}
+
+// GetTaskSubmissions returns all submissions for an auction-style task.
+func (c *ClawNetClient) GetTaskSubmissions(id string) ([]map[string]interface{}, error) {
+	var subs []map[string]interface{}
+	return subs, c.get("/api/tasks/"+id+"/submissions", &subs)
+}
+
+// PickTaskWinner selects the winning submission for an auction-style task.
+func (c *ClawNetClient) PickTaskWinner(id, winnerPeerID string) error {
+	return c.post("/api/tasks/"+id+"/pick", map[string]interface{}{
+		"winner": winnerPeerID,
+	}, nil)
+}
+
+// ---------- Overlay Mesh ----------
+
+// GetOverlayStatus returns the overlay mesh network status.
+func (c *ClawNetClient) GetOverlayStatus() (map[string]interface{}, error) {
+	var status map[string]interface{}
+	return status, c.get("/api/overlay/status", &status)
+}
+
+// GetOverlayTree returns the overlay peer tree.
+func (c *ClawNetClient) GetOverlayTree() (map[string]interface{}, error) {
+	var tree map[string]interface{}
+	return tree, c.get("/api/overlay/tree", &tree)
+}
+
+// GetOverlayPeersGeo returns overlay peers with geographic info.
+func (c *ClawNetClient) GetOverlayPeersGeo() ([]map[string]interface{}, error) {
+	var peers []map[string]interface{}
+	return peers, c.get("/api/overlay/peers/geo", &peers)
+}
+
+// AddOverlayPeer adds a custom overlay peer by URI.
+func (c *ClawNetClient) AddOverlayPeer(uri string) error {
+	return c.post("/api/overlay/peers/add", map[string]interface{}{
+		"uri": uri,
+	}, nil)
+}
+
+// ---------- Extended Diagnostics ----------
+
+// GetMatrixStatus returns the matrix status diagnostics.
+func (c *ClawNetClient) GetMatrixStatus() (map[string]interface{}, error) {
+	var status map[string]interface{}
+	return status, c.get("/api/matrix/status", &status)
+}
+
+// GetTraffic returns network traffic statistics.
+func (c *ClawNetClient) GetTraffic() (map[string]interface{}, error) {
+	var traffic map[string]interface{}
+	return traffic, c.get("/api/traffic", &traffic)
 }

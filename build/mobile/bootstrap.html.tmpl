@@ -31,6 +31,7 @@
     .mt { margin-top: 12px; }
     .hidden { display: none; }
     .back-link { display: inline-block; margin-bottom: 12px; color: #0f6fff; font-size: 13px; cursor: pointer; text-decoration: none; }
+    .inv-error-highlight { border-color: #d9534f !important; }
   </style>
 </head>
 <body>
@@ -54,6 +55,22 @@
     const appTitle = __APP_NAME_JS__;
     let currentEmail = prefillEmail;
     let discoveredHubs = [];
+    let invitationCodeRequired = false;
+    let feishuAutoEnroll = false;
+
+    const COUNTRY_CODES = [
+        { code: "+86", label: "🇨🇳 +86" },
+        { code: "+1", label: "🇺🇸 +1" },
+        { code: "+81", label: "🇯🇵 +81" },
+        { code: "+82", label: "🇰🇷 +82" },
+        { code: "+44", label: "🇬🇧 +44" },
+        { code: "+49", label: "🇩🇪 +49" },
+        { code: "+33", label: "🇫🇷 +33" },
+        { code: "+61", label: "🇦🇺 +61" },
+        { code: "+65", label: "🇸🇬 +65" },
+        { code: "+852", label: "🇭🇰 +852" },
+        { code: "+886", label: "🇹🇼 +886" },
+    ];
 
     function normalizeBaseURL(v) { return (v || '').trim().replace(/\/+$/, ''); }
 
@@ -71,8 +88,14 @@
           '<h1>' + appTitle + '</h1>' +
           '<p class="desc">Enter your email to discover available Hub servers via Hub Center.</p>' +
           '<input id="email" type="email" value="' + escapeHTML(currentEmail) + '" placeholder="name@example.com">' +
-          '<input id="mobile" class="mt" type="tel" placeholder="Mobile number (for Feishu invitation)">' +
+          '<div class="mt" style="display:flex;gap:8px;">' +
+            '<select id="country-code" style="width:110px;flex-shrink:0;">' + COUNTRY_CODES.map(function(c) { return '<option value="' + c.code + '">' + c.label + '</option>'; }).join('') + '</select>' +
+            '<input id="mobile-number" type="tel" placeholder="Mobile number" style="flex:1;">' +
+          '</div>' +
           '<input id="hub-url" class="mt" type="url" placeholder="Or enter a private Hub URL directly">' +
+          (invitationCodeRequired ? '<input id="inv-code" class="mt" type="text" placeholder="Invitation code">' +
+            '<div id="inv-error" class="status error" style="margin-top:4px;"></div>' : '') +
+          (feishuAutoEnroll ? '<div style="margin-top:8px;font-size:12px;color:#5c708c;">📱 Mobile number is needed for Feishu organization invitation</div>' : '') +
           '<button class="btn" id="discover">Discover Hubs</button>' +
           '<div class="status' + (isError ? ' error' : '') + '" id="status">' + (message || '') + '</div>' +
           '<div class="footer">Hub Center: ' + (center || '(not configured)') + '</div>' +
@@ -118,11 +141,14 @@
 
     async function doDiscover() {
       var emailInput = document.getElementById("email");
-      var mobileInput = document.getElementById("mobile");
       var hubInput = document.getElementById("hub-url");
       var status = document.getElementById("status");
       var email = (emailInput.value || "").trim();
-      var mobile = (mobileInput ? mobileInput.value || "" : "").trim();
+      var countryCodeEl = document.getElementById("country-code");
+      var mobileNumberEl = document.getElementById("mobile-number");
+      var countryCode = countryCodeEl ? countryCodeEl.value : "";
+      var mobileNumber = (mobileNumberEl ? mobileNumberEl.value || "" : "").trim();
+      var mobile = mobileNumber ? countryCode + mobileNumber : "";
       var hubURL = normalizeBaseURL(hubInput.value || "");
       if (!email) { status.textContent = "Please enter your email."; status.className = "status error"; emailInput.focus(); return; }
       currentEmail = email;
@@ -189,6 +215,12 @@
       var resp = await fetch(hubURL + "/api/entry/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.message || resp.statusText || "Private hub probe failed");
+      if (payload.invitation_code_required !== undefined) {
+          invitationCodeRequired = payload.invitation_code_required;
+      }
+      if (payload.feishu_auto_enroll !== undefined) {
+          feishuAutoEnroll = payload.feishu_auto_enroll;
+      }
       if (payload.status === "bound" && payload.pwa_url) return String(payload.pwa_url).trim();
 
       // If pending approval, show a clear message
@@ -200,8 +232,30 @@
       if (payload.status === "not_found" && payload.enrollment_mode) {
         var invCode = "";
         if (payload.invitation_code_required) {
-          invCode = prompt("This hub requires an invitation code:") || "";
-          if (!invCode) throw new Error("Invitation code is required");
+          // Re-render form with invitation code input if not already shown
+          if (!document.getElementById("inv-code")) {
+            invitationCodeRequired = true;
+            renderEmailForm("This hub requires an invitation code. Please enter it below.");
+            // Restore all form values
+            document.getElementById("email").value = email;
+            document.getElementById("hub-url").value = hubURL;
+            if (mobile) {
+              var parts = mobile.match(/^(\+\d+)(.*)$/);
+              if (parts) {
+                var ccEl = document.getElementById("country-code");
+                if (ccEl) ccEl.value = parts[1];
+                var mnEl = document.getElementById("mobile-number");
+                if (mnEl) mnEl.value = parts[2];
+              }
+            }
+            throw new Error("Please enter your invitation code and tap Discover again.");
+          }
+          invCode = (document.getElementById("inv-code").value || "").trim();
+          if (!invCode) {
+            var invErr = document.getElementById("inv-error");
+            if (invErr) invErr.textContent = "Invitation code is required";
+            throw new Error("Invitation code is required");
+          }
         }
         var enrollResp = await fetch(hubURL + "/api/enroll/start", {
           method: "POST",
@@ -209,7 +263,15 @@
           body: JSON.stringify({ email: email, mobile: mobile, invitation_code: invCode })
         });
         var enrollData = await enrollResp.json();
-        if (!enrollResp.ok) throw new Error(enrollData.message || "Enrollment request failed");
+        if (!enrollResp.ok) {
+          var errCode = enrollData.code || "";
+          if (errCode === "INVITATION_CODE_REQUIRED" || errCode === "INVALID_INVITATION_CODE") {
+            var invErr = document.getElementById("inv-error");
+            if (invErr) invErr.textContent = enrollData.message || "Invalid invitation code";
+            throw new Error(enrollData.message || "Enrollment request failed");
+          }
+          throw new Error(enrollData.message || "Enrollment request failed");
+        }
         if (enrollData.status === "pending_approval") {
           throw new Error(enrollData.message || "Your enrollment request has been submitted. Please wait for administrator approval.");
         }
@@ -218,6 +280,22 @@
         }
         // If auto-approved, re-probe to get the pwa_url
         if (enrollData.status === "approved") {
+          // Show feishu status if present
+          if (enrollData.feishu_status) {
+            var statusEl = document.getElementById("status");
+            if (statusEl) {
+              var feishuMsg = "";
+              switch (enrollData.feishu_status) {
+                case "ok": feishuMsg = "✅ Feishu organization invitation sent"; break;
+                case "failed": feishuMsg = "⚠️ Feishu invitation failed" + (enrollData.feishu_message ? ": " + enrollData.feishu_message : ""); break;
+                case "disabled": feishuMsg = "ℹ️ Feishu auto-enrollment is not enabled"; break;
+                case "skipped": feishuMsg = "ℹ️ Feishu enrollment skipped" + (enrollData.feishu_message ? ": " + enrollData.feishu_message : ""); break;
+                default: feishuMsg = "Feishu status: " + enrollData.feishu_status; break;
+              }
+              statusEl.textContent = feishuMsg;
+              statusEl.className = enrollData.feishu_status === "failed" ? "status error" : "status";
+            }
+          }
           var resp2 = await fetch(hubURL + "/api/entry/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) });
           var payload2 = await resp2.json();
           if (payload2.status === "bound" && payload2.pwa_url) return String(payload2.pwa_url).trim();

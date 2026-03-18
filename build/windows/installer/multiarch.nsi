@@ -44,7 +44,7 @@ VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 
 ManifestDPIAware true
 
-!include "MUI.nsh"
+!include "MUI2.nsh"
 !include "x64.nsh"
 
 !define MUI_ICON "..\icon.ico"
@@ -53,8 +53,10 @@ ManifestDPIAware true
 !define MUI_ABORTWARNING
 
 # Launch app checkbox on finish page (checked by default)
-!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXECUTABLE}"
+# Use ShellExec to avoid launching app with admin privileges
+!define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "$(LaunchAfterInstall)"
+!define MUI_FINISHPAGE_RUN_FUNCTION LaunchAsCurrentUser
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -84,10 +86,38 @@ LangString LaunchAfterInstall ${LANG_GERMAN} "${INFO_PRODUCTNAME} starten"
 LangString LaunchAfterInstall ${LANG_SPANISH} "Iniciar ${INFO_PRODUCTNAME}"
 LangString LaunchAfterInstall ${LANG_RUSSIAN} "Запустить ${INFO_PRODUCTNAME}"
 
+# Localized strings for already-installed dialog
+LangString AlreadyInstalled ${LANG_ENGLISH} "${INFO_PRODUCTNAME} is already installed. Do you want to uninstall it first?"
+LangString AlreadyInstalled ${LANG_SIMPCHINESE} "${INFO_PRODUCTNAME} 已安装。是否先卸载？"
+LangString AlreadyInstalled ${LANG_TRADCHINESE} "${INFO_PRODUCTNAME} 已安裝。是否先解除安裝？"
+LangString AlreadyInstalled ${LANG_JAPANESE} "${INFO_PRODUCTNAME} は既にインストールされています。先にアンインストールしますか？"
+LangString AlreadyInstalled ${LANG_KOREAN} "${INFO_PRODUCTNAME}이(가) 이미 설치되어 있습니다. 먼저 제거하시겠습니까?"
+LangString AlreadyInstalled ${LANG_FRENCH} "${INFO_PRODUCTNAME} est déjà installé. Voulez-vous le désinstaller d'abord ?"
+LangString AlreadyInstalled ${LANG_GERMAN} "${INFO_PRODUCTNAME} ist bereits installiert. Möchten Sie es zuerst deinstallieren?"
+LangString AlreadyInstalled ${LANG_SPANISH} "${INFO_PRODUCTNAME} ya está instalado. ¿Desea desinstalarlo primero?"
+LangString AlreadyInstalled ${LANG_RUSSIAN} "${INFO_PRODUCTNAME} уже установлен. Удалить сначала?"
+
+# Localized strings for uninstall user data dialog
+LangString DeleteUserData ${LANG_ENGLISH} "Do you want to delete user data (.cceasy and .maclaw folders)?$\n$\nThis will remove AI tools, configurations and cache.$\nNote: Your memory file (memories.json) will be preserved."
+LangString DeleteUserData ${LANG_SIMPCHINESE} "是否删除用户数据（.cceasy 和 .maclaw 文件夹）？$\n$\n这将删除 AI 工具、配置和缓存。$\n注意：记忆文件（memories.json）将被保留。"
+LangString DeleteUserData ${LANG_TRADCHINESE} "是否刪除使用者資料（.cceasy 和 .maclaw 資料夾）？$\n$\n這將刪除 AI 工具、設定和快取。$\n注意：記憶檔案（memories.json）將被保留。"
+LangString DeleteUserData ${LANG_JAPANESE} "ユーザーデータ（.cceasy と .maclaw フォルダ）を削除しますか？$\n$\nAIツール、設定、キャッシュが削除されます。$\n注意：メモリファイル（memories.json）は保持されます。"
+LangString DeleteUserData ${LANG_KOREAN} "사용자 데이터(.cceasy 및 .maclaw 폴더)를 삭제하시겠습니까?$\n$\nAI 도구, 설정 및 캐시가 삭제됩니다.$\n참고: 메모리 파일(memories.json)은 보존됩니다."
+LangString DeleteUserData ${LANG_FRENCH} "Voulez-vous supprimer les données utilisateur (dossiers .cceasy et .maclaw) ?$\n$\nCela supprimera les outils IA, configurations et cache.$\nNote : Le fichier mémoire (memories.json) sera conservé."
+LangString DeleteUserData ${LANG_GERMAN} "Möchten Sie die Benutzerdaten (.cceasy und .maclaw Ordner) löschen?$\n$\nDies entfernt KI-Tools, Konfigurationen und Cache.$\nHinweis: Die Speicherdatei (memories.json) wird beibehalten."
+LangString DeleteUserData ${LANG_SPANISH} "¿Desea eliminar los datos de usuario (carpetas .cceasy y .maclaw)?$\n$\nEsto eliminará herramientas IA, configuraciones y caché.$\nNota: El archivo de memoria (memories.json) se conservará."
+LangString DeleteUserData ${LANG_RUSSIAN} "Удалить пользовательские данные (папки .cceasy и .maclaw)?$\n$\nБудут удалены ИИ-инструменты, настройки и кэш.$\nПримечание: Файл памяти (memories.json) будет сохранён."
+
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\dist\${INFO_PROJECTNAME}-Setup.exe"
 InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
 ShowInstDetails show
+RequestExecutionLevel ${REQUEST_EXECUTION_LEVEL}
+
+# Launch app as current user (not elevated admin)
+Function LaunchAsCurrentUser
+    ExecShell "" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+FunctionEnd
 
 Function .onInit
     # Auto-detect system language (no dialog)
@@ -135,7 +165,8 @@ Function .onInit
     # Check if already installed
     ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"
     StrCmp $R0 "" notInstalled
-    MessageBox MB_YESNO|MB_ICONEXCLAMATION "${INFO_PRODUCTNAME} is already installed. Do you want to uninstall it first?" IDYES uninstall IDNO quit
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AlreadyInstalled)" IDYES uninstall
+    Abort
     
     uninstall:
     ExecWait '"$R0" /S _?=$INSTDIR'
@@ -143,8 +174,6 @@ Function .onInit
     RMDir "$INSTDIR"
     
     notInstalled:
-    
-    quit:
 FunctionEnd
 
 Section
@@ -213,7 +242,7 @@ Section "uninstall"
     DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${AUTOSTART_REG_NAME}"
 
     # Ask user if they want to delete user data
-    MessageBox MB_YESNO|MB_ICONQUESTION "Do you want to delete user data (.cceasy and .maclaw folders)?$\n$\nThis will remove AI tools, configurations and cache.$\nNote: Your memory file (memories.json) will be preserved." IDYES deleteUserData IDNO skipUserData
+    MessageBox MB_YESNO|MB_ICONQUESTION "$(DeleteUserData)" IDYES deleteUserData IDNO skipUserData
     
     deleteUserData:
     # Delete user data directories using cmd /c rd for faster deletion
@@ -223,17 +252,19 @@ Section "uninstall"
     nsExec::ExecToLog 'cmd /c rd /s /q "$PROFILE\.cceasy"'
 
     # Preserve memory file (memories.json) before deleting .maclaw
-    IfFileExists "$PROFILE\.maclaw\memories.json" 0 +3
+    IfFileExists "$PROFILE\.maclaw\memories.json" 0 noMemoryBackup
         DetailPrint "Preserving memory file..."
         CopyFiles /SILENT "$PROFILE\.maclaw\memories.json" "$TEMP\maclaw_memories_backup.json"
+    noMemoryBackup:
 
     nsExec::ExecToLog 'cmd /c rd /s /q "$PROFILE\.maclaw"'
 
     # Restore memory file after cleanup
-    IfFileExists "$TEMP\maclaw_memories_backup.json" 0 +4
+    IfFileExists "$TEMP\maclaw_memories_backup.json" 0 noMemoryRestore
         CreateDirectory "$PROFILE\.maclaw"
         CopyFiles /SILENT "$TEMP\maclaw_memories_backup.json" "$PROFILE\.maclaw\memories.json"
         Delete "$TEMP\maclaw_memories_backup.json"
+    noMemoryRestore:
     
     skipUserData:
 SectionEnd

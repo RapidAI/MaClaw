@@ -98,8 +98,11 @@ func ApproveEnrollmentHandler(identity *auth.IdentityService, feishuNotifier *fe
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					if err := ae.AddToFeishuOrg(ctx, email, "", mobile); err != nil {
+					result, err := ae.AddToFeishuOrg(ctx, email, "", mobile)
+					if err != nil {
 						log.Printf("[enroll/approve] feishu auto-enroll failed for %s: %v", email, err)
+					} else if result != nil {
+						log.Printf("[enroll/approve] feishu auto-enroll for %s: status=%s", email, result.Status)
 					}
 				}()
 			}

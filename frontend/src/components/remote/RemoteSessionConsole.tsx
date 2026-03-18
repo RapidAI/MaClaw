@@ -243,7 +243,13 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
             // [text](url)
             const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
             if (lm) {
-                parts.push(<a key={idx++} href={lm[2]} target="_blank" rel="noopener noreferrer" style={{ color: "#569cd6", textDecoration: "underline" }}>{lm[1]}</a>);
+                const href = lm[2];
+                // Only allow http/https links to prevent javascript: XSS
+                if (/^https?:\/\//i.test(href)) {
+                    parts.push(<a key={idx++} href={href} target="_blank" rel="noopener noreferrer" style={{ color: "#569cd6", textDecoration: "underline" }}>{lm[1]}</a>);
+                } else {
+                    parts.push(<span key={idx++} style={{ color: "#569cd6" }}>{lm[1]}</span>);
+                }
             } else {
                 parts.push(m);
             }

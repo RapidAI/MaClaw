@@ -44,6 +44,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
     // Create task form
     const [showCreate, setShowCreate] = useState(false);
     const [newTitle, setNewTitle] = useState("");
+    const [newDesc, setNewDesc] = useState("");
     const [newReward, setNewReward] = useState(10);
 
     const zh = lang?.startsWith("zh");
@@ -101,8 +102,10 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
 
     const handleCreate = async () => {
         if (!newTitle.trim()) return;
+        // Uses ClawNetCreateTask for now; switch to ClawNetCreateTaskFull after wails generate
         await doAction("create", () => ClawNetCreateTask(newTitle.trim(), newReward));
         setNewTitle("");
+        setNewDesc("");
         setShowCreate(false);
     };
 
@@ -191,6 +194,12 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                         onChange={(e) => setNewTitle(e.target.value)}
                         placeholder={zh ? "任务标题..." : "Task title..."}
                         style={{ flex: 1, minWidth: "120px", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "4px 8px", fontSize: "0.78rem" }}
+                    />
+                    <input
+                        value={newDesc}
+                        onChange={(e) => setNewDesc(e.target.value)}
+                        placeholder={zh ? "描述（可选）" : "Description (optional)"}
+                        style={{ flex: 2, minWidth: "140px", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "4px 8px", fontSize: "0.78rem" }}
                     />
                     <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                         <span style={{ fontSize: "0.75rem" }}>🐚</span>

@@ -317,6 +317,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                         <div><span style={{ color: "#888" }}>{zh ? "节点数" : "Peers"}:</span> {status.peers}</div>
                         <div><span style={{ color: "#888" }}>{zh ? "未读私信" : "Unread DM"}:</span> {status.unread_dm || 0}</div>
                         <div><span style={{ color: "#888" }}>{zh ? "版本" : "Version"}:</span> {status.version}</div>
+                        {status.uptime && <div><span style={{ color: "#888" }}>{zh ? "运行时间" : "Uptime"}:</span> {status.uptime}</div>}
                     </div>
                 </div>
             )}
@@ -326,6 +327,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 <div style={{ background: "#fffbeb", borderRadius: "8px", padding: "8px 14px", marginBottom: "10px", fontSize: "0.78rem" }}>
                     <span style={{ color: "#888" }}>🐚 Shell:</span>{" "}
                     <span style={{ fontWeight: 600 }}>{credits.balance ?? 0}</span>
+                    {credits.local_value && <span style={{ marginLeft: "6px", color: "#a16207", fontSize: "0.72rem" }}>({credits.local_value})</span>}
                     {credits.tier && <span style={{ marginLeft: "10px", color: "#888" }}>{zh ? "等级" : "Tier"}: {credits.tier}</span>}
                 </div>
             )}

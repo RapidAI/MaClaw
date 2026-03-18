@@ -143,7 +143,7 @@ const APP_VERSION = "5.0.0.9300"
 const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'cursor', 'iflow', 'kilo'] as const;
 const SKILL_TOOLS = ['claude', 'gemini', 'codex'] as const;
 const DEFAULT_SKILLHUB_ENTRIES = [
-    { label: '腾讯云 SkillHUB 镜像', url: 'https://skillhub.tencent.com/', type: 'mirror' },
+    { label: 'ClawSkillHub', url: 'https://clawskillhub.com/', type: 'skillhub_space' },
 ];
 const isToolTab = (tab: string): boolean => (TOOL_NAMES as readonly string[]).includes(tab);
 const isSkillTool = (tab: string): boolean => (SKILL_TOOLS as readonly string[]).includes(tab);

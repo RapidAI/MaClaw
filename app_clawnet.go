@@ -61,6 +61,7 @@ func (a *App) ClawNetGetStatus() map[string]interface{} {
 		"peers":     s.Peers,
 		"unread_dm": s.UnreadDM,
 		"version":   s.Version,
+		"uptime":    s.Uptime,
 	}
 }
 
@@ -94,6 +95,16 @@ func (a *App) ClawNetCreateTask(title string, reward float64) map[string]interfa
 	return map[string]interface{}{"ok": true, "task": task}
 }
 
+// ClawNetCreateTaskFull creates a task with description, tags, and optional target peer.
+func (a *App) ClawNetCreateTaskFull(title, description string, reward float64, tags []string, targetPeer string) map[string]interface{} {
+	c := a.initClawNet()
+	task, err := c.CreateTaskFull(title, description, reward, tags, targetPeer)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "task": task}
+}
+
 // ClawNetGetCredits returns Shell balance and tier info.
 func (a *App) ClawNetGetCredits() map[string]interface{} {
 	c := a.initClawNet()
@@ -102,9 +113,12 @@ func (a *App) ClawNetGetCredits() map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{
-		"ok":      true,
-		"balance": credits.Balance,
-		"tier":    credits.Tier,
+		"ok":            true,
+		"balance":       credits.Balance,
+		"tier":          credits.Tier,
+		"currency":      credits.Currency,
+		"exchange_rate": credits.ExchangeRate,
+		"local_value":   credits.LocalValue,
 	}
 }
 
@@ -122,6 +136,16 @@ func (a *App) ClawNetSearchKnowledge(query string) map[string]interface{} {
 func (a *App) ClawNetPublishKnowledge(title, body string) map[string]interface{} {
 	c := a.initClawNet()
 	entry, err := c.PublishKnowledge(title, body)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "entry": entry}
+}
+
+// ClawNetPublishKnowledgeFull publishes a knowledge entry with domain tags.
+func (a *App) ClawNetPublishKnowledgeFull(title, body string, domains []string) map[string]interface{} {
+	c := a.initClawNet()
+	entry, err := c.PublishKnowledgeFull(title, body, domains)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -473,11 +497,11 @@ func (a *App) ClawNetExportIdentity() map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": "cancelled"}
 	}
 
-	if err := copyFile(keyPath, dest); err != nil {
-		a.log("ClawNet: export identity key failed: %v", err)
+	if err := clawnetCopyFile(keyPath, dest); err != nil {
+		a.log(fmt.Sprintf("ClawNet: export identity key failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	a.log("ClawNet: identity key exported to %s", dest)
+	a.log(fmt.Sprintf("ClawNet: identity key exported to %s", dest))
 	return map[string]interface{}{"ok": true, "path": dest}
 }
 
@@ -497,12 +521,12 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 
 	info, err := os.Stat(src)
 	if err != nil {
-		a.log("ClawNet: import identity — cannot read source file: %v", err)
+		a.log(fmt.Sprintf("ClawNet: import identity — cannot read source file: %v", err))
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("cannot read file: %v", err)}
 	}
 	// Sanity check: Ed25519 key files are small (typically < 1KB)
 	if info.Size() > 10*1024 {
-		a.log("ClawNet: import identity — file too large (%d bytes)", info.Size())
+		a.log(fmt.Sprintf("ClawNet: import identity — file too large (%d bytes)", info.Size()))
 		return map[string]interface{}{"ok": false, "error": "file too large — does not look like an identity key"}
 	}
 
@@ -519,30 +543,30 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0755); err != nil {
-		a.log("ClawNet: import identity — mkdir failed: %v", err)
+		a.log(fmt.Sprintf("ClawNet: import identity — mkdir failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 
 	// Backup existing key if present
 	if _, err := os.Stat(keyPath); err == nil {
 		if renameErr := os.Rename(keyPath, keyPath+".bak"); renameErr != nil {
-			a.log("ClawNet: import identity — backup rename failed: %v", renameErr)
+			a.log(fmt.Sprintf("ClawNet: import identity — backup rename failed: %v", renameErr))
 		} else {
-			a.log("ClawNet: existing identity key backed up to %s.bak", keyPath)
+			a.log(fmt.Sprintf("ClawNet: existing identity key backed up to %s.bak", keyPath))
 		}
 	}
 
-	if err := copyFile(src, keyPath); err != nil {
-		a.log("ClawNet: import identity — copy failed: %v", err)
+	if err := clawnetCopyFile(src, keyPath); err != nil {
+		a.log(fmt.Sprintf("ClawNet: import identity — copy failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	a.log("ClawNet: identity key imported from %s", src)
+	a.log(fmt.Sprintf("ClawNet: identity key imported from %s", src))
 
 	// Restart daemon with new identity
 	restarted := false
 	c := a.initClawNet()
 	if err := c.EnsureDaemon(); err != nil {
-		a.log("ClawNet: daemon restart after import failed: %v", err)
+		a.log(fmt.Sprintf("ClawNet: daemon restart after import failed: %v", err))
 	} else {
 		restarted = true
 		a.log("ClawNet: daemon restarted with new identity")
@@ -551,8 +575,9 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
 }
 
-// copyFile copies src to dst atomically via temp file.
-func copyFile(src, dst string) error {
+// clawnetCopyFile copies src to dst atomically via temp file.
+// Preserves 0600 permissions for security-sensitive files like identity keys.
+func clawnetCopyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -560,7 +585,7 @@ func copyFile(src, dst string) error {
 	defer in.Close()
 
 	tmp := dst + ".tmp"
-	out, err := os.Create(tmp)
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
@@ -613,7 +638,7 @@ func (a *App) ClawNetOnlineBackupKey(password string) map[string]interface{} {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Post(hubURL+"/api/clawnet/key/backup", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		a.log("ClawNet: online backup request failed for %s: %v", email, err)
+		a.log(fmt.Sprintf("ClawNet: online backup request failed for %s: %v", email, err))
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("hub request failed: %v", err)}
 	}
 	defer resp.Body.Close()
@@ -625,10 +650,10 @@ func (a *App) ClawNetOnlineBackupKey(password string) map[string]interface{} {
 		if errMsg == "" {
 			errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		a.log("ClawNet: online backup failed for %s: %s", email, errMsg)
+		a.log(fmt.Sprintf("ClawNet: online backup failed for %s: %s", email, errMsg))
 		return map[string]interface{}{"ok": false, "error": errMsg}
 	}
-	a.log("ClawNet: identity key backed up to Hub for %s", email)
+	a.log(fmt.Sprintf("ClawNet: identity key backed up to Hub for %s", email))
 	return map[string]interface{}{"ok": true}
 }
 
@@ -656,7 +681,7 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Post(hubURL+"/api/clawnet/key/restore", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		a.log("ClawNet: online restore request failed for %s: %v", email, err)
+		a.log(fmt.Sprintf("ClawNet: online restore request failed for %s: %v", email, err))
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("hub request failed: %v", err)}
 	}
 	defer resp.Body.Close()
@@ -668,18 +693,18 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 		if errMsg == "" {
 			errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		a.log("ClawNet: online restore failed for %s: %s", email, errMsg)
+		a.log(fmt.Sprintf("ClawNet: online restore failed for %s: %s", email, errMsg))
 		return map[string]interface{}{"ok": false, "error": errMsg}
 	}
 
 	keyDataB64, _ := result["key_data"].(string)
 	if keyDataB64 == "" {
-		a.log("ClawNet: online restore — empty key data in response for %s", email)
+		a.log(fmt.Sprintf("ClawNet: online restore — empty key data in response for %s", email))
 		return map[string]interface{}{"ok": false, "error": "empty key data in response"}
 	}
 	keyData, err := base64.StdEncoding.DecodeString(keyDataB64)
 	if err != nil {
-		a.log("ClawNet: online restore — invalid key encoding for %s: %v", email, err)
+		a.log(fmt.Sprintf("ClawNet: online restore — invalid key encoding for %s: %v", email, err))
 		return map[string]interface{}{"ok": false, "error": "invalid key data encoding"}
 	}
 
@@ -694,32 +719,237 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0755); err != nil {
-		a.log("ClawNet: online restore — mkdir failed: %v", err)
+		a.log(fmt.Sprintf("ClawNet: online restore — mkdir failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	// Backup existing key
 	if _, err := os.Stat(keyPath); err == nil {
 		if renameErr := os.Rename(keyPath, keyPath+".bak"); renameErr != nil {
-			a.log("ClawNet: online restore — backup rename failed: %v", renameErr)
+			a.log(fmt.Sprintf("ClawNet: online restore — backup rename failed: %v", renameErr))
 		} else {
-			a.log("ClawNet: existing identity key backed up to %s.bak", keyPath)
+			a.log(fmt.Sprintf("ClawNet: existing identity key backed up to %s.bak", keyPath))
 		}
 	}
 	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
-		a.log("ClawNet: online restore — write key failed: %v", err)
+		a.log(fmt.Sprintf("ClawNet: online restore — write key failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	a.log("ClawNet: identity key restored from Hub for %s", email)
+	a.log(fmt.Sprintf("ClawNet: identity key restored from Hub for %s", email))
 
 	// Restart daemon with new identity
 	restarted := false
 	c := a.initClawNet()
 	if err := c.EnsureDaemon(); err != nil {
-		a.log("ClawNet: daemon restart after online restore failed: %v", err)
+		a.log(fmt.Sprintf("ClawNet: daemon restart after online restore failed: %v", err))
 	} else {
 		restarted = true
 		a.log("ClawNet: daemon restarted with restored identity")
 	}
 
 	return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
+}
+
+// ---------- Missing Wails Bindings ----------
+
+// ClawNetUpdateResume updates the agent's resume/skills profile.
+func (a *App) ClawNetUpdateResume(skills []string, domains []string, bio string) map[string]interface{} {
+	c := a.initClawNet()
+	resume := &ClawNetResume{Skills: skills, Domains: domains, Bio: bio}
+	if err := c.UpdateResume(resume); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetAssignTask assigns a task to a specific bidder.
+func (a *App) ClawNetAssignTask(id, peerID string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.AssignTask(id, peerID); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetClaimTask claims an open task.
+func (a *App) ClawNetClaimTask(id string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.ClaimTask(id); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetCreatePrediction creates a new prediction market question.
+func (a *App) ClawNetCreatePrediction(question string, options []string) map[string]interface{} {
+	c := a.initClawNet()
+	pred, err := c.CreatePrediction(question, options)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "prediction": pred}
+}
+
+// ClawNetPlaceBet places a bet on a prediction.
+func (a *App) ClawNetPlaceBet(predID, option string, stake float64) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.PlaceBet(predID, option, stake); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetResolvePrediction resolves a prediction with the winning option.
+func (a *App) ClawNetResolvePrediction(predID, result string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.ResolvePrediction(predID, result); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetAppealPrediction files an appeal against a prediction resolution.
+func (a *App) ClawNetAppealPrediction(predID, reason string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.AppealPrediction(predID, reason); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetGetPredictionLeaderboard returns the prediction market leaderboard.
+func (a *App) ClawNetGetPredictionLeaderboard() map[string]interface{} {
+	c := a.initClawNet()
+	lb, err := c.GetPredictionLeaderboard()
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "leaderboard": lb}
+}
+
+// ClawNetJoinSwarm joins an existing swarm session.
+func (a *App) ClawNetJoinSwarm(sessionID string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.JoinSwarm(sessionID); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetContributeToSwarm adds a contribution to a swarm session.
+func (a *App) ClawNetContributeToSwarm(sessionID, message, stance string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.ContributeToSwarm(sessionID, message, stance); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetSynthesizeSwarm triggers synthesis for a swarm session.
+func (a *App) ClawNetSynthesizeSwarm(sessionID string) map[string]interface{} {
+	c := a.initClawNet()
+	result, err := c.SynthesizeSwarm(sessionID)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "result": result}
+}
+
+// ClawNetReactKnowledge reacts to a knowledge entry.
+func (a *App) ClawNetReactKnowledge(id, reaction string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.ReactKnowledge(id, reaction); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetReplyKnowledge replies to a knowledge entry.
+func (a *App) ClawNetReplyKnowledge(id, body string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.ReplyKnowledge(id, body); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetGetKnowledgeReplies returns replies for a knowledge entry.
+func (a *App) ClawNetGetKnowledgeReplies(id string) map[string]interface{} {
+	c := a.initClawNet()
+	replies, err := c.GetKnowledgeReplies(id)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "replies": replies}
+}
+
+// ClawNetGetCreditsAudit returns the credit audit log.
+func (a *App) ClawNetGetCreditsAudit() map[string]interface{} {
+	c := a.initClawNet()
+	audit, err := c.GetCreditsAudit()
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "audit": audit}
+}
+
+// ClawNetMatchAgentsForTask finds agents matching a task's requirements.
+func (a *App) ClawNetMatchAgentsForTask(taskID string) map[string]interface{} {
+	c := a.initClawNet()
+	agents, err := c.MatchAgentsForTask(taskID)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "agents": agents}
+}
+
+// ---------- Auction House Bindings ----------
+
+// ClawNetSubmitTaskWork submits work for an auction-style task.
+func (a *App) ClawNetSubmitTaskWork(id, result string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.SubmitTaskWork(id, result); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetGetTaskSubmissions returns all submissions for an auction-style task.
+func (a *App) ClawNetGetTaskSubmissions(id string) map[string]interface{} {
+	c := a.initClawNet()
+	subs, err := c.GetTaskSubmissions(id)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "submissions": subs}
+}
+
+// ClawNetPickTaskWinner selects the winning submission for an auction-style task.
+func (a *App) ClawNetPickTaskWinner(id, winnerPeerID string) map[string]interface{} {
+	c := a.initClawNet()
+	if err := c.PickTaskWinner(id, winnerPeerID); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ---------- Overlay Mesh Bindings ----------
+
+// ClawNetGetOverlayStatus returns the overlay mesh network status.
+func (a *App) ClawNetGetOverlayStatus() map[string]interface{} {
+	c := a.initClawNet()
+	status, err := c.GetOverlayStatus()
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "overlay": status}
+}
+
+// ClawNetGetOverlayPeersGeo returns overlay peers with geographic info.
+func (a *App) ClawNetGetOverlayPeersGeo() map[string]interface{} {
+	c := a.initClawNet()
+	peers, err := c.GetOverlayPeersGeo()
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true, "peers": peers}
 }

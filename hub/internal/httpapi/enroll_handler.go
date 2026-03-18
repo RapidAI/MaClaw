@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -40,7 +41,7 @@ type EmailPollLoginRequest struct {
 func EnrollStartHandler(identity *auth.IdentityService, feishuNotifier *feishu.Notifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req EnrollStartRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
@@ -92,24 +93,57 @@ func EnrollStartHandler(identity *auth.IdentityService, feishuNotifier *feishu.N
 			})
 		}
 
-		// Auto-add user to Feishu organization so they can discover the bot.
-		// This runs for all successful enrollments (including pending_approval)
-		// so the user is already in the Feishu org when the admin approves.
+		// Build response map, only including non-empty fields to match
+		// the original EnrollmentResult omitempty behavior.
+		respMap := map[string]any{
+			"status": resp.Status,
+		}
+		if resp.Message != "" {
+			respMap["message"] = resp.Message
+		}
+		if resp.UserID != "" {
+			respMap["user_id"] = resp.UserID
+		}
+		if resp.Email != "" {
+			respMap["email"] = resp.Email
+		}
+		if resp.SN != "" {
+			respMap["sn"] = resp.SN
+		}
+		if resp.MachineID != "" {
+			respMap["machine_id"] = resp.MachineID
+		}
+		if resp.MachineToken != "" {
+			respMap["machine_token"] = resp.MachineToken
+		}
+		if resp.ExpiresAt != "" {
+			respMap["expires_at"] = resp.ExpiresAt
+		}
+
+		// Synchronous feishu auto-enroll with 15-second timeout.
 		if resp != nil && feishuNotifier != nil {
 			if ae := feishuNotifier.AutoEnroller(); ae != nil {
-				email := req.Email
-				mobile := req.Mobile
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-					if err := ae.AddToFeishuOrg(ctx, email, "", mobile); err != nil {
-						log.Printf("[enroll] feishu auto-enroll failed for %s: %v", email, err)
+				feishuCtx, feishuCancel := context.WithTimeout(r.Context(), 15*time.Second)
+				defer feishuCancel()
+				feishuResult, feishuErr := ae.AddToFeishuOrg(feishuCtx, req.Email, "", req.Mobile)
+				if feishuErr != nil {
+					log.Printf("[enroll] feishu auto-enroll failed for %s: %v", req.Email, feishuErr)
+				}
+				if feishuResult != nil {
+					respMap["feishu_status"] = feishuResult.Status
+					if feishuResult.Message != "" {
+						respMap["feishu_message"] = feishuResult.Message
 					}
-				}()
+				} else {
+					respMap["feishu_status"] = "failed"
+					respMap["feishu_message"] = "unknown error"
+				}
+			} else {
+				respMap["feishu_status"] = "disabled"
 			}
 		}
 
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, respMap)
 	}
 }
 

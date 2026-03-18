@@ -353,6 +353,13 @@ type IMMessageHandler struct {
 	memory  *conversationMemory
 	client  *http.Client
 
+	// Unified tool registry and dynamic builder (Phase 1 upgrade).
+	registry    *ToolRegistry
+	toolBuilder *DynamicToolBuilder
+
+	// Security firewall (Phase 2 upgrade).
+	firewall *SecurityFirewall
+
 	// Dynamic tool generation and routing (lazily initialized via setters).
 	toolDefGen     *ToolDefinitionGenerator
 	toolRouter     *ToolRouter
@@ -388,12 +395,30 @@ type IMMessageHandler struct {
 
 // NewIMMessageHandler creates a new handler.
 func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
-	return &IMMessageHandler{
+	h := &IMMessageHandler{
 		app:     app,
 		manager: manager,
 		memory:  newConversationMemory(),
 		client:  &http.Client{Timeout: 120 * time.Second},
 	}
+	// Initialize ToolRegistry and register builtin tools.
+	h.registry = NewToolRegistry()
+	registerBuiltinTools(h.registry, h)
+	// Register non-code tools (Git, file search, health check).
+	registerNonCodeTools(h.registry, app)
+	h.toolBuilder = NewDynamicToolBuilder(h.registry)
+	return h
+}
+
+// SetToolRegistry replaces the tool registry (for testing or late reconfiguration).
+func (h *IMMessageHandler) SetToolRegistry(r *ToolRegistry) {
+	h.registry = r
+	h.toolBuilder = NewDynamicToolBuilder(r)
+}
+
+// SetSecurityFirewall configures the security firewall for tool execution checks.
+func (h *IMMessageHandler) SetSecurityFirewall(fw *SecurityFirewall) {
+	h.firewall = fw
 }
 
 // SetToolDefGenerator configures the dynamic tool definition generator.
@@ -458,6 +483,30 @@ func (h *IMMessageHandler) SetScheduledTaskManager(stm *ScheduledTaskManager) {
 // getTools returns the current tool definitions, using the generator with
 // a 5-second cache when configured, falling back to buildToolDefinitions().
 func (h *IMMessageHandler) getTools() []map[string]interface{} {
+	// --- Phase 1 upgrade: prefer DynamicToolBuilder from ToolRegistry ---
+	if h.toolBuilder != nil && h.registry != nil {
+		h.toolsMu.RLock()
+		cached := h.cachedTools
+		cacheTime := h.toolsCacheTime
+		h.toolsMu.RUnlock()
+
+		if cached != nil && time.Since(cacheTime) < toolsCacheTTL {
+			return cached
+		}
+
+		// Ensure ClawNet tools are dynamically registered/unregistered.
+		h.syncClawNetTools()
+
+		tools := h.toolBuilder.BuildAll()
+
+		h.toolsMu.Lock()
+		h.cachedTools = tools
+		h.toolsCacheTime = time.Now()
+		h.toolsMu.Unlock()
+		return tools
+	}
+
+	// --- Legacy path: ToolDefinitionGenerator or hardcoded ---
 	h.toolsMu.RLock()
 	gen := h.toolDefGen
 	cached := h.cachedTools
@@ -496,6 +545,49 @@ func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]
 		return allTools
 	}
 	return router.Route(userMessage, allTools)
+}
+
+// syncClawNetTools dynamically registers or unregisters ClawNet tools
+// based on whether the ClawNet daemon is currently running.
+func (h *IMMessageHandler) syncClawNetTools() {
+	if h.registry == nil {
+		return
+	}
+	running := h.app.clawNetClient != nil && h.app.clawNetClient.IsRunning()
+	_, hasSearch := h.registry.Get("clawnet_search")
+
+	if running && !hasSearch {
+		h.registry.Register(RegisteredTool{
+			Name:        "clawnet_search",
+			Description: "在虾网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
+			Category:    ToolCategoryBuiltin,
+			Tags:        []string{"clawnet", "search", "knowledge", "p2p"},
+			Status:      RegToolAvailable,
+			InputSchema: map[string]interface{}{
+				"query": map[string]string{"type": "string", "description": "搜索关键词"},
+			},
+			Required: []string{"query"},
+			Source:   "clawnet",
+			Handler:  func(args map[string]interface{}) string { return h.toolClawNetSearch(args) },
+		})
+		h.registry.Register(RegisteredTool{
+			Name:        "clawnet_publish",
+			Description: "向虾网（ClawNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
+			Category:    ToolCategoryBuiltin,
+			Tags:        []string{"clawnet", "publish", "knowledge", "p2p"},
+			Status:      RegToolAvailable,
+			InputSchema: map[string]interface{}{
+				"title": map[string]string{"type": "string", "description": "知识标题"},
+				"body":  map[string]string{"type": "string", "description": "知识内容（Markdown 格式）"},
+			},
+			Required: []string{"title", "body"},
+			Source:   "clawnet",
+			Handler:  func(args map[string]interface{}) string { return h.toolClawNetPublish(args) },
+		})
+	} else if !running && hasSearch {
+		h.registry.Unregister("clawnet_search")
+		h.registry.Unregister("clawnet_publish")
+	}
 }
 
 // HandleIMMessage processes an IM user message and returns the Agent's response.
@@ -1534,7 +1626,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 	}
 
 	// ---------- ClawNet tools (dynamic — only when daemon is running) ----------
-	if h.app.clawNetClient != nil && h.app.clawNetClient.IsRunning() {
+	if h.app != nil && h.app.clawNetClient != nil && h.app.clawNetClient.IsRunning() {
 		defs = append(defs,
 			toolDef("clawnet_search", "在虾网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
 				map[string]interface{}{
@@ -1591,6 +1683,29 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 	if args == nil {
 		args = map[string]interface{}{}
 	}
+
+	// --- SecurityFirewall check (Phase 2 upgrade) ---
+	if h.firewall != nil {
+		ctx := &SecurityCallContext{SessionID: "local"}
+		allowed, reason := h.firewall.Check(name, args, ctx)
+		if !allowed {
+			return reason
+		}
+	}
+
+	// --- Registry-based dispatch (Phase 1 upgrade) ---
+	if h.registry != nil {
+		if tool, ok := h.registry.Get(name); ok {
+			if tool.HandlerProg != nil {
+				return tool.HandlerProg(args, onProgress)
+			}
+			if tool.Handler != nil {
+				return tool.Handler(args)
+			}
+		}
+	}
+
+	// --- Legacy switch-case fallback (for dynamically added ClawNet tools etc.) ---
 	switch name {
 	case "list_sessions":
 		return h.toolListSessions()
@@ -3174,3 +3289,55 @@ func (h *IMMessageHandler) toolClawNetPublish(args map[string]interface{}) strin
 	}
 	return fmt.Sprintf("✅ 知识已发布到虾网\nID: %s\n标题: %s", entry.ID, entry.Title)
 }
+
+func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string {
+	if h.app == nil || h.app.auditLog == nil {
+		return "审计日志未初始化"
+	}
+
+	filter := AuditFilter{}
+	if since := stringVal(args, "since"); since != "" {
+		if t, err := time.Parse(time.RFC3339, since); err == nil {
+			filter.StartTime = &t
+		}
+	}
+	if until := stringVal(args, "until"); until != "" {
+		if t, err := time.Parse(time.RFC3339, until); err == nil {
+			filter.EndTime = &t
+		}
+	}
+	if tn := stringVal(args, "tool_name"); tn != "" {
+		filter.ToolName = tn
+	}
+	if rl := stringVal(args, "risk_level"); rl != "" {
+		filter.RiskLevels = []RiskLevel{RiskLevel(rl)}
+	}
+
+	entries, err := h.app.auditLog.Query(filter)
+	if err != nil {
+		return fmt.Sprintf("查询失败: %s", err.Error())
+	}
+
+	limit := 20
+	if l, ok := args["limit"]; ok {
+		if lf, ok := l.(float64); ok && lf > 0 {
+			limit = int(lf)
+		}
+	}
+	if len(entries) > limit {
+		entries = entries[len(entries)-limit:]
+	}
+
+	if len(entries) == 0 {
+		return "没有找到匹配的审计记录"
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("找到 %d 条审计记录:\n\n", len(entries)))
+	for i, e := range entries {
+		b.WriteString(fmt.Sprintf("%d. [%s] %s | 风险: %s | 决策: %s | 结果: %s\n",
+			i+1, e.Timestamp.Format("01-02 15:04"), e.ToolName, e.RiskLevel, e.PolicyAction, e.Result))
+	}
+	return b.String()
+}
+

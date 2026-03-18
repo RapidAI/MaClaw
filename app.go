@@ -74,6 +74,11 @@ type App struct {
 	scheduledTaskManager *ScheduledTaskManager
 	remoteInfraOnce      sync.Once // guards ensureRemoteInfra initialization
 	clawNetClient        *ClawNetClient
+	mcpAutoDiscovery     *MCPAutoDiscovery
+	securityFirewall     *SecurityFirewall
+	securityRiskAnalyzer *SecurityRiskAnalyzer
+	contextBridge        *ContextBridge
+	taskOrchestrator2    *TaskOrchestrator2
 }
 
 var OnConfigChanged func(AppConfig)
@@ -389,6 +394,41 @@ func (a *App) initRemoteInfra() {
 			fmt.Printf("[ensureRemoteInfra] WARNING: failed to init scheduled task manager: %v\n", err)
 		}
 	}
+	// Initialize MCP AutoDiscovery (Phase 1 upgrade: Task 3.3).
+	// Note: ToolRegistry is created per-IMMessageHandler, so auto-discovery
+	// registers into MCPRegistry. The IMMessageHandler's syncClawNetTools and
+	// getTools path already pick up MCP tools via the existing toolDefGenerator.
+	if a.mcpAutoDiscovery == nil && a.mcpRegistry != nil {
+		a.mcpAutoDiscovery = NewMCPAutoDiscovery(a, nil, a.mcpRegistry)
+		// Scan global MCP servers.
+		if err := a.mcpAutoDiscovery.ScanGlobal(); err != nil {
+			fmt.Printf("[ensureRemoteInfra] WARNING: global MCP scan failed: %v\n", err)
+		}
+		// Scan project-level MCP for all configured projects.
+		if cfg, err := a.LoadConfig(); err == nil {
+			for _, p := range cfg.Projects {
+				if p.Path != "" {
+					_ = a.mcpAutoDiscovery.ScanProject(p.Path)
+					_ = a.mcpAutoDiscovery.WatchProject(p.Path)
+				}
+			}
+		}
+	}
+	// Initialize SecurityFirewall (Phase 2 upgrade).
+	if a.securityRiskAnalyzer == nil {
+		a.securityRiskAnalyzer = NewSecurityRiskAnalyzer()
+	}
+	if a.securityFirewall == nil && a.policyEngine != nil && a.auditLog != nil {
+		a.securityFirewall = NewSecurityFirewall(a.securityRiskAnalyzer, a.policyEngine, a.auditLog)
+	}
+	// Initialize ContextBridge (Phase 3 upgrade).
+	if a.contextBridge == nil {
+		a.contextBridge = NewContextBridge()
+	}
+	// Initialize TaskOrchestrator2 (Phase 3 upgrade).
+	if a.taskOrchestrator2 == nil && a.remoteSessions != nil && a.toolSelector != nil {
+		a.taskOrchestrator2 = NewTaskOrchestrator2(a.remoteSessions, a.toolSelector, a.contextBridge)
+	}
 }
 
 // createAndWireHubClient creates a new RemoteHubClient, wires all subsystem
@@ -427,6 +467,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	}
 	if a.startupFeedback != nil {
 		hubClient.imHandler.SetStartupFeedback(a.startupFeedback)
+	}
+	if a.securityFirewall != nil {
+		hubClient.imHandler.SetSecurityFirewall(a.securityFirewall)
 	}
 	if a.conversationArchiver != nil {
 		hubClient.imHandler.memory.archiver = a.conversationArchiver
@@ -5446,21 +5489,28 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	base := strings.TrimRight(rawURL, "/")
 	client := &http.Client{Timeout: 8 * time.Second}
 
-	// 探测 1: 标准 Hub API — /api/v1/skills/search?q=test
+	// 探测 1: ClawSkillHub / skillhub.space 风格 — /api/skills?search=test&limit=1
+	if probeSkillHubSpace(client, base) {
+		result["type"] = "skillhub_space"
+		result["reason"] = "检测到 ClawSkillHub API (skillhub.space 兼容)"
+		return result
+	}
+
+	// 探测 2: 标准 Hub API — /api/v1/skills/search?q=test
 	if hubType := probeStandardHub(client, base); hubType {
 		result["type"] = "standard"
 		result["reason"] = "检测到标准 SkillHub API"
 		return result
 	}
 
-	// 探测 2: ClawHub 镜像 (topclawhubskills.com 风格) — /api/stats
+	// 探测 3: ClawHub 镜像 (topclawhubskills.com 风格) — /api/stats
 	if hubType := probeClawHubMirror(client, base); hubType {
 		result["type"] = "clawhub_mirror"
 		result["reason"] = "检测到 ClawHub 镜像 API (topclawhubskills.com 兼容)"
 		return result
 	}
 
-	// 探测 3: ClawHub (clawhub.ai 风格) — /api/v1/skills
+	// 探测 4: ClawHub (clawhub.ai 风格) — /api/v1/skills
 	if hubType := probeClawHub(client, base); hubType {
 		result["type"] = "clawhub"
 		result["reason"] = "检测到 ClawHub API (clawhub.ai 兼容)"
@@ -5479,6 +5529,31 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 
 	result["reason"] = "该地址不可达或不支持"
 	return result
+}
+
+// probeSkillHubSpace 检测 clawskillhub.com / skillhub.space 风格的 API
+// GET /api/skills?search=test&limit=1 应返回 JSON 数组
+func probeSkillHubSpace(client *http.Client, base string) bool {
+	endpoint := base + "/api/skills?search=test&limit=1"
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	// 应返回 JSON 数组 [{"id":..., "slug":..., "owner":...}, ...]
+	var items []json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return false
+	}
+	return true
 }
 
 // probeStandardHub 检测标准 Hub API

@@ -34,7 +34,7 @@ type MaclawLLMConfig struct {
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []MaclawLLMProvider {
 	return []MaclawLLMProvider{
-		{Name: "智谱", URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 200000},
+		{Name: "智谱", URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000},
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true},
 		{Name: "Custom2", URL: "", Model: "", IsCustom: true},
 	}

@@ -1,9 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -73,7 +73,9 @@ func NewMemoryStore(path string) (*MemoryStore, error) {
 
 // generateID produces a unique ID from the current timestamp and a random suffix.
 func generateID() string {
-	return fmt.Sprintf("%d-%04x", time.Now().UnixNano(), rand.Intn(0xFFFF))
+	var buf [2]byte
+	_, _ = rand.Read(buf[:])
+	return fmt.Sprintf("%d-%04x", time.Now().UnixNano(), int(buf[0])<<8|int(buf[1]))
 }
 
 // Save stores a memory entry. If an entry with identical content already exists,

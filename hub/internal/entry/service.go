@@ -12,6 +12,11 @@ type InvitationCodeChecker interface {
 	IsRequired(ctx context.Context) (bool, error)
 }
 
+// FeishuAutoEnrollChecker checks whether feishu auto-enrollment is enabled.
+type FeishuAutoEnrollChecker interface {
+	IsEnabled() bool
+}
+
 type ProbeResult struct {
 	Email                  string `json:"email"`
 	Status                 string `json:"status"`
@@ -21,15 +26,17 @@ type ProbeResult struct {
 	PWAURL                 string `json:"pwa_url,omitempty"`
 	Message                string `json:"message,omitempty"`
 	InvitationCodeRequired bool   `json:"invitation_code_required"`
+	FeishuAutoEnroll       bool   `json:"feishu_auto_enroll"`
 }
 
 type Service struct {
 	identity       *auth.IdentityService
 	invitationCode InvitationCodeChecker
+	feishuChecker  FeishuAutoEnrollChecker // may be nil
 }
 
-func NewService(identity *auth.IdentityService, invitationCode InvitationCodeChecker) *Service {
-	return &Service{identity: identity, invitationCode: invitationCode}
+func NewService(identity *auth.IdentityService, invitationCode InvitationCodeChecker, feishuChecker FeishuAutoEnrollChecker) *Service {
+	return &Service{identity: identity, invitationCode: invitationCode, feishuChecker: feishuChecker}
 }
 
 func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult, error) {
@@ -43,12 +50,18 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 		}
 	}
 
+	feishuAutoEnroll := false
+	if s.feishuChecker != nil {
+		feishuAutoEnroll = s.feishuChecker.IsEnabled()
+	}
+
 	if email == "" {
 		return &ProbeResult{
 			Email:                  email,
 			Status:                 "invalid_email",
 			Message:                "Email is required",
 			InvitationCodeRequired: invCodeRequired,
+			FeishuAutoEnroll:       feishuAutoEnroll,
 		}, nil
 	}
 
@@ -60,6 +73,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 				Status:                 "invalid_email",
 				Message:                err.Error(),
 				InvitationCodeRequired: invCodeRequired,
+				FeishuAutoEnroll:       feishuAutoEnroll,
 			}, nil
 		}
 		return nil, err
@@ -70,6 +84,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 			Status:                 "blocked",
 			Message:                "Email is blocked",
 			InvitationCodeRequired: invCodeRequired,
+			FeishuAutoEnroll:       feishuAutoEnroll,
 		}, nil
 	}
 
@@ -81,6 +96,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 				Status:                 "invalid_email",
 				Message:                err.Error(),
 				InvitationCodeRequired: invCodeRequired,
+				FeishuAutoEnroll:       feishuAutoEnroll,
 			}, nil
 		}
 		return nil, err
@@ -100,6 +116,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 			EnrollmentMode:         enrollmentMode,
 			Message:                "Email is not bound to this hub",
 			InvitationCodeRequired: invCodeRequired,
+			FeishuAutoEnroll:       feishuAutoEnroll,
 		}, nil
 	}
 
@@ -112,6 +129,7 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 			EnrollmentMode:         enrollmentMode,
 			Message:                "Email exists but is not ready for login",
 			InvitationCodeRequired: invCodeRequired,
+			FeishuAutoEnroll:       feishuAutoEnroll,
 		}, nil
 	}
 
@@ -123,5 +141,6 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 		EnrollmentMode:         enrollmentMode,
 		PWAURL:                 s.identity.BuildPWAEntryURL(email),
 		InvitationCodeRequired: invCodeRequired,
+		FeishuAutoEnroll:       feishuAutoEnroll,
 	}, nil
 }

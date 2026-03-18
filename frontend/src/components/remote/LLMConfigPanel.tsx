@@ -24,7 +24,7 @@ const NONE_PROVIDER = "__none__";
 const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number }[] = [
     { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-4o", context_length: 128000 },
     { name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat", context_length: 128000 },
-    { name: "GLM (智谱)", url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.7", context_length: 200000 },
+    { name: "GLM (智谱)", url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.7", context_length: 180000 },
     { name: "Kimi (月之暗面)", url: "https://api.kimi.com/coding/v1", model: "kimi-k2-thinking", context_length: 128000 },
     { name: "Doubao (豆包)", url: "https://ark.cn-beijing.volces.com/api/coding", model: "doubao-seed-code-preview-latest", context_length: 128000 },
     { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.1", context_length: 128000 },
@@ -119,7 +119,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         if (dlgSelectedIdx === null) return;
         setDlgProviders(prev => {
             const copy = [...prev];
-            copy[dlgSelectedIdx] = { ...copy[dlgSelectedIdx], [field]: value };
+            const parsed: string | number = field === "context_length" ? (parseInt(value, 10) || 0) : value;
+            copy[dlgSelectedIdx] = { ...copy[dlgSelectedIdx], [field]: parsed };
             return copy;
         });
         setDlgDirty(true);
@@ -438,12 +439,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     <label style={labelStyle}>{t("上下文长度 (tokens)", "Context Length (tokens)")}</label>
                                     <input style={inputStyle} type="number" min={0} step={1000}
                                         value={dlgProvider.context_length || ""}
-                                        onChange={e => dlgUpdateField("context_length", e.target.value ? String(parseInt(e.target.value, 10) || 0) : "0")}
+                                        onChange={e => dlgUpdateField("context_length", e.target.value)}
                                         placeholder="128000" />
                                     <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                         {t(
-                                            "模型支持的最大上下文长度。智谱 GLM 为 200000，留空默认 128000。",
-                                            "Max context window of the model. GLM supports 200000. Defaults to 128000 if empty."
+                                            "模型支持的最大上下文长度。智谱 GLM 为 180000，留空默认 128000。",
+                                            "Max context window of the model. GLM supports 180000. Defaults to 128000 if empty."
                                         )}
                                     </p>
                                 </div>

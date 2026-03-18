@@ -63,15 +63,17 @@ func (e *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, ri
 			}
 		}
 	}
-	e.mu.Unlock()
 
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	// Snapshot rules and cache under the same lock to avoid a race
+	// between Unlock and RLock where LoadRules could replace the rules.
+	rules := e.rules
+	reCache := e.reCache
+	e.mu.Unlock()
 
 	argStr := flattenArgs(args)
 
-	for _, rule := range e.rules {
-		if e.matchesRuleLocked(rule, toolName, argStr, risk) {
+	for _, rule := range rules {
+		if e.matchesRuleSnapshot(rule, toolName, argStr, risk, reCache) {
 			return rule.Action
 		}
 	}
@@ -262,4 +264,44 @@ func sortRulesByPriority(rules []PolicyRule) {
 	sort.Slice(rules, func(i, j int) bool {
 		return rules[i].Priority < rules[j].Priority
 	})
+}
+
+// matchesRuleSnapshot is like matchesRule but uses a pre-captured regex cache
+// snapshot. This avoids holding the lock during evaluation.
+func (e *PolicyEngine) matchesRuleSnapshot(rule PolicyRule, toolName, argStr string, risk RiskLevel, cache map[string]*regexp.Regexp) bool {
+	if rule.ToolPattern != "" && rule.ToolPattern != "*" {
+		matched, err := filepath.Match(rule.ToolPattern, toolName)
+		if err != nil || !matched {
+			return false
+		}
+	}
+
+	if rule.ArgsPattern != "" {
+		re, ok := cache[rule.ArgsPattern]
+		if !ok {
+			var err error
+			re, err = regexp.Compile(rule.ArgsPattern)
+			if err != nil {
+				return false
+			}
+		}
+		if !re.MatchString(argStr) {
+			return false
+		}
+	}
+
+	if len(rule.RiskLevels) > 0 {
+		found := false
+		for _, rl := range rule.RiskLevels {
+			if strings.EqualFold(string(rl), string(risk)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	return true
 }

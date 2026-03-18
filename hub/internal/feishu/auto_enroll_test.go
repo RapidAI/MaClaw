@@ -18,9 +18,12 @@ func TestAutoEnroller_DisabledByDefault(t *testing.T) {
 		t.Fatal("expected auto-enroller to be disabled by default")
 	}
 
-	err := ae.AddToFeishuOrg(context.Background(), "test@example.com", "Test", "")
+	result, err := ae.AddToFeishuOrg(context.Background(), "test@example.com", "Test", "")
 	if err != nil {
 		t.Fatalf("unexpected error when disabled: %v", err)
+	}
+	if result == nil || result.Status != "disabled" {
+		t.Fatalf("expected status 'disabled', got %+v", result)
 	}
 }
 
@@ -66,9 +69,12 @@ func TestAutoEnroller_NilBot(t *testing.T) {
 	)
 	ae.SetConfig(AutoEnrollConfig{Enabled: true})
 
-	err := ae.AddToFeishuOrg(context.Background(), "test@example.com", "Test", "")
+	result, err := ae.AddToFeishuOrg(context.Background(), "test@example.com", "Test", "")
 	if err == nil {
 		t.Fatal("expected error when bot is nil")
+	}
+	if result == nil || result.Status != "failed" {
+		t.Fatalf("expected status 'failed', got %+v", result)
 	}
 }
 
@@ -85,13 +91,16 @@ func TestAutoEnroller_Cooldown(t *testing.T) {
 
 	// First call — will fail because bot can't reach Feishu API, but
 	// the cooldown entry should be recorded.
-	_ = ae.AddToFeishuOrg(context.Background(), "cooldown@example.com", "Test", "")
+	_, _ = ae.AddToFeishuOrg(context.Background(), "cooldown@example.com", "Test", "")
 	firstCount := callCount
 
 	// Second call within cooldown — should return immediately without calling bot.
-	err := ae.AddToFeishuOrg(context.Background(), "cooldown@example.com", "Test", "")
+	result, err := ae.AddToFeishuOrg(context.Background(), "cooldown@example.com", "Test", "")
 	if err != nil {
 		t.Fatalf("unexpected error on cooldown call: %v", err)
+	}
+	if result == nil || result.Status != "skipped" {
+		t.Fatalf("expected status 'skipped', got %+v", result)
 	}
 	if callCount != firstCount {
 		t.Fatalf("expected bot not to be called during cooldown, but callCount went from %d to %d", firstCount, callCount)
@@ -106,9 +115,12 @@ func TestAutoEnroller_EmptyEmail(t *testing.T) {
 	ae.SetConfig(AutoEnrollConfig{Enabled: true})
 
 	// Empty email should be a no-op.
-	err := ae.AddToFeishuOrg(context.Background(), "", "Test", "")
+	result, err := ae.AddToFeishuOrg(context.Background(), "", "Test", "")
 	if err != nil {
 		t.Fatalf("unexpected error for empty email: %v", err)
+	}
+	if result == nil || result.Status != "skipped" {
+		t.Fatalf("expected status 'skipped', got %+v", result)
 	}
 }
 
@@ -146,7 +158,7 @@ func TestAutoEnroller_DefaultDisplayName(t *testing.T) {
 
 	// This will fail at the API call level, but the important thing is
 	// it doesn't panic or skip due to empty displayName.
-	err := ae.AddToFeishuOrg(context.Background(), "alice@example.com", "", "+8613800138000")
+	_, err := ae.AddToFeishuOrg(context.Background(), "alice@example.com", "", "+8613800138000")
 	if err == nil {
 		t.Log("no error (unexpected but acceptable in test env)")
 	}
@@ -165,7 +177,7 @@ func TestAutoEnroller_CooldownEviction(t *testing.T) {
 	ae.mu.Unlock()
 
 	// Trigger a call that will evict the stale entry.
-	_ = ae.AddToFeishuOrg(context.Background(), "fresh@example.com", "Test", "")
+	_, _ = ae.AddToFeishuOrg(context.Background(), "fresh@example.com", "Test", "")
 
 	ae.mu.Lock()
 	_, staleExists := ae.attempts["stale@example.com"]

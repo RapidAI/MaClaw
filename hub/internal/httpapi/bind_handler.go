@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -87,7 +88,7 @@ func consumeVerifyCode(email, code string) (ok bool, locked bool) {
 		delete(verifyCodes, email) // force re-send
 		return false, true
 	}
-	if entry.Code != code {
+	if subtle.ConstantTimeCompare([]byte(entry.Code), []byte(code)) != 1 {
 		entry.Attempts++
 		return false, entry.Attempts >= verifyMaxAttempts
 	}

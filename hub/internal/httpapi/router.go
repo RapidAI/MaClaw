@@ -41,7 +41,13 @@ func NewRouter(
 	if invitationSvc != nil {
 		invChecker = invitationSvc
 	}
-	entrySvc := entry.NewService(identity, invChecker)
+	var feishuChecker entry.FeishuAutoEnrollChecker
+	if feishuNotifier != nil {
+		if ae := feishuNotifier.AutoEnroller(); ae != nil {
+			feishuChecker = ae
+		}
+	}
+	entrySvc := entry.NewService(identity, invChecker, feishuChecker)
 	var userLookup machineUserLookup
 	if identity != nil {
 		userLookup = identity.UsersRepo()
@@ -155,10 +161,10 @@ func NewRouter(
 	mux.HandleFunc("POST /api/session/input", SessionInputHandler(identity, sessionSvc, deviceSvc))
 	mux.HandleFunc("POST /api/session/interrupt", SessionInterruptHandler(identity, sessionSvc, deviceSvc))
 	mux.HandleFunc("POST /api/session/kill", SessionKillHandler(identity, sessionSvc, deviceSvc))
-	mux.HandleFunc("GET /api/debug/machines", DebugListMachinesHandler(deviceSvc, userLookup))
-	mux.HandleFunc("GET /api/debug/machine-events", DebugListMachineEventsHandler(deviceSvc))
-	mux.HandleFunc("GET /api/debug/sessions", DebugListSessionsHandler(sessionSvc))
-	mux.HandleFunc("GET /api/debug/session", DebugGetSessionHandler(sessionSvc))
+	mux.HandleFunc("GET /api/debug/machines", RequireAdmin(admins, DebugListMachinesHandler(deviceSvc, userLookup)))
+	mux.HandleFunc("GET /api/debug/machine-events", RequireAdmin(admins, DebugListMachineEventsHandler(deviceSvc)))
+	mux.HandleFunc("GET /api/debug/sessions", RequireAdmin(admins, DebugListSessionsHandler(sessionSvc)))
+	mux.HandleFunc("GET /api/debug/session", RequireAdmin(admins, DebugGetSessionHandler(sessionSvc)))
 	mux.HandleFunc("/ws", gateway.HandleWS)
 	mux.HandleFunc("GET /api/shortcuts", GetShortcutsHandler(identity, system))
 	mux.HandleFunc("PUT /api/shortcuts", PutShortcutsHandler(identity, system))

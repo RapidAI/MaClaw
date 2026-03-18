@@ -53,7 +53,7 @@ VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 # Enable HiDPI support. https://nsis.sourceforge.io/Reference/ManifestDPIAware
 ManifestDPIAware true
 
-!include "MUI.nsh"
+!include "MUI2.nsh"
 
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
@@ -62,8 +62,10 @@ ManifestDPIAware true
 !define MUI_ABORTWARNING # This will warn the user if they exit from the installer.
 
 # Launch app checkbox on finish page (checked by default)
-!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXECUTABLE}"
+# Use ShellExec to avoid launching app with admin privileges
+!define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "$(LaunchAfterInstall)"
+!define MUI_FINISHPAGE_RUN_FUNCTION LaunchAsCurrentUser
 
 !insertmacro MUI_PAGE_WELCOME # Welcome to the installer page.
 # !insertmacro MUI_PAGE_LICENSE "resources\eula.txt" # Adds a EULA page to the installer
@@ -103,6 +105,11 @@ Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\dist\${INFO_PROJECTNAME}-Setup.exe" # Name of the installer's file.
 InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}" # Default installing folder ($PROGRAMFILES is Program Files folder).
 ShowInstDetails show # This will always show the installation details.
+
+# Launch app as current user (not elevated admin)
+Function LaunchAsCurrentUser
+   ExecShell "" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+FunctionEnd
 
 Function .onInit
    # Auto-detect system language (no dialog)
