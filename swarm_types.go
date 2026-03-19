@@ -34,10 +34,12 @@ const (
 type SwarmPhase string
 
 const (
-	PhaseTaskSplit      SwarmPhase = "task_split"
+	PhaseRequirements   SwarmPhase = "requirements"   // Spec Phase 1: 需求生成与确认
+	PhaseDesign         SwarmPhase = "design"          // Spec Phase 2: 结构化设计
+	PhaseTaskSplit      SwarmPhase = "task_split"      // Spec Phase 3: 任务分解（含验收标准）
 	PhaseArchitecture   SwarmPhase = "architecture"
 	PhaseConflictDetect SwarmPhase = "conflict_detect"
-	PhaseDevelopment    SwarmPhase = "development"
+	PhaseDevelopment    SwarmPhase = "development"     // Spec Phase 4: 执行
 	PhaseMerge          SwarmPhase = "merge"
 	PhaseCompile        SwarmPhase = "compile"
 	PhaseTest           SwarmPhase = "test"
@@ -52,6 +54,7 @@ const (
 	RoleArchitect  AgentRole = "architect"
 	RoleDesigner   AgentRole = "designer"
 	RoleDeveloper  AgentRole = "developer"
+	RoleTestWriter AgentRole = "test_writer"
 	RoleCompiler   AgentRole = "compiler"
 	RoleTester     AgentRole = "tester"
 	RoleDocumenter AgentRole = "documenter"
@@ -80,6 +83,10 @@ type SwarmRun struct {
 	ProjectPath string      `json:"project_path"`
 	TechStack   string      `json:"tech_stack,omitempty"`
 	Tool        string      `json:"tool"` // coding tool to use (e.g. "claude", "cursor")
+
+	// Spec-driven artifacts (Kiro spec model)
+	Requirements string `json:"requirements,omitempty"` // Phase 1 输出：结构化需求文档
+	DesignDoc    string `json:"design_doc,omitempty"`   // Phase 2 输出：结构化设计文档
 
 	// Tasks & Agents
 	Tasks      []SubTask    `json:"tasks"`
@@ -125,11 +132,14 @@ type SwarmAgent struct {
 // SubTask represents a decomposed unit of work that can be assigned to a
 // developer agent.
 type SubTask struct {
-	Index         int      `json:"index"`
-	Description   string   `json:"description"`
-	ExpectedFiles []string `json:"expected_files"`
-	Dependencies  []int    `json:"dependencies"`
-	GroupID       int      `json:"group_id"`
+	Index              int      `json:"index"`
+	Description        string   `json:"description"`
+	ExpectedFiles      []string `json:"expected_files"`
+	Dependencies       []int    `json:"dependencies"`
+	GroupID            int      `json:"group_id"`
+	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"` // 验收标准
+	TestFile           string   `json:"test_file,omitempty"`          // TDD: 测试文件路径
+	TestCode           string   `json:"test_code,omitempty"`          // TDD: 测试代码内容（由 test_writer agent 生成）
 }
 
 // TaskGroup groups tasks that share file dependencies and must be executed
@@ -299,18 +309,21 @@ type PromptTemplate struct {
 
 // PromptContext provides the variables available for prompt template rendering.
 type PromptContext struct {
-	ProjectName   string
-	TechStack     string
-	TaskDesc      string
-	ArchDesign    string
-	InterfaceDefs string
-	CompileErrors string
-	TestCommand   string
-	Requirements  string
-	FeatureList   string
-	ProjectStruct string
-	APIList       string
-	ChangeLog     string
+	ProjectName        string
+	TechStack          string
+	TaskDesc           string
+	ArchDesign         string
+	InterfaceDefs      string
+	CompileErrors      string
+	TestCommand        string
+	Requirements       string
+	FeatureList        string
+	ProjectStruct      string
+	APIList            string
+	ChangeLog          string
+	AcceptanceCriteria string // 验收标准（换行分隔）
+	TestFile           string // TDD: 测试文件路径
+	TestCode           string // TDD: 已生成的测试代码
 }
 
 // ---------------------------------------------------------------------------

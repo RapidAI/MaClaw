@@ -187,6 +187,54 @@ func (b *NotifyBroadcaster) BroadcastText(ctx context.Context, email, subject, t
 	}
 }
 
+// BroadcastFile sends a file to all IM channels where the user is reachable.
+// If the platform supports file sending, the file is delivered directly;
+// otherwise the accompanying message text is sent as a fallback.
+// Used for Swarm PDF document delivery.
+func (b *NotifyBroadcaster) BroadcastFile(ctx context.Context, email, b64Data, fileName, mimeType, message string) {
+	if b.adapter == nil {
+		return
+	}
+
+	b.adapter.mu.RLock()
+	plugins := make(map[string]IMPlugin, len(b.adapter.plugins))
+	for k, v := range b.adapter.plugins {
+		plugins[k] = v
+	}
+	b.adapter.mu.RUnlock()
+
+	for name, plugin := range plugins {
+		lookup, ok := plugin.(BindingLookup)
+		if !ok {
+			continue
+		}
+		uid := lookup.LookupByEmail(email)
+		if uid == "" {
+			continue
+		}
+		target := UserTarget{PlatformUID: uid}
+		caps := plugin.Capabilities()
+
+		// 先发送附带的文本消息
+		if message != "" {
+			if err := plugin.SendText(ctx, target, message); err != nil {
+				log.Printf("[im/notify] broadcast file text to %s (uid=%s) failed: %v", name, uid, err)
+			}
+		}
+
+		// 发送文件
+		if caps.SupportsFile {
+			if err := plugin.SendFile(ctx, target, b64Data, fileName, mimeType); err != nil {
+				log.Printf("[im/notify] broadcast file to %s (uid=%s) failed: %v", name, uid, err)
+			}
+		} else {
+			// 平台不支持文件，发送文本提示
+			fallback := fmt.Sprintf("📎 文件「%s」已生成，但当前平台不支持文件发送。请在桌面端查看。", fileName)
+			_ = plugin.SendText(ctx, target, fallback)
+		}
+	}
+}
+
 func platformDisplayName(name string) string {
 	switch name {
 	case "feishu":
@@ -236,5 +284,16 @@ func (p *ProactiveSender) SendProactiveMessage(ctx context.Context, userID, text
 		return fmt.Errorf("resolve user email for %s: %w", userID, err)
 	}
 	p.broadcaster.BroadcastText(ctx, email, "MaClaw 定时任务通知", text)
+	return nil
+}
+
+// SendProactiveFile resolves the user's email and broadcasts a file to all IM channels.
+// Used for Swarm PDF document delivery.
+func (p *ProactiveSender) SendProactiveFile(ctx context.Context, userID, b64Data, fileName, mimeType, message string) error {
+	email, err := p.users.GetEmail(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("resolve user email for %s: %w", userID, err)
+	}
+	p.broadcaster.BroadcastFile(ctx, email, b64Data, fileName, mimeType, message)
 	return nil
 }

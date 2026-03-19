@@ -7,17 +7,20 @@ import (
 	"time"
 )
 
-// runGreenfield executes the Greenfield mode pipeline:
-// task_split → architecture → development → merge → compile → test → document → report
+// runGreenfield executes the Greenfield mode pipeline using the spec-driven model:
 //
-// It integrates FeedbackLoop for test failure classification, SwarmNotifier for
-// real-time progress notifications, and SwarmReporter for final report generation.
+//   Phase 1: requirements — 生成结构化需求，暂停等待用户确认
+//   Phase 2: design — 架构师生成结构化设计（接口、数据模型、模块依赖）
+//   Phase 3: task_split — 基于设计分解任务，每个任务带验收标准
+//   Phase 4: development — 并行开发，按验收标准验证
+//   Phase 5-8: merge → compile → test → document → report
+//
 // Pause/cancel checks are performed between each phase.
 func (o *SwarmOrchestrator) runGreenfield(run *SwarmRun, req SwarmRunRequest, maxAgents int) error {
 	// ---------------------------------------------------------------
-	// Phase 1: task_split — prepare project & decompose requirements
+	// Phase 1: requirements — 生成结构化需求，暂停等待用户确认
 	// ---------------------------------------------------------------
-	o.setPhase(run, PhaseTaskSplit)
+	o.setPhase(run, PhaseRequirements)
 
 	state, err := o.worktreeMgr.PrepareProject(run.ProjectPath)
 	if err != nil {
@@ -25,15 +28,103 @@ func (o *SwarmOrchestrator) runGreenfield(run *SwarmRun, req SwarmRunRequest, ma
 	}
 	run.ProjectState = state
 
-	var fallbackArchDesign string
-	tasks, err := o.taskSplitter.SplitRequirements(req.Requirements, req.TechStack)
+	structuredReqs, err := o.generateRequirements(run, req)
 	if err != nil {
-		// Fallback: try splitting via an architect agent session.
+		log.Printf("[SwarmOrchestrator] requirements generation failed: %v, using raw requirements", err)
+		structuredReqs = req.Requirements
+	}
+	run.Requirements = structuredReqs
+	o.addTimelineEvent(run, "requirements_done", "结构化需求文档已生成，等待用户确认", "")
+
+	// 生成需求 PDF 并通过 IM 发送给用户
+	o.sendDocForReview(run, DocTypeRequirements, structuredReqs)
+
+	// 暂停等待用户确认需求
+	_ = o.notifier.NotifyWaitingUser(run, "需求文档已生成，请确认或修改后继续。")
+	run.Status = SwarmStatusPaused
+	select {
+	case input := <-run.userInputCh:
+		run.Status = SwarmStatusRunning
+		if strings.TrimSpace(input) != "" && input != "ok" && input != "确认" {
+			// 用户提供了修改意见，更新需求
+			run.Requirements = input
+			o.addTimelineEvent(run, "requirements_updated", "用户修改了需求", "")
+		} else {
+			o.addTimelineEvent(run, "requirements_confirmed", "用户确认了需求", "")
+		}
+	case <-time.After(24 * time.Hour):
+		return fmt.Errorf("等待用户确认需求超时")
+	}
+
+	if err := o.checkPauseCancelGreenfield(run); err != nil {
+		return err
+	}
+
+	// ---------------------------------------------------------------
+	// Phase 2: design — 架构师生成结构化设计
+	// ---------------------------------------------------------------
+	o.setPhase(run, PhaseDesign)
+
+	designDoc, err := o.generateDesign(run, req)
+	if err != nil {
+		log.Printf("[SwarmOrchestrator] design generation failed: %v, falling back to architect agent", err)
+	}
+
+	// 如果 LLM 直接生成设计失败，回退到 architect agent
+	if designDoc == "" {
+		archOutput, archErr := o.runArchitectPhase(run, req)
+		if archErr != nil {
+			log.Printf("[SwarmOrchestrator] architect phase also failed: %v", archErr)
+		} else {
+			designDoc = archOutput
+		}
+	}
+	run.DesignDoc = designDoc
+	o.addTimelineEvent(run, "design_done", "结构化设计文档已生成，等待用户确认", "")
+
+	// 生成设计 PDF 并通过 IM 发送给用户
+	o.sendDocForReview(run, DocTypeDesign, designDoc)
+
+	// 暂停等待用户确认设计
+	_ = o.notifier.NotifyWaitingUser(run, "设计文档已生成，请确认或修改后继续。")
+	run.Status = SwarmStatusPaused
+	select {
+	case input := <-run.userInputCh:
+		run.Status = SwarmStatusRunning
+		if strings.TrimSpace(input) != "" && input != "ok" && input != "确认" {
+			// 用户提供了修改意见，重新生成设计
+			run.DesignDoc = input
+			o.addTimelineEvent(run, "design_updated", "用户修改了设计", "")
+		} else {
+			o.addTimelineEvent(run, "design_confirmed", "用户确认了设计", "")
+		}
+	case <-time.After(24 * time.Hour):
+		return fmt.Errorf("等待用户确认设计超时")
+	}
+
+	if err := o.checkPauseCancelGreenfield(run); err != nil {
+		return err
+	}
+
+	// ---------------------------------------------------------------
+	// Phase 3: task_split — 基于设计分解任务（含验收标准）
+	// ---------------------------------------------------------------
+	o.setPhase(run, PhaseTaskSplit)
+
+	// 将需求和设计合并作为任务分解的输入
+	splitInput := run.Requirements
+	if run.DesignDoc != "" {
+		splitInput += "\n\n## 设计文档\n" + run.DesignDoc
+	}
+
+	var fallbackArchDesign string
+	tasks, err := o.taskSplitter.SplitRequirements(splitInput, req.TechStack)
+	if err != nil {
 		log.Printf("[SwarmOrchestrator] direct LLM split failed: %v, trying agent-based split", err)
 		archOutput, archErr := o.runSingleAgent(run, RoleArchitect, 0, run.ProjectPath, PromptContext{
 			ProjectName:  run.ProjectPath,
 			TechStack:    req.TechStack,
-			Requirements: req.Requirements,
+			Requirements: splitInput,
 		})
 		if archErr == nil {
 			fallbackArchDesign = archOutput
@@ -45,38 +136,21 @@ func (o *SwarmOrchestrator) runGreenfield(run *SwarmRun, req SwarmRunRequest, ma
 	}
 	run.Tasks = tasks
 	o.addTimelineEvent(run, "task_split_done",
-		fmt.Sprintf("Decomposed requirements into %d sub-tasks", len(tasks)), "")
+		fmt.Sprintf("基于设计分解为 %d 个子任务（含验收标准）", len(tasks)), "")
 
 	if err := o.checkPauseCancelGreenfield(run); err != nil {
 		return err
 	}
 
 	// ---------------------------------------------------------------
-	// Phase 2: architecture — create Architect agent, parse output
-	// ---------------------------------------------------------------
-	o.setPhase(run, PhaseArchitecture)
-
-	var archDesign string
-	if fallbackArchDesign != "" {
-		// Reuse the architect output from the fallback task split.
-		archDesign = fallbackArchDesign
-		o.addTimelineEvent(run, "architect_reused", "Reusing architect output from task split fallback", "")
-	} else {
-		archDesign, err = o.runArchitectPhase(run, req)
-		if err != nil {
-			log.Printf("[SwarmOrchestrator] architect phase failed: %v", err)
-			// Continue with empty design — developers will work without it
-		}
-	}
-
-	if err := o.checkPauseCancelGreenfield(run); err != nil {
-		return err
-	}
-
-	// ---------------------------------------------------------------
-	// Phase 3: development — parallel Developer agents
+	// Phase 4: development — 并行 Developer agents（按验收标准验证）
 	// ---------------------------------------------------------------
 	o.setPhase(run, PhaseDevelopment)
+
+	archDesign := run.DesignDoc
+	if archDesign == "" {
+		archDesign = fallbackArchDesign
+	}
 
 	if err := o.runDeveloperAgents(run, tasks, maxAgents, req.Tool, archDesign); err != nil {
 		log.Printf("[SwarmOrchestrator] development phase had errors: %v", err)
@@ -89,7 +163,7 @@ func (o *SwarmOrchestrator) runGreenfield(run *SwarmRun, req SwarmRunRequest, ma
 	}
 
 	// ---------------------------------------------------------------
-	// Phase 4-5: merge + compile — collect branches, merge in order
+	// Phase 5-6: merge + compile
 	// ---------------------------------------------------------------
 	o.setPhase(run, PhaseMerge)
 
@@ -98,7 +172,6 @@ func (o *SwarmOrchestrator) runGreenfield(run *SwarmRun, req SwarmRunRequest, ma
 		log.Printf("[SwarmOrchestrator] merge phase error: %v", err)
 	}
 
-	// Transition to compile phase (already handled within MergeAll)
 	o.setPhase(run, PhaseCompile)
 	if mergeResult != nil && !mergeResult.Success {
 		o.addTimelineEvent(run, "merge_partial",
@@ -117,7 +190,7 @@ func (o *SwarmOrchestrator) runGreenfield(run *SwarmRun, req SwarmRunRequest, ma
 	}
 
 	// ---------------------------------------------------------------
-	// Phase 6: test — create Tester agent, handle feedback loop
+	// Phase 7: test — feedback loop
 	// ---------------------------------------------------------------
 	o.setPhase(run, PhaseTest)
 
@@ -130,7 +203,7 @@ func (o *SwarmOrchestrator) runGreenfield(run *SwarmRun, req SwarmRunRequest, ma
 	}
 
 	// ---------------------------------------------------------------
-	// Phase 7: document — create Documenter agent
+	// Phase 8: document
 	// ---------------------------------------------------------------
 	o.setPhase(run, PhaseDocument)
 
@@ -141,11 +214,10 @@ func (o *SwarmOrchestrator) runGreenfield(run *SwarmRun, req SwarmRunRequest, ma
 	}
 
 	// ---------------------------------------------------------------
-	// Phase 8: report — handled by runPipeline after we return
+	// Phase 9: report
 	// ---------------------------------------------------------------
 	o.setPhase(run, PhaseReport)
 
-	// Cleanup worktrees and restore project state
 	_ = o.worktreeMgr.CleanupRun(run.ProjectPath, run.ID)
 	_ = o.worktreeMgr.RestoreProject(run.ProjectPath, run.ProjectState)
 
@@ -466,4 +538,76 @@ func inferTestCommand(techStack string) string {
 	default:
 		return "echo no test command configured"
 	}
+}
+
+// generateRequirements uses the LLM to transform raw user requirements into
+// a structured requirements document (spec Phase 1).
+func (o *SwarmOrchestrator) generateRequirements(run *SwarmRun, req SwarmRunRequest) (string, error) {
+	prompt, err := RenderSpecPrompt("requirements", PromptContext{
+		Requirements: req.Requirements,
+		TechStack:    req.TechStack,
+	})
+	if err != nil {
+		return "", fmt.Errorf("render requirements prompt: %w", err)
+	}
+
+	body, err := swarmCallLLM(o.llmConfig, prompt, 0.2, 120*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("LLM call for requirements: %w", err)
+	}
+	return string(body), nil
+}
+
+// sendDocForReview 生成 PDF 文档并通过 notifier 发送给用户审阅。
+// 如果 PDF 生成失败（如缺少字体），回退为纯文本通知。
+func (o *SwarmOrchestrator) sendDocForReview(run *SwarmRun, docType DocType, content string) {
+	if o.docGenerator == nil || !o.docGenerator.HasFont() {
+		// 无字体，回退为纯文本摘要
+		summary := content
+		if len([]rune(summary)) > 500 {
+			summary = string([]rune(summary)[:500]) + "\n...(已截断，完整内容请查看项目目录)"
+		}
+		_ = o.notifier.NotifyWaitingUser(run, summary)
+		return
+	}
+
+	b64Data, fileName, err := o.docGenerator.GenerateAndEncode(docType, run.ProjectPath, content)
+	if err != nil {
+		log.Printf("[SwarmOrchestrator] PDF 生成失败: %v，回退为文本通知", err)
+		_ = o.notifier.NotifyWaitingUser(run, content)
+		return
+	}
+
+	var msg string
+	switch docType {
+	case DocTypeRequirements:
+		msg = "📋 需求文档已生成，请查阅 PDF 后回复「确认」继续，或回复修改意见。"
+	case DocTypeDesign:
+		msg = "🏗️ 设计文档已生成，请查阅 PDF。如需调整请回复修改意见。"
+	case DocTypeTaskPlan:
+		msg = "📝 任务计划已生成，任务将自动执行。"
+	}
+
+	_ = o.notifier.NotifyDocumentForReview(run, b64Data, fileName, "application/pdf", msg)
+	o.addTimelineEvent(run, "doc_sent", fmt.Sprintf("已发送 %s PDF: %s", docType, fileName), "")
+}
+
+// generateDesign uses the LLM to produce a structured design document
+// (interfaces, data models, module dependencies) based on the confirmed
+// requirements (spec Phase 2).
+func (o *SwarmOrchestrator) generateDesign(run *SwarmRun, req SwarmRunRequest) (string, error) {
+	prompt, err := RenderSpecPrompt("design", PromptContext{
+		ProjectName:  run.ProjectPath,
+		Requirements: run.Requirements,
+		TechStack:    req.TechStack,
+	})
+	if err != nil {
+		return "", fmt.Errorf("render design prompt: %w", err)
+	}
+
+	body, err := swarmCallLLM(o.llmConfig, prompt, 0.2, 120*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("LLM call for design: %w", err)
+	}
+	return string(body), nil
 }

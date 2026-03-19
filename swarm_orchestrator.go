@@ -22,6 +22,7 @@ type SwarmOrchestrator struct {
 	notifier     SwarmNotifier
 	toolSelector *ToolSelector
 	taskVerifier *TaskVerifier
+	docGenerator *SwarmDocGenerator
 	llmConfig    MaclawLLMConfig
 
 	mu              sync.RWMutex
@@ -55,6 +56,7 @@ func NewSwarmOrchestrator(
 		notifier:     notifier,
 		toolSelector: NewToolSelector(),
 		taskVerifier: NewTaskVerifier(llmCfg),
+		docGenerator: NewSwarmDocGenerator(),
 		llmConfig:    llmCfg,
 		maxRounds:    5,
 		maxAgents:    5,
@@ -388,4 +390,19 @@ func (o *SwarmOrchestrator) selectToolForTask(run *SwarmRun, task SubTask) (stri
 		desc += " " + run.TechStack
 	}
 	return o.toolSelector.Recommend(desc, installed)
+}
+
+// SetIMDelivery 设置 IM 投递回调，使 Swarm 文档和通知能通过 IM 管道发送。
+// 当 Swarm 由 IM 消息触发时，由 IMMessageHandler 调用。
+func (o *SwarmOrchestrator) SetIMDelivery(fileFn IMFileDeliveryFunc, textFn func(string)) {
+	if dn, ok := o.notifier.(*DefaultSwarmNotifier); ok {
+		dn.SetIMDelivery(fileFn, textFn)
+	}
+}
+
+// ClearIMDelivery 清除 IM 投递回调。
+func (o *SwarmOrchestrator) ClearIMDelivery() {
+	if dn, ok := o.notifier.(*DefaultSwarmNotifier); ok {
+		dn.SetIMDelivery(nil, nil)
+	}
 }

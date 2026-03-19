@@ -21,20 +21,22 @@ func NewTaskSplitter(cfg MaclawLLMConfig) *TaskSplitter {
 }
 
 // SplitRequirements uses the configured LLM to decompose product requirements
-// into a list of SubTasks (Greenfield mode).
+// into a list of SubTasks (Greenfield mode). Each task includes acceptance
+// criteria derived from the requirements for spec-driven verification.
 func (s *TaskSplitter) SplitRequirements(requirements, techStack string) ([]SubTask, error) {
 	prompt := fmt.Sprintf(`You are a software architect. Decompose the following product requirements into independent development sub-tasks.
 Each sub-task must include:
 - description: what to implement
 - expected_files: list of files that will be created or modified
 - dependencies: indices of other tasks this depends on (use 0-based indexing)
+- acceptance_criteria: list of specific, verifiable conditions that must be met for this task to be considered complete
 
 Tech stack: %s
 
 Requirements:
 %s
 
-Respond ONLY with a JSON array of objects with fields: description, expected_files, dependencies.`, techStack, requirements)
+Respond ONLY with a JSON array of objects with fields: description, expected_files, dependencies, acceptance_criteria.`, techStack, requirements)
 
 	body, err := s.callLLM(prompt)
 	if err != nil {
@@ -42,9 +44,10 @@ Respond ONLY with a JSON array of objects with fields: description, expected_fil
 	}
 
 	var raw []struct {
-		Description   string   `json:"description"`
-		ExpectedFiles []string `json:"expected_files"`
-		Dependencies  []int    `json:"dependencies"`
+		Description        string   `json:"description"`
+		ExpectedFiles      []string `json:"expected_files"`
+		Dependencies       []int    `json:"dependencies"`
+		AcceptanceCriteria []string `json:"acceptance_criteria"`
 	}
 	if err := json.Unmarshal(extractJSON(body), &raw); err != nil {
 		return nil, fmt.Errorf("parse LLM response: %w", err)
@@ -53,10 +56,11 @@ Respond ONLY with a JSON array of objects with fields: description, expected_fil
 	tasks := make([]SubTask, len(raw))
 	for i, r := range raw {
 		tasks[i] = SubTask{
-			Index:         i,
-			Description:   r.Description,
-			ExpectedFiles: r.ExpectedFiles,
-			Dependencies:  r.Dependencies,
+			Index:              i,
+			Description:        r.Description,
+			ExpectedFiles:      r.ExpectedFiles,
+			Dependencies:       r.Dependencies,
+			AcceptanceCriteria: r.AcceptanceCriteria,
 		}
 	}
 	return tasks, nil
@@ -159,18 +163,20 @@ func (s *TaskSplitter) SplitViaAgent(agentOutput string) ([]SubTask, error) {
 	// Try to parse structured JSON from the agent output first.
 	jsonData := extractJSON([]byte(agentOutput))
 	var raw []struct {
-		Description   string   `json:"description"`
-		ExpectedFiles []string `json:"expected_files"`
-		Dependencies  []int    `json:"dependencies"`
+		Description        string   `json:"description"`
+		ExpectedFiles      []string `json:"expected_files"`
+		Dependencies       []int    `json:"dependencies"`
+		AcceptanceCriteria []string `json:"acceptance_criteria"`
 	}
 	if err := json.Unmarshal(jsonData, &raw); err == nil && len(raw) > 0 {
 		tasks := make([]SubTask, len(raw))
 		for i, r := range raw {
 			tasks[i] = SubTask{
-				Index:         i,
-				Description:   r.Description,
-				ExpectedFiles: r.ExpectedFiles,
-				Dependencies:  r.Dependencies,
+				Index:              i,
+				Description:        r.Description,
+				ExpectedFiles:      r.ExpectedFiles,
+				Dependencies:       r.Dependencies,
+				AcceptanceCriteria: r.AcceptanceCriteria,
 			}
 		}
 		return tasks, nil
@@ -183,7 +189,8 @@ func (s *TaskSplitter) SplitViaAgent(agentOutput string) ([]SubTask, error) {
 分析输出：
 %s
 
-请返回 JSON 数组，每个元素包含：description, expected_files, dependencies。
+请返回 JSON 数组，每个元素包含：description, expected_files, dependencies, acceptance_criteria。
+acceptance_criteria 是一个字符串数组，列出该任务完成的验收条件。
 只返回 JSON 数组，不要其他内容。`, agentOutput)
 
 	body, err := s.callLLM(prompt)
@@ -198,10 +205,11 @@ func (s *TaskSplitter) SplitViaAgent(agentOutput string) ([]SubTask, error) {
 	tasks := make([]SubTask, len(raw))
 	for i, r := range raw {
 		tasks[i] = SubTask{
-			Index:         i,
-			Description:   r.Description,
-			ExpectedFiles: r.ExpectedFiles,
-			Dependencies:  r.Dependencies,
+			Index:              i,
+			Description:        r.Description,
+			ExpectedFiles:      r.ExpectedFiles,
+			Dependencies:       r.Dependencies,
+			AcceptanceCriteria: r.AcceptanceCriteria,
 		}
 	}
 	return tasks, nil

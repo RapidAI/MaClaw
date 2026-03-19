@@ -153,18 +153,17 @@ func NewClawNetClient() *ClawNetClient {
 // ---------- Daemon lifecycle ----------
 
 // findBinary locates the clawnet executable.
-// Search order: project vendor dir → PATH → user home.
+// Search order: project vendor dir → user home dir → PATH.
 func (c *ClawNetClient) findBinary() string {
+	binName := clawnetLocalBinaryName()
 	// 1. Vendored binary alongside the app
 	candidates := []string{
-		filepath.Join(".", "vendor", "clawnet", "clawnet.exe"),
-		filepath.Join(".", "vendor", "clawnet", "clawnet"),
+		filepath.Join(".", "vendor", "clawnet", binName),
 	}
-	home, _ := os.UserHomeDir()
-	if home != "" {
+	// 2. User home install dir
+	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates,
-			filepath.Join(home, ".openclaw", "clawnet", "clawnet.exe"),
-			filepath.Join(home, ".openclaw", "clawnet", "clawnet"),
+			filepath.Join(home, ".openclaw", "clawnet", binName),
 		)
 	}
 	for _, p := range candidates {
@@ -172,7 +171,7 @@ func (c *ClawNetClient) findBinary() string {
 			return p
 		}
 	}
-	// 2. PATH lookup
+	// 3. PATH lookup
 	if p, err := exec.LookPath("clawnet"); err == nil {
 		return p
 	}
@@ -188,27 +187,33 @@ func (c *ClawNetClient) EnsureDaemon() error {
 // EnsureDaemonWithProgress starts the daemon, auto-downloading the binary if needed.
 // The optional emitProgress callback reports download progress to the caller.
 func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string, pct int, msg string)) error {
-	c.mu.Lock()
-
-	// Already reachable?
+	// Check reachability without holding the lock (ping does a network call).
 	if c.ping() {
+		c.mu.Lock()
 		c.running = true
 		c.mu.Unlock()
 		return nil
 	}
 
+	c.mu.Lock()
 	bin := c.binPath
 	if bin == "" {
 		bin = c.findBinary()
 	}
 	if bin == "" {
-		// Release lock during potentially long download
+		// Release lock during potentially long download.
 		c.mu.Unlock()
 		downloaded, err := DownloadClawNet(emitProgress)
 		if err != nil {
 			return fmt.Errorf("clawnet binary not found and auto-download failed: %w", err)
 		}
 		c.mu.Lock()
+		// Re-check: another goroutine may have started the daemon while we downloaded.
+		if c.ping() {
+			c.running = true
+			c.mu.Unlock()
+			return nil
+		}
 		bin = downloaded
 	}
 	c.binPath = bin
@@ -1019,7 +1024,8 @@ func (c *ClawNetClient) PublishTasksToHub(hubURL string) error {
 
 	body, _ := json.Marshal(payload)
 	endpoint := strings.TrimRight(hubURL, "/") + "/api/clawnet/tasks/publish"
-	resp, err := c.client.Post(endpoint, "application/json", bytes.NewReader(body))
+	hubClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := hubClient.Post(endpoint, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("publish to hub: %w", err)
 	}
@@ -1037,7 +1043,8 @@ func (c *ClawNetClient) BrowseHubTasks(hubURL string) ([]ClawNetTask, error) {
 		return nil, fmt.Errorf("hub URL is empty")
 	}
 	endpoint := strings.TrimRight(hubURL, "/") + "/api/clawnet/tasks/browse?limit=50"
-	resp, err := c.client.Get(endpoint)
+	hubClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := hubClient.Get(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("browse hub tasks: %w", err)
 	}

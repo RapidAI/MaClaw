@@ -20,16 +20,27 @@ type SwarmNotifier interface {
 	NotifyWaitingUser(run *SwarmRun, message string) error
 	// NotifyRunComplete is called when the entire SwarmRun finishes.
 	NotifyRunComplete(run *SwarmRun, report *SwarmReport) error
+	// NotifyDocumentForReview sends a PDF document to the user for review via IM.
+	// b64Data is base64-encoded PDF, fileName is the display name, message is
+	// the accompanying text message.
+	NotifyDocumentForReview(run *SwarmRun, b64Data, fileName, mimeType, message string) error
 }
 
 // EventEmitter is a function that pushes named events to the frontend.
 // In production this wraps App.emitEvent; in tests a stub can be injected.
 type EventEmitter func(name string, data ...interface{})
 
+// IMFileDeliveryFunc 通过 IM 管道发送文件给用户。
+// 当 Swarm 由 IM 消息触发时，此回调被设置，使 PDF 文档能直接通过 IM 发送。
+// 参数: b64Data(base64编码文件), fileName, mimeType, message(附带文本消息)
+type IMFileDeliveryFunc func(b64Data, fileName, mimeType, message string)
+
 // DefaultSwarmNotifier delivers notifications via the App's event system
 // (WebSocket push to the frontend) and writes structured log lines.
 type DefaultSwarmNotifier struct {
-	emit EventEmitter
+	emit           EventEmitter
+	imFileDelivery IMFileDeliveryFunc // 可选：IM 文件投递回调
+	imTextDelivery func(text string)  // 可选：IM 文本投递回调
 }
 
 // NewDefaultSwarmNotifier creates a notifier backed by the App infrastructure.
@@ -54,6 +65,13 @@ func NewDefaultSwarmNotifierWithEmitter(emit EventEmitter) *DefaultSwarmNotifier
 		emit = func(string, ...interface{}) {}
 	}
 	return &DefaultSwarmNotifier{emit: emit}
+}
+
+// SetIMDelivery 设置 IM 投递回调，使 Swarm 通知能通过 IM 管道发送。
+// 当 Swarm 由 IM 消息触发时调用此方法。
+func (n *DefaultSwarmNotifier) SetIMDelivery(fileFn IMFileDeliveryFunc, textFn func(string)) {
+	n.imFileDelivery = fileFn
+	n.imTextDelivery = textFn
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +132,7 @@ func (n *DefaultSwarmNotifier) NotifyFailure(run *SwarmRun, failType string, sum
 }
 
 // NotifyWaitingUser pushes a user-input-required event.
+// 如果设置了 IM 文本投递回调，同时通过 IM 发送提示消息。
 // Validates: Requirements 8.4
 func (n *DefaultSwarmNotifier) NotifyWaitingUser(run *SwarmRun, message string) error {
 	msg := formatWaitingUserMessage(run.ID, message)
@@ -124,6 +143,12 @@ func (n *DefaultSwarmNotifier) NotifyWaitingUser(run *SwarmRun, message string) 
 		"phase":   string(run.Phase),
 		"msg":     msg,
 	})
+
+	// 通过 IM 管道发送文本提示（如果已配置）
+	if n.imTextDelivery != nil {
+		n.imTextDelivery(message)
+	}
+
 	log.Printf("[SwarmNotifier] %s", msg)
 	return nil
 }
@@ -147,6 +172,29 @@ func (n *DefaultSwarmNotifier) NotifyRunComplete(run *SwarmRun, report *SwarmRep
 	}
 	n.emit("swarm:run_complete", payload)
 	log.Printf("[SwarmNotifier] %s", msg)
+	return nil
+}
+
+// NotifyDocumentForReview sends a PDF document to the user via the event
+// system. The frontend or IM bridge picks up the event and delivers the file.
+// 如果设置了 IM 投递回调，同时通过 IM 管道发送文件。
+func (n *DefaultSwarmNotifier) NotifyDocumentForReview(run *SwarmRun, b64Data, fileName, mimeType, message string) error {
+	// 通过 Wails 事件系统推送到前端
+	n.emit("swarm:document_review", map[string]interface{}{
+		"run_id":    run.ID,
+		"file_data": b64Data,
+		"file_name": fileName,
+		"mime_type": mimeType,
+		"message":   message,
+		"phase":     string(run.Phase),
+	})
+
+	// 通过 IM 管道直接发送文件（如果已配置）
+	if n.imFileDelivery != nil {
+		n.imFileDelivery(b64Data, fileName, mimeType, message)
+	}
+
+	log.Printf("[SwarmNotifier] [Swarm %s] 发送审阅文档: %s (%d bytes)", run.ID, fileName, len(b64Data))
 	return nil
 }
 
@@ -221,3 +269,6 @@ func (n *NoopSwarmNotifier) NotifyAgentComplete(*SwarmRun, *SwarmAgent) error { 
 func (n *NoopSwarmNotifier) NotifyFailure(*SwarmRun, string, string) error    { return nil }
 func (n *NoopSwarmNotifier) NotifyWaitingUser(*SwarmRun, string) error        { return nil }
 func (n *NoopSwarmNotifier) NotifyRunComplete(*SwarmRun, *SwarmReport) error  { return nil }
+func (n *NoopSwarmNotifier) NotifyDocumentForReview(*SwarmRun, string, string, string, string) error {
+	return nil
+}

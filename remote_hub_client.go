@@ -888,6 +888,29 @@ func (c *RemoteHubClient) SendIMProactiveMessage(text string) error {
 	return c.conn.WriteJSON(msg)
 }
 
+// SendIMProactiveFile sends a proactive file (non-request-based) to the Hub
+// for delivery to the user's IM channels. Used for Swarm PDF document delivery.
+func (c *RemoteHubClient) SendIMProactiveFile(b64Data, fileName, mimeType, message string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return nil
+	}
+
+	msg := HubEnvelope{
+		Type:      "im.proactive_file",
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload: map[string]interface{}{
+			"file_data": b64Data,
+			"file_name": fileName,
+			"mime_type": mimeType,
+			"message":   message,
+		},
+	}
+	return c.conn.WriteJSON(msg)
+}
+
 func (c *RemoteHubClient) storeHubError(payload json.RawMessage) {
 	var body struct {
 		Message string `json:"message"`

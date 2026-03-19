@@ -20,29 +20,22 @@ const (
 	clawnetGitHubReleasesBase = "https://github.com/ChatChatTech/ClawNet/releases/latest/download"
 )
 
+// supportedOS lists the operating systems for which prebuilt binaries exist.
+var supportedOS = map[string]bool{"windows": true, "darwin": true, "linux": true}
+
+// supportedArch lists the architectures for which prebuilt binaries exist.
+var supportedArch = map[string]bool{"amd64": true, "arm64": true}
+
 // clawnetAssetName returns the expected release asset filename for the current platform.
 // Pattern: clawnet-{os}-{arch}[.exe]
 func clawnetAssetName() (string, error) {
-	var osName, archName string
-	switch runtime.GOOS {
-	case "windows":
-		osName = "windows"
-	case "darwin":
-		osName = "darwin"
-	case "linux":
-		osName = "linux"
-	default:
+	if !supportedOS[runtime.GOOS] {
 		return "", fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
-	switch runtime.GOARCH {
-	case "amd64":
-		archName = "amd64"
-	case "arm64":
-		archName = "arm64"
-	default:
+	if !supportedArch[runtime.GOARCH] {
 		return "", fmt.Errorf("unsupported arch: %s", runtime.GOARCH)
 	}
-	name := fmt.Sprintf("clawnet-%s-%s", osName, archName)
+	name := fmt.Sprintf("clawnet-%s-%s", runtime.GOOS, runtime.GOARCH)
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
@@ -153,7 +146,10 @@ func DownloadClawNet(emitProgress func(stage string, pct int, msg string)) (stri
 		os.Remove(tmpPath)
 		return "", fmt.Errorf("sync error: %w", err)
 	}
-	outFile.Close()
+	if err := outFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("close error: %w", err)
+	}
 
 	// Remove old binary if present, then rename temp → final.
 	os.Remove(targetPath)

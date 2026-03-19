@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -81,5 +82,28 @@ func (a *App) ensureSwarmOrchestrator() {
 			notifier,
 			llmCfg,
 		)
+		// 自动接入 IM 文件投递：如果 Hub 已连接，Swarm 文档可通过 IM 发送
+		a.wireSwarmIMDelivery()
 	})
+}
+
+// wireSwarmIMDelivery 将 Swarm 通知接入 IM 管道，使 PDF 文档能通过 IM 发送给用户。
+func (a *App) wireSwarmIMDelivery() {
+	if a.swarmOrchestrator == nil {
+		return
+	}
+	hc := a.hubClient()
+	if hc == nil {
+		return
+	}
+	a.swarmOrchestrator.SetIMDelivery(
+		func(b64Data, fileName, mimeType, message string) {
+			if err := hc.SendIMProactiveFile(b64Data, fileName, mimeType, message); err != nil {
+				log.Printf("[SwarmIMDelivery] 发送 PDF 到 IM 失败: %v", err)
+			}
+		},
+		func(text string) {
+			_ = hc.SendIMProactiveMessage(text)
+		},
+	)
 }

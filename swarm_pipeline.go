@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -9,7 +10,10 @@ import (
 )
 
 // runMaintenance executes the Maintenance mode pipeline:
-// task_split → conflict_detect → development → merge → compile → test → feedback → document → report
+// requirements(lite) → task_split → conflict_detect → development → merge → compile → test → feedback → document → report
+//
+// The requirements phase is lighter than greenfield — it enriches parsed tasks
+// with acceptance criteria rather than generating a full requirements document.
 func (o *SwarmOrchestrator) runMaintenance(run *SwarmRun, req SwarmRunRequest, maxAgents int) error {
 	// Phase 1: Task Split (parse task list)
 	o.setPhase(run, PhaseTaskSplit)
@@ -23,6 +27,9 @@ func (o *SwarmOrchestrator) runMaintenance(run *SwarmRun, req SwarmRunRequest, m
 	if err != nil {
 		return fmt.Errorf("parse task list: %w", err)
 	}
+
+	// 为维护模式的任务补充验收标准
+	tasks = o.enrichTasksWithCriteria(tasks)
 	run.Tasks = tasks
 
 	// Phase 2: Conflict Detection
@@ -246,6 +253,35 @@ func (o *SwarmOrchestrator) runSingleAgent(run *SwarmRun, role AgentRole, taskIn
 			}
 		}
 	}
+}
+
+// enrichTasksWithCriteria uses the LLM to generate acceptance criteria for
+// maintenance-mode tasks that were parsed from plain text and lack criteria.
+func (o *SwarmOrchestrator) enrichTasksWithCriteria(tasks []SubTask) []SubTask {
+	for i := range tasks {
+		if len(tasks[i].AcceptanceCriteria) > 0 {
+			continue // already has criteria
+		}
+		prompt := fmt.Sprintf(`为以下开发任务生成 2-4 条简洁的验收标准。每条标准必须是具体可验证的。
+
+任务描述：%s
+
+只返回 JSON 数组（字符串数组），不要其他内容。例如：["条件1","条件2"]`, tasks[i].Description)
+
+		body, err := swarmCallLLM(o.llmConfig, prompt, 0.2, 30*time.Second)
+		if err != nil {
+			log.Printf("[SwarmOrchestrator] enrich criteria for task %d failed: %v", i, err)
+			continue
+		}
+		var criteria []string
+		cleaned := extractJSON(body)
+		if err := json.Unmarshal(cleaned, &criteria); err != nil {
+			log.Printf("[SwarmOrchestrator] parse criteria for task %d failed: %v", i, err)
+			continue
+		}
+		tasks[i].AcceptanceCriteria = criteria
+	}
+	return tasks
 }
 
 // runMergePhase collects all developer branches and merges them.

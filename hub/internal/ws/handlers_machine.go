@@ -74,6 +74,8 @@ type IMAgentResponseHandler interface {
 // Used for scheduled task notifications and other non-request-based messages.
 type IMProactiveSender interface {
 	SendProactiveMessage(ctx context.Context, userID, text string) error
+	// SendProactiveFile sends a file to the user's IM channels (e.g. Swarm PDF documents).
+	SendProactiveFile(ctx context.Context, userID, b64Data, fileName, mimeType, message string) error
 }
 
 type Gateway struct {
@@ -265,6 +267,10 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "im.proactive_message":
 			if err := g.handleIMProactiveMessage(ctx, msg); err != nil {
+				return
+			}
+		case "im.proactive_file":
+			if err := g.handleIMProactiveFile(ctx, msg); err != nil {
 				return
 			}
 		default:
@@ -868,6 +874,35 @@ func (g *Gateway) handleIMProactiveMessage(ctx *ConnContext, msg Envelope) error
 	}
 	if err := g.IMProactive.SendProactiveMessage(context.Background(), ctx.UserID, payload.Text); err != nil {
 		log.Printf("[ws] handleIMProactiveMessage: send failed for user_id=%s: %v", ctx.UserID, err)
+	}
+	return nil
+}
+
+// handleIMProactiveFile handles im.proactive_file from a MaClaw client.
+// Used for Swarm PDF document delivery to the user's IM channels.
+func (g *Gateway) handleIMProactiveFile(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+	}
+	if g.IMProactive == nil {
+		log.Printf("[ws] handleIMProactiveFile: no IMProactiveSender configured, dropping message")
+		return nil
+	}
+	var payload struct {
+		FileData string `json:"file_data"`
+		FileName string `json:"file_name"`
+		MimeType string `json:"mime_type"`
+		Message  string `json:"message"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[ws] handleIMProactiveFile: parse error: %v", err)
+		return nil
+	}
+	if payload.FileData == "" || payload.FileName == "" {
+		return nil
+	}
+	if err := g.IMProactive.SendProactiveFile(context.Background(), ctx.UserID, payload.FileData, payload.FileName, payload.MimeType, payload.Message); err != nil {
+		log.Printf("[ws] handleIMProactiveFile: send failed for user_id=%s: %v", ctx.UserID, err)
 	}
 	return nil
 }
