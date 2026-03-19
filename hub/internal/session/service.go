@@ -59,6 +59,7 @@ type SessionCacheEntry struct {
 	MachineID     string
 	UserID        string
 	ExecutionMode string
+	Source        string
 	Summary       SessionSummary
 	Preview       SessionPreview
 	RecentEvents  []ImportantEvent
@@ -174,12 +175,14 @@ func (s *Service) OnSessionCreated(ctx context.Context, machineID, userID, sessi
 	projectPath, _ := payload["project_path"].(string)
 	status, _ := payload["status"].(string)
 	executionMode, _ := payload["execution_mode"].(string)
+	source, _ := payload["source"].(string)
 
 	entry := &SessionCacheEntry{
 		SessionID:     sessionID,
 		MachineID:     machineID,
 		UserID:        userID,
 		ExecutionMode: executionMode,
+		Source:        source,
 		Summary: SessionSummary{
 			SessionID: sessionID,
 			MachineID: machineID,
@@ -414,6 +417,19 @@ func (s *Service) ListByMachine(ctx context.Context, userID, machineID string) (
 		}
 	}
 	return out, nil
+}
+
+// ListAll returns all cached sessions across all machines, including
+// terminal sessions. Used by the admin remote sessions overview.
+func (s *Service) ListAll() []*SessionCacheEntry {
+	s.cache.mu.RLock()
+	defer s.cache.mu.RUnlock()
+
+	out := make([]*SessionCacheEntry, 0, len(s.cache.sessions))
+	for _, entry := range s.cache.sessions {
+		out = append(out, cloneSessionCacheEntry(entry))
+	}
+	return out
 }
 
 func (s *Service) ensureEntry(machineID, userID, sessionID string) *SessionCacheEntry {

@@ -2150,6 +2150,7 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 
 	view, err := h.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
 		Tool: tool, ProjectPath: projectPath, Provider: resolvedProvider,
+		LaunchSource: RemoteLaunchSourceAI,
 	})
 	if err != nil {
 		errMsg := fmt.Sprintf("❌ 创建会话失败: %s", err.Error())

@@ -40,10 +40,16 @@ const getStatusBadge = (status?: string): { label: string; bg: string; color: st
 };
 
 const getLaunchSourceTag = (source?: string): { label: string; bg: string; color: string } => {
+    if (source === "ai") return { label: "🤖 AI", bg: "#f0e6ff", color: "#6b21a8" };
     if (source === "mobile") return { label: "📱 手机", bg: colors.successBg, color: "#276749" };
     if (source === "handoff") return { label: "🔀 转远程", bg: "#f3f0ff", color: "#553c9a" };
     return { label: "☁️ 远程", bg: colors.bg, color: colors.textSecondary };
 };
+
+const isAISession = (s: RemoteSessionView) => (s.launch_source || "") === "ai";
+
+const isLiveSession = (s: RemoteSessionView) =>
+    !terminalStatuses.has(String(s.status || s.summary?.status || "").toLowerCase());
 
 export function RemoteSessionList(props: Props) {
     const {
@@ -58,15 +64,22 @@ export function RemoteSessionList(props: Props) {
         formatText,
     } = props;
 
+    const [sessionTab, setSessionTab] = useState<"human" | "ai">("human");
     const [showHistory, setShowHistory] = useState(false);
     const [hiddenSessionIds, setHiddenSessionIds] = useState<string[]>([]);
     const [consoleSessionId, setConsoleSessionId] = useState<string | null>(null);
     const [previewSessionIds, setPreviewSessionIds] = useState<Set<string>>(new Set());
 
-    const visibleSessions = useMemo(
-        () => remoteSessions.filter((s) => !hiddenSessionIds.includes(s.id)),
+    const humanSessions = useMemo(
+        () => remoteSessions.filter((s) => !isAISession(s) && !hiddenSessionIds.includes(s.id)),
         [remoteSessions, hiddenSessionIds],
     );
+    const aiSessions = useMemo(
+        () => remoteSessions.filter((s) => isAISession(s) && !hiddenSessionIds.includes(s.id)),
+        [remoteSessions, hiddenSessionIds],
+    );
+
+    const visibleSessions = sessionTab === "ai" ? aiSessions : humanSessions;
 
     const liveSessions = visibleSessions.filter((s) => {
         const st = String(s.status || s.summary?.status || "").toLowerCase();
@@ -149,7 +162,7 @@ export function RemoteSessionList(props: Props) {
         lineHeight: 1,
     };
 
-    const renderTable = (sessions: RemoteSessionView[], muted = false) => (
+    const renderTable = (sessions: RemoteSessionView[], muted = false, isAITab = false) => (
         <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
             <colgroup>
                 <col style={{ width: "24%" }} />
@@ -221,27 +234,40 @@ export function RemoteSessionList(props: Props) {
                                             <>
                                                 <button
                                                     style={{ ...iconBtnStyle, color: colors.primary }}
-                                                    title="打开控制台"
+                                                    title={isAITab ? "查看终端" : "打开控制台"}
                                                     onClick={() => setConsoleSessionId(session.id)}
                                                 >
                                                     🖥
                                                 </button>
-                                                <button
-                                                    style={{ ...iconBtnStyle, color: colors.warning }}
-                                                    title="中断实例"
-                                                    onClick={() => handleInterrupt(session.id)}
-                                                >
-                                                    ⏸
-                                                </button>
+                                                {!isAITab && (
+                                                    <button
+                                                        style={{ ...iconBtnStyle, color: colors.warning }}
+                                                        title="中断实例"
+                                                        onClick={() => handleInterrupt(session.id)}
+                                                    >
+                                                        ⏸
+                                                    </button>
+                                                )}
                                             </>
                                         )}
-                                        <button
-                                            style={{ ...iconBtnStyle, color: colors.danger }}
-                                            title={isTerminal ? "移除" : "停止实例"}
-                                            onClick={() => isTerminal ? hideSession(session.id) : handleKill(session.id)}
-                                        >
-                                            {isTerminal ? "✕" : "⏹"}
-                                        </button>
+                                        {!isAITab && (
+                                            <button
+                                                style={{ ...iconBtnStyle, color: colors.danger }}
+                                                title={isTerminal ? "移除" : "停止实例"}
+                                                onClick={() => isTerminal ? hideSession(session.id) : handleKill(session.id)}
+                                            >
+                                                {isTerminal ? "✕" : "⏹"}
+                                            </button>
+                                        )}
+                                        {isAITab && isTerminal && (
+                                            <button
+                                                style={{ ...iconBtnStyle, color: colors.textMuted }}
+                                                title="移除"
+                                                onClick={() => hideSession(session.id)}
+                                            >
+                                                ✕
+                                            </button>
+                                        )}
                                     </div>
                                 </td>
                             </tr>
@@ -313,34 +339,84 @@ export function RemoteSessionList(props: Props) {
         </table>
     );
 
+    const isAITab = sessionTab === "ai";
+    const humanLiveCount = useMemo(() => humanSessions.filter(isLiveSession).length, [humanSessions]);
+    const aiLiveCount = useMemo(() => aiSessions.filter(isLiveSession).length, [aiSessions]);
+
     return (
         <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, background: colors.surface, overflow: "hidden" }}>
-            {/* Header */}
-            <div style={{ padding: "12px 14px 8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ fontSize: "0.84rem", fontWeight: 600, color: colors.text }}>
-                    远程实例管理
-                    <span style={{ fontSize: "0.72rem", fontWeight: 400, color: colors.textMuted, marginLeft: "8px" }}>
-                        运行 {liveSessions.length} · 历史 {historySessions.length}
-                    </span>
-                </div>
-                {historySessions.length > 0 && (
+            {/* Header with tabs */}
+            <div style={{ padding: "12px 14px 0" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0", borderBottom: `1px solid ${colors.border}` }}>
                     <button
-                        className="btn-link"
-                        style={{ fontSize: "0.72rem" }}
-                        onClick={() => setShowHistory((v) => !v)}
+                        onClick={() => { setSessionTab("human"); setShowHistory(false); }}
+                        style={{
+                            border: "none",
+                            background: sessionTab === "human" ? colors.surface : "transparent",
+                            borderBottom: sessionTab === "human" ? `2px solid ${colors.primary}` : "2px solid transparent",
+                            padding: "8px 16px",
+                            fontSize: "0.8rem",
+                            fontWeight: sessionTab === "human" ? 700 : 500,
+                            color: sessionTab === "human" ? colors.primary : colors.textMuted,
+                            cursor: "pointer",
+                            transition: "all 0.15s",
+                        }}
                     >
-                        {showHistory ? "隐藏历史" : `查看历史 (${historySessions.length})`}
+                        👤 人类
+                        {humanLiveCount > 0 && (
+                            <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: "#eef2ff", color: "#4338ca", padding: "1px 6px", borderRadius: "999px" }}>
+                                {humanLiveCount}
+                            </span>
+                        )}
                     </button>
-                )}
+                    <button
+                        onClick={() => { setSessionTab("ai"); setShowHistory(false); }}
+                        style={{
+                            border: "none",
+                            background: sessionTab === "ai" ? colors.surface : "transparent",
+                            borderBottom: sessionTab === "ai" ? `2px solid #7c3aed` : "2px solid transparent",
+                            padding: "8px 16px",
+                            fontSize: "0.8rem",
+                            fontWeight: sessionTab === "ai" ? 700 : 500,
+                            color: sessionTab === "ai" ? "#7c3aed" : colors.textMuted,
+                            cursor: "pointer",
+                            transition: "all 0.15s",
+                        }}
+                    >
+                        🤖 AI
+                        {aiLiveCount > 0 && (
+                            <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: "#f0e6ff", color: "#6b21a8", padding: "1px 6px", borderRadius: "999px" }}>
+                                {aiLiveCount}
+                            </span>
+                        )}
+                    </button>
+                    <div style={{ flex: 1 }} />
+                    {historySessions.length > 0 && (
+                        <button
+                            className="btn-link"
+                            style={{ fontSize: "0.72rem", marginBottom: "4px" }}
+                            onClick={() => setShowHistory((v) => !v)}
+                        >
+                            {showHistory ? "隐藏历史" : `查看历史 (${historySessions.length})`}
+                        </button>
+                    )}
+                </div>
             </div>
+
+            {/* Subtitle for AI tab */}
+            {isAITab && (
+                <div style={{ padding: "6px 14px 0", fontSize: "0.7rem", color: colors.textMuted }}>
+                    MaClaw 创建的编程工具进程 — 仅监控，不可操作
+                </div>
+            )}
 
             {/* Live sessions */}
             {liveSessions.length === 0 && !showHistory ? (
                 <div style={{ padding: "20px 14px", textAlign: "center", fontSize: "0.76rem", color: colors.textMuted }}>
-                    当前没有运行中的远程实例
+                    {isAITab ? "当前没有运行中的 AI 进程" : "当前没有运行中的远程实例"}
                 </div>
             ) : (
-                liveSessions.length > 0 && renderTable(liveSessions)
+                liveSessions.length > 0 && renderTable(liveSessions, false, isAITab)
             )}
 
             {/* History sessions */}
@@ -349,7 +425,7 @@ export function RemoteSessionList(props: Props) {
                     <div style={{ padding: "8px 14px 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 500 }}>
                         已结束
                     </div>
-                    {renderTable(historySessions, true)}
+                    {renderTable(historySessions, true, isAITab)}
                 </div>
             )}
 
@@ -357,6 +433,7 @@ export function RemoteSessionList(props: Props) {
             {consoleSessionId && (() => {
                 const session = remoteSessions.find((s) => s.id === consoleSessionId);
                 if (!session) return null;
+                const isAIConsole = isAISession(session);
                 return (
                     <RemoteSessionConsole
                         session={session}
@@ -365,6 +442,7 @@ export function RemoteSessionList(props: Props) {
                         killRemoteSession={killRemoteSession}
                         refreshSessionsOnly={refreshSessionsOnly}
                         onClose={() => setConsoleSessionId(null)}
+                        readOnly={isAIConsole}
                     />
                 );
             })()}

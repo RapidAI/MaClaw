@@ -159,8 +159,9 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 	}
 
 	view, err := o.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-		Tool:        tr.Tool,
-		ProjectPath: tr.ProjectPath,
+		Tool:         tr.Tool,
+		ProjectPath:  tr.ProjectPath,
+		LaunchSource: RemoteLaunchSourceAI,
 	})
 	if err != nil {
 		sr.Status = "failed"

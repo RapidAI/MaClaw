@@ -3584,31 +3584,7 @@ ${instruction}`;
                                     formatText={formatText}
                                     localizeText={localizeText}
                                 />
-                                <div className="settings-panel" style={{ marginTop: '12px' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-                                        <div>
-                                            <div className="settings-panel-title" style={{ marginBottom: '6px' }}>
-                                                {lang === 'zh-Hans' ? '远程接入' : lang === 'zh-Hant' ? '遠端接入' : 'Remote Access'}
-                                            </div>
-                                            <div className="settings-panel-desc">
-                                                {localizeText(
-                                                    "Register this device and adjust Hub settings in Settings.",
-                                                    "如需注册当前设备或修改 Hub 配置，请进入设置中的远程标签。",
-                                                    "如需註冊目前裝置或修改 Hub 設定，請進入設定中的遠端分頁。"
-                                                )}
-                                            </div>
-                                        </div>
-                                        <button
-                                            className="btn-primary"
-                                            onClick={() => {
-                                                switchTool('settings');
-                                                setSettingsTab('remote');
-                                            }}
-                                        >
-                                            {lang === 'zh-Hans' ? '移动端注册' : lang === 'zh-Hant' ? '行動端註冊' : 'Register Remote'}
-                                        </button>
-                                    </div>
-                                </div>
+
                             </div>
                         </div>
                     )}

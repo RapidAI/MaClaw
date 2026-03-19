@@ -127,6 +127,45 @@ func DebugListSessionsHandler(svc *session.Service) http.HandlerFunc {
 	}
 }
 
+// AdminListAllSessionsHandler returns all cached sessions across all machines.
+// Each entry includes a "source" field ("ai", "desktop", "mobile", "handoff")
+// so the admin UI can split them into AI vs Human tabs.
+func AdminListAllSessionsHandler(svc *session.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items := svc.ListAll()
+		type sessionItem struct {
+			SessionID     string                  `json:"session_id"`
+			MachineID     string                  `json:"machine_id"`
+			UserID        string                  `json:"user_id"`
+			Source        string                  `json:"source"`
+			ExecutionMode string                  `json:"execution_mode"`
+			Summary       session.SessionSummary  `json:"summary"`
+			Preview       session.SessionPreview  `json:"preview"`
+			RecentEvents  []session.ImportantEvent `json:"recent_events"`
+			HostOnline    bool                    `json:"host_online"`
+			UpdatedAt     int64                   `json:"updated_at"`
+		}
+		out := make([]sessionItem, 0, len(items))
+		for _, item := range items {
+			out = append(out, sessionItem{
+				SessionID:     item.SessionID,
+				MachineID:     item.MachineID,
+				UserID:        item.UserID,
+				Source:        item.Source,
+				ExecutionMode: item.ExecutionMode,
+				Summary:       item.Summary,
+				Preview:       item.Preview,
+				RecentEvents:  item.RecentEvents,
+				HostOnline:    item.HostOnline,
+				UpdatedAt:     item.UpdatedAt.Unix(),
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"sessions": out,
+		})
+	}
+}
+
 func DebugGetSessionHandler(svc *session.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		machineID := strings.TrimSpace(r.URL.Query().Get("machine_id"))
@@ -147,6 +186,7 @@ func DebugGetSessionHandler(svc *session.Service) http.HandlerFunc {
 			"session_id":    item.SessionID,
 			"machine_id":    item.MachineID,
 			"user_id":       item.UserID,
+			"source":        item.Source,
 			"summary":       item.Summary,
 			"preview":       item.Preview,
 			"recent_events": item.RecentEvents,

@@ -19,14 +19,15 @@ type RemoteLaunchProject struct {
 }
 
 type RemoteStartSessionRequest struct {
-	Tool        string `json:"tool"`
-	ProjectID   string `json:"project_id,omitempty"`
-	ProjectPath string `json:"project_path,omitempty"`
-	Provider    string `json:"provider,omitempty"`
-	UseProxy    *bool  `json:"use_proxy,omitempty"`
-	YoloMode    *bool  `json:"yolo_mode,omitempty"`
-	AdminMode   *bool  `json:"admin_mode,omitempty"`
-	PythonEnv   string `json:"python_env,omitempty"`
+	Tool         string             `json:"tool"`
+	ProjectID    string             `json:"project_id,omitempty"`
+	ProjectPath  string             `json:"project_path,omitempty"`
+	Provider     string             `json:"provider,omitempty"`
+	UseProxy     *bool              `json:"use_proxy,omitempty"`
+	YoloMode     *bool              `json:"yolo_mode,omitempty"`
+	AdminMode    *bool              `json:"admin_mode,omitempty"`
+	PythonEnv    string             `json:"python_env,omitempty"`
+	LaunchSource RemoteLaunchSource `json:"launch_source,omitempty"`
 }
 
 func (a *App) ListRemoteLaunchProjects() ([]RemoteLaunchProject, error) {
@@ -62,7 +63,7 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
-	if !cfg.RemoteEnabled {
+	if !cfg.RemoteEnabled && normalizeRemoteLaunchSource(req.LaunchSource) == RemoteLaunchSourceDesktop {
 		return RemoteSessionView{}, fmt.Errorf("remote mode is disabled")
 	}
 
@@ -115,6 +116,9 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 		return RemoteSessionView{}, err
 	}
 	spec.LaunchSource = RemoteLaunchSourceMobile
+	if req.LaunchSource != "" {
+		spec.LaunchSource = req.LaunchSource
+	}
 
 	session, err := a.remoteSessions.Create(spec)
 	if err != nil && session == nil {

@@ -52,9 +52,9 @@ export function GetLastRemoteSmokeReport():Promise<any>;
 
 export function StartRemoteClaudeSession(arg1:string,arg2:boolean):Promise<any>;
 
-export function StartRemoteSession(arg1:string,arg2:string,arg3:boolean,arg4:string):Promise<any>;
+export function StartRemoteSession(arg1:string,arg2:string,arg3:boolean,arg4:string,arg5:string):Promise<any>;
 
-export function StartRemoteHandoffSession(arg1:string,arg2:string,arg3:boolean,arg4:string):Promise<any>;
+export function StartRemoteHandoffSession(arg1:string,arg2:string,arg3:boolean,arg4:string,arg5:string):Promise<any>;
 
 export function ListValidProviders(arg1:string):Promise<any>;
 

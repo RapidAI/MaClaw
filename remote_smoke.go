@@ -182,7 +182,7 @@ func runRemoteSmoke(app *App, args []string) int {
 	}
 
 	if *doStart {
-		session, err := app.StartRemoteSession(*toolName, *projectDir, *useProxy, "")
+		session, err := app.StartRemoteSession(*toolName, *projectDir, *useProxy, "", RemoteLaunchSourceDesktop)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "remote-smoke: start failed: %v\n", err)
 			report.Phase = "start_failed"

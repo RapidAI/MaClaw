@@ -352,8 +352,9 @@ func (e *SkillExecutor) executeStep(step NLSkillStep) (string, error) {
 			return "", fmt.Errorf("missing tool parameter")
 		}
 		view, err := e.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-			Tool:        tool,
-			ProjectPath: projectPath,
+			Tool:         tool,
+			ProjectPath:  projectPath,
+			LaunchSource: RemoteLaunchSourceAI,
 		})
 		if err != nil {
 			return "", err

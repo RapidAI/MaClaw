@@ -440,7 +440,7 @@ func TestStartRemoteSessionSupportsCodex(t *testing.T) {
 		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(99)}, nil
 	}
 
-	session, err := app.StartRemoteSession("codex", projectDir, false, "")
+	session, err := app.StartRemoteSession("codex", projectDir, false, "", RemoteLaunchSourceDesktop)
 	if err != nil {
 		t.Fatalf("StartRemoteSession(codex) error = %v", err)
 	}
@@ -527,7 +527,7 @@ func TestStartRemoteSessionSupportsOpencode(t *testing.T) {
 		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(100)}, nil
 	}
 
-	session, err := app.StartRemoteSession("opencode", projectDir, false, "")
+	session, err := app.StartRemoteSession("opencode", projectDir, false, "", RemoteLaunchSourceDesktop)
 	if err != nil {
 		t.Fatalf("StartRemoteSession(opencode) error = %v", err)
 	}
@@ -614,7 +614,7 @@ func TestStartRemoteSessionSupportsIFlow(t *testing.T) {
 		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(101)}, nil
 	}
 
-	session, err := app.StartRemoteSession("iflow", projectDir, false, "")
+	session, err := app.StartRemoteSession("iflow", projectDir, false, "", RemoteLaunchSourceDesktop)
 	if err != nil {
 		t.Fatalf("StartRemoteSession(iflow) error = %v", err)
 	}
@@ -701,7 +701,7 @@ func TestStartRemoteSessionSupportsKilo(t *testing.T) {
 		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(102)}, nil
 	}
 
-	session, err := app.StartRemoteSession("kilo", projectDir, false, "")
+	session, err := app.StartRemoteSession("kilo", projectDir, false, "", RemoteLaunchSourceDesktop)
 	if err != nil {
 		t.Fatalf("StartRemoteSession(kilo) error = %v", err)
 	}

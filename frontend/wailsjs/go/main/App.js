@@ -102,12 +102,12 @@ export function StartRemoteClaudeSession(arg1, arg2) {
   return window['go']['main']['App']['StartRemoteClaudeSession'](arg1, arg2);
 }
 
-export function StartRemoteSession(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['StartRemoteSession'](arg1, arg2, arg3, arg4);
+export function StartRemoteSession(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['StartRemoteSession'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function StartRemoteHandoffSession(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['StartRemoteHandoffSession'](arg1, arg2, arg3, arg4);
+export function StartRemoteHandoffSession(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['StartRemoteHandoffSession'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function ListValidProviders(arg1) {

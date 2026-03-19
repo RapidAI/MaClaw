@@ -9,6 +9,7 @@ type Props = {
     killRemoteSession: (sessionID: string) => Promise<void>;
     refreshSessionsOnly: () => Promise<void>;
     onClose: () => void;
+    readOnly?: boolean;
 };
 
 const TERMINAL_STATUSES = new Set([
@@ -286,6 +287,7 @@ export function RemoteSessionConsole(props: Props) {
         killRemoteSession,
         refreshSessionsOnly,
         onClose,
+        readOnly = false,
     } = props;
 
     const [sending, setSending] = useState(false);
@@ -791,22 +793,26 @@ export function RemoteSessionConsole(props: Props) {
                         title="清屏">
                         ⌧
                     </button>
-                    {!isSDK && (
+                    {!readOnly && !isSDK && (
                         <button onClick={handleEsc} disabled={sessionClosed}
                             style={actionBtnStyle} title="Escape">
                             Esc
                         </button>
                     )}
-                    <button onClick={handleCtrlC} disabled={sessionClosed}
-                        style={{ ...actionBtnStyle, color: "#e8a838" }}
-                        title={isSDK ? "中断" : "Ctrl+C"}>
-                        {isSDK ? "⏸" : "⌃C"}
-                    </button>
-                    <button onClick={handleKill} disabled={sessionClosed}
-                        style={{ ...actionBtnStyle, color: "#f44747" }}
-                        title="终止">
-                        Kill
-                    </button>
+                    {!readOnly && (
+                        <button onClick={handleCtrlC} disabled={sessionClosed}
+                            style={{ ...actionBtnStyle, color: "#e8a838" }}
+                            title={isSDK ? "中断" : "Ctrl+C"}>
+                            {isSDK ? "⏸" : "⌃C"}
+                        </button>
+                    )}
+                    {!readOnly && (
+                        <button onClick={handleKill} disabled={sessionClosed}
+                            style={{ ...actionBtnStyle, color: "#f44747" }}
+                            title="终止">
+                            Kill
+                        </button>
+                    )}
                     <button onClick={onClose}
                         style={{ ...actionBtnStyle, color: "#ccc", fontSize: "14px", padding: "0 8px" }}
                         title="关闭">
@@ -844,6 +850,7 @@ export function RemoteSessionConsole(props: Props) {
             )}
 
             {/* ── Input bar ── */}
+            {!readOnly && (
             <div style={inputBarStyle}>
                 <span style={promptStyle}>❯</span>
                 <input
@@ -906,6 +913,14 @@ export function RemoteSessionConsole(props: Props) {
                     {sending ? "…" : "⏎"}
                 </button>
             </div>
+            )}
+            {readOnly && (
+                <div style={{ ...inputBarStyle, justifyContent: "center" }}>
+                    <span style={{ color: "#6a6a6a", fontSize: "11px", fontFamily: "Consolas, monospace" }}>
+                        🔒 AI 进程监控模式 — 仅查看
+                    </span>
+                </div>
+            )}
         </div>
     );
 }

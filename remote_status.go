@@ -362,7 +362,7 @@ func (a *App) RunRemoteToolSmoke(toolName, projectDir string, useProxy bool) (Re
 		return report, fmt.Errorf("%s launch probe failed: %s", toolName, launchProbe.Message)
 	}
 
-	session, err := a.StartRemoteSession(toolName, projectDir, useProxy, "")
+	session, err := a.StartRemoteSession(toolName, projectDir, useProxy, "", RemoteLaunchSourceDesktop)
 	report.StartedSession = &session
 	if err != nil {
 		return report, err
@@ -396,15 +396,15 @@ func (a *App) ListRemoteSessions() []RemoteSessionView {
 }
 
 func (a *App) StartRemoteClaudeSession(projectDir string, useProxy bool) (RemoteSessionView, error) {
-	return a.StartRemoteSession("claude", projectDir, useProxy, "")
+	return a.StartRemoteSession("claude", projectDir, useProxy, "", RemoteLaunchSourceDesktop)
 }
 
-func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, provider string) (RemoteSessionView, error) {
+func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
-	if !cfg.RemoteEnabled {
+	if !cfg.RemoteEnabled && normalizeRemoteLaunchSource(launchSource) == RemoteLaunchSourceDesktop {
 		return RemoteSessionView{}, fmt.Errorf("remote mode is disabled")
 	}
 
@@ -432,6 +432,7 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
+	spec.LaunchSource = launchSource
 
 	session, err := a.remoteSessions.Create(spec)
 	if err != nil && session == nil {
@@ -445,12 +446,12 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 	return toRemoteSessionView(session), err
 }
 
-func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bool, provider string) (RemoteSessionView, error) {
+func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
-	if !cfg.RemoteEnabled {
+	if !cfg.RemoteEnabled && normalizeRemoteLaunchSource(launchSource) == RemoteLaunchSourceDesktop {
 		return RemoteSessionView{}, fmt.Errorf("remote mode is disabled")
 	}
 
@@ -478,7 +479,7 @@ func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bo
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
-	spec.LaunchSource = RemoteLaunchSourceHandoff
+	spec.LaunchSource = launchSource
 
 	session, err := a.remoteSessions.Create(spec)
 	if err != nil && session == nil {

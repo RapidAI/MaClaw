@@ -378,7 +378,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         }
         setRemoteBusy("start-session");
         try {
-            await StartRemoteSession(selectedRemoteTool, projectDir, getUseProxy(), selectedProvider);
+            await StartRemoteSession(selectedRemoteTool, projectDir, getUseProxy(), selectedProvider, "desktop");
             await refreshRemotePanel();
             showToastMessage(formatText("remoteStartTool", { tool: getRemoteToolLabel(selectedRemoteTool) }), 3000);
         } catch (err) {
@@ -412,9 +412,9 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         setRemoteBusy("quick-start");
         try {
             if (launchSource === "handoff") {
-                await StartRemoteHandoffSession(tool, projectDir, getUseProxy(), selectedProvider);
+                await StartRemoteHandoffSession(tool, projectDir, getUseProxy(), selectedProvider, "handoff");
             } else {
-                await StartRemoteSession(tool, projectDir, getUseProxy(), selectedProvider);
+                await StartRemoteSession(tool, projectDir, getUseProxy(), selectedProvider, "desktop");
             }
             await refreshRemotePanel();
             showToastMessage(formatText("remoteStartTool", { tool: getRemoteToolLabel(tool) }), 3000);

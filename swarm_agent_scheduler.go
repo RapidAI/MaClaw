@@ -57,8 +57,9 @@ func (o *SwarmOrchestrator) createAgent(
 	}
 
 	spec := LaunchSpec{
-		Tool:        tool,
-		ProjectPath: worktreePath,
+		Tool:         tool,
+		ProjectPath:  worktreePath,
+		LaunchSource: RemoteLaunchSourceAI,
 		Env: map[string]string{
 			"SWARM_SYSTEM_PROMPT": prompt,
 			"SWARM_ROLE":         string(role),

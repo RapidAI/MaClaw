@@ -21,11 +21,12 @@ const (
 	RemoteLaunchSourceDesktop RemoteLaunchSource = "desktop"
 	RemoteLaunchSourceMobile  RemoteLaunchSource = "mobile"
 	RemoteLaunchSourceHandoff RemoteLaunchSource = "handoff"
+	RemoteLaunchSourceAI      RemoteLaunchSource = "ai"
 )
 
 func normalizeRemoteLaunchSource(source RemoteLaunchSource) RemoteLaunchSource {
 	switch source {
-	case RemoteLaunchSourceMobile, RemoteLaunchSourceHandoff:
+	case RemoteLaunchSourceMobile, RemoteLaunchSourceHandoff, RemoteLaunchSourceAI:
 		return source
 	default:
 		return RemoteLaunchSourceDesktop
@@ -37,7 +38,7 @@ func normalizeRemoteLaunchSource(source RemoteLaunchSource) RemoteLaunchSource {
 // cannot display OS-level dialogs such as UAC prompts or permission
 // confirmation windows.
 func isHeadlessLaunchSource(source RemoteLaunchSource) bool {
-	return source == RemoteLaunchSourceMobile || source == RemoteLaunchSourceHandoff
+	return source == RemoteLaunchSourceMobile || source == RemoteLaunchSourceHandoff || source == RemoteLaunchSourceAI
 }
 
 type LaunchSpec struct {
