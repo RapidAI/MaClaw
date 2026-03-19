@@ -4,7 +4,8 @@ import { ClawNetKnowledgePanel } from "./ClawNetKnowledgePanel";
 import { ClawNetSwarmPanel } from "./ClawNetSwarmPanel";
 import { ClawNetChatPanel } from "./ClawNetChatPanel";
 import { ClawNetResumePanel } from "./ClawNetResumePanel";
-import { colors, radius } from "./styles";
+import { colors } from "./styles";
+import { cnTabBtn } from "./clawnetStyles";
 
 type Props = { lang: string; clawNetRunning: boolean };
 
@@ -17,22 +18,6 @@ const tabDefs: { id: ClawNetSubTab; icon: string; zh: string; en: string }[] = [
     { id: "chat", icon: "💬", zh: "聊天", en: "Chat" },
     { id: "resume", icon: "📋", zh: "简历/搜索", en: "Resume" },
 ];
-
-const tabBtn = (active: boolean) => ({
-    background: active ? colors.primary : "transparent",
-    color: active ? "#fff" : colors.textSecondary,
-    border: active ? "none" : `1px solid ${colors.border}`,
-    borderRadius: radius.md,
-    padding: "5px 12px",
-    fontSize: "0.72rem",
-    fontWeight: (active ? 600 : 400) as any,
-    cursor: "pointer" as const,
-    display: "flex" as const,
-    alignItems: "center" as const,
-    gap: "4px",
-    whiteSpace: "nowrap" as const,
-    transition: "all 0.15s ease",
-});
 
 export function ClawNetTabContainer({ lang, clawNetRunning }: Props) {
     const zh = lang?.startsWith("zh");
@@ -47,7 +32,7 @@ export function ClawNetTabContainer({ lang, clawNetRunning }: Props) {
                 flexWrap: "wrap",
             }}>
                 {tabDefs.map(t => (
-                    <button key={t.id} style={tabBtn(subTab === t.id)} onClick={() => setSubTab(t.id)}>
+                    <button key={t.id} style={cnTabBtn(subTab === t.id)} onClick={() => setSubTab(t.id)}>
                         <span>{t.icon}</span>
                         <span>{zh ? t.zh : t.en}</span>
                     </button>

@@ -56,3 +56,20 @@ export const cnTabStyle = (active: boolean): CSSProperties => ({
     fontWeight: active ? 600 : 400,
     cursor: "pointer",
 });
+
+/** Tab button with icon layout — used by ClawNetTabContainer */
+export const cnTabBtn = (active: boolean): CSSProperties => ({
+    background: active ? colors.primary : "transparent",
+    color: active ? "#fff" : colors.textSecondary,
+    border: active ? "none" : `1px solid ${colors.border}`,
+    borderRadius: radius.md,
+    padding: "5px 12px",
+    fontSize: "0.72rem",
+    fontWeight: active ? 600 : 400,
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+    whiteSpace: "nowrap",
+    transition: "all 0.15s ease",
+});
