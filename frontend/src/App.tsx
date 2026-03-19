@@ -35,6 +35,10 @@ import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel
 import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
 import { ClawNetPanel } from './components/remote/ClawNetPanel';
 import { ClawNetTaskBoard } from './components/remote/ClawNetTaskBoard';
+import { ClawNetKnowledgePanel } from './components/remote/ClawNetKnowledgePanel';
+import { ClawNetSwarmPanel } from './components/remote/ClawNetSwarmPanel';
+import { ClawNetChatPanel } from './components/remote/ClawNetChatPanel';
+import { ClawNetResumePanel } from './components/remote/ClawNetResumePanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
@@ -3357,7 +3361,7 @@ ${instruction}`;
                                                                                 navTab === 'api-store' ? t("apiStore") :
                                                                                     navTab === 'mcp' ? 'MCP' :
                                                                                         navTab === 'settings' ? t("globalSettings") :
-                                                                                            navTab === 'clawnet' ? (lang === 'zh-Hans' ? '虾网任务集市' : lang === 'zh-Hant' ? '蝦網任務集市' : 'ClawNet Task Board') : t("about")}
+                                                                                            navTab === 'clawnet' ? (lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet') : t("about")}
                             </span>
                             {navTab === 'projects' && (
                                 <>
@@ -4395,7 +4399,7 @@ ${instruction}`;
                     )}
 
                     {navTab === 'clawnet' && (
-                        <ClawNetTaskBoard lang={lang} clawNetRunning={clawNetRunning} />
+                        <ClawNetTabContainer lang={lang} clawNetRunning={clawNetRunning} />
                     )}
 
                     {navTab === 'about' && (
