@@ -359,31 +359,31 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                                     </button>
                                 )}
                                 {task.status === "open" && (
-                                    <button style={smallBtn(!!actionBusy)} disabled={!!actionBusy}
+                                    <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => doAction("bid-" + task.id, () => ClawNetBidOnTask(task.id, 0, zh ? "我可以做" : "I can do this"))}>
                                         {zh ? "竞标" : "Bid"}
                                     </button>
                                 )}
                                 {task.status === "assigned" && (
-                                    <button style={smallBtn(!!actionBusy)} disabled={!!actionBusy}
+                                    <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => doAction("submit-" + task.id, () => ClawNetSubmitTaskResult(task.id, ""))}>
                                         {zh ? "提交" : "Submit"}
                                     </button>
                                 )}
                                 {task.status === "submitted" && (
                                     <>
-                                        <button style={smallBtn(!!actionBusy)} disabled={!!actionBusy}
+                                        <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                             onClick={() => doAction("approve-" + task.id, () => ClawNetApproveTask(task.id))}>
                                             ✓
                                         </button>
-                                        <button style={smallBtn(!!actionBusy)} disabled={!!actionBusy}
+                                        <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                             onClick={() => doAction("reject-" + task.id, () => ClawNetRejectTask(task.id))}>
                                             ✗
                                         </button>
                                     </>
                                 )}
                                 {(task.status === "open" || task.status === "assigned") && (
-                                    <button style={smallBtn(!!actionBusy)} disabled={!!actionBusy}
+                                    <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => doAction("cancel-" + task.id, () => ClawNetCancelTask(task.id))}>
                                         ✗
                                     </button>
