@@ -114,8 +114,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("send_and_observe", "向会话发送文本并等待返回输出结果（合并了 send_input + get_session_output，推荐优先使用此工具代替分别调用 send_input 和 get_session_output）",
 		ToolCategoryBuiltin, []string{"session", "input", "send", "output", "observe"},
 		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-			"text":       map[string]string{"type": "string", "description": "要发送的文本"},
+			"session_id":      map[string]string{"type": "string", "description": "会话 ID"},
+			"text":            map[string]string{"type": "string", "description": "要发送的文本"},
+			"timeout_seconds": map[string]string{"type": "number", "description": "可选：等待输出的超时秒数（默认约 30 秒，最大 120 秒）。对于复杂编程任务可设置更长时间。"},
 		}, []string{"session_id", "text"},
 		func(args map[string]interface{}) string { return h.toolSendAndObserve(args) })
 

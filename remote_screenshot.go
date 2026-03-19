@@ -940,6 +940,13 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 		return fmt.Errorf("screenshot capture is only supported in SDK and ACP mode sessions")
 	}
 
+	// On macOS 10.15+, ensure screen recording permission is granted before
+	// spawning child processes. This ties the TCC prompt to our bundle ID
+	// so the user only sees it once, instead of repeatedly.
+	if !EnsureScreenRecordingPermission() {
+		return fmt.Errorf("screen recording permission not granted - please allow MaClaw in System Settings > Privacy & Security > Screen Recording, then restart the app")
+	}
+
 	available, reason := DetectDisplayServer()
 	if !available {
 		return fmt.Errorf("screenshot requires a graphical display environment: %s", reason)
@@ -1046,6 +1053,12 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	cmdStr := BuildScreenshotCommand()
 	if cmdStr == "" {
 		return "", fmt.Errorf("screenshot capture is not supported on %s", runtime.GOOS)
+	}
+
+	// On macOS 10.15+, ensure screen recording permission is granted before
+	// spawning child processes.
+	if !EnsureScreenRecordingPermission() {
+		return "", fmt.Errorf("screen recording permission not granted - please allow MaClaw in System Settings > Privacy & Security > Screen Recording, then restart the app")
 	}
 
 	available, reason := DetectDisplayServer()

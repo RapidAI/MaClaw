@@ -51,9 +51,10 @@ func main() {
 	// On macOS 26 (Tahoe) and later, Liquid Glass changes how translucent and
 	// frameless windows are rendered.  Wails v2's NSVisualEffectView-based
 	// translucency can crash at window creation time, so we fall back to a
-	// safe, opaque configuration on Tahoe+.
+	// safe, opaque configuration on Tahoe+.  The systray init is deferred
+	// with a delay in tray_darwin.go / systray_darwin.m to avoid racing
+	// with Liquid Glass first-frame rendering.
 	tahoe := isMacOSTahoeOrLater()
-	frameless := true
 	macOpts := &mac.Options{
 		TitleBar:             mac.TitleBarHidden(),
 		WebviewIsTransparent: true,
@@ -61,9 +62,8 @@ func main() {
 	}
 	bgColour := &options.RGBA{R: 255, G: 255, B: 255, A: 0}
 	if tahoe {
-		frameless = false
 		macOpts = &mac.Options{
-			TitleBar:             mac.TitleBarHiddenInset(),
+			TitleBar:             mac.TitleBarHidden(),
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
 		}
@@ -73,7 +73,7 @@ func main() {
 	// Create application with options
 	appOptions := &options.App{
 		Title:       "MaClaw",
-		Frameless:   frameless,
+		Frameless:   true,
 		Width:       612,
 		Height:      311,
 		StartHidden: app.IsAutoStart,

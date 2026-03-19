@@ -287,19 +287,13 @@ int nativeLoop(void) {
   return EXIT_SUCCESS;
 }
 
-void nativeStart(void) {
-  // When used with an external event loop (e.g. Wails), this function is called
-  // from a background goroutine.  We must initialise the status bar on the main
-  // thread after the host app has fully launched.
-  //
-  // dispatch_async queues the block for the main run-loop.  By the time the
-  // block executes, [NSApp run] is active and applicationDidFinishLaunching
-  // has already fired (Wails fires it before processing the dispatch queue),
-  // so it is safe to create NSStatusItem immediately.
-  NSLog(@"[systray] nativeStart: queuing dispatch_async on main queue");
-  dispatch_async(dispatch_get_main_queue(), ^{
+// _systrayInitBlock performs the actual status bar creation on the main thread.
+// Extracted so it can be called from multiple code paths (direct dispatch or
+// notification observer).
+static void _systrayInitBlock(void) {
+  @autoreleasepool {
     @try {
-      NSLog(@"[systray] dispatch block executing on main thread");
+      NSLog(@"[systray] init block executing on main thread");
       owner = [[SystrayDelegate alloc] init];
       NSLog(@"[systray] SystrayDelegate allocated");
       [owner initStatusBar];
@@ -307,7 +301,52 @@ void nativeStart(void) {
       systray_ready();
       NSLog(@"[systray] systray_ready returned");
     } @catch (NSException *exception) {
-      NSLog(@"[systray] EXCEPTION in nativeStart: %@ — %@", exception.name, exception.reason);
+      NSLog(@"[systray] EXCEPTION in init block: %@ — %@", exception.name, exception.reason);
+    }
+  }
+}
+
+void nativeStart(void) {
+  // When used with an external event loop (e.g. Wails), this function is called
+  // from a background goroutine.  We must initialise the status bar on the main
+  // thread after the host app has fully launched.
+  //
+  // On macOS 26 (Tahoe) with Liquid Glass, an immediate dispatch_async can
+  // crash because the window server / rendering pipeline isn't ready yet.
+  // Strategy:
+  //   1. If NSApp is already running and active, use dispatch_after with a
+  //      short delay to let the first frame settle.
+  //   2. Otherwise, observe NSApplicationDidFinishLaunchingNotification and
+  //      init after a delay once it fires.
+  NSLog(@"[systray] nativeStart: scheduling deferred init on main queue");
+
+  // Helper: schedule the init block after a delay on the main queue.
+  // The 1.5 s delay gives Wails + Liquid Glass time to finish first-frame
+  // rendering so that creating an NSStatusItem doesn't race with the
+  // window server.
+  void (^scheduleInit)(void) = ^{
+    dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+      dispatch_get_main_queue(),
+      ^{ _systrayInitBlock(); }
+    );
+  };
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if ([NSApp isRunning]) {
+      NSLog(@"[systray] NSApp already running, scheduling delayed init");
+      scheduleInit();
+    } else {
+      NSLog(@"[systray] NSApp not yet running, observing launch notification");
+      __block id observer = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSApplicationDidFinishLaunchingNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+                  NSLog(@"[systray] didFinishLaunching fired, scheduling delayed init");
+                  [[NSNotificationCenter defaultCenter] removeObserver:observer];
+                  scheduleInit();
+                }];
     }
   });
 }

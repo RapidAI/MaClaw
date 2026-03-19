@@ -1545,8 +1545,11 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 1. 理解需求：如果用户指令模糊（如"优化一下性能"），先澄清具体目标和范围再动手；如果指令明确（如"给 login.go 加个超时处理"），可以直接执行
 2. 创建会话：调用 create_session 启动编程工具
 3. 发送指令：调用 get_session_output 确认状态为 running 后（最多检查 2 次），立即用 send_and_observe 将需求发送给编程工具
-4. 跟踪进度：根据输出跟踪执行情况，必要时追加指令
-⚠️ 编程工具启动后会等待输入，不发送指令它不会开始工作。不要反复轮询 get_session_output。
+4. 跟踪进度：
+   - 简单操作（ls、cat 等）：send_and_observe 会直接返回结果
+   - 复杂编程任务（写代码、重构等）：编程工具可能需要数分钟完成。如果 send_and_observe 返回时会话状态为 busy，每 15-30 秒调用一次 get_session_output 检查进度是正常的
+   - ⚠️ 绝对不要终止状态为 busy 的编程会话——编程工具正在工作中
+⚠️ 编程工具启动后会等待输入，不发送指令它不会开始工作。对已退出或出错的会话不要反复轮询 get_session_output。
 
 ## ⚠️ 执行验证原则
 每次执行操作后，必须验证是否真正成功，绝不能仅凭工具返回"已发送"就告诉用户执行成功。
@@ -2362,6 +2365,12 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 		}
 	}
 
+	// When the session is busy (coding tool actively executing), hint the
+	// Agent to wait and check back periodically.
+	if status == string(SessionBusy) {
+		b.WriteString(fmt.Sprintf("\n⏳ 编程工具正在工作中，请等待 15-30 秒后再次检查进度。不要终止正在工作的会话。"))
+	}
+
 	// When the session has exited with a non-zero code, append a strong
 	// stop-loss hint so the LLM agent stops retrying and reports the
 	// failure to the user immediately.
@@ -2472,10 +2481,33 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 		return fmt.Sprintf("发送失败: %s", err.Error())
 	}
 
-	// Poll up to ~8s with increasing intervals, waiting for meaningful output.
+	// Poll up to ~30s with increasing intervals, waiting for meaningful output.
 	// We use newLines > 1 (not > 0) because the PTY echo of the sent text
 	// typically produces 1 line immediately; real output starts after that.
-	waitMs := []int{500, 500, 1000, 1000, 1500, 1500, 2000}
+	//
+	// If the caller provides a positive timeout_seconds (capped at 120s),
+	// we build a custom polling array that totals approximately that many
+	// seconds, starting with the same ramp-up pattern and then filling
+	// with 3 000 ms intervals.
+	waitMs := []int{500, 500, 1000, 1000, 1500, 1500, 2000, 2000, 3000, 3000, 3000, 3000, 3000, 3000, 3000}
+	if ts, ok := args["timeout_seconds"].(float64); ok && ts > 0 {
+		if ts > 120.0 {
+			ts = 120.0
+		}
+		targetMs := int(ts * 1000)
+		base := []int{500, 500, 1000, 1000, 1500, 1500, 2000}
+		sum := 0
+		for _, v := range base {
+			sum += v
+		}
+		custom := make([]int, len(base))
+		copy(custom, base)
+		for sum < targetMs {
+			custom = append(custom, 3000)
+			sum += 3000
+		}
+		waitMs = custom
+	}
 	for _, ms := range waitMs {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		session.mu.RLock()
@@ -2488,6 +2520,11 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 			break
 		}
 	}
+
+	// Check if session is still busy after polling — flag for busy-wait hint.
+	session.mu.RLock()
+	stillBusy := session.Status == SessionBusy
+	session.mu.RUnlock()
 
 	// Check if new images were produced during the command execution.
 	// Images from SDK sessions are already delivered to the user via the
@@ -2503,6 +2540,10 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 		"session_id": sessionID,
 		"lines":      float64(40),
 	})
+
+	if stillBusy {
+		output += fmt.Sprintf("\n\n⏳ 编程工具仍在工作中（状态: busy）。请等待 15-30 秒后调用 get_session_output(session_id=\"%s\") 检查进度。不要终止会话。", sessionID)
+	}
 
 	if newImageCount > 0 {
 		output += fmt.Sprintf("\n\n📷 会话产生了 %d 张图片，已自动通过 IM 发送给用户。", newImageCount)
