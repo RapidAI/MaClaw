@@ -3,27 +3,37 @@
 package main
 
 /*
-#cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework CoreGraphics -framework Foundation
+#cgo darwin CFLAGS: -DDARWIN
+#cgo darwin LDFLAGS: -framework CoreGraphics
 
 #include <CoreGraphics/CoreGraphics.h>
+#include <AvailabilityMacros.h>
+#include <stdlib.h>
 
-// CGPreflightScreenCaptureAccess and CGRequestScreenCaptureAccess are
-// available since macOS 10.15 (Catalina). We call them to ensure the
-// permission prompt is associated with our app's bundle ID, not with
-// the child bash/screencapture process.
+// CGPreflightScreenCaptureAccess (macOS 10.15+) and
+// CGRequestScreenCaptureAccess (macOS 10.15+) are weak-linked so the
+// binary still loads on older systems. We resolve them at runtime via
+// dlsym to avoid a hard link-time dependency on the 10.15 symbols.
+
+#include <dlfcn.h>
+
+typedef bool (*preflight_fn)(void);
+typedef bool (*request_fn)(void);
 
 static bool preflightScreenCapture(void) {
-    if (@available(macOS 10.15, *)) {
-        return CGPreflightScreenCaptureAccess();
+    preflight_fn fn = (preflight_fn)dlsym(RTLD_DEFAULT, "CGPreflightScreenCaptureAccess");
+    if (fn) {
+        return fn();
     }
     return true; // pre-Catalina: no TCC for screen recording
 }
 
-static void requestScreenCapture(void) {
-    if (@available(macOS 10.15, *)) {
-        CGRequestScreenCaptureAccess();
+static bool requestScreenCapture(void) {
+    request_fn fn = (request_fn)dlsym(RTLD_DEFAULT, "CGRequestScreenCaptureAccess");
+    if (fn) {
+        return fn();
     }
+    return true; // pre-Catalina: always allowed
 }
 */
 import "C"
@@ -46,7 +56,7 @@ func RequestScreenRecordingPermission() {
 // EnsureScreenRecordingPermission checks and, if needed, requests screen
 // recording permission. Returns true if permission is already granted.
 // If not granted, it triggers the system permission dialog (once) and
-// returns false — the caller should treat this as "permission pending"
+// returns false - the caller should treat this as "permission pending"
 // since the user hasn't responded to the dialog yet.
 func EnsureScreenRecordingPermission() bool {
 	if HasScreenRecordingPermission() {

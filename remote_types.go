@@ -134,6 +134,24 @@ type PTYSession interface {
 	Exit() <-chan PTYExit
 }
 
+// StallState represents the stall detection state of a session.
+type StallState int
+
+const (
+	StallStateNormal    StallState = iota // 正常运行
+	StallStateSuspected                   // 疑似停滞，正在 nudge
+	StallStateStuck                       // 已达最大 nudge 次数，需要 Agent 介入
+)
+
+// CompletionLevel represents the semantic task completion level.
+type CompletionLevel int
+
+const (
+	CompletionUncertain  CompletionLevel = iota // 无法确定
+	CompletionCompleted                         // 任务完成
+	CompletionIncomplete                        // 任务未完成
+)
+
 type RemoteSession struct {
 	// mu protects mutable fields that are written by output/exit loop
 	// goroutines and read by the UI thread (via toRemoteSessionView).
@@ -156,6 +174,11 @@ type RemoteSession struct {
 	ExitCode  *int
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// Stall detection and completion analysis fields (protected by mu).
+	StallState     StallState      // current stall state, updated by StallDetector
+	CompletionLevel CompletionLevel // latest completion analysis result
+	LastNudgeCount int             // nudge count from the most recent stall episode
 
 	Summary SessionSummary
 	Preview SessionPreview
