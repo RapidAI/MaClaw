@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // ensureToolOnboardingComplete runs pre-launch onboarding checks for the
@@ -334,43 +335,113 @@ func toolConfigPaths(toolName string) []string {
 	return paths
 }
 
+// ---------------------------------------------------------------------------
+// Reference-counted config backup / restore
+// ---------------------------------------------------------------------------
+//
+// Multiple concurrent sessions for the same tool share a single user-level
+// config file (e.g. ~/.claude.json).  Without coordination the following
+// race occurs:
+//
+//   Session A: backup(original) → onboarding → start
+//   Session B: backup(onboarded) → onboarding → start
+//   Session A exits: restore(original) — breaks Session B
+//   Session B exits: restore(onboarded) — user's original config lost
+//
+// We solve this with a per-tool reference counter.  The first session to
+// call backupToolConfigs snapshots the pre-onboarding state.  Subsequent
+// sessions for the same tool just increment the counter.  Only the last
+// session to call its restore function actually writes the original content
+// back (or removes the file if it didn't exist before).
+
+// configBackupState holds the shared backup state for one tool.
+type configBackupState struct {
+	refCount int
+	snaps    []configSnapshot
+}
+
+type configSnapshot struct {
+	path    string
+	data    []byte // nil means file did not exist
+	existed bool
+}
+
+var (
+	configBackupMu     sync.Mutex
+	configBackupStates = map[string]*configBackupState{} // toolName → state
+)
+
 // backupToolConfigs creates backup copies of the tool's config files before
 // onboarding modifies them.  It returns a restore function that copies the
 // backups back, removing the backup files afterward.
 //
-// If a config file does not exist yet (first-run), no backup is created and
-// the restore function will remove the file that onboarding created, leaving
-// the system in its original state.
-//
-// This ensures the user's native tool configuration (auth tokens, theme
-// preferences, etc.) is not permanently altered by our onboarding changes.
+// The backup is reference-counted: only the first session for a given tool
+// snapshots the files, and only the last session to call restore writes
+// them back.  This prevents concurrent sessions from clobbering each
+// other's config or losing the user's original settings.
 func backupToolConfigs(app *App, toolName string) func() {
 	paths := toolConfigPaths(toolName)
 	if len(paths) == 0 {
 		return func() {}
 	}
 
-	type snapshot struct {
-		path    string
-		data    []byte // nil means file did not exist
-		existed bool
-	}
+	configBackupMu.Lock()
+	defer configBackupMu.Unlock()
 
-	var snaps []snapshot
-	for _, p := range paths {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			// File doesn't exist or unreadable — record as non-existent.
-			snaps = append(snaps, snapshot{path: p, existed: false})
-		} else {
-			snaps = append(snaps, snapshot{path: p, data: data, existed: true})
+	state, exists := configBackupStates[toolName]
+	if exists {
+		// Another session already holds the backup — just bump the count.
+		state.refCount++
+		if app != nil {
+			app.log(fmt.Sprintf("[tool-onboarding] backup refcount for %s incremented to %d", toolName, state.refCount))
+		}
+	} else {
+		// First session — snapshot the current (pre-onboarding) state.
+		var snaps []configSnapshot
+		for _, p := range paths {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				snaps = append(snaps, configSnapshot{path: p, existed: false})
+			} else {
+				snaps = append(snaps, configSnapshot{path: p, data: data, existed: true})
+			}
+		}
+		state = &configBackupState{refCount: 1, snaps: snaps}
+		configBackupStates[toolName] = state
+		if app != nil {
+			app.log(fmt.Sprintf("[tool-onboarding] backup created for %s (refcount=1)", toolName))
 		}
 	}
 
+	restored := false
 	return func() {
-		for _, s := range snaps {
+		configBackupMu.Lock()
+		defer configBackupMu.Unlock()
+
+		if restored {
+			return
+		}
+		restored = true
+
+		st, ok := configBackupStates[toolName]
+		if !ok {
+			return
+		}
+
+		st.refCount--
+		if app != nil {
+			app.log(fmt.Sprintf("[tool-onboarding] backup refcount for %s decremented to %d", toolName, st.refCount))
+		}
+
+		if st.refCount > 0 {
+			// Other sessions still running — don't restore yet.
+			return
+		}
+
+		// Last session — restore original state.
+		delete(configBackupStates, toolName)
+		for _, s := range st.snaps {
 			if s.existed {
-				// Restore original content.
 				if err := os.WriteFile(s.path, s.data, 0o644); err != nil {
 					if app != nil {
 						app.log(fmt.Sprintf("[tool-onboarding] restore %s failed: %v", s.path, err))
@@ -379,7 +450,6 @@ func backupToolConfigs(app *App, toolName string) func() {
 					app.log(fmt.Sprintf("[tool-onboarding] restored original %s", s.path))
 				}
 			} else {
-				// File didn't exist before — remove the one onboarding created.
 				if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
 					if app != nil {
 						app.log(fmt.Sprintf("[tool-onboarding] cleanup %s failed: %v", s.path, err))

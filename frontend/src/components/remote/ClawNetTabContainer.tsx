@@ -39,13 +39,13 @@ export function ClawNetTabContainer({ lang, clawNetRunning }: Props) {
                 ))}
             </div>
 
-            {/* Content */}
-            <div style={{ flex: 1, overflow: "auto" }}>
-                {subTab === "tasks" && <ClawNetTaskBoard lang={lang} clawNetRunning={clawNetRunning} />}
-                {subTab === "knowledge" && <ClawNetKnowledgePanel lang={lang} clawNetRunning={clawNetRunning} />}
-                {subTab === "swarm" && <ClawNetSwarmPanel lang={lang} clawNetRunning={clawNetRunning} />}
-                {subTab === "chat" && <ClawNetChatPanel lang={lang} clawNetRunning={clawNetRunning} />}
-                {subTab === "resume" && <ClawNetResumePanel lang={lang} clawNetRunning={clawNetRunning} />}
+            {/* Content – keep all panels mounted so state survives tab switches */}
+            <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
+                <div style={{ display: subTab === "tasks" ? "block" : "none" }}><ClawNetTaskBoard lang={lang} clawNetRunning={clawNetRunning} /></div>
+                <div style={{ display: subTab === "knowledge" ? "block" : "none" }}><ClawNetKnowledgePanel lang={lang} clawNetRunning={clawNetRunning} /></div>
+                <div style={{ display: subTab === "swarm" ? "block" : "none" }}><ClawNetSwarmPanel lang={lang} clawNetRunning={clawNetRunning} /></div>
+                <div style={{ display: subTab === "chat" ? "block" : "none" }}><ClawNetChatPanel lang={lang} clawNetRunning={clawNetRunning} /></div>
+                <div style={{ display: subTab === "resume" ? "block" : "none" }}><ClawNetResumePanel lang={lang} clawNetRunning={clawNetRunning} /></div>
             </div>
         </div>
     );

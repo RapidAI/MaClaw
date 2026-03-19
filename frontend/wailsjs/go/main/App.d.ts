@@ -306,6 +306,7 @@ export function ClawNetMatchTasks():Promise<any>;
 export function ClawNetGetTaskBoard():Promise<any>;
 export function ClawNetGetTransactions():Promise<any>;
 export function ClawNetGetLeaderboard():Promise<any>;
+export function ClawNetGetDaemonInfo():Promise<any>;
 export function ClawNetGetDiagnostics():Promise<any>;
 export function ClawNetGetCreditsAudit():Promise<any>;
 export function ClawNetSelfUpdate():Promise<any>;

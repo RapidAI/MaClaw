@@ -32,6 +32,7 @@ interface BackupInfo {
 
 interface CompressResult {
     dedup_count: number;
+    merged_count: number;
     compressed_count: number;
     skipped_count: number;
     error_count: number;
@@ -447,6 +448,7 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
                 {compressResult && (
                     <div role="status" style={{ fontSize: "0.72rem", color: "#059669", background: "#ecfdf5", borderRadius: radius.sm, padding: "5px 10px", marginTop: 6 }}>
                         {compressResult.dedup_count > 0 && <>{t("去重", "Dedup")}: {compressResult.dedup_count} {t("条移除", "removed")} · </>}
+                        {compressResult.merged_count > 0 && <>{t("合并", "Merged")}: {compressResult.merged_count} {t("条合并", "merged")} · </>}
                         {t("压缩", "Compress")}: {compressResult.compressed_count} {t("条已压缩", "compressed")}, {compressResult.skipped_count} {t("条跳过", "skipped")}, {compressResult.error_count} {t("条失败", "errors")}, {t("节省", "saved")} {compressResult.saved_chars} {t("字符", "chars")}
                     </div>
                 )}

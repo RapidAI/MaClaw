@@ -183,7 +183,20 @@ func canonicalWorkspacePath(path string) (string, error) {
 
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return "", fmt.Errorf("project path not accessible: %w", err)
+		if os.IsNotExist(err) {
+			// Auto-create the project directory so that remote sessions
+			// targeting a new project path don't fail at launch.
+			if mkErr := os.MkdirAll(absPath, 0o755); mkErr != nil {
+				return "", fmt.Errorf("project path does not exist and could not be created: %w", mkErr)
+			}
+			// Re-stat after creation.
+			info, err = os.Stat(absPath)
+			if err != nil {
+				return "", fmt.Errorf("project path not accessible after creation: %w", err)
+			}
+		} else {
+			return "", fmt.Errorf("project path not accessible: %w", err)
+		}
 	}
 	if !info.IsDir() {
 		return "", fmt.Errorf("project path is not a directory: %s", absPath)

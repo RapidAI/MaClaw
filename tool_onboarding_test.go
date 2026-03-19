@@ -322,7 +322,16 @@ func TestEnsureCodeBuddyOnboardingHandlesCorruptFile(t *testing.T) {
 
 // --- Backup / Restore tests ---
 
+// resetConfigBackupStates clears the global reference-counted backup state
+// so tests don't leak into each other.
+func resetConfigBackupStates() {
+	configBackupMu.Lock()
+	defer configBackupMu.Unlock()
+	configBackupStates = map[string]*configBackupState{}
+}
+
 func TestBackupToolConfigsRestoresExistingFile(t *testing.T) {
+	resetConfigBackupStates()
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -373,6 +382,7 @@ func TestBackupToolConfigsRestoresExistingFile(t *testing.T) {
 }
 
 func TestBackupToolConfigsGeminiRestore(t *testing.T) {
+	resetConfigBackupStates()
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -420,12 +430,14 @@ func TestBackupToolConfigsGeminiRestore(t *testing.T) {
 }
 
 func TestBackupToolConfigsNoopForUnknownTool(t *testing.T) {
+	resetConfigBackupStates()
 	restore := backupToolConfigs(nil, "codex")
 	// Should not panic.
 	restore()
 }
 
 func TestBackupToolConfigsDoubleRestoreIsSafe(t *testing.T) {
+	resetConfigBackupStates()
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -447,6 +459,83 @@ func TestBackupToolConfigsDoubleRestoreIsSafe(t *testing.T) {
 	json.Unmarshal(data, &config)
 	if config["theme"] != "light" {
 		t.Errorf("theme should be light after restore, got %v", config["theme"])
+	}
+}
+
+// TestBackupToolConfigsRefCountConcurrent verifies that multiple sessions
+// for the same tool share a single backup and only the last restore writes
+// the original content back.
+func TestBackupToolConfigsRefCountConcurrent(t *testing.T) {
+	resetConfigBackupStates()
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	configPath := filepath.Join(tmpHome, ".claude.json")
+	os.WriteFile(configPath, []byte(`{"theme":"original"}`), 0o644)
+
+	app := &App{}
+
+	// Session A backs up.
+	restoreA := backupToolConfigs(app, "claude")
+	// Onboarding modifies the file.
+	os.WriteFile(configPath, []byte(`{"theme":"onboarded","hasCompletedOnboarding":true}`), 0o644)
+
+	// Session B backs up — should reuse the existing snapshot, not re-read.
+	restoreB := backupToolConfigs(app, "claude")
+
+	// Session A exits — refcount drops to 1, should NOT restore yet.
+	restoreA()
+
+	data, _ := os.ReadFile(configPath)
+	var cfg map[string]any
+	json.Unmarshal(data, &cfg)
+	if cfg["theme"] == "original" {
+		t.Fatal("restore should not have happened while session B is still active")
+	}
+
+	// Session B exits — refcount drops to 0, should restore original.
+	restoreB()
+
+	data, _ = os.ReadFile(configPath)
+	json.Unmarshal(data, &cfg)
+	if cfg["theme"] != "original" {
+		t.Errorf("expected theme=original after last restore, got %v", cfg["theme"])
+	}
+}
+
+// TestBackupToolConfigsRefCountFileNotExisted verifies that when the config
+// file didn't exist before any session, it is removed only after the last
+// session restores.
+func TestBackupToolConfigsRefCountFileNotExisted(t *testing.T) {
+	resetConfigBackupStates()
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	configPath := filepath.Join(tmpHome, ".claude.json")
+	// File does NOT exist initially.
+
+	app := &App{}
+
+	restoreA := backupToolConfigs(app, "claude")
+	// Onboarding creates the file.
+	os.WriteFile(configPath, []byte(`{"hasCompletedOnboarding":true}`), 0o644)
+
+	restoreB := backupToolConfigs(app, "claude")
+
+	// Session A exits.
+	restoreA()
+	// File should still exist (session B is active).
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		t.Fatal("file should still exist while session B is active")
+	}
+
+	// Session B exits.
+	restoreB()
+	// File should be removed (original state was non-existent).
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatal("file should have been removed after last restore")
 	}
 }
 

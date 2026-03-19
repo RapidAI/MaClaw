@@ -140,6 +140,12 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	// the session exits, so the user's native config is preserved.
 	configRestore := backupToolConfigs(m.app, spec.Tool)
 
+	// Ensure tool onboarding is complete (theme, trust, etc.) so the
+	// tool doesn't block on first-run interactive prompts.  This must
+	// run after backupToolConfigs (which snapshots the pre-onboarding
+	// state) and before BuildCommand (which may rely on the config).
+	ensureToolOnboardingComplete(m.app, spec.Tool, spec.ProjectPath)
+
 	// Remote sessions (mobile/handoff) cannot show OS-level privilege
 	// escalation dialogs (UAC on Windows, sudo on Unix). If AdminMode
 	// is requested, check whether the current process already has

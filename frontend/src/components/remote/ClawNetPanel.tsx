@@ -19,6 +19,7 @@ import {
     ClawNetAutoPickerGetStatus,
     ClawNetAutoPickerConfigure,
     ClawNetAutoPickerTriggerNow,
+    ClawNetGetDaemonInfo,
 } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
 import { colors, radius } from "./styles";
@@ -129,6 +130,8 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
     const [pickerStatus, setPickerStatus] = useState<any>(null);
     const [pickerBusy, setPickerBusy] = useState(false);
     const [triggerMsg, setTriggerMsg] = useState("");
+    // Daemon info
+    const [daemonInfo, setDaemonInfo] = useState<any>(null);
     const mountedRef = useRef(true);
     useEffect(() => { return () => { mountedRef.current = false; }; }, []);
 
@@ -142,18 +145,25 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             setRunning(isUp);
             onRunningChange(isUp);
             if (isUp) {
-                const [s, p, c] = await Promise.all([
+                const [s, p, c, d] = await Promise.all([
                     ClawNetGetStatus(),
                     ClawNetGetPeers(),
                     ClawNetGetCredits(),
+                    ClawNetGetDaemonInfo(),
                 ]);
                 if (s.ok) setStatus(s);
                 if (p.ok) setPeers(p.peers || []);
                 if (c.ok) setCredits(c);
+                if (d.ok) setDaemonInfo(d);
             } else {
                 setStatus(null);
                 setPeers([]);
                 setCredits(null);
+                // Still fetch daemon info when disconnected — shows last known PID / "process lost".
+                try {
+                    const d = await ClawNetGetDaemonInfo();
+                    if (d.ok) setDaemonInfo(d);
+                } catch {}
             }
         } catch {
             setRunning(false);
@@ -284,6 +294,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             setLeaderboard([]);
             setPickerStatus(null);
             setTriggerMsg("");
+            setDaemonInfo(null);
         } catch (e) {
             setError(String(e));
         } finally {
@@ -499,6 +510,34 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                         <div><span style={label}>{zh ? "未读私信" : "Unread DM"}:</span> <span style={mono}>{status.unread_dm || 0}</span></div>
                         <div><span style={label}>{zh ? "版本" : "Version"}:</span> <span style={mono}>{status.version}</span></div>
                         {status.uptime && <div><span style={label}>{zh ? "运行时间" : "Uptime"}:</span> <span style={mono}>{status.uptime}</span></div>}
+                    </div>
+                </div>
+            )}
+
+            {/* Daemon process info — visible even when disconnected so user can see dead state */}
+            {enabled && daemonInfo && (
+                <div style={{ ...card, background: colors.bg }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.72rem", flexWrap: "wrap" }}>
+                        <span style={label}>{zh ? "进程" : "Process"}:</span>
+                        <span style={mono}>clawnet{daemonInfo.bin_path?.endsWith(".exe") ? ".exe" : ""}</span>
+                        {daemonInfo.pid > 0 && (
+                            <>
+                                <span style={{ color: colors.border }}>|</span>
+                                <span style={label}>PID:</span>
+                                <span style={mono}>{daemonInfo.pid}</span>
+                            </>
+                        )}
+                        {daemonInfo.version && (
+                            <>
+                                <span style={{ color: colors.border }}>|</span>
+                                <span style={mono}>{daemonInfo.version}</span>
+                            </>
+                        )}
+                        {!running && daemonInfo.pid > 0 && (
+                            <span style={{ fontSize: "0.68rem", color: colors.danger }}>
+                                ({zh ? "进程已断开" : "process lost"})
+                            </span>
+                        )}
                     </div>
                 </div>
             )}

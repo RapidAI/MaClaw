@@ -333,6 +333,17 @@ func (c *ClawNetClient) ping() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// DaemonPID returns the PID of the daemon process we launched, or 0 if unknown.
+func (c *ClawNetClient) DaemonPID() int {
+	c.mu.Lock()
+	daemon := c.daemon
+	c.mu.Unlock()
+	if daemon != nil && daemon.Process != nil {
+		return daemon.Process.Pid
+	}
+	return 0
+}
+
 // ---------- HTTP helpers ----------
 
 func (c *ClawNetClient) get(path string, out interface{}) error {

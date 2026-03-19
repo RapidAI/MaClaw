@@ -648,6 +648,10 @@ export function ClawNetGetLeaderboard() {
   return window['go']['main']['App']['ClawNetGetLeaderboard']();
 }
 
+export function ClawNetGetDaemonInfo() {
+  return window['go']['main']['App']['ClawNetGetDaemonInfo']();
+}
+
 export function ClawNetGetDiagnostics() {
   return window['go']['main']['App']['ClawNetGetDiagnostics']();
 }

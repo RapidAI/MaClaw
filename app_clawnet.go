@@ -193,12 +193,36 @@ func (a *App) ClawNetCreateSwarmSession(topic, question string) map[string]inter
 	return map[string]interface{}{"ok": true, "session": session}
 }
 
-// ClawNetGetResume returns the agent's profile.
+// ClawNetGetResume returns the agent's profile (with local cache fallback).
 func (a *App) ClawNetGetResume() map[string]interface{} {
 	c := a.initClawNet()
 	r, err := c.GetResume()
 	if err != nil {
+		// Fallback to local cache on API failure.
+		cache := readProfileCache()
+		if cache != nil {
+			return map[string]interface{}{
+				"ok": true,
+				"resume": map[string]interface{}{
+					"skills": cache.Skills, "domains": cache.Domains, "bio": cache.Bio,
+				},
+				"cached": true,
+			}
+		}
 		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	// Fill empty fields from cache.
+	cache := readProfileCache()
+	if cache != nil {
+		if r.Bio == "" && cache.Bio != "" {
+			r.Bio = cache.Bio
+		}
+		if len(r.Skills) == 0 && len(cache.Skills) > 0 {
+			r.Skills = cache.Skills
+		}
+		if len(r.Domains) == 0 && len(cache.Domains) > 0 {
+			r.Domains = cache.Domains
+		}
 	}
 	return map[string]interface{}{"ok": true, "resume": r}
 }
@@ -262,13 +286,105 @@ func (a *App) ClawNetGetBinaryPath() string {
 	return p
 }
 
-// ---------- Profile ----------
+// ---------- Profile (with local cache fallback) ----------
+
+// profileCachePath returns ~/.openclaw/clawnet/profile_cache.json
+func profileCachePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".openclaw", "clawnet", "profile_cache.json")
+}
+
+// profileCache is the structure persisted to local JSON for offline fallback.
+type profileCache struct {
+	Name    string   `json:"name,omitempty"`
+	Bio     string   `json:"bio,omitempty"`
+	Motto   string   `json:"motto,omitempty"`
+	Skills  []string `json:"skills,omitempty"`
+	Domains []string `json:"domains,omitempty"`
+}
+
+func readProfileCache() *profileCache {
+	p := profileCachePath()
+	if p == "" {
+		return nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil
+	}
+	var cache profileCache
+	if json.Unmarshal(data, &cache) != nil {
+		return nil
+	}
+	return &cache
+}
+
+// writeProfileCacheFields updates specific fields in the local cache.
+// Only the provided fields are overwritten; others are preserved.
+func writeProfileCacheFields(name *string, bio *string, motto *string, skills []string, domains []string) {
+	p := profileCachePath()
+	if p == "" {
+		return
+	}
+	existing := readProfileCache()
+	if existing == nil {
+		existing = &profileCache{}
+	}
+	if name != nil {
+		existing.Name = *name
+	}
+	if bio != nil {
+		existing.Bio = *bio
+	}
+	if motto != nil {
+		existing.Motto = *motto
+	}
+	if skills != nil {
+		existing.Skills = skills
+	}
+	if domains != nil {
+		existing.Domains = domains
+	}
+	data, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	_ = os.WriteFile(p, data, 0644)
+}
 
 func (a *App) ClawNetGetProfile() map[string]interface{} {
 	c := a.initClawNet()
 	p, err := c.GetProfile()
 	if err != nil {
+		// Fallback to local cache on API failure.
+		cache := readProfileCache()
+		if cache != nil {
+			return map[string]interface{}{
+				"ok": true,
+				"profile": map[string]interface{}{
+					"name": cache.Name, "bio": cache.Bio, "motto": cache.Motto,
+				},
+				"cached": true,
+			}
+		}
 		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	// Fill empty fields from cache.
+	cache := readProfileCache()
+	if cache != nil {
+		if p.Name == "" && cache.Name != "" {
+			p.Name = cache.Name
+		}
+		if p.Bio == "" && cache.Bio != "" {
+			p.Bio = cache.Bio
+		}
+		if p.Motto == "" && cache.Motto != "" {
+			p.Motto = cache.Motto
+		}
 	}
 	return map[string]interface{}{"ok": true, "profile": p}
 }
@@ -278,6 +394,8 @@ func (a *App) ClawNetUpdateProfile(name, bio string) map[string]interface{} {
 	if err := c.UpdateProfile(name, bio); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
+	// Write to local cache.
+	writeProfileCacheFields(&name, &bio, nil, nil, nil)
 	return map[string]interface{}{"ok": true}
 }
 
@@ -286,7 +404,34 @@ func (a *App) ClawNetSetMotto(motto string) map[string]interface{} {
 	if err := c.SetMotto(motto); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
+	writeProfileCacheFields(nil, nil, &motto, nil, nil)
 	return map[string]interface{}{"ok": true}
+}
+
+// ---------- Daemon Info ----------
+
+// ClawNetGetDaemonInfo returns daemon process info for diagnostics display.
+// Returns PID (if we launched it), binary path, and version.
+// The caller (frontend) already knows the alive/running state from ClawNetIsRunning.
+func (a *App) ClawNetGetDaemonInfo() map[string]interface{} {
+	c := a.initClawNet()
+	binPath := c.binPath
+	if binPath == "" {
+		binPath = c.findBinary()
+	}
+
+	pid := c.DaemonPID()
+	version := ""
+	if s, err := c.GetStatus(); err == nil {
+		version = s.Version
+	}
+
+	return map[string]interface{}{
+		"ok":       true,
+		"pid":      pid,
+		"bin_path": binPath,
+		"version":  version,
+	}
 }
 
 // ---------- Topic Rooms ----------
@@ -762,6 +907,8 @@ func (a *App) ClawNetUpdateResume(skills []string, domains []string, bio string)
 	if err := c.UpdateResume(resume); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
+	// Write to local cache.
+	writeProfileCacheFields(nil, &bio, nil, skills, domains)
 	return map[string]interface{}{"ok": true}
 }
 
