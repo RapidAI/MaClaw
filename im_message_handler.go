@@ -29,6 +29,7 @@ type IMUserMessage struct {
 	Platform      string `json:"platform"`
 	Text          string `json:"text"`
 	MinIterations int    `json:"min_iterations,omitempty"` // floor for agent loop iterations (used by scheduled tasks)
+	IsBackground  bool   `json:"is_background,omitempty"`  // true for scheduled tasks / auto-picked tasks (uses separate HTTP client)
 }
 
 // IMAgentResponse is the structured reply sent back to Hub.
@@ -91,20 +92,44 @@ type conversationSession struct {
 	lastAccess time.Time
 }
 
-type conversationMemory struct {
+// memoryShardCount is the number of shards for conversation memory.
+// Must be a power of 2 for fast modulo via bitwise AND.
+const memoryShardCount = 16
+
+// memoryShard holds a subset of conversation sessions, protected by its
+// own lock to reduce contention when multiple users chat concurrently.
+type memoryShard struct {
 	mu       sync.RWMutex
 	sessions map[string]*conversationSession
+}
+
+type conversationMemory struct {
+	shards   [memoryShardCount]*memoryShard
 	stopCh   chan struct{}
 	archiver *ConversationArchiver
 }
 
 func newConversationMemory() *conversationMemory {
 	cm := &conversationMemory{
-		sessions: make(map[string]*conversationSession),
-		stopCh:   make(chan struct{}),
+		stopCh: make(chan struct{}),
+	}
+	for i := range cm.shards {
+		cm.shards[i] = &memoryShard{
+			sessions: make(map[string]*conversationSession),
+		}
 	}
 	go cm.evictionLoop()
 	return cm
+}
+
+// shard returns the shard for a given userID using FNV-1a hash.
+func (cm *conversationMemory) shard(userID string) *memoryShard {
+	h := uint32(2166136261) // FNV offset basis
+	for i := 0; i < len(userID); i++ {
+		h ^= uint32(userID[i])
+		h *= 16777619 // FNV prime
+	}
+	return cm.shards[h&(memoryShardCount-1)]
 }
 
 // evictionLoop 定期清理过期的对话记忆，防止内存无限增长
@@ -123,16 +148,31 @@ func (cm *conversationMemory) evictionLoop() {
 
 func (cm *conversationMemory) evictExpired() {
 	now := time.Now()
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	for uid, s := range cm.sessions {
-		if now.Sub(s.lastAccess) > memoryTTL {
-			if cm.archiver != nil {
-				if err := cm.archiver.Archive(uid, s.entries); err != nil {
-					fmt.Fprintf(os.Stderr, "conversation_archiver: failed to archive user %s: %v\n", uid, err)
+	// Collect expired sessions outside the lock to avoid holding it during
+	// archival (which may perform network I/O).
+	type expiredEntry struct {
+		userID  string
+		entries []conversationEntry
+	}
+	var toArchive []expiredEntry
+
+	for _, sh := range cm.shards {
+		sh.mu.Lock()
+		for uid, s := range sh.sessions {
+			if now.Sub(s.lastAccess) > memoryTTL {
+				if cm.archiver != nil {
+					toArchive = append(toArchive, expiredEntry{uid, s.entries})
 				}
+				delete(sh.sessions, uid)
 			}
-			delete(cm.sessions, uid)
+		}
+		sh.mu.Unlock()
+	}
+
+	// Archive outside any lock so slow I/O doesn't block other users.
+	for _, e := range toArchive {
+		if err := cm.archiver.Archive(e.userID, e.entries); err != nil {
+			fmt.Fprintf(os.Stderr, "conversation_archiver: failed to archive user %s: %v\n", e.userID, err)
 		}
 	}
 }
@@ -145,9 +185,10 @@ func (cm *conversationMemory) stop() {
 }
 
 func (cm *conversationMemory) load(userID string) []conversationEntry {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-	s := cm.sessions[userID]
+	sh := cm.shard(userID)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	s := sh.sessions[userID]
 	if s == nil {
 		return nil
 	}
@@ -157,18 +198,20 @@ func (cm *conversationMemory) load(userID string) []conversationEntry {
 }
 
 func (cm *conversationMemory) save(userID string, entries []conversationEntry) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	cm.sessions[userID] = &conversationSession{
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.sessions[userID] = &conversationSession{
 		entries:    entries,
 		lastAccess: time.Now(),
 	}
 }
 
 func (cm *conversationMemory) clear(userID string) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	delete(cm.sessions, userID)
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	delete(sh.sessions, userID)
 }
 
 func estimateTokens(entries []conversationEntry) int {
@@ -455,7 +498,8 @@ type IMMessageHandler struct {
 	app     *App
 	manager *RemoteSessionManager
 	memory  *conversationMemory
-	client  *http.Client
+	client     *http.Client // chat-priority HTTP client (optimised transport)
+	taskClient *http.Client // background-task HTTP client (separate pool)
 
 	// Unified tool registry and dynamic builder (Phase 1 upgrade).
 	registry    *ToolRegistry
@@ -494,16 +538,42 @@ type IMMessageHandler struct {
 	// Dynamic loop limit — set by the "set_max_iterations" tool during an
 	// active agent loop. Reset to 0 at the start of each runAgentLoop call.
 	// A positive value overrides the configured maxIter for the current loop.
+	// TODO: This field is not goroutine-safe when multiple agent loops run
+	// concurrently on the same handler (e.g. chat + scheduled task). Move
+	// to a per-loop context to eliminate the race.
 	loopMaxOverride int
 }
 
 // NewIMMessageHandler creates a new handler.
 func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
+	// Optimised transport for interactive chat — larger connection pool
+	// so concurrent requests don't queue behind each other.
+	chatTransport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		MaxConnsPerHost:     20,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	// Separate transport for background tasks (scheduled tasks, auto-picked
+	// ClawNet tasks) so they never starve the chat connection pool.
+	taskTransport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		MaxIdleConns:        50,
+		MaxIdleConnsPerHost: 10,
+		MaxConnsPerHost:     10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	chatClient := &http.Client{Timeout: 120 * time.Second, Transport: chatTransport}
+	taskClient := &http.Client{Timeout: 180 * time.Second, Transport: taskTransport}
+
 	h := &IMMessageHandler{
-		app:     app,
-		manager: manager,
-		memory:  newConversationMemory(),
-		client:  &http.Client{Timeout: 120 * time.Second},
+		app:        app,
+		manager:    manager,
+		memory:     newConversationMemory(),
+		client:     chatClient,
+		taskClient: taskClient,
 	}
 	// Initialize ToolRegistry and register builtin tools.
 	h.registry = NewToolRegistry()
@@ -742,15 +812,22 @@ func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProg
 		}
 	}
 
+	// Select HTTP client: background tasks use a separate connection pool
+	// so they never block interactive chat requests.
+	httpClient := h.client
+	if msg.IsBackground {
+		httpClient = h.taskClient
+	}
+
 	history := h.memory.load(msg.UserID)
-	history = h.compactHistory(history)
+	history = h.compactHistory(history, httpClient)
 	var systemPrompt string
 	if h.memoryStore != nil {
 		systemPrompt = h.buildSystemPromptWithMemory(msg.Text)
 	} else {
 		systemPrompt = h.buildSystemPrompt()
 	}
-	return h.runAgentLoop(msg.UserID, systemPrompt, history, msg.Text, onProgress, msg.MinIterations)
+	return h.runAgentLoop(msg.UserID, systemPrompt, history, msg.Text, onProgress, msg.MinIterations, httpClient)
 }
 
 // handleExitCommand terminates all active sessions, resets conversation
@@ -822,7 +899,7 @@ func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 }
 
 // compactHistory summarizes old conversation turns to stay within token limits.
-func (h *IMMessageHandler) compactHistory(entries []conversationEntry) []conversationEntry {
+func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClient *http.Client) []conversationEntry {
 	if estimateTokens(entries) < maxMemoryTokenEstimate {
 		return entries
 	}
@@ -858,7 +935,7 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry) []convers
 	for i, m := range msgs {
 		conv[i] = m
 	}
-	resp, err := h.doLLMRequest(cfg, conv, nil)
+	resp, err := h.doLLMRequest(cfg, conv, nil, httpClient)
 	if err != nil || len(resp.Choices) == 0 {
 		return recent
 	}
@@ -900,15 +977,16 @@ type llmToolCall struct {
 
 // doLLMRequest sends a chat completion request to the configured LLM.
 // Supports both OpenAI-compatible and Anthropic Messages API protocols.
-func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}) (*llmResponse, error) {
+// The httpClient parameter selects which connection pool to use (chat vs background).
+func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
 	if cfg.Protocol == "anthropic" {
-		return h.doAnthropicLLMRequest(cfg, messages, tools)
+		return h.doAnthropicLLMRequest(cfg, messages, tools, httpClient)
 	}
-	return h.doOpenAILLMRequest(cfg, messages, tools)
+	return h.doOpenAILLMRequest(cfg, messages, tools, httpClient)
 }
 
 // doOpenAILLMRequest sends a request using the OpenAI-compatible protocol.
-func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}) (*llmResponse, error) {
+func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
 
 	reqBody := map[string]interface{}{
@@ -930,7 +1008,7 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []in
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
 
-	resp, err := h.client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -954,7 +1032,7 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []in
 
 // doAnthropicLLMRequest sends a request using the Anthropic Messages API protocol
 // and converts the response to the internal llmResponse format for compatibility.
-func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}) (*llmResponse, error) {
+func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
 
 	// Separate system message and convert messages to Anthropic format.
@@ -1105,7 +1183,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages [
 		req.Header.Set("x-api-key", cfg.Key)
 	}
 
-	resp, err := h.client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1178,7 +1256,7 @@ type anthropicContentBlock struct {
 // Agentic Loop — multi-round tool calling
 // ---------------------------------------------------------------------------
 
-func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []conversationEntry, userText string, onProgress ProgressCallback, minIterations int) (result *IMAgentResponse) {
+func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []conversationEntry, userText string, onProgress ProgressCallback, minIterations int, httpClient *http.Client) (result *IMAgentResponse) {
 	// panic recovery — 防止工具执行异常导致 goroutine 崩溃
 	defer func() {
 		if r := recover(); r != nil {
@@ -1191,6 +1269,37 @@ func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []c
 		if onProgress != nil {
 			onProgress(text)
 		}
+	}
+
+	// isDebug reads the debug toggle live from config so changes take effect
+	// immediately — even mid-loop when the user flips the switch.
+	// Cached for up to 2 seconds to avoid excessive disk reads in the hot loop.
+	var cachedDebug bool
+	var cachedDebugTime time.Time
+	isDebug := func() bool {
+		if now := time.Now(); now.Sub(cachedDebugTime) > 2*time.Second {
+			c, err := h.app.LoadConfig()
+			if err != nil {
+				cachedDebug = false
+			} else {
+				cachedDebug = c.MaclawDebugToolCalls
+			}
+			cachedDebugTime = now
+		}
+		return cachedDebug
+	}
+
+	// sendToolProgress sends tool-execution progress only when debug is on.
+	sendToolProgress := func(text string) {
+		if isDebug() {
+			sendProgress(text)
+		}
+	}
+
+	// Immediate acknowledgment: when debug is off, send a brief receipt so
+	// the user knows their request was received and is being processed.
+	if !isDebug() {
+		sendProgress("📨 收到，正在处理中，稍后发你结果…")
 	}
 
 	cfg := h.app.GetMaclawLLMConfig()
@@ -1237,14 +1346,20 @@ func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []c
 			break
 		}
 		if iteration > 0 {
-			if maxIter > 0 || h.loopMaxOverride > 0 {
-				sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d/%d 轮）…", iteration+1, effectiveMax))
-			} else {
-				sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d 轮）…", iteration+1))
+			if isDebug() {
+				if maxIter > 0 || h.loopMaxOverride > 0 {
+					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d/%d 轮）…", iteration+1, effectiveMax))
+				} else {
+					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d 轮）…", iteration+1))
+				}
+			} else if iteration == 3 || (iteration > 3 && iteration%5 == 0) {
+				// Non-debug mode: send a patience hint at iteration 4, then
+				// every 5 rounds so the user knows a long task is still alive.
+				sendProgress("⏳ 任务较复杂，正在耐心处理中，稍后发你结果…")
 			}
 		}
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget)
-		resp, err := h.doLLMRequest(cfg, conversation, tools)
+		resp, err := h.doLLMRequest(cfg, conversation, tools, httpClient)
 		if err != nil {
 			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s", err.Error())}
 		}
@@ -1297,8 +1412,13 @@ func (h *IMMessageHandler) runAgentLoop(userID, systemPrompt string, history []c
 		var pendingFileData, pendingFileName, pendingFileMimeType string
 		screenshotAlreadySent := false
 		for _, tc := range choice.Message.ToolCalls {
-			sendProgress(fmt.Sprintf("⚙️ 正在执行工具: %s", tc.Function.Name))
-			result := h.executeTool(tc.Function.Name, tc.Function.Arguments, onProgress)
+			sendToolProgress(fmt.Sprintf("⚙️ 正在执行工具: %s", tc.Function.Name))
+			// When debug is off, suppress intermediate progress from tool execution too.
+			toolOnProgress := onProgress
+			if !isDebug() {
+				toolOnProgress = nil
+			}
+			result := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
 
 			// Intercept direct screenshot results: extract base64 image data
 			// so it can be delivered via IM image channel instead of text.
@@ -1411,6 +1531,15 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 - 优先使用 send_and_observe（发送并等待输出），它会自动等待结果返回
 - create_session 后 → 必须 get_session_output 确认启动
 - 验证失败如实告知用户并尝试修复
+
+## 🛑 会话失败止损原则（极其重要）
+当会话状态为 exited 且退出码非 0 时，说明编程工具启动失败或异常退出：
+- 不要反复重试创建新会话——同样的环境问题会导致同样的失败
+- 不要反复调用 get_session_output 轮询已退出的会话——状态不会改变
+- 立即停止工具调用，将错误信息和修复建议直接告知用户
+- 常见原因：工具未安装、API Key 未配置、项目路径不存在、网络问题
+- 如果输出中有具体错误信息，提取关键信息告诉用户如何修复
+- 最多重试 1 次（换工具或换服务商），仍然失败则直接告知用户
 
 ## 工具使用要点
 - 向会话发送指令优先用 send_and_observe（自动等待输出），避免分别调用 send_input + get_session_output
@@ -2045,6 +2174,7 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 	b.WriteString(fmt.Sprintf("✅ 会话已创建 [%s]\n", view.ID))
 	b.WriteString(fmt.Sprintf("🔧 工具: %s | 📦 服务商: %s | 📁 项目: %s\n", view.Tool, resolvedProvider, projectPath))
 	b.WriteString(fmt.Sprintf("⚠️ 你必须立即调用 get_session_output(session_id=%q) 确认会话是否正常启动，不要直接告诉用户已完成。", view.ID))
+	b.WriteString("\n🛑 如果 get_session_output 显示会话已退出（exited）且退出码非 0，说明工具启动失败，不要重试创建会话，直接将错误告知用户。")
 	return b.String()
 }
 
@@ -2137,6 +2267,27 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 		}
 	}
 
+	// When the session is still in "starting" state with no output, wait
+	// briefly (up to ~5s) for the process to either produce output or exit.
+	// This avoids returning an empty "(暂无输出)" result that causes the
+	// LLM agent to poll repeatedly, wasting many iterations.
+	session.mu.RLock()
+	isStarting := session.Status == SessionStarting
+	hasOutput := len(session.RawOutputLines) > 0
+	session.mu.RUnlock()
+
+	if isStarting && !hasOutput {
+		for i := 0; i < 10; i++ {
+			time.Sleep(500 * time.Millisecond)
+			session.mu.RLock()
+			changed := session.Status != SessionStarting || len(session.RawOutputLines) > 0
+			session.mu.RUnlock()
+			if changed {
+				break
+			}
+		}
+	}
+
 	session.mu.RLock()
 	status := string(session.Status)
 	summary := session.Summary
@@ -2177,6 +2328,26 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 	} else {
 		b.WriteString("\n(暂无输出)\n")
 	}
+
+	// When the session has exited with a non-zero code, append a strong
+	// stop-loss hint so the LLM agent stops retrying and reports the
+	// failure to the user immediately.
+	session.mu.RLock()
+	var exitCodeVal *int
+	if session.ExitCode != nil {
+		cp := *session.ExitCode
+		exitCodeVal = &cp
+	}
+	sessionStatus := session.Status
+	sessionTool := session.Tool
+	session.mu.RUnlock()
+
+	if (sessionStatus == SessionExited || sessionStatus == SessionError) && exitCodeVal != nil && *exitCodeVal != 0 {
+		b.WriteString(fmt.Sprintf("\n🛑 会话已失败退出（退出码 %d）。不要再对此会话调用任何工具。", *exitCodeVal))
+		b.WriteString(fmt.Sprintf("\n请立即将错误信息告知用户，并建议检查 %s 的安装和配置。", sessionTool))
+		b.WriteString("\n不要重复创建新会话重试——同样的环境问题会导致同样的失败。")
+	}
+
 	return b.String()
 }
 

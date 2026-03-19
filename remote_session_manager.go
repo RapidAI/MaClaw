@@ -697,6 +697,26 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 					s.mu.Unlock()
 					syncOutputResult(m.hubClient, result)
 				}
+
+				// If the output channel closed without the session ever
+				// reaching "running" state, the process likely crashed on
+				// startup (missing API key, bad config, etc.).  Update the
+				// summary so the user sees a clear diagnostic instead of a
+				// generic "exit code 1" message.
+				if !sessionStarted {
+					s.mu.Lock()
+					s.Summary.Severity = "error"
+					s.Summary.CurrentTask = "SDK process exited without initializing"
+					s.Summary.SuggestedAction = "Check tool installation, API key configuration, and network connectivity"
+					s.Summary.UpdatedAt = time.Now().Unix()
+					snap := s.Summary
+					s.mu.Unlock()
+					if m.hubClient != nil {
+						_ = m.hubClient.SendSessionSummary(snap)
+					}
+					m.app.emitRemoteStateChanged()
+				}
+
 				if messages == nil {
 					return
 				}

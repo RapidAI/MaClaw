@@ -175,7 +175,7 @@ func ensureGeminiOnboardingComplete(app *App) error {
 // flags provides defense-in-depth for edge cases where the CLI falls back
 // to interactive mode.
 func ensureCodeBuddyOnboardingComplete(app *App, projectPath string) error {
-	return ensureClaudeCodeForkOnboarding(app, ".codebuddy.json", "codebuddy", projectPath)
+	return ensureClaudeCodeForkOnboarding(app, ".codebuddy.json", "codebuddy", projectPath, "")
 }
 
 // ensureClaudeCodeForkOnboarding is the shared implementation for Claude Code
@@ -184,7 +184,7 @@ func ensureCodeBuddyOnboardingComplete(app *App, projectPath string) error {
 //
 // configFileName is the basename of the config file (e.g. ".kode.json").
 // logTag is used for log messages (e.g. "kode", "codebuddy").
-func ensureClaudeCodeForkOnboarding(app *App, configFileName, logTag, projectPath string) error {
+func ensureClaudeCodeForkOnboarding(app *App, configFileName, logTag, projectPath string, apiKey string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("cannot determine home directory: %w", err)
@@ -225,6 +225,17 @@ func ensureClaudeCodeForkOnboarding(app *App, configFileName, logTag, projectPat
 		}
 	}
 
+	// When a custom API key is provided, ensure it is listed in
+	// customApiKeyResponses.approved so Claude Code does not show an
+	// interactive confirmation dialog.  In SDK mode (stream-json) such
+	// a dialog cannot be answered and causes an immediate exit with
+	// code 1.
+	if apiKey != "" {
+		if ensureCustomApiKeyApproved(existing, apiKey) {
+			changed = true
+		}
+	}
+
 	if !changed {
 		if app != nil {
 			app.log(fmt.Sprintf("[%s-onboarding] config already complete, no changes needed", logTag))
@@ -249,6 +260,45 @@ func ensureClaudeCodeForkOnboarding(app *App, configFileName, logTag, projectPat
 		app.log(fmt.Sprintf("[%s-onboarding] updated %s with onboarding flags", logTag, configPath))
 	}
 	return nil
+}
+
+// ensureCustomApiKeyApproved adds the given API key to the
+// customApiKeyResponses.approved list in the config map.  Returns true
+// if the config was modified.
+//
+// Claude Code requires custom (non-Anthropic) API keys to be explicitly
+// approved in ~/.claude.json.  Without this entry, Claude Code shows an
+// interactive confirmation dialog which cannot be answered in SDK mode
+// (--input-format stream-json), causing an immediate exit with code 1.
+func ensureCustomApiKeyApproved(config map[string]any, apiKey string) bool {
+	if apiKey == "" {
+		return false
+	}
+
+	responses, _ := config["customApiKeyResponses"].(map[string]any)
+	if responses == nil {
+		responses = map[string]any{}
+		config["customApiKeyResponses"] = responses
+	}
+
+	// Check if the key is already in the approved list.
+	approved, _ := responses["approved"].([]any)
+	for _, v := range approved {
+		if s, ok := v.(string); ok && s == apiKey {
+			return false // Already approved
+		}
+	}
+
+	// Add the key to the approved list.
+	approved = append(approved, apiKey)
+	responses["approved"] = approved
+
+	// Ensure rejected list exists.
+	if responses["rejected"] == nil {
+		responses["rejected"] = []any{}
+	}
+
+	return true
 }
 
 // backupSuffix is the extension appended to config files when backing up

@@ -1094,6 +1094,7 @@ func (a *App) ensureAutoTaskPicker() {
 				Platform:      "clawnet",
 				Text:          actionText,
 				MinIterations: 30,
+				IsBackground:  true,
 			}, func(text string) {
 				// Progress callback — send to IM so user can see live updates.
 				progressMsg := fmt.Sprintf("🦐 虾网任务「%s」进度:\n%s", taskTitle, text)

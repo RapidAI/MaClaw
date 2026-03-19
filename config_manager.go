@@ -753,6 +753,10 @@ func (m *ConfigManager) applyGeneralChange(cfg *AppConfig, key, value string) (s
 		old := fmt.Sprintf("%v", cfg.HideMaclawLLMPopup)
 		cfg.HideMaclawLLMPopup = strings.EqualFold(value, "true")
 		return old, nil
+	case "maclaw_debug_tool_calls":
+		old := fmt.Sprintf("%v", cfg.MaclawDebugToolCalls)
+		cfg.MaclawDebugToolCalls = strings.EqualFold(value, "true")
+		return old, nil
 	}
 	return "", fmt.Errorf("unsupported general key %q", key)
 }
@@ -872,6 +876,7 @@ func (m *ConfigManager) initSchema() {
 				{Key: "check_update_on_startup", Description: "启动时检查更新", Type: "bool", Default: "true"},
 				{Key: "hide_startup_popup", Description: "隐藏启动弹窗", Type: "bool", Default: "false"},
 				{Key: "hide_maclaw_llm_popup", Description: "隐藏MaClaw LLM未配置提示弹窗", Type: "bool", Default: "false"},
+				{Key: "maclaw_debug_tool_calls", Description: "MaClaw Debug 开关：开启后显示工具调用过程", Type: "bool", Default: "false"},
 			},
 		},
 

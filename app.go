@@ -225,6 +225,9 @@ type AppConfig struct {
 	ClawNetAutoPickerMinReward float64 `json:"clawnet_auto_picker_min_reward,omitempty"`
 	// Security policy mode: "relaxed", "standard" (default), "strict"
 	SecurityPolicyMode string `json:"security_policy_mode,omitempty"`
+	// MaClaw Debug: when true, intermediate tool-call progress is sent to user;
+	// when false (default), only errors and final results are shown.
+	MaclawDebugToolCalls bool `json:"maclaw_debug_tool_calls,omitempty"`
 }
 
 // SkillHubEntry represents a single SkillHUB registry endpoint.
@@ -532,6 +535,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 				Platform:      "scheduler",
 				Text:          actionText,
 				MinIterations: 50, // complex tasks need more rounds
+				IsBackground:  true,
 			}, onProgress)
 			if resp == nil {
 				return "", fmt.Errorf("nil response from agent")

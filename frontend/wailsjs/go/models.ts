@@ -154,6 +154,7 @@ export namespace main {
 	    memory_auto_compress: boolean;
 	    clawnet_enabled: boolean;
 	    skill_hub_urls: any[];
+	    maclaw_debug_tool_calls: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -224,6 +225,7 @@ export namespace main {
 	        this.memory_auto_compress = source["memory_auto_compress"];
 	        this.clawnet_enabled = source["clawnet_enabled"];
 	        this.skill_hub_urls = source["skill_hub_urls"];
+	        this.maclaw_debug_tool_calls = source["maclaw_debug_tool_calls"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

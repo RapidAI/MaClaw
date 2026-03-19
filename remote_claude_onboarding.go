@@ -14,6 +14,10 @@ import (
 // It also ensures the given projectPath has a trust entry so Claude
 // Code doesn't prompt "Do you trust this project folder?" on launch.
 //
+// When apiKey is non-empty, it is added to the customApiKeyResponses
+// "approved" list so Claude Code does not prompt for API key confirmation
+// in SDK mode (where interactive prompts cause immediate exit with code 1).
+//
 // This is necessary because:
 //   - Remote sessions may run under a user profile where Claude Code
 //     has never been launched interactively.
@@ -24,8 +28,12 @@ import (
 //
 // The function is idempotent — it only adds missing keys and never
 // removes existing user preferences.
-func ensureClaudeOnboardingComplete(app *App, projectPath string) error {
-	return ensureClaudeCodeForkOnboarding(app, ".claude.json", "claude", projectPath)
+func ensureClaudeOnboardingComplete(app *App, projectPath string, apiKey ...string) error {
+	key := ""
+	if len(apiKey) > 0 {
+		key = apiKey[0]
+	}
+	return ensureClaudeCodeForkOnboarding(app, ".claude.json", "claude", projectPath, key)
 }
 
 // ensureProjectTrust adds a trust entry for the given project path in

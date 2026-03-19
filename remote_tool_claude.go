@@ -33,7 +33,11 @@ func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 
 	// Ensure Claude Code's onboarding/first-run wizard has been marked
 	// as complete so it doesn't block the session with interactive prompts.
-	if err := ensureClaudeOnboardingComplete(a.app, spec.ProjectPath); err != nil {
+	// Pass the API key so it gets added to customApiKeyResponses.approved,
+	// preventing the interactive API key confirmation dialog that would
+	// cause an immediate exit with code 1 in SDK mode.
+	apiKey := spec.Env["ANTHROPIC_AUTH_TOKEN"]
+	if err := ensureClaudeOnboardingComplete(a.app, spec.ProjectPath, apiKey); err != nil {
 		if a.app != nil {
 			a.app.log(fmt.Sprintf("[claude-adapter] onboarding pre-check warning: %v", err))
 		}

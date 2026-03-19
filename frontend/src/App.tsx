@@ -4331,6 +4331,29 @@ ${instruction}`;
                                     </div>
                                 )}
                             </div>
+
+                            <div className="form-group" style={{ marginTop: '10px', borderTop: '1px solid #f1f5f9', paddingTop: '10px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={config?.maclaw_debug_tool_calls || false}
+                                        onChange={(e) => {
+                                            if (config) {
+                                                const newConfig = new main.AppConfig({ ...config, maclaw_debug_tool_calls: e.target.checked });
+                                                setConfig(newConfig);
+                                                SaveConfig(newConfig);
+                                            }
+                                        }}
+                                        style={{ width: '16px', height: '16px' }}
+                                    />
+                                    <span style={{ fontSize: '0.8rem', color: '#374151' }}>MaClaw Debug</span>
+                                </label>
+                                <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginLeft: '24px', marginTop: '4px' }}>
+                                    {lang === 'zh-Hans' || lang === 'zh' ? '开启后，远程会话中将显示工具调用过程（如"正在执行工具…"）；关闭后仅显示最终结果和错误信息' :
+                                        lang === 'zh-Hant' ? '開啟後，遠端會話中將顯示工具調用過程；關閉後僅顯示最終結果和錯誤信息' :
+                                            'When enabled, tool call progress (e.g. "Executing tool…") is shown during remote sessions. When disabled, only final results and errors are displayed.'}
+                                </p>
+                            </div>
                             </div>
                         </div>
                     )}

@@ -482,3 +482,124 @@ func TestToolConfigPathsReturnsCorrectPaths(t *testing.T) {
 		}
 	}
 }
+
+// --- Custom API Key Approval tests ---
+
+func TestEnsureCustomApiKeyApprovedAddsKey(t *testing.T) {
+	config := map[string]any{}
+
+	changed := ensureCustomApiKeyApproved(config, "sk-test-key-123")
+	if !changed {
+		t.Error("expected change when adding new key")
+	}
+
+	responses, ok := config["customApiKeyResponses"].(map[string]any)
+	if !ok {
+		t.Fatal("customApiKeyResponses missing")
+	}
+	approved, ok := responses["approved"].([]any)
+	if !ok || len(approved) != 1 {
+		t.Fatalf("approved list should have 1 entry, got %v", approved)
+	}
+	if approved[0] != "sk-test-key-123" {
+		t.Errorf("approved[0] = %v, want sk-test-key-123", approved[0])
+	}
+	// rejected list should be initialized
+	if responses["rejected"] == nil {
+		t.Error("rejected list should be initialized")
+	}
+}
+
+func TestEnsureCustomApiKeyApprovedIdempotent(t *testing.T) {
+	config := map[string]any{
+		"customApiKeyResponses": map[string]any{
+			"approved": []any{"sk-test-key-123"},
+			"rejected": []any{},
+		},
+	}
+
+	changed := ensureCustomApiKeyApproved(config, "sk-test-key-123")
+	if changed {
+		t.Error("should not change when key already approved")
+	}
+}
+
+func TestEnsureCustomApiKeyApprovedEmptyKey(t *testing.T) {
+	config := map[string]any{}
+
+	changed := ensureCustomApiKeyApproved(config, "")
+	if changed {
+		t.Error("should not change for empty key")
+	}
+	if config["customApiKeyResponses"] != nil {
+		t.Error("should not create customApiKeyResponses for empty key")
+	}
+}
+
+func TestEnsureCustomApiKeyApprovedMultipleKeys(t *testing.T) {
+	config := map[string]any{}
+
+	ensureCustomApiKeyApproved(config, "key-1")
+	ensureCustomApiKeyApproved(config, "key-2")
+
+	responses := config["customApiKeyResponses"].(map[string]any)
+	approved := responses["approved"].([]any)
+	if len(approved) != 2 {
+		t.Fatalf("approved list should have 2 entries, got %d", len(approved))
+	}
+}
+
+func TestEnsureClaudeOnboardingWithApiKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{}
+	if err := ensureClaudeOnboardingComplete(app, `D:\test`, "sk-custom-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpHome, ".claude.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("config file not created: %v", err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	responses, ok := config["customApiKeyResponses"].(map[string]any)
+	if !ok {
+		t.Fatal("customApiKeyResponses missing")
+	}
+	approved, ok := responses["approved"].([]any)
+	if !ok || len(approved) != 1 {
+		t.Fatalf("approved list should have 1 entry, got %v", approved)
+	}
+	if approved[0] != "sk-custom-key" {
+		t.Errorf("approved[0] = %v, want sk-custom-key", approved[0])
+	}
+}
+
+func TestEnsureClaudeOnboardingWithoutApiKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{}
+	// No API key — should not create customApiKeyResponses
+	if err := ensureClaudeOnboardingComplete(app, `D:\test`); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpHome, ".claude.json")
+	data, _ := os.ReadFile(configPath)
+	var config map[string]any
+	json.Unmarshal(data, &config)
+
+	if config["customApiKeyResponses"] != nil {
+		t.Error("customApiKeyResponses should not exist when no API key provided")
+	}
+}
