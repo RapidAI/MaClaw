@@ -1526,10 +1526,17 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 - 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
 - 智能推断参数：如果用户没有指定 session_id 等参数，查看当前会话列表自动选择。
 
-## ⚠️ 执行验证原则（极其重要）
+## ⚠️ 编程任务工作流（极其重要）
+当用户提出编程需求时，按以下步骤执行：
+1. 理解需求：如果用户指令模糊（如"优化一下性能"），先澄清具体目标和范围再动手；如果指令明确（如"给 login.go 加个超时处理"），可以直接执行
+2. 创建会话：调用 create_session 启动编程工具
+3. 发送指令：调用 get_session_output 确认状态为 running 后（最多检查 2 次），立即用 send_and_observe 将需求发送给编程工具
+4. 跟踪进度：根据输出跟踪执行情况，必要时追加指令
+⚠️ 编程工具启动后会等待输入，不发送指令它不会开始工作。不要反复轮询 get_session_output。
+
+## ⚠️ 执行验证原则
 每次执行操作后，必须验证是否真正成功，绝不能仅凭工具返回"已发送"就告诉用户执行成功。
 - 优先使用 send_and_observe（发送并等待输出），它会自动等待结果返回
-- create_session 后 → 必须 get_session_output 确认启动
 - 验证失败如实告知用户并尝试修复
 
 ## 🛑 会话失败止损原则（极其重要）
@@ -2174,8 +2181,11 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 	}
 	b.WriteString(fmt.Sprintf("✅ 会话已创建 [%s]\n", view.ID))
 	b.WriteString(fmt.Sprintf("🔧 工具: %s | 📦 服务商: %s | 📁 项目: %s\n", view.Tool, resolvedProvider, projectPath))
-	b.WriteString(fmt.Sprintf("⚠️ 你必须立即调用 get_session_output(session_id=%q) 确认会话是否正常启动，不要直接告诉用户已完成。", view.ID))
-	b.WriteString("\n🛑 如果 get_session_output 显示会话已退出（exited）且退出码非 0，说明工具启动失败，不要重试创建会话，直接将错误告知用户。")
+	b.WriteString(fmt.Sprintf("\n📋 下一步操作："))
+	b.WriteString(fmt.Sprintf("\n1. 调用 get_session_output(session_id=%q) 确认会话已启动（状态为 running）", view.ID))
+	b.WriteString(fmt.Sprintf("\n2. 立即调用 send_and_observe(session_id=%q, text=\"编程指令\") 将需求发送给编程工具", view.ID))
+	b.WriteString("\n⚠️ 编程工具启动后等待输入，不发送指令不会开始工作。最多检查 2 次 get_session_output，确认 running 后立即发送。")
+	b.WriteString("\n🛑 如果会话已退出（exited）且退出码非 0，不要重试，直接告知用户错误信息。")
 	return b.String()
 }
 
@@ -2328,6 +2338,14 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 		}
 	} else {
 		b.WriteString("\n(暂无输出)\n")
+		// When the session is running but has no output, it's likely waiting
+		// for the first user message (SDK mode tools like Claude Code wait
+		// for input after init). Hint the AI to send the task.
+		if status == string(SessionRunning) {
+			b.WriteString(fmt.Sprintf("\n📌 会话已就绪但暂无输出——编程工具在等待输入。请立即调用 send_and_observe(session_id=%q, text=\"编程指令\") 发送任务。", sessionID))
+		} else if status == string(SessionStarting) {
+			b.WriteString("\n⏳ 会话正在启动中，请稍后再次调用 get_session_output 检查状态（最多再检查 1 次）。")
+		}
 	}
 
 	// When the session has exited with a non-zero code, append a strong

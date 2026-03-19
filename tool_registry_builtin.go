@@ -50,7 +50,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		nil, nil,
 		func(args map[string]interface{}) string { return h.toolListSessions() })
 
-	reg("create_session", "创建新的远程会话。可指定 provider 选择服务商。创建后用 get_session_output 或 send_and_observe 观察启动状态。",
+	reg("create_session", "创建远程编程会话。创建后编程工具会等待输入，需用 send_and_observe 发送编程指令。如果用户需求模糊，建议先澄清再创建。",
 		ToolCategoryBuiltin, []string{"session", "create", "launch"},
 		map[string]interface{}{
 			"tool":         map[string]string{"type": "string", "description": "工具名称，如 claude, codex, cursor, gemini, opencode"},
