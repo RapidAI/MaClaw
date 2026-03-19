@@ -59,6 +59,21 @@ func clawnetLocalBinaryName() string {
 	return "clawnet"
 }
 
+// clawnetManualBinaryPath checks if the user has manually placed a clawnet binary
+// at ~/.openclaw/clawnet/clawnet (or .exe on Windows). Returns the path if found.
+func clawnetManualBinaryPath() (string, bool) {
+	installDir, err := clawnetInstallDir()
+	if err != nil {
+		return "", false
+	}
+	p := filepath.Join(installDir, clawnetLocalBinaryName())
+	info, err := os.Stat(p)
+	if err == nil && !info.IsDir() && info.Size() > 0 {
+		return p, true
+	}
+	return "", false
+}
+
 // DownloadClawNet downloads the clawnet binary from GitHub Releases.
 // It accepts an optional emitProgress callback for reporting status to the frontend.
 // Returns the path to the installed binary.
@@ -83,8 +98,15 @@ func DownloadClawNet(emitProgress func(stage string, pct int, msg string)) (stri
 		return "", fmt.Errorf("failed to create install directory %s: %w", installDir, err)
 	}
 
-	downloadURL := fmt.Sprintf("%s/%s", clawnetGitHubReleasesBase, asset)
 	targetPath := filepath.Join(installDir, clawnetLocalBinaryName())
+
+	// Check for a manually placed binary before attempting download.
+	if p, ok := clawnetManualBinaryPath(); ok {
+		emit("done", 100, fmt.Sprintf("Using manually installed binary → %s", p))
+		return p, nil
+	}
+
+	downloadURL := fmt.Sprintf("%s/%s", clawnetGitHubReleasesBase, asset)
 
 	emit("downloading", 0, fmt.Sprintf("Downloading %s ...", asset))
 
@@ -98,7 +120,17 @@ func DownloadClawNet(emitProgress func(stage string, pct int, msg string)) (stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed: HTTP %s (url: %s)", resp.Status, downloadURL)
+		// Drain body so the connection can be reused.
+		io.Copy(io.Discard, resp.Body)
+		return "", fmt.Errorf(
+			"[clawnet-not-available] 🦞 ClawNet %s/%s not yet available\n\n"+
+				"The author hasn't published a prebuilt binary for your platform yet.\n"+
+				"This is not your fault — just waiting on an upstream release.\n\n"+
+				"You can manually place the binary at:\n  %s\n"+
+				"and it will be picked up automatically next time.",
+			runtime.GOOS, runtime.GOARCH,
+			targetPath,
+		)
 	}
 
 	totalSize := resp.ContentLength // may be -1 if unknown

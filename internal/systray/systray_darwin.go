@@ -6,6 +6,7 @@ package systray
 
 #import <Cocoa/Cocoa.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include "systray.h"
 
 void setInternalLoop(bool);
@@ -151,13 +152,17 @@ func SetIcon(iconBytes []byte) {
 
 // SetTitle sets the systray title, only available on Mac and Linux.
 func SetTitle(title string) {
-	C.setTitle(C.CString(title))
+	cstr := C.CString(title)
+	defer C.free(unsafe.Pointer(cstr))
+	C.setTitle(cstr)
 }
 
 // SetTooltip sets the systray tooltip to display on mouse hover of the tray icon,
 // only available on Mac and Windows.
 func SetTooltip(tooltip string) {
-	C.setTooltip(C.CString(tooltip))
+	cstr := C.CString(tooltip)
+	defer C.free(unsafe.Pointer(cstr))
+	C.setTooltip(cstr)
 }
 
 func addOrUpdateMenuItem(item *MenuItem) {
@@ -177,12 +182,18 @@ func addOrUpdateMenuItem(item *MenuItem) {
 	if item.parent != nil {
 		parentID = item.parent.id
 	}
+	cTitle := C.CString(item.title)
+	defer C.free(unsafe.Pointer(cTitle))
+	cTooltip := C.CString(item.tooltip)
+	defer C.free(unsafe.Pointer(cTooltip))
+	cShortcut := C.CString(item.shortcutKey)
+	defer C.free(unsafe.Pointer(cShortcut))
 	C.add_or_update_menu_item(
 		C.int(item.id),
 		C.int(parentID),
-		C.CString(item.title),
-		C.CString(item.tooltip),
-		C.CString(item.shortcutKey),
+		cTitle,
+		cTooltip,
+		cShortcut,
 		disabled,
 		checked,
 		isCheckable,
@@ -273,7 +284,11 @@ func systray_on_rclick() {
 // ShowBalloonNotification displays a macOS notification with sound.
 // iconFlag is ignored on macOS (always uses default notification style).
 func ShowBalloonNotification(title, message string, iconFlag uint32) error {
-	C.showNotification(C.CString(title), C.CString(message))
+	cTitle := C.CString(title)
+	defer C.free(unsafe.Pointer(cTitle))
+	cMessage := C.CString(message)
+	defer C.free(unsafe.Pointer(cMessage))
+	C.showNotification(cTitle, cMessage)
 	return nil
 }
 

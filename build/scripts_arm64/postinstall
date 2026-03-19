@@ -1,18 +1,44 @@
 #!/bin/bash
-APP_PATH="/Applications/CodeClaw.app"
-APP_URL="file:///Applications/CodeClaw.app/"
+APP_NAME="MaClaw"
+OLD_APP_NAME="CodeClaw"
+APP_PATH="/Applications/${APP_NAME}.app"
+APP_URL="file:///Applications/${APP_NAME}.app/"
+OLD_APP_PATH="/Applications/${OLD_APP_NAME}.app"
 CURRENT_USER=$(stat -f '%Su' /dev/console)
 RANDOM_GUID=$(od -An -N4 -t u4 /dev/urandom | tr -d ' ')
+
+# 0. Clean up old CodeClaw.app if it exists (renamed to MaClaw)
+if [ -d "$OLD_APP_PATH" ]; then
+    logger "${APP_NAME}: Removing legacy ${OLD_APP_NAME}.app"
+    rm -rf "$OLD_APP_PATH"
+    # Remove old Dock entry
+    if sudo -u "$CURRENT_USER" defaults read com.apple.dock persistent-apps | grep -q "${OLD_APP_NAME}.app"; then
+        logger "${APP_NAME}: Removing old ${OLD_APP_NAME} Dock entry"
+        # Read current dock items, filter out old app, rewrite
+        sudo -u "$CURRENT_USER" python3 -c "
+import plistlib, os, subprocess
+dock_plist = os.path.expanduser('~${CURRENT_USER}/Library/Preferences/com.apple.dock.plist')
+try:
+    with open(dock_plist, 'rb') as f:
+        dock = plistlib.load(f)
+    apps = dock.get('persistent-apps', [])
+    dock['persistent-apps'] = [a for a in apps if '${OLD_APP_NAME}.app' not in str(a)]
+    with open(dock_plist, 'wb') as f:
+        plistlib.dump(dock, f)
+except Exception as e:
+    pass
+" 2>/dev/null
+    fi
+fi
 
 # 1. Force register app with LaunchServices
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_PATH"
 
 if [ -d "$APP_PATH" ]; then
-    # Check if already in dock (check by app name)
-if ! sudo -u "$CURRENT_USER" defaults read com.apple.dock persistent-apps | grep -q "CodeClaw.app"; then
-  logger "CodeClaw: Adding $APP_URL to Dock for user $CURRENT_USER with GUID $RANDOM_GUID"
-        
-        # Use a more complete XML structure matching system style
+    # Check if already in dock
+    if ! sudo -u "$CURRENT_USER" defaults read com.apple.dock persistent-apps | grep -q "${APP_NAME}.app"; then
+        logger "${APP_NAME}: Adding $APP_URL to Dock for user $CURRENT_USER with GUID $RANDOM_GUID"
+
         DOCK_ITEM="<dict>
             <key>GUID</key><integer>$RANDOM_GUID</integer>
             <key>tile-data</key><dict>
@@ -20,12 +46,12 @@ if ! sudo -u "$CURRENT_USER" defaults read com.apple.dock persistent-apps | grep
                     <key>_CFURLString</key><string>$APP_URL</string>
                     <key>_CFURLStringType</key><integer>15</integer>
                 </dict>
-      <key>file-label</key><string>CodeClaw</string>
+                <key>file-label</key><string>${APP_NAME}</string>
                 <key>file-type</key><integer>41</integer>
             </dict>
             <key>tile-type</key><string>file-tile</string>
         </dict>"
-        
+
         sudo -u "$CURRENT_USER" defaults write com.apple.dock persistent-apps -array-add "$DOCK_ITEM"
         sudo -u "$CURRENT_USER" killall Dock
     fi

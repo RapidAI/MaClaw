@@ -303,8 +303,9 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int) []int
 		groups = append(groups, msgGroup{start: gStart, end: i})
 	}
 
-	// Try keeping only the last N groups, increasing N until we exceed the limit
-	// or run out of groups. We want the maximum tail that fits.
+	// Try dropping the fewest groups from the front first (dropCount=1),
+	// increasing until the remaining tail fits within the budget.
+	// This preserves as much recent context as possible.
 	systemMsg := msgs[:1]
 	placeholder := []interface{}{map[string]string{
 		"role":    "user",
@@ -336,15 +337,23 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int) []int
 		if mm, ok := m.(map[string]interface{}); ok {
 			if role, _ := mm["role"].(string); role == "tool" {
 				if content, _ := mm["content"].(string); len(content) > 1024 {
-					// Aggressively truncate tool results in the last group
-					truncated := content[:680] + "\n…(截断)…\n" + content[len(content)-300:]
-					cp := make(map[string]interface{}, len(mm))
-					for k, v := range mm {
-						cp[k] = v
+					// Aggressively truncate tool results in the last group.
+					// Use rune-safe slicing to avoid splitting multi-byte UTF-8 chars.
+					runes := []rune(content)
+					headRunes := 400
+					tailRunes := 200
+					if len(runes) <= headRunes+tailRunes {
+						// Short enough in runes — keep as-is.
+					} else {
+						truncated := string(runes[:headRunes]) + "\n…(截断)…\n" + string(runes[len(runes)-tailRunes:])
+						cp := make(map[string]interface{}, len(mm))
+						for k, v := range mm {
+							cp[k] = v
+						}
+						cp["content"] = truncated
+						result = append(result, cp)
+						continue
 					}
-					cp["content"] = truncated
-					result = append(result, cp)
-					continue
 				}
 			}
 		}
@@ -357,7 +366,15 @@ func trimHistory(entries []conversationEntry) []conversationEntry {
 	if len(entries) <= maxConversationTurns {
 		return entries
 	}
-	return entries[len(entries)-maxConversationTurns:]
+	trimmed := entries[len(entries)-maxConversationTurns:]
+	// Ensure we don't start with orphaned "tool" messages that lack a
+	// preceding assistant message with tool_calls — the LLM API rejects
+	// such sequences with "Messages with role 'tool' must be a response
+	// to a preceding message with 'tool_calls'".
+	for len(trimmed) > 0 && trimmed[0].Role == "tool" {
+		trimmed = trimmed[1:]
+	}
+	return trimmed
 }
 
 // maxToolResultLen caps individual tool results to ~4KB before they enter
@@ -810,6 +827,16 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry) []convers
 		return entries
 	}
 	split := len(entries) / 2
+	// Adjust split point forward so we don't cut in the middle of a
+	// tool-call group (assistant+tool_calls followed by tool results).
+	// The "recent" slice must not start with orphaned role:"tool" entries.
+	for split < len(entries) && entries[split].Role == "tool" {
+		split++
+	}
+	if split >= len(entries) {
+		// Degenerate case: everything is tool messages — just return as-is.
+		return entries
+	}
 	recent := entries[split:]
 
 	var sb strings.Builder

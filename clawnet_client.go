@@ -205,7 +205,7 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 		c.mu.Unlock()
 		downloaded, err := DownloadClawNet(emitProgress)
 		if err != nil {
-			return fmt.Errorf("clawnet binary not found and auto-download failed: %w", err)
+			return err // DownloadClawNet already provides a user-friendly message
 		}
 		c.mu.Lock()
 		// Re-check: another goroutine may have started the daemon while we downloaded.

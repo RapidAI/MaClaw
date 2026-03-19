@@ -1539,7 +1539,7 @@ function App() {
         x: 0, y: 0, visible: false, skillName: null
     });
 
-    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, visible: boolean, target: HTMLInputElement | null }>({
+    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, visible: boolean, target: HTMLInputElement | HTMLTextAreaElement | null }>({
         x: 0, y: 0, visible: false, target: null
     });
 
@@ -1563,7 +1563,7 @@ function App() {
     const [selectedProviderForUrl, setSelectedProviderForUrl] = useState<ProviderEndpoint | null>(null);
     const [hoveredProvider, setHoveredProvider] = useState<{ provider: ProviderEndpoint, x: number, y: number } | null>(null);
 
-    const handleContextMenu = (e: React.MouseEvent, target: HTMLInputElement) => {
+    const handleContextMenu = (e: React.MouseEvent, target: HTMLInputElement | HTMLTextAreaElement) => {
         e.preventDefault();
         setContextMenu({
             x: e.clientX,
@@ -1691,6 +1691,27 @@ function App() {
         return () => window.removeEventListener('click', handleClick);
     }, [contextMenu, skillContextMenu]);
 
+    // Global right-click context menu for all input/textarea elements (macOS WebView fix)
+    useEffect(() => {
+        const handleGlobalContextMenu = (e: MouseEvent) => {
+            const target = e.target as HTMLElement;
+            const isInput = target instanceof HTMLInputElement &&
+                ['text', 'password', 'url', 'email', 'search', 'number', 'tel'].includes(target.type);
+            const isTextarea = target instanceof HTMLTextAreaElement;
+            if (isInput || isTextarea) {
+                e.preventDefault();
+                setContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    visible: true,
+                    target: target as HTMLInputElement | HTMLTextAreaElement
+                });
+            }
+        };
+        document.addEventListener('contextmenu', handleGlobalContextMenu);
+        return () => document.removeEventListener('contextmenu', handleGlobalContextMenu);
+    }, []);
+
     const getClipboardText = async () => {
         try {
             const text = await ClipboardGetText();
@@ -1726,16 +1747,18 @@ function App() {
             case 'paste':
                 const text = await getClipboardText();
                 if (text) {
-                    // Modern approach using setRangeText if supported, or manual
                     const start = target.selectionStart || 0;
                     const end = target.selectionEnd || 0;
                     const val = target.value;
                     const newVal = val.substring(0, start) + text + val.substring(end);
 
-                    // Generic React-compatible input update
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-                    if (nativeInputValueSetter) {
-                        nativeInputValueSetter.call(target, newVal);
+                    // React-compatible value setter: pick the right prototype based on element type
+                    const proto = target instanceof HTMLTextAreaElement
+                        ? window.HTMLTextAreaElement.prototype
+                        : window.HTMLInputElement.prototype;
+                    const nativeValueSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+                    if (nativeValueSetter) {
+                        nativeValueSetter.call(target, newVal);
                     } else {
                         target.value = newVal;
                     }

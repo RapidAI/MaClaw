@@ -452,8 +452,19 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             </div>
 
             {error && (
-                <div style={{ fontSize: "0.78rem", color: colors.danger, marginBottom: "8px", padding: "6px 10px", background: colors.dangerBg, borderRadius: radius.md, border: `1px solid ${colors.border}` }}>
-                    {error}
+                <div style={{
+                    fontSize: "0.75rem",
+                    color: error.includes("[clawnet-not-available]") ? colors.warning : colors.danger,
+                    marginBottom: "8px",
+                    padding: "8px 12px",
+                    background: error.includes("[clawnet-not-available]") ? colors.warningBg : colors.dangerBg,
+                    borderRadius: radius.md,
+                    border: `1px solid ${colors.border}`,
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    lineHeight: 1.6,
+                }}>
+                    {error.replace("[clawnet-not-available] ", "")}
                 </div>
             )}
 

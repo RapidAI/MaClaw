@@ -1,7 +1,7 @@
 ﻿Unicode true
 
 !ifndef INFO_PROJECTNAME
-!define INFO_PROJECTNAME "CodeClaw"
+!define INFO_PROJECTNAME "MaClaw"
 !endif
 !ifndef INFO_COMPANYNAME
     !define INFO_COMPANYNAME "RapidAI"
@@ -16,7 +16,7 @@
     !define INFO_COPYRIGHT "Copyright (C) 2026 RapidAI"
 !endif
 !ifndef PRODUCT_EXECUTABLE
-!define PRODUCT_EXECUTABLE "CodeClaw.exe"
+!define PRODUCT_EXECUTABLE "MaClaw.exe"
 !endif
 !ifndef REQUEST_EXECUTION_LEVEL
     !define REQUEST_EXECUTION_LEVEL "admin"
@@ -27,10 +27,10 @@
 
 # Define Wails binaries (passed from command line or hardcoded here for manual build)
 !ifndef ARG_WAILS_AMD64_BINARY
-!define ARG_WAILS_AMD64_BINARY "..\..\..\dist\CodeClaw_amd64.exe"
+!define ARG_WAILS_AMD64_BINARY "..\..\..\dist\MaClaw_amd64.exe"
 !endif
 !ifndef ARG_WAILS_ARM64_BINARY
-!define ARG_WAILS_ARM64_BINARY "..\..\..\dist\CodeClaw_arm64.exe"
+!define ARG_WAILS_ARM64_BINARY "..\..\..\dist\MaClaw_arm64.exe"
 !endif
 
 VIProductVersion "${INFO_PRODUCTVERSION}"

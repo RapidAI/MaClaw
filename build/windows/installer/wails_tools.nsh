@@ -5,7 +5,7 @@
 !include "FileFunc.nsh"
 
 !ifndef INFO_PROJECTNAME
-!define INFO_PROJECTNAME "CodeClaw"
+!define INFO_PROJECTNAME "MaClaw"
 !endif
 !ifndef INFO_COMPANYNAME
 !define INFO_COMPANYNAME "RapidAI"

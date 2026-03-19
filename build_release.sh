@@ -261,7 +261,17 @@ create_app_bundle() {
     <key>NSHighResolutionCapable</key>
     <string>true</string>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright 2025</string>
+    <string>Copyright 2026 RapidAI</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>MaClaw needs access to your Desktop folder to manage project files.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>MaClaw needs access to your Documents folder to manage project files.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>MaClaw needs access to your Downloads folder to install tools and updates.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>MaClaw uses local network to discover and connect to Hub services.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>MaClaw needs photo library access to process screenshots and images.</string>
 </dict>
 </plist>
 EOF
@@ -305,7 +315,8 @@ create_pkg() {
     TEMP_ROOT="build/pkg_root_${ARCH}"
     rm -rf "$TEMP_ROOT"
     mkdir -p "$TEMP_ROOT/Applications"
-    cp -R "$BUNDLE_PATH" "$TEMP_ROOT/Applications/"
+    # Always install as MaClaw.app regardless of arch-specific bundle name
+    cp -R "$BUNDLE_PATH" "$TEMP_ROOT/Applications/${APP_NAME}.app"
     
     SCRIPTS_DIR="build/scripts_x64"
     if [ "$ARCH" == "arm64" ] || [ "$ARCH" == "universal" ]; then
