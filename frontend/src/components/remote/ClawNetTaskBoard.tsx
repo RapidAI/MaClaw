@@ -227,10 +227,6 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
             {/* Header */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", flexWrap: "wrap", gap: "6px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontSize: "1.2rem" }}>🦞</span>
-                    <span style={{ fontSize: "1rem", fontWeight: 700, color: "#1e293b" }}>
-                        {zh ? "虾网任务集市" : "ClawNet Task Bazaar"}
-                    </span>
                     {credits && (
                         <span style={{
                             fontSize: "0.75rem", background: "#fffbeb", color: "#b45309",
@@ -311,7 +307,8 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
             {/* Task cards – 2 per row */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
                 {tasks.map((task) => {
-                    const sc = STATUS_COLORS[task.status] || STATUS_COLORS.open;
+                    const normalizedStatus = (task.status || "").toLowerCase();
+                    const sc = STATUS_COLORS[normalizedStatus] || STATUS_COLORS.open;
                     return (
                         <div key={task.id} style={{
                             background: "#fff", border: "1px solid #e2e8f0", borderRadius: "7px",
@@ -344,13 +341,16 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                                     🐚 {task.reward}
                                 </span>
                                 <span style={{ flex: 1 }} />
-                                {task.status === "open" && (
+                                {normalizedStatus === "open" && (
                                     <button
                                         style={{
                                             ...smallBtn(!!actionBusy || manualPickId === task.id),
                                             color: manualPickId === task.id ? "#ca8a04" : "#fff",
                                             background: manualPickId === task.id ? "#fefce8" : "#6366f1",
                                             border: manualPickId === task.id ? "1px solid #ca8a04" : "1px solid #6366f1",
+                                            padding: "3px 10px",
+                                            fontSize: "0.68rem",
+                                            fontWeight: 600,
                                         }}
                                         disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => handleManualPick(task.id)}
@@ -358,19 +358,19 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                                         {manualPickId === task.id ? (zh ? "执行中..." : "Running...") : (zh ? "🤖 接单" : "🤖 Pick")}
                                     </button>
                                 )}
-                                {task.status === "open" && (
+                                {normalizedStatus === "open" && (
                                     <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => doAction("bid-" + task.id, () => ClawNetBidOnTask(task.id, 0, zh ? "我可以做" : "I can do this"))}>
                                         {zh ? "竞标" : "Bid"}
                                     </button>
                                 )}
-                                {task.status === "assigned" && (
+                                {normalizedStatus === "assigned" && (
                                     <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => doAction("submit-" + task.id, () => ClawNetSubmitTaskResult(task.id, ""))}>
                                         {zh ? "提交" : "Submit"}
                                     </button>
                                 )}
-                                {task.status === "submitted" && (
+                                {normalizedStatus === "submitted" && (
                                     <>
                                         <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                             onClick={() => doAction("approve-" + task.id, () => ClawNetApproveTask(task.id))}>
@@ -382,7 +382,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                                         </button>
                                     </>
                                 )}
-                                {(task.status === "open" || task.status === "assigned") && (
+                                {(normalizedStatus === "open" || normalizedStatus === "assigned") && (
                                     <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => doAction("cancel-" + task.id, () => ClawNetCancelTask(task.id))}>
                                         ✗

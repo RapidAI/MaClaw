@@ -3110,6 +3110,16 @@ ${instruction}`;
                     </div>
 
                     <div
+                        className={`sidebar-item ${navTab === 'clawnet' ? 'active' : ''}`}
+                        onClick={() => switchTool('clawnet')}
+                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        title={lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}
+                    >
+                        <img src={clawnetIcon} alt="ClawNet" style={{ width: '22px', height: '22px', margin: 0 }} />
+                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}</span>
+                    </div>
+
+                    <div
                         className={`sidebar-item ${navTab === 'about' ? 'active' : ''}`}
                         onClick={() => switchTool('about')}
                         style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
@@ -3129,15 +3139,6 @@ ${instruction}`;
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>⚙️</span>
                         <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("settings")}</span>
-                    </div>
-                    <div
-                        className={`sidebar-item ${navTab === 'clawnet' ? 'active' : ''}`}
-                        onClick={() => switchTool('clawnet')}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}
-                    >
-                        <img src={clawnetIcon} alt="ClawNet" style={{ width: '22px', height: '22px', margin: 0 }} />
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}</span>
                     </div>
                 </div>
 
