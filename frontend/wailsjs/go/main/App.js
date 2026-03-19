@@ -713,6 +713,94 @@ export function ClawNetManualPickTask(arg1) {
   return window['go']['main']['App']['ClawNetManualPickTask'](arg1);
 }
 
+export function ClawNetUpdateResume(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ClawNetUpdateResume'](arg1, arg2, arg3);
+}
+
+export function ClawNetJoinSwarm(arg1) {
+  return window['go']['main']['App']['ClawNetJoinSwarm'](arg1);
+}
+
+export function ClawNetContributeToSwarm(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ClawNetContributeToSwarm'](arg1, arg2, arg3);
+}
+
+export function ClawNetSynthesizeSwarm(arg1) {
+  return window['go']['main']['App']['ClawNetSynthesizeSwarm'](arg1);
+}
+
+export function ClawNetReactKnowledge(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetReactKnowledge'](arg1, arg2);
+}
+
+export function ClawNetReplyKnowledge(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetReplyKnowledge'](arg1, arg2);
+}
+
+export function ClawNetGetKnowledgeReplies(arg1) {
+  return window['go']['main']['App']['ClawNetGetKnowledgeReplies'](arg1);
+}
+
+export function ClawNetPublishKnowledgeFull(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ClawNetPublishKnowledgeFull'](arg1, arg2, arg3);
+}
+
+export function ClawNetAssignTask(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetAssignTask'](arg1, arg2);
+}
+
+export function ClawNetClaimTask(arg1) {
+  return window['go']['main']['App']['ClawNetClaimTask'](arg1);
+}
+
+export function ClawNetCreateTaskFull(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['ClawNetCreateTaskFull'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ClawNetMatchAgentsForTask(arg1) {
+  return window['go']['main']['App']['ClawNetMatchAgentsForTask'](arg1);
+}
+
+export function ClawNetSubmitTaskWork(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetSubmitTaskWork'](arg1, arg2);
+}
+
+export function ClawNetGetTaskSubmissions(arg1) {
+  return window['go']['main']['App']['ClawNetGetTaskSubmissions'](arg1);
+}
+
+export function ClawNetPickTaskWinner(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetPickTaskWinner'](arg1, arg2);
+}
+
+export function ClawNetGetOverlayStatus() {
+  return window['go']['main']['App']['ClawNetGetOverlayStatus']();
+}
+
+export function ClawNetGetOverlayPeersGeo() {
+  return window['go']['main']['App']['ClawNetGetOverlayPeersGeo']();
+}
+
+export function ClawNetCreatePrediction(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetCreatePrediction'](arg1, arg2);
+}
+
+export function ClawNetPlaceBet(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ClawNetPlaceBet'](arg1, arg2, arg3);
+}
+
+export function ClawNetResolvePrediction(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetResolvePrediction'](arg1, arg2);
+}
+
+export function ClawNetAppealPrediction(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetAppealPrediction'](arg1, arg2);
+}
+
+export function ClawNetGetPredictionLeaderboard() {
+  return window['go']['main']['App']['ClawNetGetPredictionLeaderboard']();
+}
+
 // AI Assistant bindings
 export function SendAIAssistantMessage(arg1) {
   return window['go']['main']['App']['SendAIAssistantMessage'](arg1);

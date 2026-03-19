@@ -327,6 +327,30 @@ export function ClawNetAutoPickerConfigure(arg1:boolean, arg2:number, arg3:numbe
 export function ClawNetAutoPickerTriggerNow():Promise<any>;
 export function ClawNetManualPickTask(arg1:string):Promise<any>;
 
+// ClawNet extended bindings (Swarm, Knowledge, Resume, etc.)
+export function ClawNetUpdateResume(arg1:Array<string>, arg2:Array<string>, arg3:string):Promise<any>;
+export function ClawNetJoinSwarm(arg1:string):Promise<any>;
+export function ClawNetContributeToSwarm(arg1:string, arg2:string, arg3:string):Promise<any>;
+export function ClawNetSynthesizeSwarm(arg1:string):Promise<any>;
+export function ClawNetReactKnowledge(arg1:string, arg2:string):Promise<any>;
+export function ClawNetReplyKnowledge(arg1:string, arg2:string):Promise<any>;
+export function ClawNetGetKnowledgeReplies(arg1:string):Promise<any>;
+export function ClawNetPublishKnowledgeFull(arg1:string, arg2:string, arg3:Array<string>):Promise<any>;
+export function ClawNetAssignTask(arg1:string, arg2:string):Promise<any>;
+export function ClawNetClaimTask(arg1:string):Promise<any>;
+export function ClawNetCreateTaskFull(arg1:string, arg2:string, arg3:number, arg4:Array<string>, arg5:string):Promise<any>;
+export function ClawNetMatchAgentsForTask(arg1:string):Promise<any>;
+export function ClawNetSubmitTaskWork(arg1:string, arg2:string):Promise<any>;
+export function ClawNetGetTaskSubmissions(arg1:string):Promise<any>;
+export function ClawNetPickTaskWinner(arg1:string, arg2:string):Promise<any>;
+export function ClawNetGetOverlayStatus():Promise<any>;
+export function ClawNetGetOverlayPeersGeo():Promise<any>;
+export function ClawNetCreatePrediction(arg1:string, arg2:Array<string>):Promise<any>;
+export function ClawNetPlaceBet(arg1:string, arg2:string, arg3:number):Promise<any>;
+export function ClawNetResolvePrediction(arg1:string, arg2:string):Promise<any>;
+export function ClawNetAppealPrediction(arg1:string, arg2:string):Promise<any>;
+export function ClawNetGetPredictionLeaderboard():Promise<any>;
+
 // AI Assistant bindings
 export function SendAIAssistantMessage(arg1:string):Promise<any>;
 

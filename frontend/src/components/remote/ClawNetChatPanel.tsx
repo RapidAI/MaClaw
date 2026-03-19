@@ -8,23 +8,10 @@ import {
     ClawNetGetTopicMessages,
     ClawNetPostTopicMessage,
 } from "../../../wailsjs/go/main/App";
-import { colors, radius } from "./styles";
+import { colors } from "./styles";
+import { cnCard, cnLabel, cnInput, cnActionBtn, cnTabStyle } from "./clawnetStyles";
 
 type Props = { lang: string; clawNetRunning: boolean };
-
-const card = { border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: "10px 14px", marginBottom: "8px", background: colors.surface } as const;
-const label = { fontSize: "0.72rem", color: colors.textMuted } as const;
-const actionBtn = (disabled?: boolean) => ({
-    background: "transparent", color: disabled ? colors.textMuted : colors.primary,
-    border: `1px solid ${disabled ? colors.border : colors.primary}`, borderRadius: radius.md,
-    padding: "3px 10px", fontSize: "0.72rem", cursor: (disabled ? "not-allowed" : "pointer") as const, opacity: disabled ? 0.5 : 1,
-});
-const tabStyle = (active: boolean) => ({
-    background: active ? colors.primary : colors.bg, color: active ? "#fff" : colors.textSecondary,
-    border: "none", borderRadius: radius.md, padding: "4px 12px", fontSize: "0.72rem",
-    fontWeight: (active ? 600 : 400) as any, cursor: "pointer" as const,
-});
-const inputStyle = { border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "4px 8px", fontSize: "0.72rem", width: "100%" } as const;
 
 export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
     const zh = lang?.startsWith("zh");
@@ -79,9 +66,10 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
         setDmBusy(true);
         try {
             const res = await ClawNetSendDM(target, dmText.trim());
+            if (!mountedRef.current) return;
             if (res.ok) { setDmText(""); if (activePeer) loadThread(activePeer); else { setNewPeer(""); setActivePeer(target); loadThread(target); } loadInbox(); }
         } catch {}
-        setDmBusy(false);
+        if (mountedRef.current) setDmBusy(false);
     };
 
     // Topics
@@ -123,25 +111,25 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
 
     useEffect(() => { if (tab === "dm") loadInbox(); else loadTopics(); }, [tab, loadInbox, loadTopics]);
 
-    if (!clawNetRunning) return <div style={label}>{zh ? "虾网未连接" : "ClawNet not connected"}</div>;
+    if (!clawNetRunning) return <div style={cnLabel}>{zh ? "虾网未连接" : "ClawNet not connected"}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>
             <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
-                <button style={tabStyle(tab === "dm")} onClick={() => { setTab("dm"); setActivePeer(null); }}>💬 {zh ? "私信" : "DM"}</button>
-                <button style={tabStyle(tab === "topics")} onClick={() => { setTab("topics"); setActiveTopic(null); }}>📢 {zh ? "话题频道" : "Topics"}</button>
+                <button style={cnTabStyle(tab === "dm")} onClick={() => { setTab("dm"); setActivePeer(null); }}>💬 {zh ? "私信" : "DM"}</button>
+                <button style={cnTabStyle(tab === "topics")} onClick={() => { setTab("topics"); setActiveTopic(null); }}>📢 {zh ? "话题频道" : "Topics"}</button>
             </div>
             {error && <div style={{ fontSize: "0.72rem", color: colors.danger, marginBottom: "8px" }}>{error}</div>}
 
             {tab === "dm" && !activePeer && (
                 <>
                     <div style={{ display: "flex", gap: "4px", marginBottom: "10px" }}>
-                        <input value={newPeer} onChange={e => setNewPeer(e.target.value)} placeholder={zh ? "输入 Peer ID 发起对话..." : "Enter Peer ID to start chat..."} style={{ ...inputStyle, flex: 1 }} />
-                        <button style={actionBtn(!newPeer.trim())} onClick={() => newPeer.trim() && openPeer(newPeer.trim())} disabled={!newPeer.trim()}>{zh ? "打开" : "Open"}</button>
+                        <input value={newPeer} onChange={e => setNewPeer(e.target.value)} placeholder={zh ? "输入 Peer ID 发起对话..." : "Enter Peer ID to start chat..."} style={{ ...cnInput, flex: 1 }} />
+                        <button style={cnActionBtn(!newPeer.trim())} onClick={() => newPeer.trim() && openPeer(newPeer.trim())} disabled={!newPeer.trim()}>{zh ? "打开" : "Open"}</button>
                     </div>
-                    {loading && <div style={label}>{zh ? "加载中..." : "Loading..."}</div>}
+                    {loading && <div style={cnLabel}>{zh ? "加载中..." : "Loading..."}</div>}
                     {inbox.map((m: any, i: number) => (
-                        <div key={i} style={{ ...card, cursor: "pointer" }} onClick={() => openPeer(m.peer_id || m.from || "")}>
+                        <div key={i} style={{ ...cnCard, cursor: "pointer" }} onClick={() => openPeer(m.peer_id || m.from || "")}>
                             <div style={{ display: "flex", justifyContent: "space-between" }}>
                                 <span style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>{(m.peer_id || m.from || "").slice(0, 16)}…</span>
                                 <span style={{ fontSize: "0.65rem", color: colors.textMuted }}>{m.created_at || m.time || ""}</span>
@@ -149,14 +137,14 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
                             {m.body && <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.body}</div>}
                         </div>
                     ))}
-                    {!loading && inbox.length === 0 && <div style={label}>{zh ? "暂无私信" : "No messages"}</div>}
+                    {!loading && inbox.length === 0 && <div style={cnLabel}>{zh ? "暂无私信" : "No messages"}</div>}
                 </>
             )}
 
             {tab === "dm" && activePeer && (
                 <>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                        <button style={{ ...actionBtn(), padding: "2px 8px" }} onClick={() => setActivePeer(null)}>← {zh ? "返回" : "Back"}</button>
+                        <button style={{ ...cnActionBtn(), padding: "2px 8px" }} onClick={() => setActivePeer(null)}>← {zh ? "返回" : "Back"}</button>
                         <span style={{ fontSize: "0.74rem", fontFamily: "monospace", color: colors.textSecondary }}>{activePeer.slice(0, 20)}…</span>
                     </div>
                     <div style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "8px" }}>
@@ -166,12 +154,12 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
                                 <div style={{ color: colors.textSecondary, marginTop: "2px" }}>{m.body}</div>
                             </div>
                         ))}
-                        {thread.length === 0 && <div style={label}>{zh ? "暂无消息" : "No messages yet"}</div>}
+                        {thread.length === 0 && <div style={cnLabel}>{zh ? "暂无消息" : "No messages yet"}</div>}
                     </div>
                     <div style={{ display: "flex", gap: "4px" }}>
                         <input value={dmText} onChange={e => setDmText(e.target.value)} placeholder={zh ? "输入消息..." : "Type a message..."}
-                            style={{ ...inputStyle, flex: 1 }} onKeyDown={e => e.key === "Enter" && sendDM()} />
-                        <button style={actionBtn(dmBusy || !dmText.trim())} onClick={sendDM} disabled={dmBusy}>{zh ? "发送" : "Send"}</button>
+                            style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && sendDM()} />
+                        <button style={cnActionBtn(dmBusy || !dmText.trim())} onClick={sendDM} disabled={dmBusy}>{zh ? "发送" : "Send"}</button>
                     </div>
                 </>
             )}
@@ -179,31 +167,31 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
             {tab === "topics" && !activeTopic && (
                 <>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
-                        <button style={actionBtn()} onClick={() => setShowNewTopic(!showNewTopic)}>{showNewTopic ? (zh ? "取消" : "Cancel") : (zh ? "创建频道" : "New Topic")}</button>
-                        <button style={actionBtn(loading)} onClick={loadTopics} disabled={loading}>{zh ? "刷新" : "Refresh"}</button>
+                        <button style={cnActionBtn()} onClick={() => setShowNewTopic(!showNewTopic)}>{showNewTopic ? (zh ? "取消" : "Cancel") : (zh ? "创建频道" : "New Topic")}</button>
+                        <button style={cnActionBtn(loading)} onClick={loadTopics} disabled={loading}>{zh ? "刷新" : "Refresh"}</button>
                     </div>
                     {showNewTopic && (
-                        <div style={{ ...card, background: colors.bg }}>
-                            <input value={newTopicName} onChange={e => setNewTopicName(e.target.value)} placeholder={zh ? "频道名称" : "Topic name"} style={{ ...inputStyle, marginBottom: "6px" }} />
-                            <input value={newTopicDesc} onChange={e => setNewTopicDesc(e.target.value)} placeholder={zh ? "描述（可选）" : "Description (optional)"} style={{ ...inputStyle, marginBottom: "6px" }} />
-                            <button style={actionBtn(!newTopicName.trim())} onClick={createTopic} disabled={!newTopicName.trim()}>{zh ? "创建" : "Create"}</button>
+                        <div style={{ ...cnCard, background: colors.bg }}>
+                            <input value={newTopicName} onChange={e => setNewTopicName(e.target.value)} placeholder={zh ? "频道名称" : "Topic name"} style={{ ...cnInput, marginBottom: "6px" }} />
+                            <input value={newTopicDesc} onChange={e => setNewTopicDesc(e.target.value)} placeholder={zh ? "描述（可选）" : "Description (optional)"} style={{ ...cnInput, marginBottom: "6px" }} />
+                            <button style={cnActionBtn(!newTopicName.trim())} onClick={createTopic} disabled={!newTopicName.trim()}>{zh ? "创建" : "Create"}</button>
                         </div>
                     )}
-                    {loading && <div style={label}>{zh ? "加载中..." : "Loading..."}</div>}
+                    {loading && <div style={cnLabel}>{zh ? "加载中..." : "Loading..."}</div>}
                     {topics.map((t: any, i: number) => (
-                        <div key={i} style={{ ...card, cursor: "pointer" }} onClick={() => loadTopicMsgs(t.name || t.id || "")}>
+                        <div key={i} style={{ ...cnCard, cursor: "pointer" }} onClick={() => loadTopicMsgs(t.name || t.id || "")}>
                             <div style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>{t.name || t.id}</div>
                             {t.description && <div style={{ fontSize: "0.7rem", color: colors.textMuted }}>{t.description}</div>}
                         </div>
                     ))}
-                    {!loading && topics.length === 0 && <div style={label}>{zh ? "暂无频道" : "No topics"}</div>}
+                    {!loading && topics.length === 0 && <div style={cnLabel}>{zh ? "暂无频道" : "No topics"}</div>}
                 </>
             )}
 
             {tab === "topics" && activeTopic && (
                 <>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                        <button style={{ ...actionBtn(), padding: "2px 8px" }} onClick={() => setActiveTopic(null)}>← {zh ? "返回" : "Back"}</button>
+                        <button style={{ ...cnActionBtn(), padding: "2px 8px" }} onClick={() => setActiveTopic(null)}>← {zh ? "返回" : "Back"}</button>
                         <span style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>#{activeTopic}</span>
                     </div>
                     <div style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "8px" }}>
@@ -213,12 +201,12 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
                                 <div style={{ color: colors.textSecondary, marginTop: "2px" }}>{m.body}</div>
                             </div>
                         ))}
-                        {topicMsgs.length === 0 && <div style={label}>{zh ? "暂无消息" : "No messages"}</div>}
+                        {topicMsgs.length === 0 && <div style={cnLabel}>{zh ? "暂无消息" : "No messages"}</div>}
                     </div>
                     <div style={{ display: "flex", gap: "4px" }}>
                         <input value={topicText} onChange={e => setTopicText(e.target.value)} placeholder={zh ? "发言..." : "Post a message..."}
-                            style={{ ...inputStyle, flex: 1 }} onKeyDown={e => e.key === "Enter" && postToTopic()} />
-                        <button style={actionBtn(topicBusy || !topicText.trim())} onClick={postToTopic} disabled={topicBusy}>{zh ? "发送" : "Send"}</button>
+                            style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && postToTopic()} />
+                        <button style={cnActionBtn(topicBusy || !topicText.trim())} onClick={postToTopic} disabled={topicBusy}>{zh ? "发送" : "Send"}</button>
                     </div>
                 </>
             )}

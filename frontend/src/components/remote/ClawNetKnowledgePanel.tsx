@@ -8,6 +8,7 @@ import {
     ClawNetGetKnowledgeReplies,
 } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
+import { cnCard, cnLabel, cnInput, cnActionBtn, cnTabStyle } from "./clawnetStyles";
 
 type Props = { lang: string; clawNetRunning: boolean };
 
@@ -16,20 +17,6 @@ interface KnowledgeEntry {
     domains?: string[]; tags?: string[]; reactions?: Record<string, number>;
     created_at?: string;
 }
-
-const card = { border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: "10px 14px", marginBottom: "8px", background: colors.surface } as const;
-const label = { fontSize: "0.72rem", color: colors.textMuted } as const;
-const actionBtn = (disabled?: boolean) => ({
-    background: "transparent", color: disabled ? colors.textMuted : colors.primary,
-    border: `1px solid ${disabled ? colors.border : colors.primary}`, borderRadius: radius.md,
-    padding: "3px 10px", fontSize: "0.72rem", cursor: (disabled ? "not-allowed" : "pointer") as const, opacity: disabled ? 0.5 : 1,
-});
-const tabStyle = (active: boolean) => ({
-    background: active ? colors.primary : colors.bg, color: active ? "#fff" : colors.textSecondary,
-    border: "none", borderRadius: radius.md, padding: "4px 12px", fontSize: "0.72rem",
-    fontWeight: (active ? 600 : 400) as any, cursor: "pointer" as const,
-});
-const inputStyle = { border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "4px 8px", fontSize: "0.72rem", width: "100%" } as const;
 
 export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
     const zh = lang?.startsWith("zh");
@@ -86,8 +73,14 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
         setPubBusy(false);
     };
 
+    // Fix: refresh current view (feed or search) after reacting, not always loadFeed
+    const refreshCurrentView = useCallback(() => {
+        if (tab === "search" && query.trim()) doSearch();
+        else loadFeed();
+    }, [tab, query, doSearch, loadFeed]);
+
     const handleReact = async (id: string, reaction: string) => {
-        try { await ClawNetReactKnowledge(id, reaction); loadFeed(); } catch {}
+        try { await ClawNetReactKnowledge(id, reaction); refreshCurrentView(); } catch {}
     };
 
     const toggleReplies = async (id: string) => {
@@ -109,33 +102,33 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
         setReplyBusy(false);
     };
 
-    if (!clawNetRunning) return <div style={label}>{zh ? "虾网未连接" : "ClawNet not connected"}</div>;
+    if (!clawNetRunning) return <div style={cnLabel}>{zh ? "虾网未连接" : "ClawNet not connected"}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>
             <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
-                <button style={tabStyle(tab === "feed")} onClick={() => setTab("feed")}>{zh ? "知识流" : "Feed"}</button>
-                <button style={tabStyle(tab === "search")} onClick={() => setTab("search")}>{zh ? "搜索" : "Search"}</button>
-                <button style={tabStyle(tab === "publish")} onClick={() => setTab("publish")}>{zh ? "发布" : "Publish"}</button>
+                <button style={cnTabStyle(tab === "feed")} onClick={() => setTab("feed")}>{zh ? "知识流" : "Feed"}</button>
+                <button style={cnTabStyle(tab === "search")} onClick={() => setTab("search")}>{zh ? "搜索" : "Search"}</button>
+                <button style={cnTabStyle(tab === "publish")} onClick={() => setTab("publish")}>{zh ? "发布" : "Publish"}</button>
             </div>
 
             {tab === "search" && (
                 <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
                     <input value={query} onChange={e => setQuery(e.target.value)} placeholder={zh ? "搜索知识..." : "Search knowledge..."}
-                        style={{ ...inputStyle, flex: 1 }} onKeyDown={e => e.key === "Enter" && doSearch()} />
-                    <button style={actionBtn(loading || !query.trim())} onClick={doSearch} disabled={loading || !query.trim()}>
+                        style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && doSearch()} />
+                    <button style={cnActionBtn(loading || !query.trim())} onClick={doSearch} disabled={loading || !query.trim()}>
                         {loading ? "..." : (zh ? "搜索" : "Search")}
                     </button>
                 </div>
             )}
 
             {tab === "publish" && (
-                <div style={{ ...card, background: colors.bg }}>
-                    <input value={pubTitle} onChange={e => setPubTitle(e.target.value)} placeholder={zh ? "标题" : "Title"} style={{ ...inputStyle, marginBottom: "6px" }} />
+                <div style={{ ...cnCard, background: colors.bg }}>
+                    <input value={pubTitle} onChange={e => setPubTitle(e.target.value)} placeholder={zh ? "标题" : "Title"} style={{ ...cnInput, marginBottom: "6px" }} />
                     <textarea value={pubBody} onChange={e => setPubBody(e.target.value)} placeholder={zh ? "内容（支持 Markdown）" : "Body (Markdown supported)"}
-                        style={{ ...inputStyle, minHeight: "80px", resize: "vertical", marginBottom: "6px" }} />
-                    <input value={pubTags} onChange={e => setPubTags(e.target.value)} placeholder={zh ? "标签（逗号分隔）" : "Tags (comma separated)"} style={{ ...inputStyle, marginBottom: "8px" }} />
-                    <button style={actionBtn(pubBusy || !pubTitle.trim() || !pubBody.trim())} onClick={handlePublish} disabled={pubBusy || !pubTitle.trim() || !pubBody.trim()}>
+                        style={{ ...cnInput, minHeight: "80px", resize: "vertical", marginBottom: "6px" }} />
+                    <input value={pubTags} onChange={e => setPubTags(e.target.value)} placeholder={zh ? "标签（逗号分隔）" : "Tags (comma separated)"} style={{ ...cnInput, marginBottom: "8px" }} />
+                    <button style={cnActionBtn(pubBusy || !pubTitle.trim() || !pubBody.trim())} onClick={handlePublish} disabled={pubBusy || !pubTitle.trim() || !pubBody.trim()}>
                         {pubBusy ? "..." : (zh ? "发布知识" : "Publish")}
                     </button>
                     {pubMsg && <div style={{ fontSize: "0.72rem", marginTop: "6px", color: pubMsg.startsWith("✅") ? colors.success : colors.danger }}>{pubMsg}</div>}
@@ -143,10 +136,10 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
             )}
 
             {error && <div style={{ fontSize: "0.72rem", color: colors.danger, marginBottom: "8px" }}>{error}</div>}
-            {(tab === "feed" || tab === "search") && loading && <div style={label}>{zh ? "加载中..." : "Loading..."}</div>}
+            {(tab === "feed" || tab === "search") && loading && <div style={cnLabel}>{zh ? "加载中..." : "Loading..."}</div>}
 
             {(tab === "feed" || tab === "search") && entries.map(e => (
-                <div key={e.id} style={card}>
+                <div key={e.id} style={cnCard}>
                     <div style={{ fontSize: "0.76rem", fontWeight: 600, color: colors.text, marginBottom: "4px" }}>{e.title}</div>
                     {e.body && <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginBottom: "6px", whiteSpace: "pre-wrap", maxHeight: "120px", overflow: "auto" }}>{e.body}</div>}
                     <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
@@ -160,7 +153,7 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
                                 {r} {e.reactions?.[r] || ""}
                             </button>
                         ))}
-                        <button onClick={() => toggleReplies(e.id)} style={{ ...actionBtn(), padding: "2px 8px", fontSize: "0.68rem" }}>
+                        <button onClick={() => toggleReplies(e.id)} style={{ ...cnActionBtn(), padding: "2px 8px", fontSize: "0.68rem" }}>
                             {zh ? "回复" : "Replies"}
                         </button>
                     </div>
@@ -173,8 +166,8 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
                             ))}
                             <div style={{ display: "flex", gap: "4px", marginTop: "4px" }}>
                                 <input value={replyText} onChange={e => setReplyText(e.target.value)} placeholder={zh ? "回复..." : "Reply..."}
-                                    style={{ ...inputStyle, flex: 1 }} onKeyDown={e => e.key === "Enter" && handleReply()} />
-                                <button style={actionBtn(replyBusy || !replyText.trim())} onClick={handleReply} disabled={replyBusy}>
+                                    style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && handleReply()} />
+                                <button style={cnActionBtn(replyBusy || !replyText.trim())} onClick={handleReply} disabled={replyBusy}>
                                     {zh ? "发送" : "Send"}
                                 </button>
                             </div>
@@ -183,7 +176,7 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
                 </div>
             ))}
             {(tab === "feed" || tab === "search") && !loading && entries.length === 0 && (
-                <div style={label}>{zh ? "暂无内容" : "No entries yet"}</div>
+                <div style={cnLabel}>{zh ? "暂无内容" : "No entries yet"}</div>
             )}
         </div>
     );
