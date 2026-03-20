@@ -16,7 +16,7 @@ import lobsterHalf from './assets/images/lobster_half.svg';
 import globeOnline from './assets/images/globe_online.svg';
 import globeOffline from './assets/images/globe_offline.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, PingSkillHub, ValidateSkillHub, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, PingSkillHub, ValidateSkillHub, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -205,6 +205,7 @@ const translations: any = {
     "en": {
         "title": "MaClaw",
         "about": "About",
+        "help": "Help",
         "cs146s": "Course",
         "introVideo": "Beginner",
         "thanks": "Thanks",
@@ -582,6 +583,7 @@ const translations: any = {
     "zh-Hans": {
         "title": "码卡龙",
         "about": "关于",
+        "help": "帮助",
         "manual": "文档指南",
         "cs146s": "在线课程",
         "introVideo": "入门视频",
@@ -938,6 +940,7 @@ const translations: any = {
     "zh-Hant": {
         "title": "碼卡龍",
         "about": "關於",
+        "help": "幫助",
         "manual": "文檔指南",
         "cs146s": "線上課程",
         "introVideo": "入門視頻",
@@ -1382,6 +1385,7 @@ function App() {
     const [tabStartIndex, setTabStartIndex] = useState(0);
     const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
+    const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');
     const [installLocation, setInstallLocation] = useState<'user' | 'project'>('user');
     const [installProject, setInstallProject] = useState<string>("");
     const [isBatchInstalling, setIsBatchInstalling] = useState(false);
@@ -1548,6 +1552,7 @@ function App() {
     const [skills, setSkills] = useState<main.Skill[]>([]);
     const [showAddSkillModal, setShowAddSkillModal] = useState(false);
     const [showAIPanel, setShowAIPanel] = useState(false);
+    const [showHelpMenu, setShowHelpMenu] = useState(false);
     const aiAssistant = useAIAssistant();
     const [showRemoteActivationModal, setShowRemoteActivationModal] = useState(false);
     const [pendingRemoteLaunchTool, setPendingRemoteLaunchTool] = useState<string>("");
@@ -2008,6 +2013,12 @@ function App() {
         // Fetch initial QQ Bot status
         GetQQBotStatus().then(setQQBotStatus).catch(() => {});
 
+        // Telegram Bot status listener
+        EventsOn("telegram-status-changed", (status: string) => {
+            setTelegramStatus(status);
+        });
+        GetTelegramStatus().then(setTelegramStatus).catch(() => {});
+
         // Listen for background tool installation events
         EventsOn("tool-checking", (toolName: string) => {
             setBackgroundInstallStatus(lang === 'zh-Hans' ? `检查 ${toolName}...` : `Checking ${toolName}...`);
@@ -2063,6 +2074,7 @@ function App() {
             EventsOff("config-changed");
             EventsOff("config-updated");
             EventsOff("qqbot-status-changed");
+            EventsOff("telegram-status-changed");
             EventsOff("tool-checking");
             EventsOff("tool-installing");
             EventsOff("tool-updating");
@@ -3090,7 +3102,7 @@ ${instruction}`;
         {
             id: 'im' as const,
             label: 'IM',
-            desc: lang === 'zh-Hans' ? '配置 QQ 机器人等即时通讯接入' : lang === 'zh-Hant' ? '配置 QQ 機器人等即時通訊接入' : 'Configure QQ Bot and other IM integrations',
+            desc: lang === 'zh-Hans' ? '配置 QQ 机器人、Telegram Bot 等即时通讯接入' : lang === 'zh-Hant' ? '配置 QQ 機器人、Telegram Bot 等即時通訊接入' : 'Configure QQ Bot, Telegram Bot and other IM integrations',
         },
         {
             id: 'security' as const,
@@ -3120,7 +3132,7 @@ ${instruction}`;
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: '180px' } as any}>
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: isLiteMode ? '60px' : '180px' } as any}>
                 {/* Left Navigation Strip */}
                 <div style={{
                     width: '60px',
@@ -3187,7 +3199,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'skills' ? 'active' : ''}`}
                         onClick={() => switchTool('skills')}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center', display: isLiteMode ? 'none' : undefined }}
                         title={t("skills")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🧩</span>
@@ -3196,7 +3208,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'mcp' ? 'active' : ''}`}
                         onClick={() => switchTool('mcp')}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center', display: isLiteMode ? 'none' : undefined }}
                         title="MCP"
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🔌</span>
@@ -3215,28 +3227,102 @@ ${instruction}`;
 
                     <div style={{ flex: 1 }}></div>
 
+                    {/* Gossip icon — only visible in lite mode (in pro mode it's in the right panel) */}
+                    {isLiteMode && (
+                        <div
+                            className={`sidebar-item ${navTab === 'gossip' ? 'active' : ''}`}
+                            onClick={() => { setShowAIPanel(false); switchTool('gossip'); }}
+                            style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'gossip' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                            title={t("gossip")}
+                        >
+                            <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🗣️</span>
+                            <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("gossip")}</span>
+                        </div>
+                    )}
+
                     <div
                         className={`sidebar-item ${navTab === 'settings' ? 'active' : ''}`}
-                        onClick={() => switchTool('settings')}
+                        onClick={() => { setShowAIPanel(false); switchTool('settings'); }}
                         style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title={t("settings")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>⚙️</span>
                         <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("settings")}</span>
                     </div>
-                    <div
-                        className={`sidebar-item ${navTab === 'about' ? 'active' : ''}`}
-                        onClick={() => switchTool('about')}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={t("about")}
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>ℹ️</span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("about")}</span>
-                    </div>
+
+                    {/* In lite mode: "Help" with popup menu; in pro mode: "About" direct nav */}
+                    {isLiteMode ? (
+                        <div style={{ position: 'relative' }}>
+                            <div
+                                className={`sidebar-item ${showHelpMenu ? 'active' : ''}`}
+                                onClick={() => setShowHelpMenu(!showHelpMenu)}
+                                style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: showHelpMenu ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                                title={t("help")}
+                            >
+                                <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>❓</span>
+                                <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("help")}</span>
+                            </div>
+                            {showHelpMenu && (
+                                <>
+                                    <div style={{ position: 'fixed', inset: 0, zIndex: 999 }} onClick={() => setShowHelpMenu(false)} />
+                                    <div style={{
+                                        position: 'absolute',
+                                        left: '62px',
+                                        bottom: '0',
+                                        background: 'white',
+                                        border: '1px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                                        zIndex: 1000,
+                                        minWidth: '120px',
+                                        padding: '4px 0',
+                                    }}>
+                                        <div
+                                            style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                                            className="help-menu-item"
+                                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
+                                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                                            onClick={() => { setShowHelpMenu(false); setShowAIPanel(false); switchTool('message'); }}
+                                        >
+                                            💬 {t("message")}
+                                        </div>
+                                        <div
+                                            style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                                            className="help-menu-item"
+                                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
+                                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                                            onClick={() => { setShowHelpMenu(false); setShowAIPanel(false); switchTool('tutorial'); }}
+                                        >
+                                            📚 {t("tutorial")}
+                                        </div>
+                                        <div
+                                            style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                                            className="help-menu-item"
+                                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
+                                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                                            onClick={() => { setShowHelpMenu(false); setShowAIPanel(false); switchTool('about'); }}
+                                        >
+                                            ℹ️ {t("about")}
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    ) : (
+                        <div
+                            className={`sidebar-item ${navTab === 'about' ? 'active' : ''}`}
+                            onClick={() => switchTool('about')}
+                            style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                            title={t("about")}
+                        >
+                            <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>ℹ️</span>
+                            <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("about")}</span>
+                        </div>
+                    )}
                 </div>
 
                 {/* Right Tool List */}
-                <div style={{ flex: 1, padding: '10px', overflowY: 'auto', backgroundColor: '#fafbff', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ flex: 1, padding: '10px', overflowY: 'auto', backgroundColor: '#fafbff', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column' }}>
                     {/* Lobster indicator + ClawNet globe + Message/Tutorial row */}
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '8px', flexShrink: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
@@ -3388,7 +3474,11 @@ ${instruction}`;
             </div>
 
             <div className="main-container">
-                <div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
+                {/* Lite mode: inline AI assistant as main content */}
+                {isLiteMode && showAIPanel ? (
+                    <AIAssistantPanel onClose={() => setShowAIPanel(false)} lang={lang} inline={true} {...aiAssistant} />
+                ) : (
+                <><div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
                         <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--text-color)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
                             <span>
@@ -4014,7 +4104,7 @@ ${instruction}`;
                                     {t("uiModePro")}
                                 </label>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                    <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); if (navTab === 'remote' || isToolTab(navTab)) { setNavTab('message'); } if (settingsTab === 'display') { setSettingsTab('general'); } } }} />
+                                    <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); const currentTab: string = navTab; if (currentTab === 'remote' || currentTab === 'skills' || currentTab === 'mcp' || isToolTab(currentTab)) { setShowAIPanel(true); } if (settingsTab === 'display') { setSettingsTab('general'); } } }} />
                                     {t("uiModeLite")}
                                 </label>
                                 <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
@@ -4281,6 +4371,89 @@ ${instruction}`;
                                                 value={config?.qqbot_app_secret || ''}
                                                 onChange={(e) => saveRemoteConfigField({ qqbot_app_secret: e.target.value } as any)}
                                                 placeholder="••••••••"
+                                                style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid #eee', paddingTop: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '6px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+                                        Telegram Bot
+                                    </h4>
+                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
+                                        {lang === 'zh-Hans'
+                                            ? '配置你自己的 Telegram Bot，通过 Telegram 与 MaClaw Agent 对话。'
+                                            : lang === 'zh-Hant'
+                                            ? '配置你自己的 Telegram Bot，透過 Telegram 與 MaClaw Agent 對話。'
+                                            : 'Configure your own Telegram Bot to chat with MaClaw Agent via Telegram.'}
+                                    </p>
+
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={(config as any)?.telegram_bot_enabled || false}
+                                                onChange={(e) => saveRemoteConfigField({ telegram_bot_enabled: e.target.checked } as any)}
+                                            />
+                                            {lang === 'zh-Hans' ? '启用 Telegram Bot' : lang === 'zh-Hant' ? '啟用 Telegram Bot' : 'Enable Telegram Bot'}
+                                        </label>
+                                        {(config as any)?.telegram_bot_enabled && (
+                                            <>
+                                                <span style={{
+                                                    fontSize: '0.7rem',
+                                                    padding: '2px 8px',
+                                                    borderRadius: '10px',
+                                                    background: telegramStatus === 'connected' ? '#dcfce7' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? '#fef9c3' : '#fee2e2',
+                                                    color: telegramStatus === 'connected' ? '#166534' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? '#854d0e' : '#991b1b',
+                                                }}>
+                                                    {telegramStatus === 'connected' ? '● 已连接' : telegramStatus === 'connecting' ? '◌ 连接中...' : telegramStatus === 'reconnecting' ? '◌ 重连中...' : telegramStatus === 'error' ? '✕ 错误' : '○ 未连接'}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    style={{
+                                                        fontSize: '0.68rem',
+                                                        padding: '2px 8px',
+                                                        borderRadius: '4px',
+                                                        border: '1px solid #ddd',
+                                                        background: 'transparent',
+                                                        color: '#555',
+                                                        cursor: 'pointer',
+                                                    }}
+                                                    onClick={() => RestartTelegram().then(setTelegramStatus)}
+                                                >
+                                                    {lang === 'zh-Hans' ? '重启' : 'Restart'}
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px', maxWidth: '420px' }}>
+                                        <div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                                                <label style={{ fontSize: '0.75rem', color: '#555' }}>Bot Token</label>
+                                                <button
+                                                    type="button"
+                                                    style={{
+                                                        fontSize: '0.68rem',
+                                                        padding: '1px 8px',
+                                                        borderRadius: '4px',
+                                                        border: '1px solid #6366f1',
+                                                        background: 'transparent',
+                                                        color: '#6366f1',
+                                                        cursor: 'pointer',
+                                                        whiteSpace: 'nowrap',
+                                                    }}
+                                                    onClick={() => BrowserOpenURL('https://open-claw.bot/docs/channels/telegram/')}
+                                                >
+                                                    {lang === 'zh-Hans' ? '教程' : lang === 'zh-Hant' ? '教程' : 'Tutorial'}
+                                                </button>
+                                            </div>
+                                            <input
+                                                type="password"
+                                                value={(config as any)?.telegram_bot_token || ''}
+                                                onChange={(e) => saveRemoteConfigField({ telegram_bot_token: e.target.value } as any)}
+                                                placeholder="e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
                                                 style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
                                             />
                                         </div>

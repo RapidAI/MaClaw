@@ -216,6 +216,9 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.ChatSendMsg:
 		a.root.StatusBar.SetMessage("AI 思考中...")
+		if msg.AgentMode {
+			return a, a.sendAgentMessage(msg.Text)
+		}
 		return a, a.sendChatMessage(msg.Text)
 
 	case views.ChatClearMsg:
@@ -321,6 +324,33 @@ func loadLLMConfig() (corelib.MaclawLLMConfig, error) {
 		return llm, fmt.Errorf("LLM 未配置，请在配置 Tab 或 GUI 中设置 maclaw_llm_url 和 maclaw_llm_model")
 	}
 	return llm, nil
+}
+
+// sendAgentMessage 在后台执行 Agent 循环（带工具调用）。
+func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
+	// 追加用户消息到历史
+	a.chatHistory = append(a.chatHistory, map[string]string{
+		"role": "user", "content": text,
+	})
+
+	// 保留最近 20 轮对话
+	history := a.chatHistory
+	if len(history) > 40 {
+		history = history[len(history)-40:]
+	}
+
+	return func() tea.Msg {
+		handler := NewTUIAgentHandler(a.sessionMgr)
+		resp := handler.RunAgentLoop(text, history)
+		if resp.Error != "" {
+			return views.ChatResponseMsg{Error: resp.Error}
+		}
+		// 追加助手回复到历史
+		a.chatHistory = append(a.chatHistory, map[string]string{
+			"role": "assistant", "content": resp.Text,
+		})
+		return views.ChatResponseMsg{Text: resp.Text}
+	}
 }
 
 // sendChatMessage 在后台调用 LLM 并返回响应。

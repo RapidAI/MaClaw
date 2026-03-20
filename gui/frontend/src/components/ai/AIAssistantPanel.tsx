@@ -10,6 +10,7 @@ interface AIAssistantPanelProps {
     sendMessage: (text: string) => Promise<void>;
     clearHistory: () => Promise<void>;
     executeAction: (command: string) => Promise<void>;
+    inline?: boolean; // when true, render as inline content instead of overlay
 }
 
 /* ── Style constants (matching RemoteSessionConsole) ── */
@@ -22,6 +23,15 @@ const overlayStyle: React.CSSProperties = {
     flexDirection: "column",
     background: "#0c0c0c",
     textAlign: "left",
+};
+
+const inlineContainerStyle: React.CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    background: "#0c0c0c",
+    textAlign: "left",
+    width: "100%",
+    height: "100%",
 };
 
 const titleBarStyle: React.CSSProperties = {
@@ -431,7 +441,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void): 
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage, clearHistory, executeAction }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage, clearHistory, executeAction, inline }: AIAssistantPanelProps) {
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
@@ -493,7 +503,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage
     );
 
     return (
-        <div style={overlayStyle}>
+        <div style={inline ? inlineContainerStyle : overlayStyle}>
             {/* ── Title bar ── */}
             <div style={titleBarStyle}>
                 <div style={titleLeftStyle}>

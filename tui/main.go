@@ -85,6 +85,11 @@ func main() {
 		os.Exit(commands.ExitUsage)
 	case "launch":
 		runLaunchCommand(os.Args[2:])
+	case "swarm":
+		if err := commands.RunSwarm(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(exitCodeForError(err))
+		}
 	case "llm":
 		if err := commands.RunLLM(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -136,6 +141,7 @@ Commands:
   remote        远程模式管理（status/set-hub/set-email/deactivate）
   loop          后台任务管理（list/stop/continue）— 仅 TUI/daemon 模式
   launch        启动编程工具（claude/codex/gemini/opencode/iflow/kilo）
+  swarm         Swarm 多任务编排（create/status/cancel/resume/list）
   llm           LLM 管理（test/ping/providers/status/set-provider）
   system        系统信息（info/python-envs）
 

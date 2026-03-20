@@ -392,3 +392,8 @@ export function ExportAgentSkillDir(arg1:string, arg2:string):Promise<void>;
 export function GetQQBotStatus():Promise<string>;
 
 export function RestartQQBot():Promise<string>;
+
+// Telegram Bot gateway bindings
+export function GetTelegramStatus():Promise<string>;
+
+export function RestartTelegram():Promise<string>;

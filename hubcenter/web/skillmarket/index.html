@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkillMarket — 管理面板</title>
+  <style>
+    :root{--bg:#f8fafc;--card:#fff;--text:#1a202c;--muted:#64748b;--primary:#2563eb;--primary-light:#eff6ff;--border:#e2e8f0;--danger:#dc2626;--success:#16a34a;--warn:#f59e0b;--radius:10px;--shadow:0 1px 3px rgba(0,0,0,.08)}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.6;font-size:14px}
+    .container{max-width:1100px;margin:0 auto;padding:20px}
+    header{text-align:center;padding:24px 0 16px}
+    header h1{font-size:24px}
+    header p{color:var(--muted);font-size:13px}
+    .tabs{display:flex;gap:4px;border-bottom:2px solid var(--border);margin-bottom:20px}
+    .tab{padding:8px 18px;cursor:pointer;border:none;background:none;font:inherit;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;transition:.2s}
+    .tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+    .tab:hover{color:var(--text)}
+    .panel{display:none}
+    .panel.active{display:block}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);margin-bottom:16px}
+    .card h3{font-size:15px;margin-bottom:10px}
+    .stat-row{display:flex;gap:16px;flex-wrap:wrap}
+    .stat{flex:1;min-width:120px;text-align:center;padding:12px;background:var(--primary-light);border-radius:var(--radius)}
+    .stat .val{font-size:22px;font-weight:700;color:var(--primary)}
+    .stat .lbl{font-size:11px;color:var(--muted)}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
+    th{background:#f1f5f9;font-weight:600;color:var(--muted);font-size:12px}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+    .badge-trial{background:#fef3c7;color:#92400e}
+    .badge-published{background:#d1fae5;color:#065f46}
+    .badge-pending{background:#e0e7ff;color:#3730a3}
+    .badge-rejected{background:#fee2e2;color:#991b1b}
+    .badge-withdrawn{background:#f1f5f9;color:#475569}
+    .btn{padding:6px 14px;border:none;border-radius:6px;font:inherit;font-size:12px;cursor:pointer;transition:.2s}
+    .btn-primary{background:var(--primary);color:#fff}
+    .btn-danger{background:var(--danger);color:#fff}
+    .btn-success{background:var(--success);color:#fff}
+    .btn:disabled{opacity:.5;cursor:default}
+    input,select{height:34px;padding:0 10px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:13px}
+    .form-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+    .form-row label{min-width:80px;font-size:13px;color:var(--muted)}
+    .msg{padding:8px 12px;border-radius:6px;font-size:13px;margin-bottom:10px}
+    .msg-ok{background:#d1fae5;color:#065f46}
+    .msg-err{background:#fee2e2;color:#991b1b}
+    .empty{text-align:center;padding:32px;color:var(--muted)}
+  </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🛒 SkillMarket</h1>
+    <p>账户管理 · Skill 管理 · 管理后台</p>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-panel="account">账户</button>
+    <button class="tab" data-panel="myskills">我的 Skill</button>
+    <button class="tab" data-panel="admin-review">审核管理</button>
+    <button class="tab" data-panel="admin-config">系统配置</button>
+  </div>
+</div>
+
+  <!-- ═══ 账户面板 ═══ -->
+  <div id="panel-account" class="panel active container">
+    <div id="login-section" class="card">
+      <h3>登录 / 查询账户</h3>
+      <div class="form-row">
+        <label>Email</label>
+        <input id="email-input" type="email" placeholder="your@email.com" style="flex:1">
+        <button class="btn btn-primary" onclick="loadAccount()">查询</button>
+        <button class="btn btn-success" onclick="ensureAccount()">创建账户</button>
+      </div>
+      <div id="account-msg"></div>
+    </div>
+    <div id="account-info" class="card" style="display:none">
+      <h3>账户信息</h3>
+      <div class="stat-row">
+        <div class="stat"><div class="val" id="s-credits">0</div><div class="lbl">Credits 余额</div></div>
+        <div class="stat"><div class="val" id="s-settled">0</div><div class="lbl">已结算收益</div></div>
+        <div class="stat"><div class="val" id="s-pending">0</div><div class="lbl">待结算收益</div></div>
+        <div class="stat"><div class="val" id="s-voucher">0</div><div class="lbl">体验券</div></div>
+        <div class="stat"><div class="val" id="s-status">-</div><div class="lbl">状态</div></div>
+      </div>
+    </div>
+    <div id="tier-info" class="card" style="display:none">
+      <h3>信誉等级</h3>
+      <div class="stat-row">
+        <div class="stat"><div class="val" id="s-tier">-</div><div class="lbl">等级</div></div>
+        <div class="stat"><div class="val" id="s-published">0</div><div class="lbl">已发布</div></div>
+        <div class="stat"><div class="val" id="s-avgrating">-</div><div class="lbl">平均评分</div></div>
+        <div class="stat"><div class="val" id="s-downloads">0</div><div class="lbl">总下载</div></div>
+      </div>
+    </div>
+    <div id="credits-section" class="card" style="display:none">
+      <h3>充值 / 提现</h3>
+      <div class="form-row">
+        <label>金额</label>
+        <input id="credits-amount" type="number" min="1" value="100" style="width:120px">
+        <button class="btn btn-primary" onclick="topUp()">充值</button>
+        <button class="btn btn-danger" onclick="withdraw()">提现</button>
+      </div>
+      <div id="credits-msg"></div>
+      <h3 style="margin-top:16px">交易记录</h3>
+      <table><thead><tr><th>时间</th><th>类型</th><th>金额</th><th>余额</th><th>说明</th></tr></thead><tbody id="tx-list"></tbody></table>
+    </div>
+  </div>
+
+  <!-- ═══ 我的 Skill 面板 ═══ -->
+  <div id="panel-myskills" class="panel container">
+    <div class="card">
+      <h3>我的 Skill</h3>
+      <p class="empty" id="myskills-empty">请先在账户面板登录</p>
+      <table id="myskills-table" style="display:none">
+        <thead><tr><th>名称</th><th>版本</th><th>状态</th><th>评分</th><th>下载</th><th>操作</th></tr></thead>
+        <tbody id="myskills-list"></tbody>
+      </table>
+    </div>
+    <div id="apikey-section" class="card" style="display:none">
+      <h3>API Key 管理</h3>
+      <div class="form-row">
+        <label>Skill ID</label>
+        <input id="apikey-skill-id" style="flex:1">
+        <button class="btn btn-primary" onclick="loadAPIKeyStatus()">查询</button>
+      </div>
+      <div id="apikey-status"></div>
+      <div class="form-row" style="margin-top:10px">
+        <label>批量上传</label>
+        <textarea id="apikey-bulk" rows="4" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:12px" placeholder="每行一个 API Key"></textarea>
+        <button class="btn btn-success" onclick="uploadAPIKeys()">上传</button>
+      </div>
+      <div id="apikey-msg"></div>
+    </div>
+  </div>
+
+  <!-- ═══ 审核管理面板 ═══ -->
+  <div id="panel-admin-review" class="panel container">
+    <div class="card">
+      <h3>待审核 Skill</h3>
+      <button class="btn btn-primary" onclick="loadPendingReview()" style="margin-bottom:10px">刷新</button>
+      <table><thead><tr><th>名称</th><th>上传者</th><th>评分</th><th>评价人数</th><th>操作</th></tr></thead><tbody id="review-list"></tbody></table>
+      <p class="empty" id="review-empty">暂无待审核 Skill</p>
+    </div>
+    <div class="card">
+      <h3>购买记录</h3>
+      <div class="form-row">
+        <input id="purchase-filter" placeholder="按 buyer email 或 skill_id 筛选" style="flex:1">
+        <button class="btn btn-primary" onclick="loadPurchases()">查询</button>
+      </div>
+      <table><thead><tr><th>买家</th><th>Skill</th><th>金额</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody id="purchase-list"></tbody></table>
+    </div>
+  </div>
+
+  <!-- ═══ 系统配置面板 ═══ -->
+  <div id="panel-admin-config" class="panel container">
+    <div class="card">
+      <h3>试用期配置</h3>
+      <div class="form-row">
+        <label>试用天数</label>
+        <input id="cfg-trial-days" type="number" min="1" value="7" style="width:80px">
+      </div>
+      <div class="form-row">
+        <label>自动上架阈值</label>
+        <input id="cfg-threshold" type="number" min="1" value="5" style="width:80px">
+      </div>
+      <button class="btn btn-primary" onclick="saveTrialConfig()">保存</button>
+      <div id="config-msg"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let currentEmail = '';
+let currentUserID = '';
+
+// ── Tab 切换 ──
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+  });
+});
+
+// ── 账户 ──
+async function loadAccount() {
+  const email = document.getElementById('email-input').value.trim();
+  if (!email) return;
+  currentEmail = email;
+  try {
+    const r = await fetch(API + '/api/v1/account/' + encodeURIComponent(email));
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    currentUserID = d.id;
+    showAccountInfo(d);
+    loadTier(email);
+    loadTransactions();
+  } catch(e) { showMsg('account-msg', e.message, true); }
+}
+
+async function ensureAccount() {
+  const email = document.getElementById('email-input').value.trim();
+  if (!email) return;
+  currentEmail = email;
+  try {
+    const r = await fetch(API + '/api/v1/account/ensure', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({email})
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    currentUserID = d.id;
+    showAccountInfo(d);
+    showMsg('account-msg', '账户已创建/确认', false);
+  } catch(e) { showMsg('account-msg', e.message, true); }
+}
+
+function showAccountInfo(d) {
+  document.getElementById('account-info').style.display = '';
+  document.getElementById('credits-section').style.display = '';
+  document.getElementById('s-credits').textContent = d.credits || 0;
+  document.getElementById('s-settled').textContent = d.settled_credits || 0;
+  document.getElementById('s-pending').textContent = d.pending_settlement || 0;
+  document.getElementById('s-voucher').textContent = d.voucher_count || 0;
+  document.getElementById('s-status').textContent = d.status || '-';
+}
+
+async function loadTier(email) {
+  try {
+    const r = await fetch(API + '/api/v1/account/' + encodeURIComponent(email) + '/tier');
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById('tier-info').style.display = '';
+    document.getElementById('s-tier').textContent = 'Tier ' + (d.tier || 1);
+    document.getElementById('s-published').textContent = d.published_count || 0;
+    document.getElementById('s-avgrating').textContent = (d.avg_rating || 0).toFixed(1);
+    document.getElementById('s-downloads').textContent = d.total_downloads || 0;
+  } catch(e) {}
+}
+
+async function loadTransactions() {
+  if (!currentEmail) return;
+  try {
+    const r = await fetch(API + '/api/v1/credits/transactions?email=' + encodeURIComponent(currentEmail));
+    if (!r.ok) return;
+    const list = await r.json();
+    const tbody = document.getElementById('tx-list');
+    tbody.innerHTML = '';
+    (list || []).forEach(tx => {
+      tbody.innerHTML += `<tr><td>${tx.created_at||''}</td><td>${tx.type}</td><td>${tx.amount}</td><td>${tx.balance}</td><td>${tx.description||''}</td></tr>`;
+    });
+  } catch(e) {}
+}
+
+async function topUp() {
+  const amount = parseInt(document.getElementById('credits-amount').value);
+  if (!amount || !currentEmail) return;
+  try {
+    const r = await fetch(API + '/api/v1/credits/topup', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email: currentEmail, amount})
+    });
+    if (!r.ok) throw new Error(await r.text());
+    showMsg('credits-msg', '充值成功', false);
+    loadAccount();
+  } catch(e) { showMsg('credits-msg', e.message, true); }
+}
+
+async function withdraw() {
+  const amount = parseInt(document.getElementById('credits-amount').value);
+  if (!amount || !currentEmail) return;
+  try {
+    const r = await fetch(API + '/api/v1/credits/withdraw', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email: currentEmail, amount})
+    });
+    if (!r.ok) throw new Error(await r.text());
+    showMsg('credits-msg', '提现成功', false);
+    loadAccount();
+  } catch(e) { showMsg('credits-msg', e.message, true); }
+}
+
+// ── 审核 ──
+async function loadPendingReview() {
+  // 简化：使用搜索 API 获取 trial 状态的 Skill
+  try {
+    const r = await fetch(API + '/api/v1/skillmarket/search?q=&top_n=50');
+    if (!r.ok) return;
+    const list = await r.json();
+    const tbody = document.getElementById('review-list');
+    tbody.innerHTML = '';
+    const pending = (list || []).filter(s => s.status === 'pending_review' || s.status === 'trial');
+    if (pending.length === 0) {
+      document.getElementById('review-empty').style.display = '';
+      return;
+    }
+    document.getElementById('review-empty').style.display = 'none';
+    pending.forEach(s => {
+      tbody.innerHTML += `<tr>
+        <td>${s.name}</td><td>${s.author||'-'}</td>
+        <td>${(s.avg_rating||0).toFixed(1)}</td><td>${s.rating_count||0}</td>
+        <td>
+          <button class="btn btn-success" onclick="approveSkill('${s.id}')">批准</button>
+          <button class="btn btn-danger" onclick="rejectSkill('${s.id}')">拒绝</button>
+        </td>
+      </tr>`;
+    });
+  } catch(e) {}
+}
+
+async function approveSkill(id) {
+  try {
+    const r = await fetch(API + '/api/v1/admin/skillmarket/' + id + '/approve', {method:'POST'});
+    if (!r.ok) throw new Error(await r.text());
+    loadPendingReview();
+  } catch(e) { alert(e.message); }
+}
+
+async function rejectSkill(id) {
+  try {
+    const r = await fetch(API + '/api/v1/admin/skillmarket/' + id + '/reject', {method:'POST'});
+    if (!r.ok) throw new Error(await r.text());
+    loadPendingReview();
+  } catch(e) { alert(e.message); }
+}
+
+// ── 购买记录 & 退款 ──
+async function loadPurchases() {
+  const filter = document.getElementById('purchase-filter').value.trim();
+  try {
+    let url = API + '/api/v1/admin/purchases';
+    if (filter) url += '?filter=' + encodeURIComponent(filter);
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const list = await r.json();
+    const tbody = document.getElementById('purchase-list');
+    tbody.innerHTML = '';
+    (list || []).forEach(p => {
+      const refundBtn = p.status === 'active' ? `<button class="btn btn-danger" onclick="refundPurchase('${p.id}')">退款</button>` : '<span class="badge badge-rejected">已退款</span>';
+      tbody.innerHTML += `<tr><td>${p.buyer_email}</td><td>${p.skill_id}</td><td>${p.amount_paid}</td><td>${p.purchase_type}</td><td>${p.status}</td><td>${refundBtn}</td></tr>`;
+    });
+  } catch(e) {}
+}
+
+async function refundPurchase(purchaseID) {
+  const reason = prompt('退款原因：');
+  if (!reason) return;
+  try {
+    const r = await fetch(API + '/api/v1/admin/refund', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({purchase_record_id: purchaseID, reason})
+    });
+    if (!r.ok) throw new Error(await r.text());
+    alert('退款成功');
+    loadPurchases();
+  } catch(e) { alert(e.message); }
+}
+
+// ── API Key ──
+async function loadAPIKeyStatus() {
+  const skillID = document.getElementById('apikey-skill-id').value.trim();
+  if (!skillID) return;
+  try {
+    const r = await fetch(API + '/api/v1/skillmarket/' + skillID + '/apikeys/status');
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    document.getElementById('apikey-status').innerHTML = `<div class="msg msg-ok">库存: ${d.stock_status || '-'} | 可用: ${d.available || 0} | 已分配: ${d.assigned || 0}</div>`;
+  } catch(e) { showMsg('apikey-msg', e.message, true); }
+}
+
+async function uploadAPIKeys() {
+  const skillID = document.getElementById('apikey-skill-id').value.trim();
+  const keys = document.getElementById('apikey-bulk').value.trim();
+  if (!skillID || !keys) return;
+  try {
+    const r = await fetch(API + '/api/v1/skillmarket/' + skillID + '/apikeys/upload', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email: currentEmail, keys: keys.split('\n').filter(k=>k.trim())})
+    });
+    if (!r.ok) throw new Error(await r.text());
+    showMsg('apikey-msg', '上传成功', false);
+    loadAPIKeyStatus();
+  } catch(e) { showMsg('apikey-msg', e.message, true); }
+}
+
+// ── 下架 ──
+async function withdrawSkill(id) {
+  if (!confirm('确认下架？')) return;
+  try {
+    const r = await fetch(API + '/api/v1/skillmarket/' + id + '/withdraw', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email: currentEmail})
+    });
+    if (!r.ok) throw new Error(await r.text());
+    alert('已下架');
+  } catch(e) { alert(e.message); }
+}
+
+// ── 配置 ──
+async function saveTrialConfig() {
+  const days = parseInt(document.getElementById('cfg-trial-days').value);
+  const threshold = parseInt(document.getElementById('cfg-threshold').value);
+  try {
+    const r = await fetch(API + '/api/v1/admin/config/trial', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({trial_duration_days: days, auto_publish_threshold: threshold})
+    });
+    if (!r.ok) throw new Error(await r.text());
+    showMsg('config-msg', '配置已保存', false);
+  } catch(e) { showMsg('config-msg', e.message, true); }
+}
+
+// ── helpers ──
+function showMsg(id, msg, isErr) {
+  const el = document.getElementById(id);
+  el.className = 'msg ' + (isErr ? 'msg-err' : 'msg-ok');
+  el.textContent = msg;
+  setTimeout(() => { el.textContent = ''; el.className = ''; }, 5000);
+}
+</script>
+</body>
+</html>

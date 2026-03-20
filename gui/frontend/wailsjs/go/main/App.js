@@ -896,3 +896,12 @@ export function GetQQBotStatus() {
 export function RestartQQBot() {
   return window['go']['main']['App']['RestartQQBot']();
 }
+
+// Telegram Bot gateway bindings
+export function GetTelegramStatus() {
+  return window['go']['main']['App']['GetTelegramStatus']();
+}
+
+export function RestartTelegram() {
+  return window['go']['main']['App']['RestartTelegram']();
+}
