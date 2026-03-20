@@ -69,6 +69,9 @@ func (m SessionListModel) Update(msg tea.Msg) (SessionListModel, tea.Cmd) {
 				m.cursor++
 			}
 		case "enter":
+			if len(m.sessions) == 0 {
+				return m, func() tea.Msg { return SessionCreateMsg{} }
+			}
 			if m.cursor < len(m.sessions) {
 				s := m.sessions[m.cursor]
 				return m, func() tea.Msg {

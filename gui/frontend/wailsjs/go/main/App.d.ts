@@ -163,6 +163,10 @@ export function DeleteNLSkill(arg1:string):Promise<void>;
 
 export function ImportNLSkillZip():Promise<string>;
 
+export function ExportLearnedSkillsZip(arg1:Array<string>):Promise<void>;
+
+export function ImportLearnedSkillsZip():Promise<any>;
+
 // MCP management bindings
 export function ListMCPServers():Promise<Array<any>>;
 
@@ -355,6 +359,17 @@ export function ClawNetPlaceBet(arg1:string, arg2:string, arg3:number):Promise<a
 export function ClawNetResolvePrediction(arg1:string, arg2:string):Promise<any>;
 export function ClawNetAppealPrediction(arg1:string, arg2:string):Promise<any>;
 export function ClawNetGetPredictionLeaderboard():Promise<any>;
+
+// Nutshell bindings
+export function ClawNetNutshellStatus():Promise<any>;
+export function ClawNetNutshellInstall():Promise<any>;
+export function ClawNetNutshellInit(arg1:string):Promise<any>;
+export function ClawNetNutshellCheck(arg1:string):Promise<any>;
+export function ClawNetNutshellPublish(arg1:string, arg2:number):Promise<any>;
+export function ClawNetNutshellClaim(arg1:string, arg2:string):Promise<any>;
+export function ClawNetNutshellDeliver(arg1:string):Promise<any>;
+export function ClawNetNutshellPack(arg1:string, arg2:string, arg3:string):Promise<any>;
+export function ClawNetNutshellUnpack(arg1:string, arg2:string):Promise<any>;
 
 // AI Assistant bindings
 export function SendAIAssistantMessage(arg1:string):Promise<any>;

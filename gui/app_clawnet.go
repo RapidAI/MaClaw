@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/clawnet"
 	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -1331,4 +1332,90 @@ func (a *App) hubClient() *RemoteHubClient {
 		return nil
 	}
 	return a.remoteSessions.GetHubClient()
+}
+
+// ---------------------------------------------------------------------------
+// Nutshell Integration
+// ---------------------------------------------------------------------------
+
+func (a *App) nutshellMgr() *clawnet.NutshellManager {
+	c := a.initClawNet()
+	return clawnet.NewNutshellManager(c.BinPath())
+}
+
+// ClawNetNutshellStatus checks if the nutshell CLI is installed.
+func (a *App) ClawNetNutshellStatus() map[string]interface{} {
+	st := a.nutshellMgr().IsInstalled()
+	return map[string]interface{}{"ok": true, "installed": st.Installed, "version": st.Version, "error": st.Error}
+}
+
+// ClawNetNutshellInstall installs the nutshell CLI via clawnet.
+func (a *App) ClawNetNutshellInstall() map[string]interface{} {
+	if err := a.nutshellMgr().Install(); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"ok": true}
+}
+
+// ClawNetNutshellInit initializes a new nutshell bundle in the given directory.
+func (a *App) ClawNetNutshellInit(dir string) map[string]interface{} {
+	out, err := a.nutshellMgr().Init(dir)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
+	}
+	return map[string]interface{}{"ok": true, "output": out}
+}
+
+// ClawNetNutshellCheck validates a nutshell bundle directory.
+func (a *App) ClawNetNutshellCheck(dir string) map[string]interface{} {
+	out, err := a.nutshellMgr().Check(dir)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
+	}
+	return map[string]interface{}{"ok": true, "output": out}
+}
+
+// ClawNetNutshellPublish publishes a nutshell bundle with a reward.
+func (a *App) ClawNetNutshellPublish(dir string, reward float64) map[string]interface{} {
+	out, err := a.nutshellMgr().Publish(dir, reward)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
+	}
+	return map[string]interface{}{"ok": true, "output": out}
+}
+
+// ClawNetNutshellClaim claims a task and creates a local workspace.
+func (a *App) ClawNetNutshellClaim(taskID, outputDir string) map[string]interface{} {
+	out, err := a.nutshellMgr().Claim(taskID, outputDir)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
+	}
+	return map[string]interface{}{"ok": true, "output": out}
+}
+
+// ClawNetNutshellDeliver submits completed work from a workspace directory.
+func (a *App) ClawNetNutshellDeliver(dir string) map[string]interface{} {
+	out, err := a.nutshellMgr().Deliver(dir)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
+	}
+	return map[string]interface{}{"ok": true, "output": out}
+}
+
+// ClawNetNutshellPack creates a .nut bundle file. peerID is optional for encryption.
+func (a *App) ClawNetNutshellPack(dir, outputFile, peerID string) map[string]interface{} {
+	out, err := a.nutshellMgr().Pack(dir, outputFile, peerID)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
+	}
+	return map[string]interface{}{"ok": true, "output": out}
+}
+
+// ClawNetNutshellUnpack extracts a .nut bundle file.
+func (a *App) ClawNetNutshellUnpack(nutFile, outputDir string) map[string]interface{} {
+	out, err := a.nutshellMgr().Unpack(nutFile, outputDir)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
+	}
+	return map[string]interface{}{"ok": true, "output": out}
 }

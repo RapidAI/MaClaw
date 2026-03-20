@@ -89,14 +89,17 @@ func (s *CreditsService) Credit(ctx context.Context, userID string, amount int64
 	}
 
 	now := time.Now().Format(timeFmt)
+	var newBalance int64
 	if settled {
 		newSettled := u.SettledCredits + actual
+		newBalance = newSettled + u.PendingSettlement
 		if _, err := tx.ExecContext(ctx, `UPDATE sm_users SET settled_credits = ?, debt = ?, updated_at = ? WHERE id = ?`,
 			newSettled, newDebt, now, userID); err != nil {
 			return err
 		}
 	} else {
 		newPending := u.PendingSettlement + actual
+		newBalance = u.SettledCredits + newPending
 		if _, err := tx.ExecContext(ctx, `UPDATE sm_users SET pending_settlement = ?, debt = ?, updated_at = ? WHERE id = ?`,
 			newPending, newDebt, now, userID); err != nil {
 			return err
@@ -106,7 +109,7 @@ func (s *CreditsService) Credit(ctx context.Context, userID string, amount int64
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO sm_credits_transactions (id, user_id, type, amount, balance, skill_id, purchase_id, description, created_at)
 		VALUES (?, ?, 'earning', ?, ?, ?, ?, ?, ?)`,
-		generateID(), userID, amount, u.SettledCredits+u.PendingSettlement+actual, skillID, purchaseID, desc, now); err != nil {
+		generateID(), userID, amount, newBalance, skillID, purchaseID, desc, now); err != nil {
 		return err
 	}
 	return tx.Commit()

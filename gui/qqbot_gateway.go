@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 )
@@ -120,6 +118,14 @@ func (m *qqBotGatewayManager) onStatusChange(status string) {
 	m.status = status
 	m.mu.Unlock()
 	m.emitStatusEvent()
+
+	// When QQ gateway connects, claim the gateway lock on Hub.
+	if status == "connected" {
+		hubClient := m.app.hubClient()
+		if hubClient != nil && hubClient.IsConnected() {
+			hubClient.SendIMGatewayClaim("qqbot_remote")
+		}
+	}
 }
 
 func (m *qqBotGatewayManager) emitStatusEvent() {
@@ -127,12 +133,12 @@ func (m *qqBotGatewayManager) emitStatusEvent() {
 }
 
 // onIncomingMessage is called when a C2C message arrives from QQ.
-// It forwards the message to the Hub as im.user_message with platform="qqbot".
+// It forwards the message to Hub as im.gateway_message so Hub's IM Adapter
+// can process it (identity binding, /call, @machine, /discuss, agent routing).
 func (m *qqBotGatewayManager) onIncomingMessage(msg qqbot.IncomingMessage) {
 	hubClient := m.app.hubClient()
 	if hubClient == nil || !hubClient.IsConnected() {
 		log.Printf("[qqbot-mgr] hub not connected, cannot forward QQ message from %s", msg.OpenID)
-		// Try to reply to the user that hub is not connected
 		m.mu.Lock()
 		gw := m.gateway
 		m.mu.Unlock()
@@ -145,84 +151,13 @@ func (m *qqBotGatewayManager) onIncomingMessage(msg qqbot.IncomingMessage) {
 		return
 	}
 
-	// Forward to Hub as im.user_message — Hub will route to IM adapter
-	// which calls back to this machine via im.user_message, and the
-	// existing IMMessageHandler processes it.
-	// But since the QQ gateway runs on the client, we handle it locally
-	// via the existing IM handler and send the response back via QQ REST API.
-	go func() {
-		requestID := fmt.Sprintf("qq_%s_%d", msg.OpenID, time.Now().UnixNano())
-		imMsg := IMUserMessage{
-			Platform: "qqbot",
-			Text:     msg.Text,
-		}
-
-		onProgress := func(text string) {
-			m.mu.Lock()
-			gw := m.gateway
-			m.mu.Unlock()
-			if gw != nil {
-				_ = gw.SendText(context.Background(), qqbot.OutgoingText{
-					OpenID: msg.OpenID,
-					Text:   "⏳ " + text,
-				})
-			}
-		}
-
-		resp := hubClient.imHandler.HandleIMMessageWithProgress(imMsg, onProgress)
-		if resp == nil {
-			return
-		}
-
-		m.mu.Lock()
-		gw := m.gateway
-		m.mu.Unlock()
-		if gw == nil {
-			return
-		}
-
-		// Send text response
-		if resp.Text != "" {
-			if err := gw.SendText(context.Background(), qqbot.OutgoingText{
-				OpenID: msg.OpenID,
-				Text:   resp.Text,
-			}); err != nil {
-				log.Printf("[qqbot-mgr] send reply failed for request=%s: %v", requestID, err)
-			}
-		}
-
-		// Send image if present (ImageKey is base64 data from screenshot pipeline)
-		if resp.ImageKey != "" {
-			_ = gw.SendMedia(context.Background(), qqbot.OutgoingMedia{
-				OpenID:   msg.OpenID,
-				FileType: 1,
-				FileData: resp.ImageKey,
-				MimeType: "image/png",
-			})
-		}
-
-		// Send file if present
-		if resp.FileData != "" {
-			fileType := 4
-			if resp.FileMimeType != "" {
-				switch {
-				case strings.HasPrefix(resp.FileMimeType, "image/"):
-					fileType = 1
-				case strings.HasPrefix(resp.FileMimeType, "video/"):
-					fileType = 2
-				case strings.HasPrefix(resp.FileMimeType, "audio/"):
-					fileType = 3
-				}
-			}
-			_ = gw.SendMedia(context.Background(), qqbot.OutgoingMedia{
-				OpenID:   msg.OpenID,
-				FileType: fileType,
-				FileData: resp.FileData,
-				FileName: resp.FileName,
-				MimeType: resp.FileMimeType,
-			})
-		}
-	}()
+	// Forward to Hub via im.gateway_message — Hub routes through IM Adapter
+	// pipeline and sends replies back as im.gateway_reply.
+	hubClient.SendIMGatewayMessage("qqbot_remote", map[string]any{
+		"platform_uid": msg.OpenID,
+		"text":         msg.Text,
+		"message_type": "text",
+	})
 }
 
 // SendQQBotReply sends a text reply to a QQ user. Called when Hub sends

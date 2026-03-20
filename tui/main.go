@@ -54,6 +54,37 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(exitCodeForError(err))
 		}
+	case "skillhub":
+		if err := commands.RunSkillHub(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(exitCodeForError(err))
+		}
+	case "skillmarket":
+		if err := commands.RunSkillMarket(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(exitCodeForError(err))
+		}
+	case "mcp":
+		if err := commands.RunMCP(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(exitCodeForError(err))
+		}
+	case "nlskill":
+		if err := commands.RunNLSkill(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(exitCodeForError(err))
+		}
+	case "remote":
+		if err := commands.RunRemote(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(exitCodeForError(err))
+		}
+	case "loop":
+		// loop 命令需要运行中的 BackgroundLoopManager，CLI 模式下不可用
+		fmt.Fprintln(os.Stderr, "Error: loop 命令仅在 TUI 交互模式或 daemon 模式下可用")
+		os.Exit(commands.ExitUsage)
+	case "launch":
+		runLaunchCommand(os.Args[2:])
 	case "llm":
 		if err := commands.RunLLM(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -98,6 +129,13 @@ Commands:
   clawnet       ClawNet P2P 网络（status/peers/tasks/credits）
   tool          工具管理（recommend/status）
   skill         技能管理（list/add/delete/backup/restore/import/export）
+  skillhub      SkillHub 市场（search/install/rate）
+  skillmarket   SkillMarket 商店（search/submit/status/account）
+  nlskill       NL 技能管理（list/add/remove/enable/disable）
+  mcp           MCP 服务器管理（list/add/remove）
+  remote        远程模式管理（status/set-hub/set-email/deactivate）
+  loop          后台任务管理（list/stop/continue）— 仅 TUI/daemon 模式
+  launch        启动编程工具（claude/codex/gemini/opencode/iflow/kilo）
   llm           LLM 管理（test/ping/providers/status/set-provider）
   system        系统信息（info/python-envs）
 
@@ -245,4 +283,30 @@ func resolveHubCredentials() (hubURL, token string) {
 		os.Exit(commands.ExitUsage)
 	}
 	return
+}
+
+// runLaunchCommand 处理 launch 子命令：启动编程工具。
+// 用法: maclaw-tui launch <tool> [--project <dir>] [--yolo] [--admin]
+func runLaunchCommand(args []string) {
+	launchFlags := flag.NewFlagSet("launch", flag.ExitOnError)
+	projectDir := launchFlags.String("project", "", "项目目录路径")
+	yolo := launchFlags.Bool("yolo", false, "启用 YOLO 模式（跳过权限确认）")
+	admin := launchFlags.Bool("admin", false, "启用管理员模式")
+	launchFlags.Parse(args)
+
+	remaining := launchFlags.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "用法: maclaw-tui launch <tool> [--project <dir>] [--yolo] [--admin]")
+		fmt.Fprintln(os.Stderr, "支持的工具: claude, codex, gemini, opencode, iflow, kilo, cursor")
+		os.Exit(commands.ExitUsage)
+	}
+
+	toolName := remaining[0]
+	launcher := NewTUIToolLauncher(true) // headless mode for CLI
+
+	ctx := context.Background()
+	if err := launcher.LaunchToolByName(ctx, toolName, *projectDir, *yolo, *admin); err != nil {
+		fmt.Fprintf(os.Stderr, "启动工具失败: %v\n", err)
+		os.Exit(commands.ExitError)
+	}
 }

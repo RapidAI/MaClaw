@@ -60,17 +60,18 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	}
 	userSvc := skillmarket.NewUserService(smStore, mailer)
 	creditsSvc := skillmarket.NewCreditsService(smStore)
+	ratingSvc := skillmarket.NewRatingService(smStore)
+	trialMgr := skillmarket.NewTrialManager(smStore, skillStore, ratingSvc)
+	versionMgr := skillmarket.NewVersionManager(smStore)
 	pendingDir := filepath.Join(dataDir, "sm_pending")
 	sandboxDir := filepath.Join(dataDir, "sm_sandbox")
-	processor := skillmarket.NewProcessor(pendingDir, sandboxDir, smStore, skillStore, mailer)
+	processor := skillmarket.NewProcessor(pendingDir, sandboxDir, smStore, skillStore, mailer, trialMgr, versionMgr)
 
 	rsaPrivKey, err := skillmarket.EnsureRSAKeyPair(dataDir)
 	if err != nil {
 		return nil, err
 	}
 
-	ratingSvc := skillmarket.NewRatingService(smStore)
-	trialMgr := skillmarket.NewTrialManager(smStore, skillStore, ratingSvc)
 	searchSvc, err := skillmarket.NewSearchService(smStore, skillStore)
 	if err != nil {
 		return nil, err

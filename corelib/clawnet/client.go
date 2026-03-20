@@ -28,6 +28,16 @@ type Client struct {
 	autoUpdateStop chan struct{}
 }
 
+// BinPath returns the resolved path to the clawnet binary.
+func (c *Client) BinPath() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.binPath != "" {
+		return c.binPath
+	}
+	return c.findBinary()
+}
+
 // --- API response types ---
 
 type Status struct {

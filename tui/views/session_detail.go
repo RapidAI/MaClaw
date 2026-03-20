@@ -38,6 +38,11 @@ func (m *SessionDetailModel) AppendOutput(line string) {
 	}
 }
 
+// GetLines 返回当前输出行数（用于增量追加）。
+func (m *SessionDetailModel) GetLines() []string {
+	return m.lines
+}
+
 // SetStatus 更新会话状态。
 func (m *SessionDetailModel) SetStatus(status string) {
 	m.status = status

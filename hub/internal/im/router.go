@@ -65,6 +65,10 @@ const defaultAgentTimeout = 180 * time.Second
 // cleanupInterval controls how often expired pending requests are reaped.
 const cleanupInterval = 30 * time.Second
 
+// progressHeartbeat is the sentinel value sent by the client to keep the
+// response timer alive without delivering a visible message to the user.
+const progressHeartbeat = "__heartbeat__"
+
 // ---------------------------------------------------------------------------
 // MessageRouter — routes IM messages to MaClaw Agent via WebSocket
 // ---------------------------------------------------------------------------
@@ -476,6 +480,12 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 				}
 			}
 			timer.Reset(pending.Timeout)
+
+			// Silent heartbeat — only resets the timer, never delivered to user.
+			if progressText == progressHeartbeat {
+				continue
+			}
+
 			progressTexts = append(progressTexts, progressText)
 
 			isDup := progressText == lastProgressText

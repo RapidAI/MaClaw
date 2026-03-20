@@ -139,6 +139,8 @@ func (m *Manager) GetConfig(section string) (string, error) {
 		return m.formatPowerConfig(cfg), nil
 	case "qqbot":
 		return m.formatQQBotConfig(cfg), nil
+	case "skillmarket":
+		return m.formatSkillMarketConfig(cfg), nil
 	default:
 		return "", fmt.Errorf("unknown config section: %s", section)
 	}
@@ -579,6 +581,8 @@ func (m *Manager) applyChange(cfg *corelib.AppConfig, section, key, value string
 		return m.applyPowerChange(cfg, k, value)
 	case "qqbot":
 		return m.applyQQBotChange(cfg, k, value)
+	case "skillmarket":
+		return m.applySkillMarketChange(cfg, k, value)
 	}
 	return "", fmt.Errorf("unknown section %q", section)
 }
@@ -795,6 +799,30 @@ func (m *Manager) applyQQBotChange(cfg *corelib.AppConfig, key, value string) (s
 	return "", fmt.Errorf("unsupported qqbot key %q", key)
 }
 
+func (m *Manager) formatSkillMarketConfig(cfg corelib.AppConfig) string {
+	var b strings.Builder
+	b.WriteString("[技能市场]\n")
+	mode := cfg.SkillPurchaseMode
+	if mode == "" {
+		mode = "auto"
+	}
+	b.WriteString(fmt.Sprintf("  skill_purchase_mode = %s\n", mode))
+	return b.String()
+}
+
+func (m *Manager) applySkillMarketChange(cfg *corelib.AppConfig, key, value string) (string, error) {
+	switch key {
+	case "skill_purchase_mode":
+		old := cfg.SkillPurchaseMode
+		if old == "" {
+			old = "auto"
+		}
+		cfg.SkillPurchaseMode = value
+		return old, nil
+	}
+	return "", fmt.Errorf("unsupported skillmarket key %q", key)
+}
+
 // ---------------------------------------------------------------------------
 // initSchema initialises the full configuration schema.
 // ---------------------------------------------------------------------------
@@ -896,6 +924,13 @@ func (m *Manager) initSchema() {
 				{Key: "qqbot_enabled", Description: "是否启用 QQ 机器人", Type: "bool", Default: "false"},
 				{Key: "qqbot_app_id", Description: "QQ 机器人 AppID", Type: "string"},
 				{Key: "qqbot_app_secret", Description: "QQ 机器人 AppSecret", Type: "string"},
+			},
+		},
+		{
+			Name:        "skillmarket",
+			Description: "技能市场",
+			Keys: []ConfigKeySchema{
+				{Key: "skill_purchase_mode", Description: "Skill获取策略：auto=免费+付费都可用，free_only=只下载免费Skill", Type: "enum", Default: "auto", ValidValues: []string{"auto", "free_only"}},
 			},
 		},
 	}

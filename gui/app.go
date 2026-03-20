@@ -83,6 +83,7 @@ type App struct {
 	autoTaskPicker       *ClawNetAutoTaskPicker
 	autoPickerOnce       sync.Once
 	qqBotGateway         *qqBotGatewayManager
+	telegramGateway      *telegramGatewayManager
 }
 
 var OnConfigChanged func(AppConfig)
@@ -473,6 +474,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	// Start QQ Bot gateway if configured (runs on client side).
 	a.ensureQQBotGateway()
 
+	// Start Telegram gateway if configured (runs on client side).
+	a.ensureTelegramGateway()
+
 	return hubClient
 }
 
@@ -578,6 +582,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.qqBotGateway != nil {
 		a.qqBotGateway.Stop()
+	}
+	if a.telegramGateway != nil {
+		a.telegramGateway.Stop()
 	}
 	a.platformShutdown()
 }
@@ -1105,6 +1112,10 @@ func (a *App) startConfigWatcher() {
 						// Re-sync QQ Bot gateway on config change
 						if a.qqBotGateway != nil {
 							a.qqBotGateway.SyncFromConfig()
+						}
+						// Re-sync Telegram gateway on config change
+						if a.telegramGateway != nil {
+							a.telegramGateway.SyncFromConfig()
 						}
 					}
 				}

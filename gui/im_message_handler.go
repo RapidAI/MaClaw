@@ -1553,6 +1553,27 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// Ensure the delayed ack goroutine is cancelled when the loop returns.
 	defer close(ackDone)
 
+	// Heartbeat: send a silent keepalive every 60s so the Hub-side response
+	// timer (180s) is continuously reset during long LLM calls or tool
+	// executions. The Hub recognises the exact string and resets the timer
+	// without forwarding the message to the user.
+	const heartbeatInterval = 60 * time.Second
+	const heartbeatMsg = "__heartbeat__"
+	heartbeatDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				sendProgress(heartbeatMsg)
+			case <-heartbeatDone:
+				return
+			}
+		}
+	}()
+	defer close(heartbeatDone)
+
 	cfg := h.app.GetMaclawLLMConfig()
 	maxIter := h.app.GetMaclawAgentMaxIterations()
 	h.loopMaxOverride = 0 // reset dynamic override for this loop

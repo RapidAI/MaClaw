@@ -498,6 +498,11 @@ const translations: any = {
         "launchModeLabel": "Mode",
         "defaultLaunchModeLabel": "Default Launch Mode",
         "defaultLaunchModeDesc": "Choose the default working mode for the tool launch area",
+        "uiModeLabel": "Interface Mode",
+        "uiModePro": "Pro",
+        "uiModeLite": "Lite",
+        "uiModeProDesc": "Full coding toolchain for developers",
+        "uiModeLiteDesc": "AI assistant & skill extensions, coding tools hidden",
         "freeload": "Free",
         "bigSpender": "Big Spender",
         "skills": "Skills",
@@ -849,6 +854,11 @@ const translations: any = {
         "launchModeLabel": "方式",
         "defaultLaunchModeLabel": "默认启动模式",
         "defaultLaunchModeDesc": "选择工具启动区的默认工作模式",
+        "uiModeLabel": "界面模式",
+        "uiModePro": "专业模式",
+        "uiModeLite": "简洁模式",
+        "uiModeProDesc": "包含完整编程工具链，适合开发者",
+        "uiModeLiteDesc": "专注 AI 助手与技能扩展，隐藏编程工具",
         "freeload": "白嫖中",
         "bigSpender": "大力氪金",
         "skills": "技能",
@@ -1198,6 +1208,11 @@ const translations: any = {
         "launchModeLabel": "方式",
         "defaultLaunchModeLabel": "預設啟動模式",
         "defaultLaunchModeDesc": "選擇工具啟動區的預設工作模式",
+        "uiModeLabel": "介面模式",
+        "uiModePro": "專業模式",
+        "uiModeLite": "簡潔模式",
+        "uiModeProDesc": "包含完整程式工具鏈，適合開發者",
+        "uiModeLiteDesc": "專注 AI 助手與技能擴展，隱藏程式工具",
         "freeload": "白嫖中",
         "bigSpender": "大力氪金",
         "skills": "技能",
@@ -3034,7 +3049,7 @@ ${instruction}`;
         },
         {
             id: 'display' as const,
-            label: lang === 'zh-Hans' ? '显示配置' : lang === 'zh-Hant' ? '顯示配置' : 'Display',
+            label: lang === 'zh-Hans' ? '编程工具' : lang === 'zh-Hant' ? '編程工具' : 'Dev CLI',
             desc: lang === 'zh-Hans' ? '工具显示与启动页行为' : lang === 'zh-Hant' ? '工具顯示與啟動頁行為' : 'Tool visibility and startup behavior',
         },
         {
@@ -3091,6 +3106,7 @@ ${instruction}`;
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
     );
+    const isLiteMode = config?.ui_mode !== 'pro';
 
     return (
         <div id="App">
@@ -3134,7 +3150,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'remote' ? 'active' : ''}`}
                         onClick={() => switchTool('remote')}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center', display: isLiteMode ? 'none' : undefined }}
                         title={lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>📡</span>
@@ -3228,14 +3244,18 @@ ${instruction}`;
                                 title={(() => {
                                     const llmOk = maclawLLMOnline;
                                     const mobileOk = !!remoteActivationStatus?.activated;
-                                    if (llmOk && mobileOk) return lang?.startsWith('zh') ? 'MaClaw Agent 在线' : 'MaClaw Agent Online';
-                                    if (!llmOk && !mobileOk) return lang?.startsWith('zh') ? 'LLM 和移动端均未就绪' : 'LLM & Mobile not ready';
-                                    if (llmOk) return lang?.startsWith('zh') ? '移动端未注册' : 'Mobile not registered';
-                                    return lang?.startsWith('zh') ? 'LLM 未就绪' : 'LLM not ready';
+                                    const netOk = clawNetRunning;
+                                    if (llmOk && mobileOk && netOk) return lang?.startsWith('zh') ? 'MaClaw Agent 在线' : 'MaClaw Agent Online';
+                                    if (!llmOk && !mobileOk && !netOk) return lang?.startsWith('zh') ? 'LLM、移动端和虾网均未就绪' : 'LLM, Mobile & ClawNet not ready';
+                                    const missing: string[] = [];
+                                    if (!llmOk) missing.push(lang?.startsWith('zh') ? 'LLM 未就绪' : 'LLM not ready');
+                                    if (!mobileOk) missing.push(lang?.startsWith('zh') ? '移动端未注册' : 'Mobile not registered');
+                                    if (!netOk) missing.push(lang?.startsWith('zh') ? '虾网未连接' : 'ClawNet not connected');
+                                    return missing.join('; ');
                                 })()}
                                 style={{
                                     cursor: 'pointer',
-                                    opacity: (maclawLLMOnline && remoteActivationStatus?.activated) ? 1 : 0.6,
+                                    opacity: (maclawLLMOnline && remoteActivationStatus?.activated && clawNetRunning) ? 1 : 0.6,
                                     transition: 'opacity 0.3s ease',
                                 }}
                                 onClick={() => { setNavTab('settings'); setSettingsTab('llm'); }}
@@ -3244,11 +3264,12 @@ ${instruction}`;
                                     src={(() => {
                                         const llmOk = maclawLLMOnline;
                                         const mobileOk = !!remoteActivationStatus?.activated;
-                                        if (llmOk && mobileOk) return lobsterOnline;
-                                        if (!llmOk && !mobileOk) return lobsterOffline;
+                                        const netOk = clawNetRunning;
+                                        if (llmOk && mobileOk && netOk) return lobsterOnline;
+                                        if (!llmOk && !mobileOk && !netOk) return lobsterOffline;
                                         return lobsterHalf;
                                     })()}
-                                    alt={maclawLLMOnline && remoteActivationStatus?.activated ? 'Online' : 'Partial'}
+                                    alt={(maclawLLMOnline && remoteActivationStatus?.activated && clawNetRunning) ? 'Online' : 'Partial'}
                                     style={{ width: '20px', height: '20px' }}
                                 />
                             </div>
@@ -3303,8 +3324,8 @@ ${instruction}`;
                             <div style={{ flex: 1 }} />
                         </div>
                     </div>
-                    <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '0 auto 8px', flexShrink: 0 }}></div>
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                    <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '0 auto 8px', flexShrink: 0, display: isLiteMode ? 'none' : undefined }}></div>
+                    <div style={{ flex: 1, display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                     <div className="tool-grid" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '8px' }}>
                         <div className={`sidebar-item ${navTab === 'claude' ? 'active' : ''}`} onClick={() => switchTool('claude')}>
                             <span className="sidebar-icon">
@@ -3938,7 +3959,7 @@ ${instruction}`;
                     {navTab === 'settings' && (
                         <div className="settings-shell" style={{ padding: '10px' }}>
                             <div className="settings-top-tabs">
-                                {settingsTabOptions.map((tab) => (
+                                {settingsTabOptions.filter(tab => !(isLiteMode && tab.id === 'display')).map((tab) => (
                                     <button
                                         key={tab.id}
                                         type="button"
@@ -3985,6 +4006,21 @@ ${instruction}`;
                                 )}
                             </div>
 
+                            {/* UI Mode selector in general settings */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '15px', marginTop: '-5px', padding: '0 0 0 0' }}>
+                                <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("uiModeLabel")}</label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                                    <input type="radio" name="uiMode" checked={!isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'pro' }); setConfig(c); SaveConfig(c); } }} />
+                                    {t("uiModePro")}
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                                    <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); if (navTab === 'remote' || isToolTab(navTab)) { setNavTab('message'); } if (settingsTab === 'display') { setSettingsTab('general'); } } }} />
+                                    {t("uiModeLite")}
+                                </label>
+                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
+                                    {isLiteMode ? t("uiModeLiteDesc") : t("uiModeProDesc")}
+                                </span>
+                            </div>
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'remote' ? 'block' : 'none' }}>
@@ -5075,21 +5111,23 @@ ${instruction}`;
                         {status}
                     </span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        {(!maclawLLMOnline || !remoteActivationStatus?.activated) && !(navTab === 'settings' && settingsTab === 'llm') && (
+                        {(!maclawLLMOnline || !remoteActivationStatus?.activated || !clawNetRunning) && !(navTab === 'settings' && settingsTab === 'llm') && (
                             <span
                                 style={{ fontSize: '0.72rem', color: '#f59e0b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
                                 onClick={() => { setNavTab('settings'); setSettingsTab('llm'); }}
                                 title={lang?.startsWith('zh') ? '点击配置' : 'Click to configure'}
                             >
                                 <img src={(() => {
-                                    if (!maclawLLMOnline && !remoteActivationStatus?.activated) return lobsterOffline;
+                                    if (!maclawLLMOnline && !remoteActivationStatus?.activated && !clawNetRunning) return lobsterOffline;
                                     return lobsterHalf;
                                 })()} alt="" style={{ width: '14px', height: '14px' }} />
                                 {!maclawLLMOnline
                                     ? (maclawLLMConfigured
                                         ? (lang?.startsWith('zh') ? 'LLM 无法连接，无法响应远程命令' : 'LLM unreachable, remote commands unavailable')
                                         : (lang?.startsWith('zh') ? 'MaClaw 未配置 LLM，无法响应远程命令' : 'LLM not configured, remote commands unavailable'))
-                                    : (lang?.startsWith('zh') ? '移动端未注册' : 'Mobile not registered')}
+                                    : !remoteActivationStatus?.activated
+                                        ? (lang?.startsWith('zh') ? '移动端未注册' : 'Mobile not registered')
+                                        : (lang?.startsWith('zh') ? '虾网未连接' : 'ClawNet not connected')}
                             </span>
                         )}
                         {backgroundInstallStatus && (
@@ -6074,6 +6112,7 @@ ${instruction}`;
                     hubUrl={config?.remote_hub_url || ""}
                     email={config?.remote_email || ""}
                     mobile={(config as any)?.remote_mobile || ""}
+                    uiMode={config?.ui_mode || ""}
                     onClose={() => setShowMaclawLLMPopup(false)}
                     onLLMConfigured={() => {
                         setMaclawLLMOnline(true);
@@ -6082,7 +6121,15 @@ ${instruction}`;
                     onRegistered={() => {
                         refreshRemotePanel();
                     }}
-                    onSaveField={(patch) => saveRemoteConfigField(patch as any)}
+                    onSaveField={(patch) => {
+                        saveRemoteConfigField(patch as any);
+                        // If ui_mode changed, update config immediately for reactivity
+                        if (patch.ui_mode && config) {
+                            const c = new main.AppConfig({ ...config, ...patch });
+                            setConfig(c);
+                            SaveConfig(c);
+                        }
+                    }}
                 />
             )}
 

@@ -158,6 +158,7 @@ export namespace main {
 	    qqbot_enabled: boolean;
 	    qqbot_app_id: string;
 	    qqbot_app_secret: string;
+	    ui_mode: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -232,6 +233,7 @@ export namespace main {
 	        this.qqbot_enabled = source["qqbot_enabled"];
 	        this.qqbot_app_id = source["qqbot_app_id"];
 	        this.qqbot_app_secret = source["qqbot_app_secret"];
+	        this.ui_mode = source["ui_mode"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

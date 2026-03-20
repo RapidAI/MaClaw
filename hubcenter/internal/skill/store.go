@@ -310,3 +310,52 @@ func matchesSkill(meta HubSkillMeta, queryTerms []string, tags []string) bool {
 	}
 	return true
 }
+
+// IncrementDownloadCount 原子递增 Skill 的下载计数。
+func (s *SkillStore) IncrementDownloadCount(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sk, ok := s.skills[id]
+	if !ok {
+		return fmt.Errorf("skill not found: %s", id)
+	}
+	sk.DownloadCount++
+	sk.Downloads = sk.DownloadCount // 同步两个字段
+	data, err := json.MarshalIndent(sk, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.dir, id+".json"), data, 0o644)
+}
+
+// UpdateStatus 更新 Skill 状态（使用乐观锁）。
+func (s *SkillStore) UpdateStatus(id, expectedStatus, newStatus string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sk, ok := s.skills[id]
+	if !ok {
+		return fmt.Errorf("skill not found: %s", id)
+	}
+	if expectedStatus != "" && sk.Status != expectedStatus {
+		return fmt.Errorf("concurrent conflict: expected status %s, got %s", expectedStatus, sk.Status)
+	}
+	sk.Status = newStatus
+	data, err := json.MarshalIndent(sk, "", "  ")
+	if err != nil {
+		return err
+	}
+	s.rebuildIndexFromSkills()
+	return os.WriteFile(filepath.Join(s.dir, id+".json"), data, 0o644)
+}
+
+// GetByFingerprint 根据 fingerprint 查找 Skill。
+func (s *SkillStore) GetByFingerprint(fingerprint string) *HubSkillMeta {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.index {
+		if m.Fingerprint == fingerprint {
+			return &m
+		}
+	}
+	return nil
+}

@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/tui/commands"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -91,4 +94,73 @@ func (l *TUIToolLauncher) launchHeadless(_ context.Context, opts tool.LaunchOpti
 type toolFinishedMsg struct {
 	name string
 	err  error
+}
+
+// LaunchToolByName 加载配置、构建环境变量、启动指定工具。
+// 这是 TUI 版本的 GUI LaunchTool 等价物。
+func (l *TUIToolLauncher) LaunchToolByName(ctx context.Context, toolName, projectDir string, yoloMode, adminMode bool) error {
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	if projectDir == "" {
+		projectDir = resolveProjectDir(cfg)
+	}
+	projectDir = filepath.Clean(projectDir)
+
+	env, _, err := buildToolEnv(toolName, cfg, projectDir)
+	if err != nil {
+		return fmt.Errorf("构建环境变量失败: %w", err)
+	}
+
+	tn := normalizeToolName(toolName)
+	args := buildToolArgs(tn, projectDir, yoloMode, adminMode)
+
+	opts := tool.LaunchOptions{
+		ProjectDir: projectDir,
+		Tool:       tn,
+		Env:        env,
+		Args:       args,
+		YoloMode:   yoloMode,
+		AdminMode:  adminMode,
+	}
+	if l.headless {
+		opts.Mode = tool.LaunchHeadless
+	}
+	return l.Launch(ctx, opts)
+}
+
+// resolveProjectDir 从配置中获取当前项目路径。
+func resolveProjectDir(cfg corelib.AppConfig) string {
+	for _, p := range cfg.Projects {
+		if p.Id == cfg.CurrentProject {
+			return p.Path
+		}
+	}
+	if len(cfg.Projects) > 0 {
+		return cfg.Projects[0].Path
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+// buildToolArgs 构建工具启动参数。
+func buildToolArgs(tool, projectDir string, yoloMode, adminMode bool) []string {
+	var args []string
+	switch tool {
+	case "claude":
+		args = append(args, "--output-format", "stream-json")
+		if yoloMode {
+			args = append(args, "--dangerously-skip-permissions")
+		}
+	case "codex":
+		if yoloMode {
+			args = append(args, "--full-auto")
+		}
+	case "gemini":
+		// gemini CLI 无特殊参数
+	}
+	return args
 }

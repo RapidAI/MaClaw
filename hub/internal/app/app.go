@@ -29,11 +29,13 @@ type App struct {
 	HTTPHandler     http.Handler
 
 	// IM modules (Agent Passthrough)
-	MessageRouter    *im.MessageRouter
-	IMAdapter        *im.Adapter
-	FeishuPlugin     *feishu.FeishuPlugin
-	OpenclawIMPlugin *im.WebhookIMPlugin
-	QQBotPlugin      *qqbot.Plugin
+	MessageRouter      *im.MessageRouter
+	IMAdapter          *im.Adapter
+	FeishuPlugin       *feishu.FeishuPlugin
+	OpenclawIMPlugin   *im.WebhookIMPlugin
+	QQBotPlugin        *qqbot.Plugin
+	QQRemotePlugin     *im.RemoteGatewayPlugin
+	TelegramPlugin     *im.RemoteGatewayPlugin
 }
 
 func (a *App) StartBackgroundTasks() {

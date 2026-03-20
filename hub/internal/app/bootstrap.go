@@ -140,7 +140,20 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		log.Printf("[bootstrap] failed to register openclaw IM plugin: %v", err)
 	}
 
-	// 8. QQBot Plugin — connects to QQ Bot via WebSocket gateway
+	// 8a. Remote Gateway Plugins — client-side IM gateways (QQ Bot, Telegram)
+	//     forwarded through the existing Hub↔Client WebSocket.
+	qqRemotePlugin := im.NewRemoteGatewayPlugin("qqbot_remote", deviceService, st.Users, st.System)
+	if err := imAdapter.RegisterPlugin(qqRemotePlugin); err != nil {
+		log.Printf("[bootstrap] failed to register qqbot_remote plugin: %v", err)
+	}
+	telegramPlugin := im.NewRemoteGatewayPlugin("telegram", deviceService, st.Users, st.System)
+	if err := imAdapter.RegisterPlugin(telegramPlugin); err != nil {
+		log.Printf("[bootstrap] failed to register telegram plugin: %v", err)
+	}
+	gateway.RegisterIMGatewayPlugin(qqRemotePlugin)
+	gateway.RegisterIMGatewayPlugin(telegramPlugin)
+
+	// 8b. QQBot Plugin — connects to QQ Bot via WebSocket gateway (Hub-native)
 	qqbotPlugin := qqbot.New(func() qqbot.Config {
 		raw, err := st.System.Get(context.Background(), "qqbot_config")
 		if err != nil || raw == "" {
@@ -222,6 +235,8 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		FeishuPlugin:     feishuPlugin,
 		OpenclawIMPlugin: openclawIMPlugin,
 		QQBotPlugin:      qqbotPlugin,
+		QQRemotePlugin:   qqRemotePlugin,
+		TelegramPlugin:   telegramPlugin,
 	}, nil
 }
 

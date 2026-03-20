@@ -114,3 +114,10 @@ func (s *Store) CountSuccessSubmissionsByFingerprint(ctx context.Context, finger
 	).Scan(&count)
 	return count, err
 }
+
+// UpdateSubmissionFingerprint 更新 submission 的 fingerprint。
+func (s *Store) UpdateSubmissionFingerprint(ctx context.Context, id, fingerprint string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sm_submissions SET fingerprint = ?, updated_at = ? WHERE id = ?`,
+		fingerprint, time.Now().Format(timeFmt), id)
+	return err
+}

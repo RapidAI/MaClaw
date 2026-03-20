@@ -78,6 +78,15 @@ type IMProactiveSender interface {
 	SendProactiveFile(ctx context.Context, userID, b64Data, fileName, mimeType, message string) error
 }
 
+// IMGatewayPlugin handles gateway claim/release and message forwarding for
+// client-side IM gateways (QQ Bot, Telegram). Each platform registers one.
+type IMGatewayPlugin interface {
+	Name() string
+	ClaimGateway(machineID, userID string) (bool, string)
+	ReleaseAllForMachine(machineID string)
+	HandleGatewayMessage(machineID string, payload json.RawMessage)
+}
+
 type Gateway struct {
 	Identity identityService
 	Devices  DeviceBinder
@@ -91,6 +100,10 @@ type Gateway struct {
 	// IMProactive handles im.proactive_message from MaClaw clients.
 	// Set via SetIMProactiveSender after construction.
 	IMProactive IMProactiveSender
+
+	// IMGatewayPlugins maps platform name → gateway plugin for client-side
+	// IM gateways (QQ Bot, Telegram). Set via RegisterIMGatewayPlugin.
+	IMGatewayPlugins map[string]IMGatewayPlugin
 
 	mu                sync.RWMutex
 	viewersByMachine  map[string]map[*ConnContext]struct{}
@@ -117,6 +130,16 @@ func (g *Gateway) SetIMResponder(h IMAgentResponseHandler) {
 // SetIMProactiveSender wires the handler for im.proactive_message messages.
 func (g *Gateway) SetIMProactiveSender(s IMProactiveSender) {
 	g.IMProactive = s
+}
+
+// RegisterIMGatewayPlugin registers a client-side IM gateway plugin (e.g.
+// "qqbot_remote", "telegram") so the WebSocket gateway can route
+// im.gateway_claim and im.gateway_message to it.
+func (g *Gateway) RegisterIMGatewayPlugin(plugin IMGatewayPlugin) {
+	if g.IMGatewayPlugins == nil {
+		g.IMGatewayPlugins = make(map[string]IMGatewayPlugin)
+	}
+	g.IMGatewayPlugins[plugin.Name()] = plugin
 }
 
 func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
@@ -271,6 +294,14 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "im.proactive_file":
 			if err := g.handleIMProactiveFile(ctx, msg); err != nil {
+				return
+			}
+		case "im.gateway_claim":
+			if err := g.handleIMGatewayClaim(ctx, msg); err != nil {
+				return
+			}
+		case "im.gateway_message":
+			if err := g.handleIMGatewayMessage(ctx, msg); err != nil {
 				return
 			}
 		default:
@@ -907,6 +938,70 @@ func (g *Gateway) handleIMProactiveFile(ctx *ConnContext, msg Envelope) error {
 	return nil
 }
 
+// handleIMGatewayClaim handles im.gateway_claim from a client that wants to
+// register as the gateway owner for a given IM platform (QQ Bot, Telegram).
+func (g *Gateway) handleIMGatewayClaim(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+	}
+	var payload struct {
+		Platform string `json:"platform"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[ws] handleIMGatewayClaim: parse error: %v", err)
+		return nil
+	}
+	if payload.Platform == "" {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "platform is required")
+	}
+	plugin, ok := g.IMGatewayPlugins[payload.Platform]
+	if !ok {
+		_ = writeWSJSON(ctx.Conn, map[string]any{
+			"type": "im.gateway_claim_result",
+			"payload": map[string]any{
+				"platform": payload.Platform,
+				"ok":       false,
+				"reason":   fmt.Sprintf("unknown platform: %s", payload.Platform),
+			},
+		})
+		return nil
+	}
+	ok, reason := plugin.ClaimGateway(ctx.MachineID, ctx.UserID)
+	_ = writeWSJSON(ctx.Conn, map[string]any{
+		"type": "im.gateway_claim_result",
+		"payload": map[string]any{
+			"platform": payload.Platform,
+			"ok":       ok,
+			"reason":   reason,
+		},
+	})
+	return nil
+}
+
+// handleIMGatewayMessage handles im.gateway_message from a client-side IM
+// gateway. The client forwards incoming QQ/TG messages here so Hub can route
+// them through the standard IM Adapter pipeline.
+func (g *Gateway) handleIMGatewayMessage(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+	}
+	var payload struct {
+		Platform string          `json:"platform"`
+		Data     json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[ws] handleIMGatewayMessage: parse error: %v", err)
+		return nil
+	}
+	plugin, ok := g.IMGatewayPlugins[payload.Platform]
+	if !ok {
+		log.Printf("[ws] handleIMGatewayMessage: unknown platform %s", payload.Platform)
+		return nil
+	}
+	plugin.HandleGatewayMessage(ctx.MachineID, payload.Data)
+	return nil
+}
+
 func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 	if ctx == nil {
 		return
@@ -916,6 +1011,10 @@ func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 		log.Printf("[ws] cleanupConnection: unbinding machine_id=%s and marking offline", ctx.MachineID)
 		_ = g.Devices.UnbindDesktop(context.Background(), ctx.MachineID, ctx)
 		_ = g.Sessions.MarkMachineOffline(context.Background(), ctx.MachineID)
+		// Release any IM gateway locks held by this machine.
+		for _, plugin := range g.IMGatewayPlugins {
+			plugin.ReleaseAllForMachine(ctx.MachineID)
+		}
 		g.broadcastMachineEvent(ctx.MachineID, map[string]any{
 			"type":       "machine.offline",
 			"machine_id": ctx.MachineID,

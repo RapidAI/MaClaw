@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
@@ -152,6 +153,7 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 	sub.CreatedAt = now
 	sub.UpdatedAt = now
 	if err := h.store.CreateSubmission(r.Context(), sub); err != nil {
+		os.Remove(zipPath) // 清理已保存的 zip 文件
 		smError(w, http.StatusInternalServerError, "create submission: "+err.Error())
 		return
 	}
@@ -442,6 +444,9 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 		return
 	}
 
+	// 下载成功后原子递增 download_count
+	_ = h.skillStore.IncrementDownloadCount(skillID)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"encrypted_data": encPkg,
 		"skill_id":       skillID,
@@ -455,21 +460,34 @@ func (h *SkillMarketHandlers) getSkillPrice(ctx context.Context, skillID string)
 	return price
 }
 
-func (h *SkillMarketHandlers) getSkillUploaderID(_ context.Context, _ string) string {
-	// TODO: 从 HubSkillMeta.UploaderID 获取（Task 11.1 扩展后）
-	return ""
+func (h *SkillMarketHandlers) getSkillUploaderID(_ context.Context, skillID string) string {
+	sk, err := h.skillStore.Get(skillID)
+	if err != nil {
+		return ""
+	}
+	return sk.UploaderID
 }
 
-func (h *SkillMarketHandlers) skillHasRequiredEnv(_ context.Context, _ string) bool {
-	// TODO: 从 HubSkillMeta.RequiredEnv 获取（Task 39.3 扩展后）
-	return false
+func (h *SkillMarketHandlers) skillHasRequiredEnv(_ context.Context, skillID string) bool {
+	sk, err := h.skillStore.Get(skillID)
+	if err != nil {
+		return false
+	}
+	return len(sk.RequiredEnv) > 0
 }
 
 func (h *SkillMarketHandlers) useVoucher(ctx context.Context, userID string) error {
-	_, err := h.store.DB().ExecContext(ctx,
+	res, err := h.store.DB().ExecContext(ctx,
 		`UPDATE sm_users SET voucher_count = voucher_count - 1, updated_at = ? WHERE id = ? AND voucher_count > 0`,
 		time.Now().Format(time.RFC3339), userID)
-	return err
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("no voucher available")
+	}
+	return nil
 }
 
 func (h *SkillMarketHandlers) checkUpgradePurchase(ctx context.Context, buyerID, skillID string) (bool, error) {
@@ -819,6 +837,5 @@ func smError(w http.ResponseWriter, status int, msg string) {
 var _counter uint64
 
 func uniqueCounter() uint64 {
-	_counter++
-	return _counter
+	return atomic.AddUint64(&_counter, 1)
 }

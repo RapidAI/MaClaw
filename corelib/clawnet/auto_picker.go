@@ -25,6 +25,7 @@ type AutoTaskPicker struct {
 	minReward      float64
 	autoEnabled    bool
 	preferredTags  []string
+	lang           string // "zh" or "en" for error localisation
 
 	activeTasks    map[string]*autoTaskRun
 	completedCount int
@@ -71,6 +72,13 @@ func (p *AutoTaskPicker) SetOnChange(fn func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onChange = fn
+}
+
+// SetLang sets the language for error messages ("zh" or "en").
+func (p *AutoTaskPicker) SetLang(lang string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lang = lang
 }
 
 func (p *AutoTaskPicker) Configure(enabled bool, pollMinutes int, minReward float64, tags []string) {
@@ -304,6 +312,10 @@ func (p *AutoTaskPicker) selectTask(tasks []Task, minReward float64, preferredTa
 }
 
 func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTaskExecutor) {
+	p.mu.Lock()
+	lang := p.lang
+	p.mu.Unlock()
+
 	run := &autoTaskRun{
 		TaskID: task.ID, Title: task.Title, Reward: task.Reward,
 		Status: "claiming", StartedAt: time.Now(),
@@ -315,7 +327,7 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 
 	if err := client.ClaimTask(task.ID); err != nil {
 		if bidErr := client.BidOnTask(task.ID, 0, "maClaw auto-pickup: I can help with this"); bidErr != nil {
-			p.failTask(run, fmt.Sprintf("claim failed: %v, bid failed: %v", err, bidErr))
+			p.failTask(run, FormatTaskError("claim", err, lang)+", "+FormatTaskError("bid", bidErr, lang))
 			return
 		}
 	}
@@ -327,7 +339,7 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 	}
 	result, err := executor(task.Title, description)
 	if err != nil {
-		p.failTask(run, fmt.Sprintf("execution failed: %v", err))
+		p.failTask(run, FormatTaskError("execution", err, lang))
 		return
 	}
 	if result == "" {
@@ -339,7 +351,7 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 
 	p.setRunStatus(run, "submitting")
 	if err := client.SubmitTaskResult(task.ID, result); err != nil {
-		p.failTask(run, fmt.Sprintf("submit failed: %v", err))
+		p.failTask(run, FormatTaskError("submit", err, lang))
 		return
 	}
 
@@ -364,6 +376,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 	p.mu.Lock()
 	client := p.client
 	executor := p.executor
+	lang := p.lang
 	if _, exists := p.activeTasks[taskID]; exists {
 		p.mu.Unlock()
 		return map[string]interface{}{"ok": false, "error": "task is already being processed"}
@@ -379,7 +392,8 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 
 	task, err := client.GetTask(taskID)
 	if err != nil {
-		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("failed to get task: %v", err)}
+		msg := FormatTaskError("get_task", err, lang)
+		return map[string]interface{}{"ok": false, "error": msg}
 	}
 	normalizedStatus := strings.ToLower(task.TaskStatus)
 	if normalizedStatus != "open" && normalizedStatus != "settled" && normalizedStatus != "" {
@@ -397,8 +411,9 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 
 	if claimErr := client.ClaimTask(task.ID); claimErr != nil {
 		if bidErr := client.BidOnTask(task.ID, 0, "manual pickup"); bidErr != nil {
-			p.failTask(run, fmt.Sprintf("claim failed: %v, bid failed: %v", claimErr, bidErr))
-			return map[string]interface{}{"ok": false, "error": fmt.Sprintf("claim failed: %v", claimErr)}
+			msg := FormatTaskError("claim", claimErr, lang) + ", " + FormatTaskError("bid", bidErr, lang)
+			p.failTask(run, msg)
+			return map[string]interface{}{"ok": false, "error": FormatTaskError("claim", claimErr, lang)}
 		}
 	}
 
@@ -409,8 +424,9 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 	}
 	execResult, execErr := executor(task.Title, description)
 	if execErr != nil {
-		p.failTask(run, fmt.Sprintf("execution failed: %v", execErr))
-		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("execution failed: %v", execErr)}
+		msg := FormatTaskError("execution", execErr, lang)
+		p.failTask(run, msg)
+		return map[string]interface{}{"ok": false, "error": msg}
 	}
 	if execResult == "" {
 		execResult = "Task completed successfully."
@@ -421,8 +437,9 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 
 	p.setRunStatus(run, "submitting")
 	if submitErr := client.SubmitTaskResult(task.ID, execResult); submitErr != nil {
-		p.failTask(run, fmt.Sprintf("submit failed: %v", submitErr))
-		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("submit failed: %v", submitErr), "result": execResult}
+		msg := FormatTaskError("submit", submitErr, lang)
+		p.failTask(run, msg)
+		return map[string]interface{}{"ok": false, "error": msg, "result": execResult}
 	}
 
 	p.mu.Lock()

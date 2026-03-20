@@ -186,6 +186,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("DELETE /api/admin/gossip/comments", RequireAdmin(adminService, AdminDeleteGossipCommentHandler(gossipRepo, gossipCache)))
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	registerStaticRoutes(mux, "./web/skillhub", "/skillhub")
+	registerStaticRoutes(mux, "./web/skillmarket", "/skillmarket")
 	// SkillMarket API
 	if smHandlers != nil {
 		mux.HandleFunc("POST /api/v1/skills/submit", smHandlers.SubmitSkill)

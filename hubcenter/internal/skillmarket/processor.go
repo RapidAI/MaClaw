@@ -24,23 +24,27 @@ const (
 
 // Processor 异步处理上传的 Skill 包。
 type Processor struct {
-	pendingDir  string
-	sandboxBase string
-	store       *Store
-	skillStore  *skill.SkillStore
-	mailer      *mail.Service
-	queue       chan string
+	pendingDir     string
+	sandboxBase    string
+	store          *Store
+	skillStore     *skill.SkillStore
+	mailer         *mail.Service
+	trialManager   *TrialManager
+	versionManager *VersionManager
+	queue          chan string
 }
 
 // NewProcessor 创建异步处理器。
-func NewProcessor(pendingDir, sandboxBase string, store *Store, skillStore *skill.SkillStore, mailer *mail.Service) *Processor {
+func NewProcessor(pendingDir, sandboxBase string, store *Store, skillStore *skill.SkillStore, mailer *mail.Service, trialMgr *TrialManager, versionMgr *VersionManager) *Processor {
 	return &Processor{
-		pendingDir:  pendingDir,
-		sandboxBase: sandboxBase,
-		store:       store,
-		skillStore:  skillStore,
-		mailer:      mailer,
-		queue:       make(chan string, processorQueue),
+		pendingDir:     pendingDir,
+		sandboxBase:    sandboxBase,
+		store:          store,
+		skillStore:     skillStore,
+		mailer:         mailer,
+		trialManager:   trialMgr,
+		versionManager: versionMgr,
+		queue:          make(chan string, processorQueue),
 	}
 }
 
@@ -116,13 +120,33 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 		log.Printf("[skillmarket] skill %s security labels: %v", skillID, securityLabels)
 	}
 
+	// 版本管理：判断新建还是升级
+	fingerprint := sub.Email + ":" + meta.Name
+	versionNum := 1
+	var prevSkillID string
+	if p.versionManager != nil {
+		resolution, err := p.versionManager.ResolveSubmission(ctx, fingerprint)
+		if err != nil {
+			log.Printf("[skillmarket] version resolve error: %v", err)
+		} else {
+			versionNum = resolution.NextVersion
+			prevSkillID = resolution.PrevSkillID
+			if resolution.IsUpgrade {
+				log.Printf("[skillmarket] version upgrade: %s v%d (prev: %s)", meta.Name, versionNum, prevSkillID)
+			}
+		}
+	}
+
+	// 更新 submission fingerprint
+	_ = p.store.UpdateSubmissionFingerprint(ctx, subID, fingerprint)
+
 	full := skill.HubSkillFull{
 		HubSkillMeta: skill.HubSkillMeta{
 			ID:          skillID,
 			Name:        meta.Name,
 			Description: meta.Description,
 			Tags:        meta.Tags,
-			Version:     meta.Version,
+			Version:     fmt.Sprintf("%d", versionNum),
 			Author:      meta.Author,
 			TrustLevel:  "community",
 			CreatedAt:   fmtTime(sub.CreatedAt),
@@ -157,9 +181,21 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	// 标记成功
 	_ = p.store.UpdateSubmissionStatus(ctx, subID, "success", "", skillID)
 
+	// Trial Manager：语法验证通过后进入 trial 状态
+	if p.trialManager != nil {
+		if err := p.trialManager.OnSkillValidated(ctx, skillID); err != nil {
+			log.Printf("[skillmarket] trial manager error: %v", err)
+		}
+	}
+
+	// 版本升级：旧版本暂不标记 superseded，等新版本 published 后再处理
+	if prevSkillID != "" {
+		log.Printf("[skillmarket] new version %s replaces %s (will supersede on publish)", skillID, prevSkillID)
+	}
+
 	// 发送成功通知邮件
-	p.sendNotification(ctx, sub.Email, "SkillMarket: Skill Published",
-		fmt.Sprintf("Your skill \"%s\" has been published successfully.\nSkill ID: %s", meta.Name, skillID))
+	p.sendNotification(ctx, sub.Email, "SkillMarket: Skill Submitted",
+		fmt.Sprintf("Your skill \"%s\" (v%d) has entered trial period.\nSkill ID: %s", meta.Name, versionNum, skillID))
 
 	return nil
 }

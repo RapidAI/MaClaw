@@ -25,6 +25,41 @@ func (a *App) BackupSkills(outputPath string) error {
 	return a.skillExecutor.BackupSkills(outputPath)
 }
 
+// ExportLearnedSkillsZip exports selected learned/crafted skills to a zip file.
+// It opens a save dialog for the user to choose the output path.
+func (a *App) ExportLearnedSkillsZip(names []string) error {
+	a.ensureRemoteInfra()
+	if a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	dest, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "导出自学习技能",
+		DefaultFilename: "learned-skills.zip",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Zip Files", Pattern: "*.zip"},
+		},
+	})
+	if err != nil || dest == "" {
+		return nil // user cancelled
+	}
+	return a.skillExecutor.ExportLearnedSkillsZip(names, dest)
+}
+
+// ImportLearnedSkillsZip opens a file dialog to select a zip, imports
+// learned/crafted skills from it, and returns a RestoreReport with
+// duplicate-skip information.
+func (a *App) ImportLearnedSkillsZip() (*RestoreReport, error) {
+	a.ensureRemoteInfra()
+	if a.skillExecutor == nil {
+		return nil, fmt.Errorf("skill executor not initialized")
+	}
+	selection := a.SelectSkillFile()
+	if selection == "" {
+		return nil, nil // user cancelled
+	}
+	return a.skillExecutor.RestoreSkills(selection)
+}
+
 // RestoreSkills imports NL Skills from a zip file (Wails binding).
 func (a *App) RestoreSkills(zipPath string) (*RestoreReport, error) {
 	a.ensureRemoteInfra()

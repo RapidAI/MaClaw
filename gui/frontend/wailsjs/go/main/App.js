@@ -323,6 +323,14 @@ export function ImportNLSkillZip() {
   return window['go']['main']['App']['ImportNLSkillZip']();
 }
 
+export function ExportLearnedSkillsZip(arg1) {
+  return window['go']['main']['App']['ExportLearnedSkillsZip'](arg1);
+}
+
+export function ImportLearnedSkillsZip() {
+  return window['go']['main']['App']['ImportLearnedSkillsZip']();
+}
+
 // MCP management bindings
 export function ListMCPServers() {
   return window['go']['main']['App']['ListMCPServers']();
@@ -811,6 +819,43 @@ export function ClawNetAppealPrediction(arg1, arg2) {
 
 export function ClawNetGetPredictionLeaderboard() {
   return window['go']['main']['App']['ClawNetGetPredictionLeaderboard']();
+}
+
+// Nutshell bindings
+export function ClawNetNutshellStatus() {
+  return window['go']['main']['App']['ClawNetNutshellStatus']();
+}
+
+export function ClawNetNutshellInstall() {
+  return window['go']['main']['App']['ClawNetNutshellInstall']();
+}
+
+export function ClawNetNutshellInit(arg1) {
+  return window['go']['main']['App']['ClawNetNutshellInit'](arg1);
+}
+
+export function ClawNetNutshellCheck(arg1) {
+  return window['go']['main']['App']['ClawNetNutshellCheck'](arg1);
+}
+
+export function ClawNetNutshellPublish(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetNutshellPublish'](arg1, arg2);
+}
+
+export function ClawNetNutshellClaim(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetNutshellClaim'](arg1, arg2);
+}
+
+export function ClawNetNutshellDeliver(arg1) {
+  return window['go']['main']['App']['ClawNetNutshellDeliver'](arg1);
+}
+
+export function ClawNetNutshellPack(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ClawNetNutshellPack'](arg1, arg2, arg3);
+}
+
+export function ClawNetNutshellUnpack(arg1, arg2) {
+  return window['go']['main']['App']['ClawNetNutshellUnpack'](arg1, arg2);
 }
 
 // AI Assistant bindings

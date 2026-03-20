@@ -29,6 +29,16 @@ type ClawNetClient struct {
 	autoUpdateStop chan struct{} // signals the auto-update goroutine to stop
 }
 
+// BinPath returns the resolved path to the clawnet binary.
+func (c *ClawNetClient) BinPath() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.binPath != "" {
+		return c.binPath
+	}
+	return c.findBinary()
+}
+
 // ClawNet API response types
 
 type ClawNetStatus struct {

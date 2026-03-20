@@ -42,6 +42,7 @@ type Props = {
     hubUrl: string;
     email: string;
     mobile: string;
+    uiMode: string;
     onClose: () => void;
     onLLMConfigured: () => void;
     onRegistered: () => void;
@@ -67,8 +68,12 @@ const stepBadge: React.CSSProperties = {
 };
 const doneBadge: React.CSSProperties = { ...stepBadge, background: '#22c55e' };
 
-export function OnboardingWizard({ lang, hubUrl, email, mobile, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
+export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
+
+    // ── Step 0: UI Mode ──
+    const [selectedMode, setSelectedMode] = useState<'pro' | 'lite'>(uiMode === 'pro' ? 'pro' : 'lite');
+    const [modeDone, setModeDone] = useState(!!uiMode && uiMode !== '');
 
     // ── Step 1: LLM ──
     const [providers, setProviders] = useState<LLMProvider[]>([]);
@@ -130,13 +135,13 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, onClose, onLLMCo
         return () => window.removeEventListener("keydown", onKey);
     }, [onClose, showConfirm]);
 
-    // Auto-close when both steps are done
+    // Auto-close when all steps are done
     useEffect(() => {
-        if (llmDone && regDone) {
+        if (modeDone && llmDone && regDone) {
             const timer = setTimeout(onClose, 1500);
             return () => clearTimeout(timer);
         }
-    }, [llmDone, regDone, onClose]);
+    }, [modeDone, llmDone, regDone, onClose]);
 
     // Collapse the LLM form after successful test & save
     useEffect(() => {
@@ -238,39 +243,96 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, onClose, onLLMCo
                 {/* Header */}
                 <div style={{
                     background: "linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)",
-                    padding: "14px 18px 12px", position: "relative",
+                    padding: "12px 18px 10px", position: "relative",
                 }}>
                     <button onClick={onClose} style={{
                         position: "absolute", top: 8, right: 12, border: "none", background: "transparent",
                         cursor: "pointer", fontSize: "1.1rem", color: "#a5b4fc",
                     }}>&times;</button>
-                    <div style={{ fontSize: "1.4rem", marginBottom: 4, lineHeight: 1 }}>👋</div>
-                    <h3 style={{ margin: 0, color: "#4338ca", fontSize: "0.92rem", fontWeight: 600 }}>
+                    <div style={{ fontSize: "1.2rem", marginBottom: 2, lineHeight: 1 }}>👋</div>
+                    <h3 style={{ margin: 0, color: "#4338ca", fontSize: "0.88rem", fontWeight: 600 }}>
                         {t("来，配置一下 MaClaw 吧", "Let's get MaClaw ready!")}
                     </h3>
-                    <p style={{ margin: "4px 0 0 0", fontSize: "0.74rem", color: "#6366f1" }}>
-                        {t("两步开启远程编程。", "Two quick steps to unlock remote coding.")}
+                    <p style={{ margin: "2px 0 0 0", fontSize: "0.7rem", color: "#6366f1" }}>
+                        {t("三步快速上手。", "Three quick steps to get started.")}
                     </p>
                 </div>
 
-                <div style={{ padding: "14px 18px 16px" }}>
-                    {/* ═══ Step 1: Configure LLM ═══ */}
-                    <div style={{ marginBottom: 16 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                            <span style={llmDone ? doneBadge : stepBadge}>{llmDone ? "✓" : "1"}</span>
-                            <span style={{ fontSize: "0.84rem", fontWeight: 600, color: "#1e293b" }}>
+                <div style={{ padding: "10px 18px 14px" }}>
+                    {/* ═══ Step 0: Choose UI Mode ═══ */}
+                    <div style={{ marginBottom: 12 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                            <span style={modeDone ? doneBadge : stepBadge}>{modeDone ? "✓" : "1"}</span>
+                            <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#1e293b" }}>
+                                {t("选择界面模式", "Choose Interface Mode")}
+                            </span>
+                            {modeDone && <span style={{ fontSize: "0.7rem", color: "#22c55e", marginLeft: "auto" }}>
+                                {t("已选择", "Selected")}
+                            </span>}
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginLeft: 30 }}>
+                            <div
+                                onClick={() => { setSelectedMode('pro'); }}
+                                style={{
+                                    flex: 1, padding: "10px 12px", borderRadius: 8, cursor: "pointer",
+                                    border: `2px solid ${selectedMode === 'pro' ? '#6366f1' : '#e2e8f0'}`,
+                                    background: selectedMode === 'pro' ? 'rgba(99,102,241,0.06)' : '#f8fafc',
+                                    transition: "all 0.15s",
+                                }}
+                            >
+                                <div style={{ fontSize: "0.82rem", fontWeight: 600, color: selectedMode === 'pro' ? '#4338ca' : '#334155', marginBottom: 2 }}>
+                                    🛠️ {t("专业模式", "Pro")}
+                                </div>
+                                <div style={{ fontSize: "0.68rem", color: "#94a3b8", lineHeight: 1.4 }}>
+                                    {t("包含完整编程工具链，适合开发者", "Full coding toolchain for developers")}
+                                </div>
+                            </div>
+                            <div
+                                onClick={() => { setSelectedMode('lite'); }}
+                                style={{
+                                    flex: 1, padding: "10px 12px", borderRadius: 8, cursor: "pointer",
+                                    border: `2px solid ${selectedMode === 'lite' ? '#6366f1' : '#e2e8f0'}`,
+                                    background: selectedMode === 'lite' ? 'rgba(99,102,241,0.06)' : '#f8fafc',
+                                    transition: "all 0.15s",
+                                }}
+                            >
+                                <div style={{ fontSize: "0.82rem", fontWeight: 600, color: selectedMode === 'lite' ? '#4338ca' : '#334155', marginBottom: 2 }}>
+                                    ✨ {t("简洁模式", "Lite")}
+                                </div>
+                                <div style={{ fontSize: "0.68rem", color: "#94a3b8", lineHeight: 1.4 }}>
+                                    {t("专注 AI 助手与技能扩展，隐藏编程工具", "AI assistant & skills, coding tools hidden")}
+                                </div>
+                            </div>
+                        </div>
+                        {!modeDone && (
+                            <button onClick={() => { onSaveField({ ui_mode: selectedMode }); setModeDone(true); }} style={{
+                                marginLeft: 30, marginTop: 8, padding: "6px 20px", fontSize: "0.78rem", fontWeight: 600,
+                                background: "#6366f1", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer",
+                            }}>
+                                {t("确认", "Confirm")}
+                            </button>
+                        )}
+                    </div>
+
+                    {/* Divider */}
+                    <div style={{ height: 1, background: "#e0e7ff", margin: "0 0 12px 0" }} />
+                    {/* ═══ Step 2: Configure LLM ═══ */}
+                    <div style={{ marginBottom: 12 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                            <span style={llmDone ? doneBadge : stepBadge}>{llmDone ? "✓" : "2"}</span>
+                            <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#1e293b" }}>
                                 {t("配置 LLM", "Configure LLM")}
                             </span>
                             {llmDone && <span style={{ fontSize: "0.7rem", color: "#22c55e", marginLeft: "auto" }}>
                                 {t("已完成", "Done")}
                             </span>}
                         </div>
-                        <p style={{ margin: "0 0 8px 30px", fontSize: "0.72rem", color: "#94a3b8", lineHeight: 1.4 }}>
+                        <p style={{ margin: "0 0 6px 30px", fontSize: "0.7rem", color: "#94a3b8", lineHeight: 1.3 }}>
                             {t("选择一个 LLM 服务商，输入 API Key 后测试并保存。", "Pick a provider, enter your API Key, then test & save.")}
                         </p>
 
                         {/* Provider buttons */}
-                        <div style={{ display: "flex", gap: 6, marginLeft: 30, marginBottom: 10, flexWrap: "wrap" }}>
+                        <div style={{ display: "flex", gap: 6, marginLeft: 30, marginBottom: 8, flexWrap: "wrap" }}>
                             {providers.map((p, i) => {
                                 const active = selectedIdx === i;
                                 return (
@@ -356,20 +418,20 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, onClose, onLLMCo
                     </div>
 
                     {/* Divider */}
-                    <div style={{ height: 1, background: "#e0e7ff", margin: "0 0 16px 0" }} />
+                    <div style={{ height: 1, background: "#e0e7ff", margin: "0 0 12px 0" }} />
 
-                    {/* ═══ Step 2: Mobile Registration ═══ */}
-                    <div style={{ marginBottom: 12 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                            <span style={regDone ? doneBadge : stepBadge}>{regDone ? "✓" : "2"}</span>
-                            <span style={{ fontSize: "0.84rem", fontWeight: 600, color: "#1e293b" }}>
+                    {/* ═══ Step 3: Mobile Registration ═══ */}
+                    <div style={{ marginBottom: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                            <span style={regDone ? doneBadge : stepBadge}>{regDone ? "✓" : "3"}</span>
+                            <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#1e293b" }}>
                                 {t("移动端注册", "Mobile Registration")}
                             </span>
                             {regDone && <span style={{ fontSize: "0.7rem", color: "#22c55e", marginLeft: "auto" }}>
                                 {t("已完成", "Done")}
                             </span>}
                         </div>
-                        <p style={{ margin: "0 0 10px 30px", fontSize: "0.72rem", color: "#94a3b8", lineHeight: 1.4 }}>
+                        <p style={{ margin: "0 0 8px 30px", fontSize: "0.7rem", color: "#94a3b8", lineHeight: 1.3 }}>
                             {t("注册设备并绑定飞书，即可通过移动端操控。", "Register your device to enable remote control.")}
                         </p>
 
@@ -446,9 +508,9 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, onClose, onLLMCo
                     </div>
 
                     {/* Footer hint */}
-                    <p style={{ margin: "8px 0 0 0", fontSize: "0.68rem", color: "#b0b8c9", lineHeight: 1.5 }}>
-                        💡 {t("左上角龙虾亮起，说明一切就绪。两步都完成后，下次启动将不再显示此向导。",
-                            "The lobster icon lights up once you're all set. This wizard won't appear again after both steps are done.")}
+                    <p style={{ margin: "6px 0 0 0", fontSize: "0.66rem", color: "#b0b8c9", lineHeight: 1.4 }}>
+                        💡 {t("左上角龙虾亮起，说明一切就绪。三步都完成后，下次启动将不再显示此向导。",
+                            "The lobster icon lights up once you're all set. This wizard won't appear again after all steps are done.")}
                     </p>
                 </div>
             </div>

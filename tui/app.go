@@ -21,6 +21,10 @@ type TUIApp struct {
 	bridge     *BubbleTeaEventBridge
 	logger     *TUILogger
 	qqBotMgr   *tuiQQBotManager
+	telegramMgr *tuiTelegramManager
+	loopMgr    *agent.BackgroundLoopManager
+	configWatcher *ConfigWatcher
+	sessionMgr *TUISessionManager
 
 	// AI 助手聊天
 	chatHistory []map[string]string // 对话历史 (role/content)
@@ -38,6 +42,11 @@ type kernelStartedMsg struct{ err error }
 type kernelEventMsg struct {
 	eventType string
 	data      interface{}
+}
+
+// sessionUpdateMsg 会话状态变更消息。
+type sessionUpdateMsg struct {
+	sessionID string
 }
 
 // NewTUIApp 创建 TUI 应用实例。
@@ -67,6 +76,12 @@ func (a *TUIApp) initKernel() tea.Msg {
 	}
 	a.kernel = kernel
 
+	// 初始化后台任务管理器
+	a.loopMgr = agent.NewBackgroundLoopManager(nil)
+
+	// 初始化会话管理器
+	a.sessionMgr = NewTUISessionManager()
+
 	// 在后台启动内核事件循环
 	go func() {
 		ctx := context.Background()
@@ -78,6 +93,19 @@ func (a *TUIApp) initKernel() tea.Msg {
 	// 启动 QQ Bot 网关（转发模式）
 	a.qqBotMgr = newTUIQQBotManager(logger)
 	go a.qqBotMgr.SyncFromConfig()
+
+	// 启动 Telegram 网关（转发模式）
+	a.telegramMgr = newTUITelegramManager(logger)
+	go a.telegramMgr.SyncFromConfig()
+
+	// 启动配置文件监听
+	cw, cwErr := NewConfigWatcher(logger)
+	if cwErr != nil {
+		logger.Error("config watcher init failed: %v", cwErr)
+	} else {
+		a.configWatcher = cw
+		cw.Start()
+	}
 
 	return kernelStartedMsg{}
 }
@@ -95,6 +123,12 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.qqBotMgr != nil {
 				a.qqBotMgr.Stop()
 			}
+			if a.telegramMgr != nil {
+				a.telegramMgr.Stop()
+			}
+			if a.configWatcher != nil {
+				a.configWatcher.Stop()
+			}
 			if a.kernel != nil {
 				ctx := context.Background()
 				_ = a.kernel.Shutdown(ctx)
@@ -104,6 +138,12 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !configEditing && !auditFiltering && !chatFocused {
 				if a.qqBotMgr != nil {
 					a.qqBotMgr.Stop()
+				}
+				if a.telegramMgr != nil {
+					a.telegramMgr.Stop()
+				}
+				if a.configWatcher != nil {
+					a.configWatcher.Stop()
 				}
 				if a.kernel != nil {
 					ctx := context.Background()
@@ -150,6 +190,10 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.qqBotMgr != nil && msg.Section == "qqbot" {
 			go a.qqBotMgr.SyncFromConfig()
 		}
+		// Re-sync Telegram gateway on config change
+		if a.telegramMgr != nil && msg.Section == "telegram" {
+			go a.telegramMgr.SyncFromConfig()
+		}
 
 	case views.MemoryCompressMsg:
 		a.root.StatusBar.SetMessage("记忆压缩中... 请使用 CLI: maclaw-tui memory compress")
@@ -177,6 +221,52 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.ChatClearMsg:
 		a.chatHistory = nil
 		a.root.StatusBar.SetMessage("聊天历史已清除")
+
+	case configChangedMsg:
+		a.root.StatusBar.SetMessage("配置文件已变更，正在重新加载...")
+		// Re-sync gateways
+		if a.qqBotMgr != nil {
+			go a.qqBotMgr.SyncFromConfig()
+		}
+		if a.telegramMgr != nil {
+			go a.telegramMgr.SyncFromConfig()
+		}
+		// Refresh tool status
+		detected := commands.DetectTools()
+		var toolInfos []views.ToolInfo
+		for _, dt := range detected {
+			toolInfos = append(toolInfos, views.ToolInfo{
+				Name:      dt.DisplayName,
+				Available: dt.Available,
+				Path:      dt.Path,
+			})
+		}
+		a.root.Tools.SetTools(toolInfos)
+
+	case toolFinishedMsg:
+		if msg.err != nil {
+			a.root.StatusBar.SetMessage(fmt.Sprintf("工具 %s 退出: %v", msg.name, msg.err))
+		} else {
+			a.root.StatusBar.SetMessage(fmt.Sprintf("工具 %s 已退出", msg.name))
+		}
+
+	case sessionUpdateMsg:
+		// 将会话输出同步到 SessionDetail 视图
+		if a.root.SessionDetail != nil && a.sessionMgr != nil {
+			s, ok := a.sessionMgr.Get(msg.sessionID)
+			if ok {
+				s.mu.Lock()
+				lines := make([]string, len(s.PreviewLines))
+				copy(lines, s.PreviewLines)
+				status := string(s.Status)
+				s.mu.Unlock()
+				a.root.SessionDetail.SetStatus(status)
+				// 追加新行（简化：重设所有行）
+				for i := len(a.root.SessionDetail.GetLines()); i < len(lines); i++ {
+					a.root.SessionDetail.AppendOutput(lines[i])
+				}
+			}
+		}
 	}
 
 	// 委托给 root model
@@ -200,6 +290,20 @@ func (a *TUIApp) View() string {
 func runTUI() {
 	app := NewTUIApp()
 	p := tea.NewProgram(app, tea.WithAltScreen())
+
+	// 绑定 Program 到 config watcher（initKernel 后才有 configWatcher）
+	go func() {
+		// 等待 initKernel 完成
+		for app.configWatcher == nil && app.err == nil {
+			time.Sleep(50 * time.Millisecond)
+			if app.ready {
+				break
+			}
+		}
+		if app.configWatcher != nil {
+			app.configWatcher.SetProgram(p)
+		}
+	}()
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)

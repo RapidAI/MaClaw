@@ -82,4 +82,11 @@ type AppConfig struct {
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`
 	QQBotAppSecret string `json:"qqbot_app_secret,omitempty"`
+	// IM — per-user Telegram Bot (client-side gateway)
+	TelegramBotEnabled bool   `json:"telegram_bot_enabled,omitempty"`
+	TelegramBotToken   string `json:"telegram_bot_token,omitempty"`
+	// UI mode: "pro" (full coding tools) or "lite" (default, simplified, no coding tools)
+	UIMode string `json:"ui_mode,omitempty"`
+	// SkillMarket — Skill 获取策略
+	SkillPurchaseMode string `json:"skill_purchase_mode,omitempty"` // "auto" (default) | "free_only"
 }

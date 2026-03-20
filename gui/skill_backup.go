@@ -95,6 +95,100 @@ func (e *SkillExecutor) BackupSkills(outputPath string) error {
 	return outFile.Close()
 }
 
+// ExportLearnedSkillsZip exports the specified learned/crafted skills (by name)
+// to a zip archive at outputPath. Only skills with source "learned" or "crafted"
+// are eligible; names that don't match are silently skipped.
+func (e *SkillExecutor) ExportLearnedSkillsZip(names []string, outputPath string) error {
+	if len(names) == 0 {
+		return fmt.Errorf("no skill names specified")
+	}
+
+	e.mu.RLock()
+	allSkills := e.loadSkills()
+	e.mu.RUnlock()
+
+	// Build set of requested names.
+	wanted := make(map[string]bool, len(names))
+	for _, n := range names {
+		wanted[n] = true
+	}
+
+	// Filter to learned/crafted skills that match the requested names.
+	var selected []NLSkillEntry
+	for _, s := range allSkills {
+		if (s.Source == "learned" || s.Source == "crafted") && wanted[s.Name] {
+			selected = append(selected, s)
+		}
+	}
+	if len(selected) == 0 {
+		return fmt.Errorf("no matching learned/crafted skills found")
+	}
+
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create export file: %w", err)
+	}
+
+	zw := zip.NewWriter(outFile)
+
+	manifest := SkillManifest{
+		BackupTime:    time.Now().Format(time.RFC3339),
+		SkillCount:    len(selected),
+		MaclawVersion: remoteAppVersion(),
+	}
+	manifestData, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		zw.Close()
+		outFile.Close()
+		return fmt.Errorf("failed to marshal manifest: %w", err)
+	}
+	mw, err := zw.Create("manifest.json")
+	if err != nil {
+		zw.Close()
+		outFile.Close()
+		return fmt.Errorf("failed to create manifest entry: %w", err)
+	}
+	if _, err := mw.Write(manifestData); err != nil {
+		zw.Close()
+		outFile.Close()
+		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+
+	usedNames := make(map[string]bool, len(selected))
+	for _, skill := range selected {
+		data, err := json.MarshalIndent(skill, "", "  ")
+		if err != nil {
+			zw.Close()
+			outFile.Close()
+			return fmt.Errorf("failed to marshal skill %q: %w", skill.Name, err)
+		}
+		fileName := toKebabCase(skill.Name) + ".json"
+		// Deduplicate file names within the zip (different skill names may
+		// produce the same kebab-case, e.g. "my skill" vs "my-skill").
+		if usedNames[fileName] {
+			fileName = toKebabCase(skill.Name) + "-" + fmt.Sprintf("%d", len(usedNames)) + ".json"
+		}
+		usedNames[fileName] = true
+		sw, err := zw.Create(fileName)
+		if err != nil {
+			zw.Close()
+			outFile.Close()
+			return fmt.Errorf("failed to create zip entry for %q: %w", skill.Name, err)
+		}
+		if _, err := sw.Write(data); err != nil {
+			zw.Close()
+			outFile.Close()
+			return fmt.Errorf("failed to write skill %q: %w", skill.Name, err)
+		}
+	}
+
+	if err := zw.Close(); err != nil {
+		outFile.Close()
+		return fmt.Errorf("failed to finalize zip: %w", err)
+	}
+	return outFile.Close()
+}
+
 // RestoreSkills reads a skill backup zip from zipPath and restores the
 // contained skills.  Skills whose name already exists locally are skipped
 // and marked as "skipped (duplicate)" in the report.

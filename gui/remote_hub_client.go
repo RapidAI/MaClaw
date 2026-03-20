@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	"github.com/gorilla/websocket"
 )
 
@@ -649,6 +651,10 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleSessionScreenshot(msg)
 		case "im.user_message":
 			go c.handleIMUserMessage(msg)
+		case "im.gateway_reply":
+			go c.handleIMGatewayReply(msg)
+		case "im.gateway_claim_result":
+			c.handleIMGatewayClaimResult(msg)
 		}
 	}
 }
@@ -805,6 +811,82 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 	}()
 }
 
+// handleIMGatewayReply handles im.gateway_reply from Hub — delivers the
+// reply to the appropriate client-side IM gateway (QQ Bot or Telegram).
+func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
+	var payload struct {
+		Platform string          `json:"platform"`
+		Payload  json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Printf("[hub-client] im.gateway_reply parse error: %v", err)
+		return
+	}
+
+	var reply GatewayReplyPayload
+	if err := json.Unmarshal(payload.Payload, &reply); err != nil {
+		log.Printf("[hub-client] im.gateway_reply payload parse error: %v", err)
+		return
+	}
+
+	switch payload.Platform {
+	case "qqbot_remote":
+		if c.app.qqBotGateway == nil {
+			return
+		}
+		switch reply.ReplyType {
+		case "text":
+			_ = c.app.qqBotGateway.SendQQBotReply(reply.PlatformUID, reply.Text)
+		case "image":
+			_ = c.app.qqBotGateway.SendQQBotMedia(qqbot.OutgoingMedia{
+				OpenID:   reply.PlatformUID,
+				FileType: 1,
+				FileData: reply.ImageData,
+				MimeType: "image/png",
+			})
+		case "file":
+			_ = c.app.qqBotGateway.SendQQBotMedia(qqbot.OutgoingMedia{
+				OpenID:   reply.PlatformUID,
+				FileType: 4,
+				FileData: reply.FileData,
+				FileName: reply.FileName,
+				MimeType: reply.MimeType,
+			})
+		}
+	case "telegram":
+		if c.app.telegramGateway == nil {
+			return
+		}
+		c.app.telegramGateway.HandleGatewayReply(GatewayReplyPayload{
+			ReplyType:   reply.ReplyType,
+			PlatformUID: reply.PlatformUID,
+			Text:        reply.Text,
+			ImageData:   reply.ImageData,
+			Caption:     reply.Caption,
+			FileData:    reply.FileData,
+			FileName:    reply.FileName,
+			MimeType:    reply.MimeType,
+		})
+	}
+}
+
+// handleIMGatewayClaimResult handles im.gateway_claim_result from Hub.
+func (c *RemoteHubClient) handleIMGatewayClaimResult(msg inboundHubEnvelope) {
+	var payload struct {
+		Platform string `json:"platform"`
+		OK       bool   `json:"ok"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return
+	}
+	if payload.OK {
+		log.Printf("[hub-client] gateway claim OK for platform=%s", payload.Platform)
+	} else {
+		log.Printf("[hub-client] gateway claim DENIED for platform=%s: %s", payload.Platform, payload.Reason)
+	}
+}
+
 // sendIMAgentResponse sends the Agent's reply back to Hub.
 func (c *RemoteHubClient) sendIMAgentResponse(requestID string, resp *IMAgentResponse) error {
 	c.mu.Lock()
@@ -909,6 +991,42 @@ func (c *RemoteHubClient) SendIMProactiveFile(b64Data, fileName, mimeType, messa
 		},
 	}
 	return c.conn.WriteJSON(msg)
+}
+
+// SendIMGatewayClaim sends im.gateway_claim to Hub to register this machine
+// as the gateway owner for the given IM platform (e.g. "qqbot_remote", "telegram").
+func (c *RemoteHubClient) SendIMGatewayClaim(platform string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return nil
+	}
+	return c.conn.WriteJSON(HubEnvelope{
+		Type:      "im.gateway_claim",
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload:   map[string]string{"platform": platform},
+	})
+}
+
+// SendIMGatewayMessage sends im.gateway_message to Hub, forwarding an incoming
+// IM message from a client-side gateway (QQ Bot, Telegram) for processing
+// through the Hub's IM Adapter pipeline.
+func (c *RemoteHubClient) SendIMGatewayMessage(platform string, data map[string]any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return nil
+	}
+	return c.conn.WriteJSON(HubEnvelope{
+		Type:      "im.gateway_message",
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload: map[string]any{
+			"platform": platform,
+			"data":     data,
+		},
+	})
 }
 
 func (c *RemoteHubClient) storeHubError(payload json.RawMessage) {

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/clawnet"
 )
 
 // ClawNetAutoTaskPicker monitors the ClawNet network and automatically picks
@@ -28,6 +30,7 @@ type ClawNetAutoTaskPicker struct {
 	minReward      float64       // minimum reward to consider (default 0)
 	autoEnabled    bool          // whether auto-pickup is enabled
 	preferredTags  []string      // preferred task tags for matching
+	lang           string        // "zh" or "en" for error localisation
 
 	// State
 	activeTasks    map[string]*autoTaskRun // taskID -> run info
@@ -79,6 +82,13 @@ func (p *ClawNetAutoTaskPicker) SetOnChange(fn func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onChange = fn
+}
+
+// SetLang sets the language for error messages ("zh" or "en").
+func (p *ClawNetAutoTaskPicker) SetLang(lang string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lang = lang
 }
 
 // Configure updates picker settings.
@@ -357,6 +367,10 @@ func (p *ClawNetAutoTaskPicker) selectTask(tasks []ClawNetTask, minReward float6
 
 // executeTask claims a task, runs it through the agent, and submits the result.
 func (p *ClawNetAutoTaskPicker) executeTask(client *ClawNetClient, task *ClawNetTask, executor AutoTaskExecutor) {
+	p.mu.Lock()
+	lang := p.lang
+	p.mu.Unlock()
+
 	run := &autoTaskRun{
 		TaskID:    task.ID,
 		Title:     task.Title,
@@ -374,7 +388,7 @@ func (p *ClawNetAutoTaskPicker) executeTask(client *ClawNetClient, task *ClawNet
 	if err := client.ClaimTask(task.ID); err != nil {
 		// If claim fails, try bidding instead.
 		if bidErr := client.BidOnTask(task.ID, 0, "maClaw auto-pickup: I can help with this"); bidErr != nil {
-			p.failTask(run, fmt.Sprintf("claim failed: %v, bid failed: %v", err, bidErr))
+			p.failTask(run, clawnet.FormatTaskError("claim", err, lang)+", "+clawnet.FormatTaskError("bid", bidErr, lang))
 			return
 		}
 	}
@@ -389,7 +403,7 @@ func (p *ClawNetAutoTaskPicker) executeTask(client *ClawNetClient, task *ClawNet
 
 	result, err := executor(task.Title, description)
 	if err != nil {
-		p.failTask(run, fmt.Sprintf("execution failed: %v", err))
+		p.failTask(run, clawnet.FormatTaskError("execution", err, lang))
 		return
 	}
 	if result == "" {
@@ -404,7 +418,7 @@ func (p *ClawNetAutoTaskPicker) executeTask(client *ClawNetClient, task *ClawNet
 	p.setRunStatus(run, "submitting")
 
 	if err := client.SubmitTaskResult(task.ID, result); err != nil {
-		p.failTask(run, fmt.Sprintf("submit failed: %v", err))
+		p.failTask(run, clawnet.FormatTaskError("submit", err, lang))
 		return
 	}
 
@@ -473,6 +487,7 @@ func (p *ClawNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[st
 	p.mu.Lock()
 	client := p.client
 	executor := p.executor
+	lang := p.lang
 
 	// Check if already working on this task.
 	if _, exists := p.activeTasks[taskID]; exists {
@@ -491,7 +506,7 @@ func (p *ClawNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[st
 	// Fetch the task details.
 	task, err := client.GetTask(taskID)
 	if err != nil {
-		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("failed to get task: %v", err)}
+		return map[string]interface{}{"ok": false, "error": clawnet.FormatTaskError("get_task", err, lang)}
 	}
 	// Allow picking tasks that are "open" or have been settled locally but are
 	// still open on the network (the Hub is the source of truth for network tasks).
@@ -516,8 +531,9 @@ func (p *ClawNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[st
 	// Step 1: Claim the task.
 	if claimErr := client.ClaimTask(task.ID); claimErr != nil {
 		if bidErr := client.BidOnTask(task.ID, 0, "manual pickup"); bidErr != nil {
-			p.failTask(run, fmt.Sprintf("claim failed: %v, bid failed: %v", claimErr, bidErr))
-			return map[string]interface{}{"ok": false, "error": fmt.Sprintf("claim failed: %v", claimErr)}
+			msg := clawnet.FormatTaskError("claim", claimErr, lang) + ", " + clawnet.FormatTaskError("bid", bidErr, lang)
+			p.failTask(run, msg)
+			return map[string]interface{}{"ok": false, "error": clawnet.FormatTaskError("claim", claimErr, lang)}
 		}
 	}
 
@@ -529,8 +545,9 @@ func (p *ClawNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[st
 	}
 	execResult, execErr := executor(task.Title, description)
 	if execErr != nil {
-		p.failTask(run, fmt.Sprintf("execution failed: %v", execErr))
-		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("execution failed: %v", execErr)}
+		msg := clawnet.FormatTaskError("execution", execErr, lang)
+		p.failTask(run, msg)
+		return map[string]interface{}{"ok": false, "error": msg}
 	}
 	if execResult == "" {
 		execResult = "Task completed successfully."
@@ -543,8 +560,9 @@ func (p *ClawNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[st
 	// Step 3: Submit the result.
 	p.setRunStatus(run, "submitting")
 	if submitErr := client.SubmitTaskResult(task.ID, execResult); submitErr != nil {
-		p.failTask(run, fmt.Sprintf("submit failed: %v", submitErr))
-		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("submit failed: %v", submitErr), "result": execResult}
+		msg := clawnet.FormatTaskError("submit", submitErr, lang)
+		p.failTask(run, msg)
+		return map[string]interface{}{"ok": false, "error": msg, "result": execResult}
 	}
 
 	// Success!

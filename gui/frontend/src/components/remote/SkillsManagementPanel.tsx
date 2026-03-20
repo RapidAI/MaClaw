@@ -9,6 +9,8 @@ import {
     InstallHubSkill,
     CheckHubSkillUpdates,
     UpdateHubSkill,
+    ExportLearnedSkillsZip,
+    ImportLearnedSkillsZip,
 } from "../../../wailsjs/go/main/App";
 
 interface NLSkillStep {
@@ -70,7 +72,7 @@ const emptySkill: NLSkillDefinition = {
 };
 
 export function SkillsManagementPanel({ translate }: Props) {
-    const [activeTab, setActiveTab] = useState<"local" | "hub">("local");
+    const [activeTab, setActiveTab] = useState<"local" | "hub" | "learned">("local");
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
@@ -100,12 +102,28 @@ export function SkillsManagementPanel({ translate }: Props) {
     const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
     const [importing, setImporting] = useState(false);
 
+    // Learned skills tab state
+    const [learnedSelected, setLearnedSelected] = useState<Set<string>>(new Set());
+    const [learnedExporting, setLearnedExporting] = useState(false);
+    const [learnedImporting, setLearnedImporting] = useState(false);
+    const [importReport, setImportReport] = useState<{ restored: number; skipped: number; failed: number; details: string[] } | null>(null);
+
     const loadData = useCallback(async () => {
         setLoading(true);
         setError("");
         try {
             const skillList = await ListNLSkills();
-            setSkills(Array.isArray(skillList) ? skillList : []);
+            const list = Array.isArray(skillList) ? skillList : [];
+            setSkills(list);
+            // Clean up learned selection: remove names no longer present
+            const learnedNames = new Set(
+                list.filter((s: NLSkillDefinition) => s.source === "learned" || s.source === "crafted").map((s: NLSkillDefinition) => s.name)
+            );
+            setLearnedSelected((prev) => {
+                const next = new Set<string>();
+                prev.forEach((n) => { if (learnedNames.has(n)) next.add(n); });
+                return next.size === prev.size ? prev : next;
+            });
         } catch (err) {
             setError(String(err));
         } finally {
@@ -351,6 +369,60 @@ export function SkillsManagementPanel({ translate }: Props) {
         }
     };
 
+    // --- Learned skills tab helpers ---
+
+    const learnedSkills = useMemo(
+        () => skills.filter((s) => s.source === "learned" || s.source === "crafted"),
+        [skills]
+    );
+
+    const toggleLearnedSelect = (name: string) => {
+        setLearnedSelected((prev) => {
+            const next = new Set(prev);
+            if (next.has(name)) next.delete(name);
+            else next.add(name);
+            return next;
+        });
+    };
+
+    const toggleLearnedSelectAll = () => {
+        if (learnedSelected.size === learnedSkills.length) {
+            setLearnedSelected(new Set());
+        } else {
+            setLearnedSelected(new Set(learnedSkills.map((s) => s.name)));
+        }
+    };
+
+    const handleLearnedExport = async () => {
+        if (learnedSelected.size === 0) return;
+        setLearnedExporting(true);
+        setError("");
+        try {
+            await ExportLearnedSkillsZip(Array.from(learnedSelected));
+        } catch (err) {
+            setError(String(err));
+        } finally {
+            setLearnedExporting(false);
+        }
+    };
+
+    const handleLearnedImport = async () => {
+        setLearnedImporting(true);
+        setError("");
+        setImportReport(null);
+        try {
+            const report = await ImportLearnedSkillsZip();
+            if (report) {
+                setImportReport(report);
+                await loadData();
+            }
+        } catch (err) {
+            setError(String(err));
+        } finally {
+            setLearnedImporting(false);
+        }
+    };
+
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {/* Tab switcher — sticky so it stays visible while content scrolls */}
@@ -372,6 +444,15 @@ export function SkillsManagementPanel({ translate }: Props) {
                     onClick={() => setActiveTab("hub")}
                 >
                     Hub 市场
+                </button>
+                <button
+                    style={{
+                        ...tabBtnStyle,
+                        ...(activeTab === "learned" ? tabBtnActiveStyle : {}),
+                    }}
+                    onClick={() => setActiveTab("learned")}
+                >
+                    自学习技能
                 </button>
             </div>
 
@@ -643,6 +724,110 @@ export function SkillsManagementPanel({ translate }: Props) {
                 </>
             )}
 
+            {/* === Learned Skills Tab === */}
+            {activeTab === "learned" && (
+                <>
+                    {/* Header with export/import buttons */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: "0.78rem", color: "#5a6577" }}>
+                            {learnedSkills.length} 个自学习技能
+                            {learnedSelected.size > 0 && ` (已选 ${learnedSelected.size})`}
+                        </span>
+                        <div style={{ display: "flex", gap: "6px" }}>
+                            <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleLearnedImport} disabled={learnedImporting}>
+                                {learnedImporting ? "导入中..." : "📦 导入"}
+                            </button>
+                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleLearnedExport} disabled={learnedExporting || learnedSelected.size === 0}>
+                                {learnedExporting ? "导出中..." : `📤 导出${learnedSelected.size > 0 ? ` (${learnedSelected.size})` : ""}`}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Import report */}
+                    {importReport && (
+                        <div style={{ fontSize: "0.76rem", padding: "8px 10px", borderRadius: "4px", border: "1px solid #e1e4e8", background: "#f9fafb" }}>
+                            <div style={{ marginBottom: "4px", fontWeight: 600 }}>
+                                导入完成：{importReport.restored} 成功，{importReport.skipped} 跳过（重名），{importReport.failed} 失败
+                            </div>
+                            {importReport.details.length > 0 && (
+                                <ul style={{ margin: 0, paddingLeft: "16px", color: "#5a6577" }}>
+                                    {importReport.details.map((d, i) => <li key={i}>{d}</li>)}
+                                </ul>
+                            )}
+                            <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "2px 8px", marginTop: "6px" }} onClick={() => setImportReport(null)}>关闭</button>
+                        </div>
+                    )}
+
+                    {/* Error */}
+                    {error && (
+                        <div style={{ fontSize: "0.78rem", color: "#c53030", background: "#fff5f5", padding: "6px 10px", borderRadius: "4px", border: "1px solid #fecdd3" }}>
+                            {error}
+                        </div>
+                    )}
+
+                    {/* Loading */}
+                    {loading && (
+                        <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: "#8b95a5" }}>加载中...</div>
+                    )}
+
+                    {/* Learned skills table */}
+                    {!loading && learnedSkills.length > 0 && (
+                        <div style={{ border: "1px solid #e1e4e8", borderRadius: "6px", overflow: "hidden" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem" }}>
+                                <thead>
+                                    <tr style={{ background: "#f4f5f7" }}>
+                                        <th style={{ ...thStyle, width: "36px", textAlign: "center" }}>
+                                            <input type="checkbox" checked={learnedSkills.length > 0 && learnedSelected.size === learnedSkills.length} onChange={toggleLearnedSelectAll} />
+                                        </th>
+                                        <th style={thStyle}>名称</th>
+                                        <th style={thStyle}>描述</th>
+                                        <th style={thStyle}>来源</th>
+                                        <th style={thStyle}>使用统计</th>
+                                        <th style={thStyle}>状态</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {learnedSkills.map((s) => (
+                                        <tr key={s.name} style={{ borderTop: "1px solid #e1e4e8" }}>
+                                            <td style={{ ...tdStyle, textAlign: "center" }}>
+                                                <input type="checkbox" checked={learnedSelected.has(s.name)} onChange={() => toggleLearnedSelect(s.name)} />
+                                            </td>
+                                            <td style={tdStyle}>{s.name}</td>
+                                            <td style={tdStyle}>{s.description || "—"}</td>
+                                            <td style={tdStyle}>
+                                                <span style={{ ...learnedSourceBadge, ...(s.source === "learned" ? learnedBadge : craftedBadge) }}>
+                                                    {s.source === "learned" ? "经验学习" : "工具制作"}
+                                                </span>
+                                            </td>
+                                            <td style={tdStyle}>
+                                                {(s.usage_count ?? 0) > 0 ? (
+                                                    <span style={{ fontSize: "0.72rem", color: "#5a6577" }}>
+                                                        {s.usage_count}次 / {Math.round((s.success_rate ?? 0) * 100)}%
+                                                    </span>
+                                                ) : (
+                                                    <span style={{ fontSize: "0.72rem", color: "#b0b8c4" }}>未使用</span>
+                                                )}
+                                            </td>
+                                            <td style={tdStyle}>
+                                                <span style={{ ...statusBadgeStyle, ...(s.status === "active" ? activeBadge : disabledBadge) }}>
+                                                    {s.status === "active" ? "启用" : s.status}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    {!loading && learnedSkills.length === 0 && !error && (
+                        <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: "#8b95a5" }}>
+                            暂无自学习技能。MaClaw 在使用过程中会自动学习并生成技能。
+                        </div>
+                    )}
+                </>
+            )}
+
             {/* Delete confirmation dialog */}
             {deleteTarget && (
                 <div className="modal-backdrop" onClick={() => setDeleteTarget(null)}>
@@ -825,6 +1010,26 @@ const hubCardStyle: React.CSSProperties = {
     borderRadius: "6px",
     padding: "10px 12px",
     background: "#fff",
+};
+
+const learnedSourceBadge: React.CSSProperties = {
+    display: "inline-block",
+    padding: "1px 8px",
+    borderRadius: "999px",
+    fontSize: "0.68rem",
+    fontWeight: 600,
+};
+
+const learnedBadge: React.CSSProperties = {
+    background: "#fef3c7",
+    color: "#92400e",
+    border: "1px solid #fcd34d",
+};
+
+const craftedBadge: React.CSSProperties = {
+    background: "#ede9fe",
+    color: "#5b21b6",
+    border: "1px solid #c4b5fd",
 };
 
 const trustBadgeStyle = (level: string): React.CSSProperties => {

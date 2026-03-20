@@ -62,6 +62,9 @@ func NewConfigModel() ConfigModel {
 			{Key: "qqbot_enabled", Value: "false", Desc: "启用 QQ 机器人", Section: "qqbot"},
 			{Key: "qqbot_app_id", Value: "", Desc: "QQ Bot AppID", Section: "qqbot"},
 			{Key: "qqbot_app_secret", Value: "", Desc: "QQ Bot AppSecret", Section: "qqbot"},
+			{Key: "telegram_bot_enabled", Value: "false", Desc: "启用 Telegram 机器人", Section: "telegram"},
+			{Key: "telegram_bot_token", Value: "", Desc: "Telegram Bot Token", Section: "telegram"},
+			{Key: "skill_purchase_mode", Value: "auto", Desc: "Skill获取策略 (auto/free_only)", Section: "skillmarket"},
 		},
 		input: ti,
 	}

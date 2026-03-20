@@ -4,18 +4,22 @@ import { ClawNetKnowledgePanel } from "./ClawNetKnowledgePanel";
 import { ClawNetSwarmPanel } from "./ClawNetSwarmPanel";
 import { ClawNetChatPanel } from "./ClawNetChatPanel";
 import { ClawNetResumePanel } from "./ClawNetResumePanel";
+import { ClawNetPredictionPanel } from "./ClawNetPredictionPanel";
+import { ClawNetNutshellPanel } from "./ClawNetNutshellPanel";
 import { colors } from "./styles";
 import { cnTabBtn } from "./clawnetStyles";
 
 type Props = { lang: string; clawNetRunning: boolean };
 
-type ClawNetSubTab = "tasks" | "knowledge" | "swarm" | "chat" | "resume";
+type ClawNetSubTab = "tasks" | "knowledge" | "swarm" | "chat" | "prediction" | "nutshell" | "resume";
 
 const tabDefs: { id: ClawNetSubTab; icon: string; zh: string; en: string }[] = [
     { id: "tasks", icon: "🏪", zh: "任务集市", en: "Tasks" },
     { id: "knowledge", icon: "📚", zh: "知识网络", en: "Knowledge" },
     { id: "swarm", icon: "🧠", zh: "群体思考", en: "Swarm" },
     { id: "chat", icon: "💬", zh: "聊天", en: "Chat" },
+    { id: "prediction", icon: "🔮", zh: "预测市场", en: "Predict" },
+    { id: "nutshell", icon: "📦", zh: "任务包", en: "Nutshell" },
     { id: "resume", icon: "📋", zh: "简历/搜索", en: "Resume" },
 ];
 
@@ -45,6 +49,8 @@ export function ClawNetTabContainer({ lang, clawNetRunning }: Props) {
                 <div style={{ display: subTab === "knowledge" ? "block" : "none" }}><ClawNetKnowledgePanel lang={lang} clawNetRunning={clawNetRunning} /></div>
                 <div style={{ display: subTab === "swarm" ? "block" : "none" }}><ClawNetSwarmPanel lang={lang} clawNetRunning={clawNetRunning} /></div>
                 <div style={{ display: subTab === "chat" ? "block" : "none" }}><ClawNetChatPanel lang={lang} clawNetRunning={clawNetRunning} /></div>
+                <div style={{ display: subTab === "prediction" ? "block" : "none" }}><ClawNetPredictionPanel lang={lang} clawNetRunning={clawNetRunning} /></div>
+                <div style={{ display: subTab === "nutshell" ? "block" : "none" }}><ClawNetNutshellPanel lang={lang} clawNetRunning={clawNetRunning} /></div>
                 <div style={{ display: subTab === "resume" ? "block" : "none" }}><ClawNetResumePanel lang={lang} clawNetRunning={clawNetRunning} /></div>
             </div>
         </div>
