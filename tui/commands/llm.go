@@ -14,7 +14,7 @@ import (
 // RunLLM 执行 llm 子命令。
 func RunLLM(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui llm <test|ping|providers|status|set-provider>")
+		return NewUsageError("usage: maclaw-tui llm <test|ping|providers|status|set-provider|set-max-iterations|get-max-iterations>")
 	}
 	switch args[0] {
 	case "test":
@@ -27,6 +27,10 @@ func RunLLM(args []string) error {
 		return llmStatus(args[1:])
 	case "set-provider":
 		return llmSetProvider(args[1:])
+	case "set-max-iterations":
+		return llmSetMaxIterations(args[1:])
+	case "get-max-iterations":
+		return llmGetMaxIterations(args[1:])
 	default:
 		return NewUsageError("unknown llm action: %s", args[0])
 	}
@@ -267,5 +271,51 @@ func llmSetProvider(args []string) error {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 	fmt.Printf("已切换到 LLM 提供商: %s (%s, %s)\n", name, found.Model, found.URL)
+	return nil
+}
+
+func llmSetMaxIterations(args []string) error {
+	fs := flag.NewFlagSet("llm set-max-iterations", flag.ExitOnError)
+	value := fs.Int("value", 0, "最大推理轮次（必填，正整数）")
+	fs.Parse(args)
+
+	if *value <= 0 {
+		return NewUsageError("usage: llm set-max-iterations --value <N> (N > 0)")
+	}
+	if *value > 300 {
+		*value = 300
+	}
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+	cfg.MaclawAgentMaxIterations = *value
+	if err := store.SaveConfig(cfg); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+	fmt.Printf("Agent 最大推理轮次已设置为 %d\n", *value)
+	return nil
+}
+
+func llmGetMaxIterations(args []string) error {
+	fs := flag.NewFlagSet("llm get-max-iterations", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+	value := cfg.MaclawAgentMaxIterations
+	if value <= 0 {
+		value = 20 // default
+	}
+	if *jsonOut {
+		return PrintJSON(map[string]int{"max_iterations": value})
+	}
+	fmt.Printf("Agent 最大推理轮次: %d\n", value)
 	return nil
 }

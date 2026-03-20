@@ -93,6 +93,18 @@ func DetectTools() []DetectedTool {
 	return tools
 }
 
+// DetectInstalledToolNames 返回已安装工具的名称列表。
+func DetectInstalledToolNames() []string {
+	tools := DetectTools()
+	var names []string
+	for _, t := range tools {
+		if t.Available {
+			names = append(names, t.Name)
+		}
+	}
+	return names
+}
+
 func toolStatus(args []string) error {
 	fs := flag.NewFlagSet("tool status", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")

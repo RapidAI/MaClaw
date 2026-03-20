@@ -3,6 +3,8 @@ package commands
 import (
 	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/clawnet"
@@ -11,8 +13,19 @@ import (
 // RunClawNet 执行 clawnet 子命令。
 func RunClawNet(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui clawnet <status|peers|tasks|credits|knowledge|dm|swarm|prediction|topic|overlay|resume|diagnostics|nutshell>")
+		return NewUsageError("usage: maclaw-tui clawnet <status|peers|tasks|credits|knowledge|dm|swarm|prediction|topic|overlay|resume|diagnostics|nutshell|identity|leaderboard|transactions|credits-audit|auto-picker|daemon|binary|profile>")
 	}
+
+	// Commands that don't require daemon running
+	switch args[0] {
+	case "identity":
+		return clawnetIdentity(args[1:])
+	case "daemon":
+		return clawnetDaemon(args[1:])
+	case "binary":
+		return clawnetBinary(args[1:])
+	}
+
 	client := clawnet.NewClient()
 	if !client.IsRunning() {
 		return fmt.Errorf("ClawNet daemon is not running. Start it first or enable clawnet_enabled in config.")
@@ -44,6 +57,16 @@ func RunClawNet(args []string) error {
 		return clawnetDiagnostics(client, args[1:])
 	case "nutshell":
 		return clawnetNutshell(client, args[1:])
+	case "leaderboard":
+		return clawnetLeaderboard(client, args[1:])
+	case "transactions":
+		return clawnetTransactions(client, args[1:])
+	case "credits-audit":
+		return clawnetCreditsAudit(client, args[1:])
+	case "auto-picker":
+		return clawnetAutoPicker(client, args[1:])
+	case "profile":
+		return clawnetProfile(client, args[1:])
 	default:
 		return NewUsageError("unknown clawnet action: %s", args[0])
 	}
@@ -96,6 +119,33 @@ func clawnetPeers(client *clawnet.Client, args []string) error {
 }
 
 func clawnetTasks(client *clawnet.Client, args []string) error {
+	// Check for subcommand-style actions first
+	if len(args) > 0 {
+		switch args[0] {
+		case "bid":
+			return clawnetTaskBid(client, args[1:])
+		case "assign":
+			return clawnetTaskAssign(client, args[1:])
+		case "claim":
+			return clawnetTaskClaim(client, args[1:])
+		case "submit":
+			return clawnetTaskSubmit(client, args[1:])
+		case "approve":
+			return clawnetTaskApprove(client, args[1:])
+		case "reject":
+			return clawnetTaskReject(client, args[1:])
+		case "cancel":
+			return clawnetTaskCancel(client, args[1:])
+		case "board":
+			return clawnetTaskBoard(client, args[1:])
+		case "submissions":
+			return clawnetTaskSubmissions(client, args[1:])
+		case "pick-winner":
+			return clawnetTaskPickWinner(client, args[1:])
+		}
+	}
+
+	// Default: list tasks
 	fs := flag.NewFlagSet("clawnet tasks", flag.ExitOnError)
 	status := fs.String("status", "", "按状态过滤 (open/assigned/completed)")
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
@@ -118,6 +168,159 @@ func clawnetTasks(client *clawnet.Client, args []string) error {
 		fmt.Printf("%-20s %-10s %-8.1f %s\n",
 			TruncateDisplay(t.ID, 20), t.TaskStatus, t.Reward, TruncateDisplay(t.Title, 30))
 	}
+	return nil
+}
+
+func clawnetTaskBid(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks bid", flag.ExitOnError)
+	taskID := fs.String("id", "", "任务 ID（必填）")
+	amount := fs.Float64("amount", 0, "出价金额")
+	message := fs.String("message", "", "出价消息")
+	fs.Parse(args)
+	if *taskID == "" {
+		return fmt.Errorf("bid requires -id flag")
+	}
+	if err := client.BidOnTask(*taskID, *amount, *message); err != nil {
+		return err
+	}
+	fmt.Printf("已对任务 %s 出价。\n", *taskID)
+	return nil
+}
+
+func clawnetTaskAssign(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks assign", flag.ExitOnError)
+	taskID := fs.String("id", "", "任务 ID（必填）")
+	peer := fs.String("peer", "", "指派的 Peer ID（必填）")
+	fs.Parse(args)
+	if *taskID == "" || *peer == "" {
+		return fmt.Errorf("assign requires -id and -peer flags")
+	}
+	if err := client.AssignTask(*taskID, *peer); err != nil {
+		return err
+	}
+	fmt.Printf("已将任务 %s 指派给 %s。\n", *taskID, *peer)
+	return nil
+}
+
+func clawnetTaskClaim(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks claim", flag.ExitOnError)
+	taskID := fs.String("id", "", "任务 ID（必填）")
+	fs.Parse(args)
+	if *taskID == "" {
+		return fmt.Errorf("claim requires -id flag")
+	}
+	if err := client.ClaimTask(*taskID); err != nil {
+		return err
+	}
+	fmt.Printf("已认领任务 %s。\n", *taskID)
+	return nil
+}
+
+func clawnetTaskSubmit(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks submit", flag.ExitOnError)
+	taskID := fs.String("id", "", "任务 ID（必填）")
+	result := fs.String("result", "", "提交结果（必填）")
+	fs.Parse(args)
+	if *taskID == "" || *result == "" {
+		return fmt.Errorf("submit requires -id and -result flags")
+	}
+	if err := client.SubmitTaskResult(*taskID, *result); err != nil {
+		return err
+	}
+	fmt.Printf("已提交任务 %s 的结果。\n", *taskID)
+	return nil
+}
+
+func clawnetTaskApprove(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks approve", flag.ExitOnError)
+	taskID := fs.String("id", "", "任务 ID（必填）")
+	fs.Parse(args)
+	if *taskID == "" {
+		return fmt.Errorf("approve requires -id flag")
+	}
+	if err := client.ApproveTask(*taskID); err != nil {
+		return err
+	}
+	fmt.Printf("已批准任务 %s。\n", *taskID)
+	return nil
+}
+
+func clawnetTaskReject(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks reject", flag.ExitOnError)
+	taskID := fs.String("id", "", "任务 ID（必填）")
+	fs.Parse(args)
+	if *taskID == "" {
+		return fmt.Errorf("reject requires -id flag")
+	}
+	if err := client.RejectTask(*taskID); err != nil {
+		return err
+	}
+	fmt.Printf("已拒绝任务 %s。\n", *taskID)
+	return nil
+}
+
+func clawnetTaskCancel(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks cancel", flag.ExitOnError)
+	taskID := fs.String("id", "", "任务 ID（必填）")
+	fs.Parse(args)
+	if *taskID == "" {
+		return fmt.Errorf("cancel requires -id flag")
+	}
+	if err := client.CancelTask(*taskID); err != nil {
+		return err
+	}
+	fmt.Printf("已取消任务 %s。\n", *taskID)
+	return nil
+}
+
+func clawnetTaskBoard(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks board", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+	board, err := client.GetTaskBoard()
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return PrintJSON(board)
+	}
+	return PrintJSON(board)
+}
+
+func clawnetTaskSubmissions(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks submissions", flag.ExitOnError)
+	taskID := fs.String("id", "", "任务 ID（必填）")
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+	if *taskID == "" {
+		return fmt.Errorf("submissions requires -id flag")
+	}
+	subs, err := client.GetTaskSubmissions(*taskID)
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return PrintJSON(subs)
+	}
+	if len(subs) == 0 {
+		fmt.Println("No submissions found.")
+		return nil
+	}
+	return PrintJSON(subs)
+}
+
+func clawnetTaskPickWinner(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet tasks pick-winner", flag.ExitOnError)
+	taskID := fs.String("id", "", "任务 ID（必填）")
+	winner := fs.String("winner", "", "获胜者 Peer ID（必填）")
+	fs.Parse(args)
+	if *taskID == "" || *winner == "" {
+		return fmt.Errorf("pick-winner requires -id and -winner flags")
+	}
+	if err := client.PickTaskWinner(*taskID, *winner); err != nil {
+		return err
+	}
+	fmt.Printf("已选择 %s 为任务 %s 的获胜者。\n", *winner, *taskID)
 	return nil
 }
 
@@ -706,4 +909,415 @@ func splitTrim(s string) []string {
 		}
 	}
 	return result
+}
+
+// ---------- Identity ----------
+
+func clawnetIdentityKeyPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".openclaw", "clawnet", "identity.key"), nil
+}
+
+func clawnetIdentity(args []string) error {
+	if len(args) == 0 {
+		return clawnetIdentityHas()
+	}
+	switch args[0] {
+	case "has-identity":
+		return clawnetIdentityHas()
+	case "export-identity":
+		return clawnetIdentityExport(args[1:])
+	case "import-identity":
+		return clawnetIdentityImport(args[1:])
+	case "backup-key":
+		return clawnetIdentityBackup(args[1:])
+	case "restore-key":
+		return clawnetIdentityRestore(args[1:])
+	default:
+		return NewUsageError("unknown identity action: %s (use has-identity|export-identity|import-identity|backup-key|restore-key)", args[0])
+	}
+}
+
+func clawnetIdentityHas() error {
+	keyPath, err := clawnetIdentityKeyPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(keyPath); err == nil {
+		fmt.Printf("Identity key exists: %s\n", keyPath)
+	} else {
+		fmt.Println("No identity key found.")
+	}
+	return nil
+}
+
+func clawnetIdentityExport(args []string) error {
+	fs := flag.NewFlagSet("identity export-identity", flag.ExitOnError)
+	output := fs.String("output", "", "导出路径（必填）")
+	fs.Parse(args)
+	if *output == "" {
+		return fmt.Errorf("export-identity requires -output flag")
+	}
+	keyPath, err := clawnetIdentityKeyPath()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("读取 identity key 失败: %w", err)
+	}
+	if err := os.WriteFile(*output, data, 0600); err != nil {
+		return fmt.Errorf("导出失败: %w", err)
+	}
+	fmt.Printf("Identity key exported to %s\n", *output)
+	return nil
+}
+
+func clawnetIdentityImport(args []string) error {
+	fs := flag.NewFlagSet("identity import-identity", flag.ExitOnError)
+	input := fs.String("input", "", "导入路径（必填）")
+	fs.Parse(args)
+	if *input == "" {
+		return fmt.Errorf("import-identity requires -input flag")
+	}
+	data, err := os.ReadFile(*input)
+	if err != nil {
+		return fmt.Errorf("读取文件失败: %w", err)
+	}
+	keyPath, err := clawnetIdentityKeyPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(keyPath, data, 0600); err != nil {
+		return fmt.Errorf("导入失败: %w", err)
+	}
+	fmt.Printf("Identity key imported from %s\n", *input)
+	return nil
+}
+
+func clawnetIdentityBackup(args []string) error {
+	fs := flag.NewFlagSet("identity backup-key", flag.ExitOnError)
+	output := fs.String("output", "", "备份路径（默认: identity.key.bak）")
+	fs.Parse(args)
+	keyPath, err := clawnetIdentityKeyPath()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("读取 identity key 失败: %w", err)
+	}
+	dest := *output
+	if dest == "" {
+		dest = keyPath + ".bak"
+	}
+	if err := os.WriteFile(dest, data, 0600); err != nil {
+		return fmt.Errorf("备份失败: %w", err)
+	}
+	fmt.Printf("Identity key backed up to %s\n", dest)
+	return nil
+}
+
+func clawnetIdentityRestore(args []string) error {
+	fs := flag.NewFlagSet("identity restore-key", flag.ExitOnError)
+	input := fs.String("input", "", "备份文件路径（默认: identity.key.bak）")
+	fs.Parse(args)
+	keyPath, err := clawnetIdentityKeyPath()
+	if err != nil {
+		return err
+	}
+	src := *input
+	if src == "" {
+		src = keyPath + ".bak"
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("读取备份文件失败: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(keyPath, data, 0600); err != nil {
+		return fmt.Errorf("恢复失败: %w", err)
+	}
+	fmt.Printf("Identity key restored from %s\n", src)
+	return nil
+}
+
+// ---------- Leaderboard ----------
+
+func clawnetLeaderboard(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet leaderboard", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+	lb, err := client.GetLeaderboard()
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return PrintJSON(lb)
+	}
+	if len(lb) == 0 {
+		fmt.Println("Leaderboard is empty.")
+		return nil
+	}
+	return PrintJSON(lb)
+}
+
+// ---------- Transactions ----------
+
+func clawnetTransactions(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet transactions", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+	txns, err := client.GetCreditsTransactions()
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return PrintJSON(txns)
+	}
+	if len(txns) == 0 {
+		fmt.Println("No transactions.")
+		return nil
+	}
+	return PrintJSON(txns)
+}
+
+// ---------- Credits Audit ----------
+
+func clawnetCreditsAudit(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet credits-audit", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+	audit, err := client.GetCreditsAudit()
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		return PrintJSON(audit)
+	}
+	if len(audit) == 0 {
+		fmt.Println("No audit records.")
+		return nil
+	}
+	return PrintJSON(audit)
+}
+
+// ---------- Auto-Picker ----------
+
+func clawnetAutoPicker(client *clawnet.Client, args []string) error {
+	if len(args) == 0 {
+		return clawnetAutoPickerStatus(client)
+	}
+	switch args[0] {
+	case "status":
+		return clawnetAutoPickerStatus(client)
+	case "configure":
+		return clawnetAutoPickerConfigure(client, args[1:])
+	case "trigger":
+		return clawnetAutoPickerTrigger(client, args[1:])
+	default:
+		return NewUsageError("unknown auto-picker action: %s (use status|configure|trigger)", args[0])
+	}
+}
+
+func clawnetAutoPickerStatus(client *clawnet.Client) error {
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, _ := store.LoadConfig()
+	hubURL := cfg.RemoteHubURL
+	picker := clawnet.NewAutoTaskPicker(client, hubURL)
+	status := picker.GetStatus()
+	return PrintJSON(status)
+}
+
+func clawnetAutoPickerConfigure(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("auto-picker configure", flag.ExitOnError)
+	enabled := fs.Bool("enabled", false, "启用自动接单")
+	pollMinutes := fs.Int("poll-minutes", 5, "轮询间隔（分钟）")
+	minReward := fs.Float64("min-reward", 0, "最低奖励")
+	tags := fs.String("tags", "", "偏好标签（逗号分隔）")
+	fs.Parse(args)
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, _ := store.LoadConfig()
+	hubURL := cfg.RemoteHubURL
+	picker := clawnet.NewAutoTaskPicker(client, hubURL)
+
+	var tagList []string
+	if *tags != "" {
+		tagList = splitTrim(*tags)
+	}
+	picker.Configure(*enabled, *pollMinutes, *minReward, tagList)
+	fmt.Printf("Auto-picker configured: enabled=%v, poll=%dm, min_reward=%.1f, tags=%v\n",
+		*enabled, *pollMinutes, *minReward, tagList)
+	return nil
+}
+
+func clawnetAutoPickerTrigger(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("auto-picker trigger", flag.ExitOnError)
+	taskID := fs.String("task", "", "任务 ID（必填）")
+	fs.Parse(args)
+	if *taskID == "" {
+		return fmt.Errorf("trigger requires -task flag")
+	}
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, _ := store.LoadConfig()
+	hubURL := cfg.RemoteHubURL
+	picker := clawnet.NewAutoTaskPicker(client, hubURL)
+	picker.SetExecutor(func(title, desc string) (string, error) {
+		return "", fmt.Errorf("CLI mode does not support task execution; use TUI or daemon mode")
+	})
+
+	result := picker.PickAndExecuteTask(*taskID)
+	return PrintJSON(result)
+}
+
+// ---------- Daemon ----------
+
+func clawnetDaemon(args []string) error {
+	if len(args) == 0 {
+		return NewUsageError("usage: clawnet daemon <ensure|stop|info>")
+	}
+	switch args[0] {
+	case "ensure":
+		client := clawnet.NewClient()
+		if err := client.EnsureDaemon(); err != nil {
+			return err
+		}
+		fmt.Println("ClawNet daemon is running.")
+		return nil
+	case "stop":
+		client := clawnet.NewClient()
+		client.StopDaemon()
+		fmt.Println("ClawNet daemon stopped.")
+		return nil
+	case "info":
+		client := clawnet.NewClient()
+		if client.IsRunning() {
+			pid := client.DaemonPID()
+			if pid > 0 {
+				fmt.Printf("ClawNet daemon running (PID: %d)\n", pid)
+			} else {
+				fmt.Println("ClawNet daemon running (PID unknown — started externally)")
+			}
+		} else {
+			fmt.Println("ClawNet daemon is not running.")
+		}
+		return nil
+	default:
+		return NewUsageError("unknown daemon action: %s (use ensure|stop|info)", args[0])
+	}
+}
+
+// ---------- Binary ----------
+
+func clawnetBinary(args []string) error {
+	if len(args) == 0 {
+		return NewUsageError("usage: clawnet binary <install|update|path>")
+	}
+	switch args[0] {
+	case "install":
+		path, err := clawnet.Download(func(stage string, pct int, msg string) {
+			fmt.Printf("[%s] %d%% %s\n", stage, pct, msg)
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("ClawNet binary installed: %s\n", path)
+		return nil
+	case "update":
+		client := clawnet.NewClient()
+		if err := client.SelfUpdate(); err != nil {
+			return err
+		}
+		fmt.Println("ClawNet binary updated.")
+		return nil
+	case "path":
+		client := clawnet.NewClient()
+		p := client.BinPath()
+		if p == "" {
+			fmt.Println("ClawNet binary not found.")
+		} else {
+			fmt.Println(p)
+		}
+		return nil
+	default:
+		return NewUsageError("unknown binary action: %s (use install|update|path)", args[0])
+	}
+}
+
+// ---------- Profile ----------
+
+func clawnetProfile(client *clawnet.Client, args []string) error {
+	if len(args) == 0 {
+		return clawnetProfileGet(client, nil)
+	}
+	switch args[0] {
+	case "get":
+		return clawnetProfileGet(client, args[1:])
+	case "update":
+		return clawnetProfileUpdate(client, args[1:])
+	case "set-motto":
+		return clawnetProfileSetMotto(client, args[1:])
+	default:
+		return NewUsageError("unknown profile action: %s (use get|update|set-motto)", args[0])
+	}
+}
+
+func clawnetProfileGet(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet profile get", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	if args != nil {
+		fs.Parse(args)
+	}
+	profile, err := client.GetProfile()
+	if err != nil {
+		return err
+	}
+	if jsonOut != nil && *jsonOut {
+		return PrintJSON(profile)
+	}
+	fmt.Printf("Profile:\n")
+	fmt.Printf("  PeerID: %s\n", profile.PeerID)
+	fmt.Printf("  Name:   %s\n", profile.Name)
+	fmt.Printf("  Bio:    %s\n", profile.Bio)
+	fmt.Printf("  Motto:  %s\n", profile.Motto)
+	return nil
+}
+
+func clawnetProfileUpdate(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet profile update", flag.ExitOnError)
+	name := fs.String("name", "", "名称")
+	bio := fs.String("bio", "", "简介")
+	fs.Parse(args)
+	if *name == "" && *bio == "" {
+		return fmt.Errorf("update requires at least -name or -bio flag")
+	}
+	if err := client.UpdateProfile(*name, *bio); err != nil {
+		return err
+	}
+	fmt.Println("Profile updated.")
+	return nil
+}
+
+func clawnetProfileSetMotto(client *clawnet.Client, args []string) error {
+	fs := flag.NewFlagSet("clawnet profile set-motto", flag.ExitOnError)
+	motto := fs.String("motto", "", "座右铭（必填）")
+	fs.Parse(args)
+	if *motto == "" {
+		return fmt.Errorf("set-motto requires -motto flag")
+	}
+	if err := client.SetMotto(*motto); err != nil {
+		return err
+	}
+	fmt.Println("Motto updated.")
+	return nil
 }

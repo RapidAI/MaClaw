@@ -131,18 +131,26 @@ Commands:
   schedule      定时任务管理（list/create/delete/pause/resume/trigger）
   audit         审计日志查询（list）
   policy        安全策略查看（list）
-  clawnet       ClawNet P2P 网络（status/peers/tasks/credits）
+  clawnet       ClawNet P2P 网络
+                  status/peers/tasks/credits/knowledge/dm/swarm/prediction
+                  topic/overlay/resume/diagnostics/nutshell
+                  identity (has-identity/export-identity/import-identity/backup-key/restore-key)
+                  leaderboard/transactions/credits-audit
+                  auto-picker (status/configure/trigger)
+                  daemon (ensure/stop/info)
+                  binary (install/update/path)
+                  profile (get/update/set-motto)
   tool          工具管理（recommend/status）
   skill         技能管理（list/add/delete/backup/restore/import/export）
-  skillhub      SkillHub 市场（search/install/rate）
+  skillhub      SkillHub 市场（search/install/rate/check-updates/update）
   skillmarket   SkillMarket 商店（search/submit/status/account）
-  nlskill       NL 技能管理（list/add/remove/enable/disable）
-  mcp           MCP 服务器管理（list/add/remove）
+  nlskill       NL 技能管理（list/add/remove/enable/disable/execute）
+  mcp           MCP 服务器管理（list/add/remove/health-check/tools/call-tool）
   remote        远程模式管理（status/set-hub/set-email/deactivate）
   loop          后台任务管理（list/stop/continue）— 仅 TUI/daemon 模式
   launch        启动编程工具（claude/codex/gemini/opencode/iflow/kilo）
   swarm         Swarm 多任务编排（create/status/cancel/resume/list）
-  llm           LLM 管理（test/ping/providers/status/set-provider）
+  llm           LLM 管理（test/ping/providers/status/set-provider/set-max-iterations/get-max-iterations）
   system        系统信息（info/python-envs）
 
 Flags:

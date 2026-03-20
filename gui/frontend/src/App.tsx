@@ -3176,7 +3176,7 @@ ${instruction}`;
 
                     <div
                         className={`sidebar-item ${showAIPanel ? 'active' : ''}`}
-                        onClick={() => setShowAIPanel(true)}
+                        onClick={() => { setShowAIPanel(true); if (isLiteMode) setNavTab(''); }}
                         style={{
                             flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px',
                             borderLeft: 'none',
@@ -3282,33 +3282,21 @@ ${instruction}`;
                                         minWidth: '120px',
                                         padding: '4px 0',
                                     }}>
-                                        <div
-                                            style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
-                                            className="help-menu-item"
-                                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
-                                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                                            onClick={() => { setShowHelpMenu(false); setShowAIPanel(false); switchTool('message'); }}
-                                        >
-                                            💬 {t("message")}
-                                        </div>
-                                        <div
-                                            style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
-                                            className="help-menu-item"
-                                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
-                                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                                            onClick={() => { setShowHelpMenu(false); setShowAIPanel(false); switchTool('tutorial'); }}
-                                        >
-                                            📚 {t("tutorial")}
-                                        </div>
-                                        <div
-                                            style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
-                                            className="help-menu-item"
-                                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
-                                            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                                            onClick={() => { setShowHelpMenu(false); setShowAIPanel(false); switchTool('about'); }}
-                                        >
-                                            ℹ️ {t("about")}
-                                        </div>
+                                        {[
+                                            { icon: '💬', key: 'message' as const, nav: 'message' },
+                                            { icon: '📚', key: 'tutorial' as const, nav: 'tutorial' },
+                                            { icon: 'ℹ️', key: 'about' as const, nav: 'about' },
+                                        ].map(({ icon, key, nav }) => (
+                                            <div
+                                                key={key}
+                                                style={{ padding: '8px 16px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                                                onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
+                                                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                                                onClick={() => { setShowHelpMenu(false); setShowAIPanel(false); switchTool(nav); }}
+                                            >
+                                                {icon} {t(key)}
+                                            </div>
+                                        ))}
                                     </div>
                                 </>
                             )}
@@ -3481,7 +3469,7 @@ ${instruction}`;
             <div className="main-container">
                 {/* Lite mode: inline AI assistant as main content */}
                 {isLiteMode && showAIPanel ? (
-                    <AIAssistantPanel onClose={() => setShowAIPanel(false)} lang={lang} inline={true} {...aiAssistant} />
+                    <AIAssistantPanel onClose={() => { setShowAIPanel(false); switchTool('settings'); }} lang={lang} inline={true} {...aiAssistant} />
                 ) : (
                 <><div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
@@ -4301,7 +4289,7 @@ ${instruction}`;
                                             : 'Configure your own QQ Bot to chat with MaClaw Agent via QQ.'}
                                     </p>
 
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
                                         <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem' }}>
                                             <input
                                                 type="checkbox"
@@ -4310,6 +4298,22 @@ ${instruction}`;
                                             />
                                             {lang === 'zh-Hans' ? '启用 QQ 机器人' : lang === 'zh-Hant' ? '啟用 QQ 機器人' : 'Enable QQ Bot'}
                                         </label>
+                                        <button
+                                            type="button"
+                                            style={{
+                                                fontSize: '0.68rem',
+                                                padding: '1px 8px',
+                                                borderRadius: '4px',
+                                                border: '1px solid #6366f1',
+                                                background: 'transparent',
+                                                color: '#6366f1',
+                                                cursor: 'pointer',
+                                                whiteSpace: 'nowrap',
+                                            }}
+                                            onClick={() => BrowserOpenURL('https://q.qq.com/qqbot/openclaw/login.html')}
+                                        >
+                                            {lang === 'zh-Hans' ? '获取 AppID' : lang === 'zh-Hant' ? '取得 AppID' : 'Get AppID'}
+                                        </button>
                                         {config?.qqbot_enabled && (
                                             <>
                                                 <span style={{
@@ -4340,43 +4344,25 @@ ${instruction}`;
                                         )}
                                     </div>
 
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px', maxWidth: '420px' }}>
-                                        <div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                                                <label style={{ fontSize: '0.75rem', color: '#555' }}>App ID</label>
-                                                <button
-                                                    type="button"
-                                                    style={{
-                                                        fontSize: '0.68rem',
-                                                        padding: '1px 8px',
-                                                        borderRadius: '4px',
-                                                        border: '1px solid #6366f1',
-                                                        background: 'transparent',
-                                                        color: '#6366f1',
-                                                        cursor: 'pointer',
-                                                        whiteSpace: 'nowrap',
-                                                    }}
-                                                    onClick={() => BrowserOpenURL('https://q.qq.com/qqbot/openclaw/login.html')}
-                                                >
-                                                    {lang === 'zh-Hans' ? '获取 AppID' : lang === 'zh-Hant' ? '取得 AppID' : 'Get AppID'}
-                                                </button>
-                                            </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', maxWidth: '520px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>App ID</label>
                                             <input
                                                 type="text"
                                                 value={config?.qqbot_app_id || ''}
                                                 onChange={(e) => saveRemoteConfigField({ qqbot_app_id: e.target.value } as any)}
                                                 placeholder="e.g. 102012345"
-                                                style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
                                             />
                                         </div>
-                                        <div>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', display: 'block', marginBottom: '4px' }}>App Secret</label>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>App Secret</label>
                                             <input
                                                 type="password"
                                                 value={config?.qqbot_app_secret || ''}
                                                 onChange={(e) => saveRemoteConfigField({ qqbot_app_secret: e.target.value } as any)}
                                                 placeholder="••••••••"
-                                                style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
                                             />
                                         </div>
                                     </div>
@@ -4394,7 +4380,7 @@ ${instruction}`;
                                             : 'Configure your own Telegram Bot to chat with MaClaw Agent via Telegram.'}
                                     </p>
 
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
                                         <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem' }}>
                                             <input
                                                 type="checkbox"
@@ -4403,6 +4389,22 @@ ${instruction}`;
                                             />
                                             {lang === 'zh-Hans' ? '启用 Telegram Bot' : lang === 'zh-Hant' ? '啟用 Telegram Bot' : 'Enable Telegram Bot'}
                                         </label>
+                                        <button
+                                            type="button"
+                                            style={{
+                                                fontSize: '0.68rem',
+                                                padding: '1px 8px',
+                                                borderRadius: '4px',
+                                                border: '1px solid #6366f1',
+                                                background: 'transparent',
+                                                color: '#6366f1',
+                                                cursor: 'pointer',
+                                                whiteSpace: 'nowrap',
+                                            }}
+                                            onClick={() => BrowserOpenURL('https://open-claw.bot/docs/channels/telegram/')}
+                                        >
+                                            {lang === 'zh-Hans' ? '教程' : lang === 'zh-Hant' ? '教程' : 'Tutorial'}
+                                        </button>
                                         {(config as any)?.telegram_bot_enabled && (
                                             <>
                                                 <span style={{
@@ -4433,33 +4435,15 @@ ${instruction}`;
                                         )}
                                     </div>
 
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px', maxWidth: '420px' }}>
-                                        <div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                                                <label style={{ fontSize: '0.75rem', color: '#555' }}>Bot Token</label>
-                                                <button
-                                                    type="button"
-                                                    style={{
-                                                        fontSize: '0.68rem',
-                                                        padding: '1px 8px',
-                                                        borderRadius: '4px',
-                                                        border: '1px solid #6366f1',
-                                                        background: 'transparent',
-                                                        color: '#6366f1',
-                                                        cursor: 'pointer',
-                                                        whiteSpace: 'nowrap',
-                                                    }}
-                                                    onClick={() => BrowserOpenURL('https://open-claw.bot/docs/channels/telegram/')}
-                                                >
-                                                    {lang === 'zh-Hans' ? '教程' : lang === 'zh-Hant' ? '教程' : 'Tutorial'}
-                                                </button>
-                                            </div>
+                                    <div style={{ maxWidth: '520px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>Bot Token</label>
                                             <input
                                                 type="password"
                                                 value={(config as any)?.telegram_bot_token || ''}
                                                 onChange={(e) => saveRemoteConfigField({ telegram_bot_token: e.target.value } as any)}
                                                 placeholder="e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-                                                style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
                                             />
                                         </div>
                                     </div>
@@ -6961,7 +6945,7 @@ ${instruction}`;
                 </div>
             )}
 
-            {showAIPanel && <AIAssistantPanel onClose={() => setShowAIPanel(false)} lang={lang} {...aiAssistant} />}
+            {showAIPanel && !isLiteMode && <AIAssistantPanel onClose={() => setShowAIPanel(false)} lang={lang} {...aiAssistant} />}
 
             {showToast && (
                 <div className="toast">

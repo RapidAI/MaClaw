@@ -117,7 +117,7 @@ export function SkillsManagementPanel({ translate }: Props) {
             setSkills(list);
             // Clean up learned selection: remove names no longer present
             const learnedNames = new Set(
-                list.filter((s: NLSkillDefinition) => s.source === "learned" || s.source === "crafted").map((s: NLSkillDefinition) => s.name)
+                list.filter((s: NLSkillDefinition) => s.source === "learned" || s.source === "crafted" || s.source === "file").map((s: NLSkillDefinition) => s.name)
             );
             setLearnedSelected((prev) => {
                 const next = new Set<string>();
@@ -795,8 +795,8 @@ export function SkillsManagementPanel({ translate }: Props) {
                                             <td style={tdStyle}>{s.name}</td>
                                             <td style={tdStyle}>{s.description || "—"}</td>
                                             <td style={tdStyle}>
-                                                <span style={{ ...learnedSourceBadge, ...(s.source === "learned" ? learnedBadge : craftedBadge) }}>
-                                                    {s.source === "learned" ? "经验学习" : "工具制作"}
+                                                <span style={{ ...learnedSourceBadge, ...(s.source === "learned" ? learnedBadge : s.source === "file" ? learnedBadge : craftedBadge) }}>
+                                                    {s.source === "learned" ? "经验学习" : s.source === "file" ? "文件导入" : "工具制作"}
                                                 </span>
                                             </td>
                                             <td style={tdStyle}>

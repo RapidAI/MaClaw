@@ -5,11 +5,19 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/clawnet"
+	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,6 +33,19 @@ type TUIApp struct {
 	loopMgr    *agent.BackgroundLoopManager
 	configWatcher *ConfigWatcher
 	sessionMgr *TUISessionManager
+
+	// 安全与路由组件
+	firewall       *security.Firewall
+	auditLog       *security.AuditLog
+	sessionMonitor *remote.SessionMonitor
+	statusCh       chan agent.StatusEvent
+	defGenerator   *tool.DefinitionGenerator
+	router         *tool.Router
+	selector       *tool.Selector
+	configMgr      *config.Manager
+	memoryStore    *memory.Store
+	schedulerMgr   *scheduler.Manager
+	clawnetClient  *clawnet.Client
 
 	// AI 助手聊天
 	chatHistory []map[string]string // 对话历史 (role/content)
@@ -42,6 +63,13 @@ type kernelStartedMsg struct{ err error }
 type kernelEventMsg struct {
 	eventType string
 	data      interface{}
+}
+
+// sessionMonitorMsg 会话监控状态变更消息。
+type sessionMonitorMsg struct {
+	eventType string
+	sessionID string
+	message   string
 }
 
 // sessionUpdateMsg 会话状态变更消息。
@@ -107,6 +135,80 @@ func (a *TUIApp) initKernel() tea.Msg {
 		cw.Start()
 	}
 
+	// --- 新增：安全组件 ---
+	dataDir := commands.ResolveDataDir()
+	riskAnalyzer := security.NewRiskAnalyzer()
+	policyEngine := security.NewPolicyEngine()
+	auditLogDir := filepath.Join(dataDir, "audit")
+	auditLog, auditErr := security.NewAuditLog(auditLogDir)
+	if auditErr != nil {
+		logger.Error("audit log init failed: %v", auditErr)
+	}
+	a.auditLog = auditLog
+
+	var fw *security.Firewall
+	if auditLog != nil {
+		fw = security.NewFirewall(riskAnalyzer, policyEngine, auditLog)
+	} else {
+		fw = security.NewFirewall(riskAnalyzer, policyEngine, nil)
+	}
+	// onAsk 回调：TUI 模式下默认允许（非交互式 agent 循环）
+	fw.SetOnAsk(func(toolName string, risk security.RiskAssessment) (bool, error) {
+		// TUI agent 循环中无法交互式确认，高风险操作默认拒绝
+		if risk.Level == security.RiskCritical {
+			return false, nil
+		}
+		return true, nil
+	})
+	a.firewall = fw
+
+	// --- 新增：SessionMonitor ---
+	statusCh := make(chan agent.StatusEvent, 32)
+	sessionMonitor := remote.NewSessionMonitor(a.sessionMgr, statusCh, 20*time.Second)
+	a.sessionMonitor = sessionMonitor
+	a.statusCh = statusCh
+
+	// --- 新增：ConfigManager ---
+	store := commands.NewFileConfigStore(dataDir)
+	a.configMgr = config.NewManager(store)
+
+	// --- 新增：MemoryStore ---
+	memPath := filepath.Join(dataDir, "memory.json")
+	memStore, memErr := memory.NewStore(memPath)
+	if memErr != nil {
+		logger.Error("memory store init failed: %v", memErr)
+	}
+	a.memoryStore = memStore
+
+	// --- 新增：SchedulerManager ---
+	schedPath := filepath.Join(dataDir, "scheduled_tasks.json")
+	schedMgr, schedErr := scheduler.NewManager(schedPath)
+	if schedErr != nil {
+		logger.Error("scheduler init failed: %v", schedErr)
+	} else {
+		schedMgr.Start()
+	}
+	a.schedulerMgr = schedMgr
+
+	// --- 新增：ClawNet Client ---
+	a.clawnetClient = clawnet.NewClient()
+
+	// --- 新增：Selector ---
+	a.selector = tool.NewSelector()
+
+	// --- 新增：DefinitionGenerator + Router ---
+	builtinDefs := (&TUIAgentHandler{sessionMgr: a.sessionMgr}).buildBuiltinToolDefinitions()
+	defGen := tool.NewDefinitionGenerator(nil, builtinDefs)
+	a.defGenerator = defGen
+	a.router = tool.NewRouter(defGen)
+
+	// 启动 SessionMonitor 状态通知转发
+	go func() {
+		for evt := range statusCh {
+			logger.Info("session monitor event: %s session=%s", evt.Type, evt.SessionID)
+		}
+	}()
+
 	return kernelStartedMsg{}
 }
 
@@ -129,6 +231,18 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.configWatcher != nil {
 				a.configWatcher.Stop()
 			}
+			if a.sessionMonitor != nil {
+				a.sessionMonitor.Close()
+			}
+			if a.schedulerMgr != nil {
+				a.schedulerMgr.Stop()
+			}
+			if a.memoryStore != nil {
+				a.memoryStore.Stop()
+			}
+			if a.auditLog != nil {
+				_ = a.auditLog.Close()
+			}
 			if a.kernel != nil {
 				ctx := context.Background()
 				_ = a.kernel.Shutdown(ctx)
@@ -144,6 +258,18 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if a.configWatcher != nil {
 					a.configWatcher.Stop()
+				}
+				if a.sessionMonitor != nil {
+					a.sessionMonitor.Close()
+				}
+				if a.schedulerMgr != nil {
+					a.schedulerMgr.Stop()
+				}
+				if a.memoryStore != nil {
+					a.memoryStore.Stop()
+				}
+				if a.auditLog != nil {
+					_ = a.auditLog.Close()
 				}
 				if a.kernel != nil {
 					ctx := context.Background()
@@ -253,6 +379,9 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.root.StatusBar.SetMessage(fmt.Sprintf("工具 %s 已退出", msg.name))
 		}
 
+	case sessionMonitorMsg:
+		a.root.StatusBar.SetMessage(fmt.Sprintf("🔔 [%s] %s", msg.eventType, msg.message))
+
 	case sessionUpdateMsg:
 		// 将会话输出同步到 SessionDetail 视图
 		if a.root.SessionDetail != nil && a.sessionMgr != nil {
@@ -308,6 +437,26 @@ func runTUI() {
 		}
 	}()
 
+	// 转发 SessionMonitor 事件到 Bubble Tea
+	go func() {
+		// 等待 initKernel 完成
+		for app.statusCh == nil && app.err == nil {
+			time.Sleep(50 * time.Millisecond)
+			if app.ready {
+				break
+			}
+		}
+		if app.statusCh != nil {
+			for evt := range app.statusCh {
+				p.Send(sessionMonitorMsg{
+					eventType: string(evt.Type),
+					sessionID: evt.SessionID,
+					message:   evt.Message,
+				})
+			}
+		}
+	}()
+
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		os.Exit(1)
@@ -340,7 +489,17 @@ func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		handler := NewTUIAgentHandler(a.sessionMgr)
+		handler := NewTUIAgentHandler(a.sessionMgr,
+			WithFirewall(a.firewall),
+			WithDefGenerator(a.defGenerator),
+			WithRouter(a.router),
+			WithSelector(a.selector),
+			WithConfigMgr(a.configMgr),
+			WithMemoryStore(a.memoryStore),
+			WithSchedulerMgr(a.schedulerMgr),
+			WithClawnetClient(a.clawnetClient),
+			WithAuditLog(a.auditLog),
+		)
 		resp := handler.RunAgentLoop(text, history)
 		if resp.Error != "" {
 			return views.ChatResponseMsg{Error: resp.Error}

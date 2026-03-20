@@ -1,8 +1,11 @@
 package commands
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -12,7 +15,7 @@ import (
 // RunMCP 执行 mcp 子命令。
 func RunMCP(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui mcp <list|add|remove>")
+		return NewUsageError("usage: maclaw-tui mcp <list|add|remove|health-check|tools|call-tool>")
 	}
 	switch args[0] {
 	case "list":
@@ -21,6 +24,12 @@ func RunMCP(args []string) error {
 		return mcpAdd(args[1:])
 	case "remove":
 		return mcpRemove(args[1:])
+	case "health-check":
+		return mcpHealthCheck(args[1:])
+	case "tools":
+		return mcpTools(args[1:])
+	case "call-tool":
+		return mcpCallTool(args[1:])
 	default:
 		return NewUsageError("unknown mcp action: %s", args[0])
 	}
@@ -188,4 +197,234 @@ func mcpRemove(args []string) error {
 	}
 	fmt.Printf("MCP 服务器 '%s' 已移除。\n", name)
 	return nil
+}
+
+// ---------- Health Check ----------
+
+func mcpHealthCheck(args []string) error {
+	fs := flag.NewFlagSet("mcp health-check", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	type healthResult struct {
+		Name     string `json:"name"`
+		Type     string `json:"type"`
+		Endpoint string `json:"endpoint,omitempty"`
+		Command  string `json:"command,omitempty"`
+		Status   string `json:"status"`
+		Error    string `json:"error,omitempty"`
+		Latency  string `json:"latency,omitempty"`
+	}
+
+	var results []healthResult
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, s := range cfg.MCPServers {
+		start := time.Now()
+		req, _ := http.NewRequest(http.MethodGet, s.EndpointURL, nil)
+		if s.AuthType == "bearer" && s.AuthSecret != "" {
+			req.Header.Set("Authorization", "Bearer "+s.AuthSecret)
+		} else if s.AuthType == "api_key" && s.AuthSecret != "" {
+			req.Header.Set("X-API-Key", s.AuthSecret)
+		}
+		resp, err := client.Do(req)
+		elapsed := time.Since(start)
+		r := healthResult{Name: s.Name, Type: "remote", Endpoint: s.EndpointURL}
+		if err != nil {
+			r.Status = "unreachable"
+			r.Error = err.Error()
+		} else {
+			resp.Body.Close()
+			r.Status = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			r.Latency = elapsed.Round(time.Millisecond).String()
+		}
+		results = append(results, r)
+	}
+
+	for _, s := range cfg.LocalMCPServers {
+		r := healthResult{Name: s.Name, Type: "local", Command: s.Command}
+		if s.Disabled {
+			r.Status = "disabled"
+		} else {
+			r.Status = "configured"
+		}
+		results = append(results, r)
+	}
+
+	if *jsonOut {
+		return PrintJSON(results)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("未配置 MCP 服务器。")
+		return nil
+	}
+
+	fmt.Printf("%-20s %-8s %-15s %-10s %s\n", "NAME", "TYPE", "STATUS", "LATENCY", "ENDPOINT")
+	fmt.Println(strings.Repeat("-", 80))
+	for _, r := range results {
+		ep := r.Endpoint
+		if ep == "" {
+			ep = r.Command
+		}
+		latency := r.Latency
+		if latency == "" {
+			latency = "-"
+		}
+		fmt.Printf("%-20s %-8s %-15s %-10s %s\n",
+			TruncateDisplay(r.Name, 20), r.Type, r.Status, latency, TruncateDisplay(ep, 40))
+	}
+	return nil
+}
+
+// ---------- Tools ----------
+
+func mcpTools(args []string) error {
+	fs := flag.NewFlagSet("mcp tools", flag.ExitOnError)
+	server := fs.String("server", "", "按服务器名称过滤")
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	type toolInfo struct {
+		Server string `json:"server"`
+		Name   string `json:"name"`
+		Desc   string `json:"description,omitempty"`
+	}
+
+	var tools []toolInfo
+
+	// For remote MCP servers, try to fetch tool list from /tools endpoint
+	client := &http.Client{Timeout: 10 * time.Second}
+	for _, s := range cfg.MCPServers {
+		if *server != "" && s.Name != *server {
+			continue
+		}
+		endpoint := strings.TrimRight(s.EndpointURL, "/") + "/tools"
+		req, _ := http.NewRequest(http.MethodGet, endpoint, nil)
+		if s.AuthType == "bearer" && s.AuthSecret != "" {
+			req.Header.Set("Authorization", "Bearer "+s.AuthSecret)
+		} else if s.AuthType == "api_key" && s.AuthSecret != "" {
+			req.Header.Set("X-API-Key", s.AuthSecret)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			tools = append(tools, toolInfo{Server: s.Name, Name: "(unreachable)", Desc: err.Error()})
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			tools = append(tools, toolInfo{Server: s.Name, Name: "(error)", Desc: fmt.Sprintf("HTTP %d", resp.StatusCode)})
+			continue
+		}
+		var toolList []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&toolList); err != nil {
+			resp.Body.Close()
+			tools = append(tools, toolInfo{Server: s.Name, Name: "(parse error)", Desc: err.Error()})
+			continue
+		}
+		resp.Body.Close()
+		for _, t := range toolList {
+			tools = append(tools, toolInfo{Server: s.Name, Name: t.Name, Desc: t.Description})
+		}
+	}
+
+	if *jsonOut {
+		return PrintJSON(tools)
+	}
+
+	if len(tools) == 0 {
+		fmt.Println("未发现 MCP 工具。")
+		return nil
+	}
+
+	fmt.Printf("%-20s %-30s %s\n", "SERVER", "TOOL", "DESCRIPTION")
+	fmt.Println(strings.Repeat("-", 80))
+	for _, t := range tools {
+		fmt.Printf("%-20s %-30s %s\n",
+			TruncateDisplay(t.Server, 20), TruncateDisplay(t.Name, 30), TruncateDisplay(t.Desc, 40))
+	}
+	return nil
+}
+
+// ---------- Call Tool ----------
+
+func mcpCallTool(args []string) error {
+	fs := flag.NewFlagSet("mcp call-tool", flag.ExitOnError)
+	server := fs.String("server", "", "MCP 服务器名称（必填）")
+	tool := fs.String("tool", "", "工具名称（必填）")
+	toolArgs := fs.String("args", "{}", "工具参数（JSON 格式）")
+	fs.Parse(args)
+
+	if *server == "" || *tool == "" {
+		return NewUsageError("usage: mcp call-tool --server <name> --tool <name> [--args '{...}']")
+	}
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	// Find the server
+	var endpoint, authType, authSecret string
+	for _, s := range cfg.MCPServers {
+		if s.Name == *server {
+			endpoint = s.EndpointURL
+			authType = s.AuthType
+			authSecret = s.AuthSecret
+			break
+		}
+	}
+	if endpoint == "" {
+		return fmt.Errorf("MCP 服务器 '%s' 不存在或不是远程服务器", *server)
+	}
+
+	// Parse args
+	var parsedArgs map[string]interface{}
+	if err := json.Unmarshal([]byte(*toolArgs), &parsedArgs); err != nil {
+		return fmt.Errorf("解析工具参数失败: %w", err)
+	}
+
+	// Call the tool
+	callURL := strings.TrimRight(endpoint, "/") + "/tools/" + *tool + "/call"
+	body, _ := json.Marshal(parsedArgs)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, callURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authType == "bearer" && authSecret != "" {
+		req.Header.Set("Authorization", "Bearer "+authSecret)
+	} else if authType == "api_key" && authSecret != "" {
+		req.Header.Set("X-API-Key", authSecret)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("调用工具失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("解析响应失败: %w", err)
+	}
+	return PrintJSON(result)
 }

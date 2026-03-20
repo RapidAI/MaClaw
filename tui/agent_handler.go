@@ -16,6 +16,12 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/clawnet"
+	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
 
@@ -47,17 +53,70 @@ type llmResponse struct {
 }
 
 // TUIAgentHandler 是 TUI 端的 Agent 循环处理器。
-// 支持 LLM 工具调用（bash、read_file、write_file、list_directory、list_sessions、send_input）。
+// 支持 LLM 工具调用，集成 Firewall + Router + 40+ 工具。
 type TUIAgentHandler struct {
-	sessionMgr *TUISessionManager
-	httpClient *http.Client
+	sessionMgr    *TUISessionManager
+	httpClient    *http.Client
+	firewall      *security.Firewall
+	defGenerator  *tool.DefinitionGenerator
+	router        *tool.Router
+	selector      *tool.Selector
+	configMgr     *config.Manager
+	memoryStore   *memory.Store
+	schedulerMgr  *scheduler.Manager
+	clawnetClient *clawnet.Client
+	auditLog      *security.AuditLog
+	maxIterations int
 }
 
 // NewTUIAgentHandler 创建 Agent 处理器。
-func NewTUIAgentHandler(sessionMgr *TUISessionManager) *TUIAgentHandler {
-	return &TUIAgentHandler{
-		sessionMgr: sessionMgr,
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+func NewTUIAgentHandler(sessionMgr *TUISessionManager, opts ...AgentHandlerOption) *TUIAgentHandler {
+	h := &TUIAgentHandler{
+		sessionMgr:    sessionMgr,
+		httpClient:    &http.Client{Timeout: 120 * time.Second},
+		maxIterations: agentMaxIterations,
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// AgentHandlerOption 配置 TUIAgentHandler 的选项函数。
+type AgentHandlerOption func(*TUIAgentHandler)
+
+func WithFirewall(fw *security.Firewall) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.firewall = fw }
+}
+func WithDefGenerator(dg *tool.DefinitionGenerator) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.defGenerator = dg }
+}
+func WithRouter(r *tool.Router) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.router = r }
+}
+func WithSelector(s *tool.Selector) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.selector = s }
+}
+func WithConfigMgr(cm *config.Manager) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.configMgr = cm }
+}
+func WithMemoryStore(ms *memory.Store) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.memoryStore = ms }
+}
+func WithSchedulerMgr(sm *scheduler.Manager) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.schedulerMgr = sm }
+}
+func WithClawnetClient(cc *clawnet.Client) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.clawnetClient = cc }
+}
+func WithAuditLog(al *security.AuditLog) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.auditLog = al }
+}
+func WithMaxIterations(n int) AgentHandlerOption {
+	return func(h *TUIAgentHandler) {
+		if n > 0 {
+			h.maxIterations = n
+		}
 	}
 }
 
@@ -80,6 +139,11 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 	systemPrompt := h.buildSystemPrompt()
 	tools := h.buildToolDefinitions()
 
+	// Router: 当工具总数 > MaxToolBudget 时裁剪
+	if h.router != nil && len(tools) > tool.MaxToolBudget {
+		tools = h.router.Route(userText, tools)
+	}
+
 	var conversation []interface{}
 	conversation = append(conversation, map[string]string{"role": "system", "content": systemPrompt})
 	for _, msg := range history {
@@ -87,7 +151,7 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 	}
 	conversation = append(conversation, map[string]string{"role": "user", "content": userText})
 
-	for iteration := 0; iteration < agentMaxIterations; iteration++ {
+	for iteration := 0; iteration < h.maxIterations; iteration++ {
 		resp, err := h.doLLMRequestWithTools(cfg, conversation, tools)
 		if err != nil {
 			return AgentResponse{Error: fmt.Sprintf("LLM 调用失败: %v", err)}
@@ -140,7 +204,16 @@ func (h *TUIAgentHandler) buildSystemPrompt() string {
 }
 
 func (h *TUIAgentHandler) buildToolDefinitions() []map[string]interface{} {
-	return []map[string]interface{}{
+	// 如果有 DefinitionGenerator，使用动态生成（builtin + MCP）
+	if h.defGenerator != nil {
+		return h.defGenerator.Generate()
+	}
+	return h.buildBuiltinToolDefinitions()
+}
+
+// buildBuiltinToolDefinitions 返回所有内置工具定义（静态回退）。
+func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{} {
+	defs := []map[string]interface{}{
 		toolDef("bash", "在终端执行命令", map[string]interface{}{
 			"command": map[string]interface{}{"type": "string", "description": "要执行的命令"},
 		}, []string{"command"}),
@@ -159,7 +232,139 @@ func (h *TUIAgentHandler) buildToolDefinitions() []map[string]interface{} {
 			"session_id": map[string]interface{}{"type": "string", "description": "会话 ID"},
 			"text":       map[string]interface{}{"type": "string", "description": "输入文本"},
 		}, []string{"session_id", "text"}),
+		// --- 会话管理扩展 ---
+		toolDef("create_session", "创建新的编程会话", map[string]interface{}{
+			"tool":          map[string]interface{}{"type": "string", "description": "工具名称 (claude/codex/gemini 等)"},
+			"project_path":  map[string]interface{}{"type": "string", "description": "项目路径"},
+			"template_name": map[string]interface{}{"type": "string", "description": "模板名称（可选）"},
+		}, []string{"tool", "project_path"}),
+		toolDef("get_session_output", "获取会话输出", map[string]interface{}{
+			"session_id": map[string]interface{}{"type": "string", "description": "会话 ID"},
+			"tail_lines": map[string]interface{}{"type": "integer", "description": "返回最后 N 行（可选）"},
+		}, []string{"session_id"}),
+		toolDef("get_session_events", "获取会话重要事件", map[string]interface{}{
+			"session_id": map[string]interface{}{"type": "string", "description": "会话 ID"},
+		}, []string{"session_id"}),
+		toolDef("interrupt_session", "中断会话", map[string]interface{}{
+			"session_id": map[string]interface{}{"type": "string", "description": "会话 ID"},
+		}, []string{"session_id"}),
+		toolDef("kill_session", "终止会话", map[string]interface{}{
+			"session_id": map[string]interface{}{"type": "string", "description": "会话 ID"},
+		}, []string{"session_id"}),
+		toolDef("send_and_observe", "发送输入并等待观察输出", map[string]interface{}{
+			"session_id":   map[string]interface{}{"type": "string", "description": "会话 ID"},
+			"text":         map[string]interface{}{"type": "string", "description": "输入文本"},
+			"wait_seconds": map[string]interface{}{"type": "integer", "description": "等待秒数"},
+		}, []string{"session_id", "text"}),
+		toolDef("control_session", "控制会话（暂停/恢复/重启）", map[string]interface{}{
+			"session_id": map[string]interface{}{"type": "string", "description": "会话 ID"},
+			"action":     map[string]interface{}{"type": "string", "description": "操作: pause/resume/restart"},
+		}, []string{"session_id", "action"}),
+		// --- 配置管理 ---
+		toolDef("get_config", "读取配置", map[string]interface{}{
+			"section": map[string]interface{}{"type": "string", "description": "配置区段 (all/claude/remote/maclaw_llm 等)"},
+		}, []string{"section"}),
+		toolDef("update_config", "更新单个配置项", map[string]interface{}{
+			"section": map[string]interface{}{"type": "string", "description": "配置区段"},
+			"key":     map[string]interface{}{"type": "string", "description": "配置键"},
+			"value":   map[string]interface{}{"type": "string", "description": "新值"},
+		}, []string{"section", "key", "value"}),
+		toolDef("batch_update_config", "批量更新配置", map[string]interface{}{
+			"changes": map[string]interface{}{"type": "array", "description": "变更列表 [{section,key,value}]", "items": map[string]interface{}{"type": "object"}},
+		}, []string{"changes"}),
+		toolDef("list_config_schema", "列出配置模式", map[string]interface{}{}, nil),
+		toolDef("export_config", "导出配置为 JSON", map[string]interface{}{}, nil),
+		toolDef("import_config", "导入 JSON 配置", map[string]interface{}{
+			"json_data": map[string]interface{}{"type": "string", "description": "JSON 配置数据"},
+		}, []string{"json_data"}),
+		// --- 模板 ---
+		toolDef("create_template", "创建会话模板", map[string]interface{}{
+			"name":         map[string]interface{}{"type": "string", "description": "模板名称"},
+			"tool":         map[string]interface{}{"type": "string", "description": "工具名称"},
+			"project_path": map[string]interface{}{"type": "string", "description": "项目路径"},
+		}, []string{"name", "tool", "project_path"}),
+		toolDef("list_templates", "列出会话模板", map[string]interface{}{}, nil),
+		toolDef("launch_template", "从模板启动会话", map[string]interface{}{
+			"template_name": map[string]interface{}{"type": "string", "description": "模板名称"},
+		}, []string{"template_name"}),
+		// --- 定时任务 ---
+		toolDef("create_scheduled_task", "创建定时任务", map[string]interface{}{
+			"name":   map[string]interface{}{"type": "string", "description": "任务名称"},
+			"action": map[string]interface{}{"type": "string", "description": "任务动作（自然语言）"},
+			"hour":   map[string]interface{}{"type": "integer", "description": "小时 (0-23)"},
+			"minute": map[string]interface{}{"type": "integer", "description": "分钟 (0-59)"},
+		}, []string{"name", "action", "hour", "minute"}),
+		toolDef("list_scheduled_tasks", "列出定时任务", map[string]interface{}{}, nil),
+		toolDef("delete_scheduled_task", "删除定时任务", map[string]interface{}{
+			"task_id": map[string]interface{}{"type": "string", "description": "任务 ID"},
+		}, []string{"task_id"}),
+		toolDef("update_scheduled_task", "更新定时任务", map[string]interface{}{
+			"task_id": map[string]interface{}{"type": "string", "description": "任务 ID"},
+			"updates": map[string]interface{}{"type": "object", "description": "要更新的字段"},
+		}, []string{"task_id", "updates"}),
+		// --- 记忆 ---
+		toolDef("memory", "记忆管理（save/list/search/delete）", map[string]interface{}{
+			"action":   map[string]interface{}{"type": "string", "description": "操作: save/list/search/delete"},
+			"content":  map[string]interface{}{"type": "string", "description": "记忆内容（save 时必填）"},
+			"category": map[string]interface{}{"type": "string", "description": "分类: user_fact/preference/project_knowledge/instruction"},
+			"tags":     map[string]interface{}{"type": "array", "description": "标签列表", "items": map[string]interface{}{"type": "string"}},
+			"keyword":  map[string]interface{}{"type": "string", "description": "搜索关键词（search/list 时使用）"},
+			"id":       map[string]interface{}{"type": "string", "description": "记忆 ID（delete 时必填）"},
+		}, []string{"action"}),
+		// --- MCP ---
+		toolDef("list_mcp_tools", "列出所有 MCP 服务器及其工具", map[string]interface{}{}, nil),
+		toolDef("call_mcp_tool", "调用 MCP 工具", map[string]interface{}{
+			"server_id": map[string]interface{}{"type": "string", "description": "MCP 服务器 ID"},
+			"tool_name": map[string]interface{}{"type": "string", "description": "工具名称"},
+			"arguments": map[string]interface{}{"type": "object", "description": "工具参数"},
+		}, []string{"server_id", "tool_name"}),
+		// --- 技能 ---
+		toolDef("list_skills", "列出本地已安装技能", map[string]interface{}{}, nil),
+		toolDef("search_skill_hub", "搜索 SkillHub 技能", map[string]interface{}{
+			"query": map[string]interface{}{"type": "string", "description": "搜索关键词"},
+		}, []string{"query"}),
+		toolDef("install_skill_hub", "从 SkillHub 安装技能", map[string]interface{}{
+			"skill_name": map[string]interface{}{"type": "string", "description": "技能名称"},
+		}, []string{"skill_name"}),
+		toolDef("run_skill", "执行本地技能", map[string]interface{}{
+			"skill_name": map[string]interface{}{"type": "string", "description": "技能名称"},
+			"input":      map[string]interface{}{"type": "string", "description": "输入参数"},
+		}, []string{"skill_name"}),
+		// --- ClawNet ---
+		toolDef("clawnet_search", "搜索 ClawNet 知识", map[string]interface{}{
+			"query": map[string]interface{}{"type": "string", "description": "搜索关键词"},
+		}, []string{"query"}),
+		toolDef("clawnet_publish", "发布知识到 ClawNet", map[string]interface{}{
+			"title": map[string]interface{}{"type": "string", "description": "标题"},
+			"body":  map[string]interface{}{"type": "string", "description": "内容"},
+		}, []string{"title", "body"}),
+		// --- 审计 ---
+		toolDef("query_audit_log", "查询审计日志", map[string]interface{}{
+			"tool_name":  map[string]interface{}{"type": "string", "description": "工具名称过滤"},
+			"risk_level": map[string]interface{}{"type": "string", "description": "风险等级过滤 (low/medium/high/critical)"},
+			"start_date": map[string]interface{}{"type": "string", "description": "开始日期 (2006-01-02)"},
+			"end_date":   map[string]interface{}{"type": "string", "description": "结束日期 (2006-01-02)"},
+		}, nil),
+		// --- 实用工具 ---
+		toolDef("send_file", "发送文件内容到会话", map[string]interface{}{
+			"session_id": map[string]interface{}{"type": "string", "description": "会话 ID"},
+			"file_path":  map[string]interface{}{"type": "string", "description": "文件路径"},
+		}, []string{"session_id", "file_path"}),
+		toolDef("parallel_execute", "并发执行多个命令", map[string]interface{}{
+			"commands": map[string]interface{}{"type": "array", "description": "命令列表", "items": map[string]interface{}{"type": "string"}},
+		}, []string{"commands"}),
+		toolDef("switch_llm_provider", "切换 LLM 提供商", map[string]interface{}{
+			"provider": map[string]interface{}{"type": "string", "description": "提供商名称"},
+		}, []string{"provider"}),
+		toolDef("set_max_iterations", "设置 Agent 最大推理轮次", map[string]interface{}{
+			"value": map[string]interface{}{"type": "integer", "description": "最大轮次"},
+		}, []string{"value"}),
+		toolDef("recommend_tool", "推荐最佳编程工具", map[string]interface{}{
+			"task_description": map[string]interface{}{"type": "string", "description": "任务描述"},
+		}, []string{"task_description"}),
+		toolDef("screenshot", "截取屏幕截图", map[string]interface{}{}, nil),
 	}
+	return defs
 }
 
 func toolDef(name, desc string, props map[string]interface{}, required []string) map[string]interface{} {
@@ -186,7 +391,32 @@ func (h *TUIAgentHandler) executeTool(name, argsJSON string) string {
 		_ = json.Unmarshal([]byte(argsJSON), &args)
 	}
 
+	// Firewall 安全检查
+	if h.firewall != nil {
+		allowed, reason := h.firewall.Check(name, args, nil)
+		if !allowed {
+			return reason
+		}
+	}
+
+	result := h.dispatchTool(name, args)
+
+	// 审计日志
+	if h.auditLog != nil {
+		_ = h.auditLog.Log(security.AuditEntry{
+			Timestamp: time.Now(),
+			ToolName:  name,
+			Arguments: args,
+			Result:    scheduler.TruncateStr(result, 200),
+		})
+	}
+
+	return result
+}
+
+func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{}) string {
 	switch name {
+	// --- 原有工具 ---
 	case "bash":
 		return h.toolBash(args)
 	case "read_file":
@@ -199,6 +429,88 @@ func (h *TUIAgentHandler) executeTool(name, argsJSON string) string {
 		return h.toolListSessions()
 	case "send_input":
 		return h.toolSendInput(args)
+	// --- 会话管理扩展 ---
+	case "create_session":
+		return h.toolCreateSession(args)
+	case "get_session_output":
+		return h.toolGetSessionOutput(args)
+	case "get_session_events":
+		return h.toolGetSessionEvents(args)
+	case "interrupt_session":
+		return h.toolInterruptSession(args)
+	case "kill_session":
+		return h.toolKillSession(args)
+	case "send_and_observe":
+		return h.toolSendAndObserve(args)
+	case "control_session":
+		return h.toolControlSession(args)
+	// --- 配置管理 ---
+	case "get_config":
+		return h.toolGetConfig(args)
+	case "update_config":
+		return h.toolUpdateConfig(args)
+	case "batch_update_config":
+		return h.toolBatchUpdateConfig(args)
+	case "list_config_schema":
+		return h.toolListConfigSchema()
+	case "export_config":
+		return h.toolExportConfig()
+	case "import_config":
+		return h.toolImportConfig(args)
+	// --- 模板 ---
+	case "create_template":
+		return h.toolCreateTemplate(args)
+	case "list_templates":
+		return h.toolListTemplates()
+	case "launch_template":
+		return h.toolLaunchTemplate(args)
+	// --- 定时任务 ---
+	case "create_scheduled_task":
+		return h.toolCreateScheduledTask(args)
+	case "list_scheduled_tasks":
+		return h.toolListScheduledTasks()
+	case "delete_scheduled_task":
+		return h.toolDeleteScheduledTask(args)
+	case "update_scheduled_task":
+		return h.toolUpdateScheduledTask(args)
+	// --- 记忆 ---
+	case "memory":
+		return h.toolMemory(args)
+	// --- MCP ---
+	case "list_mcp_tools":
+		return h.toolListMCPTools()
+	case "call_mcp_tool":
+		return h.toolCallMCPTool(args)
+	// --- 技能 ---
+	case "list_skills":
+		return h.toolListSkills()
+	case "search_skill_hub":
+		return h.toolSearchSkillHub(args)
+	case "install_skill_hub":
+		return h.toolInstallSkillHub(args)
+	case "run_skill":
+		return h.toolRunSkill(args)
+	// --- ClawNet ---
+	case "clawnet_search":
+		return h.toolClawnetSearch(args)
+	case "clawnet_publish":
+		return h.toolClawnetPublish(args)
+	// --- 审计 ---
+	case "query_audit_log":
+		return h.toolQueryAuditLog(args)
+	// --- 实用工具 ---
+	case "send_file":
+		return h.toolSendFile(args)
+	case "parallel_execute":
+		return h.toolParallelExecute(args)
+	case "switch_llm_provider":
+		return h.toolSwitchLLMProvider(args)
+	case "set_max_iterations":
+		return h.toolSetMaxIterations(args)
+	case "recommend_tool":
+		return h.toolRecommendTool(args)
+	case "screenshot":
+		return h.toolScreenshot()
 	default:
 		return fmt.Sprintf("未知工具: %s", name)
 	}

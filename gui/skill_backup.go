@@ -116,7 +116,7 @@ func (e *SkillExecutor) ExportLearnedSkillsZip(names []string, outputPath string
 	// Filter to learned/crafted skills that match the requested names.
 	var selected []NLSkillEntry
 	for _, s := range allSkills {
-		if (s.Source == "learned" || s.Source == "crafted") && wanted[s.Name] {
+		if (s.Source == "learned" || s.Source == "crafted" || s.Source == "file") && wanted[s.Name] {
 			selected = append(selected, s)
 		}
 	}

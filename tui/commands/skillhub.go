@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -38,7 +39,7 @@ type hubSearchResult struct {
 // RunSkillHub 执行 skillhub 子命令（search/install/rate）。
 func RunSkillHub(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui skillhub <search|install|rate>")
+		return NewUsageError("usage: maclaw-tui skillhub <search|install|rate|check-updates|update>")
 	}
 	switch args[0] {
 	case "search":
@@ -47,6 +48,10 @@ func RunSkillHub(args []string) error {
 		return skillhubInstall(args[1:])
 	case "rate":
 		return skillhubRate(args[1:])
+	case "check-updates":
+		return skillhubCheckUpdates(args[1:])
+	case "update":
+		return skillhubUpdate(args[1:])
 	default:
 		return NewUsageError("unknown skillhub action: %s", args[0])
 	}
@@ -285,4 +290,189 @@ func newNLSkillFromHub(meta HubSkillMeta, triggers []string, hubURL string) core
 		HubVersion:    meta.Version,
 		TrustLevel:    meta.TrustLevel,
 	}
+}
+
+// ---------- Check Updates ----------
+
+func skillhubCheckUpdates(args []string) error {
+	fs := flag.NewFlagSet("skillhub check-updates", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+
+	hubURL, err := resolveHubURL()
+	if err != nil {
+		return err
+	}
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	type updateInfo struct {
+		Name         string `json:"name"`
+		HubSkillID   string `json:"hub_skill_id"`
+		LocalVersion string `json:"local_version"`
+		LatestVersion string `json:"latest_version,omitempty"`
+		NeedsUpdate  bool   `json:"needs_update"`
+		Error        string `json:"error,omitempty"`
+	}
+
+	var results []updateInfo
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	for _, s := range cfg.NLSkills {
+		if s.HubSkillID == "" {
+			continue
+		}
+		endpoint := fmt.Sprintf("%s/api/v1/skills/%s", hubURL, url.PathEscape(s.HubSkillID))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		req.Header.Set("User-Agent", "MaClaw-TUI/1.0")
+		resp, err := client.Do(req)
+		cancel()
+
+		info := updateInfo{Name: s.Name, HubSkillID: s.HubSkillID, LocalVersion: s.HubVersion}
+		if err != nil {
+			info.Error = err.Error()
+			results = append(results, info)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			info.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			results = append(results, info)
+			continue
+		}
+		var meta struct {
+			Version string `json:"version"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&meta); err != nil {
+			resp.Body.Close()
+			info.Error = err.Error()
+			results = append(results, info)
+			continue
+		}
+		resp.Body.Close()
+		info.LatestVersion = meta.Version
+		info.NeedsUpdate = meta.Version != s.HubVersion && meta.Version != ""
+		results = append(results, info)
+	}
+
+	if *jsonOut {
+		return PrintJSON(results)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("没有来自 Hub 的技能需要检查更新。")
+		return nil
+	}
+
+	hasUpdates := false
+	fmt.Printf("%-20s %-12s %-12s %s\n", "NAME", "LOCAL", "LATEST", "STATUS")
+	fmt.Println(strings.Repeat("-", 60))
+	for _, r := range results {
+		status := "up-to-date"
+		if r.Error != "" {
+			status = "error: " + r.Error
+		} else if r.NeedsUpdate {
+			status = "update available"
+			hasUpdates = true
+		}
+		fmt.Printf("%-20s %-12s %-12s %s\n",
+			TruncateDisplay(r.Name, 20),
+			TruncateDisplay(r.LocalVersion, 12),
+			TruncateDisplay(r.LatestVersion, 12),
+			status)
+	}
+	if !hasUpdates {
+		fmt.Println("\n所有 Hub 技能已是最新版本。")
+	}
+	return nil
+}
+
+// ---------- Update ----------
+
+func skillhubUpdate(args []string) error {
+	fs := flag.NewFlagSet("skillhub update", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		return NewUsageError("usage: skillhub update <skill-name|--all>")
+	}
+	target := fs.Arg(0)
+
+	hubURL, err := resolveHubURL()
+	if err != nil {
+		return err
+	}
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	updateAll := target == "--all"
+	updated := 0
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	for i := range cfg.NLSkills {
+		s := &cfg.NLSkills[i]
+		if s.HubSkillID == "" {
+			continue
+		}
+		if !updateAll && s.Name != target {
+			continue
+		}
+
+		endpoint := fmt.Sprintf("%s/api/v1/skills/%s/download", hubURL, url.PathEscape(s.HubSkillID))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		req.Header.Set("User-Agent", "MaClaw-TUI/1.0")
+		resp, err := client.Do(req)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "更新 '%s' 失败: %v\n", s.Name, err)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			fmt.Fprintf(os.Stderr, "更新 '%s' 失败: HTTP %d\n", s.Name, resp.StatusCode)
+			continue
+		}
+
+		var full struct {
+			HubSkillMeta
+			Triggers []string `json:"triggers"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&full); err != nil {
+			resp.Body.Close()
+			fmt.Fprintf(os.Stderr, "解析 '%s' 更新数据失败: %v\n", s.Name, err)
+			continue
+		}
+		resp.Body.Close()
+
+		// Update local entry
+		s.Description = full.Description
+		s.Triggers = full.Triggers
+		s.HubVersion = full.Version
+		s.TrustLevel = full.TrustLevel
+		updated++
+		fmt.Printf("✓ '%s' 已更新到 v%s\n", s.Name, full.Version)
+	}
+
+	if err := store.SaveConfig(cfg); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+
+	if *jsonOut {
+		return PrintJSON(map[string]interface{}{"updated": updated})
+	}
+	if updated == 0 {
+		fmt.Println("没有技能被更新。")
+	}
+	return nil
 }
