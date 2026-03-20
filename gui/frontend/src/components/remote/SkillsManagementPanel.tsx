@@ -372,7 +372,7 @@ export function SkillsManagementPanel({ translate }: Props) {
     // --- Learned skills tab helpers ---
 
     const learnedSkills = useMemo(
-        () => skills.filter((s) => s.source === "learned" || s.source === "crafted"),
+        () => skills.filter((s) => s.source === "learned" || s.source === "crafted" || s.source === "file"),
         [skills]
     );
 

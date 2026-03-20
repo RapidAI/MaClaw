@@ -1958,9 +1958,14 @@ function App() {
                 setSelectedProjectForLaunch(cfg.projects[0].id);
             }
             if (cfg) {
-                // Default to message tab on startup as requested
-                const tool = "message";
-                setNavTab(tool);
+                // In lite mode, default to AI assistant panel; in pro mode, default to message tab
+                if (cfg.ui_mode !== 'pro') {
+                    setShowAIPanel(true);
+                    setNavTab("message"); // fallback navTab, won't be visible since AI panel is inline
+                } else {
+                    const tool = "message";
+                    setNavTab(tool);
+                }
 
                 // Keep track of the last active tool for settings/launch logic
                 const lastActiveTool = cfg.active_tool || "claude";
@@ -3124,7 +3129,7 @@ ${instruction}`;
         <div id="App">
             <div style={{
                 height: '30px',
-                width: '180px',
+                width: isLiteMode ? '60px' : '180px',
                 position: 'absolute',
                 top: 0,
                 left: 0,
@@ -3217,7 +3222,7 @@ ${instruction}`;
 
                     <div
                         className={`sidebar-item ${navTab === 'clawnet' ? 'active' : ''}`}
-                        onClick={() => switchTool('clawnet')}
+                        onClick={() => { setShowAIPanel(false); switchTool('clawnet'); }}
                         style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}
                     >
@@ -5327,6 +5332,7 @@ ${instruction}`;
                     )}
                     </div>
                 </div>
+            </>)}
             </div>
 
             {/* Modals */}
