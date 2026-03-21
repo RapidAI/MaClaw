@@ -665,6 +665,9 @@ func getWindowsVersionHidden() string {
 }
 
 // isWindowsTerminalAvailable returns false on Linux (Windows Terminal is Windows-only)
+func (a *App) syncToSystemEnv(config AppConfig) {
+}
+
 func (a *App) isWindowsTerminalAvailable() bool {
 	return false
 }

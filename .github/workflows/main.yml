@@ -105,6 +105,10 @@ jobs:
             go build -ldflags $ldflags -o "dist/maclaw-tool_${arch}.exe" ./cmd/maclaw-tool/
           }
 
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
       - name: Create NSIS installer
         shell: pwsh
         run: |
