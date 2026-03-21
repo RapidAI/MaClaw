@@ -472,6 +472,10 @@ func (a *App) SendAIAssistantMessage(text string) (*IMAgentResponse, error) {
 		runtime.EventsEmit(a.ctx, "ai-assistant-new-round")
 	}
 	resp := hubClient.imHandler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound)
+	// 触发聊天八卦检测
+	if a.gossipAutoPublish != nil && resp != nil && resp.Text != "" {
+		go a.gossipAutoPublish.OnChatCompleted(text, resp.Text)
+	}
 	return resp, nil
 }
 
@@ -483,6 +487,10 @@ func (a *App) ClearAIAssistantHistory() error {
 		return fmt.Errorf("AI assistant not initialized")
 	}
 	hubClient.imHandler.memory.clear("desktop-user")
+	// 同步清空 gossip 检测缓冲区
+	if a.gossipAutoPublish != nil {
+		a.gossipAutoPublish.ClearBuffer()
+	}
 	return nil
 }
 

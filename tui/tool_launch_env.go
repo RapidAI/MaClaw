@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // buildToolEnv 根据工具名和配置构建环境变量。
@@ -155,22 +159,40 @@ func buildClaudeEnv(cfg corelib.AppConfig, m *corelib.ModelConfig, projectDir st
 func buildCodexEnv(m *corelib.ModelConfig) map[string]string {
 	env := map[string]string{}
 	if !m.IsBuiltin {
+		// Only pass API key via env var; all other config goes through config.toml.
+		// OPENAI_BASE_URL is deprecated in Codex CLI — use config.toml instead.
 		if m.ApiKey != "" {
 			env["OPENAI_API_KEY"] = m.ApiKey
 		}
-		if m.ModelUrl != "" {
-			env["OPENAI_BASE_URL"] = m.ModelUrl
+		// Write config.toml to ~/.codex so Codex picks up provider settings.
+		if err := writeCodexConfigToml(m); err != nil {
+			// Best-effort: log but don't fail the launch.
+			fmt.Fprintf(os.Stderr, "[codex-config] failed to write config.toml: %v\n", err)
 		}
-		if m.ModelId != "" {
-			env["OPENAI_MODEL"] = m.ModelId
-		}
-		wireAPI := strings.TrimSpace(m.WireApi)
-		if wireAPI == "" {
-			wireAPI = "responses"
-		}
-		env["WIRE_API"] = wireAPI
 	}
 	return env
+}
+
+// writeCodexConfigToml generates ~/.codex/config.toml with unified provider config.
+func writeCodexConfigToml(m *corelib.ModelConfig) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	configToml := remote.BuildCodexConfigToml(m)
+	configPath := filepath.Join(dir, "config.toml")
+	configBytes := []byte(configToml)
+	// Skip write if unchanged
+	if existing, err := os.ReadFile(configPath); err == nil {
+		if bytes.Equal(existing, configBytes) {
+			return nil
+		}
+	}
+	return os.WriteFile(configPath, configBytes, 0644)
 }
 
 func buildGeminiEnv(m *corelib.ModelConfig) map[string]string {

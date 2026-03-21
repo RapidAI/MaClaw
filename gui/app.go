@@ -19,6 +19,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // App struct
@@ -156,7 +159,10 @@ func (a *App) initRemoteInfra() {
 			if cfg, err := a.LoadConfig(); err == nil {
 				return cfg.GossipAutoPublish
 			}
-			return false
+			return true
+		})
+		a.gossipAutoPublish.SetLLMConfigFn(func() corelib.MaclawLLMConfig {
+			return a.GetMaclawLLMConfig()
 		})
 	}
 	if a.autoUploadTrigger == nil && a.skillMarketClient != nil {
@@ -785,26 +791,12 @@ func (a *App) buildCodexLaunchEnv(
 
 	env := map[string]string{}
 
-	// Original (OpenAI native) mode: don't inject API key / base URL env vars,
-	// let Codex use its own `codex auth` login token stored locally.
-	// Only clear config and inject env vars for third-party providers.
 	if !selectedModel.IsBuiltin {
+		// Only pass API key via env var; all other config goes through config.toml.
+		// OPENAI_BASE_URL is deprecated in Codex CLI — use config.toml instead.
 		if selectedModel.ApiKey != "" {
 			env["OPENAI_API_KEY"] = selectedModel.ApiKey
 		}
-		if selectedModel.ModelUrl != "" {
-			env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
-		}
-		if selectedModel.ModelId != "" {
-			env["OPENAI_MODEL"] = selectedModel.ModelId
-		}
-		wireAPI := strings.TrimSpace(selectedModel.WireApi)
-		if wireAPI == "" {
-			wireAPI = "responses"
-		}
-		env["WIRE_API"] = wireAPI
-
-		a.clearCodexConfig()
 	} else {
 		// Restore native config so Codex can use its own auth.
 		a.restoreToolNativeConfig("codex")
@@ -1661,6 +1653,7 @@ updateLegacyJson:
 	}
 	return os.WriteFile(legacyPath, data2, 0644)
 }
+
 func (a *App) syncToCodexSettings(config AppConfig, projectDir string, instanceID string) error {
 	var selectedModel *ModelConfig
 	for _, m := range config.Codex.Models {
@@ -1701,247 +1694,7 @@ func (a *App) syncToCodexSettings(config AppConfig, projectDir string, instanceI
 	// Create config.toml
 writeConfigToml:
 	configPath := filepath.Join(dir, "config.toml")
-	baseUrl := selectedModel.ModelUrl
-	var configToml string
-	if strings.ToLower(selectedModel.ModelName) == "aigocode" {
-		if baseUrl == "" {
-			baseUrl = "https://api.aigocode.com/openai"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "gpt-5.2-codex"
-		}
-		configToml = fmt.Sprintf(`model_provider = "aigocode"
-model = "%s"
-model_reasoning_effort = "high"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.aigocode]
-name = "aigocode"
-base_url = "%s"
-wire_api = "responses"
-requires_openai_auth = true
-`, modelId, baseUrl)
-	} else if strings.ToLower(selectedModel.ModelName) == "deepseek" {
-		if baseUrl == "" {
-			baseUrl = "https://api.deepseek.com/v1"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "deepseek-chat"
-		}
-		configToml = fmt.Sprintf(`model_provider = "deepseek"
-model = "%s"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.deepseek]
-name = "deepseek"
-base_url = "%s"
-wire_api = "responses"
-request_max_retries = 4
-stream_max_retries = 8
-stream_idle_timeout_ms = 120000
-`, modelId, baseUrl)
-	} else if strings.ToLower(selectedModel.ModelName) == "glm" {
-		if baseUrl == "" {
-			baseUrl = "https://open.bigmodel.cn/api/paas/v4"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "glm-5-turbo"
-		}
-		configToml = fmt.Sprintf(`model_provider = "glm"
-model = "%s"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.glm]
-name = "glm"
-base_url = "%s"
-wire_api = "responses"
-request_max_retries = 4
-stream_max_retries = 8
-stream_idle_timeout_ms = 120000
-`, modelId, baseUrl)
-	} else if strings.ToLower(selectedModel.ModelName) == "doubao" {
-		if baseUrl == "" {
-			baseUrl = "https://ark.cn-beijing.volces.com/api/coding/v3"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "doubao-seed-code-preview-latest"
-		}
-		configToml = fmt.Sprintf(`model_provider = "doubao"
-model = "%s"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.doubao]
-name = "doubao"
-base_url = "%s"
-wire_api = "responses"
-request_max_retries = 4
-stream_max_retries = 8
-stream_idle_timeout_ms = 120000
-`, modelId, baseUrl)
-	} else if strings.ToLower(selectedModel.ModelName) == "讯飞星辰" || strings.ToLower(selectedModel.ModelName) == "xfyun" {
-		if baseUrl == "" {
-			baseUrl = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "astron-code-latest"
-		}
-		configToml = fmt.Sprintf(`model_provider = "xfyun"
-model = "%s"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.xfyun]
-name = "xfyun"
-base_url = "%s"
-wire_api = "responses"
-request_max_retries = 4
-stream_max_retries = 8
-stream_idle_timeout_ms = 120000
-`, modelId, baseUrl)
-	} else if strings.ToLower(selectedModel.ModelName) == "kimi" {
-		if baseUrl == "" {
-			baseUrl = "https://api.kimi.com/coding/v1"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "kimi-for-coding"
-		}
-		configToml = fmt.Sprintf(`model_provider = "kimi"
-model = "%s"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.kimi]
-name = "kimi"
-base_url = "%s"
-wire_api = "responses"
-request_max_retries = 4
-stream_max_retries = 8
-stream_idle_timeout_ms = 120000
-`, modelId, baseUrl)
-	} else if strings.ToLower(selectedModel.ModelName) == "minimax" {
-		if baseUrl == "" {
-			baseUrl = "https://api.minimaxi.com/v1"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "MiniMax-M2.1"
-		}
-		configToml = fmt.Sprintf(`model_provider = "minimax"
-model = "%s"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.minimax]
-name = "minimax"
-base_url = "%s"
-wire_api = "responses"
-request_max_retries = 4
-stream_max_retries = 8
-stream_idle_timeout_ms = 120000
-`, modelId, baseUrl)
-	} else if strings.ToLower(selectedModel.ModelName) == "coderelay" {
-		if baseUrl == "" {
-			baseUrl = "https://api.code-relay.com/v1"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "gpt-5.2-codex"
-		}
-		configToml = fmt.Sprintf(`model_provider = "coderelay"
-model = "%s"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.coderelay]
-name = "coderelay"
-base_url = "%s"
-wire_api = "responses"
-`, modelId, baseUrl)
-	} else if strings.ToLower(selectedModel.ModelName) == "阿里云" || strings.ToLower(selectedModel.ModelName) == "aliyun" {
-		if baseUrl == "" {
-			baseUrl = "https://coding.dashscope.aliyuncs.com/v1"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "glm-5"
-		}
-		configToml = fmt.Sprintf(`model_provider = "aliyun"
-model = "%s"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.aliyun]
-name = "aliyun"
-base_url = "%s"
-wire_api = "responses"
-request_max_retries = 4
-stream_max_retries = 8
-stream_idle_timeout_ms = 120000
-`, modelId, baseUrl)
-	} else {
-		if baseUrl == "" {
-			baseUrl = "https://api.aicodemirror.com/api/codex/backend-api/codex"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "gpt-5.2-codex"
-		}
-		configToml = fmt.Sprintf(`model_provider = "aicodemirror"
-model = "%s"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.aicodemirror]
-name = "aicodemirror"
-base_url = "%s"
-wire_api = "responses"
-`, modelId, baseUrl)
-	}
-	if selectedModel.IsCustom || (strings.ToLower(selectedModel.ModelName) != "aigocode" &&
-		strings.ToLower(selectedModel.ModelName) != "deepseek" &&
-		strings.ToLower(selectedModel.ModelName) != "glm" &&
-		strings.ToLower(selectedModel.ModelName) != "doubao" &&
-		strings.ToLower(selectedModel.ModelName) != "讯飞星辰" &&
-		strings.ToLower(selectedModel.ModelName) != "xfyun" &&
-		strings.ToLower(selectedModel.ModelName) != "kimi" &&
-		strings.ToLower(selectedModel.ModelName) != "minimax" &&
-		strings.ToLower(selectedModel.ModelName) != "coderelay" &&
-		strings.ToLower(selectedModel.ModelName) != "阿里云" &&
-		strings.ToLower(selectedModel.ModelName) != "aliyun" &&
-		strings.ToLower(selectedModel.ModelName) != "aicodemirror") {
-		// --- CUSTOM OR OTHER PROVIDERS ---
-		wireApi := selectedModel.WireApi
-		if wireApi == "" {
-			wireApi = "responses"
-		}
-		providerName := strings.ToLower(selectedModel.ModelName)
-		if providerName == "" || providerName == "custom" {
-			providerName = "custom"
-		}
-		modelId := selectedModel.ModelId
-		if modelId == "" {
-			modelId = "gpt-5.2-codex"
-		}
-		configToml = fmt.Sprintf(`model_provider = "%s"
-model = "%s"
-model_reasoning_effort = "high"
-disable_response_storage = true
-preferred_auth_method = "apikey"
-[model_providers.%s]
-name = "%s"
-base_url = "%s"
-wire_api = "%s"
-`, providerName, modelId, providerName, providerName, baseUrl, wireApi)
-	}
+	configToml := remote.BuildCodexConfigToml(selectedModel)
 	configBytes := []byte(configToml)
 	// Check if config.toml needs update
 	if existingData, err := os.ReadFile(configPath); err == nil {
@@ -2968,6 +2721,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 			RemoteHeartbeatSec:  10,
 			ScreenDimTimeoutMin: 3, // Default: dim display after 3 minutes of inactivity
 			ClawNetEnabled:      false,
+			GossipAutoPublish:   true,
 		}
 		err = a.SaveConfig(defaultConfig)
 		return defaultConfig, err
@@ -3009,6 +2763,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	if _, ok := rawConfig["clawnet_enabled"]; ok {
 		hasClawNetEnabled = true
 	}
+	hasGossipAutoPublish := false
+	if _, ok := rawConfig["gossip_auto_publish"]; ok {
+		hasGossipAutoPublish = true
+	}
 
 	err = json.Unmarshal(data, &config)
 	if err != nil {
@@ -3027,6 +2785,9 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	}
 	if !hasClawNetEnabled {
 		config.ClawNetEnabled = false
+	}
+	if !hasGossipAutoPublish {
+		config.GossipAutoPublish = true
 	}
 	if config.RemoteHeartbeatSec < 5 {
 		config.RemoteHeartbeatSec = 10

@@ -772,11 +772,6 @@ func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
 		return "", fmt.Errorf("上传失败: %w", err)
 	}
 
-	// 触发 Gossip 自动发布
-	if a.gossipAutoPublish != nil {
-		go a.gossipAutoPublish.OnSkillUploaded(skillName, "")
-	}
-
 	return submissionID, nil
 }
 

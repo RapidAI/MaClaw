@@ -80,8 +80,7 @@ func (s *CodexSDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, err
 // codexEnvDiagnostics returns a summary of key environment variables for
 // debugging, with API keys redacted.
 func codexEnvDiagnostics(env map[string]string) string {
-	keys := []string{"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL", "WIRE_API",
-		"HTTP_PROXY", "HTTPS_PROXY"}
+	keys := []string{"OPENAI_API_KEY", "HTTP_PROXY", "HTTPS_PROXY"}
 	var parts []string
 	for _, k := range keys {
 		v := env[k]

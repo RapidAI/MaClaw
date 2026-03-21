@@ -57,8 +57,8 @@ func GossipPublishHandler(gossip store.GossipRepository, cache *GossipCache) htt
 		if category == "" {
 			category = "owner"
 		}
-		if category != "owner" && category != "project" && category != "news" {
-			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Category must be owner, project, or news")
+		if category != "owner" && category != "project" && category != "news" && category != "gossip" {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Category must be owner, project, news, or gossip")
 			return
 		}
 		post := &store.GossipPost{

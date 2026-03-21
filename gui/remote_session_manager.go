@@ -1363,17 +1363,6 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 			_ = m.app.experienceExtractor.Extract(s)
 		}()
 	}
-	// Trigger gossip auto-publish for completed sessions.
-	if exitStatus == SessionExited && exitCodeVal != nil && *exitCodeVal == 0 && m.app.gossipAutoPublish != nil {
-		durationMin := int(now.Sub(s.CreatedAt).Minutes())
-		summary := summarySnap.ProgressSummary
-		if summary == "" {
-			summary = summarySnap.CurrentTask
-		}
-		if summary != "" {
-			go m.app.gossipAutoPublish.OnSessionCompleted(summary, durationMin)
-		}
-	}
 	// Save session checkpoint to memory store so the next session on the
 	// same project can resume where this one left off.
 	if m.app.sessionCheckpointer != nil {

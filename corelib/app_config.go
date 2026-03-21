@@ -90,6 +90,6 @@ type AppConfig struct {
 	UIMode string `json:"ui_mode,omitempty"`
 	// SkillMarket — Skill 获取策略
 	SkillPurchaseMode string `json:"skill_purchase_mode,omitempty"` // "auto" (default) | "free_only"
-	// Gossip — 自动发布配置
-	GossipAutoPublish bool `json:"gossip_auto_publish,omitempty"`
+	// Gossip — 聊天八卦自动发布（默认开启）
+	GossipAutoPublish bool `json:"gossip_auto_publish"`
 }

@@ -51,6 +51,9 @@ type TUIApp struct {
 	chatHistory []map[string]string // 对话历史 (role/content)
 	llmClient   *http.Client
 
+	// Gossip 聊天八卦自动发帖
+	gossipDetector *TUIGossipDetector
+
 	root  views.RootModel
 	ready bool
 	err   error
@@ -80,7 +83,8 @@ type sessionUpdateMsg struct {
 // NewTUIApp 创建 TUI 应用实例。
 func NewTUIApp() *TUIApp {
 	return &TUIApp{
-		root: views.NewRootModel(),
+		root:           views.NewRootModel(),
+		gossipDetector: NewTUIGossipDetector(),
 	}
 }
 
@@ -364,6 +368,9 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.ChatClearMsg:
 		a.chatHistory = nil
+		if a.gossipDetector != nil {
+			a.gossipDetector.ClearBuffer()
+		}
 		a.root.StatusBar.SetMessage("聊天历史已清除")
 
 	case configChangedMsg:
@@ -541,6 +548,10 @@ func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 		a.chatHistory = append(a.chatHistory, map[string]string{
 			"role": "assistant", "content": resp.Text,
 		})
+		// 触发聊天八卦检测
+		if a.gossipDetector != nil && resp.Text != "" {
+			a.gossipDetector.OnChatCompleted(text, resp.Text)
+		}
 		return views.ChatResponseMsg{Text: resp.Text}
 	}
 }

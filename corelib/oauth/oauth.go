@@ -54,12 +54,13 @@ type TokenResult struct {
 }
 
 // DefaultConfig 返回使用 OpenAI 默认值的 OAuth 配置。
+// scope 与 Codex CLI 保持一致，包含 api.connectors.read 和 api.connectors.invoke。
 func DefaultConfig() Config {
 	return Config{
 		ClientID:      OpenAIClientID,
 		AuthEndpoint:  OpenAIAuthEndpoint,
 		TokenEndpoint: OpenAITokenEndpoint,
-		Scopes:        []string{"openid", "profile", "email", "offline_access"},
+		Scopes:        []string{"openid", "profile", "email", "offline_access", "api.connectors.read", "api.connectors.invoke"},
 		CallbackPath:  "/auth/callback",
 		Timeout:       120 * time.Second,
 	}
@@ -89,7 +90,7 @@ func GenerateCodeChallenge(verifier string) string {
 }
 
 // BuildAuthURL 构建 OAuth 授权 URL，包含所有必要的查询参数。
-// 与 Codex CLI 保持一致，包含 codex_cli_simplified_flow 等额外参数。
+// 与 Codex CLI 保持一致，包含 codex_cli_simplified_flow、id_token_add_organizations、originator 等参数。
 func BuildAuthURL(cfg Config, codeChallenge, redirectURI, state string) string {
 	params := url.Values{}
 	params.Set("response_type", "code")
@@ -102,7 +103,9 @@ func BuildAuthURL(cfg Config, codeChallenge, redirectURI, state string) string {
 	params.Set("code_challenge_method", "S256")
 	params.Set("state", state)
 	// Codex CLI 兼容参数
+	params.Set("id_token_add_organizations", "true")
 	params.Set("codex_cli_simplified_flow", "true")
+	params.Set("originator", "pi")
 
 	return cfg.AuthEndpoint + "?" + params.Encode()
 }
@@ -111,14 +114,36 @@ func BuildAuthURL(cfg Config, codeChallenge, redirectURI, state string) string {
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	IDToken      string `json:"id_token"`
 	ExpiresIn    int    `json:"expires_in"`
 	Error        string `json:"error,omitempty"`
 	ErrorDesc    string `json:"error_description,omitempty"`
 }
 
+// codeExchangeResult 是授权码换 token 的内部结果，包含 id_token 用于后续 API key exchange。
+type codeExchangeResult struct {
+	AccessToken  string
+	RefreshToken string
+	IDToken      string
+	ExpiresIn    int
+}
+
 // ExchangeCode 使用授权码向 token endpoint 换取 access_token。
 // 发送 POST 请求，form-encoded body 包含 grant_type、code、code_verifier、redirect_uri、client_id。
 func ExchangeCode(cfg Config, code, codeVerifier, redirectURI string) (*TokenResult, error) {
+	result, err := exchangeCodeInternal(cfg, code, codeVerifier, redirectURI)
+	if err != nil {
+		return nil, err
+	}
+	return &TokenResult{
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+		ExpiresIn:    result.ExpiresIn,
+	}, nil
+}
+
+// exchangeCodeInternal 是 ExchangeCode 的内部实现，额外返回 id_token。
+func exchangeCodeInternal(cfg Config, code, codeVerifier, redirectURI string) (*codeExchangeResult, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
@@ -156,11 +181,65 @@ func ExchangeCode(cfg Config, code, codeVerifier, redirectURI string) (*TokenRes
 		return nil, fmt.Errorf("token exchange: response missing access_token")
 	}
 
-	return &TokenResult{
+	return &codeExchangeResult{
 		AccessToken:  tok.AccessToken,
 		RefreshToken: tok.RefreshToken,
+		IDToken:      tok.IDToken,
 		ExpiresIn:    tok.ExpiresIn,
 	}, nil
+}
+
+// apiKeyExchangeResponse 是 token exchange（获取 API key）的响应结构。
+type apiKeyExchangeResponse struct {
+	AccessToken string `json:"access_token"`
+	Error       string `json:"error,omitempty"`
+	ErrorDesc   string `json:"error_description,omitempty"`
+}
+
+// ExchangeForAPIKey 使用 id_token 通过 token exchange 获取 OpenAI API key。
+// 这与 Codex CLI 的 obtain_api_key 逻辑一致：
+// grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+// subject_token_type=urn:ietf:params:oauth:token-type:id_token
+// requested_token=openai-api-key
+func ExchangeForAPIKey(cfg Config, idToken string) (string, error) {
+	data := url.Values{}
+	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
+	data.Set("client_id", cfg.ClientID)
+	data.Set("requested_token", "openai-api-key")
+	data.Set("subject_token", idToken)
+	data.Set("subject_token_type", "urn:ietf:params:oauth:token-type:id_token")
+
+	resp, err := http.PostForm(cfg.TokenEndpoint, data)
+	if err != nil {
+		return "", fmt.Errorf("api key exchange request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return "", fmt.Errorf("api key exchange: failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp apiKeyExchangeResponse
+		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
+			return "", fmt.Errorf("api key exchange failed (HTTP %d): %s: %s",
+				resp.StatusCode, errResp.Error, errResp.ErrorDesc)
+		}
+		return "", fmt.Errorf("api key exchange failed (HTTP %d): %s",
+			resp.StatusCode, truncateBody(body, 512))
+	}
+
+	var result apiKeyExchangeResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("api key exchange: failed to parse response: %w", err)
+	}
+
+	if result.AccessToken == "" {
+		return "", fmt.Errorf("api key exchange: response missing access_token")
+	}
+
+	return result.AccessToken, nil
 }
 
 // truncateBody returns the body as a string, truncated to maxLen with "..." suffix.
@@ -178,9 +257,10 @@ func truncateBody(body []byte, maxLen int) string {
 //  3. 构建 redirect_uri 和授权 URL
 //  4. 打开系统浏览器
 //  5. 等待回调获取授权码
-//  6. 用授权码换取 token
-//  7. 停止 CallbackServer
-//  8. 返回 TokenResult
+//  6. 用授权码换取 token（含 id_token）
+//  7. 用 id_token 通过 token exchange 获取 API key
+//  8. 停止 CallbackServer
+//  9. 返回 TokenResult（Key 为 API key）
 func RunOAuthFlow(cfg Config) (*TokenResult, error) {
 	// 1. 生成 PKCE 参数
 	verifier, err := GenerateCodeVerifier()
@@ -215,13 +295,27 @@ func RunOAuthFlow(cfg Config) (*TokenResult, error) {
 		return nil, fmt.Errorf("oauth flow: %w", err)
 	}
 
-	// 6. 用授权码换取 token
-	token, err := ExchangeCode(cfg, code, verifier, redirectURI)
+	// 6. 用授权码换取 token（含 id_token）
+	exchanged, err := exchangeCodeInternal(cfg, code, verifier, redirectURI)
 	if err != nil {
 		return nil, fmt.Errorf("oauth flow: %w", err)
 	}
 
-	return token, nil
+	// 7. 用 id_token 通过 token exchange 获取 API key
+	// 如果 id_token 存在，尝试获取 API key；否则 fallback 到 access_token
+	apiKey := exchanged.AccessToken
+	if exchanged.IDToken != "" {
+		if key, err := ExchangeForAPIKey(cfg, exchanged.IDToken); err == nil {
+			apiKey = key
+		}
+		// 如果 API key exchange 失败，静默 fallback 到 access_token
+	}
+
+	return &TokenResult{
+		AccessToken:  apiKey,
+		RefreshToken: exchanged.RefreshToken,
+		ExpiresIn:    exchanged.ExpiresIn,
+	}, nil
 }
 
 // generateState 生成 32 字节随机 state 参数（base64url 编码）。

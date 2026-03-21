@@ -35,6 +35,7 @@ type refreshRequest struct {
 
 // RefreshAccessToken 使用 refresh_token 获取新的 access_token。
 // 使用 JSON POST 请求（与 Codex CLI 保持一致）。
+// 如果响应包含 id_token，会自动通过 token exchange 获取 API key。
 func RefreshAccessToken(cfg Config, refreshToken string) (*TokenResult, error) {
 	reqBody := refreshRequest{
 		ClientID:     cfg.ClientID,
@@ -83,8 +84,16 @@ func RefreshAccessToken(cfg Config, refreshToken string) (*TokenResult, error) {
 		return nil, fmt.Errorf("token refresh: response missing access_token")
 	}
 
+	// 如果响应包含 id_token，尝试通过 token exchange 获取 API key
+	apiKey := tok.AccessToken
+	if tok.IDToken != "" {
+		if key, err := ExchangeForAPIKey(cfg, tok.IDToken); err == nil {
+			apiKey = key
+		}
+	}
+
 	return &TokenResult{
-		AccessToken:  tok.AccessToken,
+		AccessToken:  apiKey,
 		RefreshToken: tok.RefreshToken,
 		ExpiresIn:    tok.ExpiresIn,
 	}, nil

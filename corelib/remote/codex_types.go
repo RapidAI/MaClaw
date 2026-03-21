@@ -2,8 +2,11 @@ package remote
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // CodexEvent 表示 `codex exec --json` 的单个 JSONL 事件。
@@ -173,4 +176,69 @@ func BuildCodexToolUseEvent(sessionID string, event CodexEvent) ImportantEvent {
 	}
 
 	return evt
+}
+
+// tomlKeySanitize strips characters that are invalid in a bare TOML key,
+// keeping only ASCII letters, digits, hyphens, and underscores.
+var tomlKeyRe = regexp.MustCompile(`[^a-z0-9_-]`)
+
+func sanitizeTomlKey(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = tomlKeyRe.ReplaceAllString(s, "")
+	if s == "" {
+		return "custom"
+	}
+	return s
+}
+
+// BuildCodexConfigToml generates a unified config.toml content for Codex CLI.
+// It replaces the deprecated OPENAI_BASE_URL env var approach with proper
+// model_providers configuration, including WebSocket support.
+// This is shared between GUI and TUI to avoid duplication.
+func BuildCodexConfigToml(m *corelib.ModelConfig) string {
+	providerName := strings.ToLower(strings.TrimSpace(m.ModelName))
+	if providerName == "" || providerName == "custom" {
+		providerName = "custom"
+	}
+	// Normalize Chinese names to ASCII provider keys
+	switch providerName {
+	case "讯飞星辰":
+		providerName = "xfyun"
+	case "阿里云":
+		providerName = "aliyun"
+	}
+	// Sanitize for use as TOML bare key
+	providerName = sanitizeTomlKey(providerName)
+
+	modelId := strings.TrimSpace(m.ModelId)
+	if modelId == "" {
+		modelId = "gpt-5.4"
+	}
+
+	baseUrl := strings.TrimSpace(m.ModelUrl)
+
+	wireApi := strings.TrimSpace(m.WireApi)
+	if wireApi == "" {
+		wireApi = "responses"
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "model_provider = %q\n", providerName)
+	fmt.Fprintf(&sb, "model = %q\n", modelId)
+	sb.WriteString("model_reasoning_effort = \"xhigh\"\n")
+	sb.WriteString("disable_response_storage = true\n")
+
+	fmt.Fprintf(&sb, "\n[model_providers.%s]\n", providerName)
+	fmt.Fprintf(&sb, "name = %q\n", providerName)
+	if baseUrl != "" {
+		fmt.Fprintf(&sb, "base_url = %q\n", baseUrl)
+	}
+	fmt.Fprintf(&sb, "wire_api = %q\n", wireApi)
+	sb.WriteString("supports_websockets = true\n")
+	sb.WriteString("requires_openai_auth = true\n")
+
+	sb.WriteString("\n[features]\n")
+	sb.WriteString("responses_websockets_v2 = true\n")
+
+	return sb.String()
 }
