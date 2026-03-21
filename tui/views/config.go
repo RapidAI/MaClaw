@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -15,7 +16,8 @@ func isSensitiveKey(key string) bool {
 	case "token", "api_key", "secret", "password":
 		return true
 	}
-	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password")
+	return strings.Contains(key, "token") || strings.Contains(key, "secret") ||
+		strings.Contains(key, "password") || strings.Contains(key, "_key")
 }
 
 // ConfigEntry 配置项。
@@ -59,6 +61,13 @@ func NewConfigModel() ConfigModel {
 			{Key: "data_dir", Value: "", Desc: "数据目录", Section: "general"},
 			{Key: "max_iterations", Value: "12", Desc: "Agent 最大迭代次数", Section: "general"},
 			{Key: "clawnet_enabled", Value: "false", Desc: "启用 ClawNet", Section: "general"},
+			// LLM 配置
+			{Key: "maclaw_llm_url", Value: "", Desc: "LLM API 地址", Section: "maclaw_llm"},
+			{Key: "maclaw_llm_key", Value: "", Desc: "LLM API Key", Section: "maclaw_llm"},
+			{Key: "maclaw_llm_model", Value: "", Desc: "LLM 模型名称", Section: "maclaw_llm"},
+			{Key: "maclaw_llm_protocol", Value: "openai", Desc: "LLM 协议 (openai/anthropic)", Section: "maclaw_llm"},
+			{Key: "maclaw_llm_context_length", Value: "", Desc: "上下文长度 (tokens)", Section: "maclaw_llm"},
+			// IM 配置
 			{Key: "qqbot_enabled", Value: "false", Desc: "启用 QQ 机器人", Section: "qqbot"},
 			{Key: "qqbot_app_id", Value: "", Desc: "QQ Bot AppID", Section: "qqbot"},
 			{Key: "qqbot_app_secret", Value: "", Desc: "QQ Bot AppSecret", Section: "qqbot"},
@@ -75,6 +84,37 @@ func (m *ConfigModel) SetEntries(entries []ConfigEntry) {
 	m.entries = entries
 	if m.cursor >= len(entries) {
 		m.cursor = max(0, len(entries)-1)
+	}
+}
+
+// LoadFromAppConfig 从 AppConfig 同步配置值到视图。
+func (m *ConfigModel) LoadFromAppConfig(cfg corelib.AppConfig) {
+	valMap := map[string]string{
+		"hub_url":                  cfg.RemoteHubURL,
+		"token":                    cfg.RemoteMachineToken,
+		"data_dir":                 "", // 运行时确定，不从配置读
+		"max_iterations":           fmt.Sprintf("%d", cfg.MaclawAgentMaxIterations),
+		"clawnet_enabled":          fmt.Sprintf("%v", cfg.ClawNetEnabled),
+		"maclaw_llm_url":           cfg.MaclawLLMUrl,
+		"maclaw_llm_key":           cfg.MaclawLLMKey,
+		"maclaw_llm_model":         cfg.MaclawLLMModel,
+		"maclaw_llm_protocol":      cfg.MaclawLLMProtocol,
+		"maclaw_llm_context_length": fmt.Sprintf("%d", cfg.MaclawLLMContextLength),
+		"qqbot_enabled":            fmt.Sprintf("%v", cfg.QQBotEnabled),
+		"qqbot_app_id":             cfg.QQBotAppID,
+		"qqbot_app_secret":         cfg.QQBotAppSecret,
+		"telegram_bot_enabled":     fmt.Sprintf("%v", cfg.TelegramBotEnabled),
+		"telegram_bot_token":       cfg.TelegramBotToken,
+		"skill_purchase_mode":      cfg.SkillPurchaseMode,
+	}
+	for i, e := range m.entries {
+		if v, ok := valMap[e.Key]; ok {
+			// 清理零值显示
+			if v == "0" && (e.Key == "max_iterations" || e.Key == "maclaw_llm_context_length") {
+				v = ""
+			}
+			m.entries[i].Value = v
+		}
 	}
 }
 

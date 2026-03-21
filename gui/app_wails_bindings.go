@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -232,7 +233,9 @@ func (a *App) CompressMemories() (*CompressResult, error) {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
 	mc := a.getOrCreateCompressor()
-	return mc.Compress(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return mc.Compress(ctx)
 }
 
 // ListMemoryBackups returns all available memory backup snapshots (Wails binding).
@@ -462,7 +465,13 @@ func (a *App) SendAIAssistantMessage(text string) (*IMAgentResponse, error) {
 	onProgress := func(progressText string) {
 		runtime.EventsEmit(a.ctx, "ai-assistant-progress", progressText)
 	}
-	resp := hubClient.imHandler.HandleIMMessageWithProgress(msg, onProgress)
+	onToken := func(delta string) {
+		runtime.EventsEmit(a.ctx, "ai-assistant-token", delta)
+	}
+	onNewRound := func() {
+		runtime.EventsEmit(a.ctx, "ai-assistant-new-round")
+	}
+	resp := hubClient.imHandler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound)
 	return resp, nil
 }
 

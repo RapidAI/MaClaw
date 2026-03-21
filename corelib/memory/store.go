@@ -311,6 +311,34 @@ func (s *Store) TouchAccess(ids []string) {
 	}
 }
 
+// SelfIdentitySummary returns a concatenated summary of all self_identity
+// memory entries. Returns empty string if none exist.
+func (s *Store) SelfIdentitySummary(maxRunes int) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if maxRunes <= 0 {
+		maxRunes = 400
+	}
+
+	var parts []string
+	for _, e := range s.entries {
+		if e.Category == CategorySelfIdentity {
+			parts = append(parts, strings.TrimSpace(e.Content))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+
+	summary := strings.Join(parts, " | ")
+	runes := []rune(summary)
+	if len(runes) > maxRunes {
+		summary = string(runes[:maxRunes]) + "…"
+	}
+	return summary
+}
+
 // Stop gracefully shuts down the persistence loop.
 func (s *Store) Stop() {
 	s.stopOnce.Do(func() {

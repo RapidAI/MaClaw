@@ -10,13 +10,10 @@ import iflowIcon from './assets/images/iflow.png';
 import opencodeIcon from './assets/images/opencode.png';
 import kiloIcon from './assets/images/KiloCode.png';
 import cursorIcon from './assets/images/qodercli.png';
-import lobsterOnline from './assets/images/lobster_online.svg';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import globeOnline from './assets/images/globe_online.svg';
-import globeOffline from './assets/images/globe_offline.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, PingSkillHub, ValidateSkillHub, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -146,9 +143,6 @@ const APP_VERSION = "5.0.0.9300"
 // Tool name constants to avoid repeated string arrays
 const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'cursor', 'iflow', 'kilo'] as const;
 const SKILL_TOOLS = ['claude', 'gemini', 'codex'] as const;
-const DEFAULT_SKILLHUB_ENTRIES = [
-    { label: 'ClawSkillHub', url: 'https://clawskillhub.com/', type: 'skillhub_space' },
-];
 const isToolTab = (tab: string): boolean => (TOOL_NAMES as readonly string[]).includes(tab);
 const isSkillTool = (tab: string): boolean => (SKILL_TOOLS as readonly string[]).includes(tab);
 
@@ -348,7 +342,7 @@ const translations: any = {
         "maclawLLMStep2Title": "Register Remote & Bind Feishu",
         "maclawLLMStep2Desc": "Register your device and bind Feishu to enable remote control.",
         "maclawLLMGoRemote": "Go to Remote Settings",
-        "maclawLLMReadyHint": "The lobster icon (top-left) lights up once you're all set.",
+        "maclawLLMReadyHint": "The AI assistant ring (left sidebar) lights up once you're all set.",
         "proxySettings": "Proxy",
         "proxyHost": "Proxy Host",
         "proxyPort": "Proxy Port",
@@ -725,7 +719,7 @@ const translations: any = {
         "maclawLLMStep2Title": "移动端注册 & 绑定飞书",
         "maclawLLMStep2Desc": "注册设备并绑定飞书，即可通过移动端操控。",
         "maclawLLMGoRemote": "前往远程设置",
-        "maclawLLMReadyHint": "左上角龙虾亮起，说明一切就绪。",
+        "maclawLLMReadyHint": "左侧 AI 助手圆圈全亮，说明一切就绪。",
         "proxySettings": "代理设置",
         "proxyHost": "代理主机",
         "proxyPort": "代理端口",
@@ -1080,7 +1074,7 @@ const translations: any = {
         "maclawLLMStep2Title": "行動端註冊 & 綁定飛書",
         "maclawLLMStep2Desc": "註冊裝置並綁定飛書，即可透過行動端操控。",
         "maclawLLMGoRemote": "前往遠端設定",
-        "maclawLLMReadyHint": "左上角龍蝦亮起，說明一切就緒。",
+        "maclawLLMReadyHint": "左側 AI 助手圓圈全亮，說明一切就緒。",
         "proxySettings": "代理設置",
         "proxyHost": "代理主機",
         "proxyPort": "代理端口",
@@ -1383,7 +1377,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'skillhub' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');
     const [installLocation, setInstallLocation] = useState<'user' | 'project'>('user');
@@ -1405,62 +1399,6 @@ function App() {
     // ClawNet P2P network running status (globe indicator)
     const [clawNetRunning, setClawNetRunning] = useState<boolean>(false);
     const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
-
-    // SkillHUB management
-    const [skillHubEntries, setSkillHubEntries] = useState<{label: string; url: string; type?: string}[]>([]);
-    const [skillHubStatus, setSkillHubStatus] = useState<Record<string, {online: boolean; ms: number; error: string; testing: boolean}>>({});
-    const [newSkillHubLabel, setNewSkillHubLabel] = useState('');
-    const [newSkillHubUrl, setNewSkillHubUrl] = useState('');
-    const [skillHubValidating, setSkillHubValidating] = useState(false);
-    const [skillHubValidateError, setSkillHubValidateError] = useState('');
-    const skillHubEntriesRef = useRef(skillHubEntries);
-    skillHubEntriesRef.current = skillHubEntries;
-
-    // Initialise skillHubEntries from config (once config loads)
-    useEffect(() => {
-        if (!config) return;
-        const saved = (config as any).skill_hub_urls;
-        if (Array.isArray(saved) && saved.length > 0) {
-            setSkillHubEntries(saved);
-        } else if (skillHubEntries.length === 0) {
-            // Persist defaults so backend Search() can read them
-            const defaults = [...DEFAULT_SKILLHUB_ENTRIES];
-            setSkillHubEntries(defaults);
-            const newConfig = new main.AppConfig({ ...config, skill_hub_urls: defaults });
-            setConfig(newConfig);
-            SaveConfig(newConfig);
-        }
-    }, [!!config]);
-
-    const pingOneSkillHub = async (url: string) => {
-        setSkillHubStatus(prev => ({ ...prev, [url]: { online: false, ms: 0, error: '', testing: true } }));
-        try {
-            const res = await PingSkillHub(url);
-            setSkillHubStatus(prev => ({ ...prev, [url]: { online: !!res.online, ms: res.ms || 0, error: res.error || '', testing: false } }));
-        } catch (err: any) {
-            setSkillHubStatus(prev => ({ ...prev, [url]: { online: false, ms: 0, error: String(err), testing: false } }));
-        }
-    };
-
-    const pingAllSkillHubs = () => {
-        skillHubEntriesRef.current.forEach(e => pingOneSkillHub(e.url));
-    };
-
-    const saveSkillHubEntries = (entries: {label: string; url: string; type?: string}[]) => {
-        setSkillHubEntries(entries);
-        if (config) {
-            const newConfig = new main.AppConfig({ ...config, skill_hub_urls: entries });
-            setConfig(newConfig);
-            SaveConfig(newConfig);
-        }
-    };
-
-    // Auto-test when switching to skillhub tab
-    useEffect(() => {
-        if (settingsTab === 'skillhub' && skillHubEntriesRef.current.length > 0) {
-            pingAllSkillHubs();
-        }
-    }, [settingsTab]);
 
     // Ref to prevent multiple hide clicks
     const isHidingRef = useRef(false);
@@ -3081,11 +3019,6 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '配置 MaClaw 代理使用的 LLM' : lang === 'zh-Hant' ? '配置 MaClaw 代理使用的 LLM' : 'Configure LLM for MaClaw agent',
         },
         {
-            id: 'skillhub' as const,
-            label: 'SkillHUB',
-            desc: lang === 'zh-Hans' ? '配置 SkillHUB 地址，搜索与下载技能包' : lang === 'zh-Hant' ? '配置 SkillHUB 位址，搜尋與下載技能包' : 'Configure SkillHUB URL to search and download skill packages',
-        },
-        {
             id: 'role' as const,
             label: lang === 'zh-Hans' ? 'MaClaw 角色' : lang === 'zh-Hant' ? 'MaClaw 角色' : 'MaClaw Role',
             desc: lang === 'zh-Hans' ? '自定义 MaClaw Agent 的名字与角色描述' : lang === 'zh-Hant' ? '自訂 MaClaw Agent 的名字與角色描述' : 'Customize MaClaw Agent name and role description',
@@ -3186,17 +3119,47 @@ ${instruction}`;
                         }}
                         title={lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}
                     >
-                        <span className="sidebar-icon" style={{
-                            margin: 0, fontSize: '1.2rem',
+                        <span className="sidebar-icon" title={(() => {
+                            const llmOk = maclawLLMOnline;
+                            const netOk = clawNetRunning;
+                            const mobileOk = !!remoteActivationStatus?.activated;
+                            if (llmOk && netOk && mobileOk) return lang?.startsWith('zh') ? '全部在线' : 'All online';
+                            const parts: string[] = [];
+                            parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
+                            parts.push(netOk ? (lang?.startsWith('zh') ? '虾网 ✓' : 'ClawNet ✓') : (lang?.startsWith('zh') ? '虾网 ✗' : 'ClawNet ✗'));
+                            parts.push(mobileOk ? (lang?.startsWith('zh') ? '移动端 ✓' : 'Mobile ✓') : (lang?.startsWith('zh') ? '移动端 ✗' : 'Mobile ✗'));
+                            return parts.join('  ');
+                        })()} style={{
+                            margin: 0,
                             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                             width: '2rem', height: '2rem',
-                            border: '2px solid #e74c3c',
                             borderRadius: '50%',
-                            boxShadow: navTab === 'ai'
-                                ? '0 0 10px rgba(231,76,60,0.6), 0 0 20px rgba(231,76,60,0.3)'
-                                : '0 0 6px rgba(231,76,60,0.4), 0 0 12px rgba(231,76,60,0.15)',
-                            transition: 'box-shadow 0.2s ease'
-                        }}>🦞</span>
+                            padding: '3px',
+                            background: (() => {
+                                const on = '#e74c3c';
+                                const off = '#ccc';
+                                const llm = maclawLLMOnline ? on : off;
+                                const net = clawNetRunning ? on : off;
+                                const mob = remoteActivationStatus?.activated ? on : off;
+                                return `conic-gradient(${llm} 0deg, ${llm} 180deg, ${net} 180deg, ${net} 270deg, ${mob} 270deg, ${mob} 360deg)`;
+                            })(),
+                            boxShadow: (() => {
+                                const allOn = maclawLLMOnline && clawNetRunning && !!remoteActivationStatus?.activated;
+                                const noneOn = !maclawLLMOnline && !clawNetRunning && !remoteActivationStatus?.activated;
+                                if (noneOn) return 'none';
+                                if (allOn && navTab === 'ai') return '0 0 10px rgba(231,76,60,0.6), 0 0 20px rgba(231,76,60,0.3)';
+                                if (allOn) return '0 0 6px rgba(231,76,60,0.4), 0 0 12px rgba(231,76,60,0.15)';
+                                return '0 0 4px rgba(231,76,60,0.3)';
+                            })(),
+                            transition: 'box-shadow 0.2s ease, background 0.3s ease'
+                        }}>
+                            <span style={{
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                width: '100%', height: '100%',
+                                borderRadius: '50%', background: '#f8f9fc',
+                                fontSize: '0.9rem', lineHeight: 1
+                            }}>🦞</span>
+                        </span>
                         <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>
                             {lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}
                         </span>
@@ -3317,60 +3280,8 @@ ${instruction}`;
 
                 {/* Right Tool List */}
                 <div style={{ flex: 1, padding: '10px', overflowY: 'auto', backgroundColor: '#fafbff', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column' }}>
-                    {/* Lobster indicator + ClawNet globe + Message/Tutorial row */}
+                    {/* Message/Tutorial row */}
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '8px', flexShrink: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                            <div
-                                title={(() => {
-                                    const llmOk = maclawLLMOnline;
-                                    const mobileOk = !!remoteActivationStatus?.activated;
-                                    const netOk = clawNetRunning;
-                                    if (llmOk && mobileOk && netOk) return lang?.startsWith('zh') ? 'MaClaw Agent 在线' : 'MaClaw Agent Online';
-                                    if (!llmOk && !mobileOk && !netOk) return lang?.startsWith('zh') ? 'LLM、移动端和虾网均未就绪' : 'LLM, Mobile & ClawNet not ready';
-                                    const missing: string[] = [];
-                                    if (!llmOk) missing.push(lang?.startsWith('zh') ? 'LLM 未就绪' : 'LLM not ready');
-                                    if (!mobileOk) missing.push(lang?.startsWith('zh') ? '移动端未注册' : 'Mobile not registered');
-                                    if (!netOk) missing.push(lang?.startsWith('zh') ? '虾网未连接' : 'ClawNet not connected');
-                                    return missing.join('; ');
-                                })()}
-                                style={{
-                                    cursor: 'pointer',
-                                    opacity: (maclawLLMOnline && remoteActivationStatus?.activated && clawNetRunning) ? 1 : 0.6,
-                                    transition: 'opacity 0.3s ease',
-                                }}
-                                onClick={() => { setNavTab('settings'); setSettingsTab('llm'); }}
-                            >
-                                <img
-                                    src={(() => {
-                                        const llmOk = maclawLLMOnline;
-                                        const mobileOk = !!remoteActivationStatus?.activated;
-                                        const netOk = clawNetRunning;
-                                        if (llmOk && mobileOk && netOk) return lobsterOnline;
-                                        if (!llmOk && !mobileOk && !netOk) return lobsterOffline;
-                                        return lobsterHalf;
-                                    })()}
-                                    alt={(maclawLLMOnline && remoteActivationStatus?.activated && clawNetRunning) ? 'Online' : 'Partial'}
-                                    style={{ width: '20px', height: '20px' }}
-                                />
-                            </div>
-                            <div
-                                title={clawNetRunning
-                                    ? (lang?.startsWith('zh') ? 'ClawNet 已连接' : 'ClawNet connected')
-                                    : (lang?.startsWith('zh') ? 'ClawNet 未接入' : 'ClawNet not connected')}
-                                style={{
-                                    cursor: 'pointer',
-                                    opacity: clawNetRunning ? 1 : 0.6,
-                                    transition: 'opacity 0.3s ease',
-                                }}
-                                onClick={() => { setNavTab('settings'); setSettingsTab('clawnet'); }}
-                            >
-                                <img
-                                    src={clawNetRunning ? globeOnline : globeOffline}
-                                    alt={clawNetRunning ? "ClawNet Online" : "ClawNet Offline"}
-                                    style={{ width: '18px', height: '18px' }}
-                                />
-                            </div>
-                        </div>
                         <div style={{ display: 'flex', gap: '2px', width: '100%' }}>
                             <div
                                 className={`sidebar-item ${navTab === 'message' ? 'active' : ''}`}
@@ -3470,7 +3381,7 @@ ${instruction}`;
             <div className="main-container">
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
-                    <AIAssistantPanel onClose={() => { switchTool('settings'); }} lang={lang} inline={true} {...aiAssistant} />
+                    <AIAssistantPanel onClose={() => { switchTool('settings'); }} lang={lang} inline={true} onHideWindow={() => WindowHide()} {...aiAssistant} />
                 ) : (
                 <><div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
@@ -4124,136 +4035,6 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'llm' ? 'block' : 'none' }}>
                                 <LLMConfigPanel lang={lang} codexModels={config?.codex?.models} onStatusChange={(online, configured) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }} />
-                            </div>
-
-                            <div className="settings-panel" style={{ display: settingsTab === 'skillhub' ? 'block' : 'none' }}>
-                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '6px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>SkillHUB</h4>
-                                    <p style={{ fontSize: '0.78rem', color: '#6b7280', marginBottom: '12px' }}>
-                                        {lang === 'zh-Hans' ? '搜索默认使用 ClawSkillHub，此处配置镜像/加速地址用于下载加速。' :
-                                         lang === 'zh-Hant' ? '搜尋預設使用 ClawSkillHub，此處設定鏡像/加速位址用於下載加速。' :
-                                         'Search uses ClawSkillHub by default. Configure mirror URLs here for download acceleration.'}
-                                    </p>
-
-                                    {/* Existing entries */}
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
-                                        {skillHubEntries.map((entry, idx) => {
-                                            const st = skillHubStatus[entry.url];
-                                            return (
-                                                <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', borderRadius: '8px', border: '1px solid #e5e7eb', backgroundColor: '#fafbff' }}>
-                                                    {/* Status indicator */}
-                                                    <span style={{ fontSize: '0.9rem', flexShrink: 0 }}>
-                                                        {st?.testing ? '⏳' : st?.online ? '🟢' : st ? '🔴' : '⚪'}
-                                                    </span>
-                                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                                        <div style={{ fontSize: '0.8rem', fontWeight: 500, color: '#374151', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                                            {entry.label}
-                                                            {entry.type && entry.type !== 'standard' && (
-                                                                <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: '4px', backgroundColor: entry.type === 'clawhub' ? '#dbeafe' : entry.type === 'mirror' ? '#ecfdf5' : '#fef3c7', color: entry.type === 'clawhub' ? '#2563eb' : entry.type === 'mirror' ? '#059669' : '#d97706', fontWeight: 400 }}>
-                                                                    {entry.type === 'clawhub' ? 'ClawHub' : entry.type === 'clawhub_mirror' ? 'ClawHub 镜像' : entry.type === 'mirror' ? '下载镜像' : entry.type}
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                        <div style={{ fontSize: '0.72rem', color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.url}</div>
-                                                    </div>
-                                                    {st && !st.testing && (
-                                                        <span style={{ fontSize: '0.68rem', color: st.online ? '#10b981' : '#ef4444', flexShrink: 0, whiteSpace: 'nowrap' }}>
-                                                            {st.online ? `${st.ms}ms` : (st.error || 'offline')}
-                                                        </span>
-                                                    )}
-                                                    <button
-                                                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.8rem', color: '#6366f1', padding: '2px 4px', flexShrink: 0 }}
-                                                        title={lang === 'zh-Hans' ? '测试' : 'Test'}
-                                                        onClick={() => pingOneSkillHub(entry.url)}
-                                                    >🔄</button>
-                                                    <button
-                                                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.8rem', color: '#ef4444', padding: '2px 4px', flexShrink: 0 }}
-                                                        title={lang === 'zh-Hans' ? '删除' : 'Delete'}
-                                                        onClick={() => {
-                                                            const next = skillHubEntries.filter((_, i) => i !== idx);
-                                                            saveSkillHubEntries(next);
-                                                        }}
-                                                    >✕</button>
-                                                </div>
-                                            );
-                                        })}
-                                        {skillHubEntries.length === 0 && (
-                                            <div style={{ textAlign: 'center', color: '#9ca3af', fontSize: '0.8rem', padding: '12px' }}>
-                                                {lang === 'zh-Hans' ? '暂无 SkillHUB 源' : 'No SkillHUB sources'}
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    {/* Add new entry */}
-                                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                                        <input
-                                            type="text"
-                                            value={newSkillHubLabel}
-                                            onChange={(e) => setNewSkillHubLabel(e.target.value)}
-                                            placeholder={lang === 'zh-Hans' ? '名称' : 'Label'}
-                                            style={{ width: '100px', padding: '6px 10px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '0.8rem', outline: 'none' }}
-                                            onContextMenu={(e) => handleContextMenu(e, e.target as HTMLInputElement)}
-                                        />
-                                        <input
-                                            type="text"
-                                            value={newSkillHubUrl}
-                                            onChange={(e) => setNewSkillHubUrl(e.target.value)}
-                                            placeholder="https://skillhub.example.com"
-                                            style={{ flex: 1, padding: '6px 10px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '0.8rem', outline: 'none', minWidth: '180px' }}
-                                            onContextMenu={(e) => handleContextMenu(e, e.target as HTMLInputElement)}
-                                        />
-                                        <button
-                                            className="btn-primary"
-                                            style={{ padding: '6px 14px', fontSize: '0.78rem', whiteSpace: 'nowrap' }}
-                                            disabled={!newSkillHubUrl.trim() || skillHubValidating}
-                                            onClick={async () => {
-                                                const url = newSkillHubUrl.trim();
-                                                setSkillHubValidating(true);
-                                                setSkillHubValidateError('');
-                                                try {
-                                                    const res = await ValidateSkillHub(url);
-                                                    if (res.type === 'unsupported') {
-                                                        setSkillHubValidateError(res.reason || (lang === 'zh-Hans' ? '不支持的 Hub 类型' : 'Unsupported hub type'));
-                                                        return;
-                                                    }
-                                                    let label = newSkillHubLabel.trim();
-                                                    if (!label) {
-                                                        try { label = new URL(url).hostname; } catch { label = url; }
-                                                    }
-                                                    const next = [...skillHubEntries, { label, url, type: res.type }];
-                                                    saveSkillHubEntries(next);
-                                                    setNewSkillHubLabel('');
-                                                    setNewSkillHubUrl('');
-                                                    setTimeout(() => pingOneSkillHub(url), 300);
-                                                } catch (err: any) {
-                                                    setSkillHubValidateError(String(err));
-                                                } finally {
-                                                    setSkillHubValidating(false);
-                                                }
-                                            }}
-                                        >
-                                            {skillHubValidating ? '⏳' : '+'} {lang === 'zh-Hans' ? '添加' : lang === 'zh-Hant' ? '新增' : 'Add'}
-                                        </button>
-                                    </div>
-                                    {skillHubValidateError && (
-                                        <div style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: '4px', padding: '4px 8px', backgroundColor: '#fef2f2', borderRadius: '4px' }}>
-                                            ⚠️ {skillHubValidateError}
-                                        </div>
-                                    )}
-
-                                    {/* Restore defaults */}
-                                    <div style={{ marginTop: '12px' }}>
-                                        <button
-                                            className="btn-link"
-                                            style={{ fontSize: '0.75rem' }}
-                                            onClick={() => {
-                                                saveSkillHubEntries([...DEFAULT_SKILLHUB_ENTRIES]);
-                                            }}
-                                        >
-                                            {lang === 'zh-Hans' ? '恢复默认镜像' : lang === 'zh-Hant' ? '恢復預設鏡像' : 'Restore default mirrors'}
-                                        </button>
-                                    </div>
-                                </div>
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'role' ? 'block' : 'none' }}>

@@ -5,6 +5,7 @@ import {
     TestMaclawLLM,
     ActivateRemote,
     ProbeRemoteHub,
+    StartOpenAIOAuth,
 } from "../../../wailsjs/go/main/App";
 
 interface LLMProvider {
@@ -15,6 +16,7 @@ interface LLMProvider {
     protocol?: string;
     context_length?: number;
     is_custom?: boolean;
+    auth_type?: string;
 }
 
 const COUNTRY_CODES = [
@@ -68,6 +70,8 @@ const stepBadge: React.CSSProperties = {
 };
 const doneBadge: React.CSSProperties = { ...stepBadge, background: '#22c55e' };
 
+import { PROVIDER_LOGOS } from "./providerLogos";
+
 export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
 
@@ -82,6 +86,7 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
     const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
     const [llmFormVisible, setLlmFormVisible] = useState(true);
+    const [oauthBusy, setOauthBusy] = useState(false);
 
     // ── Step 2: Registration ──
     const [regEmail, setRegEmail] = useState(email || "");
@@ -189,6 +194,20 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
         setLlmSaving(false);
     };
 
+    const handleOAuthLogin = async () => {
+        setOauthBusy(true);
+        setLlmResult(null);
+        try {
+            const msg = await StartOpenAIOAuth();
+            setLlmResult({ ok: true, msg: msg || "OAuth 登录成功" });
+            setLlmDone(true);
+            onLLMConfigured();
+        } catch (e) {
+            setLlmResult({ ok: false, msg: String(e) });
+        }
+        setOauthBusy(false);
+    };
+
     // ── Registration ──
     const handleRegisterClick = () => {
         if (!regEmail.trim()) {
@@ -272,7 +291,7 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                         </div>
                         <div style={{ display: "flex", gap: 8, marginLeft: 30 }}>
                             <div
-                                onClick={() => { setSelectedMode('pro'); }}
+                                onClick={() => { setSelectedMode('pro'); onSaveField({ ui_mode: 'pro' }); setModeDone(true); }}
                                 style={{
                                     flex: 1, padding: "10px 12px", borderRadius: 8, cursor: "pointer",
                                     border: `2px solid ${selectedMode === 'pro' ? '#6366f1' : '#e2e8f0'}`,
@@ -288,7 +307,7 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                                 </div>
                             </div>
                             <div
-                                onClick={() => { setSelectedMode('lite'); }}
+                                onClick={() => { setSelectedMode('lite'); onSaveField({ ui_mode: 'lite' }); setModeDone(true); }}
                                 style={{
                                     flex: 1, padding: "10px 12px", borderRadius: 8, cursor: "pointer",
                                     border: `2px solid ${selectedMode === 'lite' ? '#6366f1' : '#e2e8f0'}`,
@@ -304,14 +323,7 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                                 </div>
                             </div>
                         </div>
-                        {!modeDone && (
-                            <button onClick={() => { onSaveField({ ui_mode: selectedMode }); setModeDone(true); }} style={{
-                                marginLeft: 30, marginTop: 8, padding: "6px 20px", fontSize: "0.78rem", fontWeight: 600,
-                                background: "#6366f1", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer",
-                            }}>
-                                {t("确认", "Confirm")}
-                            </button>
-                        )}
+
                     </div>
 
                     {/* Divider */}
@@ -336,16 +348,24 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                             {providers.map((p, i) => {
                                 const active = selectedIdx === i;
                                 return (
-                                    <button key={i} onClick={() => { setSelectedIdx(active ? null : i); setLlmResult(null); }} style={{
-                                        fontSize: "0.78rem", padding: "6px 16px", cursor: "pointer",
-                                        background: active ? "#6366f1" : "#f8fafc",
-                                        color: active ? "#fff" : "#334155",
-                                        border: `1px solid ${active ? "#6366f1" : "#e2e8f0"}`,
-                                        borderRadius: 6, fontWeight: active ? 600 : 400,
-                                        transition: "all 0.15s",
-                                    }}>
-                                        {p.name}
-                                    </button>
+                                    <div key={i} style={{ textAlign: "center" }}>
+                                        <button onClick={() => { setSelectedIdx(active ? null : i); setLlmResult(null); }} style={{
+                                            fontSize: "0.78rem", padding: "6px 16px", cursor: "pointer",
+                                            background: active ? "#6366f1" : "#f8fafc",
+                                            color: active ? "#fff" : "#334155",
+                                            border: `1px solid ${active ? "#6366f1" : "#e2e8f0"}`,
+                                            borderRadius: 6, fontWeight: active ? 600 : 400,
+                                            transition: "all 0.15s",
+                                            display: "inline-flex", alignItems: "center", gap: 5,
+                                        }}>
+                                            {PROVIDER_LOGOS[p.name] ?? null}{p.name}
+                                        </button>
+                                        {p.auth_type === "oauth" && (
+                                            <div style={{ fontSize: "0.62rem", color: "#94a3b8", marginTop: 2 }}>
+                                                {t("一键登录", "One-click")}
+                                            </div>
+                                        )}
+                                    </div>
                                 );
                             })}
                         </div>
@@ -356,51 +376,68 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                                 marginLeft: 30, padding: 14, borderRadius: 8,
                                 border: "1px solid #e2e8f0", background: "#f8fafc",
                             }}>
-                                {selectedProvider.is_custom ? (
+                                {selectedProvider.auth_type === "oauth" ? (
                                     <>
-                                        <div style={{ marginBottom: 10 }}>
-                                            <label style={labelStyle}>API URL <span style={{ color: "#ef4444" }}>*</span></label>
-                                            <input style={inputStyle} value={selectedProvider.url}
-                                                onChange={e => updateField("url", e.target.value)}
-                                                placeholder="https://api.openai.com/v1" />
-                                        </div>
-                                        <div style={{ marginBottom: 10 }}>
-                                            <label style={labelStyle}>{t("模型名称", "Model Name")}</label>
-                                            <input style={inputStyle} value={selectedProvider.model}
-                                                onChange={e => updateField("model", e.target.value)}
-                                                placeholder="gpt-4o" />
-                                        </div>
+                                        <p style={{ fontSize: "0.76rem", color: "#64748b", margin: "0 0 12px 0", lineHeight: 1.4 }}>
+                                            {t("点击下方按钮，将在浏览器中完成 OpenAI 账号授权。", "Click below to authorize with your OpenAI account in the browser.")}
+                                        </p>
+                                        <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
+                                            width: "100%", padding: "10px 0", fontSize: "0.82rem", fontWeight: 600,
+                                            background: oauthBusy ? "#a5b4fc" : "#6366f1", color: "#fff",
+                                            border: "none", borderRadius: 6, cursor: oauthBusy ? "default" : "pointer",
+                                        }}>
+                                            {oauthBusy ? t("等待浏览器授权...", "Waiting for browser auth...") : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
+                                        </button>
                                     </>
                                 ) : (
                                     <>
-                                        <div style={{ marginBottom: 10 }}>
-                                            <label style={labelStyle}>API URL <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("预设", "preset")})</span></label>
-                                            <input style={readonlyInputStyle} value={selectedProvider.url} readOnly tabIndex={-1} />
+                                        {selectedProvider.is_custom ? (
+                                            <>
+                                                <div style={{ marginBottom: 10 }}>
+                                                    <label style={labelStyle}>API URL <span style={{ color: "#ef4444" }}>*</span></label>
+                                                    <input style={inputStyle} value={selectedProvider.url}
+                                                        onChange={e => updateField("url", e.target.value)}
+                                                        placeholder="https://api.openai.com/v1" />
+                                                </div>
+                                                <div style={{ marginBottom: 10 }}>
+                                                    <label style={labelStyle}>{t("模型名称", "Model Name")}</label>
+                                                    <input style={inputStyle} value={selectedProvider.model}
+                                                        onChange={e => updateField("model", e.target.value)}
+                                                        placeholder="gpt-4o" />
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <div style={{ marginBottom: 10 }}>
+                                                    <label style={labelStyle}>API URL <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("预设", "preset")})</span></label>
+                                                    <input style={readonlyInputStyle} value={selectedProvider.url} readOnly tabIndex={-1} />
+                                                </div>
+                                                <div style={{ marginBottom: 10 }}>
+                                                    <label style={labelStyle}>{t("模型名称", "Model Name")} <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("预设", "preset")})</span></label>
+                                                    <input style={readonlyInputStyle} value={selectedProvider.model} readOnly tabIndex={-1} />
+                                                </div>
+                                            </>
+                                        )}
+
+                                        {/* API Key */}
+                                        <div style={{ marginBottom: 12 }}>
+                                            <label style={labelStyle}>API Key <span style={{ color: "#ef4444" }}>*</span></label>
+                                            <input style={inputStyle} type="password" value={selectedProvider.key}
+                                                onChange={e => updateField("key", e.target.value)}
+                                                placeholder={selectedProvider.is_custom ? "sk-..." : (selectedProvider.name === "智谱" ? "xxxxxxxx.yyyyyyyy" : "sk-...")}
+                                                autoComplete="off" />
                                         </div>
-                                        <div style={{ marginBottom: 10 }}>
-                                            <label style={labelStyle}>{t("模型名称", "Model Name")} <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("预设", "preset")})</span></label>
-                                            <input style={readonlyInputStyle} value={selectedProvider.model} readOnly tabIndex={-1} />
-                                        </div>
+
+                                        {/* Test & Save */}
+                                        <button onClick={handleLLMSave} disabled={llmSaving} style={{
+                                            width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
+                                            background: llmSaving ? "#a5b4fc" : "#6366f1", color: "#fff",
+                                            border: "none", borderRadius: 6, cursor: llmSaving ? "default" : "pointer",
+                                        }}>
+                                            {llmSaving ? t("测试并保存中...", "Testing & Saving...") : t("测试并保存", "Test & Save")}
+                                        </button>
                                     </>
                                 )}
-
-                                {/* API Key */}
-                                <div style={{ marginBottom: 12 }}>
-                                    <label style={labelStyle}>API Key <span style={{ color: "#ef4444" }}>*</span></label>
-                                    <input style={inputStyle} type="password" value={selectedProvider.key}
-                                        onChange={e => updateField("key", e.target.value)}
-                                        placeholder={selectedProvider.is_custom ? "sk-..." : (selectedProvider.name === "智谱" ? "xxxxxxxx.yyyyyyyy" : "sk-...")}
-                                        autoComplete="off" />
-                                </div>
-
-                                {/* Test & Save */}
-                                <button onClick={handleLLMSave} disabled={llmSaving} style={{
-                                    width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
-                                    background: llmSaving ? "#a5b4fc" : "#6366f1", color: "#fff",
-                                    border: "none", borderRadius: 6, cursor: llmSaving ? "default" : "pointer",
-                                }}>
-                                    {llmSaving ? t("测试并保存中...", "Testing & Saving...") : t("测试并保存", "Test & Save")}
-                                </button>
 
                                 {llmResult && (
                                     <div style={{
@@ -509,8 +546,8 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
 
                     {/* Footer hint */}
                     <p style={{ margin: "6px 0 0 0", fontSize: "0.66rem", color: "#b0b8c9", lineHeight: 1.4 }}>
-                        💡 {t("左上角龙虾亮起，说明一切就绪。三步都完成后，下次启动将不再显示此向导。",
-                            "The lobster icon lights up once you're all set. This wizard won't appear again after all steps are done.")}
+                        💡 {t("左侧 AI 助手圆圈全亮，说明一切就绪。三步都完成后，下次启动将不再显示此向导。",
+                            "The AI assistant ring lights up once you're all set. This wizard won't appear again after all steps are done.")}
                     </p>
                 </div>
             </div>

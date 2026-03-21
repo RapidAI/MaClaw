@@ -204,6 +204,10 @@ export function SaveMaclawLLMProviders(arg1:any, arg2:string):Promise<void>;
 
 export function TestMaclawLLM(arg1:any):Promise<string>;
 
+export function StartOpenAIOAuth():Promise<string>;
+
+export function GetOpenAIUsage():Promise<any>;
+
 export function GetMaclawAgentMaxIterations():Promise<number>;
 
 export function SetMaclawAgentMaxIterations(arg1:number):Promise<void>;

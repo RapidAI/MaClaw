@@ -136,6 +136,12 @@ type Notifier struct {
 
 	// autoEnroller handles automatic user enrollment for Feishu users.
 	autoEnroller *AutoEnroller
+
+	// eventQueue is an async buffered channel for session events. HandleEvent
+	// enqueues events here; a background goroutine drains and processes them
+	// so the session event dispatch loop is never blocked by Feishu API calls.
+	eventQueue chan session.Event
+	eventStop  chan struct{}
 }
 
 // NotifyBroadcaster sends verification codes to all reachable channels.
@@ -164,6 +170,8 @@ func New(appID, appSecret string, users store.UserRepository, system store.Syste
 		aliasToID:       make(map[string]map[string]string),
 		idToAlias:       make(map[string]map[string]string),
 		aliasSeq:        make(map[string]int),
+		eventQueue:      make(chan session.Event, 1024),
+		eventStop:       make(chan struct{}),
 	}
 	if appID != "" && appSecret != "" {
 		n.bot = newLarkBot(appID, appSecret)
@@ -171,6 +179,7 @@ func New(appID, appSecret string, users store.UserRepository, system store.Syste
 	}
 	n.loadOpenIDMap()
 	n.loadLastPushed()
+	go n.eventDrainLoop()
 	return n
 }
 
@@ -464,11 +473,16 @@ func (n *Notifier) buildAliasesForUser(openID string) {
 	}
 }
 
-// HandleEvent is a session.Listener that forwards key events to Feishu.
+// HandleEvent is a session.Listener that forwards key events to Feishu
+// asynchronously. Events are enqueued to an internal buffered channel and
+// processed by a background goroutine, so the session event dispatch loop
+// is never blocked by Feishu API latency.
+//
 // Only high-value events are pushed to avoid notification fatigue:
 //   - session.summary: only when waiting for user action
 //   - session.important_event: only error/warning severity (excludes close-time events)
 //   - session.closed: always, with a single comprehensive card
+//   - session.preview_delta: only to active /use watchers
 //   - session.created: not pushed (too noisy)
 //
 // When a user has an active session context (/use), summary and important_event
@@ -478,6 +492,47 @@ func (n *Notifier) HandleEvent(event session.Event) {
 	if n == nil || n.bot == nil {
 		return
 	}
+	select {
+	case n.eventQueue <- event:
+	default:
+		// Queue full — drop the event to avoid blocking the dispatch loop.
+		// This is acceptable because Feishu notifications are best-effort.
+		log.Printf("[feishu] event queue full, dropping %s for session=%s", event.Type, event.SessionID)
+	}
+}
+
+// eventDrainLoop processes events from the async queue.
+func (n *Notifier) eventDrainLoop() {
+	for {
+		select {
+		case event := <-n.eventQueue:
+			n.processEvent(event)
+		case <-n.eventStop:
+			// Drain remaining events before exiting.
+			for {
+				select {
+				case event := <-n.eventQueue:
+					n.processEvent(event)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// StopEventLoop signals the event drain goroutine to stop.
+func (n *Notifier) StopEventLoop() {
+	select {
+	case <-n.eventStop:
+	default:
+		close(n.eventStop)
+	}
+}
+
+// processEvent handles a single session event synchronously (called from
+// the drain goroutine).
+func (n *Notifier) processEvent(event session.Event) {
 	switch event.Type {
 	case "session.summary":
 		if n.isSessionClosed(event.SessionID) {

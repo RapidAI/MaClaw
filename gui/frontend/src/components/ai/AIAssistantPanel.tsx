@@ -11,6 +11,7 @@ interface AIAssistantPanelProps {
     clearHistory: () => Promise<void>;
     executeAction: (command: string) => Promise<void>;
     inline?: boolean; // when true, render as inline content instead of overlay
+    onHideWindow?: () => void; // hide the entire window (inline mode)
 }
 
 /* ── Theme definitions ── */
@@ -414,6 +415,10 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     margin: "2px 0",
                     color: t.text,
                 }}>
+                    {/* Streaming: show blinking cursor when content is empty */}
+                    {!msg.content && !msg.fields && !msg.thumbnailBase64 && !msg.localFilePaths?.length && (
+                        <span style={{ opacity: 0.5, animation: "blink 1s step-end infinite" }}>▍</span>
+                    )}
                     {msg.thumbnailBase64 && msg.localFilePath && (
                         <div style={{ margin: "4px 0 6px 0" }}>
                             <a href="#" onClick={(e) => { e.preventDefault(); ShowItemInFolder(msg.localFilePath!); }}
@@ -475,9 +480,17 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
     }
 }
 
+/* ── Inject blink animation once at module level ── */
+if (typeof document !== "undefined" && !document.getElementById("ai-blink-style")) {
+    const style = document.createElement("style");
+    style.id = "ai-blink-style";
+    style.textContent = "@keyframes blink { 50% { opacity: 0; } }";
+    document.head.appendChild(style);
+}
+
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage, clearHistory, executeAction, inline }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage, clearHistory, executeAction, inline, onHideWindow }: AIAssistantPanelProps) {
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
@@ -485,6 +498,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage
     const outputContainerRef = useRef<HTMLDivElement | null>(null);
     const userScrolledUpRef = useRef(false);
     const prevMsgCountRef = useRef(0);
+    const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const t = inline ? lightTheme : overlayTheme;
 
@@ -494,13 +508,27 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage
         ? (lang === "en" ? "Thinking..." : "正在思考...")
         : (lang === "en" ? "Type a message..." : "输入消息...");
 
-    // Auto-scroll on new messages (unless user scrolled up)
+    // Debounced auto-scroll: coalesce rapid token updates into a single scroll
     useEffect(() => {
-        if (messages.length > prevMsgCountRef.current && !userScrolledUpRef.current) {
-            outputEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        if (userScrolledUpRef.current) {
+            prevMsgCountRef.current = messages.length;
+            return;
         }
-        prevMsgCountRef.current = messages.length;
-    }, [messages.length]);
+        // New message added → scroll immediately
+        if (messages.length !== prevMsgCountRef.current) {
+            prevMsgCountRef.current = messages.length;
+            outputEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            return;
+        }
+        // Content update on existing message (streaming tokens) → debounce 80ms
+        if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = setTimeout(() => {
+            outputEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }, 80);
+        return () => {
+            if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+        };
+    }, [messages]);
 
     // Track user scroll position
     const handleScroll = useCallback(() => {
@@ -542,17 +570,26 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage
     );
 
     const containerStyle: React.CSSProperties = inline
-        ? { display: "flex", flexDirection: "column", background: t.bg, textAlign: "left", width: "100%", height: "100%" }
+        ? { display: "flex", flexDirection: "column", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }
         : overlayStyle;
 
     return (
         <div style={containerStyle}>
+            {/* ── Drag overlay (inline mode) ── */}
+            {inline && (
+                <div style={{
+                    height: "30px", width: "100%",
+                    position: "absolute", top: 0, left: 0, zIndex: 999,
+                    '--wails-draggable': 'drag',
+                } as any} />
+            )}
             {/* ── Title bar ── */}
             <div style={{
                 display: "flex", alignItems: "center", justifyContent: "space-between",
                 padding: "0 10px", height: "36px",
                 background: t.titleBarBg, borderBottom: `1px solid ${t.titleBarBorder}`,
                 flexShrink: 0, gap: "6px",
+                ...(inline ? { '--wails-draggable': 'drag' } as any : {}),
             }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, flex: 1 }}>
                     {!inline && (
@@ -570,14 +607,24 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage
                         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                     }}>{title}</span>
                 </div>
-                <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                <div style={{ display: "flex", gap: "4px", flexShrink: 0, ...(inline ? { '--wails-draggable': 'no-drag', position: 'relative', zIndex: 1000 } as any : {}) }}>
                     <button
-                        onClick={clearHistory}
+                        {...(inline ? { onMouseDown: clearHistory } : { onClick: clearHistory })}
                         style={{ ...baseActionBtnStyle, color: t.actionBtnColor }}
                         title={lang === "en" ? "Clear history" : "清空历史"}
                     >
                         🗑️
                     </button>
+                    {inline && onHideWindow && (
+                    <button
+                        onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onHideWindow(); }}
+                        className="btn-hide"
+                        style={{ fontSize: "11px", padding: "1px 8px", cursor: "pointer" }}
+                        title={lang === "en" ? "Hide" : "隐藏"}
+                    >
+                        {lang === "en" ? "Hide" : lang === "zh-Hant" ? "隱藏" : "隐藏"}
+                    </button>
+                    )}
                     {!inline && (
                     <button
                         onClick={onClose}

@@ -17,6 +17,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -79,6 +80,7 @@ type App struct {
 	compressorMu         sync.Mutex // guards lazy creation of memoryCompressor
 	scheduledTaskManager *ScheduledTaskManager
 	remoteInfraOnce      sync.Once // guards ensureRemoteInfra initialization
+	remoteInfraReady     atomic.Bool // fast-path check for ensureRemoteInfra
 	clawNetClient        *ClawNetClient
 	mcpAutoDiscovery     *MCPAutoDiscovery
 	securityFirewall     *SecurityFirewall
@@ -119,11 +121,14 @@ func NewApp() *App {
 // if they haven't been created yet. Call this before any remote operation.
 // Thread-safe: uses sync.Once-style check-lock-check to avoid races.
 func (a *App) ensureRemoteInfra() {
-	// Fast path: already initialized (no lock needed).
-	if a.remoteSessions != nil && a.mcpRegistry != nil && a.skillExecutor != nil {
+	// Ultra-fast path: atomic load, no lock.
+	if a.remoteInfraReady.Load() {
 		return
 	}
-	a.remoteInfraOnce.Do(a.initRemoteInfra)
+	a.remoteInfraOnce.Do(func() {
+		a.initRemoteInfra()
+		a.remoteInfraReady.Store(true)
+	})
 }
 
 func (a *App) initRemoteInfra() {

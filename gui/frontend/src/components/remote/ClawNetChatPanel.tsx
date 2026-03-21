@@ -18,6 +18,15 @@ function readFavs(): string[] {
     try { return JSON.parse(localStorage.getItem(FAV_STORAGE_KEY) || "[]"); } catch { return []; }
 }
 
+const msgBodyStyle: React.CSSProperties = { color: colors.textSecondary, marginTop: "2px", whiteSpace: "pre-wrap", wordBreak: "break-word" };
+const msgListStyle: React.CSSProperties = { maxHeight: "300px", overflowY: "auto", marginBottom: "8px", textAlign: "left" };
+const textareaStyle: React.CSSProperties = { ...cnInput, flex: 1, resize: "vertical", fontFamily: "inherit" };
+const inputBarStyle: React.CSSProperties = { display: "flex", gap: "4px", alignItems: "flex-end" };
+
+function enterToSend(send: () => void): React.KeyboardEventHandler<HTMLTextAreaElement> {
+    return e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
+}
+
 type Props = { lang: string; clawNetRunning: boolean };
 
 export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
@@ -44,10 +53,7 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
 
     // Favorites state
     const [favTopics, setFavTopics] = useState<string[]>(readFavs);
-    const persistFavs = useCallback((next: string[]) => {
-        setFavTopics(next);
-        localStorage.setItem(FAV_STORAGE_KEY, JSON.stringify(next));
-    }, []);
+
     const toggleFav = useCallback((name: string) => {
         setFavTopics(prev => {
             if (prev.includes(name)) {
@@ -179,18 +185,18 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
                         <button style={{ ...cnActionBtn(), padding: "2px 8px" }} onClick={() => setActivePeer(null)}>← {zh ? "返回" : "Back"}</button>
                         <span style={{ fontSize: "0.74rem", fontFamily: "monospace", color: colors.textSecondary }}>{activePeer.slice(0, 20)}…</span>
                     </div>
-                    <div style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "8px" }}>
+                    <div style={msgListStyle}>
                         {thread.map((m: any, i: number) => (
                             <div key={i} style={{ marginBottom: "6px", fontSize: "0.72rem" }}>
                                 <span style={{ color: colors.textMuted, fontSize: "0.65rem" }}>{(m.from || "").slice(0, 10)} · {m.created_at || ""}</span>
-                                <div style={{ color: colors.textSecondary, marginTop: "2px" }}>{m.body}</div>
+                                <div style={msgBodyStyle}>{m.body}</div>
                             </div>
                         ))}
                         {thread.length === 0 && <div style={cnLabel}>{zh ? "暂无消息" : "No messages yet"}</div>}
                     </div>
-                    <div style={{ display: "flex", gap: "4px" }}>
-                        <input value={dmText} onChange={e => setDmText(e.target.value)} placeholder={zh ? "输入消息..." : "Type a message..."}
-                            style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && sendDM()} />
+                    <div style={inputBarStyle}>
+                        <textarea value={dmText} onChange={e => setDmText(e.target.value)} placeholder={zh ? "输入消息..." : "Type a message..."}
+                            rows={3} style={textareaStyle} onKeyDown={enterToSend(sendDM)} />
                         <button style={cnActionBtn(dmBusy || !dmText.trim())} onClick={sendDM} disabled={dmBusy}>{zh ? "发送" : "Send"}</button>
                     </div>
                 </>
@@ -245,18 +251,18 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
                         <button style={{ ...cnActionBtn(), padding: "2px 8px" }} onClick={() => setActiveTopic(null)}>← {zh ? "返回" : "Back"}</button>
                         <span style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>#{activeTopic}</span>
                     </div>
-                    <div style={{ maxHeight: "300px", overflowY: "auto", marginBottom: "8px" }}>
+                    <div style={msgListStyle}>
                         {topicMsgs.map((m: any, i: number) => (
                             <div key={i} style={{ marginBottom: "6px", fontSize: "0.72rem" }}>
                                 <span style={{ color: colors.textMuted, fontSize: "0.65rem" }}>{(m.author || m.from || "").slice(0, 10)} · {m.created_at || ""}</span>
-                                <div style={{ color: colors.textSecondary, marginTop: "2px" }}>{m.body}</div>
+                                <div style={msgBodyStyle}>{m.body}</div>
                             </div>
                         ))}
                         {topicMsgs.length === 0 && <div style={cnLabel}>{zh ? "暂无消息" : "No messages"}</div>}
                     </div>
-                    <div style={{ display: "flex", gap: "4px" }}>
-                        <input value={topicText} onChange={e => setTopicText(e.target.value)} placeholder={zh ? "发言..." : "Post a message..."}
-                            style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && postToTopic()} />
+                    <div style={inputBarStyle}>
+                        <textarea value={topicText} onChange={e => setTopicText(e.target.value)} placeholder={zh ? "发言..." : "Post a message..."}
+                            rows={3} style={textareaStyle} onKeyDown={enterToSend(postToTopic)} />
                         <button style={cnActionBtn(topicBusy || !topicText.trim())} onClick={postToTopic} disabled={topicBusy}>{zh ? "发送" : "Send"}</button>
                     </div>
                 </>

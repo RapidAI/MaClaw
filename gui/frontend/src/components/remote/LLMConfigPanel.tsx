@@ -5,8 +5,11 @@ import {
     TestMaclawLLM,
     GetMaclawAgentMaxIterations,
     SetMaclawAgentMaxIterations,
+    StartOpenAIOAuth,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
+import { UsageDisplay } from "./UsageDisplay";
+import { PROVIDER_LOGOS } from "./providerLogos";
 
 interface LLMProvider {
     name: string;
@@ -16,6 +19,7 @@ interface LLMProvider {
     protocol?: string; // "openai" (default) or "anthropic"
     context_length?: number; // max context tokens (0 = default 128k)
     is_custom?: boolean;
+    auth_type?: string;
 }
 
 const NONE_PROVIDER = "__none__";
@@ -66,8 +70,35 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [dlgSaving, setDlgSaving] = useState(false);
     const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [dlgDirty, setDlgDirty] = useState(false);
+    const [oauthBusy, setOauthBusy] = useState(false);
 
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
+
+    /** Shared OAuth login handler for both first-login and re-login scenarios. */
+    const handleOAuthLogin = useCallback(async () => {
+        setOauthBusy(true);
+        setDlgTestResult(null);
+        try {
+            await StartOpenAIOAuth();
+            const data = await GetMaclawLLMProviders();
+            if (data?.providers) {
+                const fresh = data.providers.map((p: LLMProvider) => ({ ...p }));
+                setDlgProviders(fresh);
+                setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
+                setCurrentName(data.current || NONE_PROVIDER);
+                // Re-select the OAuth provider by name to keep dlgSelectedIdx stable
+                const oaIdx = fresh.findIndex((p: LLMProvider) => p.auth_type === "oauth");
+                if (oaIdx >= 0) setDlgSelectedIdx(oaIdx);
+                setDlgDirty(false);
+                onStatusChange?.(true, true);
+                setDlgTestResult({ ok: true, msg: t("OAuth 登录成功", "OAuth login successful") });
+                setTimeout(() => setDlgOpen(false), 1200);
+            }
+        } catch (e) {
+            setDlgTestResult({ ok: false, msg: String(e) });
+        }
+        setOauthBusy(false);
+    }, [t, onStatusChange]);
 
     const loadProviders = useCallback(async () => {
         setLoading(true);
@@ -98,11 +129,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     }, [providers, currentName]);
 
     const closeDialog = useCallback(() => {
+        if (oauthBusy) return; // prevent closing during OAuth flow
         if (dlgDirty && !dlgSaving) {
             if (!window.confirm(t("有未保存的更改，确定关闭？", "Unsaved changes. Close anyway?"))) return;
         }
         setDlgOpen(false);
-    }, [dlgDirty, dlgSaving, t]);
+    }, [dlgDirty, dlgSaving, oauthBusy, t]);
 
     // Escape key to close dialog
     useEffect(() => {
@@ -163,6 +195,25 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         if (!sp) return;
         setDlgSaving(true);
         setDlgTestResult(null);
+
+        // OAuth providers: save directly (token already obtained via OAuth flow)
+        if (sp.auth_type === "oauth") {
+            try {
+                const saveName = sp.name;
+                await SaveMaclawLLMProviders(dlgProviders, saveName);
+                setDlgDirty(false);
+                setProviders(dlgProviders.map(p => ({ ...p })));
+                setCurrentName(saveName);
+                onStatusChange?.(!!sp.key, !!sp.key);
+                setDlgTestResult({ ok: true, msg: t("已保存", "Saved") });
+                setTimeout(() => setDlgOpen(false), 800);
+            } catch (e) {
+                setDlgTestResult({ ok: false, msg: String(e) });
+            }
+            setDlgSaving(false);
+            return;
+        }
+
         try {
             const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai" });
             try {
@@ -219,6 +270,13 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                     {isNone ? t("暂不配置", "None") : currentName}
                 </span>
             </div>
+
+            {/* Usage display for OAuth providers */}
+            {!isNone && providers.find(p => p.name === currentName)?.auth_type === "oauth" && (
+                <div style={{ marginBottom: 16 }}>
+                    <UsageDisplay lang={lang} />
+                </div>
+            )}
 
             {/* Max iterations — inline editable */}
             <div style={{
@@ -295,8 +353,9 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                             border: `1px solid ${active ? "#6366f1" : colors.border}`,
                                             borderRadius: 4, transition: "all 0.15s",
                                             position: "relative" as const,
+                                            display: "inline-flex", alignItems: "center", gap: 5,
                                         }}>
-                                            {p.name}
+                                            {PROVIDER_LOGOS[p.name] ?? null}{p.name}
                                             {tag && (
                                                 <span style={{
                                                     position: "absolute", top: -8, right: -10,
@@ -438,13 +497,50 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     )}
                                 </div>
 
-                                {/* API Key — always editable */}
-                                <div>
-                                    <label style={labelStyle}>{t("API 密钥", "API Key")} <span style={{ color: "#ef4444" }}>*</span></label>
-                                    <input style={inputStyle} type="password" value={dlgProvider.key}
-                                        onChange={e => dlgUpdateField("key", e.target.value)}
-                                        placeholder={(dlgProvider.protocol || "openai") === "anthropic" ? "sk-ant-..." : "sk-..."} autoComplete="off" />
-                                </div>
+                                {/* Auth: OAuth login button OR API Key input */}
+                                {dlgProvider.auth_type === "oauth" ? (
+                                    <div>
+                                        <label style={labelStyle}>{t("认证方式", "Authentication")}</label>
+                                        {dlgProvider.key ? (
+                                            <div style={{
+                                                display: "flex", alignItems: "center", gap: 10,
+                                                padding: "8px 12px", borderRadius: 4,
+                                                background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
+                                            }}>
+                                                <span style={{ fontSize: "0.76rem", color: "#22c55e", flex: 1 }}>
+                                                    ✅ {t("已通过 OAuth 认证", "OAuth authenticated")}
+                                                </span>
+                                                <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
+                                                    fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
+                                                    background: "transparent", color: "#6366f1",
+                                                    border: `1px solid #6366f1`, borderRadius: 4,
+                                                    opacity: oauthBusy ? 0.5 : 1,
+                                                }}>
+                                                    {oauthBusy ? t("登录中...", "Logging in...") : t("重新登录", "Re-login")}
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
+                                                width: "100%", padding: "10px 0", fontSize: "0.8rem",
+                                                cursor: oauthBusy ? "default" : "pointer",
+                                                background: "#6366f1", color: "#fff",
+                                                border: "none", borderRadius: 4,
+                                                opacity: oauthBusy ? 0.6 : 1,
+                                            }}>
+                                                {oauthBusy
+                                                    ? `⏳ ${t("等待浏览器授权...", "Waiting for browser authorization...")}`
+                                                    : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
+                                            </button>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <label style={labelStyle}>{t("API 密钥", "API Key")} <span style={{ color: "#ef4444" }}>*</span></label>
+                                        <input style={inputStyle} type="password" value={dlgProvider.key}
+                                            onChange={e => dlgUpdateField("key", e.target.value)}
+                                            placeholder={(dlgProvider.protocol || "openai") === "anthropic" ? "sk-ant-..." : "sk-..."} autoComplete="off" />
+                                    </div>
+                                )}
 
                                 {/* Context Length */}
                                 <div style={{ marginTop: 12 }}>
@@ -474,7 +570,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             }}>
                                 {t("取消", "Cancel")}
                             </button>
-                            <button onClick={dlgHandleSave} disabled={dlgSaving || !dlgDirty} style={{
+                            <button onClick={dlgHandleSave} disabled={dlgSaving || oauthBusy || !dlgDirty} style={{
                                 fontSize: "0.76rem", padding: "6px 18px", cursor: dlgDirty ? "pointer" : "default",
                                 background: dlgDirty ? "#6366f1" : colors.bg, color: dlgDirty ? "#fff" : colors.textMuted,
                                 border: "none", borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,

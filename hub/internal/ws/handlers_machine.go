@@ -20,6 +20,129 @@ type ConnContext struct {
 	UserID    string
 	MachineID string
 	ViewerID  string
+
+	// sendCh is a buffered channel for async writes. Messages are enqueued
+	// here and drained by a dedicated writer goroutine, preventing slow
+	// clients from blocking broadcast loops.
+	sendCh chan any
+	// closeSend is closed when the connection is torn down to stop the
+	// writer goroutine.
+	closeSend chan struct{}
+}
+
+const (
+	// sendChSize is the per-connection outbound message buffer. If a client
+	// can't keep up and the buffer fills, the connection is dropped.
+	sendChSize = 256
+	// batchFlushInterval is the maximum time the writer goroutine waits to
+	// accumulate messages before flushing them in a single write cycle.
+	batchFlushInterval = 50 * time.Millisecond
+)
+
+// initSendCh initialises the async send channel and starts the writer goroutine.
+func (c *ConnContext) initSendCh() {
+	c.sendCh = make(chan any, sendChSize)
+	c.closeSend = make(chan struct{})
+	go c.writeLoop()
+}
+
+// Send enqueues a message for async delivery. Returns false if the buffer is
+// full (slow client), in which case the connection is closed.
+func (c *ConnContext) Send(msg any) bool {
+	select {
+	case c.sendCh <- msg:
+		return true
+	default:
+		// Buffer full — slow client. Close the writer and the underlying
+		// WebSocket so the read loop also terminates.
+		log.Printf("[ws] Send: buffer full for role=%s machine_id=%s, dropping connection", c.Role, c.MachineID)
+		c.closeWriter()
+		_ = c.Conn.Close()
+		return false
+	}
+}
+
+// closeWriter signals the writer goroutine to stop. Safe to call multiple times.
+func (c *ConnContext) closeWriter() {
+	select {
+	case <-c.closeSend:
+	default:
+		close(c.closeSend)
+	}
+}
+
+// writeLoop drains sendCh and writes messages to the WebSocket. It batches
+// messages that arrive within batchFlushInterval into a single write cycle
+// to reduce syscall overhead for viewers receiving many events.
+func (c *ConnContext) writeLoop() {
+	batch := make([]any, 0, 16)
+	timer := time.NewTimer(batchFlushInterval)
+	defer timer.Stop()
+
+	flush := func() bool {
+		for _, msg := range batch {
+			if err := c.Conn.WriteJSON(msg); err != nil {
+				log.Printf("[ws] writeLoop: write error role=%s machine_id=%s: %v", c.Role, c.MachineID, err)
+				batch = batch[:0]
+				return false // connection broken
+			}
+		}
+		batch = batch[:0]
+		return true
+	}
+
+	for {
+		select {
+		case msg, ok := <-c.sendCh:
+			if !ok {
+				return
+			}
+			batch = append(batch, msg)
+			// Drain any additional queued messages without blocking.
+		drain:
+			for {
+				select {
+				case m, ok := <-c.sendCh:
+					if !ok {
+						flush()
+						return
+					}
+					batch = append(batch, m)
+					if len(batch) >= 32 {
+						if !flush() {
+							return
+						}
+					}
+				default:
+					break drain
+				}
+			}
+			// Reset timer; if nothing else arrives within the interval, flush.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(batchFlushInterval)
+			// If batch is non-trivial, flush immediately.
+			if len(batch) >= 4 {
+				if !flush() {
+					return
+				}
+			}
+		case <-timer.C:
+			if len(batch) > 0 {
+				if !flush() {
+					return
+				}
+			}
+			timer.Reset(batchFlushInterval)
+		case <-c.closeSend:
+			flush()
+			return
+		}
+	}
 }
 
 type MachineHelloPayload struct {
@@ -143,7 +266,10 @@ func (g *Gateway) RegisterIMGatewayPlugin(plugin IMGatewayPlugin) {
 }
 
 func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
-	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	upgrader := websocket.Upgrader{
+		CheckOrigin:       func(r *http.Request) bool { return true },
+		EnableCompression: true, // permessage-deflate — reduces bandwidth 50-70% for text-heavy preview deltas
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[ws] HandleWS: upgrade failed: %v", err)
@@ -151,7 +277,11 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	log.Printf("[ws] HandleWS: new WebSocket connection from %s", r.RemoteAddr)
+	// Enable compression on outbound messages.
+	conn.EnableWriteCompression(true)
+	conn.SetCompressionLevel(6) // balanced speed/ratio
+
+	log.Printf("[ws] HandleWS: new WebSocket connection from %s (compression=%v)", r.RemoteAddr, true)
 
 	// Configure WebSocket-level ping-pong to keep the connection alive even
 	// when the application-level heartbeat is delayed by heavy workloads
@@ -186,8 +316,10 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	ctx := &ConnContext{Conn: conn}
+	ctx.initSendCh()
 	defer func() {
 		close(pingDone)
+		ctx.closeWriter()
 		g.cleanupConnection(ctx)
 	}()
 
@@ -345,7 +477,7 @@ func (g *Gateway) HandleSessionEvent(event session.Event) {
 	}
 
 	for _, watcher := range watchers {
-		_ = writeWSJSON(watcher.Conn, msg)
+		watcher.Send(msg)
 	}
 
 	if event.Type != "session.created" && event.Type != "session.closed" && event.Type != "session.summary" {
@@ -353,7 +485,7 @@ func (g *Gateway) HandleSessionEvent(event session.Event) {
 	}
 
 	for _, watcher := range machineWatchers {
-		_ = writeWSJSON(watcher.Conn, msg)
+		watcher.Send(msg)
 	}
 }
 
@@ -366,7 +498,7 @@ func (g *Gateway) broadcastMachineEvent(machineID string, payload map[string]any
 	g.mu.RUnlock()
 
 	for _, watcher := range machineWatchers {
-		_ = writeWSJSON(watcher.Conn, payload)
+		watcher.Send(payload)
 	}
 }
 
@@ -724,7 +856,7 @@ func (g *Gateway) handleSessionImage(ctx *ConnContext, msg Envelope) error {
 		"payload":    json.RawMessage(msg.Payload),
 	}
 	for _, watcher := range watchers {
-		_ = writeWSJSON(watcher.Conn, fwd)
+		watcher.Send(fwd)
 	}
 
 	// Dispatch to session listeners (e.g. Feishu notifier) so they can
@@ -761,7 +893,7 @@ func (g *Gateway) handleSessionImageInputError(ctx *ConnContext, msg Envelope) e
 		"payload":    json.RawMessage(msg.Payload),
 	}
 	for _, watcher := range watchers {
-		_ = writeWSJSON(watcher.Conn, fwd)
+		watcher.Send(fwd)
 	}
 	return nil
 }

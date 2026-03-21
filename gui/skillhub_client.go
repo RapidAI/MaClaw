@@ -64,13 +64,17 @@ func NewSkillHubClient(app *App) *SkillHubClient {
 	}
 }
 
-// hubBaseURL returns the hub's API base URL from app config.
+// hubBaseURL returns the hubcenter's API base URL from app config.
 func (c *SkillHubClient) hubBaseURL() string {
 	cfg, err := c.app.LoadConfig()
-	if err != nil || cfg.RemoteHubURL == "" {
+	if err != nil {
 		return ""
 	}
-	return strings.TrimRight(cfg.RemoteHubURL, "/")
+	url := strings.TrimSpace(cfg.RemoteHubCenterURL)
+	if url == "" {
+		url = defaultRemoteHubCenterURL
+	}
+	return strings.TrimRight(url, "/")
 }
 
 // hubSkillSearchResult mirrors the hub's SkillSearchResult JSON.

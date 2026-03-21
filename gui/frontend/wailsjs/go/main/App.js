@@ -402,6 +402,14 @@ export function TestMaclawLLM(arg1) {
   return window['go']['main']['App']['TestMaclawLLM'](arg1);
 }
 
+export function StartOpenAIOAuth() {
+  return window['go']['main']['App']['StartOpenAIOAuth']();
+}
+
+export function GetOpenAIUsage() {
+  return window['go']['main']['App']['GetOpenAIUsage']();
+}
+
 export function PingMaclawLLM() {
   return window['go']['main']['App']['PingMaclawLLM']();
 }

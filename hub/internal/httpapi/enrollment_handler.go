@@ -96,13 +96,27 @@ func ApproveEnrollmentHandler(identity *auth.IdentityService, feishuNotifier *fe
 				email := user.Email
 				mobile := enrollment.Mobile
 				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 					defer cancel()
 					result, err := ae.AddToFeishuOrg(ctx, email, "", mobile)
 					if err != nil {
 						log.Printf("[enroll/approve] feishu auto-enroll failed for %s: %v", email, err)
 					} else if result != nil {
-						log.Printf("[enroll/approve] feishu auto-enroll for %s: status=%s", email, result.Status)
+						log.Printf("[enroll/approve] feishu auto-enroll for %s: status=%s msg=%s", email, result.Status, result.Message)
+					}
+					// If first attempt failed, retry once after a short delay.
+					if result != nil && result.Status == "failed" {
+						time.Sleep(5 * time.Second)
+						ae.ClearCooldown(email)
+						log.Printf("[enroll/approve] background feishu retry for %s", email)
+						retryCtx, retryCancel := context.WithTimeout(context.Background(), 60*time.Second)
+						defer retryCancel()
+						r2, err2 := ae.AddToFeishuOrg(retryCtx, email, "", mobile)
+						if err2 != nil {
+							log.Printf("[enroll/approve] background feishu retry failed for %s: %v", email, err2)
+						} else if r2 != nil {
+							log.Printf("[enroll/approve] background feishu retry for %s: status=%s msg=%s", email, r2.Status, r2.Message)
+						}
 					}
 				}()
 			}

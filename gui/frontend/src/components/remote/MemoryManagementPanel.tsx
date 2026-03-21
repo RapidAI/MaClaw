@@ -395,14 +395,19 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
 
     const handleCompress = async () => {
         setCompressing(true); setError(""); setCompressResult(null);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(t("压缩超时，请稍后重试", "Compress timed out, please retry later"))), 6 * 60 * 1000);
+        });
         try {
-            const result = await CompressMemories();
+            const result = await Promise.race([CompressMemories(), timeout]);
             setCompressResult(result as CompressResult);
             loadBackups();
             onDataChanged();
         } catch (e) {
             setError(String(e));
         } finally {
+            clearTimeout(timer);
             setCompressing(false);
         }
     };

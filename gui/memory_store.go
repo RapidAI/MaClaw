@@ -17,12 +17,18 @@ import (
 type MemoryCategory string
 
 const (
+	MemCategorySelfIdentity         MemoryCategory = "self_identity"
 	MemCategoryUserFact             MemoryCategory = "user_fact"
 	MemCategoryPreference           MemoryCategory = "preference"
 	MemCategoryProjectKnowledge     MemoryCategory = "project_knowledge"
 	MemCategoryInstruction          MemoryCategory = "instruction"
 	MemCategoryConversationSummary  MemoryCategory = "conversation_summary"
 )
+
+// IsProtected returns true for categories that must never be evicted.
+func (c MemoryCategory) IsProtected() bool {
+	return c == MemCategorySelfIdentity
+}
 
 // MemoryEntry represents a single memory record.
 type MemoryEntry struct {
@@ -241,6 +247,7 @@ func (s *MemoryStore) RecallForProject(userMessage, projectPath string) []Memory
 	projectLower := strings.ToLower(projectPath)
 	now := time.Now()
 
+	var selfIdentity []MemoryEntry
 	var userFacts []MemoryEntry
 	type scored struct {
 		entry MemoryEntry
@@ -249,6 +256,10 @@ func (s *MemoryStore) RecallForProject(userMessage, projectPath string) []Memory
 	var others []scored
 
 	for _, e := range s.entries {
+		if e.Category == MemCategorySelfIdentity {
+			selfIdentity = append(selfIdentity, e)
+			continue
+		}
 		if e.Category == MemCategoryUserFact {
 			userFacts = append(userFacts, e)
 			continue
@@ -289,6 +300,13 @@ func (s *MemoryStore) RecallForProject(userMessage, projectPath string) []Memory
 
 	var result []MemoryEntry
 	tokenBudget := maxTokens
+
+	// Self-identity memories are always recalled first — highest priority.
+	for _, e := range selfIdentity {
+		tokens := len(e.Content) / 4
+		tokenBudget -= tokens
+		result = append(result, e)
+	}
 
 	for _, e := range userFacts {
 		if len(result) >= maxEntries {
@@ -377,6 +395,34 @@ func (s *MemoryStore) UserFactSummary(maxRunes int) string {
 	return summary
 }
 
+// SelfIdentitySummary returns a concatenated summary of all self_identity
+// memory entries. Returns empty string if none exist.
+func (s *MemoryStore) SelfIdentitySummary(maxRunes int) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if maxRunes <= 0 {
+		maxRunes = 400
+	}
+
+	var parts []string
+	for _, e := range s.entries {
+		if e.Category == MemCategorySelfIdentity {
+			parts = append(parts, strings.TrimSpace(e.Content))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+
+	summary := strings.Join(parts, " | ")
+	runes := []rune(summary)
+	if len(runes) > maxRunes {
+		summary = string(runes[:maxRunes]) + "…"
+	}
+	return summary
+}
+
 // ---------------------------------------------------------------------------
 // Memory Stream scoring (inspired by Stanford "Generative Agents")
 //
@@ -398,8 +444,10 @@ const (
 // Higher means the category is inherently more important.
 func categoryImportanceWeight(c MemoryCategory) float64 {
 	switch c {
+	case MemCategorySelfIdentity:
+		return 4.0 // self-identity — highest, never lose it
 	case MemCategoryInstruction:
-		return 3.0 // explicit user rules — highest
+		return 3.0 // explicit user rules
 	case MemCategoryPreference:
 		return 2.0
 	case MemCategoryProjectKnowledge:
@@ -531,17 +579,36 @@ func (s *MemoryStore) evictLRU() {
 		return
 	}
 
-	excess := len(s.entries) - s.maxItems
+	// Separate protected (self_identity) entries — they are never evicted.
+	var protectedEntries []MemoryEntry
+	var evictable []MemoryEntry
+	for _, e := range s.entries {
+		if e.Category.IsProtected() {
+			protectedEntries = append(protectedEntries, e)
+		} else {
+			evictable = append(evictable, e)
+		}
+	}
+
+	target := s.maxItems - len(protectedEntries)
+	if target < 0 {
+		target = 0
+	}
+
+	if len(evictable) <= target {
+		return
+	}
+
+	excess := len(evictable) - target
 
 	// Build an index sorted by eviction priority: lowest access_count first,
-	// then oldest updated_at. We sort indices instead of the entries slice
-	// itself to avoid permanently reordering the store.
-	indices := make([]int, len(s.entries))
+	// then oldest updated_at.
+	indices := make([]int, len(evictable))
 	for i := range indices {
 		indices[i] = i
 	}
 	sort.SliceStable(indices, func(a, b int) bool {
-		ea, eb := s.entries[indices[a]], s.entries[indices[b]]
+		ea, eb := evictable[indices[a]], evictable[indices[b]]
 		if ea.AccessCount != eb.AccessCount {
 			return ea.AccessCount < eb.AccessCount
 		}
@@ -554,9 +621,10 @@ func (s *MemoryStore) evictLRU() {
 		remove[indices[i]] = struct{}{}
 	}
 
-	// Rebuild entries without the evicted ones.
+	// Rebuild entries: protected first, then surviving evictable.
 	kept := make([]MemoryEntry, 0, s.maxItems)
-	for i, e := range s.entries {
+	kept = append(kept, protectedEntries...)
+	for i, e := range evictable {
 		if _, ok := remove[i]; !ok {
 			kept = append(kept, e)
 		}

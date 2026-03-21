@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
 // MaclawLLMProvider, MaclawLLMConfig — see corelib_aliases.go
@@ -16,6 +18,7 @@ import (
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []MaclawLLMProvider {
 	return []MaclawLLMProvider{
+		{Name: "OpenAI", URL: "https://api.openai.com/v1", Model: "gpt-4o", AuthType: "oauth", ContextLength: 128000},
 		{Name: "智谱", URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000},
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true},
@@ -165,9 +168,75 @@ func (a *App) SaveMaclawLLMConfig(llm MaclawLLMConfig) error {
 	return nil
 }
 
+// StartOpenAIOAuth starts the OpenAI OAuth PKCE flow. On success, it updates
+// the OpenAI provider config with the obtained tokens and persists the change.
+func (a *App) StartOpenAIOAuth() (string, error) {
+	cfg := oauth.DefaultConfig()
+	result, err := oauth.RunOAuthFlow(cfg)
+	if err != nil {
+		return "", fmt.Errorf("OAuth 登录失败: %w", err)
+	}
+
+	// Update the OpenAI provider with the obtained tokens
+	data := a.GetMaclawLLMProviders()
+	for i, p := range data.Providers {
+		if p.Name == "OpenAI" && p.AuthType == "oauth" {
+			data.Providers[i] = oauth.ApplyTokenResult(p, result)
+			if err := a.SaveMaclawLLMProviders(data.Providers, "OpenAI"); err != nil {
+				return "", fmt.Errorf("保存 OAuth 配置失败: %w", err)
+			}
+			return "OpenAI OAuth 登录成功", nil
+		}
+	}
+	return "", fmt.Errorf("未找到 OpenAI provider")
+}
+
+// GetOpenAIUsage queries the OpenAI billing API for the current OAuth provider's
+// usage info. It refreshes the token first if needed.
+func (a *App) GetOpenAIUsage() (*oauth.UsageInfo, error) {
+	if err := a.ensureOAuthToken(); err != nil {
+		return nil, fmt.Errorf("OAuth token 刷新失败: %w", err)
+	}
+	data := a.GetMaclawLLMProviders()
+	for _, p := range data.Providers {
+		if p.Name == data.Current && p.AuthType == "oauth" {
+			if p.Key == "" {
+				return nil, fmt.Errorf("未登录 OpenAI，请先完成 OAuth 授权")
+			}
+			return oauth.QueryUsage(p.Key)
+		}
+	}
+	return nil, fmt.Errorf("当前 provider 不支持用量查询")
+}
+
+// ensureOAuthToken checks if the current provider uses OAuth and refreshes
+// the token if needed. Returns the (possibly updated) LLM config.
+func (a *App) ensureOAuthToken() error {
+	data := a.GetMaclawLLMProviders()
+	for i, p := range data.Providers {
+		if p.Name == data.Current && p.AuthType == "oauth" {
+			cfg := oauth.DefaultConfig()
+			updated, err := oauth.EnsureValidToken(p, cfg, func(up MaclawLLMProvider) error {
+				data.Providers[i] = up
+				return a.SaveMaclawLLMProviders(data.Providers, data.Current)
+			})
+			if err != nil {
+				return err
+			}
+			data.Providers[i] = updated
+			break
+		}
+	}
+	return nil
+}
+
 // TestMaclawLLM sends a "hello" message to the configured LLM endpoint
 // using the OpenAI-compatible or Anthropic Messages API and returns the response.
 func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
+	if err := a.ensureOAuthToken(); err != nil {
+		return "", fmt.Errorf("OAuth token refresh failed: %w", err)
+	}
+
 	url := strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 	if url == "" {
 		return "", fmt.Errorf("LLM URL is not configured")
@@ -352,6 +421,10 @@ var maclawLLMPingClient = &http.Client{Timeout: 10 * time.Second}
 // All requests carry User-Agent "OpenClaw/1.0" so LLM providers can
 // recognise the client for coding-plan eligibility.
 func (a *App) PingMaclawLLM() MaclawLLMStatus {
+	if err := a.ensureOAuthToken(); err != nil {
+		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
+	}
+
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return MaclawLLMStatus{Online: false, Configured: false, Error: err.Error()}

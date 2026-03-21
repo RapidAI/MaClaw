@@ -9,12 +9,13 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
 // RunLLM 执行 llm 子命令。
 func RunLLM(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui llm <test|ping|providers|status|set-provider|set-max-iterations|get-max-iterations>")
+		return NewUsageError("usage: maclaw-tui llm <test|ping|providers|status|set-provider|set-max-iterations|get-max-iterations|login|usage>")
 	}
 	switch args[0] {
 	case "test":
@@ -31,6 +32,10 @@ func RunLLM(args []string) error {
 		return llmSetMaxIterations(args[1:])
 	case "get-max-iterations":
 		return llmGetMaxIterations(args[1:])
+	case "login":
+		return llmLogin(args[1:])
+	case "usage":
+		return llmUsage(args[1:])
 	default:
 		return NewUsageError("unknown llm action: %s", args[0])
 	}
@@ -91,10 +96,47 @@ func llmStatus(args []string) error {
 	return nil
 }
 
+// ensureTUIoAuthToken 在 TUI 的 LLM 请求前检查并刷新 OAuth token。
+func ensureTUIoAuthToken() error {
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return nil // no config, nothing to refresh
+	}
+	if len(cfg.MaclawLLMProviders) == 0 {
+		return nil
+	}
+	for i, p := range cfg.MaclawLLMProviders {
+		if p.Name == cfg.MaclawLLMCurrentProvider && p.AuthType == "oauth" {
+			oauthCfg := oauth.DefaultConfig()
+			updated, err := oauth.EnsureValidToken(p, oauthCfg, func(up corelib.MaclawLLMProvider) error {
+				cfg.MaclawLLMProviders[i] = up
+				// Sync legacy fields
+				cfg.MaclawLLMUrl = up.URL
+				cfg.MaclawLLMKey = up.Key
+				cfg.MaclawLLMModel = up.Model
+				cfg.MaclawLLMProtocol = up.Protocol
+				cfg.MaclawLLMContextLength = up.ContextLength
+				return store.SaveConfig(cfg)
+			})
+			if err != nil {
+				return err
+			}
+			cfg.MaclawLLMProviders[i] = updated
+			break
+		}
+	}
+	return nil
+}
+
 func llmTest(args []string) error {
 	fs := flag.NewFlagSet("llm test", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
 	fs.Parse(args)
+
+	if err := ensureTUIoAuthToken(); err != nil {
+		return fmt.Errorf("OAuth token 刷新失败: %w", err)
+	}
 
 	llm, err := LoadLLMConfig()
 	if err != nil {
@@ -131,6 +173,10 @@ func llmPing(args []string) error {
 	fs := flag.NewFlagSet("llm ping", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
 	fs.Parse(args)
+
+	if err := ensureTUIoAuthToken(); err != nil {
+		return fmt.Errorf("OAuth token 刷新失败: %w", err)
+	}
 
 	llm, err := LoadLLMConfig()
 	if err != nil {
@@ -199,14 +245,24 @@ func llmProviders(args []string) error {
 		}
 		return nil
 	}
-	fmt.Printf("%-20s %-10s %-30s %s\n", "NAME", "PROTOCOL", "URL", "MODEL")
-	fmt.Println(strings.Repeat("-", 80))
+	fmt.Printf("%-20s %-10s %-30s %-16s %s\n", "NAME", "PROTOCOL", "URL", "AUTH", "MODEL")
+	fmt.Println(strings.Repeat("-", 96))
 	for _, p := range cfg.MaclawLLMProviders {
 		marker := "  "
 		if p.Name == cfg.MaclawLLMCurrentProvider {
 			marker = "→ "
 		}
-		fmt.Printf("%s%-18s %-10s %-30s %s\n", marker, p.Name, orDefault(p.Protocol, "openai"), TruncateDisplay(p.URL, 30), p.Model)
+		auth := "-"
+		if p.AuthType == "oauth" {
+			if p.Key == "" {
+				auth = "未认证"
+			} else if p.TokenExpiresAt > 0 && time.Now().Unix() >= p.TokenExpiresAt {
+				auth = "已过期"
+			} else {
+				auth = "已认证"
+			}
+		}
+		fmt.Printf("%s%-18s %-10s %-30s %-16s %s\n", marker, p.Name, orDefault(p.Protocol, "openai"), TruncateDisplay(p.URL, 30), auth, p.Model)
 	}
 	return nil
 }
@@ -317,5 +373,106 @@ func llmGetMaxIterations(args []string) error {
 		return PrintJSON(map[string]int{"max_iterations": value})
 	}
 	fmt.Printf("Agent 最大推理轮次: %d\n", value)
+	return nil
+}
+
+func llmLogin(args []string) error {
+	if len(args) == 0 || args[0] != "openai" {
+		return NewUsageError("usage: llm login openai")
+	}
+
+	fmt.Println("正在启动 OpenAI OAuth 登录，请在浏览器中完成授权...")
+
+	cfg := oauth.DefaultConfig()
+	result, err := oauth.RunOAuthFlow(cfg)
+	if err != nil {
+		return fmt.Errorf("OAuth 登录失败: %w", err)
+	}
+
+	store := NewFileConfigStore(ResolveDataDir())
+	appCfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	// Find or create the OpenAI provider
+	found := false
+	for i, p := range appCfg.MaclawLLMProviders {
+		if p.Name == "OpenAI" && p.AuthType == "oauth" {
+			appCfg.MaclawLLMProviders[i] = oauth.ApplyTokenResult(p, result)
+			found = true
+			break
+		}
+	}
+	if !found {
+		p := corelib.MaclawLLMProvider{
+			Name: "OpenAI", URL: "https://api.openai.com/v1",
+			Model: "gpt-4o", AuthType: "oauth", ContextLength: 128000,
+		}
+		p = oauth.ApplyTokenResult(p, result)
+		appCfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider{p}, appCfg.MaclawLLMProviders...)
+	}
+
+	// Set OpenAI as current and sync legacy fields
+	appCfg.MaclawLLMCurrentProvider = "OpenAI"
+	for _, p := range appCfg.MaclawLLMProviders {
+		if p.Name == "OpenAI" {
+			appCfg.MaclawLLMUrl = p.URL
+			appCfg.MaclawLLMKey = p.Key
+			appCfg.MaclawLLMModel = p.Model
+			appCfg.MaclawLLMProtocol = p.Protocol
+			appCfg.MaclawLLMContextLength = p.ContextLength
+			break
+		}
+	}
+
+	if err := store.SaveConfig(appCfg); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+
+	fmt.Println("✓ OpenAI OAuth 登录成功，已设为当前 LLM 提供商")
+	return nil
+}
+
+func llmUsage(args []string) error {
+	fs := flag.NewFlagSet("llm usage", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	fs.Parse(args)
+
+	if err := ensureTUIoAuthToken(); err != nil {
+		return fmt.Errorf("OAuth token 刷新失败: %w", err)
+	}
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	// Find the current OAuth provider
+	var accessToken string
+	for _, p := range cfg.MaclawLLMProviders {
+		if p.Name == cfg.MaclawLLMCurrentProvider && p.AuthType == "oauth" {
+			accessToken = p.Key
+			break
+		}
+	}
+	if accessToken == "" {
+		return fmt.Errorf("当前 provider 不支持用量查询（非 OAuth 类型）")
+	}
+
+	info, err := oauth.QueryUsage(accessToken)
+	if err != nil {
+		return fmt.Errorf("查询用量失败: %w", err)
+	}
+
+	if *jsonOut {
+		return PrintJSON(info)
+	}
+
+	fmt.Println("OpenAI 用量信息:")
+	fmt.Printf("  总额度:   $%.2f\n", info.TotalGranted)
+	fmt.Printf("  已使用:   $%.2f\n", info.TotalUsed)
+	fmt.Printf("  剩余额度: $%.2f\n", info.TotalAvailable)
 	return nil
 }

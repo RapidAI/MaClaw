@@ -196,11 +196,24 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 func (h *TUIAgentHandler) buildSystemPrompt() string {
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
-	return fmt.Sprintf(`你是 MaClaw AI 助手，运行在 TUI 终端中。你可以使用工具来帮助用户完成任务。
+	roleTitle := tuiRoleTitle()
+
+	// Override identity from memory self_identity if present.
+	var identity string
+	if h.memoryStore != nil {
+		if si := h.memoryStore.SelfIdentitySummary(600); si != "" {
+			identity = fmt.Sprintf("你的自我认知（来自记忆）：%s\n你运行在 TUI 终端中。你可以使用工具来帮助用户完成任务。", si)
+		}
+	}
+	if identity == "" {
+		identity = fmt.Sprintf("你是 MaClaw %s，运行在 TUI 终端中。你可以使用工具来帮助用户完成任务。", roleTitle)
+	}
+
+	return fmt.Sprintf(`%s
 当前系统: %s/%s
 用户主目录: %s
 当前工作目录: %s
-请用简洁的中文回答用户问题。当需要执行操作时，使用提供的工具。`, runtime.GOOS, runtime.GOARCH, home, cwd)
+请用简洁的中文回答用户问题。当需要执行操作时，使用提供的工具。`, identity, runtime.GOOS, runtime.GOARCH, home, cwd)
 }
 
 func (h *TUIAgentHandler) buildToolDefinitions() []map[string]interface{} {

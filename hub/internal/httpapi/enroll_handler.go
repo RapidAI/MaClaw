@@ -120,10 +120,11 @@ func EnrollStartHandler(identity *auth.IdentityService, feishuNotifier *feishu.N
 			respMap["expires_at"] = resp.ExpiresAt
 		}
 
-		// Synchronous feishu auto-enroll with 15-second timeout.
-		if resp != nil && feishuNotifier != nil {
+		// Synchronous feishu auto-enroll with 30-second timeout.
+		// Only run when enrollment is approved (user actually created).
+		if resp != nil && resp.Status == "approved" && feishuNotifier != nil {
 			if ae := feishuNotifier.AutoEnroller(); ae != nil {
-				feishuCtx, feishuCancel := context.WithTimeout(r.Context(), 15*time.Second)
+				feishuCtx, feishuCancel := context.WithTimeout(r.Context(), 30*time.Second)
 				defer feishuCancel()
 				feishuResult, feishuErr := ae.AddToFeishuOrg(feishuCtx, req.Email, "", req.Mobile)
 				if feishuErr != nil {
@@ -133,6 +134,25 @@ func EnrollStartHandler(identity *auth.IdentityService, feishuNotifier *feishu.N
 					respMap["feishu_status"] = feishuResult.Status
 					if feishuResult.Message != "" {
 						respMap["feishu_message"] = feishuResult.Message
+					}
+					// If the synchronous attempt failed, schedule a background retry.
+					if feishuResult.Status == "failed" {
+						email, mobile := req.Email, req.Mobile
+						go func() {
+							retryCtx, retryCancel := context.WithTimeout(context.Background(), 60*time.Second)
+							defer retryCancel()
+							// Wait before retrying to give transient issues time to resolve.
+							time.Sleep(5 * time.Second)
+							log.Printf("[enroll] background feishu retry for %s", email)
+							// Clear cooldown so the retry is not skipped.
+							ae.ClearCooldown(email)
+							result, err := ae.AddToFeishuOrg(retryCtx, email, "", mobile)
+							if err != nil {
+								log.Printf("[enroll] background feishu retry failed for %s: %v", email, err)
+							} else if result != nil {
+								log.Printf("[enroll] background feishu retry for %s: status=%s msg=%s", email, result.Status, result.Message)
+							}
+						}()
 					}
 				} else {
 					respMap["feishu_status"] = "failed"

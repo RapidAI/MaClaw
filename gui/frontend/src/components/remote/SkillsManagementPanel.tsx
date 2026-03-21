@@ -103,6 +103,9 @@ export function SkillsManagementPanel({ translate }: Props) {
     const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
     const [importing, setImporting] = useState(false);
 
+    // Toast message state (replaces system alert)
+    const [toastMsg, setToastMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
     // Learned skills tab state
     const [learnedSelected, setLearnedSelected] = useState<Set<string>>(new Set());
     const [learnedExporting, setLearnedExporting] = useState(false);
@@ -445,7 +448,7 @@ export function SkillsManagementPanel({ translate }: Props) {
                     }}
                     onClick={() => setActiveTab("hub")}
                 >
-                    Hub 市场
+                    技能市场
                 </button>
                 <button
                     style={{
@@ -508,7 +511,9 @@ export function SkillsManagementPanel({ translate }: Props) {
                                     {skills.map((s) => (
                                         <tr key={s.name} style={{ borderTop: "1px solid #e1e4e8" }}>
                                             <td style={tdStyle}>{s.name}</td>
-                                            <td style={tdStyle}>{s.description || "—"}</td>
+                                            <td style={tdStyle}>
+                                                <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
+                                            </td>
                                             <td style={tdStyle}>
                                                 <div style={{ display: "flex", flexWrap: "wrap", gap: "3px" }}>
                                                     {(s.triggers || []).map((t, i) => (
@@ -596,7 +601,7 @@ export function SkillsManagementPanel({ translate }: Props) {
                             alignItems: "center",
                             justifyContent: "center",
                         }}>
-                            正在搜索 SkillHub...
+                            正在搜索技能市场...
                         </div>
                     )}
 
@@ -631,7 +636,7 @@ export function SkillsManagementPanel({ translate }: Props) {
                                                 </span>
                                                 <span style={{ fontSize: "0.68rem", color: "#8b95a5" }}>v{skill.version}</span>
                                             </div>
-                                            <div style={{ fontSize: "0.76rem", color: "#5a6577", marginTop: "4px", lineHeight: 1.4 }}>
+                                            <div style={{ fontSize: "0.76rem", color: "#5a6577", marginTop: "4px", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }} title={skill.description || undefined}>
                                                 {skill.description || "暂无描述"}
                                             </div>
                                             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px", flexWrap: "wrap" }}>
@@ -720,7 +725,7 @@ export function SkillsManagementPanel({ translate }: Props) {
                             alignItems: "center",
                             justifyContent: "center",
                         }}>
-                            输入关键词搜索 SkillHub 上的 Skill
+                            输入关键词搜索技能市场上的 Skill
                         </div>
                     )}
                 </>
@@ -796,10 +801,12 @@ export function SkillsManagementPanel({ translate }: Props) {
                                                 <input type="checkbox" checked={learnedSelected.has(s.name)} onChange={() => toggleLearnedSelect(s.name)} />
                                             </td>
                                             <td style={tdStyle}>{s.name}</td>
-                                            <td style={tdStyle}>{s.description || "—"}</td>
                                             <td style={tdStyle}>
-                                                <span style={{ ...learnedSourceBadge, ...(s.source === "learned" ? learnedBadge : s.source === "file" ? learnedBadge : craftedBadge) }}>
-                                                    {s.source === "learned" ? "经验学习" : s.source === "file" ? "文件导入" : "工具制作"}
+                                                <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
+                                            </td>
+                                            <td style={tdStyle}>
+                                                <span style={sourceTextStyle}>
+                                                    {s.source === "learned" ? "📖 经验学习" : s.source === "file" ? "📁 文件导入" : "🔧 工具制作"}
                                                 </span>
                                             </td>
                                             <td style={tdStyle}>
@@ -812,22 +819,23 @@ export function SkillsManagementPanel({ translate }: Props) {
                                                 )}
                                             </td>
                                             <td style={tdStyle}>
-                                                <span style={{ ...statusBadgeStyle, ...(s.status === "active" ? activeBadge : disabledBadge) }}>
-                                                    {s.status === "active" ? "启用" : s.status}
+                                                <span style={statusDotStyle(s.status === "active")}>
+                                                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.status === "active" ? "#22c55e" : "#d1d5db", flexShrink: 0 }} />
+                                                    {s.status === "active" ? "启用" : "停用"}
                                                 </span>
                                             </td>
                                             <td style={tdStyle}>
                                                 <button
                                                     className="btn-secondary"
-                                                    style={{ fontSize: "0.7rem", padding: "2px 8px" }}
+                                                    style={uploadBtnStyle}
                                                     disabled={uploadingSkill === s.name}
                                                     onClick={async () => {
                                                         setUploadingSkill(s.name);
                                                         try {
                                                             const sid = await UploadNLSkillToMarket(s.name);
-                                                            alert(`上传成功，提交ID: ${sid}`);
+                                                            setToastMsg({ type: "success", text: `提交ID: ${sid}` });
                                                         } catch (e: any) {
-                                                            alert(`上传失败: ${e?.message || e}`);
+                                                            setToastMsg({ type: "error", text: `${e?.message || e}` });
                                                         } finally {
                                                             setUploadingSkill(null);
                                                         }
@@ -849,6 +857,26 @@ export function SkillsManagementPanel({ translate }: Props) {
                         </div>
                     )}
                 </>
+            )}
+
+            {/* Upload result toast dialog */}
+            {toastMsg && (
+                <div className="modal-backdrop" onClick={() => setToastMsg(null)}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "320px" }}>
+                        <div className="modal-header">
+                            <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{toastMsg.type === "success" ? "上传成功" : "上传失败"}</h3>
+                            <button className="btn-close" onClick={() => setToastMsg(null)}>×</button>
+                        </div>
+                        <div className="modal-body">
+                            <p style={{ fontSize: "0.8rem", color: toastMsg.type === "error" ? "#c53030" : "#5a6577", margin: 0, wordBreak: "break-all" }}>
+                                {toastMsg.text}
+                            </p>
+                        </div>
+                        <div className="modal-footer">
+                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => setToastMsg(null)}>确定</button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* Delete confirmation dialog */}
@@ -975,6 +1003,13 @@ const tdStyle: React.CSSProperties = {
     verticalAlign: "top",
 };
 
+const descCellStyle: React.CSSProperties = {
+    maxWidth: "220px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+};
+
 const tagStyle: React.CSSProperties = {
     display: "inline-block",
     background: "#f4f5f7",
@@ -1035,24 +1070,27 @@ const hubCardStyle: React.CSSProperties = {
     background: "#fff",
 };
 
-const learnedSourceBadge: React.CSSProperties = {
-    display: "inline-block",
-    padding: "1px 8px",
-    borderRadius: "999px",
-    fontSize: "0.68rem",
-    fontWeight: 600,
+const sourceTextStyle: React.CSSProperties = {
+    fontSize: "0.72rem",
+    color: "#5a6577",
+    whiteSpace: "nowrap",
 };
 
-const learnedBadge: React.CSSProperties = {
-    background: "#fef3c7",
-    color: "#92400e",
-    border: "1px solid #fcd34d",
-};
+const statusDotStyle = (active: boolean): React.CSSProperties => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    fontSize: "0.72rem",
+    color: active ? "#16a34a" : "#9ca3af",
+    whiteSpace: "nowrap",
+});
 
-const craftedBadge: React.CSSProperties = {
-    background: "#ede9fe",
-    color: "#5b21b6",
-    border: "1px solid #c4b5fd",
+const uploadBtnStyle: React.CSSProperties = {
+    fontSize: "0.7rem",
+    padding: "2px 10px",
+    whiteSpace: "nowrap",
+    minWidth: "60px",
+    textAlign: "center",
 };
 
 const trustBadgeStyle = (level: string): React.CSSProperties => {

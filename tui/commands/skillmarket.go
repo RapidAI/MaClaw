@@ -156,7 +156,7 @@ func smSubmit(args []string) error {
 
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	fw, err := w.CreateFormFile("file", filepath.Base(zipPath))
+	fw, err := w.CreateFormFile("zip", filepath.Base(zipPath))
 	if err != nil {
 		return err
 	}

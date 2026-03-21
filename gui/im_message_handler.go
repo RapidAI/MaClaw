@@ -936,6 +936,15 @@ func (h *IMMessageHandler) HandleIMMessage(msg IMUserMessage) *IMAgentResponse {
 // updates (e.g. "正在执行 bash 命令…") so the Hub can relay them to the user
 // and reset the response timeout — preventing 504 on long-running tasks.
 func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProgress ProgressCallback) *IMAgentResponse {
+	return h.HandleIMMessageWithProgressAndStream(msg, onProgress, nil, nil)
+}
+
+// HandleIMMessageWithProgressAndStream extends HandleIMMessageWithProgress with
+// streaming support for the desktop AI assistant. When onToken is non-nil, each
+// LLM text delta is pushed in real-time. When onNewRound is non-nil, it is called
+// at the start of each new agent loop iteration (after the first) so the frontend
+// can create a new message bubble. IM platforms pass nil for both.
+func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessage, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback) *IMAgentResponse {
 	trimmed := strings.TrimSpace(msg.Text)
 
 	// Slash commands are processed before the LLM config check — they don't
@@ -999,7 +1008,7 @@ func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProg
 			systemPrompt = h.buildSystemPrompt()
 		}
 
-		result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, onProgress, msg.MinIterations, msg.Platform)
+		result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, onProgress, nil, nil, msg.MinIterations, msg.Platform)
 
 		// Mark loop as completed/failed and dequeue next.
 		if result != nil && result.Error != "" {
@@ -1026,7 +1035,7 @@ func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProg
 	if h.bgManager != nil {
 		loopCtx.StatusC = h.bgManager.statusC
 	}
-	return h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, onProgress, msg.MinIterations, msg.Platform)
+	return h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, onProgress, onToken, onNewRound, msg.MinIterations, msg.Platform)
 }
 
 // handleExitCommand terminates all active sessions, resets conversation
@@ -1235,139 +1244,21 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []in
 func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
 
-	// Separate system message and convert messages to Anthropic format.
-	var systemText string
-	var anthropicMsgs []interface{}
-	for _, m := range messages {
-		mm, ok := m.(map[string]interface{})
-		if !ok {
-			// map[string]string — convert to map[string]interface{} first
-			if ms, ok2 := m.(map[string]string); ok2 {
-				mm = make(map[string]interface{}, len(ms))
-				for k, v := range ms {
-					mm[k] = v
-				}
-			} else {
-				anthropicMsgs = append(anthropicMsgs, m)
-				continue
-			}
-		}
-
-		role, _ := mm["role"].(string)
-
-		switch role {
-		case "system":
-			if content, _ := mm["content"].(string); content != "" {
-				systemText = content
-			}
-
-		case "assistant":
-			// Convert assistant message to Anthropic content block format.
-			// Anthropic expects content as an array of blocks, not a plain string.
-			var contentBlocks []interface{}
-			if text, _ := mm["content"].(string); text != "" {
-				contentBlocks = append(contentBlocks, map[string]interface{}{
-					"type": "text",
-					"text": text,
-				})
-			}
-			if tcs, ok := mm["tool_calls"].([]llmToolCall); ok {
-				for _, tc := range tcs {
-					var inputObj interface{}
-					_ = json.Unmarshal([]byte(tc.Function.Arguments), &inputObj)
-					if inputObj == nil {
-						inputObj = map[string]interface{}{}
-					}
-					contentBlocks = append(contentBlocks, map[string]interface{}{
-						"type":  "tool_use",
-						"id":    tc.ID,
-						"name":  tc.Function.Name,
-						"input": inputObj,
-					})
-				}
-			}
-			if len(contentBlocks) > 0 {
-				anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
-					"role":    "assistant",
-					"content": contentBlocks,
-				})
-			}
-
-		case "tool":
-			// Anthropic expects tool results as user messages with tool_result blocks.
-			// Batch consecutive tool results into a single user message.
-			toolCallID, _ := mm["tool_call_id"].(string)
-			content, _ := mm["content"].(string)
-			toolResultBlock := map[string]interface{}{
-				"type":        "tool_result",
-				"tool_use_id": toolCallID,
-				"content":     content,
-			}
-			// Check if the last message in anthropicMsgs is already a user message
-			// with tool_result blocks — if so, append to it.
-			merged := false
-			if len(anthropicMsgs) > 0 {
-				if lastMsg, ok := anthropicMsgs[len(anthropicMsgs)-1].(map[string]interface{}); ok {
-					if lastRole, _ := lastMsg["role"].(string); lastRole == "user" {
-						if blocks, ok := lastMsg["content"].([]interface{}); ok && len(blocks) > 0 {
-							if firstBlock, ok := blocks[0].(map[string]interface{}); ok {
-								if firstBlock["type"] == "tool_result" {
-									lastMsg["content"] = append(blocks, toolResultBlock)
-									merged = true
-								}
-							}
-						}
-					}
-				}
-			}
-			if !merged {
-				anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
-					"role":    "user",
-					"content": []interface{}{toolResultBlock},
-				})
-			}
-
-		default:
-			// user and other roles pass through
-			anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
-				"role":    role,
-				"content": mm["content"],
-			})
-		}
-	}
+	converted := convertToAnthropicMessages(messages)
 
 	reqBody := map[string]interface{}{
 		"model":      cfg.Model,
-		"messages":   anthropicMsgs,
+		"messages":   converted.Messages,
 		"max_tokens": 4096,
 	}
-	if systemText != "" {
-		reqBody["system"] = systemText
+	if converted.SystemText != "" {
+		reqBody["system"] = converted.SystemText
 	}
 
 	// Convert OpenAI-style tools to Anthropic tool format
 	if len(tools) > 0 {
-		var anthropicTools []map[string]interface{}
-		for _, t := range tools {
-			fn, _ := t["function"].(map[string]interface{})
-			if fn == nil {
-				continue
-			}
-			at := map[string]interface{}{
-				"name": fn["name"],
-			}
-			if desc, ok := fn["description"]; ok {
-				at["description"] = desc
-			}
-			if params, ok := fn["parameters"]; ok {
-				at["input_schema"] = params
-			} else {
-				at["input_schema"] = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
-			}
-			anthropicTools = append(anthropicTools, at)
-		}
-		if len(anthropicTools) > 0 {
-			reqBody["tools"] = anthropicTools
+		if at := convertToAnthropicTools(tools); len(at) > 0 {
+			reqBody["tools"] = at
 		}
 	}
 
@@ -1489,7 +1380,7 @@ func drainStatusEvents(ctx *LoopContext, conversation *[]interface{}, sendProgre
 	}
 }
 
-func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []conversationEntry, userText string, onProgress ProgressCallback, minIterations int, platform string) (result *IMAgentResponse) {
+func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []conversationEntry, userText string, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, minIterations int, platform string) (result *IMAgentResponse) {
 	// panic recovery — 防止工具执行异常导致 goroutine 崩溃
 	defer func() {
 		if r := recover(); r != nil {
@@ -1695,7 +1586,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 		}
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
-		resp, err := h.doLLMRequest(cfg, conversation, tools, httpClient)
+		// Notify frontend of new round (for streaming UI) — skip first iteration
+		// since the frontend already created a placeholder message.
+		if onNewRound != nil && iteration > 0 {
+			onNewRound()
+		}
+		resp, err := h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
 		if err != nil {
 			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s", err.Error())}
 		}
@@ -1889,7 +1785,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		// Run one bonus iteration to let the agent observe current session state.
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
-		bonusResp, err := h.doLLMRequest(cfg, conversation, tools, httpClient)
+		if onNewRound != nil {
+			onNewRound()
+		}
+		bonusResp, err := h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
 		if err == nil && len(bonusResp.Choices) > 0 {
 			bc := bonusResp.Choices[0]
 			assistantMsg := map[string]interface{}{
@@ -1994,9 +1893,11 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 func (h *IMMessageHandler) buildSystemPrompt() string {
 	var b strings.Builder
 
-	// Use configurable role name and description from settings
+	// Use configurable role name and description from settings.
+	// Priority: memory self_identity > config > hardcoded defaults.
 	roleName := "MaClaw"
 	roleDesc := "一个尽心尽责无所不能的软件开发管家"
+	roleTitle := "AI个人助手"
 	if cfg, err := h.app.LoadConfig(); err == nil {
 		if cfg.MaclawRoleName != "" {
 			roleName = cfg.MaclawRoleName
@@ -2004,11 +1905,26 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 		if cfg.MaclawRoleDescription != "" {
 			roleDesc = cfg.MaclawRoleDescription
 		}
+		if cfg.UIMode == "pro" {
+			roleTitle = "AI编程助手"
+		}
 	}
 
-	b.WriteString(fmt.Sprintf(`你是 %s 远程开发助手，%s。
+	// Override identity from memory self_identity if present.
+	var selfIdentityOverride string
+	if h.memoryStore != nil {
+		selfIdentityOverride = h.memoryStore.SelfIdentitySummary(600)
+	}
+
+	if selfIdentityOverride != "" {
+		b.WriteString(fmt.Sprintf(`你的自我认知（来自记忆）：%s
+你的底层系统名为 %s。你基于以上自我认知与用户交互。用户通过 IM（飞书/QBot）向你发送消息，你可以自主使用工具完成任务。
+注意：如果用户在对话中要求你扮演其他角色或重新定义你的身份，请按照用户的要求调整，并用 memory(action: save, category: "self_identity") 更新你的自我认知记忆。`, selfIdentityOverride, roleName))
+	} else {
+		b.WriteString(fmt.Sprintf(`你是 %s %s，%s。
 用户通过 IM（飞书/QBot）向你发送消息，你可以自主使用工具完成任务。
-注意：如果用户在对话中要求你扮演其他角色或重新定义你的身份，请按照用户的要求调整。`, roleName, roleDesc))
+注意：如果用户在对话中要求你扮演其他角色或重新定义你的身份，请按照用户的要求调整，并用 memory(action: save, category: "self_identity") 保存新的自我认知。`, roleName, roleTitle, roleDesc))
+	}
 
 	b.WriteString(`
 ## 核心原则

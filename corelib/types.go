@@ -137,6 +137,10 @@ type MaclawLLMProvider struct {
 	Protocol      string `json:"protocol,omitempty"`
 	ContextLength int    `json:"context_length,omitempty"`
 	IsCustom      bool   `json:"is_custom,omitempty"`
+	// ── 新增 OAuth 字段 ──
+	AuthType       string `json:"auth_type,omitempty"`
+	RefreshToken   string `json:"refresh_token,omitempty"`
+	TokenExpiresAt int64  `json:"token_expires_at,omitempty"`
 }
 
 // MaclawLLMConfig 是 MaClaw 桌面 Agent 的 LLM 配置。

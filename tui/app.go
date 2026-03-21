@@ -293,6 +293,9 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.root.Audit.SetEntries(nil)
 			a.root.ClawNet.SetPeers(nil)
 
+			// 从配置文件加载当前值到配置视图
+			a.syncConfigView()
+
 			// 检测已安装工具
 			detected := commands.DetectTools()
 			var toolInfos []views.ToolInfo
@@ -310,8 +313,20 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.root.StatusBar.SetMessage(fmt.Sprintf("[%s] %v", msg.eventType, msg.data))
 
 	case views.ConfigSaveMsg:
-		// TODO: 接入 config.Manager 持久化
-		a.root.StatusBar.SetMessage(fmt.Sprintf("已保存: %s = %s", msg.Key, msg.Value))
+		// 通过 config.Manager 持久化到文件
+		displayVal := msg.Value
+		if a.configMgr != nil {
+			if _, err := a.configMgr.UpdateConfig(msg.Section, msg.Key, msg.Value); err != nil {
+				a.root.StatusBar.SetMessage(fmt.Sprintf("保存失败: %s: %v", msg.Key, err))
+			} else {
+				if isSensitiveConfigKey(msg.Key) {
+					displayVal = "********"
+				}
+				a.root.StatusBar.SetMessage(fmt.Sprintf("已保存: %s = %s", msg.Key, displayVal))
+			}
+		} else {
+			a.root.StatusBar.SetMessage(fmt.Sprintf("已保存: %s = %s", msg.Key, displayVal))
+		}
 		// Re-sync QQ Bot gateway on config change
 		if a.qqBotMgr != nil && msg.Section == "qqbot" {
 			go a.qqBotMgr.SyncFromConfig()
@@ -353,6 +368,8 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case configChangedMsg:
 		a.root.StatusBar.SetMessage("配置文件已变更，正在重新加载...")
+		// 刷新配置视图
+		a.syncConfigView()
 		// Re-sync gateways
 		if a.qqBotMgr != nil {
 			go a.qqBotMgr.SyncFromConfig()
@@ -475,6 +492,22 @@ func loadLLMConfig() (corelib.MaclawLLMConfig, error) {
 	return llm, nil
 }
 
+// syncConfigView 从配置文件加载当前值到配置视图。
+func (a *TUIApp) syncConfigView() {
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return
+	}
+	a.root.Config.LoadFromAppConfig(cfg)
+}
+
+// isSensitiveConfigKey 判断配置 key 是否为敏感字段。
+func isSensitiveConfigKey(key string) bool {
+	return strings.Contains(key, "token") || strings.Contains(key, "secret") ||
+		strings.Contains(key, "key") || strings.Contains(key, "password")
+}
+
 // sendAgentMessage 在后台执行 Agent 循环（带工具调用）。
 func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 	// 追加用户消息到历史
@@ -512,6 +545,20 @@ func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 	}
 }
 
+// tuiRoleTitle returns "AI编程助手" for pro mode, "AI个人助手" otherwise.
+func tuiRoleTitle() string {
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	if cfg, err := store.LoadConfig(); err == nil && cfg.UIMode == "pro" {
+		return "AI编程助手"
+	}
+	return "AI个人助手"
+}
+
+// tuiSystemGreeting returns the TUI system prompt greeting based on ui_mode.
+func tuiSystemGreeting() string {
+	return fmt.Sprintf("你是 MaClaw %s，运行在 TUI 终端中。请用简洁的中文回答用户问题。", tuiRoleTitle())
+}
+
 // sendChatMessage 在后台调用 LLM 并返回响应。
 func (a *TUIApp) sendChatMessage(text string) tea.Cmd {
 	// 追加用户消息到历史
@@ -519,11 +566,19 @@ func (a *TUIApp) sendChatMessage(text string) tea.Cmd {
 		"role": "user", "content": text,
 	})
 
+	// Build system greeting with memory-based identity override.
+	greeting := tuiSystemGreeting()
+	if a.memoryStore != nil {
+		if si := a.memoryStore.SelfIdentitySummary(600); si != "" {
+			greeting = fmt.Sprintf("你的自我认知（来自记忆）：%s\n你运行在 TUI 终端中。请用简洁的中文回答用户问题。", si)
+		}
+	}
+
 	// 构建消息列表（含系统提示 + 历史）
 	var msgs []interface{}
 	msgs = append(msgs, map[string]string{
 		"role":    "system",
-		"content": "你是 MaClaw AI 助手，运行在 TUI 终端中。请用简洁的中文回答用户问题。",
+		"content": greeting,
 	})
 	// 保留最近 20 轮对话
 	history := a.chatHistory

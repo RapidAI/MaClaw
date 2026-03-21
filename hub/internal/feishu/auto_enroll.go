@@ -39,7 +39,9 @@ const (
 	settingsKeyAutoEnroll    = "feishu_auto_enroll"
 	feishuAPIBase            = "https://open.feishu.cn"
 	larkAPIBase              = "https://open.larksuite.com"
-	addMemberCooldown        = 10 * time.Minute
+	addMemberCooldown        = 2 * time.Minute
+	createUserMaxRetries     = 2
+	retryBaseDelay           = 2 * time.Second
 )
 
 // AutoEnrollResult holds the structured result of an auto-enroll attempt.
@@ -139,6 +141,14 @@ func (ae *AutoEnroller) trySendWelcome(openID string) {
 	ws(openID)
 }
 
+// ClearCooldown removes the cooldown entry for the given email so that a
+// subsequent AddToFeishuOrg call will not be skipped.
+func (ae *AutoEnroller) ClearCooldown(email string) {
+	ae.mu.Lock()
+	delete(ae.attempts, strings.ToLower(strings.TrimSpace(email)))
+	ae.mu.Unlock()
+}
+
 // apiBase returns the correct API base URL based on the UseLark setting.
 func (ae *AutoEnroller) apiBase() string {
 	if ae.Config().UseLark {
@@ -155,6 +165,7 @@ func (ae *AutoEnroller) apiBase() string {
 // will detect duplicates and skip silently.
 func (ae *AutoEnroller) AddToFeishuOrg(ctx context.Context, email, displayName, mobile string) (*AutoEnrollResult, error) {
 	if !ae.IsEnabled() {
+		log.Printf("[feishu/auto-enroll] disabled, skipping %s", email)
 		return &AutoEnrollResult{Status: "disabled"}, nil
 	}
 
@@ -169,11 +180,13 @@ func (ae *AutoEnroller) AddToFeishuOrg(ctx context.Context, email, displayName, 
 		mobile = normalizeChinaMobile(mobile)
 	}
 
+	log.Printf("[feishu/auto-enroll] starting for email=%s mobile=%q displayName=%q", email, mobile, displayName)
+
 	// Cooldown — avoid repeated API calls for the same email.
 	ae.mu.Lock()
 	if last, ok := ae.attempts[email]; ok && time.Since(last) < addMemberCooldown {
 		ae.mu.Unlock()
-		log.Printf("[feishu/auto-enroll] skipping %s (cooldown)", email)
+		log.Printf("[feishu/auto-enroll] skipping %s (cooldown, last attempt %s ago)", email, time.Since(last).Round(time.Second))
 		return &AutoEnrollResult{Status: "skipped", Message: "cooldown"}, nil
 	}
 	ae.attempts[email] = time.Now()
@@ -185,13 +198,10 @@ func (ae *AutoEnroller) AddToFeishuOrg(ctx context.Context, email, displayName, 
 	}
 	ae.mu.Unlock()
 
-	bot := ae.bot()
-	if bot == nil {
-		return &AutoEnrollResult{Status: "failed", Message: "feishu bot not initialized"}, fmt.Errorf("feishu bot not initialized")
-	}
-	token := bot.TenantAccessToken()
-	if token == "" {
-		return &AutoEnrollResult{Status: "failed", Message: "feishu tenant access token is empty"}, fmt.Errorf("feishu tenant access token is empty")
+	// Obtain bot and token with retry for empty token.
+	token, err := ae.acquireToken(ctx)
+	if err != nil {
+		return &AutoEnrollResult{Status: "failed", Message: err.Error()}, err
 	}
 
 	// Step 1: Check if user already exists in Feishu org by email.
@@ -201,20 +211,19 @@ func (ae *AutoEnroller) AddToFeishuOrg(ctx context.Context, email, displayName, 
 		// Non-fatal — proceed to create.
 	}
 	if existingOpenID != "" {
-		// User already in org — just bind the open_id and return.
 		log.Printf("[feishu/auto-enroll] user %s already in Feishu org (open_id=%s), binding only", email, existingOpenID)
 		ae.binder(email, existingOpenID)
+		ae.trySendWelcome(existingOpenID)
 		return &AutoEnrollResult{Status: "ok", Message: "already in org", OpenID: existingOpenID}, nil
 	}
 
-	// Step 2: Create user in Feishu org.
+	// Step 2: Create user in Feishu org with retry.
 	deptID := ae.Config().DepartmentID
 	if deptID == "" {
 		deptID = "0" // root department
 	}
 
 	if displayName == "" {
-		// Use the local part of the email as a fallback name.
 		if idx := strings.Index(email, "@"); idx > 0 {
 			displayName = email[:idx]
 		} else {
@@ -222,27 +231,92 @@ func (ae *AutoEnroller) AddToFeishuOrg(ctx context.Context, email, displayName, 
 		}
 	}
 
-	openID, err := ae.createFeishuUser(ctx, token, email, displayName, deptID, mobile)
-	if err != nil {
-		// If the error indicates the user already exists, try to extract open_id.
-		if strings.Contains(err.Error(), "already exist") || strings.Contains(err.Error(), "40003") {
+	var lastErr error
+	for attempt := 0; attempt <= createUserMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := retryBaseDelay * time.Duration(attempt)
+			log.Printf("[feishu/auto-enroll] retry %d/%d for %s after %s", attempt, createUserMaxRetries, email, delay)
+			select {
+			case <-ctx.Done():
+				return &AutoEnrollResult{Status: "failed", Message: "context cancelled"}, ctx.Err()
+			case <-time.After(delay):
+			}
+			// Re-acquire token in case it expired between retries.
+			if t, tErr := ae.acquireToken(ctx); tErr == nil {
+				token = t
+			}
+		}
+
+		openID, createErr := ae.createFeishuUser(ctx, token, email, displayName, deptID, mobile)
+		if createErr == nil {
+			if openID != "" {
+				ae.binder(email, openID)
+				ae.trySendWelcome(openID)
+				log.Printf("[feishu/auto-enroll] ✅ added %s to Feishu org (open_id=%s, dept=%s, attempt=%d)", email, openID, deptID, attempt)
+				return &AutoEnrollResult{Status: "ok", OpenID: openID}, nil
+			}
+			// API succeeded but returned empty open_id — unexpected.
+			log.Printf("[feishu/auto-enroll] createFeishuUser returned empty open_id for %s (attempt %d)", email, attempt)
+			lastErr = fmt.Errorf("API returned empty open_id")
+			continue
+		}
+
+		lastErr = createErr
+		errMsg := createErr.Error()
+		log.Printf("[feishu/auto-enroll] createFeishuUser failed for %s (attempt %d/%d): %v", email, attempt, createUserMaxRetries, createErr)
+
+		// If the error indicates the user already exists, try lookup instead of retrying create.
+		if strings.Contains(errMsg, "already exist") || strings.Contains(errMsg, "40003") {
 			log.Printf("[feishu/auto-enroll] user %s may already exist, attempting lookup", email)
 			if oid, lookupErr := ae.lookupUserByEmail(ctx, token, email); lookupErr == nil && oid != "" {
 				ae.binder(email, oid)
+				ae.trySendWelcome(oid)
 				return &AutoEnrollResult{Status: "ok", Message: "already in org", OpenID: oid}, nil
 			}
 		}
-		return &AutoEnrollResult{Status: "failed", Message: err.Error()}, fmt.Errorf("create feishu user: %w", err)
+
+		// Don't retry on non-transient errors (permission, invalid params, etc.)
+		if strings.Contains(errMsg, "41010") || // mobile required
+			strings.Contains(errMsg, "40001") || // invalid param
+			strings.Contains(errMsg, "99991663") { // no permission
+			log.Printf("[feishu/auto-enroll] non-retryable error for %s: %s", email, errMsg)
+			break
+		}
 	}
 
-	// Step 3: Bind the new open_id.
-	if openID != "" {
-		ae.binder(email, openID)
-		ae.trySendWelcome(openID)
+	errMsg := "unknown error"
+	if lastErr != nil {
+		errMsg = lastErr.Error()
+	}
+	return &AutoEnrollResult{Status: "failed", Message: errMsg}, fmt.Errorf("create feishu user: %w", lastErr)
+}
+
+// acquireToken obtains a valid tenant access token, retrying once if the
+// initial token is empty (e.g. bot just started and hasn't fetched yet).
+func (ae *AutoEnroller) acquireToken(ctx context.Context) (string, error) {
+	bot := ae.bot()
+	if bot == nil {
+		log.Printf("[feishu/auto-enroll] bot is nil — feishu app not configured")
+		return "", fmt.Errorf("feishu bot not initialized")
+	}
+	token := bot.TenantAccessToken()
+	if token != "" {
+		return token, nil
 	}
 
-	log.Printf("[feishu/auto-enroll] ✅ added %s to Feishu org (open_id=%s, dept=%s)", email, openID, deptID)
-	return &AutoEnrollResult{Status: "ok", OpenID: openID}, nil
+	// Token empty — the bot may not have fetched it yet. Wait briefly and retry.
+	log.Printf("[feishu/auto-enroll] tenant access token empty, waiting 3s for token refresh...")
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(3 * time.Second):
+	}
+	token = bot.TenantAccessToken()
+	if token != "" {
+		return token, nil
+	}
+	log.Printf("[feishu/auto-enroll] tenant access token still empty after retry")
+	return "", fmt.Errorf("feishu tenant access token is empty (bot may not be configured)")
 }
 
 
@@ -337,6 +411,8 @@ func (ae *AutoEnroller) createFeishuUser(ctx context.Context, token, email, name
 	}
 	body, _ := json.Marshal(payload)
 
+	log.Printf("[feishu/auto-enroll] createFeishuUser request: email=%s name=%q dept=%s mobile=%q empType=%d", email, name, departmentID, mobile, empType)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -346,6 +422,7 @@ func (ae *AutoEnroller) createFeishuUser(ctx context.Context, token, email, name
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		log.Printf("[feishu/auto-enroll] createFeishuUser HTTP error for %s: %v", email, err)
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -355,6 +432,7 @@ func (ae *AutoEnroller) createFeishuUser(ctx context.Context, token, email, name
 		return "", fmt.Errorf("decode: %w", err)
 	}
 	if result.Code != 0 {
+		log.Printf("[feishu/auto-enroll] createFeishuUser API error for %s: code=%d msg=%s", email, result.Code, result.Msg)
 		return "", fmt.Errorf("API error: code=%d msg=%s", result.Code, result.Msg)
 	}
 
@@ -367,6 +445,7 @@ func (ae *AutoEnroller) createFeishuUser(ctx context.Context, token, email, name
 	if err := json.Unmarshal(result.Data, &data); err != nil {
 		return "", fmt.Errorf("parse user: %w", err)
 	}
+	log.Printf("[feishu/auto-enroll] createFeishuUser success for %s: open_id=%s", email, data.User.OpenID)
 	return data.User.OpenID, nil
 }
 
