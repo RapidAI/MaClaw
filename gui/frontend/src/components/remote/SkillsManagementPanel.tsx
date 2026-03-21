@@ -788,10 +788,10 @@ export function SkillsManagementPanel({ translate }: Props) {
                                         </th>
                                         <th style={thStyle}>名称</th>
                                         <th style={thStyle}>描述</th>
-                                        <th style={thStyle}>来源</th>
+                                        <th style={{ ...thStyle, width: "40px", textAlign: "center" }}>来源</th>
                                         <th style={thStyle}>使用统计</th>
                                         <th style={thStyle}>状态</th>
-                                        <th style={thStyle}>操作</th>
+                                        <th style={{ ...thStyle, width: "100px" }}>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -805,8 +805,11 @@ export function SkillsManagementPanel({ translate }: Props) {
                                                 <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
                                             </td>
                                             <td style={tdStyle}>
-                                                <span style={sourceTextStyle}>
-                                                    {s.source === "learned" ? "📖 经验学习" : s.source === "file" ? "📁 文件导入" : "🔧 工具制作"}
+                                                <span
+                                                    title={s.source === "learned" ? "经验学习" : s.source === "file" ? "文件导入" : "工具制作"}
+                                                    style={{ cursor: "default" }}
+                                                >
+                                                    {s.source === "learned" ? "📖" : s.source === "file" ? "📁" : "🔧"}
                                                 </span>
                                             </td>
                                             <td style={tdStyle}>
@@ -825,24 +828,28 @@ export function SkillsManagementPanel({ translate }: Props) {
                                                 </span>
                                             </td>
                                             <td style={tdStyle}>
-                                                <button
-                                                    className="btn-secondary"
-                                                    style={uploadBtnStyle}
-                                                    disabled={uploadingSkill === s.name}
-                                                    onClick={async () => {
-                                                        setUploadingSkill(s.name);
-                                                        try {
-                                                            const sid = await UploadNLSkillToMarket(s.name);
-                                                            setToastMsg({ type: "success", text: `提交ID: ${sid}` });
-                                                        } catch (e: any) {
-                                                            setToastMsg({ type: "error", text: `${e?.message || e}` });
-                                                        } finally {
-                                                            setUploadingSkill(null);
-                                                        }
-                                                    }}
-                                                >
-                                                    {uploadingSkill === s.name ? "上传中..." : "⬆ 上传"}
-                                                </button>
+                                                <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                                    <button
+                                                        className="btn-secondary"
+                                                        style={uploadBtnStyle}
+                                                        disabled={uploadingSkill === s.name}
+                                                        onClick={async () => {
+                                                            setUploadingSkill(s.name);
+                                                            try {
+                                                                const sid = await UploadNLSkillToMarket(s.name);
+                                                                setToastMsg({ type: "success", text: `提交ID: ${sid}` });
+                                                                await loadData();
+                                                            } catch (e: any) {
+                                                                setToastMsg({ type: "error", text: `${e?.message || e}` });
+                                                            } finally {
+                                                                setUploadingSkill(null);
+                                                            }
+                                                        }}
+                                                    >
+                                                        {uploadingSkill === s.name ? "上传中..." : s.hub_skill_id ? "⬆ 重新上传" : "⬆ 上传"}
+                                                    </button>
+                                                    {s.hub_skill_id && <span title="已上传到技能市场" style={{ fontSize: "0.68rem", color: "#16a34a" }}>✅</span>}
+                                                </div>
                                             </td>
                                         </tr>
                                     ))}

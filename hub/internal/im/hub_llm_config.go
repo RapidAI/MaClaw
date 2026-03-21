@@ -27,12 +27,4 @@ func (c *HubLLMConfig) ToMaclawLLMConfig() corelib.MaclawLLMConfig {
 	}
 }
 
-// MaskAPIKey returns a masked version of the API key for display.
-// Shows first 4 and last 4 characters with **** in between.
-func (c *HubLLMConfig) MaskAPIKey() string {
-	k := c.APIKey
-	if len(k) <= 8 {
-		return "********"
-	}
-	return k[:4] + "****" + k[len(k)-4:]
-}
+

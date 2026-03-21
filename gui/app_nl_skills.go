@@ -153,6 +153,17 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []NLSkillEntry {
 			})
 		}
 
+		skillDir := filepath.Join(skillsRoot, entry.Name())
+
+		// Check if this file-based skill has been uploaded before.
+		var hubSkillID string
+		if statusData, err := os.ReadFile(filepath.Join(skillDir, "upload_status.json")); err == nil {
+			var us uploadStatusFile
+			if json.Unmarshal(statusData, &us) == nil && us.SubmissionID != "" {
+				hubSkillID = us.SubmissionID
+			}
+		}
+
 		result = append(result, NLSkillEntry{
 			Name:        name,
 			Description: sf.Description,
@@ -162,7 +173,8 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []NLSkillEntry {
 			Source:      "file",
 			Platforms:   sf.Platforms,
 			RequiresGUI: sf.RequiresGUI,
-			SkillDir:    filepath.Join(skillsRoot, entry.Name()),
+			SkillDir:    skillDir,
+			HubSkillID:  hubSkillID,
 			CreatedAt:   fileModTime(yamlPath),
 		})
 	}
@@ -373,6 +385,44 @@ func (e *SkillExecutor) Delete(name string) error {
 			skills = append(skills[:i], skills[i+1:]...)
 			return e.saveSkills(skills)
 		}
+	}
+	return fmt.Errorf("skill %q not found", name)
+}
+
+// uploadStatusFile is a small JSON file stored alongside file-based skills
+// to persist upload metadata that can't be saved in config.json.
+type uploadStatusFile struct {
+	SubmissionID string `json:"submission_id"`
+	UploadedAt   string `json:"uploaded_at"`
+}
+
+// MarkUploaded records that a skill has been uploaded to SkillMarket.
+// For config-based skills, it writes hub_skill_id into config.
+// For file-based skills, it writes an upload_status.json next to skill.yaml.
+func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	skills := e.loadSkills()
+	for i, s := range skills {
+		if s.Name != name {
+			continue
+		}
+		if s.Source == "file" && s.SkillDir != "" {
+			// File-based skill: write upload_status.json to skill directory.
+			status := uploadStatusFile{
+				SubmissionID: submissionID,
+				UploadedAt:   time.Now().Format(time.RFC3339),
+			}
+			data, err := json.MarshalIndent(status, "", "  ")
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(s.SkillDir, "upload_status.json"), data, 0644)
+		}
+		// Config-based skill: persist in config.json.
+		skills[i].HubSkillID = submissionID
+		return e.saveSkills(skills)
 	}
 	return fmt.Errorf("skill %q not found", name)
 }
@@ -772,6 +822,9 @@ func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
 		return "", fmt.Errorf("上传失败: %w", err)
 	}
 
+	// 上传成功后，标记 skill 已上传
+	_ = a.skillExecutor.MarkUploaded(skillName, submissionID)
+
 	return submissionID, nil
 }
 
@@ -822,6 +875,32 @@ func (a *App) packageSkillForMarket(skillName string) (string, error) {
 	}
 	if err := os.WriteFile(filepath.Join(tmpDir, "skill.json"), skillJSON, 0644); err != nil {
 		return "", err
+	}
+
+	// 生成 skill.yaml（服务端 ValidatePackage 必需）
+	// 如果 file-based skill 已自带 skill.yaml，跳过生成
+	yamlPath := filepath.Join(tmpDir, "skill.yaml")
+	if _, statErr := os.Stat(yamlPath); statErr != nil {
+		skillYAML := map[string]interface{}{
+			"name":        target.Name,
+			"description": target.Description,
+		}
+		if len(target.Triggers) > 0 {
+			skillYAML["triggers"] = target.Triggers
+		}
+		if len(target.Platforms) > 0 {
+			skillYAML["platforms"] = target.Platforms
+		}
+		if target.RequiresGUI {
+			skillYAML["requires_gui"] = true
+		}
+		yamlData, err := yaml.Marshal(skillYAML)
+		if err != nil {
+			return "", fmt.Errorf("生成 skill.yaml 失败: %w", err)
+		}
+		if err := os.WriteFile(yamlPath, yamlData, 0644); err != nil {
+			return "", err
+		}
 	}
 
 	// 打包为 zip

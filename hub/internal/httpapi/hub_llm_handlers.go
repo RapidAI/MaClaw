@@ -12,27 +12,46 @@ import (
 
 const hubLLMConfigKey = "hub_llm_config"
 
-// GetHubLLMConfigHandler returns the current Hub LLM configuration with
-// the API key masked.
+// GetHubLLMConfigHandler returns the current Hub LLM configuration.
+// The API key is never sent to the frontend; instead a boolean flag
+// indicates whether a key has been configured.
 func GetHubLLMConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw, err := system.Get(r.Context(), hubLLMConfigKey)
 		if err != nil || raw == "" {
-			writeJSON(w, http.StatusOK, &im.HubLLMConfig{})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"enabled": false, "api_url": "", "api_key": "",
+				"model": "", "protocol": "", "smart_route_single_device": false,
+				"has_api_key": false,
+			})
 			return
 		}
 		var cfg im.HubLLMConfig
 		if json.Unmarshal([]byte(raw), &cfg) != nil {
-			writeJSON(w, http.StatusOK, &im.HubLLMConfig{})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"enabled": false, "api_url": "", "api_key": "",
+				"model": "", "protocol": "", "smart_route_single_device": false,
+				"has_api_key": false,
+			})
 			return
 		}
-		cfg.APIKey = cfg.MaskAPIKey()
-		writeJSON(w, http.StatusOK, cfg)
+		hasKey := cfg.APIKey != ""
+		cfg.APIKey = "" // never expose the real key
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled":                  cfg.Enabled,
+			"api_url":                  cfg.APIURL,
+			"api_key":                  "",
+			"model":                    cfg.Model,
+			"protocol":                 cfg.Protocol,
+			"smart_route_single_device": cfg.SmartRouteSingleDevice,
+			"has_api_key":              hasKey,
+		})
 	}
 }
 
 // UpdateHubLLMConfigHandler saves the Hub LLM configuration.
-// If the API key looks masked (unchanged from frontend), the old key is preserved.
+// If the API key is empty (frontend never receives the real key), the old
+// key is preserved so that saving other fields doesn't wipe the key.
 func UpdateHubLLMConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var cfg im.HubLLMConfig
@@ -41,8 +60,8 @@ func UpdateHubLLMConfigHandler(system store.SystemSettingsRepository) http.Handl
 			return
 		}
 
-		// Preserve old key if the submitted one is masked.
-		if isMasked(cfg.APIKey) || cfg.APIKey == "********" {
+		// Empty key means the user didn't change it — preserve the stored one.
+		if cfg.APIKey == "" {
 			old := loadHubLLMConfig(r, system)
 			if old != nil {
 				cfg.APIKey = old.APIKey
@@ -55,9 +74,15 @@ func UpdateHubLLMConfigHandler(system store.SystemSettingsRepository) http.Handl
 			return
 		}
 
-		resp := cfg
-		resp.APIKey = resp.MaskAPIKey()
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled":                  cfg.Enabled,
+			"api_url":                  cfg.APIURL,
+			"api_key":                  "",
+			"model":                    cfg.Model,
+			"protocol":                 cfg.Protocol,
+			"smart_route_single_device": cfg.SmartRouteSingleDevice,
+			"has_api_key":              cfg.APIKey != "",
+		})
 	}
 }
 

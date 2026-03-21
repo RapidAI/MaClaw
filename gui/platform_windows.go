@@ -1680,7 +1680,17 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 
 			codexBatchContent += fmt.Sprintf("echo Launching %s...\r\n", binaryName)
 			codexBatchContent += "echo.\r\n"
-			codexBatchContent += fmt.Sprintf("call \"%s\"%s\r\n", binaryPath, cmdArgs)
+			// Bypass the .cmd shim and invoke node directly.
+			// npm's .cmd shim uses "goto #_undefined_#" trick that breaks under "call".
+			nodeExe := filepath.Join(filepath.Dir(binaryPath), "node.exe")
+			codexJsPath := filepath.Join(filepath.Dir(binaryPath), "node_modules", "@openai", "codex", "bin", "codex.js")
+			if _, err := os.Stat(nodeExe); err == nil {
+				// Local node.exe bundled alongside the tool
+				codexBatchContent += fmt.Sprintf("\"%s\" \"%s\"%s\r\n", nodeExe, codexJsPath, cmdArgs)
+			} else {
+				// Fall back to system node
+				codexBatchContent += fmt.Sprintf("node \"%s\"%s\r\n", codexJsPath, cmdArgs)
+			}
 
 			codexBatchContent += "set TOOL_EXIT_CODE=%errorlevel%\r\n"
 			codexBatchContent += "echo.\r\n"

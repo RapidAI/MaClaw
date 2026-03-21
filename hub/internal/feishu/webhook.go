@@ -314,7 +314,11 @@ func handleListMachines(n *Notifier, openID string) {
 		if name == "" {
 			name = m.MachineID[:8]
 		}
-		sb.WriteString(fmt.Sprintf("%s %s [%s]\n  ID: %s\n", status, name, m.Platform, shortID(m.MachineID)))
+		aliasTag := ""
+		if m.Alias != "" && m.Alias != name {
+			aliasTag = fmt.Sprintf(" (%s)", m.Alias)
+		}
+		sb.WriteString(fmt.Sprintf("%s %s%s [%s]\n  ID: %s\n", status, name, aliasTag, m.Platform, shortID(m.MachineID)))
 		if m.Online && !m.LLMConfigured {
 			sb.WriteString("  ⚠️ LLM 未配置，Agent 无法运行\n")
 		}

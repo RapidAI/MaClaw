@@ -182,7 +182,7 @@ if not exist "%POWERSHELL%" (
   "$dst = '%STAGE_ROOT%';" ^
   "$skipNames = @('.git','.gocache','.gomodcache','.kiro','.kode','.vscode','build','dist');" ^
   "Get-ChildItem -Path $src -Force | Where-Object { $skipNames -notcontains $_.Name } | ForEach-Object { Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force };" ^
-  "$removePaths = @('frontend\node_modules','hub\bin','hub\package','hub\data','hub\.gocache','hub\.gomodcache','hubcenter\bin','hubcenter\package','hubcenter\data','hubcenter\.gocache','hubcenter\.gomodcache');" ^
+  "$removePaths = @('frontend\node_modules','hub\bin','hub\package','hub\data','hub\.gocache','hub\.gomodcache','hubcenter\bin','hubcenter\package','hubcenter\data','hubcenter\.gocache','hubcenter\.gomodcache','openclaw-bridge\node_modules','openclaw-bridge\dist');" ^
   "foreach ($rel in $removePaths) { $path = Join-Path $dst $rel; if (Test-Path $path) { Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue } };" ^
   "Get-ChildItem -Path $dst -Recurse -File -Include *.exe,*.exe~ -Force | Remove-Item -Force -ErrorAction SilentlyContinue;"
 if errorlevel 1 (
@@ -259,6 +259,34 @@ setlocal DisableDelayedExpansion
   echo deploy_one "$SRC_ROOT/hub" "$REMOTE_HUB_DIR" "$BUILD_ROOT/maclaw-hub" "maclaw-hub"
   echo echo "[remote] Deploying hubcenter files..."
   echo deploy_one "$SRC_ROOT/hubcenter" "$REMOTE_HUBCENTER_DIR" "$BUILD_ROOT/maclaw-hubcenter" "maclaw-hubcenter"
+  echo.
+  echo # Deploy openclaw-bridge ^(Node.js project^)
+  echo BRIDGE_SRC="$SRC_ROOT/openclaw-bridge"
+  echo BRIDGE_DST="$REMOTE_HUB_DIR/openclaw-bridge"
+  echo if [ -d "$BRIDGE_SRC" ] ^&^& [ -f "$BRIDGE_SRC/package.json" ]; then
+  echo   echo "[remote] Deploying openclaw-bridge..."
+  echo   mkdir -p "$BRIDGE_DST"
+  echo   cp -f "$BRIDGE_SRC/package.json" "$BRIDGE_DST/package.json"
+  echo   cp -f "$BRIDGE_SRC/tsconfig.json" "$BRIDGE_DST/tsconfig.json" 2^>/dev/null ^|^| true
+  echo   rm -rf "$BRIDGE_DST/src" "$BRIDGE_DST/dist"
+  echo   cp -Rf "$BRIDGE_SRC/src" "$BRIDGE_DST/src"
+  echo   if [ -f "$BRIDGE_SRC/config.example.json" ]; then
+  echo     cp -f "$BRIDGE_SRC/config.example.json" "$BRIDGE_DST/config.example.json"
+  echo   fi
+  echo   if command -v npm ^>/dev/null 2^>^&1; then
+  echo     echo "[remote] Running npm install in openclaw-bridge..."
+  echo     cd "$BRIDGE_DST" ^&^& npm install 2^>^&1 ^|^| echo "[WARN] npm install failed for openclaw-bridge"
+  echo     echo "[remote] Building openclaw-bridge..."
+  echo     npx tsc 2^>^&1 ^|^| echo "[WARN] tsc build failed for openclaw-bridge"
+  echo     echo "[remote] Pruning dev dependencies..."
+  echo     npm prune --production 2^>^&1 ^|^| true
+  echo     cd "$SRC_ROOT"
+  echo   else
+  echo     echo "[WARN] npm not found on remote host, skipping openclaw-bridge dependencies"
+  echo   fi
+  echo else
+  echo   echo "[remote] openclaw-bridge source not found, skipping"
+  echo fi
   echo.
   echo echo "[remote] Restarting hub..."
   echo if [ -x "$REMOTE_HUB_DIR/start.sh" ]; then
