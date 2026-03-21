@@ -3157,7 +3157,7 @@ ${instruction}`;
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 width: '100%', height: '100%',
                                 borderRadius: '50%', background: '#f8f9fc',
-                                fontSize: '0.9rem', lineHeight: 1
+                                fontSize: '1.05rem', lineHeight: 1
                             }}>🦞</span>
                         </span>
                         <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>

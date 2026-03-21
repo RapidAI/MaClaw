@@ -47,8 +47,12 @@ func (a *App) ClawNetStopDaemon() {
 }
 
 // ClawNetIsRunning checks if the daemon is reachable.
+// Lazily initialises the client so the App-level poller can detect a
+// daemon that was started externally (e.g. by the OS or a previous run)
+// without requiring the user to visit the settings panel first.
 func (a *App) ClawNetIsRunning() bool {
-	return a.clawNetClient != nil && a.clawNetClient.IsRunning()
+	c := a.initClawNet()
+	return c.IsRunning()
 }
 
 // ClawNetGetStatus returns node status.
