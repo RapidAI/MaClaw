@@ -662,16 +662,17 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         };
     }, [config?.remote_enabled, refreshSessionsOnly]);
 
-    // Auto-restore activation status on startup when remote was previously enabled.
-    // Depends on config?.remote_enabled so that it fires once config is loaded
-    // (config is null on initial mount because LoadConfig is async).
+    // Auto-restore activation status on startup once config is loaded.
+    // Previously gated on config?.remote_enabled, but the sidebar lobster
+    // indicator needs activation status regardless of remote_enabled so that
+    // the "mobile registered" arc lights up without visiting settings first.
     useEffect(() => {
-        if (config?.remote_enabled) {
+        if (config) {
             GetRemoteActivationStatus()
                 .then((activation) => setRemoteActivationStatus(activation))
                 .catch((err) => console.error("Failed to check remote activation on startup:", err));
         }
-    }, [config?.remote_enabled]);
+    }, [!!config]);
 
     useEffect(() => {
         setRemoteToolReadiness(null);

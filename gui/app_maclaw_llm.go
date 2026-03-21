@@ -67,6 +67,39 @@ func (a *App) GetMaclawLLMProviders() struct {
 			}
 		}
 	}
+
+	// Ensure all default providers are present (e.g. OpenAI or Custom1 added
+	// after the user already saved their config). Insert missing ones at the
+	// correct position so the tab order matches defaultMaclawLLMProviders().
+	existingNames := make(map[string]bool, len(providers))
+	for _, p := range providers {
+		existingNames[p.Name] = true
+	}
+	// Build a lookup: provider name → default order index.
+	defaultOrder := make(map[string]int, len(defaults))
+	for i, d := range defaults {
+		defaultOrder[d.Name] = i
+	}
+	for dIdx, d := range defaults {
+		if existingNames[d.Name] {
+			continue
+		}
+		// Find insertion point: right before the first provider whose
+		// default-order index is greater than dIdx.
+		insertAt := len(providers)
+		for i, p := range providers {
+			if pIdx, ok := defaultOrder[p.Name]; ok && pIdx > dIdx {
+				insertAt = i
+				break
+			}
+		}
+		// Safe mid-slice insert (avoid shared-backing-array mutation).
+		updated := make([]MaclawLLMProvider, 0, len(providers)+1)
+		updated = append(updated, providers[:insertAt]...)
+		updated = append(updated, d)
+		updated = append(updated, providers[insertAt:]...)
+		providers = updated
+	}
 	current := cfg.MaclawLLMCurrentProvider
 	if current == "" {
 		current = providers[0].Name

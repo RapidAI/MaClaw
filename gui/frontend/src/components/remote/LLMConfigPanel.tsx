@@ -343,7 +343,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                 {dlgProviders.map((p, i) => {
                                     const active = dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = { "智谱": "聪明伶俐", "MiniMax": "憨厚老实" };
+                                    const badge: Record<string, string> = { "OpenAI": "富家小子", "智谱": "聪明伶俐", "MiniMax": "憨厚老实" };
                                     const tag = badge[p.name];
                                     return (
                                         <button key={i} onClick={() => dlgSelectProvider(i)} style={{
