@@ -41,12 +41,7 @@ func (p *TUIPTYSession) Start(cmd remote.CommandSpec) (int, error) {
 
 	c := exec.Command(cmd.Command, cmd.Args...)
 	c.Dir = cmd.Cwd
-	for k, v := range cmd.Env {
-		c.Env = append(c.Env, k+"="+v)
-	}
-	if len(c.Env) > 0 {
-		c.Env = append(os.Environ(), c.Env...)
-	}
+	c.Env = mergeEnv(os.Environ(), cmd.Env)
 
 	stdout, err := c.StdoutPipe()
 	if err != nil {

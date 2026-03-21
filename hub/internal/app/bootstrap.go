@@ -96,6 +96,41 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	pluginIdentity := im.NewPluginIdentityResolver(imAdapter)
 	imAdapter.SetIdentityResolver(pluginIdentity)
 
+	// Hub LLM Coordinator — sits between Adapter and MessageRouter.
+	// Provides seamless smart mode when Hub LLM is configured.
+	llmConfigProvider := func() *im.HubLLMConfig {
+		raw, err := st.System.Get(context.Background(), "hub_llm_config")
+		if err != nil || raw == "" {
+			return nil
+		}
+		var cfg im.HubLLMConfig
+		if json.Unmarshal([]byte(raw), &cfg) != nil {
+			return nil
+		}
+		if !cfg.Enabled {
+			return nil
+		}
+		return &cfg
+	}
+	coordinator := im.NewCoordinator(messageRouter, deviceFinder, llmConfigProvider)
+	imAdapter.SetCoordinator(coordinator)
+
+	// Wire the DiscussionConductor into the MessageRouter so /discuss
+	// can delegate to LLM-orchestrated discussions when available.
+	discussionConductor := im.NewDiscussionConductor(llmConfigProvider, coordinator.Breaker(), messageRouter)
+	messageRouter.SetConductor(discussionConductor)
+
+	// Device notifier — sends online/offline notifications to active IM users.
+	deviceNotifier := im.NewDeviceNotifier(imAdapter, coordinator)
+	imAdapter.SetDeviceNotifier(deviceNotifier)
+
+	// Wire device profile updates and connect/disconnect hooks into the gateway.
+	gateway.SetDeviceProfileUpdater(coordinator.HandleDeviceProfileUpdate)
+	gateway.SetDeviceNotifyHook(ws.DeviceNotifyHook{
+		OnConnect:    deviceNotifier.NotifyDeviceOnline,
+		OnDisconnect: deviceNotifier.NotifyDeviceOffline,
+	})
+
 	// 3. Wire MessageRouter's agent response handler into the WebSocket Gateway
 	//    so im.agent_response messages from MaClaw clients are routed back.
 	wsResponder := &im.WSAgentResponder{Router: messageRouter}
@@ -236,6 +271,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		feishuPlugin,
 		openclawIMPlugin,
 		qqbotPlugin,
+		coordinator.GetLLMStatus,
 		cfg.PWA.StaticDir,
 		cfg.PWA.RoutePrefix,
 		cfg.Bridge.Dir,

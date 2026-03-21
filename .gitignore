@@ -50,3 +50,6 @@ hub/web/admin/_syntax_check.js
 hubcenter/web/admin/.tmp-check.js
 hubcenter/web/admin/_syntax_check.js
 hub/hub.exe
+gui.exe
+gui/frontend/.npm_cache/
+site/

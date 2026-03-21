@@ -13,10 +13,7 @@ import (
 // Discussion — multi-round AI-to-AI discussion orchestrated by Hub
 // ---------------------------------------------------------------------------
 
-const (
-	defaultDiscussionRounds = 3
-	discussionSummaryPrompt = "请用简洁的语言总结以上所有参与者的讨论要点和结论，不超过 300 字。"
-)
+const defaultDiscussionRounds = 3
 
 // DiscussionState tracks an active /discuss session for a user.
 type DiscussionState struct {
@@ -91,6 +88,22 @@ func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformNam
 	var prevSummary string
 	if existing != nil && existing.PrevSummary != "" {
 		prevSummary = existing.PrevSummary
+	}
+
+	// If LLM conductor is available, delegate to it for smart orchestration.
+	if r.conductor != nil && r.conductor.breaker.Allow() {
+		ds := &DiscussionState{
+			Topic:       topic,
+			PrevSummary: prevSummary,
+			Running:     true,
+			StopCh:      make(chan struct{}),
+			UserInputCh: make(chan string, 8),
+			StartedAt:   time.Now(),
+		}
+		r.discussions[userID] = ds
+		r.mu.Unlock()
+		// Pass the DiscussionState's StopCh so /stop can terminate the conductor.
+		return r.conductor.StartConductedDiscussion(ctx, userID, platformName, platformUID, topic, targets, prevSummary, ds.StopCh)
 	}
 
 	ds := &DiscussionState{
@@ -185,6 +198,10 @@ func (r *MessageRouter) runDiscussion(userID, platformName, platformUID string, 
 
 		allRoundTexts = append(allRoundTexts, roundParts...)
 
+		// Deliver round summary.
+		roundSummary := FormatRoundSummary(round, results)
+		r.deliverProgress(ctx, userID, platformName, platformUID, roundSummary)
+
 		// Drain any human interjections received during this round.
 		var userInputs []string
 		drainLoop:
@@ -220,8 +237,7 @@ func (r *MessageRouter) runDiscussion(userID, platformName, platformUID string, 
 	// Summary round: pick a random machine to summarize.
 	r.deliverProgress(ctx, userID, platformName, platformUID, "── 生成总结 ──")
 
-	summaryPrompt := fmt.Sprintf("话题: %s\n\n讨论记录:\n%s\n\n%s",
-		ds.Topic, strings.Join(allRoundTexts, "\n\n"), discussionSummaryPrompt)
+	summaryPrompt := FormatDiscussionSummary(ds.Topic, allRoundTexts)
 
 	summarizer := targets[rand.Intn(len(targets))]
 	summaryResp, err := r.routeToSingleMachine(ctx, userID, platformName, platformUID,
@@ -363,4 +379,14 @@ func (r *MessageRouter) IsDiscussionRunning(userID string) bool {
 	ds := r.discussions[userID]
 	r.mu.Unlock()
 	return ds != nil && ds.Running
+}
+
+// SetDiscussionRounds adjusts the remaining rounds for an active discussion.
+func (r *MessageRouter) SetDiscussionRounds(userID string, rounds int) {
+	r.mu.Lock()
+	ds := r.discussions[userID]
+	r.mu.Unlock()
+	if ds != nil {
+		ds.MaxRounds = ds.Round + rounds
+	}
 }

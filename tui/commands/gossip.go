@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+// gossipHTTPClient is a shared http.Client for all gossip TUI commands.
+var gossipHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // resolveMachineID 从本地配置读取 machine_id。
 func resolveMachineID() string {
 	store := NewFileConfigStore(ResolveDataDir())
@@ -58,8 +61,7 @@ func gossipBrowse(args []string) error {
 	if err != nil {
 		return fmt.Errorf("操作失败: %w", err)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := gossipHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("操作失败: %w", err)
 	}
@@ -145,9 +147,9 @@ func gossipPublish(args []string) error {
 		return fmt.Errorf("操作失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Machine-ID", mid)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := gossipHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("操作失败: %w", err)
 	}
@@ -219,9 +221,9 @@ func gossipComment(args []string) error {
 		return fmt.Errorf("操作失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Machine-ID", mid)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := gossipHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("操作失败: %w", err)
 	}
@@ -291,9 +293,9 @@ func gossipRate(args []string) error {
 		return fmt.Errorf("操作失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Machine-ID", mid)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := gossipHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("操作失败: %w", err)
 	}
@@ -341,8 +343,7 @@ func gossipComments(args []string) error {
 	if err != nil {
 		return fmt.Errorf("操作失败: %w", err)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := gossipHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("操作失败: %w", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -60,12 +61,7 @@ func (l *TUIToolLauncher) launchInteractive(_ context.Context, opts tool.LaunchO
 
 	cmd := exec.Command(opts.Tool, opts.Args...)
 	cmd.Dir = opts.ProjectDir
-	for k, v := range opts.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	if len(cmd.Env) > 0 {
-		cmd.Env = append(os.Environ(), cmd.Env...)
-	}
+	cmd.Env = mergeEnv(os.Environ(), opts.Env)
 
 	// tea.ExecProcess 会暂挂 TUI，将终端交给子进程
 	cb := tea.ExecProcess(cmd, func(err error) tea.Msg {
@@ -79,16 +75,33 @@ func (l *TUIToolLauncher) launchInteractive(_ context.Context, opts tool.LaunchO
 func (l *TUIToolLauncher) launchHeadless(_ context.Context, opts tool.LaunchOptions) error {
 	cmd := exec.Command(opts.Tool, opts.Args...)
 	cmd.Dir = opts.ProjectDir
-	for k, v := range opts.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	if len(cmd.Env) > 0 {
-		cmd.Env = append(os.Environ(), cmd.Env...)
-	}
+	cmd.Env = mergeEnv(os.Environ(), opts.Env)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+// mergeEnv 将自定义环境变量覆盖到系统环境变量上，确保自定义值优先。
+// 如果 custom 为空，返回 nil 让子进程继承父进程环境。
+func mergeEnv(sysEnv []string, custom map[string]string) []string {
+	if len(custom) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(sysEnv)+len(custom))
+	for _, entry := range sysEnv {
+		if k, v, ok := strings.Cut(entry, "="); ok {
+			merged[k] = v
+		}
+	}
+	for k, v := range custom {
+		merged[k] = v
+	}
+	result := make([]string, 0, len(merged))
+	for k, v := range merged {
+		result = append(result, k+"="+v)
+	}
+	return result
 }
 
 // toolFinishedMsg 工具执行完成的消息。

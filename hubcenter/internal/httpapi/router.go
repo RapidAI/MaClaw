@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
@@ -171,10 +172,11 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/skillhub/visibility", RequireAdmin(adminService, skillHandlers.AdminSetVisibility))
 	mux.HandleFunc("DELETE /api/admin/skillhub/{id}", RequireAdmin(adminService, skillHandlers.AdminDeleteSkill))
 	// Gossip — anonymous gossip board
-	mux.HandleFunc("POST /api/gossip/publish", GossipPublishHandler(gossipRepo, gossipCache))
+	gossipWriteRL := newGossipRateLimiter(10, 10*time.Minute) // 10 writes per 10 min per key
+	mux.HandleFunc("POST /api/gossip/publish", gossipRateLimitMiddleware(gossipWriteRL, GossipPublishHandler(gossipRepo, gossipCache)))
 	mux.HandleFunc("GET /api/gossip/browse", GossipBrowseHandler(gossipRepo))
-	mux.HandleFunc("POST /api/gossip/comment", GossipCommentHandler(gossipRepo, gossipCache))
-	mux.HandleFunc("POST /api/gossip/rate", GossipRateHandler(gossipRepo, gossipCache))
+	mux.HandleFunc("POST /api/gossip/comment", gossipRateLimitMiddleware(gossipWriteRL, GossipCommentHandler(gossipRepo, gossipCache)))
+	mux.HandleFunc("POST /api/gossip/rate", gossipRateLimitMiddleware(gossipWriteRL, GossipRateHandler(gossipRepo, gossipCache)))
 	mux.HandleFunc("GET /api/gossip/comments", GossipCommentsListHandler(gossipRepo))
 	mux.HandleFunc("GET /api/gossip/snapshot", GossipSnapshotHandler(gossipCache))
 	mux.HandleFunc("OPTIONS /api/gossip/snapshot", GossipSnapshotHandler(gossipCache))
@@ -187,6 +189,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	registerStaticRoutes(mux, "./web/skillhub", "/skillhub")
 	registerStaticRoutes(mux, "./web/skillmarket", "/skillmarket")
+	registerStaticRoutes(mux, "./web/gossip", "/gossip")
 	// SkillMarket API
 	if smHandlers != nil {
 		mux.HandleFunc("POST /api/v1/skills/submit", smHandlers.SubmitSkill)

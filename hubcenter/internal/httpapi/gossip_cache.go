@@ -12,17 +12,21 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
 // GossipCache manages a gzip-compressed JSON snapshot of all gossip posts.
 type GossipCache struct {
-	gossip   store.GossipRepository
-	filePath string
-	mu       sync.Mutex
+	gossip       store.GossipRepository
+	filePath     string
+	mu           sync.Mutex
+	failureCount int // consecutive refresh failures
 }
+
+// snapshotMaxPosts is the upper bound for posts loaded into the snapshot cache.
+// Adjust if the gossip board grows beyond this limit.
+const snapshotMaxPosts = 100000
 
 func NewGossipCache(gossip store.GossipRepository, filePath string) *GossipCache {
 	return &GossipCache{gossip: gossip, filePath: filePath}
@@ -41,23 +45,28 @@ func (gc *GossipCache) Refresh(ctx context.Context) error {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 
-	posts, _, err := gc.gossip.ListPosts(ctx, 0, 100000)
+	if err := gc.doRefresh(ctx); err != nil {
+		gc.failureCount++
+		if gc.failureCount >= 3 {
+			log.Printf("[gossip-cache] ERROR: refresh failed %d consecutive times: %v", gc.failureCount, err)
+		}
+		return err
+	}
+	gc.failureCount = 0
+	return nil
+}
+
+// doRefresh performs the actual snapshot generation. Separated so Refresh
+// can uniformly track failure counts regardless of which step fails.
+func (gc *GossipCache) doRefresh(ctx context.Context) error {
+	posts, _, err := gc.gossip.ListPosts(ctx, 0, snapshotMaxPosts)
 	if err != nil {
 		return fmt.Errorf("list posts: %w", err)
 	}
 
 	items := make([]map[string]any, 0, len(posts))
 	for _, p := range posts {
-		items = append(items, map[string]any{
-			"id":         p.ID,
-			"nickname":   p.Nickname,
-			"content":    p.Content,
-			"category":   p.Category,
-			"score":      p.Score,
-			"votes":      p.Votes,
-			"locked":     p.Locked,
-			"created_at": p.CreatedAt.Format(time.RFC3339),
-		})
+		items = append(items, gossipPostToPublicMap(p))
 	}
 	payload, err := json.Marshal(map[string]any{"posts": items, "total": len(items)})
 	if err != nil {
@@ -81,6 +90,8 @@ func (gc *GossipCache) Refresh(ctx context.Context) error {
 	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("write tmp: %w", err)
 	}
+	// On Windows, os.Rename fails if destination exists; remove first.
+	_ = os.Remove(gc.filePath)
 	if err := os.Rename(tmp, gc.filePath); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}

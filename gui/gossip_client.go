@@ -123,15 +123,34 @@ func readErrorBody(body io.Reader) string {
 	return string(b)
 }
 
-// PublishPost 发布帖子。POST /api/gossip/publish
-func (c *GossipClient) PublishPost(ctx context.Context, content, category string) (*GossipPublishResult, error) {
+// requireBase returns the HubCenter base URL or an error if not configured.
+func (c *GossipClient) requireBase() (string, error) {
 	base := c.baseURL()
 	if base == "" {
-		return nil, fmt.Errorf("hubcenter URL not configured")
+		return "", fmt.Errorf("hubcenter URL not configured")
 	}
-	mid := c.machineID()
+	return base, nil
+}
+
+// requireWrite returns (base, machineID) or an error if either is missing.
+// Write operations (publish/comment/rate) need both.
+func (c *GossipClient) requireWrite() (base, mid string, err error) {
+	base, err = c.requireBase()
+	if err != nil {
+		return "", "", err
+	}
+	mid = c.machineID()
 	if mid == "" {
-		return nil, fmt.Errorf("machine_id not configured")
+		return "", "", fmt.Errorf("machine_id not configured")
+	}
+	return base, mid, nil
+}
+
+// PublishPost 发布帖子。POST /api/gossip/publish
+func (c *GossipClient) PublishPost(ctx context.Context, content, category string) (*GossipPublishResult, error) {
+	base, mid, err := c.requireWrite()
+	if err != nil {
+		return nil, err
 	}
 
 	payload, _ := json.Marshal(map[string]string{
@@ -146,6 +165,7 @@ func (c *GossipClient) PublishPost(ctx context.Context, content, category string
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Machine-ID", mid)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -166,9 +186,9 @@ func (c *GossipClient) PublishPost(ctx context.Context, content, category string
 
 // BrowsePosts 浏览帖子列表。GET /api/gossip/browse?page=N
 func (c *GossipClient) BrowsePosts(ctx context.Context, page int) (*GossipBrowseResult, error) {
-	base := c.baseURL()
-	if base == "" {
-		return nil, fmt.Errorf("hubcenter URL not configured")
+	base, err := c.requireBase()
+	if err != nil {
+		return nil, err
 	}
 
 	reqURL := fmt.Sprintf("%s/api/gossip/browse?page=%d", base, page)
@@ -196,13 +216,9 @@ func (c *GossipClient) BrowsePosts(ctx context.Context, page int) (*GossipBrowse
 
 // AddComment 提交评论。POST /api/gossip/comment
 func (c *GossipClient) AddComment(ctx context.Context, postID, content string, rating int) (*GossipCommentResult, error) {
-	base := c.baseURL()
-	if base == "" {
-		return nil, fmt.Errorf("hubcenter URL not configured")
-	}
-	mid := c.machineID()
-	if mid == "" {
-		return nil, fmt.Errorf("machine_id not configured")
+	base, mid, err := c.requireWrite()
+	if err != nil {
+		return nil, err
 	}
 
 	payload, _ := json.Marshal(map[string]interface{}{
@@ -218,6 +234,7 @@ func (c *GossipClient) AddComment(ctx context.Context, postID, content string, r
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Machine-ID", mid)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -238,13 +255,9 @@ func (c *GossipClient) AddComment(ctx context.Context, postID, content string, r
 
 // RatePost 评分帖子。POST /api/gossip/rate
 func (c *GossipClient) RatePost(ctx context.Context, postID string, rating int) error {
-	base := c.baseURL()
-	if base == "" {
-		return fmt.Errorf("hubcenter URL not configured")
-	}
-	mid := c.machineID()
-	if mid == "" {
-		return fmt.Errorf("machine_id not configured")
+	base, mid, err := c.requireWrite()
+	if err != nil {
+		return err
 	}
 
 	payload, _ := json.Marshal(map[string]interface{}{
@@ -259,6 +272,7 @@ func (c *GossipClient) RatePost(ctx context.Context, postID string, rating int) 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Machine-ID", mid)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -274,9 +288,9 @@ func (c *GossipClient) RatePost(ctx context.Context, postID string, rating int) 
 
 // GetComments 获取评论列表。GET /api/gossip/comments?post_id=X&page=N
 func (c *GossipClient) GetComments(ctx context.Context, postID string, page int) (*GossipCommentsResult, error) {
-	base := c.baseURL()
-	if base == "" {
-		return nil, fmt.Errorf("hubcenter URL not configured")
+	base, err := c.requireBase()
+	if err != nil {
+		return nil, err
 	}
 
 	reqURL := fmt.Sprintf("%s/api/gossip/comments?post_id=%s&page=%d", base, url.QueryEscape(postID), page)
@@ -305,9 +319,9 @@ func (c *GossipClient) GetComments(ctx context.Context, postID string, page int)
 // GetSnapshot 获取快照数据，支持 ETag 条件请求。GET /api/gossip/snapshot
 // 当服务端返回 304 Not Modified 时，返回 Changed=false。
 func (c *GossipClient) GetSnapshot(ctx context.Context, etag string) (*GossipSnapshotResult, error) {
-	base := c.baseURL()
-	if base == "" {
-		return nil, fmt.Errorf("hubcenter URL not configured")
+	base, err := c.requireBase()
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", base+"/api/gossip/snapshot", nil)

@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,6 +66,10 @@ const defaultAgentTimeout = 180 * time.Second
 // cleanupInterval controls how often expired pending requests are reaped.
 const cleanupInterval = 30 * time.Second
 
+// requestIDCounter is an atomic counter to ensure unique request IDs
+// even when multiple goroutines generate them at the same nanosecond.
+var requestIDCounter atomic.Uint64
+
 // progressHeartbeat is the sentinel value sent by the client to keep the
 // response timer alive without delivering a visible message to the user.
 const progressHeartbeat = "__heartbeat__"
@@ -87,6 +92,7 @@ type MessageRouter struct {
 	devices          DeviceFinder
 	progressDelivery ProgressDeliveryFunc
 	responseDelivery ResponseDeliveryFunc
+	conductor        *DiscussionConductor // optional; nil = mechanical rounds
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingIMRequest // requestID → pending
@@ -282,6 +288,12 @@ func (r *MessageRouter) SetResponseDelivery(fn ResponseDeliveryFunc) {
 	r.responseDelivery = fn
 }
 
+// SetConductor wires the LLM DiscussionConductor into the router.
+// When set, StartDiscussion delegates to the conductor if LLM is available.
+func (r *MessageRouter) SetConductor(dc *DiscussionConductor) {
+	r.conductor = dc
+}
+
 // Stop terminates the background cleanup goroutine.
 func (r *MessageRouter) Stop() {
 	r.stopOnce.Do(func() { close(r.stopCh) })
@@ -405,7 +417,8 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 // routeToSingleMachine sends a message to one machine and waits for the reply.
 // If namePrefix is non-empty, progress and response text are prefixed with [namePrefix].
 func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platformName, platformUID, text, machineID, namePrefix string) (*GenericResponse, error) {
-	requestID := fmt.Sprintf("im_%s_%d", userID, time.Now().UnixNano())
+	seq := requestIDCounter.Add(1)
+	requestID := fmt.Sprintf("im_%s_%d_%d", userID, time.Now().UnixNano(), seq)
 	now := time.Now()
 	pending := &PendingIMRequest{
 		RequestID:    requestID,
@@ -578,43 +591,42 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 	}
 
 	// Collect all responses, delivering rich (image/file) ones individually.
-	var textParts []string
+	var deviceReplies []DeviceReply
+	var richDelivered int
 	for range targets {
 		res := <-ch
+		dr := DeviceReply{Name: res.name}
 		if res.err != nil {
-			textParts = append(textParts, fmt.Sprintf("[%s] ❌ 错误: %v", res.name, res.err))
-			continue
-		}
-		if res.resp == nil {
-			continue
-		}
-
-		hasImage := res.resp.ImageKey != ""
-		hasFile := res.resp.FileData != "" && res.resp.FileName != ""
-
-		if (hasImage || hasFile) && r.responseDelivery != nil {
-			// Deliver image/file response individually.
-			r.responseDelivery(ctx, userID, platformName, platformUID, res.resp)
-		} else if hasImage || hasFile {
-			// No responseDelivery wired — fallback: mention that media was lost.
-			textParts = append(textParts, fmt.Sprintf("[%s] (图片/文件无法在合并消息中显示)", res.name))
+			dr.Err = res.err
+		} else if res.resp != nil {
+			hasImage := res.resp.ImageKey != ""
+			hasFile := res.resp.FileData != "" && res.resp.FileName != ""
+			if (hasImage || hasFile) && r.responseDelivery != nil {
+				r.responseDelivery(ctx, userID, platformName, platformUID, res.resp)
+				richDelivered++
+				continue // delivered individually, skip from merged text
+			}
+			dr.Response = res.resp
 		} else {
-			// Pure text — collect for combined message.
-			// Body is already prefixed by routeToSingleMachine.
-			textParts = append(textParts, res.resp.Body)
+			// nil response, nil error — treat as timeout
+			dr.Err = fmt.Errorf("空响应")
 		}
+		deviceReplies = append(deviceReplies, dr)
 	}
 
 	if len(skipped) > 0 {
-		textParts = append(textParts, fmt.Sprintf("⚠️ 以下设备 LLM 未配置，已跳过: %s", strings.Join(skipped, "、")))
+		deviceReplies = append(deviceReplies, DeviceReply{
+			Name: "⚠️ LLM 未配置",
+			Err:  fmt.Errorf("已跳过: %s", strings.Join(skipped, "、")),
+		})
 	}
 
-	if len(textParts) == 0 {
+	if len(deviceReplies) == 0 {
 		return &GenericResponse{
 			StatusCode: 200,
 			StatusIcon: "📢",
 			Title:      "群聊回复",
-			Body:       "📢 群聊回复已分别发送",
+			Body:       fmt.Sprintf("📢 %d 条回复已分别发送（含图片/文件）", richDelivered),
 		}, nil
 	}
 
@@ -622,7 +634,7 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 		StatusCode: 200,
 		StatusIcon: "📢",
 		Title:      "群聊回复",
-		Body:       strings.Join(textParts, "\n\n"),
+		Body:       FormatBroadcastReply(deviceReplies),
 	}, nil
 }
 

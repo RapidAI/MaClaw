@@ -2,16 +2,18 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
@@ -126,7 +128,7 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 	}
 
 	// 保存 zip 到 pending 目录
-	subID := fmt.Sprintf("sub-%d", uniqueCounter())
+	subID := uniqueID("sub")
 	_ = os.MkdirAll(h.pendingDir, 0o755)
 	zipPath := filepath.Join(h.pendingDir, subID+".zip")
 	out, err := os.Create(zipPath)
@@ -405,7 +407,7 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 			}
 
 			// 扣款
-			purchaseID = fmt.Sprintf("pur-%d", uniqueCounter())
+			purchaseID = uniqueID("pur")
 			if err := h.creditsSvc.Debit(ctx, buyer.ID, actualPrice, skillID, purchaseID, "purchase skill"); err != nil {
 				if err == skillmarket.ErrInsufficientCredits {
 					smError(w, http.StatusPaymentRequired, fmt.Sprintf("insufficient credits: need %d", actualPrice))
@@ -428,11 +430,17 @@ func (h *SkillMarketHandlers) DownloadSkillMarket(w http.ResponseWriter, r *http
 				if isUpgrade {
 					purchaseType = "upgrade"
 				}
-				_ = h.creditsSvc.Credit(ctx, uploaderID, sellerEarning, settled, skillID, purchaseID, "skill sold")
-				_ = h.creditsSvc.RecordPlatformFee(ctx, platformFee, skillID, purchaseID, "platform fee 30%")
+				if err := h.creditsSvc.Credit(ctx, uploaderID, sellerEarning, settled, skillID, purchaseID, "skill sold"); err != nil {
+					log.Printf("[skillmarket] WARN: debit ok but credit seller %s failed: %v (purchaseID=%s)", uploaderID, err, purchaseID)
+				}
+				if err := h.creditsSvc.RecordPlatformFee(ctx, platformFee, skillID, purchaseID, "platform fee 30%"); err != nil {
+					log.Printf("[skillmarket] WARN: record platform fee failed: %v (purchaseID=%s)", err, purchaseID)
+				}
 
 				// 创建 Purchase Record
-				h.createPurchaseRecord(ctx, purchaseID, buyer, skillID, purchaseType, amountPaid, platformFee, sellerEarning, uploaderID)
+				if err := h.createPurchaseRecord(ctx, purchaseID, buyer, skillID, purchaseType, amountPaid, platformFee, sellerEarning, uploaderID); err != nil {
+					log.Printf("[skillmarket] WARN: create purchase record failed: %v (purchaseID=%s)", err, purchaseID)
+				}
 			}
 		}
 	}
@@ -498,11 +506,21 @@ func (h *SkillMarketHandlers) checkUpgradePurchase(ctx context.Context, buyerID,
 	return count > 0, err
 }
 
-func (h *SkillMarketHandlers) createPurchaseRecord(ctx context.Context, id string, buyer *skillmarket.SkillMarketUser, skillID, purchaseType string, amountPaid, platformFee, sellerEarning int64, sellerID string) {
-	_, _ = h.store.DB().ExecContext(ctx, `
-		INSERT INTO sm_purchase_records (id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, status, created_at)
-		VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'active', ?)`,
-		id, buyer.Email, buyer.ID, skillID, purchaseType, amountPaid, platformFee, sellerEarning, sellerID, time.Now().Format(time.RFC3339))
+func (h *SkillMarketHandlers) createPurchaseRecord(ctx context.Context, id string, buyer *skillmarket.SkillMarketUser, skillID, purchaseType string, amountPaid, platformFee, sellerEarning int64, sellerID string) error {
+	return h.store.CreatePurchase(ctx, &skillmarket.PurchaseRecord{
+		ID:               id,
+		BuyerEmail:       buyer.Email,
+		BuyerID:          buyer.ID,
+		SkillID:          skillID,
+		PurchasedVersion: 1,
+		PurchaseType:     purchaseType,
+		AmountPaid:       amountPaid,
+		PlatformFee:      platformFee,
+		SellerEarning:    sellerEarning,
+		SellerID:         sellerID,
+		Status:           "active",
+		CreatedAt:        time.Now(),
+	})
 }
 
 // ── Leaderboard ──────────────────────────────────────────────────────────
@@ -834,8 +852,8 @@ func smError(w http.ResponseWriter, status int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-var _counter uint64
-
-func uniqueCounter() uint64 {
-	return atomic.AddUint64(&_counter, 1)
+func uniqueID(prefix string) string {
+	var buf [8]byte
+	_, _ = rand.Read(buf[:])
+	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixMilli(), hex.EncodeToString(buf[:]))
 }

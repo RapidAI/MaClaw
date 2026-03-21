@@ -157,6 +157,7 @@ type GossipRepository interface {
 	ListComments(ctx context.Context, postID string, offset, limit int) ([]*GossipComment, int, error)
 	DeleteComment(ctx context.Context, id string) error
 	UpdatePostScore(ctx context.Context, postID string) error
+	HasRated(ctx context.Context, postID, machineID string) (bool, error)
 }
 
 type Store struct {

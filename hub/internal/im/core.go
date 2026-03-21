@@ -115,9 +115,11 @@ type Adapter struct {
 	mu      sync.RWMutex
 	plugins map[string]IMPlugin
 
-	messageRouter *MessageRouter
-	identity      IdentityResolver
-	limiter       *rateLimiter
+	messageRouter  *MessageRouter
+	coordinator    *Coordinator      // optional; nil = passthrough to messageRouter
+	deviceNotifier *DeviceNotifier   // optional; nil = no device notifications
+	identity       IdentityResolver
+	limiter        *rateLimiter
 }
 
 // NewAdapter creates a new IM Adapter with the given MessageRouter.
@@ -135,6 +137,18 @@ func NewAdapter(router *MessageRouter, identity IdentityResolver) *Adapter {
 // PluginIdentityResolver).
 func (a *Adapter) SetIdentityResolver(resolver IdentityResolver) {
 	a.identity = resolver
+}
+
+// SetCoordinator wires the LLM Coordinator into the adapter. When set,
+// non-command messages are routed through the Coordinator instead of
+// directly to the MessageRouter.
+func (a *Adapter) SetCoordinator(coord *Coordinator) {
+	a.coordinator = coord
+}
+
+// SetDeviceNotifier wires the device notifier for online/offline notifications.
+func (a *Adapter) SetDeviceNotifier(dn *DeviceNotifier) {
+	a.deviceNotifier = dn
 }
 
 // RegisterPlugin registers an IM plugin with the adapter.
@@ -201,6 +215,11 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	}
 	msg.UnifiedUserID = unifiedID
 	target.UnifiedUserID = unifiedID
+
+	// Mark user as active for device notifications.
+	if a.deviceNotifier != nil {
+		a.deviceNotifier.MarkUserActive(unifiedID, msg.PlatformName, msg.PlatformUID)
+	}
 
 	// 2. Rate limiting
 	if !a.limiter.allow(unifiedID) {
@@ -287,6 +306,67 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		return
 	}
 
+	// 3e. Handle /help command.
+	if text == "/help" {
+		machines := a.messageRouter.devices.FindAllOnlineMachinesForUser(ctx, unifiedID)
+		selected, _ := a.messageRouter.GetSelectedMachine(unifiedID)
+		llmEnabled := a.coordinator != nil && a.coordinator.IsLLMEnabled()
+		helpText := BuildHelpMessage(len(machines), selected, llmEnabled)
+		a.sendResponse(ctx, plugin, target, &GenericResponse{
+			StatusCode: 200,
+			StatusIcon: "📋",
+			Title:      "帮助",
+			Body:       helpText,
+		})
+		return
+	}
+
+	// 3f. Handle /rounds N command — adjust discussion rounds.
+	if strings.HasPrefix(text, "/rounds ") {
+		nStr := strings.TrimSpace(text[8:])
+		n := 0
+		for _, c := range nStr {
+			if c >= '0' && c <= '9' {
+				n = n*10 + int(c-'0')
+			} else {
+				n = -1
+				break
+			}
+		}
+		if n <= 0 || n > 20 {
+			a.sendResponse(ctx, plugin, target, &GenericResponse{
+				StatusCode: 400,
+				StatusIcon: "❓",
+				Title:      "参数错误",
+				Body:       "用法: /rounds <1-20>",
+			})
+			return
+		}
+		a.messageRouter.SetDiscussionRounds(unifiedID, n)
+		a.sendResponse(ctx, plugin, target, &GenericResponse{
+			StatusCode: 200,
+			StatusIcon: "✅",
+			Title:      "已调整",
+			Body:       fmt.Sprintf("讨论轮数已调整为 %d 轮。", n),
+		})
+		return
+	}
+
+	// 3g. Unknown / command — friendly error.
+	if strings.HasPrefix(text, "/") {
+		cmd := text
+		if idx := strings.IndexByte(text, ' '); idx > 0 {
+			cmd = text[:idx]
+		}
+		a.sendResponse(ctx, plugin, target, &GenericResponse{
+			StatusCode: 400,
+			StatusIcon: "❓",
+			Title:      "未知命令",
+			Body:       fmt.Sprintf("未识别的命令 %q，发送 /help 查看可用命令。", cmd),
+		})
+		return
+	}
+
 	// 3d. If user is in discussion mode, handle accordingly.
 	if !strings.HasPrefix(text, "/") && a.messageRouter.IsInDiscussion(unifiedID) {
 		if a.messageRouter.IsDiscussionRunning(unifiedID) {
@@ -322,20 +402,26 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		}
 	}
 
-	// 5. Route to MaClaw Agent via MessageRouter
-	resp, err := a.messageRouter.RouteToAgent(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text)
-	if err != nil {
+	// 5. Route to MaClaw Agent — via Coordinator (if wired) or MessageRouter.
+	var routeResp *GenericResponse
+	var routeErr error
+	if a.coordinator != nil {
+		routeResp, routeErr = a.coordinator.Coordinate(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text)
+	} else {
+		routeResp, routeErr = a.messageRouter.RouteToAgent(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text)
+	}
+	if routeErr != nil {
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 500,
 			StatusIcon: "❌",
 			Title:      "路由失败",
-			Body:       fmt.Sprintf("无法将消息路由到 Agent: %s", err.Error()),
+			Body:       fmt.Sprintf("无法将消息路由到 Agent: %s", routeErr.Error()),
 		})
 		return
 	}
 
-	// 4. Format and deliver response
-	a.sendResponse(ctx, plugin, target, resp)
+	// 6. Format and deliver response
+	a.sendResponse(ctx, plugin, target, routeResp)
 }
 
 // DeliverProgress sends a progress text message to a user via the appropriate

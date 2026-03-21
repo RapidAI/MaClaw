@@ -31,6 +31,7 @@ func NewRouter(
 	feishuPlugin *feishu.FeishuPlugin,
 	openclawIMPlugin *im.WebhookIMPlugin,
 	qqbotPlugin *qqbot.Plugin,
+	hubLLMStatusFn func() string,
 	staticDir string,
 	routePrefix string,
 	bridgeDir string,
@@ -120,6 +121,12 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/bridge/channels", RequireAdmin(admins, SaveBridgeChannelHandler(system, bridgeDir)))
 	mux.HandleFunc("GET /api/admin/bridge/status", RequireAdmin(admins, BridgeStatusHandler(system)))
 	mux.HandleFunc("POST /api/admin/bridge/install", RequireAdmin(admins, InstallBridgeDepsHandler(bridgeDir)))
+	// Hub LLM configuration
+	mux.HandleFunc("GET /api/admin/hub_llm_config", RequireAdmin(admins, GetHubLLMConfigHandler(system)))
+	mux.HandleFunc("PUT /api/admin/hub_llm_config", RequireAdmin(admins, UpdateHubLLMConfigHandler(system)))
+	mux.HandleFunc("POST /api/admin/hub_llm_test", RequireAdmin(admins, TestHubLLMHandler(system)))
+	mux.HandleFunc("GET /api/admin/hub_llm_status", RequireAdmin(admins, HubLLMStatusHandler(hubLLMStatusFn)))
+
 	mux.HandleFunc("GET /api/admin/settings/qqbot", RequireAdmin(admins, GetQQBotConfigHandler(system)))
 	mux.HandleFunc("POST /api/admin/settings/qqbot", RequireAdmin(admins, UpdateQQBotConfigHandler(system, qqbotPlugin)))
 	mux.HandleFunc("GET /api/admin/qqbot/bindings", RequireAdmin(admins, GetQQBotBindingsHandler(qqbotPlugin)))

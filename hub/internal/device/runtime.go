@@ -279,6 +279,12 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 		log.Printf("[device] MarkOnline ERROR: UpdateStatus failed for machine_id=%s: %v", machineID, err)
 		return err
 	}
+	// Persist Alias to DB when set (from hello payload or auto-assigned).
+	if info.Alias != "" {
+		if err := s.repo.UpdateAlias(ctx, machineID, info.Alias); err != nil {
+			log.Printf("[device] MarkOnline WARNING: UpdateAlias failed for machine_id=%s: %v", machineID, err)
+		}
+	}
 	log.Printf("[device] MarkOnline: DB status set to 'online' for machine_id=%s", machineID)
 	return s.repo.UpdateHeartbeat(ctx, machineID, now)
 }
@@ -455,6 +461,13 @@ func (s *Service) ListMachines(ctx context.Context, userID string) ([]MachineRun
 			if info.Name == "" {
 				info.Name = meta.Name
 			}
+			// Runtime Alias takes precedence over DB — unlike other fields
+			// which use DB-first fallback, Alias uses runtime-first override
+			// because the runtime value reflects the most recent nickname
+			// update from the machine (best-effort persisted to DB).
+			if meta.Alias != "" {
+				info.Alias = meta.Alias
+			}
 			if info.Platform == "" {
 				info.Platform = meta.Platform
 			}
@@ -522,6 +535,10 @@ func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, er
 			if info.Name == "" {
 				info.Name = meta.Name
 			}
+			// Runtime Alias override — see comment in ListMachines.
+			if meta.Alias != "" {
+				info.Alias = meta.Alias
+			}
 			if info.Platform == "" {
 				info.Platform = meta.Platform
 			}
@@ -570,18 +587,37 @@ func (s *Service) RenameMachine(ctx context.Context, machineID string, alias str
 	if s.repo == nil {
 		return errors.New("no repository configured")
 	}
-	return s.repo.UpdateAlias(ctx, machineID, alias)
+	if err := s.repo.UpdateAlias(ctx, machineID, alias); err != nil {
+		return err
+	}
+	// Keep runtime in sync so the change is visible immediately.
+	s.setRuntimeAlias(machineID, alias)
+	return nil
 }
 
-// UpdateRuntimeAlias sets the runtime-only Alias for a machine (not persisted to DB).
-// Used by the machine.nickname_update WebSocket message.
-func (s *Service) UpdateRuntimeAlias(machineID string, alias string) {
+// SetAlias updates the machine Alias in both runtime memory and DB (best-effort).
+// Unlike RenameMachine (which requires a repo and returns errors), this is
+// designed for the WS nickname_update path where we always want the runtime
+// update to succeed and treat DB persistence as non-blocking.
+func (s *Service) SetAlias(ctx context.Context, machineID string, alias string) {
+	s.setRuntimeAlias(machineID, alias)
+	log.Printf("[device] SetAlias: machine_id=%s alias=%q", machineID, alias)
+
+	// Best-effort DB persistence — failure is logged but does not block the caller.
+	if s.repo != nil {
+		if err := s.repo.UpdateAlias(ctx, machineID, alias); err != nil {
+			log.Printf("[device] SetAlias WARNING: DB persist failed for machine_id=%s: %v", machineID, err)
+		}
+	}
+}
+
+// setRuntimeAlias is the shared helper that updates the in-memory Alias.
+func (s *Service) setRuntimeAlias(machineID string, alias string) {
 	s.runtime.mu.Lock()
-	defer s.runtime.mu.Unlock()
 	info := s.runtime.metadataByMachine[machineID]
 	info.Alias = alias
 	s.runtime.metadataByMachine[machineID] = info
-	log.Printf("[device] UpdateRuntimeAlias: machine_id=%s alias=%q", machineID, alias)
+	s.runtime.mu.Unlock()
 }
 
 func (s *Service) ClearOfflineMachines(ctx context.Context) (int64, error) {

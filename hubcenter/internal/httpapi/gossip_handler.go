@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -26,13 +27,13 @@ type gossipPublishRequest struct {
 
 func generateNickname(machineID string) string {
 	h := sha256.Sum256([]byte(machineID + "gossip-salt"))
-	return "MaClaw-" + hex.EncodeToString(h[:])[:4]
+	return "MaClaw-" + hex.EncodeToString(h[:])[:6]
 }
 
 func generateID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	return fmt.Sprintf("%d-%s", time.Now().UnixMilli(), hex.EncodeToString(b))
 }
 
 func GossipPublishHandler(gossip store.GossipRepository, cache *GossipCache) http.HandlerFunc {
@@ -87,6 +88,28 @@ func GossipPublishHandler(gossip store.GossipRepository, cache *GossipCache) htt
 	}
 }
 
+// gossipPostToPublicMap converts a GossipPost to a public-facing map (no machine_id/user_email).
+func gossipPostToPublicMap(p *store.GossipPost) map[string]any {
+	return map[string]any{
+		"id":         p.ID,
+		"nickname":   p.Nickname,
+		"content":    p.Content,
+		"category":   p.Category,
+		"score":      p.Score,
+		"votes":      p.Votes,
+		"locked":     p.Locked,
+		"created_at": p.CreatedAt.Format(time.RFC3339),
+	}
+}
+
+// gossipPostToAdminMap converts a GossipPost to an admin map (includes machine_id/user_email).
+func gossipPostToAdminMap(p *store.GossipPost) map[string]any {
+	m := gossipPostToPublicMap(p)
+	m["machine_id"] = p.MachineID
+	m["user_email"] = p.UserEmail
+	return m
+}
+
 func GossipBrowseHandler(gossip store.GossipRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -102,16 +125,7 @@ func GossipBrowseHandler(gossip store.GossipRepository) http.HandlerFunc {
 		}
 		items := make([]map[string]any, 0, len(posts))
 		for _, p := range posts {
-			items = append(items, map[string]any{
-				"id":         p.ID,
-				"nickname":   p.Nickname,
-				"content":    p.Content,
-				"category":   p.Category,
-				"score":      p.Score,
-				"votes":      p.Votes,
-				"locked":     p.Locked,
-				"created_at": p.CreatedAt.Format(time.RFC3339),
-			})
+			items = append(items, gossipPostToPublicMap(p))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "posts": items, "total": total, "page": page,
@@ -143,6 +157,7 @@ func GossipCommentHandler(gossip store.GossipRepository, cache *GossipCache) htt
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "post_id required")
 			return
 		}
+		postID := strings.TrimSpace(req.PostID)
 		content := strings.TrimSpace(req.Content)
 		if content == "" || utf8.RuneCountInString(content) > 1000 {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Content must be 1-1000 characters")
@@ -152,7 +167,7 @@ func GossipCommentHandler(gossip store.GossipRepository, cache *GossipCache) htt
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Rating must be 0-5")
 			return
 		}
-		post, err := gossip.GetPost(r.Context(), req.PostID)
+		post, err := gossip.GetPost(r.Context(), postID)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "Post not found")
 			return
@@ -161,9 +176,16 @@ func GossipCommentHandler(gossip store.GossipRepository, cache *GossipCache) htt
 			writeError(w, http.StatusForbidden, "LOCKED", "This post is locked for comments/ratings")
 			return
 		}
+		// Prevent duplicate ratings from the same machine
+		if req.Rating > 0 {
+			if rated, err := gossip.HasRated(r.Context(), postID, machineID); err == nil && rated {
+				writeError(w, http.StatusConflict, "ALREADY_RATED", "You have already rated this post")
+				return
+			}
+		}
 		comment := &store.GossipComment{
 			ID:        generateID(),
-			PostID:    req.PostID,
+			PostID:    postID,
 			MachineID: machineID,
 			UserEmail: strings.TrimSpace(req.UserEmail),
 			Nickname:  generateNickname(machineID),
@@ -176,7 +198,7 @@ func GossipCommentHandler(gossip store.GossipRepository, cache *GossipCache) htt
 			return
 		}
 		if req.Rating > 0 {
-			_ = gossip.UpdatePostScore(r.Context(), req.PostID)
+			_ = gossip.UpdatePostScore(r.Context(), postID)
 			go cache.Refresh(context.Background())
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -213,11 +235,12 @@ func GossipRateHandler(gossip store.GossipRepository, cache *GossipCache) http.H
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "post_id required")
 			return
 		}
+		postID := strings.TrimSpace(req.PostID)
 		if req.Rating < 1 || req.Rating > 5 {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Rating must be 1-5")
 			return
 		}
-		post, err := gossip.GetPost(r.Context(), req.PostID)
+		post, err := gossip.GetPost(r.Context(), postID)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "Post not found")
 			return
@@ -226,9 +249,14 @@ func GossipRateHandler(gossip store.GossipRepository, cache *GossipCache) http.H
 			writeError(w, http.StatusForbidden, "LOCKED", "This post is locked for ratings")
 			return
 		}
+		// Prevent duplicate ratings from the same machine
+		if rated, err := gossip.HasRated(r.Context(), postID, machineID); err == nil && rated {
+			writeError(w, http.StatusConflict, "ALREADY_RATED", "You have already rated this post")
+			return
+		}
 		comment := &store.GossipComment{
 			ID:        generateID(),
-			PostID:    req.PostID,
+			PostID:    postID,
 			MachineID: machineID,
 			UserEmail: strings.TrimSpace(req.UserEmail),
 			Nickname:  generateNickname(machineID),
@@ -240,7 +268,7 @@ func GossipRateHandler(gossip store.GossipRepository, cache *GossipCache) http.H
 			writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
 			return
 		}
-		_ = gossip.UpdatePostScore(r.Context(), req.PostID)
+		_ = gossip.UpdatePostScore(r.Context(), postID)
 		go cache.Refresh(context.Background())
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
@@ -297,18 +325,7 @@ func AdminListGossipHandler(gossip store.GossipRepository) http.HandlerFunc {
 		}
 		items := make([]map[string]any, 0, len(posts))
 		for _, p := range posts {
-			items = append(items, map[string]any{
-				"id":         p.ID,
-				"machine_id": p.MachineID,
-				"user_email": p.UserEmail,
-				"nickname":   p.Nickname,
-				"content":    p.Content,
-				"category":   p.Category,
-				"score":      p.Score,
-				"votes":      p.Votes,
-				"locked":     p.Locked,
-				"created_at": p.CreatedAt.Format(time.RFC3339),
-			})
+			items = append(items, gossipPostToAdminMap(p))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "posts": items, "total": total, "page": page,

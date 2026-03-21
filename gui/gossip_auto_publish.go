@@ -56,6 +56,10 @@ func NewAutoPublishTrigger(client *GossipClient, enabledFn func() bool) *AutoPub
 
 // OnSkillUploaded 当 Skill 上传成功时触发，生成 category="news" 的帖子。
 func (t *AutoPublishTrigger) OnSkillUploaded(skillName, description string) {
+	if strings.TrimSpace(skillName) == "" {
+		log.Printf("[gossip-auto] skipping publish: empty skill name")
+		return
+	}
 	content := fmt.Sprintf("🎉 新 Skill 上架: %s — %s", skillName, description)
 	t.tryPublish(content, "news")
 }
@@ -66,6 +70,10 @@ func (t *AutoPublishTrigger) OnSessionCompleted(sessionSummary string, durationM
 		return
 	}
 	sanitized := sanitizeContent(sessionSummary)
+	if sanitized == "" {
+		log.Printf("[gossip-auto] skipping publish: session summary empty after sanitization")
+		return
+	}
 	content := fmt.Sprintf("💻 编码会话完成 (%d分钟): %s", durationMin, sanitized)
 	t.tryPublish(content, "project")
 }
@@ -87,11 +95,12 @@ func (t *AutoPublishTrigger) tryPublish(content, category string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// 无论成功失败都更新冷却时间，避免连续失败时反复重试
+	t.lastPublish = time.Now()
+
 	_, err := t.client.PublishPost(ctx, content, category)
 	if err != nil {
 		log.Printf("[gossip-auto] publish failed: %v", err)
 		return
 	}
-
-	t.lastPublish = time.Now()
 }

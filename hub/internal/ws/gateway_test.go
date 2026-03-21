@@ -54,7 +54,7 @@ func (d *testDeviceBinder) SendToMachine(machineID string, msg any) error {
 	return nil
 }
 
-func (d *testDeviceBinder) UpdateRuntimeAlias(machineID string, alias string) {}
+func (d *testDeviceBinder) SetAlias(ctx context.Context, machineID string, alias string) {}
 
 type testSessionService struct {
 	snapshot         *session.SessionCacheEntry

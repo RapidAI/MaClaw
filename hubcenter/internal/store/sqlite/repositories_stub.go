@@ -846,3 +846,14 @@ func (r *gossipRepo) UpdatePostScore(ctx context.Context, postID string) error {
 		 votes = COALESCE((SELECT COUNT(*) FROM gossip_comments WHERE post_id = ? AND rating > 0), 0) WHERE id = ?`,
 		postID, postID, postID)
 }
+
+func (r *gossipRepo) HasRated(ctx context.Context, postID, machineID string) (bool, error) {
+	var count int
+	err := r.readDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM gossip_comments WHERE post_id = ? AND machine_id = ? AND rating > 0`,
+		postID, machineID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}

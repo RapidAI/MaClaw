@@ -16,11 +16,12 @@ import (
 )
 
 type ConnContext struct {
-	Conn      *websocket.Conn
-	Role      string
-	UserID    string
-	MachineID string
-	ViewerID  string
+	Conn        *websocket.Conn
+	Role        string
+	UserID      string
+	MachineID   string
+	MachineName string // populated by handleMachineHello
+	ViewerID    string
 
 	// sendCh is a buffered channel for async writes. Messages are enqueued
 	// here and drained by a dedicated writer goroutine, preventing slow
@@ -170,7 +171,7 @@ type DeviceBinder interface {
 	MarkOnline(ctx context.Context, machineID string, hello MachineHelloPayload) error
 	Heartbeat(ctx context.Context, machineID string, heartbeat MachineHeartbeatPayload) error
 	SendToMachine(machineID string, msg any) error
-	UpdateRuntimeAlias(machineID string, alias string)
+	SetAlias(ctx context.Context, machineID string, alias string)
 }
 
 type SessionService interface {
@@ -213,6 +214,15 @@ type IMGatewayPlugin interface {
 	HandleGatewayMessage(machineID string, payload json.RawMessage)
 }
 
+// DeviceProfileUpdaterFunc is called when a machine sends device.profile_update.
+type DeviceProfileUpdaterFunc func(userID string, profile json.RawMessage)
+
+// DeviceNotifyHook is called on machine connect/disconnect for IM notifications.
+type DeviceNotifyHook struct {
+	OnConnect    func(userID, machineID, name string)
+	OnDisconnect func(userID, machineID, name string)
+}
+
 type Gateway struct {
 	Identity identityService
 	Devices  DeviceBinder
@@ -230,6 +240,14 @@ type Gateway struct {
 	// IMGatewayPlugins maps platform name → gateway plugin for client-side
 	// IM gateways (QQ Bot, Telegram). Set via RegisterIMGatewayPlugin.
 	IMGatewayPlugins map[string]IMGatewayPlugin
+
+	// DeviceProfileUpdater is called when a machine sends device.profile_update.
+	// Set via SetDeviceProfileUpdater after construction.
+	DeviceProfileUpdater DeviceProfileUpdaterFunc
+
+	// DeviceNotifyFunc is called on machine connect/disconnect for IM notifications.
+	// Set via SetDeviceNotifyFunc after construction.
+	DeviceNotifyFunc DeviceNotifyHook
 
 	mu                sync.RWMutex
 	viewersByMachine  map[string]map[*ConnContext]struct{}
@@ -266,6 +284,16 @@ func (g *Gateway) RegisterIMGatewayPlugin(plugin IMGatewayPlugin) {
 		g.IMGatewayPlugins = make(map[string]IMGatewayPlugin)
 	}
 	g.IMGatewayPlugins[plugin.Name()] = plugin
+}
+
+// SetDeviceProfileUpdater wires the device profile update handler.
+func (g *Gateway) SetDeviceProfileUpdater(fn DeviceProfileUpdaterFunc) {
+	g.DeviceProfileUpdater = fn
+}
+
+// SetDeviceNotifyHook wires the device connect/disconnect notification hooks.
+func (g *Gateway) SetDeviceNotifyHook(hook DeviceNotifyHook) {
+	g.DeviceNotifyFunc = hook
 }
 
 func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
@@ -441,6 +469,10 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "machine.nickname_update":
 			if err := g.handleMachineNicknameUpdate(ctx, msg); err != nil {
+				return
+			}
+		case "device.profile_update":
+			if err := g.handleDeviceProfileUpdate(ctx, msg); err != nil {
 				return
 			}
 		default:
@@ -741,6 +773,10 @@ func (g *Gateway) handleMachineHello(ctx *ConnContext, msg Envelope) error {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
 	log.Printf("[ws] handleMachineHello: machine_id=%s marked online successfully", ctx.MachineID)
+	ctx.MachineName = payload.Name
+	if g.DeviceNotifyFunc.OnConnect != nil {
+		go g.DeviceNotifyFunc.OnConnect(ctx.UserID, ctx.MachineID, payload.Name)
+	}
 	return writeAck(ctx.Conn, msg.RequestID)
 }
 
@@ -1162,6 +1198,9 @@ func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 				"status": "offline",
 			},
 		})
+		if g.DeviceNotifyFunc.OnDisconnect != nil {
+			go g.DeviceNotifyFunc.OnDisconnect(ctx.UserID, ctx.MachineID, ctx.MachineName)
+		}
 		return
 	}
 	g.removeViewer(ctx)
@@ -1218,6 +1257,19 @@ func writeAck(conn *websocket.Conn, requestID string) error {
 	return conn.WriteJSON(map[string]any{"type": "ack", "request_id": requestID, "payload": map[string]any{"ok": true}})
 }
 
+// handleDeviceProfileUpdate processes a device.profile_update message from a
+// MaClaw client, forwarding the profile data to the Coordinator's cache.
+func (g *Gateway) handleDeviceProfileUpdate(ctx *ConnContext, msg Envelope) error {
+	if ctx.Role != "machine" {
+		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
+	}
+	if g.DeviceProfileUpdater != nil {
+		g.DeviceProfileUpdater(ctx.UserID, msg.Payload)
+	}
+	return writeAck(ctx.Conn, msg.RequestID)
+}
+
+
 // handleMachineNicknameUpdate processes a runtime nickname change from a machine.
 func (g *Gateway) handleMachineNicknameUpdate(ctx *ConnContext, msg Envelope) error {
 	if ctx.Role != "machine" {
@@ -1231,6 +1283,6 @@ func (g *Gateway) handleMachineNicknameUpdate(ctx *ConnContext, msg Envelope) er
 	}
 	nickname := strings.TrimSpace(payload.Nickname)
 	log.Printf("[ws] handleMachineNicknameUpdate: machine_id=%s nickname=%q", ctx.MachineID, nickname)
-	g.Devices.UpdateRuntimeAlias(ctx.MachineID, nickname)
+	g.Devices.SetAlias(context.Background(), ctx.MachineID, nickname)
 	return writeAck(ctx.Conn, msg.RequestID)
 }
