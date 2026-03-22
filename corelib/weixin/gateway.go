@@ -355,6 +355,9 @@ type Gateway struct {
 	wg      sync.WaitGroup
 	running bool
 
+	// Last active user for diagnostic broadcast
+	lastActiveUID string
+
 	// Session pause state
 	pauseMu    sync.Mutex
 	pauseUntil time.Time
@@ -425,6 +428,13 @@ func (g *Gateway) IsRunning() bool {
 // GetContextToken returns the cached context token for a user.
 func (g *Gateway) GetContextToken(userID string) string {
 	return g.ctxTokens.Get(userID)
+}
+
+// LastActiveUserID returns the most recent user who sent a message.
+func (g *Gateway) LastActiveUserID() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.lastActiveUID
 }
 
 func (g *Gateway) emitStatus(status string) {
@@ -632,6 +642,11 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 	if fromUserID == "" {
 		return
 	}
+
+	// Track last active user for diagnostic broadcast
+	g.mu.Lock()
+	g.lastActiveUID = fromUserID
+	g.mu.Unlock()
 
 	// Cache context token
 	if msg.ContextToken != "" {

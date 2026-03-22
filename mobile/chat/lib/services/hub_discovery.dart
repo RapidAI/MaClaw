@@ -7,7 +7,6 @@ class HubDiscovery {
   static const defaultCenterUrl = 'http://hubs.mypapers.top:9388';
   static const _prefKeyHubUrl = 'discovered_hub_url';
   static const _prefKeyHubName = 'discovered_hub_name';
-  static const _prefKeyCenterUrl = 'hub_center_url';
 
   static String _trimSlash(String url) => url.replaceAll(RegExp(r'/+$'), '');
 

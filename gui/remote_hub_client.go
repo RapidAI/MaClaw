@@ -1013,6 +1013,14 @@ func (c *RemoteHubClient) handleIMGatewayClaimResult(msg inboundHubEnvelope) {
 	} else {
 		log.Printf("[hub-client] gateway claim DENIED for platform=%s: %s", payload.Platform, payload.Reason)
 	}
+	// Send claim result as diagnostic to WeChat if applicable
+	if payload.Platform == "weixin" && c.app.weixinGateway != nil {
+		diagText := fmt.Sprintf("🔍 [客户端] gateway claim result\nplatform=%s ok=%v", payload.Platform, payload.OK)
+		if !payload.OK {
+			diagText += "\nreason=" + payload.Reason
+		}
+		c.app.weixinGateway.BroadcastDiag(diagText)
+	}
 }
 
 func (c *RemoteHubClient) handleNicknameAssigned(msg inboundHubEnvelope) {

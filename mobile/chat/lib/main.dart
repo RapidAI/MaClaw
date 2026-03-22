@@ -93,8 +93,11 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
     _api = ApiClient(baseUrl: _hubUrl!);
   }
 
-  void _onHubDiscovered(String hubUrl, String hubName) {
-    _setHubUrl(hubUrl);
+  /// Called by LoginScreen after hub discovery + successful authentication.
+  void _onHubReady(String hubUrl, String hubName, AuthService auth) {
+    _hubUrl = hubUrl.replaceAll(RegExp(r'/+$'), '');
+    _auth = auth;
+    _api = ApiClient(baseUrl: _hubUrl!);
   }
 
   void _onAuthenticated() {
@@ -188,9 +191,8 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
     }
     if (!_loggedIn) {
       return LoginScreen(
-        authProvider: () => _auth,
         onLoginSuccess: _onAuthenticated,
-        onHubDiscovered: _onHubDiscovered,
+        onHubReady: _onHubReady,
       );
     }
     return MultiProvider(

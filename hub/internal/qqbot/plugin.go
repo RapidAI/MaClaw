@@ -824,6 +824,11 @@ func (p *Plugin) handleDispatch(eventType string, data json.RawMessage, sessionI
 		log.Printf("[qqbot/ws] session resumed")
 
 	case "C2C_MESSAGE_CREATE":
+		cfg := p.configProvider()
+		if !cfg.Enabled {
+			log.Printf("[qqbot/ws] plugin disabled, ignoring C2C message")
+			return
+		}
 		go p.handleC2CMessage(data)
 
 	case "GROUP_AT_MESSAGE_CREATE":
@@ -895,9 +900,16 @@ func (p *Plugin) HandleWebhook(r *http.Request) ([]byte, int) {
 
 	log.Printf("[qqbot/webhook] op=%d t=%s", payload.Op, payload.T)
 
-	// Op 13: 回调地址验证 (ed25519 signature)
+	// Op 13: 回调地址验证 (ed25519 signature) — always respond even if disabled
 	if payload.Op == 13 {
 		return p.handleValidation(payload.Data, cfg.AppSecret)
+	}
+
+	// If disabled, ACK but don't process any messages
+	if !cfg.Enabled {
+		log.Printf("[qqbot/webhook] plugin disabled, ignoring event %s", payload.T)
+		ack, _ := json.Marshal(map[string]int{"op": 12})
+		return ack, http.StatusOK
 	}
 
 	// Verify ed25519 signature for non-validation requests

@@ -177,6 +177,7 @@ func (p *RemoteGatewayPlugin) ClaimGateway(machineID, userID string) (bool, stri
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.owner != nil && p.owner.MachineID != machineID {
+		log.Printf("[remote-gw/%s] claim DENIED: already held by machine=%s, requester=%s", p.platform, p.owner.MachineID, machineID)
 		return false, fmt.Sprintf("gateway already held by machine %s (since %s)",
 			p.owner.MachineID, p.owner.ClaimedAt.Format("15:04:05"))
 	}
@@ -185,7 +186,9 @@ func (p *RemoteGatewayPlugin) ClaimGateway(machineID, userID string) (bool, stri
 		UserID:    userID,
 		ClaimedAt: time.Now(),
 	}
-	log.Printf("[remote-gw/%s] gateway claimed by machine=%s user=%s", p.platform, machineID, userID)
+	log.Printf("[remote-gw/%s] gateway CLAIMED by machine=%s user=%s", p.platform, machineID, userID)
+	// Note: cannot send diag here because sendToGatewayOwner requires the lock
+	// which we already hold. The claim result is sent by the WS handler.
 	return true, ""
 }
 
@@ -227,12 +230,18 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 	handler := p.messageHandler
 	p.mu.RUnlock()
 
+	ownerID := ""
+	if owner != nil {
+		ownerID = owner.MachineID
+	}
+	log.Printf("[remote-gw/%s] HandleGatewayMessage: from_machine=%s owner=%s handler_nil=%v", p.platform, machineID, ownerID, handler == nil)
+
 	if owner == nil || owner.MachineID != machineID {
-		log.Printf("[remote-gw/%s] ignoring message from non-owner machine=%s", p.platform, machineID)
+		log.Printf("[remote-gw/%s] REJECTED: message from non-owner machine=%s (owner=%s)", p.platform, machineID, ownerID)
 		return
 	}
 	if handler == nil {
-		log.Printf("[remote-gw/%s] no message handler registered", p.platform)
+		log.Printf("[remote-gw/%s] REJECTED: no message handler registered", p.platform)
 		return
 	}
 
@@ -245,6 +254,8 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		log.Printf("[remote-gw/%s] parse gateway_message failed: %v", p.platform, err)
 		return
 	}
+
+	log.Printf("[remote-gw/%s] dispatching: uid=%s type=%s text_len=%d", p.platform, msg.PlatformUID, msg.MessageType, len(msg.Text))
 
 	// Check if this is a binding flow message (email or verify code).
 	if p.handleBindingFlow(msg.PlatformUID, msg.Text) {
@@ -278,6 +289,9 @@ func (p *RemoteGatewayPlugin) sendToGatewayOwner(replyType string, payload map[s
 		return fmt.Errorf("%s: no gateway owner", p.platform)
 	}
 	payload["reply_type"] = replyType
+	// Embed platform inside the payload so the client can parse it from
+	// msg.Payload (inboundHubEnvelope.Payload is the "payload" JSON field).
+	payload["platform"] = p.platform
 	return p.sender.SendToMachine(owner.MachineID, map[string]any{
 		"type":     "im.gateway_reply",
 		"platform": p.platform,

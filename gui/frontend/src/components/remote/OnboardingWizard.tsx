@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import {
     GetMaclawLLMProviders,
     SaveMaclawLLMProviders,
@@ -9,6 +10,7 @@ import {
     GetWeixinStatus,
     StartWeixinQRLogin,
     WaitWeixinQRLogin,
+    RestartWeixin,
 } from "../../../wailsjs/go/main/App";
 
 interface LLMProvider {
@@ -273,6 +275,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                         setWxMsg(poll.message || t("✅ 微信绑定成功", "✅ WeChat connected"));
                         setWxDone(true);
                         wxPollingRef.current = false;
+                        // Auto-start WeChat process after successful QR scan
+                        RestartWeixin().catch(() => {});
                         break;
                     } else if (st === "scaned") {
                         setWxStatus("scaned");
@@ -598,8 +602,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
 
                                 {wxQrUrl && wxStatus !== "expired" && wxStatus !== "error" && (
                                     <div style={{ textAlign: "center" }}>
-                                        <img src={wxQrUrl} alt="WeChat QR" style={{
-                                            width: 180, height: 180, borderRadius: 8,
+                                        <QRCodeSVG value={wxQrUrl} size={180} style={{
+                                            borderRadius: 8,
                                             border: "1px solid #e2e8f0",
                                         }} />
                                     </div>

@@ -51,7 +51,7 @@ Select a provider and enter your API Key in the configuration panel for each too
 
 ## About
 
-*   **Version**: V5.0.0.9300
+*   **Version**: V5.1.0.9400
 *   **Author**: Dr. Daniel
 *   **GitHub**: [RapidAI/MaClaw](https://github.com/rapidai/maclaw)
 *   **Website**: [maclaw.top](https://maclaw.top)

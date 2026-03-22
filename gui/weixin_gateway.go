@@ -179,7 +179,13 @@ func (m *weixinGatewayManager) onIncomingMessage(msg weixin.IncomingMessage) {
 		return
 	}
 
-	if cfg.IsWeixinLocalMode() {
+	isLocal := cfg.IsWeixinLocalMode()
+	hubClient := m.app.hubClient()
+	hubNil := hubClient == nil
+	hubConn := !hubNil && hubClient.IsConnected()
+	log.Printf("[weixin-mgr] onIncomingMessage: user=%s local_mode=%v hub_nil=%v hub_connected=%v", msg.FromUserID, isLocal, hubNil, hubConn)
+
+	if isLocal {
 		m.handleLocalMessage(msg)
 		return
 	}
@@ -191,19 +197,7 @@ func (m *weixinGatewayManager) onIncomingMessage(msg weixin.IncomingMessage) {
 func (m *weixinGatewayManager) forwardToHub(msg weixin.IncomingMessage) {
 	hubClient := m.app.hubClient()
 	if hubClient == nil || !hubClient.IsConnected() {
-		log.Printf("[weixin-mgr] hub not connected, cannot forward WX message from user=%s", msg.FromUserID)
-		m.mu.Lock()
-		gw := m.gateway
-		m.mu.Unlock()
-		if gw != nil {
-			if err := gw.SendText(context.Background(), weixin.OutgoingText{
-				ToUserID:     msg.FromUserID,
-				Text:         "⚠️ Hub 未连接，无法处理消息。",
-				ContextToken: msg.ContextToken,
-			}); err != nil {
-				log.Printf("[weixin-mgr] failed to send hub-disconnected notice to user=%s: %v", msg.FromUserID, err)
-			}
-		}
+		log.Printf("[weixin-mgr] forwardToHub FAILED: hub_nil=%v user=%s", hubClient == nil, msg.FromUserID)
 		return
 	}
 
@@ -227,7 +221,11 @@ func (m *weixinGatewayManager) forwardToHub(msg weixin.IncomingMessage) {
 		payload["context_token"] = msg.ContextToken
 	}
 
-	hubClient.SendIMGatewayMessage("weixin", payload)
+	if err := hubClient.SendIMGatewayMessage("weixin", payload); err != nil {
+		log.Printf("[weixin-mgr] forwardToHub SendIMGatewayMessage error: %v", err)
+	} else {
+		log.Printf("[weixin-mgr] forwardToHub OK: user=%s text=%q", msg.FromUserID, truncateForLog(msg.Text, 30))
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +598,51 @@ func (m *weixinGatewayManager) saveMediaToTemp(msg weixin.IncomingMessage) (stri
 	return p, nil
 }
 
-// mediaLabel returns a Chinese label for the media type.
+// sendDiag sends a diagnostic message to the WeChat user for remote debugging.
+func (m *weixinGatewayManager) sendDiag(toUserID, contextToken, text string) {
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return
+	}
+	_ = gw.SendText(context.Background(), weixin.OutgoingText{
+		ToUserID:     toUserID,
+		Text:         text,
+		ContextToken: contextToken,
+	})
+}
+
+// BroadcastDiag sends a diagnostic message to the last known WeChat user.
+// Used when we don't have a specific user ID (e.g. claim result callback).
+func (m *weixinGatewayManager) BroadcastDiag(text string) {
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return
+	}
+	// Use gateway's last known user for broadcast
+	lastUID := gw.LastActiveUserID()
+	if lastUID == "" {
+		log.Printf("[weixin-mgr] BroadcastDiag: no last active user, dropping: %s", text)
+		return
+	}
+	_ = gw.SendText(context.Background(), weixin.OutgoingText{
+		ToUserID: lastUID,
+		Text:     text,
+	})
+}
+
+// truncateForLog truncates a string for log output.
+func truncateForLog(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
 func mediaLabel(mediaType string) string {
 	switch mediaType {
 	case "image":
@@ -618,10 +660,12 @@ func mediaLabel(mediaType string) string {
 
 // HandleGatewayReply dispatches a reply from Hub to the WeChat API.
 func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
+	log.Printf("[weixin-mgr] HandleGatewayReply: type=%s uid=%s text_len=%d", reply.ReplyType, reply.PlatformUID, len(reply.Text))
 	m.mu.Lock()
 	gw := m.gateway
 	m.mu.Unlock()
 	if gw == nil {
+		log.Printf("[weixin-mgr] HandleGatewayReply: gateway is nil, dropping reply")
 		return
 	}
 
@@ -743,6 +787,8 @@ func (a *App) SetWeixinLocalMode(enabled bool) error {
 	if err := a.SaveConfig(cfg); err != nil {
 		return err
 	}
+	log.Printf("[weixin-mgr] SetWeixinLocalMode: enabled=%v (local_mode after save: %v)", enabled, cfg.IsWeixinLocalMode())
+
 	// Invalidate cached local handler so it's recreated on next message.
 	if a.weixinGateway != nil {
 		a.weixinGateway.resetLocalHandler()
@@ -753,9 +799,14 @@ func (a *App) SetWeixinLocalMode(enabled bool) error {
 	// send the gateway claim so Hub registers this machine as the owner.
 	if !enabled {
 		hubClient := a.hubClient()
+		hubNil := hubClient == nil
+		hubConnected := !hubNil && hubClient.IsConnected()
+		log.Printf("[weixin-mgr] switching to hub mode: hub_nil=%v hub_connected=%v", hubNil, hubConnected)
 		if hubClient != nil && hubClient.IsConnected() {
 			hubClient.SendIMGatewayClaim("weixin")
 			log.Printf("[weixin-mgr] sent gateway claim after switching to hub mode")
+		} else {
+			log.Printf("[weixin-mgr] WARNING: cannot send gateway claim, hub not available")
 		}
 	}
 	return nil

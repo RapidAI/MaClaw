@@ -200,9 +200,12 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 
 	target := UserTarget{PlatformUID: msg.PlatformUID}
 
+	log.Printf("[IM Adapter] HandleMessage: platform=%s uid=%s text_len=%d", msg.PlatformName, msg.PlatformUID, len(msg.Text))
+
 	// 1. Identity mapping
 	unifiedID, err := a.identity.ResolveUser(ctx, msg.PlatformName, msg.PlatformUID)
 	if err != nil {
+		log.Printf("[IM Adapter] ResolveUser FAILED: platform=%s uid=%s err=%v", msg.PlatformName, msg.PlatformUID, err)
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 403,
 			StatusIcon: "👋",
@@ -581,6 +584,8 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	}
 
 	// 5. Route to MaClaw Agent — via Coordinator (if wired) or MessageRouter.
+	log.Printf("[IM Adapter] routing: user=%s coordinator=%v text_len=%d", unifiedID, a.coordinator != nil, len(text))
+
 	var routeResp *GenericResponse
 	var routeErr error
 	if a.coordinator != nil {
