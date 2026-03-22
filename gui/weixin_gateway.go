@@ -747,6 +747,17 @@ func (a *App) SetWeixinLocalMode(enabled bool) error {
 	if a.weixinGateway != nil {
 		a.weixinGateway.resetLocalHandler()
 	}
+
+	// When switching to hub mode, the gateway is already connected so
+	// onStatusChange("connected") won't fire again. We must explicitly
+	// send the gateway claim so Hub registers this machine as the owner.
+	if !enabled {
+		hubClient := a.hubClient()
+		if hubClient != nil && hubClient.IsConnected() {
+			hubClient.SendIMGatewayClaim("weixin")
+			log.Printf("[weixin-mgr] sent gateway claim after switching to hub mode")
+		}
+	}
 	return nil
 }
 

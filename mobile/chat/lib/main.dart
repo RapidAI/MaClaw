@@ -36,9 +36,15 @@ class MaClawChatApp extends StatefulWidget {
 class _MaClawChatAppState extends State<MaClawChatApp> {
   /// Hub URL discovered at runtime via HubCenter or direct probe.
   String? _hubUrl;
+
+  /// Build WebSocket URL from hub base URL.
+  /// Handles both http→ws and https→wss correctly.
   String get _wsUrl {
     final base = _hubUrl ?? '';
-    return base.replaceFirst('http', 'ws') + '/api/chat/ws';
+    final wsBase = base.startsWith('https://')
+        ? base.replaceFirst('https://', 'wss://')
+        : base.replaceFirst('http://', 'ws://');
+    return '$wsBase/api/chat/ws';
   }
 
   AuthService? _auth;
@@ -62,14 +68,21 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
   }
 
   Future<void> _tryRestoreSession() async {
-    final savedHub = await HubDiscovery.loadHubUrl();
-    if (savedHub != null && savedHub.isNotEmpty) {
-      _setHubUrl(savedHub);
-      final restored = await _auth!.restoreSession();
-      if (!mounted) return;
-      if (restored) {
-        _onAuthenticated();
+    try {
+      final savedHub = await HubDiscovery.loadHubUrl();
+      if (savedHub != null && savedHub.isNotEmpty) {
+        _setHubUrl(savedHub);
+        final restored = await _auth!.restoreSession();
+        if (!mounted) return;
+        if (restored) {
+          _onAuthenticated();
+        } else {
+          // Token invalid — clear it so we don't retry stale tokens.
+          await _auth!.logout();
+        }
       }
+    } catch (_) {
+      // Network error during restore — fall through to login screen.
     }
     if (mounted) setState(() => _initializing = false);
   }
@@ -175,7 +188,7 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
     }
     if (!_loggedIn) {
       return LoginScreen(
-        auth: _auth ?? AuthService(baseUrl: ''),
+        authProvider: () => _auth,
         onLoginSuccess: _onAuthenticated,
         onHubDiscovered: _onHubDiscovered,
       );

@@ -6,13 +6,17 @@ import '../../services/hub_discovery.dart';
 /// Login screen with hub discovery.
 /// Flow: enter email → discover hub via HubCenter → select hub → login → poll.
 class LoginScreen extends StatefulWidget {
-  final AuthService auth;
+  /// Returns the current AuthService. Called after hub discovery so we always
+  /// get the instance with the correct baseUrl (created by main.dart in
+  /// _onHubDiscovered → _setHubUrl).
+  final AuthService? Function() authProvider;
   final VoidCallback onLoginSuccess;
+  /// Called when a hub is discovered, so main.dart can update the base URL.
   final void Function(String hubUrl, String hubName)? onHubDiscovered;
 
   const LoginScreen({
     super.key,
-    required this.auth,
+    required this.authProvider,
     required this.onLoginSuccess,
     this.onHubDiscovered,
   });
@@ -33,6 +37,8 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _pollId;
   _Phase _phase = _Phase.email;
   List<DiscoveredHub> _hubs = [];
+  int _pollAttempts = 0;
+  static const _maxPollAttempts = 200; // ~10 minutes at 3s interval
 
   @override
   void dispose() {
@@ -40,6 +46,12 @@ class _LoginScreenState extends State<LoginScreen> {
     _emailController.dispose();
     _hubUrlController.dispose();
     super.dispose();
+  }
+
+  AuthService get _auth {
+    final a = widget.authProvider();
+    if (a == null) throw StateError('AuthService not available — hub not yet discovered');
+    return a;
   }
 
   Future<void> _discover() async {
@@ -79,6 +91,14 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
+    if (probe.status == 'pending_approval') {
+      setState(() {
+        _loading = false;
+        _error = probe.message.isNotEmpty ? probe.message : 'Your enrollment is pending approval';
+      });
+      return;
+    }
+
     if (probe.status == 'not_found') {
       final enrollResult = await HubDiscovery.enroll(hubUrl, email);
       final enrollStatus = enrollResult['status'] as String? ?? '';
@@ -107,11 +127,13 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _connectToHub(String hubUrl, String hubName, String email) async {
     hubUrl = hubUrl.replaceAll(RegExp(r'/+$'), '');
 
+    // Save and notify parent — this creates the AuthService with correct baseUrl.
     await HubDiscovery.saveHub(hubUrl, hubName);
     widget.onHubDiscovered?.call(hubUrl, hubName);
 
+    // Now request email login using the freshly created AuthService.
     try {
-      final result = await widget.auth.requestEmailLogin(email);
+      final result = await _auth.requestEmailLogin(email);
       if (result.pollId.isEmpty) {
         setState(() {
           _loading = false;
@@ -120,6 +142,7 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
       _pollId = result.pollId;
+      _pollAttempts = 0;
       setState(() {
         _loading = false;
         _phase = _Phase.polling;
@@ -136,10 +159,22 @@ class _LoginScreenState extends State<LoginScreen> {
   void _startPolling() {
     _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       if (_pollId == null) return;
-      final confirmed = await widget.auth.pollLogin(_pollId!);
-      if (confirmed) {
+      _pollAttempts++;
+      if (_pollAttempts > _maxPollAttempts) {
         _pollTimer?.cancel();
-        widget.onLoginSuccess();
+        if (mounted) {
+          setState(() { _error = 'Login timed out. Please try again.'; _phase = _Phase.email; });
+        }
+        return;
+      }
+      try {
+        final confirmed = await _auth.pollLogin(_pollId!);
+        if (confirmed) {
+          _pollTimer?.cancel();
+          widget.onLoginSuccess();
+        }
+      } catch (_) {
+        // Transient error — keep polling.
       }
     });
   }
@@ -150,137 +185,8 @@ class _LoginScreenState extends State<LoginScreen> {
       _phase = _Phase.email;
       _hubs = [];
       _pollId = null;
+      _pollAttempts = 0;
       _statusMessage = null;
       _error = null;
     });
   }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.chat_bubble_outline,
-                  size: 64, color: Theme.of(context).colorScheme.primary),
-              const SizedBox(height: 16),
-              Text('MaClaw Chat',
-                  style: Theme.of(context).textTheme.headlineMedium),
-              const SizedBox(height: 48),
-              if (_phase == _Phase.email) _buildEmailForm(),
-              if (_phase == _Phase.hubSelect) _buildHubSelect(),
-              if (_phase == _Phase.polling) _buildPolling(),
-              if (_error != null) ...[
-                const SizedBox(height: 12),
-                Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildEmailForm() {
-    return Column(children: [
-      TextField(
-        controller: _emailController,
-        keyboardType: TextInputType.emailAddress,
-        textInputAction: TextInputAction.go,
-        onSubmitted: (_) => _discover(),
-        decoration: InputDecoration(
-          labelText: 'Email',
-          hintText: 'your@email.com',
-          prefixIcon: const Icon(Icons.email_outlined),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        ),
-      ),
-      const SizedBox(height: 12),
-      TextField(
-        controller: _hubUrlController,
-        keyboardType: TextInputType.url,
-        decoration: InputDecoration(
-          labelText: 'Hub URL (optional)',
-          hintText: 'Or enter a private Hub URL directly',
-          prefixIcon: const Icon(Icons.dns_outlined),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        ),
-      ),
-      const SizedBox(height: 16),
-      SizedBox(
-        width: double.infinity,
-        height: 48,
-        child: FilledButton(
-          onPressed: _loading ? null : _discover,
-          child: _loading
-              ? const SizedBox(width: 20, height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-              : const Text('Discover & Sign In'),
-        ),
-      ),
-      const SizedBox(height: 8),
-      Text('Hub Center: ${HubDiscovery.defaultCenterUrl}',
-          style: TextStyle(color: Colors.grey[500], fontSize: 11)),
-    ]);
-  }
-
-  Widget _buildHubSelect() {
-    final email = _emailController.text.trim();
-    return Column(children: [
-      TextButton.icon(
-        onPressed: _goBack,
-        icon: const Icon(Icons.arrow_back, size: 16),
-        label: const Text('Back'),
-      ),
-      Text('Found ${_hubs.length} hubs', style: const TextStyle(fontSize: 14)),
-      const SizedBox(height: 12),
-      ..._hubs.map((hub) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: InkWell(
-          onTap: _loading ? null : () => _selectHub(hub, email),
-          borderRadius: BorderRadius.circular(12),
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey.shade300),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Row(
-              children: [
-                Expanded(child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(hub.name.isNotEmpty ? hub.name : hub.hubId,
-                        style: const TextStyle(fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 2),
-                    Text('${hub.visibility} · ${hub.enrollmentMode}',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-                  ],
-                )),
-                const Icon(Icons.chevron_right),
-              ],
-            ),
-          ),
-        ),
-      )),
-    ]);
-  }
-
-  Widget _buildPolling() {
-    return Column(children: [
-      const CircularProgressIndicator(),
-      const SizedBox(height: 16),
-      Text(_statusMessage ?? 'Check your email or IM for the login link.',
-          textAlign: TextAlign.center),
-      const SizedBox(height: 8),
-      Text('Waiting for confirmation...',
-          style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-      const SizedBox(height: 24),
-      TextButton(onPressed: _goBack, child: const Text('Back')),
-    ]);
-  }
-}

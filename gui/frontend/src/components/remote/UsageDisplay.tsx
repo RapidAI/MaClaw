@@ -30,10 +30,6 @@ export function UsageDisplay({ lang }: Props) {
         setLoading(false);
     };
 
-    const pct = usage && usage.total_granted > 0
-        ? Math.round((usage.total_used / usage.total_granted) * 100)
-        : 0;
-
     return (
         <div style={{
             padding: "10px 14px", borderRadius: 8,
@@ -59,23 +55,32 @@ export function UsageDisplay({ lang }: Props) {
             )}
 
             {usage && (
-                <div>
-                    <div style={{
-                        height: 6, borderRadius: 3, background: "#e2e8f0",
-                        overflow: "hidden", marginBottom: 6,
-                    }}>
-                        <div style={{
-                            height: "100%", borderRadius: 3,
-                            background: pct > 80 ? "#ef4444" : "#22c55e",
-                            width: `${Math.min(pct, 100)}%`,
-                            transition: "width 0.3s",
-                        }} />
+                <div style={{ fontSize: "0.76rem", color: "#334155" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ color: "#64748b" }}>{t("本月花费", "This Month")}</span>
+                        <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>
+                            ${usage.total_used.toFixed(4)}
+                        </span>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.7rem", color: "#64748b" }}>
-                        <span>{t("已用", "Used")}: ${usage.total_used.toFixed(2)}</span>
-                        <span>{t("剩余", "Left")}: ${usage.total_available.toFixed(2)}</span>
-                        <span>{t("总额", "Total")}: ${usage.total_granted.toFixed(2)}</span>
-                    </div>
+                    {usage.total_granted > 0 && (
+                        <>
+                            <div style={{
+                                height: 6, borderRadius: 3, background: "#e2e8f0",
+                                overflow: "hidden", margin: "6px 0",
+                            }}>
+                                <div style={{
+                                    height: "100%", borderRadius: 3,
+                                    background: (usage.total_used / usage.total_granted) > 0.8 ? "#ef4444" : "#22c55e",
+                                    width: `${Math.min(Math.round((usage.total_used / usage.total_granted) * 100), 100)}%`,
+                                    transition: "width 0.3s",
+                                }} />
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.7rem", color: "#64748b" }}>
+                                <span>{t("剩余", "Left")}: ${usage.total_available.toFixed(2)}</span>
+                                <span>{t("总额", "Total")}: ${usage.total_granted.toFixed(2)}</span>
+                            </div>
+                        </>
+                    )}
                 </div>
             )}
         </div>

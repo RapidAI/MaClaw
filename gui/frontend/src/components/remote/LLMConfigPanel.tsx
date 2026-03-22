@@ -32,7 +32,7 @@ const NONE_PROVIDER = "__none__";
 
 /** Known OpenAI-compatible providers for quick-fill in custom provider config. */
 const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number }[] = [
-    { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-4o", context_length: 128000 },
+    { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-5.4", context_length: 128000 },
     { name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat", context_length: 128000 },
     { name: "GLM (智谱)", url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.7", context_length: 180000 },
     { name: "Kimi (月之暗面)", url: "https://api.kimi.com/coding/v1", model: "kimi-k2-thinking", context_length: 128000 },
@@ -529,16 +529,25 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
                                         {t("模型名称", "Model Name")}
-                                        {!dlgProvider.is_custom && (
+                                        {!dlgProvider.is_custom && dlgProvider.auth_type !== "oauth" && (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {t("（预设，无需修改）", "(preset)")}
+                                            </span>
+                                        )}
+                                        {dlgProvider.auth_type === "oauth" && (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {t("（可修改）", "(editable)")}
                                             </span>
                                         )}
                                     </label>
                                     {dlgProvider.is_custom ? (
                                         <input style={inputStyle} value={dlgProvider.model}
                                             onChange={e => dlgUpdateField("model", e.target.value)}
-                                            placeholder="gpt-4o" />
+                                            placeholder="gpt-5.4" />
+                                    ) : dlgProvider.auth_type === "oauth" ? (
+                                        <input style={inputStyle} value={dlgProvider.model}
+                                            onChange={e => dlgUpdateField("model", e.target.value)}
+                                            placeholder="gpt-5.4" />
                                     ) : (
                                         <input style={readonlyStyle} value={dlgProvider.model} readOnly tabIndex={-1} />
                                     )}

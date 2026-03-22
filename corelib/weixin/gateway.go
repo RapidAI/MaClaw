@@ -805,6 +805,7 @@ func (g *Gateway) sendTextChunk(ctx context.Context, to, text, contextToken stri
 		Msg: weixinMessage{
 			ToUserID:     to,
 			ClientID:     clientID,
+			CreateTimeMs: time.Now().UnixMilli(),
 			MessageType:  MsgTypeBot,
 			MessageState: MsgStateFinish,
 			ContextToken: contextToken,
@@ -855,7 +856,10 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 
 	// Build media message item
 	var item messageItem
-	aesKeyB64 := base64.StdEncoding.EncodeToString(uploaded.aesKey)
+	// AES key for cdnMedia: base64(hex_string) — the hex-encoded key is 32 chars,
+	// then base64-encode that string. Matches the TS reference implementation.
+	aesKeyHex := hex.EncodeToString(uploaded.aesKey)
+	aesKeyForMedia := base64.StdEncoding.EncodeToString([]byte(aesKeyHex))
 	switch msg.MediaType {
 	case "image":
 		item = messageItem{
@@ -863,7 +867,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 			ImageItem: &imageItem{
 				Media: &cdnMedia{
 					EncryptQueryParam: uploaded.downloadParam,
-					AESKey:            aesKeyB64,
+					AESKey:            aesKeyForMedia,
 					EncryptType:       1,
 				},
 				MidSize: uploaded.ciphertextSize,
@@ -875,7 +879,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 			VideoItem: &videoItem{
 				Media: &cdnMedia{
 					EncryptQueryParam: uploaded.downloadParam,
-					AESKey:            aesKeyB64,
+					AESKey:            aesKeyForMedia,
 					EncryptType:       1,
 				},
 				VideoSize: uploaded.ciphertextSize,
@@ -887,7 +891,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 			FileItem: &fileItem{
 				Media: &cdnMedia{
 					EncryptQueryParam: uploaded.downloadParam,
-					AESKey:            aesKeyB64,
+					AESKey:            aesKeyForMedia,
 					EncryptType:       1,
 				},
 				FileName: msg.FileName,
@@ -901,6 +905,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		Msg: weixinMessage{
 			ToUserID:     msg.ToUserID,
 			ClientID:     clientID,
+			CreateTimeMs: time.Now().UnixMilli(),
 			MessageType:  MsgTypeBot,
 			MessageState: MsgStateFinish,
 			ContextToken: msg.ContextToken,

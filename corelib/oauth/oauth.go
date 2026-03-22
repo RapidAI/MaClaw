@@ -307,8 +307,14 @@ func RunOAuthFlow(cfg Config) (*TokenResult, error) {
 	if exchanged.IDToken != "" {
 		if key, err := ExchangeForAPIKey(cfg, exchanged.IDToken); err == nil {
 			apiKey = key
+		} else {
+			// API key exchange 失败，fallback 到 access_token。
+			// 注意：access_token 可能无法直接调用 /v1/chat/completions，
+			// 如果后续 LLM 调用失败，请检查此处。
+			fmt.Printf("[oauth] warning: API key exchange failed, falling back to access_token: %v\n", err)
 		}
-		// 如果 API key exchange 失败，静默 fallback 到 access_token
+	} else {
+		fmt.Println("[oauth] warning: no id_token in response, using access_token directly")
 	}
 
 	return &TokenResult{

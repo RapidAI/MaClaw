@@ -140,7 +140,38 @@ func (c *RemoteHubClient) Connect() error {
 	go c.SyncTools()
 	c.startPreviewFlusher()
 
+	// Re-send IM gateway claims for any already-connected gateways that are
+	// in hub mode. This covers both initial connect and reconnect scenarios.
+	go c.syncIMGatewayClaims()
+
 	return nil
+}
+
+// syncIMGatewayClaims sends gateway claims for all IM gateways that are
+// currently connected and operating in hub (non-local) mode.
+func (c *RemoteHubClient) syncIMGatewayClaims() {
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		return
+	}
+	// WeChat
+	if !cfg.IsWeixinLocalMode() && c.app.weixinGateway != nil && c.app.weixinGateway.Status() == "connected" {
+		if err := c.SendIMGatewayClaim("weixin"); err == nil {
+			log.Printf("[hub-client] re-sent weixin gateway claim on connect")
+		}
+	}
+	// Telegram
+	if c.app.telegramGateway != nil && c.app.telegramGateway.Status() == "connected" {
+		if err := c.SendIMGatewayClaim("telegram"); err == nil {
+			log.Printf("[hub-client] re-sent telegram gateway claim on connect")
+		}
+	}
+	// QQ Bot
+	if c.app.qqBotGateway != nil && c.app.qqBotGateway.Status() == "connected" {
+		if err := c.SendIMGatewayClaim("qqbot_remote"); err == nil {
+			log.Printf("[hub-client] re-sent qqbot gateway claim on connect")
+		}
+	}
 }
 
 // errHubAuthFailed is returned when the hub rejects machine credentials.

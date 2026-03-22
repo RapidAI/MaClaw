@@ -89,6 +89,8 @@ func RefreshAccessToken(cfg Config, refreshToken string) (*TokenResult, error) {
 	if tok.IDToken != "" {
 		if key, err := ExchangeForAPIKey(cfg, tok.IDToken); err == nil {
 			apiKey = key
+		} else {
+			fmt.Printf("[oauth] warning: API key exchange failed during refresh, falling back to access_token: %v\n", err)
 		}
 	}
 
