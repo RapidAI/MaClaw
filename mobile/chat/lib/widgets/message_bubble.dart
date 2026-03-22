@@ -221,7 +221,7 @@ class _VoiceNoteContentState extends State<_VoiceNoteContent> {
               height: 6.0 + (i % 3) * 6,
               margin: const EdgeInsets.symmetric(horizontal: 1),
               decoration: BoxDecoration(
-                color: widget.textColor.withOpacity(0.6),
+                color: widget.textColor.withAlpha(153),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),

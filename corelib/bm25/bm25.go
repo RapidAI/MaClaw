@@ -3,7 +3,10 @@
 package bm25
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"unicode"
@@ -31,11 +34,12 @@ type Doc struct {
 
 // Index is a thread-safe in-memory BM25 index.
 type Index struct {
-	mu    sync.RWMutex
-	docs  []indexedDoc
-	avgDL float64
-	k1    float64
-	b     float64
+	mu       sync.RWMutex
+	docs     []indexedDoc
+	avgDL    float64
+	k1       float64
+	b        float64
+	docsHash string // hash of the last Rebuild input, used by RebuildIfChanged
 }
 
 type indexedDoc struct {
@@ -54,7 +58,25 @@ func New() *Index {
 func (idx *Index) Rebuild(docs []Doc) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	idx.rebuildLocked(docs)
+	idx.docsHash = hashDocs(docs)
+}
 
+// RebuildIfChanged rebuilds the index only if the docs have changed since the
+// last Rebuild/RebuildIfChanged call. Returns true if a rebuild occurred.
+func (idx *Index) RebuildIfChanged(docs []Doc) bool {
+	h := hashDocs(docs)
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if h == idx.docsHash {
+		return false
+	}
+	idx.rebuildLocked(docs)
+	idx.docsHash = h
+	return true
+}
+
+func (idx *Index) rebuildLocked(docs []Doc) {
 	idx.docs = make([]indexedDoc, len(docs))
 	totalLen := 0
 	for i, d := range docs {
@@ -77,6 +99,7 @@ func (idx *Index) Add(d Doc) {
 	doc := tokenizeDoc(d)
 	idx.docs = append(idx.docs, doc)
 	idx.recalcAvgDL()
+	idx.docsHash = "" // invalidate cache
 }
 
 // Remove removes a document by ID.
@@ -88,6 +111,7 @@ func (idx *Index) Remove(id string) {
 		if d.id == id {
 			idx.docs = append(idx.docs[:i], idx.docs[i+1:]...)
 			idx.recalcAvgDL()
+			idx.docsHash = "" // invalidate cache
 			return
 		}
 	}
@@ -103,11 +127,13 @@ func (idx *Index) Update(d Doc) {
 		if existing.id == d.ID {
 			idx.docs[i] = doc
 			idx.recalcAvgDL()
+			idx.docsHash = "" // invalidate cache
 			return
 		}
 	}
 	idx.docs = append(idx.docs, doc)
 	idx.recalcAvgDL()
+	idx.docsHash = "" // invalidate cache
 }
 
 // Score computes BM25 scores for all documents against the query string.
@@ -226,4 +252,24 @@ func isAllPunct(s string) bool {
 		}
 	}
 	return true
+}
+
+// hashDocs computes a deterministic hash over a slice of Docs.
+// Docs are sorted by ID first to ensure order-independence.
+func hashDocs(docs []Doc) string {
+	if len(docs) == 0 {
+		return ""
+	}
+	sorted := make([]Doc, len(docs))
+	copy(sorted, docs)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+
+	h := sha256.New()
+	for _, d := range sorted {
+		h.Write([]byte(d.ID))
+		h.Write([]byte{0})
+		h.Write([]byte(d.Text))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

@@ -108,6 +108,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	var models []map[string]interface{}
+	// Add the auto-detect meta model
+	models = append(models, map[string]interface{}{
+		"id":       "free-proxy",
+		"object":   "model",
+		"owned_by": "freeproxy",
+	})
 	for name := range Registry {
 		models = append(models, map[string]interface{}{
 			"id":       name,
@@ -146,28 +152,43 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	adapter := ResolveAdapter(req.Model)
 	ctx := r.Context()
 
 	// Serialize access — one request at a time per browser tab
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Find or connect to the target tab
-	tab, err := s.cdp.FindTabByDomain(ctx, adapter.Domain())
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, err.Error())
-		return
+	var adapter Adapter
+	var tab *TabInfo
+
+	// If model explicitly matches a registered adapter, use precise lookup;
+	// otherwise auto-detect from open Chrome tabs.
+	if a, exact := Registry[req.Model]; exact {
+		adapter = a
+		t, err := s.cdp.FindTabByDomain(ctx, adapter.Domain())
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		tab = t
+	} else {
+		detected, t, err := DetectAdapter(ctx, s.cdp)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		adapter = detected
+		tab = t
+		log.Printf("[freeproxy] auto-detected provider: %s", adapter.Name())
 	}
+
 	if err := s.cdp.ConnectTab(ctx, tab); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "connect to tab: "+err.Error())
 		return
 	}
 
-	model := req.Model
-	if model == "" {
-		model = adapter.Name()
-	}
+	// Use the actual adapter name as model in response so caller knows which provider was used.
+	model := adapter.Name()
 
 	if req.Stream {
 		s.handleStream(ctx, w, adapter, tab.ID, prompt.String(), model)

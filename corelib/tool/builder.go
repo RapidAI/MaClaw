@@ -15,6 +15,7 @@ type DynamicToolBuilder struct {
 	registry       *Registry
 	maxDirectTools int // threshold before filtering kicks in (default 20)
 	maxDynamic     int // max non-builtin tools when filtering (default 15)
+	bm25Index      *bm25.Index // cached BM25 index, reused across Build calls
 }
 
 // NewDynamicToolBuilder creates a builder backed by the given registry.
@@ -23,7 +24,13 @@ func NewDynamicToolBuilder(registry *Registry) *DynamicToolBuilder {
 		registry:       registry,
 		maxDirectTools: 20,
 		maxDynamic:     15,
+		bm25Index:      bm25.New(),
 	}
+}
+
+// SetRegistry replaces the registry without discarding the cached BM25 index.
+func (b *DynamicToolBuilder) SetRegistry(registry *Registry) {
+	b.registry = registry
 }
 
 // BuildAll returns tool definitions for every available tool (no filtering).
@@ -75,7 +82,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		dynamic = append(dynamic, t)
 	}
 
-	// Score remaining dynamic tools using BM25.
+	// Score remaining dynamic tools using BM25 (reuses cached index).
 	docs := make([]bm25.Doc, len(dynamic))
 	for i, t := range dynamic {
 		text := t.Name + " " + t.Description
@@ -84,9 +91,8 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		}
 		docs[i] = bm25.Doc{ID: t.Name, Text: text}
 	}
-	idx := bm25.New()
-	idx.Rebuild(docs)
-	bm25Scores := idx.Score(userMessage)
+	b.bm25Index.RebuildIfChanged(docs)
+	bm25Scores := b.bm25Index.Score(userMessage)
 
 	type scored struct {
 		tool  RegisteredTool

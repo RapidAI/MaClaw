@@ -20,22 +20,27 @@ class ChatRoomScreen extends StatefulWidget {
 class _ChatRoomScreenState extends State<ChatRoomScreen> {
   final _scrollController = ScrollController();
   bool _loadingOlder = false;
+  late final ChatProvider _chatProvider;
 
   @override
   void initState() {
     super.initState();
-    // Load cached messages + sync incremental from server.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<ChatProvider>().enterChannel(widget.channel.id);
-    });
     _scrollController.addListener(_onScroll);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _chatProvider = context.read<ChatProvider>();
+    // Load cached messages + sync incremental from server (once).
+    _chatProvider.enterChannel(widget.channel.id);
   }
 
   void _onScroll() {
     if (_loadingOlder) return;
     if (_scrollController.position.pixels <= 50) {
       _loadingOlder = true;
-      context.read<ChatProvider>().loadOlderMessages(widget.channel.id).then(
+      _chatProvider.loadOlderMessages(widget.channel.id).then(
             (_) => _loadingOlder = false,
             onError: (_) => _loadingOlder = false,
           );
@@ -44,7 +49,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
   @override
   void dispose() {
-    context.read<ChatProvider>().leaveChannel(widget.channel.id);
+    _chatProvider.leaveChannel(widget.channel.id);
     _scrollController.dispose();
     super.dispose();
   }

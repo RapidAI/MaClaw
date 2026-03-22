@@ -70,11 +70,15 @@ type Router struct {
 	generator   *DefinitionGenerator
 	recommender SkillRecommender
 	registry    *Registry
+	bm25Index   *bm25.Index // cached BM25 index, reused across Route calls
 }
 
 // NewRouter creates a new Router.
 func NewRouter(generator *DefinitionGenerator) *Router {
-	return &Router{generator: generator}
+	return &Router{
+		generator: generator,
+		bm25Index: bm25.New(),
+	}
 }
 
 // SetRegistry sets the Registry used for dynamic builtin detection and tag-based scoring.
@@ -127,7 +131,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		return core
 	}
 
-	// Build a BM25 index over candidate tool descriptions.
+	// Build a BM25 index over candidate tool descriptions (reuses cached index).
 	docs := make([]bm25.Doc, len(candidates))
 	for i, t := range candidates {
 		name := ExtractToolName(t)
@@ -138,9 +142,8 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 		docs[i] = bm25.Doc{ID: name, Text: text}
 	}
-	idx := bm25.New()
-	idx.Rebuild(docs)
-	scores := idx.Score(userMessage)
+	r.bm25Index.RebuildIfChanged(docs)
+	scores := r.bm25Index.Score(userMessage)
 
 	type scored struct {
 		index int
@@ -239,5 +242,3 @@ func ExtractToolDescription(def map[string]interface{}) string {
 	desc, _ := fnMap["description"].(string)
 	return desc
 }
-
-

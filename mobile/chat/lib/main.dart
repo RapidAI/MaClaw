@@ -9,6 +9,7 @@ import 'screens/home_screen.dart';
 import 'screens/voice/call_screen.dart';
 import 'services/api_client.dart';
 import 'services/auth_service.dart';
+import 'services/hub_discovery.dart';
 import 'services/push_service.dart';
 import 'services/webrtc_service.dart';
 import 'services/ws_client.dart';
@@ -33,11 +34,15 @@ class MaClawChatApp extends StatefulWidget {
 }
 
 class _MaClawChatAppState extends State<MaClawChatApp> {
-  static const _hubUrl = 'http://localhost:9388';
-  static const _wsUrl = 'ws://localhost:9388/api/chat/ws';
+  /// Hub URL discovered at runtime via HubCenter or direct probe.
+  String? _hubUrl;
+  String get _wsUrl {
+    final base = _hubUrl ?? '';
+    return base.replaceFirst('http', 'ws') + '/api/chat/ws';
+  }
 
-  late final AuthService _auth;
-  late final ApiClient _api;
+  AuthService? _auth;
+  ApiClient? _api;
   late final LocalDatabase _db;
   WsClient? _ws;
   SyncService? _sync;
@@ -52,43 +57,53 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
   @override
   void initState() {
     super.initState();
-    _auth = AuthService(baseUrl: _hubUrl);
-    _api = ApiClient(baseUrl: _hubUrl);
     _db = LocalDatabase();
     _tryRestoreSession();
   }
 
   Future<void> _tryRestoreSession() async {
-    final restored = await _auth.restoreSession();
-    if (!mounted) return;
-    if (restored) {
-      _onAuthenticated();
+    final savedHub = await HubDiscovery.loadHubUrl();
+    if (savedHub != null && savedHub.isNotEmpty) {
+      _setHubUrl(savedHub);
+      final restored = await _auth!.restoreSession();
+      if (!mounted) return;
+      if (restored) {
+        _onAuthenticated();
+      }
     }
-    setState(() => _initializing = false);
+    if (mounted) setState(() => _initializing = false);
+  }
+
+  void _setHubUrl(String hubUrl) {
+    _hubUrl = hubUrl.replaceAll(RegExp(r'/+$'), '');
+    _auth = AuthService(baseUrl: _hubUrl!);
+    _api = ApiClient(baseUrl: _hubUrl!);
+  }
+
+  void _onHubDiscovered(String hubUrl, String hubName) {
+    _setHubUrl(hubUrl);
   }
 
   void _onAuthenticated() {
-    _api.setToken(_auth.token!);
+    if (_api == null || _auth == null) return;
+    _api!.setToken(_auth!.token!);
 
-    _ws = WsClient(wsUrl: _wsUrl, tokenProvider: () => _auth.token ?? '');
-    _sync = SyncService(api: _api, ws: _ws!, db: _db);
+    _ws = WsClient(wsUrl: _wsUrl, tokenProvider: () => _auth?.token ?? '');
+    _sync = SyncService(api: _api!, ws: _ws!, db: _db);
     _chatProvider = ChatProvider(
-      api: _api,
+      api: _api!,
       sync: _sync!,
-      currentUserId: _auth.userId!,
+      currentUserId: _auth!.userId!,
     );
 
-    _webrtc = WebRTCService(api: _api);
+    _webrtc = WebRTCService(api: _api!);
     _callProvider = CallProvider(webrtc: _webrtc!, ws: _ws!);
-
-    // Listen for incoming calls to auto-show call screen.
     _callProvider!.addListener(_onCallStateChanged);
 
     _ws!.connect();
     _sync!.start();
 
-    // Initialize push notifications.
-    _push = PushService(api: _api);
+    _push = PushService(api: _api!);
     _push!.onNotificationTap = _onPushNotificationTap;
     _push!.initialize();
 
@@ -98,18 +113,11 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
   void _onCallStateChanged() {
     if (_callProvider?.state == CallState.incoming) {
       final ctx = _navKey.currentContext;
-      if (ctx != null) {
-        CallScreen.show(ctx);
-      }
+      if (ctx != null) CallScreen.show(ctx);
     }
   }
 
-  void _onPushNotificationTap(String channelId) {
-    // Navigate to the chat room for this channel.
-    // HomeScreen / ConversationListScreen handles deep-link via this callback.
-    // For now, just ensure we're on the home screen — the channel will be
-    // opened by the user from the conversation list.
-  }
+  void _onPushNotificationTap(String channelId) {}
 
   void _onLogout() {
     _callProvider?.removeListener(_onCallStateChanged);
@@ -123,8 +131,14 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
     _callProvider = null;
     _webrtc = null;
     _push = null;
-    _auth.logout();
-    setState(() => _loggedIn = false);
+    _auth?.logout();
+    HubDiscovery.clearHub();
+    setState(() {
+      _loggedIn = false;
+      _hubUrl = null;
+      _auth = null;
+      _api = null;
+    });
   }
 
   @override
@@ -157,14 +171,13 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
 
   Widget _buildHome() {
     if (_initializing) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     if (!_loggedIn) {
       return LoginScreen(
-        auth: _auth,
+        auth: _auth ?? AuthService(baseUrl: ''),
         onLoginSuccess: _onAuthenticated,
+        onHubDiscovered: _onHubDiscovered,
       );
     }
     return MultiProvider(
@@ -173,7 +186,7 @@ class _MaClawChatAppState extends State<MaClawChatApp> {
         ChangeNotifierProvider.value(value: _callProvider!),
         ChangeNotifierProvider.value(value: _themeProvider),
       ],
-      child: HomeScreen(api: _api),
+      child: HomeScreen(api: _api!),
     );
   }
 }

@@ -64,21 +64,3 @@ func TestToolSelector_Recommend_ReasonContainsMatches(t *testing.T) {
 		t.Errorf("reason should mention matches, got %q", reason)
 	}
 }
-
-func TestContainsWord(t *testing.T) {
-	words := []string{"python", "script", "data"}
-	if !containsWord(words, "python") {
-		t.Error("expected true for python")
-	}
-	if containsWord(words, "java") {
-		t.Error("expected false for java")
-	}
-}
-
-func TestUniqueStrings(t *testing.T) {
-	input := []string{"a", "b", "a", "c", "b"}
-	result := uniqueStrings(input)
-	if len(result) != 3 {
-		t.Errorf("uniqueStrings len = %d, want 3", len(result))
-	}
-}

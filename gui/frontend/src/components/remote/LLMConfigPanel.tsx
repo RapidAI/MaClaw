@@ -15,6 +15,7 @@ import {
 import { colors } from "./styles";
 import { UsageDisplay } from "./UsageDisplay";
 import { PROVIDER_LOGOS } from "./providerLogos";
+import { useDialog } from "../CustomDialog";
 
 interface LLMProvider {
     name: string;
@@ -63,6 +64,7 @@ const readonlyStyle: React.CSSProperties = {
 type Props = { lang: string; codexModels?: any[]; onStatusChange?: (online: boolean, configured: boolean) => void };
 
 export function LLMConfigPanel({ lang, onStatusChange }: Props) {
+    const { showAlert, showConfirm } = useDialog();
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
     const [loading, setLoading] = useState(false);
@@ -138,13 +140,13 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgOpen(true);
     }, [providers, currentName]);
 
-    const closeDialog = useCallback(() => {
+    const closeDialog = useCallback(async () => {
         if (oauthBusy) return; // prevent closing during OAuth flow
         if (dlgDirty && !dlgSaving) {
-            if (!window.confirm(t("有未保存的更改，确定关闭？", "Unsaved changes. Close anyway?"))) return;
+            if (!await showConfirm(t("有未保存的更改，确定关闭？", "Unsaved changes. Close anyway?"))) return;
         }
         setDlgOpen(false);
-    }, [dlgDirty, dlgSaving, oauthBusy, t]);
+    }, [dlgDirty, dlgSaving, oauthBusy, t, showConfirm]);
 
     // Escape key to close dialog
     useEffect(() => {
@@ -214,7 +216,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setCurrentName(NONE_PROVIDER);
                 onStatusChange?.(false, false);
                 setDlgOpen(false);
-            } catch (e) { alert(String(e)); }
+            } catch (e) { showAlert(String(e)); }
             setDlgSaving(false);
             return;
         }

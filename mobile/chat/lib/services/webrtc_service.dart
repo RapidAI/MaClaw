@@ -137,8 +137,8 @@ class WebRTCService {
     _stateController.add(CallConnectionState.disconnected);
   }
 
-  void dispose() {
-    _cleanup();
+  Future<void> dispose() async {
+    await _cleanup();
     _stateController.close();
   }
 }

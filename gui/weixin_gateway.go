@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
 
@@ -347,7 +352,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		lastProgress = now
 		_ = gw.SendText(context.Background(), weixin.OutgoingText{
 			ToUserID:     msg.FromUserID,
-			Text:         "⏳ " + progressText,
+			Text:         "⏳ " + textutil.StripMarkdown(progressText),
 			ContextToken: contextToken,
 		})
 	}
@@ -366,14 +371,36 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 }
 
 // sendAgentResponse dispatches all parts of an IMAgentResponse to the WeChat user.
+// reMarkdownImage matches ![alt](url) patterns in LLM response text.
+var reMarkdownImage = regexp.MustCompile(`!\[[^\]]*\]\(([^)]+)\)`)
+
 func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, contextToken string, resp *IMAgentResponse) {
 	ctx := context.Background()
 
+	// Extract markdown image URLs from text before stripping markdown.
+	var imageURLs []string
+	var imageDataURIs []string // data:image/...;base64,xxx
+	if resp.Text != "" {
+		matches := reMarkdownImage.FindAllStringSubmatch(resp.Text, 10)
+		for _, match := range matches {
+			if len(match) <= 1 {
+				continue
+			}
+			src := match[1]
+			if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+				imageURLs = append(imageURLs, src)
+			} else if strings.HasPrefix(src, "data:image/") {
+				imageDataURIs = append(imageDataURIs, src)
+			}
+		}
+	}
+
 	// Send text response
 	if resp.Text != "" {
+		text := textutil.StripMarkdown(resp.Text)
 		if err := gw.SendText(ctx, weixin.OutgoingText{
 			ToUserID:     toUserID,
-			Text:         resp.Text,
+			Text:         text,
 			ContextToken: contextToken,
 		}); err != nil {
 			log.Printf("[weixin-mgr] local SendText error (to=%s): %v", toUserID, err)
@@ -384,7 +411,7 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 	if resp.Error != "" && resp.Text == "" {
 		_ = gw.SendText(ctx, weixin.OutgoingText{
 			ToUserID:     toUserID,
-			Text:         "❌ " + resp.Error,
+			Text:         "❌ " + textutil.StripMarkdown(resp.Error),
 			ContextToken: contextToken,
 		})
 	}
@@ -399,6 +426,40 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 				FileData:     imgData,
 				MediaType:    "image",
 			})
+		}
+	}
+
+	// Download and send markdown images extracted from LLM response text.
+	for _, imgURL := range imageURLs {
+		imgData, err := downloadImageURL(ctx, imgURL)
+		if err != nil {
+			log.Printf("[weixin-mgr] download markdown image failed (url=%s): %v", imgURL, err)
+			continue
+		}
+		if err := gw.SendMedia(ctx, weixin.OutgoingMedia{
+			ToUserID:     toUserID,
+			ContextToken: contextToken,
+			FileData:     imgData,
+			MediaType:    "image",
+		}); err != nil {
+			log.Printf("[weixin-mgr] send markdown image failed (url=%s): %v", imgURL, err)
+		}
+	}
+
+	// Send inline data URI images (data:image/png;base64,...).
+	for _, dataURI := range imageDataURIs {
+		// Format: data:image/png;base64,iVBOR...
+		if idx := strings.Index(dataURI, ";base64,"); idx > 0 {
+			b64 := dataURI[idx+8:]
+			imgData, err := base64.StdEncoding.DecodeString(b64)
+			if err == nil && len(imgData) > 0 {
+				_ = gw.SendMedia(ctx, weixin.OutgoingMedia{
+					ToUserID:     toUserID,
+					ContextToken: contextToken,
+					FileData:     imgData,
+					MediaType:    "image",
+				})
+			}
 		}
 	}
 
@@ -418,6 +479,52 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 
 	// Send local file(s) if present
 	m.sendLocalFiles(gw, toUserID, contextToken, resp)
+}
+
+// imageDownloadClient is a dedicated HTTP client for downloading markdown
+// images with a hard timeout, independent of context cancellation.
+var imageDownloadClient = &http.Client{Timeout: 20 * time.Second}
+
+// downloadImageURL fetches an image from a URL with a timeout and size limit.
+func downloadImageURL(ctx context.Context, rawURL string) ([]byte, error) {
+	dlCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(dlCtx, "GET", rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	resp, err := imageDownloadClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	// Verify Content-Type is an image (or octet-stream which some CDNs use).
+	ct := resp.Header.Get("Content-Type")
+	if ct != "" && !strings.HasPrefix(ct, "image/") && !strings.HasPrefix(ct, "application/octet-stream") {
+		return nil, fmt.Errorf("unexpected Content-Type: %s", ct)
+	}
+
+	// Limit to 10 MB to avoid memory issues.
+	const maxImageSize = 10 * 1024 * 1024
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxImageSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxImageSize {
+		return nil, fmt.Errorf("image too large (>10MB)")
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty response body")
+	}
+	return data, nil
 }
 
 // sendLocalFiles reads local file paths from the agent response and sends them
@@ -533,7 +640,7 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 	case "text":
 		if err := gw.SendText(context.Background(), weixin.OutgoingText{
 			ToUserID:     reply.PlatformUID,
-			Text:         reply.Text,
+			Text:         textutil.StripMarkdown(reply.Text),
 			ContextToken: contextToken,
 		}); err != nil {
 			log.Printf("[weixin-mgr] SendText error (to=%s): %v", reply.PlatformUID, err)

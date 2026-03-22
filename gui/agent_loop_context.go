@@ -63,6 +63,7 @@ type LoopContext struct {
 
 	HTTPClient *http.Client // chat or task client
 	SessionID  string       // associated remote session (if any)
+	Platform   string       // originating IM platform ("desktop", "weixin_local", etc.)
 	StartedAt  time.Time    // when this loop was spawned
 }
 

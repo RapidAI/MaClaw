@@ -1,6 +1,10 @@
 package tool
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
+)
 
 // Profile describes a programming tool's capability profile.
 type Profile struct {
@@ -13,7 +17,9 @@ type Profile struct {
 
 // Selector recommends the best programming tool for a given task.
 type Selector struct {
-	profiles map[string]Profile
+	profiles     map[string]Profile
+	profileOrder []string
+	bm25Index    *bm25.Index // cached index over profile capability texts
 }
 
 // NewSelector creates a Selector pre-loaded with default capability profiles.
@@ -55,7 +61,28 @@ func NewSelector() *Selector {
 			TaskTypes:  []string{"generate", "edit", "fix", "complete", "refactor", "test"},
 			Score:      0.75},
 	}
-	return &Selector{profiles: profiles}
+	order := []string{"claude", "codex", "gemini", "cursor", "opencode", "iflow", "kilo"}
+
+	s := &Selector{
+		profiles:     profiles,
+		profileOrder: order,
+		bm25Index:    bm25.New(),
+	}
+	s.rebuildIndex()
+	return s
+}
+
+// rebuildIndex builds the BM25 index from profile capability texts.
+func (s *Selector) rebuildIndex() {
+	docs := make([]bm25.Doc, 0, len(s.profiles))
+	for _, name := range s.profileOrder {
+		p := s.profiles[name]
+		text := strings.Join(p.Languages, " ") + " " +
+			strings.Join(p.Frameworks, " ") + " " +
+			strings.Join(p.TaskTypes, " ")
+		docs = append(docs, bm25.Doc{ID: name, Text: text})
+	}
+	s.bm25Index.Rebuild(docs)
 }
 
 // Recommend returns the best tool name and a reason for the recommendation.
@@ -68,37 +95,35 @@ func (s *Selector) Recommend(taskDescription string, installed []string) (string
 		installedSet[strings.ToLower(name)] = true
 	}
 
+	// BM25 scoring against profile capability texts.
+	bm25Scores := s.bm25Index.Score(taskDescription)
+
 	bestName := ""
 	bestScore := -1.0
 	var bestMatches []string
 
-	profileOrder := []string{"claude", "codex", "gemini", "cursor", "opencode", "iflow", "kilo"}
-	for _, pName := range profileOrder {
-		profile, ok := s.profiles[pName]
-		if !ok {
-			continue
-		}
-		score := profile.Score
-		var matches []string
+	for _, pName := range s.profileOrder {
+		profile := s.profiles[pName]
+		score := profile.Score + bm25Scores[pName]
 
+		// Collect matches for the reason string.
+		var matches []string
 		for _, lang := range profile.Languages {
-			if selectorContainsWord(words, lang) || strings.Contains(desc, lang) {
-				score += 1.0
+			if selectorContainsWord(words, lang) {
 				matches = append(matches, lang)
 			}
 		}
 		for _, fw := range profile.Frameworks {
-			if selectorContainsWord(words, fw) || strings.Contains(desc, fw) {
-				score += 1.5
+			if selectorContainsWord(words, fw) {
 				matches = append(matches, fw)
 			}
 		}
 		for _, tt := range profile.TaskTypes {
-			if selectorContainsWord(words, tt) || strings.Contains(desc, tt) {
-				score += 1.0
+			if selectorContainsWord(words, tt) {
 				matches = append(matches, tt)
 			}
 		}
+
 		if installedSet[profile.Name] {
 			score += 2.0
 		}

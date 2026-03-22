@@ -3656,10 +3656,9 @@ func (a *App) emitRecoverLog(msg string) {
 	a.emitEvent("recover-log", msg)
 }
 func (a *App) ShowMessage(title, message string) {
-	runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{
-		Type:    runtime.InfoDialog,
-		Title:   title,
-		Message: message,
+	runtime.EventsEmit(a.ctx, "show-message", map[string]string{
+		"title":   title,
+		"message": message,
 	})
 }
 func (a *App) emitEvent(name string, data ...interface{}) {

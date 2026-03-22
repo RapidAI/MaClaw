@@ -6,6 +6,9 @@ import {
     ActivateRemote,
     ProbeRemoteHub,
     StartOpenAIOAuth,
+    GetWeixinStatus,
+    StartWeixinQRLogin,
+    WaitWeixinQRLogin,
 } from "../../../wailsjs/go/main/App";
 
 interface LLMProvider {
@@ -19,31 +22,10 @@ interface LLMProvider {
     auth_type?: string;
 }
 
-const COUNTRY_CODES = [
-    { code: "+86", label: "🇨🇳 +86" },
-    { code: "+1", label: "🇺🇸 +1" },
-    { code: "+81", label: "🇯🇵 +81" },
-    { code: "+82", label: "🇰🇷 +82" },
-    { code: "+44", label: "🇬🇧 +44" },
-    { code: "+49", label: "🇩🇪 +49" },
-    { code: "+33", label: "🇫🇷 +33" },
-    { code: "+61", label: "🇦🇺 +61" },
-    { code: "+65", label: "🇸🇬 +65" },
-    { code: "+852", label: "🇭🇰 +852" },
-    { code: "+886", label: "🇹🇼 +886" },
-    { code: "+91", label: "🇮🇳 +91" },
-    { code: "+7", label: "🇷🇺 +7" },
-    { code: "+55", label: "🇧🇷 +55" },
-] as const;
-
-// Pre-sorted by code length descending so +852 matches before +8x
-const COUNTRY_CODES_SORTED = [...COUNTRY_CODES].sort((a, b) => b.code.length - a.code.length);
-
 type Props = {
     lang: string;
     hubUrl: string;
     email: string;
-    mobile: string;
     uiMode: string;
     onClose: () => void;
     onLLMConfigured: () => void;
@@ -72,14 +54,14 @@ const doneBadge: React.CSSProperties = { ...stepBadge, background: '#22c55e' };
 
 import { PROVIDER_LOGOS } from "./providerLogos";
 
-export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
+export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
 
-    // ── Step 0: UI Mode ──
+    // ── Step 1: UI Mode ──
     const [selectedMode, setSelectedMode] = useState<'pro' | 'lite'>(uiMode === 'pro' ? 'pro' : 'lite');
     const [modeDone, setModeDone] = useState(!!uiMode && uiMode !== '');
 
-    // ── Step 1: LLM ──
+    // ── Step 2: LLM ──
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
     const [llmSaving, setLlmSaving] = useState(false);
@@ -88,10 +70,8 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
     const [llmFormVisible, setLlmFormVisible] = useState(true);
     const [oauthBusy, setOauthBusy] = useState(false);
 
-    // ── Step 2: Registration ──
+    // ── Step 3: Registration ──
     const [regEmail, setRegEmail] = useState(email || "");
-    const [countryCode, setCountryCode] = useState("+86");
-    const [localNumber, setLocalNumber] = useState("");
     const [invCode, setInvCode] = useState("");
     const [invRequired, setInvRequired] = useState(false);
     const [invError, setInvError] = useState("");
@@ -100,26 +80,20 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
     const [regDone, setRegDone] = useState(false);
     const [showConfirm, setShowConfirm] = useState(false);
 
+    // ── Step 4: WeChat Binding ──
+    const [wxDone, setWxDone] = useState(false);
+    const [wxQrUrl, setWxQrUrl] = useState("");
+    const [wxStatus, setWxStatus] = useState(""); // "wait" | "scaned" | "confirmed" | "expired" | "error"
+    const [wxMsg, setWxMsg] = useState("");
+    const [wxLoading, setWxLoading] = useState(false);
+    const wxPollingRef = useRef(false);
+
     // Load providers on mount
     useEffect(() => {
         GetMaclawLLMProviders().then(data => {
             if (data?.providers) setProviders(data.providers);
         }).catch(() => {});
     }, []);
-
-    // Parse mobile prop (runs once on mount)
-    useEffect(() => {
-        if (!mobile) return;
-        const s = mobile.replace(/[\s-]/g, "");
-        for (const cc of COUNTRY_CODES_SORTED) {
-            if (s.startsWith(cc.code)) {
-                setCountryCode(cc.code);
-                setLocalNumber(s.slice(cc.code.length));
-                return;
-            }
-        }
-        setLocalNumber(s.replace(/^\+?\d{1,4}/, ""));
-    }, [mobile]);
 
     // Probe hub for invitation code requirement (only on mount / hubUrl change,
     // NOT on every regEmail keystroke — use the initial email prop).
@@ -130,6 +104,18 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
             if (r?.invitation_code_required) setInvRequired(true);
         }).catch(() => {});
     }, [hubUrl]);
+
+    // Check WeChat status on mount — if already connected, mark done
+    useEffect(() => {
+        GetWeixinStatus().then(s => {
+            if (s && s !== "disconnected") setWxDone(true);
+        }).catch(() => {});
+    }, []);
+
+    // Cleanup polling on unmount
+    useEffect(() => {
+        return () => { wxPollingRef.current = false; };
+    }, []);
 
     // Escape key to close wizard (but not if confirmation dialog is open)
     useEffect(() => {
@@ -142,11 +128,11 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
 
     // Auto-close when all steps are done
     useEffect(() => {
-        if (modeDone && llmDone && regDone) {
+        if (modeDone && llmDone && regDone && wxDone) {
             const timer = setTimeout(onClose, 1500);
             return () => clearTimeout(timer);
         }
-    }, [modeDone, llmDone, regDone, onClose]);
+    }, [modeDone, llmDone, regDone, wxDone, onClose]);
 
     // Collapse the LLM form after successful test & save
     useEffect(() => {
@@ -222,10 +208,9 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
         setRegBusy(true);
         setRegResult(null);
         setInvError("");
-        const fullMobile = localNumber ? countryCode + localNumber : "";
-        onSaveField({ remote_email: regEmail.trim(), remote_mobile: fullMobile });
+        onSaveField({ remote_email: regEmail.trim() });
         try {
-            await ActivateRemote(regEmail.trim(), invCode.trim(), fullMobile);
+            await ActivateRemote(regEmail.trim(), invCode.trim(), "");
             setRegResult({ ok: true, msg: t("注册成功", "Registration successful") });
             setRegDone(true);
             onRegistered();
@@ -247,6 +232,71 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
             }
         }
         setRegBusy(false);
+    };
+
+    // ── WeChat QR Login ──
+    const startWxQR = async () => {
+        wxPollingRef.current = false; // stop any previous polling
+        setWxLoading(true);
+        setWxQrUrl("");
+        setWxStatus("");
+        setWxMsg(t("正在获取二维码...", "Fetching QR code..."));
+        try {
+            const res = await StartWeixinQRLogin();
+            if (res.error) {
+                setWxMsg("❌ " + res.error);
+                setWxStatus("error");
+                setWxLoading(false);
+                return;
+            }
+            const qrUrl = res.qrcode_url || "";
+            const token = res.qrcode_token || "";
+            if (!qrUrl || !token) {
+                setWxMsg(t("❌ 获取二维码失败，请重试", "❌ Failed to get QR code, please retry"));
+                setWxStatus("error");
+                setWxLoading(false);
+                return;
+            }
+            setWxQrUrl(qrUrl);
+            setWxStatus("wait");
+            setWxMsg(t("请用微信扫描二维码", "Scan with WeChat"));
+            setWxLoading(false);
+
+            // Start long-polling loop
+            wxPollingRef.current = true;
+            while (wxPollingRef.current) {
+                try {
+                    const poll = await WaitWeixinQRLogin(token);
+                    const st = poll.status || "";
+                    if (st === "confirmed") {
+                        setWxStatus("confirmed");
+                        setWxMsg(poll.message || t("✅ 微信绑定成功", "✅ WeChat connected"));
+                        setWxDone(true);
+                        wxPollingRef.current = false;
+                        break;
+                    } else if (st === "scaned") {
+                        setWxStatus("scaned");
+                        setWxMsg(poll.message || t("已扫码，请在微信确认", "Scanned, confirm in WeChat"));
+                    } else if (st === "expired") {
+                        setWxStatus("expired");
+                        setWxMsg(poll.message || t("二维码已过期，请刷新", "QR expired, please refresh"));
+                        wxPollingRef.current = false;
+                        break;
+                    }
+                    // "wait" — continue polling
+                } catch {
+                    if (!wxPollingRef.current) break; // unmounted, don't update state
+                    setWxStatus("error");
+                    setWxMsg(t("轮询失败，请重试", "Polling failed, please retry"));
+                    wxPollingRef.current = false;
+                    break;
+                }
+            }
+        } catch (e) {
+            setWxMsg("❌ " + String(e));
+            setWxStatus("error");
+            setWxLoading(false);
+        }
     };
 
     return (
@@ -273,12 +323,12 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                         {t("来，配置一下 MaClaw 吧", "Let's get MaClaw ready!")}
                     </h3>
                     <p style={{ margin: "2px 0 0 0", fontSize: "0.7rem", color: "#6366f1" }}>
-                        {t("三步快速上手。", "Three quick steps to get started.")}
+                        {t("四步快速上手。", "Four quick steps to get started.")}
                     </p>
                 </div>
 
                 <div style={{ padding: "10px 18px 14px" }}>
-                    {/* ═══ Step 0: Choose UI Mode ═══ */}
+                    {/* ═══ Step 1: Choose UI Mode ═══ */}
                     <div style={{ marginBottom: 12 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                             <span style={modeDone ? doneBadge : stepBadge}>{modeDone ? "✓" : "1"}</span>
@@ -469,7 +519,7 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                             </span>}
                         </div>
                         <p style={{ margin: "0 0 8px 30px", fontSize: "0.7rem", color: "#94a3b8", lineHeight: 1.3 }}>
-                            {t("注册设备并绑定飞书，即可通过移动端操控。", "Register your device to enable remote control.")}
+                            {t("注册设备到 Hub，即可通过移动端操控。", "Register your device to enable remote control.")}
                         </p>
 
                         <div style={{ marginLeft: 30 }}>
@@ -479,22 +529,6 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                                 <input style={inputStyle} value={regEmail}
                                     onChange={e => setRegEmail(e.target.value)}
                                     placeholder="name@example.com" spellCheck={false} />
-                            </div>
-
-                            {/* Phone */}
-                            <div style={{ marginBottom: 10 }}>
-                                <label style={labelStyle}>{t("手机号", "Phone")} <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("飞书自动加入组织", "auto-join Feishu org")})</span></label>
-                                <div style={{ display: "flex", gap: 4 }}>
-                                    <select style={{ ...inputStyle, width: 80, flexShrink: 0, cursor: "pointer" }}
-                                        value={countryCode} onChange={e => setCountryCode(e.target.value)}>
-                                        {COUNTRY_CODES.map(cc => (
-                                            <option key={cc.code} value={cc.code}>{cc.label}</option>
-                                        ))}
-                                    </select>
-                                    <input style={{ ...inputStyle, flex: 1 }} value={localNumber}
-                                        onChange={e => setLocalNumber(e.target.value.replace(/\D/g, ""))}
-                                        placeholder="13800138000" spellCheck={false} />
-                                </div>
                             </div>
 
                             {/* Invitation code */}
@@ -507,18 +541,6 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                                     {invError && <div style={{ fontSize: "0.72rem", color: "#ef4444", marginTop: 4 }}>{invError}</div>}
                                 </div>
                             )}
-
-                            {/* Warning */}
-                            <div style={{
-                                padding: "8px 10px", borderRadius: 6, fontSize: "0.72rem", lineHeight: 1.5,
-                                background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
-                                color: "#b45309", marginBottom: 10,
-                            }}>
-                                ⚠️ {t(
-                                    "邮箱/手机号务必正确，填写错误会导致注册失败或飞书邀请失败，需管理员手动处理。",
-                                    "Make sure your email and phone are correct. Errors may cause registration or Feishu invite failures."
-                                )}
-                            </div>
 
                             {/* Register button */}
                             <button onClick={handleRegisterClick} disabled={regBusy || regDone} style={{
@@ -544,9 +566,70 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                         </div>
                     </div>
 
+                    {/* Divider */}
+                    <div style={{ height: 1, background: "#e0e7ff", margin: "0 0 12px 0" }} />
+
+                    {/* ═══ Step 4: WeChat Binding ═══ */}
+                    <div style={{ marginBottom: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                            <span style={wxDone ? doneBadge : stepBadge}>{wxDone ? "✓" : "4"}</span>
+                            <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#1e293b" }}>
+                                {t("绑定微信", "Bind WeChat")}
+                            </span>
+                            {wxDone && <span style={{ fontSize: "0.7rem", color: "#22c55e", marginLeft: "auto" }}>
+                                {t("已绑定", "Connected")}
+                            </span>}
+                        </div>
+                        <p style={{ margin: "0 0 8px 30px", fontSize: "0.7rem", color: "#94a3b8", lineHeight: 1.3 }}>
+                            {t("扫码绑定微信，即可通过微信与 MaClaw 交互。", "Scan to bind WeChat for messaging with MaClaw.")}
+                        </p>
+
+                        {!wxDone && (
+                            <div style={{ marginLeft: 30 }}>
+                                {!wxQrUrl && wxStatus !== "error" && (
+                                    <button onClick={startWxQR} disabled={wxLoading} style={{
+                                        width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
+                                        background: wxLoading ? "#a5b4fc" : "#6366f1", color: "#fff",
+                                        border: "none", borderRadius: 6, cursor: wxLoading ? "default" : "pointer",
+                                    }}>
+                                        {wxLoading ? t("获取中...", "Loading...") : t("显示二维码", "Show QR Code")}
+                                    </button>
+                                )}
+
+                                {wxQrUrl && wxStatus !== "expired" && wxStatus !== "error" && (
+                                    <div style={{ textAlign: "center" }}>
+                                        <img src={wxQrUrl} alt="WeChat QR" style={{
+                                            width: 180, height: 180, borderRadius: 8,
+                                            border: "1px solid #e2e8f0",
+                                        }} />
+                                    </div>
+                                )}
+
+                                {(wxStatus === "expired" || wxStatus === "error") && (
+                                    <button onClick={startWxQR} disabled={wxLoading} style={{
+                                        width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
+                                        background: wxLoading ? "#a5b4fc" : "#6366f1", color: "#fff",
+                                        border: "none", borderRadius: 6, cursor: wxLoading ? "default" : "pointer",
+                                    }}>
+                                        {t("刷新二维码", "Refresh QR Code")}
+                                    </button>
+                                )}
+
+                                {wxMsg && (
+                                    <div style={{
+                                        marginTop: 8, padding: "6px 10px", borderRadius: 4, fontSize: "0.74rem",
+                                        textAlign: "center", color: wxStatus === "error" || wxStatus === "expired" ? "#ef4444" : wxStatus === "scaned" ? "#b45309" : "#64748b",
+                                    }}>
+                                        {wxMsg}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
                     {/* Footer hint */}
                     <p style={{ margin: "6px 0 0 0", fontSize: "0.66rem", color: "#b0b8c9", lineHeight: 1.4 }}>
-                        💡 {t("左侧 AI 助手圆圈全亮，说明一切就绪。三步都完成后，下次启动将不再显示此向导。",
+                        💡 {t("左侧 AI 助手圆圈全亮，说明一切就绪。四步都完成后，下次启动将不再显示此向导。",
                             "The AI assistant ring lights up once you're all set. This wizard won't appear again after all steps are done.")}
                     </p>
                 </div>
@@ -567,17 +650,14 @@ export function OnboardingWizard({ lang, hubUrl, email, mobile, uiMode, onClose,
                             {t("确认注册信息", "Confirm Registration")}
                         </div>
                         <div style={{ fontSize: 14, color: "#555", lineHeight: 1.6, marginBottom: 8 }}>
-                            {t("请确认以下信息正确无误。手机号/邮箱填写错误会导致注册失败，且需要管理员手动处理。",
-                                "Please confirm the info below is correct. Errors require admin intervention.")}
+                            {t("请确认邮箱正确无误。填写错误会导致注册失败，且需要管理员手动处理。",
+                                "Please confirm the email below is correct. Errors require admin intervention.")}
                         </div>
                         <div style={{
                             padding: 14, margin: "12px 0", borderRadius: 10,
                             background: "#f0f5ff", fontSize: "0.88rem", lineHeight: 1.8,
                         }}>
                             <div><span style={{ color: "#64748b" }}>{t("邮箱", "Email")}:</span> <span style={{ fontWeight: 600 }}>{regEmail}</span></div>
-                            {localNumber && (
-                                <div><span style={{ color: "#64748b" }}>{t("手机号", "Phone")}:</span> <span style={{ fontWeight: 600 }}>{countryCode} {localNumber}</span></div>
-                            )}
                         </div>
                         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
                             <button onClick={() => setShowConfirm(false)} style={{

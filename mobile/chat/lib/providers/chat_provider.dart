@@ -3,7 +3,6 @@ import 'package:uuid/uuid.dart';
 import '../models/channel.dart';
 import '../models/message.dart';
 import '../services/api_client.dart';
-import '../services/image_compressor.dart';
 import '../services/sync_service.dart';
 
 /// Central state management for chat data.

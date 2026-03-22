@@ -1391,6 +1391,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	// Wire the loop context so tools can access it.
 	h.currentLoopCtx = ctx
+	ctx.Platform = platform
 	defer func() { h.currentLoopCtx = nil }()
 
 	// Helper to send progress if callback is set.
@@ -3096,6 +3097,21 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	if h.manager == nil {
 		return "会话管理器未初始化"
 	}
+
+	// Non-desktop platforms (WeChat, QQ, etc.) cannot receive session.image
+	// WebSocket pushes, so capture and return base64 data directly.
+	platform := ""
+	if h.currentLoopCtx != nil {
+		platform = h.currentLoopCtx.Platform
+	}
+	if platform != "" && platform != "desktop" {
+		base64Data, err := h.manager.CaptureScreenshotToBase64(sessionID)
+		if err != nil {
+			return fmt.Sprintf("截图失败: %s", err.Error())
+		}
+		return fmt.Sprintf("[screenshot_base64]%s", base64Data)
+	}
+
 	if err := h.manager.CaptureScreenshot(sessionID); err != nil {
 		return fmt.Sprintf("截图失败: %s", err.Error())
 	}

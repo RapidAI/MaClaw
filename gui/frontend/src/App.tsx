@@ -36,6 +36,8 @@ import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { GossipPanel } from './components/gossip/GossipPanel';
+import { useDialog } from './components/CustomDialog';
+import { QRCodeSVG } from 'qrcode.react';
 
 const subscriptionUrls: { [key: string]: string } = {
     "GLM": "https://bigmodel.cn/glm-coding",
@@ -1364,6 +1366,7 @@ const ToolConfiguration = ({
 };
 
 function App() {
+    const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("claude");
     const [bbsContent, setBbsContent] = useState<string>("");
@@ -2891,7 +2894,7 @@ ${instruction}`;
             await OpenSystemUrl(mailtoLink);
         } catch (e) {
             console.error("Failed to pack/send log:", e);
-            alert("Failed to send log: " + e);
+            showAlert("Failed to send log: " + e);
         }
     };
 
@@ -4423,10 +4426,12 @@ ${instruction}`;
 
                                         {weixinQRCode && (
                                             <div style={{ textAlign: 'center', maxWidth: '280px' }}>
-                                                <img
-                                                    src={weixinQRCode}
-                                                    alt={lang === 'zh-Hans' ? '微信登录二维码' : 'WeChat login QR code'}
-                                                    style={{ width: '220px', height: '220px', borderRadius: '8px', border: '1px solid #e5e7eb' }}
+                                                <QRCodeSVG
+                                                    value={weixinQRCode}
+                                                    size={220}
+                                                    level="M"
+                                                    bgColor="#ffffff"
+                                                    style={{ borderRadius: '8px', border: '1px solid #e5e7eb', padding: '8px', background: '#fff' }}
                                                 />
                                                 <p style={{ fontSize: '0.72rem', color: '#6366f1', marginTop: '8px' }}>
                                                     {lang === 'zh-Hans' || lang === 'zh-Hant' ? '请用微信扫描上方二维码' : 'Scan the QR code with WeChat'}
@@ -6286,7 +6291,6 @@ ${instruction}`;
                     lang={lang}
                     hubUrl={config?.remote_hub_url || ""}
                     email={config?.remote_email || ""}
-                    mobile={(config as any)?.remote_mobile || ""}
                     uiMode={config?.ui_mode || ""}
                     onClose={() => setShowMaclawLLMPopup(false)}
                     onLLMConfigured={() => {

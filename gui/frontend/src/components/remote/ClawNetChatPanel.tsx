@@ -10,6 +10,7 @@ import {
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
 import { cnCard, cnLabel, cnInput, cnActionBtn, cnTabStyle } from "./clawnetStyles";
+import { useDialog } from "../CustomDialog";
 
 const FAV_STORAGE_KEY = "clawnet_fav_topics";
 const FAV_LIMIT = 5;
@@ -31,6 +32,7 @@ type Props = { lang: string; clawNetRunning: boolean };
 
 export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
     const zh = lang?.startsWith("zh");
+    const { showAlert } = useDialog();
     const [tab, setTab] = useState<"dm" | "topics">("dm");
 
     // DM state
@@ -62,14 +64,14 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
                 return next;
             }
             if (prev.length >= FAV_LIMIT) {
-                alert(zh ? `收藏已满（最多${FAV_LIMIT}个），请先去掉旧的收藏` : `Favorites full (max ${FAV_LIMIT}). Remove an old one first.`);
+                showAlert(zh ? `收藏已满（最多${FAV_LIMIT}个），请先去掉旧的收藏` : `Favorites full (max ${FAV_LIMIT}). Remove an old one first.`);
                 return prev;
             }
             const next = [...prev, name];
             localStorage.setItem(FAV_STORAGE_KEY, JSON.stringify(next));
             return next;
         });
-    }, [zh]);
+    }, [zh, showAlert]);
 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");

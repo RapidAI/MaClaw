@@ -1114,3 +1114,75 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	m.app.log("[screenshot-direct] successfully captured fullscreen via command-line")
 	return base64Data, nil
 }
+
+// CaptureScreenshotToBase64 captures a screenshot (using the same command-line
+// approach as CaptureScreenshot) but returns the base64-encoded PNG data
+// directly instead of sending it via the WebSocket image channel.
+// This is used by IM platforms (WeChat, QQ, etc.) that cannot receive
+// session.image WebSocket pushes.
+func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (string, error) {
+	if sessionID == "" {
+		return m.CaptureScreenshotDirect()
+	}
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return "", fmt.Errorf("session not found: %s", sessionID)
+	}
+	switch s.Exec.(type) {
+	case *SDKExecutionHandle, *GeminiACPExecutionHandle:
+		// supported
+	default:
+		return "", fmt.Errorf("screenshot capture is only supported in SDK and ACP mode sessions")
+	}
+
+	if !EnsureScreenRecordingPermission() {
+		return "", fmt.Errorf("screen recording permission not granted")
+	}
+	available, reason := DetectDisplayServer()
+	if !available {
+		return "", fmt.Errorf("screenshot requires a graphical display: %s", reason)
+	}
+
+	cmdStr := BuildScreenshotCommand()
+	if cmdStr == "" {
+		return "", fmt.Errorf("screenshot not supported on %s", runtime.GOOS)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	var shellName string
+	var shellArgs []string
+	if runtime.GOOS == "windows" {
+		shellName = "powershell"
+		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", cmdStr}
+	} else {
+		shellName = "bash"
+		shellArgs = []string{"-c", cmdStr}
+	}
+
+	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	hideCommandWindow(cmd)
+
+	m.app.log(fmt.Sprintf("[screenshot-b64] capturing for session=%s", sessionID))
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("screenshot command timed out after 45s")
+		}
+		return "", fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+
+	base64Data, err := ParseScreenshotOutput(stdout.String())
+	if err != nil {
+		return "", fmt.Errorf("screenshot output parse error: %w", err)
+	}
+	if isBlankImage(base64Data) {
+		return "", fmt.Errorf("screenshot is blank — session may be locked or display is off")
+	}
+
+	m.app.log(fmt.Sprintf("[screenshot-b64] successfully captured for session=%s", sessionID))
+	return base64Data, nil
+}

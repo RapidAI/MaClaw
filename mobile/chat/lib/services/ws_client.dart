@@ -101,6 +101,7 @@ class WsClient {
   }
 
   void dispose() {
+    if (_disposed) return;
     _disposed = true;
     disconnect();
     _controller.close();

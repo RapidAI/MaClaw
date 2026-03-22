@@ -24,6 +24,7 @@ import {
 } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
 import { colors, radius } from "./styles";
+import { useDialog } from "../CustomDialog";
 
 type Props = {
     config: main.AppConfig | null;
@@ -100,6 +101,7 @@ const FinanceIcon = () => (
 );
 
 export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningChange }: Props) {
+    const { showConfirm } = useDialog();
     const [running, setRunning] = useState(false);
     const [busy, setBusy] = useState(false);
     const [status, setStatus] = useState<any>(null);
@@ -361,7 +363,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         const confirmMsg = zh
             ? "⚠️ 恢复身份密钥将替换当前密钥（已有密钥会自动备份为 .bak）。确定继续？"
             : "⚠️ Restoring an identity key will replace the current one (existing key is auto-backed up as .bak). Continue?";
-        if (!window.confirm(confirmMsg)) return;
+        if (!await showConfirm(confirmMsg)) return;
         setKeyBusy(true);
         setKeyMsg("");
         try {
@@ -421,7 +423,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         const confirmMsg = zh
             ? "⚠️ 从 Hub 恢复身份密钥将替换当前密钥（已有密钥会自动备份为 .bak）。确定继续？"
             : "⚠️ Restoring identity key from Hub will replace the current one (existing key is auto-backed up as .bak). Continue?";
-        if (!window.confirm(confirmMsg)) return;
+        if (!await showConfirm(confirmMsg)) return;
         setOnlineBusy(true);
         setOnlineMsg("");
         try {
