@@ -20,11 +20,29 @@ func setupTray(app *App, appOptions *options.App) {
 	appMenu.Append(menu.EditMenu())
 	appOptions.Menu = appMenu
 
-	// On macOS we keep the original OnStartup (app.startup) as-is and only
-	// override OnDomReady to defer systray initialization until the WebView
-	// and window are fully created.  On macOS 26 (Tahoe) with Liquid Glass,
-	// initializing systray during OnStartup races with first-frame rendering
-	// and can cause a crash.
+	// On macOS 26 (Tahoe) with Liquid Glass, the systray library's
+	// NSStatusBar / NSStatusItem rendering crashes shortly after the
+	// WebView's first frame.  Until the systray library is updated for
+	// Liquid Glass we skip tray creation entirely on Tahoe+.
+	// The global callback variables (UpdateTrayMenu, ShowNotification,
+	// FlashAndBeep) stay nil; all call-sites already nil-check them.
+	if isMacOSTahoeOrLater() {
+		log.Println("[tray] macOS Tahoe+ detected – skipping systray to avoid Liquid Glass crash")
+		// Still wire OnConfigChanged so config-changed events reach the frontend.
+		origDomReady := appOptions.OnDomReady
+		appOptions.OnDomReady = func(ctx context.Context) {
+			if origDomReady != nil {
+				origDomReady(ctx)
+			}
+			OnConfigChanged = func(cfg AppConfig) {
+				runtime.EventsEmit(app.ctx, "config-changed", cfg)
+			}
+		}
+		return
+	}
+
+	// On pre-Tahoe macOS we defer systray init to OnDomReady so the
+	// WebView and window are fully created before touching NSStatusBar.
 	origDomReady := appOptions.OnDomReady
 	appOptions.OnDomReady = func(ctx context.Context) {
 		if origDomReady != nil {

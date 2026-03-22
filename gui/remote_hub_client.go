@@ -137,6 +137,7 @@ func (c *RemoteHubClient) Connect() error {
 	go c.heartbeatLoop()
 	go c.SyncSessions()
 	go c.SyncLaunchProjects()
+	go c.SyncTools()
 	c.startPreviewFlusher()
 
 	return nil
@@ -239,6 +240,16 @@ func (c *RemoteHubClient) sendMachineAuthLocked() error {
 func (c *RemoteHubClient) sendMachineHelloLocked() error {
 	cfg, _ := c.app.LoadConfig()
 	profile := c.app.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
+	tools := listRemoteToolMetadataForApp(c.app)
+	toolNames := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t.Visible && t.CanStart {
+			toolNames = append(toolNames, t.Name)
+		}
+	}
+	if len(toolNames) == 0 {
+		toolNames = []string{"claude"}
+	}
 	msg := HubEnvelope{
 		Type:      "machine.hello",
 		TS:        time.Now().Unix(),
@@ -254,7 +265,7 @@ func (c *RemoteHubClient) sendMachineHelloLocked() error {
 			"capabilities": map[string]interface{}{
 				"remote_sessions": true,
 				"pty":             true,
-				"tools":           []string{"claude"},
+				"tools":           toolNames,
 				"llm_configured":  c.app.isMaclawLLMConfigured(),
 			},
 		},
@@ -547,6 +558,74 @@ func (c *RemoteHubClient) SyncLaunchProjects() {
 		},
 	}
 	_ = c.conn.WriteJSON(msg)
+}
+
+// SyncTools sends the machine's available tools and their provider configs to Hub.
+func (c *RemoteHubClient) SyncTools() {
+	tools := listRemoteToolMetadataForApp(c.app)
+	cfg, _ := c.app.LoadConfig()
+
+	type toolProviderInfo struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+		ModelName   string `json:"model_name"`
+		HasKey      bool   `json:"has_key"`
+		IsBuiltin   bool   `json:"is_builtin"`
+	}
+	type toolInfo struct {
+		Name        string             `json:"name"`
+		DisplayName string             `json:"display_name"`
+		Installed   bool               `json:"installed"`
+		CanStart    bool               `json:"can_start"`
+		Current     string             `json:"current_provider"`
+		Providers   []toolProviderInfo `json:"providers"`
+	}
+
+	items := make([]toolInfo, 0, len(tools))
+	for _, t := range tools {
+		if !t.Visible {
+			continue
+		}
+		tc, err := remoteToolConfig(cfg, t.Name)
+		if err != nil {
+			items = append(items, toolInfo{
+				Name: t.Name, DisplayName: t.DisplayName,
+				Installed: t.Installed, CanStart: t.CanStart,
+			})
+			continue
+		}
+		providers := make([]toolProviderInfo, 0, len(tc.Models))
+		for _, m := range tc.Models {
+			providers = append(providers, toolProviderInfo{
+				Name:        m.ModelName,
+				DisplayName: m.ModelName,
+				ModelName:   m.ModelId,
+				HasKey:      strings.TrimSpace(m.ApiKey) != "" || m.IsBuiltin || m.HasSubscription,
+				IsBuiltin:   m.IsBuiltin,
+			})
+		}
+		items = append(items, toolInfo{
+			Name: t.Name, DisplayName: t.DisplayName,
+			Installed: t.Installed, CanStart: t.CanStart,
+			Current:   tc.CurrentModel,
+			Providers: providers,
+		})
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.conn == nil {
+		return
+	}
+
+	_ = c.conn.WriteJSON(HubEnvelope{
+		Type:      "machine.tools",
+		TS:        time.Now().Unix(),
+		MachineID: c.machineID,
+		Payload: map[string]interface{}{
+			"tools": items,
+		},
+	})
 }
 
 // SessionMetadata holds lightweight metadata about an active session,
@@ -869,6 +948,21 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			FileData:    reply.FileData,
 			FileName:    reply.FileName,
 			MimeType:    reply.MimeType,
+		})
+	case "weixin":
+		if c.app.weixinGateway == nil {
+			return
+		}
+		c.app.weixinGateway.HandleGatewayReply(GatewayReplyPayload{
+			ReplyType:   reply.ReplyType,
+			PlatformUID: reply.PlatformUID,
+			Text:        reply.Text,
+			ImageData:   reply.ImageData,
+			Caption:     reply.Caption,
+			FileData:    reply.FileData,
+			FileName:    reply.FileName,
+			MimeType:    reply.MimeType,
+			Extra:       reply.Extra,
 		})
 	}
 }

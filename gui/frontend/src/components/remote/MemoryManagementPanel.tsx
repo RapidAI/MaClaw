@@ -10,6 +10,8 @@ import {
     DeleteMemoryBackup,
     SetAutoCompress,
     GetAutoCompressStatus,
+    GetMemoryMaxBackups,
+    SetMemoryMaxBackups,
 } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 
@@ -352,6 +354,8 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
     const [autoEnabled, setAutoEnabled] = useState(false);
     const [serviceStatus, setServiceStatus] = useState<AutoCompressStatus | null>(null);
     const [toggling, setToggling] = useState(false);
+    const [maxBackups, setMaxBackupsLocal] = useState(20);
+    const [savingMax, setSavingMax] = useState(false);
 
     const loadBackups = useCallback(async () => {
         setBackupsLoading(true);
@@ -370,7 +374,14 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
         } catch { /* ignore */ }
     }, []);
 
-    useEffect(() => { loadBackups(); loadStatus(); }, [loadBackups, loadStatus]);
+    const loadMaxBackups = useCallback(async () => {
+        try {
+            const n = await GetMemoryMaxBackups();
+            if (n > 0) setMaxBackupsLocal(n);
+        } catch { /* ignore */ }
+    }, []);
+
+    useEffect(() => { loadBackups(); loadStatus(); loadMaxBackups(); }, [loadBackups, loadStatus, loadMaxBackups]);
 
     // Clean up delayed refresh timer on unmount.
     const autoRefreshTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -472,7 +483,22 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
             {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.76rem", marginBottom: 8 }}>{error}</div>}
 
             {/* Backup list */}
-            <div style={{ fontSize: "0.8rem", color: colors.text, fontWeight: 600, marginBottom: 8 }}>📦 {t("历史备份", "Backup History")}</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <div style={{ fontSize: "0.8rem", color: colors.text, fontWeight: 600 }}>📦 {t("历史备份", "Backup History")}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.7rem", color: colors.textMuted }}>
+                    {t("保留", "Keep")}
+                    <input
+                        type="number" min={8} max={100} value={maxBackups}
+                        onChange={e => { const v = parseInt(e.target.value, 10); if (!isNaN(v)) setMaxBackupsLocal(v); }}
+                        onBlur={async () => { const clamped = Math.max(8, maxBackups); setMaxBackupsLocal(clamped); setSavingMax(true); try { await SetMemoryMaxBackups(clamped); loadBackups(); } catch (e) { setError(String(e)); } setSavingMax(false); }}
+                        onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                        disabled={savingMax}
+                        style={{ width: 48, padding: "2px 4px", fontSize: "0.7rem", border: `1px solid ${colors.border}`, borderRadius: radius.sm, textAlign: "center", background: colors.surface, color: colors.text }}
+                        aria-label={t("最大备份数", "Max backups")}
+                    />
+                    {t("份", "backups")}
+                </div>
+            </div>
             {backupsLoading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("加载中…", "Loading…")}</div>}
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "calc(100vh - 390px)", overflowY: "auto" }}>
                 {backups.length === 0 && !backupsLoading && (

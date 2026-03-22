@@ -174,6 +174,67 @@ func NewClient() *Client {
 	}
 }
 
+// ---------- PID lock file (duplicate-process guard) ----------
+
+func pidFilePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".openclaw", "clawnet", "daemon.pid")
+}
+
+// writePIDFile writes the given PID to the lock file.
+func writePIDFile(pid int) {
+	p := pidFilePath()
+	if p == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	_ = os.WriteFile(p, []byte(fmt.Sprintf("%d", pid)), 0644)
+}
+
+// removePIDFile removes the PID lock file.
+func removePIDFile() {
+	if p := pidFilePath(); p != "" {
+		_ = os.Remove(p)
+	}
+}
+
+// readPIDFile returns the PID stored in the lock file, or 0 if absent/invalid.
+func readPIDFile() int {
+	p := pidFilePath()
+	if p == "" {
+		return 0
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return 0
+	}
+	var pid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); err != nil {
+		return 0
+	}
+	return pid
+}
+
+// isDaemonAlive checks if a previous daemon is still running by combining
+// PID-level process existence check with an HTTP ping. Both must pass to
+// confirm the daemon is truly alive (avoids PID reuse false positives).
+func (c *Client) isDaemonAlive() bool {
+	pid := readPIDFile()
+	if pid == 0 {
+		return false
+	}
+	if !isProcessAlive(pid) {
+		// Stale PID file — clean up.
+		removePIDFile()
+		return false
+	}
+	// Process exists; confirm it's actually our daemon via HTTP ping.
+	return c.ping()
+}
+
 // ---------- Daemon lifecycle ----------
 
 func (c *Client) findBinary() string {
@@ -201,6 +262,14 @@ func (c *Client) EnsureDaemon() error {
 
 func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct int, msg string)) error {
 	if c.ping() {
+		c.mu.Lock()
+		c.running = true
+		c.mu.Unlock()
+		return nil
+	}
+
+	// Check PID lock file — another instance may have started the daemon.
+	if c.isDaemonAlive() {
 		c.mu.Lock()
 		c.running = true
 		c.mu.Unlock()
@@ -240,6 +309,7 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 			_ = stopCmd.Process.Kill()
 		}
 	}
+	removePIDFile()
 	time.Sleep(1 * time.Second)
 
 	if c.ping() {
@@ -259,6 +329,10 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 		return fmt.Errorf("failed to start clawnet daemon: %w", err)
 	}
 	c.daemon = cmd
+	// Write PID lock file immediately after start.
+	if cmd.Process != nil {
+		writePIDFile(cmd.Process.Pid)
+	}
 	c.mu.Unlock()
 
 	go func() { _ = cmd.Wait() }()
@@ -303,6 +377,7 @@ func (c *Client) StopDaemon() {
 	} else if daemon != nil && daemon.Process != nil {
 		_ = daemon.Process.Kill()
 	}
+	removePIDFile()
 }
 
 func (c *Client) IsRunning() bool {

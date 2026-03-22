@@ -38,6 +38,8 @@ type MemoryCompressor struct {
 	client    *http.Client
 	// minContentLen is the minimum content length (in runes) to consider for compression.
 	minContentLen int
+	// maxBackups is the configurable limit on backup files to keep. 0 means use defaultMaxBackups.
+	maxBackups int
 
 	// Background service fields
 	app        *App
@@ -382,7 +384,7 @@ Rules:
 		map[string]string{"role": "user", "content": userPrompt},
 	}
 
-	resp, err := doSimpleLLMRequest(llmCfg, messages, mc.client, 60*time.Second)
+	resp, err := doSimpleLLMRequest(ctx, llmCfg, messages, mc.client, 60*time.Second)
 	if err != nil {
 		return 0, err
 	}
@@ -600,7 +602,7 @@ func (mc *MemoryCompressor) compressEntry(ctx context.Context, entry MemoryEntry
 		map[string]string{"role": "user", "content": userPrompt},
 	}
 
-	result, err := doSimpleLLMRequest(llmCfg, messages, mc.client, 30*time.Second)
+	result, err := doSimpleLLMRequest(ctx, llmCfg, messages, mc.client, 30*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -649,8 +651,8 @@ func (mc *MemoryCompressor) createBackup() (string, error) {
 	return name, nil
 }
 
-// maxBackups is the maximum number of backup files to keep. Oldest are pruned.
-const maxBackups = 30
+// defaultMaxBackups is the default number of backup files to keep.
+const defaultMaxBackups = 20
 
 func (mc *MemoryCompressor) ListBackups() ([]MemoryBackupInfo, error) {
 	dir := mc.backupDir()
@@ -683,14 +685,33 @@ func (mc *MemoryCompressor) ListBackups() ([]MemoryBackupInfo, error) {
 	})
 
 	// Auto-prune oldest backups beyond the limit.
-	if len(backups) > maxBackups {
-		for _, old := range backups[maxBackups:] {
+	limit := mc.getMaxBackups()
+	if len(backups) > limit {
+		for _, old := range backups[limit:] {
 			_ = os.Remove(filepath.Join(dir, old.Name))
 		}
-		backups = backups[:maxBackups]
+		backups = backups[:limit]
 	}
 
 	return backups, nil
+}
+
+// getMaxBackups returns the effective max backups limit.
+func (mc *MemoryCompressor) getMaxBackups() int {
+	if mc.maxBackups > 0 {
+		return mc.maxBackups
+	}
+	return defaultMaxBackups
+}
+
+const minBackups = 8
+
+// SetMaxBackups updates the backup retention limit.
+func (mc *MemoryCompressor) SetMaxBackups(n int) {
+	if n < minBackups {
+		n = minBackups
+	}
+	mc.maxBackups = n
 }
 
 func (mc *MemoryCompressor) RestoreBackup(backupName string) error {

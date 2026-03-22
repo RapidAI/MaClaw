@@ -9,6 +9,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/chat"
+	chatpush "github.com/RapidAI/CodeClaw/hub/internal/chat/push"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
@@ -20,6 +22,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
+	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
@@ -264,6 +267,35 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	// falls back to legacy notifier path.
 	sessionService.RegisterListener(feishuNotifier.HandleEvent)
 
+	// ── Chat Module ─────────────────────────────────────────
+	chatStore, err := chat.NewStore(provider.Write)
+	if err != nil {
+		return nil, fmt.Errorf("chat store: %w", err)
+	}
+
+	// Push dispatcher: look up tokens from chat store.
+	pushDispatcher := chatpush.NewDispatcher(func(userID string) ([]chatpush.TokenInfo, error) {
+		tokens, err := chatStore.GetPushTokens(userID)
+		if err != nil {
+			return nil, err
+		}
+		var infos []chatpush.TokenInfo
+		for _, t := range tokens {
+			infos = append(infos, chatpush.TokenInfo{Platform: t.Platform, Token: t.Token})
+		}
+		return infos, nil
+	})
+
+	chatNotifier := chat.NewNotifier(chatStore, pushDispatcher)
+	chatChannelSvc := chat.NewChannelService(chatStore)
+	chatMessageSvc := chat.NewMessageService(chatStore, chatNotifier)
+	chatFileSvc := chat.NewFileService(chatStore, "./data/chat_files")
+	chatReadReceiptSvc := chat.NewReadReceiptService(chatStore)
+	chatPresenceSvc := chat.NewPresenceService(chatStore, chatNotifier)
+	chatVoiceSignaling := chat.NewVoiceSignaling(chatStore, chatNotifier)
+
+	voiceprintSvc := voiceprint.NewService(st.Voiceprints, st.System)
+
 	router := httpapi.NewRouter(
 		adminService,
 		identityService,
@@ -280,6 +312,15 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		qqbotPlugin,
 		coordinator.GetLLMStatus,
 		coordinator.ConvContextStats,
+		chatStore,
+		chatChannelSvc,
+		chatMessageSvc,
+		chatFileSvc,
+		chatReadReceiptSvc,
+		chatPresenceSvc,
+		chatVoiceSignaling,
+		chatNotifier,
+		voiceprintSvc,
 		cfg.PWA.StaticDir,
 		cfg.PWA.RoutePrefix,
 		cfg.Bridge.Dir,
@@ -305,6 +346,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		QQBotPlugin:      qqbotPlugin,
 		QQRemotePlugin:   qqRemotePlugin,
 		TelegramPlugin:   telegramPlugin,
+		ChatNotifier:     chatNotifier,
 	}, nil
 }
 

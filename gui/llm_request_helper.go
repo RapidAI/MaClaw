@@ -36,14 +36,14 @@ type llmSimpleResponse struct {
 // doSimpleLLMRequest sends a simple chat completion request (no tool calling)
 // to the configured LLM, supporting both OpenAI and Anthropic protocols.
 // It returns the text content of the assistant's reply.
-func doSimpleLLMRequest(cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
+func doSimpleLLMRequest(ctx context.Context, cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
 	if cfg.Protocol == "anthropic" {
-		return doSimpleAnthropicRequest(cfg, messages, client, timeout)
+		return doSimpleAnthropicRequest(ctx, cfg, messages, client, timeout)
 	}
-	return doSimpleOpenAIRequest(cfg, messages, client, timeout)
+	return doSimpleOpenAIRequest(ctx, cfg, messages, client, timeout)
 }
 
-func doSimpleOpenAIRequest(cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
+func doSimpleOpenAIRequest(ctx context.Context, cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
 	reqBody := map[string]interface{}{
 		"model":    cfg.Model,
@@ -51,7 +51,7 @@ func doSimpleOpenAIRequest(cfg MaclawLLMConfig, messages []interface{}, client *
 	}
 	data, _ := json.Marshal(reqBody)
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
@@ -95,7 +95,7 @@ func doSimpleOpenAIRequest(cfg MaclawLLMConfig, messages []interface{}, client *
 	return &llmSimpleResponse{Content: stripThinkingTags(result.Choices[0].Message.Content)}, nil
 }
 
-func doSimpleAnthropicRequest(cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
+func doSimpleAnthropicRequest(ctx context.Context, cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
 
 	// Separate system message from user/assistant messages
@@ -128,7 +128,7 @@ func doSimpleAnthropicRequest(cfg MaclawLLMConfig, messages []interface{}, clien
 
 	data, _ := json.Marshal(reqBody)
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))

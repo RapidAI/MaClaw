@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>MaClaw APP</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f4f7fb; }
+    .card { max-width: 420px; margin: 24px auto; padding: 24px; border: 1px solid #d6deeb; border-radius: 20px; background: #fff; }
+    h1 { color: #132238; margin-bottom: 8px; font-size: 22px; }
+    .desc { color: #5c708c; margin-bottom: 16px; font-size: 14px; line-height: 1.5; }
+    input, select { width: 100%; height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid #d6deeb; font-size: 14px; outline: none; }
+    input:focus { border-color: #0f6fff; }
+    .btn { width: 100%; height: 44px; margin-top: 12px; border: 0; border-radius: 12px; background: #0f6fff; color: #fff; font-size: 15px; cursor: pointer; }
+    .btn:active { opacity: 0.85; }
+    .btn-outline { background: #fff; color: #0f6fff; border: 1px solid #0f6fff; }
+    .status { min-height: 20px; margin-top: 12px; color: #5c708c; font-size: 13px; }
+    .status.error { color: #d9534f; }
+    .footer { margin-top: 12px; font-size: 12px; color: #9aa8bc; word-break: break-all; }
+    .hub-list { margin-top: 12px; }
+    .hub-item { display: flex; align-items: center; justify-content: space-between; padding: 12px; margin-top: 8px; border: 1px solid #d6deeb; border-radius: 12px; cursor: pointer; transition: border-color 0.15s; }
+    .hub-item:hover { border-color: #0f6fff; background: #f0f6ff; }
+    .hub-name { font-weight: 600; color: #132238; font-size: 14px; }
+    .hub-meta { color: #5c708c; font-size: 12px; margin-top: 2px; }
+    .hub-badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: #e8f0fe; color: #0f6fff; white-space: nowrap; }
+    .hub-badge.default { background: #0f6fff; color: #fff; }
+    .mt { margin-top: 12px; }
+    .hidden { display: none; }
+    .back-link { display: inline-block; margin-bottom: 12px; color: #0f6fff; font-size: 13px; cursor: pointer; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+    // Unregister any existing Service Workers and clear caches to ensure fresh loads
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(regs) {
+        regs.forEach(function(r) { r.unregister(); });
+      });
+    }
+    if ('caches' in window) {
+      caches.keys().then(function(names) {
+        names.forEach(function(n) { caches.delete(n); });
+      });
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const center = (params.get("hubcenter") || "").replace(/\/+$/, "");
+    const prefillEmail = params.get("prefill_email") || "";
+    const appTitle = "MaClaw APP";
+    let currentEmail = prefillEmail;
+    let discoveredHubs = [];
+
+    function normalizeBaseURL(v) { return (v || '').trim().replace(/\/+$/, ''); }
+
+    function buildEntryURL(target, email) {
+      const u = new URL(target, window.location.href);
+      if (!u.searchParams.get("email")) u.searchParams.set("email", email);
+      if (!u.searchParams.get("entry")) u.searchParams.set("entry", "app");
+      return u.toString();
+    }
+
+    function renderEmailForm(message, isError) {
+      const app = document.getElementById("app");
+      app.innerHTML =
+        '<div class="card">' +
+          '<h1>' + appTitle + '</h1>' +
+          '<p class="desc">Enter your email to discover available Hub servers via Hub Center.</p>' +
+          '<input id="email" type="email" value="' + escapeHTML(currentEmail) + '" placeholder="name@example.com">' +
+          '<input id="hub-url" class="mt" type="url" placeholder="Or enter a private Hub URL directly">' +
+          '<button class="btn" id="discover">Discover Hubs</button>' +
+          '<div class="status' + (isError ? ' error' : '') + '" id="status">' + (message || '') + '</div>' +
+          '<div class="footer">Hub Center: ' + (center || '(not configured)') + '</div>' +
+        '</div>';
+      document.getElementById("discover").addEventListener("click", doDiscover);
+      document.getElementById("email").addEventListener("keydown", function(e) { if (e.key === "Enter") doDiscover(); });
+    }
+
+    function renderHubList(hubs, email, defaultHubID) {
+      let html =
+        '<div class="card">' +
+          '<a class="back-link" id="back">\u2190 Back</a>' +
+          '<h1>Select a Hub</h1>' +
+          '<p class="desc">Found ' + hubs.length + ' hub' + (hubs.length > 1 ? 's' : '') + ' for <strong>' + escapeHTML(email) + '</strong>. Tap to connect.</p>' +
+          '<div class="hub-list">';
+      for (let i = 0; i < hubs.length; i++) {
+        const hub = hubs[i];
+        const isDefault = hub.hub_id === defaultHubID;
+        html +=
+          '<div class="hub-item" data-index="' + i + '">' +
+            '<div>' +
+              '<div class="hub-name">' + escapeHTML(hub.name || hub.hub_id) + '</div>' +
+              '<div class="hub-meta">' + escapeHTML(hub.visibility || '') + (hub.enrollment_mode ? ' \u00b7 ' + escapeHTML(hub.enrollment_mode) : '') + '</div>' +
+            '</div>' +
+            '<span class="hub-badge' + (isDefault ? ' default' : '') + '">' + (isDefault ? 'Default' : 'Connect') + '</span>' +
+          '</div>';
+      }
+      html += '</div><div class="status" id="status"></div></div>';
+      document.getElementById("app").innerHTML = html;
+      document.getElementById("back").addEventListener("click", function() { renderEmailForm(''); });
+      var items = document.querySelectorAll(".hub-item");
+      for (var j = 0; j < items.length; j++) {
+        items[j].addEventListener("click", function() {
+          var idx = parseInt(this.getAttribute("data-index"), 10);
+          connectToHub(hubs[idx], email);
+        });
+      }
+    }
+
+    function escapeHTML(s) {
+      var d = document.createElement("div"); d.appendChild(document.createTextNode(s)); return d.innerHTML;
+    }
+
+    async function doDiscover() {
+      var emailInput = document.getElementById("email");
+      var hubInput = document.getElementById("hub-url");
+      var status = document.getElementById("status");
+      var email = (emailInput.value || "").trim();
+      var hubURL = normalizeBaseURL(hubInput.value || "");
+      if (!email) { status.textContent = "Please enter your email."; status.className = "status error"; emailInput.focus(); return; }
+      currentEmail = email;
+
+      if (hubURL) {
+        status.textContent = "Connecting to private hub...";
+        status.className = "status";
+        try {
+          var target = await resolveViaPrivateHub(hubURL, email);
+          var url = buildEntryURL(target, email);
+          saveLastHub(email, url, hubURL);
+          window.location.replace(url);
+        } catch (err) {
+          status.textContent = err instanceof Error ? err.message : String(err);
+          status.className = "status error";
+        }
+        return;
+      }
+
+      if (!center) {
+        status.textContent = "Hub Center is not configured. Enter a private Hub URL.";
+        status.className = "status error";
+        hubInput.focus();
+        return;
+      }
+
+      status.textContent = "Discovering hubs...";
+      status.className = "status";
+      try {
+        var result = await fetchHubList(email);
+        var hubs = Array.isArray(result.hubs) ? result.hubs : [];
+        if (hubs.length === 0) {
+          status.textContent = result.message || "No hubs found for this email. Try a private Hub URL.";
+          status.className = "status error";
+          return;
+        }
+        if (hubs.length === 1) {
+          status.textContent = "Connecting to " + (hubs[0].name || hubs[0].hub_id || "hub") + "...";
+          var url = buildEntryURL(hubs[0].pwa_url, email);
+          saveLastHub(email, url, hubs[0].name || hubs[0].hub_id || "");
+          window.location.replace(url);
+          return;
+        }
+        discoveredHubs = hubs;
+        renderHubList(hubs, email, result.default_hub_id || "");
+      } catch (err) {
+        var msg = err instanceof Error ? err.message : String(err);
+        if (/fetch|network|cors|load/i.test(msg)) {
+          msg = "Network error: unable to reach Hub Center (" + center + "). " + msg;
+        }
+        status.textContent = msg;
+        status.className = "status error";
+      }
+    }
+
+    async function fetchHubList(email) {
+      var resp = await fetch(center + "/api/entry/resolve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.message || resp.statusText || "Resolve failed");
+      return payload;
+    }
+
+    async function resolveViaPrivateHub(hubURL, email) {
+      var resp = await fetch(hubURL + "/api/entry/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.message || resp.statusText || "Private hub probe failed");
+      if (payload.status === "bound" && payload.pwa_url) return String(payload.pwa_url).trim();
+
+      // If pending approval, show a clear message
+      if (payload.status === "pending_approval") {
+        throw new Error(payload.message || "Your enrollment request is pending administrator approval.");
+      }
+
+      // If user not found and enrollment mode supports it, submit an enrollment request
+      if (payload.status === "not_found" && payload.enrollment_mode) {
+        var invCode = "";
+        if (payload.invitation_code_required) {
+          invCode = prompt("This hub requires an invitation code:") || "";
+          if (!invCode) throw new Error("Invitation code is required");
+        }
+        var enrollResp = await fetch(hubURL + "/api/enroll/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: email, invitation_code: invCode })
+        });
+        var enrollData = await enrollResp.json();
+        if (!enrollResp.ok) throw new Error(enrollData.message || "Enrollment request failed");
+        if (enrollData.status === "pending_approval") {
+          throw new Error(enrollData.message || "Your enrollment request has been submitted. Please wait for administrator approval.");
+        }
+        if (enrollData.status === "manual_binding_required") {
+          throw new Error(enrollData.message || "This hub requires manual binding by an administrator.");
+        }
+        // If auto-approved, re-probe to get the pwa_url
+        if (enrollData.status === "approved") {
+          var resp2 = await fetch(hubURL + "/api/entry/probe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email }) });
+          var payload2 = await resp2.json();
+          if (payload2.status === "bound" && payload2.pwa_url) return String(payload2.pwa_url).trim();
+        }
+        throw new Error(enrollData.message || "Enrollment submitted but hub is not ready yet");
+      }
+
+      throw new Error(payload.message || "Email is not bound to this hub");
+    }
+
+    function connectToHub(hub, email) {
+      var status = document.getElementById("status");
+      if (!hub.pwa_url) { status.textContent = "This hub has no PWA URL configured."; status.className = "status error"; return; }
+      status.textContent = "Connecting to " + (hub.name || hub.hub_id) + "...";
+      status.className = "status";
+      var url = buildEntryURL(hub.pwa_url, email);
+      saveLastHub(email, url, hub.name || hub.hub_id || "");
+      window.location.replace(url);
+    }
+
+    function saveLastHub(email, url, name) {
+      try { localStorage.setItem("maclaw_last_hub", JSON.stringify({ email: email, url: url, name: name })); } catch(_) {}
+    }
+    function loadLastHub() {
+      try { var v = localStorage.getItem("maclaw_last_hub"); return v ? JSON.parse(v) : null; } catch(_) { return null; }
+    }
+    function clearLastHub() {
+      try { localStorage.removeItem("maclaw_last_hub"); } catch(_) {}
+    }
+
+    // Auto-reconnect: if we have a saved hub, jump straight to it.
+    (function autoReconnect() {
+      var saved = loadLastHub();
+      if (saved && saved.url && saved.email) {
+        document.getElementById("app").innerHTML =
+          '<div class="card">' +
+            '<h1>' + appTitle + '</h1>' +
+            '<p class="desc">Reconnecting as <strong>' + escapeHTML(saved.email) + '</strong>' + (saved.name ? ' to <strong>' + escapeHTML(saved.name) + '</strong>' : '') + '...</p>' +
+            '<button class="btn btn-outline" id="switch-btn">Switch Account</button>' +
+          '</div>';
+        document.getElementById("switch-btn").addEventListener("click", function() {
+          clearLastHub();
+          currentEmail = saved.email;
+          renderEmailForm("");
+        });
+        window.location.replace(saved.url);
+        return;
+      }
+      renderEmailForm("");
+    })();
+  </script>
+</body>
+</html>

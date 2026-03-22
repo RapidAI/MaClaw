@@ -22,6 +22,7 @@ type Store struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	maxItems int
+	bm25     *bm25Index
 }
 
 // NewStore creates a Store that persists to the given path.
@@ -37,11 +38,15 @@ func NewStore(path string) (*Store, error) {
 		saveCh:   make(chan struct{}, 1),
 		stopCh:   make(chan struct{}),
 		maxItems: 500,
+		bm25:     newBM25Index(),
 	}
 
 	if err := s.load(); err != nil {
 		return nil, err
 	}
+
+	// Build BM25 index from loaded entries.
+	s.bm25.rebuild(s.entries)
 
 	go s.persistLoop()
 	return s, nil
@@ -66,6 +71,7 @@ func (s *Store) Save(entry Entry) error {
 			s.entries[i].UpdatedAt = now
 			s.entries[i].AccessCount++
 			s.entries[i].Tags = mergeTags(s.entries[i].Tags, entry.Tags)
+			s.bm25.updateEntry(s.entries[i])
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -84,6 +90,7 @@ func (s *Store) Save(entry Entry) error {
 	}
 
 	s.entries = append(s.entries, entry)
+	s.bm25.addEntry(entry)
 	s.evictLRU()
 	s.dirty = true
 	s.signalSave()
@@ -111,6 +118,7 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 			s.entries[i].Category = category
 			s.entries[i].Tags = tags
 			s.entries[i].UpdatedAt = time.Now()
+			s.bm25.updateEntry(s.entries[i])
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -127,6 +135,7 @@ func (s *Store) Delete(id string) error {
 	for i, e := range s.entries {
 		if e.ID == id {
 			s.entries = append(s.entries[:i], s.entries[i+1:]...)
+			s.bm25.removeEntry(id)
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -184,13 +193,15 @@ func (s *Store) Recall(userMessage string) []Entry {
 // RecallForProject retrieves memory entries relevant to the given user
 // message, with optional project path affinity boosting.
 func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
+	// Compute BM25 scores outside the store lock to avoid nested locking.
+	bm25Scores := s.bm25.score(userMessage)
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	const maxEntries = 20
 	const maxTokens = 2000
 
-	words := strings.Fields(strings.ToLower(userMessage))
 	projectLower := strings.ToLower(projectPath)
 	now := time.Now()
 
@@ -198,7 +209,7 @@ func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
 	var userFacts []Entry
 	type scored struct {
 		entry Entry
-		score int
+		score float64
 	}
 	var others []scored
 
@@ -211,12 +222,13 @@ func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
 			userFacts = append(userFacts, e)
 			continue
 		}
-		sc := relevanceScore(e, words)
+
+		sc := bm25Scores[e.ID] // 0 if not matched
 
 		if projectLower != "" {
 			for _, tag := range e.Tags {
 				if strings.ToLower(tag) == projectLower {
-					sc += 3
+					sc += 3.0
 					break
 				}
 			}
@@ -225,11 +237,11 @@ func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
 		age := now.Sub(e.UpdatedAt)
 		if age > 7*24*time.Hour {
 			weeks := int(age.Hours() / (24 * 7))
-			sc -= weeks
+			sc -= float64(weeks)
 		}
 
 		if e.Category == CategorySessionCheckpoint && age < 24*time.Hour {
-			sc += 2
+			sc += 2.0
 		}
 
 		others = append(others, scored{entry: e, score: sc})
@@ -357,33 +369,6 @@ func (s *Store) Stop() {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-func relevanceScore(e Entry, words []string) int {
-	score := 0
-	contentLower := strings.ToLower(e.Content)
-	tagsLower := make([]string, len(e.Tags))
-	for i, t := range e.Tags {
-		tagsLower[i] = strings.ToLower(t)
-	}
-	for _, w := range words {
-		if w == "" {
-			continue
-		}
-		if strings.Contains(contentLower, w) {
-			score++
-		}
-		for _, tag := range tagsLower {
-			if strings.Contains(tag, w) {
-				score++
-				break
-			}
-		}
-	}
-	return score
-}
 
 func (s *Store) evictLRU() {
 	if len(s.entries) <= s.maxItems {
@@ -437,6 +422,7 @@ func (s *Store) evictLRU() {
 		}
 	}
 	s.entries = kept
+	s.bm25.rebuild(kept)
 }
 
 func (s *Store) persistLoop() {

@@ -109,14 +109,7 @@ func (dn *DeviceNotifier) fireNotification(entry *debounceEntry) {
 	if entry.online {
 		msg = fmt.Sprintf("📱 %s 已上线", entry.name)
 	} else {
-		msg = fmt.Sprintf("📴 %s 已离线", entry.name)
-		// Check if this was the user's selected device.
-		if dn.coordinator != nil {
-			selected, _ := dn.coordinator.router.GetSelectedMachine(entry.userID)
-			if selected == entry.machineID {
-				msg += "\n💡 这是您当前选定的设备，请使用 /call <昵称> 切换到其他设备。"
-			}
-		}
+		msg = dn.buildOfflineMessage(entry)
 	}
 
 	// Deliver via progress (lightweight, no response expected).
@@ -125,4 +118,54 @@ func (dn *DeviceNotifier) fireNotification(entry *debounceEntry) {
 	} else {
 		log.Printf("[DeviceNotifier] adapter not wired, dropping notification for user=%s", entry.userID)
 	}
+}
+
+// buildOfflineMessage constructs the offline notification message, handling
+// automatic space state recovery when the disconnected device is relevant
+// to the user's current interaction space.
+func (dn *DeviceNotifier) buildOfflineMessage(entry *debounceEntry) string {
+	if dn.coordinator == nil {
+		return fmt.Sprintf("📴 %s 已离线", entry.name)
+	}
+
+	ss := dn.coordinator.SpaceStateStore()
+	state := ss.GetOrCreate(entry.userID)
+
+	switch state.State {
+	case SpacePrivate:
+		if state.PrivateTarget == entry.machineID {
+			if err := ss.ExitPrivate(entry.userID); err != nil {
+				log.Printf("[DeviceNotifier] ExitPrivate failed for user=%s: %v", entry.userID, err)
+				return fmt.Sprintf("📴 %s 已离线", entry.name)
+			}
+			dn.coordinator.router.ClearSelectedMachine(entry.userID)
+			return fmt.Sprintf("📴 %s 已离线，已自动返回大厅。", entry.name)
+		}
+
+	case SpaceMeeting:
+		if containsParticipant(state.Participants, entry.machineID) {
+			remaining := ss.RemoveParticipant(entry.userID, entry.machineID)
+			switch {
+			case remaining == 0:
+				_ = ss.ExitMeeting(entry.userID)
+				dn.coordinator.router.StopDiscussion(entry.userID)
+				return "📴 所有会议设备已离线，会议已结束，已返回大厅。"
+			case remaining == 1:
+				return fmt.Sprintf("📴 %s 已离线，会议仅剩 1 台设备参与。", entry.name)
+			default:
+				return fmt.Sprintf("📴 %s 已离线", entry.name)
+			}
+		}
+	}
+
+	return fmt.Sprintf("📴 %s 已离线", entry.name)
+}
+
+func containsParticipant(participants []string, machineID string) bool {
+	for _, p := range participants {
+		if p == machineID {
+			return true
+		}
+	}
+	return false
 }

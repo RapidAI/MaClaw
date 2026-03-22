@@ -6,6 +6,11 @@ import {
     GetMaclawAgentMaxIterations,
     SetMaclawAgentMaxIterations,
     StartOpenAIOAuth,
+    StartFreeProxy,
+    StopFreeProxy,
+    IsFreeProxyRunning,
+    DetectChrome,
+    LaunchChromeDebug,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
 import { UsageDisplay } from "./UsageDisplay";
@@ -71,6 +76,10 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [dlgDirty, setDlgDirty] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
+    const [proxyRunning, setProxyRunning] = useState(false);
+    const [proxyBusy, setProxyBusy] = useState(false);
+    const [chromePath, setChromePath] = useState<string | null>(null); // null = not checked yet
+    const [chromeLaunching, setChromeLaunching] = useState(false);
 
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
 
@@ -125,6 +134,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgSaving(false);
         setDlgTestResult(null);
         setDlgDirty(false);
+        setChromePath(null); // reset so Chrome detection re-runs
         setDlgOpen(true);
     }, [providers, currentName]);
 
@@ -143,6 +153,23 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [dlgOpen, closeDialog]);
+
+    // Poll free proxy status when dialog shows a "none" auth provider
+    const dlgAuthType = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.auth_type : undefined;
+    useEffect(() => {
+        if (!dlgOpen || dlgAuthType !== "none") return;
+        let cancelled = false;
+        const poll = () => { IsFreeProxyRunning().then(r => { if (!cancelled) setProxyRunning(r); }).catch(() => {}); };
+        poll();
+        const id = setInterval(poll, 3000);
+        return () => { cancelled = true; clearInterval(id); };
+    }, [dlgOpen, dlgAuthType]);
+
+    // Detect Chrome when dialog opens with free provider
+    useEffect(() => {
+        if (!dlgOpen || dlgAuthType !== "none") return;
+        DetectChrome().then((p: string) => setChromePath(p || "")).catch(() => setChromePath(""));
+    }, [dlgOpen, dlgAuthType]);
 
     const dlgIsNone = dlgSelectedIdx === null;
     const dlgProvider = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx] ?? null : null;
@@ -205,6 +232,24 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
                 onStatusChange?.(!!sp.key, !!sp.key);
+                setDlgTestResult({ ok: true, msg: t("已保存", "Saved") });
+                setTimeout(() => setDlgOpen(false), 800);
+            } catch (e) {
+                setDlgTestResult({ ok: false, msg: String(e) });
+            }
+            setDlgSaving(false);
+            return;
+        }
+
+        // Free proxy (auth_type "none"): save directly, no test needed
+        if (sp.auth_type === "none") {
+            try {
+                const saveName = sp.name;
+                await SaveMaclawLLMProviders(dlgProviders, saveName);
+                setDlgDirty(false);
+                setProviders(dlgProviders.map(p => ({ ...p })));
+                setCurrentName(saveName);
+                onStatusChange?.(proxyRunning, true);
                 setDlgTestResult({ ok: true, msg: t("已保存", "Saved") });
                 setTimeout(() => setDlgOpen(false), 800);
             } catch (e) {
@@ -343,7 +388,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                 {dlgProviders.map((p, i) => {
                                     const active = dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = { "OpenAI": "富家小子", "智谱": "聪明伶俐", "MiniMax": "憨厚老实" };
+                                    const badge: Record<string, string> = { "免费": "白嫖党", "OpenAI": "富家小子", "智谱": "聪明伶俐", "MiniMax": "憨厚老实" };
                                     const tag = badge[p.name];
                                     return (
                                         <button key={i} onClick={() => dlgSelectProvider(i)} style={{
@@ -497,7 +542,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     )}
                                 </div>
 
-                                {/* Auth: OAuth login button OR API Key input */}
+                                {/* Auth: OAuth login button / no-key hint / API Key input */}
                                 {dlgProvider.auth_type === "oauth" ? (
                                     <div>
                                         <label style={labelStyle}>{t("认证方式", "Authentication")}</label>
@@ -532,6 +577,117 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
                                             </button>
                                         )}
+                                    </div>
+                                ) : dlgProvider.auth_type === "none" ? (
+                                    <div>
+                                        {/* Chrome detection */}
+                                        <label style={labelStyle}>{t("Chrome 浏览器", "Chrome Browser")}</label>
+                                        {chromePath === null ? (
+                                            <p style={{ fontSize: "0.72rem", color: colors.textMuted }}>{t("检测中...", "Detecting...")}</p>
+                                        ) : chromePath ? (
+                                            <div style={{
+                                                display: "flex", alignItems: "center", gap: 8,
+                                                padding: "8px 12px", borderRadius: 4, marginBottom: 10,
+                                                background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
+                                            }}>
+                                                <span style={{ fontSize: "0.76rem", color: "#22c55e", flex: 1 }}>
+                                                    ✅ {t("已找到 Chrome", "Chrome found")}
+                                                </span>
+                                                <button
+                                                    disabled={chromeLaunching}
+                                                    onClick={async () => {
+                                                        setChromeLaunching(true);
+                                                        try {
+                                                            await LaunchChromeDebug();
+                                                            setDlgTestResult({ ok: true, msg: t("Chrome 已启动（带调试端口）", "Chrome launched with debug port") });
+                                                        } catch (e) {
+                                                            setDlgTestResult({ ok: false, msg: t("启动 Chrome 失败: ", "Failed to launch Chrome: ") + String(e) });
+                                                        }
+                                                        setChromeLaunching(false);
+                                                    }}
+                                                    style={{
+                                                        fontSize: "0.72rem", padding: "4px 12px", cursor: chromeLaunching ? "default" : "pointer",
+                                                        background: "#6366f1", color: "#fff",
+                                                        border: "none", borderRadius: 4,
+                                                        opacity: chromeLaunching ? 0.5 : 1,
+                                                    }}
+                                                >
+                                                    {chromeLaunching ? "..." : t("启动 Chrome", "Launch Chrome")}
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <div style={{
+                                                display: "flex", alignItems: "center", gap: 8,
+                                                padding: "8px 12px", borderRadius: 4, marginBottom: 10,
+                                                background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
+                                            }}>
+                                                <span style={{ fontSize: "0.76rem", color: "#ef4444", flex: 1 }}>
+                                                    ❌ {t("未找到 Chrome", "Chrome not found")}
+                                                </span>
+                                                <button
+                                                    onClick={() => window.open("https://www.google.com/chrome/", "_blank")}
+                                                    style={{
+                                                        fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
+                                                        background: "#6366f1", color: "#fff",
+                                                        border: "none", borderRadius: 4,
+                                                    }}
+                                                >
+                                                    {t("下载 Chrome", "Download Chrome")}
+                                                </button>
+                                            </div>
+                                        )}
+                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "0 0 12px 0", lineHeight: 1.5 }}>
+                                            💡 {t(
+                                                "步骤：① 点击「启动 Chrome」→ ② 在打开的 Chrome 中登录 ChatGPT / Kimi / 豆包 / Gemini 之一 → ③ 启动代理服务。",
+                                                "Steps: ① Click \"Launch Chrome\" → ② Log in to ChatGPT / Kimi / Doubao / Gemini in the opened Chrome → ③ Start the proxy."
+                                            )}
+                                        </p>
+
+                                        {/* Proxy status */}
+                                        <label style={labelStyle}>{t("代理状态", "Proxy Status")}</label>
+                                        <div style={{
+                                            display: "flex", alignItems: "center", gap: 10,
+                                            padding: "8px 12px", borderRadius: 4,
+                                            background: proxyRunning ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
+                                            border: `1px solid ${proxyRunning ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+                                        }}>
+                                            <span style={{
+                                                width: 8, height: 8, borderRadius: "50%",
+                                                background: proxyRunning ? "#22c55e" : "#ef4444",
+                                                display: "inline-block", flexShrink: 0,
+                                            }} />
+                                            <span style={{ fontSize: "0.76rem", color: proxyRunning ? "#22c55e" : "#ef4444", flex: 1 }}>
+                                                {proxyRunning
+                                                    ? t("代理服务运行中 (localhost:10099)", "Proxy running (localhost:10099)")
+                                                    : t("代理服务未运行", "Proxy not running")}
+                                            </span>
+                                            <button
+                                                disabled={proxyBusy}
+                                                onClick={async () => {
+                                                    setProxyBusy(true);
+                                                    try {
+                                                        if (proxyRunning) { await StopFreeProxy(); setProxyRunning(false); }
+                                                        else { await StartFreeProxy(); setProxyRunning(true); }
+                                                    } catch { /* ignore */ }
+                                                    setProxyBusy(false);
+                                                }}
+                                                style={{
+                                                    fontSize: "0.72rem", padding: "4px 12px", cursor: proxyBusy ? "default" : "pointer",
+                                                    background: proxyRunning ? "transparent" : "#6366f1",
+                                                    color: proxyRunning ? "#ef4444" : "#fff",
+                                                    border: `1px solid ${proxyRunning ? "#ef4444" : "#6366f1"}`,
+                                                    borderRadius: 4, opacity: proxyBusy ? 0.5 : 1,
+                                                }}
+                                            >
+                                                {proxyBusy ? "..." : proxyRunning ? t("停止", "Stop") : t("启动", "Start")}
+                                            </button>
+                                        </div>
+                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "6px 0 0 0", lineHeight: 1.4 }}>
+                                            🆓 {t(
+                                                "本地浏览器代理，无需 API 密钥。需要 Chrome 以 --remote-debugging-port=9222 启动。",
+                                                "Local browser proxy, no API key needed. Chrome must be launched with --remote-debugging-port=9222."
+                                            )}
+                                        </p>
                                     </div>
                                 ) : (
                                     <div>

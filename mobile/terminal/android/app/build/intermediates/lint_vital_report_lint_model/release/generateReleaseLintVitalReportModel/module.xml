@@ -1,0 +1,19 @@
+<lint-module
+    format="1"
+    dir="D:\workprj\aicoder\mobile\android\app"
+    name=":app"
+    type="APP"
+    maven="MaClaw:app:unspecified"
+    agpVersion="8.5.2"
+    buildFolder="build"
+    bootClassPath="C:\Users\ma139\AppData\Local\Android\Sdk\platforms\android-35\android.jar;C:\Users\ma139\AppData\Local\Android\Sdk\build-tools\34.0.0\core-lambda-stubs.jar"
+    javaSourceLevel="17"
+    compileTarget="android-35"
+    neverShrinking="true">
+  <lintOptions
+      abortOnError="true"
+      absolutePaths="true"
+      checkReleaseBuilds="true"
+      explainIssues="true"/>
+  <variant name="release"/>
+</lint-module>

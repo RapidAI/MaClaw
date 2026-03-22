@@ -1,41 +1,28 @@
-# Mobile Shells
+# Mobile Apps
 
-This folder contains all generated mobile shell projects and mobile-only artifacts.
+This folder contains all mobile projects for MaClaw.
 
 ## Layout
 
-- `android/`
-  Android shell project, packaging scripts, keystore helpers, and signing config templates.
-- `ios/`
-  iOS shell project and simulator build script.
-- `shared/bootstrap.html`
-  Shared mobile entry page used by both Android and iOS shells.
-- `dist/`
-  Consolidated mobile packaging outputs.
-  See `dist/README.md` for the handoff-oriented deliverable list.
+- `terminal/` — WebView Shell app (existing). Loads Hub web UI in a native WebView container.
+  - `android/` — Android shell project
+  - `ios/` — iOS shell project
+  - `shared/` — Shared bootstrap HTML entry point
+  - `ipa/` — iOS IPA artifacts
+- `chat/` — Flutter Chat app (new). Native IM with text/image/voice messaging and voice calls.
+  - Targets: Android, iOS, HarmonyOS (via flutter_ohos)
+- `dist/` — Consolidated packaging outputs for all mobile apps.
 
-## Current Outputs
+## Chat App
 
-Artifacts currently present in `dist/`:
+The Chat app is a Flutter-based IM client supporting:
+- Text, image, and voice messages (single chat & group chat)
+- Real-time voice calls (1v1 and multi-party via WebRTC)
+- Native push notifications (APNs / FCM / HMS Push)
+- Local message caching with incremental sync
+- Human-to-human and human-to-machine(s) conversations
 
-- `maclaw-release.apk`
-- `maclaw-release.aab`
-- `README.md`
+## Terminal App
 
-Future Android debug builds also land here as:
-
-- `maclaw-debug.apk`
-
-## Defaults
-
-Both Android and iOS default to Hub Center `http://hubs.mypapers.top:9388`.
-
-## Entry Points
-
-- Android debug APK: `android/build_android.cmd`
-- Android unsigned release APK: `android/build_android_release.cmd`
-- Android signed release APK: `android/build_android_signed_release.cmd`
-- Android unsigned release AAB: `android/build_android_aab.cmd`
-- Android signed release AAB: `android/build_android_signed_aab.cmd`
-- iOS simulator build: `ios/build_ios_simulator.sh`
-- iOS simulator release build: `ios/build_ios_simulator_release.sh`
+The Terminal app is a lightweight WebView shell that connects to Hub Center
+and loads the Hub's web-based admin/management UI.

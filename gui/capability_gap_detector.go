@@ -190,7 +190,7 @@ func (d *CapabilityGapDetector) doLLMChat(messages []map[string]interface{}) (st
 		msgs[i] = m
 	}
 
-	result, err := doSimpleLLMRequest(d.llmConfig, msgs, d.client, 30*time.Second)
+	result, err := doSimpleLLMRequest(context.Background(), d.llmConfig, msgs, d.client, 30*time.Second)
 	if err != nil {
 		return "", err
 	}

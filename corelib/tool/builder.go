@@ -3,6 +3,8 @@ package tool
 import (
 	"sort"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 )
 
 // DynamicToolBuilder builds LLM tool definitions dynamically from the Registry.
@@ -73,15 +75,26 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		dynamic = append(dynamic, t)
 	}
 
-	// Score remaining dynamic tools by keyword overlap with userMessage.
-	msgTokens := TokenizeSimple(userMessage)
+	// Score remaining dynamic tools using BM25.
+	docs := make([]bm25.Doc, len(dynamic))
+	for i, t := range dynamic {
+		text := t.Name + " " + t.Description
+		for _, tag := range t.Tags {
+			text += " " + tag
+		}
+		docs[i] = bm25.Doc{ID: t.Name, Text: text}
+	}
+	idx := bm25.New()
+	idx.Rebuild(docs)
+	bm25Scores := idx.Score(userMessage)
+
 	type scored struct {
 		tool  RegisteredTool
 		score float64
 	}
 	scoredList := make([]scored, 0, len(dynamic))
 	for _, t := range dynamic {
-		s := ScoreTool(t, msgTokens)
+		s := bm25Scores[t.Name] + float64(t.Priority)*0.01
 		scoredList = append(scoredList, scored{tool: t, score: s})
 	}
 	sort.Slice(scoredList, func(i, j int) bool {

@@ -1,0 +1,19 @@
+{
+    "logs": [
+        {
+            "outputFile": "tech.rapidai.hubshell.app-mergeReleaseResources-34:/values-port/values-port.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\ma139\\.gradle\\caches\\transforms-4\\704a3c4169f36e5aff8a143b95b6710c\\transformed\\appcompat-1.7.0\\res\\values-port\\values-port.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "55",
+                        "endOffsets": "106"
+                    }
+                }
+            ]
+        }
+    ]
+}

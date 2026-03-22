@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -195,7 +196,7 @@ Quality over quantity — only extract patterns you're confident are reusable.`
 		map[string]string{"role": "user", "content": userPrompt},
 	}
 
-	result, err := doSimpleLLMRequest(e.llmConfig, messages, e.client, 30*time.Second)
+	result, err := doSimpleLLMRequest(context.Background(), e.llmConfig, messages, e.client, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}

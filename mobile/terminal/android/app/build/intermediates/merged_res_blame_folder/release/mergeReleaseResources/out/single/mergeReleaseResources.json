@@ -1,0 +1,22 @@
+[
+    {
+        "merged": "tech.rapidai.hubshell.app-release-36:/mipmap-anydpi-v26_ic_launcher_round.xml.flat",
+        "source": "tech.rapidai.hubshell.app-main-37:/mipmap-anydpi-v26/ic_launcher_round.xml"
+    },
+    {
+        "merged": "tech.rapidai.hubshell.app-release-36:/drawable_ic_launcher_background.xml.flat",
+        "source": "tech.rapidai.hubshell.app-main-37:/drawable/ic_launcher_background.xml"
+    },
+    {
+        "merged": "tech.rapidai.hubshell.app-release-36:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "tech.rapidai.hubshell.app-main-37:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "tech.rapidai.hubshell.app-release-36:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "tech.rapidai.hubshell.app-main-37:/drawable/ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "tech.rapidai.hubshell.app-release-36:/xml_network_security_config.xml.flat",
+        "source": "tech.rapidai.hubshell.app-main-37:/xml/network_security_config.xml"
+    }
+]

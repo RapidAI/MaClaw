@@ -36,6 +36,7 @@ type Compressor struct {
 	llm           LLMChatCaller
 	emitter       corelib.EventEmitter
 	minContentLen int
+	maxBackups    int
 
 	mu         sync.Mutex
 	running    bool
@@ -175,6 +176,7 @@ func (mc *Compressor) dedup() int {
 	mc.store.entries = kept
 	mc.store.dirty = true
 	mc.store.signalSave()
+	mc.store.bm25.rebuild(kept)
 	return len(remove)
 }
 
@@ -404,6 +406,7 @@ Rules:
 		mc.store.dirty = true
 		mc.store.mu.Unlock()
 		mc.store.signalSave()
+		mc.store.bm25.rebuild(kept)
 	}
 
 	return removed, nil
@@ -559,7 +562,7 @@ func (mc *Compressor) createBackup() (string, error) {
 	return name, nil
 }
 
-const maxBackups = 30
+const defaultMaxBackups = 20
 
 // ListBackups returns available backup snapshots.
 func (mc *Compressor) ListBackups() ([]BackupInfo, error) {
@@ -592,14 +595,30 @@ func (mc *Compressor) ListBackups() ([]BackupInfo, error) {
 		return backups[i].CreatedAt > backups[j].CreatedAt
 	})
 
-	if len(backups) > maxBackups {
-		for _, old := range backups[maxBackups:] {
+	limit := mc.getMaxBackups()
+	if len(backups) > limit {
+		for _, old := range backups[limit:] {
 			_ = os.Remove(filepath.Join(dir, old.Name))
 		}
-		backups = backups[:maxBackups]
+		backups = backups[:limit]
 	}
 
 	return backups, nil
+}
+
+func (mc *Compressor) getMaxBackups() int {
+	if mc.maxBackups > 0 {
+		return mc.maxBackups
+	}
+	return defaultMaxBackups
+}
+
+// SetMaxBackups updates the backup retention limit.
+func (mc *Compressor) SetMaxBackups(n int) {
+	if n < 8 {
+		n = 8
+	}
+	mc.maxBackups = n
 }
 
 // RestoreBackup restores a backup by name.
@@ -628,6 +647,7 @@ func (mc *Compressor) RestoreBackup(backupName string) error {
 	mc.store.entries = restored
 	mc.store.dirty = false
 	mc.store.mu.Unlock()
+	mc.store.bm25.rebuild(restored)
 	return nil
 }
 

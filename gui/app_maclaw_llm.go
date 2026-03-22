@@ -18,6 +18,7 @@ import (
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []MaclawLLMProvider {
 	return []MaclawLLMProvider{
+		{Name: "免费", URL: "http://localhost:10099/v1", Model: "free-proxy", ContextLength: 128000, AuthType: "none"},
 		{Name: "OpenAI", URL: "https://api.openai.com/v1", Model: "gpt-4o", AuthType: "oauth", ContextLength: 128000},
 		{Name: "智谱", URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000},
@@ -136,6 +137,16 @@ func (a *App) SaveMaclawLLMProviders(providers []MaclawLLMProvider, current stri
 	}
 	if err := a.SaveConfig(cfg); err != nil {
 		return err
+	}
+	// Auto-start or stop the free proxy based on the selected provider.
+	if current == freeProviderName {
+		if !a.IsFreeProxyRunning() {
+			go a.StartFreeProxy()
+		}
+	} else {
+		if a.IsFreeProxyRunning() {
+			go a.StopFreeProxy()
+		}
 	}
 	// Immediately notify Hub of the LLM configuration change via heartbeat
 	// so the Hub-side llm_configured flag is updated without waiting for the

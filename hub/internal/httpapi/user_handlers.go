@@ -26,6 +26,7 @@ type SessionStartRequest struct {
 	Tool        string `json:"tool"`
 	ProjectID   string `json:"project_id,omitempty"`
 	ProjectPath string `json:"project_path,omitempty"`
+	Provider    string `json:"provider,omitempty"`
 	PythonEnv   string `json:"python_env,omitempty"`
 	UseProxy    *bool  `json:"use_proxy,omitempty"`
 	YoloMode    *bool  `json:"yolo_mode,omitempty"`
@@ -210,6 +211,7 @@ func SessionStartHandler(identity *auth.IdentityService, devices machineCommandS
 		req.Tool = strings.TrimSpace(req.Tool)
 		req.ProjectID = strings.TrimSpace(req.ProjectID)
 		req.ProjectPath = strings.TrimSpace(req.ProjectPath)
+		req.Provider = strings.TrimSpace(req.Provider)
 		req.PythonEnv = strings.TrimSpace(req.PythonEnv)
 		if req.MachineID == "" || req.Tool == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "machine_id and tool are required")
@@ -220,6 +222,7 @@ func SessionStartHandler(identity *auth.IdentityService, devices machineCommandS
 			"tool":         req.Tool,
 			"project_id":   req.ProjectID,
 			"project_path": req.ProjectPath,
+			"provider":     req.Provider,
 			"python_env":   req.PythonEnv,
 		}
 		if req.UseProxy != nil {

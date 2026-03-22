@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -18,7 +19,7 @@ func swarmCallLLM(cfg MaclawLLMConfig, prompt string, temperature float64, timeo
 	}
 
 	client := &http.Client{Timeout: timeout}
-	result, err := doSimpleLLMRequest(cfg, messages, client, timeout)
+	result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, timeout)
 	if err != nil {
 		return nil, err
 	}

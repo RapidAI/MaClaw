@@ -156,6 +156,17 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 
 		`CREATE INDEX IF NOT EXISTS idx_gossip_comments_post_id ON gossip_comments(post_id);`,
+
+		`CREATE TABLE IF NOT EXISTS voiceprints (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			email TEXT NOT NULL,
+			label TEXT NOT NULL DEFAULT '',
+			embedding BLOB NOT NULL,
+			created_at TEXT NOT NULL
+		);`,
+
+		`CREATE INDEX IF NOT EXISTS idx_voiceprints_user_id ON voiceprints(user_id);`,
 	}
 
 	for _, stmt := range stmts {

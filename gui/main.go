@@ -51,10 +51,16 @@ func main() {
 	// On macOS 26 (Tahoe) and later, Liquid Glass changes how translucent and
 	// frameless windows are rendered.  Wails v2's NSVisualEffectView-based
 	// translucency can crash at window creation time, so we fall back to a
-	// safe, opaque, non-frameless configuration on Tahoe+.  The systray init
-	// is deferred to OnDomReady in tray_darwin.go to avoid racing with
-	// Liquid Glass first-frame rendering.
+	// safe, opaque, non-frameless configuration on Tahoe+.  Systray is
+	// completely disabled on Tahoe+ (see tray_darwin.go) because the
+	// NSStatusBar rendering also crashes under Liquid Glass.
 	tahoe := isMacOSTahoeOrLater()
+	// On Tahoe+ we skip systray, so there is no tray icon to click.
+	// If the app starts hidden (autostart) the user would have no way to
+	// bring the window back.  Force the window visible in that case.
+	if tahoe && app.IsAutoStart {
+		app.IsAutoStart = false
+	}
 	macOpts := &mac.Options{
 		TitleBar:             mac.TitleBarHidden(),
 		WebviewIsTransparent: true,

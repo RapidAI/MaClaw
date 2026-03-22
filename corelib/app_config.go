@@ -71,6 +71,7 @@ type AppConfig struct {
 	SkillHubURLs []SkillHubEntry `json:"skill_hub_urls,omitempty"`
 	// Memory
 	MemoryAutoCompress bool `json:"memory_auto_compress,omitempty"`
+	MemoryMaxBackups   int  `json:"memory_max_backups,omitempty"` // 0 means use default (20)
 	// ClawNet
 	ClawNetEnabled            bool    `json:"clawnet_enabled"`
 	ClawNetAutoPickerEnabled  bool    `json:"clawnet_auto_picker_enabled,omitempty"`
@@ -86,10 +87,31 @@ type AppConfig struct {
 	// IM — per-user Telegram Bot (client-side gateway)
 	TelegramBotEnabled bool   `json:"telegram_bot_enabled,omitempty"`
 	TelegramBotToken   string `json:"telegram_bot_token,omitempty"`
+	// IM — per-user WeChat (client-side gateway via iLink API)
+	WeixinEnabled   bool   `json:"weixin_enabled,omitempty"`
+	WeixinToken     string `json:"weixin_token,omitempty"`
+	WeixinBaseURL   string `json:"weixin_base_url,omitempty"`
+	WeixinCDNURL    string `json:"weixin_cdn_url,omitempty"`
+	WeixinAccountID string `json:"weixin_account_id,omitempty"`
+	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (单机), false = remote/Hub (多机)
 	// UI mode: "pro" (full coding tools) or "lite" (default, simplified, no coding tools)
 	UIMode string `json:"ui_mode,omitempty"`
 	// SkillMarket — Skill 获取策略
 	SkillPurchaseMode string `json:"skill_purchase_mode,omitempty"` // "auto" (default) | "free_only"
 	// Gossip — 聊天八卦自动发布（默认开启）
 	GossipAutoPublish bool `json:"gossip_auto_publish"`
+}
+
+// IsWeixinLocalMode returns the effective WeChat local mode setting.
+// Default is true (单机/local) when the field has never been set.
+func (c *AppConfig) IsWeixinLocalMode() bool {
+	if c.WeixinLocalMode == nil {
+		return true
+	}
+	return *c.WeixinLocalMode
+}
+
+// SetWeixinLocal sets the WeixinLocalMode pointer field.
+func (c *AppConfig) SetWeixinLocal(v bool) {
+	c.WeixinLocalMode = &v
 }

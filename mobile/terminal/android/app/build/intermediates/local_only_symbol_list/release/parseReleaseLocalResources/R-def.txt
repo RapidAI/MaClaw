@@ -1,0 +1,12 @@
+R_DEF: Internal format may change without notice
+local
+color rapidai_shell_background
+color rapidai_shell_on_primary
+color rapidai_shell_primary
+drawable ic_launcher_background
+drawable ic_launcher_foreground
+mipmap ic_launcher
+mipmap ic_launcher_round
+string app_name
+style Theme.RapidAIHubShell
+xml network_security_config

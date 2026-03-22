@@ -1,0 +1,53 @@
+name: maclaw_chat
+description: MaClaw Chat - IM client with text/image/voice messaging and voice calls.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # Networking
+  web_socket_channel: ^3.0.0
+  http: ^1.2.0
+
+  # Local storage
+  sqflite: ^2.3.0
+  path_provider: ^2.1.0
+  shared_preferences: ^2.2.0
+
+  # Media
+  image_picker: ^1.0.0
+  flutter_image_compress: ^2.1.0
+  record: ^5.1.0
+  audioplayers: ^6.0.0
+
+  # WebRTC for voice calls
+  flutter_webrtc: ^0.12.0
+
+  # Push notifications
+  firebase_core: ^3.0.0
+  firebase_messaging: ^15.0.0
+
+  # State management
+  provider: ^6.1.0
+
+  # Utilities
+  uuid: ^4.2.0
+  intl: ^0.19.0
+  cached_network_image: ^3.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/

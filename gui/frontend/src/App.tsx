@@ -13,7 +13,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -1378,8 +1378,15 @@ function App() {
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
     const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
+    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');
+    const [weixinStatus, setWeixinStatus] = useState<string>('disconnected');
+    const [weixinLocalMode, setWeixinLocalModeState] = useState<boolean>(true);
+    const [weixinQRCode, setWeixinQRCode] = useState<string>('');
+    const [weixinQRLoading, setWeixinQRLoading] = useState<boolean>(false);
+    const [weixinQRWaiting, setWeixinQRWaiting] = useState<boolean>(false);
+    const [weixinQRError, setWeixinQRError] = useState<string>('');
     const [installLocation, setInstallLocation] = useState<'user' | 'project'>('user');
     const [installProject, setInstallProject] = useState<string>("");
     const [isBatchInstalling, setIsBatchInstalling] = useState(false);
@@ -1960,6 +1967,13 @@ function App() {
         });
         GetTelegramStatus().then(setTelegramStatus).catch(() => {});
 
+        // WeChat status listener
+        EventsOn("weixin-status-changed", (status: string) => {
+            setWeixinStatus(status);
+        });
+        GetWeixinStatus().then(setWeixinStatus).catch(() => {});
+        GetWeixinLocalMode().then(setWeixinLocalModeState).catch(() => {});
+
         // Listen for background tool installation events
         EventsOn("tool-checking", (toolName: string) => {
             setBackgroundInstallStatus(lang === 'zh-Hans' ? `检查 ${toolName}...` : `Checking ${toolName}...`);
@@ -2016,6 +2030,7 @@ function App() {
             EventsOff("config-updated");
             EventsOff("qqbot-status-changed");
             EventsOff("telegram-status-changed");
+            EventsOff("weixin-status-changed");
             EventsOff("tool-checking");
             EventsOff("tool-installing");
             EventsOff("tool-updating");
@@ -3041,7 +3056,7 @@ ${instruction}`;
         {
             id: 'im' as const,
             label: 'IM',
-            desc: lang === 'zh-Hans' ? '配置 QQ 机器人、Telegram Bot 等即时通讯接入' : lang === 'zh-Hant' ? '配置 QQ 機器人、Telegram Bot 等即時通訊接入' : 'Configure QQ Bot, Telegram Bot and other IM integrations',
+            desc: lang === 'zh-Hans' ? '配置 QQ 机器人、Telegram Bot、微信等即时通讯接入' : lang === 'zh-Hant' ? '配置 QQ 機器人、Telegram Bot、微信等即時通訊接入' : 'Configure QQ Bot, Telegram Bot, WeChat and other IM integrations',
         },
         {
             id: 'security' as const,
@@ -4059,10 +4074,37 @@ ${instruction}`;
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'im' ? 'block' : 'none' }}>
+                                {/* IM sub-tabs */}
+                                <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                                    {([
+                                        { key: 'qq' as const, label: lang === 'zh-Hans' ? 'QQ 机器人' : lang === 'zh-Hant' ? 'QQ 機器人' : 'QQ Bot' },
+                                        { key: 'telegram' as const, label: 'Telegram Bot' },
+                                        { key: 'weixin' as const, label: lang === 'zh-Hans' ? '微信' : lang === 'zh-Hant' ? '微信' : 'WeChat' },
+                                    ]).map((t) => (
+                                        <button
+                                            key={t.key}
+                                            type="button"
+                                            onClick={() => setImSubTab(t.key)}
+                                            style={{
+                                                padding: '4px 14px',
+                                                borderRadius: '14px',
+                                                border: imSubTab === t.key ? '1.5px solid #6366f1' : '1px solid #ddd',
+                                                background: imSubTab === t.key ? '#eef2ff' : 'transparent',
+                                                color: imSubTab === t.key ? '#6366f1' : '#555',
+                                                fontWeight: imSubTab === t.key ? 600 : 400,
+                                                fontSize: '0.75rem',
+                                                cursor: 'pointer',
+                                                transition: 'all 0.15s',
+                                            }}
+                                        >
+                                            {t.label}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {/* QQ Bot tab */}
+                                {imSubTab === 'qq' && (
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '6px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
-                                        {lang === 'zh-Hans' ? 'QQ 机器人' : lang === 'zh-Hant' ? 'QQ 機器人' : 'QQ Bot'}
-                                    </h4>
                                     <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
                                             ? '配置你自己的 QQ 机器人，通过 QQ 与 MaClaw Agent 对话。'
@@ -4149,11 +4191,11 @@ ${instruction}`;
                                         </div>
                                     </div>
                                 </div>
+                                )}
 
-                                <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid #eee', paddingTop: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '6px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
-                                        Telegram Bot
-                                    </h4>
+                                {/* Telegram Bot tab */}
+                                {imSubTab === 'telegram' && (
+                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
                                             ? '配置你自己的 Telegram Bot，通过 Telegram 与 MaClaw Agent 对话。'
@@ -4230,6 +4272,194 @@ ${instruction}`;
                                         </div>
                                     </div>
                                 </div>
+                                )}
+
+                                {/* WeChat tab */}
+                                {imSubTab === 'weixin' && (
+                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
+                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
+                                        {lang === 'zh-Hans' || lang === 'zh-Hant'
+                                            ? '扫码登录微信，通过微信与 MaClaw Agent 对话。'
+                                            : 'Scan QR code to log in to WeChat and chat with MaClaw Agent.'}
+                                    </p>
+
+                                    {/* Status + controls row */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                                        <span style={{
+                                            fontSize: '0.7rem',
+                                            padding: '2px 8px',
+                                            borderRadius: '10px',
+                                            background: weixinStatus === 'connected' ? '#dcfce7'
+                                                : ['connecting', 'reconnecting', 'paused'].includes(weixinStatus) ? '#fef9c3'
+                                                : '#fee2e2',
+                                            color: weixinStatus === 'connected' ? '#166534'
+                                                : ['connecting', 'reconnecting', 'paused'].includes(weixinStatus) ? '#854d0e'
+                                                : '#991b1b',
+                                        }}>
+                                            {{ connected: '● 已连接', connecting: '◌ 连接中...', reconnecting: '◌ 重连中...', paused: '◌ 已暂停', error: '✕ 错误' }[weixinStatus] || '○ 未连接'}
+                                        </span>
+                                        {(config as any)?.weixin_account_id && (
+                                            <span style={{ fontSize: '0.7rem', color: '#888' }}>
+                                                ID: {(config as any).weixin_account_id}
+                                            </span>
+                                        )}
+                                        {weixinStatus === 'connected' && (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    aria-label="Restart WeChat connection"
+                                                    style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#555', cursor: 'pointer' }}
+                                                    onClick={() => RestartWeixin().then(setWeixinStatus)}
+                                                >
+                                                    {lang === 'zh-Hans' ? '重启' : 'Restart'}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    aria-label="Disconnect WeChat"
+                                                    style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ef4444', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
+                                                    onClick={() => { StopWeixin(); setWeixinStatus('disconnected'); }}
+                                                >
+                                                    {lang === 'zh-Hans' ? '断开' : 'Disconnect'}
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+
+                                    {/* 单机/多机 mode selector */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
+                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
+                                        </span>
+                                        {((() => {
+                                            const isCN = lang === 'zh-Hans' || lang === 'zh-Hant';
+                                            return [
+                                                { value: true, label: isCN ? '🖥 单机' : '🖥 Local', desc: isCN ? '本地 LLM 直连' : 'Direct local LLM' },
+                                                { value: false, label: isCN ? '🌐 多机' : '🌐 Remote', desc: isCN ? '通过 Hub 转发' : 'Via Hub' },
+                                            ];
+                                        })()).map((opt) => (
+                                            <button
+                                                key={String(opt.value)}
+                                                type="button"
+                                                aria-label={opt.desc}
+                                                title={opt.desc}
+                                                style={{
+                                                    padding: '4px 14px',
+                                                    borderRadius: '14px',
+                                                    border: weixinLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
+                                                    background: weixinLocalMode === opt.value ? '#eef2ff' : 'transparent',
+                                                    color: weixinLocalMode === opt.value ? '#6366f1' : '#555',
+                                                    fontWeight: weixinLocalMode === opt.value ? 600 : 400,
+                                                    fontSize: '0.75rem',
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.15s',
+                                                }}
+                                                onClick={() => {
+                                                    const prev = weixinLocalMode;
+                                                    setWeixinLocalModeState(opt.value);
+                                                    SetWeixinLocalMode(opt.value).catch(() => setWeixinLocalModeState(prev));
+                                                }}
+                                            >
+                                                {opt.label}
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    {/* QR Login section */}
+                                    {weixinStatus !== 'connected' && (
+                                    <div style={{ marginTop: '4px' }}>
+                                        {!weixinQRCode && !weixinQRLoading && !weixinQRWaiting && (
+                                            <button
+                                                type="button"
+                                                aria-label="Scan QR code to login WeChat"
+                                                style={{
+                                                    padding: '6px 18px',
+                                                    borderRadius: '6px',
+                                                    border: '1.5px solid #6366f1',
+                                                    background: '#eef2ff',
+                                                    color: '#6366f1',
+                                                    fontWeight: 600,
+                                                    fontSize: '0.78rem',
+                                                    cursor: 'pointer',
+                                                }}
+                                                onClick={async () => {
+                                                    setWeixinQRError('');
+                                                    setWeixinQRLoading(true);
+                                                    try {
+                                                        const res = await StartWeixinQRLogin();
+                                                        if (res.error) {
+                                                            setWeixinQRError(res.error);
+                                                            setWeixinQRLoading(false);
+                                                            return;
+                                                        }
+                                                        setWeixinQRCode(res.qrcode_url || '');
+                                                        setWeixinQRLoading(false);
+                                                        setWeixinQRWaiting(true);
+                                                        const waitRes = await WaitWeixinQRLogin(res.qrcode_token || '');
+                                                        setWeixinQRWaiting(false);
+                                                        setWeixinQRCode('');
+                                                        if (waitRes.error) {
+                                                            setWeixinQRError(waitRes.error);
+                                                        } else {
+                                                            setWeixinStatus('connected');
+                                                            LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
+                                                        }
+                                                    } catch (e: any) {
+                                                        setWeixinQRError(e?.message || String(e));
+                                                        setWeixinQRLoading(false);
+                                                        setWeixinQRWaiting(false);
+                                                        setWeixinQRCode('');
+                                                    }
+                                                }}
+                                            >
+                                                {lang === 'zh-Hans' || lang === 'zh-Hant' ? '🔑 扫码登录微信' : '🔑 Scan QR to Login'}
+                                            </button>
+                                        )}
+
+                                        {weixinQRLoading && (
+                                            <p style={{ fontSize: '0.75rem', color: '#6366f1' }}>
+                                                {lang === 'zh-Hans' ? '正在获取二维码...' : 'Loading QR code...'}
+                                            </p>
+                                        )}
+
+                                        {weixinQRCode && (
+                                            <div style={{ textAlign: 'center', maxWidth: '280px' }}>
+                                                <img
+                                                    src={weixinQRCode}
+                                                    alt={lang === 'zh-Hans' ? '微信登录二维码' : 'WeChat login QR code'}
+                                                    style={{ width: '220px', height: '220px', borderRadius: '8px', border: '1px solid #e5e7eb' }}
+                                                />
+                                                <p style={{ fontSize: '0.72rem', color: '#6366f1', marginTop: '8px' }}>
+                                                    {lang === 'zh-Hans' || lang === 'zh-Hant' ? '请用微信扫描上方二维码' : 'Scan the QR code with WeChat'}
+                                                </p>
+                                                {weixinQRWaiting && (
+                                                    <p style={{ fontSize: '0.68rem', color: '#888' }}>
+                                                        {lang === 'zh-Hans' ? '等待扫码确认中...' : 'Waiting for confirmation...'}
+                                                    </p>
+                                                )}
+                                                <button
+                                                    type="button"
+                                                    aria-label="Cancel QR login"
+                                                    style={{ marginTop: '10px', fontSize: '0.72rem', padding: '3px 14px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#888', cursor: 'pointer' }}
+                                                    onClick={() => {
+                                                        setWeixinQRCode('');
+                                                        setWeixinQRWaiting(false);
+                                                        setWeixinQRLoading(false);
+                                                    }}
+                                                >
+                                                    {lang === 'zh-Hans' || lang === 'zh-Hant' ? '取消' : 'Cancel'}
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        {weixinQRError && (
+                                            <p style={{ fontSize: '0.72rem', color: '#ef4444', marginTop: '8px' }}>
+                                                {weixinQRError}
+                                            </p>
+                                        )}
+                                    </div>
+                                    )}
+                                </div>
+                                )}
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'security' ? 'block' : 'none' }}>

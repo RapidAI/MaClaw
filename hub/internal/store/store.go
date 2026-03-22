@@ -229,6 +229,24 @@ type SessionRepository interface {
 	Close(ctx context.Context, sessionID string, exitCode *int, endedAt time.Time, status string) error
 }
 
+// Voiceprint stores a speaker embedding vector for a user.
+type Voiceprint struct {
+	ID        string
+	UserID    string
+	Email     string
+	Label     string    // e.g. "enrollment-1"
+	Embedding []float32 // 192-dim L2-normalized
+	CreatedAt time.Time
+}
+
+type VoiceprintRepository interface {
+	Create(ctx context.Context, vp *Voiceprint) error
+	ListByUserID(ctx context.Context, userID string) ([]*Voiceprint, error)
+	ListAll(ctx context.Context) ([]*Voiceprint, error)
+	Delete(ctx context.Context, id string) error
+	DeleteByUserID(ctx context.Context, userID string) (int64, error)
+}
+
 type Store struct {
 	Admins          AdminUserRepository
 	System          SystemSettingsRepository
@@ -241,4 +259,5 @@ type Store struct {
 	ViewerTokens    ViewerTokenRepository
 	LoginTokens     LoginTokenRepository
 	Sessions        SessionRepository
+	Voiceprints     VoiceprintRepository
 }

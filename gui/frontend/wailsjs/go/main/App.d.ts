@@ -251,6 +251,10 @@ export function SetAutoCompress(arg1:boolean):Promise<void>;
 
 export function GetAutoCompressStatus():Promise<any>;
 
+export function GetMemoryMaxBackups():Promise<number>;
+
+export function SetMemoryMaxBackups(arg1:number):Promise<void>;
+
 // Scheduled task management bindings
 export function ListScheduledTasks():Promise<Array<any>>;
 
@@ -402,6 +406,21 @@ export function GetTelegramStatus():Promise<string>;
 
 export function RestartTelegram():Promise<string>;
 
+// WeChat gateway bindings
+export function GetWeixinStatus():Promise<string>;
+
+export function RestartWeixin():Promise<string>;
+
+export function StopWeixin():Promise<void>;
+
+export function StartWeixinQRLogin():Promise<Record<string, string>>;
+
+export function WaitWeixinQRLogin(arg1:string):Promise<Record<string, string>>;
+
+export function GetWeixinLocalMode():Promise<boolean>;
+
+export function SetWeixinLocalMode(arg1:boolean):Promise<void>;
+
 // Gossip bindings
 export function GossipSnapshot(arg1:string):Promise<any>;
 
@@ -415,3 +434,15 @@ export function GossipGetComments(arg1:string, arg2:number):Promise<any>;
 
 // NL Skill upload binding
 export function UploadNLSkillToMarket(arg1:string):Promise<string>;
+
+
+// Free proxy bindings
+export function StartFreeProxy():Promise<string>;
+
+export function StopFreeProxy():Promise<string>;
+
+export function IsFreeProxyRunning():Promise<boolean>;
+
+export function DetectChrome():Promise<string>;
+
+export function LaunchChromeDebug():Promise<string>;

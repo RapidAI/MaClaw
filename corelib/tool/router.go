@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 )
 
 const (
@@ -137,36 +139,38 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		return core
 	}
 
-	msgTokens := Tokenize(userMessage)
-	if len(msgTokens) == 0 {
-		if remaining > len(candidates) {
-			remaining = len(candidates)
-		}
-		return append(core, candidates[:remaining]...)
-	}
-
-	allDocs := make([][]string, len(candidates))
+	// Build a BM25 index over candidate tool descriptions.
+	docs := make([]bm25.Doc, len(candidates))
 	for i, t := range candidates {
-		allDocs[i] = r.toolTokensWithTags(t)
+		name := ExtractToolName(t)
+		desc := ExtractToolDescription(t)
+		text := name + " " + desc
+		if tags := r.tagsForTool(name); len(tags) > 0 {
+			text += " " + strings.Join(tags, " ")
+		}
+		docs[i] = bm25.Doc{ID: name, Text: text}
 	}
-	idf := ComputeIDF(allDocs)
+	idx := bm25.New()
+	idx.Rebuild(docs)
+	scores := idx.Score(userMessage)
 
 	type scored struct {
 		index int
 		score float64
 	}
-	scores := make([]scored, len(candidates))
-	for i, doc := range allDocs {
-		scores[i] = scored{index: i, score: TFIDFSimilarity(msgTokens, doc, idf)}
+	scoredList := make([]scored, len(candidates))
+	for i, t := range candidates {
+		name := ExtractToolName(t)
+		scoredList[i] = scored{index: i, score: scores[name]}
 	}
-	sort.SliceStable(scores, func(i, j int) bool {
-		return scores[i].score > scores[j].score
+	sort.SliceStable(scoredList, func(i, j int) bool {
+		return scoredList[i].score > scoredList[j].score
 	})
 
 	dynamicCount := 0
 	result := make([]map[string]interface{}, len(core), MaxToolBudget+2)
 	copy(result, core)
-	for _, s := range scores {
+	for _, s := range scoredList {
 		if len(result) >= MaxToolBudget {
 			break
 		}
@@ -181,7 +185,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	}
 
 	if r.recommender != nil {
-		if hint := r.matchRecommendations(msgTokens); hint != nil {
+		if hint := r.matchRecommendations(bm25.Tokenize(userMessage)); hint != nil {
 			result = append(result, hint)
 		}
 	}
@@ -202,7 +206,7 @@ func (r *Router) matchRecommendations(msgTokens []string) map[string]interface{}
 		msgSet[t] = struct{}{}
 	}
 	for _, rec := range recommendations {
-		recTokens := Tokenize(rec.Name + " " + rec.Description)
+		recTokens := bm25.Tokenize(rec.Name + " " + rec.Description)
 		matchCount := 0
 		for _, rt := range recTokens {
 			if _, ok := msgSet[rt]; ok {

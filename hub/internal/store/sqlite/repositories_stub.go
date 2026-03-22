@@ -54,6 +54,10 @@ type sessionRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+type voiceprintRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
@@ -68,6 +72,7 @@ func NewStore(p *Provider) *store.Store {
 		ViewerTokens: &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		LoginTokens:  &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Sessions:     &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Voiceprints:  &voiceprintRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
 }
 

@@ -253,6 +253,7 @@ type Gateway struct {
 	viewersByMachine  map[string]map[*ConnContext]struct{}
 	viewersBySession  map[string]map[*ConnContext]struct{}
 	projectsByMachine map[string][]map[string]any
+	toolsByMachine    map[string][]any // machine_id → tool info array
 }
 
 func NewGateway(identity identityService, devices DeviceBinder, sessions SessionService) *Gateway {
@@ -263,6 +264,7 @@ func NewGateway(identity identityService, devices DeviceBinder, sessions Session
 		viewersByMachine:  map[string]map[*ConnContext]struct{}{},
 		viewersBySession:  map[string]map[*ConnContext]struct{}{},
 		projectsByMachine: map[string][]map[string]any{},
+		toolsByMachine:    map[string][]any{},
 	}
 }
 
@@ -405,6 +407,10 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		case "machine.projects":
 			if err := g.handleMachineProjects(ctx, msg); err != nil {
+				return
+			}
+		case "machine.tools":
+			if err := g.handleMachineTools(ctx, msg); err != nil {
 				return
 			}
 		case "session.created":
@@ -664,6 +670,7 @@ func (g *Gateway) handleViewerSubscribeMachine(ctx *ConnContext, msg Envelope) e
 		"payload": map[string]any{
 			"sessions": sessionsPayload,
 			"projects": g.getProjectsForMachine(payload.MachineID),
+			"tools":    g.getToolsForMachine(payload.MachineID),
 		},
 	})
 }
@@ -677,6 +684,7 @@ func (g *Gateway) handleViewerStartSession(ctx *ConnContext, msg Envelope) error
 		Tool        string `json:"tool"`
 		ProjectID   string `json:"project_id,omitempty"`
 		ProjectPath string `json:"project_path,omitempty"`
+		Provider    string `json:"provider,omitempty"`
 		UseProxy    *bool  `json:"use_proxy,omitempty"`
 		YoloMode    *bool  `json:"yolo_mode,omitempty"`
 		AdminMode   *bool  `json:"admin_mode,omitempty"`
@@ -698,6 +706,7 @@ func (g *Gateway) handleViewerStartSession(ctx *ConnContext, msg Envelope) error
 			"tool":         payload.Tool,
 			"project_id":   payload.ProjectID,
 			"project_path": payload.ProjectPath,
+			"provider":     payload.Provider,
 			"python_env":   payload.PythonEnv,
 		},
 	}
@@ -815,6 +824,45 @@ func (g *Gateway) handleMachineProjects(ctx *ConnContext, msg Envelope) error {
 		},
 	})
 	return writeAck(ctx.Conn, msg.RequestID)
+}
+
+func (g *Gateway) handleMachineTools(ctx *ConnContext, msg Envelope) error {
+	var payload struct {
+		Tools []any `json:"tools"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid machine.tools payload")
+	}
+
+	// Deep-copy the slice to avoid shared references.
+	stored := make([]any, len(payload.Tools))
+	copy(stored, payload.Tools)
+
+	g.mu.Lock()
+	g.toolsByMachine[ctx.MachineID] = stored
+	g.mu.Unlock()
+
+	g.broadcastMachineEvent(ctx.MachineID, map[string]any{
+		"type":       "machine.tools",
+		"machine_id": ctx.MachineID,
+		"ts":         time.Now().Unix(),
+		"payload": map[string]any{
+			"tools": stored,
+		},
+	})
+	return writeAck(ctx.Conn, msg.RequestID)
+}
+
+func (g *Gateway) getToolsForMachine(machineID string) []any {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	stored := g.toolsByMachine[machineID]
+	if stored == nil {
+		return nil
+	}
+	cp := make([]any, len(stored))
+	copy(cp, stored)
+	return cp
 }
 
 func (g *Gateway) handleSessionCreated(ctx *ConnContext, msg Envelope) error {
@@ -1190,6 +1238,10 @@ func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 		for _, plugin := range g.IMGatewayPlugins {
 			plugin.ReleaseAllForMachine(ctx.MachineID)
 		}
+		// Clean up cached machine data.
+		g.mu.Lock()
+		delete(g.toolsByMachine, ctx.MachineID)
+		g.mu.Unlock()
 		g.broadcastMachineEvent(ctx.MachineID, map[string]any{
 			"type":       "machine.offline",
 			"machine_id": ctx.MachineID,

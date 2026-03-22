@@ -493,6 +493,14 @@ export function GetAutoCompressStatus() {
   return window['go']['main']['App']['GetAutoCompressStatus']();
 }
 
+export function GetMemoryMaxBackups() {
+  return window['go']['main']['App']['GetMemoryMaxBackups']();
+}
+
+export function SetMemoryMaxBackups(arg1) {
+  return window['go']['main']['App']['SetMemoryMaxBackups'](arg1);
+}
+
 // Scheduled task management bindings
 export function ListScheduledTasks() {
   return window['go']['main']['App']['ListScheduledTasks']();
@@ -914,6 +922,35 @@ export function RestartTelegram() {
   return window['go']['main']['App']['RestartTelegram']();
 }
 
+// WeChat gateway bindings
+export function GetWeixinStatus() {
+  return window['go']['main']['App']['GetWeixinStatus']();
+}
+
+export function RestartWeixin() {
+  return window['go']['main']['App']['RestartWeixin']();
+}
+
+export function StopWeixin() {
+  return window['go']['main']['App']['StopWeixin']();
+}
+
+export function StartWeixinQRLogin() {
+  return window['go']['main']['App']['StartWeixinQRLogin']();
+}
+
+export function WaitWeixinQRLogin(arg1) {
+  return window['go']['main']['App']['WaitWeixinQRLogin'](arg1);
+}
+
+export function GetWeixinLocalMode() {
+  return window['go']['main']['App']['GetWeixinLocalMode']();
+}
+
+export function SetWeixinLocalMode(arg1) {
+  return window['go']['main']['App']['SetWeixinLocalMode'](arg1);
+}
+
 // Gossip bindings
 export function GossipSnapshot(arg1) {
   return window['go']['main']['App']['GossipSnapshot'](arg1);
@@ -938,4 +975,25 @@ export function GossipGetComments(arg1, arg2) {
 // NL Skill upload binding
 export function UploadNLSkillToMarket(arg1) {
   return window['go']['main']['App']['UploadNLSkillToMarket'](arg1);
+}
+
+// Free proxy bindings
+export function StartFreeProxy() {
+  return window['go']['main']['App']['StartFreeProxy']();
+}
+
+export function StopFreeProxy() {
+  return window['go']['main']['App']['StopFreeProxy']();
+}
+
+export function IsFreeProxyRunning() {
+  return window['go']['main']['App']['IsFreeProxyRunning']();
+}
+
+export function DetectChrome() {
+  return window['go']['main']['App']['DetectChrome']();
+}
+
+export function LaunchChromeDebug() {
+  return window['go']['main']['App']['LaunchChromeDebug']();
 }

@@ -145,14 +145,15 @@ func (m *telegramGatewayManager) onIncomingMessage(msg telegram.IncomingMessage)
 
 // GatewayReplyPayload holds the fields of an im.gateway_reply from Hub.
 type GatewayReplyPayload struct {
-	ReplyType   string `json:"reply_type"`
-	PlatformUID string `json:"platform_uid"`
-	Text        string `json:"text"`
-	ImageData   string `json:"image_data"`
-	Caption     string `json:"caption"`
-	FileData    string `json:"file_data"`
-	FileName    string `json:"file_name"`
-	MimeType    string `json:"mime_type"`
+	ReplyType   string         `json:"reply_type"`
+	PlatformUID string         `json:"platform_uid"`
+	Text        string         `json:"text"`
+	ImageData   string         `json:"image_data"`
+	Caption     string         `json:"caption"`
+	FileData    string         `json:"file_data"`
+	FileName    string         `json:"file_name"`
+	MimeType    string         `json:"mime_type"`
+	Extra       map[string]any `json:"extra,omitempty"`
 }
 
 // HandleGatewayReply dispatches a reply from Hub to the Telegram API.

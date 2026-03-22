@@ -533,7 +533,7 @@ func makeSummarizer(cfg MaclawLLMConfig, httpClient *http.Client) func(string) s
 		msgs := []interface{}{
 			map[string]string{"role": "user", "content": "请简洁总结以下对话历史，保留关键事实、决策和待办事项：\n\n" + text},
 		}
-		result, err := doSimpleLLMRequest(cfg, msgs, httpClient, 30*time.Second)
+		result, err := doSimpleLLMRequest(context.Background(), cfg, msgs, httpClient, 30*time.Second)
 		if err != nil || result.Content == "" {
 			return ""
 		}
@@ -1425,13 +1425,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 	}
 
-	// Delayed acknowledgment: when debug is off, schedule a brief receipt
-	// after a short grace period. If the agent loop finishes quickly (e.g.
-	// simple greetings), the receipt is suppressed — the user sees only the
-	// final card, avoiding the redundant "收到，正在处理中" message.
+	// Delayed acknowledgment: when debug is off and streaming is not active,
+	// schedule a brief receipt after a short grace period. If the agent loop
+	// finishes quickly (e.g. simple greetings), the receipt is suppressed —
+	// the user sees only the final card, avoiding the redundant "收到，正在处理中" message.
+	// When streaming (onToken != nil), the user already sees real-time output,
+	// so the acknowledgment is unnecessary.
 	const ackDelay = 3 * time.Second
 	ackDone := make(chan struct{})
-	if !isDebug() {
+	if !isDebug() && onToken == nil {
 		ackTimer := time.NewTimer(ackDelay)
 		go func() {
 			select {
@@ -1580,9 +1582,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				} else {
 					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d 轮）…", iteration+1))
 				}
-			} else if iteration == 3 || (iteration > 3 && iteration%5 == 0) {
-				// Non-debug mode: send a patience hint at iteration 4, then
-				// every 5 rounds so the user knows a long task is still alive.
+			} else if onToken == nil && (iteration == 3 || (iteration > 3 && iteration%5 == 0)) {
+				// Non-debug, non-streaming mode: send a patience hint at iteration 4,
+				// then every 5 rounds so the user knows a long task is still alive.
+				// When streaming, the user already sees real-time output.
 				sendProgress("⏳ 任务较复杂，正在耐心处理中，稍后发你结果…")
 			}
 		}

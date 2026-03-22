@@ -94,6 +94,7 @@ type App struct {
 	autoPickerOnce       sync.Once
 	qqBotGateway         *qqBotGatewayManager
 	telegramGateway      *telegramGatewayManager
+	weixinGateway        *weixinGatewayManager
 }
 
 var OnConfigChanged func(AppConfig)
@@ -519,6 +520,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	// Start Telegram gateway if configured (runs on client side).
 	a.ensureTelegramGateway()
 
+	// Start WeChat gateway if configured (runs on client side).
+	a.ensureWeixinGateway()
+
 	return hubClient
 }
 
@@ -579,6 +583,8 @@ func (a *App) startup(ctx context.Context) {
 			mc := a.getOrCreateCompressor()
 			mc.Start()
 		}
+		// Auto-start free proxy if "免费" provider is selected.
+		go a.ensureFreeProxyIfNeeded()
 		return
 	}
 	a.setPowerOptimizationEnabled(false)
@@ -627,6 +633,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.telegramGateway != nil {
 		a.telegramGateway.Stop()
+	}
+	if a.weixinGateway != nil {
+		a.weixinGateway.Stop()
 	}
 	a.platformShutdown()
 }
@@ -2720,7 +2729,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 			RemoteMachineToken: "",
 			RemoteHeartbeatSec:  10,
 			ScreenDimTimeoutMin: 3, // Default: dim display after 3 minutes of inactivity
-			ClawNetEnabled:      false,
+			ClawNetEnabled:      true,
 			GossipAutoPublish:   true,
 		}
 		err = a.SaveConfig(defaultConfig)
@@ -2784,7 +2793,7 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		config.PowerOptimization = true
 	}
 	if !hasClawNetEnabled {
-		config.ClawNetEnabled = false
+		config.ClawNetEnabled = true
 	}
 	if !hasGossipAutoPublish {
 		config.GossipAutoPublish = true

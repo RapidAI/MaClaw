@@ -5,6 +5,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/chat"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
@@ -36,6 +37,9 @@ type App struct {
 	QQBotPlugin        *qqbot.Plugin
 	QQRemotePlugin     *im.RemoteGatewayPlugin
 	TelegramPlugin     *im.RemoteGatewayPlugin
+
+	// Chat module
+	ChatNotifier *chat.Notifier
 }
 
 func (a *App) StartBackgroundTasks() {

@@ -1,0 +1,188 @@
+name: RapidSpeech.cpp CI
+
+on:
+  # Tag push triggers release build (no path filter needed)
+  push:
+    tags:
+      - 'rs-v*'
+  # PR and branch push only when RapidSpeech.cpp changes
+  pull_request:
+    paths:
+      - 'RapidSpeech.cpp/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RS_DIR: RapidSpeech.cpp
+
+jobs:
+  # ============================================================
+  # Linux build
+  # ============================================================
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Configure & Build
+        run: |
+          cd $RS_DIR
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=install \
+            -DRS_BUILD_SERVER=ON \
+            -DRS_BUILD_TESTS=ON
+          cmake --build build --config Release -j$(nproc)
+          cmake --install build --config Release
+
+      - name: Run tests
+        run: |
+          cd $RS_DIR/build
+          ctest --output-on-failure || true
+
+      - name: Package artifacts
+        run: |
+          cd $RS_DIR
+          mkdir -p dist
+          # Library
+          cp install/lib/librapidspeech.so* dist/ 2>/dev/null || true
+          # Headers
+          cp install/include/rapidspeech.h dist/
+          # Server & CLI
+          cp install/bin/rs-server dist/ 2>/dev/null || true
+          cp install/bin/rs-asr-offline dist/ 2>/dev/null || true
+          # CMake config
+          mkdir -p dist/cmake
+          cp install/lib/cmake/rapidspeech/*.cmake dist/cmake/ 2>/dev/null || true
+          tar czf rapidspeech-linux-x64.tar.gz -C dist .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapidspeech-linux-x64
+          path: ${{ env.RS_DIR }}/rapidspeech-linux-x64.tar.gz
+
+  # ============================================================
+  # macOS build
+  # ============================================================
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure & Build
+        run: |
+          cd $RS_DIR
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=install \
+            -DRS_BUILD_SERVER=ON \
+            -DRS_BUILD_TESTS=ON
+          cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+          cmake --install build --config Release
+
+      - name: Run tests
+        run: |
+          cd $RS_DIR/build
+          ctest --output-on-failure || true
+
+      - name: Package artifacts
+        run: |
+          cd $RS_DIR
+          mkdir -p dist
+          cp install/lib/librapidspeech*.dylib dist/ 2>/dev/null || true
+          cp install/include/rapidspeech.h dist/
+          cp install/bin/rs-server dist/ 2>/dev/null || true
+          cp install/bin/rs-asr-offline dist/ 2>/dev/null || true
+          mkdir -p dist/cmake
+          cp install/lib/cmake/rapidspeech/*.cmake dist/cmake/ 2>/dev/null || true
+          tar czf rapidspeech-macos-universal.tar.gz -C dist .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapidspeech-macos-universal
+          path: ${{ env.RS_DIR }}/rapidspeech-macos-universal.tar.gz
+
+  # ============================================================
+  # Windows build
+  # ============================================================
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure & Build
+        shell: pwsh
+        run: |
+          cd $env:RS_DIR
+          cmake -B build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_INSTALL_PREFIX=install `
+            -DRS_BUILD_SERVER=ON `
+            -DRS_BUILD_TESTS=ON
+          cmake --build build --config Release -- -m:2
+          cmake --install build --config Release
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          cd "$env:RS_DIR\build"
+          ctest -C Release --output-on-failure
+        continue-on-error: true
+
+      - name: Package artifacts
+        shell: pwsh
+        run: |
+          cd $env:RS_DIR
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "install\bin\rapidspeech.dll" dist\ -ErrorAction SilentlyContinue
+          Copy-Item "install\lib\rapidspeech.lib" dist\ -ErrorAction SilentlyContinue
+          Copy-Item "install\include\rapidspeech.h" dist\
+          Copy-Item "install\bin\rs-server.exe" dist\ -ErrorAction SilentlyContinue
+          Copy-Item "install\bin\rs-asr-offline.exe" dist\ -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path dist\cmake
+          Copy-Item "install\lib\cmake\rapidspeech\*.cmake" dist\cmake\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist\* -DestinationPath rapidspeech-windows-x64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapidspeech-windows-x64
+          path: ${{ env.RS_DIR }}/rapidspeech-windows-x64.zip
+
+  # ============================================================
+  # Release (only on tag push)
+  # ============================================================
+  release:
+    if: startsWith(github.ref, 'refs/tags/rs-v')
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

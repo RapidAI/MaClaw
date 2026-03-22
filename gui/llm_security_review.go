@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -70,7 +71,7 @@ func (r *LLMSecurityReview) callLLM(riskCtx RiskContext, assessment RiskAssessme
 		map[string]string{"role": "user", "content": prompt},
 	}
 
-	result, err := doSimpleLLMRequest(r.llmConfig, messages, r.client, 5*time.Second)
+	result, err := doSimpleLLMRequest(context.Background(), r.llmConfig, messages, r.client, 5*time.Second)
 	if err != nil {
 		return "", "", err
 	}

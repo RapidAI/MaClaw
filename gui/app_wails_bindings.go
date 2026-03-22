@@ -299,6 +299,36 @@ func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
 	return a.memoryCompressor.Status()
 }
 
+// GetMemoryMaxBackups returns the configured max backup retention count (Wails binding).
+func (a *App) GetMemoryMaxBackups() int {
+	cfg, err := a.LoadConfig()
+	if err != nil || cfg.MemoryMaxBackups <= 0 {
+		return defaultMaxBackups
+	}
+	if cfg.MemoryMaxBackups < minBackups {
+		return minBackups
+	}
+	return cfg.MemoryMaxBackups
+}
+
+// SetMemoryMaxBackups updates the max backup retention count and persists it (Wails binding).
+func (a *App) SetMemoryMaxBackups(n int) error {
+	if n < 8 {
+		n = 8
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.MemoryMaxBackups = n
+	if err := a.SaveConfig(cfg); err != nil {
+		return err
+	}
+	mc := a.getOrCreateCompressor()
+	mc.SetMaxBackups(n)
+	return nil
+}
+
 // getOrCreateCompressor returns the singleton MemoryCompressor, creating it if needed.
 func (a *App) getOrCreateCompressor() *MemoryCompressor {
 	a.compressorMu.Lock()
@@ -306,6 +336,10 @@ func (a *App) getOrCreateCompressor() *MemoryCompressor {
 	if a.memoryCompressor == nil {
 		cfg := a.GetMaclawLLMConfig()
 		a.memoryCompressor = NewMemoryCompressor(a.memoryStore, cfg, a)
+		// Apply configured backup limit.
+		if appCfg, err := a.LoadConfig(); err == nil && appCfg.MemoryMaxBackups > 0 {
+			a.memoryCompressor.SetMaxBackups(appCfg.MemoryMaxBackups)
+		}
 	}
 	return a.memoryCompressor
 }
@@ -463,6 +497,9 @@ func (a *App) SendAIAssistantMessage(text string) (*IMAgentResponse, error) {
 		Text:     text,
 	}
 	onProgress := func(progressText string) {
+		if progressText == "__heartbeat__" {
+			return
+		}
 		runtime.EventsEmit(a.ctx, "ai-assistant-progress", progressText)
 	}
 	onToken := func(delta string) {

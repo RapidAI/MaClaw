@@ -5,6 +5,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/chat"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
@@ -14,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
@@ -33,6 +35,15 @@ func NewRouter(
 	qqbotPlugin *qqbot.Plugin,
 	hubLLMStatusFn func() string,
 	convStatsFn func() (int, int),
+	chatStore *chat.Store,
+	chatChannelSvc *chat.ChannelService,
+	chatMessageSvc *chat.MessageService,
+	chatFileSvc *chat.FileService,
+	chatReadReceiptSvc *chat.ReadReceiptService,
+	chatPresenceSvc *chat.PresenceService,
+	chatVoiceSignaling *chat.VoiceSignaling,
+	chatNotifier *chat.Notifier,
+	voiceprintSvc *voiceprint.Service,
 	staticDir string,
 	routePrefix string,
 	bridgeDir string,
@@ -131,6 +142,15 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/users/smart_route", RequireAdmin(admins, UpdateUserSmartRouteHandler(identity.UsersRepo())))
 	mux.HandleFunc("GET /api/admin/smart_route_all", RequireAdmin(admins, GetSmartRouteAllHandler(system)))
 	mux.HandleFunc("PUT /api/admin/smart_route_all", RequireAdmin(admins, UpdateSmartRouteAllHandler(system)))
+	// Voiceprint management
+	if voiceprintSvc != nil {
+		mux.HandleFunc("GET /api/admin/voiceprint/config", RequireAdmin(admins, GetVoiceprintConfigHandler(voiceprintSvc)))
+		mux.HandleFunc("PUT /api/admin/voiceprint/config", RequireAdmin(admins, UpdateVoiceprintConfigHandler(voiceprintSvc)))
+		mux.HandleFunc("POST /api/admin/voiceprint/enroll", RequireAdmin(admins, VoiceprintEnrollHandler(voiceprintSvc, identity.UsersRepo())))
+		mux.HandleFunc("POST /api/admin/voiceprint/identify", RequireAdmin(admins, VoiceprintIdentifyHandler(voiceprintSvc)))
+		mux.HandleFunc("GET /api/admin/voiceprints", RequireAdmin(admins, ListVoiceprintsHandler(voiceprintSvc)))
+		mux.HandleFunc("DELETE /api/admin/voiceprints", RequireAdmin(admins, DeleteVoiceprintHandler(voiceprintSvc)))
+	}
 	// Conversation stats
 	if convStatsFn != nil {
 		mux.HandleFunc("GET /api/admin/conversation_stats", RequireAdmin(admins, func(w http.ResponseWriter, r *http.Request) {
@@ -199,6 +219,32 @@ func NewRouter(
 	// ClawNet task bulletin board — Hub-relayed P2P task discovery
 	mux.HandleFunc("POST /api/clawnet/tasks/publish", ClawNetTaskPublishHandler())
 	mux.HandleFunc("GET /api/clawnet/tasks/browse", ClawNetTaskBrowseHandler())
+
+	// ── User-facing voiceprint self-enrollment ──────────────
+	if voiceprintSvc != nil {
+		mux.HandleFunc("POST /api/chat/voiceprint/enroll", UserVoiceprintEnrollHandler(identity, voiceprintSvc))
+		mux.HandleFunc("GET /api/chat/voiceprint/list", UserVoiceprintListHandler(identity, voiceprintSvc))
+		mux.HandleFunc("DELETE /api/chat/voiceprint", UserVoiceprintDeleteHandler(identity, voiceprintSvc))
+	}
+
+	// ── Chat Module ─────────────────────────────────────────
+	if chatChannelSvc != nil {
+		mux.HandleFunc("POST /api/chat/channels", ChatCreateChannelHandler(identity, chatChannelSvc))
+		mux.HandleFunc("GET /api/chat/channels", ChatListChannelsHandler(identity, chatChannelSvc))
+		mux.HandleFunc("POST /api/chat/channels/{id}/messages", ChatSendMessageHandler(identity, chatChannelSvc, chatMessageSvc))
+		mux.HandleFunc("GET /api/chat/channels/{id}/messages", ChatGetMessagesHandler(identity, chatChannelSvc, chatMessageSvc))
+		mux.HandleFunc("POST /api/chat/read-receipts", ChatReadReceiptsHandler(identity, chatReadReceiptSvc))
+		mux.HandleFunc("POST /api/chat/files/upload", ChatFileUploadHandler(identity, chatChannelSvc, chatFileSvc))
+		mux.HandleFunc("GET /api/chat/files/{id}", ChatFileDownloadHandler(identity, chatFileSvc))
+		mux.HandleFunc("GET /api/chat/users/{id}/presence", ChatPresenceHandler(identity, chatPresenceSvc))
+		mux.HandleFunc("POST /api/chat/voice/call", ChatVoiceCallHandler(identity, chatVoiceSignaling))
+		mux.HandleFunc("POST /api/chat/voice/answer", ChatVoiceAnswerHandler(identity, chatVoiceSignaling))
+		mux.HandleFunc("POST /api/chat/voice/ice", ChatVoiceICEHandler(identity, chatVoiceSignaling))
+		mux.HandleFunc("POST /api/chat/voice/hangup", ChatVoiceHangupHandler(identity, chatVoiceSignaling))
+		mux.HandleFunc("POST /api/chat/push/register", ChatPushRegisterHandler(identity, chatStore))
+		mux.HandleFunc("POST /api/chat/typing", ChatTypingHandler(identity, chatNotifier))
+		mux.HandleFunc("/api/chat/ws", ChatWSHandler(identity, chatNotifier))
+	}
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")

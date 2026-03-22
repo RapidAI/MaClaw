@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -96,7 +97,7 @@ func (a *ConversationArchiver) callLLMForSummary(cfg MaclawLLMConfig, conversati
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	result, err := doSimpleLLMRequest(cfg, messages, client, 30*time.Second)
+	result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 30*time.Second)
 	if err != nil {
 		return "", err
 	}

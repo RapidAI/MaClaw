@@ -176,7 +176,7 @@ func generateScript(cfg MaclawLLMConfig, task, language string, client *http.Cli
 		map[string]string{"role": "user", "content": fmt.Sprintf("请生成一个 %s 脚本来完成以下任务：\n\n%s", language, task)},
 	}
 
-	result, err := doSimpleLLMRequest(cfg, messages, client, 60*time.Second)
+	result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 60*time.Second)
 	if err != nil {
 		return "", err
 	}
