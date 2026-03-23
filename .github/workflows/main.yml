@@ -185,13 +185,20 @@ jobs:
         run: |
           mkdir -p dist build/bin
           # amd64
+          # -ld_classic: use legacy linker to avoid duplicate-symbol errors
+          # from multiple CGO+ObjC compilation units (systray, tray_tahoe, wails).
+          # -no_warn_duplicate_libraries: suppress harmless framework warnings.
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=amd64 \
-            go build -tags desktop,production -o build/bin/${APP_NAME}_amd64 ./gui/
+            go build -tags desktop,production \
+              -ldflags="-extldflags=-Wl,-ld_classic,-no_warn_duplicate_libraries" \
+              -o build/bin/${APP_NAME}_amd64 ./gui/
           # arm64
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=arm64 \
-            go build -tags desktop,production -o build/bin/${APP_NAME}_arm64 ./gui/
+            go build -tags desktop,production \
+              -ldflags="-extldflags=-Wl,-ld_classic,-no_warn_duplicate_libraries" \
+              -o build/bin/${APP_NAME}_arm64 ./gui/
 
       - name: Build TUI & maclaw-tool (darwin)
         run: |
