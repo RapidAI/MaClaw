@@ -34,6 +34,7 @@ type gatewayOwner struct {
 	MachineID string
 	UserID    string
 	ClaimedAt time.Time
+	Seq       uint64 // monotonically increasing claim sequence
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +59,7 @@ type RemoteGatewayPlugin struct {
 
 	mu             sync.RWMutex
 	owner          *gatewayOwner          // current gateway holder
+	claimSeq       uint64                 // monotonic counter for claim generations
 	messageHandler func(msg IncomingMessage) // set by IM Adapter via ReceiveMessage
 
 	// email↔platformUID bindings (persisted in system_settings)
@@ -67,6 +69,11 @@ type RemoteGatewayPlugin struct {
 	// pending email verification
 	pendingMu sync.Mutex
 	pending   map[string]*pendingRemoteBind // platformUID → pending
+
+	// context tokens forwarded from client-side gateways (e.g. WeChat).
+	// Stored per platformUID so replies can carry the token back.
+	ctxTokenMu sync.RWMutex
+	ctxTokens  map[string]string // platformUID → context_token
 }
 
 type pendingRemoteBind struct {
@@ -87,6 +94,7 @@ func NewRemoteGatewayPlugin(platform string, sender MachineMessageSender, users 
 		system:   system,
 		bindings: make(map[string]string),
 		pending:  make(map[string]*pendingRemoteBind),
+		ctxTokens: make(map[string]string),
 	}
 	p.loadBindings()
 	return p
@@ -172,24 +180,34 @@ func (p *RemoteGatewayPlugin) Stop(ctx context.Context) error  { return nil }
 // ---------------------------------------------------------------------------
 
 // ClaimGateway attempts to register a machine as the gateway owner for this
-// platform. Returns (true, "") on success, (false, reason) if already claimed.
-func (p *RemoteGatewayPlugin) ClaimGateway(machineID, userID string) (bool, string) {
+// platform. Returns (true, "") on success, (false, reason) if already claimed
+// by a different user. The returned seq can be passed to ReleaseGatewayBySeq
+// so that stale connection cleanups don't release a newer claim.
+func (p *RemoteGatewayPlugin) ClaimGateway(machineID, userID string) (ok bool, reason string, seq uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.owner != nil && p.owner.MachineID != machineID {
-		log.Printf("[remote-gw/%s] claim DENIED: already held by machine=%s, requester=%s", p.platform, p.owner.MachineID, machineID)
-		return false, fmt.Sprintf("gateway already held by machine %s (since %s)",
-			p.owner.MachineID, p.owner.ClaimedAt.Format("15:04:05"))
+		if p.owner.UserID == userID {
+			// Same user, different machine ID (e.g. re-activation / re-enroll).
+			// Always allow takeover.
+			log.Printf("[remote-gw/%s] claim TAKEOVER: old_machine=%s new_machine=%s user=%s",
+				p.platform, p.owner.MachineID, machineID, userID)
+		} else {
+			log.Printf("[remote-gw/%s] claim DENIED: already held by machine=%s (user=%s), requester=%s (user=%s)",
+				p.platform, p.owner.MachineID, p.owner.UserID, machineID, userID)
+			return false, fmt.Sprintf("gateway already held by machine %s (since %s)",
+				p.owner.MachineID, p.owner.ClaimedAt.Format("15:04:05")), 0
+		}
 	}
+	p.claimSeq++
 	p.owner = &gatewayOwner{
 		MachineID: machineID,
 		UserID:    userID,
 		ClaimedAt: time.Now(),
+		Seq:       p.claimSeq,
 	}
-	log.Printf("[remote-gw/%s] gateway CLAIMED by machine=%s user=%s", p.platform, machineID, userID)
-	// Note: cannot send diag here because sendToGatewayOwner requires the lock
-	// which we already hold. The claim result is sent by the WS handler.
-	return true, ""
+	log.Printf("[remote-gw/%s] gateway CLAIMED by machine=%s user=%s seq=%d", p.platform, machineID, userID, p.claimSeq)
+	return true, "", p.claimSeq
 }
 
 // ReleaseGateway releases the gateway lock for the given machine.
@@ -197,8 +215,23 @@ func (p *RemoteGatewayPlugin) ReleaseGateway(machineID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.owner != nil && p.owner.MachineID == machineID {
-		log.Printf("[remote-gw/%s] gateway released by machine=%s", p.platform, machineID)
+		log.Printf("[remote-gw/%s] gateway released by machine=%s seq=%d", p.platform, machineID, p.owner.Seq)
 		p.owner = nil
+	}
+}
+
+// ReleaseGatewayBySeq releases the gateway only if the current claim matches
+// the given seq. This prevents a stale connection cleanup from releasing a
+// newer claim made by a reconnected client.
+func (p *RemoteGatewayPlugin) ReleaseGatewayBySeq(machineID string, seq uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.owner != nil && p.owner.MachineID == machineID && p.owner.Seq == seq {
+		log.Printf("[remote-gw/%s] gateway released by machine=%s seq=%d (seq-match)", p.platform, machineID, seq)
+		p.owner = nil
+	} else if p.owner != nil {
+		log.Printf("[remote-gw/%s] release SKIPPED: machine=%s req_seq=%d owner_seq=%d owner_machine=%s",
+			p.platform, machineID, seq, p.owner.Seq, p.owner.MachineID)
 	}
 }
 
@@ -206,6 +239,13 @@ func (p *RemoteGatewayPlugin) ReleaseGateway(machineID string) {
 // Called when a machine disconnects.
 func (p *RemoteGatewayPlugin) ReleaseAllForMachine(machineID string) {
 	p.ReleaseGateway(machineID)
+}
+
+// ReleaseAllForMachineBySeq releases gateways matching both machineID and seq.
+func (p *RemoteGatewayPlugin) ReleaseAllForMachineBySeq(machineID string, seqs map[string]uint64) {
+	if seq, ok := seqs[p.platform]; ok {
+		p.ReleaseGatewayBySeq(machineID, seq)
+	}
 }
 
 // GatewayOwner returns the current owner machine ID, or "" if none.
@@ -246,16 +286,40 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 	}
 
 	var msg struct {
-		PlatformUID string `json:"platform_uid"`
-		Text        string `json:"text"`
-		MessageType string `json:"message_type"`
+		PlatformUID  string `json:"platform_uid"`
+		Text         string `json:"text"`
+		MessageType  string `json:"message_type"`
+		ContextToken string `json:"context_token"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		log.Printf("[remote-gw/%s] parse gateway_message failed: %v", p.platform, err)
 		return
 	}
 
-	log.Printf("[remote-gw/%s] dispatching: uid=%s type=%s text_len=%d", p.platform, msg.PlatformUID, msg.MessageType, len(msg.Text))
+	// Cache context_token so replies can carry it back to the client.
+	// Evict oldest entries when the cache exceeds 1000 to prevent unbounded growth.
+	if msg.ContextToken != "" && msg.PlatformUID != "" {
+		p.ctxTokenMu.Lock()
+		p.ctxTokens[msg.PlatformUID] = msg.ContextToken
+		if len(p.ctxTokens) > 1000 {
+			// Simple eviction: drop a random entry (map iteration is random in Go).
+			for k := range p.ctxTokens {
+				if k != msg.PlatformUID {
+					delete(p.ctxTokens, k)
+					break
+				}
+			}
+		}
+		p.ctxTokenMu.Unlock()
+	}
+
+	log.Printf("[remote-gw/%s] dispatching: uid=%s type=%s text_len=%d has_ctx_token=%v", p.platform, msg.PlatformUID, msg.MessageType, len(msg.Text), msg.ContextToken != "")
+
+	// Auto-bind: if the sender is not yet bound and the message comes from
+	// the gateway owner's machine, automatically bind this platformUID to
+	// the owner's email. This removes the need for manual email verification
+	// when the gateway owner chats via their own WeChat account.
+	p.tryAutoBindOwner(msg.PlatformUID, owner)
 
 	// Check if this is a binding flow message (email or verify code).
 	if p.handleBindingFlow(msg.PlatformUID, msg.Text) {
@@ -289,16 +353,74 @@ func (p *RemoteGatewayPlugin) sendToGatewayOwner(replyType string, payload map[s
 		return fmt.Errorf("%s: no gateway owner", p.platform)
 	}
 	payload["reply_type"] = replyType
-	// Embed platform inside the payload so the client can parse it from
-	// msg.Payload (inboundHubEnvelope.Payload is the "payload" JSON field).
-	payload["platform"] = p.platform
-	return p.sender.SendToMachine(owner.MachineID, map[string]any{
-		"type":     "im.gateway_reply",
-		"platform": p.platform,
-		"payload":  payload,
-	})
+
+	// Inject cached context_token so the client can deliver the reply
+	// without relying on its own local cache (fixes Hub-mode WeChat replies).
+	if uid, _ := payload["platform_uid"].(string); uid != "" {
+		p.ctxTokenMu.RLock()
+		if ct := p.ctxTokens[uid]; ct != "" {
+			payload["context_token"] = ct
+		}
+		p.ctxTokenMu.RUnlock()
+	}
+
+	msg := map[string]any{
+		"type": "im.gateway_reply",
+		"payload": map[string]any{
+			"platform": p.platform,
+			"payload":  payload,
+		},
+	}
+	err := p.sender.SendToMachine(owner.MachineID, msg)
+	if err != nil {
+		log.Printf("[remote-gw/%s] sendToGatewayOwner FAILED: machine=%s reply_type=%s err=%v", p.platform, owner.MachineID, replyType, err)
+	} else {
+		log.Printf("[remote-gw/%s] sendToGatewayOwner OK: machine=%s reply_type=%s", p.platform, owner.MachineID, replyType)
+	}
+	return err
 }
 
+
+// ---------------------------------------------------------------------------
+// Auto-bind gateway owner
+// ---------------------------------------------------------------------------
+
+// tryAutoBindOwner automatically binds a platformUID to the gateway owner's
+// email if the UID is not yet bound. Called on every incoming message from the
+// owner's machine so the first message triggers the binding silently.
+func (p *RemoteGatewayPlugin) tryAutoBindOwner(platformUID string, owner *gatewayOwner) {
+	if owner == nil || owner.UserID == "" {
+		return
+	}
+
+	// Use write lock for the entire check-then-set to prevent duplicate
+	// notifications when concurrent messages arrive before the first bind
+	// completes.
+	p.bindMu.Lock()
+	if p.bindings[platformUID] != "" {
+		p.bindMu.Unlock()
+		return
+	}
+
+	// Look up the owner's email from their userID.
+	user, err := p.users.GetByID(context.Background(), owner.UserID)
+	if err != nil || user == nil || user.Email == "" {
+		p.bindMu.Unlock()
+		log.Printf("[remote-gw/%s] auto-bind: cannot resolve owner userID=%s: %v", p.platform, owner.UserID, err)
+		return
+	}
+
+	p.bindings[platformUID] = user.Email
+	p.bindMu.Unlock()
+	p.saveBindings()
+
+	log.Printf("[remote-gw/%s] auto-bind OK: platformUID=%s → email=%s (owner userID=%s)",
+		p.platform, platformUID, user.Email, owner.UserID)
+
+	// Notify the user that binding was automatic.
+	_ = p.SendText(context.Background(), UserTarget{PlatformUID: platformUID},
+		fmt.Sprintf("✅ 已自动绑定账号 %s，可以直接使用了。", user.Email))
+}
 
 // ---------------------------------------------------------------------------
 // Email binding flow (same logic as qqbot plugin)
@@ -323,6 +445,7 @@ func (p *RemoteGatewayPlugin) handleBindingFlow(platformUID, text string) bool {
 	}
 	return false
 }
+
 
 func (p *RemoteGatewayPlugin) handleEmailSubmit(platformUID, email string) {
 	// Check if already bound

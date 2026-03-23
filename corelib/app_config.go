@@ -94,6 +94,9 @@ type AppConfig struct {
 	WeixinCDNURL    string `json:"weixin_cdn_url,omitempty"`
 	WeixinAccountID string `json:"weixin_account_id,omitempty"`
 	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (单机), false = remote/Hub (多机)
+	// IM — local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
+	QQBotLocalMode    *bool `json:"qqbot_local_mode,omitempty"`    // nil = auto-detect, true = local, false = hub
+	TelegramLocalMode *bool `json:"telegram_local_mode,omitempty"` // nil = auto-detect, true = local, false = hub
 	// UI mode: "pro" (full coding tools) or "lite" (default, simplified, no coding tools)
 	UIMode string `json:"ui_mode,omitempty"`
 	// SkillMarket — Skill 获取策略
@@ -103,9 +106,15 @@ type AppConfig struct {
 }
 
 // IsWeixinLocalMode returns the effective WeChat local mode setting.
-// Default is true (单机/local) when the field has never been set.
+// When the field has never been explicitly set (nil):
+//   - If Hub is activated (RemoteMachineID is set), default to Hub/多机 mode (false)
+//   - Otherwise, default to local/单机 mode (true)
 func (c *AppConfig) IsWeixinLocalMode() bool {
 	if c.WeixinLocalMode == nil {
+		// Auto-detect: if Hub is activated, default to Hub mode
+		if c.RemoteMachineID != "" {
+			return false
+		}
 		return true
 	}
 	return *c.WeixinLocalMode
@@ -114,4 +123,36 @@ func (c *AppConfig) IsWeixinLocalMode() bool {
 // SetWeixinLocal sets the WeixinLocalMode pointer field.
 func (c *AppConfig) SetWeixinLocal(v bool) {
 	c.WeixinLocalMode = &v
+}
+
+// IsQQBotLocalMode returns the effective QQ Bot local mode setting.
+func (c *AppConfig) IsQQBotLocalMode() bool {
+	if c.QQBotLocalMode == nil {
+		if c.RemoteMachineID != "" {
+			return false
+		}
+		return true
+	}
+	return *c.QQBotLocalMode
+}
+
+// SetQQBotLocal sets the QQBotLocalMode pointer field.
+func (c *AppConfig) SetQQBotLocal(v bool) {
+	c.QQBotLocalMode = &v
+}
+
+// IsTelegramLocalMode returns the effective Telegram local mode setting.
+func (c *AppConfig) IsTelegramLocalMode() bool {
+	if c.TelegramLocalMode == nil {
+		if c.RemoteMachineID != "" {
+			return false
+		}
+		return true
+	}
+	return *c.TelegramLocalMode
+}
+
+// SetTelegramLocal sets the TelegramLocalMode pointer field.
+func (c *AppConfig) SetTelegramLocal(v bool) {
+	c.TelegramLocalMode = &v
 }

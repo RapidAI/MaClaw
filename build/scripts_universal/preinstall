@@ -1,0 +1,4 @@
+#!/bin/bash
+# Universal package — no architecture check needed.
+logger "MaClaw: Installing universal package. System architecture is $(uname -m)"
+exit 0

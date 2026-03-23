@@ -56,6 +56,8 @@ func (d *testDeviceBinder) SendToMachine(machineID string, msg any) error {
 
 func (d *testDeviceBinder) SetAlias(ctx context.Context, machineID string, alias string) {}
 
+func (d *testDeviceBinder) CheckAliasConflict(machineID, userID, alias string) bool { return false }
+
 type testSessionService struct {
 	snapshot         *session.SessionCacheEntry
 	events           []string

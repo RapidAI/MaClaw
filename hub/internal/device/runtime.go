@@ -162,8 +162,36 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 	// Apply nickname from hello payload (persisted on client side).
 	var assignedNickname string
 	if nn := strings.TrimSpace(hello.Nickname); nn != "" {
-		info.Alias = nn
-		log.Printf("[device] MarkOnline: nickname=%q for machine_id=%s", nn, machineID)
+		// Client reported a nickname — check for Alias conflict with
+		// same-user online machines before accepting it.
+		aliasConflict := false
+		if conn != nil {
+			for otherID, otherConn := range s.runtime.desktopsByMachine {
+				if otherID == machineID || otherConn == nil || otherConn.Conn == nil {
+					continue
+				}
+				if otherConn.UserID != conn.UserID {
+					continue
+				}
+				if otherMeta, ok := s.runtime.metadataByMachine[otherID]; ok {
+					if strings.EqualFold(otherMeta.Alias, nn) {
+						aliasConflict = true
+						break
+					}
+				}
+			}
+		}
+		if aliasConflict {
+			// Nickname conflicts with another online device — reassign.
+			assignedNickname = s.pickNicknameLocked(machineID, conn)
+			if assignedNickname != "" {
+				info.Alias = assignedNickname
+				log.Printf("[device] MarkOnline: nickname=%q conflicts, reassigned=%q for machine_id=%s", nn, assignedNickname, machineID)
+			}
+		} else {
+			info.Alias = nn
+			log.Printf("[device] MarkOnline: nickname=%q for machine_id=%s", nn, machineID)
+		}
 	} else if info.Alias == "" {
 		// No nickname provided and none previously set — auto-assign one
 		// so the device has a stable identity in IM from the start.
@@ -355,6 +383,7 @@ func (s *Service) SendToMachine(machineID string, msg any) error {
 		})
 		return ErrMachineOffline
 	}
+	log.Printf("[device] SendToMachine: machine_id=%s conn=%p sendCh_len=%d", machineID, conn, len(conn.SendChDiag()))
 	s.recordEvent(MachineEvent{
 		Timestamp: time.Now().Unix(),
 		MachineID: machineID,
@@ -362,7 +391,12 @@ func (s *Service) SendToMachine(machineID string, msg any) error {
 		Type:      "send",
 		Message:   "command dispatched to machine",
 	})
-	return conn.Conn.WriteJSON(msg)
+	if !conn.Send(msg) {
+		log.Printf("[device] SendToMachine: Send returned false (buffer full) machine_id=%s", machineID)
+		return ErrMachineOffline
+	}
+	log.Printf("[device] SendToMachine: Send OK machine_id=%s", machineID)
+	return nil
 }
 
 // FindOnlineMachineByName returns the machine ID of an online device belonging
@@ -618,6 +652,27 @@ func (s *Service) setRuntimeAlias(machineID string, alias string) {
 	info.Alias = alias
 	s.runtime.metadataByMachine[machineID] = info
 	s.runtime.mu.Unlock()
+}
+
+// CheckAliasConflict returns true if another online machine belonging to the
+// same user already uses the given alias (case-insensitive).
+func (s *Service) CheckAliasConflict(machineID, userID, alias string) bool {
+	s.runtime.mu.RLock()
+	defer s.runtime.mu.RUnlock()
+	for otherID, otherConn := range s.runtime.desktopsByMachine {
+		if otherID == machineID || otherConn == nil || otherConn.Conn == nil {
+			continue
+		}
+		if otherConn.UserID != userID {
+			continue
+		}
+		if otherMeta, ok := s.runtime.metadataByMachine[otherID]; ok {
+			if strings.EqualFold(otherMeta.Alias, alias) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Service) ClearOfflineMachines(ctx context.Context) (int64, error) {

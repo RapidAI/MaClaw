@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"time"
 
 	"github.com/energye/systray"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -43,14 +42,13 @@ func setupTray(app *App, appOptions *options.App) {
 					runtime.EventsEmit(app.ctx, "config-changed", cfg)
 				}
 
-				// Register system notification function
+				// System notification (not available in upstream energye/systray)
 				ShowNotification = func(title, message string, iconFlag uint32) {
-					_ = systray.ShowBalloonNotification(title, message, iconFlag)
+					_, _, _ = title, message, iconFlag
 				}
 
-				// Register flash + sound function
+				// Flash + beep (not available in upstream energye/systray)
 				FlashAndBeep = func() {
-					systray.FlashAndBeep()
 				}
 
 				// Handle menu clicks
@@ -66,10 +64,7 @@ func setupTray(app *App, appOptions *options.App) {
 				})
 
 				if app.CurrentLanguage != "" {
-					go func() {
-						time.Sleep(500 * time.Millisecond)
-						UpdateTrayMenu(app.CurrentLanguage)
-					}()
+					UpdateTrayMenu(app.CurrentLanguage)
 				}
 			}, func() {
 				// Cleanup logic on exit

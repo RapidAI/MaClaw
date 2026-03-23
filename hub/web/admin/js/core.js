@@ -15,7 +15,7 @@ function setSetupAvailability(enabled) { document.getElementById('stageToggle').
 async function refreshAuthStage() { try { const data = await loadAdminStatus(); const initialized = !!data.initialized; adminInitialized = initialized; setSetupAvailability(!initialized); document.getElementById('authStageHint').textContent = initialized ? tr('canLogin') : tr('needsSetup'); showAuthStage(initialized ? 'login' : 'setup'); return initialized; } catch (err) { adminInitialized = true; setSetupAvailability(false); setOutput(tr('loadAdminFailed', { error: err.message }), 'loginOutput'); showAuthStage('login'); return true; } }
 function refreshAdminHeader() { const profile = adminProfile(); document.getElementById('adminDisplayName').textContent = profile?.username || tr('administrator'); document.getElementById('adminDisplayMeta').textContent = profile?.email || tr('signedIn'); const emailInput = document.getElementById('adminEmailInput'); const userInput = document.getElementById('adminUsernameInput'); if (emailInput) emailInput.value = profile?.email || ''; if (userInput) userInput.value = profile?.username || ''; const on = !!token(); document.getElementById('authBadge').textContent = on ? tr('authenticated') : tr('loggedOut'); document.getElementById('authBadge').className = 'badge ' + (on ? 'ok' : 'warn'); }
 function setAuthState(on) { document.getElementById('loginView').classList.toggle('hidden', on); document.getElementById('appView').classList.toggle('hidden', !on); refreshAdminHeader(); if (!on) refreshAuthStage(); }
-function openTab(name) { localStorage.setItem(activeTabKey, name); document.querySelectorAll('.nav button').forEach(v => v.classList.toggle('active', v.dataset.tab === name)); document.querySelectorAll('.panel').forEach(v => v.classList.remove('active')); const panel = document.getElementById('tab-' + name); if (panel) panel.classList.add('active'); document.getElementById('pageTitle').textContent = tr(tabMeta[name][0]); document.getElementById('pageSubtitle').textContent = tr(tabMeta[name][1]); if (name === 'invitationcodes') { loadInvitationCodeStatus(); loadInvitationCodes(); } if (name === 'pwarequests') { loadPwaEnrollments(); } if (name === 'im') { loadFeishuConfig(); } }
+function openTab(name) { localStorage.setItem(activeTabKey, name); document.querySelectorAll('.nav button').forEach(v => v.classList.toggle('active', v.dataset.tab === name)); document.querySelectorAll('.panel').forEach(v => v.classList.remove('active')); const panel = document.getElementById('tab-' + name); if (panel) panel.classList.add('active'); document.getElementById('pageTitle').textContent = tr(tabMeta[name][0]); document.getElementById('pageSubtitle').textContent = tr(tabMeta[name][1]); if (name === 'invitationcodes') { loadInvitationCodeStatus(); loadInvitationCodes(); } if (name === 'pwarequests') { loadPwaEnrollments(); } if (name === 'im') { loadFeishuConfig(); } if (name === 'system') { loadTlsConfig(); } }
 function restoreTab() { openTab(localStorage.getItem(activeTabKey) || 'overview'); }
 function dismissSetupGate() { document.getElementById('setupGate').classList.add('hidden'); }
 function openSetupGateTarget() { dismissSetupGate(); }
@@ -34,3 +34,66 @@ async function saveHubLlmConfig() { try { const payload = { enabled: document.ge
 async function testHubLlm() { const btn = document.getElementById('hubLlmTestBtn'); if (btn) { btn.disabled = true; btn.textContent = hli('testing'); } try { const data = await api('/api/admin/hub_llm_test', { method: 'POST' }); if (data.success) { const msg = hli('testOk', { ms: data.latency_ms, reply: data.reply || '' }); setOutput(msg); showToast(msg, 'success'); } else { const msg = hli('testFail', { error: data.error || 'Unknown' }); setOutput(msg); showToast(msg, 'error'); } } catch (err) { const msg = hli('testError', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } finally { if (btn) { btn.disabled = false; btn.textContent = hli('testBtn'); } } }
 async function loadHubLlmStatus() { try { const data = await api('/api/admin/hub_llm_status'); const badge = document.getElementById('hubLlmStatusBadge'); if (badge) { const s = data.status || 'not_configured'; const map = { healthy: [hli('statusHealthy'), 'ok'], half_open: [hli('statusHalfOpen'), 'warn'], open: [hli('statusOpen'), 'danger'], not_configured: [hli('statusNone'), 'info'] }; const [text, cls] = map[s] || ['⚪ ' + s, 'info']; badge.textContent = text; badge.className = 'badge ' + cls; } } catch (_) {} }
 
+
+// === TLS Config functions ===
+async function loadTlsConfig() {
+  try {
+    const data = await api('/api/admin/tls_config');
+    document.getElementById('tlsEnabled').checked = !!data.enabled;
+    document.getElementById('tlsCertFile').textContent = data.cert_file || '-';
+    document.getElementById('tlsKeyFile').textContent = data.key_file || '-';
+    const badge = document.getElementById('tlsCertBadge');
+    const info = document.getElementById('tlsCertInfo');
+    if (data.cert_valid) {
+      const expiry = new Date(data.cert_expiry).toLocaleDateString();
+      badge.textContent = '🟢 有效至 ' + expiry;
+      badge.className = 'badge ok';
+      info.innerHTML = '<div class="item-meta">SANs: ' + escapeHtml(data.cert_sans || '-') + '</div>';
+    } else if (data.cert_expiry) {
+      badge.textContent = '🔴 已过期';
+      badge.className = 'badge danger';
+      info.innerHTML = '<div class="item-meta" style="color:var(--danger)">证书已过期，启用后将自动重新生成</div>';
+    } else {
+      badge.textContent = '⚪ 未生成';
+      badge.className = 'badge info';
+      info.innerHTML = '<div class="item-meta">首次启用时将自动生成自签名证书</div>';
+    }
+  } catch (err) {
+    setOutput('加载 TLS 配置失败: ' + err.message);
+    showToast('加载 TLS 配置失败: ' + err.message, 'error');
+  }
+}
+
+async function saveTlsConfig() {
+  const enabled = document.getElementById('tlsEnabled').checked;
+  const btn = document.getElementById('tlsSaveBtn');
+  const action = enabled ? '启用' : '关闭';
+  if (!confirm('确定' + action + ' TLS？进程将自动重启，页面会短暂不可用。')) return;
+  if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+  try {
+    const data = await api('/api/admin/tls_config', { method: 'POST', body: JSON.stringify({ enabled }) });
+    if (data.restarting) {
+      const host = location.hostname;
+      const port = location.port || (location.protocol === 'https:' ? '443' : '80');
+      const newProto = enabled ? 'https:' : 'http:';
+      const newUrl = newProto + '//' + host + ':' + port + '/admin/';
+      const msg = 'TLS 已' + action + '，进程正在重启。请稍后访问：' + newUrl;
+      setOutput(msg);
+      showToast(msg, 'info');
+      if (btn) btn.textContent = '已保存，等待重启...';
+      // Show a clickable link after a short delay
+      setTimeout(function() {
+        showToast('点击访问新地址: ' + newUrl, 'info');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '保存并重启';
+          btn.onclick = function() { location.href = newUrl; };
+        }
+      }, 4000);
+    }
+  } catch (err) {
+    setOutput('保存 TLS 配置失败: ' + err.message);
+    showToast('保存 TLS 配置失败: ' + err.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '保存并重启'; }
+  }
+}

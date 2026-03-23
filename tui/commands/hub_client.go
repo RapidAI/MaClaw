@@ -2,6 +2,7 @@
 package commands
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -44,7 +45,11 @@ func (c *HubClient) Connect() error {
 	q.Set("token", c.token)
 	u.RawQuery = q.Encode()
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	dialer := websocket.Dialer{HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout}
+	if strings.HasPrefix(u.Scheme, "wss") {
+		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	conn, _, err := dialer.Dial(u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("connect to Hub failed: %w", err)
 	}

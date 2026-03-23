@@ -13,7 +13,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ClipboardGetText, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -140,7 +140,7 @@ const recommendedModels: { [provider: string]: { id: string; note?: string }[] }
         { id: "glm-4.7" },
     ],
 };
-const APP_VERSION = "5.1.0.9400"
+const APP_VERSION = "5.1.1.9500"
 
 // Tool name constants to avoid repeated string arrays
 const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'cursor', 'iflow', 'kilo'] as const;
@@ -398,6 +398,7 @@ const translations: any = {
         "remoteReconnectHub": "Reconnect Hub",
         "remoteClearing": "Clearing...",
         "remoteClearActivation": "Clear Registration",
+        "remoteReRegister": "Re-register",
         "remoteToolPath": "Tool path",
         "remoteNextStep": "Next Step",
         "remoteLaunchProject": "Launch project",
@@ -775,6 +776,7 @@ const translations: any = {
         "remoteReconnectHub": "重连 Hub",
         "remoteClearing": "清除中...",
         "remoteClearActivation": "清除注册状态",
+        "remoteReRegister": "重新注册",
         "remoteToolPath": "工具路径",
         "remoteNextStep": "下一步",
         "remoteLaunchProject": "启动项目",
@@ -1130,6 +1132,7 @@ const translations: any = {
         "remoteReconnectHub": "重新連線 Hub",
         "remoteClearing": "清除中...",
         "remoteClearActivation": "清除註冊狀態",
+        "remoteReRegister": "重新註冊",
         "remoteToolPath": "工具路徑",
         "remoteNextStep": "下一步",
         "remoteLaunchProject": "啟動專案",
@@ -1383,7 +1386,9 @@ function App() {
     const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
+    const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
     const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');
+    const [telegramLocalMode, setTelegramLocalModeState] = useState<boolean>(true);
     const [weixinStatus, setWeixinStatus] = useState<string>('disconnected');
     const [weixinLocalMode, setWeixinLocalModeState] = useState<boolean>(true);
     const [weixinQRCode, setWeixinQRCode] = useState<string>('');
@@ -1515,10 +1520,6 @@ function App() {
         x: 0, y: 0, visible: false, skillName: null
     });
 
-    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, visible: boolean, target: HTMLInputElement | HTMLTextAreaElement | null }>({
-        x: 0, y: 0, visible: false, target: null
-    });
-
     const [confirmDialog, setConfirmDialog] = useState<{
         show: boolean;
         title: string;
@@ -1538,20 +1539,6 @@ function App() {
     const [providerFilter, setProviderFilter] = useState<'all' | 'china' | 'global'>('all');
     const [selectedProviderForUrl, setSelectedProviderForUrl] = useState<ProviderEndpoint | null>(null);
     const [hoveredProvider, setHoveredProvider] = useState<{ provider: ProviderEndpoint, x: number, y: number } | null>(null);
-
-    const handleContextMenu = (e: React.MouseEvent, target: HTMLInputElement | HTMLTextAreaElement) => {
-        e.preventDefault();
-        setContextMenu({
-            x: e.clientX,
-            y: e.clientY,
-            visible: true,
-            target: target
-        });
-    };
-
-    const closeContextMenu = () => {
-        setContextMenu({ ...contextMenu, visible: false });
-    };
 
     const showToastMessage = (message: string, duration: number = 3000) => {
         setToastMessage(message);
@@ -1660,91 +1647,11 @@ function App() {
 
     useEffect(() => {
         const handleClick = () => {
-            closeContextMenu();
             setSkillContextMenu(prev => ({ ...prev, visible: false }));
         };
         window.addEventListener('click', handleClick);
         return () => window.removeEventListener('click', handleClick);
-    }, [contextMenu, skillContextMenu]);
-
-    // Global right-click context menu for all input/textarea elements (macOS WebView fix)
-    useEffect(() => {
-        const handleGlobalContextMenu = (e: MouseEvent) => {
-            const target = e.target as HTMLElement;
-            const isInput = target instanceof HTMLInputElement &&
-                ['text', 'password', 'url', 'email', 'search', 'number', 'tel'].includes(target.type);
-            const isTextarea = target instanceof HTMLTextAreaElement;
-            if (isInput || isTextarea) {
-                e.preventDefault();
-                setContextMenu({
-                    x: e.clientX,
-                    y: e.clientY,
-                    visible: true,
-                    target: target as HTMLInputElement | HTMLTextAreaElement
-                });
-            }
-        };
-        document.addEventListener('contextmenu', handleGlobalContextMenu);
-        return () => document.removeEventListener('contextmenu', handleGlobalContextMenu);
-    }, []);
-
-    const getClipboardText = async () => {
-        try {
-            const text = await ClipboardGetText();
-            return text || "";
-        } catch (err) {
-            console.error("ClipboardGetText failed:", err);
-            // Browser API fallback if backend fails
-            try {
-                if (navigator.clipboard && navigator.clipboard.readText) {
-                    return await navigator.clipboard.readText();
-                }
-            } catch (e) { }
-            return "";
-        }
-    };
-
-    const handleContextAction = async (action: string) => {
-        const target = contextMenu.target;
-        if (!target) return;
-
-        target.focus();
-
-        switch (action) {
-            case 'selectAll':
-                target.select();
-                break;
-            case 'copy':
-                document.execCommand('copy');
-                break;
-            case 'cut':
-                document.execCommand('cut');
-                break;
-            case 'paste':
-                const text = await getClipboardText();
-                if (text) {
-                    const start = target.selectionStart || 0;
-                    const end = target.selectionEnd || 0;
-                    const val = target.value;
-                    const newVal = val.substring(0, start) + text + val.substring(end);
-
-                    // React-compatible value setter: pick the right prototype based on element type
-                    const proto = target instanceof HTMLTextAreaElement
-                        ? window.HTMLTextAreaElement.prototype
-                        : window.HTMLInputElement.prototype;
-                    const nativeValueSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-                    if (nativeValueSetter) {
-                        nativeValueSetter.call(target, newVal);
-                    } else {
-                        target.value = newVal;
-                    }
-                    const event = new Event('input', { bubbles: true });
-                    target.dispatchEvent(event);
-                }
-                break;
-        }
-        closeContextMenu();
-    };
+    }, [skillContextMenu]);
 
     const logEndRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1963,12 +1870,14 @@ function App() {
         });
         // Fetch initial QQ Bot status
         GetQQBotStatus().then(setQQBotStatus).catch(() => {});
+        GetQQBotLocalMode().then(setQQBotLocalModeState).catch(() => {});
 
         // Telegram Bot status listener
         EventsOn("telegram-status-changed", (status: string) => {
             setTelegramStatus(status);
         });
         GetTelegramStatus().then(setTelegramStatus).catch(() => {});
+        GetTelegramLocalMode().then(setTelegramLocalModeState).catch(() => {});
 
         // WeChat status listener
         EventsOn("weixin-status-changed", (status: string) => {
@@ -3893,7 +3802,6 @@ ${instruction}`;
                                                 const newList = config.projects.map((p: any) => p.id === proj.id ? { ...p, name: e.target.value } : p);
                                                 setConfig(new main.AppConfig({ ...config, projects: newList }));
                                             }}
-                                            onContextMenu={(e) => handleContextMenu(e, e.currentTarget)}
                                             style={{ fontWeight: 'bold', border: 'none', padding: 0, fontSize: '0.9rem', width: '112px', flexShrink: 0, lineHeight: 1.1 }}
                                             spellCheck={false}
                                             autoComplete="off"
@@ -4044,6 +3952,7 @@ ${instruction}`;
                                     remoteBusy={remoteBusy}
                                     remoteActivationStatus={remoteActivationStatus}
                                     activateRemoteWithEmail={activateRemoteWithEmail}
+                                    clearRemoteActivationState={clearRemoteActivationState}
                                     invitationCodeRequired={invitationCodeRequired}
                                     invitationCode={invitationCode}
                                     setInvitationCode={setInvitationCode}
@@ -4171,6 +4080,47 @@ ${instruction}`;
                                         )}
                                     </div>
 
+                                    {/* 单机/多机 mode selector */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
+                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
+                                        </span>
+                                        {[
+                                            { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🖥 单机' : '🖥 Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本地 LLM 直连' : 'Direct local LLM' },
+                                            { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🌐 多机' : '🌐 Remote', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '通过 Hub 转发' : 'Via Hub' },
+                                        ].map((opt) => (
+                                            <button
+                                                key={String(opt.value)}
+                                                type="button"
+                                                aria-label={opt.desc}
+                                                title={opt.desc}
+                                                style={{
+                                                    padding: '4px 14px',
+                                                    borderRadius: '14px',
+                                                    border: qqBotLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
+                                                    background: qqBotLocalMode === opt.value ? '#eef2ff' : 'transparent',
+                                                    color: qqBotLocalMode === opt.value ? '#6366f1' : '#555',
+                                                    fontWeight: qqBotLocalMode === opt.value ? 600 : 400,
+                                                    fontSize: '0.75rem',
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.15s',
+                                                }}
+                                                onClick={() => {
+                                                    const prev = qqBotLocalMode;
+                                                    setQQBotLocalModeState(opt.value);
+                                                    SetQQBotLocalMode(opt.value).then(() => {
+                                                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
+                                                    }).catch((err: any) => {
+                                                        setQQBotLocalModeState(prev);
+                                                        alert(err?.message || err || '切换失败');
+                                                    });
+                                                }}
+                                            >
+                                                {opt.label}
+                                            </button>
+                                        ))}
+                                    </div>
+
                                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', maxWidth: '520px' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                             <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>App ID</label>
@@ -4260,6 +4210,47 @@ ${instruction}`;
                                                 </button>
                                             </>
                                         )}
+                                    </div>
+
+                                    {/* 单机/多机 mode selector */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
+                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
+                                        </span>
+                                        {[
+                                            { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🖥 单机' : '🖥 Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本地 LLM 直连' : 'Direct local LLM' },
+                                            { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🌐 多机' : '🌐 Remote', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '通过 Hub 转发' : 'Via Hub' },
+                                        ].map((opt) => (
+                                            <button
+                                                key={String(opt.value)}
+                                                type="button"
+                                                aria-label={opt.desc}
+                                                title={opt.desc}
+                                                style={{
+                                                    padding: '4px 14px',
+                                                    borderRadius: '14px',
+                                                    border: telegramLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
+                                                    background: telegramLocalMode === opt.value ? '#eef2ff' : 'transparent',
+                                                    color: telegramLocalMode === opt.value ? '#6366f1' : '#555',
+                                                    fontWeight: telegramLocalMode === opt.value ? 600 : 400,
+                                                    fontSize: '0.75rem',
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.15s',
+                                                }}
+                                                onClick={() => {
+                                                    const prev = telegramLocalMode;
+                                                    setTelegramLocalModeState(opt.value);
+                                                    SetTelegramLocalMode(opt.value).then(() => {
+                                                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
+                                                    }).catch((err: any) => {
+                                                        setTelegramLocalModeState(prev);
+                                                        alert(err?.message || err || '切换失败');
+                                                    });
+                                                }}
+                                            >
+                                                {opt.label}
+                                            </button>
+                                        ))}
                                     </div>
 
                                     <div style={{ maxWidth: '520px' }}>
@@ -4359,7 +4350,14 @@ ${instruction}`;
                                                 onClick={() => {
                                                     const prev = weixinLocalMode;
                                                     setWeixinLocalModeState(opt.value);
-                                                    SetWeixinLocalMode(opt.value).catch(() => setWeixinLocalModeState(prev));
+                                                    SetWeixinLocalMode(opt.value).then(() => {
+                                                        // Sync config state so subsequent SaveConfig calls
+                                                        // don't overwrite weixin_local_mode with stale value
+                                                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
+                                                    }).catch((err: any) => {
+                                                        setWeixinLocalModeState(prev);
+                                                        alert(err?.message || err || '切换失败');
+                                                    });
                                                 }}
                                             >
                                                 {opt.label}
@@ -4502,6 +4500,22 @@ ${instruction}`;
                                                 title={lang === 'zh-Hans' ? '无键鼠操作多少分钟后熄屏节能（0=禁用）。防锁屏开启时有效。' : 'Minutes of inactivity before screen dims (0=disabled). Effective when screen-lock prevention is on.'}
                                             />
                                         </div>
+                                    </div>
+                                </div>
+
+                                {/* Diagnostics info block */}
+                                <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid #e5e7eb', paddingTop: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+                                        {lang === 'zh-Hans' ? '诊断信息' : lang === 'zh-Hant' ? '診斷資訊' : 'Diagnostics'}
+                                    </h4>
+                                    <div style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: '#6b7280', lineHeight: 1.8, background: '#f9fafb', borderRadius: '6px', padding: '10px 12px', wordBreak: 'break-all' }}>
+                                        <div>Machine ID: {config?.remote_machine_id || '(未激活)'}</div>
+                                        <div>User ID: {config?.remote_user_id || '(未激活)'}</div>
+                                        <div>Client ID: {config?.remote_client_id || '(未生成)'}</div>
+                                        <div>SN: {config?.remote_sn || '(未激活)'}</div>
+                                        <div>Hub URL: {config?.remote_hub_url || '(未设置)'}</div>
+                                        <div>Email: {config?.remote_email || '(未设置)'}</div>
+                                        <div>WeChat Mode: {(config as any)?.weixin_local_mode === false ? '多机 (Hub)' : '单机 (Local)'}</div>
                                     </div>
                                 </div>
                             </div>
@@ -5434,7 +5448,7 @@ ${instruction}`;
                             className="elegant-scrollbar"
                             style={{
                                 backgroundColor: '#1e293b',
-                                color: '#1f2937',
+                                color: '#e2e8f0',
                                 padding: '15px',
                                 borderRadius: '8px',
                                 height: '250px',
@@ -5802,7 +5816,6 @@ ${instruction}`;
                                         data-field="model-name"
                                         value={(config as any)[activeTool].models[activeTab].model_name}
                                         onChange={(e) => handleModelNameChange(e.target.value)}
-                                        onContextMenu={(e) => handleContextMenu(e, e.currentTarget)}
                                         placeholder={t("customProviderPlaceholder")}
                                         spellCheck={false}
                                         autoComplete="off"
@@ -5825,7 +5838,6 @@ ${instruction}`;
                                                 style={{ flex: 1 }}
                                                 value={(config as any)[activeTool].models[activeTab].model_id}
                                                 onChange={(e) => handleModelIdChange(e.target.value)}
-                                                onContextMenu={(e) => handleContextMenu(e, e.currentTarget)}
                                                 placeholder={activeTool === 'codebuddy' ? "e.g. gpt-4,gpt-3.5-turbo" : (getDefaultModelId(activeTool, (config as any)[activeTool].models[activeTab].model_name) || "e.g. gpt-4")}
                                                 spellCheck={false}
                                                 autoComplete="off"
@@ -5877,7 +5889,6 @@ ${instruction}`;
                                         data-field="wire-api"
                                         value={(config as any)[activeTool].models[activeTab].wire_api || ""}
                                         onChange={(e) => handleWireApiChange(e.target.value)}
-                                        onContextMenu={(e) => handleContextMenu(e, e.currentTarget)}
                                         placeholder="chat"
                                         spellCheck={false}
                                         autoComplete="off"
@@ -5908,7 +5919,6 @@ ${instruction}`;
                                         data-field="api-key"
                                         value={(config as any)[activeTool].models[activeTab].api_key}
                                         onChange={(e) => handleApiKeyChange(e.target.value)}
-                                        onContextMenu={(e) => handleContextMenu(e, e.currentTarget)}
                                         placeholder={t("enterKey")}
                                         spellCheck={false}
                                         autoComplete="off"
@@ -5938,7 +5948,6 @@ ${instruction}`;
                                             data-field="api-url"
                                             value={(config as any)[activeTool].models[activeTab].model_url}
                                             onChange={(e) => handleModelUrlChange(e.target.value)}
-                                            onContextMenu={(e) => handleContextMenu(e, e.currentTarget)}
                                             placeholder="https://api.example.com/v1"
                                             spellCheck={false}
                                             autoComplete="off"
@@ -6024,27 +6033,6 @@ ${instruction}`;
                             <button className="btn-hide" style={{ flex: 1 }} onClick={() => setShowModelSettings(false)}>{t("close")}</button>
                         </div>
                     </div>
-                </div>
-            )}
-
-            {contextMenu.visible && (
-                <div style={{
-                    position: 'fixed',
-                    top: contextMenu.y,
-                    left: contextMenu.x,
-                    backgroundColor: 'white',
-                    border: '1px solid #e2e8f0',
-                    borderRadius: '8px',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                    zIndex: 3000,
-                    padding: '5px 0',
-                    minWidth: '120px'
-                }}>
-                    <div className="context-menu-item" onClick={() => handleContextAction('selectAll')}>{t("selectAll")}</div>
-                    <div style={{ height: '1px', backgroundColor: '#f1f5f9', margin: '4px 0' }}></div>
-                    <div className="context-menu-item" onClick={() => handleContextAction('copy')}>{t("copy")}</div>
-                    <div className="context-menu-item" onClick={() => handleContextAction('cut')}>{t("cut")}</div>
-                    <div className="context-menu-item" onClick={() => handleContextAction('paste')}>{t("contextPaste")}</div>
                 </div>
             )}
 

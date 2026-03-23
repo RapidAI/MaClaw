@@ -43,17 +43,31 @@ export function useAIAssistant() {
             ));
         };
 
-        // New round: agent loop started a new LLM call — create a new assistant bubble.
+        // New round: agent loop started a new LLM call.
+        // Reuse the previous streaming bubble if it's still empty (tool-only round);
+        // only create a new bubble when the previous one already has content.
         const newRoundHandler = () => {
+            // Two-phase approach: first read current state to decide, then update.
+            // We use a ref to communicate the decision out of the updater.
+            let reusedId: string | null = null;
             const newId = nextId();
-            streamingMsgIdRef.current = newId;
-            const newMsg: ChatMessage = {
-                id: newId,
-                role: 'assistant',
-                content: '',
-                timestamp: Date.now(),
-            };
-            setMessages(prev => [...prev, newMsg]);
+            setMessages(prev => {
+                const lastIdx = findLastIndex(prev, m => m.role === 'assistant');
+                if (lastIdx >= 0 && prev[lastIdx].content === '') {
+                    reusedId = prev[lastIdx].id;
+                    return prev; // no state change
+                }
+                return [...prev, {
+                    id: newId,
+                    role: 'assistant' as const,
+                    content: '',
+                    timestamp: Date.now(),
+                }];
+            });
+            // Update ref after updater — React batches state, but ref is sync.
+            // For the reuse case reusedId is set synchronously inside the updater
+            // (same tick), so this works reliably.
+            streamingMsgIdRef.current = reusedId ?? newId;
         };
 
         EventsOn(STREAM_TOKEN_EVENT, tokenHandler);
@@ -150,6 +164,17 @@ export function useAIAssistant() {
         } finally {
             sendingRef.current = false;
             setSending(false);
+            // Clean up empty assistant bubbles left over from tool-only rounds,
+            // but keep the last assistant message (it may carry structured data
+            // like fields/actions even with empty text content).
+            setMessages(prev => {
+                const lastAssistantIdx = findLastIndex(prev, m => m.role === 'assistant');
+                return prev.filter((m, i) => {
+                    if (m.role !== 'assistant') return true;
+                    if (i === lastAssistantIdx) return true; // always keep the last one
+                    return m.content !== '' || !!m.fields?.length || !!m.thumbnailBase64 || !!m.localFilePaths?.length;
+                });
+            });
         }
     }, []);
 
@@ -190,7 +215,7 @@ export function useAIAssistant() {
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)
-function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
+export function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
     for (let i = arr.length - 1; i >= 0; i--) {
         if (predicate(arr[i])) return i;
     }

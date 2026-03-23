@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 )
 
@@ -80,7 +79,7 @@ func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, er
 		return RemoteProbeResult{}, err
 	}
 
-	resp, err := http.Post(strings.TrimRight(hubURL, "/")+"/api/entry/probe", "application/json", bytes.NewReader(data))
+	resp, err := hubHTTPClient.Post(strings.TrimRight(hubURL, "/")+"/api/entry/probe", "application/json", bytes.NewReader(data))
 	if err != nil {
 		return RemoteProbeResult{}, err
 	}
@@ -168,7 +167,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		return RemoteActivationResult{}, err
 	}
 
-	resp, err := http.Post(strings.TrimRight(hubURL, "/")+"/api/enroll/start", "application/json", bytes.NewReader(data))
+	resp, err := hubHTTPClient.Post(strings.TrimRight(hubURL, "/")+"/api/enroll/start", "application/json", bytes.NewReader(data))
 	if err != nil {
 		return RemoteActivationResult{}, err
 	}
@@ -414,7 +413,7 @@ func (a *App) resolveRemoteHubCenter(centerURL string, email string, cfg AppConf
 		return hubCenterResolveResult{}, err
 	}
 
-	resp, err := http.Post(strings.TrimRight(centerURL, "/")+"/api/entry/resolve", "application/json", bytes.NewReader(data))
+	resp, err := hubHTTPClient.Post(strings.TrimRight(centerURL, "/")+"/api/entry/resolve", "application/json", bytes.NewReader(data))
 	if err != nil {
 		return hubCenterResolveResult{}, fmt.Errorf("resolve remote hub via center: %w", err)
 	}

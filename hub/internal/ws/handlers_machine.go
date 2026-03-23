@@ -23,6 +23,12 @@ type ConnContext struct {
 	MachineName string // populated by handleMachineHello
 	ViewerID    string
 
+	// gwClaimSeqs tracks the claim sequence for each IM gateway platform
+	// claimed by this connection. Used during cleanup to only release claims
+	// that belong to this specific connection (prevents race where a stale
+	// connection cleanup releases a newer claim from a reconnected client).
+	gwClaimSeqs map[string]uint64
+
 	// sendCh is a buffered channel for async writes. Messages are enqueued
 	// here and drained by a dedicated writer goroutine, preventing slow
 	// clients from blocking broadcast loops.
@@ -64,6 +70,11 @@ func (c *ConnContext) Send(msg any) bool {
 	}
 }
 
+// SendChDiag returns the current length of the send channel for diagnostics.
+func (c *ConnContext) SendChDiag() chan any {
+	return c.sendCh
+}
+
 // closeWriter signals the writer goroutine to stop. Safe to call multiple times.
 func (c *ConnContext) closeWriter() {
 	select {
@@ -82,12 +93,16 @@ func (c *ConnContext) writeLoop() {
 	defer timer.Stop()
 
 	flush := func() bool {
+		n := len(batch)
 		for _, msg := range batch {
 			if err := c.Conn.WriteJSON(msg); err != nil {
 				log.Printf("[ws] writeLoop: write error role=%s machine_id=%s: %v", c.Role, c.MachineID, err)
 				batch = batch[:0]
 				return false // connection broken
 			}
+		}
+		if n > 0 {
+			log.Printf("[ws] writeLoop: flushed %d msg(s) to role=%s machine_id=%s", n, c.Role, c.MachineID)
 		}
 		batch = batch[:0]
 		return true
@@ -172,6 +187,9 @@ type DeviceBinder interface {
 	Heartbeat(ctx context.Context, machineID string, heartbeat MachineHeartbeatPayload) error
 	SendToMachine(machineID string, msg any) error
 	SetAlias(ctx context.Context, machineID string, alias string)
+	// CheckAliasConflict returns true if another same-user online machine
+	// already uses the given alias.
+	CheckAliasConflict(machineID, userID, alias string) bool
 }
 
 type SessionService interface {
@@ -209,8 +227,9 @@ type IMProactiveSender interface {
 // client-side IM gateways (QQ Bot, Telegram). Each platform registers one.
 type IMGatewayPlugin interface {
 	Name() string
-	ClaimGateway(machineID, userID string) (bool, string)
+	ClaimGateway(machineID, userID string) (ok bool, reason string, seq uint64)
 	ReleaseAllForMachine(machineID string)
+	ReleaseAllForMachineBySeq(machineID string, seqs map[string]uint64)
 	HandleGatewayMessage(machineID string, payload json.RawMessage)
 }
 
@@ -1189,7 +1208,15 @@ func (g *Gateway) handleIMGatewayClaim(ctx *ConnContext, msg Envelope) error {
 		})
 		return nil
 	}
-	ok, reason := plugin.ClaimGateway(ctx.MachineID, ctx.UserID)
+	ok, reason, seq := plugin.ClaimGateway(ctx.MachineID, ctx.UserID)
+	if ok {
+		// Record the claim seq on this connection so cleanup releases the
+		// correct generation.
+		if ctx.gwClaimSeqs == nil {
+			ctx.gwClaimSeqs = make(map[string]uint64)
+		}
+		ctx.gwClaimSeqs[payload.Platform] = seq
+	}
 	_ = writeWSJSON(ctx.Conn, map[string]any{
 		"type": "im.gateway_claim_result",
 		"payload": map[string]any{
@@ -1221,7 +1248,19 @@ func (g *Gateway) handleIMGatewayMessage(ctx *ConnContext, msg Envelope) error {
 		log.Printf("[ws] handleIMGatewayMessage: unknown platform %s", payload.Platform)
 		return nil
 	}
-	plugin.HandleGatewayMessage(ctx.MachineID, payload.Data)
+	// Run in a goroutine to avoid blocking the WS read loop.
+	// HandleGatewayMessage → IM Adapter → routeToSingleMachine blocks until
+	// the Agent replies (up to 180s). If we block here, the read loop cannot
+	// receive the im.agent_response from the same connection → deadlock.
+	machineID := ctx.MachineID
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[ws] handleIMGatewayMessage: panic in HandleGatewayMessage (platform=%s machine=%s): %v", payload.Platform, machineID, r)
+			}
+		}()
+		plugin.HandleGatewayMessage(machineID, payload.Data)
+	}()
 	return nil
 }
 
@@ -1234,9 +1273,17 @@ func (g *Gateway) cleanupConnection(ctx *ConnContext) {
 		log.Printf("[ws] cleanupConnection: unbinding machine_id=%s and marking offline", ctx.MachineID)
 		_ = g.Devices.UnbindDesktop(context.Background(), ctx.MachineID, ctx)
 		_ = g.Sessions.MarkMachineOffline(context.Background(), ctx.MachineID)
-		// Release any IM gateway locks held by this machine.
-		for _, plugin := range g.IMGatewayPlugins {
-			plugin.ReleaseAllForMachine(ctx.MachineID)
+		// Release any IM gateway locks held by this connection, using the
+		// claim seq to avoid releasing a newer claim from a reconnected client.
+		if len(ctx.gwClaimSeqs) > 0 {
+			for _, plugin := range g.IMGatewayPlugins {
+				plugin.ReleaseAllForMachineBySeq(ctx.MachineID, ctx.gwClaimSeqs)
+			}
+		} else {
+			// Fallback for connections that never claimed any gateway.
+			for _, plugin := range g.IMGatewayPlugins {
+				plugin.ReleaseAllForMachine(ctx.MachineID)
+			}
 		}
 		// Clean up cached machine data.
 		g.mu.Lock()
@@ -1323,6 +1370,8 @@ func (g *Gateway) handleDeviceProfileUpdate(ctx *ConnContext, msg Envelope) erro
 
 
 // handleMachineNicknameUpdate processes a runtime nickname change from a machine.
+// It checks for Alias conflicts with other same-user online devices before
+// accepting the nickname. On conflict the request is rejected with an error.
 func (g *Gateway) handleMachineNicknameUpdate(ctx *ConnContext, msg Envelope) error {
 	if ctx.Role != "machine" {
 		return writeWSError(ctx.Conn, "FORBIDDEN", "Machine role required")
@@ -1334,7 +1383,17 @@ func (g *Gateway) handleMachineNicknameUpdate(ctx *ConnContext, msg Envelope) er
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid machine.nickname_update payload")
 	}
 	nickname := strings.TrimSpace(payload.Nickname)
+	if nickname == "" {
+		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "nickname must not be empty")
+	}
 	log.Printf("[ws] handleMachineNicknameUpdate: machine_id=%s nickname=%q", ctx.MachineID, nickname)
+
+	// Check for Alias conflict with other same-user online machines.
+	if conflict := g.Devices.CheckAliasConflict(ctx.MachineID, ctx.UserID, nickname); conflict {
+		log.Printf("[ws] handleMachineNicknameUpdate: nickname=%q conflicts for machine_id=%s, rejecting", nickname, ctx.MachineID)
+		return writeWSError(ctx.Conn, "NICKNAME_CONFLICT", fmt.Sprintf("昵称 %q 已被您的另一台在线设备使用", nickname))
+	}
+
 	g.Devices.SetAlias(context.Background(), ctx.MachineID, nickname)
 	return writeAck(ctx.Conn, msg.RequestID)
 }

@@ -62,6 +62,7 @@ type Props = {
     remoteBusy: string;
     remoteActivationStatus: RemoteActivationStatus | null;
     activateRemoteWithEmail: () => void;
+    clearRemoteActivationState: () => void;
     invitationCodeRequired: boolean;
     invitationCode: string;
     setInvitationCode: (code: string) => void;
@@ -75,6 +76,7 @@ export function RemoteSettingsPanel({
     remoteBusy,
     remoteActivationStatus,
     activateRemoteWithEmail,
+    clearRemoteActivationState,
     invitationCodeRequired,
     invitationCode,
     setInvitationCode,
@@ -398,16 +400,26 @@ export function RemoteSettingsPanel({
                         : `${translate("remoteActivation")}: ${translate("remoteNotActivated")}`}
                 </span>
                 {remoteActivationStatus?.activated && config?.remote_hub_url && (
-                    <button
-                        className="btn-secondary"
-                        style={{ marginLeft: "10px", flexShrink: 0, fontSize: "0.8rem", padding: "2px 12px", height: "26px" }}
-                        onClick={() => {
-                            const hubUrl = (config.remote_hub_url || "").replace(/\/+$/, "");
-                            if (hubUrl) BrowserOpenURL(`${hubUrl}/bind`);
-                        }}
-                    >
-                        绑定管理
-                    </button>
+                    <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                        <button
+                            className="btn-secondary"
+                            style={{ fontSize: "0.8rem", padding: "2px 12px", height: "26px" }}
+                            disabled={!!remoteBusy}
+                            onClick={clearRemoteActivationState}
+                        >
+                            {remoteBusy === "clear" ? translate("remoteClearing") : translate("remoteReRegister")}
+                        </button>
+                        <button
+                            className="btn-secondary"
+                            style={{ fontSize: "0.8rem", padding: "2px 12px", height: "26px" }}
+                            onClick={() => {
+                                const hubUrl = (config.remote_hub_url || "").replace(/\/+$/, "");
+                                if (hubUrl) BrowserOpenURL(`${hubUrl}/bind`);
+                            }}
+                        >
+                            绑定管理
+                        </button>
+                    </div>
                 )}
             </div>
 

@@ -264,7 +264,7 @@ jobs:
             if [ "$ARCH" = "universal" ]; then
               BUNDLE="dist/${APP_NAME}.app"
               PKG_NAME="${APP_NAME}-Universal.pkg"
-              SCRIPTS_DIR="build/scripts_arm64"
+              SCRIPTS_DIR="build/scripts_universal"
             else
               BUNDLE="dist/${APP_NAME}_${ARCH}.app"
               PKG_NAME="${APP_NAME}-${ARCH}.pkg"

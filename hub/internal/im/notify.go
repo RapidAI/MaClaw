@@ -25,8 +25,9 @@ type Mailer interface {
 
 // NotifyBroadcaster sends a message to all reachable channels for a given email.
 type NotifyBroadcaster struct {
-	adapter *Adapter
-	mailer  Mailer
+	adapter        *Adapter
+	mailer         Mailer
+	activeProvider ActiveUserProvider // optional; when set, SendToActive targets only the last active IM
 }
 
 // NewNotifyBroadcaster creates a broadcaster wired to the IM Adapter and mailer.
@@ -260,6 +261,67 @@ func joinChannels(channels []string) string {
 	return result
 }
 
+// ActiveUserProvider returns the last active IM platform for a user.
+type ActiveUserProvider interface {
+	GetActiveUser(userID string) (platformName, platformUID string, ok bool)
+}
+
+// SetActiveUserProvider wires the active user provider so SendToActive
+// can target only the user's last active IM platform.
+func (b *NotifyBroadcaster) SetActiveUserProvider(p ActiveUserProvider) {
+	b.activeProvider = p
+}
+
+// SendToActive sends a text message only to the user's last active IM
+// platform. Falls back to sending to a single bound IM channel (first
+// found) if no active platform is known, to avoid duplicate notifications.
+func (b *NotifyBroadcaster) SendToActive(ctx context.Context, userID, email, subject, text string) {
+	if b.activeProvider != nil {
+		platformName, platformUID, ok := b.activeProvider.GetActiveUser(userID)
+		if ok && b.adapter != nil {
+			b.adapter.DeliverProgress(ctx, platformName, userID, platformUID, text)
+			return
+		}
+	}
+	// No active IM known — send to the first bound IM channel only (not all).
+	// Prefer remote gateways (weixin, qqbot_remote, telegram) over hub-native
+	// plugins since they are more commonly used in multi-machine setups.
+	if b.adapter != nil {
+		b.adapter.mu.RLock()
+		plugins := make(map[string]IMPlugin, len(b.adapter.plugins))
+		for k, v := range b.adapter.plugins {
+			plugins[k] = v
+		}
+		b.adapter.mu.RUnlock()
+
+		preferred := []string{"weixin", "qqbot_remote", "telegram", "feishu", "qqbot", "openclaw"}
+		for _, name := range preferred {
+			plugin, ok := plugins[name]
+			if !ok {
+				continue
+			}
+			lookup, ok := plugin.(BindingLookup)
+			if !ok {
+				continue
+			}
+			uid := lookup.LookupByEmail(email)
+			if uid == "" {
+				continue
+			}
+			target := UserTarget{PlatformUID: uid}
+			if err := plugin.SendText(ctx, target, text); err != nil {
+				log.Printf("[im/notify] SendToActive fallback to %s (uid=%s) failed: %v", name, uid, err)
+				continue
+			}
+			return // sent to one channel, done
+		}
+	}
+	// Last resort: email
+	if b.mailer != nil {
+		_ = b.mailer.Send(ctx, []string{email}, subject, text)
+	}
+}
+
 // UserLookup resolves an internal user ID to an email address.
 type UserLookup interface {
 	GetEmail(ctx context.Context, userID string) (string, error)
@@ -277,13 +339,15 @@ func NewProactiveSender(broadcaster *NotifyBroadcaster, users UserLookup) *Proac
 	return &ProactiveSender{broadcaster: broadcaster, users: users}
 }
 
-// SendProactiveMessage resolves the user's email and broadcasts the text to all IM channels.
+// SendProactiveMessage resolves the user's email and sends the text to the
+// user's last active IM platform. Falls back to broadcasting if no active
+// platform is known.
 func (p *ProactiveSender) SendProactiveMessage(ctx context.Context, userID, text string) error {
 	email, err := p.users.GetEmail(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("resolve user email for %s: %w", userID, err)
 	}
-	p.broadcaster.BroadcastText(ctx, email, "MaClaw 定时任务通知", text)
+	p.broadcaster.SendToActive(ctx, userID, email, "MaClaw 通知", text)
 	return nil
 }
 

@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import type { ChatMessage } from "./useAIAssistant";
+import { findLastIndex } from "./useAIAssistant";
 
 interface AIAssistantPanelProps {
     onClose: () => void;
@@ -396,7 +397,7 @@ function renderActions(
 
 /* ── Render a single ChatMessage ── */
 
-function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme): React.ReactNode {
+function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean): React.ReactNode {
     switch (msg.role) {
         case "user":
             return (
@@ -415,8 +416,8 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     margin: "2px 0",
                     color: t.text,
                 }}>
-                    {/* Streaming: show blinking cursor when content is empty */}
-                    {!msg.content && !msg.fields && !msg.thumbnailBase64 && !msg.localFilePaths?.length && (
+                    {/* Streaming: show blinking cursor only on the last assistant message */}
+                    {isLastAssistant && !msg.content && !msg.fields && !msg.thumbnailBase64 && !msg.localFilePaths?.length && (
                         <span style={{ opacity: 0.5, animation: "blink 1s step-end infinite" }}>▍</span>
                     )}
                     {msg.thumbnailBase64 && msg.localFilePath && (
@@ -563,11 +564,11 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, sendMessage
         await sendMessage(text);
     }, [inputValue, sending, sendMessage]);
 
-    // Memoize rendered messages
-    const renderedMessages = useMemo(
-        () => messages.map((msg) => renderMessage(msg, executeAction, t)),
-        [messages, executeAction, t],
-    );
+    // Memoize rendered messages — only the last assistant message shows a streaming cursor.
+    const renderedMessages = useMemo(() => {
+        const lastAssistantIdx = findLastIndex(messages, m => m.role === 'assistant');
+        return messages.map((msg, i) => renderMessage(msg, executeAction, t, i === lastAssistantIdx));
+    }, [messages, executeAction, t]);
 
     const containerStyle: React.CSSProperties = inline
         ? { display: "flex", flexDirection: "column", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }

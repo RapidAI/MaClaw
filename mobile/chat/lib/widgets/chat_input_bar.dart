@@ -3,7 +3,7 @@ import 'package:image_picker/image_picker.dart';
 import '../services/image_compressor.dart';
 import 'voice_recorder_sheet.dart';
 
-/// Chat input bar with text, image picker, and voice recorder.
+/// WeChat-style chat input bar: multi-line text area + bottom toolbar + send button.
 class ChatInputBar extends StatefulWidget {
   final void Function(String text) onSendText;
   final void Function(String path) onSendImage;
@@ -54,25 +54,15 @@ class _ChatInputBarState extends State<ChatInputBar> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('Camera'),
-              onTap: () => Navigator.pop(ctx, ImageSource.camera),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Gallery'),
-              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
-            ),
+            ListTile(leading: const Icon(Icons.camera_alt), title: const Text('Camera'), onTap: () => Navigator.pop(ctx, ImageSource.camera)),
+            ListTile(leading: const Icon(Icons.photo_library), title: const Text('Gallery'), onTap: () => Navigator.pop(ctx, ImageSource.gallery)),
           ],
         ),
       ),
     );
     if (source == null) return;
-
     final picked = await _imagePicker.pickImage(source: source);
     if (picked == null) return;
-
     final compressed = await ImageCompressor.compress(picked.path);
     widget.onSendImage(compressed);
   }
@@ -82,10 +72,7 @@ class _ChatInputBarState extends State<ChatInputBar> {
       context: context,
       isDismissible: false,
       builder: (ctx) => VoiceRecorderSheet(
-        onRecorded: (path, durationMs) {
-          Navigator.pop(ctx);
-          widget.onSendVoice(path, durationMs);
-        },
+        onRecorded: (path, durationMs) { Navigator.pop(ctx); widget.onSendVoice(path, durationMs); },
         onCancel: () => Navigator.pop(ctx),
       ),
     );
@@ -93,54 +80,77 @@ class _ChatInputBarState extends State<ChatInputBar> {
 
   @override
   Widget build(BuildContext context) {
+    final bottomPad = MediaQuery.of(context).padding.bottom;
     return Container(
-      padding: EdgeInsets.only(
-        left: 8, right: 8, top: 8,
-        bottom: MediaQuery.of(context).padding.bottom + 8,
-      ),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(top: BorderSide(color: Colors.grey.shade200)),
+        color: const Color(0xFFF7F7F7),
+        border: Border(top: BorderSide(color: Colors.grey.shade300, width: 0.5)),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            icon: const Icon(Icons.image_outlined),
-            onPressed: _pickImage,
-            tooltip: 'Send image',
-          ),
-          IconButton(
-            icon: const Icon(Icons.mic_outlined),
-            onPressed: _showVoiceRecorder,
-            tooltip: 'Record voice',
-          ),
-          Expanded(
-            child: TextField(
-              controller: _controller,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => _send(),
-              decoration: InputDecoration(
-                hintText: 'Type a message...',
-                filled: true,
-                fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(24),
-                  borderSide: BorderSide.none,
+          // Text input area
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+            child: Container(
+              constraints: const BoxConstraints(minHeight: 80, maxHeight: 160),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade300, width: 0.5),
+              ),
+              child: TextField(
+                controller: _controller,
+                maxLines: null,
+                textInputAction: TextInputAction.newline,
+                style: const TextStyle(fontSize: 16),
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  hintText: '',
                 ),
               ),
             ),
           ),
-          const SizedBox(width: 4),
-          if (_showSend)
-            IconButton(
-              icon: Icon(Icons.send,
-                  color: Theme.of(context).colorScheme.primary),
-              onPressed: _send,
+          // Bottom toolbar
+          Padding(
+            padding: EdgeInsets.only(left: 4, right: 8, bottom: bottomPad + 4, top: 2),
+            child: Row(
+              children: [
+                _toolBtn(Icons.emoji_emotions_outlined, () {}),
+                _toolBtn(Icons.alternate_email, () {}),
+                _toolBtn(Icons.folder_outlined, _pickImage),
+                _toolBtn(Icons.content_cut, () {}),
+                _toolBtn(Icons.radio_button_unchecked, () {}),
+                _toolBtn(Icons.mic_none, _showVoiceRecorder),
+                const Spacer(),
+                SizedBox(
+                  height: 34,
+                  child: TextButton(
+                    onPressed: _showSend ? _send : null,
+                    style: TextButton.styleFrom(
+                      backgroundColor: _showSend ? const Color(0xFF07C160) : const Color(0xFFE0E0E0),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                    ),
+                    child: Text('发送', style: TextStyle(fontSize: 14, color: _showSend ? Colors.white : Colors.grey[500])),
+                  ),
+                ),
+              ],
             ),
+          ),
         ],
       ),
+    );
+  }
+
+  Widget _toolBtn(IconData icon, VoidCallback onTap) {
+    return IconButton(
+      icon: Icon(icon, size: 24, color: Colors.grey[700]),
+      onPressed: onTap,
+      padding: const EdgeInsets.all(6),
+      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
     );
   }
 }

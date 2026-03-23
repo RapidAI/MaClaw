@@ -19,6 +19,7 @@ import (
 
 type App struct {
 	Config          *config.Config
+	ConfigPath      string // path to YAML config file (for runtime updates)
 	Provider        *sqlite.Provider
 	AdminService    *auth.AdminService
 	IdentityService *auth.IdentityService

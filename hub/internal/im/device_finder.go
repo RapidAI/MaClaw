@@ -53,6 +53,9 @@ func (f *DeviceServiceFinder) FindAllOnlineMachinesForUser(ctx context.Context, 
 		}
 	}
 	// Lazy-assign nicknames to machines without Alias (only when >1 online).
+	// This is a fallback for edge cases where MarkOnline didn't assign one
+	// (e.g. hub restart before client reconnects). When assigning, persist
+	// the nickname to runtime so it sticks and notify the client.
 	if len(online) > 1 {
 		usedNames := make(map[string]bool)
 		for _, m := range online {
@@ -66,9 +69,19 @@ func (f *DeviceServiceFinder) FindAllOnlineMachinesForUser(ctx context.Context, 
 				nick := pickNextNickname(&nextIdx, usedNames)
 				online[i].Alias = nick
 				usedNames[nick] = true
+				// Persist to runtime and notify client so it remembers.
+				f.Svc.SetAlias(ctx, online[i].MachineID, nick)
+				_ = f.Svc.SendToMachine(online[i].MachineID, map[string]any{
+					"type": "machine.nickname_assigned",
+					"payload": map[string]any{
+						"nickname": nick,
+					},
+				})
 			}
 		}
 	}
+	// Single device without Alias: leave it alone — the agent will
+	// proactively report its nickname via set_nickname on first turn.
 	out := make([]OnlineMachineInfo, 0, len(online))
 	for _, m := range online {
 		out = append(out, OnlineMachineInfo{

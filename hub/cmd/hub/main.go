@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -37,12 +38,40 @@ func run(args []string) error {
 		return err
 	}
 
-	a, err := app.Bootstrap(cfg)
+	a, err := app.Bootstrap(cfg, *configPath)
 	if err != nil {
 		return err
 	}
 	a.StartBackgroundTasks()
 	addr := cfg.Server.ListenHost + ":" + strconv.Itoa(cfg.Server.ListenPort)
+
+	if cfg.TLS.Enabled {
+		if cfg.TLS.AutoGenerate {
+			if err := app.EnsureSelfSignedCert(cfg.TLS.CertFile, cfg.TLS.KeyFile); err != nil {
+				return fmt.Errorf("auto-generate TLS cert: %w", err)
+			}
+		} else {
+			// Manual cert mode: verify files exist before attempting to start.
+			if _, err := os.Stat(cfg.TLS.CertFile); err != nil {
+				return fmt.Errorf("TLS cert file not found: %s (set auto_generate=true or provide valid cert)", cfg.TLS.CertFile)
+			}
+			if _, err := os.Stat(cfg.TLS.KeyFile); err != nil {
+				return fmt.Errorf("TLS key file not found: %s (set auto_generate=true or provide valid key)", cfg.TLS.KeyFile)
+			}
+		}
+		log.Printf("MaClaw Hub listening on %s (TLS)", addr)
+		log.Printf("  Clients should use: https://<host>:%d", cfg.Server.ListenPort)
+		log.Printf("  To disable TLS (e.g. behind nginx), set tls.enabled=false in config")
+		srv := &http.Server{
+			Addr:    addr,
+			Handler: a.HTTPHandler,
+			TLSConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+			},
+		}
+		return srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+	}
+
 	log.Printf("MaClaw Hub listening on %s", addr)
 	return http.ListenAndServe(addr, a.HTTPHandler)
 }

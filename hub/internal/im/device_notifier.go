@@ -57,6 +57,19 @@ func (dn *DeviceNotifier) MarkUserActive(userID, platformName, platformUID strin
 	dn.mu.Unlock()
 }
 
+// GetActiveUser returns the last active IM platform info for a user.
+// Returns ("", "", false) if the user has no recorded IM activity.
+func (dn *DeviceNotifier) GetActiveUser(userID string) (platformName, platformUID string, ok bool) {
+	dn.mu.Lock()
+	info, ok := dn.activeUsers[userID]
+	dn.mu.Unlock()
+	if !ok {
+		return "", "", false
+	}
+	return info.PlatformName, info.PlatformUID, true
+}
+
+
 // NotifyDeviceOnline queues an online notification with debouncing.
 func (dn *DeviceNotifier) NotifyDeviceOnline(userID, machineID, name string) {
 	dn.scheduleNotification(userID, machineID, name, true)

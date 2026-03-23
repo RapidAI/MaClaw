@@ -2033,6 +2033,18 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 	now := time.Now()
 	b.WriteString(fmt.Sprintf("- 当前时间: %s（%s）\n", now.Format("2006-01-02 15:04"), now.Weekday()))
 
+	// Nickname reporting: tell the agent its current nickname so it can
+	// proactively report it via set_nickname on first turn.
+	currentNickname := ""
+	if cfg, err := h.app.LoadConfig(); err == nil {
+		currentNickname = strings.TrimSpace(cfg.RemoteNickname)
+	}
+	if currentNickname != "" {
+		b.WriteString(fmt.Sprintf("- 当前昵称: %s\n", currentNickname))
+	} else {
+		b.WriteString("- 当前昵称: （未设置）\n")
+	}
+
 	if h.manager != nil {
 		sessions := h.manager.List()
 		b.WriteString(fmt.Sprintf("- 活跃会话: %d 个\n", len(sessions)))
@@ -2148,6 +2160,7 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFirstTurn bool) string {
 	// Build the base prompt without memory (strip the default non-first-turn section).
 	base := h.buildSystemPrompt()
+
 	if !isFirstTurn {
 		return base
 	}
@@ -2157,8 +2170,29 @@ func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFir
 	}
 	var b strings.Builder
 	b.WriteString(base)
+	// Inject nickname reporting instruction AFTER stripping the memory
+	// section so it doesn't get truncated.
+	b.WriteString(h.buildNicknameInstruction())
 	h.appendMemorySection(&b, true)
 	return b.String()
+}
+
+// buildNicknameInstruction returns a system-prompt snippet that instructs the
+// agent to proactively call set_nickname on its first turn so the Hub knows
+// who it is. If the client already has a configured nickname it tells the
+// agent to report that name; otherwise it asks the agent to pick one based
+// on its own self-identity.
+func (h *IMMessageHandler) buildNicknameInstruction() string {
+	currentNickname := ""
+	if cfg, err := h.app.LoadConfig(); err == nil {
+		currentNickname = strings.TrimSpace(cfg.RemoteNickname)
+	}
+	if currentNickname != "" {
+		return fmt.Sprintf("\n## ⚠️ 上线昵称报告（仅首次对话执行一次）\n"+
+			"你刚上线，请在回复用户之前先调用 set_nickname 工具报告你的昵称「%s」，确保 Hub 知道你是谁。\n", currentNickname)
+	}
+	return "\n## ⚠️ 上线昵称报告（仅首次对话执行一次）\n" +
+		"你还没有昵称。请根据你的自我认知（角色名/身份），在回复用户之前先调用 set_nickname 工具给自己起一个昵称并上报给 Hub。如果没有特别的自我认知，可以用一个你喜欢的中文名字。\n"
 }
 
 // appendMemorySection appends a lightweight "## 用户记忆" section containing:

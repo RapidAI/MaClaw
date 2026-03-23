@@ -10,7 +10,9 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/energye/systray v1.0.2
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/go-ego/gse v1.0.2
 	github.com/go-lark/lark/v2 v2.0.0-beta.6
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-sqlite3 v1.14.37
@@ -38,11 +40,9 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
-	github.com/go-ego/gse v1.0.2 // indirect
 	github.com/go-lark/card-builder v1.0.0-beta.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
 	github.com/labstack/echo/v4 v4.13.3 // indirect
 	github.com/labstack/gommon v0.4.2 // indirect
@@ -80,6 +80,6 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-// replace github.com/wailsapp/wails/v2 v2.11.0 => C:\Users\yong\go\pkg\mod
-
 replace github.com/energye/systray v1.0.2 => ./gui/internal/systray
+
+// replace github.com/wailsapp/wails/v2 v2.11.0 => C:\Users\yong\go\pkg\mod

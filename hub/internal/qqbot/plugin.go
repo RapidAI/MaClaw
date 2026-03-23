@@ -908,8 +908,7 @@ func (p *Plugin) HandleWebhook(r *http.Request) ([]byte, int) {
 	// If disabled, ACK but don't process any messages
 	if !cfg.Enabled {
 		log.Printf("[qqbot/webhook] plugin disabled, ignoring event %s", payload.T)
-		ack, _ := json.Marshal(map[string]int{"op": 12})
-		return ack, http.StatusOK
+		return []byte(`{"op":12}`), http.StatusOK
 	}
 
 	// Verify ed25519 signature for non-validation requests

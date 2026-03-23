@@ -585,6 +585,16 @@ func (a *App) startup(ctx context.Context) {
 		}
 		// Auto-start free proxy if "免费" provider is selected.
 		go a.ensureFreeProxyIfNeeded()
+		// Auto-start IM gateways that were previously enabled.
+		// If Hub is connected, createAndWireHubClient already started them;
+		// only start here when Hub credentials are absent (pure local mode).
+		if config.RemoteMachineID == "" || config.RemoteMachineToken == "" || config.RemoteHubURL == "" {
+			go func() {
+				a.ensureQQBotGateway()
+				a.ensureTelegramGateway()
+				a.ensureWeixinGateway()
+			}()
+		}
 		return
 	}
 	a.setPowerOptimizationEnabled(false)
@@ -1153,6 +1163,10 @@ func (a *App) startConfigWatcher() {
 						// Re-sync Telegram gateway on config change
 						if a.telegramGateway != nil {
 							a.telegramGateway.SyncFromConfig()
+						}
+						// Re-sync WeChat gateway on config change
+						if a.weixinGateway != nil {
+							a.weixinGateway.SyncFromConfig()
 						}
 					}
 				}

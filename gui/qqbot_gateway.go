@@ -5,13 +5,18 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 // qqBotGatewayManager manages the client-side QQ Bot WebSocket gateway.
-// It starts/stops the gateway based on AppConfig and forwards messages
-// between QQ and the Hub via the existing machine WebSocket.
+// Supports two modes:
+//   - Local / 单机 mode (default): routes messages directly to the
+//     local MaClaw LLM agent loop, bypassing Hub entirely.
+//   - Hub / 多机 mode (QQBotLocalMode=false): forwards messages to Hub
+//     via im.gateway_message, receives replies via im.gateway_reply.
 type qqBotGatewayManager struct {
 	app        *App
 	mu         sync.Mutex
@@ -19,6 +24,10 @@ type qqBotGatewayManager struct {
 	status     string // "disconnected", "connecting", "connected", "error", "reconnecting"
 	lastAppID  string
 	lastSecret string
+
+	// localHandler is a fully-wired IMMessageHandler for local mode.
+	// Created lazily on first local-mode message.
+	localHandler *IMMessageHandler
 }
 
 func newQQBotGatewayManager(app *App) *qqBotGatewayManager {
@@ -99,7 +108,12 @@ func (m *qqBotGatewayManager) Stop() {
 	m.status = "disconnected"
 	m.lastAppID = ""
 	m.lastSecret = ""
+	lh := m.localHandler
+	m.localHandler = nil
 	m.mu.Unlock()
+	if lh != nil {
+		lh.memory.stop()
+	}
 	if gw != nil {
 		_ = gw.Stop()
 	}
@@ -119,8 +133,11 @@ func (m *qqBotGatewayManager) onStatusChange(status string) {
 	m.mu.Unlock()
 	m.emitStatusEvent()
 
-	// When QQ gateway connects, claim the gateway lock on Hub.
+	// When QQ gateway connects, claim the gateway lock on Hub (only in hub mode).
 	if status == "connected" {
+		if cfg, err := m.app.LoadConfig(); err == nil && cfg.IsQQBotLocalMode() {
+			return
+		}
 		hubClient := m.app.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
 			hubClient.SendIMGatewayClaim("qqbot_remote")
@@ -132,36 +149,234 @@ func (m *qqBotGatewayManager) emitStatusEvent() {
 	m.app.emitEvent("qqbot-status-changed", m.Status())
 }
 
+// resetLocalHandler invalidates the cached local handler.
+func (m *qqBotGatewayManager) resetLocalHandler() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.localHandler != nil {
+		m.localHandler.memory.stop()
+		m.localHandler = nil
+	}
+}
+
+// ensureLocalHandler lazily creates a fully-wired IMMessageHandler for local mode.
+func (m *qqBotGatewayManager) ensureLocalHandler() *IMMessageHandler {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.localHandler != nil {
+		return m.localHandler
+	}
+
+	a := m.app
+	a.ensureRemoteInfra()
+
+	h := NewIMMessageHandler(a, a.remoteSessions)
+	if a.capabilityGapDetector != nil {
+		h.SetCapabilityGapDetector(a.capabilityGapDetector)
+	}
+	if a.toolDefGenerator != nil {
+		h.SetToolDefGenerator(a.toolDefGenerator)
+	}
+	if a.toolRouter != nil {
+		h.SetToolRouter(a.toolRouter)
+	}
+	if a.memoryStore != nil {
+		h.SetMemoryStore(a.memoryStore)
+	}
+	if a.configManager != nil {
+		h.SetConfigManager(a.configManager)
+	}
+	if a.templateManager != nil {
+		h.SetTemplateManager(a.templateManager)
+	}
+	if a.scheduledTaskManager != nil {
+		h.SetScheduledTaskManager(a.scheduledTaskManager)
+	}
+	if a.contextResolver != nil {
+		h.SetContextResolver(a.contextResolver)
+	}
+	if a.sessionPrecheck != nil {
+		h.SetSessionPrecheck(a.sessionPrecheck)
+	}
+	if a.startupFeedback != nil {
+		h.SetStartupFeedback(a.startupFeedback)
+	}
+	if a.securityFirewall != nil {
+		h.SetSecurityFirewall(a.securityFirewall)
+	}
+	if a.conversationArchiver != nil {
+		h.memory.archiver = a.conversationArchiver
+	}
+
+	m.localHandler = h
+	log.Printf("[qqbot-mgr] local IMMessageHandler created")
+	return h
+}
+
 // onIncomingMessage is called when a C2C message arrives from QQ.
-// It forwards the message to Hub as im.gateway_message so Hub's IM Adapter
-// can process it (identity binding, /call, @machine, /discuss, agent routing).
+// Routes to local handler or Hub depending on mode.
 func (m *qqBotGatewayManager) onIncomingMessage(msg qqbot.IncomingMessage) {
+	cfg, err := m.app.LoadConfig()
+	if err != nil {
+		log.Printf("[qqbot-mgr] LoadConfig error: %v", err)
+		return
+	}
+
+	isLocal := cfg.IsQQBotLocalMode()
+	hubClient := m.app.hubClient()
+	hubConnected := hubClient != nil && hubClient.IsConnected()
+	log.Printf("[qqbot-mgr] onIncomingMessage: user=%s local_mode=%v hub_connected=%v", msg.OpenID, isLocal, hubConnected)
+
+	if isLocal {
+		m.handleLocalMessage(msg)
+		return
+	}
+
+	// Hub mode — try forwarding; fall back to local if Hub unavailable.
+	if !hubConnected {
+		log.Printf("[qqbot-mgr] Hub mode but Hub unavailable, falling back to local: user=%s", msg.OpenID)
+		m.notifyHubUnavailable(msg)
+		m.handleLocalMessage(msg)
+		return
+	}
+
+	m.forwardToHub(msg)
+}
+
+func (m *qqBotGatewayManager) notifyHubUnavailable(msg qqbot.IncomingMessage) {
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return
+	}
+	_ = gw.SendText(context.Background(), qqbot.OutgoingText{
+		OpenID: msg.OpenID,
+		Text:   "⚠️ 当前为多机模式，但 Hub 未连接。消息已回退到本地处理。\n请检查 Hub 连接状态，或切换回单机模式。",
+	})
+}
+
+func (m *qqBotGatewayManager) forwardToHub(msg qqbot.IncomingMessage) {
 	hubClient := m.app.hubClient()
 	if hubClient == nil || !hubClient.IsConnected() {
-		log.Printf("[qqbot-mgr] hub not connected, cannot forward QQ message from %s", msg.OpenID)
+		log.Printf("[qqbot-mgr] forwardToHub FAILED: hub unavailable user=%s", msg.OpenID)
+		m.notifyHubUnavailable(msg)
+		m.handleLocalMessage(msg)
+		return
+	}
+
+	if err := hubClient.SendIMGatewayMessage("qqbot_remote", map[string]any{
+		"platform_uid": msg.OpenID,
+		"text":         msg.Text,
+		"message_type": "text",
+	}); err != nil {
+		log.Printf("[qqbot-mgr] forwardToHub SendIMGatewayMessage error: %v", err)
+	}
+}
+
+func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
+	if !m.app.isMaclawLLMConfigured() {
 		m.mu.Lock()
 		gw := m.gateway
 		m.mu.Unlock()
 		if gw != nil {
 			_ = gw.SendText(context.Background(), qqbot.OutgoingText{
 				OpenID: msg.OpenID,
-				Text:   "⚠️ Hub 未连接，无法处理消息。请确认客户端已连接到 Hub。",
+				Text:   "⚠️ 本地 LLM 未配置，请先在设置中配置 MaClaw LLM。",
 			})
 		}
 		return
 	}
 
-	// Forward to Hub via im.gateway_message — Hub routes through IM Adapter
-	// pipeline and sends replies back as im.gateway_reply.
-	hubClient.SendIMGatewayMessage("qqbot_remote", map[string]any{
-		"platform_uid": msg.OpenID,
-		"text":         msg.Text,
-		"message_type": "text",
-	})
+	handler := m.ensureLocalHandler()
+
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return
+	}
+
+	text := msg.Text
+	if text == "" {
+		return
+	}
+
+	var lastProgress time.Time
+	onProgress := func(progressText string) {
+		if progressText == "" {
+			return
+		}
+		now := time.Now()
+		if now.Sub(lastProgress) < 5*time.Second {
+			return
+		}
+		lastProgress = now
+		_ = gw.SendText(context.Background(), qqbot.OutgoingText{
+			OpenID: msg.OpenID,
+			Text:   "⏳ " + textutil.StripMarkdown(progressText),
+		})
+	}
+
+	resp := handler.HandleIMMessageWithProgress(IMUserMessage{
+		UserID:   msg.OpenID,
+		Platform: "qqbot_local",
+		Text:     text,
+	}, onProgress)
+
+	if resp == nil {
+		return
+	}
+
+	m.sendAgentResponse(gw, msg.OpenID, resp)
+}
+
+func (m *qqBotGatewayManager) sendAgentResponse(gw *qqbot.Gateway, openID string, resp *IMAgentResponse) {
+	ctx := context.Background()
+
+	if resp.Text != "" {
+		text := textutil.StripMarkdown(resp.Text)
+		if err := gw.SendText(ctx, qqbot.OutgoingText{
+			OpenID: openID,
+			Text:   text,
+		}); err != nil {
+			log.Printf("[qqbot-mgr] local SendText error (to=%s): %v", openID, err)
+		}
+	}
+
+	if resp.Error != "" && resp.Text == "" {
+		_ = gw.SendText(ctx, qqbot.OutgoingText{
+			OpenID: openID,
+			Text:   "❌ " + textutil.StripMarkdown(resp.Error),
+		})
+	}
+
+	if resp.ImageKey != "" {
+		_ = gw.SendMedia(ctx, qqbot.OutgoingMedia{
+			OpenID:   openID,
+			FileType: 1, // image
+			FileData: resp.ImageKey,
+			MimeType: "image/png",
+		})
+	}
+
+	if resp.FileData != "" {
+		mimeType := resp.FileMimeType
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		_ = gw.SendMedia(ctx, qqbot.OutgoingMedia{
+			OpenID:   openID,
+			FileType: 4, // file
+			FileData: resp.FileData,
+			FileName: resp.FileName,
+			MimeType: mimeType,
+		})
+	}
 }
 
 // SendQQBotReply sends a text reply to a QQ user. Called when Hub sends
-// im.qq_outgoing back to the client.
+// im.gateway_reply back to the client.
 func (m *qqBotGatewayManager) SendQQBotReply(openID, text string) error {
 	m.mu.Lock()
 	gw := m.gateway
@@ -217,4 +432,43 @@ func (a *App) StopQQBot() {
 	if a.qqBotGateway != nil {
 		a.qqBotGateway.Stop()
 	}
+}
+
+// GetQQBotLocalMode returns whether QQ Bot local mode is enabled.
+func (a *App) GetQQBotLocalMode() bool {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return true
+	}
+	return cfg.IsQQBotLocalMode()
+}
+
+// SetQQBotLocalMode enables or disables QQ Bot local mode.
+func (a *App) SetQQBotLocalMode(enabled bool) error {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	// Switching to hub mode requires prior Hub registration.
+	if !enabled && cfg.RemoteMachineID == "" {
+		return fmt.Errorf("请先注册到 Hub（设置 Hub 地址并完成注册），再开启多机模式")
+	}
+	cfg.SetQQBotLocal(enabled)
+	if err := a.SaveConfig(cfg); err != nil {
+		return err
+	}
+	log.Printf("[qqbot-mgr] SetQQBotLocalMode: enabled=%v", enabled)
+
+	if a.qqBotGateway != nil {
+		a.qqBotGateway.resetLocalHandler()
+	}
+
+	if !enabled {
+		hubClient := a.hubClient()
+		if hubClient != nil && hubClient.IsConnected() {
+			hubClient.SendIMGatewayClaim("qqbot_remote")
+			log.Printf("[qqbot-mgr] sent gateway claim after switching to hub mode")
+		}
+	}
+	return nil
 }

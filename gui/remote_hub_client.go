@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,7 +98,12 @@ func NewRemoteHubClient(app *App, manager *RemoteSessionManager) *RemoteHubClien
 }
 
 func defaultHubDial(urlStr string) (*websocket.Conn, error) {
-	conn, _, err := websocket.DefaultDialer.Dial(urlStr, nil)
+	dialer := *websocket.DefaultDialer
+	// Support wss:// with self-signed certificates (Hub TLS mode).
+	if strings.HasPrefix(urlStr, "wss://") {
+		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	conn, _, err := dialer.Dial(urlStr, nil)
 	return conn, err
 }
 
@@ -161,13 +167,13 @@ func (c *RemoteHubClient) syncIMGatewayClaims() {
 		}
 	}
 	// Telegram
-	if c.app.telegramGateway != nil && c.app.telegramGateway.Status() == "connected" {
+	if !cfg.IsTelegramLocalMode() && c.app.telegramGateway != nil && c.app.telegramGateway.Status() == "connected" {
 		if err := c.SendIMGatewayClaim("telegram"); err == nil {
 			log.Printf("[hub-client] re-sent telegram gateway claim on connect")
 		}
 	}
 	// QQ Bot
-	if c.app.qqBotGateway != nil && c.app.qqBotGateway.Status() == "connected" {
+	if !cfg.IsQQBotLocalMode() && c.app.qqBotGateway != nil && c.app.qqBotGateway.Status() == "connected" {
 		if err := c.SendIMGatewayClaim("qqbot_remote"); err == nil {
 			log.Printf("[hub-client] re-sent qqbot gateway claim on connect")
 		}
@@ -942,9 +948,12 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 		return
 	}
 
+	c.app.log(fmt.Sprintf("[hub-client] im.gateway_reply received: platform=%s reply_type=%s uid=%s", payload.Platform, reply.ReplyType, reply.PlatformUID))
+
 	switch payload.Platform {
 	case "qqbot_remote":
 		if c.app.qqBotGateway == nil {
+			c.app.log("[hub-client] im.gateway_reply: qqBotGateway is nil, ignoring")
 			return
 		}
 		switch reply.ReplyType {
@@ -982,18 +991,21 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 		})
 	case "weixin":
 		if c.app.weixinGateway == nil {
+			c.app.log("[hub-client] im.gateway_reply: weixinGateway is nil, ignoring")
 			return
 		}
+		c.app.log(fmt.Sprintf("[hub-client] im.gateway_reply: dispatching to weixinGateway, text=%q ctx_token_len=%d", reply.Text, len(reply.ContextToken)))
 		c.app.weixinGateway.HandleGatewayReply(GatewayReplyPayload{
-			ReplyType:   reply.ReplyType,
-			PlatformUID: reply.PlatformUID,
-			Text:        reply.Text,
-			ImageData:   reply.ImageData,
-			Caption:     reply.Caption,
-			FileData:    reply.FileData,
-			FileName:    reply.FileName,
-			MimeType:    reply.MimeType,
-			Extra:       reply.Extra,
+			ReplyType:    reply.ReplyType,
+			PlatformUID:  reply.PlatformUID,
+			Text:         reply.Text,
+			ImageData:    reply.ImageData,
+			Caption:      reply.Caption,
+			FileData:     reply.FileData,
+			FileName:     reply.FileName,
+			MimeType:     reply.MimeType,
+			ContextToken: reply.ContextToken,
+			Extra:        reply.Extra,
 		})
 	}
 }
@@ -1013,14 +1025,6 @@ func (c *RemoteHubClient) handleIMGatewayClaimResult(msg inboundHubEnvelope) {
 	} else {
 		log.Printf("[hub-client] gateway claim DENIED for platform=%s: %s", payload.Platform, payload.Reason)
 	}
-	// Send claim result as diagnostic to WeChat if applicable
-	if payload.Platform == "weixin" && c.app.weixinGateway != nil {
-		diagText := fmt.Sprintf("🔍 [客户端] gateway claim result\nplatform=%s ok=%v", payload.Platform, payload.OK)
-		if !payload.OK {
-			diagText += "\nreason=" + payload.Reason
-		}
-		c.app.weixinGateway.BroadcastDiag(diagText)
-	}
 }
 
 func (c *RemoteHubClient) handleNicknameAssigned(msg inboundHubEnvelope) {
@@ -1039,11 +1043,11 @@ func (c *RemoteHubClient) handleNicknameAssigned(msg inboundHubEnvelope) {
 	if err != nil {
 		return
 	}
-	// Only save if no nickname was previously set (don't overwrite user choice).
-	if cfg.RemoteNickname == "" {
-		cfg.RemoteNickname = nickname
-		_ = c.app.SaveConfig(cfg)
-	}
+	// Always accept hub-assigned nickname — the hub only sends this when
+	// auto-assigning (first time) or resolving a conflict with another
+	// online device, so it should always take effect.
+	cfg.RemoteNickname = nickname
+	_ = c.app.SaveConfig(cfg)
 }
 
 

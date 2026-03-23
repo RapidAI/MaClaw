@@ -6,6 +6,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
+	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
@@ -44,6 +45,9 @@ func NewRouter(
 	chatVoiceSignaling *chat.VoiceSignaling,
 	chatNotifier *chat.Notifier,
 	voiceprintSvc *voiceprint.Service,
+	hubCfg *config.Config,
+	configPath string,
+	ensureTLSCert func(certFile, keyFile string) error,
 	staticDir string,
 	routePrefix string,
 	bridgeDir string,
@@ -138,6 +142,9 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/admin/hub_llm_config", RequireAdmin(admins, UpdateHubLLMConfigHandler(system)))
 	mux.HandleFunc("POST /api/admin/hub_llm_test", RequireAdmin(admins, TestHubLLMHandler(system)))
 	mux.HandleFunc("GET /api/admin/hub_llm_status", RequireAdmin(admins, HubLLMStatusHandler(hubLLMStatusFn)))
+	// TLS configuration
+	mux.HandleFunc("GET /api/admin/tls_config", RequireAdmin(admins, GetTLSConfigHandler(hubCfg)))
+	mux.HandleFunc("POST /api/admin/tls_config", RequireAdmin(admins, UpdateTLSConfigHandler(hubCfg, configPath, ensureTLSCert, centerSvc)))
 	// Smart route permission
 	mux.HandleFunc("POST /api/admin/users/smart_route", RequireAdmin(admins, UpdateUserSmartRouteHandler(identity.UsersRepo())))
 	mux.HandleFunc("GET /api/admin/smart_route_all", RequireAdmin(admins, GetSmartRouteAllHandler(system)))

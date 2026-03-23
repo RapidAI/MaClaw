@@ -26,7 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
-func Bootstrap(cfg *config.Config) (*App, error) {
+func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	provider, err := sqlite.NewProvider(sqlite.Config{
 		DSN:               cfg.Database.DSN,
 		WAL:               cfg.Database.WAL,
@@ -239,6 +239,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	// 9. Cross-IM NotifyBroadcaster — sends verification codes to all
 	//    reachable channels (email + any already-bound IM platforms).
 	broadcaster := im.NewNotifyBroadcaster(imAdapter, mailer)
+	broadcaster.SetActiveUserProvider(deviceNotifier)
 	qqbotPlugin.SetBroadcaster(broadcaster)
 	feishuNotifier.SetBroadcaster(broadcaster)
 
@@ -326,6 +327,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		chatVoiceSignaling,
 		chatNotifier,
 		voiceprintSvc,
+		cfg,
+		configPath,
+		EnsureSelfSignedCert,
 		cfg.PWA.StaticDir,
 		cfg.PWA.RoutePrefix,
 		cfg.Bridge.Dir,
@@ -333,6 +337,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 
 	return &App{
 		Config:          cfg,
+		ConfigPath:      configPath,
 		Provider:        provider,
 		AdminService:    adminService,
 		IdentityService: identityService,

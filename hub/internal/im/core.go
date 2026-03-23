@@ -240,6 +240,46 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		return
 	}
 
+	log.Printf("[IM Adapter] command check: text=%q len=%d bytes=[% x]", text, len(text), []byte(text))
+
+	// 3a. Handle /machines command — list all devices from Hub's perspective.
+	if text == "/machines" || text == "/m" {
+		log.Printf("[IM Adapter] /machines MATCHED for user=%s platform=%s", msg.UnifiedUserID, msg.PlatformName)
+		machines := a.messageRouter.devices.FindAllOnlineMachinesForUser(ctx, unifiedID)
+		if len(machines) == 0 {
+			a.sendResponse(ctx, plugin, target, &GenericResponse{
+				StatusCode: 200,
+				StatusIcon: "📴",
+				Title:      "设备列表",
+				Body:       "暂无在线设备。请确认 MaClaw 客户端已启动并连接到 Hub。",
+			})
+			return
+		}
+		selected, _ := a.messageRouter.GetSelectedMachine(unifiedID)
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("🖥 在线设备 (%d 台):\n\n", len(machines)))
+		for _, m := range machines {
+			marker := "  "
+			if m.MachineID == selected {
+				marker = "▶ "
+			}
+			llmTag := ""
+			if !m.LLMConfigured {
+				llmTag = " ⚠️LLM未配置"
+			}
+			sb.WriteString(fmt.Sprintf("%s%s%s\n", marker, m.Name, llmTag))
+		}
+		sb.WriteString("\n使用 /call <昵称> 切换设备，/call all 群聊模式。")
+		log.Printf("[IM Adapter] /machines response: %d devices, sending to platform=%s uid=%s", len(machines), msg.PlatformName, msg.PlatformUID)
+		a.sendResponse(ctx, plugin, target, &GenericResponse{
+			StatusCode: 200,
+			StatusIcon: "🖥️",
+			Title:      "设备列表",
+			Body:       sb.String(),
+		})
+		return
+	}
+
 	// 3. Handle /call command — always handled by Hub, never sent to Agent.
 	if strings.HasPrefix(text, "/call ") || strings.HasPrefix(text, "/call\t") || text == "/call" {
 		name := ""
@@ -740,7 +780,9 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		}
 	}
 
-	_ = plugin.SendText(ctx, target, text)
+	if err := plugin.SendText(ctx, target, text); err != nil {
+		log.Printf("[IM Adapter] SendText failed for %s (uid=%s): %v", plugin.Name(), target.PlatformUID, err)
+	}
 }
 
 // truncateAtLine truncates text to maxLen at a line boundary and appends "…".

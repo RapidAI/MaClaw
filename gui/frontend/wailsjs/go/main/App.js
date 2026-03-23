@@ -951,6 +951,22 @@ export function SetWeixinLocalMode(arg1) {
   return window['go']['main']['App']['SetWeixinLocalMode'](arg1);
 }
 
+export function GetQQBotLocalMode() {
+  return window['go']['main']['App']['GetQQBotLocalMode']();
+}
+
+export function SetQQBotLocalMode(arg1) {
+  return window['go']['main']['App']['SetQQBotLocalMode'](arg1);
+}
+
+export function GetTelegramLocalMode() {
+  return window['go']['main']['App']['GetTelegramLocalMode']();
+}
+
+export function SetTelegramLocalMode(arg1) {
+  return window['go']['main']['App']['SetTelegramLocalMode'](arg1);
+}
+
 // Gossip bindings
 export function GossipSnapshot(arg1) {
   return window['go']['main']['App']['GossipSnapshot'](arg1);

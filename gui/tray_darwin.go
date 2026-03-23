@@ -20,37 +20,72 @@ func setupTray(app *App, appOptions *options.App) {
 	appMenu.Append(menu.EditMenu())
 	appOptions.Menu = appMenu
 
-	// On macOS 26 (Tahoe) with Liquid Glass, the systray library's
-	// NSStatusBar / NSStatusItem rendering crashes shortly after the
-	// WebView's first frame.  Until the systray library is updated for
-	// Liquid Glass we skip tray creation entirely on Tahoe+.
-	// The global callback variables (UpdateTrayMenu, ShowNotification,
-	// FlashAndBeep) stay nil; all call-sites already nil-check them.
 	if isMacOSTahoeOrLater() {
-		log.Println("[tray] macOS Tahoe+ detected – skipping systray to avoid Liquid Glass crash")
-		// Still wire OnConfigChanged so config-changed events reach the frontend.
-		origDomReady := appOptions.OnDomReady
-		appOptions.OnDomReady = func(ctx context.Context) {
-			if origDomReady != nil {
-				origDomReady(ctx)
-			}
-			OnConfigChanged = func(cfg AppConfig) {
-				runtime.EventsEmit(app.ctx, "config-changed", cfg)
-			}
-		}
+		setupTrayTahoe(app, appOptions)
 		return
 	}
+	setupTrayPreTahoe(app, appOptions)
+}
 
-	// On pre-Tahoe macOS we defer systray init to OnDomReady so the
-	// WebView and window are fully created before touching NSStatusBar.
-	origDomReady := appOptions.OnDomReady
-	appOptions.OnDomReady = func(ctx context.Context) {
-		if origDomReady != nil {
-			origDomReady(ctx)
+// setupTrayTahoe uses a pure-Cocoa NSStatusItem (no energye/systray) to avoid
+// Liquid Glass crashes on macOS 26+.
+func setupTrayTahoe(app *App, appOptions *options.App) {
+	origStartup := appOptions.OnStartup
+	appOptions.OnStartup = func(ctx context.Context) {
+		if origStartup != nil {
+			origStartup(ctx)
 		}
 
-		// Use RunWithExternalLoop since Wails already owns the NSApplication event loop.
-		start, _ := systray.RunWithExternalLoop(func() {
+		t := trayTranslations["en"]
+
+		setupTahoeTray(icon, t["title"], t["show"], t["quit"],
+			func() {
+				// Show
+				runtime.WindowShow(app.ctx)
+			},
+			func() {
+				// Quit
+				runtime.Quit(app.ctx)
+			},
+		)
+
+		UpdateTrayMenu = func(lang string) {
+			t, ok := trayTranslations[lang]
+			if !ok {
+				t = trayTranslations["en"]
+			}
+			updateTahoeTrayMenu(t["title"], t["show"], t["quit"])
+		}
+
+		OnConfigChanged = func(cfg AppConfig) {
+			runtime.EventsEmit(app.ctx, "config-changed", cfg)
+		}
+
+		// ShowNotification / FlashAndBeep not available on Tahoe tray.
+		ShowNotification = func(title, message string, iconFlag uint32) {
+			_, _, _ = title, message, iconFlag
+		}
+		FlashAndBeep = func() {}
+
+		if app.CurrentLanguage != "" {
+			UpdateTrayMenu(app.CurrentLanguage)
+		}
+	}
+}
+
+// setupTrayPreTahoe uses energye/systray via systray.Run() in a goroutine.
+// This is the proven pattern from V3.2.1 that works on Intel Catalina through
+// ARM Sequoia.
+//
+// ⚠️ DO NOT OPTIMIZE / DO NOT REPLACE with RunWithExternalLoop or local fork!
+// This uses upstream energye/systray v1.0.2 (via local fork with Windows
+// extras) with plain systray.Run() in a goroutine — the exact pattern that
+// works reliably on all pre-Tahoe macOS versions. Leave it alone.
+func setupTrayPreTahoe(app *App, appOptions *options.App) {
+	appOptions.OnStartup = func(ctx context.Context) {
+		app.startup(ctx)
+
+		go systray.Run(func() {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("[tray] panic in onReady: %v", r)
@@ -80,12 +115,10 @@ func setupTray(app *App, appOptions *options.App) {
 			}
 
 			ShowNotification = func(title, message string, iconFlag uint32) {
-				_ = systray.ShowBalloonNotification(title, message, iconFlag)
+				_, _, _ = title, message, iconFlag
 			}
 
-			FlashAndBeep = func() {
-				systray.FlashAndBeep()
-			}
+			FlashAndBeep = func() {}
 
 			mShow.Click(func() {
 				go runtime.WindowShow(app.ctx)
@@ -100,20 +133,8 @@ func setupTray(app *App, appOptions *options.App) {
 			})
 
 			if app.CurrentLanguage != "" {
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					UpdateTrayMenu(app.CurrentLanguage)
-				}()
+				UpdateTrayMenu(app.CurrentLanguage)
 			}
 		}, func() {})
-
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[tray] panic in nativeStart: %v", r)
-				}
-			}()
-			start()
-		}()
 	}
 }

@@ -70,6 +70,35 @@ type Config struct {
 	Bridge struct {
 		Dir string `yaml:"dir"` // path to openclaw-bridge directory
 	} `yaml:"bridge"`
+
+	// TLS enables HTTPS/WSS on the same listen port (default 9399).
+	// When enabled with auto_generate, Hub creates a self-signed certificate
+	// on first start. Clients must use https:// URLs and accept self-signed certs.
+	//
+	// If you later add nginx reverse proxy, set enabled=false and configure nginx:
+	//
+	//   server {
+	//       listen 443 ssl;
+	//       ssl_certificate     /path/to/cert.pem;
+	//       ssl_certificate_key /path/to/key.pem;
+	//
+	//       location / {
+	//           proxy_pass http://127.0.0.1:9399;
+	//           proxy_http_version 1.1;
+	//           proxy_set_header Upgrade $http_upgrade;
+	//           proxy_set_header Connection "upgrade";
+	//           proxy_set_header Host $host;
+	//           proxy_set_header X-Real-IP $remote_addr;
+	//           proxy_read_timeout 3600s;   # WebSocket long-lived connections
+	//           proxy_send_timeout 3600s;
+	//       }
+	//   }
+	TLS struct {
+		Enabled      bool   `yaml:"enabled"`
+		CertFile     string `yaml:"cert_file"`
+		KeyFile      string `yaml:"key_file"`
+		AutoGenerate bool   `yaml:"auto_generate"` // generate self-signed cert if cert/key missing
+	} `yaml:"tls"`
 }
 
 func Default() *Config {
@@ -112,6 +141,11 @@ func Default() *Config {
 	cfg.Logging.Dir = "./data/logs"
 
 	cfg.Bridge.Dir = "./openclaw-bridge"
+
+	cfg.TLS.Enabled = false
+	cfg.TLS.CertFile = "./data/tls/hub.crt"
+	cfg.TLS.KeyFile = "./data/tls/hub.key"
+	cfg.TLS.AutoGenerate = true
 
 	return cfg
 }

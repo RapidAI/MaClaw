@@ -421,6 +421,14 @@ export function GetWeixinLocalMode():Promise<boolean>;
 
 export function SetWeixinLocalMode(arg1:boolean):Promise<void>;
 
+export function GetQQBotLocalMode():Promise<boolean>;
+
+export function SetQQBotLocalMode(arg1:boolean):Promise<void>;
+
+export function GetTelegramLocalMode():Promise<boolean>;
+
+export function SetTelegramLocalMode(arg1:boolean):Promise<void>;
+
 // Gossip bindings
 export function GossipSnapshot(arg1:string):Promise<any>;
 

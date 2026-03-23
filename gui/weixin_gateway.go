@@ -172,6 +172,7 @@ func (m *weixinGatewayManager) resetLocalHandler() {
 // onIncomingMessage routes WeChat messages based on config:
 //   - Local mode: directly invokes the local MaClaw LLM agent loop
 //   - Hub mode: forwards to Hub via im.gateway_message
+//   - Hub mode fallback: if Hub is unavailable, notify user and fall back to local
 func (m *weixinGatewayManager) onIncomingMessage(msg weixin.IncomingMessage) {
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
@@ -180,12 +181,22 @@ func (m *weixinGatewayManager) onIncomingMessage(msg weixin.IncomingMessage) {
 	}
 
 	isLocal := cfg.IsWeixinLocalMode()
+	localModePtr := cfg.WeixinLocalMode // nil = never set (default local)
 	hubClient := m.app.hubClient()
 	hubNil := hubClient == nil
 	hubConn := !hubNil && hubClient.IsConnected()
-	log.Printf("[weixin-mgr] onIncomingMessage: user=%s local_mode=%v hub_nil=%v hub_connected=%v", msg.FromUserID, isLocal, hubNil, hubConn)
+	log.Printf("[weixin-mgr] onIncomingMessage: user=%s local_mode=%v local_mode_ptr=%v hub_nil=%v hub_connected=%v",
+		msg.FromUserID, isLocal, localModePtr, hubNil, hubConn)
 
 	if isLocal {
+		m.handleLocalMessage(msg)
+		return
+	}
+
+	// Hub mode — try forwarding; fall back to local if Hub unavailable.
+	if hubNil || !hubConn {
+		log.Printf("[weixin-mgr] Hub mode but Hub unavailable, falling back to local: user=%s", msg.FromUserID)
+		m.notifyHubUnavailable(msg)
 		m.handleLocalMessage(msg)
 		return
 	}
@@ -193,11 +204,31 @@ func (m *weixinGatewayManager) onIncomingMessage(msg weixin.IncomingMessage) {
 	m.forwardToHub(msg)
 }
 
+// notifyHubUnavailable sends a one-time warning to the WeChat user when Hub
+// mode is configured but Hub is not connected. The message is rate-limited
+// to avoid spamming on every incoming message.
+func (m *weixinGatewayManager) notifyHubUnavailable(msg weixin.IncomingMessage) {
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return
+	}
+	_ = gw.SendText(context.Background(), weixin.OutgoingText{
+		ToUserID:     msg.FromUserID,
+		Text:         "⚠️ 当前为多机模式，但 Hub 未连接。消息已回退到本地处理。\n请检查 Hub 连接状态，或切换回单机模式。",
+		ContextToken: msg.ContextToken,
+	})
+}
+
 // forwardToHub sends the message to Hub via im.gateway_message (original behaviour).
 func (m *weixinGatewayManager) forwardToHub(msg weixin.IncomingMessage) {
 	hubClient := m.app.hubClient()
 	if hubClient == nil || !hubClient.IsConnected() {
 		log.Printf("[weixin-mgr] forwardToHub FAILED: hub_nil=%v user=%s", hubClient == nil, msg.FromUserID)
+		// Fall back to local processing instead of silently dropping.
+		m.notifyHubUnavailable(msg)
+		m.handleLocalMessage(msg)
 		return
 	}
 
@@ -613,26 +644,7 @@ func (m *weixinGatewayManager) sendDiag(toUserID, contextToken, text string) {
 	})
 }
 
-// BroadcastDiag sends a diagnostic message to the last known WeChat user.
-// Used when we don't have a specific user ID (e.g. claim result callback).
-func (m *weixinGatewayManager) BroadcastDiag(text string) {
-	m.mu.Lock()
-	gw := m.gateway
-	m.mu.Unlock()
-	if gw == nil {
-		return
-	}
-	// Use gateway's last known user for broadcast
-	lastUID := gw.LastActiveUserID()
-	if lastUID == "" {
-		log.Printf("[weixin-mgr] BroadcastDiag: no last active user, dropping: %s", text)
-		return
-	}
-	_ = gw.SendText(context.Background(), weixin.OutgoingText{
-		ToUserID: lastUID,
-		Text:     text,
-	})
-}
+
 
 // truncateForLog truncates a string for log output.
 func truncateForLog(s string, maxRunes int) string {
@@ -669,15 +681,14 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 		return
 	}
 
-	// Resolve context token: prefer from reply payload, fall back to cached
-	contextToken := ""
-	if ct, ok := reply.Extra["context_token"]; ok {
-		if s, ok := ct.(string); ok {
-			contextToken = s
-		}
-	}
+	// Resolve context token: prefer from reply payload (injected by Hub),
+	// fall back to locally cached token.
+	contextToken := reply.ContextToken
 	if contextToken == "" {
 		contextToken = gw.GetContextToken(reply.PlatformUID)
+	}
+	if contextToken == "" {
+		log.Printf("[weixin-mgr] HandleGatewayReply: WARNING no contextToken for uid=%s, reply will likely fail", reply.PlatformUID)
 	}
 
 	switch reply.ReplyType {
@@ -782,6 +793,10 @@ func (a *App) SetWeixinLocalMode(enabled bool) error {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return err
+	}
+	// Switching to hub mode requires prior Hub registration.
+	if !enabled && cfg.RemoteMachineID == "" {
+		return fmt.Errorf("请先注册到 Hub（设置 Hub 地址并完成注册），再开启多机模式")
 	}
 	cfg.SetWeixinLocal(enabled)
 	if err := a.SaveConfig(cfg); err != nil {

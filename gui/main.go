@@ -51,16 +51,8 @@ func main() {
 	// On macOS 26 (Tahoe) and later, Liquid Glass changes how translucent and
 	// frameless windows are rendered.  Wails v2's NSVisualEffectView-based
 	// translucency can crash at window creation time, so we fall back to a
-	// safe, opaque, non-frameless configuration on Tahoe+.  Systray is
-	// completely disabled on Tahoe+ (see tray_darwin.go) because the
-	// NSStatusBar rendering also crashes under Liquid Glass.
+	// safe, opaque, non-frameless configuration on Tahoe+.
 	tahoe := isMacOSTahoeOrLater()
-	// On Tahoe+ we skip systray, so there is no tray icon to click.
-	// If the app starts hidden (autostart) the user would have no way to
-	// bring the window back.  Force the window visible in that case.
-	if tahoe && app.IsAutoStart {
-		app.IsAutoStart = false
-	}
 	macOpts := &mac.Options{
 		TitleBar:             mac.TitleBarHidden(),
 		WebviewIsTransparent: true,
@@ -68,9 +60,14 @@ func main() {
 	}
 	bgColour := &options.RGBA{R: 255, G: 255, B: 255, A: 0}
 	frameless := true
+	// ⚠️ DO NOT OPTIMIZE the Tahoe fallback below!
+	// TitleBarHidden (not HiddenInset!) hides the red/yellow/green traffic-light
+	// buttons. frameless=false avoids Liquid Glass crash with Wails v2's
+	// NSVisualEffectView. This combination was chosen deliberately — do not
+	// switch back to TitleBarHiddenInset or frameless=true on Tahoe.
 	if tahoe {
 		macOpts = &mac.Options{
-			TitleBar:             mac.TitleBarHiddenInset(),
+			TitleBar:             mac.TitleBarHidden(),
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
 		}
@@ -80,14 +77,15 @@ func main() {
 
 	// Create application with options
 	appOptions := &options.App{
-		Title:       "MaClaw",
-		Frameless:   frameless,
-		Width:       807,
-		Height:      392,
-		StartHidden: app.IsAutoStart,
-		OnStartup:   app.startup,
-		OnDomReady:  app.domReady,
-		OnShutdown:  app.shutdown,
+		Title:                    "MaClaw",
+		Frameless:                frameless,
+		Width:                    807,
+		Height:                   392,
+		EnableDefaultContextMenu: true,
+		StartHidden:              app.IsAutoStart,
+		OnStartup:                app.startup,
+		OnDomReady:               app.domReady,
+		OnShutdown:               app.shutdown,
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId: "maclaw-lock",
 			OnSecondInstanceLaunch: func(secondInstanceData options.SecondInstanceData) {

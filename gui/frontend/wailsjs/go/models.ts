@@ -135,6 +135,7 @@ export namespace main {
 	    remote_machine_id: string;
 	    remote_machine_token: string;
 	    remote_heartbeat_sec: number;
+	    remote_nickname: string;
 	    remote_client_id: string;
 	    default_launch_mode: string;
 	    maclaw_llm_url: string;
@@ -152,13 +153,27 @@ export namespace main {
 	    local_mcp_servers: any[];
 	    nl_skills: any[];
 	    memory_auto_compress: boolean;
+	    memory_max_backups: number;
 	    clawnet_enabled: boolean;
 	    skill_hub_urls: any[];
 	    maclaw_debug_tool_calls: boolean;
+	    clawnet_auto_picker_enabled: boolean;
+	    clawnet_auto_picker_poll_min: number;
+	    clawnet_auto_picker_min_reward: number;
+	    security_policy_mode: string;
 	    qqbot_enabled: boolean;
 	    qqbot_app_id: string;
 	    qqbot_app_secret: string;
+	    telegram_bot_enabled: boolean;
+	    telegram_bot_token: string;
+	    weixin_enabled: boolean;
+	    weixin_token: string;
+	    weixin_base_url: string;
+	    weixin_cdn_url: string;
+	    weixin_account_id: string;
+	    weixin_local_mode?: boolean;
 	    ui_mode: string;
+	    skill_purchase_mode: string;
 	    gossip_auto_publish: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -211,6 +226,7 @@ export namespace main {
 	        this.remote_machine_id = source["remote_machine_id"];
 	        this.remote_machine_token = source["remote_machine_token"];
 	        this.remote_heartbeat_sec = source["remote_heartbeat_sec"];
+	        this.remote_nickname = source["remote_nickname"];
 	        this.remote_client_id = source["remote_client_id"];
 	        this.default_launch_mode = source["default_launch_mode"];
 	        this.maclaw_llm_url = source["maclaw_llm_url"];
@@ -228,13 +244,27 @@ export namespace main {
 	        this.local_mcp_servers = source["local_mcp_servers"];
 	        this.nl_skills = source["nl_skills"];
 	        this.memory_auto_compress = source["memory_auto_compress"];
+	        this.memory_max_backups = source["memory_max_backups"];
 	        this.clawnet_enabled = source["clawnet_enabled"];
+	        this.clawnet_auto_picker_enabled = source["clawnet_auto_picker_enabled"];
+	        this.clawnet_auto_picker_poll_min = source["clawnet_auto_picker_poll_min"];
+	        this.clawnet_auto_picker_min_reward = source["clawnet_auto_picker_min_reward"];
 	        this.skill_hub_urls = source["skill_hub_urls"];
+	        this.security_policy_mode = source["security_policy_mode"];
 	        this.maclaw_debug_tool_calls = source["maclaw_debug_tool_calls"];
 	        this.qqbot_enabled = source["qqbot_enabled"];
 	        this.qqbot_app_id = source["qqbot_app_id"];
 	        this.qqbot_app_secret = source["qqbot_app_secret"];
+	        this.telegram_bot_enabled = source["telegram_bot_enabled"];
+	        this.telegram_bot_token = source["telegram_bot_token"];
+	        this.weixin_enabled = source["weixin_enabled"];
+	        this.weixin_token = source["weixin_token"];
+	        this.weixin_base_url = source["weixin_base_url"];
+	        this.weixin_cdn_url = source["weixin_cdn_url"];
+	        this.weixin_account_id = source["weixin_account_id"];
+	        this.weixin_local_mode = source["weixin_local_mode"];
 	        this.ui_mode = source["ui_mode"];
+	        this.skill_purchase_mode = source["skill_purchase_mode"];
 	        this.gossip_auto_publish = source["gossip_auto_publish"];
 	    }
 	

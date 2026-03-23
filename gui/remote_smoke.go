@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -506,7 +505,7 @@ func getRemoteSmokeJSON(baseURL, path string, query url.Values, target any) erro
 		endpoint += "?" + query.Encode()
 	}
 
-	resp, err := http.Get(endpoint)
+	resp, err := hubHTTPClient.Get(endpoint)
 	if err != nil {
 		return err
 	}
