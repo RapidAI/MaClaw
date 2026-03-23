@@ -6,6 +6,7 @@ package main
 #cgo CFLAGS: -x objective-c
 #cgo LDFLAGS: -framework Cocoa
 
+#include <stdlib.h>
 #include "tray_tahoe_darwin.h"
 */
 import "C"
