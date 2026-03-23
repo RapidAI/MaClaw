@@ -256,8 +256,17 @@ func (dc *DiscussionConductor) askDevices(
 		text      string
 	}
 	ch := make(chan result, len(devices))
+	sem := dc.router.LLMSemaphore()
 	for _, d := range devices {
 		go func(d OnlineMachineInfo) {
+			// Acquire LLM semaphore slot; skip device on timeout.
+			if !sem.Acquire(ctx) {
+				log.Printf("[DiscussionConductor] semaphore timeout for device=%s, skipping", d.Name)
+				ch <- result{d.MachineID, ""}
+				return
+			}
+			defer sem.Release()
+
 			// Build discussion_context instruction for this device.
 			var others []string
 			for _, n := range allNames {
@@ -341,6 +350,15 @@ func (dc *DiscussionConductor) decideNextAction(ctx context.Context, state *Cond
 	}
 
 	llmCfg := cfg.ToMaclawLLMConfig()
+
+	// Acquire LLM semaphore for the decision call.
+	sem := dc.router.LLMSemaphore()
+	if !sem.Acquire(ctx) {
+		log.Printf("[DiscussionConductor] semaphore timeout for decideNextAction")
+		return nil
+	}
+	defer sem.Release()
+
 	resp, err := agent.DoSimpleLLMRequest(llmCfg, messages, dc.client, 10*time.Second)
 	if err != nil {
 		log.Printf("[DiscussionConductor] LLM error: %v", err)
@@ -392,6 +410,15 @@ func (dc *DiscussionConductor) generateFinalSummary(ctx context.Context, state *
 	}
 
 	llmCfg := cfg.ToMaclawLLMConfig()
+
+	// Acquire LLM semaphore for the summary call.
+	sem := dc.router.LLMSemaphore()
+	if !sem.Acquire(ctx) {
+		log.Printf("[DiscussionConductor] semaphore timeout for generateFinalSummary")
+		return dc.fallbackSummary(state)
+	}
+	defer sem.Release()
+
 	resp, err := agent.DoSimpleLLMRequest(llmCfg, messages, dc.client, 15*time.Second)
 	if err != nil {
 		log.Printf("[DiscussionConductor] summary LLM error: %v", err)

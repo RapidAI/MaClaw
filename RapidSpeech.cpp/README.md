@@ -52,8 +52,12 @@ While the open-source ecosystem already offers powerful cloud-side frameworks su
 - [ ] FireRedASR2
 
 **Text-to-Speech (TTS)**
+- [x] OpenVoice2 (MeloTTS base + tone color converter, streaming)
 - [ ] CosyVoice3
 - [ ] Qwen3-TTS
+
+**Speaker Verification**
+- [x] ECAPA-TDNN (speaker embedding + cosine similarity verification)
 
 ------
 
@@ -96,13 +100,85 @@ Models are available on:
 git clone https://github.com/RapidAI/RapidSpeech.cpp
 cd RapidSpeech.cpp
 git submodule sync && git submodule update --init --recursive
-cmake -B build
+cmake -B build -DRS_BUILD_SERVER=ON
 cmake --build build --config Release
+```
 
+### ASR (Speech Recognition)
+
+```bash
 ./build/rs-asr-offline \
   -m /path/to/SenseVoice/sense-voice-small-fp32.gguf \
   -w /path/to/test_sample_rate_16k.wav
 ```
+
+### Speaker Verification
+
+```bash
+./build/rs-speaker-verify \
+  -m /path/to/ecapa-tdnn.gguf \
+  -a /path/to/speaker1.wav \
+  -b /path/to/speaker2.wav \
+  -t 0.5
+```
+
+### TTS (Text-to-Speech)
+
+```bash
+# Server mode
+./build/rs-server --model /path/to/openvoice2.gguf --port 8080
+
+# Synthesize via API
+curl -X POST http://localhost:8080/v1/tts \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello world", "stream": true}'
+```
+
+### Python Bindings
+
+Build with Python support:
+
+```bash
+cmake -B build -DRS_ENABLE_PYTHON=ON
+cmake --build build --config Release
+```
+
+```python
+import rapidspeech
+
+# ASR
+asr = rapidspeech.asr_offline("/path/to/model.gguf")
+asr.push_audio(pcm_data)
+asr.process()
+print(asr.get_text())
+
+# Speaker Verification
+sv = rapidspeech.speaker_verifier("/path/to/ecapa-tdnn.gguf")
+result = sv.verify(audio1, audio2, threshold=0.5)
+print(f"Score: {result['score']}, Same speaker: {result['same_speaker']}")
+
+# TTS
+tts = rapidspeech.tts_synthesizer("/path/to/openvoice2.gguf")
+pcm = tts.synthesize("Hello world")
+
+# TTS with voice cloning
+tts.set_reference(reference_pcm, sample_rate=16000)
+pcm = tts.synthesize("Hello in cloned voice")
+
+# Streaming TTS
+chunks = tts.synthesize_streaming("Hello world")
+for chunk in chunks:
+    play_audio(chunk)
+```
+
+### REST API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/v1/asr` | POST | Speech recognition (WAV upload) |
+| `/v1/tts` | POST | Text-to-speech (JSON body) |
+| `/v1/speaker-verify` | POST | Speaker verification (two WAV uploads) |
+| `/v1/speaker-embed` | POST | Speaker embedding extraction |
 
 ------
 

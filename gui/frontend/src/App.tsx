@@ -3050,6 +3050,13 @@ ${instruction}`;
                             const llmOk = maclawLLMOnline;
                             const netOk = clawNetRunning;
                             const mobileOk = !!remoteActivationStatus?.activated;
+                            if (isLiteMode) {
+                                if (llmOk && netOk) return lang?.startsWith('zh') ? '全部在线' : 'All online';
+                                const parts: string[] = [];
+                                parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
+                                parts.push(netOk ? (lang?.startsWith('zh') ? '虾网 ✓' : 'ClawNet ✓') : (lang?.startsWith('zh') ? '虾网 ✗' : 'ClawNet ✗'));
+                                return parts.join('  ');
+                            }
                             if (llmOk && netOk && mobileOk) return lang?.startsWith('zh') ? '全部在线' : 'All online';
                             const parts: string[] = [];
                             parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
@@ -3067,12 +3074,19 @@ ${instruction}`;
                                 const off = '#ccc';
                                 const llm = maclawLLMOnline ? on : off;
                                 const net = clawNetRunning ? on : off;
+                                if (isLiteMode) {
+                                    return `conic-gradient(${llm} 0deg, ${llm} 180deg, ${net} 180deg, ${net} 360deg)`;
+                                }
                                 const mob = remoteActivationStatus?.activated ? on : off;
                                 return `conic-gradient(${llm} 0deg, ${llm} 180deg, ${net} 180deg, ${net} 270deg, ${mob} 270deg, ${mob} 360deg)`;
                             })(),
                             boxShadow: (() => {
-                                const allOn = maclawLLMOnline && clawNetRunning && !!remoteActivationStatus?.activated;
-                                const noneOn = !maclawLLMOnline && !clawNetRunning && !remoteActivationStatus?.activated;
+                                const allOn = isLiteMode
+                                    ? (maclawLLMOnline && clawNetRunning)
+                                    : (maclawLLMOnline && clawNetRunning && !!remoteActivationStatus?.activated);
+                                const noneOn = isLiteMode
+                                    ? (!maclawLLMOnline && !clawNetRunning)
+                                    : (!maclawLLMOnline && !clawNetRunning && !remoteActivationStatus?.activated);
                                 if (noneOn) return 'none';
                                 if (allOn && navTab === 'ai') return '0 0 10px rgba(231,76,60,0.6), 0 0 20px rgba(231,76,60,0.3)';
                                 if (allOn) return '0 0 6px rgba(231,76,60,0.4), 0 0 12px rgba(231,76,60,0.15)';
@@ -3880,7 +3894,7 @@ ${instruction}`;
                     {navTab === 'settings' && (
                         <div className="settings-shell" style={{ padding: '10px' }}>
                             <div className="settings-top-tabs">
-                                {settingsTabOptions.filter(tab => !(isLiteMode && tab.id === 'display')).map((tab) => (
+                                {settingsTabOptions.filter(tab => !(isLiteMode && (tab.id === 'display' || tab.id === 'remote'))).map((tab) => (
                                     <button
                                         key={tab.id}
                                         type="button"
@@ -3935,7 +3949,7 @@ ${instruction}`;
                                     {t("uiModePro")}
                                 </label>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                    <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); const currentTab: string = navTab; if (currentTab === 'remote' || currentTab === 'skills' || currentTab === 'mcp' || isToolTab(currentTab)) { setNavTab('ai'); } if (settingsTab === 'display') { setSettingsTab('general'); } } }} />
+                                    <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); const currentTab: string = navTab; if (currentTab === 'remote' || currentTab === 'skills' || currentTab === 'mcp' || isToolTab(currentTab)) { setNavTab('ai'); } if (settingsTab === 'display' || settingsTab === 'remote') { setSettingsTab('general'); } } }} />
                                     {t("uiModeLite")}
                                 </label>
                                 <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>

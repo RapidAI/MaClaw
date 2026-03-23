@@ -75,6 +75,47 @@ var requestIDCounter atomic.Uint64
 const progressHeartbeat = "__heartbeat__"
 
 // ---------------------------------------------------------------------------
+// broadcastProgressDedup — cross-device progress deduplication for broadcast
+// ---------------------------------------------------------------------------
+
+type ctxKeyBroadcastDedup struct{}
+
+// broadcastProgressDedup tracks progress texts already delivered across
+// multiple concurrent routeToSingleMachine calls within a single broadcast.
+// The raw text (without [deviceName] prefix) is used as the dedup key so
+// identical acknowledgments from different devices are suppressed.
+type broadcastProgressDedup struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+func newBroadcastProgressDedup() *broadcastProgressDedup {
+	return &broadcastProgressDedup{seen: make(map[string]struct{})}
+}
+
+// tryDeliver returns true if the text has not been seen before (first caller wins).
+func (d *broadcastProgressDedup) tryDeliver(rawText string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.seen[rawText]; ok {
+		return false
+	}
+	d.seen[rawText] = struct{}{}
+	return true
+}
+
+func withBroadcastDedup(ctx context.Context, d *broadcastProgressDedup) context.Context {
+	return context.WithValue(ctx, ctxKeyBroadcastDedup{}, d)
+}
+
+func getBroadcastDedup(ctx context.Context) *broadcastProgressDedup {
+	if v, ok := ctx.Value(ctxKeyBroadcastDedup{}).(*broadcastProgressDedup); ok {
+		return v
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // MessageRouter — routes IM messages to MaClaw Agent via WebSocket
 // ---------------------------------------------------------------------------
 
@@ -93,6 +134,7 @@ type MessageRouter struct {
 	progressDelivery ProgressDeliveryFunc
 	responseDelivery ResponseDeliveryFunc
 	conductor        *DiscussionConductor // optional; nil = mechanical rounds
+	llmSem           *LLMSemaphore       // global LLM concurrency limiter
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingIMRequest // requestID → pending
@@ -115,10 +157,17 @@ func NewMessageRouter(devices DeviceFinder) *MessageRouter {
 		pendingReqs:     make(map[string]*PendingIMRequest),
 		selectedMachine: make(map[string]string),
 		discussions:     make(map[string]*DiscussionState),
+		llmSem:          NewLLMSemaphore(DefaultMaxConcurrent),
 		stopCh:          make(chan struct{}),
 	}
 	go r.cleanupLoop()
 	return r
+}
+
+// LLMSemaphore returns the shared LLM concurrency semaphore so that
+// other components (Coordinator, IntentClassifier, etc.) can share it.
+func (r *MessageRouter) LLMSemaphore() *LLMSemaphore {
+	return r.llmSem
 }
 
 // MachineSelectResult is returned by SelectMachine / TrySelectByName.
@@ -526,6 +575,13 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 			lastProgressText = progressText
 
 			if time.Since(lastDelivered) >= progressMinInterval && !isDup {
+				// Cross-device dedup: in broadcast mode, suppress identical
+				// progress texts already sent by another device.
+				if dedup := getBroadcastDedup(ctx); dedup != nil {
+					if !dedup.tryDeliver(progressText) {
+						continue // already delivered by another device, skip
+					}
+				}
 				lastDelivered = time.Now()
 				deliverText := progressText
 				if namePrefix != "" {
@@ -587,9 +643,19 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 	}
 	ch := make(chan result, len(targets))
 
+	// Create a shared dedup filter so identical progress messages from
+	// different devices (e.g. "📨 收到，正在处理中…") are only sent once.
+	dedupCtx := withBroadcastDedup(ctx, newBroadcastProgressDedup())
+
 	for _, m := range targets {
 		go func(m OnlineMachineInfo) {
-			resp, err := r.routeToSingleMachine(ctx, userID, platformName, platformUID, text, m.MachineID, m.Name)
+			// Acquire LLM semaphore slot; degrade on timeout.
+			if !r.llmSem.Acquire(dedupCtx) {
+				ch <- result{name: m.Name, resp: nil, err: fmt.Errorf("LLM 并发已满，请稍后重试")}
+				return
+			}
+			defer r.llmSem.Release()
+			resp, err := r.routeToSingleMachine(dedupCtx, userID, platformName, platformUID, text, m.MachineID, m.Name)
 			ch <- result{name: m.Name, resp: resp, err: err}
 		}(m)
 	}
@@ -672,9 +738,16 @@ func (r *MessageRouter) routeToMultiple(ctx context.Context, userID, platformNam
 		err  error
 	}
 	ch := make(chan result, len(targets))
+	dedupCtx := withBroadcastDedup(ctx, newBroadcastProgressDedup())
 	for _, m := range targets {
 		go func(m OnlineMachineInfo) {
-			resp, err := r.routeToSingleMachine(ctx, userID, platformName, platformUID, text, m.MachineID, m.Name)
+			// Acquire LLM semaphore slot; degrade on timeout.
+			if !r.llmSem.Acquire(dedupCtx) {
+				ch <- result{name: m.Name, resp: nil, err: fmt.Errorf("LLM 并发已满，请稍后重试")}
+				return
+			}
+			defer r.llmSem.Release()
+			resp, err := r.routeToSingleMachine(dedupCtx, userID, platformName, platformUID, text, m.MachineID, m.Name)
 			ch <- result{name: m.Name, resp: resp, err: err}
 		}(m)
 	}

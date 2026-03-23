@@ -454,3 +454,13 @@ export function IsFreeProxyRunning():Promise<boolean>;
 export function DetectChrome():Promise<string>;
 
 export function LaunchChromeDebug():Promise<string>;
+
+export function IsDangbeiLoggedIn():Promise<boolean>;
+
+export function DetectBrowser():Promise<Record<string, string>>;
+
+export function DangbeiLogin():Promise<number>;
+
+export function DangbeiFinishLogin(arg1:number):Promise<string>;
+
+export function DangbeiEnsureAuth():Promise<string>;

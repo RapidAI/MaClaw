@@ -58,6 +58,7 @@ jobs:
           # Server & CLI
           cp install/bin/rs-server dist/ 2>/dev/null || true
           cp install/bin/rs-asr-offline dist/ 2>/dev/null || true
+          cp install/bin/rs-speaker-verify dist/ 2>/dev/null || true
           # CMake config
           mkdir -p dist/cmake
           cp install/lib/cmake/rapidspeech/*.cmake dist/cmake/ 2>/dev/null || true
@@ -103,6 +104,7 @@ jobs:
           cp install/include/rapidspeech.h dist/
           cp install/bin/rs-server dist/ 2>/dev/null || true
           cp install/bin/rs-asr-offline dist/ 2>/dev/null || true
+          cp install/bin/rs-speaker-verify dist/ 2>/dev/null || true
           mkdir -p dist/cmake
           cp install/lib/cmake/rapidspeech/*.cmake dist/cmake/ 2>/dev/null || true
           tar czf rapidspeech-macos-universal.tar.gz -C dist .
@@ -152,6 +154,7 @@ jobs:
           Copy-Item "install\include\rapidspeech.h" dist\
           Copy-Item "install\bin\rs-server.exe" dist\ -ErrorAction SilentlyContinue
           Copy-Item "install\bin\rs-asr-offline.exe" dist\ -ErrorAction SilentlyContinue
+          Copy-Item "install\bin\rs-speaker-verify.exe" dist\ -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path dist\cmake
           Copy-Item "install\lib\cmake\rapidspeech\*.cmake" dist\cmake\ -ErrorAction SilentlyContinue
           Compress-Archive -Path dist\* -DestinationPath rapidspeech-windows-x64.zip

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // TLSConfigResponse is the JSON shape returned by GET /api/admin/tls_config.
@@ -74,8 +76,28 @@ func UpdateTLSConfigHandler(cfg *config.Config, configPath string, ensureCert fu
 		}
 
 		if configPath == "" {
-			writeError(w, http.StatusInternalServerError, "NO_CONFIG_PATH", "Config file path not available; cannot persist TLS changes")
-			return
+			// No config file was specified at startup — derive a default path
+			// next to the executable so TLS changes can be persisted.
+			exe, exeErr := os.Executable()
+			if exeErr != nil {
+				writeError(w, http.StatusInternalServerError, "NO_CONFIG_PATH", "Cannot determine executable path to create config file")
+				return
+			}
+			configPath = filepath.Join(filepath.Dir(exe), "config.yaml")
+			if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
+				// Bootstrap a minimal config file with defaults.
+				defaults := config.Default()
+				data, marshalErr := yaml.Marshal(defaults)
+				if marshalErr != nil {
+					writeError(w, http.StatusInternalServerError, "NO_CONFIG_PATH", "Failed to marshal default config")
+					return
+				}
+				if writeErr := os.WriteFile(configPath, data, 0644); writeErr != nil {
+					writeError(w, http.StatusInternalServerError, "NO_CONFIG_PATH", "Failed to create config file: "+writeErr.Error())
+					return
+				}
+				log.Printf("[tls] created default config file at %s", configPath)
+			}
 		}
 
 		// When enabling TLS with auto_generate, ensure cert exists before

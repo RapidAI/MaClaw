@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -112,9 +113,9 @@ func isValidToolProvider(m corelib.ModelConfig) bool {
 
 func buildClaudeEnv(cfg corelib.AppConfig, m *corelib.ModelConfig, projectDir string) map[string]string {
 	env := map[string]string{
-		"CLAUDE_CODE_USE_COLORS":       "true",
+		"CLAUDE_CODE_USE_COLORS":        "true",
 		"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
-		"MAX_THINKING_TOKENS":          "10000",
+		"MAX_THINKING_TOKENS":           "10000",
 	}
 	if !m.IsBuiltin {
 		if m.ApiKey != "" {
@@ -128,6 +129,13 @@ func buildClaudeEnv(cfg corelib.AppConfig, m *corelib.ModelConfig, projectDir st
 			env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = m.ModelId
 			env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = m.ModelId
 			env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = m.ModelId
+		}
+		// Write settings.json unless 百度千帆 (handled below with different URL)
+		lowerName := strings.ToLower(m.ModelName)
+		if lowerName != "百度千帆" && lowerName != "qianfan" {
+			if err := configfile.WriteClaudeSettings(m.ApiKey, m.ModelUrl, m.ModelId); err != nil {
+				fmt.Fprintf(os.Stderr, "[claude-config] failed to write settings.json: %v\n", err)
+			}
 		}
 	}
 	// 百度千帆特殊处理
@@ -143,6 +151,10 @@ func buildClaudeEnv(cfg corelib.AppConfig, m *corelib.ModelConfig, projectDir st
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = modelID
 		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 		env["API_TIMEOUT_MS"] = "600000"
+		// Also write settings.json for 百度千帆
+		if err := configfile.WriteClaudeSettings(m.ApiKey, "https://qianfan.baidubce.com/anthropic/coding", modelID); err != nil {
+			fmt.Fprintf(os.Stderr, "[claude-config] failed to write settings.json: %v\n", err)
+		}
 	}
 	// TeamMode
 	for _, proj := range cfg.Projects {
@@ -160,14 +172,17 @@ func buildCodexEnv(m *corelib.ModelConfig) map[string]string {
 	env := map[string]string{}
 	if !m.IsBuiltin {
 		// Only pass API key via env var; all other config goes through config.toml.
-		// OPENAI_BASE_URL is deprecated in Codex CLI — use config.toml instead.
 		if m.ApiKey != "" {
 			env["OPENAI_API_KEY"] = m.ApiKey
 		}
-		// Write config.toml to ~/.codex so Codex picks up provider settings.
-		if err := writeCodexConfigToml(m); err != nil {
-			// Best-effort: log but don't fail the launch.
-			fmt.Fprintf(os.Stderr, "[codex-config] failed to write config.toml: %v\n", err)
+		// Write auth.json + config.toml atomically with rollback via configfile package.
+		// This preserves user's MCP servers, profiles, and comments in config.toml.
+		if err := configfile.WriteCodexConfig(m.ApiKey, m.ModelUrl, m.ModelId, m.ModelName, m.WireApi); err != nil {
+			fmt.Fprintf(os.Stderr, "[codex-config] failed to write config: %v\n", err)
+			// Fallback to legacy full-regeneration approach
+			if err2 := writeCodexConfigToml(m); err2 != nil {
+				fmt.Fprintf(os.Stderr, "[codex-config] fallback also failed: %v\n", err2)
+			}
 		}
 	}
 	return env
@@ -207,6 +222,10 @@ func buildGeminiEnv(m *corelib.ModelConfig) map[string]string {
 		}
 		if m.ModelId != "" {
 			env["GEMINI_MODEL"] = m.ModelId
+		}
+		// Write ~/.gemini/.env + settings.json for persistence across subprocess restarts
+		if err := configfile.WriteGeminiConfig(m.ApiKey, m.ModelUrl, m.ModelId); err != nil {
+			fmt.Fprintf(os.Stderr, "[gemini-config] failed to write config: %v\n", err)
 		}
 	}
 	return env

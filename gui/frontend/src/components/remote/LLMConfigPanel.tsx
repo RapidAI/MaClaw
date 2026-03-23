@@ -9,8 +9,10 @@ import {
     StartFreeProxy,
     StopFreeProxy,
     IsFreeProxyRunning,
-    DetectChrome,
-    LaunchChromeDebug,
+    DetectBrowser,
+    DangbeiLogin,
+    DangbeiFinishLogin,
+    DangbeiEnsureAuth,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
 import { UsageDisplay } from "./UsageDisplay";
@@ -80,8 +82,11 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [oauthBusy, setOauthBusy] = useState(false);
     const [proxyRunning, setProxyRunning] = useState(false);
     const [proxyBusy, setProxyBusy] = useState(false);
-    const [chromePath, setChromePath] = useState<string | null>(null); // null = not checked yet
-    const [chromeLaunching, setChromeLaunching] = useState(false);
+    const [browserInfo, setBrowserInfo] = useState<{ found: string; name?: string; path?: string } | null>(null);
+    const [dangbeiLoggedIn, setDangbeiLoggedIn] = useState(false);
+    const [loginBusy, setLoginBusy] = useState(false);
+    const [browserLaunched, setBrowserLaunched] = useState(false);
+    const [authChecking, setAuthChecking] = useState(false);
 
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
 
@@ -136,7 +141,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgSaving(false);
         setDlgTestResult(null);
         setDlgDirty(false);
-        setChromePath(null); // reset so Chrome detection re-runs
+        setBrowserInfo(null);
+        setBrowserLaunched(false);
         setDlgOpen(true);
     }, [providers, currentName]);
 
@@ -167,10 +173,19 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         return () => { cancelled = true; clearInterval(id); };
     }, [dlgOpen, dlgAuthType]);
 
-    // Detect Chrome when dialog opens with free provider
+    // Detect browser and check dangbei login when dialog opens with free provider
     useEffect(() => {
         if (!dlgOpen || dlgAuthType !== "none") return;
-        DetectChrome().then((p: string) => setChromePath(p || "")).catch(() => setChromePath(""));
+        DetectBrowser().then((info: any) => setBrowserInfo(info || { found: "false" })).catch(() => setBrowserInfo({ found: "false" }));
+        // Validate persisted cookie — if valid, skip browser login flow
+        setAuthChecking(true);
+        DangbeiEnsureAuth().then((result: string) => {
+            setDangbeiLoggedIn(result === "authenticated");
+            setAuthChecking(false);
+        }).catch(() => {
+            setDangbeiLoggedIn(false);
+            setAuthChecking(false);
+        });
     }, [dlgOpen, dlgAuthType]);
 
     const dlgIsNone = dlgSelectedIdx === null;
@@ -591,66 +606,143 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     </div>
                                 ) : dlgProvider.auth_type === "none" ? (
                                     <div>
-                                        {/* Chrome detection */}
-                                        <label style={labelStyle}>{t("Chrome 浏览器", "Chrome Browser")}</label>
-                                        {chromePath === null ? (
-                                            <p style={{ fontSize: "0.72rem", color: colors.textMuted }}>{t("检测中...", "Detecting...")}</p>
-                                        ) : chromePath ? (
+                                        {/* 当贝 AI login status */}
+                                        <label style={labelStyle}>{t("当贝 AI 登录", "Dangbei AI Login")}</label>
+                                        {authChecking ? (
+                                            <div style={{
+                                                padding: "8px 12px", borderRadius: 4, marginBottom: 10,
+                                                background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)",
+                                            }}>
+                                                <span style={{ fontSize: "0.76rem", color: "#6366f1" }}>
+                                                    ⏳ {t("正在验证登录状态...", "Validating login status...")}
+                                                </span>
+                                            </div>
+                                        ) : dangbeiLoggedIn ? (
                                             <div style={{
                                                 display: "flex", alignItems: "center", gap: 8,
                                                 padding: "8px 12px", borderRadius: 4, marginBottom: 10,
                                                 background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
                                             }}>
                                                 <span style={{ fontSize: "0.76rem", color: "#22c55e", flex: 1 }}>
-                                                    ✅ {t("已找到 Chrome", "Chrome found")}
+                                                    ✅ {t("已登录当贝 AI", "Logged in to Dangbei AI")}
                                                 </span>
                                                 <button
-                                                    disabled={chromeLaunching}
+                                                    disabled={loginBusy}
                                                     onClick={async () => {
-                                                        setChromeLaunching(true);
+                                                        setLoginBusy(true);
+                                                        setDlgTestResult(null);
                                                         try {
-                                                            await LaunchChromeDebug();
-                                                            setDlgTestResult({ ok: true, msg: t("Chrome 已启动（带调试端口）", "Chrome launched with debug port") });
+                                                            await DangbeiLogin();
+                                                            setBrowserLaunched(true);
+                                                            setDlgTestResult({ ok: true, msg: t("浏览器已打开，请登录后点击「完成登录」", "Browser opened. Log in then click 'Finish Login'") });
                                                         } catch (e) {
-                                                            setDlgTestResult({ ok: false, msg: t("启动 Chrome 失败: ", "Failed to launch Chrome: ") + String(e) });
+                                                            setDlgTestResult({ ok: false, msg: String(e) });
                                                         }
-                                                        setChromeLaunching(false);
+                                                        setLoginBusy(false);
                                                     }}
                                                     style={{
-                                                        fontSize: "0.72rem", padding: "4px 12px", cursor: chromeLaunching ? "default" : "pointer",
-                                                        background: "#6366f1", color: "#fff",
-                                                        border: "none", borderRadius: 4,
-                                                        opacity: chromeLaunching ? 0.5 : 1,
+                                                        fontSize: "0.72rem", padding: "4px 12px", cursor: loginBusy ? "default" : "pointer",
+                                                        background: "transparent", color: "#6366f1",
+                                                        border: "1px solid #6366f1", borderRadius: 4,
+                                                        opacity: loginBusy ? 0.5 : 1,
                                                     }}
                                                 >
-                                                    {chromeLaunching ? "..." : t("启动 Chrome", "Launch Chrome")}
+                                                    {loginBusy ? "..." : t("重新登录", "Re-login")}
                                                 </button>
                                             </div>
                                         ) : (
-                                            <div style={{
-                                                display: "flex", alignItems: "center", gap: 8,
-                                                padding: "8px 12px", borderRadius: 4, marginBottom: 10,
-                                                background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
-                                            }}>
-                                                <span style={{ fontSize: "0.76rem", color: "#ef4444", flex: 1 }}>
-                                                    ❌ {t("未找到 Chrome", "Chrome not found")}
-                                                </span>
+                                            <div style={{ marginBottom: 10 }}>
+                                                {/* Browser detection */}
+                                                {browserInfo === null ? (
+                                                    <p style={{ fontSize: "0.72rem", color: colors.textMuted }}>{t("检测浏览器...", "Detecting browser...")}</p>
+                                                ) : browserInfo.found === "true" ? (
+                                                    <div style={{
+                                                        display: "flex", alignItems: "center", gap: 8,
+                                                        padding: "8px 12px", borderRadius: 4, marginBottom: 8,
+                                                        background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
+                                                    }}>
+                                                        <span style={{ fontSize: "0.76rem", color: "#22c55e", flex: 1 }}>
+                                                            ✅ {t(`已找到 ${browserInfo.name === "edge" ? "Edge" : "Chrome"}`, `${browserInfo.name === "edge" ? "Edge" : "Chrome"} found`)}
+                                                        </span>
+                                                    </div>
+                                                ) : (
+                                                    <div style={{
+                                                        display: "flex", alignItems: "center", gap: 8,
+                                                        padding: "8px 12px", borderRadius: 4, marginBottom: 8,
+                                                        background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
+                                                    }}>
+                                                        <span style={{ fontSize: "0.76rem", color: "#ef4444", flex: 1 }}>
+                                                            ❌ {t("未找到 Chrome 或 Edge", "Chrome/Edge not found")}
+                                                        </span>
+                                                        <button onClick={() => window.open("https://www.google.com/chrome/", "_blank")} style={{
+                                                            fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
+                                                            background: "#6366f1", color: "#fff", border: "none", borderRadius: 4,
+                                                        }}>
+                                                            {t("下载 Chrome", "Download Chrome")}
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {/* Login button */}
                                                 <button
-                                                    onClick={() => window.open("https://www.google.com/chrome/", "_blank")}
+                                                    disabled={loginBusy || browserInfo?.found !== "true"}
+                                                    onClick={async () => {
+                                                        setLoginBusy(true);
+                                                        setDlgTestResult(null);
+                                                        try {
+                                                            await DangbeiLogin();
+                                                            setBrowserLaunched(true);
+                                                            setDlgTestResult({ ok: true, msg: t("浏览器已打开，请在浏览器中登录当贝 AI，完成后点击下方「完成登录」按钮", "Browser opened. Log in to Dangbei AI, then click 'Finish Login' below") });
+                                                        } catch (e) {
+                                                            setDlgTestResult({ ok: false, msg: String(e) });
+                                                        }
+                                                        setLoginBusy(false);
+                                                    }}
                                                     style={{
-                                                        fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
+                                                        width: "100%", padding: "10px 0", fontSize: "0.8rem",
+                                                        cursor: loginBusy ? "default" : "pointer",
                                                         background: "#6366f1", color: "#fff",
                                                         border: "none", borderRadius: 4,
+                                                        opacity: (loginBusy || browserInfo?.found !== "true") ? 0.6 : 1,
                                                     }}
                                                 >
-                                                    {t("下载 Chrome", "Download Chrome")}
+                                                    {loginBusy ? `⏳ ${t("正在启动浏览器...", "Launching browser...")}` : t("登录当贝 AI", "Login to Dangbei AI")}
                                                 </button>
                                             </div>
                                         )}
+
+                                        {/* Finish login button — shown after browser is launched */}
+                                        {browserLaunched && (
+                                            <button
+                                                disabled={loginBusy}
+                                                onClick={async () => {
+                                                    setLoginBusy(true);
+                                                    setDlgTestResult(null);
+                                                    try {
+                                                        await DangbeiFinishLogin();
+                                                        setDangbeiLoggedIn(true);
+                                                        setBrowserLaunched(false);
+                                                        setDlgTestResult({ ok: true, msg: t("登录成功", "Login successful") });
+                                                    } catch (e) {
+                                                        setDlgTestResult({ ok: false, msg: String(e) });
+                                                    }
+                                                    setLoginBusy(false);
+                                                }}
+                                                style={{
+                                                    width: "100%", padding: "10px 0", fontSize: "0.8rem", marginBottom: 10,
+                                                    cursor: loginBusy ? "default" : "pointer",
+                                                    background: "#22c55e", color: "#fff",
+                                                    border: "none", borderRadius: 4,
+                                                    opacity: loginBusy ? 0.6 : 1,
+                                                }}
+                                            >
+                                                {loginBusy ? `⏳ ${t("提取登录信息...", "Extracting login info...")}` : t("✅ 我已在浏览器中登录，完成登录", "✅ I've logged in, finish login")}
+                                            </button>
+                                        )}
+
                                         <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "0 0 12px 0", lineHeight: 1.5 }}>
                                             💡 {t(
-                                                "步骤：① 点击「启动 Chrome」→ ② 在打开的 Chrome 中登录 ChatGPT / Kimi / 豆包 / Gemini 之一 → ③ 启动代理服务。",
-                                                "Steps: ① Click \"Launch Chrome\" → ② Log in to ChatGPT / Kimi / Doubao / Gemini in the opened Chrome → ③ Start the proxy."
+                                                "已登录的 cookie 会自动保存，下次打开无需重复登录。如 cookie 失效会自动提示重新登录。支持 DeepSeek-R1、GLM-5、通义、Kimi 等 11 个模型。",
+                                                "Login cookies are saved automatically. If expired, you'll be prompted to re-login. Supports 11 models including DeepSeek-R1, GLM-5, etc."
                                             )}
                                         </p>
 
@@ -695,8 +787,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         </div>
                                         <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "6px 0 0 0", lineHeight: 1.4 }}>
                                             🆓 {t(
-                                                "本地浏览器代理，无需 API 密钥。需要 Chrome 以 --remote-debugging-port=9222 启动。",
-                                                "Local browser proxy, no API key needed. Chrome must be launched with --remote-debugging-port=9222."
+                                                "通过当贝 AI 免费使用多种大模型，无需 API 密钥。",
+                                                "Use multiple LLMs for free via Dangbei AI, no API key needed."
                                             )}
                                         </p>
                                     </div>

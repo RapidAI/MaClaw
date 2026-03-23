@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include "rapidspeech.h"
 
 /**
  * Log levels for the RapidSpeech framework.
@@ -15,12 +16,12 @@ enum class RSLogLevel {
 /**
  * Set the global logging level.
  */
-void rs_log_set_level(RSLogLevel level);
+RS_API void rs_log_set_level(RSLogLevel level);
 
 /**
  * Core logging function. Supports printf-style formatting.
  */
-void rs_log(RSLogLevel level, const char* format, ...);
+RS_API void rs_log(RSLogLevel level, const char* format, ...);
 
 /**
  * Convenience macros for internal usage.

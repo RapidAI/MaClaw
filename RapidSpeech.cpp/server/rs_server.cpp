@@ -1,5 +1,5 @@
 // RapidSpeech REST API Server
-// Provides /v1/asr, /v1/tts, /v1/health endpoints
+// Provides /v1/asr, /v1/tts, /v1/speaker-embed, /v1/speaker-verify, /v1/health endpoints
 // Depends on cpp-httplib (header-only): server/third_party/httplib.h
 
 #include "httplib.h"
@@ -250,7 +250,8 @@ static void handle_tts(ServerState& state,
             return;
         }
         // TODO: pass ref_pcm to voice cloning pipeline when model supports it
-        // rs_push_reference_audio(state.tts_ctx, ref_pcm.data(), ref_pcm.size());
+        rs_push_reference_audio(state.tts_ctx, ref_pcm.data(),
+                                static_cast<int>(ref_pcm.size()), ref_sr);
     }
 
     std::lock_guard<std::mutex> lock(state.tts_mtx);
@@ -260,6 +261,9 @@ static void handle_tts(ServerState& state,
         res.set_content(json_error("TTS model not loaded"), "application/json");
         return;
     }
+
+    // Reset state for new request
+    rs_reset(state.tts_ctx);
 
     if (rs_push_text(state.tts_ctx, text.c_str()) != 0) {
         res.status = 500;
@@ -359,6 +363,125 @@ static void handle_speaker_embed(ServerState& state,
         json += buf;
     }
     json += "]}";
+
+    res.set_content(json, "application/json");
+}
+
+// --------------- Cosine similarity helper ---------------
+
+static float cosine_similarity(const float* a, const float* b, int dim) {
+    float dot = 0.0f, norm_a = 0.0f, norm_b = 0.0f;
+    for (int i = 0; i < dim; i++) {
+        dot    += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+    }
+    float denom = std::sqrt(norm_a) * std::sqrt(norm_b);
+    return denom > 1e-10f ? dot / denom : 0.0f;
+}
+
+// --------------- Speaker Verify handler ---------------
+
+// Extract embedding from a WAV buffer using the speaker context.
+// Caller must hold state.spk_mtx.
+static bool extract_embedding(rs_context_t* spk_ctx,
+                               const std::vector<float>& pcm,
+                               std::vector<float>& embedding, int& emb_dim) {
+    rs_reset(spk_ctx);
+    if (rs_push_audio(spk_ctx, pcm.data(), static_cast<int>(pcm.size())) != 0) return false;
+    int status = rs_process(spk_ctx);
+    if (status < 0) return false;
+    float* emb_ptr = nullptr;
+    emb_dim = rs_get_embedding_output(spk_ctx, &emb_ptr);
+    if (emb_dim <= 0 || !emb_ptr) return false;
+    embedding.assign(emb_ptr, emb_ptr + emb_dim);
+    return true;
+}
+
+static void handle_speaker_verify(ServerState& state,
+                                   const httplib::Request& req, httplib::Response& res) {
+    // Expect multipart form: audio1=<wav>, audio2=<wav>
+    // Optional query param: threshold (default 0.5)
+    if (!req.has_file("audio1") || !req.has_file("audio2")) {
+        res.status = 400;
+        res.set_content(json_error("missing 'audio1' and/or 'audio2' fields (WAV audio)"),
+                        "application/json");
+        return;
+    }
+
+    auto file1 = req.get_file_value("audio1");
+    auto file2 = req.get_file_value("audio2");
+
+    std::vector<float> pcm1, pcm2;
+    int sr1 = 16000, sr2 = 16000;
+
+    if (!parse_wav_buffer(file1.content.data(), file1.content.size(), pcm1, &sr1)) {
+        res.status = 400;
+        res.set_content(json_error("invalid WAV format for audio1"), "application/json");
+        return;
+    }
+    if (!parse_wav_buffer(file2.content.data(), file2.content.size(), pcm2, &sr2)) {
+        res.status = 400;
+        res.set_content(json_error("invalid WAV format for audio2"), "application/json");
+        return;
+    }
+    if (pcm1.empty() || pcm2.empty()) {
+        res.status = 400;
+        res.set_content(json_error("empty audio data"), "application/json");
+        return;
+    }
+
+    // Parse threshold
+    float threshold = 0.5f;
+    if (req.has_param("threshold")) {
+        try {
+            threshold = std::stof(req.get_param_value("threshold"));
+        } catch (...) {
+            res.status = 400;
+            res.set_content(json_error("invalid threshold value"), "application/json");
+            return;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(state.spk_mtx);
+
+    if (!state.spk_ctx) {
+        res.status = 503;
+        res.set_content(json_error("speaker model not loaded"), "application/json");
+        return;
+    }
+
+    // Extract embeddings for both audio files
+    std::vector<float> emb1, emb2;
+    int dim1 = 0, dim2 = 0;
+
+    if (!extract_embedding(state.spk_ctx, pcm1, emb1, dim1)) {
+        res.status = 500;
+        res.set_content(json_error("failed to extract embedding for audio1"), "application/json");
+        return;
+    }
+    if (!extract_embedding(state.spk_ctx, pcm2, emb2, dim2)) {
+        res.status = 500;
+        res.set_content(json_error("failed to extract embedding for audio2"), "application/json");
+        return;
+    }
+
+    if (dim1 != dim2) {
+        res.status = 500;
+        res.set_content(json_error("embedding dimension mismatch"), "application/json");
+        return;
+    }
+
+    float score = cosine_similarity(emb1.data(), emb2.data(), dim1);
+    bool same_speaker = score >= threshold;
+
+    // Build JSON response
+    char score_buf[32], thresh_buf[32];
+    snprintf(score_buf, sizeof(score_buf), "%.6f", score);
+    snprintf(thresh_buf, sizeof(thresh_buf), "%.6f", threshold);
+    std::string json = "{\"score\":" + std::string(score_buf)
+                     + ",\"same_speaker\":" + (same_speaker ? "true" : "false")
+                     + ",\"threshold\":" + std::string(thresh_buf) + "}";
 
     res.set_content(json, "application/json");
 }
@@ -500,10 +623,15 @@ int main(int argc, char* argv[]) {
         handle_speaker_embed(state, req, res);
     });
 
+    svr.Post("/v1/speaker-verify", [&state](const httplib::Request& req, httplib::Response& res) {
+        handle_speaker_verify(state, req, res);
+    });
+
     std::cout << "[rs-server] Listening on " << host << ":" << port << std::endl;
     if (state.asr_ctx) std::cout << "[rs-server] ASR endpoint: POST /v1/asr" << std::endl;
     if (state.tts_ctx) std::cout << "[rs-server] TTS endpoint: POST /v1/tts" << std::endl;
     if (state.spk_ctx) std::cout << "[rs-server] Speaker embed endpoint: POST /v1/speaker-embed" << std::endl;
+    if (state.spk_ctx) std::cout << "[rs-server] Speaker verify endpoint: POST /v1/speaker-verify" << std::endl;
     std::cout << "[rs-server] Health check: GET /v1/health" << std::endl;
 
     if (!svr.listen(host, port)) {

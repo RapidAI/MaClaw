@@ -10,6 +10,19 @@ type HubLLMConfig struct {
 	Model                  string `json:"model"`
 	Protocol               string `json:"protocol"`                  // "openai" (default) or "anthropic"
 	SmartRouteSingleDevice bool   `json:"smart_route_single_device"` // default false
+	MaxConcurrent          int    `json:"max_concurrent"`            // max concurrent LLM calls; 0 = default (5)
+}
+
+// DefaultMaxConcurrent is the default limit for concurrent LLM API calls.
+const DefaultMaxConcurrent = 5
+
+// EffectiveMaxConcurrent returns the configured max concurrent value,
+// falling back to DefaultMaxConcurrent when unset or invalid.
+func (c *HubLLMConfig) EffectiveMaxConcurrent() int {
+	if c.MaxConcurrent > 0 {
+		return c.MaxConcurrent
+	}
+	return DefaultMaxConcurrent
 }
 
 // ToMaclawLLMConfig converts to the corelib LLM config format used by

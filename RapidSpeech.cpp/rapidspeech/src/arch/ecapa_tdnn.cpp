@@ -1,6 +1,7 @@
 #include "ecapa_tdnn.h"
 #include "core/rs_context.h"
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "ggml.h"
 #include "utils/rs_log.h"
 #include <cmath>
@@ -15,6 +16,13 @@
 // ggml graph helpers
 // =====================================================================
 
+// Replacement for removed ggml_new_f32: create a 1-element f32 tensor
+static struct ggml_tensor* ggml_scalar_f32(struct ggml_context* ctx, float val) {
+  struct ggml_tensor* t = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+  ggml_set_f32(t, val);
+  return t;
+}
+
 // BatchNorm1d: y = (x - mean) / sqrt(var + eps) * w + b
 // x shape: [C, T] (channels-first after conv1d)
 static struct ggml_tensor* batch_norm_1d(struct ggml_context* ctx,
@@ -28,7 +36,7 @@ static struct ggml_tensor* batch_norm_1d(struct ggml_context* ctx,
   // Subtract mean
   struct ggml_tensor* cur = ggml_sub(ctx, x, mean);
   // Divide by sqrt(var + eps) — we compute rsqrt = 1/sqrt(var+eps) then multiply
-  struct ggml_tensor* var_eps = ggml_add1(ctx, var, ggml_new_f32(ctx, eps));
+  struct ggml_tensor* var_eps = ggml_add1(ctx, var, ggml_scalar_f32(ctx, eps));
   struct ggml_tensor* inv_std = ggml_sqrt(ctx, var_eps);
   cur = ggml_div(ctx, cur, inv_std);
   // Scale and shift
@@ -364,7 +372,7 @@ bool EcapaTdnnModel::Encode(const std::vector<float>& input_frames,
   var = ggml_sub(ctx0, var, ggml_mul(ctx0, mean, mean));
   // Clamp variance to avoid sqrt of negative
   var = ggml_relu(ctx0, var);  // max(0, var)
-  struct ggml_tensor* std_dev = ggml_sqrt(ctx0, ggml_add1(ctx0, var, ggml_new_f32(ctx0, 1e-10f)));
+  struct ggml_tensor* std_dev = ggml_sqrt(ctx0, ggml_add1(ctx0, var, ggml_scalar_f32(ctx0, 1e-10f)));
 
   // 6. Concatenate mean and std: [C*2, 1]
   struct ggml_tensor* pooled = ggml_concat(ctx0, mean, std_dev, 0);

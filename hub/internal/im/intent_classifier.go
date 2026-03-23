@@ -46,6 +46,7 @@ type routeHistoryEntry struct {
 type IntentClassifier struct {
 	configProvider func() *HubLLMConfig
 	breaker        *CircuitBreaker
+	llmSem         *LLMSemaphore
 	client         *http.Client
 
 	mu    sync.Mutex
@@ -67,10 +68,11 @@ const (
 )
 
 // NewIntentClassifier creates a new classifier.
-func NewIntentClassifier(configProvider func() *HubLLMConfig, breaker *CircuitBreaker) *IntentClassifier {
+func NewIntentClassifier(configProvider func() *HubLLMConfig, breaker *CircuitBreaker, llmSem *LLMSemaphore) *IntentClassifier {
 	return &IntentClassifier{
 		configProvider: configProvider,
 		breaker:        breaker,
+		llmSem:         llmSem,
 		client:         &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -110,6 +112,10 @@ func (ic *IntentClassifier) Classify(
 	classifyCtx, cancel := context.WithTimeout(ctx, classifyTimeout)
 	defer cancel()
 
+	// Acquire LLM semaphore; degrade to broadcast on timeout.
+	// Semaphore is acquired inside the goroutine so Release happens only
+	// after the LLM call completes, not when the caller times out.
+
 	// Channel-based call so we can respect the context timeout.
 	type llmResult struct {
 		resp *agent.LLMSimpleResponse
@@ -117,6 +123,11 @@ func (ic *IntentClassifier) Classify(
 	}
 	ch := make(chan llmResult, 1)
 	go func() {
+		if !ic.llmSem.Acquire(classifyCtx) {
+			ch <- llmResult{nil, fmt.Errorf("LLM semaphore timeout")}
+			return
+		}
+		defer ic.llmSem.Release()
 		resp, err := agent.DoSimpleLLMRequest(llmCfg, messages, ic.client, classifyTimeout)
 		ch <- llmResult{resp, err}
 	}()

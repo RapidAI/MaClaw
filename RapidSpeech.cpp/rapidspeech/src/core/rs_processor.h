@@ -67,6 +67,26 @@ public:
    */
   void Reset();
 
+  // --- TTS-specific methods ---
+
+  /// Push text for TTS synthesis. Returns 0 on success, -1 on error.
+  int PushText(const char* text, const char* language = "zh");
+
+  /// Push reference audio for voice cloning. Returns 0 on success, -1 on error.
+  int PushReferenceAudio(const float* samples, int n_samples, int sample_rate);
+
+  /// Process TTS: runs encoder on first call, then vocoder chunks on subsequent calls.
+  /// Returns 1 if audio chunk available, 0 if done, -1 on error.
+  int ProcessTTS();
+
+  /// Get audio output from TTS. Returns number of samples.
+  int GetAudioOutput(float** out_data);
+
+  /// Get model architecture name.
+  std::string GetArchName() const {
+    return model_ ? model_->GetMeta().arch_name : "";
+  }
+
 private:
   std::shared_ptr<ISpeechModel> model_;
   std::shared_ptr<RSState> state_;
@@ -85,4 +105,9 @@ private:
   // Config: SenseVoice usually processes in chunks.
   // 1600 samples = 100ms at 16kHz. Adjust based on model requirements.
   int chunk_size_samples_ = 16000; // 1 second chunks for offline-like testing
+
+  // TTS state
+  bool tts_encoded_ = false;  // true after text encoder + flow decoder done
+  std::vector<float> tts_audio_buf_;  // accumulated audio output
+  int tts_audio_read_pos_ = 0;
 };

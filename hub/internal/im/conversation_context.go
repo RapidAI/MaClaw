@@ -1,6 +1,7 @@
 package im
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -34,8 +35,8 @@ type ConversationContext struct {
 }
 
 // RecordRound appends a round and asynchronously generates a summary.
-func (cc *ConversationContext) RecordRound(userText, responseText, targetDevice, deviceName string, llmCfg *HubLLMConfig, breaker *CircuitBreaker) {
-	summary := generateSummary(responseText, llmCfg, breaker)
+func (cc *ConversationContext) RecordRound(userText, responseText, targetDevice, deviceName string, llmCfg *HubLLMConfig, breaker *CircuitBreaker, llmSem *LLMSemaphore) {
+	summary := generateSummary(responseText, llmCfg, breaker, llmSem)
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 	cc.rounds = append(cc.rounds, ConversationRound{
@@ -51,9 +52,9 @@ func (cc *ConversationContext) RecordRound(userText, responseText, targetDevice,
 }
 
 // RecordRoundAsync records a round with async summary generation (non-blocking).
-func (cc *ConversationContext) RecordRoundAsync(userText, responseText, targetDevice, deviceName string, llmCfg *HubLLMConfig, breaker *CircuitBreaker) {
+func (cc *ConversationContext) RecordRoundAsync(userText, responseText, targetDevice, deviceName string, llmCfg *HubLLMConfig, breaker *CircuitBreaker, llmSem *LLMSemaphore) {
 	go func() {
-		cc.RecordRound(userText, responseText, targetDevice, deviceName, llmCfg, breaker)
+		cc.RecordRound(userText, responseText, targetDevice, deviceName, llmCfg, breaker, llmSem)
 	}()
 }
 
@@ -167,12 +168,23 @@ func (s *conversationContextStore) Stats() (contexts int, totalRounds int) {
 
 // generateSummary creates a short summary of the agent's response.
 // Uses LLM if available (3s timeout), otherwise truncates to 100 chars.
-func generateSummary(responseText string, llmCfg *HubLLMConfig, breaker *CircuitBreaker) string {
+func generateSummary(responseText string, llmCfg *HubLLMConfig, breaker *CircuitBreaker, llmSem *LLMSemaphore) string {
 	if responseText == "" {
 		return "(空回复)"
 	}
 	if llmCfg == nil || !llmCfg.Enabled || breaker == nil || !breaker.Allow() {
 		return truncate(responseText, summaryMaxChars)
+	}
+
+	// Acquire LLM semaphore; fall back to truncation on timeout.
+	if llmSem != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultAcquireTimeout)
+		defer cancel()
+		if !llmSem.Acquire(ctx) {
+			log.Printf("[ConversationContext] semaphore timeout for summary, falling back to truncation")
+			return truncate(responseText, summaryMaxChars)
+		}
+		defer llmSem.Release()
 	}
 
 	messages := []interface{}{

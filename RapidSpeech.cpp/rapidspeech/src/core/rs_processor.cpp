@@ -1,4 +1,5 @@
 #include "core/rs_processor.h"
+#include "arch/openvoice2.h"
 #include "utils/rs_log.h"
 #include "ggml-backend.h"
 #include <iostream>
@@ -123,10 +124,91 @@ void RSProcessor::Reset() {
   text_accumulator_.clear();
   embedding_buffer_.clear();
   last_token_id_ = -1;
+  // Reset TTS state
+  tts_encoded_ = false;
+  tts_audio_buf_.clear();
+  tts_audio_read_pos_ = 0;
   // Recreate model state for a clean slate
   if (model_) {
     state_ = model_->CreateState();
   }
+}
+
+// =====================================================================
+// TTS methods
+// =====================================================================
+
+int RSProcessor::PushText(const char* text, const char* language) {
+  if (!model_ || !state_) return -1;
+
+  // Check if model is OpenVoice2 by arch name
+  const auto& meta = model_->GetMeta();
+  if (meta.arch_name != "openvoice2") {
+    RS_LOG_ERR("PushText: model is not a TTS model (arch=%s)", meta.arch_name.c_str());
+    return -1;
+  }
+
+  // Dynamic cast to OpenVoice2Model to call PushText
+  // We use a simple approach: store text in state, let Process handle it
+  auto* ov2 = dynamic_cast<OpenVoice2Model*>(model_.get());
+  if (!ov2) return -1;
+
+  if (!ov2->PushText(*state_, text, language)) return -1;
+  tts_encoded_ = false;
+  tts_audio_buf_.clear();
+  tts_audio_read_pos_ = 0;
+  return 0;
+}
+
+int RSProcessor::PushReferenceAudio(const float* samples, int n_samples, int sample_rate) {
+  if (!model_ || !state_ || !sched_) return -1;
+
+  auto* ov2 = dynamic_cast<OpenVoice2Model*>(model_.get());
+  if (!ov2) return -1;
+
+  return ov2->PushReferenceAudio(*state_, samples, n_samples, sample_rate, sched_) ? 0 : -1;
+}
+
+int RSProcessor::ProcessTTS() {
+  if (!model_ || !state_ || !sched_) return -1;
+
+  auto* ov2 = dynamic_cast<OpenVoice2Model*>(model_.get());
+  if (!ov2) return -1;
+
+  // First call: run text encoder + duration predictor + flow decoder
+  if (!tts_encoded_) {
+    ggml_backend_sched_reset(sched_);
+    // Encode runs TextEncoder + DurationPredictor + FlowDecoder
+    if (!ov2->Encode({}, *state_, sched_)) return -1;
+    tts_encoded_ = true;
+  }
+
+  // Each subsequent call: run vocoder on next mel chunk
+  ggml_backend_sched_reset(sched_);
+  if (!ov2->Decode(*state_, sched_)) {
+    return 0;  // No more chunks
+  }
+
+  // Get audio from this chunk
+  float* chunk_data = nullptr;
+  int chunk_n = ov2->GetAudioOutput(*state_, &chunk_data);
+  if (chunk_n > 0 && chunk_data) {
+    tts_audio_buf_.assign(chunk_data, chunk_data + chunk_n);
+    tts_audio_read_pos_ = 0;
+  }
+
+  return 1;  // Audio available
+}
+
+int RSProcessor::GetAudioOutput(float** out_data) {
+  if (tts_audio_buf_.empty() || tts_audio_read_pos_ >= static_cast<int>(tts_audio_buf_.size())) {
+    *out_data = nullptr;
+    return 0;
+  }
+  *out_data = tts_audio_buf_.data() + tts_audio_read_pos_;
+  int n = static_cast<int>(tts_audio_buf_.size()) - tts_audio_read_pos_;
+  tts_audio_read_pos_ = static_cast<int>(tts_audio_buf_.size());
+  return n;
 }
 
 void CircularBuffer::Push(const float* data, size_t size) {

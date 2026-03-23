@@ -84,6 +84,24 @@ RS_API int rs_get_embedding_output(rs_context_t* ctx, float** out_embedding);
 // Reset context state for a new request (clears audio buffer, text, state)
 RS_API void rs_reset(rs_context_t* ctx);
 
+// --- Speaker Verification ---
+
+// Compare two audio segments and return cosine similarity score.
+// Both audio inputs should be 32-bit float PCM at the given sample_rate.
+// Returns similarity score in [-1, 1], or -2.0f on error.
+RS_API float rs_speaker_verify(rs_context_t* ctx,
+                               const float* audio1, int n_samples1,
+                               const float* audio2, int n_samples2,
+                               int sample_rate);
+
+// --- TTS Voice Cloning ---
+
+// Push reference audio for voice cloning (tone color transfer).
+// Must be called before rs_push_text + rs_process for the cloned voice to take effect.
+// Returns 0 on success, -1 on error.
+RS_API int rs_push_reference_audio(rs_context_t* ctx, const float* samples,
+                                   int n_samples, int sample_rate);
+
 #ifdef __cplusplus
 }
 #endif

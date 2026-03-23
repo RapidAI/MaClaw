@@ -12,24 +12,34 @@ import (
 	"time"
 )
 
-// Server is the OpenAI-compatible HTTP proxy server.
+// Server is the OpenAI-compatible HTTP proxy server backed by 当贝 AI.
 type Server struct {
 	addr     string
-	cdp      *CDPClient
-	mu       sync.Mutex // serialize requests per adapter (one tab at a time)
+	auth     *AuthStore
+	client   *DangbeiClient
+	mu       sync.Mutex // serialize completion requests (one at a time)
 	listener net.Listener
 	srv      *http.Server
 }
 
 // NewServer creates a new proxy server.
 // addr is the listen address (e.g. ":10099").
-// chromeDebugURL is the Chrome DevTools debug URL (e.g. "http://localhost:9222").
-func NewServer(addr, chromeDebugURL string) *Server {
+// configDir is the directory for persisting auth data.
+func NewServer(addr, configDir string) *Server {
+	auth := NewAuthStore(configDir)
+	auth.Load() // best-effort load persisted cookie
 	return &Server{
-		addr: addr,
-		cdp:  NewCDPClient(chromeDebugURL),
+		addr:   addr,
+		auth:   auth,
+		client: NewDangbeiClient(auth),
 	}
 }
+
+// Auth returns the underlying AuthStore for external login flows.
+func (s *Server) Auth() *AuthStore { return s.auth }
+
+// Client returns the underlying DangbeiClient.
+func (s *Server) Client() *DangbeiClient { return s.client }
 
 // Start starts the HTTP server. It blocks until the server is stopped.
 func (s *Server) Start(ctx context.Context) error {
@@ -45,7 +55,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.srv = &http.Server{Handler: mux}
-	log.Printf("[freeproxy] listening on %s", s.listener.Addr())
+	log.Printf("[freeproxy] listening on %s (当贝 AI backend)", s.listener.Addr())
 
 	go func() {
 		<-ctx.Done()
@@ -63,7 +73,6 @@ func (s *Server) Stop() {
 	if s.srv != nil {
 		s.srv.Shutdown(context.Background())
 	}
-	s.cdp.Close()
 }
 
 // ── OpenAI-compatible request/response types ──
@@ -107,30 +116,29 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	var models []map[string]interface{}
-	// Add the auto-detect meta model
-	models = append(models, map[string]interface{}{
-		"id":       "free-proxy",
-		"object":   "model",
-		"owned_by": "freeproxy",
+	models := AvailableModels()
+	var data []map[string]interface{}
+	// Add the generic "free-proxy" meta model
+	data = append(data, map[string]interface{}{
+		"id": "free-proxy", "object": "model", "owned_by": "dangbei",
 	})
-	for name := range Registry {
-		models = append(models, map[string]interface{}{
-			"id":       name,
-			"object":   "model",
-			"owned_by": "freeproxy",
+	for _, m := range models {
+		data = append(data, map[string]interface{}{
+			"id": m.ID, "object": "model", "owned_by": "dangbei",
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"object": "list",
-		"data":   models,
-	})
+	json.NewEncoder(w).Encode(map[string]interface{}{"object": "list", "data": data})
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !s.auth.HasAuth() {
+		writeError(w, http.StatusUnauthorized, "未登录当贝 AI，请先在 MaClaw 设置中完成登录")
 		return
 	}
 
@@ -140,67 +148,58 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Combine all messages into a single prompt
+	// Combine messages into a single prompt
 	var prompt strings.Builder
 	for _, m := range req.Messages {
-		if m.Role == "system" {
+		switch m.Role {
+		case "system":
 			prompt.WriteString("[System] " + m.Content + "\n\n")
-		} else if m.Role == "user" {
+		case "user":
 			prompt.WriteString(m.Content + "\n")
-		} else if m.Role == "assistant" {
+		case "assistant":
 			prompt.WriteString("[Previous assistant response] " + m.Content + "\n\n")
 		}
 	}
 
+	// Resolve model class — "free-proxy" or empty defaults to deepseek_r1
+	modelClass := req.Model
+	if modelClass == "" || modelClass == "free-proxy" {
+		modelClass = "deepseek_r1"
+	}
+
 	ctx := r.Context()
 
-	// Serialize access — one request at a time per browser tab
+	// Create a session for this request (not under lock — network I/O)
+	sessionID, err := s.client.CreateSession(ctx)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "create session: "+err.Error())
+		return
+	}
+	defer func() {
+		go s.client.DeleteSession(context.Background(), sessionID)
+	}()
+
+	// Serialize completions — one at a time to avoid 当贝 rate limits
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var adapter Adapter
-	var tab *TabInfo
-
-	// If model explicitly matches a registered adapter, use precise lookup;
-	// otherwise auto-detect from open Chrome tabs.
-	if a, exact := Registry[req.Model]; exact {
-		adapter = a
-		t, err := s.cdp.FindTabByDomain(ctx, adapter.Domain())
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		tab = t
-	} else {
-		detected, t, err := DetectAdapter(ctx, s.cdp)
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		adapter = detected
-		tab = t
-		log.Printf("[freeproxy] auto-detected provider: %s", adapter.Name())
+	cr := CompletionRequest{
+		SessionID:  sessionID,
+		Prompt:     prompt.String(),
+		ModelClass: modelClass,
 	}
-
-	if err := s.cdp.ConnectTab(ctx, tab); err != nil {
-		writeError(w, http.StatusServiceUnavailable, "connect to tab: "+err.Error())
-		return
-	}
-
-	// Use the actual adapter name as model in response so caller knows which provider was used.
-	model := adapter.Name()
 
 	if req.Stream {
-		s.handleStream(ctx, w, adapter, tab.ID, prompt.String(), model)
+		s.handleStream(ctx, w, cr, modelClass)
 	} else {
-		s.handleNonStream(ctx, w, adapter, tab.ID, prompt.String(), model)
+		s.handleNonStream(ctx, w, cr, modelClass)
 	}
 }
 
-func (s *Server) handleNonStream(ctx context.Context, w http.ResponseWriter, adapter Adapter, tabID, prompt, model string) {
-	fullText, err := adapter.SendMessage(ctx, s.cdp, tabID, prompt, func(string) {})
+func (s *Server) handleNonStream(ctx context.Context, w http.ResponseWriter, cr CompletionRequest, model string) {
+	fullText, _, err := s.client.StreamCompletion(ctx, cr, nil)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "adapter error: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "completion error: "+err.Error())
 		return
 	}
 
@@ -216,9 +215,9 @@ func (s *Server) handleNonStream(ctx context.Context, w http.ResponseWriter, ada
 			FinishReason: &stop,
 		}},
 		Usage: chatUsage{
-			PromptTokens:     len(prompt) / 4,
+			PromptTokens:     len(cr.Prompt) / 4,
 			CompletionTokens: len(fullText) / 4,
-			TotalTokens:      (len(prompt) + len(fullText)) / 4,
+			TotalTokens:      (len(cr.Prompt) + len(fullText)) / 4,
 		},
 	}
 
@@ -226,7 +225,7 @@ func (s *Server) handleNonStream(ctx context.Context, w http.ResponseWriter, ada
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, adapter Adapter, tabID, prompt, model string) {
+func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, cr CompletionRequest, model string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -257,15 +256,13 @@ func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, adapte
 		flusher.Flush()
 	}
 
-	_, err := adapter.SendMessage(ctx, s.cdp, tabID, prompt, func(token string) {
+	_, _, err := s.client.StreamCompletion(ctx, cr, func(token string) {
 		sendChunk(token, false)
 	})
 	if err != nil {
-		// Send error as final chunk
-		sendChunk("", false)
+		log.Printf("[freeproxy] stream error: %v", err)
 	}
 
-	// Send finish chunk
 	sendChunk("", true)
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()

@@ -2,12 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"net"
 	"os"
-	"os/exec"
-	"runtime"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -21,13 +18,24 @@ var (
 )
 
 const (
-	freeProxyAddr     = ":10099"
-	chromeDebugURL    = "http://localhost:9222"
-	freeProviderName  = "免费"
+	freeProxyAddr    = ":10099"
+	freeProviderName = "免费"
 )
 
-// StartFreeProxy starts the local free proxy server.
-// It is safe to call multiple times — only one instance runs.
+var freeProxyConfigOnce sync.Once
+var freeProxyConfigPath string
+
+// freeProxyConfigDir returns the directory for persisting dangbei auth data.
+func freeProxyConfigDir() string {
+	freeProxyConfigOnce.Do(func() {
+		home, _ := os.UserHomeDir()
+		freeProxyConfigPath = filepath.Join(home, ".maclaw", "freeproxy")
+		os.MkdirAll(freeProxyConfigPath, 0700)
+	})
+	return freeProxyConfigPath
+}
+
+// StartFreeProxy starts the local free proxy server backed by 当贝 AI.
 func (a *App) StartFreeProxy() string {
 	freeProxyMu.Lock()
 	defer freeProxyMu.Unlock()
@@ -38,7 +46,7 @@ func (a *App) StartFreeProxy() string {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	freeProxyCancel = cancel
-	freeProxyServer = freeproxy.NewServer(freeProxyAddr, chromeDebugURL)
+	freeProxyServer = freeproxy.NewServer(freeProxyAddr, freeProxyConfigDir())
 
 	go func() {
 		if err := freeProxyServer.Start(ctx); err != nil {
@@ -76,66 +84,134 @@ func (a *App) IsFreeProxyRunning() bool {
 	return freeProxyServer != nil
 }
 
+// IsDangbeiLoggedIn returns whether the user has a valid 当贝 AI cookie.
+func (a *App) IsDangbeiLoggedIn() bool {
+	freeProxyMu.Lock()
+	srv := freeProxyServer
+	freeProxyMu.Unlock()
+
+	if srv != nil {
+		return srv.Auth().HasAuth()
+	}
+	// Check persisted auth even if server isn't running
+	auth := freeproxy.NewAuthStore(freeProxyConfigDir())
+	auth.Load()
+	return auth.HasAuth()
+}
+
+// DangbeiEnsureAuth checks if a valid persisted cookie exists.
+// Returns "authenticated" if the cookie is valid, "need_login" otherwise.
+// This allows the frontend to skip the browser login flow when a valid cookie exists.
+func (a *App) DangbeiEnsureAuth() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// If server is running and has a cookie, validate it directly
+	freeProxyMu.Lock()
+	srv := freeProxyServer
+	freeProxyMu.Unlock()
+
+	if srv != nil && srv.Auth().HasAuth() {
+		if srv.Client().IsAuthenticated(ctx) {
+			return "authenticated"
+		}
+		// Server cookie is stale — fall through to try persisted cookie
+	}
+
+	// Try loading persisted cookie from disk
+	auth := freeproxy.NewAuthStore(freeProxyConfigDir())
+	if err := auth.Load(); err != nil || !auth.HasAuth() {
+		return "need_login"
+	}
+
+	// Skip re-validation if the persisted cookie is the same as the server's
+	// (already proven invalid above)
+	if srv != nil && srv.Auth().GetCookie() == auth.GetCookie() {
+		return "need_login"
+	}
+
+	// Validate the persisted cookie via API
+	client := freeproxy.NewDangbeiClient(auth)
+	if !client.IsAuthenticated(ctx) {
+		return "need_login"
+	}
+
+	// Cookie is valid — sync to running server if needed
+	if srv != nil {
+		srv.Auth().SetCookie(auth.GetCookie())
+	}
+
+	return "authenticated"
+}
+
 // ensureFreeProxyIfNeeded starts the free proxy server if the current
 // LLM provider is "免费" and the server is not already running.
 func (a *App) ensureFreeProxyIfNeeded() {
 	data := a.GetMaclawLLMProviders()
 	if data.Current == freeProviderName {
-		a.StartFreeProxy() // idempotent — returns "already running" if active
+		a.StartFreeProxy()
 	}
 }
 
-// DetectChrome returns the Chrome executable path if found, or "" if not found.
+// DetectBrowser returns info about the detected browser (Chrome/Edge).
+func (a *App) DetectBrowser() map[string]string {
+	bi := freeproxy.DetectBrowser()
+	if bi == nil {
+		return map[string]string{"found": "false"}
+	}
+	return map[string]string{
+		"found": "true",
+		"name":  bi.Name,
+		"path":  bi.Path,
+	}
+}
+
+// DangbeiLogin launches a dedicated browser for the user to log in to 当贝 AI.
+func (a *App) DangbeiLogin() error {
+	return freeproxy.LoginViaBrowser()
+}
+
+// DangbeiFinishLogin extracts cookies from the browser after user login,
+// saves them, and optionally starts the proxy.
+// The debug port is auto-discovered from DevToolsActivePort — no parameter needed.
+func (a *App) DangbeiFinishLogin() (string, error) {
+	cookie, err := freeproxy.FinishLogin()
+	if err != nil {
+		return "", err
+	}
+
+	// Save cookie to the running server's auth store (if running)
+	freeProxyMu.Lock()
+	srv := freeProxyServer
+	freeProxyMu.Unlock()
+
+	if srv != nil {
+		srv.Auth().SetCookie(cookie)
+		srv.Auth().Save()
+	} else {
+		// Save to disk even if server isn't running yet
+		auth := freeproxy.NewAuthStore(freeProxyConfigDir())
+		auth.SetCookie(cookie)
+		auth.Save()
+	}
+
+	return "登录成功", nil
+}
+
+// DetectChrome is kept for backward compatibility. Returns Chrome path or "".
 func (a *App) DetectChrome() string {
-	if runtime.GOOS == "windows" {
-		candidates := []string{
-			os.Getenv("ProgramFiles") + `\Google\Chrome\Application\chrome.exe`,
-			os.Getenv("ProgramFiles(x86)") + `\Google\Chrome\Application\chrome.exe`,
-			os.Getenv("LocalAppData") + `\Google\Chrome\Application\chrome.exe`,
-		}
-		for _, p := range candidates {
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
-		}
+	bi := freeproxy.DetectBrowser()
+	if bi == nil {
+		return ""
 	}
-	// macOS / Linux: try PATH
-	if p, err := exec.LookPath("google-chrome"); err == nil {
-		return p
-	}
-	if p, err := exec.LookPath("chrome"); err == nil {
-		return p
-	}
-	if runtime.GOOS == "darwin" {
-		p := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
+	return bi.Path
 }
 
-// LaunchChromeDebug launches Chrome with --remote-debugging-port=9222.
-// If the debug port is already reachable, it skips launching.
-// Returns the Chrome path used, or an error.
+// LaunchChromeDebug is kept for backward compatibility.
+// Now launches a dedicated browser instance for 当贝 login.
 func (a *App) LaunchChromeDebug() (string, error) {
-	// Check if debug port is already reachable
-	conn, err := net.DialTimeout("tcp", "localhost:9222", 2*time.Second)
-	if err == nil {
-		conn.Close()
-		return "(already running)", nil
+	if err := a.DangbeiLogin(); err != nil {
+		return "", err
 	}
-
-	chromePath := a.DetectChrome()
-	if chromePath == "" {
-		return "", fmt.Errorf("Chrome not found")
-	}
-	cmd := exec.Command(chromePath, "--remote-debugging-port=9222")
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("launch Chrome: %w", err)
-	}
-	// Detach — don't wait for Chrome to exit
-	go func() { cmd.Wait() }()
-	log.Printf("[freeproxy] launched Chrome with debug port: %s", chromePath)
-	return chromePath, nil
+	return "browser launched", nil
 }

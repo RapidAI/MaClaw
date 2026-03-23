@@ -218,20 +218,25 @@ func readPIDFile() int {
 	return pid
 }
 
-// isDaemonAlive checks if a previous daemon is still running by combining
-// PID-level process existence check with an HTTP ping. Both must pass to
-// confirm the daemon is truly alive (avoids PID reuse false positives).
+// isDaemonAlive checks if a previous daemon is still running by looking for
+// a process with the clawnet binary name, then confirming via HTTP ping.
+// Falls back to PID file check for robustness.
 func (c *Client) isDaemonAlive() bool {
+	// Primary: detect by process name — immune to stale PID files.
+	if pid := findProcessByName(LocalBinaryName()); pid != 0 {
+		if c.ping() {
+			return true
+		}
+	}
+	// Fallback: PID file (covers edge cases where process name differs).
 	pid := readPIDFile()
 	if pid == 0 {
 		return false
 	}
 	if !isProcessAlive(pid) {
-		// Stale PID file — clean up.
 		removePIDFile()
 		return false
 	}
-	// Process exists; confirm it's actually our daemon via HTTP ping.
 	return c.ping()
 }
 
@@ -298,6 +303,27 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 	c.binPath = bin
 
 	c.mu.Unlock()
+
+	// Guard: if a clawnet process is already running (by name), don't start another.
+	if pid := findProcessByName(LocalBinaryName()); pid != 0 {
+		// Another daemon process exists — try to reach it.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if c.ping() {
+				c.mu.Lock()
+				c.running = true
+				c.mu.Unlock()
+				return nil
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		// Process exists but not responding — kill it before starting fresh.
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Kill()
+		}
+		time.Sleep(1 * time.Second)
+	}
+
 	stopCmd := exec.Command(bin, "stop")
 	hideCommandWindow(stopCmd)
 	stopDone := make(chan error, 1)
@@ -312,6 +338,7 @@ func (c *Client) EnsureDaemonWithProgress(emitProgress func(stage string, pct in
 	removePIDFile()
 	time.Sleep(1 * time.Second)
 
+	// Final check after cleanup — another caller may have started it.
 	if c.ping() {
 		c.mu.Lock()
 		c.running = true

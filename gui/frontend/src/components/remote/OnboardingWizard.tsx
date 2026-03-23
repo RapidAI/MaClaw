@@ -129,12 +129,14 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
     }, [onClose, showConfirm]);
 
     // Auto-close when all steps are done
+    const isLite = selectedMode === 'lite';
     useEffect(() => {
-        if (modeDone && llmDone && regDone && wxDone) {
+        const allDone = isLite ? (modeDone && llmDone && wxDone) : (modeDone && llmDone && regDone && wxDone);
+        if (allDone) {
             const timer = setTimeout(onClose, 1500);
             return () => clearTimeout(timer);
         }
-    }, [modeDone, llmDone, regDone, wxDone, onClose]);
+    }, [modeDone, llmDone, regDone, wxDone, isLite, onClose]);
 
     // Collapse the LLM form after successful test & save
     useEffect(() => {
@@ -327,7 +329,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                         {t("来，配置一下 MaClaw 吧", "Let's get MaClaw ready!")}
                     </h3>
                     <p style={{ margin: "2px 0 0 0", fontSize: "0.7rem", color: "#6366f1" }}>
-                        {t("四步快速上手。", "Four quick steps to get started.")}
+                        {isLite ? t("三步快速上手。", "Three quick steps to get started.") : t("四步快速上手。", "Four quick steps to get started.")}
                     </p>
                 </div>
 
@@ -511,8 +513,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                     {/* Divider */}
                     <div style={{ height: 1, background: "#e0e7ff", margin: "0 0 12px 0" }} />
 
-                    {/* ═══ Step 3: Mobile Registration ═══ */}
-                    <div style={{ marginBottom: 10 }}>
+                    {/* ═══ Step 3: Mobile Registration (pro mode only) ═══ */}
+                    {!isLite && <div style={{ marginBottom: 10 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                             <span style={regDone ? doneBadge : stepBadge}>{regDone ? "✓" : "3"}</span>
                             <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#1e293b" }}>
@@ -568,15 +570,15 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                                 </div>
                             )}
                         </div>
-                    </div>
+                    </div>}
 
                     {/* Divider */}
-                    <div style={{ height: 1, background: "#e0e7ff", margin: "0 0 12px 0" }} />
+                    {!isLite && <div style={{ height: 1, background: "#e0e7ff", margin: "0 0 12px 0" }} />}
 
-                    {/* ═══ Step 4: WeChat Binding ═══ */}
+                    {/* ═══ Step 3/4: WeChat Binding ═══ */}
                     <div style={{ marginBottom: 10 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                            <span style={wxDone ? doneBadge : stepBadge}>{wxDone ? "✓" : "4"}</span>
+                            <span style={wxDone ? doneBadge : stepBadge}>{wxDone ? "✓" : isLite ? "3" : "4"}</span>
                             <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#1e293b" }}>
                                 {t("绑定微信", "Bind WeChat")}
                             </span>
@@ -633,7 +635,10 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
 
                     {/* Footer hint */}
                     <p style={{ margin: "6px 0 0 0", fontSize: "0.66rem", color: "#b0b8c9", lineHeight: 1.4 }}>
-                        💡 {t("左侧 AI 助手圆圈全亮，说明一切就绪。四步都完成后，下次启动将不再显示此向导。",
+                        💡 {isLite
+                        ? t("左侧 AI 助手圆圈全亮，说明一切就绪。三步都完成后，下次启动将不再显示此向导。",
+                            "The AI assistant ring lights up once you're all set. This wizard won't appear again after all steps are done.")
+                        : t("左侧 AI 助手圆圈全亮，说明一切就绪。四步都完成后，下次启动将不再显示此向导。",
                             "The AI assistant ring lights up once you're all set. This wizard won't appear again after all steps are done.")}
                     </p>
                 </div>

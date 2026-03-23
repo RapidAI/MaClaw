@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -31,6 +32,19 @@ func run(args []string) error {
 	configPath := flag.String("config", "", "Path to MaClaw Hub config file")
 	if err := flag.CommandLine.Parse(args); err != nil {
 		return err
+	}
+
+	// When no config file is specified, check for config.yaml next to the
+	// executable. This allows TLS toggle (which auto-creates the file) to
+	// survive process restarts without requiring an explicit -config flag.
+	if *configPath == "" {
+		if exe, err := os.Executable(); err == nil {
+			candidate := filepath.Join(filepath.Dir(exe), "config.yaml")
+			if _, err := os.Stat(candidate); err == nil {
+				*configPath = candidate
+				log.Printf("[hub] auto-detected config file: %s", candidate)
+			}
+		}
 	}
 
 	cfg, err := config.Load(*configPath)

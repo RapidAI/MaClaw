@@ -16,6 +16,8 @@ func buildWindowsScreenshotCommand() string { return "" }
 func buildWindowsWindowScreenshotCommand(_ string) string { return "" }
 
 func buildDarwinScreenshotCommand() string {
+	// Permission is checked natively in Go (via CheckScreenRecordingPermission)
+	// before this command is executed. No python3 permission check needed here.
 	return `tmpfile=$(mktemp /tmp/screenshot_XXXXXX.png); ` +
 		`tmpfile2=$(mktemp /tmp/screenshot_XXXXXX.png); ` +
 		`tmpfile3=""; ` +

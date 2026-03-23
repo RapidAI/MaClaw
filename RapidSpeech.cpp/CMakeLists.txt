@@ -68,12 +68,14 @@ set(RS_SOURCES
         rapidspeech/src/core/rs_context.cpp
         rapidspeech/src/core/rs_processor.cpp
         rapidspeech/src/frontend/audio_processor.cpp
+        rapidspeech/src/frontend/text_frontend.cpp
         rapidspeech/src/frontend/fftsg.c
         rapidspeech/src/utils/rs_log.cpp
         rapidspeech/src/arch/sensevoice.cpp
         rapidspeech/src/arch/sensevoice_encoder.cpp
         rapidspeech/src/arch/funasr-nano.cpp
         rapidspeech/src/arch/ecapa_tdnn.cpp
+        rapidspeech/src/arch/openvoice2.cpp
         rapidspeech/src/utils/rs_wav.cpp
 )
 
@@ -233,6 +235,8 @@ if (RS_BUILD_SERVER)
     if (NOT WIN32)
         find_package(Threads REQUIRED)
         target_link_libraries(rs-server PRIVATE Threads::Threads)
+    else()
+        target_link_libraries(rs-server PRIVATE ws2_32)
     endif()
     install(TARGETS rs-server RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
@@ -245,6 +249,17 @@ target_include_directories(rs-asr-offline PRIVATE
 )
 target_link_libraries(rs-asr-offline PRIVATE rapidspeech-core)
 install(TARGETS rs-asr-offline
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# Speaker verification example
+add_executable(rs-speaker-verify examples/rs-speaker-verify.cpp)
+target_include_directories(rs-speaker-verify PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/rapidspeech/src
+)
+target_link_libraries(rs-speaker-verify PRIVATE rapidspeech-core)
+install(TARGETS rs-speaker-verify
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 

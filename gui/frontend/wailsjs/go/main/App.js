@@ -1013,3 +1013,23 @@ export function DetectChrome() {
 export function LaunchChromeDebug() {
   return window['go']['main']['App']['LaunchChromeDebug']();
 }
+
+export function IsDangbeiLoggedIn() {
+  return window['go']['main']['App']['IsDangbeiLoggedIn']();
+}
+
+export function DetectBrowser() {
+  return window['go']['main']['App']['DetectBrowser']();
+}
+
+export function DangbeiLogin() {
+  return window['go']['main']['App']['DangbeiLogin']();
+}
+
+export function DangbeiFinishLogin(arg1) {
+  return window['go']['main']['App']['DangbeiFinishLogin'](arg1);
+}
+
+export function DangbeiEnsureAuth() {
+  return window['go']['main']['App']['DangbeiEnsureAuth']();
+}

@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <cstdint>
+#include "rapidspeech.h"
 
 /**
  * WAV header， 16bit PCM
@@ -25,11 +26,7 @@ struct WaveHeader {
 
 /**
  * load 16bit PCM WAV convert into float PCM
- * @param filename .wav file path
- * @param data  float
- * @param sample_rate sample rate
- * @return true if success
  */
-bool load_wav_file(const char* filename, std::vector<float>& data, int* sample_rate);
+RS_API bool load_wav_file(const char* filename, std::vector<float>& data, int* sample_rate);
 
-void load_cmvn_params(struct gguf_context * ctx_gguf, std::vector<float>& means, std::vector<float>& vars);
+RS_API void load_cmvn_params(struct gguf_context * ctx_gguf, std::vector<float>& means, std::vector<float>& vars);

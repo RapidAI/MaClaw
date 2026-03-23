@@ -852,6 +852,9 @@ func (h *TUIAgentHandler) toolScreenshot() string {
 		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
 			`Add-Type -AssemblyName System.Windows.Forms; $bmp = New-Object System.Drawing.Bitmap([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen(0,0,0,0,$bmp.Size); $ms = New-Object System.IO.MemoryStream; $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [Convert]::ToBase64String($ms.ToArray())`)
 	} else if runtime.GOOS == "darwin" {
+		if !remote.CheckScreenRecordingPermission() {
+			return "截图权限未授予 - 请打开 系统设置 > 隐私与安全性 > 屏幕录制，移除并重新添加 maclaw，然后重启 maclaw"
+		}
 		cmd = exec.CommandContext(ctx, "bash", "-c", `screencapture -x /tmp/_maclaw_ss.png && base64 /tmp/_maclaw_ss.png && rm -f /tmp/_maclaw_ss.png`)
 	} else {
 		cmd = exec.CommandContext(ctx, "bash", "-c", `import -window root /tmp/_maclaw_ss.png 2>/dev/null && base64 /tmp/_maclaw_ss.png && rm -f /tmp/_maclaw_ss.png`)

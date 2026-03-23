@@ -69,7 +69,7 @@ func TestIntentClassifier_RouteSingle(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "帮我看看Go代码", testProfiles(), nil)
 	if err != nil {
@@ -88,7 +88,7 @@ func TestIntentClassifier_Broadcast(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "今天天气怎么样", testProfiles(), nil)
 	if err != nil {
@@ -104,7 +104,7 @@ func TestIntentClassifier_Discuss(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "大家讨论下API设计", testProfiles(), nil)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestIntentClassifier_TimeoutDegradesToBroadcast(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	start := time.Now()
 	result, err := ic.Classify(context.Background(), "user1", "hello", testProfiles(), nil)
@@ -147,7 +147,7 @@ func TestIntentClassifier_LLMErrorDegradesToBroadcast(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "hello", testProfiles(), nil)
 	if err != nil {
@@ -163,7 +163,7 @@ func TestIntentClassifier_JSONParseFailureDegrades(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "hello", testProfiles(), nil)
 	if err != nil {
@@ -189,7 +189,7 @@ func TestIntentClassifier_CacheHit(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 	profiles := testProfiles()
 
 	// First call — hits LLM.
@@ -223,7 +223,7 @@ func TestIntentClassifier_CacheMissOnDifferentText(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 	profiles := testProfiles()
 
 	_, _ = ic.Classify(context.Background(), "user1", "message A", profiles, nil)
@@ -235,7 +235,7 @@ func TestIntentClassifier_CacheMissOnDifferentText(t *testing.T) {
 
 func TestIntentClassifier_NilConfigDegrades(t *testing.T) {
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(func() *HubLLMConfig { return nil }, cb)
+	ic := NewIntentClassifier(func() *HubLLMConfig { return nil }, cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "hello", testProfiles(), nil)
 	if err != nil {
@@ -252,7 +252,7 @@ func TestIntentClassifier_RouteSingleByName(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "Go代码", testProfiles(), nil)
 	if err != nil {
@@ -271,7 +271,7 @@ func TestIntentClassifier_RouteSingleUnknownTarget(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "hello", testProfiles(), nil)
 	if err != nil {
@@ -288,7 +288,7 @@ func TestIntentClassifier_ErrorTriggersCircuitBreaker(t *testing.T) {
 	defer srv.Close()
 
 	cb := NewCircuitBreaker(3, time.Minute)
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	for i := 0; i < 3; i++ {
 		_, _ = ic.Classify(context.Background(), "user1", fmt.Sprintf("msg%d", i), testProfiles(), nil)
@@ -305,7 +305,7 @@ func TestIntentClassifier_MarkdownFencedJSON(t *testing.T) {
 	defer srv.Close()
 
 	cb := DefaultCircuitBreaker()
-	ic := NewIntentClassifier(testConfig(srv.URL), cb)
+	ic := NewIntentClassifier(testConfig(srv.URL), cb, NewLLMSemaphore(5))
 
 	result, err := ic.Classify(context.Background(), "user1", "hello", testProfiles(), nil)
 	if err != nil {

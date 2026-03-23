@@ -274,3 +274,168 @@ func TestRouteToAgent_ProgressDedup(t *testing.T) {
 		t.Fatalf("unexpected delivered text: %s", deliveredTexts[0])
 	}
 }
+
+// TestBroadcastProgressDedup verifies that when multiple devices send
+// identical progress messages during a broadcast, only the first one
+// is delivered to the user.
+func TestBroadcastProgressDedup(t *testing.T) {
+	df := &mockDeviceFinder{
+		found: true,
+		allMachines: []OnlineMachineInfo{
+			{MachineID: "m1", Name: "Mac-Home", LLMConfigured: true},
+			{MachineID: "m2", Name: "Mac-Office", LLMConfigured: true},
+		},
+	}
+	router := NewMessageRouter(df)
+	defer router.Stop()
+
+	var mu sync.Mutex
+	var deliveredTexts []string
+
+	router.SetProgressDelivery(func(ctx context.Context, userID, platformName, platformUID, text string) {
+		mu.Lock()
+		deliveredTexts = append(deliveredTexts, text)
+		mu.Unlock()
+	})
+	router.SetResponseDelivery(func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {})
+
+	// Enter broadcast mode.
+	router.mu.Lock()
+	router.selectedMachine["user1"] = broadcastMachineID
+	router.mu.Unlock()
+
+	// Start broadcast in a goroutine.
+	resultCh := make(chan *GenericResponse, 1)
+	go func() {
+		resp, _ := router.RouteToAgent(context.Background(), "user1", "test", "uid1", "hello")
+		resultCh <- resp
+	}()
+
+	// Wait for pending requests to be created (one per device).
+	time.Sleep(100 * time.Millisecond)
+
+	// Collect all pending request IDs.
+	router.mu.Lock()
+	var reqIDs []string
+	for id := range router.pendingReqs {
+		reqIDs = append(reqIDs, id)
+	}
+	router.mu.Unlock()
+
+	if len(reqIDs) < 2 {
+		t.Fatalf("expected at least 2 pending requests for broadcast, got %d", len(reqIDs))
+	}
+
+	// Both devices send the same progress text.
+	for _, id := range reqIDs {
+		router.HandleAgentProgress(id, "📨 收到，正在处理中，稍后发你结果…")
+	}
+
+	// Give progress delivery goroutines time to run.
+	time.Sleep(100 * time.Millisecond)
+
+	// Send responses from both devices.
+	for _, id := range reqIDs {
+		router.HandleAgentResponse(id, &AgentResponse{Text: "done"})
+	}
+
+	select {
+	case resp := <-resultCh:
+		if resp.StatusCode != 200 {
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, resp.Body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for broadcast response")
+	}
+
+	// The key assertion: identical progress from 2 devices should only
+	// be delivered once thanks to broadcastProgressDedup.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(deliveredTexts) != 1 {
+		t.Fatalf("expected 1 delivered progress (deduped across devices), got %d: %v", len(deliveredTexts), deliveredTexts)
+	}
+}
+
+// TestBroadcastProgressDedup_DifferentTextsPass verifies that different
+// progress messages from different devices are all delivered (not suppressed).
+func TestBroadcastProgressDedup_DifferentTextsPass(t *testing.T) {
+	df := &mockDeviceFinder{
+		found: true,
+		allMachines: []OnlineMachineInfo{
+			{MachineID: "m1", Name: "Mac-Home", LLMConfigured: true},
+			{MachineID: "m2", Name: "Mac-Office", LLMConfigured: true},
+		},
+	}
+	router := NewMessageRouter(df)
+	defer router.Stop()
+
+	var mu sync.Mutex
+	var deliveredTexts []string
+
+	router.SetProgressDelivery(func(ctx context.Context, userID, platformName, platformUID, text string) {
+		mu.Lock()
+		deliveredTexts = append(deliveredTexts, text)
+		mu.Unlock()
+	})
+	router.SetResponseDelivery(func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {})
+
+	router.mu.Lock()
+	router.selectedMachine["user1"] = broadcastMachineID
+	router.mu.Unlock()
+
+	resultCh := make(chan *GenericResponse, 1)
+	go func() {
+		resp, _ := router.RouteToAgent(context.Background(), "user1", "test", "uid1", "hello")
+		resultCh <- resp
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Collect pending request IDs and sort by machine for deterministic assignment.
+	router.mu.Lock()
+	reqMap := make(map[string]*PendingIMRequest)
+	for id, p := range router.pendingReqs {
+		reqMap[id] = p
+	}
+	router.mu.Unlock()
+
+	if len(reqMap) < 2 {
+		t.Fatalf("expected at least 2 pending requests, got %d", len(reqMap))
+	}
+
+	// Each device sends a DIFFERENT progress text.
+	i := 0
+	var reqIDs []string
+	for id := range reqMap {
+		reqIDs = append(reqIDs, id)
+		if i == 0 {
+			router.HandleAgentProgress(id, "⚙️ 正在执行工具: bash")
+		} else {
+			router.HandleAgentProgress(id, "⚙️ 正在执行工具: read_file")
+		}
+		i++
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	for _, id := range reqIDs {
+		router.HandleAgentResponse(id, &AgentResponse{Text: "done"})
+	}
+
+	select {
+	case resp := <-resultCh:
+		if resp.StatusCode != 200 {
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, resp.Body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for broadcast response")
+	}
+
+	// Both different progress texts should be delivered.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(deliveredTexts) != 2 {
+		t.Fatalf("expected 2 delivered progress (different texts), got %d: %v", len(deliveredTexts), deliveredTexts)
+	}
+}

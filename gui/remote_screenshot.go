@@ -570,11 +570,16 @@ func buildDarwinScreenshotCommand() string {
 	// screencapture -x captures silently (no shutter sound).
 	// On locked screens, screencapture may produce a black image.
 	//
+	// Permission is checked natively in Go (via HasScreenRecordingPermission
+	// which uses CGPreflightScreenCaptureAccess + CGWindowListCreateImage probe
+	// + screen lock detection) before this command is executed.
+	//
 	// Strategy:
 	// 1. Try screencapture -x (standard approach).
 	// 2. Check if the image is all-black using python3 PIL pixel sampling.
 	// 3. If blank, try screencapture -C (include cursor, sometimes helps).
-	// 4. If still blank, report the error with lock status.
+	// 4. If still blank, try CGWindowListCreateImage via python3+Quartz.
+	// 5. If still blank, report the error with lock status.
 	return `tmpfile=$(mktemp /tmp/screenshot_XXXXXX.png); ` +
 		`tmpfile2=$(mktemp /tmp/screenshot_XXXXXX.png); ` +
 		`tmpfile3=""; ` +
@@ -647,7 +652,7 @@ Quartz.CGImageDestinationFinalize(dest)
 		`if [ "$is_blank3" != "true" ]; then ` +
 		`base64 -i "$tmpfile3"; exit 0; fi; fi; ` +
 		`rm -f "$tmpfile3"; ` +
-		// Both attempts blank — report error with lock status.
+		// All attempts blank — report error with lock status.
 		`echo "screen is blank - session may be locked ($is_locked) or display is off" >&2; exit 1`
 }
 
@@ -944,7 +949,7 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 	// spawning child processes. This ties the TCC prompt to our bundle ID
 	// so the user only sees it once, instead of repeatedly.
 	if !EnsureScreenRecordingPermission() {
-		return fmt.Errorf("screen recording permission not granted - please allow MaClaw in System Settings > Privacy & Security > Screen Recording, then restart the app")
+		return fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, remove and re-add maclaw, then restart. Do NOT just toggle the switch; remove the entry and add it again")
 	}
 
 	available, reason := DetectDisplayServer()
@@ -1058,7 +1063,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	// On macOS 10.15+, ensure screen recording permission is granted before
 	// spawning child processes.
 	if !EnsureScreenRecordingPermission() {
-		return "", fmt.Errorf("screen recording permission not granted - please allow MaClaw in System Settings > Privacy & Security > Screen Recording, then restart the app")
+		return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, remove and re-add maclaw, then restart. Do NOT just toggle the switch; remove the entry and add it again")
 	}
 
 	available, reason := DetectDisplayServer()
@@ -1136,7 +1141,7 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 	}
 
 	if !EnsureScreenRecordingPermission() {
-		return "", fmt.Errorf("screen recording permission not granted")
+		return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, remove and re-add maclaw, then restart")
 	}
 	available, reason := DetectDisplayServer()
 	if !available {

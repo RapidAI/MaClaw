@@ -55,7 +55,7 @@ func NewCoordinator(
 		router:           router,
 		devices:          devices,
 		ruleEngine:       &RuleEngine{},
-		intentClassifier: NewIntentClassifier(configProvider, breaker),
+		intentClassifier: NewIntentClassifier(configProvider, breaker, router.LLMSemaphore()),
 		breaker:          breaker,
 		configProvider:   configProvider,
 		profileCache:     NewDeviceProfileCache(),
@@ -307,7 +307,7 @@ func (c *Coordinator) routeToTargetWithContext(
 	// Async record to ConversationContext (record original text, not the handoff-prefixed one).
 	if resp != nil {
 		cfg := c.configProvider()
-		cc.RecordRoundAsync(text, resp.Body, targetID, targetMachine.Name, cfg, c.breaker)
+		cc.RecordRoundAsync(text, resp.Body, targetID, targetMachine.Name, cfg, c.breaker, c.router.LLMSemaphore())
 	}
 
 	return resp, err
@@ -643,7 +643,15 @@ func (c *Coordinator) hubDirectAnswer(
 		err  error
 	}
 	ch := make(chan llmResult, 1)
+	sem := c.router.LLMSemaphore()
 	go func() {
+		// Acquire LLM semaphore inside the goroutine so Release happens
+		// only after the LLM call completes, not when the caller times out.
+		if !sem.Acquire(answerCtx) {
+			ch <- llmResult{nil, fmt.Errorf("LLM semaphore timeout")}
+			return
+		}
+		defer sem.Release()
 		r, e := agent.DoSimpleLLMRequest(llmCfg, messages, client, hubDirectAnswerTimeout)
 		ch <- llmResult{r, e}
 	}()
@@ -666,7 +674,7 @@ func (c *Coordinator) hubDirectAnswer(
 		}
 
 		// Record to conversation context.
-		cc.RecordRoundAsync(text, content, "hub", "Hub AI", cfg, c.breaker)
+		cc.RecordRoundAsync(text, content, "hub", "Hub AI", cfg, c.breaker, c.router.LLMSemaphore())
 
 		return &GenericResponse{
 			StatusCode: 200,
