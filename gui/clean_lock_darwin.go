@@ -31,6 +31,12 @@ const lockUniqueID = "maclaw-lock"
 // a previous crash leaves a lock file behind and every subsequent launch
 // calls os.Exit(0) without showing any window.
 func cleanStaleLock() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[startup] cleanStaleLock recovered from panic: %v\n", r)
+		}
+	}()
+
 	cDir := C.nativeTempDir()
 	tempDir := C.GoString(cDir)
 	C.free(unsafe.Pointer(cDir))

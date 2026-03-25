@@ -75,19 +75,25 @@ func setupTrayTahoe(app *App, appOptions *options.App) {
 	}
 }
 
-// setupTrayPreTahoe uses energye/systray via systray.Run() in a goroutine.
-// This is the proven pattern from V3.2.1 that works on Intel Catalina through
-// ARM Sequoia.
+// setupTrayPreTahoe uses energye/systray via RunWithExternalLoop() so that
+// the systray status-bar item is created without interfering with Wails'
+// NSApplication delegate or Cocoa event loop.
 //
-// ⚠️ DO NOT OPTIMIZE / DO NOT REPLACE with RunWithExternalLoop or local fork!
-// This uses upstream energye/systray v1.0.2 (via local fork with Windows
-// extras) with plain systray.Run() in a goroutine — the exact pattern that
-// works reliably on all pre-Tahoe macOS versions. Leave it alone.
+// Previous versions used systray.Run() in a goroutine, which called
+// registerSystray() → [[NSApplication sharedApplication] setDelegate:owner]
+// and then [NSApp run], effectively hijacking the Wails-owned main run loop.
+// On macOS 15+ this causes an immediate crash (SIGABRT / SIGSEGV) because
+// AppKit enforces stricter thread-safety checks on the application delegate.
+//
+// RunWithExternalLoop avoids both problems: it does NOT set the NSApp
+// delegate and does NOT call [NSApp run]. Instead it returns start/end
+// callbacks; calling start() schedules the status-bar creation on the main
+// thread via dispatch_async (see nativeStart in systray_darwin.m).
 func setupTrayPreTahoe(app *App, appOptions *options.App) {
 	appOptions.OnStartup = func(ctx context.Context) {
 		app.startup(ctx)
 
-		go systray.Run(func() {
+		onReady := func() {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("[tray] panic in onReady: %v", r)
@@ -138,6 +144,9 @@ func setupTrayPreTahoe(app *App, appOptions *options.App) {
 			if app.CurrentLanguage != "" {
 				UpdateTrayMenu(app.CurrentLanguage)
 			}
-		}, func() {})
+		}
+
+		start, _ := systray.RunWithExternalLoop(onReady, func() {})
+		start()
 	}
 }

@@ -101,18 +101,19 @@ type App struct {
 	weixinGateway        *weixinGatewayManager
 }
 
-var OnConfigChanged func(AppConfig)
-var UpdateTrayMenu func(string)
-var UpdateTrayVisibility func(bool)
+// Safe no-op defaults so callers never need nil checks before tray is ready.
+var OnConfigChanged func(AppConfig) = func(AppConfig) {}
+var UpdateTrayMenu func(string) = func(string) {}
+var UpdateTrayVisibility func(bool) = func(bool) {}
 
 // ShowNotification displays a system tray balloon/toast notification.
 // title is the notification title, message is the body text.
 // iconFlag: 0=none, 1=info, 2=warning, 3=error
-var ShowNotification func(title, message string, iconFlag uint32)
+var ShowNotification func(title, message string, iconFlag uint32) = func(string, string, uint32) {}
 
 // FlashAndBeep plays a notification sound and flashes the taskbar/dock icon.
 // Set by platform-specific tray setup code.
-var FlashAndBeep func()
+var FlashAndBeep func() = func() {}
 
 // AppConfig, SkillHubEntry, Skill — see corelib_aliases.go
 

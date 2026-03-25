@@ -24,6 +24,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
+// imHeartbeatMsg is the sentinel value sent as a progress update to keep the
+// Hub-side response timer alive. It must never be delivered to the end user.
+const imHeartbeatMsg = "__heartbeat__"
+
 // ---------------------------------------------------------------------------
 // IMMessageHandler — handles IM messages forwarded from Hub via WebSocket
 // ---------------------------------------------------------------------------
@@ -1533,7 +1537,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// executions. The Hub recognises the exact string and resets the timer
 	// without forwarding the message to the user.
 	const heartbeatInterval = 60 * time.Second
-	const heartbeatMsg = "__heartbeat__"
 	heartbeatDone := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(heartbeatInterval)
@@ -1541,7 +1544,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		for {
 			select {
 			case <-ticker.C:
-				sendProgress(heartbeatMsg)
+				sendProgress(imHeartbeatMsg)
 			case <-heartbeatDone:
 				return
 			}

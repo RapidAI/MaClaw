@@ -517,6 +517,8 @@ func (p *Plugin) sendC2CMedia(ctx context.Context, openID string, fileType int, 
 
 // tryUploadMedia attempts to upload media to QQ. It first tries inline mode,
 // and if that fails with a timeout/size error, retries with URL mode.
+// If URL mode fails with a download error (QQ can't reach our server, e.g.
+// intranet deployment), it falls back to inline mode.
 func (p *Plugin) tryUploadMedia(ctx context.Context, token, uploadURL string, fileType int, base64Data, fileName, mimeType string) (string, error) {
 	uploadPayload := map[string]any{
 		"file_type":    fileType,
@@ -533,6 +535,7 @@ func (p *Plugin) tryUploadMedia(ctx context.Context, token, uploadURL string, fi
 		if storeErr != nil {
 			log.Printf("[qqbot] failed to store temp file, falling back to inline: %v", storeErr)
 			uploadPayload["file_data"] = base64Data
+			useURLMode = false
 		} else {
 			log.Printf("[qqbot] large file (%d bytes base64), using URL mode: %s", len(base64Data), tempURL)
 			uploadPayload["url"] = tempURL
@@ -546,8 +549,24 @@ func (p *Plugin) tryUploadMedia(ctx context.Context, token, uploadURL string, fi
 		return fileInfo, nil
 	}
 
-	// If inline mode failed and we haven't tried URL mode yet, retry with URL.
 	errStr := err.Error()
+
+	// If URL mode failed because QQ couldn't download the file (intranet
+	// deployment), fall back to inline mode.
+	if useURLMode && isDownloadError(errStr) {
+		log.Printf("[qqbot] URL mode failed (QQ can't reach our server), falling back to inline: %v", err)
+		inlinePayload := map[string]any{
+			"file_type":    fileType,
+			"srv_send_msg": false,
+			"file_data":    base64Data,
+		}
+		if fileType == 4 && fileName != "" {
+			inlinePayload["file_name"] = fileName
+		}
+		return p.doUploadMedia(ctx, token, uploadURL, inlinePayload)
+	}
+
+	// If inline mode failed with timeout and we haven't tried URL mode yet, retry with URL.
 	isTimeoutErr := strings.Contains(errStr, "850027") || strings.Contains(errStr, "40034003") || strings.Contains(errStr, "超时")
 	if !useURLMode && isTimeoutErr && p.publicBaseURL != "" {
 		log.Printf("[qqbot] inline upload failed with timeout, retrying with URL mode: %v", err)
@@ -563,10 +582,38 @@ func (p *Plugin) tryUploadMedia(ctx context.Context, token, uploadURL string, fi
 		if fileType == 4 && fileName != "" {
 			retryPayload["file_name"] = fileName
 		}
-		return p.doUploadMedia(ctx, token, uploadURL, retryPayload)
+		retryInfo, retryErr := p.doUploadMedia(ctx, token, uploadURL, retryPayload)
+		if retryErr == nil {
+			return retryInfo, nil
+		}
+		// URL mode also failed with download error — QQ can't reach us.
+		// Fall back to inline (already failed with timeout, but worth one more try
+		// since the timeout may have been transient).
+		if isDownloadError(retryErr.Error()) {
+			log.Printf("[qqbot] URL mode also failed (QQ can't reach server), retrying inline: %v", retryErr)
+			inlinePayload := map[string]any{
+				"file_type":    fileType,
+				"srv_send_msg": false,
+				"file_data":    base64Data,
+			}
+			if fileType == 4 && fileName != "" {
+				inlinePayload["file_name"] = fileName
+			}
+			return p.doUploadMedia(ctx, token, uploadURL, inlinePayload)
+		}
+		return "", retryErr
 	}
 
 	return "", err
+}
+
+// isDownloadError returns true if the error string indicates QQ's server
+// could not download the file from our URL (common in intranet deployments).
+func isDownloadError(errStr string) bool {
+	return strings.Contains(errStr, "40002") ||
+		strings.Contains(errStr, "10041") ||
+		strings.Contains(errStr, "850011") ||
+		strings.Contains(errStr, "download file")
 }
 
 // doUploadMedia performs the actual HTTP POST to QQ's file upload endpoint.
@@ -1031,6 +1078,16 @@ func isDuplicateC2C(msgID string) bool {
 // C2C message handling (shared by WebSocket and Webhook paths)
 // ---------------------------------------------------------------------------
 
+// qqAttachment represents a single attachment in a QQ C2C message event.
+type qqAttachment struct {
+	ContentType string `json:"content_type"`
+	FileName    string `json:"filename"`
+	Height      int    `json:"height"`
+	Width       int    `json:"width"`
+	Size        int    `json:"size"`
+	URL         string `json:"url"`
+}
+
 func (p *Plugin) handleC2CMessage(data json.RawMessage) {
 	var event struct {
 		ID      string `json:"id"`
@@ -1038,7 +1095,8 @@ func (p *Plugin) handleC2CMessage(data json.RawMessage) {
 		Author  struct {
 			UserOpenID string `json:"user_openid"`
 		} `json:"author"`
-		Timestamp string `json:"timestamp"`
+		Timestamp   string         `json:"timestamp"`
+		Attachments []qqAttachment `json:"attachments"`
 	}
 	if err := json.Unmarshal(data, &event); err != nil {
 		log.Printf("[qqbot] parse C2C message failed: %v", err)
@@ -1047,7 +1105,13 @@ func (p *Plugin) handleC2CMessage(data json.RawMessage) {
 
 	openID := event.Author.UserOpenID
 	text := strings.TrimSpace(event.Content)
-	if openID == "" || text == "" {
+	hasAttachments := len(event.Attachments) > 0
+
+	if openID == "" {
+		return
+	}
+	// Drop only if there's truly nothing — no text AND no attachments.
+	if text == "" && !hasAttachments {
 		return
 	}
 
@@ -1057,7 +1121,11 @@ func (p *Plugin) handleC2CMessage(data json.RawMessage) {
 		return
 	}
 
-	log.Printf("[qqbot] C2C from %s: %s", openID, truncate(text, 80))
+	if hasAttachments {
+		log.Printf("[qqbot] C2C from %s: text=%q attachments=%d", openID, truncate(text, 40), len(event.Attachments))
+	} else {
+		log.Printf("[qqbot] C2C from %s: %s", openID, truncate(text, 80))
+	}
 
 	// Handle /unbind command
 	if strings.EqualFold(text, "/unbind") {
@@ -1065,8 +1133,8 @@ func (p *Plugin) handleC2CMessage(data json.RawMessage) {
 		return
 	}
 
-	// Handle binding flow first
-	if p.handleBindingFlow(openID, text) {
+	// Handle binding flow first (only for text messages)
+	if text != "" && p.handleBindingFlow(openID, text) {
 		return
 	}
 
@@ -1083,6 +1151,19 @@ func (p *Plugin) handleC2CMessage(data json.RawMessage) {
 		return
 	}
 
+	// Build attachments for the IM message.
+	var attachments []im.MessageAttachment
+	if hasAttachments {
+		attachments = p.downloadQQAttachments(event.Attachments)
+	}
+
+	// Determine message type.
+	msgType := "text"
+	if len(attachments) > 0 {
+		// Use the first attachment's type as the message type.
+		msgType = attachments[0].Type
+	}
+
 	// Dispatch to IM Adapter via registered handler
 	p.mu.Lock()
 	handler := p.messageHandler
@@ -1096,11 +1177,83 @@ func (p *Plugin) handleC2CMessage(data json.RawMessage) {
 	handler(im.IncomingMessage{
 		PlatformName: "qqbot",
 		PlatformUID:  openID,
-		MessageType:  "text",
+		MessageType:  msgType,
 		Text:         text,
+		Attachments:  attachments,
 		RawPayload:   data,
 		Timestamp:    time.Now(),
 	})
+}
+
+// downloadQQAttachments downloads attachment files from QQ CDN URLs and
+// converts them to im.MessageAttachment with base64-encoded data.
+func (p *Plugin) downloadQQAttachments(raw []qqAttachment) []im.MessageAttachment {
+	var result []im.MessageAttachment
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, att := range raw {
+		if att.URL == "" {
+			log.Printf("[qqbot] attachment has no URL, skipping: %+v", att)
+			continue
+		}
+
+		// Determine attachment type from content_type.
+		attType := qqContentTypeToAttType(att.ContentType)
+
+		// Download the file.
+		fileData, err := p.downloadFile(ctx, att.URL)
+		if err != nil {
+			log.Printf("[qqbot] download attachment failed (%s): %v", att.FileName, err)
+			continue
+		}
+
+		if int64(len(fileData)) > im.MaxAttachmentSize {
+			log.Printf("[qqbot] attachment too large (%d bytes), skipping: %s", len(fileData), att.FileName)
+			continue
+		}
+
+		result = append(result, im.MessageAttachment{
+			Type:     attType,
+			FileName: att.FileName,
+			MimeType: att.ContentType,
+			Data:     base64.StdEncoding.EncodeToString(fileData),
+			Size:     int64(len(fileData)),
+		})
+		log.Printf("[qqbot] downloaded attachment: %s (%s, %d bytes)", att.FileName, att.ContentType, len(fileData))
+	}
+	return result
+}
+
+// downloadFile fetches a file from the given URL using the plugin's HTTP client.
+func (p *Plugin) downloadFile(ctx context.Context, fileURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, im.MaxAttachmentSize+1))
+}
+
+// qqContentTypeToAttType maps QQ's content_type to im.MessageAttachment.Type.
+func qqContentTypeToAttType(ct string) string {
+	switch {
+	case strings.HasPrefix(ct, "image/"):
+		return "image"
+	case strings.HasPrefix(ct, "video/"):
+		return "video"
+	case ct == "voice" || strings.HasPrefix(ct, "audio/"):
+		return "audio"
+	default:
+		return "file"
+	}
 }
 
 // ---------------------------------------------------------------------------
