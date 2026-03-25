@@ -4,11 +4,9 @@ package main
 
 import (
 	"context"
-	"log"
-	"time"
+	"os/exec"
+	"strings"
 
-	"github.com/RapidAI/CodeClaw/corelib/brand"
-	"github.com/energye/systray"
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -21,16 +19,18 @@ func setupTray(app *App, appOptions *options.App) {
 	appMenu.Append(menu.EditMenu())
 	appOptions.Menu = appMenu
 
-	if isMacOSTahoeOrLater() {
-		setupTrayTahoe(app, appOptions)
-		return
-	}
-	setupTrayPreTahoe(app, appOptions)
+	// All macOS versions now use the pure-Cocoa NSStatusItem tray.
+	// The previous energye/systray path (setupTrayPreTahoe) caused crashes
+	// on macOS 15+ due to AppKit thread-safety enforcement and race
+	// conditions between systray's deferred init and Wails' event loop.
+	setupTrayNative(app, appOptions)
 }
 
-// setupTrayTahoe uses a pure-Cocoa NSStatusItem (no energye/systray) to avoid
-// Liquid Glass crashes on macOS 26+.
-func setupTrayTahoe(app *App, appOptions *options.App) {
+// setupTrayNative uses a pure-Cocoa NSStatusItem (no energye/systray) for
+// all macOS versions. This avoids the thread-safety crashes that
+// energye/systray triggers on macOS 15+ and the Liquid Glass issues on
+// macOS 26+.
+func setupTrayNative(app *App, appOptions *options.App) {
 	origStartup := appOptions.OnStartup
 	appOptions.OnStartup = func(ctx context.Context) {
 		if origStartup != nil {
@@ -63,90 +63,24 @@ func setupTrayTahoe(app *App, appOptions *options.App) {
 			runtime.EventsEmit(app.ctx, "config-changed", cfg)
 		}
 
-		// ShowNotification / FlashAndBeep not available on Tahoe tray.
 		ShowNotification = func(title, message string, iconFlag uint32) {
-			_, _, _ = title, message, iconFlag
+			// Use osascript to display a native macOS notification.
+			// Escape backslashes first, then double quotes for AppleScript strings.
+			// Strip newlines — AppleScript string literals don't support them.
+			r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", " ", "\r", "")
+			safeTitle := r.Replace(title)
+			safeMsg := r.Replace(message)
+			script := `display notification "` + safeMsg + `" with title "` + safeTitle + `" sound name "default"`
+			_ = exec.Command("osascript", "-e", script).Start()
 		}
-		FlashAndBeep = func() {}
+
+		FlashAndBeep = func() {
+			// Dock bounce is handled via the Tahoe ObjC helper.
+			tahoeDockBounce()
+		}
 
 		if app.CurrentLanguage != "" {
 			UpdateTrayMenu(app.CurrentLanguage)
 		}
-	}
-}
-
-// setupTrayPreTahoe uses energye/systray via RunWithExternalLoop() so that
-// the systray status-bar item is created without interfering with Wails'
-// NSApplication delegate or Cocoa event loop.
-//
-// Previous versions used systray.Run() in a goroutine, which called
-// registerSystray() → [[NSApplication sharedApplication] setDelegate:owner]
-// and then [NSApp run], effectively hijacking the Wails-owned main run loop.
-// On macOS 15+ this causes an immediate crash (SIGABRT / SIGSEGV) because
-// AppKit enforces stricter thread-safety checks on the application delegate.
-//
-// RunWithExternalLoop avoids both problems: it does NOT set the NSApp
-// delegate and does NOT call [NSApp run]. Instead it returns start/end
-// callbacks; calling start() schedules the status-bar creation on the main
-// thread via dispatch_async (see nativeStart in systray_darwin.m).
-func setupTrayPreTahoe(app *App, appOptions *options.App) {
-	appOptions.OnStartup = func(ctx context.Context) {
-		app.startup(ctx)
-
-		onReady := func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[tray] panic in onReady: %v", r)
-				}
-			}()
-
-			systray.SetIcon(icon)
-			systray.SetTooltip(brand.Current().TrayTooltip)
-			systray.CreateMenu()
-
-			mShow := systray.AddMenuItem("Show Main Window", "Show Main Window")
-			systray.AddSeparator()
-			mQuit := systray.AddMenuItem("Quit", "Quit Application")
-
-			UpdateTrayMenu = func(lang string) {
-				tr := trayTranslations()
-				t, ok := tr[lang]
-				if !ok {
-					t = tr["en"]
-				}
-				systray.SetTooltip(t["title"])
-				mShow.SetTitle(t["show"])
-				mQuit.SetTitle(t["quit"])
-			}
-
-			OnConfigChanged = func(cfg AppConfig) {
-				runtime.EventsEmit(app.ctx, "config-changed", cfg)
-			}
-
-			ShowNotification = func(title, message string, iconFlag uint32) {
-				_, _, _ = title, message, iconFlag
-			}
-
-			FlashAndBeep = func() {}
-
-			mShow.Click(func() {
-				go runtime.WindowShow(app.ctx)
-			})
-
-			mQuit.Click(func() {
-				go func() {
-					systray.Quit()
-					time.Sleep(100 * time.Millisecond)
-					runtime.Quit(app.ctx)
-				}()
-			})
-
-			if app.CurrentLanguage != "" {
-				UpdateTrayMenu(app.CurrentLanguage)
-			}
-		}
-
-		start, _ := systray.RunWithExternalLoop(onReady, func() {})
-		start()
 	}
 }

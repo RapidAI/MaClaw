@@ -555,11 +555,11 @@ func (o *SwarmOrchestrator) sendDocForReview(run *SwarmRun, docType DocType, con
 	var msg string
 	switch docType {
 	case DocTypeRequirements:
-		msg = "📋 需求文档已生成，请查阅 PDF 后回复「确认」继续，或回复修改意见。"
+		msg = "📋 需求文档已生成，请查看 PDF 并确认需求是否准确。回复「确认」继续下一阶段，或回复修改意见。"
 	case DocTypeDesign:
-		msg = "🏗️ 设计文档已生成，请查阅 PDF。如需调整请回复修改意见。"
+		msg = "🏗️ 技术设计文档已生成，请查看 PDF 并确认设计方案。回复「确认」继续下一阶段，或回复修改意见。"
 	case DocTypeTaskPlan:
-		msg = "📝 任务计划已生成，任务将自动执行。"
+		msg = "📝 任务列表已生成，请查看 PDF 并确认任务拆分是否合理。回复「确认」开始自动执行，或回复修改意见。"
 	}
 
 	_ = o.notifier.NotifyDocumentForReview(run, b64Data, fileName, "application/pdf", msg)

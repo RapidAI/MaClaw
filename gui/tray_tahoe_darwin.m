@@ -117,3 +117,11 @@ void TahoeUpdateMenu(const char *tooltip,
         }
     });
 }
+
+void TahoeDockBounce(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @autoreleasepool {
+            [NSApp requestUserAttention:NSCriticalRequest];
+        }
+    });
+}

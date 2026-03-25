@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bytes"
@@ -1555,14 +1555,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	cfg := h.app.GetMaclawLLMConfig()
 	maxIter := h.app.GetMaclawAgentMaxIterations()
 	h.loopMaxOverride = 0 // reset dynamic override for this loop
-
-	// --- Trajectory logging ---
-	var trajRec *TrajectoryRecorder
-	if h.app.GetLLMTrajectoryLogging() {
-		trajRec = NewTrajectoryRecorder()
-		defer trajRec.Flush()
-	}
-
 	// Sync initial maxIter into the LoopContext so ctx is the source of truth.
 	if ctx.MaxIterations() <= 0 {
 		ctx.SetMaxIterations(maxIter)
@@ -1583,16 +1575,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 
 	history = append(history, conversationEntry{Role: "user", Content: userContent})
-
-	// --- Trajectory: record session start and initial conversation ---
-	if trajRec != nil {
-		trajRec.StartSession(ctx.ID, cfg.URL, cfg.Model, cfg.Protocol, userID, platform, tools)
-		trajRec.Record("system", systemPrompt, nil, "", "")
-		for _, entry := range history[:len(history)-1] {
-			trajRec.Record(entry.Role, entry.Content, entry.ToolCalls, entry.ToolCallID, entry.ReasoningContent)
-		}
-		trajRec.Record("user", userContent, nil, "", "")
-	}
 
 	// maxIter defaults to 300 (MaxAgentIterationsCap).
 	// We still enforce a hard safety cap to prevent runaway loops.
@@ -1733,11 +1715,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		conversation = append(conversation, assistantMsg)
 
-		// --- Trajectory: record assistant response ---
-		if trajRec != nil {
-			trajRec.Record("assistant", msgContent, choice.Message.ToolCalls, "", msgReasoning)
-		}
-
 		historyEntry := conversationEntry{Role: "assistant", Content: msgContent, ReasoningContent: msgReasoning}
 		if len(choice.Message.ToolCalls) > 0 {
 			historyEntry.ToolCalls = choice.Message.ToolCalls
@@ -1842,10 +1819,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			history = append(history, conversationEntry{
 				Role: "tool", Content: truncated, ToolCallID: tc.ID,
 			})
-			// --- Trajectory: record tool result ---
-			if trajRec != nil {
-				trajRec.Record("tool", truncated, nil, tc.ID, "")
-			}
 		}
 
 		// If a direct screenshot was captured, return it immediately as an image response.
@@ -1978,11 +1951,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				Role: "assistant", Content: bcContent, ReasoningContent: bcReasoning, ToolCalls: bc.Message.ToolCalls,
 			})
 
-			// --- Trajectory: record bonus round assistant ---
-			if trajRec != nil {
-				trajRec.Record("assistant", bcContent, bc.Message.ToolCalls, "", bcReasoning)
-			}
-
 			// Execute any tool calls from the bonus round.
 			for _, tc := range bc.Message.ToolCalls {
 				toolOnProgress := onProgress
@@ -1999,10 +1967,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				history = append(history, conversationEntry{
 					Role: "tool", Content: truncated, ToolCallID: tc.ID,
 				})
-				// --- Trajectory: record bonus round tool result ---
-				if trajRec != nil {
-					trajRec.Record("tool", truncated, nil, tc.ID, "")
-				}
 			}
 		}
 
@@ -2305,11 +2269,9 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 只有真正需要启动 IDE/编程工具来修改项目代码的任务才是编程任务。
 
 ### 第二步：检查跳过信号（Skip_Signal）
-如果用户消息中包含以下表达，跳过需求/设计/任务分解三个确认阶段，直接进入内部规划后执行：
+如果用户消息中包含以下表达，跳过确认直接执行：
 - 中文：直接做、不用问了、按你的想法来、直接开始、不用确认、马上做、赶紧做
 - English：just do it、skip confirmation、go ahead、do it now
-- 在任何确认阶段中收到跳过信号，跳过剩余确认阶段直接进入执行
-- 跳过时仍在内部生成需求理解、设计方案和任务分解，但不生成 PDF、不等待用户确认
 
 ### 第三步：需求确认（Requirements Phase）
 对于编程任务且无跳过信号时，进入 Spec 驱动工作流：
@@ -2325,8 +2287,8 @@ d) 约束与假设
 1. 用 Markdown 格式编写需求文档内容
 2. 用 craft_tool 生成 Markdown-to-PDF 转换脚本，或用 bash 调用 pandoc/wkhtmltopdf 将 Markdown 转为 PDF
 3. 用 send_file（forward_to_im=true）将 PDF 发送给用户
-4. 同时发送一段简短的文字摘要，让用户快速预览
-5. PDF 文件命名：需求文档_<feature_name>.pdf
+4. PDF 文件命名：需求文档_<feature_name>.pdf
+5. ⚠️ 发送 PDF 后必须同时发送明确的行动提示，告知用户需要查看并确认或提出修改意见。格式："📄 已生成需求文档的 PDF 版本，请查看并确认需求是否准确，或提出修改意见。" 禁止只发 PDF 不说话——用户需要明确知道这个文档需要他看、需要他反馈。
 
 **确认规则：**
 - 等待用户明确确认（如"确认"、"没问题"、"通过"）后才进入下一阶段
@@ -2349,6 +2311,7 @@ d) 实现方案概述
 
 **文档生成与发送：**（同第三步的 PDF 生成流程）
 - PDF 文件命名：设计文档_<feature_name>.pdf
+- ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成技术设计文档的 PDF 版本，请查看设计方案并确认，或提出修改意见。"
 
 **确认规则：**（同第三步）
 - 用户可要求回退到需求阶段修改（如"需求文档需要改一下"、"回到需求阶段"）
@@ -2366,6 +2329,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 
 **文档生成与发送：**（同第三步的 PDF 生成流程）
 - PDF 文件命名：任务列表_<feature_name>.pdf
+- ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成任务列表的 PDF 版本，请查看任务拆分是否合理，确认后开始执行，或提出修改意见。"
 
 **确认规则：**（同第三步）
 - 用户可要求回退到需求或设计阶段修改
@@ -2400,6 +2364,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 3. 将完成报告作为文本消息发送给用户
 4. 全部通过：报告功能成功完成
 5. 有失败：列出失败项并建议下一步操作
+
 
 ### 第八步：自动续接（Auto-Resume）
 当编程工具因 token 耗尽正常退出（exit_code=0 或 1，且 get_session_output 返回续接指令）时：

@@ -12,4 +12,7 @@ void TahoeCreateTray(const void *iconData, int iconLen,
 void TahoeUpdateMenu(const char *tooltip,
                      const char *showLabel, const char *quitLabel);
 
+// Bounce the dock icon to draw user attention.
+void TahoeDockBounce(void);
+
 #endif

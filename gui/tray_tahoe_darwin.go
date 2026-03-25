@@ -38,7 +38,7 @@ func tahoeOnQuitClicked() {
 func setupTahoeTray(iconBytes []byte, tooltip, showLabel, quitLabel string,
 	onShow func(), onQuit func()) {
 
-	log.Println("[tray] using Tahoe-safe native NSStatusItem")
+	log.Println("[tray] using native NSStatusItem (pure Cocoa, no energye/systray)")
 
 	tahoeShowCallback = onShow
 	tahoeQuitCallback = onQuit
@@ -68,4 +68,9 @@ func updateTahoeTrayMenu(tooltip, showLabel, quitLabel string) {
 	C.free(unsafe.Pointer(cTooltip))
 	C.free(unsafe.Pointer(cShow))
 	C.free(unsafe.Pointer(cQuit))
+}
+
+// tahoeDockBounce bounces the dock icon to draw user attention.
+func tahoeDockBounce() {
+	C.TahoeDockBounce()
 }
