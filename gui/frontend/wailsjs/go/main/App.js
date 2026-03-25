@@ -426,6 +426,14 @@ export function SetMaclawAgentMaxIterations(arg1) {
   return window['go']['main']['App']['SetMaclawAgentMaxIterations'](arg1);
 }
 
+export function GetLLMTrajectoryLogging() {
+  return window['go']['main']['App']['GetLLMTrajectoryLogging']();
+}
+
+export function SetLLMTrajectoryLogging(arg1) {
+  return window['go']['main']['App']['SetLLMTrajectoryLogging'](arg1);
+}
+
 export function PingSkillHub(arg1) {
   return window['go']['main']['App']['PingSkillHub'](arg1);
 }

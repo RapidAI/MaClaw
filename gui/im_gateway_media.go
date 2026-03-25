@@ -30,11 +30,15 @@ func buildMediaAttachment(mediaType string, mediaData []byte, mediaName, mimeTyp
 	return att
 }
 
-// saveMediaToTempDir saves raw media bytes to a temp directory, returning the
-// file path. The prefix is used for the temp subdirectory name (e.g.
-// "maclaw-weixin-media") and the file name prefix (e.g. "wx_").
+// saveMediaToTempDir saves raw media bytes to ~/.maclaw/temp/<subDir>,
+// returning the file path. The subDir identifies the IM source (e.g. "wx",
+// "qq", "tg") and the namePrefix is used for the file name (e.g. "wx_").
 func saveMediaToTempDir(subDir, namePrefix, userID, mediaType string, mediaData []byte, mediaName string) (string, error) {
-	dir := filepath.Join(os.TempDir(), subDir)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".maclaw", "temp", subDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

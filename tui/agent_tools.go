@@ -35,6 +35,25 @@ func (h *TUIAgentHandler) toolCreateSession(args map[string]interface{}) string 
 	if toolName == "" || projectPath == "" {
 		return "错误: 缺少 tool 或 project_path 参数"
 	}
+
+	// 编程工具健康检查
+	if h.codingToolHealth != nil {
+		// 先查缓存：如果已标记为不可用/认证失败，直接拒绝
+		if blocked, reason := h.codingToolHealth.IsBlocked(toolName); blocked {
+			return codingToolFallbackHint(toolName, reason)
+		}
+		// 未检查过 → 执行预检查
+		if _, checked := h.codingToolHealth.Get(toolName); !checked {
+			ok, reason := checkCodingToolHealth(toolName)
+			if ok {
+				h.codingToolHealth.Set(toolName, codingToolAvailable, "")
+			} else {
+				h.codingToolHealth.Set(toolName, codingToolUnavailable, reason)
+				return codingToolFallbackHint(toolName, reason)
+			}
+		}
+	}
+
 	spec := remote.LaunchSpec{
 		Tool:        toolName,
 		ProjectPath: projectPath,
@@ -67,6 +86,7 @@ func (h *TUIAgentHandler) toolGetSessionOutput(args map[string]interface{}) stri
 	nudgeCount := s.NudgeCount
 	lastOutputAt := s.LastOutputAt
 	createdAt := s.CreatedAt
+	stepProgress := s.StepProgress
 	s.mu.Unlock()
 
 	tailLines := intArg(args, "tail_lines", 0)
@@ -91,7 +111,7 @@ func (h *TUIAgentHandler) toolGetSessionOutput(args map[string]interface{}) stri
 	}
 
 	// 状态提示
-	hint := sessionDiagHint(status, stallState)
+	hint := sessionDiagHint(status, stallState, stepProgress)
 	if hint != "" {
 		diag.WriteString("\n" + hint)
 	}
@@ -99,30 +119,66 @@ func (h *TUIAgentHandler) toolGetSessionOutput(args map[string]interface{}) stri
 	if len(lines) == 0 {
 		return diag.String() + "\n(无输出)"
 	}
-	return diag.String() + "\n" + strings.Join(lines, "\n")
+
+	// 运行时认证失败检测（仅在工具尚未标记为不可用时检测，且只扫描最近 50 行）
+	output := strings.Join(lines, "\n")
+	if h.codingToolHealth != nil {
+		if toolName := h.sessionToolName(sid); toolName != "" {
+			if blocked, _ := h.codingToolHealth.IsBlocked(toolName); !blocked {
+				scanLines := lines
+				if len(scanLines) > 50 {
+					scanLines = scanLines[len(scanLines)-50:]
+				}
+				scanText := strings.Join(scanLines, "\n")
+				if failed, pattern := DetectAuthFailure(scanText); failed {
+					h.codingToolHealth.MarkAuthFailed(toolName,
+						fmt.Sprintf("运行时检测到认证错误 (匹配: %s)", pattern))
+					diag.WriteString(fmt.Sprintf("\n⚠️ 检测到认证失败，工具 %s 已标记为不可用。请使用 bash/read_file/write_file 等基础工具继续。", toolName))
+				}
+			}
+		}
+	}
+
+	return diag.String() + "\n" + output
 }
 
 // sessionDiagHint 根据会话状态和停滞状态生成诊断提示。
-func sessionDiagHint(status remote.SessionStatus, stallState remote.StallState) string {
+func sessionDiagHint(status remote.SessionStatus, stallState remote.StallState, stepProgress string) string {
+	var parts []string
+	// Show step progress if available
+	if stepProgress != "" {
+		parts = append(parts, stepProgress)
+	}
 	switch status {
 	case remote.SessionBusy, remote.SessionRunning:
 		switch stallState {
 		case remote.StallStateSuspected:
-			return "⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查"
+			parts = append(parts, "⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查")
 		case remote.StallStateStuck:
-			return "⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话"
+			parts = append(parts, "⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话")
 		default:
-			return "⏳ 编程工具正在工作中，请等待后再检查进度"
+			parts = append(parts, "⏳ 编程工具正在工作中，请等待后再检查进度")
 		}
 	case remote.SessionWaitingInput:
-		return "⚠️ 会话正在等待用户输入"
+		parts = append(parts, "⚠️ 会话正在等待用户输入")
 	case remote.SessionExited:
-		return "会话已退出"
+		parts = append(parts, "会话已退出")
 	case remote.SessionError:
-		return "⚠️ 会话出错"
-	default:
+		parts = append(parts, "⚠️ 会话出错")
+	}
+	return strings.Join(parts, "\n")
+}
+
+// sessionToolName 从会话 ID 获取对应的工具名称。
+func (h *TUIAgentHandler) sessionToolName(sessionID string) string {
+	if h.sessionMgr == nil {
 		return ""
 	}
+	s, ok := h.sessionMgr.Get(sessionID)
+	if !ok {
+		return ""
+	}
+	return s.Spec.Tool
 }
 
 func (h *TUIAgentHandler) toolGetSessionEvents(args map[string]interface{}) string {
@@ -219,6 +275,7 @@ func (h *TUIAgentHandler) toolSendAndObserve(args map[string]interface{}) string
 	stallState := s.StallState
 	nudgeCount := s.NudgeCount
 	lastOutputAt := s.LastOutputAt
+	stepProgress2 := s.StepProgress
 	s.mu.Unlock()
 
 	// 诊断头
@@ -235,7 +292,7 @@ func (h *TUIAgentHandler) toolSendAndObserve(args map[string]interface{}) string
 	} else if stallState == remote.StallStateStuck {
 		diag.WriteString(fmt.Sprintf(" stall=stuck nudge_count=%d", nudgeCount))
 	}
-	hint := sessionDiagHint(status, stallState)
+	hint := sessionDiagHint(status, stallState, stepProgress2)
 	if hint != "" {
 		diag.WriteString("\n" + hint)
 	}
@@ -243,7 +300,22 @@ func (h *TUIAgentHandler) toolSendAndObserve(args map[string]interface{}) string
 	if len(newLines) == 0 {
 		return diag.String() + "\n(等待后无新输出)"
 	}
-	return diag.String() + "\n" + strings.Join(newLines, "\n")
+
+	// 运行时认证失败检测（仅在工具尚未标记为不可用时检测）
+	output := strings.Join(newLines, "\n")
+	if h.codingToolHealth != nil {
+		if toolName := h.sessionToolName(sid); toolName != "" {
+			if blocked, _ := h.codingToolHealth.IsBlocked(toolName); !blocked {
+				if failed, pattern := DetectAuthFailure(output); failed {
+					h.codingToolHealth.MarkAuthFailed(toolName,
+						fmt.Sprintf("运行时检测到认证错误 (匹配: %s)", pattern))
+					diag.WriteString(fmt.Sprintf("\n⚠️ 检测到认证失败，工具 %s 已标记为不可用。请使用 bash/read_file/write_file 等基础工具继续。", toolName))
+				}
+			}
+		}
+	}
+
+	return diag.String() + "\n" + output
 }
 
 func (h *TUIAgentHandler) toolControlSession(args map[string]interface{}) string {

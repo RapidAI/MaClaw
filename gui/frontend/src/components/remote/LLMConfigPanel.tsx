@@ -16,6 +16,8 @@ import {
     GetFreeProxyModels,
     GetFreeProxyModel,
     SetFreeProxyModel,
+    GetLLMTrajectoryLogging,
+    SetLLMTrajectoryLogging,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
 import { UsageDisplay } from "./UsageDisplay";
@@ -93,6 +95,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [authChecking, setAuthChecking] = useState(false);
     const [freeModels, setFreeModels] = useState<{id: string; name: string}[]>([]);
     const [freeSelectedModel, setFreeSelectedModel] = useState("");
+    const [trajectoryLogging, setTrajectoryLogging] = useState(false);
 
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
 
@@ -129,6 +132,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             if (data?.providers) { setProviders(data.providers); setCurrentName(data.current || NONE_PROVIDER); }
             const iter = await GetMaclawAgentMaxIterations();
             setMaxIter(typeof iter === "number" ? iter : 0);
+            const trajLog = await GetLLMTrajectoryLogging();
+            setTrajectoryLogging(!!trajLog);
         } catch { /* ignore */ }
         setLoading(false);
     }, []);
@@ -383,6 +388,30 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                         {maxIter === 0 ? t("不限制", "Unlimited") : `${maxIter} ${t("轮", "rounds")}`}
                     </span>
                 </div>
+            </div>
+
+            {/* Trajectory Logging Toggle */}
+            <div style={{
+                marginBottom: 16, padding: "12px 16px", borderRadius: 6,
+                border: `1px solid ${colors.border}`, background: colors.surface,
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+            }}>
+                <div>
+                    <label style={{ ...labelStyle, marginBottom: 2 }}>
+                        {t("记录 LLM 交互", "Log LLM Trajectories")}
+                    </label>
+                    <div style={{ fontSize: "0.68rem", color: "#888", lineHeight: 1.4 }}>
+                        {t("保存所有 LLM 对话到 ~/.maclaw/trajectories（用于模型训练）",
+                           "Save all LLM conversations to ~/.maclaw/trajectories (for model training)")}
+                    </div>
+                </div>
+                <input type="checkbox" checked={trajectoryLogging}
+                    onChange={e => {
+                        const v = e.target.checked;
+                        setTrajectoryLogging(v);
+                        SetLLMTrajectoryLogging(v).catch(() => {});
+                    }}
+                    style={{ width: 18, height: 18, accentColor: "#6366f1", cursor: "pointer", flexShrink: 0 }} />
             </div>
 
             {isNone && (

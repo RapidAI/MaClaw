@@ -1354,6 +1354,41 @@ func (a *App) MigrateDataDir() {
 			log.Printf("[MigrateDataDir] migrated %s → %s", src, dst)
 		}
 	}
+
+	// Fix .cmd/.bat shim files that contain hardcoded old paths.
+	toolsDir := filepath.Join(newBase, "tools")
+	if entries, err := os.ReadDir(toolsDir); err == nil {
+		for _, e := range entries {
+			ext := strings.ToLower(filepath.Ext(e.Name()))
+			if ext != ".cmd" && ext != ".bat" {
+				continue
+			}
+			p := filepath.Join(toolsDir, e.Name())
+			data, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			content := string(data)
+			if !strings.Contains(content, ".cceasy") {
+				continue
+			}
+			// Replace both absolute path and %USERPROFILE% forms.
+			fixed := content
+			fixed = strings.ReplaceAll(fixed, oldBase, newBase)
+			fixed = strings.ReplaceAll(fixed, `%USERPROFILE%\.cceasy\tools`, strings.ReplaceAll(filepath.Join(newBase, "tools"), home, `%USERPROFILE%`))
+			fixed = strings.ReplaceAll(fixed, `%USERPROFILE%\.cceasy`, strings.ReplaceAll(newBase, home, `%USERPROFILE%`))
+			if fixed != content {
+				_ = os.WriteFile(p, []byte(fixed), 0644)
+				log.Printf("[MigrateDataDir] fixed old path in %s", e.Name())
+			}
+		}
+	}
+
+	// Remove old .cceasy directory if empty.
+	if entries, err := os.ReadDir(oldBase); err == nil && len(entries) == 0 {
+		_ = os.Remove(oldBase)
+		log.Printf("[MigrateDataDir] removed empty legacy directory %s", oldBase)
+	}
 }
 
 func (a *App) GetLocalCacheDir() string {

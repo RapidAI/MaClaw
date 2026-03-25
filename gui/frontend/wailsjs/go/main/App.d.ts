@@ -214,6 +214,10 @@ export function GetMaclawAgentMaxIterations():Promise<number>;
 
 export function SetMaclawAgentMaxIterations(arg1:number):Promise<void>;
 
+export function GetLLMTrajectoryLogging():Promise<boolean>;
+
+export function SetLLMTrajectoryLogging(arg1:boolean):Promise<void>;
+
 export function PingMaclawLLM():Promise<any>;
 
 export function PingSkillHub(arg1:string):Promise<any>;

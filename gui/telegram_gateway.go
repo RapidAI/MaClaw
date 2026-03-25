@@ -514,5 +514,5 @@ func (a *App) SetTelegramLocalMode(enabled bool) error {
 
 // saveTelegramMediaToTemp saves media from a Telegram message to a temp file.
 func saveTelegramMediaToTemp(msg telegram.IncomingMessage) (string, error) {
-	return saveMediaToTempDir("maclaw-telegram-media", "tg_", strconv.FormatInt(msg.ChatID, 10), msg.MediaType, msg.MediaData, msg.MediaName)
+	return saveMediaToTempDir("tg", "tg_", strconv.FormatInt(msg.ChatID, 10), msg.MediaType, msg.MediaData, msg.MediaName)
 }

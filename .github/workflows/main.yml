@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       BRAND:
-        description: 'OEM brand identifier (empty = default MaClaw)'
+        description: 'Brand to build: empty = all (maclaw + tigerclaw), "maclaw" = maclaw only, "qianxin" = tigerclaw only'
         required: false
         default: ''
         type: string
@@ -26,13 +26,16 @@ jobs:
   # ============================================================
   build-windows:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || fromJSON('["", "qianxin"]') }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Compute brand variables
         shell: pwsh
         run: |
-          $brand = "${{ inputs.BRAND }}"
+          $brand = "${{ matrix.brand }}"
           if ($brand -ne "") {
             # Brand display name mapping
             $displayNames = @{ "qianxin" = "TigerClaw" }
@@ -188,7 +191,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-artifacts
+          name: windows-artifacts-${{ matrix.brand || 'default' }}
           path: |
             dist/${{ env.BRAND_APP_NAME }}-Setup.exe
             dist/${{ env.BRAND_APP_NAME }}-Windows-Portable.zip
@@ -209,12 +212,15 @@ jobs:
   # ============================================================
   build-macos:
     runs-on: macos-latest
+    strategy:
+      matrix:
+        brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || fromJSON('["", "qianxin"]') }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Compute brand variables
         run: |
-          BRAND="${{ inputs.BRAND }}"
+          BRAND="${{ matrix.brand }}"
           if [ -n "$BRAND" ]; then
             # Brand display name mapping
             declare -A DISPLAY_NAMES=( ["qianxin"]="TigerClaw" )
@@ -373,7 +379,7 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-artifacts
+          name: macos-artifacts-${{ matrix.brand || 'default' }}
           path: |
             dist/${{ env.BRAND_APP_NAME }}-Universal.pkg
             dist/${{ env.BRAND_APP_NAME }}-amd64.pkg
@@ -393,12 +399,15 @@ jobs:
   # ============================================================
   build-linux:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        brand: ${{ inputs.BRAND == 'maclaw' && fromJSON('[""]') || inputs.BRAND == 'qianxin' && fromJSON('["qianxin"]') || fromJSON('["", "qianxin"]') }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Compute brand variables
         run: |
-          BRAND="${{ inputs.BRAND }}"
+          BRAND="${{ matrix.brand }}"
           if [ -n "$BRAND" ]; then
             declare -A DISPLAY_NAMES=( ["qianxin"]="TigerClaw" )
             DISPLAY_NAME="${DISPLAY_NAMES[$BRAND]:-$BRAND}"
@@ -518,7 +527,7 @@ jobs:
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-artifacts
+          name: linux-artifacts-${{ matrix.brand || 'default' }}
           path: |
             dist/${{ env.BRAND_APP_NAME }}-*-x86_64.AppImage
             dist/*-tui_amd64_linux

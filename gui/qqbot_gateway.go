@@ -506,5 +506,5 @@ func (a *App) SetQQBotLocalMode(enabled bool) error {
 
 // saveQQMediaToTemp saves media from a QQ message to a temp file.
 func saveQQMediaToTemp(msg qqbot.IncomingMessage) (string, error) {
-	return saveMediaToTempDir("maclaw-qqbot-media", "qq_", msg.OpenID, msg.MediaType, msg.MediaData, msg.MediaName)
+	return saveMediaToTempDir("qq", "qq_", msg.OpenID, msg.MediaType, msg.MediaData, msg.MediaName)
 }

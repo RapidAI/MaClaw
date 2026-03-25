@@ -1555,6 +1555,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	cfg := h.app.GetMaclawLLMConfig()
 	maxIter := h.app.GetMaclawAgentMaxIterations()
 	h.loopMaxOverride = 0 // reset dynamic override for this loop
+
+	// --- Trajectory logging ---
+	var trajRec *TrajectoryRecorder
+	if h.app.GetLLMTrajectoryLogging() {
+		trajRec = NewTrajectoryRecorder()
+		defer trajRec.Flush()
+	}
+
 	// Sync initial maxIter into the LoopContext so ctx is the source of truth.
 	if ctx.MaxIterations() <= 0 {
 		ctx.SetMaxIterations(maxIter)
@@ -1575,6 +1583,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 
 	history = append(history, conversationEntry{Role: "user", Content: userContent})
+
+	// --- Trajectory: record session start and initial conversation ---
+	if trajRec != nil {
+		trajRec.StartSession(ctx.ID, cfg.URL, cfg.Model, cfg.Protocol, userID, platform, tools)
+		trajRec.Record("system", systemPrompt, nil, "", "")
+		for _, entry := range history[:len(history)-1] {
+			trajRec.Record(entry.Role, entry.Content, entry.ToolCalls, entry.ToolCallID, entry.ReasoningContent)
+		}
+		trajRec.Record("user", userContent, nil, "", "")
+	}
 
 	// maxIter defaults to 300 (MaxAgentIterationsCap).
 	// We still enforce a hard safety cap to prevent runaway loops.
@@ -1715,6 +1733,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		conversation = append(conversation, assistantMsg)
 
+		// --- Trajectory: record assistant response ---
+		if trajRec != nil {
+			trajRec.Record("assistant", msgContent, choice.Message.ToolCalls, "", msgReasoning)
+		}
+
 		historyEntry := conversationEntry{Role: "assistant", Content: msgContent, ReasoningContent: msgReasoning}
 		if len(choice.Message.ToolCalls) > 0 {
 			historyEntry.ToolCalls = choice.Message.ToolCalls
@@ -1819,6 +1842,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			history = append(history, conversationEntry{
 				Role: "tool", Content: truncated, ToolCallID: tc.ID,
 			})
+			// --- Trajectory: record tool result ---
+			if trajRec != nil {
+				trajRec.Record("tool", truncated, nil, tc.ID, "")
+			}
 		}
 
 		// If a direct screenshot was captured, return it immediately as an image response.
@@ -1951,6 +1978,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				Role: "assistant", Content: bcContent, ReasoningContent: bcReasoning, ToolCalls: bc.Message.ToolCalls,
 			})
 
+			// --- Trajectory: record bonus round assistant ---
+			if trajRec != nil {
+				trajRec.Record("assistant", bcContent, bc.Message.ToolCalls, "", bcReasoning)
+			}
+
 			// Execute any tool calls from the bonus round.
 			for _, tc := range bc.Message.ToolCalls {
 				toolOnProgress := onProgress
@@ -1967,6 +1999,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				history = append(history, conversationEntry{
 					Role: "tool", Content: truncated, ToolCallID: tc.ID,
 				})
+				// --- Trajectory: record bonus round tool result ---
+				if trajRec != nil {
+					trajRec.Record("tool", truncated, nil, tc.ID, "")
+				}
 			}
 		}
 
@@ -2269,59 +2305,103 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 只有真正需要启动 IDE/编程工具来修改项目代码的任务才是编程任务。
 
 ### 第二步：检查跳过信号（Skip_Signal）
-如果用户消息中包含以下表达，跳过确认直接执行：
+如果用户消息中包含以下表达，跳过需求/设计/任务分解三个确认阶段，直接进入内部规划后执行：
 - 中文：直接做、不用问了、按你的想法来、直接开始、不用确认、马上做、赶紧做
 - English：just do it、skip confirmation、go ahead、do it now
+- 在任何确认阶段中收到跳过信号，跳过剩余确认阶段直接进入执行
+- 跳过时仍在内部生成需求理解、设计方案和任务分解，但不生成 PDF、不等待用户确认
 
-### 第三步：需求确认（Confirmation Phase）
-对于编程任务且无跳过信号时，必须先输出确认消息再执行：
+### 第三步：需求确认（Requirements Phase）
+对于编程任务且无跳过信号时，进入 Spec 驱动工作流：
 
-**确认消息格式：**
-📋 **需求确认**
-1. 需求理解：[用简洁语言复述你对需求的理解]
-2. 实现方案：[涉及的文件和大致实现思路]
-3. 边界情况：[需要用户决定的设计决策点，如无则省略]
+**文档内容要求：**
+生成需求文档，包含：
+a) 需求背景与目标
+b) 功能需求列表（每条需求有编号和验收标准）
+c) 非功能需求（如有）
+d) 约束与假设
 
-请确认是否按此方案执行？
+**文档生成与发送：**
+1. 用 Markdown 格式编写需求文档内容
+2. 用 craft_tool 生成 Markdown-to-PDF 转换脚本，或用 bash 调用 pandoc/wkhtmltopdf 将 Markdown 转为 PDF
+3. 用 send_file（forward_to_im=true）将 PDF 发送给用户
+4. 同时发送一段简短的文字摘要，让用户快速预览
+5. PDF 文件命名：需求文档_<feature_name>.pdf
 
-**确认阶段规则：**
-- 等待用户明确同意（如"好的"、"可以"、"确认"、"没问题"）后才调用 create_session
-- 如果用户提出修正或追加新需求（如"加音效"、"还要支持XX"、"改成YY"），将新需求整合到当前方案中，重新输出完整的确认消息，不要直接开始编程
-- ⚠️ 关键：在确认阶段，任何不是明确同意或跳过信号的用户回复，都应视为需求变更/补充，必须重新确认。不要把追加需求当成新的独立指令直接执行
-- 如果用户在确认阶段发出跳过信号，立即执行
+**确认规则：**
+- 等待用户明确确认（如"确认"、"没问题"、"通过"）后才进入下一阶段
+- 用户提出修改意见时，更新文档内容，重新生成 PDF 并发送
+- 修订后使用最新版本作为后续阶段输入
+- 用户发出跳过信号时，跳过剩余确认阶段直接进入执行
 
-### 第四步：执行编程任务
-用户确认后（或跳过确认后），按以下步骤执行：
-1. 创建会话：调用 create_session 启动编程工具
-   - ⚠️ 严禁自己写代码：当用户请求的是编程任务时，你必须通过 create_session 启动专业编程工具（Claude Code、Gemini CLI 等）来完成。绝对不要用 write_file 或 bash 自己编写项目代码——你没有项目上下文和 IDE 能力，专业编程工具才有。
-   - 例外：此规则仅针对用户明确要求的编程任务。你为了完成非编程任务而自发编写辅助脚本（如 craft_tool、bash 一次性脚本等）不受此限制。
-2. 发送指令：调用 get_session_output 确认状态为 running 后（最多检查 2 次），立即用 send_and_observe 将确认阶段达成的需求理解和实现方案整合到编程指令中发送给编程工具
-⚠️ 严禁在 create_session 之后、send_and_observe 之前插入 bash、read_file、write_file 等其他工具调用。创建会话后的第一个动作必须是 get_session_output 检查状态，第二个动作必须是 send_and_observe 发送编程指令。
-3. 跟踪进度：
-   - 简单操作（ls、cat 等）：send_and_observe 会直接返回结果
-   - 复杂编程任务（写代码、重构等）：编程工具可能需要数分钟完成。如果 send_and_observe 返回时会话状态为 busy，每 15-30 秒调用一次 get_session_output 检查进度是正常的
-   - ⚠️ 绝对不要终止状态为 busy 的编程会话——编程工具正在工作中
-⚠️ 编程工具启动后会等待输入，不发送指令它不会开始工作。对已退出或出错的会话不要反复轮询 get_session_output。
+**PDF 生成失败回退：**
+- 如果 PDF 生成失败，将文档内容作为格式化文本直接发送到 IM，并告知用户 PDF 生成失败
 
-### 第五步：任务完成后 Review/Fix/Optimize（RFO Phase）
-当编程任务成功完成（会话状态为 waiting_input 或 exited 且 exit_code=0）时：
+### 第四步：技术设计（Design Phase）
+用户确认需求文档后，进入技术设计阶段：
 
-**RFO 询问格式：**
-✅ 任务已完成。是否需要进一步优化代码质量？（会消耗额外 tokens）
-- Review：审查代码质量、命名、结构
-- Fix：修复潜在问题、边界情况
-- Optimize：性能优化、代码简化
-- 跳过：直接结束
+**文档内容要求：**
+基于确认的需求文档，生成技术设计文档，包含：
+a) 架构设计（涉及的模块和文件）
+b) 接口设计（关键函数/方法签名）
+c) 数据模型变更（如有）
+d) 实现方案概述
 
-**RFO 规则：**
-- 用户可选择一个或多个选项（如"review 和 optimize"、"全部"）
-- 多选时按 Review → Fix → Optimize 顺序执行
-- 每个选项通过 send_and_observe 发送对应指令给编程工具
-- 每个选项完成后报告结果再执行下一个
-- 用户说"不需要"、"跳过"、"skip"时直接结束
-- 如果任务失败（exit_code≠0 或 error 状态），跳过 RFO 直接报告失败
+**文档生成与发送：**（同第三步的 PDF 生成流程）
+- PDF 文件命名：设计文档_<feature_name>.pdf
 
-### 第六步：自动续接（Auto-Resume）
+**确认规则：**（同第三步）
+- 用户可要求回退到需求阶段修改（如"需求文档需要改一下"、"回到需求阶段"）
+- 回退后重新生成所有后续阶段文档
+- 告知用户回退信息
+
+### 第五步：任务分解（TaskBreakdown Phase）
+用户确认设计文档后，进入任务分解阶段：
+
+**文档内容要求：**
+基于确认的需求和设计文档，生成任务列表文档，包含：
+a) 编号的任务列表（按执行顺序排列）
+b) 每个任务的描述和涉及的文件
+c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期结果）
+
+**文档生成与发送：**（同第三步的 PDF 生成流程）
+- PDF 文件命名：任务列表_<feature_name>.pdf
+
+**确认规则：**（同第三步）
+- 用户可要求回退到需求或设计阶段修改
+- 回退后重新生成所有后续阶段文档
+- 告知用户回退信息
+
+### 第六步：任务执行（Execution Phase）
+用户确认任务列表后（或跳过确认后），自动执行所有任务：
+
+**执行规则：**
+1. 按任务列表顺序逐个执行，不再需要用户交互
+2. 每个任务：调用 create_session 启动编程工具，通过 send_and_observe 发送任务描述（附带确认的需求和设计上下文）
+3. 任务编码完成后，指示编程工具运行对应的 TDD 测试用例验证
+4. 测试失败时，指示编程工具修复并重试，最多 3 次
+5. 3 次重试仍失败，记录失败，跳到下一个任务
+6. 每个任务完成后发送进度消息给用户（如"任务 3/8 完成 ✅"或"任务 4/8 失败 ❌"）
+
+⚠️ 严禁自己写代码：编程任务必须通过 create_session 启动专业编程工具完成。
+⚠️ 严禁在 create_session 之后、send_and_observe 之前插入其他工具调用。
+⚠️ 绝对不要终止状态为 busy 的编程会话——编程工具正在工作中。
+
+### 第七步：完成验收（Verification Phase）
+所有任务执行完毕后，自动进入验收阶段：
+
+**验收流程：**
+1. 指示编程工具运行所有 TDD 测试用例作为全量回归测试
+2. 生成完成报告，包含：
+   a) 总任务数和成功/失败数
+   b) 每个任务的执行结果
+   c) 全量测试运行结果
+   d) 失败任务的错误摘要（如有）
+3. 将完成报告作为文本消息发送给用户
+4. 全部通过：报告功能成功完成
+5. 有失败：列出失败项并建议下一步操作
+
+### 第八步：自动续接（Auto-Resume）
 当编程工具因 token 耗尽正常退出（exit_code=0 或 1，且 get_session_output 返回续接指令）时：
 
 **自动续接规则：**

@@ -884,7 +884,7 @@ func (a *App) updatePathForNode() {
 	npmPath := filepath.Join(os.Getenv("AppData"), "npm")
 	home, _ := os.UserHomeDir()
 	localToolPath := filepath.Join(home, ".maclaw", "data", "tools")
-	oldToolPath := filepath.Join(home, ".cceasy", "node")
+	oldToolPath := filepath.Join(home, ".cceasy", "node") // legacy path, keep for cleanup
 
 	currentPath := os.Getenv("PATH")
 	if strings.Contains(strings.ToLower(currentPath), strings.ToLower(oldToolPath)) {

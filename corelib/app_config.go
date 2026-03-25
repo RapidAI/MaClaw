@@ -112,6 +112,8 @@ type AppConfig struct {
 	SkillPurchaseMode string `json:"skill_purchase_mode,omitempty"` // "auto" (default) | "free_only"
 	// Gossip — 聊天八卦自动发布（默认开启）
 	GossipAutoPublish bool `json:"gossip_auto_publish"`
+	// LLM Trajectory Logging — 记录所有 LLM 交互用于模型训练
+	LLMTrajectoryLogging bool `json:"llm_trajectory_logging,omitempty"`
 	// Onboarding — 是否已完成引导流程
 	OnboardingDone bool `json:"onboarding_done,omitempty"`
 }

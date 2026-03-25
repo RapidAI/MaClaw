@@ -582,6 +582,14 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 					Body:       body,
 				}, nil
 			}
+			// Deferred: media was buffered on the client side, waiting for
+			// user intent. Do not deliver anything to the IM user — the
+			// client will send a real response (or a timeout prompt via
+			// progress) later.
+			if resp.Deferred {
+				log.Printf("[MessageRouter] request_id=%s deferred (media buffered), suppressing IM reply", pending.RequestID)
+				return nil, nil
+			}
 			gr := resp.ToGenericResponse()
 			if namePrefix != "" {
 				if gr.Body != "" {

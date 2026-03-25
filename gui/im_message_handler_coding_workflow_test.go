@@ -133,48 +133,32 @@ func TestCodingWorkflowProperty1_ConfirmationBeforeCreateSession(t *testing.T) {
 		t.Errorf("Property 1 failed: %v", err)
 	}
 }
-
 // ---------------------------------------------------------------------------
-// Feature: coding-interaction-workflow, Property 2: Confirmation message contains all required components
+// Feature: coding-interaction-workflow, Property 2: Requirements Phase document components
 //
-// Validates: Requirements 1.2
-// For any valid system configuration, buildSystemPrompt() output must contain
-// instructions for all three confirmation message components:
-// 需求理解 (or 需求复述), 实现方案, 边界情况
+// Validates: Requirements 2.1 (maclaw-spec-driven-workflow)
 // ---------------------------------------------------------------------------
 func TestCodingWorkflowProperty2_ConfirmationContainsAllComponents(t *testing.T) {
 	f := func(cfg randomAppConfig) bool {
 		prompt := buildPromptForConfig(cfg)
-
-		// Component 1: 需求理解 or 需求复述
-		hasUnderstanding := strings.Contains(prompt, "需求理解") || strings.Contains(prompt, "需求复述")
-		if !hasUnderstanding {
-			t.Logf("prompt missing 需求理解/需求复述")
-			return false
+		if !strings.Contains(prompt, "需求背景与目标") {
+			t.Logf("missing 需求背景与目标"); return false
 		}
-
-		// Component 2: 实现方案
-		hasPlan := strings.Contains(prompt, "实现方案")
-		if !hasPlan {
-			t.Logf("prompt missing 实现方案")
-			return false
+		if !strings.Contains(prompt, "功能需求列表") {
+			t.Logf("missing 功能需求列表"); return false
 		}
-
-		// Component 3: 边界情况
-		hasEdgeCases := strings.Contains(prompt, "边界情况")
-		if !hasEdgeCases {
-			t.Logf("prompt missing 边界情况")
-			return false
+		if !strings.Contains(prompt, "非功能需求") {
+			t.Logf("missing 非功能需求"); return false
 		}
-
+		if !strings.Contains(prompt, "约束与假设") {
+			t.Logf("missing 约束与假设"); return false
+		}
 		return true
 	}
-
 	if err := quick.Check(f, quickConfig()); err != nil {
 		t.Errorf("Property 2 failed: %v", err)
 	}
 }
-
 // ---------------------------------------------------------------------------
 // Feature: coding-interaction-workflow, Property 3: Coding vs non-coding task distinction
 //
@@ -266,97 +250,61 @@ func TestCodingWorkflowProperty4_SkipSignalBilingualPatterns(t *testing.T) {
 		t.Errorf("Property 4 failed: %v", err)
 	}
 }
-
 // ---------------------------------------------------------------------------
-// Feature: coding-interaction-workflow, Property 5: RFO workflow completeness
+// Feature: coding-interaction-workflow, Property 5: Verification Phase completeness
 //
-// Validates: Requirements 4.1, 4.2, 5.1, 5.2, 6.2
-// For any valid system configuration, buildSystemPrompt() output must contain:
-// (a) RFO trigger conditions (waiting_input or exited with exit_code=0),
-// (b) all three RFO options (Review, Fix, Optimize),
-// (c) the sequential execution order Review → Fix → Optimize.
+// Validates: Requirements 6.1, 6.2, 6.3 (maclaw-spec-driven-workflow)
 // ---------------------------------------------------------------------------
 func TestCodingWorkflowProperty5_RFOWorkflowCompleteness(t *testing.T) {
 	f := func(cfg randomAppConfig) bool {
 		prompt := buildPromptForConfig(cfg)
-
-		// (a) RFO trigger conditions
-		hasWaitingInput := strings.Contains(prompt, "waiting_input")
-		hasExitCode0 := strings.Contains(prompt, "exit_code=0") || strings.Contains(prompt, "exit code 0") || strings.Contains(prompt, "退出码")
-		if !hasWaitingInput {
-			t.Logf("prompt missing RFO trigger condition 'waiting_input'")
-			return false
+		if !strings.Contains(prompt, "全量回归测试") {
+			t.Logf("missing 全量回归测试"); return false
 		}
-		// Must mention exited with success condition
-		hasExited := strings.Contains(prompt, "exited")
-		if !hasExited || !hasExitCode0 {
-			t.Logf("prompt missing RFO trigger condition for exited+exit_code=0 (exited=%v, exitCode0=%v)",
-				hasExited, hasExitCode0)
-			return false
+		if !(strings.Contains(prompt, "总任务数") || strings.Contains(prompt, "成功/失败数")) {
+			t.Logf("missing report task count"); return false
 		}
-
-		// (b) All three RFO options
-		hasReview := strings.Contains(prompt, "Review")
-		hasFix := strings.Contains(prompt, "Fix")
-		hasOptimize := strings.Contains(prompt, "Optimize")
-		if !hasReview || !hasFix || !hasOptimize {
-			t.Logf("prompt missing RFO options (Review=%v, Fix=%v, Optimize=%v)",
-				hasReview, hasFix, hasOptimize)
-			return false
+		if !strings.Contains(prompt, "每个任务的执行结果") {
+			t.Logf("missing per-task result"); return false
 		}
-
-		// (c) Sequential execution order: Review → Fix → Optimize
-		hasOrder := strings.Contains(prompt, "Review → Fix → Optimize")
-		if !hasOrder {
-			t.Logf("prompt missing sequential order 'Review → Fix → Optimize'")
-			return false
+		if !strings.Contains(prompt, "全量测试运行结果") {
+			t.Logf("missing full test result"); return false
 		}
-
+		if !strings.Contains(prompt, "全部通过") {
+			t.Logf("missing success report"); return false
+		}
+		if !(strings.Contains(prompt, "有失败") || strings.Contains(prompt, "列出失败项")) {
+			t.Logf("missing failure report"); return false
+		}
 		return true
 	}
-
 	if err := quick.Check(f, quickConfig()); err != nil {
 		t.Errorf("Property 5 failed: %v", err)
 	}
 }
-
 // ---------------------------------------------------------------------------
-// Feature: coding-interaction-workflow, Property 6: Skip RFO on task failure
+// Feature: coding-interaction-workflow, Property 6: Task failure handling with retry
 //
-// Validates: Requirements 4.6
-// For any valid system configuration, buildSystemPrompt() output must contain
-// explicit instructions to skip RFO when task fails (exit_code≠0 or error status).
+// Validates: Requirements 5.4, 5.5 (maclaw-spec-driven-workflow)
 // ---------------------------------------------------------------------------
 func TestCodingWorkflowProperty6_SkipRFOOnTaskFailure(t *testing.T) {
 	f := func(cfg randomAppConfig) bool {
 		prompt := buildPromptForConfig(cfg)
-
-		// Must mention skipping RFO on failure
-		hasFailureSkip := strings.Contains(prompt, "exit_code≠0") || strings.Contains(prompt, "exit_code!=0") || strings.Contains(prompt, "非零")
-		hasErrorStatus := strings.Contains(prompt, "error") || strings.Contains(prompt, "失败")
-		hasSkipRFO := strings.Contains(prompt, "跳过 RFO") || strings.Contains(prompt, "跳过RFO") || strings.Contains(prompt, "skip RFO")
-
-		if !hasFailureSkip {
-			t.Logf("prompt missing failure condition (exit_code≠0 or 非零)")
-			return false
+		if !(strings.Contains(prompt, "最多 3 次") || strings.Contains(prompt, "最多3次")) {
+			t.Logf("missing retry limit"); return false
 		}
-		if !hasErrorStatus {
-			t.Logf("prompt missing error status reference")
-			return false
+		if !strings.Contains(prompt, "跳到下一个任务") {
+			t.Logf("missing skip-to-next"); return false
 		}
-		if !hasSkipRFO {
-			t.Logf("prompt missing skip RFO instruction")
-			return false
+		if !(strings.Contains(prompt, "完成 ✅") || strings.Contains(prompt, "失败 ❌")) {
+			t.Logf("missing progress format"); return false
 		}
-
 		return true
 	}
-
 	if err := quick.Check(f, quickConfig()); err != nil {
 		t.Errorf("Property 6 failed: %v", err)
 	}
 }
-
 // ---------------------------------------------------------------------------
 // Feature: coding-interaction-workflow, Property 7: Existing workflow rules preserved
 //

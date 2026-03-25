@@ -24,20 +24,23 @@ type TUISession struct {
 	LastOutputAt  time.Time            // 最后一次收到输出的时间
 	StallState    remote.StallState    // 停滞检测状态
 	NudgeCount    int                  // 已发送的 nudge 次数
+	StepProgress  string               // 当前步骤进度文本
 }
 
 // TUISessionManager 管理 TUI 端的本地会话生命周期。
 // 复用 corelib/remote 的 LaunchSpec、OutputPipeline、SessionMonitor。
 type TUISessionManager struct {
-	mu       sync.RWMutex
-	sessions map[string]*TUISession
-	onUpdate func(sessionID string) // 会话状态变更回调
+	mu              sync.RWMutex
+	sessions        map[string]*TUISession
+	onUpdate        func(sessionID string) // 会话状态变更回调
+	progressTracker *remote.ProgressTracker
 }
 
 // NewTUISessionManager 创建会话管理器。
 func NewTUISessionManager() *TUISessionManager {
 	return &TUISessionManager{
-		sessions: make(map[string]*TUISession),
+		sessions:        make(map[string]*TUISession),
+		progressTracker: remote.NewProgressTracker(),
 	}
 }
 
@@ -187,6 +190,10 @@ func (m *TUISessionManager) runOutputLoop(s *TUISession) {
 		}
 		lines := splitOutputLines(chunk)
 		now := time.Now()
+		// Track tool_use steps from PTY output
+		for _, line := range lines {
+			m.progressTracker.ConsumeLine(s.ID, line)
+		}
 		s.mu.Lock()
 		s.PreviewLines = append(s.PreviewLines, lines...)
 		// 限制预览行数
@@ -195,6 +202,14 @@ func (m *TUISessionManager) runOutputLoop(s *TUISession) {
 		}
 		s.LastOutputAt = now
 		s.Summary.UpdatedAt = now.Unix()
+		// Update step progress
+		if sp := m.progressTracker.FormatProgress(s.ID); sp != "" {
+			s.StepProgress = sp
+			s.Summary.StepProgress = sp
+			if prog := m.progressTracker.GetProgress(s.ID); prog != nil {
+				s.Summary.StepCount = prog.StepCount
+			}
+		}
 		s.mu.Unlock()
 
 		m.mu.RLock()
@@ -230,6 +245,9 @@ func (m *TUISessionManager) runExitLoop(s *TUISession) {
 	s.mu.Unlock()
 
 	_ = s.Handle.Close()
+
+	// Clean up progress tracking for this session.
+	m.progressTracker.Reset(s.ID)
 
 	m.mu.RLock()
 	cb := m.onUpdate

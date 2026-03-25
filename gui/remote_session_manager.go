@@ -21,6 +21,7 @@ type RemoteSessionManager struct {
 
 	stallDetector      *StallDetector
 	completionAnalyzer *CompletionAnalyzer
+	progressTracker    *ProgressTracker
 
 	mu       sync.RWMutex
 	sessions map[string]*RemoteSession
@@ -44,6 +45,7 @@ func NewRemoteSessionManager(app *App) *RemoteSessionManager {
 
 	m.stallDetector = NewStallDetector(StallDetectorConfig{}, app.log)
 	m.completionAnalyzer = NewCompletionAnalyzer(CompletionAnalyzerConfig{})
+	m.progressTracker = NewProgressTracker()
 
 	m.stallDetector.OnStallStateChanged = func(sessionID string, state StallState, nudgeCount int) {
 		s, ok := m.Get(sessionID)
@@ -682,12 +684,23 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 				s.ID, len(chunk), len(rawLines)))
 			// Check for startup prompts and auto-respond
 			responder.feed(rawLines)
+			// Track tool_use steps from PTY output
+			for _, line := range rawLines {
+				m.progressTracker.ConsumeLine(s.ID, line)
+			}
 		}
 
 		result := pipeline.Consume(s, chunk)
 
 		s.mu.Lock()
 		applyOutputResult(s, result)
+		// Update step progress for PTY sessions
+		if sp := m.progressTracker.FormatProgress(s.ID); sp != "" {
+			s.Summary.StepProgress = sp
+			if prog := m.progressTracker.GetProgress(s.ID); prog != nil {
+				s.Summary.StepCount = prog.StepCount
+			}
+		}
 		s.mu.Unlock()
 
 		syncOutputResult(m.hubClient, result)
@@ -1031,6 +1044,8 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 					for _, block := range msg.Message.Content {
 						if block.Type == "tool_use" && block.Name != "" {
 							lastToolName = block.Name
+							// Record step in progress tracker
+							m.progressTracker.RecordSDKToolUse(s.ID, block.Name, block.Input)
 							evt := buildSDKToolUseEvent(s, block)
 							s.Events = appendRecentEvents(s.Events, evt, maxRecentImportantEvents)
 							eventsToSync = append(eventsToSync, evt)
@@ -1064,6 +1079,13 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 							Data:         img.Data,
 							AfterLineIdx: len(s.RawOutputLines) - 1,
 						})
+					}
+				}
+				// Update step progress in summary before snapshotting
+				if sp := m.progressTracker.FormatProgress(s.ID); sp != "" {
+					s.Summary.StepProgress = sp
+					if prog := m.progressTracker.GetProgress(s.ID); prog != nil {
+						s.Summary.StepCount = prog.StepCount
 					}
 				}
 				snap := s.Summary
@@ -1468,6 +1490,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	// unexpectedly, so the user's native tool config is always restored.
 	defer func() {
 		m.stallDetector.StopMonitoring(s.ID)
+		m.progressTracker.Reset(s.ID)
 		if s.configCleanup != nil {
 			s.configCleanup()
 			s.configCleanup = nil

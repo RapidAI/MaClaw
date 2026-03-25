@@ -905,6 +905,7 @@ func (m *Manager) initSchema() {
 				{Key: "maclaw_llm_context_length", Description: "LLM 上下文长度 (tokens)，0=默认128000", Type: "int", Default: "0"},
 				{Key: "maclaw_llm_current_provider", Description: "当前 LLM 提供商", Type: "string"},
 				{Key: "maclaw_agent_max_iterations", Description: "Agent 最大推理轮次（30-300，默认300）", Type: "int", Default: "300"},
+				{Key: "llm_trajectory_logging", Description: "记录 LLM 交互 trajectory（用于模型训练）", Type: "bool", Default: "false"},
 			},
 		},
 		{

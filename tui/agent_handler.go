@@ -55,26 +55,28 @@ type llmResponse struct {
 // TUIAgentHandler 是 TUI 端的 Agent 循环处理器。
 // 支持 LLM 工具调用，集成 Firewall + Router + 40+ 工具。
 type TUIAgentHandler struct {
-	sessionMgr    *TUISessionManager
-	httpClient    *http.Client
-	firewall      *security.Firewall
-	defGenerator  *tool.DefinitionGenerator
-	router        *tool.Router
-	selector      *tool.Selector
-	configMgr     *config.Manager
-	memoryStore   *memory.Store
-	schedulerMgr  *scheduler.Manager
-	clawnetClient *clawnet.Client
-	auditLog      *security.AuditLog
-	maxIterations int
+	sessionMgr       *TUISessionManager
+	httpClient       *http.Client
+	firewall         *security.Firewall
+	defGenerator     *tool.DefinitionGenerator
+	router           *tool.Router
+	selector         *tool.Selector
+	configMgr        *config.Manager
+	memoryStore      *memory.Store
+	schedulerMgr     *scheduler.Manager
+	clawnetClient    *clawnet.Client
+	auditLog         *security.AuditLog
+	maxIterations    int
+	codingToolHealth *codingToolHealthCache // 编程工具健康状态缓存
 }
 
 // NewTUIAgentHandler 创建 Agent 处理器。
 func NewTUIAgentHandler(sessionMgr *TUISessionManager, opts ...AgentHandlerOption) *TUIAgentHandler {
 	h := &TUIAgentHandler{
-		sessionMgr:    sessionMgr,
-		httpClient:    &http.Client{Timeout: 120 * time.Second},
-		maxIterations: agentMaxIterations,
+		sessionMgr:       sessionMgr,
+		httpClient:       &http.Client{Timeout: 120 * time.Second},
+		maxIterations:    agentMaxIterations,
+		codingToolHealth: newCodingToolHealthCache(),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -223,11 +225,25 @@ func (h *TUIAgentHandler) buildSystemPrompt() string {
 		identity = fmt.Sprintf("你是 MaClaw %s，运行在 TUI 终端中。你可以使用工具来帮助用户完成任务。", roleTitle)
 	}
 
-	return fmt.Sprintf(`%s
+	prompt := fmt.Sprintf(`%s
 当前系统: %s/%s
 用户主目录: %s
 当前工作目录: %s
 请用简洁的中文回答用户问题。当需要执行操作时，使用提供的工具。`, identity, runtime.GOOS, runtime.GOARCH, home, cwd)
+
+	// 注入编程工具不可用提示
+	if h.codingToolHealth != nil {
+		if summary := h.codingToolHealth.UnavailableToolsSummary(); summary != "" {
+			prompt += fmt.Sprintf(`
+
+⚠️ 以下编程工具当前不可用：
+%s
+请使用 bash、read_file、write_file 等基础工具自行完成编程任务，不要尝试创建这些工具的会话。
+如果任务确实无法在没有编程工具的情况下完成，请明确告知用户。`, summary)
+		}
+	}
+
+	return prompt
 }
 
 func (h *TUIAgentHandler) buildToolDefinitions() []map[string]interface{} {

@@ -614,7 +614,7 @@ func detectMediaType(ext string) string {
 
 // saveMediaToTemp saves incoming media data to a temp file and returns the path.
 func (m *weixinGatewayManager) saveMediaToTemp(msg weixin.IncomingMessage) (string, error) {
-	return saveMediaToTempDir("maclaw-weixin-media", "wx_", msg.FromUserID, msg.MediaType, msg.MediaData, msg.MediaName)
+	return saveMediaToTempDir("wx", "wx_", msg.FromUserID, msg.MediaType, msg.MediaData, msg.MediaName)
 }
 
 

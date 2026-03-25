@@ -660,6 +660,12 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		return
 	}
 
+	// Deferred response (media buffered on client, waiting for user intent).
+	// Nothing to deliver to the user right now.
+	if routeResp == nil {
+		return
+	}
+
 	// 6. Format and deliver response
 	a.sendResponse(ctx, plugin, target, routeResp)
 }

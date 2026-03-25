@@ -102,12 +102,12 @@ func ResolveToolPath(toolName string) (string, bool) {
 
 func resolveWindows(toolsRoot, toolName, bn string) string {
 	possiblePaths := []string{
-		filepath.Join(toolsRoot, bn+".cmd"),
 		filepath.Join(toolsRoot, bn+".exe"),
+		filepath.Join(toolsRoot, bn+".cmd"),
 		filepath.Join(toolsRoot, bn+".bat"),
 		filepath.Join(toolsRoot, bn+".ps1"),
-		filepath.Join(toolsRoot, "bin", bn+".cmd"),
 		filepath.Join(toolsRoot, "bin", bn+".exe"),
+		filepath.Join(toolsRoot, "bin", bn+".cmd"),
 		filepath.Join(toolsRoot, bn),
 		filepath.Join(toolsRoot, "bin", bn),
 	}

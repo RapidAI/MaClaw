@@ -777,3 +777,22 @@ func maclawAnthropicProbe(endpoint, key, userAgent string) (bool, error) {
 	}
 	return false, fmt.Errorf("HTTP %d", resp.StatusCode)
 }
+
+// GetLLMTrajectoryLogging returns the current trajectory logging toggle state.
+func (a *App) GetLLMTrajectoryLogging() bool {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return false
+	}
+	return cfg.LLMTrajectoryLogging
+}
+
+// SetLLMTrajectoryLogging enables or disables LLM trajectory logging.
+func (a *App) SetLLMTrajectoryLogging(enabled bool) error {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.LLMTrajectoryLogging = enabled
+	return a.SaveConfig(cfg)
+}

@@ -89,6 +89,8 @@ type SessionSummary struct {
 	ThinkingSince   int64    `json:"thinking_since,omitempty"`
 	CurrentTask     string   `json:"current_task"`
 	ProgressSummary string   `json:"progress_summary"`
+	StepProgress    string   `json:"step_progress,omitempty"`
+	StepCount       int      `json:"step_count,omitempty"`
 	LastResult      string   `json:"last_result"`
 	SuggestedAction string   `json:"suggested_action"`
 	ImportantFiles  []string `json:"important_files"`
