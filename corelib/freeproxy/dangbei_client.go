@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -299,11 +302,38 @@ func (c *DangbeiClient) StreamCompletion(ctx context.Context, cr CompletionReque
 		bodyReader := raw.Body()
 		errBody, _ := io.ReadAll(io.LimitReader(bodyReader, 4096))
 		bodyReader.Close()
+
+		// Dump full diagnostics to temp file for debugging
+		homeDir, _ := os.UserHomeDir()
+		logDir := filepath.Join(homeDir, ".maclaw", "logs")
+		os.MkdirAll(logDir, 0755)
+		dumpFile := filepath.Join(logDir, fmt.Sprintf("freeproxy_err_%d.log", time.Now().UnixMilli()))
+		var dump strings.Builder
+		dump.WriteString(fmt.Sprintf("=== freeproxy error dump ===\nTime: %s\nHTTP Status: %d\n", time.Now().Format(time.RFC3339), raw.StatusCode))
+		dump.WriteString(fmt.Sprintf("\n--- Request URL ---\nPOST https://ai-api.dangbei.net/ai-search/agentApi/v1/agentChat\n"))
+		dump.WriteString(fmt.Sprintf("\n--- Request Headers ---\n"))
+		for k, v := range headers {
+			if k == "cookie" {
+				// mask cookie value, keep first/last 10 chars
+				masked := v
+				if len(v) > 24 {
+					masked = v[:10] + "..." + v[len(v)-10:]
+				}
+				dump.WriteString(fmt.Sprintf("  %s: %s\n", k, masked))
+			} else {
+				dump.WriteString(fmt.Sprintf("  %s: %s\n", k, v))
+			}
+		}
+		dump.WriteString(fmt.Sprintf("\n--- Request Body (len=%d) ---\n%s\n", len(body), string(body)))
+		dump.WriteString(fmt.Sprintf("\n--- Response Body ---\n%s\n", string(errBody)))
+		os.WriteFile(dumpFile, []byte(dump.String()), 0644)
+		log.Printf("[freeproxy] chat HTTP %d, diagnostics dumped to %s", raw.StatusCode, dumpFile)
+
 		var ar apiResponse
 		if json.Unmarshal(errBody, &ar) == nil && !ar.ok() {
-			return "", "", fmt.Errorf("chat HTTP %d: %s", raw.StatusCode, ar.errMsg())
+			return "", "", fmt.Errorf("chat HTTP %d: %s (see %s)", raw.StatusCode, ar.errMsg(), dumpFile)
 		}
-		return "", "", fmt.Errorf("chat HTTP %d: %s", raw.StatusCode, string(errBody))
+		return "", "", fmt.Errorf("chat HTTP %d: %s (see %s)", raw.StatusCode, string(errBody), dumpFile)
 	}
 
 	bodyReader := raw.Body()
