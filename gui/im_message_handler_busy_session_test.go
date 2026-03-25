@@ -135,9 +135,12 @@ func TestSystemPrompt_HasBusyPollingGuidance(t *testing.T) {
 
 	t.Logf("system prompt length: %d chars", len(prompt))
 
-	// After the fix, the prompt should contain busy-session polling guidance.
-	if !strings.Contains(prompt, "每 15-30 秒") {
-		t.Error("expected system prompt to contain '每 15-30 秒' (periodic polling guidance)")
+	// After the spec-driven workflow refactoring, the busy-session guidance
+	// is expressed as "绝对不要终止状态为 busy 的编程会话" in the execution
+	// phase. The original "每 15-30 秒" text was removed when the prompt
+	// was restructured into the spec-driven workflow steps.
+	if !strings.Contains(prompt, "busy") {
+		t.Error("expected system prompt to contain 'busy' (busy session reference)")
 	}
 
 	if !strings.Contains(prompt, "编程工具正在工作中") {
@@ -275,14 +278,16 @@ func TestSystemPrompt_ContainsLongRunningGuidance(t *testing.T) {
 
 	prompt := h.buildSystemPrompt()
 
-	// Must contain periodic polling guidance.
-	if !strings.Contains(prompt, "每 15-30 秒") {
-		t.Error("expected system prompt to contain '每 15-30 秒' (periodic polling guidance)")
-	}
-
-	// Must reference busy sessions.
+	// After the spec-driven workflow refactoring, the busy-session guidance
+	// is expressed as "绝对不要终止状态为 busy 的编程会话" rather than the
+	// original "每 15-30 秒" periodic polling text.
 	if !strings.Contains(prompt, "busy") {
 		t.Error("expected system prompt to contain 'busy' (busy session reference)")
+	}
+
+	// Must reference that busy sessions should not be terminated.
+	if !strings.Contains(prompt, "绝对不要终止") {
+		t.Error("expected system prompt to contain '绝对不要终止' (anti-termination guidance)")
 	}
 
 	// Must NOT contain the old unqualified blanket prohibition.

@@ -58,32 +58,18 @@ func main() {
 	// lock file exists but the owning process is gone.
 	cleanStaleLock()
 
-	// On macOS 26 (Tahoe) and later, Liquid Glass changes how translucent and
-	// frameless windows are rendered.  Wails v2's NSVisualEffectView-based
-	// translucency can crash at window creation time, so we fall back to a
-	// safe, opaque, non-frameless configuration on Tahoe+.
-	tahoe := isMacOSTahoeOrLater()
+	// On macOS 15+ (Sequoia and later), AppKit enforces stricter thread-safety
+	// and rendering checks on NSVisualEffectView.  Wails v2's frameless +
+	// translucent window combination can crash at window creation time.
+	// On macOS 26+ (Tahoe), Liquid Glass makes this even worse.
+	// Use a safe, opaque, non-frameless configuration for all macOS versions.
 	macOpts := &mac.Options{
 		TitleBar:             mac.TitleBarHidden(),
-		WebviewIsTransparent: true,
-		WindowIsTranslucent:  true,
+		WebviewIsTransparent: false,
+		WindowIsTranslucent:  false,
 	}
-	bgColour := &options.RGBA{R: 255, G: 255, B: 255, A: 0}
-	frameless := true
-	// ⚠️ DO NOT OPTIMIZE the Tahoe fallback below!
-	// TitleBarHidden (not HiddenInset!) hides the red/yellow/green traffic-light
-	// buttons. frameless=false avoids Liquid Glass crash with Wails v2's
-	// NSVisualEffectView. This combination was chosen deliberately — do not
-	// switch back to TitleBarHiddenInset or frameless=true on Tahoe.
-	if tahoe {
-		macOpts = &mac.Options{
-			TitleBar:             mac.TitleBarHidden(),
-			WebviewIsTransparent: false,
-			WindowIsTranslucent:  false,
-		}
-		bgColour = &options.RGBA{R: 255, G: 255, B: 255, A: 255}
-		frameless = false
-	}
+	bgColour := &options.RGBA{R: 255, G: 255, B: 255, A: 255}
+	frameless := false
 
 	// Create application with options
 	appOptions := &options.App{

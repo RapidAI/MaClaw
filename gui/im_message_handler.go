@@ -2650,7 +2650,8 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"tool":         map[string]string{"type": "string", "description": "工具名称，如 claude, codex, cursor, gemini, opencode"},
 				"project_path": map[string]string{"type": "string", "description": "项目路径（可选）"},
 				"project_id":   map[string]string{"type": "string", "description": "预设项目 ID（可选，与 project_path 二选一）"},
-				"provider":     map[string]string{"type": "string", "description": "服务商名称（可选，如 Original, DeepSeek, 百度千帆）。不指定则使用桌面端当前选中的服务商"},
+				"provider":            map[string]string{"type": "string", "description": "服务商名称（可选，如 Original, DeepSeek, 百度千帆）。不指定则使用桌面端当前选中的服务商"},
+				"resume_session_id": map[string]string{"type": "string", "description": "续接会话 ID（可选）。自动续接时由 get_session_output 返回，传入后使用 --resume 模式恢复完整对话历史"},
 			}, []string{"tool"}),
 		toolDef("list_providers", "列出指定编程工具的所有可用服务商（已过滤未配置的空服务商）",
 			map[string]interface{}{
@@ -3165,9 +3166,12 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 	}
 	resolvedProvider := resolveResult.Provider.ModelName
 
+	resumeSessionID, _ := args["resume_session_id"].(string)
+
 	view, err := h.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
 		Tool: tool, ProjectPath: projectPath, Provider: resolvedProvider,
-		LaunchSource: RemoteLaunchSourceAI,
+		LaunchSource:    RemoteLaunchSourceAI,
+		ResumeSessionID: resumeSessionID,
 	})
 	if err != nil {
 		errMsg := fmt.Sprintf("❌ 创建会话失败: %s", err.Error())

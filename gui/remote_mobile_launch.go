@@ -20,15 +20,16 @@ type RemoteLaunchProject struct {
 }
 
 type RemoteStartSessionRequest struct {
-	Tool         string             `json:"tool"`
-	ProjectID    string             `json:"project_id,omitempty"`
-	ProjectPath  string             `json:"project_path,omitempty"`
-	Provider     string             `json:"provider,omitempty"`
-	UseProxy     *bool              `json:"use_proxy,omitempty"`
-	YoloMode     *bool              `json:"yolo_mode,omitempty"`
-	AdminMode    *bool              `json:"admin_mode,omitempty"`
-	PythonEnv    string             `json:"python_env,omitempty"`
-	LaunchSource RemoteLaunchSource `json:"launch_source,omitempty"`
+	Tool            string             `json:"tool"`
+	ProjectID       string             `json:"project_id,omitempty"`
+	ProjectPath     string             `json:"project_path,omitempty"`
+	Provider        string             `json:"provider,omitempty"`
+	UseProxy        *bool              `json:"use_proxy,omitempty"`
+	YoloMode        *bool              `json:"yolo_mode,omitempty"`
+	AdminMode       *bool              `json:"admin_mode,omitempty"`
+	PythonEnv       string             `json:"python_env,omitempty"`
+	LaunchSource    RemoteLaunchSource `json:"launch_source,omitempty"`
+	ResumeSessionID string             `json:"resume_session_id,omitempty"`
 }
 
 func (a *App) ListRemoteLaunchProjects() ([]RemoteLaunchProject, error) {
@@ -119,6 +120,10 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 	spec.LaunchSource = RemoteLaunchSourceMobile
 	if req.LaunchSource != "" {
 		spec.LaunchSource = req.LaunchSource
+	}
+	// Pass through resume session ID for --resume support.
+	if req.ResumeSessionID != "" {
+		spec.ResumeSessionID = req.ResumeSessionID
 	}
 
 	session, err := a.remoteSessions.Create(spec)

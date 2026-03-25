@@ -1507,6 +1507,12 @@ func buildResumeContext(s *RemoteSession, reason string) *SessionResumeContext {
 		LastProgress: s.Summary.ProgressSummary,
 		ExitReason:   reason,
 	}
+	// Capture Claude Code's internal session ID for --resume support.
+	// This allows the auto-resume logic to continue the exact conversation
+	// instead of starting fresh, preserving full context history.
+	if sdkHandle, ok := s.Exec.(*SDKExecutionHandle); ok {
+		rc.ClaudeSessionID = sdkHandle.ClaudeSessionID()
+	}
 	// Carry forward resume count and original task from previous session.
 	if s.ResumeContext != nil {
 		rc.ResumeCount = s.ResumeContext.ResumeCount + 1

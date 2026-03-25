@@ -64,6 +64,12 @@ type LaunchSpec struct {
 	UseProxy  bool
 	TeamMode  bool
 
+	// ResumeSessionID, if non-empty, tells the provider adapter to resume
+	// a previous Claude Code session (via --resume <id>) instead of starting
+	// a fresh conversation. This preserves conversation history and produces
+	// much higher quality continuations than starting from scratch.
+	ResumeSessionID string
+
 	Env map[string]string
 }
 
@@ -251,6 +257,12 @@ type SessionResumeContext struct {
 	ProjectPath     string   `json:"project_path"`      // project path for new session
 	Tool            string   `json:"tool"`              // tool name (claude, gemini, etc.)
 	ExitReason      string   `json:"exit_reason"`       // "token_limit", "api_error", "unknown"
+
+	// ClaudeSessionID is the session ID reported by Claude Code's SDK
+	// protocol (system/init message). When available, the auto-resume
+	// logic can use `claude -p --resume <id>` to continue the exact
+	// conversation instead of starting fresh, preserving full context.
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 }
 
 // isStructuredSession returns true for sessions that use a structured

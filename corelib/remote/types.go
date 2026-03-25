@@ -61,6 +61,12 @@ type LaunchSpec struct {
 	PythonEnv    string
 	UseProxy     bool
 	TeamMode     bool
+
+	// ResumeSessionID, if non-empty, tells the provider adapter to resume
+	// a previous tool session (e.g. Claude Code --resume <id>) instead of
+	// starting a fresh conversation.
+	ResumeSessionID string
+
 	Env          map[string]string
 }
 

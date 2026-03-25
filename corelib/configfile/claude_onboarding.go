@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -94,25 +96,36 @@ func EnsureClaudeOnboarding(opts ClaudeOnboardingOptions, logFn func(string)) er
 		if logFn != nil {
 			logFn(fmt.Sprintf("[%s-onboarding] config already complete, no changes needed", tag))
 		}
-		return nil
+	} else {
+		out, err := json.MarshalIndent(existing, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal config: %w", err)
+		}
+
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return fmt.Errorf("create config directory: %w", err)
+		}
+
+		if err := AtomicWrite(configPath, out); err != nil {
+			return fmt.Errorf("write %s: %w", configPath, err)
+		}
+
+		if logFn != nil {
+			logFn(fmt.Sprintf("[%s-onboarding] updated %s with onboarding flags", tag, configPath))
+		}
 	}
 
-	out, err := json.MarshalIndent(existing, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+	// Install the anti-premature-exit stop hook for Claude Code.
+	// This hook intercepts Claude Code's exit attempts and checks whether
+	// a todo list exists with incomplete items, preventing premature exit
+	// on complex tasks. Inspired by the Ralph architecture.
+	if err := ensureClaudeStopHook(home, tag, logFn); err != nil {
+		if logFn != nil {
+			logFn(fmt.Sprintf("[%s-onboarding] stop hook install warning: %v", tag, err))
+		}
+		// Non-fatal: don't block session creation if hook install fails.
 	}
 
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
-
-	if err := AtomicWrite(configPath, out); err != nil {
-		return fmt.Errorf("write %s: %w", configPath, err)
-	}
-
-	if logFn != nil {
-		logFn(fmt.Sprintf("[%s-onboarding] updated %s with onboarding flags", tag, configPath))
-	}
 	return nil
 }
 
@@ -194,4 +207,66 @@ func isTruthy(v any) bool {
 	default:
 		return false
 	}
+}
+
+// ensureClaudeStopHook installs a stop hook in ~/.claude/hooks/ that
+// prevents Claude Code from exiting prematurely when tasks are incomplete.
+//
+// The hook checks for a TODO.md or todo.md file in the working directory.
+// If incomplete items (lines starting with "- [ ]") exist, the hook
+// returns a non-zero exit code, which tells Claude Code to continue
+// working instead of exiting.
+//
+// This is inspired by the "Ralph" architecture for autonomous agent loops.
+// The hook is idempotent — it only writes if the file doesn't exist or
+// has been modified by the user (checked via a marker comment).
+func ensureClaudeStopHook(home, tag string, logFn func(string)) error {
+	hooksDir := filepath.Join(home, ".claude", "hooks")
+
+	// Build the hook content once — platform-specific shell command.
+	var checkCmd string
+	if runtime.GOOS == "windows" {
+		checkCmd = `powershell -NoProfile -Command "if ((Test-Path TODO.md) -and (Select-String -Path TODO.md -Pattern '- \[ \]' -Quiet)) { Write-Output 'Incomplete tasks in TODO.md. Complete all tasks before exiting.'; exit 1 } if ((Test-Path todo.md) -and (Select-String -Path todo.md -Pattern '- \[ \]' -Quiet)) { Write-Output 'Incomplete tasks in todo.md. Complete all tasks before exiting.'; exit 1 } exit 0"`
+	} else {
+		checkCmd = `sh -c 'if [ -f TODO.md ] && grep -q "\\- \\[ \\]" TODO.md 2>/dev/null; then echo "Incomplete tasks in TODO.md. Complete all tasks before exiting." && exit 1; fi; if [ -f todo.md ] && grep -q "\\- \\[ \\]" todo.md 2>/dev/null; then echo "Incomplete tasks in todo.md. Complete all tasks before exiting." && exit 1; fi; exit 0'`
+	}
+
+	hookContent := fmt.Sprintf(`{
+  "_comment": "maclaw-anti-premature-exit: Prevents Claude Code from exiting when tasks are incomplete",
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": %s
+      }
+    ]
+  }
+}
+`, strconv.Quote(checkCmd))
+
+	// Try primary path first, then fallback if user has their own stop.json.
+	for _, name := range []string{"stop.json", "maclaw-stop.json"} {
+		hookPath := filepath.Join(hooksDir, name)
+		if data, err := os.ReadFile(hookPath); err == nil {
+			if strings.Contains(string(data), "maclaw-anti-premature-exit") {
+				return nil // Already installed
+			}
+			if name == "stop.json" {
+				continue // User's custom hook — try fallback name
+			}
+		}
+
+		if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+			return fmt.Errorf("create hooks dir: %w", err)
+		}
+		if err := AtomicWrite(hookPath, []byte(hookContent)); err != nil {
+			return fmt.Errorf("write stop hook: %w", err)
+		}
+		if logFn != nil {
+			logFn(fmt.Sprintf("[%s-onboarding] installed anti-premature-exit stop hook at %s", tag, hookPath))
+		}
+		return nil
+	}
+
+	return nil
 }

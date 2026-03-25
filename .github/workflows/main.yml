@@ -310,7 +310,7 @@ jobs:
 
       - name: Build macOS GUI binaries
         env:
-          MACOSX_DEPLOYMENT_TARGET: '10.15'
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           mkdir -p dist build/bin
           GUI_TAGS="desktop,production"
@@ -387,7 +387,7 @@ jobs:
             <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>CFBundleShortVersionString</key><string>${VERSION}</string>
             <key>CFBundleIconFile</key><string>AppIcon</string>
-            <key>LSMinimumSystemVersion</key><string>10.15.0</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
             <key>NSHighResolutionCapable</key><string>true</string>
           </dict></plist>
           PEOF

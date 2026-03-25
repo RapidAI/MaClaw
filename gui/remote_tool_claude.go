@@ -63,6 +63,15 @@ func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		"--max-turns", "200",
 	}
 
+	// When resuming a previous Claude Code session, use --resume <session_id>
+	// instead of starting a fresh conversation. This preserves the full
+	// conversation history (including compacted context), producing much
+	// higher quality continuations than starting from scratch with a text
+	// summary of previous progress.
+	if spec.ResumeSessionID != "" {
+		args = append(args, "--resume", spec.ResumeSessionID)
+	}
+
 	// Permission handling via SDK protocol
 	if spec.YoloMode {
 		args = append(args, "--dangerously-skip-permissions")
@@ -75,6 +84,16 @@ func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	// it can capture screenshots using platform-native tools.
 	if prompt := buildScreenshotSystemPrompt(); prompt != "" {
 		args = append(args, "--append-system-prompt", prompt)
+	}
+
+	// Inject anti-premature-exit instructions that encourage Claude Code
+	// to decompose complex tasks into a TODO list and complete all items
+	// before exiting. This works in tandem with the stop hook installed
+	// by EnsureClaudeOnboarding.
+	// Skip for resume sessions — the previous session already has the
+	// TODO protocol in its context, and adding it again wastes tokens.
+	if spec.ResumeSessionID == "" {
+		args = append(args, "--append-system-prompt", buildAntiPrematureExitPrompt())
 	}
 
 	return CommandSpec{
@@ -138,6 +157,29 @@ When the user asks to take a screenshot or check what's on screen, use these com
 	default:
 		return ""
 	}
+}
+
+// buildAntiPrematureExitPrompt returns system prompt instructions that
+// encourage Claude Code to decompose complex tasks into a TODO checklist
+// and complete all items before exiting. This dramatically reduces
+// premature exits on multi-step tasks.
+//
+// Works in tandem with the stop hook installed by EnsureClaudeOnboarding,
+// which checks for incomplete TODO items and blocks exit if any remain.
+func buildAntiPrematureExitPrompt() string {
+	return `IMPORTANT: Task Completion Protocol
+When given a complex task (more than a simple file edit or command):
+1. Create a TODO.md file in the project root with a checklist of all subtasks:
+   - [ ] Subtask 1: description
+   - [ ] Subtask 2: description
+   ...
+2. As you complete each subtask, update TODO.md to mark it done:
+   - [x] Subtask 1: description
+3. Do NOT stop or exit until ALL items in TODO.md are marked [x] complete.
+4. If you run low on context, prioritize completing the current subtask and updating TODO.md before the context compacts.
+5. After all tasks are complete, do a final check: read TODO.md and verify every item is [x]. Only then should you consider the task done.
+
+This ensures complex multi-step tasks are fully completed even across context window boundaries.`
 }
 
 func (a *ClaudeAdapter) buildCommandEnv(base map[string]string) map[string]string {
