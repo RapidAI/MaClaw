@@ -387,7 +387,6 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		})
 	}
 
-	debugLLMLog("weixin_gateway handling msg from=%s text=%s", msg.FromUserID, text)
 	resp := handler.HandleIMMessageWithProgress(IMUserMessage{
 		UserID:   msg.FromUserID,
 		Platform: "weixin_local",

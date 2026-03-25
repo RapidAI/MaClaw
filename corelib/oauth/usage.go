@@ -68,7 +68,7 @@ func QueryUsageFrom(endpoint, accessToken string) (*UsageInfo, error) {
 			return nil, fmt.Errorf("create costs request: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("User-Agent", "OpenClaw/1.0")
+		req.Header.Set("User-Agent", "claude-code/2.0.0")
 
 		client := &http.Client{Timeout: 15 * time.Second}
 		resp, err := client.Do(req)

@@ -684,8 +684,7 @@ var maclawLLMPingClient = &http.Client{Timeout: 10 * time.Second}
 // consumed).  If that returns 404 it falls back to a HEAD request on the
 // chat completions path.
 //
-// All requests carry a User-Agent derived from the provider's AgentType
-// ("OpenClaw/1.0" or "claude-code/2.0.0") so LLM providers can
+// All requests carry a User-Agent of "claude-code/2.0.0" so LLM providers can
 // recognise the client for coding-plan eligibility.
 func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	if err := a.ensureOAuthToken(); err != nil {

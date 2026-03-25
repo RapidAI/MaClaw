@@ -1274,16 +1274,13 @@ type llmToolCall struct {
 // Supports both OpenAI-compatible and Anthropic Messages API protocols.
 // The httpClient parameter selects which connection pool to use (chat vs background).
 func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
-	debugLLMLog("doLLMRequest url=%s ua=%s model=%s protocol=%s", cfg.URL, cfg.UserAgent(), cfg.Model, cfg.Protocol)
 	if cfg.Protocol == "anthropic" {
 		return h.doAnthropicLLMRequest(cfg, messages, tools, httpClient)
 	}
 	return h.doOpenAILLMRequest(cfg, messages, tools, httpClient)
 }
 
-// doOpenAILLMRequest sends a request using the OpenAI-compatible protocol.
 func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
-	debugLLMLog("doOpenAILLMRequest url=%s ua=%s", cfg.URL, cfg.UserAgent())
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
 
 	reqBody := map[string]interface{}{
@@ -1300,7 +1297,7 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []in
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "OpenClaw/1.0")
+	req.Header.Set("User-Agent", cfg.UserAgent())
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
@@ -1356,7 +1353,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages [
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "OpenClaw/1.0")
+	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
 	if cfg.Key != "" {
 		req.Header.Set("x-api-key", cfg.Key)
@@ -1430,11 +1427,6 @@ type anthropicContentBlock struct {
 	Name  string                 `json:"name,omitempty"`
 	Input map[string]interface{} `json:"input,omitempty"`
 }
-
-// ---------------------------------------------------------------------------
-// Agentic Loop — multi-round tool calling
-// ---------------------------------------------------------------------------
-
 // parseSlotKind converts a string slot kind to the SlotKind enum.
 // Defaults to SlotKindScheduled for unknown values.
 func parseSlotKind(s string) SlotKind {

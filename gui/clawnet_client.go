@@ -286,6 +286,27 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 		c.mu.Unlock()
 		return nil
 	}
+
+	// Final guard: if a clawnet process already exists (e.g. another maclaw
+	// instance just started one), wait for it instead of spawning a duplicate.
+	if pid := clawnetFindProcessByName(clawnetLocalBinaryName()); pid != 0 {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if c.ping() {
+				c.mu.Lock()
+				c.running = true
+				c.mu.Unlock()
+				return nil
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		// Process exists but never became reachable — kill it before starting fresh.
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Kill()
+		}
+		time.Sleep(1 * time.Second)
+	}
+
 	c.mu.Lock()
 
 	cmd := exec.Command(bin, "start")
