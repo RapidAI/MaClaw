@@ -10,7 +10,7 @@
 !define INFO_PRODUCTNAME "MaClaw"
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "5.1.1.9500"
+    !define INFO_PRODUCTVERSION "5.1.2.9600"
 !endif
 !ifndef INFO_COPYRIGHT
     !define INFO_COPYRIGHT "Copyright (C) 2026 RapidAI"
