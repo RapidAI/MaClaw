@@ -10,7 +10,7 @@ func makeDynamicTool(name, desc string) map[string]interface{} {
 	return toolDef(name, desc, nil, nil)
 }
 
-// makeAllTools creates a slice of 26 builtins + n dynamic tools.
+// makeAllTools creates a slice of 28 builtins + n dynamic tools.
 func makeAllTools(dynamicCount int) []map[string]interface{} {
 	builtins := makeBuiltinDefs()
 	for i := 0; i < dynamicCount; i++ {
@@ -34,8 +34,8 @@ func TestToolRouter_BelowBudget(t *testing.T) {
 }
 
 func TestToolRouter_ExactlyAtBudget(t *testing.T) {
-	// 26 builtins + 2 dynamic = 28 total, at maxToolBudget.
-	allTools := makeAllTools(2)
+	// 28 builtins + 0 dynamic = 28 total, exactly at maxToolBudget.
+	allTools := makeAllTools(0)
 	router := NewToolRouter(nil)
 	result := router.Route("test message", allTools)
 
@@ -45,7 +45,7 @@ func TestToolRouter_ExactlyAtBudget(t *testing.T) {
 }
 
 func TestToolRouter_AboveBudget_KeepsCoreTools(t *testing.T) {
-	// 26 builtins + 20 dynamic = 46 total, above maxToolBudget.
+	// 28 builtins + 20 dynamic = 48 total, above maxToolBudget.
 	allTools := makeAllTools(20)
 	router := NewToolRouter(nil)
 	result := router.Route("some query", allTools)
@@ -67,7 +67,7 @@ func TestToolRouter_AboveBudget_KeepsCoreTools(t *testing.T) {
 }
 
 func TestToolRouter_AboveBudget_LimitsDynamic(t *testing.T) {
-	// 26 builtins + 25 dynamic = 51 total.
+	// 28 builtins + 25 dynamic = 53 total.
 	allTools := makeAllTools(25)
 	router := NewToolRouter(nil)
 	result := router.Route("some query", allTools)
@@ -86,7 +86,7 @@ func TestToolRouter_AboveBudget_LimitsDynamic(t *testing.T) {
 
 func TestToolRouter_RelevanceRanking(t *testing.T) {
 	builtins := makeBuiltinDefs()
-	// 26 builtins = below maxToolBudget — all should be returned.
+	// 28 builtins = below maxToolBudget — all should be returned.
 	router := NewToolRouter(nil)
 	result := router.Route("search the web for golang tutorials", builtins)
 

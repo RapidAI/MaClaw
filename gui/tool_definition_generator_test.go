@@ -35,6 +35,8 @@ func makeBuiltinDefs() []map[string]interface{} {
 		toolDef("send_and_observe", "发送并观察输出", nil, nil),
 		toolDef("control_session", "控制会话", nil, nil),
 		toolDef("manage_config", "管理配置", nil, nil),
+		toolDef("web_search", "搜索网页", nil, nil),
+		toolDef("web_fetch", "获取网页内容", nil, nil),
 	}
 }
 
