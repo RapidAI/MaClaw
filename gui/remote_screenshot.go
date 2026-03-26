@@ -957,54 +957,72 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 		return fmt.Errorf("screenshot requires a graphical display environment: %s", reason)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-
-	var shellName string
-	var shellArgs []string
-	if runtime.GOOS == "windows" {
-		// Use PowerShell directly to avoid cmd.exe quote mangling that
-		// corrupts base64 output. The Windows screenshot commands return
-		// pure PowerShell script blocks (no powershell.exe prefix).
-		shellName = "powershell"
-		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", cmdStr}
-	} else {
-		shellName = "bash"
-		shellArgs = []string{"-c", cmdStr}
-	}
-
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	hideCommandWindow(cmd)
-
 	logLabel := "fullscreen"
 	if label != "" {
 		logLabel = fmt.Sprintf("window %q", label)
 	}
-	m.app.log(fmt.Sprintf("[screenshot] capturing %s for session=%s", logLabel, sessionID))
 
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("screenshot command timed out after 45s")
+	// On macOS, try native CGO capture first (avoids screencapture subprocess
+	// which triggers its own TCC dialog on macOS 26+). Only for fullscreen
+	// captures (label == "" means no specific window title).
+	var base64Data string
+	if runtime.GOOS == "darwin" && label == "" {
+		m.app.log(fmt.Sprintf("[screenshot] trying native CGO capture for session=%s", sessionID))
+		if b64, err := nativeCaptureScreenshot(); err == nil && b64 != "" && !isBlankImage(b64) {
+			base64Data = b64
+			m.app.log(fmt.Sprintf("[screenshot] native CGO capture succeeded for session=%s", sessionID))
+		} else {
+			if err != nil {
+				m.app.log(fmt.Sprintf("[screenshot] native CGO capture failed, falling back to shell: %v", err))
+			} else {
+				m.app.log("[screenshot] native CGO capture returned blank image, falling back to shell")
+			}
 		}
-		m.app.log(fmt.Sprintf("[screenshot] capture failed for session=%s: %v, stderr: %s", sessionID, err, stderr.String()))
-		return fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 
-	rawOut := stdout.String()
-	base64Data, err := ParseScreenshotOutput(rawOut)
-	if err != nil {
-		// Log diagnostic info: raw output length and first 120 chars to help
-		// identify what the screenshot command actually produced.
-		preview := rawOut
-		if len(preview) > 120 {
-			preview = preview[:120] + "..."
+	// Fallback: shell command approach (all platforms, or when native failed).
+	if base64Data == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+
+		var shellName string
+		var shellArgs []string
+		if runtime.GOOS == "windows" {
+			shellName = "powershell"
+			shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", cmdStr}
+		} else {
+			shellName = "bash"
+			shellArgs = []string{"-c", cmdStr}
 		}
-		m.app.log(fmt.Sprintf("[screenshot] failed to parse output for session=%s: %v (stdout_len=%d, stderr=%q, preview=%q)",
-			sessionID, err, len(rawOut), strings.TrimSpace(stderr.String()), preview))
-		return fmt.Errorf("screenshot output parse error: %w", err)
+
+		cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		hideCommandWindow(cmd)
+
+		m.app.log(fmt.Sprintf("[screenshot] capturing %s for session=%s via shell", logLabel, sessionID))
+
+		if err := cmd.Run(); err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("screenshot command timed out after 45s")
+			}
+			m.app.log(fmt.Sprintf("[screenshot] capture failed for session=%s: %v, stderr: %s", sessionID, err, stderr.String()))
+			return fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		}
+
+		rawOut := stdout.String()
+		var err error
+		base64Data, err = ParseScreenshotOutput(rawOut)
+		if err != nil {
+			preview := rawOut
+			if len(preview) > 120 {
+				preview = preview[:120] + "..."
+			}
+			m.app.log(fmt.Sprintf("[screenshot] failed to parse output for session=%s: %v (stdout_len=%d, stderr=%q, preview=%q)",
+				sessionID, err, len(rawOut), strings.TrimSpace(stderr.String()), preview))
+			return fmt.Errorf("screenshot output parse error: %w", err)
+		}
 	}
 
 	// Server-side blank image detection as a safety net. Even if the
@@ -1052,16 +1070,7 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 // BitBlt+CAPTUREBLT, tscon reconnect, PrintWindow composite) that work even when
 // the session is locked. On other platforms, it uses command-line tools.
 func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
-	// Use command-line approach (PowerShell on Windows) which has multiple
-	// fallback strategies including PrintWindow composite that works even
-	// when the session is locked or the desktop compositor is inactive.
-	cmdStr := BuildScreenshotCommand()
-	if cmdStr == "" {
-		return "", fmt.Errorf("screenshot capture is not supported on %s", runtime.GOOS)
-	}
-
-	// On macOS 10.15+, ensure screen recording permission is granted before
-	// spawning child processes.
+	// On macOS 10.15+, ensure screen recording permission is granted.
 	if !EnsureScreenRecordingPermission() {
 		return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
 	}
@@ -1069,6 +1078,25 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	available, reason := DetectDisplayServer()
 	if !available {
 		return "", fmt.Errorf("screenshot requires a graphical display environment: %s", reason)
+	}
+
+	// On macOS, try native CGO capture first (avoids screencapture TCC dialog).
+	if runtime.GOOS == "darwin" {
+		m.app.log("[screenshot-direct] trying native CGO capture")
+		if b64, err := nativeCaptureScreenshot(); err == nil && b64 != "" && !isBlankImage(b64) {
+			m.app.log("[screenshot-direct] native CGO capture succeeded")
+			return b64, nil
+		} else if err != nil {
+			m.app.log(fmt.Sprintf("[screenshot-direct] native CGO capture failed, falling back to shell: %v", err))
+		} else {
+			m.app.log("[screenshot-direct] native CGO capture returned blank, falling back to shell")
+		}
+	}
+
+	// Fallback: shell command approach.
+	cmdStr := BuildScreenshotCommand()
+	if cmdStr == "" {
+		return "", fmt.Errorf("screenshot capture is not supported on %s", runtime.GOOS)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -1148,6 +1176,20 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 		return "", fmt.Errorf("screenshot requires a graphical display: %s", reason)
 	}
 
+	// On macOS, try native CGO capture first (avoids screencapture TCC dialog).
+	if runtime.GOOS == "darwin" {
+		m.app.log(fmt.Sprintf("[screenshot-b64] trying native CGO capture for session=%s", sessionID))
+		if b64, err := nativeCaptureScreenshot(); err == nil && b64 != "" && !isBlankImage(b64) {
+			m.app.log(fmt.Sprintf("[screenshot-b64] native CGO capture succeeded for session=%s", sessionID))
+			return b64, nil
+		} else if err != nil {
+			m.app.log(fmt.Sprintf("[screenshot-b64] native CGO capture failed, falling back to shell: %v", err))
+		} else {
+			m.app.log("[screenshot-b64] native CGO capture returned blank, falling back to shell")
+		}
+	}
+
+	// Fallback: shell command approach.
 	cmdStr := BuildScreenshotCommand()
 	if cmdStr == "" {
 		return "", fmt.Errorf("screenshot not supported on %s", runtime.GOOS)
