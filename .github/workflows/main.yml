@@ -392,6 +392,11 @@ jobs:
             <key>CFBundleIconFile</key><string>AppIcon</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
             <key>NSHighResolutionCapable</key><string>true</string>
+            <key>NSDesktopFolderUsageDescription</key><string>${DISPLAY_NAME} needs access to your Desktop folder to manage project files.</string>
+            <key>NSDocumentsFolderUsageDescription</key><string>${DISPLAY_NAME} needs access to your Documents folder to manage project files.</string>
+            <key>NSDownloadsFolderUsageDescription</key><string>${DISPLAY_NAME} needs access to your Downloads folder to install tools and updates.</string>
+            <key>NSLocalNetworkUsageDescription</key><string>${DISPLAY_NAME} uses local network to discover and connect to Hub services.</string>
+            <key>NSScreenCaptureUsageDescription</key><string>${DISPLAY_NAME} needs screen recording permission to capture screenshots for remote coding sessions.</string>
           </dict></plist>
           PEOF
             # Strip leading whitespace from plist (heredoc indentation artifact)

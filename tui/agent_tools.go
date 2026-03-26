@@ -1201,7 +1201,10 @@ func (h *TUIAgentHandler) toolScreenshot() string {
 			`Add-Type -AssemblyName System.Windows.Forms; $bmp = New-Object System.Drawing.Bitmap([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen(0,0,0,0,$bmp.Size); $ms = New-Object System.IO.MemoryStream; $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [Convert]::ToBase64String($ms.ToArray())`)
 	} else if runtime.GOOS == "darwin" {
 		if !remote.CheckScreenRecordingPermission() {
-			return "截图权限未授予 - 请打开 系统设置 > 隐私与安全性 > 屏幕录制，移除并重新添加 maclaw，然后重启 maclaw"
+			if remote.IsScreenRecordingStale() {
+				return "截图权限已过期（macOS 26 TCC 记录失效）- 请在终端执行: sudo tccutil reset ScreenCapture com.wails.MaClaw 然后重启 maclaw"
+			}
+			return "截图权限未授予 - 请打开 系统设置 > 隐私与安全性 > 屏幕录制，授权 MaClaw，然后重启"
 		}
 		cmd = exec.CommandContext(ctx, "bash", "-c", `screencapture -x /tmp/_maclaw_ss.png && base64 /tmp/_maclaw_ss.png && rm -f /tmp/_maclaw_ss.png`)
 	} else {

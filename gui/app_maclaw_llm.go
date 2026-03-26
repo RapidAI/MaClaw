@@ -22,7 +22,7 @@ func defaultMaclawLLMProviders() []MaclawLLMProvider {
 		{Name: "OpenAI", URL: "https://api.openai.com/v1", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 128000},
 		{Name: "智谱", URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000},
-		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 128000},
+		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 128000, AgentType: "claude-code/2.0.0"},
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true},
 		{Name: "Custom2", URL: "", Model: "", IsCustom: true},
 	}
@@ -308,6 +308,7 @@ func (a *App) ensureOAuthToken() error {
 // After a successful text test, it also probes vision support and persists the
 // result into the provider's SupportsVision field.
 func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
+	log.Printf("[LLM] TestMaclawLLM: agent_type=%q user_agent=%q", llm.AgentType, llm.UserAgent())
 	if err := a.ensureOAuthToken(); err != nil {
 		return "", fmt.Errorf("OAuth token refresh failed: %w", err)
 	}
@@ -701,6 +702,7 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	key := strings.TrimSpace(llmCfg.Key)
 	protocol := strings.TrimSpace(llmCfg.Protocol)
 	ua := llmCfg.UserAgent()
+	log.Printf("[LLM] PingMaclawLLM: agent_type=%q user_agent=%q", llmCfg.AgentType, ua)
 
 	if protocol == "anthropic" {
 		online, err := maclawAnthropicProbe(baseURL+"/v1/messages", key, ua)

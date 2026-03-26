@@ -732,7 +732,7 @@ func (h *TUIAgentHandler) doLLMRequestWithTools(cfg corelib.MaclawLLMConfig, con
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "MaClaw-TUI/1.0")
+	req.Header.Set("User-Agent", cfg.UserAgent())
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}

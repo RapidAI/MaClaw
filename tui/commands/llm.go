@@ -55,6 +55,13 @@ func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 		Protocol:      cfg.MaclawLLMProtocol,
 		ContextLength: cfg.MaclawLLMContextLength,
 	}
+	// Resolve AgentType from the current provider (not stored as a flat field).
+	for _, p := range cfg.MaclawLLMProviders {
+		if p.Name == cfg.MaclawLLMCurrentProvider {
+			llm.AgentType = p.AgentType
+			break
+		}
+	}
 	return llm, nil
 }
 

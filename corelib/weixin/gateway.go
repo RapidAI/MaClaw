@@ -38,7 +38,6 @@ const (
 	backoffDelay           = 30 * time.Second
 	retryDelay             = 2 * time.Second
 	sessionExpiredErrcode  = -14
-	sessionPauseDuration   = 1 * time.Hour
 	textChunkLimit         = 4000
 	cdnUploadMaxRetries    = 3
 	cdnDownloadMaxBytes    = 100 * 1024 * 1024 // 100 MB
@@ -358,10 +357,6 @@ type Gateway struct {
 	// Last active user for diagnostic broadcast
 	lastActiveUID string
 
-	// Session pause state
-	pauseMu    sync.Mutex
-	pauseUntil time.Time
-
 	// Per-user message processing locks — ensures messages from the same
 	// user are handled sequentially while different users run concurrently.
 	userLocks   map[string]*sync.Mutex
@@ -459,39 +454,6 @@ func (g *Gateway) emitStatus(status string) {
 	}
 }
 
-func (g *Gateway) isSessionPaused() bool {
-	g.pauseMu.Lock()
-	defer g.pauseMu.Unlock()
-	if g.pauseUntil.IsZero() {
-		return false
-	}
-	if time.Now().After(g.pauseUntil) {
-		g.pauseUntil = time.Time{}
-		return false
-	}
-	return true
-}
-
-func (g *Gateway) pauseSession() {
-	g.pauseMu.Lock()
-	g.pauseUntil = time.Now().Add(sessionPauseDuration)
-	g.pauseMu.Unlock()
-	log.Printf("[weixin/gw] session paused for %v", sessionPauseDuration)
-}
-
-func (g *Gateway) remainingPause() time.Duration {
-	g.pauseMu.Lock()
-	defer g.pauseMu.Unlock()
-	if g.pauseUntil.IsZero() {
-		return 0
-	}
-	rem := time.Until(g.pauseUntil)
-	if rem < 0 {
-		return 0
-	}
-	return rem
-}
-
 // ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
@@ -550,6 +512,8 @@ func (g *Gateway) apiPost(ctx context.Context, endpoint string, body []byte, tim
 func (g *Gateway) pollLoop(ctx context.Context) {
 	defer g.wg.Done()
 	g.emitStatus("connected")
+	wl := GetWxLog()
+	wl.Log("gw.pollLoop", "---", "-", "STARTED baseURL=%s", g.config.baseURL())
 
 	var getUpdatesBuf string
 	consecutiveFailures := 0
@@ -560,20 +524,6 @@ func (g *Gateway) pollLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
-		}
-
-		// Check session pause
-		if g.isSessionPaused() {
-			rem := g.remainingPause()
-			log.Printf("[weixin/gw] session paused, sleeping %v", rem)
-			g.emitStatus("paused")
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(rem):
-			}
-			g.emitStatus("connected")
-			continue
 		}
 
 		reqBody, _ := json.Marshal(getUpdatesReq{
@@ -616,10 +566,10 @@ func (g *Gateway) pollLoop(ctx context.Context) {
 		if isAPIError {
 			isSessionExpired := resp.Errcode == sessionExpiredErrcode || resp.Ret == sessionExpiredErrcode
 			if isSessionExpired {
-				g.pauseSession()
-				g.emitStatus("paused")
-				consecutiveFailures = 0
-				continue
+				wl.Log("gw.pollLoop", "---", "-", "SESSION_EXPIRED errcode=%d ret=%d — stopping gateway", resp.Errcode, resp.Ret)
+				log.Printf("[weixin/gw] session expired (errcode=%d ret=%d), stopping gateway", resp.Errcode, resp.Ret)
+				g.emitStatus("session_expired")
+				return // exit pollLoop — caller will clean up
 			}
 			consecutiveFailures++
 			log.Printf("[weixin/gw] getUpdates API error: ret=%d errcode=%d errmsg=%s (%d/%d)",
@@ -661,13 +611,17 @@ func (g *Gateway) userLock(userID string) *sync.Mutex {
 }
 
 func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage) {
+	wl := GetWxLog()
+
 	// Skip bot's own messages (echoes) and deleted messages
 	if msg.MessageType == MsgTypeBot || msg.DeleteTimeMs > 0 {
+		wl.Log("gw.process", "IN", msg.FromUserID, "SKIP bot_echo_or_deleted msg_type=%d delete_ts=%d", msg.MessageType, msg.DeleteTimeMs)
 		return
 	}
 
 	fromUserID := msg.FromUserID
 	if fromUserID == "" {
+		wl.Log("gw.process", "IN", "?", "SKIP empty fromUserID")
 		return
 	}
 
@@ -704,6 +658,8 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 		MediaName:    mediaName,
 	}
 
+	wl.Log("gw.process", "IN", fromUserID, "text_len=%d media=%s ctx_token=%v", len(text), mediaType, msg.ContextToken != "")
+
 	// Dispatch handler in a goroutine so the poll loop is never blocked by
 	// slow handler processing (e.g. LLM calls). A per-user mutex ensures
 	// messages from the same user are still processed sequentially.
@@ -717,6 +673,7 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 		// one-time queued notification so the user knows the message wasn't lost.
 		locked := ul.TryLock()
 		if !locked {
+			wl.Log("gw.dispatch", "---", fromUserID, "QUEUED lock busy, waiting for previous msg")
 			// Lock is busy — notify user (rate-limited: only if no recent notification).
 			if incoming.Text != "" {
 				log.Printf("[weixin/gw] message queued for user=%s (lock busy), text=%s",
@@ -737,7 +694,9 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 			ul.Lock()
 		}
 		defer ul.Unlock()
+		wl.Log("gw.dispatch", "---", fromUserID, "LOCKED calling handler")
 		g.handler(incoming)
+		wl.Log("gw.dispatch", "---", fromUserID, "DONE handler returned")
 	}()
 }
 
@@ -874,7 +833,9 @@ func generateClientID() string {
 // SendText sends a text message to a WeChat user.
 // Texts longer than 4000 characters are split into chunks.
 func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
+	wl := GetWxLog()
 	if msg.Text == "" {
+		wl.Log("gw.SendText", "OUT", msg.ToUserID, "SKIP empty text")
 		return nil
 	}
 	if msg.ContextToken == "" {
@@ -882,10 +843,13 @@ func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
 		msg.ContextToken = g.ctxTokens.Get(msg.ToUserID)
 	}
 	if msg.ContextToken == "" {
+		wl.Log("gw.SendText", "OUT", msg.ToUserID, "ERR no contextToken")
 		return fmt.Errorf("weixin: contextToken is required for sending to %s", msg.ToUserID)
 	}
 
+	wl.Log("gw.SendText", "OUT", msg.ToUserID, "text_len=%d ctx_token_len=%d", len([]rune(msg.Text)), len(msg.ContextToken))
 	runes := []rune(msg.Text)
+	chunkIdx := 0
 	for len(runes) > 0 {
 		chunk := runes
 		if len(chunk) > textChunkLimit {
@@ -893,9 +857,12 @@ func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
 		}
 		runes = runes[len(chunk):]
 		if err := g.sendTextChunk(ctx, msg.ToUserID, string(chunk), msg.ContextToken); err != nil {
+			wl.Log("gw.SendText", "OUT", msg.ToUserID, "ERR chunk=%d: %v", chunkIdx, err)
 			return err
 		}
+		chunkIdx++
 	}
+	wl.Log("gw.SendText", "OUT", msg.ToUserID, "OK chunks=%d", chunkIdx)
 	return nil
 }
 
@@ -922,15 +889,20 @@ func (g *Gateway) sendTextChunk(ctx context.Context, to, text, contextToken stri
 
 // SendMedia uploads media to CDN and sends it to a WeChat user.
 func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
+	wl := GetWxLog()
 	if msg.ContextToken == "" {
 		msg.ContextToken = g.ctxTokens.Get(msg.ToUserID)
 	}
 	if msg.ContextToken == "" {
+		wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "ERR no contextToken media=%s", msg.MediaType)
 		return fmt.Errorf("weixin: contextToken is required for sending media to %s", msg.ToUserID)
 	}
 	if len(msg.FileData) == 0 {
+		wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "ERR empty file data")
 		return fmt.Errorf("weixin: empty file data")
 	}
+
+	wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "media=%s size=%d name=%s", msg.MediaType, len(msg.FileData), msg.FileName)
 
 	// Determine upload media type
 	uploadType := UploadMediaFile

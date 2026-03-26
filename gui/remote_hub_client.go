@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
+	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/gorilla/websocket"
 )
 
@@ -1012,10 +1013,13 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			MimeType:    reply.MimeType,
 		})
 	case "weixin":
+		wl := weixin.GetWxLog()
 		if c.app.weixinGateway == nil {
+			wl.Log("hubClient.reply", "IN", reply.PlatformUID, "ERR weixinGateway is nil, dropping")
 			c.app.log("[hub-client] im.gateway_reply: weixinGateway is nil, ignoring")
 			return
 		}
+		wl.Log("hubClient.reply", "IN", reply.PlatformUID, "dispatching type=%s text_len=%d ctx_token_len=%d", reply.ReplyType, len(reply.Text), len(reply.ContextToken))
 		c.app.log(fmt.Sprintf("[hub-client] im.gateway_reply: dispatching to weixinGateway, text=%q ctx_token_len=%d", reply.Text, len(reply.ContextToken)))
 		c.app.weixinGateway.HandleGatewayReply(GatewayReplyPayload{
 			ReplyType:    reply.ReplyType,
@@ -1238,9 +1242,12 @@ func (c *RemoteHubClient) SendIMGatewayMessage(platform string, data map[string]
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
+		if platform == "weixin" {
+			weixin.GetWxLog().Log("hubClient.send", "OUT", "-", "ERR not connected, dropping gateway_message")
+		}
 		return nil
 	}
-	return c.conn.WriteJSON(HubEnvelope{
+	err := c.conn.WriteJSON(HubEnvelope{
 		Type:      "im.gateway_message",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
@@ -1249,6 +1256,16 @@ func (c *RemoteHubClient) SendIMGatewayMessage(platform string, data map[string]
 			"data":     data,
 		},
 	})
+	if platform == "weixin" {
+		wl := weixin.GetWxLog()
+		uid, _ := data["platform_uid"].(string)
+		if err != nil {
+			wl.Log("hubClient.send", "OUT", uid, "ERR WriteJSON: %v", err)
+		} else {
+			wl.Log("hubClient.send", "OUT", uid, "OK im.gateway_message sent to hub")
+		}
+	}
+	return err
 }
 
 func (c *RemoteHubClient) storeHubError(payload json.RawMessage) {

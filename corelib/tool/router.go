@@ -25,6 +25,7 @@ var CoreToolNames = map[string]bool{
 	"screenshot": true, "send_file": true,
 	"memory": true,
 	"web_search": true, "web_fetch": true,
+	"set_nickname": true,
 }
 
 // CodingSessionToolNames lists tools that require a coding LLM session provider.
@@ -65,16 +66,16 @@ func FilterCodingTools(tools []map[string]interface{}) []map[string]interface{} 
 }
 
 // BuiltinToolNames is the complete set of all builtin tool names.
+// CoreToolNames are merged in automatically via init(), so there is no need
+// to duplicate entries that already appear in CoreToolNames.
 var BuiltinToolNames = map[string]bool{
-	"list_sessions": true, "create_session": true, "list_providers": true,
-	"send_input": true, "get_session_output": true, "get_session_events": true,
-	"interrupt_session": true, "kill_session": true, "screenshot": true,
-	"list_mcp_tools": true, "call_mcp_tool": true,
-	"list_skills": true, "search_skill_hub": true, "install_skill_hub": true, "run_skill": true,
+	"list_providers": true,
+	"send_input": true,
+	"interrupt_session": true, "kill_session": true,
+	"list_mcp_tools": true,
+	"search_skill_hub": true, "install_skill_hub": true,
 	"parallel_execute": true, "recommend_tool": true, "craft_tool": true,
-	"bash": true, "read_file": true, "write_file": true, "list_directory": true,
-	"send_file": true, "open": true,
-	"memory": true,
+	"open": true,
 	"create_template": true, "list_templates": true, "launch_template": true,
 	"get_config": true, "update_config": true, "batch_update_config": true,
 	"list_config_schema": true, "export_config": true, "import_config": true,
@@ -83,9 +84,15 @@ var BuiltinToolNames = map[string]bool{
 	"delete_scheduled_task": true, "update_scheduled_task": true,
 	"search_and_install_skill": true,
 	"switch_llm_provider": true,
-	"send_and_observe": true, "control_session": true, "manage_config": true,
+	"manage_config": true,
 	"query_audit_log": true,
-	"web_search": true, "web_fetch": true,
+}
+
+func init() {
+	// Ensure every core tool is also recognized as builtin.
+	for name := range CoreToolNames {
+		BuiltinToolNames[name] = true
+	}
 }
 
 // IsBuiltinToolName returns true if the tool name is a known builtin tool (static fallback).
@@ -157,25 +164,26 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	}
 
 	var core, candidates []map[string]interface{}
+	var candidateNames []string
 	for _, t := range allTools {
-		if CoreToolNames[ExtractToolName(t)] {
+		name := ExtractToolName(t)
+		if CoreToolNames[name] {
 			core = append(core, t)
 		} else {
 			candidates = append(candidates, t)
+			candidateNames = append(candidateNames, name)
 		}
 	}
 
-	remaining := MaxToolBudget - len(core)
-	if remaining <= 0 || len(candidates) == 0 {
+	if len(candidates) == 0 || len(core) >= MaxToolBudget {
 		return core
 	}
 
 	// Build a BM25 index over candidate tool descriptions (reuses cached index).
 	docs := make([]bm25.Doc, len(candidates))
 	for i, t := range candidates {
-		name := ExtractToolName(t)
-		desc := ExtractToolDescription(t)
-		text := name + " " + desc
+		name := candidateNames[i]
+		text := name + " " + ExtractToolDescription(t)
 		if tags := r.tagsForTool(name); len(tags) > 0 {
 			text += " " + strings.Join(tags, " ")
 		}
@@ -189,8 +197,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		score float64
 	}
 	scoredList := make([]scored, len(candidates))
-	for i, t := range candidates {
-		name := ExtractToolName(t)
+	for i, name := range candidateNames {
 		scoredList[i] = scored{index: i, score: scores[name]}
 	}
 	sort.SliceStable(scoredList, func(i, j int) bool {
@@ -204,8 +211,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		if len(result) >= MaxToolBudget {
 			break
 		}
-		name := ExtractToolName(candidates[s.index])
-		if !r.isBuiltin(name) {
+		if !r.isBuiltin(candidateNames[s.index]) {
 			dynamicCount++
 			if dynamicCount > MaxDynamicRouted {
 				continue

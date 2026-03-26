@@ -402,11 +402,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		delta := choice.Delta
 
 		// Reasoning content delta (kimi-k2.5, deepseek, etc.)
+		// Only accumulate for post-stream fallback; never push to frontend
+		// — reasoning_content is internal chain-of-thought, not user-facing.
 		if delta.ReasoningContent != "" {
 			reasoningBuf.WriteString(delta.ReasoningContent)
-			if delta.Content == "" {
-				tf.Write(delta.ReasoningContent)
-			}
 		}
 
 		// Text content delta

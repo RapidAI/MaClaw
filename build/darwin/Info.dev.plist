@@ -33,6 +33,8 @@
         <string>MaClaw uses local network to discover and connect to Hub services.</string>
         <key>NSPhotoLibraryUsageDescription</key>
         <string>MaClaw needs photo library access to process screenshots and images.</string>
+        <key>NSScreenCaptureUsageDescription</key>
+        <string>MaClaw needs screen recording permission to capture screenshots for remote coding sessions.</string>
         {{if .Info.FileAssociations}}
         <key>CFBundleDocumentTypes</key>
         <array>

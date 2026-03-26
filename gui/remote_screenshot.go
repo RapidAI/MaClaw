@@ -949,7 +949,7 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 	// spawning child processes. This ties the TCC prompt to our bundle ID
 	// so the user only sees it once, instead of repeatedly.
 	if !EnsureScreenRecordingPermission() {
-		return fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, remove and re-add maclaw, then restart. Do NOT just toggle the switch; remove the entry and add it again")
+		return fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
 	}
 
 	available, reason := DetectDisplayServer()
@@ -1063,7 +1063,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	// On macOS 10.15+, ensure screen recording permission is granted before
 	// spawning child processes.
 	if !EnsureScreenRecordingPermission() {
-		return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, remove and re-add maclaw, then restart. Do NOT just toggle the switch; remove the entry and add it again")
+		return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
 	}
 
 	available, reason := DetectDisplayServer()
@@ -1141,7 +1141,7 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 	}
 
 	if !EnsureScreenRecordingPermission() {
-		return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, remove and re-add maclaw, then restart")
+		return "", fmt.Errorf("screen recording permission not granted - please open System Settings > Privacy & Security > Screen Recording, grant permission to MaClaw, then restart the app")
 	}
 	available, reason := DetectDisplayServer()
 	if !available {

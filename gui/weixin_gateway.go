@@ -145,6 +145,9 @@ func (m *weixinGatewayManager) Status() string {
 }
 
 func (m *weixinGatewayManager) onStatusChange(status string) {
+	wl := weixin.GetWxLog()
+	wl.Log("mgr.status", "---", "-", "status=%s", status)
+
 	m.mu.Lock()
 	m.status = status
 	m.mu.Unlock()
@@ -160,10 +163,55 @@ func (m *weixinGatewayManager) onStatusChange(status string) {
 			hubClient.SendIMGatewayClaim("weixin")
 		}
 	}
+
+	if status == "session_expired" {
+		wl.Log("mgr.status", "---", "-", "session expired — tearing down gateway and releasing hub claim")
+		log.Printf("[weixin-mgr] session expired, tearing down gateway")
+
+		// Release Hub gateway claim so Hub doesn't route replies to a dead gateway.
+		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
+			_ = hubClient.SendIMGatewayUnclaim("weixin")
+		}
+
+		// Tear down the gateway instance so HandleGatewayReply won't try to use it.
+		// NOTE: we must NOT call gw.Stop() synchronously here because this
+		// callback runs inside pollLoop → emitStatus, and Stop() waits for
+		// pollLoop to finish — that would deadlock. Instead, nil out the
+		// gateway reference (so no new messages are dispatched) and let
+		// pollLoop's natural return + wg.Done() handle the cleanup.
+		m.mu.Lock()
+		gw := m.gateway
+		m.gateway = nil
+		m.lastToken = ""
+		m.status = "disconnected"
+		lh := m.localHandler
+		m.localHandler = nil
+		m.mu.Unlock()
+		if lh != nil {
+			lh.memory.stop()
+		}
+		// Async stop: pollLoop is about to return (emitStatus is the last
+		// call before return), so Stop() will complete quickly once we
+		// release this callback.
+		if gw != nil {
+			go func() {
+				_ = gw.Stop()
+				wl.Log("mgr.status", "---", "-", "gateway Stop() completed after session_expired")
+			}()
+		}
+		m.emitStatusEvent()
+	}
 }
 
 func (m *weixinGatewayManager) emitStatusEvent() {
 	m.app.emitEvent("weixin-status-changed", m.Status())
+}
+
+func modeLabel(isLocal bool) string {
+	if isLocal {
+		return "local"
+	}
+	return "hub"
 }
 
 // resetLocalHandler tears down the cached local IMMessageHandler so it will
@@ -182,8 +230,10 @@ func (m *weixinGatewayManager) resetLocalHandler() {
 //   - Hub mode: forwards to Hub via im.gateway_message
 //   - Hub mode fallback: if Hub is unavailable, notify user and fall back to local
 func (m *weixinGatewayManager) onIncomingMessage(msg weixin.IncomingMessage) {
+	wl := weixin.GetWxLog()
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
+		wl.Log("mgr.incoming", "IN", msg.FromUserID, "ERR LoadConfig: %v", err)
 		log.Printf("[weixin-mgr] LoadConfig error: %v", err)
 		return
 	}
@@ -193,22 +243,27 @@ func (m *weixinGatewayManager) onIncomingMessage(msg weixin.IncomingMessage) {
 	hubClient := m.app.hubClient()
 	hubNil := hubClient == nil
 	hubConn := !hubNil && hubClient.IsConnected()
+	wl.Log("mgr.incoming", "IN", msg.FromUserID, "mode=%s hub_nil=%v hub_conn=%v text_len=%d media=%s",
+		modeLabel(isLocal), hubNil, hubConn, len(msg.Text), msg.MediaType)
 	log.Printf("[weixin-mgr] onIncomingMessage: user=%s local_mode=%v local_mode_ptr=%v hub_nil=%v hub_connected=%v",
 		msg.FromUserID, isLocal, localModePtr, hubNil, hubConn)
 
 	if isLocal {
+		wl.Log("mgr.incoming", "---", msg.FromUserID, "ROUTE → local handler")
 		m.handleLocalMessage(msg)
 		return
 	}
 
 	// Hub mode — try forwarding; fall back to local if Hub unavailable.
 	if hubNil || !hubConn {
+		wl.Log("mgr.incoming", "---", msg.FromUserID, "ROUTE → local FALLBACK (hub unavailable)")
 		log.Printf("[weixin-mgr] Hub mode but Hub unavailable, falling back to local: user=%s", msg.FromUserID)
 		m.notifyHubUnavailable(msg)
 		m.handleLocalMessage(msg)
 		return
 	}
 
+	wl.Log("mgr.incoming", "---", msg.FromUserID, "ROUTE → hub forward")
 	m.forwardToHub(msg)
 }
 
@@ -231,8 +286,10 @@ func (m *weixinGatewayManager) notifyHubUnavailable(msg weixin.IncomingMessage) 
 
 // forwardToHub sends the message to Hub via im.gateway_message (original behaviour).
 func (m *weixinGatewayManager) forwardToHub(msg weixin.IncomingMessage) {
+	wl := weixin.GetWxLog()
 	hubClient := m.app.hubClient()
 	if hubClient == nil || !hubClient.IsConnected() {
+		wl.Log("mgr.forward", "OUT", msg.FromUserID, "ERR hub disconnected, fallback to local")
 		log.Printf("[weixin-mgr] forwardToHub FAILED: hub_nil=%v user=%s", hubClient == nil, msg.FromUserID)
 		// Fall back to local processing instead of silently dropping.
 		m.notifyHubUnavailable(msg)
@@ -262,8 +319,10 @@ func (m *weixinGatewayManager) forwardToHub(msg weixin.IncomingMessage) {
 	}
 
 	if err := hubClient.SendIMGatewayMessage("weixin", payload); err != nil {
+		wl.Log("mgr.forward", "OUT", msg.FromUserID, "ERR SendIMGatewayMessage: %v", err)
 		log.Printf("[weixin-mgr] forwardToHub SendIMGatewayMessage error: %v", err)
 	} else {
+		wl.Log("mgr.forward", "OUT", msg.FromUserID, "OK sent to hub, has_ctx_token=%v", msg.ContextToken != "")
 		log.Printf("[weixin-mgr] forwardToHub OK: user=%s text=%q", msg.FromUserID, truncateForLog(msg.Text, 30))
 	}
 }
@@ -330,8 +389,10 @@ func (m *weixinGatewayManager) ensureLocalHandler() *IMMessageHandler {
 // handleLocalMessage processes a WeChat message through the local agent loop
 // and sends the response back via the WeChat API.
 func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
+	wl := weixin.GetWxLog()
 	// Check LLM is configured before entering the agent loop.
 	if !m.app.isMaclawLLMConfigured() {
+		wl.Log("mgr.local", "---", msg.FromUserID, "ERR LLM not configured")
 		m.mu.Lock()
 		gw := m.gateway
 		m.mu.Unlock()
@@ -351,6 +412,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 	gw := m.gateway
 	m.mu.Unlock()
 	if gw == nil {
+		wl.Log("mgr.local", "---", msg.FromUserID, "ERR gateway is nil")
 		return
 	}
 
@@ -358,6 +420,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 	if contextToken == "" {
 		contextToken = gw.GetContextToken(msg.FromUserID)
 	}
+	wl.Log("mgr.local", "---", msg.FromUserID, "ctx_token=%v text_len=%d media=%s", contextToken != "", len(msg.Text), msg.MediaType)
 
 	// Build the user message text; prepend media info if present.
 	text := msg.Text
@@ -373,6 +436,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 	}
 
 	if text == "" {
+		wl.Log("mgr.local", "---", msg.FromUserID, "SKIP empty text after media processing")
 		return
 	}
 
@@ -395,6 +459,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		})
 	}
 
+	wl.Log("mgr.local", "---", msg.FromUserID, "calling HandleIMMessageWithProgress text_len=%d", len(text))
 	resp := handler.HandleIMMessageWithProgress(IMUserMessage{
 		UserID:   msg.FromUserID,
 		Platform: "weixin_local",
@@ -402,9 +467,11 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 	}, onProgress)
 
 	if resp == nil {
+		wl.Log("mgr.local", "---", msg.FromUserID, "agent returned nil response")
 		return
 	}
 
+	wl.Log("mgr.local", "OUT", msg.FromUserID, "agent OK text_len=%d err=%q", len(resp.Text), resp.Error)
 	m.sendAgentResponse(gw, msg.FromUserID, contextToken, resp)
 }
 
@@ -646,11 +713,14 @@ func truncateForLog(s string, maxRunes int) string {
 
 // HandleGatewayReply dispatches a reply from Hub to the WeChat API.
 func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
+	wl := weixin.GetWxLog()
+	wl.Log("mgr.hubReply", "IN", reply.PlatformUID, "type=%s text_len=%d ctx_token_len=%d", reply.ReplyType, len(reply.Text), len(reply.ContextToken))
 	log.Printf("[weixin-mgr] HandleGatewayReply: type=%s uid=%s text_len=%d", reply.ReplyType, reply.PlatformUID, len(reply.Text))
 	m.mu.Lock()
 	gw := m.gateway
 	m.mu.Unlock()
 	if gw == nil {
+		wl.Log("mgr.hubReply", "---", reply.PlatformUID, "ERR gateway is nil, dropping reply")
 		log.Printf("[weixin-mgr] HandleGatewayReply: gateway is nil, dropping reply")
 		return
 	}
@@ -662,7 +732,10 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 		contextToken = gw.GetContextToken(reply.PlatformUID)
 	}
 	if contextToken == "" {
+		wl.Log("mgr.hubReply", "---", reply.PlatformUID, "WARN no contextToken, reply will likely fail")
 		log.Printf("[weixin-mgr] HandleGatewayReply: WARNING no contextToken for uid=%s, reply will likely fail", reply.PlatformUID)
+	} else {
+		wl.Log("mgr.hubReply", "---", reply.PlatformUID, "ctx_token resolved (from_payload=%v)", reply.ContextToken != "")
 	}
 
 	switch reply.ReplyType {
@@ -672,11 +745,15 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			Text:         textutil.StripMarkdown(reply.Text),
 			ContextToken: contextToken,
 		}); err != nil {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendText: %v", err)
 			log.Printf("[weixin-mgr] SendText error (to=%s): %v", reply.PlatformUID, err)
+		} else {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendText text_len=%d", len(reply.Text))
 		}
 	case "image":
 		data, err := base64.StdEncoding.DecodeString(reply.ImageData)
 		if err != nil {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR image base64 decode: %v", err)
 			log.Printf("[weixin-mgr] image base64 decode error: %v", err)
 			return
 		}
@@ -687,11 +764,15 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			FileData:     data,
 			MediaType:    "image",
 		}); err != nil {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendMedia(image): %v", err)
 			log.Printf("[weixin-mgr] SendMedia(image) error (to=%s): %v", reply.PlatformUID, err)
+		} else {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendMedia(image) size=%d", len(data))
 		}
 	case "file":
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR file base64 decode: %v", err)
 			log.Printf("[weixin-mgr] file base64 decode error: %v", err)
 			return
 		}
@@ -703,11 +784,15 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			FileName:     reply.FileName,
 			MediaType:    "file",
 		}); err != nil {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendMedia(file): %v", err)
 			log.Printf("[weixin-mgr] SendMedia(file) error (to=%s): %v", reply.PlatformUID, err)
+		} else {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendMedia(file) name=%s size=%d", reply.FileName, len(data))
 		}
 	case "video":
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR video base64 decode: %v", err)
 			log.Printf("[weixin-mgr] video base64 decode error: %v", err)
 			return
 		}
@@ -719,8 +804,13 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			FileName:     reply.FileName,
 			MediaType:    "video",
 		}); err != nil {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendMedia(video): %v", err)
 			log.Printf("[weixin-mgr] SendMedia(video) error (to=%s): %v", reply.PlatformUID, err)
+		} else {
+			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendMedia(video) size=%d", len(data))
 		}
+	default:
+		wl.Log("mgr.hubReply", "---", reply.PlatformUID, "WARN unknown reply_type=%s", reply.ReplyType)
 	}
 }
 

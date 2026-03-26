@@ -139,11 +139,19 @@ type MaclawLLMProvider struct {
 	ContextLength  int    `json:"context_length,omitempty"`
 	IsCustom       bool   `json:"is_custom,omitempty"`
 	SupportsVision bool   `json:"supports_vision,omitempty"`
-	AgentType      string `json:"agent_type,omitempty"` // Deprecated: ignored; UserAgent() always returns "claude-code/2.0.0"
+	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
 	AuthType       string `json:"auth_type,omitempty"`
 	RefreshToken   string `json:"refresh_token,omitempty"`
 	TokenExpiresAt int64  `json:"token_expires_at,omitempty"`
+}
+
+// UserAgent returns the User-Agent header value for LLM API requests.
+func (p MaclawLLMProvider) UserAgent() string {
+	if p.AgentType != "" {
+		return p.AgentType
+	}
+	return "openclaw"
 }
 
 // MaclawLLMConfig 是 MaClaw 桌面 Agent 的 LLM 配置。
@@ -154,14 +162,17 @@ type MaclawLLMConfig struct {
 	Protocol       string `json:"protocol,omitempty"`
 	ContextLength  int    `json:"context_length,omitempty"`
 	SupportsVision bool   `json:"supports_vision,omitempty"`
-	AgentType      string `json:"agent_type,omitempty"` // Deprecated: ignored; UserAgent() always returns "claude-code/2.0.0"
+	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 }
 
 // UserAgent returns the User-Agent header value for LLM API requests.
-// Uses "claude-code/2.0.0" as the system-wide default — compatible with
-// all major providers and satisfies Kimi's coding-agent whitelist.
+// Returns AgentType directly as the User-Agent string.
+// Default is "openclaw" when AgentType is empty.
 func (c MaclawLLMConfig) UserAgent() string {
-	return "claude-code/2.0.0"
+	if c.AgentType != "" {
+		return c.AgentType
+	}
+	return "openclaw"
 }
 
 

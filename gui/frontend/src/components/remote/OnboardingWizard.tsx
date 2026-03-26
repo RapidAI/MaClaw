@@ -32,6 +32,7 @@ interface LLMProvider {
     context_length?: number;
     is_custom?: boolean;
     auth_type?: string;
+    agent_type?: string;
 }
 
 type Props = {
@@ -262,7 +263,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
         setLlmSaving(true);
         setLlmResult(null);
         try {
-            const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai" });
+            const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
             await SaveMaclawLLMProviders(providers, sp.name);
             setLlmResult({ ok: true, msg: reply });
             setLlmDone(true);

@@ -301,20 +301,17 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         }
 
         try {
-            const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai" });
-            try {
-                const saveName = sp.name;
-                await SaveMaclawLLMProviders(dlgProviders, saveName);
-                setDlgDirty(false);
-                setDlgTestResult({ ok: true, msg: reply });
-                setProviders(dlgProviders.map(p => ({ ...p })));
-                setCurrentName(saveName);
-                onStatusChange?.(true, true);
-                // Auto-close after brief delay so user sees the success message
-                setTimeout(() => setDlgOpen(false), 1200);
-            } catch (e) {
-                setDlgTestResult({ ok: false, msg: t("连接正常但保存失败: ", "Connection OK but save failed: ") + String(e) });
-            }
+            // Save first so the agent_type and other settings take effect immediately
+            const saveName = sp.name;
+            await SaveMaclawLLMProviders(dlgProviders, saveName);
+            setDlgDirty(false);
+            setProviders(dlgProviders.map(p => ({ ...p })));
+            setCurrentName(saveName);
+
+            const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
+            setDlgTestResult({ ok: true, msg: reply });
+            onStatusChange?.(true, true);
+            setTimeout(() => setDlgOpen(false), 1200);
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });
         }
@@ -558,6 +555,32 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         </p>
                                     </div>
                                 )}
+
+                                {/* User-Agent selection */}
+                                <div style={{ marginBottom: 12 }}>
+                                    <label style={labelStyle}>User-Agent</label>
+                                    <div style={{ display: "flex", gap: 6 }}>
+                                        {(["openclaw", "claude-code/2.0.0"] as const).map(ua => {
+                                            const active = (dlgProvider.agent_type || "openclaw") === ua;
+                                            return (
+                                                <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)} style={{
+                                                    fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
+                                                    background: active ? "#6366f1" : colors.surface,
+                                                    color: active ? "#fff" : colors.text,
+                                                    border: `1px solid ${active ? "#6366f1" : colors.border}`,
+                                                    borderRadius: 4, transition: "all 0.15s",
+                                                }}>
+                                                    {ua}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                    <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                                        {(dlgProvider.agent_type || "openclaw") === "claude-code/2.0.0"
+                                            ? t("Kimi 等需要 Claude Coding Plan 身份的服务商", "For providers requiring Claude Coding Plan identity (e.g. Kimi)")
+                                            : t("智谱等大多数服务商使用 OpenClaw 身份", "Most providers use OpenClaw identity (e.g. Zhipu)")}
+                                    </p>
+                                </div>
 
                                 {/* Custom: editable name */}
                                 {dlgProvider.is_custom && (

@@ -1373,6 +1373,8 @@ function App() {
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("claude");
+    const navTabRef = useRef(navTab);
+    useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
     const [tutorialContent, setTutorialContent] = useState<string>("");
     const [thanksContent, setThanksContent] = useState<string>(""); // New state for thanks content
@@ -1862,15 +1864,19 @@ function App() {
         // Listen for external config changes (e.g. from Tray)
         const handleConfigChange = (cfg: main.AppConfig) => {
             setConfig(cfg);
-            // Sync with tray menu changes
-            const tool = cfg.active_tool || "message";
-            setNavTab(tool);
-            if (tool === 'claude' || tool === 'gemini' || tool === 'codex' || tool === 'opencode' || tool === 'codebuddy' || tool === 'cursor' || tool === 'iflow' || tool === 'kilo') {
-                setActiveTool(tool);
-                const toolCfg = (cfg as any)[tool];
-                if (toolCfg && toolCfg.models) {
-                    const idx = toolCfg.models.findIndex((m: any) => m.model_name === toolCfg.current_model);
-                    if (idx !== -1) setActiveTab(idx);
+            // Sync with tray menu changes — but don't yank the user away from
+            // the AI assistant panel.  'ai' is never persisted as active_tool,
+            // so a config-changed event would always overwrite it.
+            if (navTabRef.current !== 'ai') {
+                const tool = cfg.active_tool || "message";
+                setNavTab(tool);
+                if (tool === 'claude' || tool === 'gemini' || tool === 'codex' || tool === 'opencode' || tool === 'codebuddy' || tool === 'cursor' || tool === 'iflow' || tool === 'kilo') {
+                    setActiveTool(tool);
+                    const toolCfg = (cfg as any)[tool];
+                    if (toolCfg && toolCfg.models) {
+                        const idx = toolCfg.models.findIndex((m: any) => m.model_name === toolCfg.current_model);
+                        if (idx !== -1) setActiveTab(idx);
+                    }
                 }
             }
         };

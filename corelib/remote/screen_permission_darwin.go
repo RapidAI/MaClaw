@@ -4,11 +4,12 @@ package remote
 
 /*
 #cgo darwin CFLAGS: -DDARWIN
-#cgo darwin LDFLAGS: -framework CoreGraphics
+#cgo darwin LDFLAGS: -framework CoreGraphics -framework CoreFoundation
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <stdlib.h>
 #include <dlfcn.h>
+#include <sys/utsname.h>
 
 typedef bool (*preflight_fn)(void);
 
@@ -50,8 +51,23 @@ static int isScreenLocked(void) {
     CFRelease(dict);
     return result;
 }
+
+static int darwinKernelMajor(void) {
+    struct utsname u;
+    if (uname(&u) != 0) return 0;
+    int major = 0;
+    for (int i = 0; u.release[i] != '\0' && u.release[i] != '.'; i++) {
+        major = major * 10 + (u.release[i] - '0');
+    }
+    return major;
+}
 */
 import "C"
+
+// IsMacOS26OrLater returns true if running on macOS 26 (Tahoe) or later.
+func IsMacOS26OrLater() bool {
+	return int(C.darwinKernelMajor()) >= 25
+}
 
 // CheckScreenRecordingPermission returns true if the current process has
 // screen recording permission. Uses the TCC API check plus a real capture
@@ -70,4 +86,20 @@ func CheckScreenRecordingPermission() bool {
 		return true
 	}
 	return false
+}
+
+// IsScreenRecordingStale returns true when the TCC API reports permission
+// granted but the actual capture probe fails (and the screen is not locked).
+// This indicates a stale TCC record, common on macOS 26+ after pkg upgrades.
+func IsScreenRecordingStale() bool {
+	if !bool(C.preflightScreenCapture()) {
+		return false // API says not granted — not stale, just denied
+	}
+	if C.probeScreenCapture() == 1 {
+		return false // works fine
+	}
+	if C.isScreenLocked() == 1 {
+		return false // locked screen causes probe failure, not stale
+	}
+	return true
 }
