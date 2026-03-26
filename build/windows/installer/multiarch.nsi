@@ -47,8 +47,11 @@ ManifestDPIAware true
 !include "MUI2.nsh"
 !include "x64.nsh"
 
-!define MUI_ICON "..\icon.ico"
-!define MUI_UNICON "..\icon.ico"
+!ifndef MUI_ICON_PATH
+!define MUI_ICON_PATH "..\icon.ico"
+!endif
+!define MUI_ICON "${MUI_ICON_PATH}"
+!define MUI_UNICON "${MUI_ICON_PATH}"
 !define MUI_FINISHPAGE_NOAUTOCLOSE
 !define MUI_ABORTWARNING
 

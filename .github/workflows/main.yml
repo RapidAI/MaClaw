@@ -218,6 +218,7 @@ jobs:
                   /DINFO_PRODUCTVERSION="$env:VERSION" `
                   /DARG_WAILS_AMD64_BINARY="$root\dist\${outName}_amd64.exe" `
                   /DARG_WAILS_ARM64_BINARY="$root\dist\${outName}_arm64.exe" `
+                  /DMUI_ICON_PATH="$root\$($env:BRAND_ICON_ICO)" `
                   build/windows/installer/multiarch.nsi
 
       - name: Create portable zip
