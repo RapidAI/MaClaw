@@ -51,7 +51,7 @@ func NewBackgroundLoopManager(statusC chan StatusEvent) *BackgroundLoopManager {
 		loops:   make(map[string]*LoopContext),
 		statusC: statusC,
 		slotLimits: map[SlotKind]int{
-			SlotKindCoding:    1,
+			SlotKindCoding:    2,
 			SlotKindScheduled: 1,
 			SlotKindAuto:      1,
 		},
@@ -261,4 +261,15 @@ func (m *BackgroundLoopManager) notifyChange() {
 	if m.OnChange != nil {
 		m.OnChange()
 	}
+}
+
+// SetSlotLimit dynamically adjusts the concurrency limit for a given SlotKind.
+// The new limit takes effect immediately; already-running loops are not affected.
+func (m *BackgroundLoopManager) SetSlotLimit(kind SlotKind, limit int) {
+	if limit <= 0 {
+		limit = 1
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.slotLimits[kind] = limit
 }

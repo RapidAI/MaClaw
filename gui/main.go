@@ -2,7 +2,12 @@ package main
 
 import (
 	"embed"
+	"fmt"
+	"io"
+	"log"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -19,6 +24,9 @@ import (
 var assets embed.FS
 
 func main() {
+	// --- Log to file: ~/.maclaw/logs/maclaw.log ---
+	initLogFile()
+
 	// Migrate ~/.maclaw/skills → ~/.maclaw/data/skills (one-time).
 	skill.MigrateSkillsDir()
 
@@ -138,4 +146,37 @@ func main() {
 	if err != nil {
 		println("Error:", err.Error())
 	}
+}
+
+// initLogFile sets up log output to ~/.maclaw/logs/maclaw.log (with rotation)
+// while keeping stderr as a fallback. Logs are rotated when the file exceeds
+// 10 MB; the previous log is kept as maclaw.log.1.
+func initLogFile() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(home, ".maclaw", "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	logPath := filepath.Join(dir, "maclaw.log")
+
+	// Rotate if existing log exceeds 10 MB.
+	if info, err := os.Stat(logPath); err == nil && info.Size() > 10*1024*1024 {
+		prev := logPath + ".1"
+		_ = os.Remove(prev)
+		_ = os.Rename(logPath, prev)
+	}
+
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	// Write to both file and stderr so console still works during development.
+	mw := io.MultiWriter(f, os.Stderr)
+	log.SetOutput(mw)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Printf("[maclaw] === started at %s ===", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "[maclaw] logging to %s\n", logPath)
 }

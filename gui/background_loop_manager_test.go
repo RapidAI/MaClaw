@@ -60,16 +60,17 @@ func TestProperty8_SlotConcurrencyControl(t *testing.T) {
 			}
 		}
 
-		// Only 1 should have been spawned (limit=1 for coding)
-		if mgr.RunningCount(SlotKindCoding) != 1 {
+		// Only 2 should have been spawned (limit=2 for coding)
+		if mgr.RunningCount(SlotKindCoding) != 2 {
 			return false
 		}
-		if len(spawned) != 1 {
+		if len(spawned) != 2 {
 			return false
 		}
 
-		// Stop it, then spawn again — should succeed
+		// Stop them, then spawn again — should succeed
 		mgr.Stop(spawned[0].ID)
+		mgr.Stop(spawned[1].ID)
 		if mgr.RunningCount(SlotKindCoding) != 0 {
 			return false
 		}
@@ -98,14 +99,15 @@ func TestSlotIndependence(t *testing.T) {
 	mgr := NewBackgroundLoopManager(statusC)
 
 	coding := mgr.Spawn(SlotKindCoding, "u", "coding task", 20, nil)
+	coding2 := mgr.Spawn(SlotKindCoding, "u", "coding task 2", 20, nil)
 	scheduled := mgr.Spawn(SlotKindScheduled, "u", "scheduled task", 50, nil)
 	auto := mgr.Spawn(SlotKindAuto, "u", "auto task", 30, nil)
 
-	if coding == nil || scheduled == nil || auto == nil {
-		t.Fatal("all three slot kinds should spawn independently")
+	if coding == nil || coding2 == nil || scheduled == nil || auto == nil {
+		t.Fatal("all slot kinds should spawn independently (coding x2)")
 	}
-	if mgr.RunningCount(SlotKindCoding) != 1 {
-		t.Error("coding slot should have 1 running")
+	if mgr.RunningCount(SlotKindCoding) != 2 {
+		t.Error("coding slot should have 2 running")
 	}
 	if mgr.RunningCount(SlotKindScheduled) != 1 {
 		t.Error("scheduled slot should have 1 running")
@@ -121,6 +123,7 @@ func TestSlotIndependence(t *testing.T) {
 	}
 
 	mgr.Stop(coding.ID)
+	mgr.Stop(coding2.ID)
 	mgr.Stop(scheduled.ID)
 	mgr.Stop(auto.ID)
 }
@@ -133,13 +136,17 @@ func TestSpawnOrQueue_Dequeue(t *testing.T) {
 	statusC := make(chan StatusEvent, 32)
 	mgr := NewBackgroundLoopManager(statusC)
 
-	// Fill the coding slot
+	// Fill both coding slots (limit=2)
 	ctx1 := mgr.Spawn(SlotKindCoding, "u", "first", 20, nil)
 	if ctx1 == nil {
 		t.Fatal("first spawn should succeed")
 	}
+	ctx1b := mgr.Spawn(SlotKindCoding, "u", "first-b", 20, nil)
+	if ctx1b == nil {
+		t.Fatal("second spawn should succeed (limit=2)")
+	}
 
-	// Queue a second task
+	// Queue a third task
 	ctx2, waitCh := mgr.SpawnOrQueue(SlotKindCoding, "u", "second", 30)
 	if ctx2 != nil {
 		t.Fatal("should be queued, not spawned")
@@ -151,7 +158,7 @@ func TestSpawnOrQueue_Dequeue(t *testing.T) {
 		t.Fatalf("expected queue length 1, got %d", mgr.QueueLength(SlotKindCoding))
 	}
 
-	// Stop the first — should dequeue and spawn the second
+	// Stop the first — should dequeue and spawn the queued task
 	mgr.Stop(ctx1.ID)
 
 	// Wait for the dequeued context
@@ -162,14 +169,16 @@ func TestSpawnOrQueue_Dequeue(t *testing.T) {
 	if dequeued.Description != "second" {
 		t.Errorf("expected description 'second', got %q", dequeued.Description)
 	}
-	if mgr.RunningCount(SlotKindCoding) != 1 {
-		t.Error("coding slot should have 1 running after dequeue")
+	// ctx1b is still running + dequeued = 2 running
+	if mgr.RunningCount(SlotKindCoding) != 2 {
+		t.Errorf("coding slot should have 2 running after dequeue, got %d", mgr.RunningCount(SlotKindCoding))
 	}
 	if mgr.QueueLength(SlotKindCoding) != 0 {
 		t.Error("queue should be empty after dequeue")
 	}
 
 	mgr.Stop(dequeued.ID)
+	mgr.Stop(ctx1b.ID)
 }
 
 // ---------------------------------------------------------------------------

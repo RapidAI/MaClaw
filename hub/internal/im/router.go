@@ -134,7 +134,9 @@ type MessageRouter struct {
 	progressDelivery ProgressDeliveryFunc
 	responseDelivery ResponseDeliveryFunc
 	conductor        *DiscussionConductor // optional; nil = mechanical rounds
-	llmSem           *LLMSemaphore       // global LLM concurrency limiter
+	llmSem           *LLMSemaphore       // global LLM concurrency limiter (legacy/fallback)
+	llmSemGUI        *LLMSemaphore       // GUI-originated LLM concurrency limiter
+	llmSemIM         *LLMSemaphore       // IM-originated LLM concurrency limiter
 
 	mu          sync.Mutex
 	pendingReqs map[string]*PendingIMRequest // requestID → pending
@@ -164,6 +166,8 @@ func NewMessageRouter(devices DeviceFinder) *MessageRouter {
 		pendingAttachments: make(map[string][]MessageAttachment),
 		discussions:        make(map[string]*DiscussionState),
 		llmSem:             NewLLMSemaphore(DefaultMaxConcurrent),
+		llmSemGUI:          NewLLMSemaphore(DefaultMaxConcurrentGUI),
+		llmSemIM:           NewLLMSemaphore(DefaultMaxConcurrentIM),
 		stopCh:             make(chan struct{}),
 	}
 	go r.cleanupLoop()
@@ -195,6 +199,26 @@ func (r *MessageRouter) popAttachments(userID string) []MessageAttachment {
 // other components (Coordinator, IntentClassifier, etc.) can share it.
 func (r *MessageRouter) LLMSemaphore() *LLMSemaphore {
 	return r.llmSem
+}
+
+// LLMSemaphoreForSource returns the per-source semaphore. Use "gui" for
+// desktop AI assistant requests and "im" for IM (Feishu/WeChat/etc.).
+// Falls back to the global semaphore for unknown sources.
+func (r *MessageRouter) LLMSemaphoreForSource(source string) *LLMSemaphore {
+	switch source {
+	case "gui":
+		return r.llmSemGUI
+	case "im":
+		return r.llmSemIM
+	default:
+		return r.llmSem
+	}
+}
+
+// ResizeSourceSemaphores updates the per-source semaphore capacities.
+func (r *MessageRouter) ResizeSourceSemaphores(guiCap, imCap int) {
+	r.llmSemGUI.Resize(guiCap)
+	r.llmSemIM.Resize(imCap)
 }
 
 // MachineSelectResult is returned by SelectMachine / TrySelectByName.
@@ -698,12 +722,12 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 
 	for _, m := range targets {
 		go func(m OnlineMachineInfo, atts []MessageAttachment) {
-			// Acquire LLM semaphore slot; degrade on timeout.
-			if !r.llmSem.Acquire(dedupCtx) {
+			// Acquire IM-specific LLM semaphore slot; degrade on timeout.
+			if !r.llmSemIM.Acquire(dedupCtx) {
 				ch <- result{name: m.Name, resp: nil, err: fmt.Errorf("LLM 并发已满，请稍后重试")}
 				return
 			}
-			defer r.llmSem.Release()
+			defer r.llmSemIM.Release()
 			resp, err := r.routeToSingleMachine(dedupCtx, userID, platformName, platformUID, text, m.MachineID, m.Name, atts)
 			ch <- result{name: m.Name, resp: resp, err: err}
 		}(m, broadcastAttachments)
@@ -790,12 +814,12 @@ func (r *MessageRouter) routeToMultiple(ctx context.Context, userID, platformNam
 	dedupCtx := withBroadcastDedup(ctx, newBroadcastProgressDedup())
 	for _, m := range targets {
 		go func(m OnlineMachineInfo) {
-			// Acquire LLM semaphore slot; degrade on timeout.
-			if !r.llmSem.Acquire(dedupCtx) {
+			// Acquire IM-specific LLM semaphore slot; degrade on timeout.
+			if !r.llmSemIM.Acquire(dedupCtx) {
 				ch <- result{name: m.Name, resp: nil, err: fmt.Errorf("LLM 并发已满，请稍后重试")}
 				return
 			}
-			defer r.llmSem.Release()
+			defer r.llmSemIM.Release()
 			resp, err := r.routeToSingleMachine(dedupCtx, userID, platformName, platformUID, text, m.MachineID, m.Name)
 			ch <- result{name: m.Name, resp: resp, err: err}
 		}(m)

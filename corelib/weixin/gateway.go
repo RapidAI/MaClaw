@@ -367,6 +367,10 @@ type Gateway struct {
 	userLocks   map[string]*sync.Mutex
 	userLocksMu sync.Mutex
 
+	// Rate-limit queue notifications: at most one per user per 30s.
+	queueNoticeMu    sync.Mutex
+	queueNoticeTimes map[string]time.Time
+
 	// handlerWg tracks in-flight handler goroutines so Stop() can wait
 	// for them to finish before returning.
 	handlerWg sync.WaitGroup
@@ -375,11 +379,12 @@ type Gateway struct {
 // NewGateway creates a new WeChat gateway.
 func NewGateway(config Config, handler MessageHandler) *Gateway {
 	return &Gateway{
-		config:    config,
-		handler:   handler,
-		client:    &http.Client{},
-		ctxTokens: newContextTokenCache(),
-		userLocks: make(map[string]*sync.Mutex),
+		config:           config,
+		handler:          handler,
+		client:           &http.Client{},
+		ctxTokens:        newContextTokenCache(),
+		userLocks:        make(map[string]*sync.Mutex),
+		queueNoticeTimes: make(map[string]time.Time),
 	}
 }
 
@@ -706,10 +711,55 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 	g.handlerWg.Add(1)
 	go func() {
 		defer g.handlerWg.Done()
-		ul.Lock()
+
+		// Try to acquire the lock with a short deadline. If the lock is
+		// already held (previous message still being processed), send a
+		// one-time queued notification so the user knows the message wasn't lost.
+		locked := ul.TryLock()
+		if !locked {
+			// Lock is busy — notify user (rate-limited: only if no recent notification).
+			if incoming.Text != "" {
+				log.Printf("[weixin/gw] message queued for user=%s (lock busy), text=%s",
+					fromUserID, truncateLog(incoming.Text, 50))
+				ctxToken := incoming.ContextToken
+				if ctxToken == "" {
+					ctxToken = g.ctxTokens.Get(fromUserID)
+				}
+				if ctxToken != "" && g.shouldSendQueueNotice(fromUserID) {
+					_ = g.SendText(context.Background(), OutgoingText{
+						ToUserID:     fromUserID,
+						Text:         "⏳ 上一条消息还在处理中，你的消息已排队，请稍候…",
+						ContextToken: ctxToken,
+					})
+				}
+			}
+			// Block until the lock is available.
+			ul.Lock()
+		}
 		defer ul.Unlock()
 		g.handler(incoming)
 	}()
+}
+
+func truncateLog(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes]) + "…"
+}
+
+// shouldSendQueueNotice returns true if a queue notification should be sent
+// for this user. Rate-limited to at most once per 30 seconds per user.
+func (g *Gateway) shouldSendQueueNotice(userID string) bool {
+	g.queueNoticeMu.Lock()
+	defer g.queueNoticeMu.Unlock()
+	now := time.Now()
+	if last, ok := g.queueNoticeTimes[userID]; ok && now.Sub(last) < 30*time.Second {
+		return false
+	}
+	g.queueNoticeTimes[userID] = now
+	return true
 }
 
 func extractTextBody(items []messageItem) string {
