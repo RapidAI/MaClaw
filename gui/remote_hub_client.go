@@ -739,6 +739,12 @@ func (c *RemoteHubClient) handleAck(msg inboundHubEnvelope) {
 }
 
 func (c *RemoteHubClient) readLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[hub-client] readLoop panic recovered: %v", r)
+			c.handleConnectionLoss(fmt.Errorf("readLoop panic: %v", r))
+		}
+	}()
 	for {
 		c.mu.Lock()
 		conn := c.conn
@@ -901,6 +907,11 @@ func (c *RemoteHubClient) handleSessionScreenshot(msg inboundHubEnvelope) {
 	sessionID := msg.SessionID
 	windowTitle := payload.WindowTitle
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[hub-screenshot] panic recovered for session=%s: %v", sessionID, r)
+			}
+		}()
 		var err error
 		if windowTitle != "" {
 			err = c.manager.CaptureWindowScreenshot(sessionID, windowTitle)
@@ -1284,6 +1295,12 @@ func (c *RemoteHubClient) setLastError(message string) {
 }
 
 func (c *RemoteHubClient) heartbeatLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[hub-client] heartbeatLoop panic recovered: %v", r)
+			c.handleConnectionLoss(fmt.Errorf("heartbeatLoop panic: %v", r))
+		}
+	}()
 	for {
 		interval := c.currentHeartbeatInterval()
 		timer := time.NewTimer(interval)
@@ -1376,6 +1393,11 @@ func (c *RemoteHubClient) triggerReconnect() {
 }
 
 func (c *RemoteHubClient) reconnectLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[hub-client] reconnectLoop panic recovered: %v", r)
+		}
+	}()
 	defer c.reconnecting.Store(false)
 
 	backoff := 500 * time.Millisecond

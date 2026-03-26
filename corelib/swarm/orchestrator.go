@@ -396,6 +396,20 @@ func (o *SwarmOrchestrator) setPhase(run *SwarmRun, phase SwarmPhase) {
 
 // runPipeline drives the swarm run through its phases.
 func (o *SwarmOrchestrator) runPipeline(run *SwarmRun, req SwarmRunRequest, maxAgents int) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[SwarmOrchestrator] runPipeline panic recovered: %v", r)
+			o.mu.Lock()
+			run.Status = SwarmStatusFailed
+			now := time.Now()
+			run.CompletedAt = &now
+			run.UpdatedAt = now
+			o.activeRun = nil
+			o.mu.Unlock()
+			o.addTimelineEvent(run, "run_panic", fmt.Sprintf("Pipeline panic: %v", r), "")
+		}
+	}()
+
 	o.mu.Lock()
 	run.Status = SwarmStatusRunning
 	o.mu.Unlock()

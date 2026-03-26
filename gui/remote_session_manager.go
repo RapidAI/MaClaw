@@ -646,6 +646,11 @@ func (m *RemoteSessionManager) Kill(sessionID string) error {
 }
 
 func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.app.log(fmt.Sprintf("[remote-output-panic] session=%s recovered: %v", s.ID, r))
+		}
+	}()
 	pipeline := m.pipelineFactory()
 	responder := newStartupAutoResponder(m.app, s)
 
@@ -714,6 +719,11 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 // It reads from the Output() channel for text preview and also processes
 // structured SDK messages from Messages() for proper event generation.
 func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.app.log(fmt.Sprintf("[sdk-output-panic] session=%s recovered: %v", s.ID, r))
+		}
+	}()
 	sdkHandle, ok := s.Exec.(*SDKExecutionHandle)
 	if !ok {
 		m.runOutputLoop(s)
@@ -1250,6 +1260,11 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 // Codex exec --json emits complete JSONL lines (not streaming fragments),
 // so we don't need the streaming accumulator used by Claude's SDK loop.
 func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.app.log(fmt.Sprintf("[codex-output-panic] session=%s recovered: %v", s.ID, r))
+		}
+	}()
 	codexHandle, ok := s.Exec.(*CodexSDKExecutionHandle)
 	if !ok {
 		m.runOutputLoop(s)
@@ -1333,6 +1348,11 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 // session state transitions based on ACP-specific markers emitted by
 // the GeminiACPExecutionHandle.
 func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.app.log(fmt.Sprintf("[gemini-acp-output-panic] session=%s recovered: %v", s.ID, r))
+		}
+	}()
 	acpHandle, ok := s.Exec.(*GeminiACPExecutionHandle)
 	if !ok {
 		m.runOutputLoop(s)
@@ -1537,6 +1557,11 @@ func buildResumeContext(s *RemoteSession, reason string) *SessionResumeContext {
 }
 
 func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.app.log(fmt.Sprintf("[remote-exit-panic] session=%s recovered: %v", s.ID, r))
+		}
+	}()
 	// Ensure config cleanup runs even if the exit channel is nil or closed
 	// unexpectedly, so the user's native tool config is always restored.
 	defer func() {
