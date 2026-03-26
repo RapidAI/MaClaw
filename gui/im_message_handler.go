@@ -2269,9 +2269,11 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 只有真正需要启动 IDE/编程工具来修改项目代码的任务才是编程任务。
 
 ### 第二步：检查跳过信号（Skip_Signal）
-如果用户消息中包含以下表达，跳过确认直接执行：
+如果用户消息中包含以下表达，跳过所有确认阶段，直接进入内部规划后执行：
 - 中文：直接做、不用问了、按你的想法来、直接开始、不用确认、马上做、赶紧做
 - English：just do it、skip confirmation、go ahead、do it now
+- 在任何确认阶段中收到跳过信号，跳过剩余确认阶段直接进入执行
+- 跳过时仍在内部生成需求理解和设计方案，但不生成 PDF、不等待用户确认
 
 ### 第三步：需求确认（Requirements Phase）
 对于编程任务且无跳过信号时，进入 Spec 驱动工作流：
@@ -2285,7 +2287,10 @@ d) 约束与假设
 
 **文档生成与发送：**
 1. 用 Markdown 格式编写需求文档内容
-2. 用 craft_tool 生成 Markdown-to-PDF 转换脚本，或用 bash 调用 pandoc/wkhtmltopdf 将 Markdown 转为 PDF
+2. 生成 PDF 文件（⚠️ 必须是 .pdf 格式，严禁发送 .html 文件到 IM 通道）：
+   - 优先方案：用 craft_tool 生成 Python 脚本，使用 markdown + pdfkit 或 reportlab 将 Markdown 转为 PDF
+   - 备选方案：用 bash 调用 pandoc（pandoc input.md -o output.pdf）或 wkhtmltopdf
+   - ⚠️ 禁止将 HTML 文件直接作为文档发送到 IM——HTML 在飞书/微信/QQ 中显示效果极差
 3. 用 send_file（forward_to_im=true）将 PDF 发送给用户
 4. PDF 文件命名：需求文档_<feature_name>.pdf
 5. ⚠️ 发送 PDF 后必须同时发送明确的行动提示，告知用户需要查看并确认或提出修改意见。格式："📄 已生成需求文档的 PDF 版本，请查看并确认需求是否准确，或提出修改意见。" 禁止只发 PDF 不说话——用户需要明确知道这个文档需要他看、需要他反馈。
@@ -2297,7 +2302,8 @@ d) 约束与假设
 - 用户发出跳过信号时，跳过剩余确认阶段直接进入执行
 
 **PDF 生成失败回退：**
-- 如果 PDF 生成失败，将文档内容作为格式化文本直接发送到 IM，并告知用户 PDF 生成失败
+- 如果 PDF 生成失败，将文档内容作为 Markdown 纯文本直接发送到 IM，并告知用户 PDF 生成失败
+- ⚠️ 回退时严禁发送 HTML 格式——只能发送 Markdown 纯文本或 PDF，绝不发送 .html 文件
 
 ### 第四步：技术设计（Design Phase）
 用户确认需求文档后，进入技术设计阶段：
@@ -2309,7 +2315,7 @@ b) 接口设计（关键函数/方法签名）
 c) 数据模型变更（如有）
 d) 实现方案概述
 
-**文档生成与发送：**（同第三步的 PDF 生成流程）
+**文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 文件，严禁发送 .html）
 - PDF 文件命名：设计文档_<feature_name>.pdf
 - ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成技术设计文档的 PDF 版本，请查看设计方案并确认，或提出修改意见。"
 
@@ -2327,7 +2333,7 @@ a) 编号的任务列表（按执行顺序排列）
 b) 每个任务的描述和涉及的文件
 c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期结果）
 
-**文档生成与发送：**（同第三步的 PDF 生成流程）
+**文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 文件，严禁发送 .html）
 - PDF 文件命名：任务列表_<feature_name>.pdf
 - ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成任务列表的 PDF 版本，请查看任务拆分是否合理，确认后开始执行，或提出修改意见。"
 
@@ -2364,7 +2370,6 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 3. 将完成报告作为文本消息发送给用户
 4. 全部通过：报告功能成功完成
 5. 有失败：列出失败项并建议下一步操作
-
 
 ### 第八步：自动续接（Auto-Resume）
 当编程工具因 token 耗尽正常退出（exit_code=0 或 1，且 get_session_output 返回续接指令）时：
@@ -2408,8 +2413,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
 - 创建会话时可用 project_id 参数指定预设项目，或用 project_manage(action="list") 查看可用项目列表
 
-`)
-	} else {
+`)	} else {
 		// Lite/simple mode: no coding session tools available.
 		b.WriteString(`
 ## 当前模式

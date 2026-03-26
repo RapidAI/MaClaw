@@ -205,8 +205,8 @@ func TestSpecWorkflowProperty5_PDFGenerationAndDelivery(t *testing.T) {
 			return false
 		}
 
-		// (e) Fallback to formatted text on failure
-		hasFallback := strings.Contains(prompt, "PDF 生成失败") || strings.Contains(prompt, "格式化文本")
+		// (e) Fallback to text on failure (Markdown 纯文本 or formatted text)
+		hasFallback := strings.Contains(prompt, "PDF 生成失败")
 		if !hasFallback {
 			t.Logf("missing PDF fallback instruction")
 			return false

@@ -4,5 +4,5 @@ package main
 
 import _ "embed"
 
-//go:embed build/qianxin.png
+//go:embed build/tigerclaw.ico
 var icon []byte

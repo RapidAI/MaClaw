@@ -1322,6 +1322,35 @@ func (a *App) GetDataDir() string {
 	return filepath.Join(a.GetUserHomeDir(), ".maclaw", "data")
 }
 
+// BrandInfo is the JSON-friendly brand information exposed to the frontend.
+type BrandInfo struct {
+	ID              string `json:"id"`
+	DisplayName     string `json:"displayName"`
+	DisplayNameCN   string `json:"displayNameCN"`
+	Slogan          string `json:"slogan"`
+	Author          string `json:"author"`
+	BusinessContact string `json:"businessContact"`
+	WebsiteURL      string `json:"websiteURL"`
+	GitHubURL       string `json:"githubURL"`
+	IconPath        string `json:"iconPath"`
+}
+
+// GetBrandInfo returns the current brand configuration for the frontend.
+func (a *App) GetBrandInfo() BrandInfo {
+	b := brand.Current()
+	return BrandInfo{
+		ID:              b.ID,
+		DisplayName:     b.DisplayName,
+		DisplayNameCN:   b.DisplayNameCN,
+		Slogan:          b.Slogan,
+		Author:          b.Author,
+		BusinessContact: b.BusinessContact,
+		WebsiteURL:      b.WebsiteURL,
+		GitHubURL:       b.GitHubURL,
+		IconPath:        b.IconPath,
+	}
+}
+
 // MigrateDataDir moves legacy ~/.cceasy/* subdirectories into ~/.maclaw/data/
 // on first launch. It is safe to call multiple times (no-op once migrated).
 func (a *App) MigrateDataDir() {

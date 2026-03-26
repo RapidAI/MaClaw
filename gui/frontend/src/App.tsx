@@ -2,6 +2,7 @@
 import './App.css';
 import { buildNumber } from './version';
 import appIcon from './assets/images/appicon.png';
+import qianxinIcon from './assets/images/qianxin.png';
 import claudecodeIcon from './assets/images/claudecode.png';
 import codebuddyIcon from './assets/images/Codebuddy.png';
 import codexIcon from './assets/images/Codex.png';
@@ -13,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -1406,6 +1407,12 @@ function App() {
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
 
+    // Brand info from backend
+    const [brandInfo, setBrandInfo] = useState<{id: string, displayName: string, displayNameCN: string, slogan: string, author: string, businessContact: string, websiteURL: string, githubURL: string, iconPath: string} | null>(null);
+    const currentIcon = brandInfo?.id === 'qianxin' ? qianxinIcon : appIcon;
+    const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '码卡龙 MaClaw';
+    const brandSidebarName = brandInfo?.displayName || 'MaClaw';
+
     // MaClaw LLM online status (lobster indicator)
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
@@ -1673,6 +1680,11 @@ function App() {
         }
         setLang(initialLang);
         SetLanguage(initialLang);
+
+        // Load brand info from backend
+        GetBrandInfo().then(info => {
+            setBrandInfo(info);
+        }).catch(() => {});
 
         // Detect OS from backend for Windows Terminal check
         GetSystemInfo().then(info => {
@@ -2796,7 +2808,7 @@ function App() {
                     ? `請將剛剛打開的文件夾中的壓縮包（aicoder_log_....zip）作為附件添加到此郵件中發送。\n\n`
                     : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
 
-            const body = `Product: MaClaw
+            const body = `Product: ${brandInfo?.displayName || 'MaClaw'}
 Version: ${APP_VERSION}
 
 System Information:
@@ -3019,7 +3031,7 @@ ${instruction}`;
                     flexShrink: 0
                 }}>
                     <div className="sidebar-header" style={{ padding: '0 0 10px 0', justifyContent: 'center', width: '100%' }}>
-                        <img src={appIcon} alt="Logo" className="sidebar-logo" style={{ width: '28px', height: '28px' }} />
+                        <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '28px', height: '28px' }} />
                     </div>
                     <div style={{
                         fontSize: '0.7rem',
@@ -3031,7 +3043,7 @@ ${instruction}`;
                         WebkitTextFillColor: 'transparent',
                         display: 'inline-block',
                         width: '100%'
-                    }}>MaClaw</div>
+                    }}>{brandSidebarName}</div>
 
                     <div
                         className={`sidebar-item ${navTab === 'remote' ? 'active' : ''}`}
@@ -4789,7 +4801,7 @@ ${instruction}`;
                             justifyContent: 'center',
                             boxSizing: 'border-box'
                         }}>
-                            <img src={appIcon} alt="Logo" style={{ width: '64px', height: '64px', marginBottom: '15px' }} />
+                            <img src={currentIcon} alt="Logo" style={{ width: '64px', height: '64px', marginBottom: '15px' }} />
                             <h2 style={{
                                 margin: '0 0 4px 0',
                                 background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
@@ -4797,7 +4809,7 @@ ${instruction}`;
                                 WebkitTextFillColor: 'transparent',
                                 display: 'inline-block',
                                 fontWeight: 'bold'
-                            }}>码卡龙 MaClaw</h2>
+                            }}>{brandDisplayTitle}</h2>
                             <div style={{
                                 fontSize: '1rem',
                                 fontWeight: 'bold',
@@ -4807,15 +4819,15 @@ ${instruction}`;
                                 marginBottom: '4px',
                                 display: 'inline-block'
                             }}>
-                                {t("slogan")}
+                                {brandInfo?.slogan || t("slogan")}
                             </div>
                             <div style={{ fontSize: '1rem', color: '#374151', marginBottom: '5px' }}>{t("version")} {APP_VERSION}</div>
-                            <div style={{ fontSize: '0.9rem', color: '#9ca3af', marginBottom: '5px' }}>{t("businessCooperation")}</div>
-                            <div style={{ fontSize: '0.9rem', color: '#6b7280', marginBottom: '20px' }}>{t("author")}: Dr. Daniel</div>
+                            <div style={{ fontSize: '0.9rem', color: '#9ca3af', marginBottom: '5px' }}>{brandInfo?.businessContact || t("businessCooperation")}</div>
+                            <div style={{ fontSize: '0.9rem', color: '#6b7280', marginBottom: '20px' }}>{t("author")}: {brandInfo?.author || 'Dr. Daniel'}</div>
 
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
                                 <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://maclaw.top")}>{t("officialWebsite")}</button>
+                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}>{t("officialWebsite")}</button>
                                     <button
                                         className="btn-link"
                                         style={{ fontSize: '0.75rem', padding: '2px 6px' }}
@@ -4844,8 +4856,17 @@ ${instruction}`;
                                         {t("onlineUpdate")}
                                     </button>
                                     <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => setShowInstallLog(true)}>{t("installLog")}</button>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}>{t("bugReport")}</button>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/rapidai/maclaw")}>GitHub</button>
+                                    {brandInfo?.githubURL ? (
+                                        <>
+                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL(brandInfo.githubURL + "/issues/new")}>{t("bugReport")}</button>
+                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL(brandInfo.githubURL)}>GitHub</button>
+                                        </>
+                                    ) : brandInfo?.id !== 'qianxin' ? (
+                                        <>
+                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}>{t("bugReport")}</button>
+                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/rapidai/maclaw")}>GitHub</button>
+                                        </>
+                                    ) : null}
                                 </div>
                             </div>
                         </div>
