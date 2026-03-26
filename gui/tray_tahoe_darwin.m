@@ -41,7 +41,7 @@ void TahoeCreateTray(const void *iconData, int iconLen,
                 if (iconCopy) {
                     NSImage *img = [[NSImage alloc] initWithData:iconCopy];
                     [img setSize:NSMakeSize(18, 18)];
-                    img.template = YES;
+                    img.template = NO;
                     _tahoeStatusItem.button.image = img;
                 }
 
