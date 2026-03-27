@@ -1722,7 +1722,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			onNewRound()
 		}
 		resp, err := h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
-		if err != nil {
+// Accumulate token usage stats
+if resp != nil && resp.Usage != nil {
+u := resp.Usage
+input := u.PromptTokens
+output := u.CompletionTokens
+if input == 0 && u.InputTokens > 0 {
+input = u.InputTokens
+}
+if output == 0 && u.OutputTokens > 0 {
+output = u.OutputTokens
+}
+h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
+}
+if err != nil {
 			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s", err.Error())}
 		}
 		if len(resp.Choices) == 0 {
@@ -1970,7 +1983,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			onNewRound()
 		}
 		bonusResp, err := h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
-		if err == nil && len(bonusResp.Choices) > 0 {
+// Accumulate token usage stats for bonus round
+if bonusResp != nil && bonusResp.Usage != nil {
+u := bonusResp.Usage
+input := u.PromptTokens
+output := u.CompletionTokens
+if input == 0 && u.InputTokens > 0 {
+input = u.InputTokens
+}
+if output == 0 && u.OutputTokens > 0 {
+output = u.OutputTokens
+}
+h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
+}
+if err == nil && len(bonusResp.Choices) > 0 {
 			bc := bonusResp.Choices[0]
 			bcContent := bc.Message.Content
 			bcReasoning := bc.Message.ReasoningContent

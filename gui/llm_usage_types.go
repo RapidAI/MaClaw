@@ -1,8 +1,7 @@
 package main
 
-// llm_types_patch.go — missing type definitions needed by llm_stream.go and app_maclaw_llm.go.
-
-// llmUsage represents token usage in LLM API responses (OpenAI/Anthropic).
+// llmUsage holds token usage information returned by LLM API responses.
+// OpenAI uses prompt_tokens/completion_tokens; Anthropic uses input_tokens/output_tokens.
 type llmUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`

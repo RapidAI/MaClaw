@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -16,6 +17,9 @@ import (
 )
 
 const embeddingModelFilename = "embeddinggemma-300M-Q8_0.gguf"
+
+// embeddingDownloadMu prevents concurrent model downloads.
+var embeddingDownloadMu sync.Mutex
 
 // embeddingModelsDir returns ~/.maclaw/models, creating it if needed.
 func embeddingModelsDir() (string, error) {
@@ -139,6 +143,12 @@ func (a *App) CheckEmbeddingModel() map[string]interface{} {
 //   { "percent": int, "downloaded": int64, "total": int64, "error": string }
 // This method blocks until download completes or fails.
 func (a *App) DownloadEmbeddingModel() error {
+	// Prevent concurrent downloads — second caller returns immediately.
+	if !embeddingDownloadMu.TryLock() {
+		return fmt.Errorf("download already in progress")
+	}
+	defer embeddingDownloadMu.Unlock()
+
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
