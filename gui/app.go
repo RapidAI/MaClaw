@@ -103,6 +103,7 @@ type App struct {
 	qqBotGateway         *qqBotGatewayManager
 	telegramGateway      *telegramGatewayManager
 	weixinGateway        *weixinGatewayManager
+	tokenUsageMu         sync.Mutex // guards AccumulateLLMTokenUsage
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.

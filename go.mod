@@ -10,7 +10,6 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/energye/systray v1.0.2
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/git-jiadong/go-silk v0.0.0-20241215085148-b8734e30c24b
 	github.com/go-ego/gse v1.0.2
 	github.com/go-lark/lark/v2 v2.0.0-beta.6
 	github.com/google/uuid v1.6.0
@@ -20,7 +19,9 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/refraction-networking/utls v1.8.2
 	github.com/tetratelabs/wazero v1.11.0
+	github.com/viterin/vek v0.4.3
 	github.com/wailsapp/wails/v2 v2.11.0
+	github.com/wdvxdr1123/go-silk v0.0.0-20220304095002-f67345df09ea
 	golang.org/x/crypto v0.36.0
 	golang.org/x/image v0.37.0
 	golang.org/x/net v0.38.0
@@ -41,6 +42,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
+	github.com/chewxy/math32 v1.10.1 // indirect
 	github.com/clipperhouse/displaywidth v0.9.0 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
@@ -75,6 +77,7 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/vcaesar/cedar v0.30.0 // indirect
+	github.com/viterin/partial v1.1.0 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect

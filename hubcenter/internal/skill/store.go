@@ -92,21 +92,49 @@ func (s *SkillStore) Get(id string) (*HubSkillFull, error) {
 	return skill, nil
 }
 
-func (s *SkillStore) Publish(skill HubSkillFull) error {
-	skill.Visible = true
-	data, err := json.MarshalIndent(skill, "", "  ")
+func (s *SkillStore) Publish(sk HubSkillFull) error {
+	sk.Visible = true
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Upsert：如果同 ID 已存在，保留下载量和评分
+	if existing, ok := s.skills[sk.ID]; ok {
+		sk.Downloads = existing.Downloads
+		sk.DownloadCount = existing.DownloadCount
+		sk.RatingSum = existing.RatingSum
+		sk.RatingCount = existing.RatingCount
+		sk.AvgRating = existing.AvgRating
+		sk.CreatedAt = existing.CreatedAt // 保留首次创建时间
+		sk.UpdatedAt = fmtTimeNow()
+	}
+
+	data, err := json.MarshalIndent(sk, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal skill: %w", err)
 	}
-	path := filepath.Join(s.dir, skill.ID+".json")
+	path := filepath.Join(s.dir, sk.ID+".json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write skill file: %w", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.skills[skill.ID] = &skill
+	s.skills[sk.ID] = &sk
 	s.rebuildIndexFromSkills()
 	return nil
+}
+
+// GetByID 根据 ID 查找 Skill（返回 nil 表示不存在）。
+func (s *SkillStore) GetByID(id string) *HubSkillMeta {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if sk, ok := s.skills[id]; ok {
+		m := sk.HubSkillMeta
+		return &m
+	}
+	return nil
+}
+
+func fmtTimeNow() string {
+	return time.Now().UTC().Format(time.RFC3339)
 }
 
 func (s *SkillStore) RebuildIndex() error {

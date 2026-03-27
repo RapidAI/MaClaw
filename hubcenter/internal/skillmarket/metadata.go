@@ -8,6 +8,7 @@ import (
 
 // SkillMetadata 是 skill.yaml 的结构化表示。
 type SkillMetadata struct {
+	ID          string   `yaml:"id,omitempty" json:"id,omitempty"` // UUID，首次创建时生成，重新上传时复用
 	Name        string   `yaml:"name" json:"name"`
 	Description string   `yaml:"description" json:"description"`
 	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
@@ -51,7 +52,7 @@ func ParseSkillYAML(data []byte) (*SkillMetadata, error) {
 
 	// 收集未识别字段到 Extra
 	knownKeys := map[string]bool{
-		"name": true, "description": true, "tags": true,
+		"id": true, "name": true, "description": true, "tags": true,
 		"triggers": true, "version": true, "author": true,
 		"price": true, "permissions": true, "required_env": true,
 		"pricing_mode": true, "platforms": true, "requires_gui": true,

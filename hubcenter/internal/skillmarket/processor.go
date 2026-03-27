@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 )
@@ -116,16 +118,44 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	securityLabels := GenerateLabels(secReport)
 
 	// 构建 HubSkillFull 并发布
-	skillID := generateID()
-
-	if len(securityLabels) > 0 {
-		log.Printf("[skillmarket] skill %s security labels: %v", skillID, securityLabels)
-	}
-
 	// 版本管理：判断新建还是升级
 	fingerprint := sub.Email + ":" + meta.Name
 	versionNum := 1
 	var prevSkillID string
+	skillID := ""
+
+	// 如果包里带了 UUID，尝试复用（防洗包：fingerprint 必须匹配）
+	if meta.ID != "" {
+		// 校验 UUID 格式，防止路径穿越等注入
+		if _, err := uuid.Parse(meta.ID); err != nil {
+			log.Printf("[skillmarket] invalid skill ID format in package: %q, ignoring", meta.ID)
+			meta.ID = ""
+		}
+	}
+	if meta.ID != "" {
+		existing := p.skillStore.GetByID(meta.ID)
+		if existing != nil {
+			if existing.Fingerprint == fingerprint {
+				// 归属匹配，复用 ID → update
+				skillID = meta.ID
+				log.Printf("[skillmarket] reuse skill ID %s (fingerprint match)", skillID)
+			} else {
+				// 归属不匹配，拒绝复用，当作新 skill
+				log.Printf("[skillmarket] skill ID %s fingerprint mismatch (pkg=%s, existing=%s), treating as new", meta.ID, fingerprint, existing.Fingerprint)
+			}
+		} else {
+			// 服务端没有这个 ID，首次上传，直接用包里的 UUID
+			skillID = meta.ID
+			log.Printf("[skillmarket] first upload with skill ID %s", skillID)
+		}
+	}
+
+	// 没有可复用的 ID，生成新 UUID
+	if skillID == "" {
+		skillID = uuid.New().String()
+		log.Printf("[skillmarket] generated new skill ID %s", skillID)
+	}
+
 	if p.versionManager != nil {
 		resolution, err := p.versionManager.ResolveSubmission(ctx, fingerprint)
 		if err != nil {
@@ -137,6 +167,10 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 				log.Printf("[skillmarket] version upgrade: %s v%d (prev: %s)", meta.Name, versionNum, prevSkillID)
 			}
 		}
+	}
+
+	if len(securityLabels) > 0 {
+		log.Printf("[skillmarket] skill %s security labels: %v", skillID, securityLabels)
 	}
 
 	// 更新 submission fingerprint
@@ -210,7 +244,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	}
 
 	// 版本升级：旧版本暂不标记 superseded，等新版本 published 后再处理
-	if prevSkillID != "" {
+	if prevSkillID != "" && prevSkillID != skillID {
 		log.Printf("[skillmarket] new version %s replaces %s (will supersede on publish)", skillID, prevSkillID)
 	}
 

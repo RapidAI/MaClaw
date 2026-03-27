@@ -300,10 +300,52 @@ func (e *SkillExecutor) Delete(name string) error {
 				return nil
 			}
 			skills = append(skills[:i], skills[i+1:]...)
-			return e.saveSkills(skills)
+			if err := e.saveSkills(skills); err != nil {
+				return err
+			}
+			// Also remove any on-disk skill directory so that
+			// loadSkills (which scans disk) won't rediscover it.
+			e.removeSkillDirs(name)
+			return nil
 		}
 	}
 	return fmt.Errorf("skill %q not found", name)
+}
+
+// removeSkillDirs scans all skill directories and removes any whose
+// skill.yaml name matches the given name. Errors are silently ignored
+// so that config deletion is never blocked by a disk cleanup failure.
+func (e *SkillExecutor) removeSkillDirs(name string) {
+	for _, root := range skill.SkillScanRoots() {
+		entries, _ := os.ReadDir(root)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			yamlPath := filepath.Join(root, entry.Name(), "skill.yaml")
+			if _, err := os.Stat(yamlPath); err != nil {
+				yamlPath = filepath.Join(root, entry.Name(), "skill.yml")
+				if _, err := os.Stat(yamlPath); err != nil {
+					continue
+				}
+			}
+			data, err := os.ReadFile(yamlPath)
+			if err != nil {
+				continue
+			}
+			var sf skillYAMLFile
+			if err := yaml.Unmarshal(data, &sf); err != nil {
+				continue
+			}
+			parsedName := strings.TrimSpace(sf.Name)
+			if parsedName == "" {
+				parsedName = entry.Name()
+			}
+			if parsedName == name {
+				_ = os.RemoveAll(filepath.Join(root, entry.Name()))
+			}
+		}
+	}
 }
 
 // uploadStatusFile is a small JSON file stored alongside file-based skills

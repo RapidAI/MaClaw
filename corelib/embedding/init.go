@@ -1,10 +1,16 @@
-//go:build !cgo_embedding
-// +build !cgo_embedding
-
 package embedding
 
-// NewDefaultEmbedder returns a NoopEmbedder when the cgo_embedding build tag
-// is not active. The modelPath parameter is ignored.
+import "os"
+
+// NewDefaultEmbedder attempts to create a GemmaEmbedder from modelPath.
+// If initialization fails (model not found, etc.), it silently falls back to NoopEmbedder.
 func NewDefaultEmbedder(modelPath string) Embedder {
-	return NoopEmbedder{}
+	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+		return NoopEmbedder{}
+	}
+	emb, err := NewGemmaEmbedder(modelPath, 256)
+	if err != nil {
+		return NoopEmbedder{}
+	}
+	return emb
 }

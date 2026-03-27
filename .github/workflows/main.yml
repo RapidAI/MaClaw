@@ -22,7 +22,7 @@ env:
 
 jobs:
   # ============================================================
-  # Verify: no-CGO (NoopEmbedder) build path compiles and tests pass
+  # Verify: pure Go embedding build path compiles and tests pass
   # ============================================================
   verify-noembedding:
     runs-on: ubuntu-latest
@@ -34,15 +34,15 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Verify build without cgo_embedding tag
+      - name: Verify build compiles (pure Go, no CGO)
         run: |
-          echo "=== Verifying default build (NoopEmbedder) compiles ==="
+          echo "=== Verifying pure Go build compiles ==="
           CGO_ENABLED=0 go build ./corelib/embedding/...
           CGO_ENABLED=0 go build ./corelib/memory/...
 
-      - name: Run tests without cgo_embedding tag
+      - name: Run tests (pure Go, no CGO)
         run: |
-          echo "=== Running tests for embedding and memory packages (no CGO) ==="
+          echo "=== Running tests for embedding and memory packages ==="
           CGO_ENABLED=0 go test ./corelib/embedding/... ./corelib/memory/...
 
   # ============================================================
@@ -160,41 +160,6 @@ jobs:
         shell: pwsh
         run: choco install mingw -y --no-progress
 
-      - name: Cache RapidSpeech static library (Windows)
-        id: cache-rapidspeech-win
-        uses: actions/cache@v4
-        with:
-          path: RapidSpeech.cpp/build
-          key: rapidspeech-windows-${{ hashFiles('RapidSpeech.cpp/CMakeLists.txt', 'build/build_rapidspeech.cmd') }}
-
-      - name: Build RapidSpeech static library (Windows)
-        if: steps.cache-rapidspeech-win.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          # Use MinGW Makefiles for gcc-compatible .a output
-          $RS_DIR = "${{ github.workspace }}/RapidSpeech.cpp"
-          $BUILD_DIR = "$RS_DIR/build"
-          New-Item -ItemType Directory -Force -Path $BUILD_DIR | Out-Null
-          cmake -G "MinGW Makefiles" -S $RS_DIR -B $BUILD_DIR `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DBUILD_SHARED_LIBS=OFF `
-            -DRS_BUILD_TESTS=OFF `
-            -DRS_BUILD_SERVER=OFF `
-            -DRS_ENABLE_PYTHON=OFF
-          cmake --build $BUILD_DIR --target rapidspeech_static --config Release -j $env:NUMBER_OF_PROCESSORS
-          # Remove DLL import libs that confuse the static linker
-          Get-ChildItem $BUILD_DIR -Filter "*.dll" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
-          Get-ChildItem $BUILD_DIR -Filter "*.dll.a" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
-
-      - name: Clean DLL artifacts from cached RapidSpeech build
-        shell: pwsh
-        run: |
-          $BUILD_DIR = "${{ github.workspace }}/RapidSpeech.cpp/build"
-          if (Test-Path $BUILD_DIR) {
-            Get-ChildItem $BUILD_DIR -Filter "*.dll" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
-            Get-ChildItem $BUILD_DIR -Filter "*.dll.a" -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue
-          }
-
       - name: Generate Windows resources & build GUI
         shell: pwsh
         run: |
@@ -228,14 +193,13 @@ jobs:
           # Determine build tags
           $guiTagsBase = "desktop,production"
           if ($env:BRAND_TAG -ne "") { $guiTagsBase = "$guiTagsBase,$($env:BRAND_TAG)" }
-          $guiTagsCgo = "$guiTagsBase,cgo_embedding"
           $outName = $env:BRAND_APP_NAME
 
-          # --- amd64 (CGO enabled with cgo_embedding) ---
+          # --- amd64 (CGO enabled for Wails WebView) ---
           & $goversioninfo -64 -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o gui/resource_windows_amd64.syso build/windows/versioninfo.json.tmp
           $env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='1'
           $env:CC='gcc'
-          go build -tags $guiTagsCgo -ldflags "-s -w -H windowsgui" -o "dist/${outName}_amd64.exe" ./gui/
+          go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui" -o "dist/${outName}_amd64.exe" ./gui/
           Remove-Item gui/resource_windows_amd64.syso -ErrorAction SilentlyContinue
 
           # --- arm64 (no CGO, NoopEmbedder — cross-compile CGO not supported) ---
@@ -376,27 +340,12 @@ jobs:
           npm ci --cache ./.npm_cache
           npm run build
 
-      - name: Cache RapidSpeech static library (macOS)
-        id: cache-rapidspeech-macos
-        uses: actions/cache@v4
-        with:
-          path: RapidSpeech.cpp/build
-          key: rapidspeech-macos-${{ hashFiles('RapidSpeech.cpp/CMakeLists.txt', 'build/build_rapidspeech.sh') }}
-
-      - name: Build RapidSpeech static library (macOS)
-        if: steps.cache-rapidspeech-macos.outputs.cache-hit != 'true'
-        env:
-          MACOSX_DEPLOYMENT_TARGET: '11.0'
-        run: |
-          chmod +x build/build_rapidspeech.sh
-          bash build/build_rapidspeech.sh
-
       - name: Build macOS GUI binaries
         env:
           MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           mkdir -p dist build/bin
-          GUI_TAGS="desktop,production,cgo_embedding"
+          GUI_TAGS="desktop,production"
           if [ -n "$BRAND_TAG" ]; then GUI_TAGS="${GUI_TAGS},${BRAND_TAG}"; fi
           OUT_NAME="${BRAND_APP_NAME}"
           # amd64
@@ -578,10 +527,10 @@ jobs:
           sudo apt-get update
           # Try 4.0 first (Ubuntu 22.04), fall back to 4.1 (Ubuntu 24.04+)
           if sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev 2>/dev/null; then
-            TAGS="desktop,production,cgo_embedding"
+            TAGS="desktop,production"
           else
             sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
-            TAGS="desktop,production,webkit2_41,cgo_embedding"
+            TAGS="desktop,production,webkit2_41"
           fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
@@ -596,19 +545,6 @@ jobs:
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
-
-      - name: Cache RapidSpeech static library
-        id: cache-rapidspeech
-        uses: actions/cache@v4
-        with:
-          path: RapidSpeech.cpp/build
-          key: rapidspeech-linux-${{ hashFiles('RapidSpeech.cpp/CMakeLists.txt', 'build/build_rapidspeech.sh') }}
-
-      - name: Build RapidSpeech static library
-        if: steps.cache-rapidspeech.outputs.cache-hit != 'true'
-        run: |
-          chmod +x build/build_rapidspeech.sh
-          bash build/build_rapidspeech.sh
 
       - name: Build Linux GUI (amd64)
         run: |

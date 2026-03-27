@@ -804,11 +804,13 @@ func (a *App) SetLLMTrajectoryLogging(enabled bool) error {
 // ---------------------------------------------------------------------------
 
 // AccumulateLLMTokenUsage adds token counts for the given provider.
-// Called internally after each LLM API call.
+// Called internally after each LLM API call. Thread-safe via tokenUsageMu.
 func (a *App) AccumulateLLMTokenUsage(providerName string, inputTokens, outputTokens int) {
 	if inputTokens == 0 && outputTokens == 0 {
 		return
 	}
+	a.tokenUsageMu.Lock()
+	defer a.tokenUsageMu.Unlock()
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		log.Printf("[LLM] AccumulateLLMTokenUsage: load config: %v", err)

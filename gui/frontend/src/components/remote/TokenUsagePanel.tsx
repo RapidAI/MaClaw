@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
 import {
-    GetLLMTokenUsage,
     GetAllLLMTokenUsage,
     ResetLLMTokenUsage,
     GetMaclawLLMProviders,
@@ -32,15 +31,13 @@ export function TokenUsagePanel({ lang }: Props) {
             if (data?.providers) {
                 setProviders(data.providers.map((p: any) => p.name));
                 setCurrentProvider(data.current || "");
-                if (!selectedProvider) {
-                    setSelectedProvider(data.current || "");
-                }
+                setSelectedProvider(prev => prev || data.current || "");
             }
             const all = await GetAllLLMTokenUsage();
             setAllUsage(all || {});
         } catch { /* ignore */ }
         setLoading(false);
-    }, [selectedProvider]);
+    }, []);
 
     useEffect(() => { loadData(); }, []);
 

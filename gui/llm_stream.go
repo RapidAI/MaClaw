@@ -431,9 +431,6 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		"model":    cfg.Model,
 		"messages": messages,
 		"stream":   true,
-		"stream_options": map[string]interface{}{
-			"include_usage": true,
-		},
 	}
 	if len(tools) > 0 {
 		reqBody["tools"] = tools
