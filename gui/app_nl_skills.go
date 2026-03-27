@@ -261,55 +261,29 @@ func (e *SkillExecutor) Delete(name string) error {
 	defer e.mu.Unlock()
 
 	skills := e.loadSkills()
+	found := false
 	for i, s := range skills {
 		if s.Name == name {
-			// For file-based skills, remove the YAML file from disk.
-			if s.Source == "file" {
-				// Search all scan roots (e.g. ~/.maclaw/data/skills, ~/.agents/skills).
-				for _, root := range skill.SkillScanRoots() {
-					entries, _ := os.ReadDir(root)
-					for _, entry := range entries {
-						if !entry.IsDir() {
-							continue
-						}
-						yamlPath := filepath.Join(root, entry.Name(), "skill.yaml")
-						if _, err := os.Stat(yamlPath); err != nil {
-							yamlPath = filepath.Join(root, entry.Name(), "skill.yml")
-							if _, err := os.Stat(yamlPath); err != nil {
-								continue
-							}
-						}
-						data, err := os.ReadFile(yamlPath)
-						if err != nil {
-							continue
-						}
-						var sf skillYAMLFile
-						if err := yaml.Unmarshal(data, &sf); err != nil {
-							continue
-						}
-						parsedName := strings.TrimSpace(sf.Name)
-						if parsedName == "" {
-							parsedName = entry.Name()
-						}
-						if parsedName == name {
-							os.RemoveAll(filepath.Join(root, entry.Name()))
-							return nil
-						}
-					}
+			found = true
+			// Remove from config (only config-backed entries live here;
+			// file-only skills won't be in the slice, but the flag still
+			// gets set so we proceed to disk cleanup below).
+			if s.Source != "file" {
+				skills = append(skills[:i], skills[i+1:]...)
+				if err := e.saveSkills(skills); err != nil {
+					return err
 				}
-				return nil
 			}
-			skills = append(skills[:i], skills[i+1:]...)
-			if err := e.saveSkills(skills); err != nil {
-				return err
-			}
-			// Also remove any on-disk skill directory so that
-			// loadSkills (which scans disk) won't rediscover it.
-			e.removeSkillDirs(name)
-			return nil
+			break
 		}
 	}
-	return fmt.Errorf("skill %q not found", name)
+	if !found {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	// Always clean up on-disk skill directories so that loadSkills
+	// (which scans disk via scanSkillYAMLFiles) won't rediscover it.
+	e.removeSkillDirs(name)
+	return nil
 }
 
 // removeSkillDirs scans all skill directories and removes any whose
