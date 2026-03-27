@@ -84,6 +84,9 @@ set "GOOS=windows"
 set "GOARCH=amd64"
 set "CGO_ENABLED=1"
 
+REM Clear Go build cache to ensure updated CGO flags take effect
+go clean -cache >nul 2>&1
+
 "%GOVERSIONINFO_PATH%" -64 -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_amd64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate amd64 resources.
