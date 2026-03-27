@@ -15,7 +15,7 @@ echo [build_rapidspeech] Build:  %BUILD_DIR%
 
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
 
-cmake -S "%RS_DIR%" -B "%BUILD_DIR%" ^
+cmake -G "MinGW Makefiles" -S "%RS_DIR%" -B "%BUILD_DIR%" ^
     -DCMAKE_BUILD_TYPE=Release ^
     -DBUILD_SHARED_LIBS=OFF ^
     -DRS_BUILD_TESTS=OFF ^

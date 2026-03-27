@@ -33,6 +33,12 @@ echo [INFO] Version: %VERSION%
 
 REM -- Build RapidSpeech static library --
 echo [Step 2/5] Building RapidSpeech static library...
+REM Clean any DLL/import-lib leftovers that confuse the static linker
+if exist "%~dp0RapidSpeech.cpp\build" (
+    del /q "%~dp0RapidSpeech.cpp\build\*.dll" 2>nul
+    del /q "%~dp0RapidSpeech.cpp\build\*.dll.a" 2>nul
+    for /r "%~dp0RapidSpeech.cpp\build\ggml" %%f in (*.dll *.dll.a) do del /q "%%f" 2>nul
+)
 call "%~dp0build\build_rapidspeech.cmd"
 if !errorlevel! neq 0 (
     echo [ERROR] RapidSpeech build failed.
