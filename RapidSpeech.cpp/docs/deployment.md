@@ -9,8 +9,10 @@
 | moonshine-tiny.gguf | ASR | 英文语音识别 (tiny) | convert_moonshine.py |
 | moonshine-base.gguf | ASR | 英文语音识别 (base) | convert_moonshine.py |
 | moonshine-base-zh.gguf | ASR | 中英文语音识别 | convert_moonshine.py |
+| sense-voice-small-fp32.gguf | ASR | 多语言语音识别 (SenseVoice) | HuggingFace 预转换 |
 | openvoice2-base.gguf | TTS | 语音合成 + 声音克隆 | convert_openvoice2.py |
 | ecapa-tdnn.gguf | Speaker | 说话人声纹提取/验证 | convert_ecapa_tdnn.py |
+| embeddinggemma-300M-Q8_0.gguf | Embedding | Google Gemma 文本嵌入 | convert_gemma_embedding.py |
 
 ### 模型转换
 
@@ -39,7 +41,15 @@ python scripts/convert_openvoice2.py \
 python scripts/convert_ecapa_tdnn.py \
     --model-dir models/ecapa-tdnn \
     --output models/gguf/ecapa-tdnn.gguf
+
+# Embedding: Google Gemma
+python scripts/convert_gemma_embedding.py \
+    --model-dir models/embedding-gemma-300M \
+    --output models/gguf/embeddinggemma-300M-Q8_0.gguf
 ```
+
+SenseVoice 模型可直接从 HuggingFace 下载预转换的 GGUF：
+- https://huggingface.co/RapidAI/RapidSpeech
 
 ### 目录结构
 
@@ -48,8 +58,10 @@ models/gguf/
 ├── moonshine-tiny.gguf        # ASR 英文小模型
 ├── moonshine-base.gguf        # ASR 英文大模型
 ├── moonshine-base-zh.gguf     # ASR 中英文模型
+├── sense-voice-small-fp32.gguf # ASR 多语言 (SenseVoice)
 ├── openvoice2-base.gguf       # TTS 语音合成
-└── ecapa-tdnn.gguf            # 说话人声纹模型
+├── ecapa-tdnn.gguf            # 说话人声纹模型
+└── embeddinggemma-300M-Q8_0.gguf # Google Gemma 文本嵌入
 ```
 
 ## 2. 编译
@@ -88,8 +100,11 @@ rs-server [options]
 ### 启动示例
 
 ```bash
-# 仅 ASR
+# 仅 ASR（Moonshine 中文）
 ./rs-server --asr-model models/gguf/moonshine-base-zh.gguf --port 8080
+
+# 仅 ASR（SenseVoice 多语言）
+./rs-server --asr-model models/gguf/sense-voice-small-fp32.gguf --port 8080
 
 # 仅 TTS
 ./rs-server --tts-model models/gguf/openvoice2-base.gguf --port 8080

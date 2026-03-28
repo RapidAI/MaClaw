@@ -46,6 +46,9 @@
 
 **语音识别（ASR）**
 - [x] SenseVoice-small
+- [x] Moonshine-tiny（英文，encoder-decoder + RoPE）
+- [x] Moonshine-base（英文）
+- [x] Moonshine-base-zh（中英文）
 - [ ] FunASR-nano
 - [ ] Qwen3-ASR
 - [ ] FireRedASR2
@@ -57,6 +60,12 @@
 
 **声纹验证**
 - [x] ECAPA-TDNN（声纹嵌入提取 + 余弦相似度验证）
+
+**语音活动检测（VAD）**
+- [x] Silero VAD
+
+**文本嵌入（Embedding）**
+- [x] Gemma Embedding（Google, 300M, 语义搜索文本嵌入）
 
 ------
 
@@ -105,9 +114,20 @@ cmake --build build --config Release
 ### 语音识别（ASR）
 
 ```bash
+# SenseVoice
 ./build/rs-asr-offline \
   -m /path/to/SenseVoice/sense-voice-small-fp32.gguf \
   -w /path/to/test_sample_rate_16k.wav
+
+# Moonshine（英文）
+./build/rs-asr-offline \
+  --model models/gguf/moonshine-tiny.gguf \
+  --wav test.wav
+
+# Moonshine（中英文）
+./build/rs-asr-offline \
+  --model models/gguf/moonshine-base-zh.gguf \
+  --wav test_zh.wav
 ```
 
 ### 声纹验证
@@ -169,14 +189,33 @@ for chunk in chunks:
     play_audio(chunk)
 ```
 
+### REST API 服务
+
+`rs-server` 提供统一的 HTTP API，支持所有能力：
+
+```bash
+# 全功能服务（ASR + TTS + 声纹）
+./build/rs-server \
+    --asr-model models/gguf/moonshine-base-zh.gguf \
+    --tts-model models/gguf/openvoice2-base.gguf \
+    --spk-model models/gguf/ecapa-tdnn.gguf \
+    --port 8080
+
+# 仅 ASR
+./build/rs-server --asr-model models/gguf/moonshine-tiny.gguf --port 8080
+```
+
 ### REST API 端点
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/v1/asr` | POST | 语音识别（上传 WAV） |
-| `/v1/tts` | POST | 语音合成（JSON 请求体） |
-| `/v1/speaker-verify` | POST | 声纹验证（上传两个 WAV） |
-| `/v1/speaker-embed` | POST | 声纹嵌入提取 |
+| `/health` | GET | 健康检查 |
+| `/asr` | POST | 语音识别（multipart 上传 WAV） |
+| `/tts` | POST | 语音合成，支持声音克隆（multipart） |
+| `/speaker/embed` | POST | 声纹嵌入提取（multipart WAV） |
+| `/speaker/verify` | POST | 说话人验证（上传两个 WAV） |
+
+详见 [docs/deployment.md](docs/deployment.md) 完整 API 文档。
 ------
 
 ## 🤝 参与贡献

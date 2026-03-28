@@ -47,6 +47,9 @@ While the open-source ecosystem already offers powerful cloud-side frameworks su
 
 **Automatic Speech Recognition (ASR)**
 - [x] SenseVoice-small
+- [x] Moonshine-tiny (English, encoder-decoder with RoPE)
+- [x] Moonshine-base (English)
+- [x] Moonshine-base-zh (Chinese + English)
 - [ ] FunASR-nano
 - [ ] Qwen3-ASR
 - [ ] FireRedASR2
@@ -58,6 +61,12 @@ While the open-source ecosystem already offers powerful cloud-side frameworks su
 
 **Speaker Verification**
 - [x] ECAPA-TDNN (speaker embedding + cosine similarity verification)
+
+**Voice Activity Detection (VAD)**
+- [x] Silero VAD
+
+**Text Embedding**
+- [x] Gemma Embedding (Google, 300M, text embedding for semantic search)
 
 ------
 
@@ -107,9 +116,20 @@ cmake --build build --config Release
 ### ASR (Speech Recognition)
 
 ```bash
+# SenseVoice
 ./build/rs-asr-offline \
   -m /path/to/SenseVoice/sense-voice-small-fp32.gguf \
   -w /path/to/test_sample_rate_16k.wav
+
+# Moonshine (English)
+./build/rs-asr-offline \
+  --model models/gguf/moonshine-tiny.gguf \
+  --wav test.wav
+
+# Moonshine (Chinese + English)
+./build/rs-asr-offline \
+  --model models/gguf/moonshine-base-zh.gguf \
+  --wav test_zh.wav
 ```
 
 ### Speaker Verification
@@ -171,14 +191,33 @@ for chunk in chunks:
     play_audio(chunk)
 ```
 
+### REST API Server
+
+The `rs-server` binary provides a unified HTTP API for all capabilities:
+
+```bash
+# Full-featured server (ASR + TTS + Speaker)
+./build/rs-server \
+    --asr-model models/gguf/moonshine-base-zh.gguf \
+    --tts-model models/gguf/openvoice2-base.gguf \
+    --spk-model models/gguf/ecapa-tdnn.gguf \
+    --port 8080
+
+# ASR only
+./build/rs-server --asr-model models/gguf/moonshine-tiny.gguf --port 8080
+```
+
 ### REST API Endpoints
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/v1/asr` | POST | Speech recognition (WAV upload) |
-| `/v1/tts` | POST | Text-to-speech (JSON body) |
-| `/v1/speaker-verify` | POST | Speaker verification (two WAV uploads) |
-| `/v1/speaker-embed` | POST | Speaker embedding extraction |
+| `/health` | GET | Health check |
+| `/asr` | POST | Speech recognition (multipart WAV upload) |
+| `/tts` | POST | Text-to-speech with optional voice cloning (multipart) |
+| `/speaker/embed` | POST | Speaker embedding extraction (multipart WAV) |
+| `/speaker/verify` | POST | Speaker verification (two WAV uploads) |
+
+See [docs/deployment.md](docs/deployment.md) for full API documentation.
 
 ------
 
