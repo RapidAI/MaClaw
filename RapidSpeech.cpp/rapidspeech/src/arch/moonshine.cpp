@@ -34,6 +34,15 @@ static ggml_tensor* rms_norm(ggml_context* ctx, ggml_tensor* x,
     return x;
 }
 
+// LayerNorm without bias: (x - mean) / sqrt(var + eps) * weight
+// HF Moonshine uses nn.LayerNorm(bias=False) for all norms.
+static ggml_tensor* layer_norm(ggml_context* ctx, ggml_tensor* x,
+                                ggml_tensor* weight) {
+    x = ggml_norm(ctx, x, 1e-5f);
+    if (weight) x = ggml_mul(ctx, x, weight);
+    return x;
+}
+
 // GroupNorm(1, dim) = LayerNorm over the channel dimension.
 // Input x: [time, channels] from conv1d output.
 // ggml_norm normalizes over dim0, so we transpose to [channels, time],
@@ -372,9 +381,9 @@ ggml_tensor* MoonshineModel::BuildEncoder(ggml_context* ctx0,
     for (int l = 0; l < hparams_.encoder_depth; l++) {
         auto& layer = weights_.encoder_layers[l];
 
-        // Pre-norm self-attention (RMSNorm)
+        // Pre-norm self-attention (LayerNorm)
         ggml_tensor* residual = x;
-        x = rms_norm(ctx0, x, layer.attn_norm_weight);
+        x = layer_norm(ctx0, x, layer.attn_norm_weight);
 
         // Separate Q/K/V projections -> [dim, n_frames] each
         ggml_tensor* q = ggml_mul_mat(ctx0, layer.attn_q_weight, x);
@@ -1113,6 +1122,65 @@ std::string MoonshineModel::GetTranscription(RSState& state) {
     }
 
     ms.text_result = oss.str();
+
+    // Remove spaces between CJK characters.
+    // SentencePiece inserts ▁ before each token, which becomes a space.
+    // For CJK text this produces "你 好" instead of "你好".
+    {
+        std::string cleaned;
+        cleaned.reserve(ms.text_result.size());
+        size_t len = ms.text_result.size();
+        size_t i = 0;
+        while (i < len) {
+            if (ms.text_result[i] == ' ') {
+                // Decode the UTF-8 codepoint before and after this space
+                // to check if both are CJK characters.
+                auto decode_prev_cp = [&]() -> uint32_t {
+                    if (cleaned.empty()) return 0;
+                    // Walk back from end of cleaned to find start of last UTF-8 char
+                    int back = (int)cleaned.size() - 1;
+                    while (back > 0 && (cleaned[back] & 0xC0) == 0x80) back--;
+                    const unsigned char* p = (const unsigned char*)&cleaned[back];
+                    int rem = (int)cleaned.size() - back;
+                    if ((*p & 0x80) == 0) return *p;
+                    if ((*p & 0xE0) == 0xC0 && rem >= 2) return ((p[0]&0x1F)<<6)|(p[1]&0x3F);
+                    if ((*p & 0xF0) == 0xE0 && rem >= 3) return ((p[0]&0x0F)<<12)|((p[1]&0x3F)<<6)|(p[2]&0x3F);
+                    if ((*p & 0xF8) == 0xF0 && rem >= 4) return ((p[0]&0x07)<<18)|((p[1]&0x3F)<<12)|((p[2]&0x3F)<<6)|(p[3]&0x3F);
+                    return 0;
+                };
+                auto decode_next_cp = [&]() -> uint32_t {
+                    size_t j = i + 1;
+                    if (j >= len) return 0;
+                    const unsigned char* p = (const unsigned char*)&ms.text_result[j];
+                    int rem = (int)len - (int)j;
+                    if ((*p & 0x80) == 0) return *p;
+                    if ((*p & 0xE0) == 0xC0 && rem >= 2) return ((p[0]&0x1F)<<6)|(p[1]&0x3F);
+                    if ((*p & 0xF0) == 0xE0 && rem >= 3) return ((p[0]&0x0F)<<12)|((p[1]&0x3F)<<6)|(p[2]&0x3F);
+                    if ((*p & 0xF8) == 0xF0 && rem >= 4) return ((p[0]&0x07)<<18)|((p[1]&0x3F)<<12)|((p[2]&0x3F)<<6)|(p[3]&0x3F);
+                    return 0;
+                };
+                auto is_cjk = [](uint32_t cp) -> bool {
+                    return (cp >= 0x4E00 && cp <= 0x9FFF)   // CJK Unified Ideographs
+                        || (cp >= 0x3400 && cp <= 0x4DBF)   // CJK Extension A
+                        || (cp >= 0x3000 && cp <= 0x303F)   // CJK Symbols and Punctuation
+                        || (cp >= 0xFF00 && cp <= 0xFFEF)   // Fullwidth Forms
+                        || (cp >= 0x20000 && cp <= 0x2A6DF) // CJK Extension B
+                        || (cp >= 0xF900 && cp <= 0xFAFF);  // CJK Compatibility Ideographs
+                };
+                uint32_t prev_cp = decode_prev_cp();
+                uint32_t next_cp = decode_next_cp();
+                if (is_cjk(prev_cp) || is_cjk(next_cp)) {
+                    // Skip the space: CJK char adjacent to space
+                    i++;
+                    continue;
+                }
+            }
+            cleaned.push_back(ms.text_result[i]);
+            i++;
+        }
+        ms.text_result = cleaned;
+    }
+
     // Trim leading/trailing whitespace
     size_t start = ms.text_result.find_first_not_of(' ');
     size_t end = ms.text_result.find_last_not_of(' ');

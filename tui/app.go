@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
@@ -80,6 +81,11 @@ type sessionMonitorMsg struct {
 // sessionUpdateMsg 会话状态变更消息。
 type sessionUpdateMsg struct {
 	sessionID string
+}
+
+// pythonEnvMsg Python 环境检测/安装完成消息。
+type pythonEnvMsg struct {
+	status pyenv.Status
 }
 
 // NewTUIApp 创建 TUI 应用实例。
@@ -337,6 +343,18 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 			}
 			a.root.Tools.SetTools(toolInfos)
+
+			// 异步检测 Python 环境（不阻塞 UI）
+			return a, a.checkPythonEnvCmd()
+		}
+
+	case pythonEnvMsg:
+		if msg.status.Error != "" {
+			a.root.StatusBar.SetMessage(fmt.Sprintf("⚠ Python 环境异常: %s", msg.status.Error))
+		} else if msg.status.Available && msg.status.VenvReady {
+			a.root.StatusBar.SetMessage(fmt.Sprintf("🐍 Python %s 就绪 (venv: %s)", msg.status.Version, msg.status.VenvPath))
+		} else if msg.status.Available {
+			a.root.StatusBar.SetMessage(fmt.Sprintf("🐍 Python %s 可用", msg.status.Version))
 		}
 
 	case kernelEventMsg:
@@ -594,6 +612,18 @@ func tuiRoleTitle() string {
 // tuiSystemGreeting returns the TUI system prompt greeting based on ui_mode.
 func tuiSystemGreeting() string {
 	return fmt.Sprintf("你是 MaClaw %s，运行在 TUI 终端中。请用简洁的中文回答用户问题。", tuiRoleTitle())
+}
+
+// checkPythonEnvCmd 返回一个异步检测并安装 Python 环境的 tea.Cmd。
+func (a *TUIApp) checkPythonEnvCmd() tea.Cmd {
+	return func() tea.Msg {
+		st := pyenv.EnsureEnvironment(func(stage string, pct int, msg string) {
+			if a.logger != nil {
+				a.logger.Info("[python-env] [%s] %d%% %s", stage, pct, msg)
+			}
+		})
+		return pythonEnvMsg{status: st}
+	}
 }
 
 // sendChatMessage 在后台调用 LLM 并返回响应。

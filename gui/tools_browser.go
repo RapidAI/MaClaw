@@ -1,6 +1,8 @@
 package main
 
 import (
+	"log"
+
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -13,11 +15,35 @@ func registerBrowserTools(registry *ToolRegistry) {
 	coreReg := tool.NewRegistry()
 	browser.RegisterTools(coreReg)
 
-	// Bridge each corelib tool into the gui registry.
+	// Create OCR provider (RapidOCR → LLM Vision fallback)
+	ocrSidecar := browser.NewRapidOCRSidecar(func(msg string) {
+		log.Printf("[browser-ocr] %s", msg)
+	})
+	compositeOCR := browser.NewCompositeOCRProvider(ocrSidecar)
+
+	// Create BrowserTaskSupervisor
+	sessionFn := func() (*browser.Session, error) {
+		return browser.GetSession("")
+	}
+	supervisor := browser.NewBrowserTaskSupervisor(nil, nil, compositeOCR, sessionFn, func(msg string) {
+		log.Printf("[browser-task] %s", msg)
+	})
+
+	// Register task supervisor tools
+	browser.RegisterTaskTools(coreReg, supervisor)
+
+	// Register OCR tool
+	browser.RegisterOCRTool(coreReg, compositeOCR, sessionFn)
+
+	// Register recorder + replayer tools
+	recorder := browser.NewBrowserRecorder(sessionFn, func(msg string) {
+		log.Printf("[browser-record] %s", msg)
+	})
+	replayer := browser.NewFlowReplayer(supervisor, compositeOCR, nil)
+	browser.RegisterRecorderTools(coreReg, recorder, replayer)
+
+	// Bridge all corelib browser tools into the gui registry.
 	for _, ct := range coreReg.ListAvailable() {
-		if ct.Source != "builtin:browser" {
-			continue
-		}
 		gt := RegisteredTool{
 			Name:        ct.Name,
 			Description: ct.Description,
@@ -29,9 +55,8 @@ func registerBrowserTools(registry *ToolRegistry) {
 			Required:    ct.Required,
 			Source:      ct.Source,
 		}
-		// Bridge the handler: corelib Handler -> gui ToolHandler (same signature).
 		if ct.Handler != nil {
-			h := ct.Handler // capture
+			h := ct.Handler
 			gt.Handler = func(args map[string]interface{}) string {
 				return h(args)
 			}

@@ -191,7 +191,7 @@ Commands:
   launch        启动编程工具（%s）
   swarm         Swarm 多任务编排（create/status/cancel/resume/list）
   llm           LLM 管理（test/ping/providers/status/set-provider/set-max-iterations/get-max-iterations）
-  system        系统信息（info/python-envs）
+  system        系统信息（info/python-envs/python-status/python-ensure）
   gossip        八卦社区（browse/publish/comment/rate/comments）
 
 Flags:

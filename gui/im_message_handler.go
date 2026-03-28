@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bytes"
@@ -1731,15 +1731,24 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		resp, err := h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
 		// Accumulate token usage stats
-		if resp != nil && resp.Usage != nil {
-			u := resp.Usage
-			input := u.PromptTokens
-			output := u.CompletionTokens
-			if input == 0 && u.InputTokens > 0 {
-				input = u.InputTokens
-			}
-			if output == 0 && u.OutputTokens > 0 {
-				output = u.OutputTokens
+		if resp != nil {
+			var input, output int
+			if resp.Usage != nil {
+				u := resp.Usage
+				input = u.PromptTokens
+				output = u.CompletionTokens
+				if input == 0 && u.InputTokens > 0 {
+					input = u.InputTokens
+				}
+				if output == 0 && u.OutputTokens > 0 {
+					output = u.OutputTokens
+				}
+			} else {
+				// Fallback: estimate tokens when provider doesn't return usage in streaming mode.
+				input = estimateConversationTokens(conversation)
+				if len(resp.Choices) > 0 {
+					output = estimateBytesToTokens([]byte(resp.Choices[0].Message.Content))
+				}
 			}
 			h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
 		}
@@ -1992,15 +2001,24 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		bonusResp, err := h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
 		// Accumulate token usage stats for bonus round
-		if bonusResp != nil && bonusResp.Usage != nil {
-			u := bonusResp.Usage
-			input := u.PromptTokens
-			output := u.CompletionTokens
-			if input == 0 && u.InputTokens > 0 {
-				input = u.InputTokens
-			}
-			if output == 0 && u.OutputTokens > 0 {
-				output = u.OutputTokens
+		if bonusResp != nil {
+			var input, output int
+			if bonusResp.Usage != nil {
+				u := bonusResp.Usage
+				input = u.PromptTokens
+				output = u.CompletionTokens
+				if input == 0 && u.InputTokens > 0 {
+					input = u.InputTokens
+				}
+				if output == 0 && u.OutputTokens > 0 {
+					output = u.OutputTokens
+				}
+			} else {
+				// Fallback: estimate tokens when provider doesn't return usage in streaming mode.
+				input = estimateConversationTokens(conversation)
+				if len(bonusResp.Choices) > 0 {
+					output = estimateBytesToTokens([]byte(bonusResp.Choices[0].Message.Content))
+				}
 			}
 			h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
 		}

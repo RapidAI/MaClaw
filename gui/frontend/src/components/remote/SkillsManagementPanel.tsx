@@ -80,6 +80,43 @@ const emptySkill: NLSkillDefinition = {
     created_at: "",
 };
 
+// Localize backend error messages for skill operations.
+function makeLocalizeHubError(localizeText: Props["localizeText"]) {
+    const patterns: Array<{ re: RegExp; fn: (m: RegExpMatchArray) => string }> = [
+        {
+            re: /skill "([^"]+)" already exists/,
+            fn: (m) => localizeText(
+                `skill "${m[1]}" already exists`,
+                `技能「${m[1]}」已存在`,
+                `技能「${m[1]}」已存在`,
+            ),
+        },
+        {
+            re: /skill name is required/,
+            fn: () => localizeText("Skill name is required", "技能名称不能为空", "技能名稱不能為空"),
+        },
+        {
+            re: /skill hub client not initialized/,
+            fn: () => localizeText("Skill Hub client not initialized", "技能中心客户端未初始化", "技能中心客戶端未初始化"),
+        },
+        {
+            re: /skill executor not initialized/,
+            fn: () => localizeText("Skill executor not initialized", "技能执行器未初始化", "技能執行器未初始化"),
+        },
+        {
+            re: /machine not registered/,
+            fn: () => localizeText("Machine not registered", "设备未注册", "裝置未註冊"),
+        },
+    ];
+    return (msg: string): string => {
+        for (const p of patterns) {
+            const m = msg.match(p.re);
+            if (m) return p.fn(m);
+        }
+        return msg;
+    };
+}
+
 export function SkillsManagementPanel({ localizeText }: Props) {
     const [activeTab, setActiveTab] = useState<"local" | "hub" | "learned">("local");
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
@@ -93,6 +130,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [hubSearching, setHubSearching] = useState(false);
     const [hubError, setHubError] = useState("");
     const [hubSearched, setHubSearched] = useState(false);
+
+    // Localize backend error messages
+    const localizeHubError = useMemo(() => makeLocalizeHubError(localizeText), [localizeText]);
 
     // Install/update state
     const [installingSkills, setInstallingSkills] = useState<string[]>([]);
@@ -148,7 +188,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 return next.size === prev.size ? prev : next;
             });
         } catch (err) {
-            setError(String(err));
+            setError(localizeHubError(String(err)));
         } finally {
             setLoading(false);
         }
@@ -168,7 +208,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             const results = await SearchSkillHub(q);
             setHubResults(Array.isArray(results) ? results : []);
         } catch (err) {
-            setHubError(String(err));
+            setHubError(localizeHubError(String(err)));
             setHubResults([]);
         } finally {
             setHubSearching(false);
@@ -227,7 +267,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             await loadData();
             await checkUpdates();
         } catch (err) {
-            setHubError(String(err));
+            setHubError(localizeHubError(String(err)));
         } finally {
             setInstallingSkills((prev) => prev.filter((id) => id !== skill.id));
         }
@@ -240,7 +280,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             await loadData();
             await checkUpdates();
         } catch (err) {
-            setHubError(String(err));
+            setHubError(localizeHubError(String(err)));
         } finally {
             setUpdatingSkills((prev) => prev.filter((n) => n !== skillName));
         }
@@ -371,7 +411,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             setDeleteTarget(null);
             await loadData();
         } catch (err) {
-            setError(String(err));
+            setError(localizeHubError(String(err)));
         } finally {
             setBusy(false);
         }
@@ -386,7 +426,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 await loadData();
             }
         } catch (err) {
-            setError(String(err));
+            setError(localizeHubError(String(err)));
         } finally {
             setImporting(false);
         }
@@ -429,7 +469,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         try {
             await ExportLearnedSkillsZip(Array.from(learnedSelected));
         } catch (err) {
-            setError(String(err));
+            setError(localizeHubError(String(err)));
         } finally {
             setLearnedExporting(false);
         }
@@ -446,7 +486,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 await loadData();
             }
         } catch (err) {
-            setError(String(err));
+            setError(localizeHubError(String(err)));
         } finally {
             setLearnedImporting(false);
         }

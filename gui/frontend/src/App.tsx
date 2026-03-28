@@ -142,7 +142,7 @@ const recommendedModels: { [provider: string]: { id: string; note?: string }[] }
         { id: "glm-4.7" },
     ],
 };
-const APP_VERSION = "5.1.2.9600"
+const APP_VERSION = "5.2.1.9700"
 
 // Tool name constants to avoid repeated string arrays
 const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'cursor', 'iflow', 'kilo'] as const;
@@ -1414,7 +1414,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
@@ -1469,7 +1469,6 @@ function App() {
 
     const [showModelSettings, setShowModelSettings] = useState(false);
     const [showProxySettings, setShowProxySettings] = useState(false);
-    const [proxyEditMode, setProxyEditMode] = useState<'global' | 'project'>('global');
 
     useEffect(() => {
         if (showModelSettings && activeTab === 0) {
@@ -2982,7 +2981,12 @@ ${instruction}`;
         {
             id: 'general' as const,
             label: lang === 'zh-Hans' ? '通用设置' : lang === 'zh-Hant' ? '通用設置' : 'General',
-            desc: lang === 'zh-Hans' ? '语言、项目、代理与环境' : lang === 'zh-Hant' ? '語言、項目、代理與環境' : 'Language, projects, proxy, and environment',
+            desc: lang === 'zh-Hans' ? '语言、项目与环境' : lang === 'zh-Hant' ? '語言、項目與環境' : 'Language, projects, and environment',
+        },
+        {
+            id: 'proxy' as const,
+            label: lang === 'zh-Hans' ? '代理设置' : lang === 'zh-Hant' ? '代理設置' : 'Proxy',
+            desc: lang === 'zh-Hans' ? '全局网络代理配置' : lang === 'zh-Hant' ? '全局網路代理配置' : 'Global network proxy configuration',
         },
         {
             id: 'display' as const,
@@ -3986,18 +3990,7 @@ ${instruction}`;
                                         {t("remoteModeLabel")}
                                     </label>
                                 </div>}
-                                {!isWindows && (
-                                    <button
-                                        className="btn-link"
-                                        onClick={() => {
-                                            setProxyEditMode('global');
-                                            setShowProxySettings(true);
-                                        }}
-                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '2px 12px', border: '1px solid var(--border-color)', height: '24px', borderRadius: '12px', fontSize: '0.7rem' }}
-                                    >
-                                        <span>🌐</span> {t("proxySettings")}
-                                    </button>
-                                )}
+                                
                             </div>
 
                             {/* UI Mode selector in general settings */}
@@ -4031,6 +4024,125 @@ ${instruction}`;
                                     setInvitationCode={setInvitationCode}
                                     invitationCodeError={invitationCodeError}
                                 />
+                            </div>
+
+                            <div className="settings-panel" style={{ display: settingsTab === 'proxy' ? 'block' : 'none' }}>
+                                {/* Enable toggle */}
+                                <div style={{ marginBottom: '15px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px' }}>
+                                        <input type="checkbox" checked={config?.default_proxy_enabled || false}
+                                            onChange={(e) => { const nc = new main.AppConfig({ ...config, default_proxy_enabled: e.target.checked }); setConfig(nc); }}
+                                        />
+                                        <span style={{ fontWeight: 500 }}>{t("proxyEnabled")}</span>
+                                    </label>
+                                </div>
+
+                                {/* Protocol + Host + Port row */}
+                                <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
+                                    <div style={{ width: '110px', flexShrink: 0 }}>
+                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyProtocol")}</label>
+                                        <select className="form-input" style={{ height: '34px' }}
+                                            value={config?.default_proxy_protocol || 'http'}
+                                            onChange={(e) => { const nc = new main.AppConfig({ ...config, default_proxy_protocol: e.target.value }); setConfig(nc); }}
+                                        >
+                                            <option value="http">HTTP</option>
+                                            <option value="https">HTTPS</option>
+                                            <option value="socks5">SOCKS5</option>
+                                        </select>
+                                    </div>
+                                    <div style={{ flex: 1 }}>
+                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyHost")}</label>
+                                        <input type="text" className="form-input" spellCheck={false}
+                                            placeholder={t("proxyHostPlaceholder")}
+                                            value={config?.default_proxy_host || ''}
+                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_host: e.target.value })); }}
+                                        />
+                                    </div>
+                                    <div style={{ width: '90px', flexShrink: 0 }}>
+                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPort")}</label>
+                                        <input type="text" className="form-input" spellCheck={false}
+                                            placeholder={t("proxyPortPlaceholder")}
+                                            value={config?.default_proxy_port || ''}
+                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_port: e.target.value })); }}
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Username + Password row */}
+                                <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
+                                    <div style={{ flex: 1 }}>
+                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyUsername")}</label>
+                                        <input type="text" className="form-input" spellCheck={false} autoComplete="off"
+                                            value={config?.default_proxy_username || ''}
+                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_username: e.target.value })); }}
+                                        />
+                                    </div>
+                                    <div style={{ flex: 1 }}>
+                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPassword")}</label>
+                                        <input type="password" className="form-input" autoComplete="new-password"
+                                            value={config?.default_proxy_password || ''}
+                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_password: e.target.value })); }}
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Bypass list */}
+                                <div style={{ marginBottom: '12px' }}>
+                                    <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyBypass")}</label>
+                                    <textarea className="form-input" rows={2} spellCheck={false}
+                                        placeholder={t("proxyBypassPlaceholder")}
+                                        value={config?.default_proxy_bypass || ''}
+                                        onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_bypass: e.target.value })); }}
+                                        style={{ resize: 'vertical', minHeight: '40px', fontFamily: 'monospace', fontSize: '0.78rem' }}
+                                    />
+                                    <div style={{ fontSize: '0.7rem', color: '#888', marginTop: '3px' }}>{t("proxyBypassHint")}</div>
+                                </div>
+
+                                {/* Scope checkboxes */}
+                                <div style={{ marginBottom: '12px', padding: '10px', backgroundColor: 'var(--bg-secondary, #f8fafc)', borderRadius: '6px', border: '1px solid var(--border-color, #e2e8f0)' }}>
+                                    <label className="form-label" style={{ fontSize: '0.78rem', marginBottom: '8px', display: 'block' }}>{t("proxyScopeTitle")}</label>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem' }}>
+                                            <input type="checkbox" checked={config?.default_proxy_scope_maclaw || false}
+                                                onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_scope_maclaw: e.target.checked })); }}
+                                            />
+                                            {t("proxyScopeMaclaw")}
+                                        </label>
+                                        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem', opacity: 0.75 }}>
+                                            <input type="checkbox" checked={config?.default_proxy_scope_coding_tools || false}
+                                                onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_scope_coding_tools: e.target.checked })); }}
+                                            />
+                                            {t("proxyScopeCodingTools")}
+                                        </label>
+                                        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem' }}>
+                                            <input type="checkbox" checked={config?.default_proxy_scope_agent || false}
+                                                onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_scope_agent: e.target.checked })); }}
+                                            />
+                                            {t("proxyScopeAgent")}
+                                        </label>
+                                    </div>
+                                </div>
+
+                                {/* Save button */}
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '20px' }}>
+                                    <button className="btn-primary" onClick={() => {
+                                        SaveConfig(config);
+                                        try { (window as any).go?.main?.App?.SaveProxyConfig?.({
+                                            enabled: config?.default_proxy_enabled || false,
+                                            protocol: config?.default_proxy_protocol || 'http',
+                                            host: config?.default_proxy_host || '',
+                                            port: config?.default_proxy_port || '',
+                                            username: config?.default_proxy_username || '',
+                                            password: config?.default_proxy_password || '',
+                                            bypass: config?.default_proxy_bypass || '',
+                                            scope_maclaw: config?.default_proxy_scope_maclaw || false,
+                                            scope_coding_tools: config?.default_proxy_scope_coding_tools || false,
+                                            scope_agent: config?.default_proxy_scope_agent || false,
+                                        }); } catch {}
+                                    }} style={{ padding: '8px 16px' }}>
+                                        {t("saveChanges")}
+                                    </button>
+                                </div>
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'llm' ? 'block' : 'none' }}>
@@ -5010,7 +5122,6 @@ ${instruction}`;
                                             checked={resolvedLaunchProject?.use_proxy || false}
                                             onChange={(e) => {
                                                 if (e.target.checked && !resolvedLaunchProject?.proxy_host && !config?.default_proxy_host) {
-                                                    setProxyEditMode('project');
                                                     setShowProxySettings(true);
                                                     return;
                                                 }
@@ -5022,7 +5133,6 @@ ${instruction}`;
                                             onClick={(e) => {
                                                 e.preventDefault();
                                                 e.stopPropagation();
-                                                setProxyEditMode('project');
                                                 setShowProxySettings(true);
                                             }}
                                             style={{ marginLeft: '4px', cursor: 'pointer', opacity: 0.7 }}
@@ -6580,18 +6690,18 @@ ${instruction}`;
                 </div>
             )}
 
-            {/* Proxy Settings Dialog */}
+            {/* Proxy Settings Dialog (project-level only) */}
             {showProxySettings && config && (
                 <div className="modal-overlay">
                     <div className="modal-content" style={{ width: '540px', textAlign: 'left' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                             <h3 style={{ margin: 0, color: '#6366f1' }}>
-                                {proxyEditMode === 'global' ? t("proxySettings") + " - " + (lang === 'zh-Hans' ? '全局默认' : lang === 'zh-Hant' ? '全局預設' : 'Global Default') : t("proxySettings")}
+                                {t("proxySettings")}
                             </h3>
                             <button className="modal-close" onClick={() => setShowProxySettings(false)}>&times;</button>
                         </div>
 
-                        {proxyEditMode === 'project' && config?.default_proxy_host && (
+                        {config?.default_proxy_host && (
                             <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#eef2ff', borderRadius: '6px', fontSize: '0.85rem' }}>
                                 <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
                                     <input
@@ -6618,41 +6728,15 @@ ${instruction}`;
                             </div>
                         )}
 
-                        {/* Enable toggle (global mode only) */}
-                        {proxyEditMode === 'global' && (
-                            <div style={{ marginBottom: '15px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px' }}>
-                                    <input type="checkbox" checked={config?.default_proxy_enabled || false}
-                                        onChange={(e) => { const nc = new main.AppConfig({ ...config, default_proxy_enabled: e.target.checked }); setConfig(nc); }}
-                                    />
-                                    <span style={{ fontWeight: 500 }}>{t("proxyEnabled")}</span>
-                                </label>
-                            </div>
-                        )}
-
-                        {/* Protocol + Host + Port row */}
+                        {/* Host + Port row */}
                         <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-                            {proxyEditMode === 'global' && (
-                                <div style={{ width: '110px', flexShrink: 0 }}>
-                                    <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyProtocol")}</label>
-                                    <select className="form-input" style={{ height: '34px' }}
-                                        value={config?.default_proxy_protocol || 'http'}
-                                        onChange={(e) => { const nc = new main.AppConfig({ ...config, default_proxy_protocol: e.target.value }); setConfig(nc); }}
-                                    >
-                                        <option value="http">HTTP</option>
-                                        <option value="https">HTTPS</option>
-                                        <option value="socks5">SOCKS5</option>
-                                    </select>
-                                </div>
-                            )}
                             <div style={{ flex: 1 }}>
                                 <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyHost")}</label>
                                 <input type="text" className="form-input" spellCheck={false}
                                     placeholder={t("proxyHostPlaceholder")}
-                                    value={proxyEditMode === 'global' ? (config?.default_proxy_host || '') : (config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_host || '')}
+                                    value={config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_host || ''}
                                     onChange={(e) => {
-                                        if (proxyEditMode === 'global') { setConfig(new main.AppConfig({ ...config, default_proxy_host: e.target.value })); }
-                                        else { const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_host: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); } }
+                                        const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_host: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); }
                                     }}
                                 />
                             </div>
@@ -6660,10 +6744,9 @@ ${instruction}`;
                                 <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPort")}</label>
                                 <input type="text" className="form-input" spellCheck={false}
                                     placeholder={t("proxyPortPlaceholder")}
-                                    value={proxyEditMode === 'global' ? (config?.default_proxy_port || '') : (config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_port || '')}
+                                    value={config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_port || ''}
                                     onChange={(e) => {
-                                        if (proxyEditMode === 'global') { setConfig(new main.AppConfig({ ...config, default_proxy_port: e.target.value })); }
-                                        else { const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_port: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); } }
+                                        const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_port: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); }
                                     }}
                                 />
                             </div>
@@ -6674,65 +6757,22 @@ ${instruction}`;
                             <div style={{ flex: 1 }}>
                                 <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyUsername")}</label>
                                 <input type="text" className="form-input" spellCheck={false} autoComplete="off"
-                                    value={proxyEditMode === 'global' ? (config?.default_proxy_username || '') : (config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_username || '')}
+                                    value={config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_username || ''}
                                     onChange={(e) => {
-                                        if (proxyEditMode === 'global') { setConfig(new main.AppConfig({ ...config, default_proxy_username: e.target.value })); }
-                                        else { const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_username: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); } }
+                                        const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_username: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); }
                                     }}
                                 />
                             </div>
                             <div style={{ flex: 1 }}>
                                 <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPassword")}</label>
                                 <input type="password" className="form-input" autoComplete="new-password"
-                                    value={proxyEditMode === 'global' ? (config?.default_proxy_password || '') : (config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_password || '')}
+                                    value={config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_password || ''}
                                     onChange={(e) => {
-                                        if (proxyEditMode === 'global') { setConfig(new main.AppConfig({ ...config, default_proxy_password: e.target.value })); }
-                                        else { const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_password: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); } }
+                                        const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_password: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); }
                                     }}
                                 />
                             </div>
                         </div>
-
-                        {/* Bypass list (global mode only) */}
-                        {proxyEditMode === 'global' && (
-                            <div style={{ marginBottom: '12px' }}>
-                                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyBypass")}</label>
-                                <textarea className="form-input" rows={2} spellCheck={false}
-                                    placeholder={t("proxyBypassPlaceholder")}
-                                    value={config?.default_proxy_bypass || ''}
-                                    onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_bypass: e.target.value })); }}
-                                    style={{ resize: 'vertical', minHeight: '40px', fontFamily: 'monospace', fontSize: '0.78rem' }}
-                                />
-                                <div style={{ fontSize: '0.7rem', color: '#888', marginTop: '3px' }}>{t("proxyBypassHint")}</div>
-                            </div>
-                        )}
-
-                        {/* Scope checkboxes (global mode only) */}
-                        {proxyEditMode === 'global' && (
-                            <div style={{ marginBottom: '12px', padding: '10px', backgroundColor: 'var(--bg-secondary, #f8fafc)', borderRadius: '6px', border: '1px solid var(--border-color, #e2e8f0)' }}>
-                                <label className="form-label" style={{ fontSize: '0.78rem', marginBottom: '8px', display: 'block' }}>{t("proxyScopeTitle")}</label>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem' }}>
-                                        <input type="checkbox" checked={config?.default_proxy_scope_maclaw || false}
-                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_scope_maclaw: e.target.checked })); }}
-                                        />
-                                        {t("proxyScopeMaclaw")}
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem', opacity: 0.75 }}>
-                                        <input type="checkbox" checked={config?.default_proxy_scope_coding_tools || false}
-                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_scope_coding_tools: e.target.checked })); }}
-                                        />
-                                        {t("proxyScopeCodingTools")}
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem' }}>
-                                        <input type="checkbox" checked={config?.default_proxy_scope_agent || false}
-                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_scope_agent: e.target.checked })); }}
-                                        />
-                                        {t("proxyScopeAgent")}
-                                    </label>
-                                </div>
-                            </div>
-                        )}
 
                         <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '20px' }}>
                             <button className="btn-secondary" onClick={() => setShowProxySettings(false)} style={{ padding: '8px 16px' }}>
@@ -6741,28 +6781,13 @@ ${instruction}`;
                             <button className="btn-primary" onClick={() => {
                                     SaveConfig(config);
                                     setShowProxySettings(false);
-                                    if (proxyEditMode === 'project') {
-                                        const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch);
-                                        if (proj && !proj.use_proxy) {
-                                            const newProjects = config.projects.map((p: any) => p.id === proj.id ? { ...p, use_proxy: true } : p);
-                                            const newConfig = new main.AppConfig({ ...config, projects: newProjects });
-                                            setConfig(newConfig);
-                                            SaveConfig(newConfig);
-                                        }
+                                    const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch);
+                                    if (proj && !proj.use_proxy) {
+                                        const newProjects = config.projects.map((p: any) => p.id === proj.id ? { ...p, use_proxy: true } : p);
+                                        const newConfig = new main.AppConfig({ ...config, projects: newProjects });
+                                        setConfig(newConfig);
+                                        SaveConfig(newConfig);
                                     }
-                                    // Apply agent proxy immediately
-                                    try { (window as any).go?.main?.App?.SaveProxyConfig?.({
-                                        enabled: config?.default_proxy_enabled || false,
-                                        protocol: config?.default_proxy_protocol || 'http',
-                                        host: config?.default_proxy_host || '',
-                                        port: config?.default_proxy_port || '',
-                                        username: config?.default_proxy_username || '',
-                                        password: config?.default_proxy_password || '',
-                                        bypass: config?.default_proxy_bypass || '',
-                                        scope_maclaw: config?.default_proxy_scope_maclaw || false,
-                                        scope_coding_tools: config?.default_proxy_scope_coding_tools || false,
-                                        scope_agent: config?.default_proxy_scope_agent || false,
-                                    }); } catch {}
                                 }} style={{ padding: '8px 16px' }}>
                                 {t("saveChanges")}
                             </button>
