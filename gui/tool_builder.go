@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -32,6 +33,11 @@ func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} {
 	b.syncRegistry()
 	return b.inner.Build(userMessage)
+}
+
+// SetEmbedder delegates to corelib/tool.DynamicToolBuilder.SetEmbedder.
+func (b *DynamicToolBuilder) SetEmbedder(emb embedding.Embedder) {
+	b.inner.SetEmbedder(emb)
 }
 
 // syncRegistry refreshes the inner corelib registry from the gui registry.

@@ -18,6 +18,9 @@ import (
 
 const embeddingModelFilename = "embeddinggemma-300M-Q8_0.gguf"
 
+// embeddingModelDefaultURL is the primary download source (GitHub Releases).
+const embeddingModelDefaultURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/embeddinggemma-300M-Q8_0.gguf"
+
 // embeddingDownloadMu prevents concurrent model downloads.
 var embeddingDownloadMu sync.Mutex
 
@@ -53,6 +56,7 @@ type VectorSearchStatus struct {
 	EmbedderDim  int    `json:"embedder_dim"`  // embedding dimension (0 if not loaded)
 	EntryCount   int    `json:"entry_count"`   // total memory entries
 	EmbeddedCount int   `json:"embedded_count"` // entries with embeddings
+	HybridToolRetrievalActive bool `json:"hybrid_tool_retrieval_active"` // hybrid tool retrieval enabled
 }
 
 // GetVectorSearchStatus returns the full runtime status of vector search.
@@ -95,6 +99,11 @@ func (a *App) GetVectorSearchStatus() VectorSearchStatus {
 		a.memoryStore.RUnlock()
 	}
 
+	// Hybrid tool retrieval status.
+	if a.toolRouter != nil {
+		status.HybridToolRetrievalActive = a.toolRouter.HybridActive()
+	}
+
 	return status
 }
 
@@ -110,14 +119,33 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 		return err
 	}
 
-	// Re-wire embedder on the memory store.
-	if a.memoryStore != nil {
-		if enabled {
-			modelPath := embedding.DefaultModelPath()
-			emb := embedding.NewDefaultEmbedder(modelPath)
+	// Re-wire embedder on the memory store, tool router, and tool builder.
+	if enabled {
+		modelPath := embedding.DefaultModelPath()
+		emb := embedding.NewDefaultEmbedder(modelPath)
+		if a.memoryStore != nil {
 			a.memoryStore.SetEmbedder(emb)
-		} else {
-			a.memoryStore.SetEmbedder(embedding.NoopEmbedder{})
+		}
+		if a.toolRouter != nil {
+			a.toolRouter.SetEmbedder(emb)
+		}
+		if a.remoteSessions != nil && a.remoteSessions.hubClient != nil &&
+			a.remoteSessions.hubClient.imHandler != nil &&
+			a.remoteSessions.hubClient.imHandler.toolBuilder != nil {
+			a.remoteSessions.hubClient.imHandler.toolBuilder.SetEmbedder(emb)
+		}
+	} else {
+		noop := embedding.NoopEmbedder{}
+		if a.memoryStore != nil {
+			a.memoryStore.SetEmbedder(noop)
+		}
+		if a.toolRouter != nil {
+			a.toolRouter.SetEmbedder(noop)
+		}
+		if a.remoteSessions != nil && a.remoteSessions.hubClient != nil &&
+			a.remoteSessions.hubClient.imHandler != nil &&
+			a.remoteSessions.hubClient.imHandler.toolBuilder != nil {
+			a.remoteSessions.hubClient.imHandler.toolBuilder.SetEmbedder(noop)
 		}
 	}
 	return nil
@@ -138,9 +166,13 @@ func (a *App) CheckEmbeddingModel() map[string]interface{} {
 	return map[string]interface{}{"exists": true, "path": p, "size": fi.Size()}
 }
 
-// DownloadEmbeddingModel downloads the embedding model from the configured Hub.
+// DownloadEmbeddingModel downloads the embedding model.
+// It first tries the default GitHub Releases URL; on failure it falls back
+// to the user-configured Hub URL.
 // Progress is emitted via Wails event "embedding-download-progress" with payload:
-//   { "percent": int, "downloaded": int64, "total": int64, "error": string }
+//
+//	{ "percent": int, "downloaded": int64, "total": int64, "error": string }
+//
 // This method blocks until download completes or fails.
 func (a *App) DownloadEmbeddingModel() error {
 	// Prevent concurrent downloads — second caller is silently ignored.
@@ -149,43 +181,58 @@ func (a *App) DownloadEmbeddingModel() error {
 	}
 	defer embeddingDownloadMu.Unlock()
 
+	dir, err := embeddingModelsDir()
+	if err != nil {
+		return fmt.Errorf("create models dir: %w", err)
+	}
+	destPath := filepath.Join(dir, embeddingModelFilename)
+
+	// 1) Try default GitHub URL first (silent — don't emit errors to UI).
+	if err := a.downloadModelFrom(embeddingModelDefaultURL, destPath, false); err == nil {
+		return nil
+	}
+
+	// 2) Fallback: Hub URL (emit progress & errors to UI).
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 	hubURL := strings.TrimRight(cfg.RemoteHubURL, "/")
 	if hubURL == "" {
-		return fmt.Errorf("Hub URL 未配置，请先在「移动端注册」中配置 Hub 地址")
+		return fmt.Errorf("默认下载地址不可用，且 Hub URL 未配置")
 	}
+	fallbackURL := hubURL + "/api/v1/models/" + embeddingModelFilename
+	return a.downloadModelFrom(fallbackURL, destPath, true)
+}
 
-	dir, err := embeddingModelsDir()
-	if err != nil {
-		return fmt.Errorf("create models dir: %w", err)
-	}
-	destPath := filepath.Join(dir, embeddingModelFilename)
+// downloadModelFrom downloads a file from url to destPath, emitting progress events.
+// When emitErrors is false, errors are not sent to the frontend (used for silent fallback attempts).
+func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 	tmpPath := destPath + ".tmp"
-
-	downloadURL := hubURL + "/api/v1/models/" + embeddingModelFilename
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		a.emitDownloadProgress(0, 0, 0, err.Error())
+		if emitErrors {
+			a.emitDownloadProgress(0, 0, 0, err.Error())
+		}
 		return fmt.Errorf("download request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("Hub 返回 HTTP %d", resp.StatusCode)
-		a.emitDownloadProgress(0, 0, 0, msg)
-		return fmt.Errorf("hub returned HTTP %d", resp.StatusCode)
+		msg := fmt.Sprintf("HTTP %d from %s", resp.StatusCode, url)
+		if emitErrors {
+			a.emitDownloadProgress(0, 0, 0, msg)
+		}
+		return fmt.Errorf("%s", msg)
 	}
 
 	totalSize, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
@@ -207,11 +254,12 @@ func (a *App) DownloadEmbeddingModel() error {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, wErr := out.Write(buf[:n]); wErr != nil {
-				a.emitDownloadProgress(0, downloaded, totalSize, wErr.Error())
+				if emitErrors {
+					a.emitDownloadProgress(0, downloaded, totalSize, wErr.Error())
+				}
 				return fmt.Errorf("write file: %w", wErr)
 			}
 			downloaded += int64(n)
-			// Emit progress at most every 200ms to avoid flooding
 			if time.Since(lastEmit) > 200*time.Millisecond {
 				pct := 0
 				if totalSize > 0 {
@@ -225,13 +273,14 @@ func (a *App) DownloadEmbeddingModel() error {
 			break
 		}
 		if readErr != nil {
-			a.emitDownloadProgress(0, downloaded, totalSize, readErr.Error())
+			if emitErrors {
+				a.emitDownloadProgress(0, downloaded, totalSize, readErr.Error())
+			}
 			return fmt.Errorf("read body: %w", readErr)
 		}
 	}
 	out.Close()
 
-	// Rename tmp to final
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}

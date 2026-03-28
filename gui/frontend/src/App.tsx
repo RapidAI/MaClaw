@@ -4108,9 +4108,10 @@ ${instruction}`;
                                             />
                                             {t("proxyScopeMaclaw")}
                                         </label>
-                                        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem', opacity: 0.75 }}>
-                                            <input type="checkbox" checked={config?.default_proxy_scope_coding_tools || false}
-                                                onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_scope_coding_tools: e.target.checked })); }}
+                                        <label style={{ display: 'flex', alignItems: 'center', cursor: isWindows ? 'not-allowed' : 'pointer', gap: '8px', fontSize: '0.82rem', opacity: isWindows ? 0.45 : 0.75 }}>
+                                            <input type="checkbox" checked={isWindows ? false : (config?.default_proxy_scope_coding_tools || false)}
+                                                disabled={isWindows}
+                                                onChange={(e) => { if (!isWindows) { setConfig(new main.AppConfig({ ...config, default_proxy_scope_coding_tools: e.target.checked })); } }}
                                             />
                                             {t("proxyScopeCodingTools")}
                                         </label>

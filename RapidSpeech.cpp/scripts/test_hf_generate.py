@@ -17,7 +17,7 @@ print(f"Audio: {len(pcm)/16000:.1f}s")
 # This tests whether the issue is in encoder or decoder
 for model_name, dim, n_heads, head_dim, rotary_dim, n_enc in [
     ("moonshine-tiny", 288, 8, 36, 32, 6),
-    ("moonshine-base", 416, 8, 52, 32, 8),
+    ("moonshine-base", 416, 8, 52, 46, 8),
 ]:
     model_dir = Path(f"models/{model_name}")
     w = {}

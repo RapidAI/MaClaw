@@ -663,6 +663,23 @@ func truncateToolResultForTool(toolName, s string) string {
 	}
 }
 
+// inferFileDeliveryMessage generates a user-facing prompt based on the file name
+// when no explicit message was provided. This ensures PDF documents sent via IM
+// always include a hint telling the user what the document is and what to do.
+func inferFileDeliveryMessage(fileName string) string {
+	lower := strings.ToLower(fileName)
+	switch {
+	case strings.Contains(lower, "requirement") || strings.Contains(lower, "需求"):
+		return "📋 需求文档已生成，请查看并确认需求是否准确，或提出修改意见。"
+	case strings.Contains(lower, "design") || strings.Contains(lower, "设计"):
+		return "🏗️ 技术设计文档已生成，请查看设计方案并确认，或提出修改意见。"
+	case strings.Contains(lower, "task") || strings.Contains(lower, "任务"):
+		return "📝 任务列表已生成，请查看任务拆分是否合理，确认后开始执行。"
+	default:
+		return fmt.Sprintf("📄 已生成文件 %s，请查看并确认，或提出修改意见。", fileName)
+	}
+}
+
 // thinkTagPattern matches <think>...</think> blocks (including multiline)
 // produced by reasoning models (DeepSeek, Kimi, QwQ, etc.) that should not
 // be shown to end users. Also handles unclosed <think> tags (e.g. when
@@ -1820,6 +1837,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		type pendingFile struct {
 			name, mimeType, data string
 			forwardIM            bool
+			message              string // IM delivery prompt
 		}
 		var pendingFiles []pendingFile
 		screenshotAlreadySent := false
@@ -1851,26 +1869,38 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Intercept file send results: collect ALL files (not just the last one).
 			// Format: [file_base64|filename|mimetype]data
 			//     or: [file_base64|filename|mimetype|im]data  (forward to IM)
+			//     or: [file_base64|filename|mimetype|im|msg:提示信息]data
 			if strings.HasPrefix(result, "[file_base64|") {
 				rest := strings.TrimPrefix(result, "[file_base64|")
 				if closeBracket := strings.Index(rest, "]"); closeBracket > 0 {
 					meta := rest[:closeBracket]
-					parts := strings.SplitN(meta, "|", 3)
+					parts := strings.Split(meta, "|")
 					if len(parts) >= 2 {
 						fwd := false
 						mType := parts[1]
-						if len(parts) == 3 && parts[2] == "im" {
-							fwd = true
-						} else if len(parts) == 3 {
-							// parts[1] contained a | — shouldn't happen with current
-							// MIME types, but be safe: treat extra segment as part of mime.
-							mType = parts[1] + "|" + parts[2]
+						var fileMsg string
+						// Scan remaining segments for flags.
+						for i := 2; i < len(parts); i++ {
+							seg := parts[i]
+							if seg == "im" {
+								fwd = true
+							} else if strings.HasPrefix(seg, "msg:") {
+								fileMsg = strings.TrimPrefix(seg, "msg:")
+							} else {
+								// Unknown segment — append to mimeType for safety.
+								mType += "|" + seg
+							}
+						}
+						// Fallback: auto-generate prompt based on filename if none provided.
+						if fwd && fileMsg == "" {
+							fileMsg = inferFileDeliveryMessage(parts[0])
 						}
 						pendingFiles = append(pendingFiles, pendingFile{
 							name:      parts[0],
 							mimeType:  mType,
 							data:      rest[closeBracket+1:],
 							forwardIM: fwd,
+							message:   fileMsg,
 						})
 						if fwd {
 							toolContent = fmt.Sprintf("文件 %s 已准备好，将通过 IM 通道发送给用户。", parts[0])
@@ -1948,7 +1978,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if pf.forwardIM {
 						if h.imFileSender == nil {
 							failLines = append(failLines, fmt.Sprintf("📄 %s 已保存到本地，但未连接到 Hub，无法转发到 IM", pf.name))
-						} else if err := h.imFileSender(pf.data, pf.name, pf.mimeType, ""); err != nil {
+						} else if err := h.imFileSender(pf.data, pf.name, pf.mimeType, pf.message); err != nil {
 							log.Printf("[IMMessageHandler] IM forward failed for %s: %v", pf.name, err)
 							failLines = append(failLines, fmt.Sprintf("📄 %s 已保存到本地，但发送到 IM 失败: %s", pf.name, err.Error()))
 						} else {
@@ -2506,6 +2536,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - ⚠️ 桌面端用户说"发到飞书"、"发到微信"、"发到QQ"、"发到 IM"时，必须在 send_file 中设置 forward_to_im=true，否则文件只会保存到本地而不会发送到 IM 平台。
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
 - 创建会话时可用 project_id 参数指定预设项目，或用 project_manage(action="list") 查看可用项目列表
+- 浏览器自动化（browser_* 系列工具）：可通过 CDP 协议连接本机 Chrome，执行真实 UI 操作（导航、点击、输入、截图、执行 JS、等待元素等）。适用于网页自动化测试、表单填写、登录验证等。使用前先调用 browser_connect 连接浏览器。
 
 `)	} else {
 		// Lite/simple mode: no coding session tools available.
@@ -2520,6 +2551,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - read_file / write_file / list_directory：文件操作
 - craft_tool：生成并执行脚本
 - web_search / web_fetch：网络搜索
+- browser_* 系列：浏览器自动化（CDP 连接 Chrome，可点击、输入、截图、执行 JS，适用于网页测试和自动化）
 - memory：长期记忆管理
 - screenshot：截屏
 - send_file / open：发送文件、打开文件或网址

@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -43,6 +44,16 @@ func (r *ToolRouter) SetHubClient(client *SkillHubClient) {
 // Route delegates to corelib/tool.Router.Route.
 func (r *ToolRouter) Route(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
 	return r.inner.Route(userMessage, allTools)
+}
+
+// SetEmbedder delegates to corelib/tool.Router.SetEmbedder.
+func (r *ToolRouter) SetEmbedder(emb embedding.Embedder) {
+	r.inner.SetEmbedder(emb)
+}
+
+// HybridActive returns true if hybrid retrieval is currently enabled.
+func (r *ToolRouter) HybridActive() bool {
+	return r.inner.HybridActive()
 }
 
 // matchRecommendations is exposed for tests that call it directly.

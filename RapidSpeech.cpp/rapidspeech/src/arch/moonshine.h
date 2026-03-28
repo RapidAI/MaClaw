@@ -43,6 +43,7 @@ struct MoonshineHParams {
 
     // RoPE
     float rope_theta = 10000.0f;
+    float partial_rotary_factor = 0.9f;
 };
 
 /**

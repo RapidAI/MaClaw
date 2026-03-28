@@ -54,7 +54,7 @@ n_heads = cfg.get("encoder_num_attention_heads", 8)
 head_dim = dim // n_heads
 n_enc = cfg.get("encoder_num_hidden_layers", 8)
 n_dec = cfg.get("decoder_num_hidden_layers", 8)
-rotary_dim = int(head_dim * cfg.get("partial_rotary_factor", 0.62))
+rotary_dim = int(head_dim * cfg.get("partial_rotary_factor", 0.9))
 # Round to even
 rotary_dim = rotary_dim - (rotary_dim % 2)
 theta = cfg.get("rope_theta", 10000.0)

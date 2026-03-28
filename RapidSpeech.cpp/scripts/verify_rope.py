@@ -34,8 +34,8 @@ def pytorch_rope(x_c, rotary_dim, theta):
             result[s, h, dim_pairs:rotary_dim] = x2 * cos_a[s] + x1 * sin_a[s]
     return result
 
-# ggml RoPE (mode=0, NeoX style)
-# ggml_rope_ext with mode=0 applies rotation to pairs (i, i+n_dims/2) where n_dims=rotary_dim
+# ggml RoPE (mode=2, NeoX style)
+# ggml_rope_ext with mode=2 applies rotation to pairs (i, i+n_dims/2) where n_dims=rotary_dim
 # For each position p and dimension pair (i, i+rotary_dim/2):
 #   x_out[i] = x[i] * cos(p * freq_i) - x[i + rotary_dim/2] * sin(p * freq_i)
 #   x_out[i + rotary_dim/2] = x[i] * sin(p * freq_i) + x[i + rotary_dim/2] * cos(p * freq_i)

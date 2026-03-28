@@ -22,7 +22,7 @@
 //
 // Encoder: RMSNorm, separate Q/K/V, GELU FFN, no attention bias
 // Decoder: RMSNorm, separate Q/K/V, SwiGLU FFN, causal self-attn
-// RoPE: partial_rotary_factor=0.9, theta=10000
+// RoPE: partial_rotary_factor=0.9, theta=10000, NeoX-style (split-half)
 // ============================================================
 
 // ---- Norm helpers ----
@@ -60,10 +60,12 @@ static ggml_tensor* group_norm_1(ggml_context* ctx, ggml_tensor* x,
 
 static ggml_tensor* apply_rope(ggml_context* ctx, ggml_tensor* x,
                                 ggml_tensor* pos, int head_dim,
-                                float rope_theta) {
-    int rotary_dim = (int)(head_dim * 0.9f);
+                                float rope_theta, float partial_rotary_factor = 0.9f) {
+    int rotary_dim = (int)(head_dim * partial_rotary_factor);
     rotary_dim -= rotary_dim % 2;  // must be even
-    return ggml_rope_ext(ctx, x, pos, nullptr, rotary_dim, 0, 0,
+    // mode=2: NeoX-style (split-half) RoPE, matching HF Moonshine's rotate_half
+    // HF rotate_half splits into (x[..., :d/2], x[..., d/2:]) which is GGML_ROPE_TYPE_NEOX
+    return ggml_rope_ext(ctx, x, pos, nullptr, rotary_dim, 2, 0,
                          rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
 }
 
@@ -282,6 +284,7 @@ bool MoonshineModel::Load(const std::unique_ptr<rs_context_t>& ctx,
     hparams_.sample_rate   = read_i32("moonshine.sample_rate", 16000);
     hparams_.is_streaming  = read_bool("moonshine.is_streaming", false);
     hparams_.rope_theta    = read_f32("moonshine.rope_theta", 10000.0f);
+    hparams_.partial_rotary_factor = read_f32("moonshine.partial_rotary_factor", 0.9f);
     hparams_.encoder_head_dim = hparams_.encoder_dim / hparams_.encoder_heads;
     hparams_.decoder_head_dim = hparams_.decoder_dim / hparams_.decoder_heads;
     meta_.audio_sample_rate = hparams_.sample_rate;
@@ -290,10 +293,11 @@ bool MoonshineModel::Load(const std::unique_ptr<rs_context_t>& ctx,
     if (!MapTensors(ctx->gguf_data)) return false;
     if (!LoadVocab(ctx->ctx_gguf)) return false;
 
-    RS_LOG_INFO("Moonshine: enc=%dx%d dec=%dx%d vocab=%d streaming=%d",
+    RS_LOG_INFO("Moonshine: enc=%dx%d dec=%dx%d vocab=%d streaming=%d rope_theta=%.1f prf=%.2f",
                 hparams_.encoder_dim, hparams_.encoder_depth,
                 hparams_.decoder_dim, hparams_.decoder_depth,
-                hparams_.vocab_size, hparams_.is_streaming);
+                hparams_.vocab_size, hparams_.is_streaming,
+                hparams_.rope_theta, hparams_.partial_rotary_factor);
     return true;
 }
 
@@ -307,7 +311,7 @@ std::shared_ptr<RSState> MoonshineModel::CreateState() {
 
 ggml_tensor* MoonshineModel::ApplyRoPE(ggml_context* ctx0, ggml_tensor* x,
                                         int head_dim, int /*offset*/) {
-    return apply_rope(ctx0, x, nullptr, head_dim, hparams_.rope_theta);
+    return apply_rope(ctx0, x, nullptr, head_dim, hparams_.rope_theta, hparams_.partial_rotary_factor);
 }
 
 // ============================================================
@@ -396,8 +400,8 @@ ggml_tensor* MoonshineModel::BuildEncoder(ggml_context* ctx0,
         v = ggml_reshape_3d(ctx0, v, head_dim, n_heads, n_frames);
 
         // RoPE
-        q = apply_rope(ctx0, q, enc_positions, head_dim, hparams_.rope_theta);
-        k = apply_rope(ctx0, k, enc_positions, head_dim, hparams_.rope_theta);
+        q = apply_rope(ctx0, q, enc_positions, head_dim, hparams_.rope_theta, hparams_.partial_rotary_factor);
+        k = apply_rope(ctx0, k, enc_positions, head_dim, hparams_.rope_theta, hparams_.partial_rotary_factor);
 
         // Scaled dot-product attention
         ggml_tensor* attn_out = sdpa_attention(ctx0, q, k, v,
@@ -408,9 +412,9 @@ ggml_tensor* MoonshineModel::BuildEncoder(ggml_context* ctx0,
         attn_out = ggml_mul_mat(ctx0, layer.attn_out_weight, attn_out);
         x = ggml_add(ctx0, residual, attn_out);
 
-        // Pre-norm FFN (RMSNorm + GELU)
+        // Pre-norm FFN (LayerNorm + GELU)
         residual = x;
-        x = rms_norm(ctx0, x, layer.ff_norm_weight);
+        x = layer_norm(ctx0, x, layer.ff_norm_weight);
         x = ggml_mul_mat(ctx0, layer.ff_up_weight, x);
         if (layer.ff_up_bias) x = ggml_add(ctx0, x, layer.ff_up_bias);
         x = ggml_gelu(ctx0, x);
@@ -420,7 +424,7 @@ ggml_tensor* MoonshineModel::BuildEncoder(ggml_context* ctx0,
     }
 
     // Final encoder norm
-    x = rms_norm(ctx0, x, weights_.encoder_final_norm_weight);
+    x = layer_norm(ctx0, x, weights_.encoder_final_norm_weight);
     return x;
 }
 
@@ -477,6 +481,20 @@ bool MoonshineModel::Encode(const std::vector<float>& input_frames,
         RS_LOG_ERR("Moonshine: encoder graph compute failed");
         ggml_free(ctx0);
         return false;
+    }
+
+    // Debug: read conv3 output
+    {
+        ggml_tensor* c3 = ggml_get_tensor(ctx0, "conv3_out");
+        if (c3) {
+            int c3_n = (int)ggml_nelements(c3);
+            std::vector<float> c3_data(std::min(c3_n, 20));
+            ggml_backend_tensor_get(c3, c3_data.data(), 0, c3_data.size() * sizeof(float));
+            RS_LOG_INFO("Moonshine: conv3_out ne=[%d,%d] first10 = %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f",
+                        (int)c3->ne[0], (int)c3->ne[1],
+                        c3_data[0], c3_data[1], c3_data[2], c3_data[3], c3_data[4],
+                        c3_data[5], c3_data[6], c3_data[7], c3_data[8], c3_data[9]);
+        }
     }
 
     int enc_dim = hparams_.encoder_dim;
@@ -674,9 +692,9 @@ bool MoonshineModel::RunDecoderStep(MoonshineState& ms, int step, int cur_token,
     for (int l = 0; l < n_layers; l++) {
         auto& layer = weights_.decoder_layers[l];
 
-        // --- Self-attention (RMSNorm + causal + KV cache) ---
+        // --- Self-attention (LayerNorm + causal + KV cache) ---
         ggml_tensor* residual = x;
-        x = rms_norm(ctx0, x, layer.self_attn_norm_weight);
+        x = layer_norm(ctx0, x, layer.self_attn_norm_weight);
 
         ggml_tensor* q     = ggml_mul_mat(ctx0, layer.self_attn_q_weight, x);
         ggml_tensor* k_new = ggml_mul_mat(ctx0, layer.self_attn_k_weight, x);
@@ -688,8 +706,8 @@ bool MoonshineModel::RunDecoderStep(MoonshineState& ms, int step, int cur_token,
         v_new = ggml_reshape_3d(ctx0, v_new, head_dim, n_heads, 1);
 
         // RoPE with explicit position
-        q     = apply_rope(ctx0, q,     rope_pos, head_dim, hparams_.rope_theta);
-        k_new = apply_rope(ctx0, k_new, rope_pos, head_dim, hparams_.rope_theta);
+        q     = apply_rope(ctx0, q,     rope_pos, head_dim, hparams_.rope_theta, hparams_.partial_rotary_factor);
+        k_new = apply_rope(ctx0, k_new, rope_pos, head_dim, hparams_.rope_theta, hparams_.partial_rotary_factor);
 
         // Mark new k/v for readback BEFORE any permute.
         // k_new/v_new are [head_dim, n_heads, 1] = kv_entry_floats elements.
@@ -731,9 +749,9 @@ bool MoonshineModel::RunDecoderStep(MoonshineState& ms, int step, int cur_token,
         self_attn = ggml_mul_mat(ctx0, layer.self_attn_out_weight, self_attn);
         x = ggml_add(ctx0, residual, self_attn);
 
-        // --- Cross-attention (RMSNorm + persistent cross KV) ---
+        // --- Cross-attention (LayerNorm + persistent cross KV) ---
         residual = x;
-        x = rms_norm(ctx0, x, layer.cross_attn_norm_weight);
+        x = layer_norm(ctx0, x, layer.cross_attn_norm_weight);
 
         ggml_tensor* cq = ggml_mul_mat(ctx0, layer.cross_attn_q_weight, x);
         cq = ggml_reshape_3d(ctx0, cq, head_dim, n_heads, 1);
@@ -755,11 +773,12 @@ bool MoonshineModel::RunDecoderStep(MoonshineState& ms, int step, int cur_token,
         cross_attn = ggml_mul_mat(ctx0, layer.cross_attn_out_weight, cross_attn);
         x = ggml_add(ctx0, residual, cross_attn);
 
-        // --- FFN: RMSNorm + SwiGLU ---
+        // --- FFN: LayerNorm + SwiGLU ---
         // fc1 outputs [2*intermediate, 1]. Split into gate and value halves.
-        // gate = silu(first_half), output = gate * second_half, then fc2.
+        // HF Moonshine: gate = first_half, value = second_half
+        // output = silu(gate) * value, then fc2.
         residual = x;
-        x = rms_norm(ctx0, x, layer.ff_norm_weight);
+        x = layer_norm(ctx0, x, layer.ff_norm_weight);
 
         ggml_tensor* fc1_out = ggml_mul_mat(ctx0, layer.ff_up_weight, x);
         if (layer.ff_up_bias) {
@@ -772,7 +791,7 @@ bool MoonshineModel::RunDecoderStep(MoonshineState& ms, int step, int cur_token,
         int intermediate_2x = (int)fc1_out->ne[0];
         int intermediate = intermediate_2x / 2;
 
-        // SwiGLU split via view_1d + reshape_2d
+        // SwiGLU: first half = gate, second half = value (matching HF order)
         ggml_tensor* gate_part = ggml_view_1d(ctx0, fc1_out, intermediate, 0);
         gate_part = ggml_reshape_2d(ctx0, gate_part, intermediate, 1);
         ggml_tensor* value_part = ggml_view_1d(ctx0, fc1_out, intermediate,
@@ -792,7 +811,7 @@ bool MoonshineModel::RunDecoderStep(MoonshineState& ms, int step, int cur_token,
     }
 
     // Final norm + LM head
-    x = rms_norm(ctx0, x, weights_.decoder_final_norm_weight);
+    x = layer_norm(ctx0, x, weights_.decoder_final_norm_weight);
     ggml_tensor* lm_weight = weights_.lm_head_weight ? weights_.lm_head_weight
                                                       : weights_.token_embedding;
     x = ggml_mul_mat(ctx0, lm_weight, x);

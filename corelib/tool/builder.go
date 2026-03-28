@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
 // DynamicToolBuilder builds LLM tool definitions dynamically from the Registry.
@@ -13,9 +14,10 @@ import (
 // filled by the most relevant dynamic tools based on keyword similarity.
 type DynamicToolBuilder struct {
 	registry       *Registry
-	maxDirectTools int // threshold before filtering kicks in (default 20)
-	maxDynamic     int // max non-builtin tools when filtering (default 15)
-	bm25Index      *bm25.Index // cached BM25 index, reused across Build calls
+	maxDirectTools int             // threshold before filtering kicks in (default 20)
+	maxDynamic     int             // max non-builtin tools when filtering (default 15)
+	bm25Index      *bm25.Index     // cached BM25 index, reused across Build calls
+	hybrid         *HybridRetriever // nil when no embedder set
 }
 
 // NewDynamicToolBuilder creates a builder backed by the given registry.
@@ -31,6 +33,16 @@ func NewDynamicToolBuilder(registry *Registry) *DynamicToolBuilder {
 // SetRegistry replaces the registry without discarding the cached BM25 index.
 func (b *DynamicToolBuilder) SetRegistry(registry *Registry) {
 	b.registry = registry
+}
+
+// SetEmbedder configures the embedder for hybrid retrieval.
+// If emb is a NoopEmbedder, hybrid is disabled (set to nil).
+func (b *DynamicToolBuilder) SetEmbedder(emb embedding.Embedder) {
+	if embedding.IsNoop(emb) {
+		b.hybrid = nil
+		return
+	}
+	b.hybrid = NewHybridRetriever(emb)
 }
 
 // BuildAll returns tool definitions for every available tool (no filtering).
@@ -84,15 +96,22 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 
 	// Score remaining dynamic tools using BM25 (reuses cached index).
 	docs := make([]bm25.Doc, len(dynamic))
+	dynamicTexts := make(map[string]string, len(dynamic))
 	for i, t := range dynamic {
 		text := t.Name + " " + t.Description
 		for _, tag := range t.Tags {
 			text += " " + tag
 		}
 		docs[i] = bm25.Doc{ID: t.Name, Text: text}
+		dynamicTexts[t.Name] = text
 	}
 	b.bm25Index.RebuildIfChanged(docs)
 	bm25Scores := b.bm25Index.Score(userMessage)
+
+	// Fuse with vector scores when hybrid retrieval is active.
+	if b.hybrid != nil {
+		bm25Scores = b.hybrid.FuseScores(userMessage, bm25Scores, dynamicTexts)
+	}
 
 	type scored struct {
 		tool  RegisteredTool
@@ -179,6 +198,8 @@ var GroupKeywords = map[string][]string{
 	"browser":   {"browser", "web", "automation", "test"},
 	"自动化":      {"browser", "automation", "test"},
 	"automation": {"browser", "automation", "test"},
+	"测试":       {"browser", "automation", "test", "web"},
+	"test":      {"browser", "automation", "test", "web"},
 	"登录":       {"browser", "web", "automation"},
 	"下单":       {"browser", "web", "automation"},
 }

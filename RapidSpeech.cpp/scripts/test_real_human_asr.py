@@ -220,7 +220,7 @@ models = {
     "tiny": MoonshineRunner("models/moonshine-tiny", dim=288, n_heads=8,
                              head_dim=36, rotary_dim=32, n_enc=6, n_dec=6),
     "base": MoonshineRunner("models/moonshine-base", dim=416, n_heads=8,
-                             head_dim=52, rotary_dim=32, n_enc=8, n_dec=8),
+                             head_dim=52, rotary_dim=46, n_enc=8, n_dec=8),
 }
 
 for model_name, runner in models.items():

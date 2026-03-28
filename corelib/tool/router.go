@@ -1,10 +1,12 @@
 package tool
 
 import (
+	"log"
 	"sort"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
 const (
@@ -26,6 +28,7 @@ var CoreToolNames = map[string]bool{
 	"memory": true,
 	"web_search": true, "web_fetch": true,
 	"set_nickname": true,
+	"browser_connect": true,
 }
 
 // CodingSessionToolNames lists tools that require a coding LLM session provider.
@@ -124,7 +127,8 @@ type Router struct {
 	generator   *DefinitionGenerator
 	recommender SkillRecommender
 	registry    *Registry
-	bm25Index   *bm25.Index // cached BM25 index, reused across Route calls
+	bm25Index   *bm25.Index      // cached BM25 index, reused across Route calls
+	hybrid      *HybridRetriever // nil when no embedder set
 }
 
 // NewRouter creates a new Router.
@@ -143,6 +147,21 @@ func (r *Router) SetRegistry(reg *Registry) {
 // SetRecommender sets the SkillRecommender used for recommendation matching.
 func (r *Router) SetRecommender(recommender SkillRecommender) {
 	r.recommender = recommender
+}
+
+// SetEmbedder configures the embedder for hybrid retrieval.
+// If emb is a NoopEmbedder, hybrid is disabled (set to nil).
+func (r *Router) SetEmbedder(emb embedding.Embedder) {
+	if embedding.IsNoop(emb) {
+		r.hybrid = nil
+		return
+	}
+	r.hybrid = NewHybridRetriever(emb)
+}
+
+// HybridActive returns true if hybrid retrieval is currently enabled.
+func (r *Router) HybridActive() bool {
+	return r.hybrid != nil
 }
 
 func (r *Router) isBuiltin(name string) bool {
@@ -189,6 +208,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 
 	// Build a BM25 index over candidate tool descriptions (reuses cached index).
 	docs := make([]bm25.Doc, len(candidates))
+	candidateTexts := make(map[string]string, len(candidates))
 	for i, t := range candidates {
 		name := candidateNames[i]
 		text := name + " " + ExtractToolDescription(t)
@@ -196,9 +216,35 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			text += " " + strings.Join(tags, " ")
 		}
 		docs[i] = bm25.Doc{ID: name, Text: text}
+		candidateTexts[name] = text
 	}
 	r.bm25Index.RebuildIfChanged(docs)
 	scores := r.bm25Index.Score(userMessage)
+
+	// Fuse with vector scores when hybrid retrieval is active.
+	if r.hybrid != nil {
+		scores = r.hybrid.FuseScores(userMessage, scores, candidateTexts)
+
+		// Debug log top-5 tools with fused scores.
+		type debugEntry struct {
+			name  string
+			score float64
+		}
+		debugList := make([]debugEntry, 0, len(scores))
+		for name, s := range scores {
+			debugList = append(debugList, debugEntry{name: name, score: s})
+		}
+		sort.Slice(debugList, func(i, j int) bool {
+			return debugList[i].score > debugList[j].score
+		})
+		n := 5
+		if len(debugList) < n {
+			n = len(debugList)
+		}
+		for i := 0; i < n; i++ {
+			log.Printf("[HybridRoute] #%d %s fused=%.4f", i+1, debugList[i].name, debugList[i].score)
+		}
+	}
 
 	type scored struct {
 		index int
