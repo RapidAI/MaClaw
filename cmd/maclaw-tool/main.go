@@ -350,6 +350,11 @@ Commands:
   session attach <session-id> Attach to a running session
   session kill <session-id>   Kill a session
 
+  security-check [--mode standard|strict|relaxed] [--project /path]
+                              Run security check (stdin JSON, local only)
+  audit-record [--audit-dir dir]
+                              Record audit entry (stdin JSON, local only)
+
 Flags:
   --version                   Show version
 `)
@@ -368,13 +373,32 @@ func main() {
 		return
 	}
 
+	// Check for local-only subcommands BEFORE --token validation.
+	// security-check and audit-record run purely locally without Hub connection.
+	args := flag.Args()
+	if len(args) > 0 {
+		switch args[0] {
+		case "security-check":
+			scFlags := flag.NewFlagSet("security-check", flag.ExitOnError)
+			mode := scFlags.String("mode", "standard", "Security mode: standard, strict, relaxed")
+			project := scFlags.String("project", "", "Project path for project-level policy")
+			scFlags.Parse(args[1:])
+			os.Exit(runSecurityCheck(*mode, *project))
+		case "audit-record":
+			arFlags := flag.NewFlagSet("audit-record", flag.ExitOnError)
+			auditDir := arFlags.String("audit-dir", "", "Audit log directory (default: ~/.maclaw/audit/)")
+			arFlags.Parse(args[1:])
+			os.Exit(runAuditRecord(*auditDir))
+		}
+	}
+
 	if *token == "" {
 		fmt.Fprintln(os.Stderr, "Error: --token is required")
 		usage()
 		os.Exit(1)
 	}
 
-	args := flag.Args()
+	// args already declared above; reuse for session commands
 	if len(args) < 2 {
 		usage()
 		os.Exit(1)

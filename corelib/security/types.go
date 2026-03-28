@@ -68,15 +68,19 @@ const (
 
 // AuditEntry represents a single audit log record.
 type AuditEntry struct {
-	Timestamp    time.Time              `json:"timestamp"`
-	UserID       string                 `json:"user_id"`
-	SessionID    string                 `json:"session_id"`
-	Action       AuditAction            `json:"action,omitempty"`
-	ToolName     string                 `json:"tool_name"`
-	Arguments    map[string]interface{} `json:"arguments"`
-	RiskLevel    RiskLevel              `json:"risk_level"`
-	PolicyAction PolicyAction           `json:"policy_action"`
-	Result       string                 `json:"result"`
+	Timestamp           time.Time              `json:"timestamp"`
+	UserID              string                 `json:"user_id"`
+	SessionID           string                 `json:"session_id"`
+	Action              AuditAction            `json:"action,omitempty"`
+	ToolName            string                 `json:"tool_name"`
+	Arguments           map[string]interface{} `json:"arguments"`
+	RiskLevel           RiskLevel              `json:"risk_level"`
+	PolicyAction        PolicyAction           `json:"policy_action"`
+	Result              string                 `json:"result"`
+	Source              string                 `json:"source,omitempty"`
+	SensitiveDetected   bool                   `json:"sensitive_detected,omitempty"`
+	SensitiveCategories []string               `json:"sensitive_categories,omitempty"`
+	OutputSnippet       string                 `json:"output_snippet,omitempty"`
 }
 
 // AuditFilter defines criteria for querying audit log entries.

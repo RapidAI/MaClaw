@@ -126,6 +126,14 @@ func EnsureClaudeOnboarding(opts ClaudeOnboardingOptions, logFn func(string)) er
 		// Non-fatal: don't block session creation if hook install fails.
 	}
 
+	// Install the security gateway hooks (PreToolUse + PostToolUse).
+	if err := EnsureClaudeSecurityHook(home, "", tag, logFn); err != nil {
+		if logFn != nil {
+			logFn(fmt.Sprintf("[%s-onboarding] security hook install warning: %v", tag, err))
+		}
+		// Non-fatal: don't block session creation if hook install fails.
+	}
+
 	return nil
 }
 
