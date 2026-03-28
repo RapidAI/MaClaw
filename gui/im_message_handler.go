@@ -831,6 +831,8 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	registerBuiltinTools(h.registry, h)
 	// Register non-code tools (Git, file search, health check).
 	registerNonCodeTools(h.registry, app)
+	// Register browser automation tools (CDP-based).
+	registerBrowserTools(h.registry)
 	h.toolBuilder = NewDynamicToolBuilder(h.registry)
 	return h
 }
