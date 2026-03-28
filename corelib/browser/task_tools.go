@@ -16,7 +16,7 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 			Name:        "browser_task_run",
 			Description: "执行浏览器自动化任务。接受操作步骤序列和成功标准，逐步执行并验证。支持自动重试。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "automation", "task"},
+			Tags:        []string{"browser", "automation", "task", "浏览器", "自动化", "任务", "网页"},
 			Priority:    5,
 			Required:    []string{"steps"},
 			InputSchema: map[string]interface{}{
@@ -91,7 +91,7 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 			Name:        "browser_task_status",
 			Description: "查询浏览器任务的当前状态和进度。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "task", "status"},
+			Tags:        []string{"browser", "task", "status", "浏览器", "任务", "状态"},
 			Priority:    4,
 			Required:    []string{"task_id"},
 			InputSchema: map[string]interface{}{
@@ -114,7 +114,7 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 			Name:        "browser_task_verify",
 			Description: "对当前浏览器页面执行成功标准验证。可用于检查页面是否处于预期状态。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "verify", "test"},
+			Tags:        []string{"browser", "verify", "test", "浏览器", "验证", "检查", "网页"},
 			Priority:    5,
 			Required:    []string{"criteria"},
 			InputSchema: map[string]interface{}{
@@ -155,7 +155,7 @@ func RegisterOCRTool(registry *tool.Registry, ocr OCRProvider, sessionFn func() 
 		Name:        "browser_ocr",
 		Description: "对当前浏览器页面截图执行 OCR 文字识别。返回识别到的文本区域列表（含坐标和置信度）。首次调用会自动安装 RapidOCR。",
 		Category:    tool.CategoryBuiltin,
-		Tags:        []string{"browser", "ocr", "text", "recognition"},
+		Tags:        []string{"browser", "ocr", "text", "recognition", "浏览器", "文字识别", "网页"},
 		Priority:    5,
 		Status:      tool.StatusAvailable,
 		Source:      "builtin:browser-ocr",
@@ -213,7 +213,7 @@ func RegisterRecorderTools(registry *tool.Registry, recorder *BrowserRecorder, r
 			Name:        "browser_record_start",
 			Description: "开始录制浏览器操作。录制期间，所有 browser_* 工具的操作会被自动记录。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "record"},
+			Tags:        []string{"browser", "record", "浏览器", "录制"},
 			Priority:    4,
 			InputSchema: map[string]interface{}{},
 			Handler: func(args map[string]interface{}) string {
@@ -227,7 +227,7 @@ func RegisterRecorderTools(registry *tool.Registry, recorder *BrowserRecorder, r
 			Name:        "browser_record_stop",
 			Description: "停止录制并保存操作流程。保存到 ~/.maclaw/browser_flows/<name>.json。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "record"},
+			Tags:        []string{"browser", "record", "浏览器", "录制", "保存"},
 			Priority:    4,
 			Required:    []string{"name"},
 			InputSchema: map[string]interface{}{
@@ -251,7 +251,7 @@ func RegisterRecorderTools(registry *tool.Registry, recorder *BrowserRecorder, r
 			Name:        "browser_task_replay",
 			Description: "回放录制的浏览器操作流程。支持参数覆盖（如替换用户名密码）。页面变化时会自动调整。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "replay", "automation"},
+			Tags:        []string{"browser", "replay", "automation", "浏览器", "回放", "自动化", "网页"},
 			Priority:    5,
 			Required:    []string{"name"},
 			InputSchema: map[string]interface{}{
@@ -305,7 +305,7 @@ func RegisterRecorderTools(registry *tool.Registry, recorder *BrowserRecorder, r
 			Name:        "browser_list_flows",
 			Description: "列出所有已录制的浏览器操作流程。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "flows", "list"},
+			Tags:        []string{"browser", "flows", "list", "浏览器", "流程", "列表"},
 			Priority:    3,
 			InputSchema: map[string]interface{}{},
 			Handler: func(args map[string]interface{}) string {

@@ -28,7 +28,7 @@ var CoreToolNames = map[string]bool{
 	"memory": true,
 	"web_search": true, "web_fetch": true,
 	"set_nickname": true,
-	"browser_connect": true,
+	"browser_connect": true, "browser_navigate": true, "browser_click": true,
 }
 
 // CodingSessionToolNames lists tools that require a coding LLM session provider.

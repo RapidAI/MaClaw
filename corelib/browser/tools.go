@@ -17,7 +17,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_connect",
 			Description: "连接到浏览器的 CDP 远程调试端口。如果浏览器未启动调试模式，会返回启动指引。可选参数 addr 指定地址（默认 http://127.0.0.1:9222）。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "test", "automation"},
+			Tags:        []string{"browser", "web", "test", "automation", "浏览器", "连接", "网页"},
 			Priority:    5,
 			InputSchema: map[string]interface{}{
 				"addr": map[string]interface{}{"type": "string", "description": "CDP 地址，默认 http://127.0.0.1:9222"},
@@ -46,7 +46,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_navigate",
 			Description: "在浏览器中导航到指定 URL，等待页面加载完成。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "navigate"},
+			Tags:        []string{"browser", "web", "navigate", "浏览器", "导航", "打开", "网页", "访问"},
 			Priority:    5,
 			Required:    []string{"url"},
 			InputSchema: map[string]interface{}{
@@ -73,7 +73,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_click",
 			Description: "点击页面上匹配 CSS 选择器的元素。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "click"},
+			Tags:        []string{"browser", "web", "click", "浏览器", "点击", "网页", "操作"},
 			Priority:    5,
 			Required:    []string{"selector"},
 			InputSchema: map[string]interface{}{
@@ -95,7 +95,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_type",
 			Description: "在匹配 CSS 选择器的输入框中输入文本。会先清空输入框再输入。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "input", "type"},
+			Tags:        []string{"browser", "web", "input", "type", "浏览器", "输入", "填写", "网页"},
 			Priority:    5,
 			Required:    []string{"selector", "text"},
 			InputSchema: map[string]interface{}{
@@ -119,7 +119,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_screenshot",
 			Description: "截取当前页面的屏幕截图，返回 base64 编码的 PNG 图片。可选 full_page 参数截取整个页面。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "screenshot"},
+			Tags:        []string{"browser", "web", "screenshot", "浏览器", "截图", "网页"},
 			Priority:    5,
 			InputSchema: map[string]interface{}{
 				"full_page": map[string]interface{}{"type": "boolean", "description": "是否截取整个页面（默认 false，只截取可视区域）"},
@@ -147,7 +147,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_get_text",
 			Description: "获取匹配 CSS 选择器的元素的文本内容。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "text"},
+			Tags:        []string{"browser", "web", "text", "浏览器", "文本", "获取", "网页"},
 			Priority:    5,
 			Required:    []string{"selector"},
 			InputSchema: map[string]interface{}{
@@ -169,7 +169,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_get_html",
 			Description: "获取匹配 CSS 选择器的元素的 HTML。selector 为空则返回整个页面 HTML（截断到 50KB）。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "html"},
+			Tags:        []string{"browser", "web", "html", "浏览器", "网页", "源码"},
 			Priority:    4,
 			InputSchema: map[string]interface{}{
 				"selector": map[string]interface{}{"type": "string", "description": "CSS 选择器（留空返回整页）"},
@@ -190,7 +190,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_eval",
 			Description: "在当前页面执行任意 JavaScript 代码并返回结果。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "javascript", "eval"},
+			Tags:        []string{"browser", "web", "javascript", "eval", "浏览器", "执行", "脚本", "网页"},
 			Priority:    5,
 			Required:    []string{"expression"},
 			InputSchema: map[string]interface{}{
@@ -212,7 +212,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_wait",
 			Description: "等待匹配 CSS 选择器的元素出现在页面上。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "wait"},
+			Tags:        []string{"browser", "web", "wait", "浏览器", "等待", "网页"},
 			Priority:    4,
 			Required:    []string{"selector"},
 			InputSchema: map[string]interface{}{
@@ -236,7 +236,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_scroll",
 			Description: "滚动页面。delta_y 正值向下滚动，负值向上。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "scroll"},
+			Tags:        []string{"browser", "web", "scroll", "浏览器", "滚动", "网页"},
 			Priority:    3,
 			InputSchema: map[string]interface{}{
 				"delta_x": map[string]interface{}{"type": "integer", "description": "水平滚动像素（默认 0）"},
@@ -259,7 +259,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_select",
 			Description: "在 <select> 下拉框中选择指定值。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "select"},
+			Tags:        []string{"browser", "web", "select", "浏览器", "选择", "下拉", "网页"},
 			Priority:    3,
 			Required:    []string{"selector", "value"},
 			InputSchema: map[string]interface{}{
@@ -281,7 +281,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_list_pages",
 			Description: "列出浏览器中所有打开的页面（标签页）。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "pages", "tabs"},
+			Tags:        []string{"browser", "web", "pages", "tabs", "浏览器", "标签页", "网页"},
 			Priority:    4,
 			InputSchema: map[string]interface{}{},
 			Handler: func(args map[string]interface{}) string {
@@ -313,7 +313,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_switch_page",
 			Description: "切换到指定的页面标签页（通过 target_id，可从 browser_list_pages 获取）。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "switch", "tab"},
+			Tags:        []string{"browser", "web", "switch", "tab", "浏览器", "切换", "标签页", "网页"},
 			Priority:    3,
 			Required:    []string{"target_id"},
 			InputSchema: map[string]interface{}{
@@ -335,7 +335,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_close",
 			Description: "断开与浏览器的 CDP 连接（不会关闭浏览器本身）。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "close"},
+			Tags:        []string{"browser", "web", "close", "浏览器", "关闭", "断开"},
 			Priority:    3,
 			InputSchema: map[string]interface{}{},
 			Handler: func(args map[string]interface{}) string {
@@ -347,7 +347,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_click_at",
 			Description: "CDP 级别真实鼠标点击（Input.dispatchMouseEvent）。算用户手势，能触发文件对话框、绕过反自动化检测。适合 el.click() 无效的场景。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "click", "automation"},
+			Tags:        []string{"browser", "web", "click", "automation", "浏览器", "点击", "真实点击", "网页"},
 			Priority:    5,
 			Required:    []string{"selector"},
 			InputSchema: map[string]interface{}{
@@ -369,7 +369,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_set_files",
 			Description: "给 file input 元素设置本地文件路径，绕过文件对话框。用于自动化文件上传。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "upload", "file"},
+			Tags:        []string{"browser", "web", "upload", "file", "浏览器", "上传", "文件", "网页"},
 			Priority:    4,
 			Required:    []string{"selector", "files"},
 			InputSchema: map[string]interface{}{
@@ -400,7 +400,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_back",
 			Description: "浏览器后退（history.back），等待页面加载完成。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "navigate", "back"},
+			Tags:        []string{"browser", "web", "navigate", "back", "浏览器", "后退", "网页"},
 			Priority:    3,
 			InputSchema: map[string]interface{}{},
 			Handler: func(args map[string]interface{}) string {
@@ -419,7 +419,7 @@ func RegisterTools(registry *tool.Registry) {
 			Name:        "browser_info",
 			Description: "获取当前页面的标题、URL 和加载状态（一次调用返回所有信息）。",
 			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "info"},
+			Tags:        []string{"browser", "web", "info", "浏览器", "信息", "状态", "网页"},
 			Priority:    5,
 			InputSchema: map[string]interface{}{},
 			Handler: func(args map[string]interface{}) string {
