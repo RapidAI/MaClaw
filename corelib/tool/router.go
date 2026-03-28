@@ -383,6 +383,13 @@ func writeRouteLog(
 	}
 	defer f.Close()
 
+	// Truncate if over 5MB to prevent unbounded growth.
+	if info, e := f.Stat(); e == nil && info.Size() > 5*1024*1024 {
+		f.Truncate(0)
+		f.Seek(0, 0)
+		fmt.Fprintln(f, "[log truncated — exceeded 5MB]")
+	}
+
 	now := time.Now().Format("2006-01-02 15:04:05")
 	fmt.Fprintf(f, "\n=== Tool Route [%s] ===\n", now)
 	msgPreview := userMessage
