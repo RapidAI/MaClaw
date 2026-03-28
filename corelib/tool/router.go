@@ -1,9 +1,13 @@
 package tool
 
 import (
+	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -280,6 +284,19 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
+	// Write detailed routing log to ~/.maclaw/logs/tool_route.log
+	selectedNames := make([]string, len(result))
+	for i, t := range result {
+		selectedNames[i] = ExtractToolName(t)
+	}
+	rankedNames := make([]string, len(scoredList))
+	rankedScores := make([]float64, len(scoredList))
+	for i, s := range scoredList {
+		rankedNames[i] = candidateNames[s.index]
+		rankedScores[i] = s.score
+	}
+	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, rankedNames, rankedScores, selectedNames)
+
 	return result
 }
 
@@ -340,4 +357,56 @@ func ExtractToolDescription(def map[string]interface{}) string {
 	}
 	desc, _ := fnMap["description"].(string)
 	return desc
+}
+
+// writeRouteLog writes a detailed tool routing decision log to ~/.maclaw/logs/tool_route.log.
+// Runs in a goroutine to avoid blocking the hot path.
+func writeRouteLog(
+	userMessage string,
+	totalTools, coreCount, candidateCount int,
+	hybridActive bool,
+	rankedNames []string,
+	rankedScores []float64,
+	selectedNames []string,
+) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	logDir := filepath.Join(home, ".maclaw", "logs")
+	os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, "tool_route.log")
+
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	now := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Fprintf(f, "\n=== Tool Route [%s] ===\n", now)
+	msgPreview := userMessage
+	if len([]rune(msgPreview)) > 100 {
+		msgPreview = string([]rune(msgPreview)[:100]) + "..."
+	}
+	fmt.Fprintf(f, "Message: %s\n", msgPreview)
+	fmt.Fprintf(f, "Total tools: %d | Core: %d | Candidates: %d | Hybrid: %v\n",
+		totalTools, coreCount, candidateCount, hybridActive)
+
+	// Top-20 candidates by score
+	n := 20
+	if len(rankedNames) < n {
+		n = len(rankedNames)
+	}
+	fmt.Fprintf(f, "Top-%d candidates by fused score:\n", n)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(f, "  #%d %s = %.4f\n", i+1, rankedNames[i], rankedScores[i])
+	}
+
+	// Final selected tools
+	fmt.Fprintf(f, "Selected tools (%d):\n", len(selectedNames))
+	for _, name := range selectedNames {
+		fmt.Fprintf(f, "  - %s\n", name)
+	}
+	fmt.Fprintln(f, "---")
 }
