@@ -79,6 +79,7 @@ func wrapExecutorWithReplay(original scheduler.TaskExecutor, bridge *browserRepl
 }
 
 // bgLoopMgrAdapter wraps *agent.BackgroundLoopManager to satisfy browser.LoopManager.
+// Note: a similar adapter exists in corelib/browser/task_tools.go for in-package use.
 type bgLoopMgrAdapter struct {
 	mgr *agent.BackgroundLoopManager
 }

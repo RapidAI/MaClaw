@@ -60,24 +60,23 @@ func RunReplayInBackground(
 	go func() {
 		select {
 		case <-loopCtx.CancelC:
-			// Cancel all running/paused tasks on this supervisor
+			// Cancel the replay task via supervisor's public Cancel method.
+			// We iterate GetState to find running tasks — but since replay
+			// creates exactly one task, we cancel all running/paused ones.
 			sup := replayer.supervisor
 			sup.mu.RLock()
 			var ids []string
-			for id, entry := range sup.tasks {
-				if entry.state.Status == TaskStatusRunning || entry.state.Status == TaskStatusPaused {
-					ids = append(ids, id)
-				}
+			for id := range sup.tasks {
+				ids = append(ids, id)
 			}
 			sup.mu.RUnlock()
 			for _, id := range ids {
-				_ = sup.Cancel(id)
+				_ = sup.Cancel(id) // Cancel checks status internally
 			}
 			if logger != nil {
 				logger(fmt.Sprintf("[replay-bg] cancel signal received for %s", flowName))
 			}
 		case <-replayDone:
-			// replay finished, stop monitoring
 		}
 	}()
 

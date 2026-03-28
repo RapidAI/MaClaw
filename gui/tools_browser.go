@@ -60,6 +60,9 @@ func registerBrowserTools(registry *ToolRegistry) {
 		log.Printf("[browser-record] %s", msg)
 	})
 	replayer := browser.NewFlowReplayer(supervisor, compositeOCR, nil)
+	// Note: loopMgr/activityStore/statusC are nil here. Async replay is wired
+	// at a higher level (app.go) when the gui BackgroundLoopManager is available.
+	// The corelib browser package uses corelib/agent types, not gui-local types.
 	browser.RegisterRecorderTools(coreReg, recorder, replayer, nil, nil, nil, func(msg string) {
 		log.Printf("[browser-replay] %s", msg)
 	})

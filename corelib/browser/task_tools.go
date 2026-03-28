@@ -94,7 +94,6 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 			Category:    tool.CategoryBuiltin,
 			Tags:        []string{"browser", "task", "status", "浏览器", "任务", "状态", "回放", "进度"},
 			Priority:    4,
-			Required:    []string{"task_id"},
 			InputSchema: map[string]interface{}{
 				"task_id": map[string]interface{}{"type": "string", "description": "任务 ID（留空则列出所有浏览器后台任务）"},
 			},
