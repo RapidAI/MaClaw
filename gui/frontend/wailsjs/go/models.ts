@@ -189,6 +189,7 @@ export namespace main {
 	    skill_purchase_mode: string;
 	    gossip_auto_publish: boolean;
 	    onboarding_done: boolean;
+	    vector_search_enabled: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -294,6 +295,7 @@ export namespace main {
 	        this.skill_purchase_mode = source["skill_purchase_mode"];
 	        this.gossip_auto_publish = source["gossip_auto_publish"];
 	        this.onboarding_done = source["onboarding_done"];
+	        this.vector_search_enabled = source["vector_search_enabled"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -656,6 +656,8 @@ func (a *App) startup(ctx context.Context) {
 		}
 		// Auto-start free proxy if "免费" provider is selected.
 		go a.ensureFreeProxyIfNeeded()
+		// Background preload embedding model (silent, resumable).
+		go a.backgroundPreloadEmbeddingModel()
 		// Auto-start IM gateways that were previously enabled.
 		// If Hub is connected, createAndWireHubClient already started them;
 		// only start here when Hub credentials are absent (pure local mode).

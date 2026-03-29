@@ -207,6 +207,7 @@ func (a *App) DownloadEmbeddingModel() error {
 
 // downloadModelFrom downloads a file from url to destPath, emitting progress events.
 // When emitErrors is false, errors are not sent to the frontend (used for silent fallback attempts).
+// Supports HTTP Range resume: if a .tmp file already exists, it sends a Range header to continue.
 func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 	tmpPath := destPath + ".tmp"
 
@@ -218,6 +219,13 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 
+	// Resume: check existing .tmp file size for Range request.
+	var resumeOffset int64
+	if fi, err := os.Stat(tmpPath); err == nil && fi.Size() > 0 {
+		resumeOffset = fi.Size()
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
+	}
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if emitErrors {
@@ -227,7 +235,7 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		msg := fmt.Sprintf("HTTP %d from %s", resp.StatusCode, url)
 		if emitErrors {
 			a.emitDownloadProgress(0, 0, 0, msg)
@@ -235,19 +243,46 @@ func (a *App) downloadModelFrom(url, destPath string, emitErrors bool) error {
 		return fmt.Errorf("%s", msg)
 	}
 
-	totalSize, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+	// If server doesn't support Range (returned 200 instead of 206), start from scratch.
+	if resp.StatusCode == http.StatusOK && resumeOffset > 0 {
+		resumeOffset = 0
+	}
 
-	out, err := os.Create(tmpPath)
+	var totalSize int64
+	if resp.StatusCode == http.StatusPartialContent {
+		// Content-Range: bytes 12345-99999/100000
+		if cr := resp.Header.Get("Content-Range"); cr != "" {
+			// Parse total from "bytes start-end/total"
+			if idx := strings.LastIndex(cr, "/"); idx >= 0 {
+				totalSize, _ = strconv.ParseInt(cr[idx+1:], 10, 64)
+			}
+		}
+		if totalSize == 0 {
+			cl, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+			totalSize = resumeOffset + cl
+		}
+	} else {
+		totalSize, _ = strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+	}
+
+	var out *os.File
+	if resumeOffset > 0 && resp.StatusCode == http.StatusPartialContent {
+		out, err = os.OpenFile(tmpPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	} else {
+		resumeOffset = 0
+		out, err = os.Create(tmpPath)
+	}
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return fmt.Errorf("open temp file: %w", err)
 	}
 	defer func() {
 		out.Close()
-		os.Remove(tmpPath) // clean up on failure; no-op if already renamed
+		// Only clean up .tmp on non-resume errors; keep it for future resume.
+		// The caller (backgroundPreloadEmbeddingModel) relies on .tmp surviving.
 	}()
 
 	buf := make([]byte, 64*1024)
-	var downloaded int64
+	downloaded := resumeOffset
 	lastEmit := time.Now()
 
 	for {
@@ -299,4 +334,87 @@ func (a *App) emitDownloadProgress(pct int, downloaded, total int64, errMsg stri
 		"total":      total,
 		"error":      errMsg,
 	})
+}
+
+// backgroundPreloadEmbeddingModel silently downloads the embedding model in the
+// background when vector search is not yet enabled and the model file is missing.
+// On success it verifies the model by loading it, then auto-enables vector search.
+// Supports resume: if a previous .tmp file exists, the download continues from
+// where it left off (HTTP Range).
+func (a *App) backgroundPreloadEmbeddingModel() {
+	// Wait a bit for ensureRemoteInfra to initialize memoryStore/toolRouter etc.
+	time.Sleep(15 * time.Second)
+
+	// Only run if vector search is currently OFF and model doesn't exist.
+	cfg, err := a.LoadConfig()
+	if err != nil || cfg.VectorSearchEnabled {
+		return
+	}
+
+	dir, err := embeddingModelsDir()
+	if err != nil {
+		return
+	}
+	destPath := filepath.Join(dir, embeddingModelFilename)
+	if _, err := os.Stat(destPath); err == nil {
+		// Model file already exists — just verify and auto-enable.
+		if a.verifyAndEnableEmbedding(destPath) {
+			return
+		}
+		// Verification failed — file is corrupt, remove and re-download.
+		os.Remove(destPath)
+	}
+
+	// Acquire download lock; skip if another download is in progress.
+	if !embeddingDownloadMu.TryLock() {
+		return
+	}
+	defer embeddingDownloadMu.Unlock()
+
+	fmt.Println("[embedding] background preload: starting silent download")
+
+	// Try default GitHub URL first.
+	if err := a.downloadModelFrom(embeddingModelDefaultURL, destPath, false); err != nil {
+		// Fallback: Hub URL.
+		hubURL := strings.TrimRight(cfg.RemoteHubURL, "/")
+		if hubURL == "" {
+			fmt.Printf("[embedding] background preload: all sources failed: %v\n", err)
+			return
+		}
+		fallbackURL := hubURL + "/api/v1/models/" + embeddingModelFilename
+		if err := a.downloadModelFrom(fallbackURL, destPath, false); err != nil {
+			fmt.Printf("[embedding] background preload: fallback failed: %v\n", err)
+			return
+		}
+	}
+
+	// Verify and auto-enable.
+	a.verifyAndEnableEmbedding(destPath)
+}
+
+// verifyAndEnableEmbedding loads the model to verify integrity, then auto-enables
+// vector search if successful. Returns true on success.
+func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
+	// Ensure infrastructure is ready before enabling.
+	a.ensureRemoteInfra()
+
+	emb, err := embedding.NewGemmaEmbedder(modelPath, 256)
+	if err != nil {
+		fmt.Printf("[embedding] verification failed: %v\n", err)
+		return false
+	}
+
+	// Quick smoke test: embed a short string.
+	vec, err := emb.Embed("test")
+	if err != nil || len(vec) == 0 {
+		fmt.Printf("[embedding] smoke test failed: err=%v len=%d\n", err, len(vec))
+		return false
+	}
+
+	fmt.Println("[embedding] model verified, auto-enabling vector search")
+	if err := a.SetVectorSearchEnabled(true); err != nil {
+		fmt.Printf("[embedding] auto-enable failed: %v\n", err)
+		return false
+	}
+	return true
 }
