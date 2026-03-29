@@ -3289,18 +3289,18 @@ ${instruction}`;
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
-                    padding: '10px 0',
+                    padding: '6px 0',
                     backgroundColor: '#fafbff',
                     flexShrink: 0
                 }}>
-                    <div className="sidebar-header" style={{ padding: '0 0 10px 0', justifyContent: 'center', width: '100%' }}>
+                    <div className="sidebar-header" style={{ padding: '0 0 6px 0', justifyContent: 'center', width: '100%' }}>
                         <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '28px', height: '28px' }} />
                     </div>
                     <div style={{
                         fontSize: '0.7rem',
                         fontWeight: 'bold',
                         textAlign: 'center',
-                        marginBottom: '4px',
+                        marginBottom: '2px',
                         background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
                         WebkitBackgroundClip: 'text',
                         WebkitTextFillColor: 'transparent',
@@ -3311,7 +3311,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'remote' ? 'active' : ''}`}
                         onClick={() => switchTool('remote')}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>📡</span>
@@ -3322,7 +3322,7 @@ ${instruction}`;
                         className={`sidebar-item ${navTab === 'ai' ? 'active' : ''}`}
                         onClick={() => { switchTool('ai'); }}
                         style={{
-                            flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px',
+                            flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px',
                             borderLeft: 'none',
                             borderRight: navTab === 'ai' ? '3px solid var(--primary-color)' : '3px solid transparent',
                             justifyContent: 'center'
@@ -3392,7 +3392,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'skills' ? 'active' : ''}`}
                         onClick={() => { switchTool('skills'); }}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title={t("skills")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🧩</span>
@@ -3401,7 +3401,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'mcp' ? 'active' : ''}`}
                         onClick={() => { switchTool('mcp'); }}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title="MCP"
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🔌</span>
@@ -3411,7 +3411,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'clawnet' ? 'active' : ''}`}
                         onClick={() => { switchTool('clawnet'); }}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}
                     >
                         <img src={clawnetIcon} alt="ClawNet" style={{ width: '22px', height: '22px', margin: 0 }} />
@@ -3425,7 +3425,7 @@ ${instruction}`;
                         <div
                             className={`sidebar-item ${navTab === 'gossip' ? 'active' : ''}`}
                             onClick={() => { switchTool('gossip'); }}
-                            style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'gossip' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                            style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'gossip' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                             title={t("gossip")}
                         >
                             <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🗣️</span>
@@ -3436,7 +3436,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'settings' ? 'active' : ''}`}
                         onClick={() => { switchTool('settings'); }}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title={t("settings")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>⚙️</span>
@@ -3449,7 +3449,7 @@ ${instruction}`;
                             <div
                                 className={`sidebar-item ${showHelpMenu ? 'active' : ''}`}
                                 onClick={() => setShowHelpMenu(!showHelpMenu)}
-                                style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: showHelpMenu ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                                style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: showHelpMenu ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                                 title={t("help")}
                             >
                                 <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>❓</span>
@@ -3492,7 +3492,7 @@ ${instruction}`;
                         <div
                             className={`sidebar-item ${navTab === 'about' ? 'active' : ''}`}
                             onClick={() => switchTool('about')}
-                            style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                            style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                             title={t("about")}
                         >
                             <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>ℹ️</span>

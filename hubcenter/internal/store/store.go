@@ -189,6 +189,8 @@ type NewsRepository interface {
 	List(ctx context.Context, offset, limit int) ([]*NewsArticle, int, error)
 	// ListLatest returns the N most recent articles (pinned first, then by created_at desc).
 	ListLatest(ctx context.Context, limit int) ([]*NewsArticle, error)
+	// CountPinned returns the number of currently pinned articles.
+	CountPinned(ctx context.Context) (int, error)
 }
 
 type Store struct {

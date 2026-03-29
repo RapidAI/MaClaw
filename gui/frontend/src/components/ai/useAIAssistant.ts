@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 export interface ChatMessage {
@@ -68,10 +68,30 @@ export function useAIAssistant() {
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
     const [sending, setSending] = useState(false);
     const [streaming, setStreaming] = useState(false);
+    const [ready, setReady] = useState(false);
     // Ref-based guard prevents concurrent sends (React state is async).
     const sendingRef = useRef(false);
     // Track the current streaming message ID so token events know where to append.
     const streamingMsgIdRef = useRef<string | null>(null);
+
+    // Poll backend readiness until the AI assistant is initialized.
+    useEffect(() => {
+        let cancelled = false;
+        const check = () => {
+            IsAIAssistantReady().then(ok => {
+                if (cancelled) return;
+                if (ok) {
+                    setReady(true);
+                } else {
+                    setTimeout(check, 2000);
+                }
+            }).catch(() => {
+                if (!cancelled) setTimeout(check, 2000);
+            });
+        };
+        check();
+        return () => { cancelled = true; };
+    }, []);
 
     // Persist messages to localStorage whenever they change (debounced via ref
     // to avoid thrashing during rapid streaming token events).
@@ -295,7 +315,7 @@ export function useAIAssistant() {
         };
     }, []);
 
-    return { messages, sending, streaming, sendMessage, clearHistory, executeAction };
+    return { messages, sending, streaming, ready, sendMessage, clearHistory, executeAction };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

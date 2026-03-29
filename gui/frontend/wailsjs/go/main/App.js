@@ -911,6 +911,10 @@ export function ClawNetNutshellUnpack(arg1, arg2) {
 }
 
 // AI Assistant bindings
+export function IsAIAssistantReady() {
+  return window['go']['main']['App']['IsAIAssistantReady']();
+}
+
 export function SendAIAssistantMessage(arg1) {
   return window['go']['main']['App']['SendAIAssistantMessage'](arg1);
 }

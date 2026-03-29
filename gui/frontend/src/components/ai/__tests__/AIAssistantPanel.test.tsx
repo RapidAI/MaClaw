@@ -92,6 +92,7 @@ describe('AIAssistantPanel property tests', () => {
                             messages={messages}
                             sending={false}
                             streaming={false}
+                            ready={true}
                             sendMessage={async () => {}}
                             clearHistory={async () => {}}
                             executeAction={async () => {}}

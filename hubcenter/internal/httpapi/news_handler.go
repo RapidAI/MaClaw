@@ -125,6 +125,18 @@ func AdminCreateNewsHandler(repo store.NewsRepository) http.HandlerFunc {
 			cat = "notice"
 		}
 		now := time.Now().UTC()
+		// Enforce max 2 pinned articles
+		if req.Pinned {
+			pinnedCount, err := repo.CountPinned(r.Context())
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "NEWS_CREATE_FAILED", err.Error())
+				return
+			}
+			if pinnedCount >= 2 {
+				writeError(w, http.StatusBadRequest, "MAX_PINNED", "Maximum 2 pinned articles allowed")
+				return
+			}
+		}
 		article := &store.NewsArticle{
 			ID:        generateNewsID(),
 			Title:     title,
@@ -177,8 +189,21 @@ func AdminUpdateNewsHandler(repo store.NewsRepository) http.HandlerFunc {
 		if req.Category != nil {
 			existing.Category = strings.TrimSpace(*req.Category)
 		}
+		wasPinned := existing.Pinned
 		if req.Pinned != nil {
 			existing.Pinned = *req.Pinned
+		}
+		// Enforce max 2 pinned articles (only when newly pinning)
+		if existing.Pinned && !wasPinned {
+			pinnedCount, err := repo.CountPinned(r.Context())
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "NEWS_UPDATE_FAILED", err.Error())
+				return
+			}
+			if pinnedCount >= 2 {
+				writeError(w, http.StatusBadRequest, "MAX_PINNED", "Maximum 2 pinned articles allowed")
+				return
+			}
 		}
 		existing.UpdatedAt = time.Now().UTC()
 		if err := repo.Update(r.Context(), existing); err != nil {

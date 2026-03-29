@@ -484,6 +484,12 @@ func (a *App) TriggerScheduledTask(id string) error {
 // AI Assistant Wails bindings
 // ---------------------------------------------------------------------------
 
+// IsAIAssistantReady returns true when the AI assistant backend is initialized.
+func (a *App) IsAIAssistantReady() bool {
+	hubClient := a.hubClient()
+	return hubClient != nil && hubClient.imHandler != nil
+}
+
 // SendAIAssistantMessage handles a desktop AI assistant message (Wails binding).
 func (a *App) SendAIAssistantMessage(text string) (*IMAgentResponse, error) {
 	a.ensureRemoteInfra()

@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { ShowItemInFolder } from "../../../wailsjs/go/main/App";
+import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatMessage } from "./useAIAssistant";
 import { findLastIndex } from "./useAIAssistant";
 
@@ -9,6 +10,7 @@ interface AIAssistantPanelProps {
     messages: ChatMessage[];
     sending: boolean;
     streaming: boolean;
+    ready: boolean;
     sendMessage: (text: string) => Promise<void>;
     clearHistory: () => Promise<void>;
     executeAction: (command: string) => Promise<void>;
@@ -222,7 +224,7 @@ function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
             if (lm) {
                 const href = lm[2];
                 if (/^https?:\/\//i.test(href)) {
-                    parts.push(<a key={idx++} href={href} target="_blank" rel="noopener noreferrer" style={{ color: t.linkColor, textDecoration: "underline" }}>{lm[1]}</a>);
+                    parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer" }}>{lm[1]}</a>);
                 } else {
                     parts.push(<span key={idx++} style={{ color: t.linkColor }}>{lm[1]}</span>);
                 }
@@ -507,7 +509,7 @@ if (typeof document !== "undefined" && !document.getElementById("ai-blink-style"
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, sendMessage, clearHistory, executeAction, inline, onHideWindow }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, sendMessage, clearHistory, executeAction, inline, onHideWindow }: AIAssistantPanelProps) {
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -521,7 +523,9 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
 
     const title = lang === "en" ? "AI Assistant" : "AI 助手";
     const thinkingText = lang === "en" ? "Thinking..." : "正在思考...";
-    const placeholderText = streaming
+    const placeholderText = !ready
+        ? (lang === "en" ? "Initializing..." : "正在初始化...")
+        : streaming
         ? (lang === "en" ? "Thinking..." : "正在思考...")
         : sending
             ? (lang === "en" ? "Processing..." : "处理中...")
@@ -586,11 +590,28 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
         await sendMessage(text);
     }, [inputValue, sending, sendMessage]);
 
-    // Memoize rendered messages — only the last assistant message shows a streaming cursor.
-    const renderedMessages = useMemo(() => {
+    // Split messages: pinned news vs regular messages
+    const { pinnedNews, otherMessages } = useMemo(() => {
+        const pinned: ChatMessage[] = [];
+        const other: ChatMessage[] = [];
+        for (const m of messages) {
+            if (m.role === 'system' && m.id.startsWith('news-')) {
+                pinned.push(m);
+            } else {
+                other.push(m);
+            }
+        }
+        return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
+    }, [messages]);
+
+    // Memoize rendered non-news messages
+    const renderedOtherMessages = useMemo(() => {
         const lastAssistantIdx = findLastIndex(messages, m => m.role === 'assistant');
-        return messages.map((msg, i) => renderMessage(msg, executeAction, t, i === lastAssistantIdx));
-    }, [messages, executeAction, t]);
+        return otherMessages.map(msg => {
+            const origIdx = messages.indexOf(msg);
+            return renderMessage(msg, executeAction, t, origIdx === lastAssistantIdx);
+        });
+    }, [otherMessages, messages, executeAction, t]);
 
     const containerStyle: React.CSSProperties = inline
         ? { display: "flex", flexDirection: "column", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }
@@ -678,7 +699,32 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                         {lang === "en" ? "Ask me anything..." : "有什么可以帮你的？"}
                     </span>
                 ) : (
-                    renderedMessages
+                    <>
+                        {pinnedNews.length > 0 && (
+                            <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: pinnedNews.length >= 2 ? '1fr 1fr' : '1fr',
+                                gap: '6px',
+                                marginBottom: '6px',
+                            }}>
+                                {pinnedNews.map(msg => (
+                                    <div key={msg.id} style={{
+                                        padding: "6px 8px",
+                                        borderRadius: "6px",
+                                        background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(139,92,246,0.06))",
+                                        borderLeft: `3px solid ${t.promptColor}`,
+                                        color: t.text,
+                                        fontSize: "11px",
+                                        lineHeight: "1.5",
+                                        overflow: "hidden",
+                                    }}>
+                                        {renderContentWithCodeBlocks(msg.content, t)}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {renderedOtherMessages}
+                    </>
                 )}
                 {streaming && (
                     <div style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>
@@ -703,6 +749,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                 }}>❯</span>
                 <textarea
                     ref={inputRef}
+                    disabled={!ready}
                     style={{
                         flex: 1, minWidth: 0, background: "transparent",
                         border: "none", outline: "none", color: t.inputText,
@@ -711,6 +758,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                         resize: "none", overflow: "auto",
                         minHeight: "36px", maxHeight: "120px",
                         lineHeight: 1.4,
+                        opacity: ready ? 1 : 0.5,
                     }}
                     rows={1}
                     value={inputValue}
@@ -736,13 +784,13 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                 />
                 <button
                     onClick={handleSend}
-                    disabled={sending || !inputValue.trim()}
+                    disabled={!ready || sending || !inputValue.trim()}
                     style={{
                         ...baseInputBtnStyle,
                         ...(inline
                             ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
                             : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
-                        opacity: (sending || !inputValue.trim()) ? 0.5 : 1,
+                        opacity: (!ready || sending || !inputValue.trim()) ? 0.5 : 1,
                         marginBottom: "4px",
                     }}
                     title={lang === "en" ? "Send" : "发送"}

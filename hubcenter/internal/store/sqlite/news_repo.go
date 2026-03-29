@@ -85,6 +85,12 @@ func (r *newsRepo) ListLatest(ctx context.Context, limit int) ([]*store.NewsArti
 	return out, rows.Err()
 }
 
+func (r *newsRepo) CountPinned(ctx context.Context) (int, error) {
+	var count int
+	err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM news_articles WHERE pinned=1`).Scan(&count)
+	return count, err
+}
+
 func scanNewsArticle(row *sql.Row) (*store.NewsArticle, error) {
 	var a store.NewsArticle
 	var pinned int
