@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, ClearAIAssistantHistory } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 export interface ChatMessage {
     id: string;
-    role: 'user' | 'assistant' | 'progress' | 'error';
+    role: 'user' | 'assistant' | 'progress' | 'error' | 'system';
     content: string;
     fields?: Array<{ label: string; value: string }>;
     actions?: Array<{ label: string; command: string; style: string }>;
@@ -24,14 +24,89 @@ const STREAM_TOKEN_EVENT = "ai-assistant-token";
 const NEW_ROUND_EVENT = "ai-assistant-new-round";
 const STREAM_DONE_EVENT = "ai-assistant-stream-done";
 
+// ---------------------------------------------------------------------------
+// localStorage persistence for chat history across app restarts
+// ---------------------------------------------------------------------------
+const STORAGE_KEY = "ai-assistant-history";
+const MAX_PERSISTED_MESSAGES = 200;
+
+function loadPersistedMessages(): ChatMessage[] {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        // Only restore user / assistant / error messages
+        // Skip transient progress and system (news) messages
+        return parsed.filter(
+            (m: any) => m && m.id && m.role && m.role !== 'progress' && m.role !== 'system'
+        ) as ChatMessage[];
+    } catch {
+        return [];
+    }
+}
+
+function persistMessages(msgs: ChatMessage[]) {
+    try {
+        // Only persist meaningful messages; skip progress, system, and empty content.
+        // Strip thumbnailBase64 to avoid blowing up localStorage (5MB limit).
+        const toSave = msgs
+            .filter(m => m.role !== 'progress' && m.role !== 'system' && m.content !== '')
+            .slice(-MAX_PERSISTED_MESSAGES)
+            .map(m => {
+                if (!m.thumbnailBase64) return m;
+                const { thumbnailBase64: _, ...rest } = m;
+                return rest;
+            });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+    } catch {
+        // localStorage full or unavailable — silently ignore
+    }
+}
+
 export function useAIAssistant() {
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
     const [sending, setSending] = useState(false);
     const [streaming, setStreaming] = useState(false);
     // Ref-based guard prevents concurrent sends (React state is async).
     const sendingRef = useRef(false);
     // Track the current streaming message ID so token events know where to append.
     const streamingMsgIdRef = useRef<string | null>(null);
+
+    // Persist messages to localStorage whenever they change (debounced via ref
+    // to avoid thrashing during rapid streaming token events).
+    const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(() => {
+        if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = setTimeout(() => persistMessages(messages), 300);
+        return () => {
+            if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+            // Flush on unmount so the last state is always saved
+            persistMessages(messages);
+        };
+    }, [messages]);
+
+    // Fetch latest news from Hub Center on mount and prepend as system messages.
+    const newsFetchedRef = useRef(false);
+    useEffect(() => {
+        if (newsFetchedRef.current) return;
+        newsFetchedRef.current = true;
+        FetchNews().then((articles: any[]) => {
+            if (!articles || articles.length === 0) return;
+            const catIcons: Record<string, string> = { notice: '📢', update: '🚀', tip: '💡', alert: '⚠️' };
+            const sysMsgs: ChatMessage[] = articles.map((a: any) => ({
+                id: 'news-' + a.id,
+                role: 'system' as const,
+                content: `${catIcons[a.category] || '📄'} **${a.title}**\n\n${a.content}`,
+                timestamp: Date.now(),
+            }));
+            setMessages(prev => {
+                // Remove old news system messages, then prepend new ones
+                const filtered = prev.filter(m => !m.id.startsWith('news-'));
+                return [...sysMsgs, ...filtered];
+            });
+        }).catch(() => { /* silently ignore news fetch failures */ });
+    }, []);
 
     // Listen for streaming token events — append delta to current streaming message.
     useEffect(() => {
@@ -197,6 +272,7 @@ export function useAIAssistant() {
         setStreaming(false);
         streamingMsgIdRef.current = null;
         setMessages([]);
+        localStorage.removeItem(STORAGE_KEY);
     }, []);
 
     const executeAction = useCallback((command: string) => {

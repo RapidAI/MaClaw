@@ -463,6 +463,21 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     {msg.content}
                 </div>
             );
+        case "system":
+            return (
+                <div key={msg.id} style={{
+                    padding: "8px 12px",
+                    margin: "4px 0",
+                    borderRadius: "6px",
+                    background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(139,92,246,0.06))",
+                    borderLeft: `3px solid ${t.promptColor}`,
+                    color: t.text,
+                    fontSize: "12px",
+                    lineHeight: "1.6",
+                }}>
+                    {renderContentWithCodeBlocks(msg.content, t)}
+                </div>
+            );
         case "error":
             return (
                 <div key={msg.id} style={{

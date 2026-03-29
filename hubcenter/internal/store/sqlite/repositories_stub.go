@@ -44,6 +44,11 @@ type gossipRepo struct {
 	batch      *writeBatcher
 }
 
+type newsRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
+
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
 		Admins:        &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
@@ -54,6 +59,7 @@ func NewStore(p *Provider) *store.Store {
 		BlockedEmails: &blockedEmailRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		BlockedIPs:    &blockedIPRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Gossip:        &gossipRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		News:          &newsRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
 }
 

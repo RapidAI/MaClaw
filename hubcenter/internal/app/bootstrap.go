@@ -137,7 +137,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		}
 	}()
 
-	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.Gossip, gossipCache, smHandlers, st.System)
+	router := httpapi.NewRouter(adminService, hubService, entryService, mailer, skillStore, st.Gossip, gossipCache, smHandlers, st.System, st.News)
 
 	return &App{
 		Config:       cfg,

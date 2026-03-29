@@ -1610,7 +1610,7 @@ const ToolConfiguration = ({
 function App() {
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
-    const [navTab, setNavTab] = useState<string>("claude");
+    const [navTab, setNavTab] = useState<string>("ai");
     const navTabRef = useRef(navTab);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
@@ -2357,8 +2357,9 @@ function App() {
         }
 
         if (tool === 'message') {
-            setShowModelSettings(false);
-            ReadBBS().then(content => setBbsContent(content)).catch(err => console.error(err));
+            // message tab removed — redirect to AI assistant
+            switchTool('ai');
+            return;
         }
 
         if (tool === 'tutorial') {
@@ -3310,7 +3311,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'remote' ? 'active' : ''}`}
                         onClick={() => switchTool('remote')}
-                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center', display: isLiteMode ? 'none' : undefined }}
+                        style={{ flexDirection: 'column', padding: '10px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>📡</span>
@@ -3470,7 +3471,6 @@ ${instruction}`;
                                         padding: '4px 0',
                                     }}>
                                         {[
-                                            { icon: '💬', key: 'message' as const, nav: 'message' },
                                             { icon: '📚', key: 'tutorial' as const, nav: 'tutorial' },
                                             { icon: 'ℹ️', key: 'about' as const, nav: 'about' },
                                         ].map(({ icon, key, nav }) => (
@@ -3503,18 +3503,9 @@ ${instruction}`;
 
                 {/* Right Tool List */}
                 <div style={{ flex: 1, padding: '10px', overflowY: 'auto', backgroundColor: '#fafbff', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column' }}>
-                    {/* Message/Tutorial row */}
+                    {/* Tutorial row */}
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '8px', flexShrink: 0 }}>
                         <div style={{ display: 'flex', gap: '2px', width: '100%' }}>
-                            <div
-                                className={`sidebar-item ${navTab === 'message' ? 'active' : ''}`}
-                                onClick={() => switchTool('message')}
-                                style={{ flexDirection: 'column', padding: '6px 0', flex: 1, gap: '2px', borderLeft: 'none', borderBottom: navTab === 'message' ? '2px solid var(--primary-color)' : '2px solid transparent', justifyContent: 'center', borderRight: 'none' }}
-                                title={t("message")}
-                            >
-                                <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>💬</span>
-                                <span style={{ fontSize: '0.6rem', lineHeight: 1 }}>{t("message")}</span>
-                            </div>
                             <div
                                 className={`sidebar-item ${navTab === 'tutorial' ? 'active' : ''}`}
                                 onClick={() => switchTool('tutorial')}
@@ -3610,8 +3601,7 @@ ${instruction}`;
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
                         <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--text-color)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
                             <span>
-                                {navTab === 'message' ? t("message") :
-                                    navTab === 'claude' ? 'Claude Code' :
+                                {navTab === 'claude' ? 'Claude Code' :
                                         navTab === 'gemini' ? 'Gemini CLI' :
                                             navTab === 'codex' ? 'OpenAI Codex' :
                                                 navTab === 'opencode' ? 'OpenCode AI' :
@@ -3646,43 +3636,6 @@ ${instruction}`;
                                         style={{ marginLeft: '10px', padding: '4px 12px', fontSize: '0.8rem' }}
                                         onClick={handleAddNewProject}
                                     >{t("addNewProject")}</button>
-                                </>
-                            )}
-                            {navTab === 'message' && (
-                                <>
-                                    <button
-                                        className="btn-link"
-                                        style={{ marginLeft: '10px', fontSize: '0.8rem', padding: '4px 12px' }}
-                                        onClick={async () => {
-                                            try {
-                                                setRefreshStatus(t("refreshing"));
-                                                setBbsContent('');
-                                                const startTime = Date.now();
-                                                const content = await ReadBBS();
-                                                const elapsed = Date.now() - startTime;
-                                                const preview = content.substring(0, 50).replace(/\n/g, ' ');
-                                                const now = new Date();
-                                                const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
-                                                setRefreshStatus(t("refreshSuccess"));
-                                                setBbsContent(content);
-                                                setRefreshKey(prev => prev + 1);
-                                                setLastUpdateTime(timeStr);
-                                                setTimeout(() => setRefreshStatus(''), 5000);
-                                            } catch (err) {
-                                                setRefreshStatus(t("refreshFailed") + err);
-                                                setTimeout(() => setRefreshStatus(''), 5000);
-                                            }
-                                        }}
-                                    >
-                                        {t("refreshMessage")}
-                                    </button>
-                                    <button
-                                        className="btn-link"
-                                        style={{ marginLeft: '10px', fontSize: '0.8rem', padding: '4px 12px' }}
-                                        onClick={handleShowThanks}
-                                    >
-                                        {t("thanks")}
-                                    </button>
                                 </>
                             )}
                             {navTab === 'tutorial' && (
@@ -3772,78 +3725,6 @@ ${instruction}`;
                 </div>
 
                 <div className="main-content elegant-scrollbar" style={{ overflowY: navTab === 'projects' ? 'hidden' : 'auto', paddingBottom: '20px', '--wails-draggable': 'no-drag' } as any}>
-                    {navTab === 'message' && (
-                        <div style={{
-                            width: '100%',
-                            padding: '0 15px',
-                            boxSizing: 'border-box'
-                        }}>
-                            <div style={{
-                                position: 'relative',
-                                marginBottom: '5px'
-                            }}>
-                                {refreshStatus && (
-                                    <div style={{
-                                        position: 'absolute',
-                                        top: '0',
-                                        right: '0',
-                                        zIndex: 100,
-                                        padding: '4px 12px',
-                                        backgroundColor: 'rgba(224, 242, 254, 0.95)',
-                                        borderRadius: '16px',
-                                        color: '#0369a1',
-                                        fontSize: '0.75rem',
-                                        fontWeight: 'bold',
-                                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-                                        backdropFilter: 'blur(4px)',
-                                        animation: 'fadeIn 0.3s ease-out'
-                                    }}>
-                                        {refreshStatus}
-                                    </div>
-                                )}
-
-                                {lastUpdateTime && !refreshStatus && (
-                                    <div style={{
-                                        position: 'absolute',
-                                        top: '0',
-                                        right: '0',
-                                        zIndex: 90,
-                                        padding: '4px 10px',
-                                        backgroundColor: 'rgba(240, 253, 244, 0.9)',
-                                        borderRadius: '4px',
-                                        color: '#15803d',
-                                        fontSize: '0.7rem',
-                                        backdropFilter: 'blur(2px)'
-                                    }}>
-                                        {t("lastUpdate")}{lastUpdateTime}
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="markdown-content" style={{
-                                backgroundColor: '#fff',
-                                padding: '20px',
-                                borderRadius: '8px',
-                                border: '1px solid var(--border-color)',
-                                fontFamily: 'inherit',
-                                fontSize: '0.75rem',
-                                lineHeight: '1.6',
-                                color: '#374151',
-                                marginBottom: '20px',
-                                textAlign: 'left'
-                            }}>
-                                <ReactMarkdown
-                                    key={refreshKey}
-                                    remarkPlugins={[remarkGfm]}
-                                    // @ts-ignore - rehype-raw type compatibility
-                                    rehypePlugins={[rehypeRaw]}
-                                    components={{ a: MarkdownLink }}
-                                >
-                                    {bbsContent}
-                                </ReactMarkdown>
-                            </div>
-                        </div>
-                    )}
                     {navTab === 'tutorial' && (
                         <div style={{
                             width: '100%',

@@ -93,6 +93,16 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_gossip_comments_post_id ON gossip_comments(post_id);`,
+		// ── News (announcements) ──
+		`CREATE TABLE IF NOT EXISTS news_articles (
+			id TEXT PRIMARY KEY,
+			title TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT '',
+			category TEXT NOT NULL DEFAULT 'notice',
+			pinned INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {

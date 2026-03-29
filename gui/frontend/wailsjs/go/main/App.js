@@ -919,6 +919,10 @@ export function ClearAIAssistantHistory() {
   return window['go']['main']['App']['ClearAIAssistantHistory']();
 }
 
+export function FetchNews() {
+  return window['go']['main']['App']['FetchNews']();
+}
+
 // Background Loop bindings
 export function ListBackgroundLoops() {
   return window['go']['main']['App']['ListBackgroundLoops']();

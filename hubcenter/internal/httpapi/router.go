@@ -130,7 +130,7 @@ func EntryResolveHandler(service *entry.Service) http.HandlerFunc {
 	}
 }
 
-func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service, skillStore *skill.SkillStore, gossipRepo store.GossipRepository, gossipCache *GossipCache, smHandlers *SkillMarketHandlers, systemSettings store.SystemSettingsRepository) http.Handler {
+func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryService *entry.Service, mailer *mail.Service, skillStore *skill.SkillStore, gossipRepo store.GossipRepository, gossipCache *GossipCache, smHandlers *SkillMarketHandlers, systemSettings store.SystemSettingsRepository, newsRepo store.NewsRepository) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler("MaClaw-hubcenter"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(adminService))
@@ -196,6 +196,14 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	registerStaticRoutes(mux, "./web/skillhub", "/skillhub")
 	registerStaticRoutes(mux, "./web/skillmarket", "/skillmarket")
 	registerStaticRoutes(mux, "./web/gossip", "/gossip")
+	// News — public API for latest announcements
+	mux.HandleFunc("GET /api/news", NewsLatestHandler(newsRepo))
+	mux.HandleFunc("OPTIONS /api/news", NewsLatestHandler(newsRepo))
+	// News — admin management
+	mux.HandleFunc("GET /api/admin/news", RequireAdmin(adminService, AdminListNewsHandler(newsRepo)))
+	mux.HandleFunc("POST /api/admin/news", RequireAdmin(adminService, AdminCreateNewsHandler(newsRepo)))
+	mux.HandleFunc("PUT /api/admin/news", RequireAdmin(adminService, AdminUpdateNewsHandler(newsRepo)))
+	mux.HandleFunc("DELETE /api/admin/news", RequireAdmin(adminService, AdminDeleteNewsHandler(newsRepo)))
 	// SkillMarket API
 	if smHandlers != nil {
 		mux.HandleFunc("POST /api/v1/skills/submit", smHandlers.SubmitSkill)

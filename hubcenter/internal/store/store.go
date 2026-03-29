@@ -169,6 +169,28 @@ type GossipRepository interface {
 	RateComment(ctx context.Context, comment *GossipComment) error
 }
 
+// ── News (announcements published from Hub Center) ─────────────────────
+
+type NewsArticle struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content"`  // markdown
+	Category  string    `json:"category"` // "update" | "notice" | "tip" | "alert"
+	Pinned    bool      `json:"pinned"`   // pinned articles always show
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type NewsRepository interface {
+	Create(ctx context.Context, article *NewsArticle) error
+	Update(ctx context.Context, article *NewsArticle) error
+	Delete(ctx context.Context, id string) error
+	GetByID(ctx context.Context, id string) (*NewsArticle, error)
+	List(ctx context.Context, offset, limit int) ([]*NewsArticle, int, error)
+	// ListLatest returns the N most recent articles (pinned first, then by created_at desc).
+	ListLatest(ctx context.Context, limit int) ([]*NewsArticle, error)
+}
+
 type Store struct {
 	Admins        AdminUserRepository
 	System        SystemSettingsRepository
@@ -178,4 +200,5 @@ type Store struct {
 	BlockedEmails BlockedEmailRepository
 	BlockedIPs    BlockedIPRepository
 	Gossip        GossipRepository
+	News          NewsRepository
 }
