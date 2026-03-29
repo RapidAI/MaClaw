@@ -680,6 +680,31 @@ func (a *App) domReady(ctx context.Context) {
 	a.CheckEnvironment(false)
 }
 
+// GetUIZoomFactor returns the saved UI zoom factor (default 1.0).
+func (a *App) GetUIZoomFactor() float64 {
+	cfg, err := a.LoadConfig()
+	if err != nil || cfg.UIZoomFactor <= 0 {
+		return 1.0
+	}
+	return cfg.UIZoomFactor
+}
+
+// SetUIZoomFactor persists the UI zoom factor (clamped to 0.5–2.0).
+func (a *App) SetUIZoomFactor(factor float64) error {
+	if factor < 0.5 {
+		factor = 0.5
+	}
+	if factor > 2.0 {
+		factor = 2.0
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.UIZoomFactor = factor
+	return a.SaveConfig(cfg)
+}
+
 func (a *App) shutdown(ctx context.Context) {
 	if a.screenDimCancel != nil {
 		a.screenDimCancel()

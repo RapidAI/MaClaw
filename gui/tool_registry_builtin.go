@@ -222,6 +222,13 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"task_description"},
 		func(args map[string]interface{}) string { return h.toolRecommendTool(args) })
 
+	reg("discover_tool", "Search for additional tools not in the current tool list. Use when you need a capability that none of the available tools provide.",
+		ToolCategoryBuiltin, []string{"discover", "find", "search", "tool"},
+		map[string]interface{}{
+			"need": map[string]string{"type": "string", "description": "Describe the capability you need, e.g. 'query PostgreSQL database' or 'send Slack notification'"},
+		}, []string{"need"},
+		func(args map[string]interface{}) string { return h.toolDiscoverTool(args) })
+
 	// --- Craft tool (needs progress callback) ---
 	regP("craft_tool", "当现有工具都无法完成任务时，自动研究问题并生成脚本来解决。会用 LLM 生成代码、执行、并注册为可复用的 Skill。适用于数据处理、API 调用、文件转换、系统管理等需要编程才能完成的任务。",
 		ToolCategoryBuiltin, []string{"craft", "script", "generate", "code"},

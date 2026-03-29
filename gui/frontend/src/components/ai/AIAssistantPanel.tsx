@@ -404,7 +404,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
             return (
                 <div key={msg.id}>
                     <div style={{ borderTop: `1px solid ${t.divider}`, margin: "8px 0 4px 0" }} />
-                    <div style={{ color: t.userColor, fontWeight: 600, padding: "3px 0", overflowWrap: "break-word" }}>
+                    <div style={{ color: t.userColor, fontWeight: 600, padding: "3px 0 3px 1.2em", overflowWrap: "break-word", whiteSpace: "pre-wrap", textIndent: "-1.2em" }}>
                         ❯ {msg.content}
                     </div>
                 </div>
@@ -495,7 +495,7 @@ if (typeof document !== "undefined" && !document.getElementById("ai-blink-style"
 export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, sendMessage, clearHistory, executeAction, inline, onHideWindow }: AIAssistantPanelProps) {
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
-    const inputRef = useRef<HTMLInputElement | null>(null);
+    const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const outputEndRef = useRef<HTMLDivElement | null>(null);
     const outputContainerRef = useRef<HTMLDivElement | null>(null);
     const userScrolledUpRef = useRef(false);
@@ -563,6 +563,10 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
         const text = inputValue.trim();
         if (!text || sending) return;
         setInputValue("");
+        // Reset textarea height after send
+        if (inputRef.current) {
+            inputRef.current.style.height = "auto";
+        }
         userScrolledUpRef.current = false;
         await sendMessage(text);
     }, [inputValue, sending, sendMessage]);
@@ -671,7 +675,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
 
             {/* ── Input bar ── */}
             <div style={{
-                display: "flex", alignItems: "center", gap: "8px",
+                display: "flex", alignItems: "flex-end", gap: "8px",
                 padding: "8px 12px", paddingBottom: "max(8px, env(safe-area-inset-bottom))",
                 background: t.inputBarBg, borderTop: inline ? `1px solid ${t.inputBarBorder}` : "none",
                 flexShrink: 0,
@@ -680,22 +684,32 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                 <span style={{
                     color: t.promptColor, fontFamily: "Consolas, monospace",
                     fontSize: "13px", flexShrink: 0, userSelect: "none",
+                    paddingBottom: "8px",
                 }}>❯</span>
-                <input
+                <textarea
                     ref={inputRef}
-                    type="text"
                     style={{
                         flex: 1, minWidth: 0, background: "transparent",
                         border: "none", outline: "none", color: t.inputText,
                         fontFamily: "Consolas, 'Courier New', monospace",
                         fontSize: "14px", padding: "8px 0",
+                        resize: "none", overflow: "auto",
+                        minHeight: "36px", maxHeight: "120px",
+                        lineHeight: 1.4,
                     }}
+                    rows={1}
                     value={inputValue}
-                    onChange={(e) => setInputValue(e.target.value)}
+                    onChange={(e) => {
+                        setInputValue(e.target.value);
+                        // Auto-resize height
+                        const el = e.target;
+                        el.style.height = "auto";
+                        el.style.height = Math.min(el.scrollHeight, 120) + "px";
+                    }}
                     onCompositionStart={() => setComposing(true)}
                     onCompositionEnd={() => setComposing(false)}
                     onKeyDown={(e) => {
-                        if (e.key === "Enter" && !composing) {
+                        if (e.key === "Enter" && !e.shiftKey && !composing) {
                             e.preventDefault();
                             handleSend();
                         }
@@ -714,6 +728,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                             ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
                             : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
                         opacity: (sending || !inputValue.trim()) ? 0.5 : 1,
+                        marginBottom: "4px",
                     }}
                     title={lang === "en" ? "Send" : "发送"}
                 >

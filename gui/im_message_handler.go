@@ -2338,14 +2338,14 @@ func buildAnthropicVisionContent(text string, images []MessageAttachment) []inte
 	return blocks
 }
 
-// saveAttachmentToLocal saves a MessageAttachment to ~/.cceasy/im_files/
+// saveAttachmentToLocal saves a MessageAttachment to ~/.maclaw/im_files/
 // and returns the absolute path.
 func saveAttachmentToLocal(att *MessageAttachment) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	dir := filepath.Join(home, ".cceasy", "im_files")
+	dir := filepath.Join(home, ".maclaw", "im_files")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("cannot create im_files directory: %w", err)
 	}

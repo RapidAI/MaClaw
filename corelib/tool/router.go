@@ -33,6 +33,7 @@ var CoreToolNames = map[string]bool{
 	"web_search": true, "web_fetch": true,
 	"set_nickname": true,
 	"browser_connect": true, "browser_navigate": true, "browser_click": true,
+	"discover_tool": true,
 }
 
 // CodingSessionToolNames lists tools that require a coding LLM session provider.
@@ -128,14 +129,16 @@ type SkillRecommender interface {
 
 // Router selects the most relevant tools for a given user message.
 type Router struct {
-	generator   *DefinitionGenerator
-	recommender SkillRecommender
-	registry    *Registry
-	bm25Index   *bm25.Index      // cached BM25 index, reused across Route calls
-	hybrid      *HybridRetriever // nil when no embedder set
+	generator    *DefinitionGenerator
+	registry     *Registry
+	recommender  SkillRecommender
+	bm25Index    *bm25.Index
+	hybrid       *HybridRetriever
+	enrichStore  *EnrichmentStore
+	tracker      *UsageTracker
+	sessionTools map[string]bool
 }
 
-// NewRouter creates a new Router.
 func NewRouter(generator *DefinitionGenerator) *Router {
 	return &Router{
 		generator: generator,
@@ -168,6 +171,44 @@ func (r *Router) HybridActive() bool {
 	return r.hybrid != nil
 }
 
+// SetEnrichmentStore configures the enrichment store for enhanced tool descriptions.
+func (r *Router) SetEnrichmentStore(store *EnrichmentStore) {
+	r.enrichStore = store
+}
+
+// SetUsageTracker configures the usage tracker for experience-aware scoring.
+func (r *Router) SetUsageTracker(tracker *UsageTracker) {
+	r.tracker = tracker
+}
+
+// ActivateSessionTool adds a tool to the current session's always-include set.
+func (r *Router) ActivateSessionTool(name string) {
+	if r.sessionTools == nil {
+		r.sessionTools = make(map[string]bool)
+	}
+	r.sessionTools[name] = true
+}
+
+// ResetSession clears session-activated tools.
+func (r *Router) ResetSession() {
+	r.sessionTools = nil
+}
+
+// buildSearchText returns the enriched search text for a tool if an enrichment
+// store is configured, otherwise falls back to name + description + tags.
+func (r *Router) buildSearchText(name, description string) string {
+	if r.enrichStore != nil && r.registry != nil {
+		if t, ok := r.registry.Get(name); ok {
+			return r.enrichStore.GetSearchText(*t)
+		}
+	}
+	text := name + " " + description
+	if tags := r.tagsForTool(name); len(tags) > 0 {
+		text += " " + strings.Join(tags, " ")
+	}
+	return text
+}
+
 func (r *Router) isBuiltin(name string) bool {
 	if r.registry != nil {
 		if t, ok := r.registry.Get(name); ok {
@@ -198,7 +239,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	var candidateNames []string
 	for _, t := range allTools {
 		name := ExtractToolName(t)
-		if CoreToolNames[name] {
+		if CoreToolNames[name] || r.sessionTools[name] {
 			core = append(core, t)
 		} else {
 			candidates = append(candidates, t)
@@ -215,10 +256,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	candidateTexts := make(map[string]string, len(candidates))
 	for i, t := range candidates {
 		name := candidateNames[i]
-		text := name + " " + ExtractToolDescription(t)
-		if tags := r.tagsForTool(name); len(tags) > 0 {
-			text += " " + strings.Join(tags, " ")
-		}
+		text := r.buildSearchText(name, ExtractToolDescription(t))
 		docs[i] = bm25.Doc{ID: name, Text: text}
 		candidateTexts[name] = text
 	}
@@ -250,13 +288,34 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
+	// Three-signal scoring: retrieval + experience + priority.
+	queryTokens := bm25.Tokenize(userMessage)
+	normScores := minMaxNormalize(scores)
+
 	type scored struct {
 		index int
 		score float64
 	}
 	scoredList := make([]scored, len(candidates))
 	for i, name := range candidateNames {
-		scoredList[i] = scored{index: i, score: scores[name]}
+		retrievalScore := normScores[name]
+		var expScore float64
+		if r.tracker != nil {
+			expScore = r.tracker.ExperienceScore(name, queryTokens)
+		}
+		var priorityBonus float64
+		if r.registry != nil {
+			if t, ok := r.registry.Get(name); ok {
+				priorityBonus = clampFloat(float64(t.Priority)*0.1, 0, 1)
+			}
+		}
+		if r.tracker != nil {
+			// α=0.6 retrieval + β=0.3 experience + γ=0.1 priority
+			scoredList[i] = scored{index: i, score: 0.6*retrievalScore + 0.3*expScore + 0.1*priorityBonus}
+		} else {
+			// No tracker: α=0.9 retrieval + γ=0.1 priority
+			scoredList[i] = scored{index: i, score: 0.9*retrievalScore + 0.1*priorityBonus}
+		}
 	}
 	sort.SliceStable(scoredList, func(i, j int) bool {
 		return scoredList[i].score > scoredList[j].score
@@ -416,4 +475,15 @@ func writeRouteLog(
 		fmt.Fprintf(f, "  - %s\n", name)
 	}
 	fmt.Fprintln(f, "---")
+}
+
+// clampFloat clamps v to [lo, hi].
+func clampFloat(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }

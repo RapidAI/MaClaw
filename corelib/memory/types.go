@@ -86,6 +86,8 @@ type Entry struct {
 	Scope Scope `json:"scope,omitempty"`
 	// --- Pin mechanism ---
 	Pinned bool `json:"pinned,omitempty"`
+	// --- Compact form for context injection ---
+	CompactForm string `json:"compact_form,omitempty"`
 }
 
 // IsActive returns true if the entry participates in normal recall.

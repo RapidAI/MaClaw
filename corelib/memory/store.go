@@ -148,6 +148,7 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 			s.entries[i].Content = content
 			s.entries[i].Category = category
 			s.entries[i].Tags = tags
+			s.entries[i].CompactForm = "" // invalidate: content changed
 			s.entries[i].UpdatedAt = time.Now()
 			s.bm25.updateEntry(s.entries[i])
 			s.dirty = true
@@ -384,8 +385,17 @@ func (s *Store) UserFactSummary(maxRunes int) string {
 	return s.categorySummary(CategoryUserFact, maxRunes)
 }
 
+// DisplayContent returns CompactForm if available, otherwise Content.
+// Use this when rendering memory entries for LLM context injection.
+func DisplayContent(e Entry) string {
+	if e.CompactForm != "" {
+		return e.CompactForm
+	}
+	return e.Content
+}
+
 // categorySummary joins all entries of the given category into a pipe-separated
-// string, capped at maxRunes.
+// string, capped at maxRunes. Prefers CompactForm when available.
 func (s *Store) categorySummary(cat Category, maxRunes int) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -397,7 +407,11 @@ func (s *Store) categorySummary(cat Category, maxRunes int) string {
 	var parts []string
 	for _, e := range s.entries {
 		if e.Category == cat {
-			parts = append(parts, strings.TrimSpace(e.Content))
+			text := strings.TrimSpace(e.CompactForm)
+			if text == "" {
+				text = strings.TrimSpace(e.Content)
+			}
+			parts = append(parts, text)
 		}
 	}
 	if len(parts) == 0 {

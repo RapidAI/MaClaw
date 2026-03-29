@@ -438,6 +438,14 @@ export function SetLLMTrajectoryLogging(arg1) {
   return window['go']['main']['App']['SetLLMTrajectoryLogging'](arg1);
 }
 
+export function GetUIZoomFactor() {
+  return window['go']['main']['App']['GetUIZoomFactor']();
+}
+
+export function SetUIZoomFactor(arg1) {
+  return window['go']['main']['App']['SetUIZoomFactor'](arg1);
+}
+
 export function GetLLMTokenUsage(arg1) {
   return window['go']['main']['App']['GetLLMTokenUsage'](arg1);
 }

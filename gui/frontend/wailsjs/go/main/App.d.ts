@@ -220,6 +220,10 @@ export function GetLLMTrajectoryLogging():Promise<boolean>;
 
 export function SetLLMTrajectoryLogging(arg1:boolean):Promise<void>;
 
+export function GetUIZoomFactor():Promise<number>;
+
+export function SetUIZoomFactor(arg1:number):Promise<void>;
+
 export function GetLLMTokenUsage(arg1:string):Promise<any>;
 
 export function GetAllLLMTokenUsage():Promise<any>;

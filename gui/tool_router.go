@@ -56,6 +56,26 @@ func (r *ToolRouter) HybridActive() bool {
 	return r.inner.HybridActive()
 }
 
+// SetEnrichmentStore delegates to corelib/tool.Router.SetEnrichmentStore.
+func (r *ToolRouter) SetEnrichmentStore(store *tool.EnrichmentStore) {
+	r.inner.SetEnrichmentStore(store)
+}
+
+// SetUsageTracker delegates to corelib/tool.Router.SetUsageTracker.
+func (r *ToolRouter) SetUsageTracker(tracker *tool.UsageTracker) {
+	r.inner.SetUsageTracker(tracker)
+}
+
+// ActivateSessionTool delegates to corelib/tool.Router.ActivateSessionTool.
+func (r *ToolRouter) ActivateSessionTool(name string) {
+	r.inner.ActivateSessionTool(name)
+}
+
+// ResetSession delegates to corelib/tool.Router.ResetSession.
+func (r *ToolRouter) ResetSession() {
+	r.inner.ResetSession()
+}
+
 // matchRecommendations is exposed for tests that call it directly.
 // corelib's matchRecommendations is unexported, so we keep a thin local copy.
 func (r *ToolRouter) matchRecommendations(msgTokens []string) map[string]interface{} {

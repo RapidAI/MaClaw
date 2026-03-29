@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -139,7 +140,113 @@ func (mc *MemoryCompressor) Compress(ctx context.Context) (*CompressResult, erro
 	}
 
 	result.TotalEntries = mc.entryCount() // refresh after dedup
+
+	// 5. Backfill CompactForm for entries missing it.
+	if mc.isConfigured() {
+		mc.backfillCompactForms(ctx)
+	}
+
 	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// CompactForm backfill
+// ---------------------------------------------------------------------------
+
+// backfillCompactForms generates CompactForm for entries missing it.
+// Processes up to 30 entries per cycle to limit LLM calls.
+func (mc *MemoryCompressor) backfillCompactForms(ctx context.Context) {
+	mc.store.RLock()
+	type pending struct {
+		id      string
+		content string
+		cat     MemoryCategory
+	}
+	var todo []pending
+	for _, e := range mc.store.Entries() {
+		if e.CompactForm == "" && len([]rune(e.Content)) > 20 && !e.Category.IsProtected() {
+			todo = append(todo, pending{id: e.ID, content: e.Content, cat: e.Category})
+		}
+	}
+	mc.store.RUnlock()
+
+	if len(todo) == 0 {
+		return
+	}
+	if len(todo) > 30 {
+		todo = todo[:30]
+	}
+
+	updated := 0
+	for _, p := range todo {
+		select {
+		case <-ctx.Done():
+			goto done
+		default:
+		}
+
+		compact, err := mc.compactOneEntry(ctx, p.content, p.cat)
+		if err != nil || compact == "" {
+			continue
+		}
+		if len([]rune(compact)) >= len([]rune(p.content)) {
+			continue
+		}
+
+		mc.store.Lock()
+		for i, e := range mc.store.Entries() {
+			if e.ID == p.id && e.CompactForm == "" {
+				mc.store.Entries()[i].CompactForm = compact
+				updated++
+				break
+			}
+		}
+		mc.store.Unlock()
+	}
+done:
+
+	if updated > 0 {
+		mc.store.Lock()
+		mc.store.MarkDirty()
+		mc.store.Unlock()
+		mc.store.SignalSave()
+		log.Printf("[memory_compact] backfilled %d/%d compact forms", updated, len(todo))
+	}
+}
+
+// compactOneEntry asks the LLM to produce a minimal representation of a memory
+// entry for context injection.
+func (mc *MemoryCompressor) compactOneEntry(ctx context.Context, content string, cat MemoryCategory) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	mc.mu.Lock()
+	llmCfg := mc.llmConfig
+	mc.mu.Unlock()
+
+	systemPrompt := `You are a memory compactor. Convert the memory entry into the shortest possible representation that preserves ALL key facts. Rules:
+- Use telegraphic style: drop articles, filler words, "the user said", etc.
+- Use → to show relationships (e.g. "用户→偏好→Go语言")
+- Use ; to separate independent facts
+- Keep names, numbers, paths, commands EXACTLY as-is
+- Target ≤40% of original length
+- Return ONLY the compact text, no commentary`
+
+	userPrompt := fmt.Sprintf("[%s] %s", cat, content)
+
+	messages := []interface{}{
+		map[string]string{"role": "system", "content": systemPrompt},
+		map[string]string{"role": "user", "content": userPrompt},
+	}
+
+	result, err := doSimpleLLMRequest(ctx, llmCfg, messages, mc.client, 30*time.Second)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(result.Content), nil
 }
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -1586,7 +1586,7 @@ const ToolConfiguration = ({
                             onClick={() => handleModelSwitch(model.model_name)}
                             style={{
                                 width: '100%',
-                                padding: '8px 4px',
+                                padding: '6px 4px',
                                 fontSize: '1.125rem',
                                 borderBottom: (model.api_key && model.api_key.trim() !== "") ? '3px solid var(--primary-color)' : '1px solid var(--border-color)',
                                 position: 'relative',
@@ -1646,6 +1646,7 @@ function App() {
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
+    const [uiZoom, setUiZoom] = useState<number>(1.0);
 
     // Brand info from backend
     const [brandInfo, setBrandInfo] = useState<{id: string, displayName: string, displayNameCN: string, slogan: string, author: string, businessContact: string, websiteURL: string, githubURL: string, iconPath: string} | null>(null);
@@ -2043,6 +2044,14 @@ function App() {
                 cfg.remote_enabled = false;
             }
             setConfig(cfg);
+
+            // Apply saved UI zoom factor
+            GetUIZoomFactor().then((z) => {
+                if (z > 0) {
+                    setUiZoom(z);
+                    (document.documentElement.style as any).zoom = String(z);
+                }
+            }).catch(() => {});
 
             if (!cfg.pause_env_check) {
                 checkTools();
@@ -3225,7 +3234,7 @@ ${instruction}`;
         },
         {
             id: 'embedding' as const,
-            label: lang === 'zh-Hans' ? '嵌入模型' : lang === 'zh-Hant' ? '嵌入模型' : 'Embedding',
+            label: lang === 'zh-Hans' ? 'AI模型' : lang === 'zh-Hant' ? 'AI模型' : 'AI Model',
             desc: lang === 'zh-Hans' ? '向量搜索与嵌入模型管理' : lang === 'zh-Hant' ? '向量搜索與嵌入模型管理' : 'Vector search and embedding model management',
         },
         {
@@ -4949,6 +4958,30 @@ ${instruction}`;
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
+
+                            {/* UI Zoom */}
+                            <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0', marginBottom: '16px' }}>
+                                <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '界面缩放' : lang === 'zh-Hant' ? '介面縮放' : 'UI Zoom'}</h4>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                    <input type="range" min={50} max={200} step={5} value={Math.round(uiZoom * 100)}
+                                        onChange={e => {
+                                            const v = Number(e.target.value) / 100;
+                                            setUiZoom(v);
+                                            (document.documentElement.style as any).zoom = String(v);
+                                        }}
+                                        onPointerUp={() => { SetUIZoomFactor(uiZoom).catch(() => {}); }}
+                                        style={{ flex: 1, accentColor: '#6366f1' }} />
+                                    <span style={{ fontSize: '0.78rem', color: '#4b5563', minWidth: '42px', textAlign: 'center' }}>{Math.round(uiZoom * 100)}%</span>
+                                    <button onClick={() => { setUiZoom(1.0); (document.documentElement.style as any).zoom = '1'; SetUIZoomFactor(1.0).catch(() => {}); }}
+                                        style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: '#f3f4f6', color: '#4b5563', border: '1px solid #e5e7eb', borderRadius: 4 }}>
+                                        {lang === 'zh-Hans' ? '重置' : lang === 'zh-Hant' ? '重置' : 'Reset'}
+                                    </button>
+                                </div>
+                                <p style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '6px', marginBottom: 0 }}>
+                                    {lang === 'zh-Hans' ? '调整界面整体缩放比例，适配高 DPI 屏幕或个人偏好。' : lang === 'zh-Hant' ? '調整介面整體縮放比例，適配高 DPI 螢幕或個人偏好。' : 'Adjust overall UI scale for HiDPI displays or personal preference.'}
+                                </p>
+                            </div>
+
                             <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                 <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '工具显示' : lang === 'zh-Hant' ? '工具顯示' : 'Tool Visibility'}</h4>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>

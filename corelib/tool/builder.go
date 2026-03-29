@@ -18,6 +18,8 @@ type DynamicToolBuilder struct {
 	maxDynamic     int             // max non-builtin tools when filtering (default 15)
 	bm25Index      *bm25.Index     // cached BM25 index, reused across Build calls
 	hybrid         *HybridRetriever // nil when no embedder set
+	enrichStore    *EnrichmentStore
+	tracker        *UsageTracker
 }
 
 // NewDynamicToolBuilder creates a builder backed by the given registry.
@@ -43,6 +45,16 @@ func (b *DynamicToolBuilder) SetEmbedder(emb embedding.Embedder) {
 		return
 	}
 	b.hybrid = NewHybridRetriever(emb)
+}
+
+// SetEnrichmentStore configures the enrichment store for enhanced tool descriptions.
+func (b *DynamicToolBuilder) SetEnrichmentStore(store *EnrichmentStore) {
+	b.enrichStore = store
+}
+
+// SetUsageTracker configures the usage tracker for experience-aware scoring.
+func (b *DynamicToolBuilder) SetUsageTracker(tracker *UsageTracker) {
+	b.tracker = tracker
 }
 
 // BuildAll returns tool definitions for every available tool (no filtering).
@@ -98,9 +110,14 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	docs := make([]bm25.Doc, len(dynamic))
 	dynamicTexts := make(map[string]string, len(dynamic))
 	for i, t := range dynamic {
-		text := t.Name + " " + t.Description
-		for _, tag := range t.Tags {
-			text += " " + tag
+		var text string
+		if b.enrichStore != nil {
+			text = b.enrichStore.GetSearchText(t)
+		} else {
+			text = t.Name + " " + t.Description
+			for _, tag := range t.Tags {
+				text += " " + tag
+			}
 		}
 		docs[i] = bm25.Doc{ID: t.Name, Text: text}
 		dynamicTexts[t.Name] = text
@@ -113,13 +130,29 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		bm25Scores = b.hybrid.FuseScores(userMessage, bm25Scores, dynamicTexts)
 	}
 
+	// Three-signal scoring: retrieval + experience + priority.
+	queryTokens := bm25.Tokenize(userMessage)
+	normScores := minMaxNormalize(bm25Scores)
+
 	type scored struct {
 		tool  RegisteredTool
 		score float64
 	}
 	scoredList := make([]scored, 0, len(dynamic))
 	for _, t := range dynamic {
-		s := bm25Scores[t.Name] + float64(t.Priority)*0.01
+		retrievalScore := normScores[t.Name]
+		var expScore float64
+		if b.tracker != nil {
+			expScore = b.tracker.ExperienceScore(t.Name, queryTokens)
+		}
+		priorityBonus := clampFloat(float64(t.Priority)*0.1, 0, 1)
+
+		var s float64
+		if b.tracker != nil {
+			s = 0.6*retrievalScore + 0.3*expScore + 0.1*priorityBonus
+		} else {
+			s = 0.9*retrievalScore + 0.1*priorityBonus
+		}
 		scoredList = append(scoredList, scored{tool: t, score: s})
 	}
 	sort.Slice(scoredList, func(i, j int) bool {

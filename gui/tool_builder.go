@@ -40,6 +40,16 @@ func (b *DynamicToolBuilder) SetEmbedder(emb embedding.Embedder) {
 	b.inner.SetEmbedder(emb)
 }
 
+// SetEnrichmentStore delegates to corelib/tool.DynamicToolBuilder.SetEnrichmentStore.
+func (b *DynamicToolBuilder) SetEnrichmentStore(store *tool.EnrichmentStore) {
+	b.inner.SetEnrichmentStore(store)
+}
+
+// SetUsageTracker delegates to corelib/tool.DynamicToolBuilder.SetUsageTracker.
+func (b *DynamicToolBuilder) SetUsageTracker(tracker *tool.UsageTracker) {
+	b.inner.SetUsageTracker(tracker)
+}
+
 // syncRegistry refreshes the inner corelib registry from the gui registry.
 // The corelib builder's BM25 index is preserved; only the registry is swapped.
 func (b *DynamicToolBuilder) syncRegistry() {
