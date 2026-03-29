@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -80,7 +83,19 @@ type TUIAgentHandler struct {
 func NewTUIAgentHandler(sessionMgr *TUISessionManager, opts ...AgentHandlerOption) *TUIAgentHandler {
 	h := &TUIAgentHandler{
 		sessionMgr:       sessionMgr,
-		httpClient:       &http.Client{Timeout: 120 * time.Second},
+		httpClient:       &http.Client{Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 180 * time.Second,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   20,
+			IdleConnTimeout:       90 * time.Second,
+			DisableCompression:    true,
+		}},
 		maxIterations:    agentMaxIterations,
 		codingToolHealth: newCodingToolHealthCache(),
 	}
@@ -170,6 +185,12 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 
 	for iteration := 0; iteration < h.maxIterations; iteration++ {
 		resp, err := h.doLLMRequestWithTools(cfg, conversation, tools)
+		// Retry once on timeout / temporary network errors.
+		if err != nil && isRetryableLLMErrorTUI(err) {
+			log.Printf("[LLM] 首次请求超时/网络错误，2s 后重试: %v", err)
+			time.Sleep(2 * time.Second)
+			resp, err = h.doLLMRequestWithTools(cfg, conversation, tools)
+		}
 		if err != nil {
 			return AgentResponse{Error: fmt.Sprintf("LLM 调用失败: %v", err)}
 		}
@@ -759,6 +780,26 @@ func resolvePath(p string) string {
 		return p
 	}
 	return abs
+}
+
+// isRetryableLLMErrorTUI returns true for timeout and temporary network errors
+// that are worth retrying once.
+func isRetryableLLMErrorTUI(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "context deadline exceeded") ||
+		strings.Contains(s, "Client.Timeout") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "connection refused")
 }
 
 // doLLMRequestWithTools 发送带工具定义的 LLM 请求。

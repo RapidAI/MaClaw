@@ -129,13 +129,76 @@ func DiscoverOrLaunch() (string, error) {
 		// Process already exited. This typically means Chrome delegated to an
 		// existing instance (which has no debug port) or hit an error.
 		log.Printf("[browser] 浏览器进程已立即退出 (可能转发给了已有实例)")
+
 		// Check if DevToolsActivePort appeared anyway (unlikely but possible).
 		time.Sleep(1 * time.Second)
 		if fallbackPort, _ := readDevToolsActivePort(); fallbackPort > 0 && probePort(fallbackPort) {
 			log.Printf("[browser] 进程退出但发现调试端口: %d", fallbackPort)
 			return fmt.Sprintf("http://127.0.0.1:%d", fallbackPort), nil
 		}
-		return "", fmt.Errorf("浏览器启动后立即退出，可能 profile 目录被占用或参数错误。请先关闭所有浏览器窗口再重试")
+
+		// The existing instance (without debug port) swallowed our launch.
+		// Force-kill everything and retry once.
+		log.Printf("[browser] 强制终止所有浏览器实例并重试启动...")
+		killBrowserByName(bi.name)
+		waitForProfileUnlock(userDataDir, 10*time.Second)
+		// Extra safety: kill again if anything lingers.
+		if isBrowserRunning(bi.name) {
+			killBrowserByName(bi.name)
+			time.Sleep(3 * time.Second)
+		}
+
+		// Clean lock files again.
+		os.Remove(dtapPath)
+		for _, lockName := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile"} {
+			os.Remove(filepath.Join(userDataDir, lockName))
+		}
+
+		// Retry launch.
+		log.Printf("[browser] 重新启动浏览器...")
+		cmd2 := exec.Command(bi.path, args...)
+		cmd2.Stdout = nil
+		cmd2.Stderr = nil
+		if err := cmd2.Start(); err != nil {
+			return "", fmt.Errorf("重试启动浏览器失败: %w", err)
+		}
+		managedBrowserMu.Lock()
+		managedBrowserProc = cmd2.Process
+		managedBrowserMu.Unlock()
+
+		procExited2 := make(chan struct{})
+		go func() {
+			cmd2.Wait()
+			close(procExited2)
+			managedBrowserMu.Lock()
+			managedBrowserProc = nil
+			managedBrowserMu.Unlock()
+		}()
+
+		// Check if retry also exits immediately.
+		select {
+		case <-procExited2:
+			log.Printf("[browser] 重试启动也立即退出")
+			time.Sleep(1 * time.Second)
+			if fp, _ := readDevToolsActivePort(); fp > 0 && probePort(fp) {
+				return fmt.Sprintf("http://127.0.0.1:%d", fp), nil
+			}
+			return "", fmt.Errorf("浏览器两次启动均立即退出。请手动关闭所有浏览器窗口后重试")
+		case <-time.After(3 * time.Second):
+			// Good — retry process is alive.
+		}
+
+		port, err := waitForDevToolsActivePortWithExit(dtapPath, 20*time.Second, procExited2)
+		if err != nil {
+			if fp, _ := readDevToolsActivePort(); fp > 0 && probePort(fp) {
+				return fmt.Sprintf("http://127.0.0.1:%d", fp), nil
+			}
+			return "", fmt.Errorf("重试启动浏览器后仍未获取调试端口: %w", err)
+		}
+		retryAddr := fmt.Sprintf("http://127.0.0.1:%d", port)
+		log.Printf("[browser] 重试成功，调试端口: %d", port)
+		return retryAddr, nil
+
 	case <-time.After(2 * time.Second):
 		// Process is still running after 2s — good, continue waiting for port.
 	}
@@ -349,6 +412,23 @@ func killBrowserByName(browserName string) {
 		}
 		// /T kills the entire process tree (GPU helper, crashpad, etc.)
 		exec.Command("taskkill", "/F", "/T", "/IM", procName).Run()
+		// Fallback: enumerate remaining PIDs via tasklist and kill individually.
+		// tasklist is available on all Windows versions (unlike wmic which is deprecated).
+		out, err := exec.Command("tasklist", "/FI",
+			fmt.Sprintf("IMAGENAME eq %s", procName), "/FO", "CSV", "/NH").Output()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				line = strings.TrimSpace(line)
+				// CSV format: "chrome.exe","12345","Console","1","123,456 K"
+				fields := strings.Split(line, ",")
+				if len(fields) >= 2 {
+					pid := strings.Trim(fields[1], "\" ")
+					if pid != "" && pid != "0" {
+						exec.Command("taskkill", "/F", "/T", "/PID", pid).Run()
+					}
+				}
+			}
+		}
 	case "darwin":
 		// On macOS, use killall which is more reliable than pkill for app bundles.
 		var appName string
@@ -378,17 +458,23 @@ func killBrowserByName(browserName string) {
 }
 
 // waitForProfileUnlock waits until the specified browser processes have fully exited.
+// On Windows, Chrome uses named pipes for singleton detection. After processes exit,
+// the OS needs extra time to clean up these handles.
 func waitForProfileUnlock(userDataDir string, timeout time.Duration) {
-	_ = userDataDir // reserved for future lock-file checks
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		// Only need to check the browser we're about to launch.
-		// Both Chrome and Edge share similar profile locking, but we check
-		// both because the user-data-dir might be shared.
 		chromeGone := !isBrowserRunning("chrome")
 		edgeGone := !isBrowserRunning("edge")
 		if chromeGone && edgeGone {
-			time.Sleep(500 * time.Millisecond)
+			// Processes are gone. On Windows, wait extra time for the OS to
+			// release named pipes and file handles that Chrome uses for
+			// singleton detection. 500ms is not enough — 3s is safe.
+			grace := 3 * time.Second
+			if runtime.GOOS != "windows" {
+				grace = 1 * time.Second
+			}
+			log.Printf("[browser] 浏览器进程已退出，等待 %v 释放 profile 锁...", grace)
+			time.Sleep(grace)
 			return
 		}
 		time.Sleep(500 * time.Millisecond)

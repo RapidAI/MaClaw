@@ -34,7 +34,13 @@ type Processor struct {
 	mailer         *mail.Service
 	trialManager   *TrialManager
 	versionManager *VersionManager
+	searchSvc      *SearchService
 	queue          chan string
+}
+
+// SetSearchService 设置搜索服务（用于发布后增量更新 FTS 索引）。
+func (p *Processor) SetSearchService(svc *SearchService) {
+	p.searchSvc = svc
 }
 
 // NewProcessor 创建异步处理器。
@@ -231,6 +237,17 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 
 	if err := p.skillStore.Publish(full); err != nil {
 		return p.failSubmissionWithMeta(ctx, sub, meta, fmt.Sprintf("publish failed: %v", err))
+	}
+
+	// 增量更新 FTS 搜索索引（新上传的 skill 初始状态为 trial）
+	if p.searchSvc != nil {
+		indexStatus := "trial"
+		if p.trialManager == nil {
+			indexStatus = "published"
+		}
+		if err := p.searchSvc.IndexSkill(ctx, skillID, meta.Name, meta.Description, meta.Tags, 0, 0, 0, indexStatus, fmtTime(sub.CreatedAt)); err != nil {
+			log.Printf("[skillmarket] index skill %s error: %v", skillID, err)
+		}
 	}
 
 	// 标记成功

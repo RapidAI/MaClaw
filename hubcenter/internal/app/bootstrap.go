@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log"
 	"path/filepath"
 	"time"
 
@@ -76,6 +77,12 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 启动时全量重建 FTS 搜索索引
+	if err := searchSvc.RebuildIndex(context.Background()); err != nil {
+		log.Printf("[hubcenter] rebuild search index: %v", err)
+	}
+	// 将 searchSvc 注入 processor，发布时增量更新索引
+	processor.SetSearchService(searchSvc)
 	leaderboardSvc := skillmarket.NewLeaderboardService(skillStore)
 
 	// API Key pool: 使用 RSA 私钥的原始字节作为加密密钥种子

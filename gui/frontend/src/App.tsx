@@ -1587,7 +1587,7 @@ const ToolConfiguration = ({
                             style={{
                                 width: '100%',
                                 padding: '8px 4px',
-                                fontSize: '0.75rem',
+                                fontSize: '1.125rem',
                                 borderBottom: (model.api_key && model.api_key.trim() !== "") ? '3px solid var(--primary-color)' : '1px solid var(--border-color)',
                                 position: 'relative',
                                 overflow: 'visible'

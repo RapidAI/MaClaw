@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -293,7 +294,9 @@ func (s *SearchService) RebuildIndex(ctx context.Context) error {
 			break
 		}
 		for _, m := range result.Skills {
-			_ = s.IndexSkill(ctx, m.ID, m.Name, m.Description, m.Tags, m.AvgRating, m.Downloads, 0, "published", m.CreatedAt)
+			if err := s.IndexSkill(ctx, m.ID, m.Name, m.Description, m.Tags, m.AvgRating, m.Downloads, 0, "published", m.CreatedAt); err != nil {
+				log.Printf("[skillmarket] rebuild index: skill %s error: %v", m.ID, err)
+			}
 		}
 		if page*skillPageSize >= total {
 			break

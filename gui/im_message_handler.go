@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,7 +31,7 @@ import (
 const imHeartbeatMsg = "__heartbeat__"
 
 // ---------------------------------------------------------------------------
-// IMMessageHandler — handles IM messages forwarded from Hub via WebSocket
+// IMMessageHandler 鈥?handles IM messages forwarded from Hub via WebSocket
 // ---------------------------------------------------------------------------
 
 // MessageAttachment represents a file/image/audio attachment from IM.
@@ -50,7 +51,7 @@ type IMUserMessage struct {
 	Attachments        []MessageAttachment `json:"attachments,omitempty"`          // File/image attachments from user
 	MinIterations      int                 `json:"min_iterations,omitempty"`       // floor for agent loop iterations (used by scheduled tasks)
 	IsBackground       bool                `json:"is_background,omitempty"`        // true for scheduled tasks / auto-picked tasks (uses separate HTTP client)
-	BackgroundSlotKind string              `json:"background_slot_kind,omitempty"` // "coding", "scheduled", "auto" — determines concurrency slot (default: "scheduled")
+	BackgroundSlotKind string              `json:"background_slot_kind,omitempty"` // "coding", "scheduled", "auto" 鈥?determines concurrency slot (default: "scheduled")
 }
 
 // IMAgentResponse is the structured reply sent back to Hub.
@@ -89,7 +90,7 @@ type IMResponseAction struct {
 const (
 	maxConversationTurns   = 40
 	maxMemoryTokenEstimate = 60_000        // lowered: tools+system prompt consume ~15-20K
-	memoryTTL              = 2 * time.Hour // 对话记忆过期时间
+	memoryTTL              = 2 * time.Hour // 瀵硅瘽璁板繂杩囨湡鏃堕棿
 	memoryCleanupInterval  = 10 * time.Minute
 )
 
@@ -161,7 +162,7 @@ func (cm *conversationMemory) shard(userID string) *memoryShard {
 	return cm.shards[h&(memoryShardCount-1)]
 }
 
-// evictionLoop 定期清理过期的对话记忆，防止内存无限增长
+// evictionLoop 瀹氭湡娓呯悊杩囨湡鐨勫璇濊蹇嗭紝闃叉鍐呭瓨鏃犻檺澧為暱
 func (cm *conversationMemory) evictionLoop() {
 	ticker := time.NewTicker(memoryCleanupInterval)
 	defer ticker.Stop()
@@ -272,7 +273,7 @@ func estimateTokens(entries []conversationEntry) int {
 //
 // For multimodal messages (content is []interface{} with image_url blocks),
 // base64 image data is excluded from the estimate since it doesn't consume
-// text tokens — vision tokens are counted separately by the API.
+// text tokens 鈥?vision tokens are counted separately by the API.
 func estimateConversationTokens(msgs []interface{}) int {
 	total := 0
 	for _, m := range msgs {
@@ -292,17 +293,17 @@ func estimateConversationTokens(msgs []interface{}) int {
 				}
 				blockType, _ := bm["type"].(string)
 				if blockType == "image_url" {
-					// Vision image block — count a fixed ~85 tokens (low-detail)
+					// Vision image block 鈥?count a fixed ~85 tokens (low-detail)
 					// instead of serializing the huge base64 string.
 					total += 85
 					continue
 				}
 				if blockType == "image" {
-					// Anthropic-style image block — same treatment.
+					// Anthropic-style image block 鈥?same treatment.
 					total += 85
 					continue
 				}
-				// Text or other block — estimate normally.
+				// Text or other block 鈥?estimate normally.
 				data, _ := json.Marshal(bm)
 				total += estimateBytesToTokens(data)
 			}
@@ -422,7 +423,7 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 	systemMsg := msgs[:1]
 	fallbackPlaceholder := []interface{}{map[string]string{
 		"role":    "user",
-		"content": "[注意：中间的对话历史因上下文长度限制已被省略，请基于最近的上下文继续工作]",
+		"content": "[娉ㄦ剰锛氫腑闂寸殑瀵硅瘽鍘嗗彶鍥犱笂涓嬫枃闀垮害闄愬埗宸茶鐪佺暐锛岃鍩轰簬鏈€杩戠殑涓婁笅鏂囩户缁伐浣淽",
 	}}
 
 	// Start from keeping all groups, then drop from the front.
@@ -466,12 +467,12 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 				if len(summary) > 5000 {
 					runes := []rune(summary)
 					if len(runes) > 5000 {
-						summary = string(runes[:5000]) + "…"
+						summary = string(runes[:5000]) + "鈥?
 					}
 				}
 				placeholder = []interface{}{
-					map[string]string{"role": "user", "content": "[对话历史摘要]\n" + summary},
-					map[string]string{"role": "assistant", "content": "好的，我已了解之前的对话上下文。"},
+					map[string]string{"role": "user", "content": "[瀵硅瘽鍘嗗彶鎽樿]\n" + summary},
+					map[string]string{"role": "assistant", "content": "濂界殑锛屾垜宸蹭簡瑙ｄ箣鍓嶇殑瀵硅瘽涓婁笅鏂囥€?},
 				}
 			}
 		}
@@ -494,7 +495,7 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		return result
 	}
 
-	// Even keeping only the last group doesn't fit — try secondary truncation
+	// Even keeping only the last group doesn't fit 鈥?try secondary truncation
 	// of tool results within the last group to squeeze it in.
 	lastG := groups[len(groups)-1]
 	result := truncateLastGroup(msgs, lastG.start, lastG.end, systemMsg, fallbackPlaceholder)
@@ -502,7 +503,7 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		return result
 	}
 
-	// Still over budget — aggressively truncate assistant content in the result
+	// Still over budget 鈥?aggressively truncate assistant content in the result
 	// while keeping tool-call pairs intact.
 	result = truncateAssistantContent(result, msgBudget)
 	if estimateConversationTokens(result) <= msgBudget {
@@ -530,7 +531,7 @@ func truncateLastGroup(msgs []interface{}, start, end int, systemMsg, placeholde
 					headRunes := 400
 					tailRunes := 200
 					if len(runes) > headRunes+tailRunes {
-						truncated := string(runes[:headRunes]) + "\n…(截断)…\n" + string(runes[len(runes)-tailRunes:])
+						truncated := string(runes[:headRunes]) + "\n鈥?鎴柇)鈥n" + string(runes[len(runes)-tailRunes:])
 						cp := make(map[string]interface{}, len(mm))
 						for k, v := range mm {
 							cp[k] = v
@@ -575,7 +576,7 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 		if rc, _ := cp["reasoning_content"].(string); len(rc) > 200 {
 			runes := []rune(rc)
 			if len(runes) > 200 {
-				cp["reasoning_content"] = string(runes[:100]) + "\n…(reasoning truncated)…\n" + string(runes[len(runes)-50:])
+				cp["reasoning_content"] = string(runes[:100]) + "\n鈥?reasoning truncated)鈥n" + string(runes[len(runes)-50:])
 			}
 		}
 		content, _ := cp["content"].(string)
@@ -588,7 +589,7 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 			result[i] = cp
 			continue
 		}
-		cp["content"] = string(runes[:100]) + "\n…(截断)…\n" + string(runes[len(runes)-50:])
+		cp["content"] = string(runes[:100]) + "\n鈥?鎴柇)鈥n" + string(runes[len(runes)-50:])
 		result[i] = cp
 	}
 	return result
@@ -599,7 +600,7 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 func makeSummarizer(cfg MaclawLLMConfig, httpClient *http.Client) func(string) string {
 	return func(text string) string {
 		msgs := []interface{}{
-			map[string]string{"role": "user", "content": "请简洁总结以下对话历史，保留关键事实、决策和待办事项：\n\n" + text},
+			map[string]string{"role": "user", "content": "璇风畝娲佹€荤粨浠ヤ笅瀵硅瘽鍘嗗彶锛屼繚鐣欏叧閿簨瀹炪€佸喅绛栧拰寰呭姙浜嬮」锛歕n\n" + text},
 		}
 		result, err := doSimpleLLMRequest(context.Background(), cfg, msgs, httpClient, 30*time.Second)
 		if err != nil || result.Content == "" {
@@ -615,7 +616,7 @@ func trimHistory(entries []conversationEntry) []conversationEntry {
 	}
 	trimmed := entries[len(entries)-maxConversationTurns:]
 	// Ensure we don't start with orphaned "tool" messages that lack a
-	// preceding assistant message with tool_calls — the LLM API rejects
+	// preceding assistant message with tool_calls 鈥?the LLM API rejects
 	// such sequences with "Messages with role 'tool' must be a response
 	// to a preceding message with 'tool_calls'".
 	for len(trimmed) > 0 && trimmed[0].Role == "tool" {
@@ -638,7 +639,7 @@ func truncateToolResult(s string) string {
 	}
 	headLen := maxToolResultLen * 2 / 3
 	tailLen := maxToolResultLen - headLen - 40 // 40 bytes for the separator
-	return s[:headLen] + "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n" + s[len(s)-tailLen:]
+	return s[:headLen] + "\n\n... (宸叉埅鏂紝鍏?" + fmt.Sprintf("%d", len(s)) + " 瀛楄妭) ...\n\n" + s[len(s)-tailLen:]
 }
 
 // truncateToolResultForTool applies tool-specific truncation strategies.
@@ -649,7 +650,7 @@ func truncateToolResult(s string) string {
 const webFetchMaxToolResult = 20480
 
 func truncateToolResultForTool(toolName, s string) string {
-	// web_fetch gets a higher budget — content is already truncated in handler
+	// web_fetch gets a higher budget 鈥?content is already truncated in handler
 	limit := maxToolResultLen
 	if toolName == "web_fetch" {
 		limit = webFetchMaxToolResult
@@ -657,7 +658,7 @@ func truncateToolResultForTool(toolName, s string) string {
 	if len(s) <= limit {
 		return s
 	}
-	sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
+	sep := "\n\n... (宸叉埅鏂紝鍏?" + fmt.Sprintf("%d", len(s)) + " 瀛楄妭) ...\n\n"
 	sepLen := len(sep)
 	budget := limit - sepLen
 
@@ -681,14 +682,14 @@ func truncateToolResultForTool(toolName, s string) string {
 func inferFileDeliveryMessage(fileName string) string {
 	lower := strings.ToLower(fileName)
 	switch {
-	case strings.Contains(lower, "requirement") || strings.Contains(lower, "需求"):
-		return "📋 需求文档已生成，请查看并确认需求是否准确，或提出修改意见。"
-	case strings.Contains(lower, "design") || strings.Contains(lower, "设计"):
-		return "🏗️ 技术设计文档已生成，请查看设计方案并确认，或提出修改意见。"
-	case strings.Contains(lower, "task") || strings.Contains(lower, "任务"):
-		return "📝 任务列表已生成，请查看任务拆分是否合理，确认后开始执行。"
+	case strings.Contains(lower, "requirement") || strings.Contains(lower, "闇€姹?):
+		return "馃搵 闇€姹傛枃妗ｅ凡鐢熸垚锛岃鏌ョ湅骞剁‘璁ら渶姹傛槸鍚﹀噯纭紝鎴栨彁鍑轰慨鏀规剰瑙併€?
+	case strings.Contains(lower, "design") || strings.Contains(lower, "璁捐"):
+		return "馃彈锔?鎶€鏈璁℃枃妗ｅ凡鐢熸垚锛岃鏌ョ湅璁捐鏂规骞剁‘璁わ紝鎴栨彁鍑轰慨鏀规剰瑙併€?
+	case strings.Contains(lower, "task") || strings.Contains(lower, "浠诲姟"):
+		return "馃摑 浠诲姟鍒楄〃宸茬敓鎴愶紝璇锋煡鐪嬩换鍔℃媶鍒嗘槸鍚﹀悎鐞嗭紝纭鍚庡紑濮嬫墽琛屻€?
 	default:
-		return fmt.Sprintf("📄 已生成文件 %s，请查看并确认，或提出修改意见。", fileName)
+		return fmt.Sprintf("馃搫 宸茬敓鎴愭枃浠?%s锛岃鏌ョ湅骞剁‘璁わ紝鎴栨彁鍑轰慨鏀规剰瑙併€?, fileName)
 	}
 }
 
@@ -717,7 +718,7 @@ func stripThinkingTags(s string) string {
 const toolsCacheTTL = 5 * time.Second
 
 // ProgressCallback is called by the agent loop to send intermediate progress
-// ProgressCallback — see corelib_aliases.go
+// ProgressCallback 鈥?see corelib_aliases.go
 
 // IMMessageHandler processes IM messages using the local LLM Agent.
 // It accesses mcpRegistry and skillExecutor via h.app at call time
@@ -763,7 +764,7 @@ type IMMessageHandler struct {
 	// Configuration manager (lazily initialized via setter).
 	configManager *ConfigManager
 
-	// Dynamic loop limit — set by the "set_max_iterations" tool during an
+	// Dynamic loop limit 鈥?set by the "set_max_iterations" tool during an
 	// active agent loop. Reset to 0 at the start of each runAgentLoop call.
 	// A positive value overrides the configured maxIter for the current loop.
 	// NOTE: This field is kept as a legacy bridge alongside currentLoopCtx.
@@ -810,20 +811,32 @@ type IMMessageHandler struct {
 
 // NewIMMessageHandler creates a new handler.
 func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
-	// Optimised transport for interactive chat — larger connection pool
+	// Optimised transport for interactive chat 鈥?larger connection pool
 	// so concurrent requests don't queue behind each other.
 	chatTransport := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 180 * time.Second,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		MaxConnsPerHost:     20,
 		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  true, // 禁止自动 gzip，避免 SSE 流式被压缩缓冲
+		DisableCompression:  true, // 绂佹鑷姩 gzip锛岄伩鍏?SSE 娴佸紡琚帇缂╃紦鍐?
 	}
 	// Separate transport for background tasks (scheduled tasks, auto-picked
 	// ClawNet tasks) so they never starve the chat connection pool.
 	taskTransport := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 240 * time.Second,
 		MaxIdleConns:        50,
 		MaxIdleConnsPerHost: 10,
 		MaxConnsPerHost:     10,
@@ -831,8 +844,8 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		DisableCompression:  true,
 	}
 
-	chatClient := &http.Client{Timeout: 120 * time.Second, Transport: chatTransport}
-	taskClient := &http.Client{Timeout: 180 * time.Second, Transport: taskTransport}
+	chatClient := &http.Client{Transport: chatTransport}
+	taskClient := &http.Client{Transport: taskTransport}
 
 	h := &IMMessageHandler{
 		app:        app,
@@ -956,7 +969,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 	var tools []map[string]interface{}
 
 	// --- Phase 1 upgrade: prefer DynamicToolBuilder from ToolRegistry ---
-	// Note: We use BuildAll() here intentionally — context-aware filtering
+	// Note: We use BuildAll() here intentionally 鈥?context-aware filtering
 	// is handled downstream by routeTools() / ToolRouter which uses TF-IDF.
 	// DynamicToolBuilder.Build(msg) is an alternative path for simpler setups
 	// without ToolRouter.
@@ -987,7 +1000,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 		cacheTime := h.toolsCacheTime
 		h.toolsMu.RUnlock()
 
-		// Fallback: no generator configured — use hardcoded definitions.
+		// Fallback: no generator configured 鈥?use hardcoded definitions.
 		if gen == nil {
 			tools = h.buildToolDefinitions()
 		} else if cached != nil && time.Since(cacheTime) < toolsCacheTTL {
@@ -1040,12 +1053,12 @@ func (h *IMMessageHandler) syncClawNetTools() {
 	if running && !hasSearch {
 		h.registry.Register(RegisteredTool{
 			Name:        "clawnet_search",
-			Description: "在虾网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
+			Description: "鍦ㄨ櫨缃戯紙ClawNet P2P 鐭ヨ瘑缃戠粶锛変腑鎼滅储鐭ヨ瘑鏉＄洰銆傝繑鍥炲尮閰嶇殑鐭ヨ瘑鍒楄〃锛屽寘鍚爣棰樸€佸唴瀹广€佷綔鑰呯瓑銆?,
 			Category:    ToolCategoryBuiltin,
 			Tags:        []string{"clawnet", "search", "knowledge", "p2p"},
 			Status:      RegToolAvailable,
 			InputSchema: map[string]interface{}{
-				"query": map[string]string{"type": "string", "description": "搜索关键词"},
+				"query": map[string]string{"type": "string", "description": "鎼滅储鍏抽敭璇?},
 			},
 			Required: []string{"query"},
 			Source:   "clawnet",
@@ -1053,13 +1066,13 @@ func (h *IMMessageHandler) syncClawNetTools() {
 		})
 		h.registry.Register(RegisteredTool{
 			Name:        "clawnet_publish",
-			Description: "向虾网（ClawNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
+			Description: "鍚戣櫨缃戯紙ClawNet P2P 鐭ヨ瘑缃戠粶锛夊彂甯冧竴鏉＄煡璇嗘潯鐩€傚彂甯冨悗鍏朵粬鑺傜偣鍙互鎼滅储鍒般€?,
 			Category:    ToolCategoryBuiltin,
 			Tags:        []string{"clawnet", "publish", "knowledge", "p2p"},
 			Status:      RegToolAvailable,
 			InputSchema: map[string]interface{}{
-				"title": map[string]string{"type": "string", "description": "知识标题"},
-				"body":  map[string]string{"type": "string", "description": "知识内容（Markdown 格式）"},
+				"title": map[string]string{"type": "string", "description": "鐭ヨ瘑鏍囬"},
+				"body":  map[string]string{"type": "string", "description": "鐭ヨ瘑鍐呭锛圡arkdown 鏍煎紡锛?},
 			},
 			Required: []string{"title", "body"},
 			Source:   "clawnet",
@@ -1078,8 +1091,8 @@ func (h *IMMessageHandler) HandleIMMessage(msg IMUserMessage) *IMAgentResponse {
 
 // HandleIMMessageWithProgress processes an IM message with an optional progress
 // callback. When onProgress is non-nil, the agent loop sends intermediate status
-// updates (e.g. "正在执行 bash 命令…") so the Hub can relay them to the user
-// and reset the response timeout — preventing 504 on long-running tasks.
+// updates (e.g. "姝ｅ湪鎵ц bash 鍛戒护鈥?) so the Hub can relay them to the user
+// and reset the response timeout 鈥?preventing 504 on long-running tasks.
 func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProgress ProgressCallback) *IMAgentResponse {
 	return h.HandleIMMessageWithProgressAndStream(msg, onProgress, nil, nil, nil)
 }
@@ -1092,12 +1105,12 @@ func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProg
 func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessage, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
 	trimmed := strings.TrimSpace(msg.Text)
 
-	// Slash commands are processed before the LLM config check — they don't
+	// Slash commands are processed before the LLM config check 鈥?they don't
 	// need LLM and must always work so users can manage state even when LLM
 	// is misconfigured.
 	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
 		h.memory.clear(msg.UserID)
-		return &IMAgentResponse{Text: "对话已重置。"}
+		return &IMAgentResponse{Text: "瀵硅瘽宸查噸缃€?}
 	}
 	if trimmed == "/exit" || trimmed == "/quit" {
 		return h.handleExitCommand(msg.UserID)
@@ -1106,16 +1119,16 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 		return h.handleSessionsCommand()
 	}
 	if trimmed == "/help" {
-		return &IMAgentResponse{Text: "📖 可用命令:\n" +
-			"/new /reset — 重置对话\n" +
-			"/exit /quit — 终止所有会话，退出编程模式\n" +
-			"/sessions — 查看当前会话状态\n" +
-			"/help — 显示此帮助"}
+		return &IMAgentResponse{Text: "馃摉 鍙敤鍛戒护:\n" +
+			"/new /reset 鈥?閲嶇疆瀵硅瘽\n" +
+			"/exit /quit 鈥?缁堟鎵€鏈変細璇濓紝閫€鍑虹紪绋嬫ā寮廫n" +
+			"/sessions 鈥?鏌ョ湅褰撳墠浼氳瘽鐘舵€乗n" +
+			"/help 鈥?鏄剧ず姝ゅ府鍔?}
 	}
 
 	if !h.app.isMaclawLLMConfigured() {
 		return &IMAgentResponse{
-			Error: "MaClaw LLM 未配置，无法处理请求。请在 MaClaw 客户端的设置中配置 LLM。",
+			Error: "MaClaw LLM 鏈厤缃紝鏃犳硶澶勭悊璇锋眰銆傝鍦?MaClaw 瀹㈡埛绔殑璁剧疆涓厤缃?LLM銆?,
 		}
 	}
 
@@ -1156,11 +1169,11 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 
 		loopCtx, waitC := h.bgManager.SpawnOrQueue(slotKind, msg.UserID, msg.Text, maxIter)
 		if loopCtx == nil && waitC != nil {
-			// Slot full — block until a slot opens.
+			// Slot full 鈥?block until a slot opens.
 			loopCtx = <-waitC
 		}
 		if loopCtx == nil {
-			return &IMAgentResponse{Error: "后台任务启动失败：无法获取执行槽位"}
+			return &IMAgentResponse{Error: "鍚庡彴浠诲姟鍚姩澶辫触锛氭棤娉曡幏鍙栨墽琛屾Ы浣?}
 		}
 		loopCtx.HTTPClient = httpClient
 
@@ -1228,46 +1241,46 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 
 	var b strings.Builder
 	if len(killed) > 0 {
-		b.WriteString(fmt.Sprintf("已退出编程模式。终止了 %d 个会话: %s", len(killed), strings.Join(killed, ", ")))
+		b.WriteString(fmt.Sprintf("宸查€€鍑虹紪绋嬫ā寮忋€傜粓姝簡 %d 涓細璇? %s", len(killed), strings.Join(killed, ", ")))
 	} else {
-		b.WriteString("已退出编程模式。")
+		b.WriteString("宸查€€鍑虹紪绋嬫ā寮忋€?)
 	}
 	if failCount > 0 {
-		b.WriteString(fmt.Sprintf("\n⚠️ %d 个会话终止失败，可能需要手动处理。", failCount))
+		b.WriteString(fmt.Sprintf("\n鈿狅笍 %d 涓細璇濈粓姝㈠け璐ワ紝鍙兘闇€瑕佹墜鍔ㄥ鐞嗐€?, failCount))
 	}
-	b.WriteString("\n对话已重置，后续消息将正常对话。")
+	b.WriteString("\n瀵硅瘽宸查噸缃紝鍚庣画娑堟伅灏嗘甯稿璇濄€?)
 	return &IMAgentResponse{Text: b.String()}
 }
 
 // handleSessionsCommand returns a quick status summary of active sessions.
 func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 	if h.manager == nil {
-		return &IMAgentResponse{Text: "会话管理器未初始化。"}
+		return &IMAgentResponse{Text: "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖栥€?}
 	}
 	sessions := h.manager.List()
 	if len(sessions) == 0 {
 		return &IMAgentResponse{
-			Text: "当前没有活跃会话。\n\n💡 提示: 发送 /exit 可退出编程模式回到普通对话。",
+			Text: "褰撳墠娌℃湁娲昏穬浼氳瘽銆俓n\n馃挕 鎻愮ず: 鍙戦€?/exit 鍙€€鍑虹紪绋嬫ā寮忓洖鍒版櫘閫氬璇濄€?,
 		}
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("📋 当前 %d 个会话:\n", len(sessions)))
+	b.WriteString(fmt.Sprintf("馃搵 褰撳墠 %d 涓細璇?\n", len(sessions)))
 	for _, s := range sessions {
 		s.mu.RLock()
 		status := string(s.Status)
 		task := s.Summary.CurrentTask
 		waiting := s.Summary.WaitingForUser
 		s.mu.RUnlock()
-		b.WriteString(fmt.Sprintf("• [%s] %s — %s", s.ID, s.Tool, status))
+		b.WriteString(fmt.Sprintf("鈥?[%s] %s 鈥?%s", s.ID, s.Tool, status))
 		if task != "" {
 			b.WriteString(fmt.Sprintf(" | %s", task))
 		}
 		if waiting {
-			b.WriteString(" ⏳等待输入")
+			b.WriteString(" 鈴崇瓑寰呰緭鍏?)
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n💡 发送 /exit 可终止所有会话并退出编程模式。")
+	b.WriteString("\n馃挕 鍙戦€?/exit 鍙粓姝㈡墍鏈変細璇濆苟閫€鍑虹紪绋嬫ā寮忋€?)
 	return &IMAgentResponse{Text: b.String()}
 }
 
@@ -1284,7 +1297,7 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 		split++
 	}
 	if split >= len(entries) {
-		// Degenerate case: everything is tool messages — just return as-is.
+		// Degenerate case: everything is tool messages 鈥?just return as-is.
 		return entries
 	}
 	recent := entries[split:]
@@ -1302,7 +1315,7 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 
 	cfg := h.app.GetMaclawLLMConfig()
 	msgs := []map[string]string{
-		{"role": "user", "content": "请简洁总结以下对话历史，保留关键事实、决策和待办事项：\n\n" + summaryText},
+		{"role": "user", "content": "璇风畝娲佹€荤粨浠ヤ笅瀵硅瘽鍘嗗彶锛屼繚鐣欏叧閿簨瀹炪€佸喅绛栧拰寰呭姙浜嬮」锛歕n\n" + summaryText},
 	}
 	conv := make([]interface{}, len(msgs))
 	for i, m := range msgs {
@@ -1314,8 +1327,8 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 	}
 
 	compacted := []conversationEntry{
-		{Role: "user", Content: "[对话历史摘要]\n" + resp.Choices[0].Message.Content},
-		{Role: "assistant", Content: "好的，我已了解之前的对话上下文。"},
+		{Role: "user", Content: "[瀵硅瘽鍘嗗彶鎽樿]\n" + resp.Choices[0].Message.Content},
+		{Role: "assistant", Content: "濂界殑锛屾垜宸蹭簡瑙ｄ箣鍓嶇殑瀵硅瘽涓婁笅鏂囥€?},
 	}
 	return append(compacted, recent...)
 }
@@ -1529,11 +1542,11 @@ func drainStatusEvents(ctx *LoopContext, conversation *[]interface{}, sendProgre
 	for {
 		select {
 		case evt := <-ctx.StatusC:
-			statusMsg := fmt.Sprintf("[后台事件] %s", evt.Message)
+			statusMsg := fmt.Sprintf("[鍚庡彴浜嬩欢] %s", evt.Message)
 			*conversation = append(*conversation, map[string]string{
 				"role": "system", "content": statusMsg,
 			})
-			sendProgress(fmt.Sprintf("📡 %s", evt.Message))
+			sendProgress(fmt.Sprintf("馃摗 %s", evt.Message))
 		default:
 			return
 		}
@@ -1541,10 +1554,10 @@ func drainStatusEvents(ctx *LoopContext, conversation *[]interface{}, sendProgre
 }
 
 func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []conversationEntry, userText string, attachments []MessageAttachment, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, minIterations int, platform string) (result *IMAgentResponse) {
-	// panic recovery — 防止工具执行异常导致 goroutine 崩溃
+	// panic recovery 鈥?闃叉宸ュ叿鎵ц寮傚父瀵艰嚧 goroutine 宕╂簝
 	defer func() {
 		if r := recover(); r != nil {
-			result = &IMAgentResponse{Error: fmt.Sprintf("Agent 内部错误: %v", r)}
+			result = &IMAgentResponse{Error: fmt.Sprintf("Agent 鍐呴儴閿欒: %v", r)}
 		}
 	}()
 
@@ -1562,7 +1575,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	// isDebug reads the debug toggle live from config so changes take effect
-	// immediately — even mid-loop when the user flips the switch.
+	// immediately 鈥?even mid-loop when the user flips the switch.
 	// Cached for up to 2 seconds to avoid excessive disk reads in the hot loop.
 	var cachedDebug bool
 	var cachedDebugTime time.Time
@@ -1588,8 +1601,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	// Delayed acknowledgment: when debug is off and streaming is not active,
 	// schedule a brief receipt after a short grace period. If the agent loop
-	// finishes quickly (e.g. simple greetings), the receipt is suppressed —
-	// the user sees only the final card, avoiding the redundant "收到，正在处理中" message.
+	// finishes quickly (e.g. simple greetings), the receipt is suppressed 鈥?
+	// the user sees only the final card, avoiding the redundant "鏀跺埌锛屾鍦ㄥ鐞嗕腑" message.
 	// When streaming (onToken != nil), the user already sees real-time output,
 	// so the acknowledgment is unnecessary.
 	const ackDelay = 3 * time.Second
@@ -1599,7 +1612,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		go func() {
 			select {
 			case <-ackTimer.C:
-				sendProgress("📨 收到，正在处理中，稍后发你结果…")
+				sendProgress("馃摠 鏀跺埌锛屾鍦ㄥ鐞嗕腑锛岀◢鍚庡彂浣犵粨鏋溾€?)
 			case <-ackDone:
 				ackTimer.Stop()
 			}
@@ -1675,7 +1688,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		conversation = append(conversation, entry.toMessage())
 	}
 
-	// Build user message — multimodal if attachments contain images.
+	// Build user message 鈥?multimodal if attachments contain images.
 	userContent := buildUserContent(userText, attachments, cfg.Protocol, cfg.SupportsVision)
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 
@@ -1719,7 +1732,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 		}
 
-		// --- Background loop: pause near limit, wait for 续命 ---
+		// --- Background loop: pause near limit, wait for 缁懡 ---
 		// Only pause if: (a) background loop, (b) effectiveMax > 4 to ensure
 		// meaningful work before first pause, (c) iteration is at the pause
 		// threshold. The threshold is effectiveMax-2 to give 2 remaining rounds
@@ -1733,7 +1746,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					Type:      StatusEventApproachingLimit,
 					LoopID:    ctx.ID,
 					SessionID: ctx.SessionID,
-					Message:   fmt.Sprintf("后台任务 %s 即将达到最大轮数 (%d/%d)", ctx.ID, iteration, effectiveMax),
+					Message:   fmt.Sprintf("鍚庡彴浠诲姟 %s 鍗冲皢杈惧埌鏈€澶ц疆鏁?(%d/%d)", ctx.ID, iteration, effectiveMax),
 					Remaining: effectiveMax - iteration,
 				}:
 				default:
@@ -1747,10 +1760,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				ctx.SetState("running")
 			case <-ctx.CancelC:
 				ctx.SetState("stopped")
-				return &IMAgentResponse{Text: fmt.Sprintf("后台任务 %s 已被停止。", ctx.ID)}
+				return &IMAgentResponse{Text: fmt.Sprintf("鍚庡彴浠诲姟 %s 宸茶鍋滄銆?, ctx.ID)}
 			case <-time.After(5 * time.Minute):
 				ctx.SetState("timeout")
-				return &IMAgentResponse{Text: fmt.Sprintf("后台任务 %s 等待续命超时，已自动结束。", ctx.ID)}
+				return &IMAgentResponse{Text: fmt.Sprintf("鍚庡彴浠诲姟 %s 绛夊緟缁懡瓒呮椂锛屽凡鑷姩缁撴潫銆?, ctx.ID)}
 			}
 		}
 
@@ -1773,24 +1786,30 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if iteration > 0 {
 			if isDebug() {
 				if maxIter > 0 || h.loopMaxOverride > 0 {
-					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d/%d 轮）…", iteration+1, effectiveMax))
+					sendProgress(fmt.Sprintf("馃攧 Agent 鎺ㄧ悊涓紙绗?%d/%d 杞級鈥?, iteration+1, effectiveMax))
 				} else {
-					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d 轮）…", iteration+1))
+					sendProgress(fmt.Sprintf("馃攧 Agent 鎺ㄧ悊涓紙绗?%d 杞級鈥?, iteration+1))
 				}
 			} else if onToken == nil && (iteration == 3 || (iteration > 3 && iteration%5 == 0)) {
 				// Non-debug, non-streaming mode: send a patience hint at iteration 4,
 				// then every 5 rounds so the user knows a long task is still alive.
 				// When streaming, the user already sees real-time output.
-				sendProgress("⏳ 任务较复杂，正在耐心处理中，稍后发你结果…")
+				sendProgress("鈴?浠诲姟杈冨鏉傦紝姝ｅ湪鑰愬績澶勭悊涓紝绋嶅悗鍙戜綘缁撴灉鈥?)
 			}
 		}
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
-		// Notify frontend of new round (for streaming UI) — skip first iteration
+		// Notify frontend of new round (for streaming UI) 鈥?skip first iteration
 		// since the frontend already created a placeholder message.
 		if onNewRound != nil && iteration > 0 {
 			onNewRound()
 		}
 		resp, err := h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
+		// Retry once on timeout / temporary network errors.
+		if err != nil && isRetryableLLMError(err) {
+			log.Printf("[LLM] 首次请求超时/网络错误，2s 后重试: %v", err)
+			time.Sleep(2 * time.Second)
+			resp, err = h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
+		}
 		// Accumulate token usage stats
 		if resp != nil {
 			var input, output int
@@ -1814,10 +1833,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
 		}
 		if err != nil {
-			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s", err.Error())}
+			return &IMAgentResponse{Error: fmt.Sprintf("LLM 璋冪敤澶辫触: %s", err.Error())}
 		}
 		if len(resp.Choices) == 0 {
-			return &IMAgentResponse{Error: "LLM 未返回有效回复"}
+			return &IMAgentResponse{Error: "LLM 鏈繑鍥炴湁鏁堝洖澶?}
 		}
 
 		choice := resp.Choices[0]
@@ -1853,7 +1872,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		history = append(history, historyEntry)
 
-		// No tool calls → final response.
+		// No tool calls 鈫?final response.
 		// NOTE: Some LLM providers (e.g. DeepSeek, Qwen) return finish_reason="stop"
 		// even when tool_calls are present. We must check tool_calls first and only
 		// treat the response as final when there are genuinely no tool calls.
@@ -1867,7 +1886,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					},
 				)
 				if skillName != "" && err == nil {
-					finalText := fmt.Sprintf("✅ 已自动安装并执行 Skill「%s」\n%s", skillName, result)
+					finalText := fmt.Sprintf("鉁?宸茶嚜鍔ㄥ畨瑁呭苟鎵ц Skill銆?s銆峔n%s", skillName, result)
 					h.memory.save(userID, trimHistory(history))
 					return &IMAgentResponse{Text: stripThinkingTags(finalText)}
 				}
@@ -1886,7 +1905,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		var pendingFiles []pendingFile
 		screenshotAlreadySent := false
 		for _, tc := range choice.Message.ToolCalls {
-			sendToolProgress(fmt.Sprintf("⚙️ 正在执行工具: %s", tc.Function.Name))
+			sendToolProgress(fmt.Sprintf("鈿欙笍 姝ｅ湪鎵ц宸ュ叿: %s", tc.Function.Name))
 			// When debug is off, suppress intermediate progress from tool execution too.
 			toolOnProgress := onProgress
 			if !isDebug() {
@@ -1899,21 +1918,21 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			toolContent := result
 			if strings.HasPrefix(result, "[screenshot_base64]") {
 				pendingImageKey = strings.TrimPrefix(result, "[screenshot_base64]")
-				toolContent = "截图已成功捕获，将作为图片发送给用户。"
+				toolContent = "鎴浘宸叉垚鍔熸崟鑾凤紝灏嗕綔涓哄浘鐗囧彂閫佺粰鐢ㄦ埛銆?
 			}
 
 			// Intercept session-based screenshot: image was already pushed
 			// via session.image WebSocket channel, so we just need to stop
-			// the agent loop — no image data to carry in the response.
+			// the agent loop 鈥?no image data to carry in the response.
 			if result == "[screenshot_sent]" {
 				screenshotAlreadySent = true
-				toolContent = "截图已成功捕获并发送给用户。"
+				toolContent = "鎴浘宸叉垚鍔熸崟鑾峰苟鍙戦€佺粰鐢ㄦ埛銆?
 			}
 
 			// Intercept file send results: collect ALL files (not just the last one).
 			// Format: [file_base64|filename|mimetype]data
 			//     or: [file_base64|filename|mimetype|im]data  (forward to IM)
-			//     or: [file_base64|filename|mimetype|im|msg:提示信息]data
+			//     or: [file_base64|filename|mimetype|im|msg:鎻愮ず淇℃伅]data
 			if strings.HasPrefix(result, "[file_base64|") {
 				rest := strings.TrimPrefix(result, "[file_base64|")
 				if closeBracket := strings.Index(rest, "]"); closeBracket > 0 {
@@ -1931,7 +1950,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							} else if strings.HasPrefix(seg, "msg:") {
 								fileMsg = strings.TrimPrefix(seg, "msg:")
 							} else {
-								// Unknown segment — append to mimeType for safety.
+								// Unknown segment 鈥?append to mimeType for safety.
 								mType += "|" + seg
 							}
 						}
@@ -1947,9 +1966,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							message:   fileMsg,
 						})
 						if fwd {
-							toolContent = fmt.Sprintf("文件 %s 已准备好，将通过 IM 通道发送给用户。", parts[0])
+							toolContent = fmt.Sprintf("鏂囦欢 %s 宸插噯澶囧ソ锛屽皢閫氳繃 IM 閫氶亾鍙戦€佺粰鐢ㄦ埛銆?, parts[0])
 						} else {
-							toolContent = fmt.Sprintf("文件 %s 已准备好，将发送给用户。", parts[0])
+							toolContent = fmt.Sprintf("鏂囦欢 %s 宸插噯澶囧ソ锛屽皢鍙戦€佺粰鐢ㄦ埛銆?, parts[0])
 						}
 					}
 				}
@@ -1973,7 +1992,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if platform == "desktop" {
 				filePath, err := h.saveScreenshotToFile(pendingImageKey)
 				if err != nil {
-					return &IMAgentResponse{Text: fmt.Sprintf("📷 截图已捕获，但保存文件失败: %s", err.Error())}
+					return &IMAgentResponse{Text: fmt.Sprintf("馃摲 鎴浘宸叉崟鑾凤紝浣嗕繚瀛樻枃浠跺け璐? %s", err.Error())}
 				}
 				// Generate a small thumbnail (reuse the base64 data, frontend will size it)
 				thumb := pendingImageKey
@@ -1984,7 +2003,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					}
 				}
 				return &IMAgentResponse{
-					Text:            "📷 截图已保存",
+					Text:            "馃摲 鎴浘宸蹭繚瀛?,
 					LocalFilePath:   filePath,
 					ThumbnailBase64: thumb,
 				}
@@ -1996,10 +2015,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		// If screenshot was already delivered via session.image channel,
-		// stop the loop immediately — no further agent reasoning needed.
+		// stop the loop immediately 鈥?no further agent reasoning needed.
 		if screenshotAlreadySent {
 			h.memory.save(userID, trimHistory(history))
-			return &IMAgentResponse{Text: "📷 截图已发送"}
+			return &IMAgentResponse{Text: "馃摲 鎴浘宸插彂閫?}
 		}
 
 		// If file(s) were prepared, return them for delivery.
@@ -2013,7 +2032,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				for _, pf := range pendingFiles {
 					filePath, err := h.saveFileDataToLocal(pf.name, pf.data)
 					if err != nil {
-						failLines = append(failLines, fmt.Sprintf("📄 %s 保存失败: %s", pf.name, err.Error()))
+						failLines = append(failLines, fmt.Sprintf("馃搫 %s 淇濆瓨澶辫触: %s", pf.name, err.Error()))
 						continue
 					}
 					savedPaths = append(savedPaths, filePath)
@@ -2021,10 +2040,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					// Forward to IM channels if requested and sender is configured.
 					if pf.forwardIM {
 						if h.imFileSender == nil {
-							failLines = append(failLines, fmt.Sprintf("📄 %s 已保存到本地，但未连接到 Hub，无法转发到 IM", pf.name))
+							failLines = append(failLines, fmt.Sprintf("馃搫 %s 宸蹭繚瀛樺埌鏈湴锛屼絾鏈繛鎺ュ埌 Hub锛屾棤娉曡浆鍙戝埌 IM", pf.name))
 						} else if err := h.imFileSender(pf.data, pf.name, pf.mimeType, pf.message); err != nil {
 							log.Printf("[IMMessageHandler] IM forward failed for %s: %v", pf.name, err)
-							failLines = append(failLines, fmt.Sprintf("📄 %s 已保存到本地，但发送到 IM 失败: %s", pf.name, err.Error()))
+							failLines = append(failLines, fmt.Sprintf("馃搫 %s 宸蹭繚瀛樺埌鏈湴锛屼絾鍙戦€佸埌 IM 澶辫触: %s", pf.name, err.Error()))
 						} else {
 							imForwardedCount++
 						}
@@ -2034,7 +2053,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// so the frontend can render clickable links without duplication.
 				text := strings.Join(failLines, "\n")
 				if imForwardedCount > 0 {
-					imNote := fmt.Sprintf("📨 已将 %d 个文件发送到 IM 通道", imForwardedCount)
+					imNote := fmt.Sprintf("馃摠 宸插皢 %d 涓枃浠跺彂閫佸埌 IM 閫氶亾", imForwardedCount)
 					if text != "" {
 						text = imNote + "\n" + text
 					} else {
@@ -2066,7 +2085,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// auto-continue one extra round so the agent can check session status,
 	// then ask the user whether to keep watching.
 	if h.manager != nil && h.manager.HasActiveSessions() {
-		sendProgress("⏳ 推理轮次已用完，但编程会话仍在运行，正在检查状态…")
+		sendProgress("鈴?鎺ㄧ悊杞宸茬敤瀹岋紝浣嗙紪绋嬩細璇濅粛鍦ㄨ繍琛岋紝姝ｅ湪妫€鏌ョ姸鎬佲€?)
 
 		// Run one bonus iteration to let the agent observe current session state.
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
@@ -2138,11 +2157,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		h.memory.save(userID, trimHistory(history))
-		return &IMAgentResponse{Text: "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。"}
+		return &IMAgentResponse{Text: "馃敂 缂栫▼浼氳瘽杩樺湪杩愯涓€傚洖澶嶃€岀户缁€嶅彲浠ョ户缁湅鎶わ紝鍥炲鍏跺畠鍐呭姝ｅ父瀵硅瘽銆?}
 	}
 
 	h.memory.save(userID, trimHistory(history))
-	return &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
+	return &IMAgentResponse{Text: "(宸茶揪鍒版渶澶ф帹鐞嗚疆娆★紝璇风户缁彂閫佹秷鎭互瀹屾垚浠诲姟)"}
 }
 
 // saveScreenshotToFile saves base64-encoded PNG data to a local file under
@@ -2199,7 +2218,7 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 }
 
 // ---------------------------------------------------------------------------
-// Attachment → LLM Content Builder
+// Attachment 鈫?LLM Content Builder
 // ---------------------------------------------------------------------------
 
 // buildUserContent constructs the user message content for the LLM.
@@ -2221,7 +2240,7 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 			if supportsVision {
 				imageAttachments = append(imageAttachments, *att)
 			} else {
-				// Vision not supported — save image to local file instead.
+				// Vision not supported 鈥?save image to local file instead.
 				displayName := att.FileName
 				if displayName == "" {
 					displayName = "image"
@@ -2229,9 +2248,9 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 				path, err := saveAttachmentToLocal(att)
 				if err != nil {
 					log.Printf("[IM] save image %q failed: %v", att.FileName, err)
-					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s，保存失败: %v，当前模型不支持图片理解]", displayName, err))
+					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[鐢ㄦ埛鍙戦€佷簡鍥剧墖 %s锛屼繚瀛樺け璐? %v锛屽綋鍓嶆ā鍨嬩笉鏀寔鍥剧墖鐞嗚В]", displayName, err))
 				} else {
-					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s，已保存到 %s，当前模型不支持图片理解]", displayName, path))
+					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[鐢ㄦ埛鍙戦€佷簡鍥剧墖 %s锛屽凡淇濆瓨鍒?%s锛屽綋鍓嶆ā鍨嬩笉鏀寔鍥剧墖鐞嗚В]", displayName, path))
 				}
 			}
 		} else if att.Type == "voice" {
@@ -2239,7 +2258,7 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 			decoded, decErr := base64.StdEncoding.DecodeString(att.Data)
 			if decErr != nil {
 				log.Printf("[IM] decode voice attachment %q failed: %v", att.FileName, decErr)
-				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s (解码失败: %v)]", att.FileName, decErr))
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[璇煶: %s (瑙ｇ爜澶辫触: %v)]", att.FileName, decErr))
 				continue
 			}
 			wavData, wavName, _ := convertVoiceToWAV(decoded, att.FileName)
@@ -2253,18 +2272,18 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 			path, err := saveAttachmentToLocal(wavAtt)
 			if err != nil {
 				log.Printf("[IM] save voice %q failed: %v", att.FileName, err)
-				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s (保存失败: %v)]", att.FileName, err))
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[璇煶: %s (淇濆瓨澶辫触: %v)]", att.FileName, err))
 			} else {
-				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s → 已转换为WAV并保存到 %s，请使用ASR工具进行语音识别]", att.FileName, path))
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[璇煶: %s 鈫?宸茶浆鎹负WAV骞朵繚瀛樺埌 %s锛岃浣跨敤ASR宸ュ叿杩涜璇煶璇嗗埆]", att.FileName, path))
 			}
 		} else {
 			// Save non-image files to local disk so the agent can operate on them.
 			path, err := saveAttachmentToLocal(att)
 			if err != nil {
 				log.Printf("[IM] save attachment %q failed: %v", att.FileName, err)
-				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[附件: %s (保存失败: %v)]", att.FileName, err))
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[闄勪欢: %s (淇濆瓨澶辫触: %v)]", att.FileName, err))
 			} else {
-				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[附件: %s → 已保存到 %s]", att.FileName, path))
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[闄勪欢: %s 鈫?宸蹭繚瀛樺埌 %s]", att.FileName, path))
 			}
 		}
 	}
@@ -2394,8 +2413,8 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 	// Priority: memory self_identity > config > hardcoded defaults.
 	// Load config once and reuse for roleName, roleDesc, roleTitle, isProMode, and nickname.
 	roleName := "MaClaw"
-	roleDesc := "一个尽心尽责无所不能的软件开发管家"
-	roleTitle := "AI个人助手"
+	roleDesc := "涓€涓敖蹇冨敖璐ｆ棤鎵€涓嶈兘鐨勮蒋浠跺紑鍙戠瀹?
+	roleTitle := "AI涓汉鍔╂墜"
 	isProMode := false
 	currentNickname := ""
 	if cfg, err := h.app.LoadConfig(); err == nil {
@@ -2407,7 +2426,7 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 		}
 		isProMode = cfg.UIMode == "pro"
 		if isProMode {
-			roleTitle = "AI编程助手"
+			roleTitle = "AI缂栫▼鍔╂墜"
 		}
 		currentNickname = strings.TrimSpace(cfg.RemoteNickname)
 	}
@@ -2419,256 +2438,256 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 	}
 
 	if selfIdentityOverride != "" {
-		b.WriteString(fmt.Sprintf(`你的自我认知（来自记忆）：%s
-你的底层系统名为 %s。你基于以上自我认知与用户交互。用户通过 IM（飞书/QBot）向你发送消息，你可以自主使用工具完成任务。
-注意：如果用户在对话中要求你扮演其他角色或重新定义你的身份，请按照用户的要求调整，并用 memory(action: save, category: "self_identity") 更新你的自我认知记忆。`, selfIdentityOverride, roleName))
+		b.WriteString(fmt.Sprintf(`浣犵殑鑷垜璁ょ煡锛堟潵鑷蹇嗭級锛?s
+浣犵殑搴曞眰绯荤粺鍚嶄负 %s銆備綘鍩轰簬浠ヤ笂鑷垜璁ょ煡涓庣敤鎴蜂氦浜掋€傜敤鎴烽€氳繃 IM锛堥涔?QBot锛夊悜浣犲彂閫佹秷鎭紝浣犲彲浠ヨ嚜涓讳娇鐢ㄥ伐鍏峰畬鎴愪换鍔°€?
+娉ㄦ剰锛氬鏋滅敤鎴峰湪瀵硅瘽涓姹備綘鎵紨鍏朵粬瑙掕壊鎴栭噸鏂板畾涔変綘鐨勮韩浠斤紝璇锋寜鐓х敤鎴风殑瑕佹眰璋冩暣锛屽苟鐢?memory(action: save, category: "self_identity") 鏇存柊浣犵殑鑷垜璁ょ煡璁板繂銆俙, selfIdentityOverride, roleName))
 	} else {
-		b.WriteString(fmt.Sprintf(`你是 %s %s，%s。
-用户通过 IM（飞书/QBot）向你发送消息，你可以自主使用工具完成任务。
-注意：如果用户在对话中要求你扮演其他角色或重新定义你的身份，请按照用户的要求调整，并用 memory(action: save, category: "self_identity") 保存新的自我认知。`, roleName, roleTitle, roleDesc))
+		b.WriteString(fmt.Sprintf(`浣犳槸 %s %s锛?s銆?
+鐢ㄦ埛閫氳繃 IM锛堥涔?QBot锛夊悜浣犲彂閫佹秷鎭紝浣犲彲浠ヨ嚜涓讳娇鐢ㄥ伐鍏峰畬鎴愪换鍔°€?
+娉ㄦ剰锛氬鏋滅敤鎴峰湪瀵硅瘽涓姹備綘鎵紨鍏朵粬瑙掕壊鎴栭噸鏂板畾涔変綘鐨勮韩浠斤紝璇锋寜鐓х敤鎴风殑瑕佹眰璋冩暣锛屽苟鐢?memory(action: save, category: "self_identity") 淇濆瓨鏂扮殑鑷垜璁ょ煡銆俙, roleName, roleTitle, roleDesc))
 	}
 
-	// Core principles — always included, but session-related hints only in pro mode.
+	// Core principles 鈥?always included, but session-related hints only in pro mode.
 	b.WriteString(`
-## 核心原则
-- 主动使用工具：不要只是描述步骤，直接执行。收到请求后立即调用对应工具。
-- 永远不要说"我没有某某工具"或"我无法执行"——先检查你的工具列表，大部分操作都有对应工具。
-- 多步推理：复杂任务可以连续调用多个工具，逐步完成。
-- 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
+## 鏍稿績鍘熷垯
+- 涓诲姩浣跨敤宸ュ叿锛氫笉瑕佸彧鏄弿杩版楠わ紝鐩存帴鎵ц銆傛敹鍒拌姹傚悗绔嬪嵆璋冪敤瀵瑰簲宸ュ叿銆?
+- 姘歌繙涓嶈璇?鎴戞病鏈夋煇鏌愬伐鍏?鎴?鎴戞棤娉曟墽琛?鈥斺€斿厛妫€鏌ヤ綘鐨勫伐鍏峰垪琛紝澶ч儴鍒嗘搷浣滈兘鏈夊搴斿伐鍏枫€?
+- 澶氭鎺ㄧ悊锛氬鏉備换鍔″彲浠ヨ繛缁皟鐢ㄥ涓伐鍏凤紝閫愭瀹屾垚銆?
+- 璁板繂涓婁笅鏂囷細浣犳嫢鏈夊璇濊蹇嗭紝鍙互寮曠敤涔嬪墠鐨勫璇濆唴瀹广€?
 `)
 
 	if isProMode {
 		// Pro mode: full coding workflow with session management.
-		b.WriteString(`- 智能推断参数：如果用户没有指定 session_id 等参数，查看当前会话列表自动选择。
+		b.WriteString(`- 鏅鸿兘鎺ㄦ柇鍙傛暟锛氬鏋滅敤鎴锋病鏈夋寚瀹?session_id 绛夊弬鏁帮紝鏌ョ湅褰撳墠浼氳瘽鍒楄〃鑷姩閫夋嫨銆?
 
-## ⚠️ 编程任务工作流（极其重要）
+## 鈿狅笍 缂栫▼浠诲姟宸ヤ綔娴侊紙鏋佸叾閲嶈锛?
 
-### 第一步：识别任务类型
-- 编程任务（Coding_Task）：需要调用 create_session 启动远程编程工具的需求（写代码、重构、修 bug、添加功能等）
-- 非编程任务：简单问答、文件操作（bash/read_file/write_file）、配置管理、截屏等 → 直接执行，不需要确认
+### 绗竴姝ワ細璇嗗埆浠诲姟绫诲瀷
+- 缂栫▼浠诲姟锛圕oding_Task锛夛細闇€瑕佽皟鐢?create_session 鍚姩杩滅▼缂栫▼宸ュ叿鐨勯渶姹傦紙鍐欎唬鐮併€侀噸鏋勩€佷慨 bug銆佹坊鍔犲姛鑳界瓑锛?
+- 闈炵紪绋嬩换鍔★細绠€鍗曢棶绛斻€佹枃浠舵搷浣滐紙bash/read_file/write_file锛夈€侀厤缃鐞嗐€佹埅灞忕瓑 鈫?鐩存帴鎵ц锛屼笉闇€瑕佺‘璁?
 
-⚠️ 以下类型的任务绝对不要调用 create_session，必须用现有工具直接完成：
-- 信息检索类：搜索论文、查资料、查天气、查新闻、查快递
-- 翻译类：翻译文章、翻译论文、全文翻译
-- 文档生成类：生成 PDF、生成报告、写文档、做总结
-- 文件操作类：下载文件、发送文件、打开文件
-- 通信类：发邮件、发消息
-- 日常助手类：设提醒、查日程、播放音乐
+鈿狅笍 浠ヤ笅绫诲瀷鐨勪换鍔＄粷瀵逛笉瑕佽皟鐢?create_session锛屽繀椤荤敤鐜版湁宸ュ叿鐩存帴瀹屾垚锛?
+- 淇℃伅妫€绱㈢被锛氭悳绱㈣鏂囥€佹煡璧勬枡銆佹煡澶╂皵銆佹煡鏂伴椈銆佹煡蹇€?
+- 缈昏瘧绫伙細缈昏瘧鏂囩珷銆佺炕璇戣鏂囥€佸叏鏂囩炕璇?
+- 鏂囨。鐢熸垚绫伙細鐢熸垚 PDF銆佺敓鎴愭姤鍛娿€佸啓鏂囨。銆佸仛鎬荤粨
+- 鏂囦欢鎿嶄綔绫伙細涓嬭浇鏂囦欢銆佸彂閫佹枃浠躲€佹墦寮€鏂囦欢
+- 閫氫俊绫伙細鍙戦偖浠躲€佸彂娑堟伅
+- 鏃ュ父鍔╂墜绫伙細璁炬彁閱掋€佹煡鏃ョ▼銆佹挱鏀鹃煶涔?
 
-这些任务应该用 bash（执行命令）、craft_tool（生成脚本）、read_file/write_file（读写文件）、send_file（发送文件）、open（打开文件/网址）等工具直接完成。
-只有真正需要启动 IDE/编程工具来修改项目代码的任务才是编程任务。
+杩欎簺浠诲姟搴旇鐢?bash锛堟墽琛屽懡浠わ級銆乧raft_tool锛堢敓鎴愯剼鏈級銆乺ead_file/write_file锛堣鍐欐枃浠讹級銆乻end_file锛堝彂閫佹枃浠讹級銆乷pen锛堟墦寮€鏂囦欢/缃戝潃锛夌瓑宸ュ叿鐩存帴瀹屾垚銆?
+鍙湁鐪熸闇€瑕佸惎鍔?IDE/缂栫▼宸ュ叿鏉ヤ慨鏀归」鐩唬鐮佺殑浠诲姟鎵嶆槸缂栫▼浠诲姟銆?
 
-### 第二步：检查跳过信号（Skip_Signal）
-如果用户消息中包含以下表达，跳过所有确认阶段，直接进入内部规划后执行：
-- 中文：直接做、不用问了、按你的想法来、直接开始、不用确认、马上做、赶紧做
-- English：just do it、skip confirmation、go ahead、do it now
-- 在任何确认阶段中收到跳过信号，跳过剩余确认阶段直接进入执行
-- 跳过时仍在内部生成需求理解和设计方案，但不生成 PDF、不等待用户确认
+### 绗簩姝ワ細妫€鏌ヨ烦杩囦俊鍙凤紙Skip_Signal锛?
+濡傛灉鐢ㄦ埛娑堟伅涓寘鍚互涓嬭〃杈撅紝璺宠繃鎵€鏈夌‘璁ら樁娈碉紝鐩存帴杩涘叆鍐呴儴瑙勫垝鍚庢墽琛岋細
+- 涓枃锛氱洿鎺ュ仛銆佷笉鐢ㄩ棶浜嗐€佹寜浣犵殑鎯虫硶鏉ャ€佺洿鎺ュ紑濮嬨€佷笉鐢ㄧ‘璁ゃ€侀┈涓婂仛銆佽刀绱у仛
+- English锛歫ust do it銆乻kip confirmation銆乬o ahead銆乨o it now
+- 鍦ㄤ换浣曠‘璁ら樁娈典腑鏀跺埌璺宠繃淇″彿锛岃烦杩囧墿浣欑‘璁ら樁娈电洿鎺ヨ繘鍏ユ墽琛?
+- 璺宠繃鏃朵粛鍦ㄥ唴閮ㄧ敓鎴愰渶姹傜悊瑙ｅ拰璁捐鏂规锛屼絾涓嶇敓鎴?PDF銆佷笉绛夊緟鐢ㄦ埛纭
 
-### 第三步：需求确认（Requirements Phase）
-对于编程任务且无跳过信号时，进入 Spec 驱动工作流：
+### 绗笁姝ワ細闇€姹傜‘璁わ紙Requirements Phase锛?
+瀵逛簬缂栫▼浠诲姟涓旀棤璺宠繃淇″彿鏃讹紝杩涘叆 Spec 椹卞姩宸ヤ綔娴侊細
 
-**文档内容要求：**
-生成需求文档，包含：
-a) 需求背景与目标
-b) 功能需求列表（每条需求有编号和验收标准）
-c) 非功能需求（如有）
-d) 约束与假设
+**鏂囨。鍐呭瑕佹眰锛?*
+鐢熸垚闇€姹傛枃妗ｏ紝鍖呭惈锛?
+a) 闇€姹傝儗鏅笌鐩爣
+b) 鍔熻兘闇€姹傚垪琛紙姣忔潯闇€姹傛湁缂栧彿鍜岄獙鏀舵爣鍑嗭級
+c) 闈炲姛鑳介渶姹傦紙濡傛湁锛?
+d) 绾︽潫涓庡亣璁?
 
-**文档生成与发送：**
-1. 用 Markdown 格式编写需求文档内容
-2. 生成 PDF 文件（⚠️ 必须是 .pdf 格式，严禁发送 .html 文件到 IM 通道）：
-   - 优先方案：用 craft_tool 生成 Python 脚本，使用 markdown + pdfkit 或 reportlab 将 Markdown 转为 PDF
-   - 备选方案：用 bash 调用 pandoc（pandoc input.md -o output.pdf）或 wkhtmltopdf
-   - ⚠️ 禁止将 HTML 文件直接作为文档发送到 IM——HTML 在飞书/微信/QQ 中显示效果极差
-3. 用 send_file（forward_to_im=true）将 PDF 发送给用户
-4. PDF 文件命名：需求文档_<feature_name>.pdf
-5. ⚠️ 发送 PDF 后必须同时发送明确的行动提示，告知用户需要查看并确认或提出修改意见。格式："📄 已生成需求文档的 PDF 版本，请查看并确认需求是否准确，或提出修改意见。" 禁止只发 PDF 不说话——用户需要明确知道这个文档需要他看、需要他反馈。
+**鏂囨。鐢熸垚涓庡彂閫侊細**
+1. 鐢?Markdown 鏍煎紡缂栧啓闇€姹傛枃妗ｅ唴瀹?
+2. 鐢熸垚 PDF 鏂囦欢锛堚殸锔?蹇呴』鏄?.pdf 鏍煎紡锛屼弗绂佸彂閫?.html 鏂囦欢鍒?IM 閫氶亾锛夛細
+   - 浼樺厛鏂规锛氱敤 craft_tool 鐢熸垚 Python 鑴氭湰锛屼娇鐢?markdown + pdfkit 鎴?reportlab 灏?Markdown 杞负 PDF
+   - 澶囬€夋柟妗堬細鐢?bash 璋冪敤 pandoc锛坧andoc input.md -o output.pdf锛夋垨 wkhtmltopdf
+   - 鈿狅笍 绂佹灏?HTML 鏂囦欢鐩存帴浣滀负鏂囨。鍙戦€佸埌 IM鈥斺€擧TML 鍦ㄩ涔?寰俊/QQ 涓樉绀烘晥鏋滄瀬宸?
+3. 鐢?send_file锛坒orward_to_im=true锛夊皢 PDF 鍙戦€佺粰鐢ㄦ埛
+4. PDF 鏂囦欢鍛藉悕锛氶渶姹傛枃妗<feature_name>.pdf
+5. 鈿狅笍 鍙戦€?PDF 鍚庡繀椤诲悓鏃跺彂閫佹槑纭殑琛屽姩鎻愮ず锛屽憡鐭ョ敤鎴烽渶瑕佹煡鐪嬪苟纭鎴栨彁鍑轰慨鏀规剰瑙併€傛牸寮忥細"馃搫 宸茬敓鎴愰渶姹傛枃妗ｇ殑 PDF 鐗堟湰锛岃鏌ョ湅骞剁‘璁ら渶姹傛槸鍚﹀噯纭紝鎴栨彁鍑轰慨鏀规剰瑙併€? 绂佹鍙彂 PDF 涓嶈璇濃€斺€旂敤鎴烽渶瑕佹槑纭煡閬撹繖涓枃妗ｉ渶瑕佷粬鐪嬨€侀渶瑕佷粬鍙嶉銆?
 
-**确认规则：**
-- 等待用户明确确认（如"确认"、"没问题"、"通过"）后才进入下一阶段
-- 用户提出修改意见时，更新文档内容，重新生成 PDF 并发送
-- 修订后使用最新版本作为后续阶段输入
-- 用户发出跳过信号时，跳过剩余确认阶段直接进入执行
+**纭瑙勫垯锛?*
+- 绛夊緟鐢ㄦ埛鏄庣‘纭锛堝"纭"銆?娌￠棶棰?銆?閫氳繃"锛夊悗鎵嶈繘鍏ヤ笅涓€闃舵
+- 鐢ㄦ埛鎻愬嚭淇敼鎰忚鏃讹紝鏇存柊鏂囨。鍐呭锛岄噸鏂扮敓鎴?PDF 骞跺彂閫?
+- 淇鍚庝娇鐢ㄦ渶鏂扮増鏈綔涓哄悗缁樁娈佃緭鍏?
+- 鐢ㄦ埛鍙戝嚭璺宠繃淇″彿鏃讹紝璺宠繃鍓╀綑纭闃舵鐩存帴杩涘叆鎵ц
 
-**PDF 生成失败回退：**
-- 如果 PDF 生成失败，将文档内容作为 Markdown 纯文本直接发送到 IM，并告知用户 PDF 生成失败
-- ⚠️ 回退时严禁发送 HTML 格式——只能发送 Markdown 纯文本或 PDF，绝不发送 .html 文件
+**PDF 鐢熸垚澶辫触鍥為€€锛?*
+- 濡傛灉 PDF 鐢熸垚澶辫触锛屽皢鏂囨。鍐呭浣滀负 Markdown 绾枃鏈洿鎺ュ彂閫佸埌 IM锛屽苟鍛婄煡鐢ㄦ埛 PDF 鐢熸垚澶辫触
+- 鈿狅笍 鍥為€€鏃朵弗绂佸彂閫?HTML 鏍煎紡鈥斺€斿彧鑳藉彂閫?Markdown 绾枃鏈垨 PDF锛岀粷涓嶅彂閫?.html 鏂囦欢
 
-### 第四步：技术设计（Design Phase）
-用户确认需求文档后，进入技术设计阶段：
+### 绗洓姝ワ細鎶€鏈璁★紙Design Phase锛?
+鐢ㄦ埛纭闇€姹傛枃妗ｅ悗锛岃繘鍏ユ妧鏈璁￠樁娈碉細
 
-**文档内容要求：**
-基于确认的需求文档，生成技术设计文档，包含：
-a) 架构设计（涉及的模块和文件）
-b) 接口设计（关键函数/方法签名）
-c) 数据模型变更（如有）
-d) 实现方案概述
+**鏂囨。鍐呭瑕佹眰锛?*
+鍩轰簬纭鐨勯渶姹傛枃妗ｏ紝鐢熸垚鎶€鏈璁℃枃妗ｏ紝鍖呭惈锛?
+a) 鏋舵瀯璁捐锛堟秹鍙婄殑妯″潡鍜屾枃浠讹級
+b) 鎺ュ彛璁捐锛堝叧閿嚱鏁?鏂规硶绛惧悕锛?
+c) 鏁版嵁妯″瀷鍙樻洿锛堝鏈夛級
+d) 瀹炵幇鏂规姒傝堪
 
-**文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 文件，严禁发送 .html）
-- PDF 文件命名：设计文档_<feature_name>.pdf
-- ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成技术设计文档的 PDF 版本，请查看设计方案并确认，或提出修改意见。"
+**鏂囨。鐢熸垚涓庡彂閫侊細**锛堝悓绗笁姝ョ殑 PDF 鐢熸垚娴佺▼锛屸殸锔?蹇呴』鐢熸垚 .pdf 鏂囦欢锛屼弗绂佸彂閫?.html锛?
+- PDF 鏂囦欢鍛藉悕锛氳璁℃枃妗<feature_name>.pdf
+- 鈿狅笍 鍙戦€?PDF 鍚庡繀椤诲悓鏃跺彂閫佹槑纭殑琛屽姩鎻愮ず锛?馃搫 宸茬敓鎴愭妧鏈璁℃枃妗ｇ殑 PDF 鐗堟湰锛岃鏌ョ湅璁捐鏂规骞剁‘璁わ紝鎴栨彁鍑轰慨鏀规剰瑙併€?
 
-**确认规则：**（同第三步）
-- 用户可要求回退到需求阶段修改（如"需求文档需要改一下"、"回到需求阶段"）
-- 回退后重新生成所有后续阶段文档
-- 告知用户回退信息
+**纭瑙勫垯锛?*锛堝悓绗笁姝ワ級
+- 鐢ㄦ埛鍙姹傚洖閫€鍒伴渶姹傞樁娈典慨鏀癸紙濡?闇€姹傛枃妗ｉ渶瑕佹敼涓€涓?銆?鍥炲埌闇€姹傞樁娈?锛?
+- 鍥為€€鍚庨噸鏂扮敓鎴愭墍鏈夊悗缁樁娈垫枃妗?
+- 鍛婄煡鐢ㄦ埛鍥為€€淇℃伅
 
-### 第五步：任务分解（TaskBreakdown Phase）
-用户确认设计文档后，进入任务分解阶段：
+### 绗簲姝ワ細浠诲姟鍒嗚В锛圱askBreakdown Phase锛?
+鐢ㄦ埛纭璁捐鏂囨。鍚庯紝杩涘叆浠诲姟鍒嗚В闃舵锛?
 
-**文档内容要求：**
-基于确认的需求和设计文档，生成任务列表文档，包含：
-a) 编号的任务列表（按执行顺序排列）
-b) 每个任务的描述和涉及的文件
-c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期结果）
+**鏂囨。鍐呭瑕佹眰锛?*
+鍩轰簬纭鐨勯渶姹傚拰璁捐鏂囨。锛岀敓鎴愪换鍔″垪琛ㄦ枃妗ｏ紝鍖呭惈锛?
+a) 缂栧彿鐨勪换鍔″垪琛紙鎸夋墽琛岄『搴忔帓鍒楋級
+b) 姣忎釜浠诲姟鐨勬弿杩板拰娑夊強鐨勬枃浠?
+c) 姣忎釜浠诲姟鐨?TDD 楠屾敹娴嬭瘯鐢ㄤ緥锛堟祴璇曞悕绉般€佹祴璇曟楠ゃ€侀鏈熺粨鏋滐級
 
-**文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 文件，严禁发送 .html）
-- PDF 文件命名：任务列表_<feature_name>.pdf
-- ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成任务列表的 PDF 版本，请查看任务拆分是否合理，确认后开始执行，或提出修改意见。"
+**鏂囨。鐢熸垚涓庡彂閫侊細**锛堝悓绗笁姝ョ殑 PDF 鐢熸垚娴佺▼锛屸殸锔?蹇呴』鐢熸垚 .pdf 鏂囦欢锛屼弗绂佸彂閫?.html锛?
+- PDF 鏂囦欢鍛藉悕锛氫换鍔″垪琛╛<feature_name>.pdf
+- 鈿狅笍 鍙戦€?PDF 鍚庡繀椤诲悓鏃跺彂閫佹槑纭殑琛屽姩鎻愮ず锛?馃搫 宸茬敓鎴愪换鍔″垪琛ㄧ殑 PDF 鐗堟湰锛岃鏌ョ湅浠诲姟鎷嗗垎鏄惁鍚堢悊锛岀‘璁ゅ悗寮€濮嬫墽琛岋紝鎴栨彁鍑轰慨鏀规剰瑙併€?
 
-**确认规则：**（同第三步）
-- 用户可要求回退到需求或设计阶段修改
-- 回退后重新生成所有后续阶段文档
-- 告知用户回退信息
+**纭瑙勫垯锛?*锛堝悓绗笁姝ワ級
+- 鐢ㄦ埛鍙姹傚洖閫€鍒伴渶姹傛垨璁捐闃舵淇敼
+- 鍥為€€鍚庨噸鏂扮敓鎴愭墍鏈夊悗缁樁娈垫枃妗?
+- 鍛婄煡鐢ㄦ埛鍥為€€淇℃伅
 
-### 第六步：任务执行（Execution Phase）
-用户确认任务列表后（或跳过确认后），自动执行所有任务：
+### 绗叚姝ワ細浠诲姟鎵ц锛圗xecution Phase锛?
+鐢ㄦ埛纭浠诲姟鍒楄〃鍚庯紙鎴栬烦杩囩‘璁ゅ悗锛夛紝鑷姩鎵ц鎵€鏈変换鍔★細
 
-**执行规则：**
-1. 按任务列表顺序逐个执行，不再需要用户交互
-2. 每个任务：调用 create_session 启动编程工具，通过 send_and_observe 发送任务描述（附带确认的需求和设计上下文）
-3. 任务编码完成后，指示编程工具运行对应的 TDD 测试用例验证
-4. 测试失败时，指示编程工具修复并重试，最多 3 次
-5. 3 次重试仍失败，记录失败，跳到下一个任务
-6. 每个任务完成后发送进度消息给用户（如"任务 3/8 完成 ✅"或"任务 4/8 失败 ❌"）
+**鎵ц瑙勫垯锛?*
+1. 鎸変换鍔″垪琛ㄩ『搴忛€愪釜鎵ц锛屼笉鍐嶉渶瑕佺敤鎴蜂氦浜?
+2. 姣忎釜浠诲姟锛氳皟鐢?create_session 鍚姩缂栫▼宸ュ叿锛岄€氳繃 send_and_observe 鍙戦€佷换鍔℃弿杩帮紙闄勫甫纭鐨勯渶姹傚拰璁捐涓婁笅鏂囷級
+3. 浠诲姟缂栫爜瀹屾垚鍚庯紝鎸囩ず缂栫▼宸ュ叿杩愯瀵瑰簲鐨?TDD 娴嬭瘯鐢ㄤ緥楠岃瘉
+4. 娴嬭瘯澶辫触鏃讹紝鎸囩ず缂栫▼宸ュ叿淇骞堕噸璇曪紝鏈€澶?3 娆?
+5. 3 娆￠噸璇曚粛澶辫触锛岃褰曞け璐ワ紝璺冲埌涓嬩竴涓换鍔?
+6. 姣忎釜浠诲姟瀹屾垚鍚庡彂閫佽繘搴︽秷鎭粰鐢ㄦ埛锛堝"浠诲姟 3/8 瀹屾垚 鉁?鎴?浠诲姟 4/8 澶辫触 鉂?锛?
 
-⚠️ 严禁自己写代码：编程任务必须通过 create_session 启动专业编程工具完成。
-⚠️ 严禁在 create_session 之后、send_and_observe 之前插入其他工具调用。
-⚠️ 绝对不要终止状态为 busy 的编程会话——编程工具正在工作中。
+鈿狅笍 涓ョ鑷繁鍐欎唬鐮侊細缂栫▼浠诲姟蹇呴』閫氳繃 create_session 鍚姩涓撲笟缂栫▼宸ュ叿瀹屾垚銆?
+鈿狅笍 涓ョ鍦?create_session 涔嬪悗銆乻end_and_observe 涔嬪墠鎻掑叆鍏朵粬宸ュ叿璋冪敤銆?
+鈿狅笍 缁濆涓嶈缁堟鐘舵€佷负 busy 鐨勭紪绋嬩細璇濃€斺€旂紪绋嬪伐鍏锋鍦ㄥ伐浣滀腑銆?
 
-### 第七步：完成验收（Verification Phase）
-所有任务执行完毕后，自动进入验收阶段：
+### 绗竷姝ワ細瀹屾垚楠屾敹锛圴erification Phase锛?
+鎵€鏈変换鍔℃墽琛屽畬姣曞悗锛岃嚜鍔ㄨ繘鍏ラ獙鏀堕樁娈碉細
 
-**验收流程：**
-1. 指示编程工具运行所有 TDD 测试用例作为全量回归测试
-2. 生成完成报告，包含：
-   a) 总任务数和成功/失败数
-   b) 每个任务的执行结果
-   c) 全量测试运行结果
-   d) 失败任务的错误摘要（如有）
-3. 将完成报告作为文本消息发送给用户
-4. 全部通过：报告功能成功完成
-5. 有失败：列出失败项并建议下一步操作
+**楠屾敹娴佺▼锛?*
+1. 鎸囩ず缂栫▼宸ュ叿杩愯鎵€鏈?TDD 娴嬭瘯鐢ㄤ緥浣滀负鍏ㄩ噺鍥炲綊娴嬭瘯
+2. 鐢熸垚瀹屾垚鎶ュ憡锛屽寘鍚細
+   a) 鎬讳换鍔℃暟鍜屾垚鍔?澶辫触鏁?
+   b) 姣忎釜浠诲姟鐨勬墽琛岀粨鏋?
+   c) 鍏ㄩ噺娴嬭瘯杩愯缁撴灉
+   d) 澶辫触浠诲姟鐨勯敊璇憳瑕侊紙濡傛湁锛?
+3. 灏嗗畬鎴愭姤鍛婁綔涓烘枃鏈秷鎭彂閫佺粰鐢ㄦ埛
+4. 鍏ㄩ儴閫氳繃锛氭姤鍛婂姛鑳芥垚鍔熷畬鎴?
+5. 鏈夊け璐ワ細鍒楀嚭澶辫触椤瑰苟寤鸿涓嬩竴姝ユ搷浣?
 
-### 第八步：自动续接（Auto-Resume）
-当编程工具因 token 耗尽正常退出（exit_code=0 或 1，且 get_session_output 返回续接指令）时：
+### 绗叓姝ワ細鑷姩缁帴锛圓uto-Resume锛?
+褰撶紪绋嬪伐鍏峰洜 token 鑰楀敖姝ｅ父閫€鍑猴紙exit_code=0 鎴?1锛屼笖 get_session_output 杩斿洖缁帴鎸囦护锛夋椂锛?
 
-**自动续接规则：**
-- 不要询问用户是否继续——直接创建新会话续接
-- 调用 create_session（使用相同的 tool 和 project_path）
-- 用 send_and_observe 发送续接指令：「请检查项目当前状态，继续完成之前未完成的任务。查看已有文件，补全缺失的部分，确保项目可以正常运行。」
-- 最多自动续接 10 次（token 耗尽场景）
-- 超过 10 次后，告知用户当前进度并询问是否继续
-- ⚠️ 绝对不要自己用 write_file 写代码替代编程工具——续接必须通过新会话完成
+**鑷姩缁帴瑙勫垯锛?*
+- 涓嶈璇㈤棶鐢ㄦ埛鏄惁缁х画鈥斺€旂洿鎺ュ垱寤烘柊浼氳瘽缁帴
+- 璋冪敤 create_session锛堜娇鐢ㄧ浉鍚岀殑 tool 鍜?project_path锛?
+- 鐢?send_and_observe 鍙戦€佺画鎺ユ寚浠わ細銆岃妫€鏌ラ」鐩綋鍓嶇姸鎬侊紝缁х画瀹屾垚涔嬪墠鏈畬鎴愮殑浠诲姟銆傛煡鐪嬪凡鏈夋枃浠讹紝琛ュ叏缂哄け鐨勯儴鍒嗭紝纭繚椤圭洰鍙互姝ｅ父杩愯銆傘€?
+- 鏈€澶氳嚜鍔ㄧ画鎺?10 娆★紙token 鑰楀敖鍦烘櫙锛?
+- 瓒呰繃 10 娆″悗锛屽憡鐭ョ敤鎴峰綋鍓嶈繘搴﹀苟璇㈤棶鏄惁缁х画
+- 鈿狅笍 缁濆涓嶈鑷繁鐢?write_file 鍐欎唬鐮佹浛浠ｇ紪绋嬪伐鍏封€斺€旂画鎺ュ繀椤婚€氳繃鏂颁細璇濆畬鎴?
 
-**API 错误自动重试：**
-- 当编程工具因 API 错误退出（exit_code > 1）时，自动重试 1-2 次
-- 上游 API 可能不稳定，短暂等待后重试通常能恢复
-- 超过 2 次仍失败，告知用户错误信息
+**API 閿欒鑷姩閲嶈瘯锛?*
+- 褰撶紪绋嬪伐鍏峰洜 API 閿欒閫€鍑猴紙exit_code > 1锛夋椂锛岃嚜鍔ㄩ噸璇?1-2 娆?
+- 涓婃父 API 鍙兘涓嶇ǔ瀹氾紝鐭殏绛夊緟鍚庨噸璇曢€氬父鑳芥仮澶?
+- 瓒呰繃 2 娆′粛澶辫触锛屽憡鐭ョ敤鎴烽敊璇俊鎭?
 
-## ⚠️ 执行验证原则
-每次执行操作后，必须验证是否真正成功，绝不能仅凭工具返回"已发送"就告诉用户执行成功。
-- 优先使用 send_and_observe（发送并等待输出），它会自动等待结果返回
-- 验证失败如实告知用户并尝试修复
+## 鈿狅笍 鎵ц楠岃瘉鍘熷垯
+姣忔鎵ц鎿嶄綔鍚庯紝蹇呴』楠岃瘉鏄惁鐪熸鎴愬姛锛岀粷涓嶈兘浠呭嚟宸ュ叿杩斿洖"宸插彂閫?灏卞憡璇夌敤鎴锋墽琛屾垚鍔熴€?
+- 浼樺厛浣跨敤 send_and_observe锛堝彂閫佸苟绛夊緟杈撳嚭锛夛紝瀹冧細鑷姩绛夊緟缁撴灉杩斿洖
+- 楠岃瘉澶辫触濡傚疄鍛婄煡鐢ㄦ埛骞跺皾璇曚慨澶?
 
-## 🛑 会话失败止损原则（极其重要）
-当会话状态为 exited 且退出码非 0 时，说明编程工具启动失败或异常退出：
-- 不要反复重试创建新会话——同样的环境问题会导致同样的失败
-- 不要反复调用 get_session_output 轮询已退出的会话——状态不会改变
-- 立即停止工具调用，将错误信息和修复建议直接告知用户
-- 常见原因：工具未安装、API Key 未配置、项目路径不存在、网络问题
-- 如果输出中有具体错误信息，提取关键信息告诉用户如何修复
-- 最多重试 1 次（换工具或换服务商），仍然失败则直接告知用户
+## 馃洃 浼氳瘽澶辫触姝㈡崯鍘熷垯锛堟瀬鍏堕噸瑕侊級
+褰撲細璇濈姸鎬佷负 exited 涓旈€€鍑虹爜闈?0 鏃讹紝璇存槑缂栫▼宸ュ叿鍚姩澶辫触鎴栧紓甯搁€€鍑猴細
+- 涓嶈鍙嶅閲嶈瘯鍒涘缓鏂颁細璇濃€斺€斿悓鏍风殑鐜闂浼氬鑷村悓鏍风殑澶辫触
+- 涓嶈鍙嶅璋冪敤 get_session_output 杞宸查€€鍑虹殑浼氳瘽鈥斺€旂姸鎬佷笉浼氭敼鍙?
+- 绔嬪嵆鍋滄宸ュ叿璋冪敤锛屽皢閿欒淇℃伅鍜屼慨澶嶅缓璁洿鎺ュ憡鐭ョ敤鎴?
+- 甯歌鍘熷洜锛氬伐鍏锋湭瀹夎銆丄PI Key 鏈厤缃€侀」鐩矾寰勪笉瀛樺湪銆佺綉缁滈棶棰?
+- 濡傛灉杈撳嚭涓湁鍏蜂綋閿欒淇℃伅锛屾彁鍙栧叧閿俊鎭憡璇夌敤鎴峰浣曚慨澶?
+- 鏈€澶氶噸璇?1 娆★紙鎹㈠伐鍏锋垨鎹㈡湇鍔″晢锛夛紝浠嶇劧澶辫触鍒欑洿鎺ュ憡鐭ョ敤鎴?
 
-## 工具使用要点
-- 向会话发送指令优先用 send_and_observe（自动等待输出），避免分别调用 send_input + get_session_output
-- 中断或终止会话用 control_session（action: interrupt/kill）
-- 配置管理用 manage_config（action: get/update/batch_update/list_schema/export/import）
-- 简单文件/命令操作直接用 bash/read_file/write_file/list_directory，不要绕道创建会话
-- 截屏直接调用 screenshot（仅在用户明确要求或需要确认操作结果时使用，最小间隔 30 秒），无需活跃会话也能截取本机桌面
-- ⚠️ 截屏规则：仅在用户明确要求截屏、或用户通过 IM 远程监督需要确认操作结果时才调用 screenshot。不要在用户没有要求时主动截屏。连续截屏最小间隔 30 秒。
-- 用 send_file 通过 IM 通道直接发送文件给用户（支持图片、文档等任意文件类型）。在桌面端默认只保存到本地；如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
-- ⚠️ 发送本地磁盘上的文件/图片给用户时，必须用 send_file 工具——会话内的工具无法直接投递文件到 IM。SDK 会话中产生的截图会自动推送给用户，无需额外操作。
-- ⚠️ 桌面端用户说"发到飞书"、"发到微信"、"发到QQ"、"发到 IM"时，必须在 send_file 中设置 forward_to_im=true，否则文件只会保存到本地而不会发送到 IM 平台。
-- 用 open 打开文件或网址（PDF、Excel、URL 等）
-- 创建会话时可用 project_id 参数指定预设项目，或用 project_manage(action="list") 查看可用项目列表
-- 浏览器自动化（browser_* 系列工具）：可通过 CDP 协议连接本机 Chrome，执行真实 UI 操作（导航、点击、输入、截图、执行 JS、等待元素等）。适用于网页自动化测试、表单填写、登录验证等。使用前先调用 browser_connect 连接浏览器。
+## 宸ュ叿浣跨敤瑕佺偣
+- 鍚戜細璇濆彂閫佹寚浠や紭鍏堢敤 send_and_observe锛堣嚜鍔ㄧ瓑寰呰緭鍑猴級锛岄伩鍏嶅垎鍒皟鐢?send_input + get_session_output
+- 涓柇鎴栫粓姝細璇濈敤 control_session锛坅ction: interrupt/kill锛?
+- 閰嶇疆绠＄悊鐢?manage_config锛坅ction: get/update/batch_update/list_schema/export/import锛?
+- 绠€鍗曟枃浠?鍛戒护鎿嶄綔鐩存帴鐢?bash/read_file/write_file/list_directory锛屼笉瑕佺粫閬撳垱寤轰細璇?
+- 鎴睆鐩存帴璋冪敤 screenshot锛堜粎鍦ㄧ敤鎴锋槑纭姹傛垨闇€瑕佺‘璁ゆ搷浣滅粨鏋滄椂浣跨敤锛屾渶灏忛棿闅?30 绉掞級锛屾棤闇€娲昏穬浼氳瘽涔熻兘鎴彇鏈満妗岄潰
+- 鈿狅笍 鎴睆瑙勫垯锛氫粎鍦ㄧ敤鎴锋槑纭姹傛埅灞忋€佹垨鐢ㄦ埛閫氳繃 IM 杩滅▼鐩戠潱闇€瑕佺‘璁ゆ搷浣滅粨鏋滄椂鎵嶈皟鐢?screenshot銆備笉瑕佸湪鐢ㄦ埛娌℃湁瑕佹眰鏃朵富鍔ㄦ埅灞忋€傝繛缁埅灞忔渶灏忛棿闅?30 绉掋€?
+- 鐢?send_file 閫氳繃 IM 閫氶亾鐩存帴鍙戦€佹枃浠剁粰鐢ㄦ埛锛堟敮鎸佸浘鐗囥€佹枃妗ｇ瓑浠绘剰鏂囦欢绫诲瀷锛夈€傚湪妗岄潰绔粯璁ゅ彧淇濆瓨鍒版湰鍦帮紱濡傛灉鐢ㄦ埛瑕佹眰鍙戝埌椋炰功/寰俊/QQ锛岄渶璁剧疆 forward_to_im=true
+- 鈿狅笍 鍙戦€佹湰鍦扮鐩樹笂鐨勬枃浠?鍥剧墖缁欑敤鎴锋椂锛屽繀椤荤敤 send_file 宸ュ叿鈥斺€斾細璇濆唴鐨勫伐鍏锋棤娉曠洿鎺ユ姇閫掓枃浠跺埌 IM銆係DK 浼氳瘽涓骇鐢熺殑鎴浘浼氳嚜鍔ㄦ帹閫佺粰鐢ㄦ埛锛屾棤闇€棰濆鎿嶄綔銆?
+- 鈿狅笍 妗岄潰绔敤鎴疯"鍙戝埌椋炰功"銆?鍙戝埌寰俊"銆?鍙戝埌QQ"銆?鍙戝埌 IM"鏃讹紝蹇呴』鍦?send_file 涓缃?forward_to_im=true锛屽惁鍒欐枃浠跺彧浼氫繚瀛樺埌鏈湴鑰屼笉浼氬彂閫佸埌 IM 骞冲彴銆?
+- 鐢?open 鎵撳紑鏂囦欢鎴栫綉鍧€锛圥DF銆丒xcel銆乁RL 绛夛級
+- 鍒涘缓浼氳瘽鏃跺彲鐢?project_id 鍙傛暟鎸囧畾棰勮椤圭洰锛屾垨鐢?project_manage(action="list") 鏌ョ湅鍙敤椤圭洰鍒楄〃
+- 娴忚鍣ㄨ嚜鍔ㄥ寲锛坆rowser_* 绯诲垪宸ュ叿锛夛細鍙€氳繃 CDP 鍗忚杩炴帴鏈満 Chrome锛屾墽琛岀湡瀹?UI 鎿嶄綔锛堝鑸€佺偣鍑汇€佽緭鍏ャ€佹埅鍥俱€佹墽琛?JS銆佺瓑寰呭厓绱犵瓑锛夈€傞€傜敤浜庣綉椤佃嚜鍔ㄥ寲娴嬭瘯銆佽〃鍗曞～鍐欍€佺櫥褰曢獙璇佺瓑銆備娇鐢ㄥ墠鍏堣皟鐢?browser_connect 杩炴帴娴忚鍣ㄣ€?
 
 `)	} else {
 		// Lite/simple mode: no coding session tools available.
 		b.WriteString(`
-## 当前模式
-你当前运行在简洁模式，编程会话工具不可用（未配置编程 LLM provider）。
-如果用户请求编程任务（写代码、修 bug、重构等），请友好提示：
-"当前为简洁模式，编程会话功能未启用。如需使用编程工具，请在设置中切换到专业模式并配置编程 provider。"
+## 褰撳墠妯″紡
+浣犲綋鍓嶈繍琛屽湪绠€娲佹ā寮忥紝缂栫▼浼氳瘽宸ュ叿涓嶅彲鐢紙鏈厤缃紪绋?LLM provider锛夈€?
+濡傛灉鐢ㄦ埛璇锋眰缂栫▼浠诲姟锛堝啓浠ｇ爜銆佷慨 bug銆侀噸鏋勭瓑锛夛紝璇峰弸濂芥彁绀猴細
+"褰撳墠涓虹畝娲佹ā寮忥紝缂栫▼浼氳瘽鍔熻兘鏈惎鐢ㄣ€傚闇€浣跨敤缂栫▼宸ュ叿锛岃鍦ㄨ缃腑鍒囨崲鍒颁笓涓氭ā寮忓苟閰嶇疆缂栫▼ provider銆?
 
-你仍然可以使用以下工具帮助用户：
-- bash：执行 shell 命令
-- read_file / write_file / list_directory：文件操作
-- craft_tool：生成并执行脚本
-- web_search / web_fetch：网络搜索
-- browser_* 系列：浏览器自动化（CDP 连接 Chrome，可点击、输入、截图、执行 JS，适用于网页测试和自动化）
-- memory：长期记忆管理
-- screenshot：截屏
-- send_file / open：发送文件、打开文件或网址
-- MCP 工具和 Skill（如已配置）
+浣犱粛鐒跺彲浠ヤ娇鐢ㄤ互涓嬪伐鍏峰府鍔╃敤鎴凤細
+- bash锛氭墽琛?shell 鍛戒护
+- read_file / write_file / list_directory锛氭枃浠舵搷浣?
+- craft_tool锛氱敓鎴愬苟鎵ц鑴氭湰
+- web_search / web_fetch锛氱綉缁滄悳绱?
+- browser_* 绯诲垪锛氭祻瑙堝櫒鑷姩鍖栵紙CDP 杩炴帴 Chrome锛屽彲鐐瑰嚮銆佽緭鍏ャ€佹埅鍥俱€佹墽琛?JS锛岄€傜敤浜庣綉椤垫祴璇曞拰鑷姩鍖栵級
+- memory锛氶暱鏈熻蹇嗙鐞?
+- screenshot锛氭埅灞?
+- send_file / open锛氬彂閫佹枃浠躲€佹墦寮€鏂囦欢鎴栫綉鍧€
+- MCP 宸ュ叿鍜?Skill锛堝宸查厤缃級
 
-## 工具使用要点
-- 配置管理用 manage_config（action: get/update/batch_update/list_schema/export/import）
-- 简单文件/命令操作直接用 bash/read_file/write_file/list_directory
-- 截屏直接调用 screenshot
-- 用 send_file 通过 IM 通道直接发送文件给用户。如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
-- 用 open 打开文件或网址（PDF、Excel、URL 等）
+## 宸ュ叿浣跨敤瑕佺偣
+- 閰嶇疆绠＄悊鐢?manage_config锛坅ction: get/update/batch_update/list_schema/export/import锛?
+- 绠€鍗曟枃浠?鍛戒护鎿嶄綔鐩存帴鐢?bash/read_file/write_file/list_directory
+- 鎴睆鐩存帴璋冪敤 screenshot
+- 鐢?send_file 閫氳繃 IM 閫氶亾鐩存帴鍙戦€佹枃浠剁粰鐢ㄦ埛銆傚鏋滅敤鎴疯姹傚彂鍒伴涔?寰俊/QQ锛岄渶璁剧疆 forward_to_im=true
+- 鐢?open 鎵撳紑鏂囦欢鎴栫綉鍧€锛圥DF銆丒xcel銆乁RL 绛夛級
 
 `)
 	}
-	b.WriteString("## 当前设备状态\n")
+	b.WriteString("## 褰撳墠璁惧鐘舵€乗n")
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "MaClaw Desktop"
 	}
-	b.WriteString(fmt.Sprintf("- 设备名: %s\n", hostname))
-	b.WriteString(fmt.Sprintf("- 平台: %s\n", normalizedRemotePlatform()))
-	b.WriteString(fmt.Sprintf("- App 版本: %s\n", remoteAppVersion()))
+	b.WriteString(fmt.Sprintf("- 璁惧鍚? %s\n", hostname))
+	b.WriteString(fmt.Sprintf("- 骞冲彴: %s\n", normalizedRemotePlatform()))
+	b.WriteString(fmt.Sprintf("- App 鐗堟湰: %s\n", remoteAppVersion()))
 	now := time.Now()
-	b.WriteString(fmt.Sprintf("- 当前时间: %s（%s）\n", now.Format("2006-01-02 15:04"), now.Weekday()))
+	b.WriteString(fmt.Sprintf("- 褰撳墠鏃堕棿: %s锛?s锛塡n", now.Format("2006-01-02 15:04"), now.Weekday()))
 
 	// Nickname reporting: tell the agent its current nickname so it can
 	// proactively report it via set_nickname on first turn.
 	if currentNickname != "" {
-		b.WriteString(fmt.Sprintf("- 当前昵称: %s\n", currentNickname))
+		b.WriteString(fmt.Sprintf("- 褰撳墠鏄电О: %s\n", currentNickname))
 	} else {
-		b.WriteString("- 当前昵称: （未设置）\n")
+		b.WriteString("- 褰撳墠鏄电О: 锛堟湭璁剧疆锛塡n")
 	}
 
 	if isProMode && h.manager != nil {
 		sessions := h.manager.List()
-		b.WriteString(fmt.Sprintf("- 活跃会话: %d 个\n", len(sessions)))
+		b.WriteString(fmt.Sprintf("- 娲昏穬浼氳瘽: %d 涓猏n", len(sessions)))
 		if len(sessions) > 0 {
-			b.WriteString("\n## 当前会话列表\n")
+			b.WriteString("\n## 褰撳墠浼氳瘽鍒楄〃\n")
 			for _, s := range sessions {
 				s.mu.RLock()
 				status := string(s.Status)
 				task := s.Summary.CurrentTask
 				lastResult := s.Summary.LastResult
 				s.mu.RUnlock()
-				b.WriteString(fmt.Sprintf("- [%s] 工具=%s 标题=%s 状态=%s", s.ID, s.Tool, s.Title, status))
+				b.WriteString(fmt.Sprintf("- [%s] 宸ュ叿=%s 鏍囬=%s 鐘舵€?%s", s.ID, s.Tool, s.Title, status))
 				if task != "" {
-					b.WriteString(fmt.Sprintf(" 当前任务=%s", task))
+					b.WriteString(fmt.Sprintf(" 褰撳墠浠诲姟=%s", task))
 				}
 				if lastResult != "" {
-					b.WriteString(fmt.Sprintf(" 最近结果=%s", lastResult))
+					b.WriteString(fmt.Sprintf(" 鏈€杩戠粨鏋?%s", lastResult))
 				}
 				b.WriteString("\n")
 			}
@@ -2678,9 +2697,9 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 	if h.app.mcpRegistry != nil {
 		servers := h.app.mcpRegistry.ListServers()
 		if len(servers) > 0 {
-			b.WriteString("\n## 已注册 MCP Server\n")
+			b.WriteString("\n## 宸叉敞鍐?MCP Server\n")
 			for _, s := range servers {
-				b.WriteString(fmt.Sprintf("- [%s] %s 状态=%s\n", s.ID, s.Name, s.HealthStatus))
+				b.WriteString(fmt.Sprintf("- [%s] %s 鐘舵€?%s\n", s.ID, s.Name, s.HealthStatus))
 			}
 		}
 	}
@@ -2689,29 +2708,29 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 	if isProMode && h.bgManager != nil {
 		bgLoops := h.bgManager.List()
 		if len(bgLoops) > 0 {
-			b.WriteString("\n## 后台任务\n")
+			b.WriteString("\n## 鍚庡彴浠诲姟\n")
 			for _, lctx := range bgLoops {
-				b.WriteString(fmt.Sprintf("- [%s] 类型=%s 状态=%s 轮次=%d/%d",
+				b.WriteString(fmt.Sprintf("- [%s] 绫诲瀷=%s 鐘舵€?%s 杞=%d/%d",
 					lctx.ID, lctx.SlotKind.String(), lctx.State(),
 					lctx.Iteration(), lctx.MaxIterations()))
 				if lctx.Description != "" {
-					b.WriteString(fmt.Sprintf(" 描述=%s", lctx.Description))
+					b.WriteString(fmt.Sprintf(" 鎻忚堪=%s", lctx.Description))
 				}
 				b.WriteString("\n")
 			}
-			b.WriteString("⚠️ 有后台任务正在运行时，如果用户提出新的编程需求，先记录需求，等后台任务完成后再处理。\n")
+			b.WriteString("鈿狅笍 鏈夊悗鍙颁换鍔℃鍦ㄨ繍琛屾椂锛屽鏋滅敤鎴锋彁鍑烘柊鐨勭紪绋嬮渶姹傦紝鍏堣褰曢渶姹傦紝绛夊悗鍙颁换鍔″畬鎴愬悗鍐嶅鐞嗐€俓n")
 		}
 	}
 
 	if h.app.skillExecutor != nil {
 		skills := h.app.skillExecutor.List()
 		if len(skills) > 0 {
-			b.WriteString("\n## 已注册 Skill\n")
+			b.WriteString("\n## 宸叉敞鍐?Skill\n")
 			for _, s := range skills {
 				if s.Status == "active" {
 					b.WriteString(fmt.Sprintf("- %s: %s", s.Name, s.Description))
 					if s.UsageCount > 0 {
-						b.WriteString(fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, s.SuccessRate*100))
+						b.WriteString(fmt.Sprintf(" (鐢ㄨ繃%d娆? 鎴愬姛鐜?.0f%%)", s.UsageCount, s.SuccessRate*100))
 					}
 					b.WriteString("\n")
 				}
@@ -2725,41 +2744,41 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 		mcpTools := h.registry.ListByCategory(ToolCategoryMCP)
 		nonCodeTools := h.registry.ListByCategory(ToolCategoryNonCode)
 		if len(mcpTools) > 0 || len(nonCodeTools) > 0 {
-			b.WriteString(fmt.Sprintf("\n## 动态工具（共 %d 个可用）\n", len(allTools)))
+			b.WriteString(fmt.Sprintf("\n## 鍔ㄦ€佸伐鍏凤紙鍏?%d 涓彲鐢級\n", len(allTools)))
 			if len(mcpTools) > 0 {
-				b.WriteString(fmt.Sprintf("- MCP 工具: %d 个（来自已注册的 MCP Server）\n", len(mcpTools)))
+				b.WriteString(fmt.Sprintf("- MCP 宸ュ叿: %d 涓紙鏉ヨ嚜宸叉敞鍐岀殑 MCP Server锛塡n", len(mcpTools)))
 			}
 			if len(nonCodeTools) > 0 {
-				b.WriteString(fmt.Sprintf("- 非编程工具: %d 个（git_status, git_diff, git_commit, search_files 等）\n", len(nonCodeTools)))
+				b.WriteString(fmt.Sprintf("- 闈炵紪绋嬪伐鍏? %d 涓紙git_status, git_diff, git_commit, search_files 绛夛級\n", len(nonCodeTools)))
 			}
-			b.WriteString("- 工具列表根据消息内容动态筛选，可用「使用XX工具」激活特定分组\n")
+			b.WriteString("- 宸ュ叿鍒楄〃鏍规嵁娑堟伅鍐呭鍔ㄦ€佺瓫閫夛紝鍙敤銆屼娇鐢╔X宸ュ叿銆嶆縺娲荤壒瀹氬垎缁刓n")
 		}
 	}
 
 	// Security firewall info
 	if h.firewall != nil {
-		b.WriteString("\n## 安全防火墙\n")
-		b.WriteString("- 所有工具调用经过安全风险评估和策略检查\n")
-		b.WriteString("- 高风险操作（删除文件、修改权限、数据库 DROP 等）会被拦截或要求确认\n")
-		b.WriteString("- 可用 query_audit_log 工具查看安全审计日志\n")
+		b.WriteString("\n## 瀹夊叏闃茬伀澧橽n")
+		b.WriteString("- 鎵€鏈夊伐鍏疯皟鐢ㄧ粡杩囧畨鍏ㄩ闄╄瘎浼板拰绛栫暐妫€鏌n")
+		b.WriteString("- 楂橀闄╂搷浣滐紙鍒犻櫎鏂囦欢銆佷慨鏀规潈闄愩€佹暟鎹簱 DROP 绛夛級浼氳鎷︽埅鎴栬姹傜‘璁n")
+		b.WriteString("- 鍙敤 query_audit_log 宸ュ叿鏌ョ湅瀹夊叏瀹¤鏃ュ織\n")
 	}
 
-	// Task orchestration info (pro mode only — references coding sessions).
+	// Task orchestration info (pro mode only 鈥?references coding sessions).
 	if isProMode {
-		b.WriteString("\n## 高级能力\n")
-		b.WriteString("- tool=auto: 创建会话时自动选择最适合的编程工具\n")
-		b.WriteString("- orchestrate_task: 将复杂任务拆分为多个子任务并行执行\n")
-		b.WriteString("- add_context_note: 记录项目上下文备注，跨会话共享\n")
+		b.WriteString("\n## 楂樼骇鑳藉姏\n")
+		b.WriteString("- tool=auto: 鍒涘缓浼氳瘽鏃惰嚜鍔ㄩ€夋嫨鏈€閫傚悎鐨勭紪绋嬪伐鍏穃n")
+		b.WriteString("- orchestrate_task: 灏嗗鏉備换鍔℃媶鍒嗕负澶氫釜瀛愪换鍔″苟琛屾墽琛孿n")
+		b.WriteString("- add_context_note: 璁板綍椤圭洰涓婁笅鏂囧娉紝璺ㄤ細璇濆叡浜玕n")
 	}
 
-	b.WriteString("\n## 对话管理\n")
+	b.WriteString("\n## 瀵硅瘽绠＄悊\n")
 	if isProMode {
-		b.WriteString("- /new 或 /reset 重置对话 | /exit 或 /quit 终止所有会话 | /sessions 查看状态 | /help 帮助\n")
-		b.WriteString("- 用户表达退出意图时，提醒发送 /exit\n")
+		b.WriteString("- /new 鎴?/reset 閲嶇疆瀵硅瘽 | /exit 鎴?/quit 缁堟鎵€鏈変細璇?| /sessions 鏌ョ湅鐘舵€?| /help 甯姪\n")
+		b.WriteString("- 鐢ㄦ埛琛ㄨ揪閫€鍑烘剰鍥炬椂锛屾彁閱掑彂閫?/exit\n")
 	} else {
-		b.WriteString("- /new 或 /reset 重置对话 | /help 帮助\n")
+		b.WriteString("- /new 鎴?/reset 閲嶇疆瀵硅瘽 | /help 甯姪\n")
 	}
-	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
+	b.WriteString("\n璇风敤涓枃鍥炲锛屽叧閿妧鏈湳璇繚鐣欒嫳鏂囥€傚洖澶嶈绠€娲佸疄鐢ㄣ€?)
 
 	// Inject lightweight memory section: user_fact summary + tool hint.
 	h.appendMemorySection(&b, false)
@@ -2778,7 +2797,7 @@ func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFir
 		return base
 	}
 	// First turn: strip the default memory section and re-append with guide.
-	if idx := strings.Index(base, "\n## 用户记忆\n"); idx >= 0 {
+	if idx := strings.Index(base, "\n## 鐢ㄦ埛璁板繂\n"); idx >= 0 {
 		base = base[:idx]
 	}
 	var b strings.Builder
@@ -2787,18 +2806,18 @@ func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFir
 	// section so it doesn't get truncated.
 	b.WriteString(h.buildNicknameInstruction())
 	h.appendMemorySection(&b, true)
-	// Inject proactive memory instruction — guides the Agent to save
+	// Inject proactive memory instruction 鈥?guides the Agent to save
 	// non-obvious technical discoveries during the session.
 	b.WriteString(`
-## 主动记忆
-当你在会话中发现以下类型的非显而易见信息时，应主动使用 memory(action=save) 保存：
-- 调试过程中发现的 workaround 或未文档化行为
-- 配置细节、环境特殊性
-- 用户项目的架构决策或约定
-- 重要的错误原因和解决方案
+## 涓诲姩璁板繂
+褰撲綘鍦ㄤ細璇濅腑鍙戠幇浠ヤ笅绫诲瀷鐨勯潪鏄捐€屾槗瑙佷俊鎭椂锛屽簲涓诲姩浣跨敤 memory(action=save) 淇濆瓨锛?
+- 璋冭瘯杩囩▼涓彂鐜扮殑 workaround 鎴栨湭鏂囨。鍖栬涓?
+- 閰嶇疆缁嗚妭銆佺幆澧冪壒娈婃€?
+- 鐢ㄦ埛椤圭洰鐨勬灦鏋勫喅绛栨垨绾﹀畾
+- 閲嶈鐨勯敊璇師鍥犲拰瑙ｅ喅鏂规
 
-保存时使用 category=project_knowledge 或 instruction，并添加 tag "proactive"。
-每次会话最多主动保存 5 条。保存后在回复中简要提示：💾 已主动记录: <摘要>`)
+淇濆瓨鏃朵娇鐢?category=project_knowledge 鎴?instruction锛屽苟娣诲姞 tag "proactive"銆?
+姣忔浼氳瘽鏈€澶氫富鍔ㄤ繚瀛?5 鏉°€備繚瀛樺悗鍦ㄥ洖澶嶄腑绠€瑕佹彁绀猴細馃捑 宸蹭富鍔ㄨ褰? <鎽樿>`)
 	return b.String()
 }
 
@@ -2813,14 +2832,14 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 		currentNickname = strings.TrimSpace(cfg.RemoteNickname)
 	}
 	if currentNickname != "" {
-		return fmt.Sprintf("\n## ⚠️ 上线昵称报告（仅首次对话执行一次）\n"+
-			"你刚上线，请在回复用户之前先调用 set_nickname 工具报告你的昵称「%s」，确保 Hub 知道你是谁。\n", currentNickname)
+		return fmt.Sprintf("\n## 鈿狅笍 涓婄嚎鏄电О鎶ュ憡锛堜粎棣栨瀵硅瘽鎵ц涓€娆★級\n"+
+			"浣犲垰涓婄嚎锛岃鍦ㄥ洖澶嶇敤鎴蜂箣鍓嶅厛璋冪敤 set_nickname 宸ュ叿鎶ュ憡浣犵殑鏄电О銆?s銆嶏紝纭繚 Hub 鐭ラ亾浣犳槸璋併€俓n", currentNickname)
 	}
-	return "\n## ⚠️ 上线昵称报告（仅首次对话执行一次）\n" +
-		"你还没有昵称。请根据你的自我认知（角色名/身份），在回复用户之前先调用 set_nickname 工具给自己起一个昵称并上报给 Hub。如果没有特别的自我认知，可以用一个你喜欢的中文名字。\n"
+	return "\n## 鈿狅笍 涓婄嚎鏄电О鎶ュ憡锛堜粎棣栨瀵硅瘽鎵ц涓€娆★級\n" +
+		"浣犺繕娌℃湁鏄电О銆傝鏍规嵁浣犵殑鑷垜璁ょ煡锛堣鑹插悕/韬唤锛夛紝鍦ㄥ洖澶嶇敤鎴蜂箣鍓嶅厛璋冪敤 set_nickname 宸ュ叿缁欒嚜宸辫捣涓€涓樀绉板苟涓婃姤缁?Hub銆傚鏋滄病鏈夌壒鍒殑鑷垜璁ょ煡锛屽彲浠ョ敤涓€涓綘鍠滄鐨勪腑鏂囧悕瀛椼€俓n"
 }
 
-// appendMemorySection appends a lightweight "## 用户记忆" section containing:
+// appendMemorySection appends a lightweight "## 鐢ㄦ埛璁板繂" section containing:
 //   - A compressed one-line summary of user_fact entries (always present)
 //   - A hint that other memories can be recalled via memory(action: recall)
 //   - Full memory management guide only on first turn (isFirstTurn=true)
@@ -2834,16 +2853,16 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 
 	summary := h.memoryStore.UserFactSummary(400)
 
-	b.WriteString("\n## 用户记忆\n")
+	b.WriteString("\n## 鐢ㄦ埛璁板繂\n")
 	if summary != "" {
-		b.WriteString(fmt.Sprintf("用户信息: %s\n", summary))
+		b.WriteString(fmt.Sprintf("鐢ㄦ埛淇℃伅: %s\n", summary))
 	}
-	b.WriteString("其他记忆（偏好、项目知识、指令等）可通过 memory(action: recall, query: \"检索关键词\") 按需召回。\n")
+	b.WriteString("鍏朵粬璁板繂锛堝亸濂姐€侀」鐩煡璇嗐€佹寚浠ょ瓑锛夊彲閫氳繃 memory(action: recall, query: \"妫€绱㈠叧閿瘝\") 鎸夐渶鍙洖銆俓n")
 
 	if isFirstTurn {
-		b.WriteString("\n## 记忆管理指引\n")
-		b.WriteString("识别到有价值的信息时，主动调用 memory(action: save) 保存：\n")
-		b.WriteString("- 用户信息 → user_fact | 偏好 → preference | 项目知识 → project_knowledge | 指令 → instruction\n")
+		b.WriteString("\n## 璁板繂绠＄悊鎸囧紩\n")
+		b.WriteString("璇嗗埆鍒版湁浠峰€肩殑淇℃伅鏃讹紝涓诲姩璋冪敤 memory(action: save) 淇濆瓨锛歕n")
+		b.WriteString("- 鐢ㄦ埛淇℃伅 鈫?user_fact | 鍋忓ソ 鈫?preference | 椤圭洰鐭ヨ瘑 鈫?project_knowledge | 鎸囦护 鈫?instruction\n")
 	}
 }
 
@@ -2853,248 +2872,248 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 
 func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 	defs := []map[string]interface{}{
-		toolDef("list_sessions", "列出当前所有远程会话及其状态", nil, nil),
-		toolDef("create_session", "创建新的远程会话。可指定 provider 选择服务商。创建后建议用 get_session_output 观察启动状态。",
+		toolDef("list_sessions", "鍒楀嚭褰撳墠鎵€鏈夎繙绋嬩細璇濆強鍏剁姸鎬?, nil, nil),
+		toolDef("create_session", "鍒涘缓鏂扮殑杩滅▼浼氳瘽銆傚彲鎸囧畾 provider 閫夋嫨鏈嶅姟鍟嗐€傚垱寤哄悗寤鸿鐢?get_session_output 瑙傚療鍚姩鐘舵€併€?,
 			map[string]interface{}{
-				"tool":         map[string]string{"type": "string", "description": "工具名称，如 claude, codex, cursor, gemini, opencode"},
-				"project_path": map[string]string{"type": "string", "description": "项目路径（可选）"},
-				"project_id":   map[string]string{"type": "string", "description": "预设项目 ID（可选，与 project_path 二选一）"},
-				"provider":            map[string]string{"type": "string", "description": "服务商名称（可选，如 Original, DeepSeek, 百度千帆）。不指定则使用桌面端当前选中的服务商"},
-				"resume_session_id": map[string]string{"type": "string", "description": "续接会话 ID（可选）。自动续接时由 get_session_output 返回，传入后使用 --resume 模式恢复完整对话历史"},
+				"tool":         map[string]string{"type": "string", "description": "宸ュ叿鍚嶇О锛屽 claude, codex, cursor, gemini, opencode"},
+				"project_path": map[string]string{"type": "string", "description": "椤圭洰璺緞锛堝彲閫夛級"},
+				"project_id":   map[string]string{"type": "string", "description": "棰勮椤圭洰 ID锛堝彲閫夛紝涓?project_path 浜岄€変竴锛?},
+				"provider":            map[string]string{"type": "string", "description": "鏈嶅姟鍟嗗悕绉帮紙鍙€夛紝濡?Original, DeepSeek, 鐧惧害鍗冨竼锛夈€備笉鎸囧畾鍒欎娇鐢ㄦ闈㈢褰撳墠閫変腑鐨勬湇鍔″晢"},
+				"resume_session_id": map[string]string{"type": "string", "description": "缁帴浼氳瘽 ID锛堝彲閫夛級銆傝嚜鍔ㄧ画鎺ユ椂鐢?get_session_output 杩斿洖锛屼紶鍏ュ悗浣跨敤 --resume 妯″紡鎭㈠瀹屾暣瀵硅瘽鍘嗗彶"},
 			}, []string{"tool"}),
-		toolDef("list_providers", "列出指定编程工具的所有可用服务商（已过滤未配置的空服务商）",
+		toolDef("list_providers", "鍒楀嚭鎸囧畾缂栫▼宸ュ叿鐨勬墍鏈夊彲鐢ㄦ湇鍔″晢锛堝凡杩囨护鏈厤缃殑绌烘湇鍔″晢锛?,
 			map[string]interface{}{
-				"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, gemini"},
+				"tool": map[string]string{"type": "string", "description": "宸ュ叿鍚嶇О锛屽 claude, codex, gemini"},
 			}, []string{"tool"}),
-		toolDef("project_manage", "项目管理（创建/列出/删除/切换项目）",
+		toolDef("project_manage", "椤圭洰绠＄悊锛堝垱寤?鍒楀嚭/鍒犻櫎/鍒囨崲椤圭洰锛?,
 			map[string]interface{}{
-				"action": map[string]string{"type": "string", "description": "操作: create/list/delete/switch"},
-				"name":   map[string]string{"type": "string", "description": "项目名称（create 必填）"},
-				"path":   map[string]string{"type": "string", "description": "项目路径（create 必填）"},
-				"target": map[string]string{"type": "string", "description": "项目名称或 ID（delete/switch 必填）"},
+				"action": map[string]string{"type": "string", "description": "鎿嶄綔: create/list/delete/switch"},
+				"name":   map[string]string{"type": "string", "description": "椤圭洰鍚嶇О锛坈reate 蹇呭～锛?},
+				"path":   map[string]string{"type": "string", "description": "椤圭洰璺緞锛坈reate 蹇呭～锛?},
+				"target": map[string]string{"type": "string", "description": "椤圭洰鍚嶇О鎴?ID锛坉elete/switch 蹇呭～锛?},
 			}, []string{"action"}),
-		toolDef("send_input", "向指定会话发送文本输入。发送后可用 get_session_output 观察结果。",
+		toolDef("send_input", "鍚戞寚瀹氫細璇濆彂閫佹枃鏈緭鍏ャ€傚彂閫佸悗鍙敤 get_session_output 瑙傚療缁撴灉銆?,
 			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-				"text":       map[string]string{"type": "string", "description": "要发送的文本"},
+				"session_id": map[string]string{"type": "string", "description": "浼氳瘽 ID"},
+				"text":       map[string]string{"type": "string", "description": "瑕佸彂閫佺殑鏂囨湰"},
 			}, []string{"session_id", "text"}),
-		toolDef("get_session_output", "获取指定会话的最近输出内容和状态摘要。",
+		toolDef("get_session_output", "鑾峰彇鎸囧畾浼氳瘽鐨勬渶杩戣緭鍑哄唴瀹瑰拰鐘舵€佹憳瑕併€?,
 			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-				"lines":      map[string]string{"type": "integer", "description": "返回最近 N 行输出（默认 30，最大 100）"},
+				"session_id": map[string]string{"type": "string", "description": "浼氳瘽 ID"},
+				"lines":      map[string]string{"type": "integer", "description": "杩斿洖鏈€杩?N 琛岃緭鍑猴紙榛樿 30锛屾渶澶?100锛?},
 			}, []string{"session_id"}),
-		toolDef("get_session_events", "获取指定会话的重要事件列表（文件修改、命令执行、错误等）",
+		toolDef("get_session_events", "鑾峰彇鎸囧畾浼氳瘽鐨勯噸瑕佷簨浠跺垪琛紙鏂囦欢淇敼銆佸懡浠ゆ墽琛屻€侀敊璇瓑锛?,
 			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
+				"session_id": map[string]string{"type": "string", "description": "浼氳瘽 ID"},
 			}, []string{"session_id"}),
-		toolDef("interrupt_session", "中断指定会话（发送 Ctrl+C 信号）",
+		toolDef("interrupt_session", "涓柇鎸囧畾浼氳瘽锛堝彂閫?Ctrl+C 淇″彿锛?,
 			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
+				"session_id": map[string]string{"type": "string", "description": "浼氳瘽 ID"},
 			}, []string{"session_id"}),
-		toolDef("kill_session", "终止指定会话",
+		toolDef("kill_session", "缁堟鎸囧畾浼氳瘽",
 			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
+				"session_id": map[string]string{"type": "string", "description": "浼氳瘽 ID"},
 			}, []string{"session_id"}),
-		toolDef("screenshot", "截取屏幕截图并发送给用户。仅在以下情况使用：(1) 用户明确要求截屏；(2) 用户通过 IM 远程监督，需要确认操作结果。不要在用户未要求时主动截屏。最小间隔 30 秒。",
+		toolDef("screenshot", "鎴彇灞忓箷鎴浘骞跺彂閫佺粰鐢ㄦ埛銆備粎鍦ㄤ互涓嬫儏鍐典娇鐢細(1) 鐢ㄦ埛鏄庣‘瑕佹眰鎴睆锛?2) 鐢ㄦ埛閫氳繃 IM 杩滅▼鐩戠潱锛岄渶瑕佺‘璁ゆ搷浣滅粨鏋溿€備笉瑕佸湪鐢ㄦ埛鏈姹傛椂涓诲姩鎴睆銆傛渶灏忛棿闅?30 绉掋€?,
 			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID（可选，只有一个会话时自动选择）"},
+				"session_id": map[string]string{"type": "string", "description": "浼氳瘽 ID锛堝彲閫夛紝鍙湁涓€涓細璇濇椂鑷姩閫夋嫨锛?},
 			}, nil),
-		toolDef("list_mcp_tools", "列出已注册的 MCP Server 及其工具", nil, nil),
-		toolDef("call_mcp_tool", "调用指定 MCP Server 上的工具",
+		toolDef("list_mcp_tools", "鍒楀嚭宸叉敞鍐岀殑 MCP Server 鍙婂叾宸ュ叿", nil, nil),
+		toolDef("call_mcp_tool", "璋冪敤鎸囧畾 MCP Server 涓婄殑宸ュ叿",
 			map[string]interface{}{
 				"server_id": map[string]string{"type": "string", "description": "MCP Server ID"},
-				"tool_name": map[string]string{"type": "string", "description": "工具名称"},
-				"arguments": map[string]string{"type": "object", "description": "工具参数（JSON 对象）"},
+				"tool_name": map[string]string{"type": "string", "description": "宸ュ叿鍚嶇О"},
+				"arguments": map[string]string{"type": "object", "description": "宸ュ叿鍙傛暟锛圝SON 瀵硅薄锛?},
 			}, []string{"server_id", "tool_name"}),
-		toolDef("list_skills", "列出已注册的本地 Skill。如果本地没有 Skill，会同时展示 SkillHub 上的推荐 Skill 供安装。", nil, nil),
-		toolDef("search_skill_hub", "在已配置的 SkillHub（如 openclaw、tencent 等）上搜索可用的 Skill",
+		toolDef("list_skills", "鍒楀嚭宸叉敞鍐岀殑鏈湴 Skill銆傚鏋滄湰鍦版病鏈?Skill锛屼細鍚屾椂灞曠ず SkillHub 涓婄殑鎺ㄨ崘 Skill 渚涘畨瑁呫€?, nil, nil),
+		toolDef("search_skill_hub", "鍦ㄥ凡閰嶇疆鐨?SkillHub锛堝 openclaw銆乼encent 绛夛級涓婃悳绱㈠彲鐢ㄧ殑 Skill",
 			map[string]interface{}{
-				"query": map[string]string{"type": "string", "description": "搜索关键词（如 'git commit'、'代码审查'、'部署'）"},
+				"query": map[string]string{"type": "string", "description": "鎼滅储鍏抽敭璇嶏紙濡?'git commit'銆?浠ｇ爜瀹℃煡'銆?閮ㄧ讲'锛?},
 			}, []string{"query"}),
-		toolDef("install_skill_hub", "从 SkillHub 安装指定的 Skill 到本地。设置 auto_run=true 可安装后立即执行。",
+		toolDef("install_skill_hub", "浠?SkillHub 瀹夎鎸囧畾鐨?Skill 鍒版湰鍦般€傝缃?auto_run=true 鍙畨瑁呭悗绔嬪嵆鎵ц銆?,
 			map[string]interface{}{
-				"skill_id": map[string]string{"type": "string", "description": "Skill ID（从 search_skill_hub 结果中获取）"},
-				"hub_url":  map[string]string{"type": "string", "description": "来源 Hub URL（从 search_skill_hub 结果中获取）"},
-				"auto_run": map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（默认 true）"},
+				"skill_id": map[string]string{"type": "string", "description": "Skill ID锛堜粠 search_skill_hub 缁撴灉涓幏鍙栵級"},
+				"hub_url":  map[string]string{"type": "string", "description": "鏉ユ簮 Hub URL锛堜粠 search_skill_hub 缁撴灉涓幏鍙栵級"},
+				"auto_run": map[string]string{"type": "boolean", "description": "瀹夎鎴愬姛鍚庢槸鍚︾珛鍗虫墽琛岋紙榛樿 true锛?},
 			}, []string{"skill_id", "hub_url"}),
-		toolDef("run_skill", "执行指定的 Skill",
+		toolDef("run_skill", "鎵ц鎸囧畾鐨?Skill",
 			map[string]interface{}{
-				"name": map[string]string{"type": "string", "description": "Skill 名称"},
+				"name": map[string]string{"type": "string", "description": "Skill 鍚嶇О"},
 			}, []string{"name"}),
-		toolDef("parallel_execute", "并行执行多个编程任务，每个任务在独立会话中运行（最多5个）",
+		toolDef("parallel_execute", "骞惰鎵ц澶氫釜缂栫▼浠诲姟锛屾瘡涓换鍔″湪鐙珛浼氳瘽涓繍琛岋紙鏈€澶?涓級",
 			map[string]interface{}{
 				"tasks": map[string]interface{}{
 					"type":        "array",
-					"description": "任务列表，每个任务包含 tool（工具名）、description（任务描述）、project_path（项目路径）",
+					"description": "浠诲姟鍒楄〃锛屾瘡涓换鍔″寘鍚?tool锛堝伐鍏峰悕锛夈€乨escription锛堜换鍔℃弿杩帮級銆乸roject_path锛堥」鐩矾寰勶級",
 					"items": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
-							"tool":         map[string]string{"type": "string", "description": "工具名称"},
-							"description":  map[string]string{"type": "string", "description": "任务描述"},
-							"project_path": map[string]string{"type": "string", "description": "项目路径"},
+							"tool":         map[string]string{"type": "string", "description": "宸ュ叿鍚嶇О"},
+							"description":  map[string]string{"type": "string", "description": "浠诲姟鎻忚堪"},
+							"project_path": map[string]string{"type": "string", "description": "椤圭洰璺緞"},
 						},
 					},
 				},
 			}, []string{"tasks"}),
-		toolDef("recommend_tool", "根据任务描述推荐最合适的编程工具",
+		toolDef("recommend_tool", "鏍规嵁浠诲姟鎻忚堪鎺ㄨ崘鏈€鍚堥€傜殑缂栫▼宸ュ叿",
 			map[string]interface{}{
-				"task_description": map[string]string{"type": "string", "description": "任务描述"},
+				"task_description": map[string]string{"type": "string", "description": "浠诲姟鎻忚堪"},
 			}, []string{"task_description"}),
-		toolDef("craft_tool", "当现有工具都无法完成任务时，自动研究问题并生成脚本来解决。会用 LLM 生成代码、执行、并注册为可复用的 Skill。适用于数据处理、API 调用、文件转换、系统管理等需要编程才能完成的任务。",
+		toolDef("craft_tool", "褰撶幇鏈夊伐鍏烽兘鏃犳硶瀹屾垚浠诲姟鏃讹紝鑷姩鐮旂┒闂骞剁敓鎴愯剼鏈潵瑙ｅ喅銆備細鐢?LLM 鐢熸垚浠ｇ爜銆佹墽琛屻€佸苟娉ㄥ唽涓哄彲澶嶇敤鐨?Skill銆傞€傜敤浜庢暟鎹鐞嗐€丄PI 璋冪敤銆佹枃浠惰浆鎹€佺郴缁熺鐞嗙瓑闇€瑕佺紪绋嬫墠鑳藉畬鎴愮殑浠诲姟銆?,
 			map[string]interface{}{
-				"task":          map[string]string{"type": "string", "description": "需要完成的任务描述（越详细越好）"},
-				"language":      map[string]string{"type": "string", "description": "脚本语言: python/bash/powershell/node（可选，自动检测）"},
-				"save_as_skill": map[string]string{"type": "boolean", "description": "执行成功后是否注册为 Skill 供下次复用（默认 true）"},
-				"skill_name":    map[string]string{"type": "string", "description": "Skill 名称（可选，自动生成）"},
-				"timeout":       map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
+				"task":          map[string]string{"type": "string", "description": "闇€瑕佸畬鎴愮殑浠诲姟鎻忚堪锛堣秺璇︾粏瓒婂ソ锛?},
+				"language":      map[string]string{"type": "string", "description": "鑴氭湰璇█: python/bash/powershell/node锛堝彲閫夛紝鑷姩妫€娴嬶級"},
+				"save_as_skill": map[string]string{"type": "boolean", "description": "鎵ц鎴愬姛鍚庢槸鍚︽敞鍐屼负 Skill 渚涗笅娆″鐢紙榛樿 true锛?},
+				"skill_name":    map[string]string{"type": "string", "description": "Skill 鍚嶇О锛堝彲閫夛紝鑷姩鐢熸垚锛?},
+				"timeout":       map[string]string{"type": "integer", "description": "鎵ц瓒呮椂绉掓暟锛堥粯璁?60锛屾渶澶?300锛?},
 			}, []string{"task"}),
-		// --- 本机直接操作工具 ---
-		toolDef("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。",
+		// --- 鏈満鐩存帴鎿嶄綔宸ュ叿 ---
+		toolDef("bash", "鍦ㄦ湰鏈虹洿鎺ユ墽琛?shell 鍛戒护锛堝鍒涘缓鐩綍銆佺Щ鍔ㄦ枃浠躲€佽繍琛岃剼鏈瓑锛夈€傚懡浠ゅ湪 MaClaw 鎵€鍦ㄨ澶囦笂鎵ц锛屼笉闇€瑕佷細璇濄€?,
 			map[string]interface{}{
-				"command":     map[string]string{"type": "string", "description": "要执行的 shell 命令"},
-				"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为用户主目录）"},
-				"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
+				"command":     map[string]string{"type": "string", "description": "瑕佹墽琛岀殑 shell 鍛戒护"},
+				"working_dir": map[string]string{"type": "string", "description": "宸ヤ綔鐩綍锛堝彲閫夛紝榛樿涓虹敤鎴蜂富鐩綍锛?},
+				"timeout":     map[string]string{"type": "integer", "description": "瓒呮椂绉掓暟锛堝彲閫夛紝榛樿 30锛屾渶澶?120锛?},
 			}, []string{"command"}),
-		toolDef("read_file", "读取本机文件内容",
+		toolDef("read_file", "璇诲彇鏈満鏂囦欢鍐呭",
 			map[string]interface{}{
-				"path":  map[string]string{"type": "string", "description": "文件路径（绝对路径或相对于主目录的路径）"},
-				"lines": map[string]string{"type": "integer", "description": "最多读取行数（可选，默认 200）"},
+				"path":  map[string]string{"type": "string", "description": "鏂囦欢璺緞锛堢粷瀵硅矾寰勬垨鐩稿浜庝富鐩綍鐨勮矾寰勶級"},
+				"lines": map[string]string{"type": "integer", "description": "鏈€澶氳鍙栬鏁帮紙鍙€夛紝榛樿 200锛?},
 			}, []string{"path"}),
-		toolDef("write_file", "写入内容到本机文件（会创建不存在的目录）",
+		toolDef("write_file", "鍐欏叆鍐呭鍒版湰鏈烘枃浠讹紙浼氬垱寤轰笉瀛樺湪鐨勭洰褰曪級",
 			map[string]interface{}{
-				"path":    map[string]string{"type": "string", "description": "文件路径"},
-				"content": map[string]string{"type": "string", "description": "文件内容"},
+				"path":    map[string]string{"type": "string", "description": "鏂囦欢璺緞"},
+				"content": map[string]string{"type": "string", "description": "鏂囦欢鍐呭"},
 			}, []string{"path", "content"}),
-		toolDef("list_directory", "列出本机目录内容",
+		toolDef("list_directory", "鍒楀嚭鏈満鐩綍鍐呭",
 			map[string]interface{}{
-				"path": map[string]string{"type": "string", "description": "目录路径（可选，默认为用户主目录）"},
+				"path": map[string]string{"type": "string", "description": "鐩綍璺緞锛堝彲閫夛紝榛樿涓虹敤鎴蜂富鐩綍锛?},
 			}, nil),
-		toolDef("send_file", "读取本机文件并发送给用户（通过 IM 通道直接发送文件）。设置 forward_to_im=true 可将文件同时转发到用户的飞书/微信/QQ等 IM 平台。",
+		toolDef("send_file", "璇诲彇鏈満鏂囦欢骞跺彂閫佺粰鐢ㄦ埛锛堥€氳繃 IM 閫氶亾鐩存帴鍙戦€佹枃浠讹級銆傝缃?forward_to_im=true 鍙皢鏂囦欢鍚屾椂杞彂鍒扮敤鎴风殑椋炰功/寰俊/QQ绛?IM 骞冲彴銆?,
 			map[string]interface{}{
-				"path":          map[string]string{"type": "string", "description": "文件的绝对路径或相对于主目录的路径"},
-				"file_name":     map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）"},
-				"forward_to_im": map[string]string{"type": "boolean", "description": "是否同时转发到用户的 IM 平台（飞书/微信/QQ等）。仅在用户明确要求发送到飞书、微信、QQ等 IM 时设为 true，默认 false"},
+				"path":          map[string]string{"type": "string", "description": "鏂囦欢鐨勭粷瀵硅矾寰勬垨鐩稿浜庝富鐩綍鐨勮矾寰?},
+				"file_name":     map[string]string{"type": "string", "description": "鍙戦€佹椂鏄剧ず鐨勬枃浠跺悕锛堝彲閫夛紝榛樿浣跨敤鍘熸枃浠跺悕锛?},
+				"forward_to_im": map[string]string{"type": "boolean", "description": "鏄惁鍚屾椂杞彂鍒扮敤鎴风殑 IM 骞冲彴锛堥涔?寰俊/QQ绛夛級銆備粎鍦ㄧ敤鎴锋槑纭姹傚彂閫佸埌椋炰功銆佸井淇°€丵Q绛?IM 鏃惰涓?true锛岄粯璁?false"},
 			}, []string{"path"}),
-		toolDef("open", "用操作系统默认程序打开文件或网址。例如：打开 PDF 用默认阅读器、打开 .xlsx 用 Excel、打开 URL 用默认浏览器、打开文件夹用资源管理器。也支持 mailto: 链接。",
+		toolDef("open", "鐢ㄦ搷浣滅郴缁熼粯璁ょ▼搴忔墦寮€鏂囦欢鎴栫綉鍧€銆備緥濡傦細鎵撳紑 PDF 鐢ㄩ粯璁ら槄璇诲櫒銆佹墦寮€ .xlsx 鐢?Excel銆佹墦寮€ URL 鐢ㄩ粯璁ゆ祻瑙堝櫒銆佹墦寮€鏂囦欢澶圭敤璧勬簮绠＄悊鍣ㄣ€備篃鏀寔 mailto: 閾炬帴銆?,
 			map[string]interface{}{
-				"target": map[string]string{"type": "string", "description": "要打开的文件路径、目录路径或 URL（如 C:\\Users\\test\\doc.pdf、https://example.com、mailto:test@example.com）"},
+				"target": map[string]string{"type": "string", "description": "瑕佹墦寮€鐨勬枃浠惰矾寰勩€佺洰褰曡矾寰勬垨 URL锛堝 C:\\Users\\test\\doc.pdf銆乭ttps://example.com銆乵ailto:test@example.com锛?},
 			}, []string{"target"}),
-		// --- 长期记忆工具（合并） ---
-		toolDef("memory", "管理长期记忆（action: recall/save/list/delete）。recall 按需检索相关记忆，save 保存新记忆。",
+		// --- 闀挎湡璁板繂宸ュ叿锛堝悎骞讹級 ---
+		toolDef("memory", "绠＄悊闀挎湡璁板繂锛坅ction: recall/save/list/delete锛夈€俽ecall 鎸夐渶妫€绱㈢浉鍏宠蹇嗭紝save 淇濆瓨鏂拌蹇嗐€?,
 			map[string]interface{}{
-				"action":   map[string]string{"type": "string", "description": "操作: recall(按需召回)/save(保存)/list(列出或搜索)/delete(删除)"},
-				"query":    map[string]string{"type": "string", "description": "检索关键词（recall 时必填，由你提炼的精准检索词，非用户原始消息）"},
-				"content":  map[string]string{"type": "string", "description": "记忆内容（save 时必填）"},
-				"category": map[string]string{"type": "string", "description": "类别: user_fact/preference/project_knowledge/instruction（save 时必填，recall/list 时可选过滤）"},
+				"action":   map[string]string{"type": "string", "description": "鎿嶄綔: recall(鎸夐渶鍙洖)/save(淇濆瓨)/list(鍒楀嚭鎴栨悳绱?/delete(鍒犻櫎)"},
+				"query":    map[string]string{"type": "string", "description": "妫€绱㈠叧閿瘝锛坮ecall 鏃跺繀濉紝鐢变綘鎻愮偧鐨勭簿鍑嗘绱㈣瘝锛岄潪鐢ㄦ埛鍘熷娑堟伅锛?},
+				"content":  map[string]string{"type": "string", "description": "璁板繂鍐呭锛坰ave 鏃跺繀濉級"},
+				"category": map[string]string{"type": "string", "description": "绫诲埆: user_fact/preference/project_knowledge/instruction锛坰ave 鏃跺繀濉紝recall/list 鏃跺彲閫夎繃婊わ級"},
 				"tags": map[string]interface{}{
 					"type":        "array",
-					"description": "关联标签（save 时可选）",
+					"description": "鍏宠仈鏍囩锛坰ave 鏃跺彲閫夛級",
 					"items":       map[string]string{"type": "string"},
 				},
-				"keyword": map[string]string{"type": "string", "description": "按关键词搜索（list 时可选）"},
-				"id":      map[string]string{"type": "string", "description": "记忆条目 ID（delete 时必填）"},
+				"keyword": map[string]string{"type": "string", "description": "鎸夊叧閿瘝鎼滅储锛坙ist 鏃跺彲閫夛級"},
+				"id":      map[string]string{"type": "string", "description": "璁板繂鏉＄洰 ID锛坉elete 鏃跺繀濉級"},
 			}, []string{"action"}),
-		// --- 会话模板工具 ---
-		toolDef("create_template", "创建会话模板（快捷启动配置）",
+		// --- 浼氳瘽妯℃澘宸ュ叿 ---
+		toolDef("create_template", "鍒涘缓浼氳瘽妯℃澘锛堝揩鎹峰惎鍔ㄩ厤缃級",
 			map[string]interface{}{
-				"name":         map[string]string{"type": "string", "description": "模板名称"},
-				"tool":         map[string]string{"type": "string", "description": "工具名称"},
-				"project_path": map[string]string{"type": "string", "description": "项目路径"},
-				"model_config": map[string]string{"type": "string", "description": "模型配置"},
-				"yolo_mode":    map[string]string{"type": "boolean", "description": "是否开启 Yolo 模式"},
+				"name":         map[string]string{"type": "string", "description": "妯℃澘鍚嶇О"},
+				"tool":         map[string]string{"type": "string", "description": "宸ュ叿鍚嶇О"},
+				"project_path": map[string]string{"type": "string", "description": "椤圭洰璺緞"},
+				"model_config": map[string]string{"type": "string", "description": "妯″瀷閰嶇疆"},
+				"yolo_mode":    map[string]string{"type": "boolean", "description": "鏄惁寮€鍚?Yolo 妯″紡"},
 			}, []string{"name", "tool"}),
-		toolDef("list_templates", "列出所有会话模板", nil, nil),
-		toolDef("launch_template", "使用模板启动会话",
+		toolDef("list_templates", "鍒楀嚭鎵€鏈変細璇濇ā鏉?, nil, nil),
+		toolDef("launch_template", "浣跨敤妯℃澘鍚姩浼氳瘽",
 			map[string]interface{}{
-				"template_name": map[string]string{"type": "string", "description": "模板名称"},
+				"template_name": map[string]string{"type": "string", "description": "妯℃澘鍚嶇О"},
 			}, []string{"template_name"}),
-		// --- 配置管理工具 ---
-		toolDef("get_config", "获取指定配置区域的当前值",
+		// --- 閰嶇疆绠＄悊宸ュ叿 ---
+		toolDef("get_config", "鑾峰彇鎸囧畾閰嶇疆鍖哄煙鐨勫綋鍓嶅€?,
 			map[string]interface{}{
-				"section": map[string]string{"type": "string", "description": "配置区域名称（如 claude/gemini/remote/projects/maclaw_llm/proxy/general），为空或 all 返回概览"},
+				"section": map[string]string{"type": "string", "description": "閰嶇疆鍖哄煙鍚嶇О锛堝 claude/gemini/remote/projects/maclaw_llm/proxy/general锛夛紝涓虹┖鎴?all 杩斿洖姒傝"},
 			}, []string{"section"}),
-		toolDef("update_config", "修改单个配置项",
+		toolDef("update_config", "淇敼鍗曚釜閰嶇疆椤?,
 			map[string]interface{}{
-				"section": map[string]string{"type": "string", "description": "配置区域名称"},
-				"key":     map[string]string{"type": "string", "description": "配置项名称"},
-				"value":   map[string]string{"type": "string", "description": "新值"},
+				"section": map[string]string{"type": "string", "description": "閰嶇疆鍖哄煙鍚嶇О"},
+				"key":     map[string]string{"type": "string", "description": "閰嶇疆椤瑰悕绉?},
+				"value":   map[string]string{"type": "string", "description": "鏂板€?},
 			}, []string{"section", "key", "value"}),
-		toolDef("batch_update_config", "批量修改配置（原子性，任一项失败则全部回滚）",
+		toolDef("batch_update_config", "鎵归噺淇敼閰嶇疆锛堝師瀛愭€э紝浠讳竴椤瑰け璐ュ垯鍏ㄩ儴鍥炴粴锛?,
 			map[string]interface{}{
-				"changes": map[string]string{"type": "string", "description": "JSON 数组，每项包含 section/key/value，例如 [{\"section\":\"general\",\"key\":\"language\",\"value\":\"en\"}]"},
+				"changes": map[string]string{"type": "string", "description": "JSON 鏁扮粍锛屾瘡椤瑰寘鍚?section/key/value锛屼緥濡?[{\"section\":\"general\",\"key\":\"language\",\"value\":\"en\"}]"},
 			}, []string{"changes"}),
-		toolDef("list_config_schema", "列出所有可配置项的 schema 信息", nil, nil),
-		toolDef("export_config", "导出当前配置（敏感字段已脱敏）", nil, nil),
-		toolDef("import_config", "导入配置（JSON 格式，保留本机特有字段）",
+		toolDef("list_config_schema", "鍒楀嚭鎵€鏈夊彲閰嶇疆椤圭殑 schema 淇℃伅", nil, nil),
+		toolDef("export_config", "瀵煎嚭褰撳墠閰嶇疆锛堟晱鎰熷瓧娈靛凡鑴辨晱锛?, nil, nil),
+		toolDef("import_config", "瀵煎叆閰嶇疆锛圝SON 鏍煎紡锛屼繚鐣欐湰鏈虹壒鏈夊瓧娈碉級",
 			map[string]interface{}{
-				"json_data": map[string]string{"type": "string", "description": "要导入的配置 JSON 字符串"},
+				"json_data": map[string]string{"type": "string", "description": "瑕佸鍏ョ殑閰嶇疆 JSON 瀛楃涓?},
 			}, []string{"json_data"}),
-		// --- Agent 自管理工具 ---
-		toolDef("set_max_iterations", fmt.Sprintf("调整最大推理轮数。设置后会持久化保存，后续对话也会生效。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。范围 %d-%d。", minAgentIterations, maxAgentIterationsCap),
+		// --- Agent 鑷鐞嗗伐鍏?---
+		toolDef("set_max_iterations", fmt.Sprintf("璋冩暣鏈€澶ф帹鐞嗚疆鏁般€傝缃悗浼氭寔涔呭寲淇濆瓨锛屽悗缁璇濅篃浼氱敓鏁堛€傚綋浣犲垽鏂换鍔″鏉傞渶瑕佹洿澶氳疆娆℃椂璋冪敤姝ゅ伐鍏锋墿灞曚笂闄愶紝浠诲姟绠€鍗曟椂鍙缉鍑忋€傝寖鍥?%d-%d銆?, minAgentIterations, maxAgentIterationsCap),
 			map[string]interface{}{
-				"max_iterations": map[string]string{"type": "integer", "description": fmt.Sprintf("新的最大轮数（%d-%d）", minAgentIterations, maxAgentIterationsCap)},
-				"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},
+				"max_iterations": map[string]string{"type": "integer", "description": fmt.Sprintf("鏂扮殑鏈€澶ц疆鏁帮紙%d-%d锛?, minAgentIterations, maxAgentIterationsCap)},
+				"reason":         map[string]string{"type": "string", "description": "璋冩暣鍘熷洜锛堢敤浜庢棩蹇楄褰曪級"},
 			}, []string{"max_iterations"}),
-		// --- 定时任务工具 ---
-		toolDef("create_scheduled_task", "创建定时任务。用户说 每天9点做XX、每周一下午3点做YY、从3月1号到15号每天上午10点做ZZ 时，解析出时间参数并调用此工具。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31=每月几号。重要：如果用户说的是一次性任务（如'今天中午提醒我'、'明天下午3点做XX'），必须将 start_date 和 end_date 都设为目标日期，确保只执行一次。",
+		// --- 瀹氭椂浠诲姟宸ュ叿 ---
+		toolDef("create_scheduled_task", "鍒涘缓瀹氭椂浠诲姟銆傜敤鎴疯 姣忓ぉ9鐐瑰仛XX銆佹瘡鍛ㄤ竴涓嬪崍3鐐瑰仛YY銆佷粠3鏈?鍙峰埌15鍙锋瘡澶╀笂鍗?0鐐瑰仛ZZ 鏃讹紝瑙ｆ瀽鍑烘椂闂村弬鏁板苟璋冪敤姝ゅ伐鍏枫€俤ay_of_week: -1=姣忓ぉ, 0=鍛ㄦ棩, 1=鍛ㄤ竴...6=鍛ㄥ叚銆俤ay_of_month: -1=涓嶉檺, 1-31=姣忔湀鍑犲彿銆傞噸瑕侊細濡傛灉鐢ㄦ埛璇寸殑鏄竴娆℃€т换鍔★紙濡?浠婂ぉ涓崍鎻愰啋鎴?銆?鏄庡ぉ涓嬪崍3鐐瑰仛XX'锛夛紝蹇呴』灏?start_date 鍜?end_date 閮借涓虹洰鏍囨棩鏈燂紝纭繚鍙墽琛屼竴娆°€?,
 			map[string]interface{}{
-				"name":         map[string]string{"type": "string", "description": "任务名称（简短描述）"},
-				"action":       map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，会发送给 agent 执行）"},
-				"hour":         map[string]string{"type": "integer", "description": "执行时间-小时（0-23）"},
-				"minute":       map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0）"},
-				"day_of_week":  map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日, 1=周一...6=周六，默认-1）"},
-				"day_of_month": map[string]string{"type": "integer", "description": "每月几号（-1=不限, 1-31，默认-1）"},
-				"start_date":   map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02，可选）"},
-				"end_date":     map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02，可选）"},
+				"name":         map[string]string{"type": "string", "description": "浠诲姟鍚嶇О锛堢畝鐭弿杩帮級"},
+				"action":       map[string]string{"type": "string", "description": "鍒版椂瑕佹墽琛岀殑鎿嶄綔锛堣嚜鐒惰瑷€鎻忚堪锛屼細鍙戦€佺粰 agent 鎵ц锛?},
+				"hour":         map[string]string{"type": "integer", "description": "鎵ц鏃堕棿-灏忔椂锛?-23锛?},
+				"minute":       map[string]string{"type": "integer", "description": "鎵ц鏃堕棿-鍒嗛挓锛?-59锛岄粯璁?锛?},
+				"day_of_week":  map[string]string{"type": "integer", "description": "鏄熸湡鍑狅紙-1=姣忓ぉ, 0=鍛ㄦ棩, 1=鍛ㄤ竴...6=鍛ㄥ叚锛岄粯璁?1锛?},
+				"day_of_month": map[string]string{"type": "integer", "description": "姣忔湀鍑犲彿锛?1=涓嶉檺, 1-31锛岄粯璁?1锛?},
+				"start_date":   map[string]string{"type": "string", "description": "鐢熸晥寮€濮嬫棩鏈燂紙鏍煎紡 2006-01-02锛屽彲閫夛級"},
+				"end_date":     map[string]string{"type": "string", "description": "鐢熸晥缁撴潫鏃ユ湡锛堟牸寮?2006-01-02锛屽彲閫夛級"},
 			}, []string{"name", "action", "hour"}),
-		toolDef("list_scheduled_tasks", "列出所有定时任务及其状态、下次执行时间", nil, nil),
-		toolDef("delete_scheduled_task", "删除定时任务（按 ID 或名称）",
+		toolDef("list_scheduled_tasks", "鍒楀嚭鎵€鏈夊畾鏃朵换鍔″強鍏剁姸鎬併€佷笅娆℃墽琛屾椂闂?, nil, nil),
+		toolDef("delete_scheduled_task", "鍒犻櫎瀹氭椂浠诲姟锛堟寜 ID 鎴栧悕绉帮級",
 			map[string]interface{}{
-				"id":   map[string]string{"type": "string", "description": "任务 ID（优先）"},
-				"name": map[string]string{"type": "string", "description": "任务名称（ID 为空时按名称匹配）"},
+				"id":   map[string]string{"type": "string", "description": "浠诲姟 ID锛堜紭鍏堬級"},
+				"name": map[string]string{"type": "string", "description": "浠诲姟鍚嶇О锛圛D 涓虹┖鏃舵寜鍚嶇О鍖归厤锛?},
 			}, nil),
-		toolDef("update_scheduled_task", "修改定时任务的时间或内容",
+		toolDef("update_scheduled_task", "淇敼瀹氭椂浠诲姟鐨勬椂闂存垨鍐呭",
 			map[string]interface{}{
-				"id":           map[string]string{"type": "string", "description": "任务 ID（必填）"},
-				"name":         map[string]string{"type": "string", "description": "新名称（可选）"},
-				"action":       map[string]string{"type": "string", "description": "新的执行内容（可选）"},
-				"hour":         map[string]string{"type": "integer", "description": "新的小时（可选）"},
-				"minute":       map[string]string{"type": "integer", "description": "新的分钟（可选）"},
-				"day_of_week":  map[string]string{"type": "integer", "description": "新的星期几（可选）"},
-				"day_of_month": map[string]string{"type": "integer", "description": "新的每月几号（可选）"},
-				"start_date":   map[string]string{"type": "string", "description": "新的开始日期（可选）"},
-				"end_date":     map[string]string{"type": "string", "description": "新的结束日期（可选）"},
+				"id":           map[string]string{"type": "string", "description": "浠诲姟 ID锛堝繀濉級"},
+				"name":         map[string]string{"type": "string", "description": "鏂板悕绉帮紙鍙€夛級"},
+				"action":       map[string]string{"type": "string", "description": "鏂扮殑鎵ц鍐呭锛堝彲閫夛級"},
+				"hour":         map[string]string{"type": "integer", "description": "鏂扮殑灏忔椂锛堝彲閫夛級"},
+				"minute":       map[string]string{"type": "integer", "description": "鏂扮殑鍒嗛挓锛堝彲閫夛級"},
+				"day_of_week":  map[string]string{"type": "integer", "description": "鏂扮殑鏄熸湡鍑狅紙鍙€夛級"},
+				"day_of_month": map[string]string{"type": "integer", "description": "鏂扮殑姣忔湀鍑犲彿锛堝彲閫夛級"},
+				"start_date":   map[string]string{"type": "string", "description": "鏂扮殑寮€濮嬫棩鏈燂紙鍙€夛級"},
+				"end_date":     map[string]string{"type": "string", "description": "鏂扮殑缁撴潫鏃ユ湡锛堝彲閫夛級"},
 			}, []string{"id"}),
 	}
 
-	// ---------- ClawNet tools (dynamic — only when daemon is running) ----------
+	// ---------- ClawNet tools (dynamic 鈥?only when daemon is running) ----------
 	if h.app != nil && h.app.clawNetClient != nil && h.app.clawNetClient.IsRunning() {
 		defs = append(defs,
-			toolDef("clawnet_search", "在虾网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
+			toolDef("clawnet_search", "鍦ㄨ櫨缃戯紙ClawNet P2P 鐭ヨ瘑缃戠粶锛変腑鎼滅储鐭ヨ瘑鏉＄洰銆傝繑鍥炲尮閰嶇殑鐭ヨ瘑鍒楄〃锛屽寘鍚爣棰樸€佸唴瀹广€佷綔鑰呯瓑銆?,
 				map[string]interface{}{
-					"query": map[string]string{"type": "string", "description": "搜索关键词"},
+					"query": map[string]string{"type": "string", "description": "鎼滅储鍏抽敭璇?},
 				}, []string{"query"}),
-			toolDef("clawnet_publish", "向虾网（ClawNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
+			toolDef("clawnet_publish", "鍚戣櫨缃戯紙ClawNet P2P 鐭ヨ瘑缃戠粶锛夊彂甯冧竴鏉＄煡璇嗘潯鐩€傚彂甯冨悗鍏朵粬鑺傜偣鍙互鎼滅储鍒般€?,
 				map[string]interface{}{
-					"title": map[string]string{"type": "string", "description": "知识标题"},
-					"body":  map[string]string{"type": "string", "description": "知识内容（Markdown 格式）"},
+					"title": map[string]string{"type": "string", "description": "鐭ヨ瘑鏍囬"},
+					"body":  map[string]string{"type": "string", "description": "鐭ヨ瘑鍐呭锛圡arkdown 鏍煎紡锛?},
 				}, []string{"title", "body"}),
 		)
 	}
 
 	// ---------- Web search & fetch tools ----------
 	defs = append(defs,
-		toolDef("web_search", "搜索互联网内容。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。",
+		toolDef("web_search", "鎼滅储浜掕仈缃戝唴瀹广€傝繑鍥炴悳绱㈢粨鏋滃垪琛紙鏍囬銆乁RL銆佹憳瑕侊級銆傞€傜敤浜庢煡鎵捐祫鏂欍€佹妧鏈枃妗ｃ€佹渶鏂颁俊鎭瓑銆?,
 			map[string]interface{}{
-				"query":       map[string]string{"type": "string", "description": "搜索关键词"},
-				"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 8，最大 20）"},
+				"query":       map[string]string{"type": "string", "description": "鎼滅储鍏抽敭璇?},
+				"max_results": map[string]string{"type": "integer", "description": "鏈€澶х粨鏋滄暟锛堥粯璁?8锛屾渶澶?20锛?},
 			}, []string{"query"}),
-		toolDef("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持 HTTP/HTTPS/FTP 协议，自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。也可用 save_path 下载文件到本地。",
+		toolDef("web_fetch", "鎶撳彇鎸囧畾 URL 鐨勭綉椤靛唴瀹瑰苟鎻愬彇姝ｆ枃鏂囨湰銆傛敮鎸?HTTP/HTTPS/FTP 鍗忚锛岃嚜鍔ㄧ紪鐮佹娴嬶紙GBK/UTF-8 绛夛級銆丠TML 姝ｆ枃鎻愬彇銆傚彲閫?JS 娓叉煋锛堥渶鏈満瀹夎 Chrome锛夈€備篃鍙敤 save_path 涓嬭浇鏂囦欢鍒版湰鍦般€?,
 			map[string]interface{}{
-				"url":       map[string]string{"type": "string", "description": "要抓取的 URL（支持 http/https/ftp 协议）"},
-				"render_js": map[string]string{"type": "boolean", "description": "是否使用 Chrome 渲染 JS（可选，默认 false。适用于 SPA 等 JS 渲染页面）"},
-				"save_path": map[string]string{"type": "string", "description": "保存文件路径（可选。指定后将原始内容保存到文件而非返回文本，适用于下载文件）"},
-				"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
+				"url":       map[string]string{"type": "string", "description": "瑕佹姄鍙栫殑 URL锛堟敮鎸?http/https/ftp 鍗忚锛?},
+				"render_js": map[string]string{"type": "boolean", "description": "鏄惁浣跨敤 Chrome 娓叉煋 JS锛堝彲閫夛紝榛樿 false銆傞€傜敤浜?SPA 绛?JS 娓叉煋椤甸潰锛?},
+				"save_path": map[string]string{"type": "string", "description": "淇濆瓨鏂囦欢璺緞锛堝彲閫夈€傛寚瀹氬悗灏嗗師濮嬪唴瀹逛繚瀛樺埌鏂囦欢鑰岄潪杩斿洖鏂囨湰锛岄€傜敤浜庝笅杞芥枃浠讹級"},
+				"timeout":   map[string]string{"type": "integer", "description": "瓒呮椂绉掓暟锛堝彲閫夛紝榛樿 30锛屾渶澶?120锛?},
 			}, []string{"url"}),
 	)
 
@@ -3128,14 +3147,14 @@ func toolDef(name, desc string, props map[string]interface{}, required []string)
 func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress ProgressCallback) (result string) {
 	defer func() {
 		if r := recover(); r != nil {
-			result = fmt.Sprintf("工具执行异常: %v", r)
+			result = fmt.Sprintf("宸ュ叿鎵ц寮傚父: %v", r)
 		}
 	}()
 
 	var args map[string]interface{}
 	if argsJSON != "" {
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-			return fmt.Sprintf("参数解析失败: %s", err.Error())
+			return fmt.Sprintf("鍙傛暟瑙ｆ瀽澶辫触: %s", err.Error())
 		}
 	}
 	if args == nil {
@@ -3163,16 +3182,16 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 		}
 	}
 
-	return fmt.Sprintf("未知工具: %s", name)
+	return fmt.Sprintf("鏈煡宸ュ叿: %s", name)
 }
 
 func (h *IMMessageHandler) toolListSessions() string {
 	if h.manager == nil {
-		return "会话管理器未初始化"
+		return "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	sessions := h.manager.List()
 	if len(sessions) == 0 {
-		return "当前没有活跃会话。"
+		return "褰撳墠娌℃湁娲昏穬浼氳瘽銆?
 	}
 	var b strings.Builder
 	for _, s := range sessions {
@@ -3181,12 +3200,12 @@ func (h *IMMessageHandler) toolListSessions() string {
 		task := s.Summary.CurrentTask
 		waiting := s.Summary.WaitingForUser
 		s.mu.RUnlock()
-		b.WriteString(fmt.Sprintf("- [%s] 工具=%s 标题=%s 状态=%s", s.ID, s.Tool, s.Title, status))
+		b.WriteString(fmt.Sprintf("- [%s] 宸ュ叿=%s 鏍囬=%s 鐘舵€?%s", s.ID, s.Tool, s.Title, status))
 		if task != "" {
-			b.WriteString(fmt.Sprintf(" 任务=%s", task))
+			b.WriteString(fmt.Sprintf(" 浠诲姟=%s", task))
 		}
 		if waiting {
-			b.WriteString(" [等待用户输入]")
+			b.WriteString(" [绛夊緟鐢ㄦ埛杈撳叆]")
 		}
 		b.WriteString("\n")
 	}
@@ -3194,7 +3213,7 @@ func (h *IMMessageHandler) toolListSessions() string {
 }
 
 // ---------------------------------------------------------------------------
-// Non-coding task guard — prevents create_session for non-coding requests
+// Non-coding task guard 鈥?prevents create_session for non-coding requests
 // ---------------------------------------------------------------------------
 
 // nonCodingKeywords are phrases that strongly indicate a non-coding task.
@@ -3202,16 +3221,16 @@ func (h *IMMessageHandler) toolListSessions() string {
 // we block session creation and guide the LLM to use direct tools instead.
 // All entries MUST be lowercase (matched against lowercased user text).
 var nonCodingKeywords = []string{
-	"搜索论文", "搜论文", "找论文", "查论文", "下载论文",
-	"翻译", "全文翻译", "翻译成中文", "翻译成英文",
-	"生成pdf", "生成 pdf", "导出pdf", "导出 pdf",
-	"查天气", "天气预报", "今天天气",
-	"查快递", "快递单号", "物流查询",
-	"搜索新闻", "查新闻", "最新新闻",
-	"总结文章", "总结论文", "摘要",
-	"发邮件", "写邮件", "发送邮件",
-	"提醒我", "设个闹钟",
-	"播放音乐", "放首歌",
+	"鎼滅储璁烘枃", "鎼滆鏂?, "鎵捐鏂?, "鏌ヨ鏂?, "涓嬭浇璁烘枃",
+	"缈昏瘧", "鍏ㄦ枃缈昏瘧", "缈昏瘧鎴愪腑鏂?, "缈昏瘧鎴愯嫳鏂?,
+	"鐢熸垚pdf", "鐢熸垚 pdf", "瀵煎嚭pdf", "瀵煎嚭 pdf",
+	"鏌ュぉ姘?, "澶╂皵棰勬姤", "浠婂ぉ澶╂皵",
+	"鏌ュ揩閫?, "蹇€掑崟鍙?, "鐗╂祦鏌ヨ",
+	"鎼滅储鏂伴椈", "鏌ユ柊闂?, "鏈€鏂版柊闂?,
+	"鎬荤粨鏂囩珷", "鎬荤粨璁烘枃", "鎽樿",
+	"鍙戦偖浠?, "鍐欓偖浠?, "鍙戦€侀偖浠?,
+	"鎻愰啋鎴?, "璁句釜闂归挓",
+	"鎾斁闊充箰", "鏀鹃姝?,
 	"arxiv",
 }
 
@@ -3219,14 +3238,14 @@ var nonCodingKeywords = []string{
 // If any of these appear, the guard does NOT block session creation.
 // All entries MUST be lowercase (matched against lowercased user text).
 var codingKeywords = []string{
-	"写代码", "编程", "开发", "修bug", "修 bug", "修复bug", "修复 bug",
-	"重构", "refactor", "实现", "添加功能", "新增功能",
-	"写脚本", "写一个脚本", "写个脚本",
-	"写函数", "写方法", "写接口", "写api", "写 api",
-	"代码", "源码", "源代码",
-	"编译", "构建", "build", "compile",
-	"测试", "单元测试", "test",
-	"部署", "deploy",
+	"鍐欎唬鐮?, "缂栫▼", "寮€鍙?, "淇産ug", "淇?bug", "淇bug", "淇 bug",
+	"閲嶆瀯", "refactor", "瀹炵幇", "娣诲姞鍔熻兘", "鏂板鍔熻兘",
+	"鍐欒剼鏈?, "鍐欎竴涓剼鏈?, "鍐欎釜鑴氭湰",
+	"鍐欏嚱鏁?, "鍐欐柟娉?, "鍐欐帴鍙?, "鍐檃pi", "鍐?api",
+	"浠ｇ爜", "婧愮爜", "婧愪唬鐮?,
+	"缂栬瘧", "鏋勫缓", "build", "compile",
+	"娴嬭瘯", "鍗曞厓娴嬭瘯", "test",
+	"閮ㄧ讲", "deploy",
 	"pull request", "merge request",
 	"git commit", "git push",
 	"create_session", // explicit tool name = intentional
@@ -3259,17 +3278,17 @@ func (h *IMMessageHandler) checkNonCodingTaskGuard() string {
 		return "" // no non-coding signal, allow
 	}
 
-	return fmt.Sprintf(`⚠️ 任务类型检测：当前请求看起来不是编程任务（检测到关键词：%q），不需要创建编程会话。
+	return fmt.Sprintf(`鈿狅笍 浠诲姟绫诲瀷妫€娴嬶細褰撳墠璇锋眰鐪嬭捣鏉ヤ笉鏄紪绋嬩换鍔★紙妫€娴嬪埌鍏抽敭璇嶏細%q锛夛紝涓嶉渶瑕佸垱寤虹紪绋嬩細璇濄€?
 
-请直接使用以下工具完成任务：
-- bash：执行命令行操作（如 curl 下载、脚本执行）
-- craft_tool：自动生成并执行脚本（适合数据处理、API 调用、文件转换）
-- read_file / write_file：读写本地文件
-- send_file：将文件发送给用户
-- open：打开文件或网址
-- memory：保存/检索信息
+璇风洿鎺ヤ娇鐢ㄤ互涓嬪伐鍏峰畬鎴愪换鍔★細
+- bash锛氭墽琛屽懡浠よ鎿嶄綔锛堝 curl 涓嬭浇銆佽剼鏈墽琛岋級
+- craft_tool锛氳嚜鍔ㄧ敓鎴愬苟鎵ц鑴氭湰锛堥€傚悎鏁版嵁澶勭悊銆丄PI 璋冪敤銆佹枃浠惰浆鎹級
+- read_file / write_file锛氳鍐欐湰鍦版枃浠?
+- send_file锛氬皢鏂囦欢鍙戦€佺粰鐢ㄦ埛
+- open锛氭墦寮€鏂囦欢鎴栫綉鍧€
+- memory锛氫繚瀛?妫€绱俊鎭?
 
-如果确实需要编程会话，请在下一轮重新调用 create_session。`, matched)
+濡傛灉纭疄闇€瑕佺紪绋嬩細璇濓紝璇峰湪涓嬩竴杞噸鏂拌皟鐢?create_session銆俙, matched)
 }
 
 func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string {
@@ -3292,17 +3311,17 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		recommended, reason := h.contextResolver.ResolveTool(projectPath, "")
 		if recommended != "" {
 			tool = recommended
-			hints = append(hints, fmt.Sprintf("🔧 自动推荐工具: %s（%s）", tool, reason))
+			hints = append(hints, fmt.Sprintf("馃敡 鑷姩鎺ㄨ崘宸ュ叿: %s锛?s锛?, tool, reason))
 		}
 	}
 	if tool == "" {
-		return "缺少 tool 参数，且无法自动推荐工具"
+		return "缂哄皯 tool 鍙傛暟锛屼笖鏃犳硶鑷姩鎺ㄨ崘宸ュ叿"
 	}
 
 	// Resolve project_id to project path (takes priority over project_path).
 	cfg, cfgErr := h.app.LoadConfig()
 	if cfgErr != nil {
-		return fmt.Sprintf("加载配置失败: %s", cfgErr.Error())
+		return fmt.Sprintf("鍔犺浇閰嶇疆澶辫触: %s", cfgErr.Error())
 	}
 	if projectID != "" {
 		var found bool
@@ -3310,7 +3329,7 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 			if p.Id == projectID {
 				projectPath = p.Path
 				found = true
-				hints = append(hints, fmt.Sprintf("📁 通过项目 ID 解析: %s → %s", projectID, p.Path))
+				hints = append(hints, fmt.Sprintf("馃搧 閫氳繃椤圭洰 ID 瑙ｆ瀽: %s 鈫?%s", projectID, p.Path))
 				break
 			}
 		}
@@ -3320,9 +3339,9 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 				available = append(available, fmt.Sprintf("%s(%s)", p.Id, p.Name))
 			}
 			if len(available) == 0 {
-				return fmt.Sprintf("项目 ID %q 未找到，当前没有已配置的项目", projectID)
+				return fmt.Sprintf("椤圭洰 ID %q 鏈壘鍒帮紝褰撳墠娌℃湁宸查厤缃殑椤圭洰", projectID)
 			}
-			return fmt.Sprintf("项目 ID %q 未找到，可用项目: %s", projectID, strings.Join(available, ", "))
+			return fmt.Sprintf("椤圭洰 ID %q 鏈壘鍒帮紝鍙敤椤圭洰: %s", projectID, strings.Join(available, ", "))
 		}
 	}
 
@@ -3331,7 +3350,7 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		detected, reason := h.contextResolver.ResolveProject()
 		if detected != "" {
 			projectPath = detected
-			hints = append(hints, fmt.Sprintf("📁 自动检测项目: %s（%s）", projectPath, reason))
+			hints = append(hints, fmt.Sprintf("馃搧 鑷姩妫€娴嬮」鐩? %s锛?s锛?, projectPath, reason))
 		}
 	}
 
@@ -3339,39 +3358,39 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 	if h.sessionPrecheck != nil {
 		result := h.sessionPrecheck.Check(tool, projectPath)
 		if !result.ToolReady {
-			hints = append(hints, fmt.Sprintf("⚠️ 工具预检未通过: %s", result.ToolHint))
+			hints = append(hints, fmt.Sprintf("鈿狅笍 宸ュ叿棰勬鏈€氳繃: %s", result.ToolHint))
 		}
 		if !result.ProjectReady {
-			hints = append(hints, "⚠️ 项目路径不存在或无法访问")
+			hints = append(hints, "鈿狅笍 椤圭洰璺緞涓嶅瓨鍦ㄦ垨鏃犳硶璁块棶")
 		}
 		if !result.ModelReady {
-			hints = append(hints, fmt.Sprintf("⚠️ 模型预检未通过: %s", result.ModelHint))
+			hints = append(hints, fmt.Sprintf("鈿狅笍 妯″瀷棰勬鏈€氳繃: %s", result.ModelHint))
 		}
 		if result.AllPassed {
-			hints = append(hints, "✅ 环境预检全部通过")
+			hints = append(hints, "鉁?鐜棰勬鍏ㄩ儴閫氳繃")
 		}
-		// Block session creation when the tool binary is missing — launching
+		// Block session creation when the tool binary is missing 鈥?launching
 		// a process that doesn't exist always exits immediately with code 1,
 		// wasting a session slot and confusing the user with a cryptic error.
 		if !result.ToolReady {
-			return strings.Join(hints, "\n") + "\n❌ 工具未安装，无法创建会话。请先在桌面端安装 " + tool + " 后重试。"
+			return strings.Join(hints, "\n") + "\n鉂?宸ュ叿鏈畨瑁咃紝鏃犳硶鍒涘缓浼氳瘽銆傝鍏堝湪妗岄潰绔畨瑁?" + tool + " 鍚庨噸璇曘€?
 		}
 	}
 
 	// ProviderResolver integration: resolve provider before starting session.
 	toolCfg, tcErr := remoteToolConfig(cfg, tool)
 	if tcErr != nil {
-		return fmt.Sprintf("获取工具配置失败: %s", tcErr.Error())
+		return fmt.Sprintf("鑾峰彇宸ュ叿閰嶇疆澶辫触: %s", tcErr.Error())
 	}
 
 	resolver := &ProviderResolver{}
 	resolveResult, resolveErr := resolver.Resolve(toolCfg, provider)
 	if resolveErr != nil {
-		errMsg := fmt.Sprintf("❌ 无法创建会话：%s\n请在桌面端为 %s 配置至少一个有效的服务商。", resolveErr.Error(), tool)
+		errMsg := fmt.Sprintf("鉂?鏃犳硶鍒涘缓浼氳瘽锛?s\n璇峰湪妗岄潰绔负 %s 閰嶇疆鑷冲皯涓€涓湁鏁堢殑鏈嶅姟鍟嗐€?, resolveErr.Error(), tool)
 		return errMsg
 	}
 	if resolveResult.Fallback {
-		hints = append(hints, fmt.Sprintf("⚡ 服务商已降级: %s → %s", resolveResult.OriginalName, resolveResult.Provider.ModelName))
+		hints = append(hints, fmt.Sprintf("鈿?鏈嶅姟鍟嗗凡闄嶇骇: %s 鈫?%s", resolveResult.OriginalName, resolveResult.Provider.ModelName))
 	}
 	resolvedProvider := resolveResult.Provider.ModelName
 
@@ -3383,8 +3402,8 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		ResumeSessionID: resumeSessionID,
 	})
 	if err != nil {
-		errMsg := fmt.Sprintf("❌ 创建会话失败: %s", err.Error())
-		errMsg += fmt.Sprintf("\n💡 修复建议:\n- 检查 %s 是否已安装并可正常运行\n- 确认项目路径 %s 存在且可访问\n- 使用 list_providers 查看可用服务商配置", tool, projectPath)
+		errMsg := fmt.Sprintf("鉂?鍒涘缓浼氳瘽澶辫触: %s", err.Error())
+		errMsg += fmt.Sprintf("\n馃挕 淇寤鸿:\n- 妫€鏌?%s 鏄惁宸插畨瑁呭苟鍙甯歌繍琛孿n- 纭椤圭洰璺緞 %s 瀛樺湪涓斿彲璁块棶\n- 浣跨敤 list_providers 鏌ョ湅鍙敤鏈嶅姟鍟嗛厤缃?, tool, projectPath)
 		return errMsg
 	}
 
@@ -3402,39 +3421,39 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		b.WriteString(hint)
 		b.WriteString("\n")
 	}
-	b.WriteString(fmt.Sprintf("✅ 会话已创建 [%s]\n", view.ID))
-	b.WriteString(fmt.Sprintf("🔧 工具: %s | 📦 服务商: %s | 📁 项目: %s\n", view.Tool, resolvedProvider, projectPath))
-	b.WriteString(fmt.Sprintf("\n📋 下一步操作："))
-	b.WriteString(fmt.Sprintf("\n1. 调用 get_session_output(session_id=%q) 确认会话已启动（状态为 running）", view.ID))
-	b.WriteString(fmt.Sprintf("\n2. 立即调用 send_and_observe(session_id=%q, text=\"编程指令\") 将需求发送给编程工具", view.ID))
-	b.WriteString("\n⚠️ 编程工具启动后等待输入，不发送指令不会开始工作。最多检查 2 次 get_session_output，确认 running 后立即发送。")
-	b.WriteString("\n🛑 如果会话已退出（exited）且退出码非 0，不要重试，直接告知用户错误信息。")
+	b.WriteString(fmt.Sprintf("鉁?浼氳瘽宸插垱寤?[%s]\n", view.ID))
+	b.WriteString(fmt.Sprintf("馃敡 宸ュ叿: %s | 馃摝 鏈嶅姟鍟? %s | 馃搧 椤圭洰: %s\n", view.Tool, resolvedProvider, projectPath))
+	b.WriteString(fmt.Sprintf("\n馃搵 涓嬩竴姝ユ搷浣滐細"))
+	b.WriteString(fmt.Sprintf("\n1. 璋冪敤 get_session_output(session_id=%q) 纭浼氳瘽宸插惎鍔紙鐘舵€佷负 running锛?, view.ID))
+	b.WriteString(fmt.Sprintf("\n2. 绔嬪嵆璋冪敤 send_and_observe(session_id=%q, text=\"缂栫▼鎸囦护\") 灏嗛渶姹傚彂閫佺粰缂栫▼宸ュ叿", view.ID))
+	b.WriteString("\n鈿狅笍 缂栫▼宸ュ叿鍚姩鍚庣瓑寰呰緭鍏ワ紝涓嶅彂閫佹寚浠や笉浼氬紑濮嬪伐浣溿€傛渶澶氭鏌?2 娆?get_session_output锛岀‘璁?running 鍚庣珛鍗冲彂閫併€?)
+	b.WriteString("\n馃洃 濡傛灉浼氳瘽宸查€€鍑猴紙exited锛変笖閫€鍑虹爜闈?0锛屼笉瑕侀噸璇曪紝鐩存帴鍛婄煡鐢ㄦ埛閿欒淇℃伅銆?)
 	return b.String()
 }
 
 func (h *IMMessageHandler) toolListProviders(args map[string]interface{}) string {
 	toolName, _ := args["tool"].(string)
 	if toolName == "" {
-		return "缺少 tool 参数"
+		return "缂哄皯 tool 鍙傛暟"
 	}
 	cfg, err := h.app.LoadConfig()
 	if err != nil {
-		return fmt.Sprintf("加载配置失败: %s", err.Error())
+		return fmt.Sprintf("鍔犺浇閰嶇疆澶辫触: %s", err.Error())
 	}
 	toolCfg, err := remoteToolConfig(cfg, toolName)
 	if err != nil {
-		return fmt.Sprintf("不支持的工具: %s", toolName)
+		return fmt.Sprintf("涓嶆敮鎸佺殑宸ュ叿: %s", toolName)
 	}
 	valid := validProviders(toolCfg)
 	if len(valid) == 0 {
-		return fmt.Sprintf("工具 %s 没有可用的服务商，请在桌面端配置", toolName)
+		return fmt.Sprintf("宸ュ叿 %s 娌℃湁鍙敤鐨勬湇鍔″晢锛岃鍦ㄦ闈㈢閰嶇疆", toolName)
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("工具 %s 的可用服务商:\n", toolName))
+	b.WriteString(fmt.Sprintf("宸ュ叿 %s 鐨勫彲鐢ㄦ湇鍔″晢:\n", toolName))
 	for _, m := range valid {
 		isDefault := ""
 		if strings.EqualFold(m.ModelName, toolCfg.CurrentModel) {
-			isDefault = " [当前默认]"
+			isDefault = " [褰撳墠榛樿]"
 		}
 		modelId := m.ModelId
 		if len(modelId) > 20 {
@@ -3454,17 +3473,17 @@ func (h *IMMessageHandler) toolProjectManage(args map[string]interface{}) string
 		path, _ := args["path"].(string)
 		res, err := project.Create(h.app, name, path)
 		if err != nil {
-			return fmt.Sprintf("创建项目失败: %v", err)
+			return fmt.Sprintf("鍒涘缓椤圭洰澶辫触: %v", err)
 		}
 		data, _ := json.Marshal(map[string]string{"id": res.Id, "name": res.Name, "path": res.Path, "status": "created"})
 		return string(data)
 	case "list":
 		items, err := project.List(h.app)
 		if err != nil {
-			return fmt.Sprintf("加载配置失败: %v", err)
+			return fmt.Sprintf("鍔犺浇閰嶇疆澶辫触: %v", err)
 		}
 		if len(items) == 0 {
-			return "当前没有已配置的项目。请在桌面端添加项目。"
+			return "褰撳墠娌℃湁宸查厤缃殑椤圭洰銆傝鍦ㄦ闈㈢娣诲姞椤圭洰銆?
 		}
 		data, _ := json.Marshal(items)
 		return string(data)
@@ -3472,7 +3491,7 @@ func (h *IMMessageHandler) toolProjectManage(args map[string]interface{}) string
 		target, _ := args["target"].(string)
 		res, err := project.Delete(h.app, target)
 		if err != nil {
-			return fmt.Sprintf("删除项目失败: %v", err)
+			return fmt.Sprintf("鍒犻櫎椤圭洰澶辫触: %v", err)
 		}
 		data, _ := json.Marshal(map[string]string{"id": res.Id, "name": res.Name, "status": "deleted"})
 		return string(data)
@@ -3480,12 +3499,12 @@ func (h *IMMessageHandler) toolProjectManage(args map[string]interface{}) string
 		target, _ := args["target"].(string)
 		res, err := project.Switch(h.app, target)
 		if err != nil {
-			return fmt.Sprintf("切换项目失败: %v", err)
+			return fmt.Sprintf("鍒囨崲椤圭洰澶辫触: %v", err)
 		}
 		data, _ := json.Marshal(map[string]string{"id": res.Id, "name": res.Name, "path": res.Path, "status": "switched"})
 		return string(data)
 	default:
-		return fmt.Sprintf("未知 action: %s（支持 create/list/delete/switch）", action)
+		return fmt.Sprintf("鏈煡 action: %s锛堟敮鎸?create/list/delete/switch锛?, action)
 	}
 }
 
@@ -3493,15 +3512,15 @@ func (h *IMMessageHandler) toolSendInput(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
 	text, _ := args["text"].(string)
 	if sessionID == "" || text == "" {
-		return "缺少 session_id 或 text 参数"
+		return "缂哄皯 session_id 鎴?text 鍙傛暟"
 	}
 	if h.manager == nil {
-		return "会话管理器未初始化"
+		return "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	if err := h.manager.WriteInput(sessionID, text); err != nil {
-		return fmt.Sprintf("发送失败: %s", err.Error())
+		return fmt.Sprintf("鍙戦€佸け璐? %s", err.Error())
 	}
-	return fmt.Sprintf("已发送到会话 %s。⚠️ 你必须立即调用 get_session_output(session_id=%q) 验证命令是否执行成功，不要直接告诉用户已完成。", sessionID, sessionID)
+	return fmt.Sprintf("宸插彂閫佸埌浼氳瘽 %s銆傗殸锔?浣犲繀椤荤珛鍗宠皟鐢?get_session_output(session_id=%q) 楠岃瘉鍛戒护鏄惁鎵ц鎴愬姛锛屼笉瑕佺洿鎺ュ憡璇夌敤鎴峰凡瀹屾垚銆?, sessionID, sessionID)
 }
 
 // writeAutoResumeHint appends auto-resume instructions to the output buffer
@@ -3509,42 +3528,42 @@ func (h *IMMessageHandler) toolSendInput(args map[string]interface{}) string {
 // provides a context-specific description of why the session exited.
 func writeAutoResumeHint(b *strings.Builder, rc *SessionResumeContext, reason string) {
 	if rc == nil {
-		b.WriteString("\n✅ 编程工具已正常退出。如需继续，请创建新会话。")
+		b.WriteString("\n鉁?缂栫▼宸ュ叿宸叉甯搁€€鍑恒€傚闇€缁х画锛岃鍒涘缓鏂颁細璇濄€?)
 		return
 	}
 	if rc.ResumeCount >= 10 {
-		b.WriteString("\n✅ 编程工具已退出。已自动续接 10 次，建议告知用户当前进度并询问是否继续。")
+		b.WriteString("\n鉁?缂栫▼宸ュ叿宸查€€鍑恒€傚凡鑷姩缁帴 10 娆★紝寤鸿鍛婄煡鐢ㄦ埛褰撳墠杩涘害骞惰闂槸鍚︾户缁€?)
 		return
 	}
-	b.WriteString(fmt.Sprintf("\n🔄 %s", reason))
-	b.WriteString(fmt.Sprintf("\n📌 自动续接指令（第 %d 次续接）：", rc.ResumeCount+1))
-	b.WriteString("\n1. 立即调用 create_session 创建新会话（使用相同的 tool 和 project_path）")
-	b.WriteString("\n2. 用 send_and_observe 发送续接指令：")
-	b.WriteString("\n   「请检查项目当前状态，继续完成之前未完成的任务。")
+	b.WriteString(fmt.Sprintf("\n馃攧 %s", reason))
+	b.WriteString(fmt.Sprintf("\n馃搶 鑷姩缁帴鎸囦护锛堢 %d 娆＄画鎺ワ級锛?, rc.ResumeCount+1))
+	b.WriteString("\n1. 绔嬪嵆璋冪敤 create_session 鍒涘缓鏂颁細璇濓紙浣跨敤鐩稿悓鐨?tool 鍜?project_path锛?)
+	b.WriteString("\n2. 鐢?send_and_observe 鍙戦€佺画鎺ユ寚浠わ細")
+	b.WriteString("\n   銆岃妫€鏌ラ」鐩綋鍓嶇姸鎬侊紝缁х画瀹屾垚涔嬪墠鏈畬鎴愮殑浠诲姟銆?)
 	if rc.OriginalTask != "" {
-		b.WriteString(fmt.Sprintf("原始任务：%s。", rc.OriginalTask))
+		b.WriteString(fmt.Sprintf("鍘熷浠诲姟锛?s銆?, rc.OriginalTask))
 	}
 	if rc.LastProgress != "" {
-		b.WriteString(fmt.Sprintf("上次进度：%s。", rc.LastProgress))
+		b.WriteString(fmt.Sprintf("涓婃杩涘害锛?s銆?, rc.LastProgress))
 	}
 	if len(rc.CompletedFiles) > 0 {
-		b.WriteString(fmt.Sprintf("已完成的文件：%s。", strings.Join(rc.CompletedFiles, ", ")))
+		b.WriteString(fmt.Sprintf("宸插畬鎴愮殑鏂囦欢锛?s銆?, strings.Join(rc.CompletedFiles, ", ")))
 	}
-	b.WriteString("查看已有文件，补全缺失的部分，确保项目可以正常运行。」")
-	b.WriteString("\n⚠️ 不要询问用户是否继续——直接创建新会话续接。不要自己用 write_file 写代码。")
+	b.WriteString("鏌ョ湅宸叉湁鏂囦欢锛岃ˉ鍏ㄧ己澶辩殑閮ㄥ垎锛岀‘淇濋」鐩彲浠ユ甯歌繍琛屻€傘€?)
+	b.WriteString("\n鈿狅笍 涓嶈璇㈤棶鐢ㄦ埛鏄惁缁х画鈥斺€旂洿鎺ュ垱寤烘柊浼氳瘽缁帴銆備笉瑕佽嚜宸辩敤 write_file 鍐欎唬鐮併€?)
 }
 
 func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
 	if sessionID == "" {
-		return "缺少 session_id 参数"
+		return "缂哄皯 session_id 鍙傛暟"
 	}
 	if h.manager == nil {
-		return "会话管理器未初始化"
+		return "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	session, ok := h.manager.Get(sessionID)
 	if !ok {
-		return fmt.Sprintf("会话 %s 不存在", sessionID)
+		return fmt.Sprintf("浼氳瘽 %s 涓嶅瓨鍦?, sessionID)
 	}
 
 	maxLines := 30
@@ -3557,7 +3576,7 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 
 	// When the session is still in "starting" state with no output, wait
 	// briefly (up to ~5s) for the process to either produce output or exit.
-	// This avoids returning an empty "(暂无输出)" result that causes the
+	// This avoids returning an empty "(鏆傛棤杈撳嚭)" result that causes the
 	// LLM agent to poll repeatedly, wasting many iterations.
 	session.mu.RLock()
 	isStarting := session.Status == SessionStarting
@@ -3584,44 +3603,44 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 	session.mu.RUnlock()
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("会话 %s 状态: %s\n", sessionID, status))
+	b.WriteString(fmt.Sprintf("浼氳瘽 %s 鐘舵€? %s\n", sessionID, status))
 	if summary.CurrentTask != "" {
-		b.WriteString(fmt.Sprintf("当前任务: %s\n", summary.CurrentTask))
+		b.WriteString(fmt.Sprintf("褰撳墠浠诲姟: %s\n", summary.CurrentTask))
 	}
 	if summary.ProgressSummary != "" {
-		b.WriteString(fmt.Sprintf("进度: %s\n", summary.ProgressSummary))
+		b.WriteString(fmt.Sprintf("杩涘害: %s\n", summary.ProgressSummary))
 	}
 	if summary.LastResult != "" {
-		b.WriteString(fmt.Sprintf("最近结果: %s\n", summary.LastResult))
+		b.WriteString(fmt.Sprintf("鏈€杩戠粨鏋? %s\n", summary.LastResult))
 	}
 	if summary.LastCommand != "" {
-		b.WriteString(fmt.Sprintf("最近命令: %s\n", summary.LastCommand))
+		b.WriteString(fmt.Sprintf("鏈€杩戝懡浠? %s\n", summary.LastCommand))
 	}
 	if summary.WaitingForUser {
-		b.WriteString("⚠️ 会话正在等待用户输入\n")
+		b.WriteString("鈿狅笍 浼氳瘽姝ｅ湪绛夊緟鐢ㄦ埛杈撳叆\n")
 	}
 	if summary.SuggestedAction != "" {
-		b.WriteString(fmt.Sprintf("建议操作: %s\n", summary.SuggestedAction))
+		b.WriteString(fmt.Sprintf("寤鸿鎿嶄綔: %s\n", summary.SuggestedAction))
 	}
 	if len(rawLines) > 0 {
 		start := 0
 		if len(rawLines) > maxLines {
 			start = len(rawLines) - maxLines
 		}
-		b.WriteString(fmt.Sprintf("\n--- 最近 %d 行输出 ---\n", len(rawLines)-start))
+		b.WriteString(fmt.Sprintf("\n--- 鏈€杩?%d 琛岃緭鍑?---\n", len(rawLines)-start))
 		for _, line := range rawLines[start:] {
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
 	} else {
-		b.WriteString("\n(暂无输出)\n")
+		b.WriteString("\n(鏆傛棤杈撳嚭)\n")
 		// When the session is running but has no output, it's likely waiting
 		// for the first user message (SDK mode tools like Claude Code wait
 		// for input after init). Hint the AI to send the task.
 		if status == string(SessionRunning) {
-			b.WriteString(fmt.Sprintf("\n📌 会话已就绪但暂无输出——编程工具在等待输入。请立即调用 send_and_observe(session_id=%q, text=\"编程指令\") 发送任务。", sessionID))
+			b.WriteString(fmt.Sprintf("\n馃搶 浼氳瘽宸插氨缁絾鏆傛棤杈撳嚭鈥斺€旂紪绋嬪伐鍏峰湪绛夊緟杈撳叆銆傝绔嬪嵆璋冪敤 send_and_observe(session_id=%q, text=\"缂栫▼鎸囦护\") 鍙戦€佷换鍔°€?, sessionID))
 		} else if status == string(SessionStarting) {
-			b.WriteString("\n⏳ 会话正在启动中，请稍后再次调用 get_session_output 检查状态（最多再检查 1 次）。")
+			b.WriteString("\n鈴?浼氳瘽姝ｅ湪鍚姩涓紝璇风◢鍚庡啀娆¤皟鐢?get_session_output 妫€鏌ョ姸鎬侊紙鏈€澶氬啀妫€鏌?1 娆★級銆?)
 		}
 	}
 
@@ -3634,11 +3653,11 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 
 		switch stallState {
 		case StallStateSuspected:
-			b.WriteString("\n⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查")
+			b.WriteString("\n鈴?缂栫▼宸ュ叿杈撳嚭鏆傚仠锛岀郴缁熸鍦ㄥ皾璇曟仮澶嶏紝璇风◢鍚庡啀妫€鏌?)
 		case StallStateStuck:
-			b.WriteString("\n⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话")
+			b.WriteString("\n鈿狅笍 缂栫▼宸ュ叿鍙兘宸插崱浣忥紝寤鸿鍙戦€佸叿浣撴寚浠ゆ垨缁堟浼氳瘽")
 		default: // StallStateNormal
-			b.WriteString("\n⏳ 编程工具正在工作中，请等待后再检查进度")
+			b.WriteString("\n鈴?缂栫▼宸ュ叿姝ｅ湪宸ヤ綔涓紝璇风瓑寰呭悗鍐嶆鏌ヨ繘搴?)
 		}
 	}
 
@@ -3651,10 +3670,10 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 
 		switch completionLevel {
 		case CompletionCompleted:
-			b.WriteString("\n✅ 任务似乎已完成，可以查看结果")
+			b.WriteString("\n鉁?浠诲姟浼间箮宸插畬鎴愶紝鍙互鏌ョ湅缁撴灉")
 		case CompletionIncomplete:
-			b.WriteString("\n⚠️ 任务似乎未完成，建议发送「继续」让编程工具继续工作")
-			// CompletionUncertain: 保持现有默认提示（"⚠️ 会话正在等待用户输入"）
+			b.WriteString("\n鈿狅笍 浠诲姟浼间箮鏈畬鎴愶紝寤鸿鍙戦€併€岀户缁€嶈缂栫▼宸ュ叿缁х画宸ヤ綔")
+			// CompletionUncertain: 淇濇寔鐜版湁榛樿鎻愮ず锛?鈿狅笍 浼氳瘽姝ｅ湪绛夊緟鐢ㄦ埛杈撳叆"锛?
 		}
 	}
 
@@ -3673,33 +3692,33 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 
 	if (sessionStatus == SessionExited || sessionStatus == SessionError) && exitCodeVal != nil && *exitCodeVal != 0 {
 		// Structured sessions (Claude Code SDK, Gemini ACP, Codex, iFlow)
-		// normally exit with code 1 — this is NOT a failure.
+		// normally exit with code 1 鈥?this is NOT a failure.
 		if session.isStructuredSession() && *exitCodeVal == 1 {
 			// Check if there's a resume context indicating unfinished work.
 			session.mu.RLock()
 			rc := session.ResumeContext
 			session.mu.RUnlock()
 
-			writeAutoResumeHint(&b, rc, "编程工具因 token 耗尽正常退出，但任务可能未完成。")
+			writeAutoResumeHint(&b, rc, "缂栫▼宸ュ叿鍥?token 鑰楀敖姝ｅ父閫€鍑猴紝浣嗕换鍔″彲鑳芥湭瀹屾垚銆?)
 		} else if session.isStructuredSession() && *exitCodeVal > 1 {
-			// API error or unexpected crash — allow retry.
+			// API error or unexpected crash 鈥?allow retry.
 			session.mu.RLock()
 			rc := session.ResumeContext
 			session.mu.RUnlock()
 
 			if rc != nil && rc.ExitReason == "api_error" && rc.ResumeCount < 2 {
-				b.WriteString(fmt.Sprintf("\n⚠️ 编程工具异常退出（退出码 %d），可能是上游 API 不稳定。", *exitCodeVal))
-				b.WriteString(fmt.Sprintf("\n📌 自动重试（第 %d 次）：立即创建新会话重试，使用相同参数。", rc.ResumeCount+1))
-				b.WriteString("\n不要询问用户——直接重试。")
+				b.WriteString(fmt.Sprintf("\n鈿狅笍 缂栫▼宸ュ叿寮傚父閫€鍑猴紙閫€鍑虹爜 %d锛夛紝鍙兘鏄笂娓?API 涓嶇ǔ瀹氥€?, *exitCodeVal))
+				b.WriteString(fmt.Sprintf("\n馃搶 鑷姩閲嶈瘯锛堢 %d 娆★級锛氱珛鍗冲垱寤烘柊浼氳瘽閲嶈瘯锛屼娇鐢ㄧ浉鍚屽弬鏁般€?, rc.ResumeCount+1))
+				b.WriteString("\n涓嶈璇㈤棶鐢ㄦ埛鈥斺€旂洿鎺ラ噸璇曘€?)
 			} else {
-				b.WriteString(fmt.Sprintf("\n🛑 会话已失败退出（退出码 %d）。不要再对此会话调用任何工具。", *exitCodeVal))
-				b.WriteString(fmt.Sprintf("\n请立即将错误信息告知用户，并建议检查 %s 的安装和配置。", sessionTool))
-				b.WriteString("\n不要重复创建新会话重试——同样的环境问题会导致同样的失败。")
+				b.WriteString(fmt.Sprintf("\n馃洃 浼氳瘽宸插け璐ラ€€鍑猴紙閫€鍑虹爜 %d锛夈€備笉瑕佸啀瀵规浼氳瘽璋冪敤浠讳綍宸ュ叿銆?, *exitCodeVal))
+				b.WriteString(fmt.Sprintf("\n璇风珛鍗冲皢閿欒淇℃伅鍛婄煡鐢ㄦ埛锛屽苟寤鸿妫€鏌?%s 鐨勫畨瑁呭拰閰嶇疆銆?, sessionTool))
+				b.WriteString("\n涓嶈閲嶅鍒涘缓鏂颁細璇濋噸璇曗€斺€斿悓鏍风殑鐜闂浼氬鑷村悓鏍风殑澶辫触銆?)
 			}
 		} else {
-			b.WriteString(fmt.Sprintf("\n🛑 会话已失败退出（退出码 %d）。不要再对此会话调用任何工具。", *exitCodeVal))
-			b.WriteString(fmt.Sprintf("\n请立即将错误信息告知用户，并建议检查 %s 的安装和配置。", sessionTool))
-			b.WriteString("\n不要重复创建新会话重试——同样的环境问题会导致同样的失败。")
+			b.WriteString(fmt.Sprintf("\n馃洃 浼氳瘽宸插け璐ラ€€鍑猴紙閫€鍑虹爜 %d锛夈€備笉瑕佸啀瀵规浼氳瘽璋冪敤浠讳綍宸ュ叿銆?, *exitCodeVal))
+			b.WriteString(fmt.Sprintf("\n璇风珛鍗冲皢閿欒淇℃伅鍛婄煡鐢ㄦ埛锛屽苟寤鸿妫€鏌?%s 鐨勫畨瑁呭拰閰嶇疆銆?, sessionTool))
+			b.WriteString("\n涓嶈閲嶅鍒涘缓鏂颁細璇濋噸璇曗€斺€斿悓鏍风殑鐜闂浼氬鑷村悓鏍风殑澶辫触銆?)
 		}
 	}
 
@@ -3711,7 +3730,7 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 		rc := session.ResumeContext
 		session.mu.RUnlock()
 
-		writeAutoResumeHint(&b, rc, "编程工具已正常退出（可能达到 max-turns 限制），任务可能未完成。")
+		writeAutoResumeHint(&b, rc, "缂栫▼宸ュ叿宸叉甯搁€€鍑猴紙鍙兘杈惧埌 max-turns 闄愬埗锛夛紝浠诲姟鍙兘鏈畬鎴愩€?)
 	}
 
 	return b.String()
@@ -3720,30 +3739,30 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 func (h *IMMessageHandler) toolGetSessionEvents(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
 	if sessionID == "" {
-		return "缺少 session_id 参数"
+		return "缂哄皯 session_id 鍙傛暟"
 	}
 	if h.manager == nil {
-		return "会话管理器未初始化"
+		return "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	session, ok := h.manager.Get(sessionID)
 	if !ok {
-		return fmt.Sprintf("会话 %s 不存在", sessionID)
+		return fmt.Sprintf("浼氳瘽 %s 涓嶅瓨鍦?, sessionID)
 	}
 	session.mu.RLock()
 	events := make([]ImportantEvent, len(session.Events))
 	copy(events, session.Events)
 	session.mu.RUnlock()
 	if len(events) == 0 {
-		return fmt.Sprintf("会话 %s 暂无重要事件。", sessionID)
+		return fmt.Sprintf("浼氳瘽 %s 鏆傛棤閲嶈浜嬩欢銆?, sessionID)
 	}
 	var b strings.Builder
 	for _, ev := range events {
 		b.WriteString(fmt.Sprintf("- [%s] %s: %s", ev.Severity, ev.Type, ev.Title))
 		if ev.Summary != "" {
-			b.WriteString(fmt.Sprintf(" — %s", ev.Summary))
+			b.WriteString(fmt.Sprintf(" 鈥?%s", ev.Summary))
 		}
 		if ev.RelatedFile != "" {
-			b.WriteString(fmt.Sprintf(" (文件: %s)", ev.RelatedFile))
+			b.WriteString(fmt.Sprintf(" (鏂囦欢: %s)", ev.RelatedFile))
 		}
 		b.WriteString("\n")
 	}
@@ -3753,48 +3772,48 @@ func (h *IMMessageHandler) toolGetSessionEvents(args map[string]interface{}) str
 func (h *IMMessageHandler) toolInterruptSession(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
 	if sessionID == "" {
-		return "缺少 session_id 参数"
+		return "缂哄皯 session_id 鍙傛暟"
 	}
 	if h.manager == nil {
-		return "会话管理器未初始化"
+		return "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	if err := h.manager.Interrupt(sessionID); err != nil {
-		return fmt.Sprintf("中断失败: %s", err.Error())
+		return fmt.Sprintf("涓柇澶辫触: %s", err.Error())
 	}
-	return fmt.Sprintf("已向会话 %s 发送中断信号", sessionID)
+	return fmt.Sprintf("宸插悜浼氳瘽 %s 鍙戦€佷腑鏂俊鍙?, sessionID)
 }
 
 func (h *IMMessageHandler) toolKillSession(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
 	if sessionID == "" {
-		return "缺少 session_id 参数"
+		return "缂哄皯 session_id 鍙傛暟"
 	}
 	if h.manager == nil {
-		return "会话管理器未初始化"
+		return "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	if err := h.manager.Kill(sessionID); err != nil {
-		return fmt.Sprintf("终止失败: %s", err.Error())
+		return fmt.Sprintf("缁堟澶辫触: %s", err.Error())
 	}
-	return fmt.Sprintf("已终止会话 %s", sessionID)
+	return fmt.Sprintf("宸茬粓姝細璇?%s", sessionID)
 }
 
 // toolSendAndObserve combines send_input + get_session_output into a single
 // tool call. It sends text to a session, waits briefly for output to
-// accumulate, then returns the session output — saving one LLM round-trip.
+// accumulate, then returns the session output 鈥?saving one LLM round-trip.
 func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
 	text, _ := args["text"].(string)
 	if sessionID == "" || text == "" {
-		return "缺少 session_id 或 text 参数"
+		return "缂哄皯 session_id 鎴?text 鍙傛暟"
 	}
 	if h.manager == nil {
-		return "会话管理器未初始化"
+		return "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	// Snapshot line count and image count BEFORE sending so we can detect new output/images.
 	session, ok := h.manager.Get(sessionID)
 	if !ok {
-		return fmt.Sprintf("会话 %s 不存在", sessionID)
+		return fmt.Sprintf("浼氳瘽 %s 涓嶅瓨鍦?, sessionID)
 	}
 	session.mu.RLock()
 	baseLineCount := len(session.RawOutputLines)
@@ -3802,7 +3821,7 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 	session.mu.RUnlock()
 
 	if err := h.manager.WriteInput(sessionID, text); err != nil {
-		return fmt.Sprintf("发送失败: %s", err.Error())
+		return fmt.Sprintf("鍙戦€佸け璐? %s", err.Error())
 	}
 
 	// Poll up to ~30s with increasing intervals, waiting for meaningful output.
@@ -3845,7 +3864,7 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 		}
 	}
 
-	// Check if session is still busy after polling — read stall state for precise hint.
+	// Check if session is still busy after polling 鈥?read stall state for precise hint.
 	session.mu.RLock()
 	stillBusy := session.Status == SessionBusy
 	stallState := session.StallState
@@ -3853,7 +3872,7 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 
 	// Check if new images were produced during the command execution.
 	// Images from SDK sessions are already delivered to the user via the
-	// session.image WebSocket channel (Hub → Feishu notifier), so we do NOT
+	// session.image WebSocket channel (Hub 鈫?Feishu notifier), so we do NOT
 	// return [screenshot_base64] here (that would cause duplicate delivery).
 	// Instead, append a note to the text output so the AI knows an image
 	// was sent and can reference it in its response.
@@ -3873,7 +3892,7 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 	_ = stallState
 
 	if newImageCount > 0 {
-		output += fmt.Sprintf("\n\n📷 会话产生了 %d 张图片，已自动通过 IM 发送给用户。", newImageCount)
+		output += fmt.Sprintf("\n\n馃摲 浼氳瘽浜х敓浜?%d 寮犲浘鐗囷紝宸茶嚜鍔ㄩ€氳繃 IM 鍙戦€佺粰鐢ㄦ埛銆?, newImageCount)
 	}
 
 	return output
@@ -3884,24 +3903,24 @@ func (h *IMMessageHandler) toolControlSession(args map[string]interface{}) strin
 	sessionID, _ := args["session_id"].(string)
 	action, _ := args["action"].(string)
 	if sessionID == "" {
-		return "缺少 session_id 参数"
+		return "缂哄皯 session_id 鍙傛暟"
 	}
 	if h.manager == nil {
-		return "会话管理器未初始化"
+		return "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	switch action {
 	case "interrupt":
 		if err := h.manager.Interrupt(sessionID); err != nil {
-			return fmt.Sprintf("中断失败: %s", err.Error())
+			return fmt.Sprintf("涓柇澶辫触: %s", err.Error())
 		}
-		return fmt.Sprintf("已向会话 %s 发送中断信号", sessionID)
+		return fmt.Sprintf("宸插悜浼氳瘽 %s 鍙戦€佷腑鏂俊鍙?, sessionID)
 	case "kill":
 		if err := h.manager.Kill(sessionID); err != nil {
-			return fmt.Sprintf("终止失败: %s", err.Error())
+			return fmt.Sprintf("缁堟澶辫触: %s", err.Error())
 		}
-		return fmt.Sprintf("已终止会话 %s", sessionID)
+		return fmt.Sprintf("宸茬粓姝細璇?%s", sessionID)
 	default:
-		return "action 参数无效，可选值: interrupt, kill"
+		return "action 鍙傛暟鏃犳晥锛屽彲閫夊€? interrupt, kill"
 	}
 }
 
@@ -3922,7 +3941,7 @@ func (h *IMMessageHandler) toolManageConfig(args map[string]interface{}) string 
 	case "import":
 		return h.toolImportConfig(args)
 	default:
-		return "action 参数无效，可选值: get, update, batch_update, list_schema, export, import"
+		return "action 鍙傛暟鏃犳晥锛屽彲閫夊€? get, update, batch_update, list_schema, export, import"
 	}
 }
 
@@ -3934,31 +3953,31 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	// Enforce cooldown to prevent accidental repeated screenshots.
 	if !h.lastScreenshotAt.IsZero() && time.Since(h.lastScreenshotAt) < screenshotCooldown {
 		remaining := screenshotCooldown - time.Since(h.lastScreenshotAt)
-		return fmt.Sprintf("截屏冷却中，请等待 %d 秒后再试", int(remaining.Seconds())+1)
+		return fmt.Sprintf("鎴睆鍐峰嵈涓紝璇风瓑寰?%d 绉掑悗鍐嶈瘯", int(remaining.Seconds())+1)
 	}
 
 	sessionID, _ := args["session_id"].(string)
 
-	// 如果未指定 session_id，自动选择唯一活跃会话
+	// 濡傛灉鏈寚瀹?session_id锛岃嚜鍔ㄩ€夋嫨鍞竴娲昏穬浼氳瘽
 	if sessionID == "" && h.manager != nil {
 		sessions := h.manager.List()
 		if len(sessions) == 1 {
 			sessionID = sessions[0].ID
 		} else if len(sessions) > 1 {
 			var lines []string
-			lines = append(lines, "有多个活跃会话，请指定 session_id：")
+			lines = append(lines, "鏈夊涓椿璺冧細璇濓紝璇锋寚瀹?session_id锛?)
 			for _, s := range sessions {
 				s.mu.RLock()
 				status := string(s.Status)
 				s.mu.RUnlock()
-				lines = append(lines, fmt.Sprintf("- %s (工具=%s, 状态=%s)", s.ID, s.Tool, status))
+				lines = append(lines, fmt.Sprintf("- %s (宸ュ叿=%s, 鐘舵€?%s)", s.ID, s.Tool, status))
 			}
 			return strings.Join(lines, "\n")
 		} else {
-			// 没有活跃会话时，直接截屏本机屏幕（不依赖 session）
+			// 娌℃湁娲昏穬浼氳瘽鏃讹紝鐩存帴鎴睆鏈満灞忓箷锛堜笉渚濊禆 session锛?
 			base64Data, err := h.manager.CaptureScreenshotDirect()
 			if err != nil {
-				return fmt.Sprintf("截图失败: %s", err.Error())
+				return fmt.Sprintf("鎴浘澶辫触: %s", err.Error())
 			}
 			h.lastScreenshotAt = time.Now()
 			return fmt.Sprintf("[screenshot_base64]%s", base64Data)
@@ -3966,10 +3985,10 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	}
 
 	if sessionID == "" {
-		return "缺少 session_id 参数，且无法自动选择会话"
+		return "缂哄皯 session_id 鍙傛暟锛屼笖鏃犳硶鑷姩閫夋嫨浼氳瘽"
 	}
 	if h.manager == nil {
-		return "会话管理器未初始化"
+		return "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	// Non-desktop platforms (WeChat, QQ, etc.) cannot receive session.image
@@ -3981,17 +4000,17 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	if platform != "" && platform != "desktop" {
 		base64Data, err := h.manager.CaptureScreenshotToBase64(sessionID)
 		if err != nil {
-			return fmt.Sprintf("截图失败: %s", err.Error())
+			return fmt.Sprintf("鎴浘澶辫触: %s", err.Error())
 		}
 		h.lastScreenshotAt = time.Now()
 		return fmt.Sprintf("[screenshot_base64]%s", base64Data)
 	}
 
 	if err := h.manager.CaptureScreenshot(sessionID); err != nil {
-		return fmt.Sprintf("截图失败: %s", err.Error())
+		return fmt.Sprintf("鎴浘澶辫触: %s", err.Error())
 	}
-	// 截图已通过 session.image 通道直接发送给用户，
-	// 返回特殊标记让 runAgentLoop 立即终止，避免 Agent 继续推理导致重复发图。
+	// 鎴浘宸查€氳繃 session.image 閫氶亾鐩存帴鍙戦€佺粰鐢ㄦ埛锛?
+	// 杩斿洖鐗规畩鏍囪璁?runAgentLoop 绔嬪嵆缁堟锛岄伩鍏?Agent 缁х画鎺ㄧ悊瀵艰嚧閲嶅鍙戝浘銆?
 	h.lastScreenshotAt = time.Now()
 	return "[screenshot_sent]"
 }
@@ -4004,7 +4023,7 @@ func (h *IMMessageHandler) toolListMCPTools() string {
 	if mgr := h.app.localMCPManager; mgr != nil {
 		for _, ts := range mgr.GetAllTools() {
 			hasAny = true
-			b.WriteString(fmt.Sprintf("## %s (%s) [本地/stdio]\n", ts.ServerName, ts.ServerID))
+			b.WriteString(fmt.Sprintf("## %s (%s) [鏈湴/stdio]\n", ts.ServerName, ts.ServerID))
 			for _, t := range ts.Tools {
 				b.WriteString(fmt.Sprintf("  - %s: %s\n", t.Name, t.Description))
 			}
@@ -4017,10 +4036,10 @@ func (h *IMMessageHandler) toolListMCPTools() string {
 		servers := registry.ListServers()
 		for _, s := range servers {
 			hasAny = true
-			b.WriteString(fmt.Sprintf("## %s (%s) [远程/HTTP] 状态=%s\n", s.Name, s.ID, s.HealthStatus))
+			b.WriteString(fmt.Sprintf("## %s (%s) [杩滅▼/HTTP] 鐘舵€?%s\n", s.Name, s.ID, s.HealthStatus))
 			tools := registry.GetServerTools(s.ID)
 			if len(tools) == 0 {
-				b.WriteString("  (无工具或无法获取)\n")
+				b.WriteString("  (鏃犲伐鍏锋垨鏃犳硶鑾峰彇)\n")
 				continue
 			}
 			for _, t := range tools {
@@ -4030,7 +4049,7 @@ func (h *IMMessageHandler) toolListMCPTools() string {
 	}
 
 	if !hasAny {
-		return "没有已注册的 MCP Server"
+		return "娌℃湁宸叉敞鍐岀殑 MCP Server"
 	}
 	return b.String()
 }
@@ -4039,7 +4058,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	serverID, _ := args["server_id"].(string)
 	toolName, _ := args["tool_name"].(string)
 	if serverID == "" || toolName == "" {
-		return "缺少 server_id 或 tool_name 参数"
+		return "缂哄皯 server_id 鎴?tool_name 鍙傛暟"
 	}
 	toolArgs, _ := args["arguments"].(map[string]interface{})
 
@@ -4047,7 +4066,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	if mgr := h.app.localMCPManager; mgr != nil && mgr.IsRunning(serverID) {
 		result, err := mgr.CallTool(serverID, toolName, toolArgs)
 		if err != nil {
-			return fmt.Sprintf("本地 MCP 调用失败: %s", err.Error())
+			return fmt.Sprintf("鏈湴 MCP 璋冪敤澶辫触: %s", err.Error())
 		}
 		return result
 	}
@@ -4055,11 +4074,11 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	// Fall back to remote MCP registry (HTTP-based servers)
 	registry := h.app.mcpRegistry
 	if registry == nil {
-		return "MCP Registry 未初始化"
+		return "MCP Registry 鏈垵濮嬪寲"
 	}
 	result, err := registry.CallTool(serverID, toolName, toolArgs)
 	if err != nil {
-		return fmt.Sprintf("MCP 调用失败: %s", err.Error())
+		return fmt.Sprintf("MCP 璋冪敤澶辫触: %s", err.Error())
 	}
 	return result
 }
@@ -4067,7 +4086,7 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 func (h *IMMessageHandler) toolListSkills() string {
 	exec := h.app.skillExecutor
 	if exec == nil {
-		return "Skill Executor 未初始化"
+		return "Skill Executor 鏈垵濮嬪寲"
 	}
 	skills := exec.List()
 
@@ -4075,34 +4094,34 @@ func (h *IMMessageHandler) toolListSkills() string {
 
 	// Show local skills
 	if len(skills) > 0 {
-		b.WriteString("=== 本地已注册 Skill ===\n")
+		b.WriteString("=== 鏈湴宸叉敞鍐?Skill ===\n")
 		for _, s := range skills {
 			line := fmt.Sprintf("- %s [%s]: %s", s.Name, s.Status, s.Description)
 			if s.Source == "hub" {
-				line += fmt.Sprintf(" (来源: Hub, trust: %s)", s.TrustLevel)
+				line += fmt.Sprintf(" (鏉ユ簮: Hub, trust: %s)", s.TrustLevel)
 			} else if s.Source == "file" {
-				line += " (来源: 本地文件)"
+				line += " (鏉ユ簮: 鏈湴鏂囦欢)"
 			}
 			if s.UsageCount > 0 {
-				line += fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, s.SuccessRate*100)
+				line += fmt.Sprintf(" (鐢ㄨ繃%d娆? 鎴愬姛鐜?.0f%%)", s.UsageCount, s.SuccessRate*100)
 			}
 			b.WriteString(line + "\n")
 		}
 	} else {
-		b.WriteString("本地没有已注册的 Skill。\n")
+		b.WriteString("鏈湴娌℃湁宸叉敞鍐岀殑 Skill銆俓n")
 	}
 
 	// If local skills are empty or few, also show Hub recommendations
 	if len(skills) < 3 && h.app.skillHubClient != nil {
 		recs := h.app.skillHubClient.GetRecommendations()
 		if len(recs) > 0 {
-			b.WriteString("\n=== SkillHub 推荐 Skill（可用 install_skill_hub 安装）===\n")
+			b.WriteString("\n=== SkillHub 鎺ㄨ崘 Skill锛堝彲鐢?install_skill_hub 瀹夎锛?==\n")
 			for _, r := range recs {
 				b.WriteString(fmt.Sprintf("- [%s] %s: %s (trust: %s, downloads: %d, hub: %s)\n",
 					r.ID, r.Name, r.Description, r.TrustLevel, r.Downloads, r.HubURL))
 			}
 		} else {
-			b.WriteString("\n提示：可以使用 search_skill_hub 工具在 SkillHub 上搜索更多 Skill。\n")
+			b.WriteString("\n鎻愮ず锛氬彲浠ヤ娇鐢?search_skill_hub 宸ュ叿鍦?SkillHub 涓婃悳绱㈡洿澶?Skill銆俓n")
 		}
 	}
 
@@ -4112,26 +4131,26 @@ func (h *IMMessageHandler) toolListSkills() string {
 func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) string {
 	query, _ := args["query"].(string)
 	if query == "" {
-		return "缺少 query 参数"
+		return "缂哄皯 query 鍙傛暟"
 	}
 
 	if h.app.skillHubClient == nil {
 		h.app.ensureRemoteInfra()
 	}
 	if h.app.skillHubClient == nil {
-		return "SkillHub 客户端未初始化，请检查配置中的 skill_hub_urls"
+		return "SkillHub 瀹㈡埛绔湭鍒濆鍖栵紝璇锋鏌ラ厤缃腑鐨?skill_hub_urls"
 	}
 
 	results, err := h.app.skillHubClient.Search(context.Background(), query)
 	if err != nil {
-		return fmt.Sprintf("搜索失败: %s", err.Error())
+		return fmt.Sprintf("鎼滅储澶辫触: %s", err.Error())
 	}
 	if len(results) == 0 {
-		return fmt.Sprintf("在 SkillHub 上未找到与 %q 相关的 Skill", query)
+		return fmt.Sprintf("鍦?SkillHub 涓婃湭鎵惧埌涓?%q 鐩稿叧鐨?Skill", query)
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("找到 %d 个 Skill：\n", len(results)))
+	b.WriteString(fmt.Sprintf("鎵惧埌 %d 涓?Skill锛歕n", len(results)))
 	for _, r := range results {
 		tags := ""
 		if len(r.Tags) > 0 {
@@ -4140,7 +4159,7 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 		b.WriteString(fmt.Sprintf("- ID: %s | %s: %s%s (trust: %s, downloads: %d, hub: %s)\n",
 			r.ID, r.Name, r.Description, tags, r.TrustLevel, r.Downloads, r.HubURL))
 	}
-	b.WriteString("\n使用 install_skill_hub 工具安装，需提供 skill_id 和 hub_url 参数。")
+	b.WriteString("\n浣跨敤 install_skill_hub 宸ュ叿瀹夎锛岄渶鎻愪緵 skill_id 鍜?hub_url 鍙傛暟銆?)
 	return b.String()
 }
 
@@ -4148,26 +4167,26 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	skillID, _ := args["skill_id"].(string)
 	hubURL, _ := args["hub_url"].(string)
 	if skillID == "" {
-		return "缺少 skill_id 参数"
+		return "缂哄皯 skill_id 鍙傛暟"
 	}
 	if hubURL == "" {
-		return "缺少 hub_url 参数"
+		return "缂哄皯 hub_url 鍙傛暟"
 	}
 
 	if h.app.skillHubClient == nil {
 		h.app.ensureRemoteInfra()
 	}
 	if h.app.skillHubClient == nil {
-		return "SkillHub 客户端未初始化"
+		return "SkillHub 瀹㈡埛绔湭鍒濆鍖?
 	}
 	if h.app.skillExecutor == nil {
-		return "Skill Executor 未初始化"
+		return "Skill Executor 鏈垵濮嬪寲"
 	}
 
 	// Download from Hub
 	entry, err := h.app.skillHubClient.Install(context.Background(), skillID, hubURL)
 	if err != nil {
-		return fmt.Sprintf("安装失败: %s", err.Error())
+		return fmt.Sprintf("瀹夎澶辫触: %s", err.Error())
 	}
 
 	// Security review if risk assessor is available
@@ -4184,14 +4203,14 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 					Result:       fmt.Sprintf("rejected skill %s from %s: critical risk", skillID, hubURL),
 				})
 			}
-			return fmt.Sprintf("⚠️ Skill %q 包含高风险操作，已拒绝自动安装。风险因素: %s",
+			return fmt.Sprintf("鈿狅笍 Skill %q 鍖呭惈楂橀闄╂搷浣滐紝宸叉嫆缁濊嚜鍔ㄥ畨瑁呫€傞闄╁洜绱? %s",
 				entry.Name, strings.Join(assessment.Factors, ", "))
 		}
 	}
 
 	// Register locally
 	if err := h.app.skillExecutor.Register(*entry); err != nil {
-		return fmt.Sprintf("注册失败: %s", err.Error())
+		return fmt.Sprintf("娉ㄥ唽澶辫触: %s", err.Error())
 	}
 
 	// Audit log
@@ -4218,19 +4237,19 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("✅ 已成功安装 Skill「%s」\n描述: %s\n来源: %s\n信任等级: %s\n",
+	b.WriteString(fmt.Sprintf("鉁?宸叉垚鍔熷畨瑁?Skill銆?s銆峔n鎻忚堪: %s\n鏉ユ簮: %s\n淇′换绛夌骇: %s\n",
 		entry.Name, entry.Description, hubURL, entry.TrustLevel))
 
 	if autoRun {
-		b.WriteString(fmt.Sprintf("\n正在立即执行 Skill「%s」...\n", entry.Name))
+		b.WriteString(fmt.Sprintf("\n姝ｅ湪绔嬪嵆鎵ц Skill銆?s銆?..\n", entry.Name))
 		result, err := h.app.skillExecutor.Execute(entry.Name)
 		if err != nil {
-			b.WriteString(fmt.Sprintf("执行失败: %s\n%s", err.Error(), result))
+			b.WriteString(fmt.Sprintf("鎵ц澶辫触: %s\n%s", err.Error(), result))
 		} else {
-			b.WriteString(fmt.Sprintf("执行结果:\n%s", result))
+			b.WriteString(fmt.Sprintf("鎵ц缁撴灉:\n%s", result))
 		}
 	} else {
-		b.WriteString(fmt.Sprintf("\n可以使用 run_skill 工具执行，名称为: %s", entry.Name))
+		b.WriteString(fmt.Sprintf("\n鍙互浣跨敤 run_skill 宸ュ叿鎵ц锛屽悕绉颁负: %s", entry.Name))
 	}
 
 	return b.String()
@@ -4239,15 +4258,15 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}) string {
 	exec := h.app.skillExecutor
 	if exec == nil {
-		return "Skill Executor 未初始化"
+		return "Skill Executor 鏈垵濮嬪寲"
 	}
 	name, _ := args["name"].(string)
 	if name == "" {
-		return "缺少 name 参数"
+		return "缂哄皯 name 鍙傛暟"
 	}
 	result, err := exec.Execute(name)
 	if err != nil {
-		return fmt.Sprintf("Skill 执行失败: %s\n%s", err.Error(), result)
+		return fmt.Sprintf("Skill 鎵ц澶辫触: %s\n%s", err.Error(), result)
 	}
 	return result
 }
@@ -4262,11 +4281,11 @@ func stringVal(m map[string]interface{}, key string) string {
 func (h *IMMessageHandler) toolParallelExecute(args map[string]interface{}) string {
 	orch := h.app.orchestrator
 	if orch == nil {
-		return "Orchestrator 未初始化"
+		return "Orchestrator 鏈垵濮嬪寲"
 	}
 	tasksRaw, ok := args["tasks"].([]interface{})
 	if !ok || len(tasksRaw) == 0 {
-		return "缺少 tasks 参数"
+		return "缂哄皯 tasks 鍙傛暟"
 	}
 	var tasks []TaskRequest
 	for _, t := range tasksRaw {
@@ -4285,14 +4304,14 @@ func (h *IMMessageHandler) toolParallelExecute(args map[string]interface{}) stri
 		tasks = append(tasks, tr)
 	}
 	if len(tasks) == 0 {
-		return "没有有效的任务"
+		return "娌℃湁鏈夋晥鐨勪换鍔?
 	}
 	result, err := orch.ExecuteParallel(tasks)
 	if err != nil {
-		return fmt.Sprintf("并行执行失败: %s", err.Error())
+		return fmt.Sprintf("骞惰鎵ц澶辫触: %s", err.Error())
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("任务 %s: %s\n", result.TaskID, result.Summary))
+	b.WriteString(fmt.Sprintf("浠诲姟 %s: %s\n", result.TaskID, result.Summary))
 	for key, sr := range result.Results {
 		b.WriteString(fmt.Sprintf("- %s: tool=%s status=%s", key, sr.Tool, sr.Status))
 		if sr.SessionID != "" {
@@ -4309,11 +4328,11 @@ func (h *IMMessageHandler) toolParallelExecute(args map[string]interface{}) stri
 func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string {
 	selector := h.app.toolSelector
 	if selector == nil {
-		return "ToolSelector 未初始化"
+		return "ToolSelector 鏈垵濮嬪寲"
 	}
 	desc, _ := args["task_description"].(string)
 	if desc == "" {
-		return "缺少 task_description 参数"
+		return "缂哄皯 task_description 鍙傛暟"
 	}
 	// Build list of installed tools by checking if their binaries are on PATH.
 	var installed []string
@@ -4327,11 +4346,11 @@ func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string
 		}
 	}
 	name, reason := selector.Recommend(desc, installed)
-	return fmt.Sprintf("推荐工具: %s\n理由: %s", name, reason)
+	return fmt.Sprintf("鎺ㄨ崘宸ュ叿: %s\n鐞嗙敱: %s", name, reason)
 }
 
 // ---------------------------------------------------------------------------
-// 本机直接操作工具 (bash, read_file, write_file, list_directory)
+// 鏈満鐩存帴鎿嶄綔宸ュ叿 (bash, read_file, write_file, list_directory)
 // ---------------------------------------------------------------------------
 
 const (
@@ -4362,7 +4381,7 @@ func resolvePath(p string) string {
 func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress ProgressCallback) string {
 	command, _ := args["command"].(string)
 	if command == "" {
-		return "缺少 command 参数"
+		return "缂哄皯 command 鍙傛暟"
 	}
 
 	timeout := bashDefaultTimeout
@@ -4398,7 +4417,7 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress Prog
 	// Start the command and send periodic heartbeats for long-running ops.
 	err := cmd.Start()
 	if err != nil {
-		return fmt.Sprintf("[错误] 命令启动失败: %v", err)
+		return fmt.Sprintf("[閿欒] 鍛戒护鍚姩澶辫触: %v", err)
 	}
 
 	// Heartbeat goroutine: send progress every 30s while the command runs.
@@ -4414,10 +4433,10 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress Prog
 				// Truncate command for display.
 				displayCmd := command
 				if len(displayCmd) > 60 {
-					displayCmd = displayCmd[:60] + "…"
+					displayCmd = displayCmd[:60] + "鈥?
 				}
 				if onProgress != nil {
-					onProgress(fmt.Sprintf("⏳ 命令仍在执行中（已 %ds）: %s", elapsed, displayCmd))
+					onProgress(fmt.Sprintf("鈴?鍛戒护浠嶅湪鎵ц涓紙宸?%ds锛? %s", elapsed, displayCmd))
 				}
 			case <-done:
 				return
@@ -4432,14 +4451,14 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress Prog
 	if stdout.Len() > 0 {
 		out := stdout.String()
 		if len(out) > 8192 {
-			out = out[:8192] + "\n... (输出已截断)"
+			out = out[:8192] + "\n... (杈撳嚭宸叉埅鏂?"
 		}
 		b.WriteString(out)
 	}
 	if stderr.Len() > 0 {
 		errOut := stderr.String()
 		if len(errOut) > 4096 {
-			errOut = errOut[:4096] + "\n... (错误输出已截断)"
+			errOut = errOut[:4096] + "\n... (閿欒杈撳嚭宸叉埅鏂?"
 		}
 		if b.Len() > 0 {
 			b.WriteString("\n")
@@ -4450,14 +4469,14 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress Prog
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			b.WriteString(fmt.Sprintf("\n[错误] 命令超时（%d 秒）", timeout))
+			b.WriteString(fmt.Sprintf("\n[閿欒] 鍛戒护瓒呮椂锛?d 绉掞級", timeout))
 		} else {
-			b.WriteString(fmt.Sprintf("\n[错误] 退出码: %v", err))
+			b.WriteString(fmt.Sprintf("\n[閿欒] 閫€鍑虹爜: %v", err))
 		}
 	}
 
 	if b.Len() == 0 {
-		return "(命令执行完成，无输出)"
+		return "(鍛戒护鎵ц瀹屾垚锛屾棤杈撳嚭)"
 	}
 	return b.String()
 }
@@ -4465,16 +4484,16 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress Prog
 func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 	p, _ := args["path"].(string)
 	if p == "" {
-		return "缺少 path 参数"
+		return "缂哄皯 path 鍙傛暟"
 	}
 	absPath := resolvePath(p)
 
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return fmt.Sprintf("文件不存在或无法访问: %s", err.Error())
+		return fmt.Sprintf("鏂囦欢涓嶅瓨鍦ㄦ垨鏃犳硶璁块棶: %s", err.Error())
 	}
 	if info.IsDir() {
-		return fmt.Sprintf("%s 是目录，请使用 list_directory 工具", absPath)
+		return fmt.Sprintf("%s 鏄洰褰曪紝璇蜂娇鐢?list_directory 宸ュ叿", absPath)
 	}
 
 	maxLines := readFileMaxLines
@@ -4484,13 +4503,13 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return fmt.Sprintf("读取失败: %s", err.Error())
+		return fmt.Sprintf("璇诲彇澶辫触: %s", err.Error())
 	}
 
 	lines := strings.SplitAfter(string(data), "\n")
 	if len(lines) > maxLines {
 		lines = lines[:maxLines]
-		return strings.Join(lines, "") + fmt.Sprintf("\n... (已截断，共 %d 行，显示前 %d 行)", len(strings.SplitAfter(string(data), "\n")), maxLines)
+		return strings.Join(lines, "") + fmt.Sprintf("\n... (宸叉埅鏂紝鍏?%d 琛岋紝鏄剧ず鍓?%d 琛?", len(strings.SplitAfter(string(data), "\n")), maxLines)
 	}
 	return string(data)
 }
@@ -4499,30 +4518,30 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 	p, _ := args["path"].(string)
 	content, _ := args["content"].(string)
 	if p == "" || content == "" {
-		return "缺少 path 或 content 参数"
+		return "缂哄皯 path 鎴?content 鍙傛暟"
 	}
 	if len(content) > writeFileMaxSize {
-		return fmt.Sprintf("内容过大（%d 字节），最大允许 %d 字节", len(content), writeFileMaxSize)
+		return fmt.Sprintf("鍐呭杩囧ぇ锛?d 瀛楄妭锛夛紝鏈€澶у厑璁?%d 瀛楄妭", len(content), writeFileMaxSize)
 	}
 
 	absPath := resolvePath(p)
 
-	// 自动创建父目录
+	// 鑷姩鍒涘缓鐖剁洰褰?
 	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Sprintf("创建目录失败: %s", err.Error())
+		return fmt.Sprintf("鍒涘缓鐩綍澶辫触: %s", err.Error())
 	}
 
 	if err := os.WriteFile(absPath, []byte(content), 0644); err != nil {
-		return fmt.Sprintf("写入失败: %s", err.Error())
+		return fmt.Sprintf("鍐欏叆澶辫触: %s", err.Error())
 	}
 
-	// 验证写入
+	// 楠岃瘉鍐欏叆
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return fmt.Sprintf("写入后验证失败: %s", err.Error())
+		return fmt.Sprintf("鍐欏叆鍚庨獙璇佸け璐? %s", err.Error())
 	}
-	return fmt.Sprintf("已写入 %s（%d 字节）", absPath, info.Size())
+	return fmt.Sprintf("宸插啓鍏?%s锛?d 瀛楄妭锛?, absPath, info.Size())
 }
 
 func (h *IMMessageHandler) toolListDirectory(args map[string]interface{}) string {
@@ -4531,61 +4550,61 @@ func (h *IMMessageHandler) toolListDirectory(args map[string]interface{}) string
 
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return fmt.Sprintf("路径不存在或无法访问: %s", err.Error())
+		return fmt.Sprintf("璺緞涓嶅瓨鍦ㄦ垨鏃犳硶璁块棶: %s", err.Error())
 	}
 	if !info.IsDir() {
-		return fmt.Sprintf("%s 不是目录", absPath)
+		return fmt.Sprintf("%s 涓嶆槸鐩綍", absPath)
 	}
 
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
-		return fmt.Sprintf("读取目录失败: %s", err.Error())
+		return fmt.Sprintf("璇诲彇鐩綍澶辫触: %s", err.Error())
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("目录: %s（共 %d 项）\n", absPath, len(entries)))
+	b.WriteString(fmt.Sprintf("鐩綍: %s锛堝叡 %d 椤癸級\n", absPath, len(entries)))
 	shown := 0
 	for _, entry := range entries {
 		if shown >= 100 {
-			b.WriteString(fmt.Sprintf("... 还有 %d 项未显示\n", len(entries)-shown))
+			b.WriteString(fmt.Sprintf("... 杩樻湁 %d 椤规湭鏄剧ず\n", len(entries)-shown))
 			break
 		}
 		info, _ := entry.Info()
 		if entry.IsDir() {
-			b.WriteString(fmt.Sprintf("  📁 %s/\n", entry.Name()))
+			b.WriteString(fmt.Sprintf("  馃搧 %s/\n", entry.Name()))
 		} else if info != nil {
-			b.WriteString(fmt.Sprintf("  📄 %s (%d bytes)\n", entry.Name(), info.Size()))
+			b.WriteString(fmt.Sprintf("  馃搫 %s (%d bytes)\n", entry.Name(), info.Size()))
 		} else {
-			b.WriteString(fmt.Sprintf("  📄 %s\n", entry.Name()))
+			b.WriteString(fmt.Sprintf("  馃搫 %s\n", entry.Name()))
 		}
 		shown++
 	}
 	return b.String()
 }
 
-const sendFileMaxSize = 200 << 20 // 200 MB — large files are handled by plugin-level fallback (temp URL)
+const sendFileMaxSize = 200 << 20 // 200 MB 鈥?large files are handled by plugin-level fallback (temp URL)
 
 func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
 	p, _ := args["path"].(string)
 	if p == "" {
-		return "缺少 path 参数"
+		return "缂哄皯 path 鍙傛暟"
 	}
 	absPath := resolvePath(p)
 
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return fmt.Sprintf("文件不存在或无法访问: %s", err.Error())
+		return fmt.Sprintf("鏂囦欢涓嶅瓨鍦ㄦ垨鏃犳硶璁块棶: %s", err.Error())
 	}
 	if info.IsDir() {
-		return fmt.Sprintf("%s 是目录，不能作为文件发送", absPath)
+		return fmt.Sprintf("%s 鏄洰褰曪紝涓嶈兘浣滀负鏂囦欢鍙戦€?, absPath)
 	}
 	if info.Size() > sendFileMaxSize {
-		return fmt.Sprintf("文件过大（%d 字节），最大允许 %d 字节", info.Size(), sendFileMaxSize)
+		return fmt.Sprintf("鏂囦欢杩囧ぇ锛?d 瀛楄妭锛夛紝鏈€澶у厑璁?%d 瀛楄妭", info.Size(), sendFileMaxSize)
 	}
 
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return fmt.Sprintf("读取文件失败: %s", err.Error())
+		return fmt.Sprintf("璇诲彇鏂囦欢澶辫触: %s", err.Error())
 	}
 
 	fileName, _ := args["file_name"].(string)
@@ -4613,7 +4632,7 @@ func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
 func (h *IMMessageHandler) toolOpen(args map[string]interface{}) string {
 	target, _ := args["target"].(string)
 	if target == "" {
-		return "缺少 target 参数"
+		return "缂哄皯 target 鍙傛暟"
 	}
 
 	// Detect URLs (http, https, file, mailto, etc.)
@@ -4622,14 +4641,14 @@ func (h *IMMessageHandler) toolOpen(args map[string]interface{}) string {
 		target = resolvePath(target)
 		// Verify the path exists before attempting to open.
 		if _, err := os.Stat(target); err != nil {
-			return fmt.Sprintf("路径不存在或无法访问: %s", err.Error())
+			return fmt.Sprintf("璺緞涓嶅瓨鍦ㄦ垨鏃犳硶璁块棶: %s", err.Error())
 		}
 	}
 
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		// Use rundll32 url.dll,FileProtocolHandler — opens files/URLs with
+		// Use rundll32 url.dll,FileProtocolHandler 鈥?opens files/URLs with
 		// the default handler without spawning a visible console window.
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 	case "darwin":
@@ -4639,16 +4658,16 @@ func (h *IMMessageHandler) toolOpen(args map[string]interface{}) string {
 	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Sprintf("打开失败: %s", err.Error())
+		return fmt.Sprintf("鎵撳紑澶辫触: %s", err.Error())
 	}
 
-	// Don't wait for the process — it's a GUI application.
+	// Don't wait for the process 鈥?it's a GUI application.
 	go cmd.Wait()
 
 	if isURL {
-		return fmt.Sprintf("已用默认浏览器打开: %s", target)
+		return fmt.Sprintf("宸茬敤榛樿娴忚鍣ㄦ墦寮€: %s", target)
 	}
-	return fmt.Sprintf("已用默认程序打开: %s", target)
+	return fmt.Sprintf("宸茬敤榛樿绋嬪簭鎵撳紑: %s", target)
 }
 
 // ---------------------------------------------------------------------------
@@ -4658,7 +4677,7 @@ func (h *IMMessageHandler) toolOpen(args map[string]interface{}) string {
 // toolMemory merges save/list/delete/recall memory operations into a single tool.
 func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	if h.memoryStore == nil {
-		return "长期记忆未初始化"
+		return "闀挎湡璁板繂鏈垵濮嬪寲"
 	}
 
 	action := stringVal(args, "action")
@@ -4666,7 +4685,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	case "recall":
 		query := stringVal(args, "query")
 		if query == "" {
-			return "缺少 query 参数"
+			return "缂哄皯 query 鍙傛暟"
 		}
 		category := MemoryCategory(stringVal(args, "category"))
 		// Resolve current project path for affinity boosting.
@@ -4676,10 +4695,10 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		}
 		entries := h.memoryStore.RecallDynamic(query, category, projectPath)
 		if len(entries) == 0 {
-			return "没有找到相关记忆。"
+			return "娌℃湁鎵惧埌鐩稿叧璁板繂銆?
 		}
 		var b strings.Builder
-		b.WriteString(fmt.Sprintf("召回 %d 条相关记忆:\n", len(entries)))
+		b.WriteString(fmt.Sprintf("鍙洖 %d 鏉＄浉鍏宠蹇?\n", len(entries)))
 		for _, e := range entries {
 			b.WriteString(fmt.Sprintf("- [%s] %s\n", string(e.Category), e.Content))
 		}
@@ -4694,7 +4713,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	case "save":
 		content := stringVal(args, "content")
 		if content == "" {
-			return "缺少 content 参数"
+			return "缂哄皯 content 鍙傛暟"
 		}
 		category := stringVal(args, "category")
 		if category == "" {
@@ -4716,27 +4735,27 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			Tags:     tags,
 		}
 		if err := h.memoryStore.Save(entry); err != nil {
-			return fmt.Sprintf("保存记忆失败: %s", err.Error())
+			return fmt.Sprintf("淇濆瓨璁板繂澶辫触: %s", err.Error())
 		}
 		summary := content
 		if len(summary) > 50 {
 			summary = summary[:50] + "..."
 		}
-		return fmt.Sprintf("已保存记忆: %s", summary)
+		return fmt.Sprintf("宸蹭繚瀛樿蹇? %s", summary)
 
 	case "list":
 		category := MemoryCategory(stringVal(args, "category"))
 		keyword := stringVal(args, "keyword")
 		entries := h.memoryStore.List(category, keyword)
 		if len(entries) == 0 {
-			return "没有找到匹配的记忆条目。"
+			return "娌℃湁鎵惧埌鍖归厤鐨勮蹇嗘潯鐩€?
 		}
 		var b strings.Builder
-		b.WriteString(fmt.Sprintf("找到 %d 条记忆:\n", len(entries)))
+		b.WriteString(fmt.Sprintf("鎵惧埌 %d 鏉¤蹇?\n", len(entries)))
 		for _, e := range entries {
 			b.WriteString(fmt.Sprintf("- [%s] (%s) %s", e.ID, e.Category, e.Content))
 			if len(e.Tags) > 0 {
-				b.WriteString(fmt.Sprintf(" 标签=%v", e.Tags))
+				b.WriteString(fmt.Sprintf(" 鏍囩=%v", e.Tags))
 			}
 			b.WriteString("\n")
 		}
@@ -4745,15 +4764,15 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	case "delete":
 		id := stringVal(args, "id")
 		if id == "" {
-			return "缺少 id 参数"
+			return "缂哄皯 id 鍙傛暟"
 		}
 		if err := h.memoryStore.Delete(id); err != nil {
-			return fmt.Sprintf("删除记忆失败: %s", err.Error())
+			return fmt.Sprintf("鍒犻櫎璁板繂澶辫触: %s", err.Error())
 		}
-		return fmt.Sprintf("已删除记忆: %s", id)
+		return fmt.Sprintf("宸插垹闄よ蹇? %s", id)
 
 	default:
-		return "action 参数无效，可选值: recall, save, list, delete"
+		return "action 鍙傛暟鏃犳晥锛屽彲閫夊€? recall, save, list, delete"
 	}
 }
 
@@ -4763,13 +4782,13 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 
 func (h *IMMessageHandler) toolCreateTemplate(args map[string]interface{}) string {
 	if h.templateManager == nil {
-		return "模板管理器未初始化"
+		return "妯℃澘绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	name := stringVal(args, "name")
 	tool := stringVal(args, "tool")
 	if name == "" || tool == "" {
-		return "缺少 name 或 tool 参数"
+		return "缂哄皯 name 鎴?tool 鍙傛暟"
 	}
 
 	tpl := SessionTemplate{
@@ -4787,27 +4806,27 @@ func (h *IMMessageHandler) toolCreateTemplate(args map[string]interface{}) strin
 	}
 
 	if err := h.templateManager.Create(tpl); err != nil {
-		return fmt.Sprintf("创建模板失败: %s", err.Error())
+		return fmt.Sprintf("鍒涘缓妯℃澘澶辫触: %s", err.Error())
 	}
-	return fmt.Sprintf("模板已创建: %s（工具=%s, 项目=%s）", name, tool, tpl.ProjectPath)
+	return fmt.Sprintf("妯℃澘宸插垱寤? %s锛堝伐鍏?%s, 椤圭洰=%s锛?, name, tool, tpl.ProjectPath)
 }
 
 func (h *IMMessageHandler) toolListTemplates() string {
 	if h.templateManager == nil {
-		return "模板管理器未初始化"
+		return "妯℃澘绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	templates := h.templateManager.List()
 	if len(templates) == 0 {
-		return "当前没有会话模板。"
+		return "褰撳墠娌℃湁浼氳瘽妯℃澘銆?
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("共 %d 个模板:\n", len(templates)))
+	b.WriteString(fmt.Sprintf("鍏?%d 涓ā鏉?\n", len(templates)))
 	for _, t := range templates {
-		b.WriteString(fmt.Sprintf("- %s: 工具=%s 项目=%s", t.Name, t.Tool, t.ProjectPath))
+		b.WriteString(fmt.Sprintf("- %s: 宸ュ叿=%s 椤圭洰=%s", t.Name, t.Tool, t.ProjectPath))
 		if t.ModelConfig != "" {
-			b.WriteString(fmt.Sprintf(" 模型=%s", t.ModelConfig))
+			b.WriteString(fmt.Sprintf(" 妯″瀷=%s", t.ModelConfig))
 		}
 		if t.YoloMode {
 			b.WriteString(" [Yolo]")
@@ -4819,17 +4838,17 @@ func (h *IMMessageHandler) toolListTemplates() string {
 
 func (h *IMMessageHandler) toolLaunchTemplate(args map[string]interface{}) string {
 	if h.templateManager == nil {
-		return "模板管理器未初始化"
+		return "妯℃澘绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	name := stringVal(args, "template_name")
 	if name == "" {
-		return "缺少 template_name 参数"
+		return "缂哄皯 template_name 鍙傛暟"
 	}
 
 	tpl, err := h.templateManager.Get(name)
 	if err != nil {
-		return fmt.Sprintf("获取模板失败: %s", err.Error())
+		return fmt.Sprintf("鑾峰彇妯℃澘澶辫触: %s", err.Error())
 	}
 
 	// Build args from template config and delegate to toolCreateSession.
@@ -4846,103 +4865,103 @@ func (h *IMMessageHandler) toolLaunchTemplate(args map[string]interface{}) strin
 
 func (h *IMMessageHandler) toolGetConfig(args map[string]interface{}) string {
 	if h.configManager == nil {
-		return "配置管理器未初始化"
+		return "閰嶇疆绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	section := stringVal(args, "section")
 	result, err := h.configManager.GetConfig(section, true)
 	if err != nil {
-		return fmt.Sprintf("读取配置失败: %s", err.Error())
+		return fmt.Sprintf("璇诲彇閰嶇疆澶辫触: %s", err.Error())
 	}
 	return result
 }
 
 func (h *IMMessageHandler) toolUpdateConfig(args map[string]interface{}) string {
 	if h.configManager == nil {
-		return "配置管理器未初始化"
+		return "閰嶇疆绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	section := stringVal(args, "section")
 	key := stringVal(args, "key")
 	value := stringVal(args, "value")
 	if section == "" || key == "" {
-		return "缺少 section 或 key 参数"
+		return "缂哄皯 section 鎴?key 鍙傛暟"
 	}
 
 	oldValue, err := h.configManager.UpdateConfig(section, key, value)
 	if err != nil {
-		return fmt.Sprintf("修改配置失败: %s", err.Error())
+		return fmt.Sprintf("淇敼閰嶇疆澶辫触: %s", err.Error())
 	}
-	return fmt.Sprintf("配置已更新: %s.%s\n旧值: %s\n新值: %s", section, key, oldValue, value)
+	return fmt.Sprintf("閰嶇疆宸叉洿鏂? %s.%s\n鏃у€? %s\n鏂板€? %s", section, key, oldValue, value)
 }
 
 func (h *IMMessageHandler) toolBatchUpdateConfig(args map[string]interface{}) string {
 	if h.configManager == nil {
-		return "配置管理器未初始化"
+		return "閰嶇疆绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	changesStr := stringVal(args, "changes")
 	if changesStr == "" {
-		return "缺少 changes 参数"
+		return "缂哄皯 changes 鍙傛暟"
 	}
 
 	var changes []ConfigChange
 	if err := json.Unmarshal([]byte(changesStr), &changes); err != nil {
-		return fmt.Sprintf("解析 changes 参数失败: %s", err.Error())
+		return fmt.Sprintf("瑙ｆ瀽 changes 鍙傛暟澶辫触: %s", err.Error())
 	}
 	if len(changes) == 0 {
-		return "changes 列表为空"
+		return "changes 鍒楄〃涓虹┖"
 	}
 
 	if err := h.configManager.BatchUpdate(changes); err != nil {
-		return fmt.Sprintf("批量更新配置失败: %s", err.Error())
+		return fmt.Sprintf("鎵归噺鏇存柊閰嶇疆澶辫触: %s", err.Error())
 	}
-	return fmt.Sprintf("批量更新成功，共应用 %d 项变更", len(changes))
+	return fmt.Sprintf("鎵归噺鏇存柊鎴愬姛锛屽叡搴旂敤 %d 椤瑰彉鏇?, len(changes))
 }
 
 func (h *IMMessageHandler) toolListConfigSchema() string {
 	if h.configManager == nil {
-		return "配置管理器未初始化"
+		return "閰嶇疆绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	result, err := h.configManager.SchemaJSON()
 	if err != nil {
-		return fmt.Sprintf("获取配置 Schema 失败: %s", err.Error())
+		return fmt.Sprintf("鑾峰彇閰嶇疆 Schema 澶辫触: %s", err.Error())
 	}
 	return result
 }
 
 func (h *IMMessageHandler) toolExportConfig() string {
 	if h.configManager == nil {
-		return "配置管理器未初始化"
+		return "閰嶇疆绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	result, err := h.configManager.ExportConfig()
 	if err != nil {
-		return fmt.Sprintf("导出配置失败: %s", err.Error())
+		return fmt.Sprintf("瀵煎嚭閰嶇疆澶辫触: %s", err.Error())
 	}
 	return result
 }
 
 func (h *IMMessageHandler) toolImportConfig(args map[string]interface{}) string {
 	if h.configManager == nil {
-		return "配置管理器未初始化"
+		return "閰嶇疆绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 
 	jsonData := stringVal(args, "json_data")
 	if jsonData == "" {
-		return "缺少 json_data 参数"
+		return "缂哄皯 json_data 鍙傛暟"
 	}
 
 	report, err := h.configManager.ImportConfig(jsonData)
 	if err != nil {
-		return fmt.Sprintf("导入配置失败: %s", err.Error())
+		return fmt.Sprintf("瀵煎叆閰嶇疆澶辫触: %s", err.Error())
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("配置导入完成: 应用 %d 项, 跳过 %d 项", report.Applied, report.Skipped))
+	b.WriteString(fmt.Sprintf("閰嶇疆瀵煎叆瀹屾垚: 搴旂敤 %d 椤? 璺宠繃 %d 椤?, report.Applied, report.Skipped))
 	if len(report.Warnings) > 0 {
-		b.WriteString("\n警告:")
+		b.WriteString("\n璀﹀憡:")
 		for _, w := range report.Warnings {
 			b.WriteString(fmt.Sprintf("\n  - %s", w))
 		}
@@ -4952,11 +4971,11 @@ func (h *IMMessageHandler) toolImportConfig(args map[string]interface{}) string 
 
 // toolSetMaxIterations allows the agent to dynamically adjust the max
 // iterations for the current conversation loop. This does NOT change the
-// persisted config — it only affects the in-flight loop.
+// persisted config 鈥?it only affects the in-flight loop.
 func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) string {
 	n, ok := args["max_iterations"].(float64)
 	if !ok || n < 1 {
-		return fmt.Sprintf("缺少或无效的 max_iterations 参数（需要 %d-%d 的整数）", minAgentIterations, maxAgentIterationsCap)
+		return fmt.Sprintf("缂哄皯鎴栨棤鏁堢殑 max_iterations 鍙傛暟锛堥渶瑕?%d-%d 鐨勬暣鏁帮級", minAgentIterations, maxAgentIterationsCap)
 	}
 	limit := int(n)
 	if limit < minAgentIterations {
@@ -4979,9 +4998,9 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 	}
 
 	if reason != "" {
-		return fmt.Sprintf("✅ 已将最大轮数调整为 %d（已持久化，原因: %s）", limit, reason)
+		return fmt.Sprintf("鉁?宸插皢鏈€澶ц疆鏁拌皟鏁翠负 %d锛堝凡鎸佷箙鍖栵紝鍘熷洜: %s锛?, limit, reason)
 	}
-	return fmt.Sprintf("✅ 已将最大轮数调整为 %d（已持久化）", limit)
+	return fmt.Sprintf("鉁?宸插皢鏈€澶ц疆鏁拌皟鏁翠负 %d锛堝凡鎸佷箙鍖栵級", limit)
 }
 
 // ---------------------------------------------------------------------------
@@ -4991,7 +5010,7 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 	nickname := strings.TrimSpace(stringVal(args, "nickname"))
 	if nickname == "" {
-		return "❌ nickname 不能为空"
+		return "鉂?nickname 涓嶈兘涓虹┖"
 	}
 	// Persist to local config.
 	cfg, err := h.app.LoadConfig()
@@ -5003,10 +5022,10 @@ func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 	if hc := h.app.hubClient(); hc != nil {
 		if err := hc.SendNicknameUpdate(nickname); err != nil {
 			log.Printf("[set_nickname] SendNicknameUpdate error: %v", err)
-			return fmt.Sprintf("⚠️ 昵称已保存到本地（%s），但上报 Hub 失败：%v", nickname, err)
+			return fmt.Sprintf("鈿狅笍 鏄电О宸蹭繚瀛樺埌鏈湴锛?s锛夛紝浣嗕笂鎶?Hub 澶辫触锛?v", nickname, err)
 		}
 	}
-	return fmt.Sprintf("✅ 昵称已更新为「%s」，Hub 已同步。", nickname)
+	return fmt.Sprintf("鉁?鏄电О宸叉洿鏂颁负銆?s銆嶏紝Hub 宸插悓姝ャ€?, nickname)
 }
 
 // ---------------------------------------------------------------------------
@@ -5016,17 +5035,17 @@ func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) string {
 	providerName := stringVal(args, "provider")
 	if providerName == "" {
-		// No provider specified — list available providers and current selection.
+		// No provider specified 鈥?list available providers and current selection.
 		info := h.app.GetMaclawLLMProviders()
 		var b strings.Builder
-		b.WriteString(fmt.Sprintf("当前 LLM 服务商: %s\n可用服务商:\n", info.Current))
+		b.WriteString(fmt.Sprintf("褰撳墠 LLM 鏈嶅姟鍟? %s\n鍙敤鏈嶅姟鍟?\n", info.Current))
 		for _, p := range info.Providers {
 			if p.URL == "" && p.Key == "" && p.Model == "" {
 				continue // skip unconfigured custom slots
 			}
 			marker := ""
 			if p.Name == info.Current {
-				marker = " [当前]"
+				marker = " [褰撳墠]"
 			}
 			b.WriteString(fmt.Sprintf("  - %s (model=%s)%s\n", p.Name, p.Model, marker))
 		}
@@ -5069,17 +5088,17 @@ func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) st
 		for _, p := range configured {
 			names = append(names, p.Name)
 		}
-		return fmt.Sprintf("未找到服务商 %q，可用: %s", providerName, strings.Join(names, ", "))
+		return fmt.Sprintf("鏈壘鍒版湇鍔″晢 %q锛屽彲鐢? %s", providerName, strings.Join(names, ", "))
 	}
 
 	if match.Name == info.Current {
-		return fmt.Sprintf("当前已经是 %s，无需切换", match.Name)
+		return fmt.Sprintf("褰撳墠宸茬粡鏄?%s锛屾棤闇€鍒囨崲", match.Name)
 	}
 
 	if err := h.app.SaveMaclawLLMProviders(info.Providers, match.Name); err != nil {
-		return fmt.Sprintf("切换失败: %s", err.Error())
+		return fmt.Sprintf("鍒囨崲澶辫触: %s", err.Error())
 	}
-	return fmt.Sprintf("✅ 已将 LLM 服务商切换为 %s (model=%s)", match.Name, match.Model)
+	return fmt.Sprintf("鉁?宸插皢 LLM 鏈嶅姟鍟嗗垏鎹负 %s (model=%s)", match.Name, match.Model)
 }
 
 // ---------------------------------------------------------------------------
@@ -5088,19 +5107,19 @@ func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) st
 
 func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) string {
 	if h.scheduledTaskManager == nil {
-		return "定时任务管理器未初始化"
+		return "瀹氭椂浠诲姟绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	name := stringVal(args, "name")
 	action := stringVal(args, "action")
 	if name == "" || action == "" {
-		return "缺少 name 或 action 参数"
+		return "缂哄皯 name 鎴?action 鍙傛暟"
 	}
 	hour := -1
 	if v, ok := args["hour"].(float64); ok {
 		hour = int(v)
 	}
 	if hour < 0 || hour > 23 {
-		return "hour 必须在 0-23 之间"
+		return "hour 蹇呴』鍦?0-23 涔嬮棿"
 	}
 	minute := 0
 	if v, ok := args["minute"].(float64); ok {
@@ -5129,13 +5148,13 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 
 	id, err := h.scheduledTaskManager.Add(t)
 	if err != nil {
-		return fmt.Sprintf("创建定时任务失败: %s", err.Error())
+		return fmt.Sprintf("鍒涘缓瀹氭椂浠诲姟澶辫触: %s", err.Error())
 	}
 
 	// Notify frontend to refresh the scheduled tasks panel.
 	h.app.emitEvent("scheduled-tasks-changed")
 
-	// 非一次性任务同步到系统日历
+	// 闈炰竴娆℃€т换鍔″悓姝ュ埌绯荤粺鏃ュ巻
 	if created := h.scheduledTaskManager.Get(id); created != nil && isRecurringTask(created) {
 		go func() {
 			if err := SyncTaskToSystemCalendar(created); err != nil {
@@ -5146,45 +5165,45 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 
 	// Format next run time for display.
 	if task := h.scheduledTaskManager.Get(id); task != nil && task.NextRunAt != nil {
-		return fmt.Sprintf("✅ 定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s", id, name, action, task.NextRunAt.Format("2006-01-02 15:04"))
+		return fmt.Sprintf("鉁?瀹氭椂浠诲姟宸插垱寤篭nID: %s\n鍚嶇О: %s\n鎿嶄綔: %s\n涓嬫鎵ц: %s", id, name, action, task.NextRunAt.Format("2006-01-02 15:04"))
 	}
-	return fmt.Sprintf("✅ 定时任务已创建（ID: %s）", id)
+	return fmt.Sprintf("鉁?瀹氭椂浠诲姟宸插垱寤猴紙ID: %s锛?, id)
 }
 
 func (h *IMMessageHandler) toolListScheduledTasks() string {
 	if h.scheduledTaskManager == nil {
-		return "定时任务管理器未初始化"
+		return "瀹氭椂浠诲姟绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	tasks := h.scheduledTaskManager.List()
 	if len(tasks) == 0 {
-		return "当前没有定时任务。"
+		return "褰撳墠娌℃湁瀹氭椂浠诲姟銆?
 	}
 
-	weekdays := []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
+	weekdays := []string{"鍛ㄦ棩", "鍛ㄤ竴", "鍛ㄤ簩", "鍛ㄤ笁", "鍛ㄥ洓", "鍛ㄤ簲", "鍛ㄥ叚"}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("共 %d 个定时任务：\n\n", len(tasks)))
+	b.WriteString(fmt.Sprintf("鍏?%d 涓畾鏃朵换鍔★細\n\n", len(tasks)))
 	for _, t := range tasks {
-		b.WriteString(fmt.Sprintf("📋 [%s] %s\n", t.ID, t.Name))
-		b.WriteString(fmt.Sprintf("   操作: %s\n", t.Action))
+		b.WriteString(fmt.Sprintf("馃搵 [%s] %s\n", t.ID, t.Name))
+		b.WriteString(fmt.Sprintf("   鎿嶄綔: %s\n", t.Action))
 
 		// Schedule description
-		sched := fmt.Sprintf("每天 %02d:%02d", t.Hour, t.Minute)
+		sched := fmt.Sprintf("姣忓ぉ %02d:%02d", t.Hour, t.Minute)
 		if t.DayOfWeek >= 0 && t.DayOfWeek <= 6 {
-			sched = fmt.Sprintf("每%s %02d:%02d", weekdays[t.DayOfWeek], t.Hour, t.Minute)
+			sched = fmt.Sprintf("姣?s %02d:%02d", weekdays[t.DayOfWeek], t.Hour, t.Minute)
 		}
 		if t.DayOfMonth > 0 {
-			sched = fmt.Sprintf("每月%d号 %02d:%02d", t.DayOfMonth, t.Hour, t.Minute)
+			sched = fmt.Sprintf("姣忔湀%d鍙?%02d:%02d", t.DayOfMonth, t.Hour, t.Minute)
 		}
 		if t.StartDate != "" || t.EndDate != "" {
-			sched += fmt.Sprintf("（%s ~ %s）", t.StartDate, t.EndDate)
+			sched += fmt.Sprintf("锛?s ~ %s锛?, t.StartDate, t.EndDate)
 		}
-		b.WriteString(fmt.Sprintf("   时间: %s\n", sched))
-		b.WriteString(fmt.Sprintf("   状态: %s", t.Status))
+		b.WriteString(fmt.Sprintf("   鏃堕棿: %s\n", sched))
+		b.WriteString(fmt.Sprintf("   鐘舵€? %s", t.Status))
 		if t.NextRunAt != nil {
-			b.WriteString(fmt.Sprintf(" | 下次执行: %s", t.NextRunAt.Format("2006-01-02 15:04")))
+			b.WriteString(fmt.Sprintf(" | 涓嬫鎵ц: %s", t.NextRunAt.Format("2006-01-02 15:04")))
 		}
 		if t.RunCount > 0 {
-			b.WriteString(fmt.Sprintf(" | 已执行 %d 次", t.RunCount))
+			b.WriteString(fmt.Sprintf(" | 宸叉墽琛?%d 娆?, t.RunCount))
 		}
 		b.WriteString("\n\n")
 	}
@@ -5193,12 +5212,12 @@ func (h *IMMessageHandler) toolListScheduledTasks() string {
 
 func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) string {
 	if h.scheduledTaskManager == nil {
-		return "定时任务管理器未初始化"
+		return "瀹氭椂浠诲姟绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	id := stringVal(args, "id")
 	name := stringVal(args, "name")
 	if id == "" && name == "" {
-		return "请提供 id 或 name 参数"
+		return "璇锋彁渚?id 鎴?name 鍙傛暟"
 	}
 	var err error
 	if id != "" {
@@ -5207,23 +5226,23 @@ func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) 
 		err = h.scheduledTaskManager.DeleteByName(name)
 	}
 	if err != nil {
-		return fmt.Sprintf("删除失败: %s", err.Error())
+		return fmt.Sprintf("鍒犻櫎澶辫触: %s", err.Error())
 	}
 	h.app.emitEvent("scheduled-tasks-changed")
-	return "✅ 定时任务已删除"
+	return "鉁?瀹氭椂浠诲姟宸插垹闄?
 }
 
 func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) string {
 	if h.scheduledTaskManager == nil {
-		return "定时任务管理器未初始化"
+		return "瀹氭椂浠诲姟绠＄悊鍣ㄦ湭鍒濆鍖?
 	}
 	id := stringVal(args, "id")
 	if id == "" {
-		return "缺少 id 参数"
+		return "缂哄皯 id 鍙傛暟"
 	}
 	err := h.scheduledTaskManager.Update(id, args)
 	if err != nil {
-		return fmt.Sprintf("更新失败: %s", err.Error())
+		return fmt.Sprintf("鏇存柊澶辫触: %s", err.Error())
 	}
 	h.app.emitEvent("scheduled-tasks-changed")
 	// Show updated task info.
@@ -5232,45 +5251,45 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 		if t.NextRunAt != nil {
 			next = t.NextRunAt.Format("2006-01-02 15:04")
 		}
-		return fmt.Sprintf("✅ 定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
+		return fmt.Sprintf("鉁?瀹氭椂浠诲姟宸叉洿鏂癨nID: %s\n鍚嶇О: %s\n鎿嶄綔: %s\n鏃堕棿: %02d:%02d\n涓嬫鎵ц: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
 	}
-	return "✅ 定时任务已更新"
+	return "鉁?瀹氭椂浠诲姟宸叉洿鏂?
 }
 
 // ---------- ClawNet Knowledge Tools ----------
 
 func (h *IMMessageHandler) toolClawNetSearch(args map[string]interface{}) string {
 	if h.app.clawNetClient == nil || !h.app.clawNetClient.IsRunning() {
-		return "虾网未连接，请先在设置中启用 ClawNet"
+		return "铏剧綉鏈繛鎺ワ紝璇峰厛鍦ㄨ缃腑鍚敤 ClawNet"
 	}
 	query := stringVal(args, "query")
 	if query == "" {
-		return "缺少 query 参数"
+		return "缂哄皯 query 鍙傛暟"
 	}
 	entries, err := h.app.clawNetClient.SearchKnowledge(query)
 	if err != nil {
-		return fmt.Sprintf("搜索失败: %s", err.Error())
+		return fmt.Sprintf("鎼滅储澶辫触: %s", err.Error())
 	}
 	if len(entries) == 0 {
-		return fmt.Sprintf("未找到与「%s」相关的知识条目", query)
+		return fmt.Sprintf("鏈壘鍒颁笌銆?s銆嶇浉鍏崇殑鐭ヨ瘑鏉＄洰", query)
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("🔍 虾网知识搜索「%s」— 找到 %d 条:\n\n", query, len(entries)))
+	b.WriteString(fmt.Sprintf("馃攳 铏剧綉鐭ヨ瘑鎼滅储銆?s銆嶁€?鎵惧埌 %d 鏉?\n\n", query, len(entries)))
 	for i, e := range entries {
 		if i >= 10 {
-			b.WriteString(fmt.Sprintf("... 还有 %d 条结果\n", len(entries)-10))
+			b.WriteString(fmt.Sprintf("... 杩樻湁 %d 鏉＄粨鏋淺n", len(entries)-10))
 			break
 		}
 		b.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, e.Title))
 		if e.Body != "" {
 			body := e.Body
 			if len(body) > 200 {
-				body = body[:200] + "…"
+				body = body[:200] + "鈥?
 			}
 			b.WriteString(fmt.Sprintf("   %s\n", body))
 		}
 		if e.Author != "" {
-			b.WriteString(fmt.Sprintf("   — %s", e.Author))
+			b.WriteString(fmt.Sprintf("   鈥?%s", e.Author))
 		}
 		if e.Domain != "" {
 			b.WriteString(fmt.Sprintf(" [%s]", e.Domain))
@@ -5282,26 +5301,26 @@ func (h *IMMessageHandler) toolClawNetSearch(args map[string]interface{}) string
 
 func (h *IMMessageHandler) toolClawNetPublish(args map[string]interface{}) string {
 	if h.app.clawNetClient == nil || !h.app.clawNetClient.IsRunning() {
-		return "虾网未连接，请先在设置中启用 ClawNet"
+		return "铏剧綉鏈繛鎺ワ紝璇峰厛鍦ㄨ缃腑鍚敤 ClawNet"
 	}
 	title := stringVal(args, "title")
 	body := stringVal(args, "body")
 	if title == "" {
-		return "缺少 title 参数"
+		return "缂哄皯 title 鍙傛暟"
 	}
 	if body == "" {
-		return "缺少 body 参数"
+		return "缂哄皯 body 鍙傛暟"
 	}
 	entry, err := h.app.clawNetClient.PublishKnowledge(title, body)
 	if err != nil {
-		return fmt.Sprintf("发布失败: %s", err.Error())
+		return fmt.Sprintf("鍙戝竷澶辫触: %s", err.Error())
 	}
-	return fmt.Sprintf("✅ 知识已发布到虾网\nID: %s\n标题: %s", entry.ID, entry.Title)
+	return fmt.Sprintf("鉁?鐭ヨ瘑宸插彂甯冨埌铏剧綉\nID: %s\n鏍囬: %s", entry.ID, entry.Title)
 }
 
 func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string {
 	if h.app == nil || h.app.auditLog == nil {
-		return "审计日志未初始化"
+		return "瀹¤鏃ュ織鏈垵濮嬪寲"
 	}
 
 	filter := AuditFilter{}
@@ -5324,7 +5343,7 @@ func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string
 
 	entries, err := h.app.auditLog.Query(filter)
 	if err != nil {
-		return fmt.Sprintf("查询失败: %s", err.Error())
+		return fmt.Sprintf("鏌ヨ澶辫触: %s", err.Error())
 	}
 
 	limit := 20
@@ -5338,13 +5357,13 @@ func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string
 	}
 
 	if len(entries) == 0 {
-		return "没有找到匹配的审计记录"
+		return "娌℃湁鎵惧埌鍖归厤鐨勫璁¤褰?
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("找到 %d 条审计记录:\n\n", len(entries)))
+	b.WriteString(fmt.Sprintf("鎵惧埌 %d 鏉″璁¤褰?\n\n", len(entries)))
 	for i, e := range entries {
-		b.WriteString(fmt.Sprintf("%d. [%s] %s | 风险: %s | 决策: %s | 结果: %s\n",
+		b.WriteString(fmt.Sprintf("%d. [%s] %s | 椋庨櫓: %s | 鍐崇瓥: %s | 缁撴灉: %s\n",
 			i+1, e.Timestamp.Format("01-02 15:04"), e.ToolName, e.RiskLevel, e.PolicyAction, e.Result))
 	}
 	return b.String()
@@ -5357,7 +5376,7 @@ func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string
 func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 	query := stringVal(args, "query")
 	if query == "" {
-		return "缺少 query 参数"
+		return "缂哄皯 query 鍙傛暟"
 	}
 	maxResults := 8
 	if n, ok := args["max_results"].(float64); ok && n > 0 {
@@ -5366,14 +5385,14 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 
 	results, err := websearch.Search(query, maxResults)
 	if err != nil {
-		return fmt.Sprintf("搜索失败: %s", err.Error())
+		return fmt.Sprintf("鎼滅储澶辫触: %s", err.Error())
 	}
 	if len(results) == 0 {
-		return "未找到相关结果"
+		return "鏈壘鍒扮浉鍏崇粨鏋?
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("搜索 \"%s\" 找到 %d 条结果:\n\n", query, len(results)))
+	sb.WriteString(fmt.Sprintf("鎼滅储 \"%s\" 鎵惧埌 %d 鏉＄粨鏋?\n\n", query, len(results)))
 	for i, r := range results {
 		sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, r.Title, r.URL))
 		if r.Snippet != "" {
@@ -5387,7 +5406,7 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	rawURL := stringVal(args, "url")
 	if rawURL == "" {
-		return "缺少 url 参数"
+		return "缂哄皯 url 鍙傛暟"
 	}
 
 	opts := &websearch.FetchOptions{}
@@ -5407,7 +5426,7 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 
 	result, err := websearch.Fetch(rawURL, opts)
 	if err != nil {
-		return fmt.Sprintf("抓取失败: %s", err.Error())
+		return fmt.Sprintf("鎶撳彇澶辫触: %s", err.Error())
 	}
 
 	// If saved to file, return short message
@@ -5417,10 +5436,10 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 
 	var sb strings.Builder
 	if result.Title != "" {
-		sb.WriteString(fmt.Sprintf("标题: %s\n", result.Title))
+		sb.WriteString(fmt.Sprintf("鏍囬: %s\n", result.Title))
 	}
 	sb.WriteString(fmt.Sprintf("URL: %s\n", result.URL))
-	sb.WriteString(fmt.Sprintf("类型: %s | 大小: %d 字节\n\n", result.ContentType, result.BytesRead))
+	sb.WriteString(fmt.Sprintf("绫诲瀷: %s | 澶у皬: %d 瀛楄妭\n\n", result.ContentType, result.BytesRead))
 
 	content := result.Content
 	// web_fetch allows longer content: up to 16KB for text return
@@ -5428,7 +5447,7 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	if len(content) > webFetchMaxContent {
 		headLen := webFetchMaxContent * 2 / 3
 		tailLen := webFetchMaxContent - headLen - 60
-		content = content[:headLen] + "\n\n... (内容已截断，共 " + fmt.Sprintf("%d", len(content)) + " 字符) ...\n\n" + content[len(content)-tailLen:]
+		content = content[:headLen] + "\n\n... (鍐呭宸叉埅鏂紝鍏?" + fmt.Sprintf("%d", len(content)) + " 瀛楃) ...\n\n" + content[len(content)-tailLen:]
 	}
 	sb.WriteString(content)
 	return sb.String()
