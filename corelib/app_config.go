@@ -126,7 +126,7 @@ type AppConfig struct {
 	// Onboarding — 是否已完成引导流程
 	OnboardingDone bool `json:"onboarding_done,omitempty"`
 	// Embedding — 向量搜索开关
-	VectorSearchEnabled bool `json:"vector_search_enabled,omitempty"`
+	VectorSearchEnabled bool `json:"vector_search_enabled"`
 	// SSH — 预配置的远程主机列表
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
 }

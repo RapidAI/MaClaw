@@ -74,23 +74,35 @@ func DiscoverOrLaunch() (string, error) {
 		log.Printf("[browser] %s 正在运行但未开启调试端口，正在重启...", bi.name)
 		killBrowserByName(bi.name)
 		// Wait for processes to fully exit and release profile lock.
-		waitForProfileUnlock(userDataDir, 8*time.Second)
+		waitForProfileUnlock(userDataDir, 12*time.Second)
+		// Double-check: if processes are still lingering, force kill again.
+		if isBrowserRunning(bi.name) {
+			log.Printf("[browser] 浏览器进程仍在运行，再次强制终止...")
+			killBrowserByName(bi.name)
+			time.Sleep(2 * time.Second)
+		}
 	}
 
 	// Clean stale DevToolsActivePort file before launch.
 	dtapPath := filepath.Join(userDataDir, "DevToolsActivePort")
 	os.Remove(dtapPath)
+	// Remove lock files that may prevent the new instance from starting properly.
+	// Linux/macOS uses SingletonLock; Windows uses lockfile.
+	for _, lockName := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile"} {
+		os.Remove(filepath.Join(userDataDir, lockName))
+	}
 
 	// Launch with --remote-debugging-port=0 (auto-pick free port).
 	args := []string{
-		fmt.Sprintf("--user-data-dir=%s", userDataDir),
 		"--remote-debugging-port=0",
 		"--no-first-run",
 		"--no-default-browser-check",
+		"--user-data-dir=" + userDataDir,
 	}
 	cmd := exec.Command(bi.path, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	log.Printf("[browser] 启动命令: %s %v", bi.path, args)
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("启动浏览器失败: %w", err)
 	}
@@ -100,17 +112,43 @@ func DiscoverOrLaunch() (string, error) {
 	managedBrowserProc = cmd.Process
 	managedBrowserMu.Unlock()
 
-	// Detach — don't block on browser exit.
+	// Channel to detect if the browser process exits prematurely.
+	procExited := make(chan struct{})
 	go func() {
 		cmd.Wait()
+		close(procExited)
 		managedBrowserMu.Lock()
 		managedBrowserProc = nil
 		managedBrowserMu.Unlock()
 	}()
 
+	// Give Chrome a moment to start — if it exits immediately, the profile
+	// was likely locked or the args were wrong.
+	select {
+	case <-procExited:
+		// Process already exited. This typically means Chrome delegated to an
+		// existing instance (which has no debug port) or hit an error.
+		log.Printf("[browser] 浏览器进程已立即退出 (可能转发给了已有实例)")
+		// Check if DevToolsActivePort appeared anyway (unlikely but possible).
+		time.Sleep(1 * time.Second)
+		if fallbackPort, _ := readDevToolsActivePort(); fallbackPort > 0 && probePort(fallbackPort) {
+			log.Printf("[browser] 进程退出但发现调试端口: %d", fallbackPort)
+			return fmt.Sprintf("http://127.0.0.1:%d", fallbackPort), nil
+		}
+		return "", fmt.Errorf("浏览器启动后立即退出，可能 profile 目录被占用或参数错误。请先关闭所有浏览器窗口再重试")
+	case <-time.After(2 * time.Second):
+		// Process is still running after 2s — good, continue waiting for port.
+	}
+
 	// Wait for DevToolsActivePort file to appear (Chrome writes it after startup).
-	port, err := waitForDevToolsActivePort(dtapPath, 15*time.Second)
+	port, err := waitForDevToolsActivePortWithExit(dtapPath, 20*time.Second, procExited)
 	if err != nil {
+		// Fallback: the browser may have delegated to an existing instance.
+		// Try reading DevToolsActivePort from the default location one more time.
+		if fallbackPort, _ := readDevToolsActivePort(); fallbackPort > 0 && probePort(fallbackPort) {
+			log.Printf("[browser] 通过 fallback 发现调试端口: %d", fallbackPort)
+			return fmt.Sprintf("http://127.0.0.1:%d", fallbackPort), nil
+		}
 		return "", fmt.Errorf("浏览器已启动但未能获取调试端口: %w", err)
 	}
 
@@ -122,17 +160,30 @@ func DiscoverOrLaunch() (string, error) {
 // waitForDevToolsActivePort polls the DevToolsActivePort file until it appears
 // and contains a valid port number, then verifies the port is actually listening.
 func waitForDevToolsActivePort(path string, timeout time.Duration) (int, error) {
+	return waitForDevToolsActivePortWithExit(path, timeout, nil)
+}
+
+// waitForDevToolsActivePortWithExit is like waitForDevToolsActivePort but also
+// aborts early if the browser process exits (signalled via procExited channel).
+func waitForDevToolsActivePortWithExit(path string, timeout time.Duration, procExited <-chan struct{}) (int, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		// Check if the browser process has exited.
+		if procExited != nil {
+			select {
+			case <-procExited:
+				return 0, fmt.Errorf("浏览器进程在等待调试端口期间退出")
+			default:
+			}
+		}
+
 		data, err := os.ReadFile(path)
 		if err == nil {
 			lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
 			if port, err := strconv.Atoi(strings.TrimSpace(lines[0])); err == nil && port > 0 {
-				// File exists with a port — now verify the CDP server is actually ready.
 				if probePort(port) {
 					return port, nil
 				}
-				// Port not ready yet, keep polling.
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -265,6 +316,15 @@ func isBrowserRunning(browserName string) bool {
 			return false
 		}
 		return strings.Contains(string(out), procName)
+	case "darwin":
+		var appName string
+		if browserName == "chrome" {
+			appName = "Google Chrome"
+		} else {
+			appName = "Microsoft Edge"
+		}
+		out, _ := exec.Command("pgrep", "-f", appName).Output()
+		return len(strings.TrimSpace(string(out))) > 0
 	default:
 		var procName string
 		if browserName == "chrome" {
@@ -287,7 +347,25 @@ func killBrowserByName(browserName string) {
 		} else {
 			procName = "msedge.exe"
 		}
-		exec.Command("taskkill", "/F", "/IM", procName).Run()
+		// /T kills the entire process tree (GPU helper, crashpad, etc.)
+		exec.Command("taskkill", "/F", "/T", "/IM", procName).Run()
+	case "darwin":
+		// On macOS, use killall which is more reliable than pkill for app bundles.
+		var appName string
+		if browserName == "chrome" {
+			appName = "Google Chrome"
+		} else {
+			appName = "Microsoft Edge"
+		}
+		exec.Command("killall", appName).Run()
+		// Also pkill helper processes.
+		var helperName string
+		if browserName == "chrome" {
+			helperName = "Google Chrome Helper"
+		} else {
+			helperName = "Microsoft Edge Helper"
+		}
+		exec.Command("killall", helperName).Run()
 	default:
 		var procName string
 		if browserName == "chrome" {
@@ -299,24 +377,23 @@ func killBrowserByName(browserName string) {
 	}
 }
 
-// waitForProfileUnlock waits until the browser processes have fully exited.
-// More reliable than checking lock files, which Chrome may not always clean up.
+// waitForProfileUnlock waits until the specified browser processes have fully exited.
 func waitForProfileUnlock(userDataDir string, timeout time.Duration) {
 	_ = userDataDir // reserved for future lock-file checks
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		// Check if any Chrome/Edge processes are still running.
-		// Once they're all gone, the profile is unlocked.
+		// Only need to check the browser we're about to launch.
+		// Both Chrome and Edge share similar profile locking, but we check
+		// both because the user-data-dir might be shared.
 		chromeGone := !isBrowserRunning("chrome")
 		edgeGone := !isBrowserRunning("edge")
 		if chromeGone && edgeGone {
-			// Extra grace period for file handles to be released.
 			time.Sleep(500 * time.Millisecond)
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	// Timeout — proceed anyway; Chrome child processes may linger harmlessly.
+	log.Printf("[browser] waitForProfileUnlock 超时，继续尝试启动...")
 }
 
 // readDevToolsActivePort reads the DevToolsActivePort file from known Chrome profile locations.

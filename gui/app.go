@@ -304,6 +304,14 @@ func (a *App) initRemoteInfra() {
 				modelPath := embedding.DefaultModelPath()
 				emb := embedding.NewDefaultEmbedder(modelPath)
 				ms.SetEmbedder(emb)
+				if a.toolRouter != nil {
+					a.toolRouter.SetEmbedder(emb)
+				}
+				if a.remoteSessions != nil && a.remoteSessions.hubClient != nil &&
+					a.remoteSessions.hubClient.imHandler != nil &&
+					a.remoteSessions.hubClient.imHandler.toolBuilder != nil {
+					a.remoteSessions.hubClient.imHandler.toolBuilder.SetEmbedder(emb)
+				}
 			}
 			// Start memory maintenance pipeline (decay → compress).
 			// LLM-dependent components (promoter, reflector) will be nil
@@ -463,6 +471,12 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		registerGUIAutomationTools(hubClient.imHandler.registry, blm, hubClient.imHandler.agentActivity, statusC)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		hubClient.imHandler.toolBuilder = NewDynamicToolBuilder(hubClient.imHandler.registry)
+		// If vector search is enabled, wire the embedder into the newly created toolBuilder.
+		if cfg, err := a.LoadConfig(); err == nil && cfg.VectorSearchEnabled {
+			modelPath := embedding.DefaultModelPath()
+			emb := embedding.NewDefaultEmbedder(modelPath)
+			hubClient.imHandler.toolBuilder.SetEmbedder(emb)
+		}
 		// Wire the statusC into the chat loop's LoopContext so it can drain
 		// background events. This is done lazily: the chat LoopContext gets
 		// statusC assigned in HandleIMMessageWithProgress before runAgentLoop.
