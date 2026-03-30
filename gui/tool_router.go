@@ -66,6 +66,11 @@ func (r *ToolRouter) SetUsageTracker(tracker *tool.UsageTracker) {
 	r.inner.SetUsageTracker(tracker)
 }
 
+// SetReranker delegates to corelib/tool.Router.SetReranker.
+func (r *ToolRouter) SetReranker(rr tool.Reranker) {
+	r.inner.SetReranker(rr)
+}
+
 // ActivateSessionTool delegates to corelib/tool.Router.ActivateSessionTool.
 func (r *ToolRouter) ActivateSessionTool(name string) {
 	r.inner.ActivateSessionTool(name)

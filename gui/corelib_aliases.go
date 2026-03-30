@@ -12,6 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -329,3 +330,9 @@ func extractFailingSummary(output string) string {
 }
 
 
+
+// ── remote function aliases ─────────────────────────────────────────────────
+
+// downsizeScreenshotBase64 wraps remote.DownsizeScreenshotBase64 for use
+// within gui/ without a package qualifier.
+var downsizeScreenshotBase64 = remote.DownsizeScreenshotBase64

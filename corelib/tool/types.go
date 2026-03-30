@@ -52,6 +52,8 @@ type RegisteredTool struct {
 	InputSchema map[string]interface{} `json:"input_schema"`
 	Required    []string               `json:"required"`
 	Source      string                 `json:"source"`
+	Body        string                 `json:"body,omitempty"`
+	BodySummary string                 `json:"body_summary,omitempty"`
 	Caps        CapRequirement         `json:"-"`
 	Handler     Handler                `json:"-"`
 	HandlerProg HandlerWithProgress    `json:"-"`

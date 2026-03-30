@@ -150,9 +150,17 @@ func (s *EnrichmentStore) save() error {
 
 // GenerateEnrichmentPrompt returns the system+user messages for LLM-based
 // synthetic query generation. The caller is responsible for making the LLM call.
-func GenerateEnrichmentPrompt(toolName, description string) (system, user string) {
-	system = `You are a tool usage analyst. Given a tool's name and description, generate 5 typical user queries that would require this tool. Output ONLY a JSON array of strings, no markdown, no commentary.`
-	user = fmt.Sprintf("Tool: %s\nDescription: %s", toolName, description)
+// When bodySummary is non-empty, the prompts instruct the LLM to generate
+// queries that reflect implementation-level details and distinguish the tool
+// from similar tools. When bodySummary is empty, falls back to name + description only.
+func GenerateEnrichmentPrompt(toolName, description, bodySummary string) (system, user string) {
+	if bodySummary != "" {
+		system = `You are a tool usage analyst. Given a tool's name, description, and implementation body summary, generate 5 typical user queries that would require this tool. Focus on queries that reflect implementation-level details visible in the body summary and that distinguish this tool from similar tools in the same category. Output ONLY a JSON array of strings, no markdown, no commentary.`
+		user = fmt.Sprintf("Tool: %s\nDescription: %s\nBody Summary:\n%s", toolName, description, bodySummary)
+	} else {
+		system = `You are a tool usage analyst. Given a tool's name and description, generate 5 typical user queries that would require this tool. Output ONLY a JSON array of strings, no markdown, no commentary.`
+		user = fmt.Sprintf("Tool: %s\nDescription: %s", toolName, description)
+	}
 	return
 }
 
@@ -168,6 +176,142 @@ func ParseEnrichmentResponse(resp string) []string {
 		return nil
 	}
 	return queries
+}
+
+// BuiltinBodies provides hardcoded body content (parameter schema descriptions)
+// for core builtin tools. Used to populate RegisteredTool.Body during registration.
+var BuiltinBodies = map[string]string{
+	"bash": `Parameters:
+- command (string, required): Shell command to execute
+- timeout (int, optional): Timeout in seconds, default 30
+Typical usage: Run shell commands, check system status, install packages`,
+
+	"read_file": `Parameters:
+- path (string, required): File path to read
+- encoding (string, optional): File encoding, default utf-8
+Typical usage: Read source code, config files, logs`,
+
+	"write_file": `Parameters:
+- path (string, required): Destination file path
+- content (string, required): Content to write
+- mode (string, optional): Write mode (overwrite/append), default overwrite
+Typical usage: Create or update source files, configs, scripts`,
+
+	"list_directory": `Parameters:
+- path (string, required): Directory path to list
+- recursive (bool, optional): List recursively, default false
+- depth (int, optional): Max recursion depth
+Typical usage: Explore project structure, find files in a folder`,
+
+	"memory": `Parameters:
+- action (string, required): Operation type (store/recall/search)
+- key (string, optional): Memory key for store/recall
+- content (string, optional): Content to store
+- query (string, optional): Search query for recall
+Typical usage: Persist notes, recall project context, search past interactions`,
+
+	"web_search": `Parameters:
+- query (string, required): Search query
+- max_results (int, optional): Maximum results to return, default 5
+Typical usage: Search for documentation, find solutions, look up APIs`,
+
+	"web_fetch": `Parameters:
+- url (string, required): URL to fetch
+- format (string, optional): Output format (text/html/markdown), default text
+Typical usage: Fetch webpage content, read documentation, download text resources`,
+
+	"screenshot": `Parameters:
+- display (int, optional): Display index for multi-monitor, default 0
+- region (string, optional): Screen region to capture (x,y,w,h)
+Typical usage: Capture screen state, verify UI changes, document visual output`,
+
+	"send_and_observe": `Parameters:
+- session_id (string, required): Target coding session ID
+- message (string, required): Message to send to the session
+- timeout (int, optional): Wait timeout in seconds, default 120
+Typical usage: Send instructions to coding agent and wait for results`,
+
+	"create_session": `Parameters:
+- tool (string, required): Coding tool to launch (e.g. claude, cursor)
+- project_dir (string, optional): Working directory for the session
+Typical usage: Start a new coding session with a specific tool and project`,
+
+	"call_mcp_tool": `Parameters:
+- server (string, required): MCP server name
+- tool (string, required): Tool name on the server
+- arguments (object, optional): Tool arguments as key-value pairs
+Typical usage: Invoke external tools via MCP protocol`,
+
+	"browser_connect": `Parameters:
+- url (string, optional): CDP endpoint URL to connect to
+- launch (bool, optional): Launch a new browser instance, default false
+Typical usage: Connect to Chrome via CDP for browser automation`,
+
+	"browser_navigate": `Parameters:
+- url (string, required): URL to navigate to
+- wait_until (string, optional): Wait condition (load/domcontentloaded/networkidle)
+Typical usage: Open a webpage in the connected browser`,
+
+	"browser_click": `Parameters:
+- selector (string, required): CSS selector of the element to click
+- button (string, optional): Mouse button (left/right/middle), default left
+Typical usage: Click buttons, links, or interactive elements on a webpage`,
+
+	"list_skills": `Parameters:
+- filter (string, optional): Filter skills by name or tag
+Typical usage: List installed NL skills, browse skill library`,
+
+	"run_skill": `Parameters:
+- name (string, required): Skill name to execute
+- input (string, optional): Input text or parameters for the skill
+Typical usage: Execute an NL skill by name with optional input`,
+
+	"craft_tool": `Parameters:
+- description (string, required): What the tool should do
+- language (string, optional): Script language (bash/python), default bash
+Typical usage: Generate a one-off automation script for a specific task`,
+
+	"parallel_execute": `Parameters:
+- tasks (array, required): List of task descriptions to execute in parallel
+- max_concurrent (int, optional): Max concurrent sessions, default 3
+Typical usage: Run multiple coding tasks simultaneously across sessions`,
+
+	"recommend_tool": `Parameters:
+- task (string, required): Description of the task to accomplish
+Typical usage: Get a recommendation for which coding tool fits a task best`,
+
+	"send_file": `Parameters:
+- path (string, required): Local file path to send
+- caption (string, optional): Message to accompany the file
+Typical usage: Share a file with the user in the chat`,
+
+	"set_nickname": `Parameters:
+- nickname (string, required): New display name to set
+Typical usage: Change the assistant's display name in the conversation`,
+
+	"list_sessions": `Parameters:
+- status (string, optional): Filter by session status (active/stopped/all)
+Typical usage: Show all active or recent coding sessions`,
+
+	"get_session_output": `Parameters:
+- session_id (string, required): Session ID to read output from
+- lines (int, optional): Number of recent lines to return
+Typical usage: Read the latest output from a coding session`,
+
+	"get_session_events": `Parameters:
+- session_id (string, required): Session ID to read events from
+- since (string, optional): Timestamp to filter events after
+Typical usage: Get activity log and events from a coding session`,
+
+	"control_session": `Parameters:
+- session_id (string, required): Session ID to control
+- action (string, required): Control action (interrupt/kill/resume)
+Typical usage: Stop, interrupt, or resume a coding session`,
+
+	"discover_tool": `Parameters:
+- query (string, required): Description of the capability needed
+- sources (string, optional): Where to search (mcp/skillhub/all), default all
+Typical usage: Find tools from MCP servers or SkillHub matching a need`,
 }
 
 // BuiltinEnrichments provides hardcoded synthetic queries for core tools.

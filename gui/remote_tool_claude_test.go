@@ -49,10 +49,9 @@ func TestClaudeAdapterBuildCommandEnvPreservesBaseEntries(t *testing.T) {
 	if env["CLAUDE_CODE_USE_COLORS"] != "true" {
 		t.Fatalf("CLAUDE_CODE_USE_COLORS = %q, want %q", env["CLAUDE_CODE_USE_COLORS"], "true")
 	}
-	// CLAUDE_CODE_MAX_OUTPUT_TOKENS was removed (incompatible with newer Claude Code).
-	// Verify it is NOT set by buildCommandEnv.
-	if v, ok := env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]; ok {
-		t.Fatalf("CLAUDE_CODE_MAX_OUTPUT_TOKENS should not be set, got %q", v)
+	// CLAUDE_CODE_MAX_OUTPUT_TOKENS should be set to 128000.
+	if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != "128000" {
+		t.Fatalf("CLAUDE_CODE_MAX_OUTPUT_TOKENS = %q, want %q", env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "128000")
 	}
 	if !strings.Contains(env["PATH"], `D:\custom\bin`) {
 		t.Fatalf("PATH %q should include custom base PATH", env["PATH"])
@@ -105,6 +104,7 @@ func TestClaudeAdapterBuildCommandIncludesPrintFlag(t *testing.T) {
 	foundP := false
 	foundStreamJSON := false
 	foundMaxTurns := false
+	foundMaxOutputTokens := false
 	for i, arg := range cmd.Args {
 		if arg == "-p" {
 			foundP = true
@@ -114,6 +114,9 @@ func TestClaudeAdapterBuildCommandIncludesPrintFlag(t *testing.T) {
 		}
 		if arg == "--max-turns" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "200" {
 			foundMaxTurns = true
+		}
+		if arg == "--max-output-tokens" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "128000" {
+			foundMaxOutputTokens = true
 		}
 	}
 
@@ -125,5 +128,8 @@ func TestClaudeAdapterBuildCommandIncludesPrintFlag(t *testing.T) {
 	}
 	if !foundMaxTurns {
 		t.Fatalf("BuildCommand args %v missing --max-turns 200", cmd.Args)
+	}
+	if !foundMaxOutputTokens {
+		t.Fatalf("BuildCommand args %v missing --max-output-tokens 128000", cmd.Args)
 	}
 }

@@ -136,6 +136,7 @@ type Router struct {
 	hybrid       *HybridRetriever
 	enrichStore  *EnrichmentStore
 	tracker      *UsageTracker
+	reranker     Reranker // nil when reranking is disabled
 	sessionTools map[string]bool
 }
 
@@ -181,6 +182,11 @@ func (r *Router) SetUsageTracker(tracker *UsageTracker) {
 	r.tracker = tracker
 }
 
+// SetReranker configures the LLM listwise reranker. Pass nil to disable.
+func (r *Router) SetReranker(rr Reranker) {
+	r.reranker = rr
+}
+
 // ActivateSessionTool adds a tool to the current session's always-include set.
 func (r *Router) ActivateSessionTool(name string) {
 	if r.sessionTools == nil {
@@ -205,6 +211,19 @@ func (r *Router) buildSearchText(name, description string) string {
 	text := name + " " + description
 	if tags := r.tagsForTool(name); len(tags) > 0 {
 		text += " " + strings.Join(tags, " ")
+	}
+	return text
+}
+
+// buildEmbeddingText returns the text used for embedding vector computation.
+// Includes name + description + BodySummary when available.
+// Falls back to name + description when BodySummary is empty.
+func (r *Router) buildEmbeddingText(name, description string) string {
+	text := name + " " + description
+	if r.registry != nil {
+		if t, ok := r.registry.Get(name); ok && t.BodySummary != "" {
+			text += "\n" + t.BodySummary
+		}
 	}
 	return text
 }
@@ -254,18 +273,21 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	// Build a BM25 index over candidate tool descriptions (reuses cached index).
 	docs := make([]bm25.Doc, len(candidates))
 	candidateTexts := make(map[string]string, len(candidates))
+	embeddingTexts := make(map[string]string, len(candidates))
 	for i, t := range candidates {
 		name := candidateNames[i]
-		text := r.buildSearchText(name, ExtractToolDescription(t))
+		desc := ExtractToolDescription(t)
+		text := r.buildSearchText(name, desc)
 		docs[i] = bm25.Doc{ID: name, Text: text}
 		candidateTexts[name] = text
+		embeddingTexts[name] = r.buildEmbeddingText(name, desc)
 	}
 	r.bm25Index.RebuildIfChanged(docs)
 	scores := r.bm25Index.Score(userMessage)
 
 	// Fuse with vector scores when hybrid retrieval is active.
 	if r.hybrid != nil {
-		scores = r.hybrid.FuseScores(userMessage, scores, candidateTexts)
+		scores = r.hybrid.FuseScores(userMessage, scores, embeddingTexts)
 
 		// Debug log top-5 tools with fused scores.
 		type debugEntry struct {
@@ -321,6 +343,69 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		return scoredList[i].score > scoredList[j].score
 	})
 
+	// Rerank top candidates when reranker is configured and candidates exceed budget.
+	var rerankerResult []string
+	if r.reranker != nil && len(scoredList) > MaxToolBudget {
+		// Take top-20 candidates for reranking.
+		rerankerCount := 20
+		if rerankerCount > len(scoredList) {
+			rerankerCount = len(scoredList)
+		}
+		summaries := make([]CandidateSummary, rerankerCount)
+		for i := 0; i < rerankerCount; i++ {
+			name := candidateNames[scoredList[i].index]
+			desc := ExtractToolDescription(candidates[scoredList[i].index])
+			var bodySummary string
+			if r.registry != nil {
+				if t, ok := r.registry.Get(name); ok {
+					bodySummary = t.BodySummary
+				}
+			}
+			summaries[i] = CandidateSummary{
+				Name:        name,
+				Description: desc,
+				BodySummary: bodySummary,
+			}
+		}
+
+		reranked, err := r.reranker.Rerank(userMessage, summaries, 5)
+		if err != nil || len(reranked) == 0 {
+			if err != nil {
+				log.Printf("[Router] WARN: reranker failed: %v, falling back to fused scores", err)
+			}
+			// Fall back to fused score ordering — no change to scoredList
+		} else {
+			rerankerResult = reranked
+			// Promote reranked results to front of scored list.
+			// Build a set of reranked names for quick lookup.
+			rerankedSet := make(map[string]bool, len(reranked))
+			for _, name := range reranked {
+				rerankedSet[name] = true
+			}
+
+			// Build new scored list: reranked first (in reranker order), then remaining by fused score.
+			newScored := make([]scored, 0, len(scoredList))
+			// Add reranked items first, in reranker order.
+			for _, name := range reranked {
+				for _, s := range scoredList {
+					if candidateNames[s.index] == name {
+						newScored = append(newScored, s)
+						break
+					}
+				}
+			}
+			// Supplement with remaining items from fused score list.
+			for _, s := range scoredList {
+				if !rerankedSet[candidateNames[s.index]] {
+					newScored = append(newScored, s)
+				}
+			}
+
+			// If reranker returned < 5 results, the remaining are already supplemented from fused scores.
+			scoredList = newScored
+		}
+	}
+
 	dynamicCount := 0
 	result := make([]map[string]interface{}, len(core), MaxToolBudget+2)
 	copy(result, core)
@@ -354,7 +439,19 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		rankedNames[i] = candidateNames[s.index]
 		rankedScores[i] = s.score
 	}
-	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, rankedNames, rankedScores, selectedNames)
+
+	// Compute bodyAware: true when hybrid is active and any candidate has non-empty BodySummary.
+	bodyAware := false
+	if r.hybrid != nil && r.registry != nil {
+		for _, name := range candidateNames {
+			if t, ok := r.registry.Get(name); ok && t.BodySummary != "" {
+				bodyAware = true
+				break
+			}
+		}
+	}
+
+	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, selectedNames, rerankerResult)
 
 	return result
 }
@@ -424,9 +521,11 @@ func writeRouteLog(
 	userMessage string,
 	totalTools, coreCount, candidateCount int,
 	hybridActive bool,
+	bodyAware bool,
 	rankedNames []string,
 	rankedScores []float64,
 	selectedNames []string,
+	rerankerResult []string,
 ) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -458,6 +557,7 @@ func writeRouteLog(
 	fmt.Fprintf(f, "Message: %s\n", msgPreview)
 	fmt.Fprintf(f, "Total tools: %d | Core: %d | Candidates: %d | Hybrid: %v\n",
 		totalTools, coreCount, candidateCount, hybridActive)
+	fmt.Fprintf(f, "Body-aware: %v\n", bodyAware)
 
 	// Top-20 candidates by score
 	n := 20
@@ -474,6 +574,16 @@ func writeRouteLog(
 	for _, name := range selectedNames {
 		fmt.Fprintf(f, "  - %s\n", name)
 	}
+
+	// Reranker output (if invoked)
+	if len(rerankerResult) > 0 {
+		fmt.Fprintf(f, "Reranker output (%d):", len(rerankerResult))
+		for i, name := range rerankerResult {
+			fmt.Fprintf(f, " #%d %s", i+1, name)
+		}
+		fmt.Fprintln(f)
+	}
+
 	fmt.Fprintln(f, "---")
 }
 

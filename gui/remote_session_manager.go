@@ -7,6 +7,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 const maxRecentImportantEvents = 5
@@ -22,6 +26,12 @@ type RemoteSessionManager struct {
 	stallDetector      *StallDetector
 	completionAnalyzer *CompletionAnalyzer
 	progressTracker    *ProgressTracker
+
+	// Second-layer Harness modules (lazily initialized via setters).
+	contextInjector  *configfile.ContextInjector
+	feedbackInjector *remote.FeedbackInjector
+	failureLearner   *remote.FailureLearner
+	harnessGate      *security.HarnessGate
 
 	mu       sync.RWMutex
 	sessions map[string]*RemoteSession
@@ -83,6 +93,24 @@ func (m *RemoteSessionManager) SetHubClient(client *RemoteHubClient) {
 func (m *RemoteSessionManager) GetHubClient() *RemoteHubClient {
 	return m.hubClient
 }
+
+// SetContextInjector configures the layered context injection module.
+func (m *RemoteSessionManager) SetContextInjector(ci *configfile.ContextInjector) {
+	m.contextInjector = ci
+}
+
+// SetFeedbackInjector configures the feedback injection module.
+func (m *RemoteSessionManager) SetFeedbackInjector(fi *remote.FeedbackInjector) {
+	m.feedbackInjector = fi
+}
+
+// SetFailureLearner configures the failure learning module.
+func (m *RemoteSessionManager) SetFailureLearner(fl *remote.FailureLearner) {
+	m.failureLearner = fl
+}
+
+// SetHarnessGate configures the output validation gate module.
+func (m *RemoteSessionManager) SetHarnessGate(hg *security.HarnessGate) { m.harnessGate = hg }
 
 // executionStrategyForMode returns the correct ExecutionStrategy for the
 // given provider execution mode. All current providers use SDK or headless

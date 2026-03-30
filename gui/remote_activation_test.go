@@ -108,7 +108,7 @@ func TestBuildClaudeLaunchEnv_SetsAnthropicFields(t *testing.T) {
 	if env["CLAUDE_CODE_USE_COLORS"] != "true" {
 		t.Fatalf("CLAUDE_CODE_USE_COLORS = %q", env["CLAUDE_CODE_USE_COLORS"])
 	}
-	if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != "64000" {
+	if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != "128000" {
 		t.Fatalf("CLAUDE_CODE_MAX_OUTPUT_TOKENS = %q", env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"])
 	}
 }

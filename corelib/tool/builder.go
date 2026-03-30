@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"log"
 	"sort"
 	"strings"
 
@@ -20,6 +21,7 @@ type DynamicToolBuilder struct {
 	hybrid         *HybridRetriever // nil when no embedder set
 	enrichStore    *EnrichmentStore
 	tracker        *UsageTracker
+	reranker       Reranker         // nil when reranking is disabled
 }
 
 // NewDynamicToolBuilder creates a builder backed by the given registry.
@@ -55,6 +57,24 @@ func (b *DynamicToolBuilder) SetEnrichmentStore(store *EnrichmentStore) {
 // SetUsageTracker configures the usage tracker for experience-aware scoring.
 func (b *DynamicToolBuilder) SetUsageTracker(tracker *UsageTracker) {
 	b.tracker = tracker
+}
+
+// SetReranker configures the LLM listwise reranker. Pass nil to disable.
+func (b *DynamicToolBuilder) SetReranker(rr Reranker) {
+	b.reranker = rr
+}
+
+// buildEmbeddingText returns the text used for embedding vector computation.
+// Includes name + description + BodySummary when available.
+// Falls back to name + description when BodySummary is empty.
+func (b *DynamicToolBuilder) buildEmbeddingText(name, description string) string {
+	text := name + " " + description
+	if b.registry != nil {
+		if t, ok := b.registry.Get(name); ok && t.BodySummary != "" {
+			text += "\n" + t.BodySummary
+		}
+	}
+	return text
 }
 
 // BuildAll returns tool definitions for every available tool (no filtering).
@@ -109,6 +129,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	// Score remaining dynamic tools using BM25 (reuses cached index).
 	docs := make([]bm25.Doc, len(dynamic))
 	dynamicTexts := make(map[string]string, len(dynamic))
+	embeddingTexts := make(map[string]string, len(dynamic))
 	for i, t := range dynamic {
 		var text string
 		if b.enrichStore != nil {
@@ -121,13 +142,14 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		}
 		docs[i] = bm25.Doc{ID: t.Name, Text: text}
 		dynamicTexts[t.Name] = text
+		embeddingTexts[t.Name] = b.buildEmbeddingText(t.Name, t.Description)
 	}
 	b.bm25Index.RebuildIfChanged(docs)
 	bm25Scores := b.bm25Index.Score(userMessage)
 
 	// Fuse with vector scores when hybrid retrieval is active.
 	if b.hybrid != nil {
-		bm25Scores = b.hybrid.FuseScores(userMessage, bm25Scores, dynamicTexts)
+		bm25Scores = b.hybrid.FuseScores(userMessage, bm25Scores, embeddingTexts)
 	}
 
 	// Three-signal scoring: retrieval + experience + priority.
@@ -158,6 +180,54 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	sort.Slice(scoredList, func(i, j int) bool {
 		return scoredList[i].score > scoredList[j].score
 	})
+
+	// Rerank top candidates when reranker is configured and candidates exceed threshold.
+	if b.reranker != nil && len(scoredList) > b.maxDirectTools {
+		rerankerCount := 20
+		if rerankerCount > len(scoredList) {
+			rerankerCount = len(scoredList)
+		}
+		summaries := make([]CandidateSummary, rerankerCount)
+		for i := 0; i < rerankerCount; i++ {
+			summaries[i] = CandidateSummary{
+				Name:        scoredList[i].tool.Name,
+				Description: scoredList[i].tool.Description,
+				BodySummary: scoredList[i].tool.BodySummary,
+			}
+		}
+
+		reranked, err := b.reranker.Rerank(userMessage, summaries, 5)
+		if err != nil || len(reranked) == 0 {
+			if err != nil {
+				log.Printf("[Builder] WARN: reranker failed: %v, falling back to fused scores", err)
+			}
+			// Fall back to fused score ordering — no change to scoredList
+		} else {
+			// Promote reranked results to front of scored list.
+			rerankedSet := make(map[string]bool, len(reranked))
+			for _, name := range reranked {
+				rerankedSet[name] = true
+			}
+
+			newScored := make([]scored, 0, len(scoredList))
+			// Add reranked items first, in reranker order.
+			for _, name := range reranked {
+				for _, s := range scoredList {
+					if s.tool.Name == name {
+						newScored = append(newScored, s)
+						break
+					}
+				}
+			}
+			// Supplement with remaining items from fused score list.
+			for _, s := range scoredList {
+				if !rerankedSet[s.tool.Name] {
+					newScored = append(newScored, s)
+				}
+			}
+			scoredList = newScored
+		}
+	}
 
 	limit := b.maxDynamic - len(groupActivated)
 	if limit < 0 {

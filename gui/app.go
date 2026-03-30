@@ -835,7 +835,7 @@ func (a *App) buildClaudeLaunchEnv(
 
 	env := map[string]string{}
 	env["CLAUDE_CODE_USE_COLORS"] = "true"
-	env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "64000"
+	env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
 	env["MAX_THINKING_TOKENS"] = "10000"
 
 	if !selectedModel.IsBuiltin {
@@ -1738,7 +1738,7 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 	// Exclusively use AUTH_TOKEN for custom providers
 	env["ANTHROPIC_AUTH_TOKEN"] = selectedModel.ApiKey
 	env["CLAUDE_CODE_USE_COLORS"] = "true"
-	env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "64000"
+	env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
 	env["MAX_THINKING_TOKENS"] = "31999"
 	switch strings.ToLower(selectedModel.ModelName) {
 	case "kimi":

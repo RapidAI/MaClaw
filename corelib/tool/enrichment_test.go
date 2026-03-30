@@ -119,7 +119,7 @@ func TestParseEnrichmentResponse(t *testing.T) {
 }
 
 func TestGenerateEnrichmentPrompt(t *testing.T) {
-	sys, usr := GenerateEnrichmentPrompt("my_tool", "Does cool stuff")
+	sys, usr := GenerateEnrichmentPrompt("my_tool", "Does cool stuff", "")
 	if sys == "" || usr == "" {
 		t.Error("expected non-empty prompts")
 	}

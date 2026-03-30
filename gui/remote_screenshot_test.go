@@ -10,19 +10,21 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // --- BuildScreenshotCommand tests ---
 
 func TestBuildScreenshotCommand_ReturnsNonEmpty(t *testing.T) {
-	cmd := BuildScreenshotCommand()
+	cmd := remote.BuildScreenshotCommand()
 	if cmd == "" {
 		t.Fatal("BuildScreenshotCommand() returned empty string on supported platform")
 	}
 }
 
 func TestBuildScreenshotCommand_PlatformKeywords(t *testing.T) {
-	cmd := BuildScreenshotCommand()
+	cmd := remote.BuildScreenshotCommand()
 
 	switch runtime.GOOS {
 	case "windows":
@@ -46,7 +48,7 @@ func TestBuildScreenshotCommand_PlatformKeywords(t *testing.T) {
 // --- ParseScreenshotOutput tests ---
 
 func TestParseScreenshotOutput_EmptyInput(t *testing.T) {
-	_, err := ParseScreenshotOutput("")
+	_, err := remote.ParseScreenshotOutput("")
 	if err == nil {
 		t.Fatal("expected error for empty input")
 	}
@@ -60,7 +62,7 @@ func TestParseScreenshotOutput_ValidPNG(t *testing.T) {
 	pngData := append([]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}, []byte("fake-png-body")...)
 	encoded := base64.StdEncoding.EncodeToString(pngData)
 
-	result, err := ParseScreenshotOutput(encoded)
+	result, err := remote.ParseScreenshotOutput(encoded)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,7 +91,7 @@ func TestParseScreenshotOutput_ValidPNGWithWhitespace(t *testing.T) {
 	// Inject whitespace and newlines
 	withWhitespace := "  \n" + encoded + "\n  \t"
 
-	result, err := ParseScreenshotOutput(withWhitespace)
+	result, err := remote.ParseScreenshotOutput(withWhitespace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +103,7 @@ func TestParseScreenshotOutput_ValidPNGWithWhitespace(t *testing.T) {
 func TestParseScreenshotOutput_InvalidBase64(t *testing.T) {
 	// After stripping non-base64 characters, "!!!not-valid-base64!!!" becomes
 	// "notvalidbase64" which is decodable but not PNG data.
-	_, err := ParseScreenshotOutput("!!!not-valid-base64!!!")
+	_, err := remote.ParseScreenshotOutput("!!!not-valid-base64!!!")
 	if err == nil {
 		t.Fatal("expected error for invalid base64")
 	}
@@ -115,7 +117,7 @@ func TestParseScreenshotOutput_InvalidBase64(t *testing.T) {
 func TestParseScreenshotOutput_NotPNG(t *testing.T) {
 	// Valid base64 but not PNG data
 	nonPNG := base64.StdEncoding.EncodeToString([]byte("this is not a PNG file at all"))
-	_, err := ParseScreenshotOutput(nonPNG)
+	_, err := remote.ParseScreenshotOutput(nonPNG)
 	if err == nil {
 		t.Fatal("expected error for non-PNG data")
 	}
@@ -127,7 +129,7 @@ func TestParseScreenshotOutput_NotPNG(t *testing.T) {
 // --- DetectDisplayServer tests ---
 
 func TestDetectDisplayServer_ReasonableResult(t *testing.T) {
-	available, reason := DetectDisplayServer()
+	available, reason := remote.DetectDisplayServer()
 
 	switch runtime.GOOS {
 	case "windows", "darwin":
@@ -280,9 +282,9 @@ func TestSanitizeWindowTitle_AllowsSafeCharacters(t *testing.T) {
 		{"test_app (debug)", "test_app (debug)"},
 	}
 	for _, tc := range cases {
-		got := sanitizeWindowTitle(tc.input)
+		got := remote.SanitizeWindowTitle(tc.input)
 		if got != tc.want {
-			t.Errorf("sanitizeWindowTitle(%q) = %q, want %q", tc.input, got, tc.want)
+			t.Errorf("SanitizeWindowTitle(%q) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
 }
@@ -299,32 +301,32 @@ func TestSanitizeWindowTitle_StripsDangerousCharacters(t *testing.T) {
 		{"a&b|c"},
 	}
 	for _, tc := range cases {
-		got := sanitizeWindowTitle(tc.input)
+		got := remote.SanitizeWindowTitle(tc.input)
 		// Should not contain any of: ' " ` $ ; & | \
 		for _, bad := range []string{"'", "\"", "`", "$", ";", "&", "|", "\\"} {
 			if strings.Contains(got, bad) {
-				t.Errorf("sanitizeWindowTitle(%q) = %q, still contains %q", tc.input, got, bad)
+				t.Errorf("SanitizeWindowTitle(%q) = %q, still contains %q", tc.input, got, bad)
 			}
 		}
 	}
 }
 
 func TestSanitizeWindowTitle_EmptyAfterSanitize(t *testing.T) {
-	got := sanitizeWindowTitle("$$$")
+	got := remote.SanitizeWindowTitle("$$")
 	if got != "" {
 		t.Errorf("expected empty string, got %q", got)
 	}
 }
 
 func TestBuildWindowScreenshotCommand_EmptyAfterSanitize(t *testing.T) {
-	cmd := BuildWindowScreenshotCommand("$$$")
+	cmd := remote.BuildWindowScreenshotCommand("$$")
 	if cmd != "" {
 		t.Errorf("expected empty command for fully-sanitized title, got: %s", cmd)
 	}
 }
 
 func TestBuildWindowScreenshotCommand_ValidTitle(t *testing.T) {
-	cmd := BuildWindowScreenshotCommand("Notepad")
+	cmd := remote.BuildWindowScreenshotCommand("Notepad")
 	if cmd == "" {
 		t.Fatal("expected non-empty command for valid title")
 	}
@@ -339,7 +341,7 @@ func TestParseScreenshotOutput_BOMPrefix(t *testing.T) {
 	// Prepend UTF-8 BOM
 	withBOM := "\xEF\xBB\xBF" + encoded
 
-	result, err := ParseScreenshotOutput(withBOM)
+	result, err := remote.ParseScreenshotOutput(withBOM)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,7 +355,7 @@ func TestParseScreenshotOutput_RawBase64NoPadding(t *testing.T) {
 	// Encode without padding
 	encoded := base64.RawStdEncoding.EncodeToString(pngData)
 
-	result, err := ParseScreenshotOutput(encoded)
+	result, err := remote.ParseScreenshotOutput(encoded)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -373,30 +375,12 @@ func TestParseScreenshotOutput_NullBytesStripped(t *testing.T) {
 	// Inject null bytes
 	withNulls := encoded[:4] + "\x00" + encoded[4:]
 
-	result, err := ParseScreenshotOutput(withNulls)
+	result, err := remote.ParseScreenshotOutput(withNulls)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result != encoded {
 		t.Fatalf("expected %q, got %q", encoded, result)
-	}
-}
-
-func TestStripNonBase64(t *testing.T) {
-	cases := []struct {
-		input, want string
-	}{
-		{"abc123+/=", "abc123+/="},
-		{"abc\x00def", "abcdef"},
-		{"\xEF\xBB\xBFabc", "abc"},
-		{"a b\tc\nd", "abcd"},
-		{"hello世界", "hello"},
-	}
-	for _, tc := range cases {
-		got := stripNonBase64(tc.input)
-		if got != tc.want {
-			t.Errorf("stripNonBase64(%q) = %q, want %q", tc.input, got, tc.want)
-		}
 	}
 }
 
@@ -435,7 +419,7 @@ func TestCaptureScreenshot_LogPrefixInErrors(t *testing.T) {
 	}
 }
 
-// --- isBlankImage / isImageBlank tests ---
+// --- IsBlankImage tests ---
 
 func TestIsBlankImage_AllBlackPNG(t *testing.T) {
 	// Create a small all-black PNG image.
@@ -453,7 +437,7 @@ func TestIsBlankImage_AllBlackPNG(t *testing.T) {
 	}
 	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
 
-	if !isBlankImage(b64) {
+	if !remote.IsBlankImage(b64) {
 		t.Fatal("expected all-black image to be detected as blank")
 	}
 }
@@ -472,7 +456,7 @@ func TestIsBlankImage_ColorfulPNG(t *testing.T) {
 	}
 	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
 
-	if isBlankImage(b64) {
+	if remote.IsBlankImage(b64) {
 		t.Fatal("expected colorful image to NOT be detected as blank")
 	}
 }
@@ -492,7 +476,7 @@ func TestIsBlankImage_NearBlackPNG(t *testing.T) {
 	}
 	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
 
-	if !isBlankImage(b64) {
+	if !remote.IsBlankImage(b64) {
 		t.Fatal("expected near-black image to be detected as blank")
 	}
 }
@@ -517,7 +501,7 @@ func TestIsBlankImage_MixedWithBrightPixel(t *testing.T) {
 	}
 	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
 
-	if isBlankImage(b64) {
+	if remote.IsBlankImage(b64) {
 		t.Fatal("expected image with bright pixels to NOT be detected as blank")
 	}
 }
@@ -525,40 +509,19 @@ func TestIsBlankImage_MixedWithBrightPixel(t *testing.T) {
 func TestIsBlankImage_InvalidBase64(t *testing.T) {
 	// Invalid base64 should return false (not blank) — don't discard
 	// potentially valid data due to decode errors.
-	if isBlankImage("not-valid-base64!!!") {
+	if remote.IsBlankImage("not-valid-base64!!!") {
 		t.Fatal("expected invalid base64 to return false (not blank)")
 	}
 }
 
 func TestIsBlankImage_EmptyString(t *testing.T) {
-	if isBlankImage("") {
+	if remote.IsBlankImage("") {
 		t.Fatal("expected empty string to return false (not blank)")
 	}
 }
 
-func TestIsqrt(t *testing.T) {
-	cases := []struct {
-		input uint64
-		want  uint64
-	}{
-		{0, 0},
-		{1, 1},
-		{4, 2},
-		{9, 3},
-		{10, 3},
-		{100, 10},
-		{10000, 100},
-	}
-	for _, tc := range cases {
-		got := isqrt(tc.input)
-		if got != tc.want {
-			t.Errorf("isqrt(%d) = %d, want %d", tc.input, got, tc.want)
-		}
-	}
-}
-
 func TestBuildScreenshotCommand_BlankDetectionKeywords(t *testing.T) {
-	cmd := BuildScreenshotCommand()
+	cmd := remote.BuildScreenshotCommand()
 	switch runtime.GOOS {
 	case "windows":
 		// Windows command should include blank detection logic.
@@ -592,7 +555,7 @@ func TestBuildWindowsWindowScreenshotCommand_PrintWindowFallback(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific test")
 	}
-	cmd := BuildWindowScreenshotCommand("Notepad")
+	cmd := remote.BuildWindowScreenshotCommand("Notepad")
 	if !strings.Contains(cmd, "PrintWindow") {
 		t.Fatal("expected Windows window command to use PrintWindow API")
 	}
@@ -600,4 +563,3 @@ func TestBuildWindowsWindowScreenshotCommand_PrintWindowFallback(t *testing.T) {
 		t.Fatal("expected Windows window command to include blank detection")
 	}
 }
-

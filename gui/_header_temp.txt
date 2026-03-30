@@ -1,0 +1,87 @@
+﻿package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"mime"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/project"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
+)
+
+// imHeartbeatMsg is the sentinel value sent as a progress update to keep the
+// Hub-side response timer alive. It must never be delivered to the end user.
+const imHeartbeatMsg = "__heartbeat__"
+
+// ---------------------------------------------------------------------------
+// IMMessageHandler 鈥?handles IM messages forwarded from Hub via WebSocket
+// ---------------------------------------------------------------------------
+
+// MessageAttachment represents a file/image/audio attachment from IM.
+type MessageAttachment struct {
+	Type     string `json:"type"`      // "image", "file", "audio", "video"
+	FileName string `json:"file_name"` // Display name
+	MimeType string `json:"mime_type"` // MIME type
+	Data     string `json:"data"`      // Base64-encoded content
+	Size     int64  `json:"size"`      // Original size in bytes
+}
+
+// IMUserMessage is the payload of an "im.user_message" from Hub.
+type IMUserMessage struct {
+	UserID             string              `json:"user_id"`
+	Platform           string              `json:"platform"`
+	Text               string              `json:"text"`
+	Attachments        []MessageAttachment `json:"attachments,omitempty"`          // File/image attachments from user
+	MinIterations      int                 `json:"min_iterations,omitempty"`       // floor for agent loop iterations (used by scheduled tasks)
+	IsBackground       bool                `json:"is_background,omitempty"`        // true for scheduled tasks / auto-picked tasks (uses separate HTTP client)
+	BackgroundSlotKind string              `json:"background_slot_kind,omitempty"` // "coding", "scheduled", "auto" 鈥?determines concurrency slot (default: "scheduled")
+}
+
+// IMAgentResponse is the structured reply sent back to Hub.
+type IMAgentResponse struct {
+	Text            string             `json:"text"`
+	Fields          []IMResponseField  `json:"fields,omitempty"`
+	Actions         []IMResponseAction `json:"actions,omitempty"`
+	ImageKey        string             `json:"image_key,omitempty"`
+	FileData        string             `json:"file_data,omitempty"`
+	FileName        string             `json:"file_name,omitempty"`
+	FileMimeType    string             `json:"file_mime_type,omitempty"`
+	LocalFilePath   string             `json:"local_file_path,omitempty"`
+	LocalFilePaths  []string           `json:"local_file_paths,omitempty"`
+	ThumbnailBase64 string             `json:"thumbnail_base64,omitempty"`
+	Error           string             `json:"error,omitempty"`
+	Deferred        bool               `json:"deferred,omitempty"`
+}
+
+// IMResponseField is a key-value field in the agent response.
+type IMResponseField struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// IMResponseAction is a suggested action in the agent response.
+type IMResponseAction struct {
+	Label   string `json:"label"`
+	Command string `json:"command"`
+	Style   string `json:"style"`
+}
+
+// ---------------------------------------------------------------------------
+// Conversation Memory
+// ---------------------------------------------------------------------------

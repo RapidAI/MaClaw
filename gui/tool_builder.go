@@ -50,6 +50,11 @@ func (b *DynamicToolBuilder) SetUsageTracker(tracker *tool.UsageTracker) {
 	b.inner.SetUsageTracker(tracker)
 }
 
+// SetReranker delegates to corelib/tool.DynamicToolBuilder.SetReranker.
+func (b *DynamicToolBuilder) SetReranker(rr tool.Reranker) {
+	b.inner.SetReranker(rr)
+}
+
 // syncRegistry refreshes the inner corelib registry from the gui registry.
 // The corelib builder's BM25 index is preserved; only the registry is swapped.
 func (b *DynamicToolBuilder) syncRegistry() {
@@ -73,6 +78,8 @@ func guiRegistryToCorelib(guiReg *ToolRegistry) *tool.Registry {
 			Status:      tool.Status(gt.Status),
 			InputSchema: gt.InputSchema,
 			Required:    gt.Required,
+			Body:        gt.Body,
+			BodySummary: gt.BodySummary,
 		})
 	}
 	return reg

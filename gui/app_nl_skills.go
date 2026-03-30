@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"gopkg.in/yaml.v3"
 )
 
@@ -405,6 +407,74 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 		defs = append(defs, d)
 	}
 	return defs
+}
+
+// AsRegisteredTools converts all active NL Skills to corelib tool.RegisteredTool
+// entries with Body populated from SKILL.md content. This is the bridge between
+// the NL Skill system and the body-aware tool routing pipeline.
+func (e *SkillExecutor) AsRegisteredTools() []tool.RegisteredTool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	skills := e.loadSkills()
+	var result []tool.RegisteredTool
+	for _, s := range skills {
+		if s.Status != "active" {
+			continue
+		}
+		body := e.readSkillBody(s)
+		var bodySummary string
+		if body != "" {
+			bodySummary = tool.TruncateBody(body, tool.DefaultBodyMaxChars)
+		}
+		rt := tool.RegisteredTool{
+			Name:        s.Name,
+			Description: s.Description,
+			Category:    tool.CategorySkill,
+			Tags:        s.Triggers,
+			Status:      tool.StatusAvailable,
+			Body:        body,
+			BodySummary: bodySummary,
+		}
+		result = append(result, rt)
+	}
+	return result
+}
+
+// readSkillBody reads the SKILL.md content for a skill entry.
+// For file-based skills with a SkillDir, it reads SKILL.md from that directory.
+// For hub/other skills without SkillDir, it checks the primary skills directory.
+// Errors are logged as warnings and do not prevent skill registration.
+func (e *SkillExecutor) readSkillBody(entry NLSkillEntry) string {
+	// Try SkillDir first (file-based skills).
+	if entry.SkillDir != "" {
+		mdPath := filepath.Join(entry.SkillDir, "SKILL.md")
+		data, err := os.ReadFile(mdPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				log.Printf("[SkillRegister] WARN: cannot read SKILL.md for %s: %v", entry.Name, err)
+			}
+			return ""
+		}
+		return string(data)
+	}
+
+	// For hub-installed skills, check the primary skills directory where
+	// extractFiles writes SKILL.md during installation.
+	if entry.Source == "hub" || entry.Source == "agent_skill" {
+		primaryDir, err := skill.PrimarySkillsDir()
+		if err != nil {
+			return ""
+		}
+		mdPath := filepath.Join(primaryDir, entry.Name, "SKILL.md")
+		data, err := os.ReadFile(mdPath)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+
+	return ""
 }
 
 // Execute runs a Skill by name. Steps are executed sequentially; if a step

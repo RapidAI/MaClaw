@@ -428,7 +428,7 @@ func captureDesktopScreenshot(screenIndex int) (string, error) {
 	if !EnsureScreenRecordingPermission() {
 		return "", fmt.Errorf("screen recording permission not granted")
 	}
-	available, reason := DetectDisplayServer()
+	available, reason := remote.DetectDisplayServer()
 	if !available {
 		return "", fmt.Errorf("no graphical display: %s", reason)
 	}
@@ -474,11 +474,11 @@ func captureDesktopScreenshot(screenIndex int) (string, error) {
 		return "", fmt.Errorf("screenshot failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 
-	base64Data, err := ParseScreenshotOutput(stdout.String())
+	base64Data, err := remote.ParseScreenshotOutput(stdout.String())
 	if err != nil {
 		return "", fmt.Errorf("screenshot parse error: %w", err)
 	}
-	if isBlankImage(base64Data) {
+	if remote.IsBlankImage(base64Data) {
 		return "", fmt.Errorf("screenshot is blank — display may be off or locked")
 	}
 	return base64Data, nil

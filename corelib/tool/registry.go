@@ -26,6 +26,16 @@ func (r *Registry) Register(tool RegisteredTool) error {
 	if tool.Status == "" {
 		tool.Status = StatusAvailable
 	}
+	// Auto-populate Body from BuiltinBodies when Body is empty.
+	if tool.Body == "" {
+		if body, ok := BuiltinBodies[tool.Name]; ok {
+			tool.Body = body
+			tool.BodySummary = TruncateBody(body, DefaultBodyMaxChars)
+		}
+	} else if tool.BodySummary == "" {
+		// Body is set but BodySummary wasn't computed — fill it in.
+		tool.BodySummary = TruncateBody(tool.Body, DefaultBodyMaxChars)
+	}
 	r.mu.Lock()
 	cp := tool
 	r.tools[tool.Name] = &cp

@@ -61,6 +61,7 @@ func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		// it to exit mid-task when creating large projects (e.g. a full game).
 		// Each tool call consumes one turn, so complex tasks need many turns.
 		"--max-turns", "200",
+		"--max-output-tokens", "128000",
 	}
 
 	// When resuming a previous Claude Code session, use --resume <session_id>
