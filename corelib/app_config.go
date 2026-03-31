@@ -127,6 +127,8 @@ type AppConfig struct {
 	OnboardingDone bool `json:"onboarding_done,omitempty"`
 	// Embedding — 向量搜索开关
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
+	// ASR — 语音识别开关
+	ASREnabled bool `json:"asr_enabled"`
 	// UI Zoom — 界面缩放比例 (0.5 ~ 2.0, 0 = 默认 1.0)
 	UIZoomFactor float64 `json:"ui_zoom_factor,omitempty"`
 	// SSH — 预配置的远程主机列表

@@ -25,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 const (
@@ -222,7 +224,10 @@ type getUploadURLReq struct {
 }
 
 type getUploadURLResp struct {
+	Ret              int    `json:"ret,omitempty"`
+	ErrMsg           string `json:"errmsg,omitempty"`
 	UploadParam      string `json:"upload_param,omitempty"`
+	UploadFullURL    string `json:"upload_full_url,omitempty"`
 	ThumbUploadParam string `json:"thumb_upload_param,omitempty"`
 }
 
@@ -685,7 +690,7 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 				if ctxToken != "" && g.shouldSendQueueNotice(fromUserID) {
 					_ = g.SendText(context.Background(), OutgoingText{
 						ToUserID:     fromUserID,
-						Text:         "⏳ 上一条消息还在处理中，你的消息已排队，请稍候…",
+						Text:         i18n.T(i18n.MsgMessageQueued, "zh"),
 						ContextToken: ctxToken,
 					})
 				}
@@ -1188,8 +1193,9 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 	if err := json.Unmarshal(data, &uploadResp); err != nil {
 		return nil, fmt.Errorf("getUploadUrl decode: %w", err)
 	}
-	if uploadResp.UploadParam == "" {
-		return nil, fmt.Errorf("getUploadUrl returned no upload_param")
+	if uploadResp.UploadParam == "" && uploadResp.UploadFullURL == "" {
+		return nil, fmt.Errorf("getUploadUrl returned no upload_param and no upload_full_url, ret=%d errmsg=%q resp=%s",
+			uploadResp.Ret, uploadResp.ErrMsg, string(data))
 	}
 
 	// Step 2: Encrypt and upload to CDN
@@ -1198,9 +1204,15 @@ func (g *Gateway) uploadToCDN(ctx context.Context, plaintext []byte, toUserID st
 		return nil, fmt.Errorf("AES encrypt: %w", err)
 	}
 
-	cdnBase := g.config.cdnURL()
-	cdnURL := cdnBase + "/upload?encrypted_query_param=" + url.QueryEscape(uploadResp.UploadParam) +
-		"&filekey=" + url.QueryEscape(filekey)
+	// Prefer upload_full_url (new API format) over legacy upload_param + cdnBase concatenation.
+	var cdnURL string
+	if uploadResp.UploadFullURL != "" {
+		cdnURL = uploadResp.UploadFullURL
+	} else {
+		cdnBase := g.config.cdnURL()
+		cdnURL = cdnBase + "/upload?encrypted_query_param=" + url.QueryEscape(uploadResp.UploadParam) +
+			"&filekey=" + url.QueryEscape(filekey)
+	}
 
 	var downloadParam string
 	var lastErr error

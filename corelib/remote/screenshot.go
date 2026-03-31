@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/png"
 	"math"
+	"runtime/debug"
 	"strings"
 )
 
@@ -145,6 +146,7 @@ func DownsizeScreenshotBase64(base64Data string, sizeLimit int) (string, error) 
 	if err != nil {
 		return base64Data, fmt.Errorf("png decode for downsize: %w", err)
 	}
+	decoded = nil // free raw bytes — img holds the pixel data now
 
 	bounds := img.Bounds()
 	origW := bounds.Dx()
@@ -184,4 +186,63 @@ func DownsizeScreenshotBase64(base64Data string, sizeLimit int) (string, error) 
 
 	result := base64.StdEncoding.EncodeToString(buf.Bytes())
 	return result, nil
+}
+
+// IsBlankImageBytes checks if raw PNG bytes represent a blank (all-black) image.
+// Use this when you already have decoded bytes to avoid a redundant base64 decode.
+func IsBlankImageBytes(decoded []byte) bool {
+	img, err := png.Decode(bytes.NewReader(decoded))
+	if err != nil {
+		return false
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() == 0 || bounds.Dy() == 0 {
+		return true
+	}
+	return isImageBlank(img, blankImageThreshold)
+}
+
+// ParseScreenshotOutputOpt is an optimised version of ParseScreenshotOutput
+// that also performs blank-image detection on the already-decoded bytes,
+// avoiding a second base64-decode + PNG-decode round-trip.
+//
+// Returns (base64Data, isBlank, error).
+func ParseScreenshotOutputOpt(stdout string) (string, bool, error) {
+	cleaned := strings.TrimPrefix(stdout, "\xEF\xBB\xBF")
+	cleaned = strings.TrimSpace(cleaned)
+	cleaned = strings.Join(strings.Fields(cleaned), "")
+	cleaned = stripNonBase64(cleaned)
+
+	if cleaned == "" {
+		return "", false, fmt.Errorf("screenshot command produced no output")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(cleaned)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(cleaned, "="))
+		if err != nil {
+			preview := cleaned
+			if len(preview) > 80 {
+				preview = preview[:80] + "..."
+			}
+			return "", false, fmt.Errorf("invalid base64 encoding (len=%d, preview=%s)", len(cleaned), preview)
+		}
+	}
+
+	if len(decoded) < len(pngMagicBytes) || !bytes.Equal(decoded[:len(pngMagicBytes)], pngMagicBytes) {
+		return "", false, fmt.Errorf("output is not PNG (decoded %d bytes, header=%x)", len(decoded), safeHeader(decoded, 8))
+	}
+
+	// Blank check on already-decoded bytes — no extra base64 round-trip.
+	blank := IsBlankImageBytes(decoded)
+
+	canonical := base64.StdEncoding.EncodeToString(decoded)
+	return canonical, blank, nil
+}
+
+// ReleaseScreenshotMemory aggressively returns screenshot-related memory to
+// the OS. Call this after the screenshot pipeline completes to avoid holding
+// large image buffers until the next GC cycle (which can take minutes).
+func ReleaseScreenshotMemory() {
+	debug.FreeOSMemory()
 }

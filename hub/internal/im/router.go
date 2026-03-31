@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 // ---------------------------------------------------------------------------
@@ -237,7 +239,7 @@ const broadcastMachineID = "__all__"
 func (r *MessageRouter) SelectMachine(ctx context.Context, userID, name string) MachineSelectResult {
 	machines := r.devices.FindAllOnlineMachinesForUser(ctx, userID)
 	if len(machines) == 0 {
-		return MachineSelectResult{OK: false, Message: "📴 当前没有在线设备。"}
+		return MachineSelectResult{OK: false, Message: i18n.T(i18n.MsgNoOnlineDevices, "zh")}
 	}
 	if len(machines) == 1 {
 		return MachineSelectResult{OK: true, Message: fmt.Sprintf("✅ 当前只有一台在线设备 %s，无需切换。", machines[0].Name)}
@@ -563,6 +565,7 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 			"user_id":  userID,
 			"platform": platformName,
 			"text":     text,
+			"lang":     "zh",
 		},
 	}
 	if len(attachments) > 0 {
@@ -713,7 +716,7 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 	ch := make(chan result, len(targets))
 
 	// Create a shared dedup filter so identical progress messages from
-	// different devices (e.g. "📨 收到，正在处理中…") are only sent once.
+	// different devices (e.g. "⏳ 需要一点时间处理，请稍候...") are only sent once.
 	dedupCtx := withBroadcastDedup(ctx, newBroadcastProgressDedup())
 
 	// Pop attachments once and re-stash for each target device so every
@@ -724,7 +727,7 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 		go func(m OnlineMachineInfo, atts []MessageAttachment) {
 			// Acquire IM-specific LLM semaphore slot; degrade on timeout.
 			if !r.llmSemIM.Acquire(dedupCtx) {
-				ch <- result{name: m.Name, resp: nil, err: fmt.Errorf("LLM 并发已满，请稍后重试")}
+				ch <- result{name: m.Name, resp: nil, err: fmt.Errorf("%s", i18n.T(i18n.MsgLLMConcurrencyFull, "zh"))}
 				return
 			}
 			defer r.llmSemIM.Release()
@@ -768,7 +771,7 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 		return &GenericResponse{
 			StatusCode: 200,
 			StatusIcon: "📢",
-			Title:      "群聊回复",
+			Title:      i18n.T(i18n.MsgGroupChatReply, "zh"),
 			Body:       fmt.Sprintf("📢 %d 条回复已分别发送（含图片/文件）", richDelivered),
 		}, nil
 	}
@@ -776,7 +779,7 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 	return &GenericResponse{
 		StatusCode: 200,
 		StatusIcon: "📢",
-		Title:      "群聊回复",
+		Title:      i18n.T(i18n.MsgGroupChatReply, "zh"),
 		Body:       FormatBroadcastReply(deviceReplies),
 	}, nil
 }
@@ -816,7 +819,7 @@ func (r *MessageRouter) routeToMultiple(ctx context.Context, userID, platformNam
 		go func(m OnlineMachineInfo) {
 			// Acquire IM-specific LLM semaphore slot; degrade on timeout.
 			if !r.llmSemIM.Acquire(dedupCtx) {
-				ch <- result{name: m.Name, resp: nil, err: fmt.Errorf("LLM 并发已满，请稍后重试")}
+				ch <- result{name: m.Name, resp: nil, err: fmt.Errorf("%s", i18n.T(i18n.MsgLLMConcurrencyFull, "zh"))}
 				return
 			}
 			defer r.llmSemIM.Release()
@@ -842,7 +845,7 @@ func (r *MessageRouter) routeToMultiple(ctx context.Context, userID, platformNam
 	return &GenericResponse{
 		StatusCode: 200,
 		StatusIcon: "📨",
-		Title:      "多设备回复",
+		Title:      i18n.T(i18n.MsgMultiDeviceReply, "zh"),
 		Body:       FormatBroadcastReply(deviceReplies),
 	}, nil
 }

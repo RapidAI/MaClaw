@@ -22,23 +22,24 @@ const missedRunCatchUpThreshold = 1 * time.Hour
 
 // ScheduledTask represents a single scheduled task.
 type ScheduledTask struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Action     string     `json:"action"`                // what the agent should do (natural language)
-	Hour       int        `json:"hour"`                  // 0-23
-	Minute     int        `json:"minute"`                // 0-59
-	DayOfWeek  int        `json:"day_of_week"`           // -1=every day, 0=Sun..6=Sat
-	DayOfMonth int        `json:"day_of_month"`          // -1=any, 1-31
-	StartDate  string     `json:"start_date,omitempty"`  // "2006-01-02", empty=no limit
-	EndDate    string     `json:"end_date,omitempty"`    // "2006-01-02", empty=no limit
-	TaskType   string     `json:"task_type,omitempty"`   // "reminder" (default) or "process"
-	Status     string     `json:"status"`                // "active", "paused", "expired"
-	CreatedAt  time.Time  `json:"created_at"`
-	LastRunAt  *time.Time `json:"last_run_at,omitempty"`
-	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
-	RunCount   int        `json:"run_count"`
-	LastResult string     `json:"last_result,omitempty"`
-	LastError  string     `json:"last_error,omitempty"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Action          string     `json:"action"`                       // what the agent should do (natural language)
+	Hour            int        `json:"hour"`                         // 0-23
+	Minute          int        `json:"minute"`                       // 0-59
+	DayOfWeek       int        `json:"day_of_week"`                  // -1=every day, 0=Sun..6=Sat
+	DayOfMonth      int        `json:"day_of_month"`                 // -1=any, 1-31
+	IntervalMinutes int        `json:"interval_minutes,omitempty"`   // >0: repeat every N minutes (overrides Hour/Minute for scheduling)
+	StartDate       string     `json:"start_date,omitempty"`         // "2006-01-02", empty=no limit
+	EndDate         string     `json:"end_date,omitempty"`           // "2006-01-02", empty=no limit
+	TaskType        string     `json:"task_type,omitempty"`          // "reminder" (default) or "process"
+	Status          string     `json:"status"`                       // "active", "paused", "expired"
+	CreatedAt       time.Time  `json:"created_at"`
+	LastRunAt       *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt       *time.Time `json:"next_run_at,omitempty"`
+	RunCount        int        `json:"run_count"`
+	LastResult      string     `json:"last_result,omitempty"`
+	LastError       string     `json:"last_error,omitempty"`
 }
 
 // TaskExecutor is called when a task fires. It receives the task action
@@ -304,6 +305,9 @@ func (m *Manager) Add(t ScheduledTask) (string, error) {
 	if t.TaskType != "" && t.TaskType != TaskTypeReminder && t.TaskType != TaskTypeProcess {
 		return "", fmt.Errorf("scheduler: task_type must be %q or %q", TaskTypeReminder, TaskTypeProcess)
 	}
+	if t.IntervalMinutes < 0 {
+		return "", fmt.Errorf("scheduler: interval_minutes must be >= 0")
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -447,6 +451,13 @@ func (m *Manager) Update(id string, args map[string]interface{}) error {
 		}
 		if v, ok := args["day_of_month"].(float64); ok {
 			m.tasks[i].DayOfMonth = int(v)
+		}
+		if v, ok := args["interval_minutes"].(float64); ok {
+			iv := int(v)
+			if iv < 0 {
+				return fmt.Errorf("scheduler: interval_minutes must be >= 0")
+			}
+			m.tasks[i].IntervalMinutes = iv
 		}
 		if v, ok := args["start_date"].(string); ok {
 			m.tasks[i].StartDate = v
@@ -599,7 +610,31 @@ func (m *Manager) detectMissedRuns(now time.Time) []string {
 // lastScheduledBefore returns the most recent scheduled execution time
 // strictly before `before` for the given task, or nil if none exists.
 func (m *Manager) lastScheduledBefore(t *ScheduledTask, before time.Time) *time.Time {
-	// Walk backwards from `before` day by day (up to 400 days).
+	// Interval mode: walk backwards from `before` in interval steps.
+	if t.IntervalMinutes > 0 {
+		interval := time.Duration(t.IntervalMinutes) * time.Minute
+		anchor := time.Date(before.Year(), before.Month(), before.Day(), t.Hour, t.Minute, 0, 0, time.Local)
+		if t.LastRunAt != nil {
+			anchor = *t.LastRunAt
+		}
+		if !anchor.Before(before) {
+			// anchor is in the future; walk back
+			elapsed := anchor.Sub(before)
+			steps := int(elapsed/interval) + 1
+			anchor = anchor.Add(-time.Duration(steps) * interval)
+		}
+		// Now anchor <= before. Find the latest anchor + k*interval < before.
+		candidate := anchor
+		for candidate.Add(interval).Before(before) {
+			candidate = candidate.Add(interval)
+		}
+		if candidate.Before(before) && m.matchesDay(t, candidate) && m.inDateRange(t, candidate) {
+			return &candidate
+		}
+		return nil
+	}
+
+	// Fixed-time mode: walk backwards day by day (up to 400 days).
 	for d := 0; d < 400; d++ {
 		day := before.AddDate(0, 0, -d)
 		candidate := time.Date(day.Year(), day.Month(), day.Day(), t.Hour, t.Minute, 0, 0, time.Local)
@@ -619,7 +654,12 @@ func (m *Manager) lastScheduledBefore(t *ScheduledTask, before time.Time) *time.
 
 // calcNext computes the next execution time after `after`.
 func (m *Manager) calcNext(t *ScheduledTask, after time.Time) *time.Time {
-	// Start from the target time today.
+	// Interval mode: repeat every N minutes.
+	if t.IntervalMinutes > 0 {
+		return m.calcNextInterval(t, after)
+	}
+
+	// Fixed-time mode: run once per matching day at Hour:Minute.
 	candidate := time.Date(after.Year(), after.Month(), after.Day(), t.Hour, t.Minute, 0, 0, time.Local)
 
 	// If candidate is not after `after`, move to tomorrow.
@@ -635,6 +675,42 @@ func (m *Manager) calcNext(t *ScheduledTask, after time.Time) *time.Time {
 		candidate = candidate.AddDate(0, 0, 1)
 	}
 	return nil // no future match found
+}
+
+// calcNextInterval computes the next execution time for interval-based tasks.
+// The anchor is LastRunAt (if available) or today's Hour:Minute. The next run
+// is the earliest anchor + k*interval that is strictly after `after` and falls
+// on a matching day within the date range.
+func (m *Manager) calcNextInterval(t *ScheduledTask, after time.Time) *time.Time {
+	if t.IntervalMinutes <= 0 {
+		return nil // defensive: should not reach here
+	}
+	interval := time.Duration(t.IntervalMinutes) * time.Minute
+
+	// Determine anchor: last run, or today's start time.
+	anchor := time.Date(after.Year(), after.Month(), after.Day(), t.Hour, t.Minute, 0, 0, time.Local)
+	if t.LastRunAt != nil {
+		anchor = *t.LastRunAt
+	}
+
+	// Fast-forward: find the first anchor + k*interval > after.
+	candidate := anchor
+	if !candidate.After(after) {
+		// How many intervals to skip?
+		elapsed := after.Sub(candidate)
+		steps := int(elapsed/interval) + 1
+		candidate = candidate.Add(time.Duration(steps) * interval)
+	}
+
+	// Scan up to 400 days worth of candidates.
+	limit := after.AddDate(0, 0, 400)
+	for candidate.Before(limit) {
+		if m.matchesDay(t, candidate) && m.inDateRange(t, candidate) {
+			return &candidate
+		}
+		candidate = candidate.Add(interval)
+	}
+	return nil
 }
 
 func (m *Manager) matchesDay(t *ScheduledTask, d time.Time) bool {
@@ -719,4 +795,30 @@ func TruncateStr(s string, maxLen int) string {
 		return s
 	}
 	return string(r[:maxLen]) + "..."
+}
+
+// FormatInterval returns a human-readable string for IntervalMinutes.
+// ≥1440 → "N天", ≥60 → "N小时", otherwise "N分钟".
+// Fractional values are shown when not evenly divisible (e.g. "1.5小时").
+func FormatInterval(minutes int) string {
+	if minutes <= 0 {
+		return ""
+	}
+	if minutes >= 1440 {
+		days := minutes / 1440
+		rem := minutes % 1440
+		if rem == 0 {
+			return fmt.Sprintf("%d天", days)
+		}
+		return fmt.Sprintf("%.1f天", float64(minutes)/1440.0)
+	}
+	if minutes >= 60 {
+		hours := minutes / 60
+		rem := minutes % 60
+		if rem == 0 {
+			return fmt.Sprintf("%d小时", hours)
+		}
+		return fmt.Sprintf("%.1f小时", float64(minutes)/60.0)
+	}
+	return fmt.Sprintf("%d分钟", minutes)
 }

@@ -474,11 +474,11 @@ func captureDesktopScreenshot(screenIndex int) (string, error) {
 		return "", fmt.Errorf("screenshot failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 
-	base64Data, err := remote.ParseScreenshotOutput(stdout.String())
+	base64Data, blank, err := remote.ParseScreenshotOutputOpt(stdout.String())
 	if err != nil {
 		return "", fmt.Errorf("screenshot parse error: %w", err)
 	}
-	if remote.IsBlankImage(base64Data) {
+	if blank {
 		return "", fmt.Errorf("screenshot is blank — display may be off or locked")
 	}
 	return base64Data, nil

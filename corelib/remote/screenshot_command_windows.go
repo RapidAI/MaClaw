@@ -79,6 +79,7 @@ func buildWindowsScreenshotCommand() string {
 		`if (-not (Test-BlankBitmap $bmp)) { ` +
 		`$b64 = ConvertTo-Base64Png $bmp; $bmp.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
 		`$bmp.Dispose(); ` +
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); ` +
 		`$hDesktop = [ScreenUtil]::GetDesktopWindow(); ` +
 		`$hDC = [ScreenUtil]::GetWindowDC($hDesktop); ` +
 		`$memDC = [ScreenUtil]::CreateCompatibleDC($hDC); ` +
@@ -93,6 +94,7 @@ func buildWindowsScreenshotCommand() string {
 		`if (-not (Test-BlankBitmap $bmp2)) { ` +
 		`$b64 = ConvertTo-Base64Png $bmp2; $bmp2.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
 		`$bmp2.Dispose(); ` +
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); ` +
 		`$tsconOk = $false; ` +
 		`try { ` +
 		`$sid = (Get-Process -Id $PID).SessionId; ` +
@@ -111,6 +113,7 @@ func buildWindowsScreenshotCommand() string {
 		`$b64 = ConvertTo-Base64Png $bmp3; $bmp3.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
 		`$bmp3.Dispose() }; ` +
 		`}; ` +
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); ` +
 		buildWindowsPrintWindowComposite() +
 		buildWindowsDXGICapture() +
 		`Write-Error "screen is blank - all 5 capture methods failed"; exit 1`
@@ -155,7 +158,8 @@ func buildWindowsPrintWindowComposite() string {
 		`$cg.Dispose(); ` +
 		`if ($capturedAny -and -not (Test-BlankBitmap $composite)) { ` +
 		`$b64 = ConvertTo-Base64Png $composite; $composite.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
-		`$composite.Dispose(); `
+		`$composite.Dispose(); ` +
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); `
 }
 
 func buildWindowsDXGICapture() string {

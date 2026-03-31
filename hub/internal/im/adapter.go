@@ -76,6 +76,7 @@ type IncomingMessage struct {
 	MessageID     string              `json:"message_id,omitempty"` // Platform message ID for dedup (optional)
 	MessageType   string              `json:"message_type"`        // "text", "image", "file", "audio", "interactive"
 	Text          string              `json:"text"`                // Text content
+	Lang          string              `json:"lang,omitempty"`      // User language ("zh", "en"); empty defaults to "zh"
 	Attachments   []MessageAttachment `json:"attachments,omitempty"` // File/image attachments
 	RawPayload    json.RawMessage     `json:"raw_payload"`         // Raw platform message for plugin-specific handling
 	Timestamp     time.Time           `json:"timestamp"`

@@ -107,14 +107,18 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
 
     // ── Step 4: WeChat Binding ──
     const [wxDone, setWxDone] = useState(false);
+    const [wxSkipped, setWxSkipped] = useState(false);
     const [wxQrUrl, setWxQrUrl] = useState("");
     const [wxStatus, setWxStatus] = useState("");
     const [wxMsg, setWxMsg] = useState("");
     const [wxLoading, setWxLoading] = useState(false);
     const wxPollingRef = useRef(false);
 
+    // wxDone = actually bound; wxSkipped = user chose to skip
+    const wxCompleted = wxDone || wxSkipped;
+
     // Step completion map (memoized to avoid array re-creation)
-    const stepDone = useMemo(() => [false, regDone, modeDone, llmDone, wxDone], [regDone, modeDone, llmDone, wxDone]);
+    const stepDone = useMemo(() => [false, regDone, modeDone, llmDone, wxCompleted], [regDone, modeDone, llmDone, wxCompleted]);
 
     // Navigation guards
     const canNext = step < TOTAL_STEPS && stepDone[step];
@@ -164,12 +168,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
 
     // Auto-close when all done
     useEffect(() => {
-        if (regDone && modeDone && llmDone && wxDone) {
+        if (regDone && modeDone && llmDone && wxCompleted) {
             onSaveField({ onboarding_done: true });
             const timer = setTimeout(onClose, 1500);
             return () => clearTimeout(timer);
         }
-    }, [regDone, modeDone, llmDone, wxDone, onClose]);
+    }, [regDone, modeDone, llmDone, wxCompleted, onClose]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
 
@@ -430,7 +434,9 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                         const s = i + 1;
                         const done = stepDone[s];
                         const active = s === step;
-                        const circleColor = done ? "#22c55e" : active ? "#6366f1" : "#cbd5e1";
+                        // Step 4 skipped: show grey instead of green
+                        const skippedStep = s === 4 && wxSkipped && !wxDone;
+                        const circleColor = skippedStep ? "#94a3b8" : done ? "#22c55e" : active ? "#6366f1" : "#cbd5e1";
                         return (
                             <div key={s} style={{ display: "flex", alignItems: "center" }}>
                                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 54 }}>
@@ -441,7 +447,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                                         fontSize: "0.72rem", fontWeight: 700,
                                         transition: "background 0.2s",
                                     }}>
-                                        {done ? "✓" : s}
+                                        {skippedStep ? "—" : done ? "✓" : s}
                                     </div>
                                     <span style={{
                                         fontSize: "0.62rem", marginTop: 3,
@@ -699,6 +705,16 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                                         {t("微信已绑定", "WeChat connected")}
                                     </div>
                                 </div>
+                            ) : wxSkipped ? (
+                                <div style={{
+                                    padding: "16px", textAlign: "center", borderRadius: 8,
+                                    background: "rgba(148,163,184,0.08)", border: "1px solid rgba(148,163,184,0.2)",
+                                }}>
+                                    <div style={{ fontSize: "1.4rem", marginBottom: 4 }}>⏭️</div>
+                                    <div style={{ fontSize: "0.82rem", color: "#94a3b8", fontWeight: 600 }}>
+                                        {t("已跳过，可稍后在设置中绑定", "Skipped — you can bind later in settings")}
+                                    </div>
+                                </div>
                             ) : (
                                 <div>
                                     {!wxQrUrl && wxStatus !== "error" && (
@@ -778,10 +794,10 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
 
                     {isLastStep ? (
                         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            {!wxDone && (
+                            {!wxDone && !wxSkipped && (
                                 <button
                                     onClick={() => {
-                                        setWxDone(true);
+                                        setWxSkipped(true);
                                     }}
                                     style={{
                                         padding: "7px 14px", fontSize: "0.75rem", fontWeight: 500, borderRadius: 6,
@@ -797,12 +813,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                                     onSaveField({ onboarding_done: true });
                                     onClose();
                                 }}
-                                disabled={!wxDone}
+                                disabled={!wxCompleted}
                                 style={{
                                     padding: "7px 20px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,
-                                    background: wxDone ? "#22c55e" : "#cbd5e1",
+                                    background: wxCompleted ? "#22c55e" : "#cbd5e1",
                                     color: "#fff", border: "none",
-                                    cursor: wxDone ? "pointer" : "default",
+                                    cursor: wxCompleted ? "pointer" : "default",
                                 }}
                             >
                                 {t("完成", "Finish")}

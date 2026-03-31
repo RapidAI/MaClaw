@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
@@ -341,7 +342,7 @@ func (m *weixinGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	}
 
 	a := m.app
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 
 	h := NewIMMessageHandler(a, a.remoteSessions)
 	// Wire the same subsystems that createAndWireHubClient does.
@@ -400,7 +401,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		if gw != nil {
 			_ = gw.SendText(context.Background(), weixin.OutgoingText{
 				ToUserID:     msg.FromUserID,
-				Text:         "⚠️ 本地 LLM 未配置，请先在设置中配置 MaClaw LLM。",
+				Text:         i18n.T(i18n.MsgLLMNotConfigured, "zh"),
 				ContextToken: msg.ContextToken,
 			})
 		}
@@ -451,6 +452,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 	// Progress callback — send intermediate status to the WeChat user.
 	// Use a rate limiter to avoid flooding: at most one progress message per 5s.
 	var lastProgress time.Time
+	var lastProgressText string
 	onProgress := func(progressText string) {
 		if progressText == "" || progressText == imHeartbeatMsg {
 			return
@@ -459,10 +461,16 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		if now.Sub(lastProgress) < 5*time.Second {
 			return
 		}
+		// Dedup: suppress identical consecutive progress messages.
+		stripped := textutil.StripMarkdown(progressText)
+		if stripped == lastProgressText {
+			return
+		}
 		lastProgress = now
+		lastProgressText = stripped
 		_ = gw.SendText(context.Background(), weixin.OutgoingText{
 			ToUserID:     msg.FromUserID,
-			Text:         "⏳ " + textutil.StripMarkdown(progressText),
+			Text:         i18n.T(i18n.MsgProgressPrefix, "zh") + textutil.StripMarkdown(progressText),
 			ContextToken: contextToken,
 		})
 	}
@@ -472,6 +480,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		UserID:      msg.FromUserID,
 		Platform:    "weixin_local",
 		Text:        text,
+		Lang:        "zh",
 		Attachments: attachments,
 	}, onProgress)
 
@@ -538,12 +547,16 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 	if resp.ImageKey != "" {
 		imgData, err := base64.StdEncoding.DecodeString(resp.ImageKey)
 		if err == nil && len(imgData) > 0 {
-			_ = gw.SendMedia(ctx, weixin.OutgoingMedia{
+			if err := gw.SendMedia(ctx, weixin.OutgoingMedia{
 				ToUserID:     toUserID,
 				ContextToken: contextToken,
 				FileData:     imgData,
 				MediaType:    "image",
-			})
+			}); err != nil {
+				log.Printf("[weixin-mgr] SendMedia screenshot failed (to=%s size=%d): %v", toUserID, len(imgData), err)
+			} else {
+				log.Printf("[weixin-mgr] SendMedia screenshot OK (to=%s size=%d)", toUserID, len(imgData))
+			}
 		}
 	}
 

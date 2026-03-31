@@ -210,7 +210,8 @@ func buildMultiMonLevel1CopyFromScreen() string {
 		`$g.Dispose(); ` +
 		`if (-not (Test-BlankBitmap $bmp)) { ` +
 		`$b64 = ConvertTo-Base64Png $bmp; $bmp.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
-		`$bmp.Dispose(); `
+		`$bmp.Dispose(); ` +
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); `
 }
 
 // buildMultiMonLevel2BitBlt returns the PowerShell fragment for
@@ -229,7 +230,8 @@ func buildMultiMonLevel2BitBlt() string {
 		`[ScreenUtil]::DeleteObject($hBmp) | Out-Null; ` +
 		`if (-not (Test-BlankBitmap $bmp2)) { ` +
 		`$b64 = ConvertTo-Base64Png $bmp2; $bmp2.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
-		`$bmp2.Dispose(); `
+		`$bmp2.Dispose(); ` +
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); `
 }
 
 // buildMultiMonLevel3Tscon returns the PowerShell fragment for
@@ -252,7 +254,8 @@ func buildMultiMonLevel3Tscon() string {
 		`if (-not (Test-BlankBitmap $bmp3)) { ` +
 		`$b64 = ConvertTo-Base64Png $bmp3; $bmp3.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
 		`$bmp3.Dispose() }; ` +
-		`}; ` // closes the if (-not $isLocked) block
+		`}; ` + // closes the if (-not $isLocked) block
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); `
 }
 
 // buildMultiMonLevel4PrintWindow returns the PowerShell fragment for
@@ -297,7 +300,8 @@ func buildMultiMonLevel4PrintWindow() string {
 		`$cg.Dispose(); ` +
 		`if ($capturedAny -and -not (Test-BlankBitmap $composite)) { ` +
 		`$b64 = ConvertTo-Base64Png $composite; $composite.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
-		`$composite.Dispose(); `
+		`$composite.Dispose(); ` +
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); `
 }
 
 // buildMultiMonLevel5DXGI returns the PowerShell fragment for
@@ -316,65 +320,50 @@ func buildMultiMonLevel5DXGI() string {
 // The monitor region is determined at runtime by querying
 // [System.Windows.Forms.Screen]::AllScreens[screenIndex].Bounds.
 func buildSingleMonitorScreenshotWindows(screenIndex int) string {
-	return fmt.Sprintf(
-		`Add-Type -AssemblyName System.Drawing; `+
-			`Add-Type -AssemblyName System.Windows.Forms; `+
-			`Add-Type @'`+"\n"+
-			`using System; using System.Drawing;`+"\n"+
-			`using System.Runtime.InteropServices;`+"\n"+
-			`public class MonUtil {`+"\n"+
-			`  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();`+"\n"+
-			`  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int nIndex);`+"\n"+
-			`  public const int SM_XVIRTUALSCREEN = 76;`+"\n"+
-			`  public const int SM_YVIRTUALSCREEN = 77;`+"\n"+
-			`  public const int SM_CXVIRTUALSCREEN = 78;`+"\n"+
-			`  public const int SM_CYVIRTUALSCREEN = 79;`+"\n"+
-			`}`+"\n"+
-			`'@;`+
-			`[MonUtil]::SetProcessDPIAware() | Out-Null; `+
-			// Helper functions
-			`function Test-BlankBitmap($bmp) { `+
-			`$step = [Math]::Max(1, [Math]::Floor([Math]::Sqrt($bmp.Width * $bmp.Height / 2000))); `+
-			`for ($y = 0; $y -lt $bmp.Height; $y += $step) { `+
-			`for ($x = 0; $x -lt $bmp.Width; $x += $step) { `+
-			`$px = $bmp.GetPixel($x, $y); `+
-			`if (($px.R + $px.G + $px.B) -gt 10) { return $false } `+
-			`} } return $true }; `+
-			`function ConvertTo-Base64Png($bmp) { `+
-			`$ms = New-Object System.IO.MemoryStream; `+
-			`$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); `+
-			`$b64 = [Convert]::ToBase64String($ms.ToArray()); `+
-			`$ms.Dispose(); return $b64 }; `+
+	// Use the same preamble as multi-monitor (includes ScreenUtil, helpers, lock check)
+	// then crop to the target monitor with BitBlt fallback for blank images.
+	return buildMultiMonVirtualDesktopPreamble() +
+		fmt.Sprintf(
 			// Validate screen index
 			`$screens = [System.Windows.Forms.Screen]::AllScreens; `+
-			`$idx = %d; `+
-			`if ($idx -lt 0 -or $idx -ge $screens.Length) { `+
-			`Write-Error "screen index $idx out of range: $($screens.Length) display(s) available"; exit 1 }; `+
-			// Get target monitor bounds
-			`$target = $screens[$idx].Bounds; `+
-			// Get virtual desktop bounds
-			`$vx = [MonUtil]::GetSystemMetrics([MonUtil]::SM_XVIRTUALSCREEN); `+
-			`$vy = [MonUtil]::GetSystemMetrics([MonUtil]::SM_YVIRTUALSCREEN); `+
-			`$vw = [MonUtil]::GetSystemMetrics([MonUtil]::SM_CXVIRTUALSCREEN); `+
-			`$vh = [MonUtil]::GetSystemMetrics([MonUtil]::SM_CYVIRTUALSCREEN); `+
-			`if ($vw -le 0 -or $vh -le 0) { `+
-			`$vx = 0; $vy = 0; `+
-			`$vw = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width; `+
-			`$vh = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height }; `+
-			// Capture full virtual desktop
-			`$fullBmp = New-Object System.Drawing.Bitmap($vw, $vh); `+
-			`$g = [System.Drawing.Graphics]::FromImage($fullBmp); `+
-			`try { $g.CopyFromScreen($vx, $vy, 0, 0, (New-Object System.Drawing.Size($vw, $vh))) } catch { }; `+
-			`$g.Dispose(); `+
-			// Crop to target monitor region
-			`$cropX = $target.X - $vx; `+
-			`$cropY = $target.Y - $vy; `+
-			`$cropRect = New-Object System.Drawing.Rectangle($cropX, $cropY, $target.Width, $target.Height); `+
-			`$monBmp = $fullBmp.Clone($cropRect, $fullBmp.PixelFormat); `+
-			`$fullBmp.Dispose(); `+
-			`if (-not (Test-BlankBitmap $monBmp)) { `+
-			`$b64 = ConvertTo-Base64Png $monBmp; $monBmp.Dispose(); [Console]::Out.Write($b64); exit 0 }; `+
-			`$monBmp.Dispose(); `+
-			`Write-Error "single monitor screenshot is blank"; exit 1`,
-		screenIndex)
+				`$idx = %d; `+
+				`if ($idx -lt 0 -or $idx -ge $screens.Length) { `+
+				`Write-Error "screen index $idx out of range: $($screens.Length) display(s) available"; exit 1 }; `+
+				`$target = $screens[$idx].Bounds; `+
+				`$cropX = $target.X - $vx; `+
+				`$cropY = $target.Y - $vy; `+
+				`$cropRect = New-Object System.Drawing.Rectangle($cropX, $cropY, $target.Width, $target.Height); `,
+			screenIndex) +
+		// Level 1: CopyFromScreen (same as multi-mon but crop to target)
+		`$fullBmp = New-Object System.Drawing.Bitmap($vw, $vh); ` +
+		`$g = [System.Drawing.Graphics]::FromImage($fullBmp); ` +
+		`try { $g.CopyFromScreen($vx, $vy, 0, 0, (New-Object System.Drawing.Size($vw, $vh))) } catch { }; ` +
+		`$g.Dispose(); ` +
+		`$monBmp = $fullBmp.Clone($cropRect, $fullBmp.PixelFormat); ` +
+		`$fullBmp.Dispose(); ` +
+		`if (-not (Test-BlankBitmap $monBmp)) { ` +
+		`$b64 = ConvertTo-Base64Png $monBmp; $monBmp.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
+		`$monBmp.Dispose(); ` +
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); ` +
+		// Level 2: BitBlt+CAPTUREBLT on full virtual desktop, then crop
+		`$hDesktop = [ScreenUtil]::GetDesktopWindow(); ` +
+		`$hDC = [ScreenUtil]::GetWindowDC($hDesktop); ` +
+		`$memDC = [ScreenUtil]::CreateCompatibleDC($hDC); ` +
+		`$hBmp = [ScreenUtil]::CreateCompatibleBitmap($hDC, $vw, $vh); ` +
+		`$old = [ScreenUtil]::SelectObject($memDC, $hBmp); ` +
+		`[ScreenUtil]::BitBlt($memDC, 0, 0, $vw, $vh, $hDC, $vx, $vy, 0x00CC0020 -bor 0x40000000) | Out-Null; ` +
+		`[ScreenUtil]::SelectObject($memDC, $old) | Out-Null; ` +
+		`$bmp2 = [System.Drawing.Image]::FromHbitmap($hBmp); ` +
+		`[ScreenUtil]::DeleteDC($memDC) | Out-Null; ` +
+		`[ScreenUtil]::ReleaseDC($hDesktop, $hDC) | Out-Null; ` +
+		`[ScreenUtil]::DeleteObject($hBmp) | Out-Null; ` +
+		`$monBmp2 = $bmp2.Clone($cropRect, $bmp2.PixelFormat); ` +
+		`$bmp2.Dispose(); ` +
+		`if (-not (Test-BlankBitmap $monBmp2)) { ` +
+		`$b64 = ConvertTo-Base64Png $monBmp2; $monBmp2.Dispose(); [Console]::Out.Write($b64); exit 0 }; ` +
+		`$monBmp2.Dispose(); ` +
+		`[System.GC]::Collect(); [System.GC]::WaitForPendingFinalizers(); ` +
+		// Close the if(-not $isLocked) block opened by the preamble
+		`}; ` +
+		`Write-Error "single monitor screenshot is blank - all capture methods failed"; exit 1`
 }

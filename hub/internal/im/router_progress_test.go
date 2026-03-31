@@ -328,7 +328,7 @@ func TestBroadcastProgressDedup(t *testing.T) {
 
 	// Both devices send the same progress text.
 	for _, id := range reqIDs {
-		router.HandleAgentProgress(id, "📨 收到，正在处理中，稍后发你结果…")
+		router.HandleAgentProgress(id, "⏳ 需要一点时间处理，请稍候...")
 	}
 
 	// Give progress delivery goroutines time to run.

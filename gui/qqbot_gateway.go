@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
@@ -176,7 +177,7 @@ func (m *qqBotGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	}
 
 	a := m.app
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 
 	h := NewIMMessageHandler(a, a.remoteSessions)
 	if a.capabilityGapDetector != nil {
@@ -260,7 +261,7 @@ func (m *qqBotGatewayManager) notifyHubUnavailable(msg qqbot.IncomingMessage) {
 	}
 	_ = gw.SendText(context.Background(), qqbot.OutgoingText{
 		OpenID: msg.OpenID,
-		Text:   "⚠️ 当前为多机模式，但 Hub 未连接。消息已回退到本地处理。\n请检查 Hub 连接状态，或切换回单机模式。",
+		Text:   i18n.T(i18n.MsgHubUnavailable, "zh"),
 	})
 }
 
@@ -301,7 +302,7 @@ func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
 		if gw != nil {
 			_ = gw.SendText(context.Background(), qqbot.OutgoingText{
 				OpenID: msg.OpenID,
-				Text:   "⚠️ 本地 LLM 未配置，请先在设置中配置 MaClaw LLM。",
+				Text:   i18n.T(i18n.MsgLLMNotConfigured, "zh"),
 			})
 		}
 		return
@@ -339,6 +340,7 @@ func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
 	}
 
 	var lastProgress time.Time
+	var lastProgressText string
 	onProgress := func(progressText string) {
 		if progressText == "" || progressText == imHeartbeatMsg {
 			return
@@ -347,10 +349,15 @@ func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
 		if now.Sub(lastProgress) < 5*time.Second {
 			return
 		}
+		stripped := textutil.StripMarkdown(progressText)
+		if stripped == lastProgressText {
+			return
+		}
 		lastProgress = now
+		lastProgressText = stripped
 		_ = gw.SendText(context.Background(), qqbot.OutgoingText{
 			OpenID: msg.OpenID,
-			Text:   "⏳ " + textutil.StripMarkdown(progressText),
+			Text:   i18n.T(i18n.MsgProgressPrefix, "zh") + textutil.StripMarkdown(progressText),
 		})
 	}
 
@@ -358,6 +365,7 @@ func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
 		UserID:      msg.OpenID,
 		Platform:    "qqbot_local",
 		Text:        text,
+		Lang:        "zh",
 		Attachments: attachments,
 	}, onProgress)
 

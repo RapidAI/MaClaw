@@ -1121,3 +1121,19 @@ export function CheckEmbeddingModel() {
 export function DownloadEmbeddingModel() {
   return window['go']['main']['App']['DownloadEmbeddingModel']();
 }
+
+export function GetASREnabled() {
+  return window['go']['main']['App']['GetASREnabled']();
+}
+
+export function SetASREnabled(arg1) {
+  return window['go']['main']['App']['SetASREnabled'](arg1);
+}
+
+export function CheckASRModel() {
+  return window['go']['main']['App']['CheckASRModel']();
+}
+
+export function DownloadASRModel() {
+  return window['go']['main']['App']['DownloadASRModel']();
+}

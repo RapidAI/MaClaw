@@ -10,12 +10,12 @@ import (
 
 // ScheduleItem 定时任务列表项。
 type ScheduleItem struct {
-	ID     string
-	Name   string
-	Status string // active, paused
-	Time   string // "HH:MM"
-	Runs   int
-	Action string
+	ID       string
+	Name     string
+	Status   string // active, paused
+	Time     string // "HH:MM" or "每N小时" etc.
+	Runs     int
+	Action   string
 }
 
 // ScheduleModel 定时任务视图。

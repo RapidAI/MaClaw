@@ -855,7 +855,7 @@ func (a *App) CleanupStaleNLSkills() []string {
 
 // RunNLSkillAsync 异步启动 skill 执行，返回 runID（Wails binding）。
 func (a *App) RunNLSkillAsync(skillName string) (string, error) {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.skillRunner == nil {
 		return "", fmt.Errorf("skill runner not initialized")
 	}
@@ -864,7 +864,7 @@ func (a *App) RunNLSkillAsync(skillName string) (string, error) {
 
 // GetNLSkillRunStatus 获取 skill 执行状态（Wails binding）。
 func (a *App) GetNLSkillRunStatus(runID string) (*SkillRunStatus, error) {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.skillRunner == nil {
 		return nil, fmt.Errorf("skill runner not initialized")
 	}
@@ -873,7 +873,7 @@ func (a *App) GetNLSkillRunStatus(runID string) (*SkillRunStatus, error) {
 
 // CancelNLSkillRun 取消正在执行的 skill（Wails binding）。
 func (a *App) CancelNLSkillRun(runID string) error {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.skillRunner == nil {
 		return fmt.Errorf("skill runner not initialized")
 	}
@@ -882,7 +882,7 @@ func (a *App) CancelNLSkillRun(runID string) error {
 
 // UploadNLSkillToMarket 手动打包并上传 skill 到 SkillMarket（Wails binding）。
 func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.skillExecutor == nil {
 		return "", fmt.Errorf("skill executor not initialized")
 	}

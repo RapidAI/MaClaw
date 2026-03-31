@@ -73,7 +73,7 @@ func (a *App) ProvideSwarmUserInput(runID, input string) error {
 // ensureSwarmOrchestrator lazily initialises the SwarmOrchestrator (thread-safe).
 func (a *App) ensureSwarmOrchestrator() {
 	swarmInitOnce.Do(func() {
-		a.ensureRemoteInfra()
+		a.ensureInteractionInfra()
 		llmCfg := a.GetMaclawLLMConfig()
 
 		sessionAdapter := &guiSessionAdapter{manager: a.remoteSessions}

@@ -11,8 +11,12 @@ import (
 )
 
 // IsRecurringTask returns true if the task is not a one-time task.
-// A one-time task has StartDate == EndDate (both set to the same date).
+// A one-time task has StartDate == EndDate (both set to the same date)
+// and no interval configured.
 func IsRecurringTask(t *ScheduledTask) bool {
+	if t.IntervalMinutes > 0 {
+		return true // interval tasks are always recurring
+	}
 	if t.StartDate == "" && t.EndDate == "" {
 		// No date range → recurring (every day / every week etc.)
 		return true
@@ -126,6 +130,10 @@ func writeICSFolded(b *strings.Builder, key, value string) {
 
 // buildRRule generates the RRULE string for a scheduled task.
 func buildRRule(t *ScheduledTask) string {
+	// Interval mode: use MINUTELY frequency.
+	if t.IntervalMinutes > 0 {
+		return fmt.Sprintf("FREQ=MINUTELY;INTERVAL=%d", t.IntervalMinutes)
+	}
 	if t.DayOfMonth > 0 {
 		return fmt.Sprintf("FREQ=MONTHLY;BYMONTHDAY=%d", t.DayOfMonth)
 	}

@@ -23,6 +23,7 @@ type IMUserMessage struct {
 	UserID      string              `json:"user_id"`
 	Platform    string              `json:"platform"`              // "feishu", "qbot", "openclaw"
 	Text        string              `json:"text"`
+	Lang        string              `json:"lang,omitempty"`        // User language ("zh", "en"); empty defaults to "zh"
 	Attachments []MessageAttachment `json:"attachments,omitempty"` // File/image attachments from user
 	Timestamp   int64               `json:"ts"`
 }

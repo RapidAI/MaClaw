@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 func estimateConversationEntryTokens(entries []conversationEntry) int {
@@ -442,13 +443,13 @@ func inferFileDeliveryMessage(fileName string) string {
 	lower := strings.ToLower(fileName)
 	switch {
 	case strings.Contains(lower, "requirement") || strings.Contains(lower, "需求"):
-		return "📋 需求文档已生成，请查看并确认需求是否准确，或提出修改意见。"
+		return i18n.T(i18n.MsgFileRequirements, "zh")
 	case strings.Contains(lower, "design") || strings.Contains(lower, "设计"):
-		return "🏗️ 技术设计文档已生成，请查看设计方案并确认，或提出修改意见。"
+		return i18n.T(i18n.MsgFileDesign, "zh")
 	case strings.Contains(lower, "task") || strings.Contains(lower, "任务"):
-		return "📝 任务列表已生成，请查看任务拆分是否合理，确认后开始执行。"
+		return i18n.T(i18n.MsgFileTaskList, "zh")
 	default:
-		return fmt.Sprintf("📄 已生成文件 %s，请查看并确认，或提出修改意见。", fileName)
+		return i18n.Tf(i18n.MsgFileGeneric, "zh", fileName)
 	}
 }
 

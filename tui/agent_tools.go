@@ -15,6 +15,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	configPkg "github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/project"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -154,18 +155,18 @@ func sessionDiagHint(status remote.SessionStatus, stallState remote.StallState, 
 	case remote.SessionBusy, remote.SessionRunning:
 		switch stallState {
 		case remote.StallStateSuspected:
-			parts = append(parts, "⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查")
+			parts = append(parts, i18n.T(i18n.MsgStallSuspected, "zh"))
 		case remote.StallStateStuck:
-			parts = append(parts, "⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话")
+			parts = append(parts, i18n.T(i18n.MsgStallStuck, "zh"))
 		default:
-			parts = append(parts, "⏳ 编程工具正在工作中，请等待后再检查进度")
+			parts = append(parts, i18n.T(i18n.MsgToolWorking, "zh"))
 		}
 	case remote.SessionWaitingInput:
-		parts = append(parts, "⚠️ 会话正在等待用户输入")
+		parts = append(parts, i18n.T(i18n.MsgWaitingInput, "zh"))
 	case remote.SessionExited:
-		parts = append(parts, "会话已退出")
+		parts = append(parts, i18n.T(i18n.MsgSessionExited, "zh"))
 	case remote.SessionError:
-		parts = append(parts, "⚠️ 会话出错")
+		parts = append(parts, i18n.T(i18n.MsgSessionError, "zh"))
 	}
 	return strings.Join(parts, "\n")
 }
@@ -533,13 +534,14 @@ func (h *TUIAgentHandler) toolCreateScheduledTask(args map[string]interface{}) s
 		return "定时任务管理器未初始化"
 	}
 	task := scheduler.ScheduledTask{
-		Name:       stringArg(args, "name"),
-		Action:     stringArg(args, "action"),
-		Hour:       intArg(args, "hour", 0),
-		Minute:     intArg(args, "minute", 0),
-		DayOfWeek:  intArg(args, "day_of_week", -1),
-		DayOfMonth: intArg(args, "day_of_month", -1),
-		TaskType:   stringArg(args, "task_type"),
+		Name:            stringArg(args, "name"),
+		Action:          stringArg(args, "action"),
+		Hour:            intArg(args, "hour", 0),
+		Minute:          intArg(args, "minute", 0),
+		DayOfWeek:       intArg(args, "day_of_week", -1),
+		DayOfMonth:      intArg(args, "day_of_month", -1),
+		IntervalMinutes: intArg(args, "interval_minutes", 0),
+		TaskType:        stringArg(args, "task_type"),
 	}
 	id, err := h.schedulerMgr.Add(task)
 	if err != nil {
@@ -566,7 +568,11 @@ func (h *TUIAgentHandler) toolListScheduledTasks() string {
 		if taskType == "" {
 			taskType = "reminder"
 		}
-		sb.WriteString(fmt.Sprintf("ID: %s  名称: %s  类型: %s  状态: %s  下次: %s\n", t.ID, t.Name, taskType, t.Status, next))
+		schedStr := fmt.Sprintf("%02d:%02d", t.Hour, t.Minute)
+		if t.IntervalMinutes > 0 {
+			schedStr = "每" + scheduler.FormatInterval(t.IntervalMinutes)
+		}
+		sb.WriteString(fmt.Sprintf("ID: %s  名称: %s  类型: %s  状态: %s  周期: %s  下次: %s\n", t.ID, t.Name, taskType, t.Status, schedStr, next))
 	}
 	return sb.String()
 }

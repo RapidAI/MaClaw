@@ -36,10 +36,11 @@ type Config struct {
 
 // IncomingMessage is a Telegram message received via long-polling.
 type IncomingMessage struct {
-	ChatID    int64
-	Text      string
-	Username  string
-	Timestamp time.Time
+	ChatID       int64
+	Text         string
+	Username     string
+	LanguageCode string // Telegram user's language_code (e.g. "en", "zh-hans")
+	Timestamp    time.Time
 	// Media fields (populated when the message contains a document/photo).
 	MediaType string // "image", "file", "voice", "video", or ""
 	MediaData []byte // raw file bytes (downloaded from Telegram)
@@ -256,10 +257,11 @@ func (g *Gateway) pollLoop(ctx context.Context) {
 			}
 
 			incoming := IncomingMessage{
-				ChatID:    m.Chat.ID,
-				Text:      text,
-				Username:  m.From.Username,
-				Timestamp: time.Unix(int64(m.Date), 0),
+				ChatID:       m.Chat.ID,
+				Text:         text,
+				Username:     m.From.Username,
+				LanguageCode: m.From.LanguageCode,
+				Timestamp:    time.Unix(int64(m.Date), 0),
 			}
 
 			// Download media if present
@@ -353,8 +355,9 @@ type tgVideo struct {
 }
 
 type tgUser struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	LanguageCode string `json:"language_code"`
 }
 
 type tgChat struct {

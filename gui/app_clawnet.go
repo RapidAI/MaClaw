@@ -1269,7 +1269,7 @@ func (a *App) ensureAutoTaskPicker() {
 		// Wire the executor: send the task to the agent via the IM handler,
 		// similar to how scheduled tasks work.
 		picker.SetExecutor(func(taskTitle, taskDescription string) (string, error) {
-			a.ensureRemoteInfra()
+			a.ensureInteractionInfra()
 			hubClient := a.hubClient()
 			if hubClient == nil {
 				return "", fmt.Errorf("hub client not available")

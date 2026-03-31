@@ -104,6 +104,7 @@ type App struct {
 	telegramGateway      *telegramGatewayManager
 	weixinGateway        *weixinGatewayManager
 	tokenUsageMu         sync.Mutex // guards AccumulateLLMTokenUsage
+	interactionInfraOnce sync.Once  // guards ensureInteractionInfra initialization
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -134,28 +135,99 @@ func NewApp() *App {
 // ensureRemoteInfra initializes remoteSessions, mcpRegistry, and skillExecutor
 // if they haven't been created yet. Call this before any remote operation.
 // Thread-safe: uses sync.Once-style check-lock-check to avoid races.
+// Only initializes Layer 0 (core) components for minimal startup memory.
 func (a *App) ensureRemoteInfra() {
 	// Ultra-fast path: atomic load, no lock.
 	if a.remoteInfraReady.Load() {
 		return
 	}
 	a.remoteInfraOnce.Do(func() {
-		a.initRemoteInfra()
+		a.initCoreInfra()
 		a.remoteInfraReady.Store(true)
 	})
 }
 
+// initRemoteInfra initializes ALL subsystems (Layer 0 + Layer 1 + Layer 2).
+// Kept for backward compatibility — goes through the proper Once guards.
 func (a *App) initRemoteInfra() {
+	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
+	a.initOnDemandInfra()
+}
+
+// ---------------------------------------------------------------------------
+// Layer 0 — Core infrastructure: minimal set needed for Hub connection and
+// basic IM message routing. Initialized at startup.
+// ---------------------------------------------------------------------------
+func (a *App) initCoreInfra() {
 	if a.remoteSessions == nil {
 		a.remoteSessions = NewRemoteSessionManager(a)
 	}
 	if a.mcpRegistry == nil {
 		a.mcpRegistry = NewMCPRegistry(a)
 	}
+	if a.skillExecutor == nil {
+		a.skillExecutor = NewSkillExecutor(a, a.mcpRegistry, a.remoteSessions)
+	}
+	if a.riskAssessor == nil {
+		a.riskAssessor = &RiskAssessor{}
+	}
+	if a.policyEngine == nil {
+		mode := ""
+		if cfg, err := a.LoadConfig(); err == nil {
+			mode = cfg.SecurityPolicyMode
+		}
+		a.policyEngine = NewPolicyEngineWithMode(mode)
+	}
+	if a.toolDefGenerator == nil {
+		builtins := (&IMMessageHandler{}).buildToolDefinitions()
+		a.toolDefGenerator = NewToolDefinitionGenerator(a.mcpRegistry, builtins)
+		a.toolDefGenerator.SetLocalMCPManager(a.localMCPManager)
+	}
+	if a.toolRouter == nil {
+		a.toolRouter = NewToolRouter(a.toolDefGenerator)
+	}
+	if a.sharedContext == nil {
+		a.sharedContext = NewSharedContextStore()
+	}
+	if a.toolSelector == nil {
+		a.toolSelector = NewToolSelector()
+	}
+	if a.configManager == nil {
+		a.configManager = NewConfigManager(a)
+	}
+	// Register OEM extra tools into the built-in tool registry.
+	{
+		registry := make(map[string]bool, len(remoteToolCatalog))
+		for name := range remoteToolCatalog {
+			registry[name] = true
+		}
+		if err := brand.RegisterExtraTools(registry); err != nil {
+			fmt.Printf("[initCoreInfra] WARNING: failed to register OEM extra tools: %v\n", err)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Layer 1 — Interaction infrastructure: components needed when the user
+// actually starts interacting (first IM message, first session launch, etc.).
+// Deferred from startup to reduce idle memory.
+// ---------------------------------------------------------------------------
+
+func (a *App) ensureInteractionInfra() {
+	a.ensureRemoteInfra()
+	a.interactionInfraOnce.Do(func() {
+		a.initInteractionInfra()
+	})
+}
+
+func (a *App) initInteractionInfra() {
 	if a.localMCPManager == nil {
 		a.localMCPManager = NewLocalMCPManager(a.mcpRegistry)
+		if a.toolDefGenerator != nil {
+			a.toolDefGenerator.SetLocalMCPManager(a.localMCPManager)
+		}
 		// Only start local MCP server processes if at least one has AutoStart enabled.
-		// This avoids spawning unnecessary Node.js/Bun child processes on startup.
 		hasAutoStart := false
 		for _, e := range a.mcpRegistry.ListLocalServers() {
 			if !e.Disabled && e.AutoStart {
@@ -166,9 +238,6 @@ func (a *App) initRemoteInfra() {
 		if hasAutoStart {
 			go a.localMCPManager.SyncFromConfig()
 		}
-	}
-	if a.skillExecutor == nil {
-		a.skillExecutor = NewSkillExecutor(a, a.mcpRegistry, a.remoteSessions)
 	}
 	if a.skillMarketClient == nil {
 		a.skillMarketClient = NewSkillMarketClient(a)
@@ -203,16 +272,6 @@ func (a *App) initRemoteInfra() {
 		a.skillRunner.uploadTrigger = a.autoUploadTrigger
 		a.skillRunner.packageFn = a.packageSkillForMarket
 	}
-	if a.riskAssessor == nil {
-		a.riskAssessor = &RiskAssessor{}
-	}
-	if a.policyEngine == nil {
-		mode := ""
-		if cfg, err := a.LoadConfig(); err == nil {
-			mode = cfg.SecurityPolicyMode
-		}
-		a.policyEngine = NewPolicyEngineWithMode(mode)
-	}
 	if a.auditLog == nil {
 		al, err := NewAuditLog(filepath.Join(a.GetDataDir(), "audit"))
 		if err == nil {
@@ -222,26 +281,6 @@ func (a *App) initRemoteInfra() {
 	if a.llmSecurityReview == nil {
 		cfg := a.GetMaclawLLMConfig()
 		a.llmSecurityReview = NewLLMSecurityReview(cfg)
-	}
-	if a.mdnsScanner == nil {
-		a.mdnsScanner = NewMDNSScanner(a.mcpRegistry)
-	}
-	if a.projectScanner == nil {
-		a.projectScanner = NewProjectScanner(a.mcpRegistry)
-	}
-	if a.toolDefGenerator == nil {
-		builtins := (&IMMessageHandler{}).buildToolDefinitions()
-		a.toolDefGenerator = NewToolDefinitionGenerator(a.mcpRegistry, builtins)
-		a.toolDefGenerator.SetLocalMCPManager(a.localMCPManager)
-	}
-	if a.toolRouter == nil {
-		a.toolRouter = NewToolRouter(a.toolDefGenerator)
-	}
-	if a.sharedContext == nil {
-		a.sharedContext = NewSharedContextStore()
-	}
-	if a.toolSelector == nil {
-		a.toolSelector = NewToolSelector()
 	}
 	if a.experienceExtractor == nil {
 		cfg := a.GetMaclawLLMConfig()
@@ -280,57 +319,8 @@ func (a *App) initRemoteInfra() {
 			a, a.skillHubClient, a.skillExecutor, a.riskAssessor, a.auditLog, cfg,
 		)
 	}
-	// Initialize smart session components
-	if a.memoryStore == nil {
-		homeDir := a.GetUserHomeDir()
-		memPath := filepath.Join(homeDir, ".maclaw", "memories.json")
-		ms, err := NewMemoryStore(memPath)
-		if err != nil {
-			fmt.Printf("[ensureRemoteInfra] WARNING: failed to load memory store from %s: %v\n", memPath, err)
-			// Retry once with a fresh file — rename the broken one aside so
-			// NewMemoryStore can create a clean store.
-			backupPath := memPath + ".bad." + time.Now().Format("20060102_150405")
-			_ = os.Rename(memPath, backupPath)
-			fmt.Printf("[ensureRemoteInfra] renamed problematic file to %s, retrying\n", backupPath)
-			ms, err = NewMemoryStore(memPath)
-			if err != nil {
-				fmt.Printf("[ensureRemoteInfra] ERROR: memory store still failed after retry: %v\n", err)
-			}
-		}
-		if ms != nil {
-			a.memoryStore = ms
-			// --- Embedding: only enable if user toggled VectorSearch ON and model exists ---
-			if cfg, err := a.LoadConfig(); err == nil && cfg.VectorSearchEnabled {
-				modelPath := embedding.DefaultModelPath()
-				emb := embedding.NewDefaultEmbedder(modelPath)
-				ms.SetEmbedder(emb)
-				if a.toolRouter != nil {
-					a.toolRouter.SetEmbedder(emb)
-				}
-				if a.remoteSessions != nil && a.remoteSessions.hubClient != nil &&
-					a.remoteSessions.hubClient.imHandler != nil &&
-					a.remoteSessions.hubClient.imHandler.toolBuilder != nil {
-					a.remoteSessions.hubClient.imHandler.toolBuilder.SetEmbedder(emb)
-				}
-			}
-			// Start memory maintenance pipeline (decay → compress).
-			// LLM-dependent components (promoter, reflector) will be nil
-			// until LLM config is available.
-			compressor := memory.NewCompressor(ms, nil, nil)
-			a.memPipeline = memory.NewPipeline(ms, compressor, nil, nil, nil)
-			a.memPipeline.Start()
-		}
-	}
-	if a.configManager == nil {
-		a.configManager = NewConfigManager(a)
-	}
-	if a.templateManager == nil {
-		homeDir := a.GetUserHomeDir()
-		tm, err := NewSessionTemplateManager(filepath.Join(homeDir, ".maclaw", "templates.json"))
-		if err == nil {
-			a.templateManager = tm
-		}
-	}
+	// Initialize smart session components — memory store
+	a.ensureMemoryStore()
 	if a.contextResolver == nil {
 		a.contextResolver = NewSessionContextResolver(a)
 	}
@@ -346,76 +336,185 @@ func (a *App) initRemoteInfra() {
 	if a.ioRelay == nil {
 		a.ioRelay = NewSessionIORelay()
 	}
-	if a.scheduledTaskManager == nil {
-		homeDir := a.GetUserHomeDir()
-		stm, err := NewScheduledTaskManager(filepath.Join(homeDir, ".maclaw", "scheduled_tasks.json"))
-		if err == nil {
-			a.scheduledTaskManager = stm
-			a.scheduledTaskManager.Start()
-		} else {
-			fmt.Printf("[ensureRemoteInfra] WARNING: failed to init scheduled task manager: %v\n", err)
-		}
-	}
-	// Initialize MCP AutoDiscovery (Phase 1 upgrade: Task 3.3).
-	// Note: ToolRegistry is created per-IMMessageHandler, so auto-discovery
-	// registers into MCPRegistry. The IMMessageHandler's syncClawNetTools and
-	// getTools path already pick up MCP tools via the existing toolDefGenerator.
-	if a.mcpAutoDiscovery == nil && a.mcpRegistry != nil {
-		a.mcpAutoDiscovery = NewMCPAutoDiscovery(a, nil, a.mcpRegistry)
-		// Scan global MCP servers.
-		if err := a.mcpAutoDiscovery.ScanGlobal(); err != nil {
-			fmt.Printf("[ensureRemoteInfra] WARNING: global MCP scan failed: %v\n", err)
-		}
-		// Scan project-level MCP for all configured projects.
-		if cfg, err := a.LoadConfig(); err == nil {
-			for _, p := range cfg.Projects {
-				if p.Path != "" {
-					_ = a.mcpAutoDiscovery.ScanProject(p.Path)
-					_ = a.mcpAutoDiscovery.WatchProject(p.Path)
-				}
-			}
-		}
-	}
-	// Initialize SecurityFirewall (Phase 2 upgrade).
+	// Initialize SecurityFirewall.
 	if a.securityRiskAnalyzer == nil {
 		a.securityRiskAnalyzer = NewSecurityRiskAnalyzer()
 	}
 	if a.securityFirewall == nil && a.policyEngine != nil && a.auditLog != nil {
 		a.securityFirewall = NewSecurityFirewall(a.securityRiskAnalyzer, a.policyEngine, a.auditLog)
 	}
-	// Initialize ContextBridge (Phase 3 upgrade).
+	// Initialize ContextBridge.
 	if a.contextBridge == nil {
 		a.contextBridge = NewContextBridge()
 	}
-	// Initialize SessionCheckpointer after contextBridge so it can use it.
 	if a.sessionCheckpointer == nil && a.memoryStore != nil {
 		a.sessionCheckpointer = NewSessionCheckpointer(a.memoryStore, a.contextBridge)
 	}
-	// Wire checkpointer into startup feedback for resume context injection.
 	if a.startupFeedback != nil && a.sessionCheckpointer != nil {
 		a.startupFeedback.SetCheckpointer(a.sessionCheckpointer)
 	}
-	// Initialize TaskOrchestrator2 (Phase 3 upgrade).
 	if a.taskOrchestrator2 == nil && a.remoteSessions != nil && a.toolSelector != nil {
 		a.taskOrchestrator2 = NewTaskOrchestrator2(a.remoteSessions, a.toolSelector, a.contextBridge)
 	}
-	// Register OEM extra tools into the built-in tool registry.
-	{
-		registry := make(map[string]bool, len(remoteToolCatalog))
-		for name := range remoteToolCatalog {
-			registry[name] = true
-		}
-		if err := brand.RegisterExtraTools(registry); err != nil {
-			fmt.Printf("[initRemoteInfra] WARNING: failed to register OEM extra tools: %v\n", err)
+}
+
+// ---------------------------------------------------------------------------
+// Layer 2 — On-demand infrastructure: heavy or rarely-used components
+// initialized only when the user explicitly accesses the feature.
+// ---------------------------------------------------------------------------
+func (a *App) initOnDemandInfra() {
+	a.ensureInteractionInfra()
+	a.ensureScheduledTaskManager()
+	a.ensureMCPAutoDiscovery()
+	a.ensureTemplateManager()
+	a.ensureMDNSScanner()
+}
+
+// ensureFullInfra initializes all layers. Alias for initRemoteInfra
+// that goes through proper Once guards.
+func (a *App) ensureFullInfra() {
+	a.initRemoteInfra()
+}
+
+// --- Fine-grained ensure helpers for Layer 2 components ---
+
+func (a *App) ensureMemoryStore() {
+	if a.memoryStore != nil {
+		return
+	}
+	homeDir := a.GetUserHomeDir()
+	memPath := filepath.Join(homeDir, ".maclaw", "memories.json")
+	ms, err := NewMemoryStore(memPath)
+	if err != nil {
+		fmt.Printf("[ensureMemoryStore] WARNING: failed to load memory store from %s: %v\n", memPath, err)
+		backupPath := memPath + ".bad." + time.Now().Format("20060102_150405")
+		_ = os.Rename(memPath, backupPath)
+		fmt.Printf("[ensureMemoryStore] renamed problematic file to %s, retrying\n", backupPath)
+		ms, err = NewMemoryStore(memPath)
+		if err != nil {
+			fmt.Printf("[ensureMemoryStore] ERROR: memory store still failed after retry: %v\n", err)
 		}
 	}
+	if ms != nil {
+		a.memoryStore = ms
+		compressor := memory.NewCompressor(ms, nil, nil)
+		a.memPipeline = memory.NewPipeline(ms, compressor, nil, nil, nil)
+		a.memPipeline.Start()
+		// Load embedding model asynchronously so it doesn't block the first
+		// AI assistant message. Vector search will become available once
+		// the model finishes loading in the background.
+		go func() {
+			cfg, err := a.LoadConfig()
+			if err != nil || !cfg.VectorSearchEnabled {
+				return
+			}
+			modelPath := embedding.DefaultModelPath()
+			emb := embedding.NewDefaultEmbedder(modelPath)
+			if embedding.IsNoop(emb) {
+				return // model not found, skip
+			}
+			ms.SetEmbedder(emb)
+			if a.toolRouter != nil {
+				a.toolRouter.SetEmbedder(emb)
+			}
+			if a.remoteSessions != nil && a.remoteSessions.hubClient != nil &&
+				a.remoteSessions.hubClient.imHandler != nil &&
+				a.remoteSessions.hubClient.imHandler.toolBuilder != nil {
+				a.remoteSessions.hubClient.imHandler.toolBuilder.SetEmbedder(emb)
+			}
+			log.Println("[ensureMemoryStore] embedding model loaded in background")
+		}()
+	}
+}
+
+func (a *App) ensureScheduledTaskManager() {
+	if a.scheduledTaskManager != nil {
+		return
+	}
+	a.ensureRemoteInfra()
+	homeDir := a.GetUserHomeDir()
+	stm, err := NewScheduledTaskManager(filepath.Join(homeDir, ".maclaw", "scheduled_tasks.json"))
+	if err == nil {
+		a.scheduledTaskManager = stm
+		a.scheduledTaskManager.Start()
+	} else {
+		fmt.Printf("[ensureScheduledTaskManager] WARNING: failed to init: %v\n", err)
+	}
+}
+
+func (a *App) ensureMCPAutoDiscovery() {
+	if a.mcpAutoDiscovery != nil {
+		return
+	}
+	a.ensureRemoteInfra()
+	if a.mcpRegistry == nil {
+		return
+	}
+	a.mcpAutoDiscovery = NewMCPAutoDiscovery(a, nil, a.mcpRegistry)
+	if err := a.mcpAutoDiscovery.ScanGlobal(); err != nil {
+		fmt.Printf("[ensureMCPAutoDiscovery] WARNING: global MCP scan failed: %v\n", err)
+	}
+	if cfg, err := a.LoadConfig(); err == nil {
+		for _, p := range cfg.Projects {
+			if p.Path != "" {
+				_ = a.mcpAutoDiscovery.ScanProject(p.Path)
+				_ = a.mcpAutoDiscovery.WatchProject(p.Path)
+			}
+		}
+	}
+}
+
+func (a *App) ensureTemplateManager() {
+	if a.templateManager != nil {
+		return
+	}
+	homeDir := a.GetUserHomeDir()
+	tm, err := NewSessionTemplateManager(filepath.Join(homeDir, ".maclaw", "templates.json"))
+	if err == nil {
+		a.templateManager = tm
+	}
+}
+
+func (a *App) ensureMDNSScanner() {
+	if a.mdnsScanner != nil {
+		return
+	}
+	a.ensureRemoteInfra()
+	if a.mcpRegistry != nil {
+		a.mdnsScanner = NewMDNSScanner(a.mcpRegistry)
+	}
+	if a.projectScanner == nil && a.mcpRegistry != nil {
+		a.projectScanner = NewProjectScanner(a.mcpRegistry)
+	}
+}
+
+func (a *App) ensureSkillHubClient() {
+	a.ensureRemoteInfra()
+	if a.skillHubClient != nil {
+		return
+	}
+	a.ensureInteractionInfra()
+}
+
+func (a *App) ensureGossipClient() {
+	if a.gossipClient != nil {
+		return
+	}
+	a.ensureInteractionInfra()
+}
+
+func (a *App) ensureAuditLog() {
+	if a.auditLog != nil {
+		return
+	}
+	a.ensureInteractionInfra()
 }
 
 // createAndWireHubClient creates a new RemoteHubClient, wires all subsystem
 // handlers into it, and connects. This consolidates the repeated hub-client
 // setup code that was duplicated in startup() and LaunchTool().
 func (a *App) createAndWireHubClient() *RemoteHubClient {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	hubClient := NewRemoteHubClient(a, a.remoteSessions)
 	a.remoteSessions.SetHubClient(hubClient)
 	if a.capabilityGapDetector != nil {
@@ -582,6 +681,13 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	}
 	_ = hubClient.Connect()
 
+	// Background warmup: pre-build tool cache and warm up the HTTP connection
+	// pool so the first user message doesn't pay cold-start latency.
+	go func() {
+		hubClient.imHandler.WarmupTools()
+		hubClient.imHandler.WarmupHTTPConn()
+	}()
+
 	// Start QQ Bot gateway if configured (runs on client side).
 	a.ensureQQBotGateway()
 
@@ -658,6 +764,18 @@ func (a *App) startup(ctx context.Context) {
 		go a.ensureFreeProxyIfNeeded()
 		// Background preload embedding model (silent, resumable).
 		go a.backgroundPreloadEmbeddingModel()
+		// Pre-warm interaction infrastructure in background so the first
+		// AI assistant message doesn't block on lazy initialization.
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[startup] pre-warm panic (non-fatal): %v", r)
+				}
+			}()
+			log.Println("[startup] pre-warming interaction infrastructure")
+			a.ensureInteractionInfra()
+			log.Println("[startup] interaction infrastructure ready")
+		}()
 		// Auto-start IM gateways that were previously enabled.
 		// If Hub is connected, createAndWireHubClient already started them;
 		// only start here when Hub credentials are absent (pure local mode).

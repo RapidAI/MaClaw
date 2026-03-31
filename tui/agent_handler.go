@@ -398,10 +398,11 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 		}, []string{"template_name"}),
 		// --- 定时任务 ---
 		toolDef("create_scheduled_task", "创建定时任务", map[string]interface{}{
-			"name":   map[string]interface{}{"type": "string", "description": "任务名称"},
-			"action": map[string]interface{}{"type": "string", "description": "任务动作（自然语言）"},
-			"hour":   map[string]interface{}{"type": "integer", "description": "小时 (0-23)"},
-			"minute": map[string]interface{}{"type": "integer", "description": "分钟 (0-59)"},
+			"name":             map[string]interface{}{"type": "string", "description": "任务名称"},
+			"action":           map[string]interface{}{"type": "string", "description": "任务动作（自然语言）"},
+			"hour":             map[string]interface{}{"type": "integer", "description": "小时 (0-23)"},
+			"minute":           map[string]interface{}{"type": "integer", "description": "分钟 (0-59)"},
+			"interval_minutes": map[string]interface{}{"type": "integer", "description": "重复间隔（分钟），>0 时启用间隔模式，如每4小时=240"},
 		}, []string{"name", "action", "hour", "minute"}),
 		toolDef("list_scheduled_tasks", "列出定时任务", map[string]interface{}{}, nil),
 		toolDef("delete_scheduled_task", "删除定时任务", map[string]interface{}{

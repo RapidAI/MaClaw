@@ -145,10 +145,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolManageConfig(args) })
 
-	reg("screenshot", "截取屏幕截图并发送给用户。仅在以下情况使用：(1) 用户明确要求截屏；(2) 用户通过 IM 远程监督，需要确认操作结果。不要在用户未要求时主动截屏。最小间隔 30 秒。",
+	reg("screenshot", "截取屏幕截图并发送给用户。仅在以下情况使用：(1) 用户明确要求截屏；(2) 用户通过 IM 远程监督，需要确认操作结果。不要在用户未要求时主动截屏。最小间隔 30 秒。支持 display 参数指定显示器（0=主屏，1=第二屏，不传=所有屏幕拼图）。",
 		ToolCategoryBuiltin, []string{"session", "screenshot", "capture"},
 		map[string]interface{}{
 			"session_id": map[string]string{"type": "string", "description": "会话 ID（可选，只有一个会话时自动选择）"},
+			"display":    map[string]string{"type": "integer", "description": "显示器编号（可选，0=主屏，1=第二屏/扩展屏，不传则截取所有屏幕拼图）"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolScreenshot(args) })
 
@@ -401,17 +402,18 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolSetMaxIterations(args) })
 
 	// --- Scheduled task tools ---
-	reg("create_scheduled_task", "创建定时任务。用户说 每天9点做XX、每周一下午3点做YY、从3月1号到15号每天上午10点做ZZ 时，解析出时间参数并调用此工具。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31=每月几号。重要：如果用户说的是一次性任务（如'今天中午提醒我'、'明天下午3点做XX'），必须将 start_date 和 end_date 都设为目标日期，确保只执行一次。",
-		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer"},
+	reg("create_scheduled_task", "创建定时任务。用户说 每天9点做XX、每周一下午3点做YY、从3月1号到15号每天上午10点做ZZ 时，解析出时间参数并调用此工具。用户说 每隔N小时/N分钟做XX 时，使用 interval_minutes 参数（如每4小时=240）。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31=每月几号。重要：如果用户说的是一次性任务（如'今天中午提醒我'、'明天下午3点做XX'），必须将 start_date 和 end_date 都设为目标日期，确保只执行一次。",
+		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer", "interval"},
 		map[string]interface{}{
-			"name":         map[string]string{"type": "string", "description": "任务名称（简短描述）"},
-			"action":       map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，会发送给 agent 执行）"},
-			"hour":         map[string]string{"type": "integer", "description": "执行时间-小时（0-23）"},
-			"minute":       map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0）"},
-			"day_of_week":  map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日, 1=周一...6=周六，默认-1）"},
-			"day_of_month": map[string]string{"type": "integer", "description": "每月几号（-1=不限, 1-31，默认-1）"},
-			"start_date":   map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02，可选）"},
-			"end_date":     map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02，可选）"},
+			"name":             map[string]string{"type": "string", "description": "任务名称（简短描述）"},
+			"action":           map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，会发送给 agent 执行）"},
+			"hour":             map[string]string{"type": "integer", "description": "执行时间-小时（0-23），间隔模式下为首次执行时间"},
+			"minute":           map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0），间隔模式下为首次执行时间"},
+			"day_of_week":      map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日, 1=周一...6=周六，默认-1）"},
+			"day_of_month":     map[string]string{"type": "integer", "description": "每月几号（-1=不限, 1-31，默认-1）"},
+			"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔（分钟），>0 时启用间隔模式。如每4小时=240，每30分钟=30，每2天=2880"},
+			"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02，可选）"},
+			"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02，可选）"},
 		}, []string{"name", "action", "hour"},
 		func(args map[string]interface{}) string { return h.toolCreateScheduledTask(args) })
 

@@ -15,6 +15,7 @@ interface AIAssistantPanelProps {
     clearHistory: () => Promise<void>;
     executeAction: (command: string) => Promise<void>;
     refreshNews: () => void;
+    scrollToTopSeq?: number; // bumped when panel should scroll to top (e.g. after news reload)
     inline?: boolean; // when true, render as inline content instead of overlay
     onHideWindow?: () => void; // hide the entire window (inline mode)
 }
@@ -510,7 +511,7 @@ if (typeof document !== "undefined" && !document.getElementById("ai-blink-style"
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, sendMessage, clearHistory, executeAction, refreshNews, inline, onHideWindow }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, sendMessage, clearHistory, executeAction, refreshNews, scrollToTopSeq, inline, onHideWindow }: AIAssistantPanelProps) {
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -562,6 +563,17 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
         userScrolledUpRef.current =
             container.scrollHeight - container.scrollTop - container.clientHeight > threshold;
     }, []);
+
+    // Scroll to top when pinned news are (re)loaded — e.g. after clear history
+    // or app restart — so the user sees the pinned messages first.
+    useEffect(() => {
+        if (!scrollToTopSeq) return;
+        const container = outputContainerRef.current;
+        if (container) {
+            container.scrollTo({ top: 0, behavior: "smooth" });
+            userScrolledUpRef.current = true; // prevent auto-scroll-to-bottom from overriding
+        }
+    }, [scrollToTopSeq]);
 
     // Focus input on mount
     useEffect(() => {
@@ -716,8 +728,18 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                                 gap: '6px',
                                 marginBottom: '6px',
                             }}>
-                                {pinnedNews.map(msg => (
-                                    <div key={msg.id} className="pinned-news-card" style={{
+                                {pinnedNews.map(msg => {
+                                    // Split content into title (first line) and body (rest)
+                                    const lines = msg.content.split('\n');
+                                    const titleLine = lines[0] || '';
+                                    const bodyLines = lines.slice(1).filter(l => l.trim() !== '');
+                                    const bodyText = bodyLines.join('\n');
+                                    // Plain text for tooltip (strip markdown bold markers)
+                                    const plainTitle = titleLine.replace(/\*\*/g, '');
+                                    const plainBody = bodyLines.map(l => l.replace(/\*\*/g, '')).join('\n');
+                                    const tooltipText = plainTitle + (plainBody ? '\n' + plainBody : '');
+                                    return (
+                                    <div key={msg.id} className="pinned-news-card" title={tooltipText} style={{
                                         padding: "6px 8px",
                                         borderRadius: "6px",
                                         background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(139,92,246,0.06))",
@@ -727,9 +749,31 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                                         lineHeight: "1.4",
                                         overflow: "hidden",
                                     }}>
-                                        {renderContentWithCodeBlocks(msg.content, t)}
+                                        {/* Title: single line, ellipsis */}
+                                        <div style={{
+                                            overflow: "hidden",
+                                            textOverflow: "ellipsis",
+                                            whiteSpace: "nowrap",
+                                            fontWeight: 600,
+                                        }}>
+                                            {renderInlineMarkdown(titleLine, t)}
+                                        </div>
+                                        {/* Body: max 2 lines, ellipsis */}
+                                        {bodyText && (
+                                        <div style={{
+                                            overflow: "hidden",
+                                            display: "-webkit-box",
+                                            WebkitLineClamp: 2,
+                                            WebkitBoxOrient: "vertical" as any,
+                                            marginTop: "2px",
+                                            color: t.textMuted,
+                                        }}>
+                                            {bodyText}
+                                        </div>
+                                        )}
                                     </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         )}
                         {renderedOtherMessages}

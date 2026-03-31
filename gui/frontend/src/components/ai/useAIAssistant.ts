@@ -69,10 +69,15 @@ export function useAIAssistant() {
     const [sending, setSending] = useState(false);
     const [streaming, setStreaming] = useState(false);
     const [ready, setReady] = useState(false);
+    // Counter that bumps whenever the panel should scroll to top (e.g. after
+    // news reload on clear / restart).  The Panel watches this value.
+    const [scrollToTopSeq, setScrollToTopSeq] = useState(0);
     // Ref-based guard prevents concurrent sends (React state is async).
     const sendingRef = useRef(false);
     // Track the current streaming message ID so token events know where to append.
     const streamingMsgIdRef = useRef<string | null>(null);
+    // Flag: when true, the next doFetchNews completion will scroll to top.
+    const scrollOnNextNewsRef = useRef(true); // true on mount (app restart)
 
     // Poll backend readiness until the AI assistant is initialized.
     useEffect(() => {
@@ -121,6 +126,12 @@ export function useAIAssistant() {
                 const filtered = prev.filter(m => !m.id.startsWith('news-'));
                 return [...sysMsgs, ...filtered];
             });
+            // After news are loaded, scroll to top only when explicitly requested
+            // (app restart or clear history), not on manual refresh button clicks.
+            if (scrollOnNextNewsRef.current) {
+                scrollOnNextNewsRef.current = false;
+                setScrollToTopSeq(s => s + 1);
+            }
         }).catch(() => { /* silently ignore news fetch failures */ });
     }, []);
 
@@ -301,7 +312,10 @@ export function useAIAssistant() {
         streamingMsgIdRef.current = null;
         setMessages([]);
         localStorage.removeItem(STORAGE_KEY);
-    }, []);
+        // Re-fetch pinned news so they reappear after clearing history.
+        scrollOnNextNewsRef.current = true;
+        doFetchNews();
+    }, [doFetchNews]);
 
     const executeAction = useCallback((command: string) => {
         return sendMessage(command);
@@ -323,7 +337,7 @@ export function useAIAssistant() {
         };
     }, []);
 
-    return { messages, sending, streaming, ready, sendMessage, clearHistory, executeAction, refreshNews: doFetchNews };
+    return { messages, sending, streaming, ready, sendMessage, clearHistory, executeAction, refreshNews: doFetchNews, scrollToTopSeq };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

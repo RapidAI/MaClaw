@@ -72,7 +72,7 @@ func (a *App) RestoreSkills(zipPath string) (*RestoreReport, error) {
 
 // QueryAuditLog queries the audit log with the given filter (Wails binding).
 func (a *App) QueryAuditLog(filter AuditFilter) ([]AuditEntry, error) {
-	a.ensureRemoteInfra()
+	a.ensureAuditLog()
 	if a.auditLog == nil {
 		return nil, fmt.Errorf("audit log not initialized")
 	}
@@ -101,7 +101,7 @@ func (a *App) RecommendTool(taskDescription string) (string, string) {
 
 // SearchSkillHub searches configured SkillHubs for Skills matching the query (Wails binding).
 func (a *App) SearchSkillHub(query string) ([]HubSkillMeta, error) {
-	a.ensureRemoteInfra()
+	a.ensureSkillHubClient()
 	if a.skillHubClient == nil {
 		return nil, fmt.Errorf("skill hub client not initialized")
 	}
@@ -110,7 +110,7 @@ func (a *App) SearchSkillHub(query string) ([]HubSkillMeta, error) {
 
 // InstallHubSkill downloads a Skill from the specified Hub and registers it locally (Wails binding).
 func (a *App) InstallHubSkill(skillID, hubURL string) error {
-	a.ensureRemoteInfra()
+	a.ensureSkillHubClient()
 	if a.skillHubClient == nil {
 		return fmt.Errorf("skill hub client not initialized")
 	}
@@ -126,7 +126,7 @@ func (a *App) InstallHubSkill(skillID, hubURL string) error {
 
 // CheckHubSkillUpdates checks all locally installed Hub Skills for available updates (Wails binding).
 func (a *App) CheckHubSkillUpdates() ([]HubSkillUpdateInfo, error) {
-	a.ensureRemoteInfra()
+	a.ensureSkillHubClient()
 	if a.skillHubClient == nil {
 		return nil, fmt.Errorf("skill hub client not initialized")
 	}
@@ -167,7 +167,7 @@ func (a *App) UpdateHubSkill(skillName string) error {
 
 // RateHubSkill submits a rating for a Hub Skill (Wails binding).
 func (a *App) RateHubSkill(skillID string, score int) error {
-	a.ensureRemoteInfra()
+	a.ensureSkillHubClient()
 	if a.skillHubClient == nil {
 		return fmt.Errorf("skill hub client not initialized")
 	}
@@ -188,7 +188,7 @@ func (a *App) RateHubSkill(skillID string, score int) error {
 
 // ListMemories returns memory entries filtered by category and keyword (Wails binding).
 func (a *App) ListMemories(category, keyword string) []MemoryEntry {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return nil
 	}
@@ -197,7 +197,7 @@ func (a *App) ListMemories(category, keyword string) []MemoryEntry {
 
 // SaveMemory creates a new memory entry (Wails binding).
 func (a *App) SaveMemory(content, category string, tags []string) error {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
@@ -210,7 +210,7 @@ func (a *App) SaveMemory(content, category string, tags []string) error {
 
 // UpdateMemory modifies an existing memory entry by ID (Wails binding).
 func (a *App) UpdateMemory(id, content, category string, tags []string) error {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
@@ -219,7 +219,7 @@ func (a *App) UpdateMemory(id, content, category string, tags []string) error {
 
 // DeleteMemory removes the memory entry with the given ID (Wails binding).
 func (a *App) DeleteMemory(id string) error {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
@@ -228,7 +228,7 @@ func (a *App) DeleteMemory(id string) error {
 
 // CompressMemories runs dedup + LLM compression once and returns a summary (Wails binding).
 func (a *App) CompressMemories() (*CompressResult, error) {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
@@ -240,7 +240,7 @@ func (a *App) CompressMemories() (*CompressResult, error) {
 
 // ListMemoryBackups returns all available memory backup snapshots (Wails binding).
 func (a *App) ListMemoryBackups() ([]MemoryBackupInfo, error) {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return nil, fmt.Errorf("memory store not initialized")
 	}
@@ -251,7 +251,7 @@ func (a *App) ListMemoryBackups() ([]MemoryBackupInfo, error) {
 // RestoreMemoryBackup replaces the current memory with the named backup and
 // takes effect immediately (Wails binding).
 func (a *App) RestoreMemoryBackup(backupName string) error {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
@@ -261,7 +261,7 @@ func (a *App) RestoreMemoryBackup(backupName string) error {
 
 // DeleteMemoryBackup removes a backup file by name (Wails binding).
 func (a *App) DeleteMemoryBackup(backupName string) error {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
@@ -271,7 +271,7 @@ func (a *App) DeleteMemoryBackup(backupName string) error {
 
 // SetAutoCompress enables or disables the background auto-compression service (Wails binding).
 func (a *App) SetAutoCompress(enabled bool) error {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
@@ -292,7 +292,7 @@ func (a *App) SetAutoCompress(enabled bool) error {
 
 // GetAutoCompressStatus returns the current state of the auto-compression service (Wails binding).
 func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	if a.memoryCompressor == nil {
 		return MemoryCompressorStatus{}
 	}
@@ -350,7 +350,7 @@ func (a *App) getOrCreateCompressor() *MemoryCompressor {
 
 // ListTemplates returns all session templates (Wails binding).
 func (a *App) ListTemplates() []SessionTemplate {
-	a.ensureRemoteInfra()
+	a.ensureTemplateManager()
 	if a.templateManager == nil {
 		return nil
 	}
@@ -359,7 +359,7 @@ func (a *App) ListTemplates() []SessionTemplate {
 
 // CreateTemplate creates a new session template (Wails binding).
 func (a *App) CreateTemplate(name, tool, projectPath, modelConfig string, yoloMode bool) error {
-	a.ensureRemoteInfra()
+	a.ensureTemplateManager()
 	if a.templateManager == nil {
 		return fmt.Errorf("template manager not initialized")
 	}
@@ -374,7 +374,7 @@ func (a *App) CreateTemplate(name, tool, projectPath, modelConfig string, yoloMo
 
 // DeleteTemplate removes the session template with the given name (Wails binding).
 func (a *App) DeleteTemplate(name string) error {
-	a.ensureRemoteInfra()
+	a.ensureTemplateManager()
 	if a.templateManager == nil {
 		return fmt.Errorf("template manager not initialized")
 	}
@@ -409,7 +409,7 @@ func (a *App) UpdateConfigBinding(section, key, value string) (string, error) {
 
 // ListScheduledTasks returns all scheduled tasks (Wails binding).
 func (a *App) ListScheduledTasks() []ScheduledTask {
-	a.ensureRemoteInfra()
+	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return nil
 	}
@@ -417,27 +417,28 @@ func (a *App) ListScheduledTasks() []ScheduledTask {
 }
 
 // CreateScheduledTask creates a new scheduled task (Wails binding).
-func (a *App) CreateScheduledTask(name, action string, hour, minute, dayOfWeek, dayOfMonth int, startDate, endDate, taskType string) (string, error) {
-	a.ensureRemoteInfra()
+func (a *App) CreateScheduledTask(name, action string, hour, minute, dayOfWeek, dayOfMonth, intervalMinutes int, startDate, endDate, taskType string) (string, error) {
+	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return "", fmt.Errorf("scheduled task manager not initialized")
 	}
 	return a.scheduledTaskManager.Add(ScheduledTask{
-		Name:       name,
-		Action:     action,
-		Hour:       hour,
-		Minute:     minute,
-		DayOfWeek:  dayOfWeek,
-		DayOfMonth: dayOfMonth,
-		StartDate:  startDate,
-		EndDate:    endDate,
-		TaskType:   taskType,
+		Name:            name,
+		Action:          action,
+		Hour:            hour,
+		Minute:          minute,
+		DayOfWeek:       dayOfWeek,
+		DayOfMonth:      dayOfMonth,
+		IntervalMinutes: intervalMinutes,
+		StartDate:       startDate,
+		EndDate:         endDate,
+		TaskType:        taskType,
 	})
 }
 
 // UpdateScheduledTask modifies a scheduled task (Wails binding).
 func (a *App) UpdateScheduledTask(id string, fields map[string]interface{}) error {
-	a.ensureRemoteInfra()
+	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
 	}
@@ -446,7 +447,7 @@ func (a *App) UpdateScheduledTask(id string, fields map[string]interface{}) erro
 
 // DeleteScheduledTask removes a scheduled task by ID (Wails binding).
 func (a *App) DeleteScheduledTask(id string) error {
-	a.ensureRemoteInfra()
+	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
 	}
@@ -455,7 +456,7 @@ func (a *App) DeleteScheduledTask(id string) error {
 
 // PauseScheduledTask pauses a scheduled task (Wails binding).
 func (a *App) PauseScheduledTask(id string) error {
-	a.ensureRemoteInfra()
+	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
 	}
@@ -464,7 +465,7 @@ func (a *App) PauseScheduledTask(id string) error {
 
 // ResumeScheduledTask resumes a paused scheduled task (Wails binding).
 func (a *App) ResumeScheduledTask(id string) error {
-	a.ensureRemoteInfra()
+	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
 	}
@@ -473,7 +474,7 @@ func (a *App) ResumeScheduledTask(id string) error {
 
 // TriggerScheduledTask immediately runs a scheduled task (Wails binding).
 func (a *App) TriggerScheduledTask(id string) error {
-	a.ensureRemoteInfra()
+	a.ensureScheduledTaskManager()
 	if a.scheduledTaskManager == nil {
 		return fmt.Errorf("scheduled task manager not initialized")
 	}
@@ -492,7 +493,7 @@ func (a *App) IsAIAssistantReady() bool {
 
 // SendAIAssistantMessage handles a desktop AI assistant message (Wails binding).
 func (a *App) SendAIAssistantMessage(text string) (*IMAgentResponse, error) {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	hubClient := a.hubClient()
 	if hubClient == nil || hubClient.imHandler == nil {
 		return nil, fmt.Errorf("AI assistant not initialized")
@@ -527,7 +528,7 @@ func (a *App) SendAIAssistantMessage(text string) (*IMAgentResponse, error) {
 
 // ClearAIAssistantHistory clears the desktop AI assistant conversation memory (Wails binding).
 func (a *App) ClearAIAssistantHistory() error {
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 	hubClient := a.hubClient()
 	if hubClient == nil || hubClient.imHandler == nil {
 		return fmt.Errorf("AI assistant not initialized")

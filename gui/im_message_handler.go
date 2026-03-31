@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -40,6 +42,7 @@ type IMUserMessage struct {
 	UserID             string              `json:"user_id"`
 	Platform           string              `json:"platform"`
 	Text               string              `json:"text"`
+	Lang               string              `json:"lang,omitempty"`                 // User language ("zh", "en"); empty defaults to "zh"
 	Attachments        []MessageAttachment `json:"attachments,omitempty"`          // File/image attachments from user
 	MinIterations      int                 `json:"min_iterations,omitempty"`       // floor for agent loop iterations (used by scheduled tasks)
 	IsBackground       bool                `json:"is_background,omitempty"`        // true for scheduled tasks / auto-picked tasks (uses separate HTTP client)
@@ -491,6 +494,46 @@ func (h *IMMessageHandler) syncClawNetTools() {
 	}
 }
 
+// WarmupTools pre-builds and caches the tool definitions so the first user
+// message does not pay the cost of syncClawNetTools + BuildAll.
+// Safe to call from a background goroutine.
+func (h *IMMessageHandler) WarmupTools() {
+	_ = h.getTools()
+}
+
+// WarmupHTTPConn sends a lightweight probe request to the configured LLM
+// endpoint so the underlying TCP+TLS connection is established and pooled
+// before the first real chat request.
+func (h *IMMessageHandler) WarmupHTTPConn() {
+	cfg := h.app.GetMaclawLLMConfig()
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.URL), "/")
+	if baseURL == "" {
+		return
+	}
+	key := strings.TrimSpace(cfg.Key)
+	ua := cfg.UserAgent()
+	endpoint := baseURL + "/models"
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("User-Agent", ua)
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	resp, err := h.client.Do(req)
+	if err != nil {
+		log.Printf("[Warmup] HTTP connection warmup failed: %v", err)
+		return
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	log.Printf("[Warmup] HTTP connection warmed up (status=%d)", resp.StatusCode)
+}
+
 // HandleIMMessage processes an IM user message and returns the Agent's response.
 func (h *IMMessageHandler) HandleIMMessage(msg IMUserMessage) *IMAgentResponse {
 	return h.HandleIMMessageWithProgress(msg, nil)
@@ -849,17 +892,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// Delayed acknowledgment: when debug is off and streaming is not active,
 	// schedule a brief receipt after a short grace period. If the agent loop
 	// finishes quickly (e.g. simple greetings), the receipt is suppressed —
-	// the user sees only the final card, avoiding the redundant "收到，正在处理中" message.
+	// the user sees only the final card, avoiding the redundant "需要一点时间处理" message.
 	// When streaming (onToken != nil), the user already sees real-time output,
 	// so the acknowledgment is unnecessary.
-	const ackDelay = 3 * time.Second
+	const ackDelay = 2 * time.Second
 	ackDone := make(chan struct{})
 	if !isDebug() && onToken == nil {
 		ackTimer := time.NewTimer(ackDelay)
 		go func() {
 			select {
 			case <-ackTimer.C:
-				sendProgress("📨 收到，正在处理中，稍后发你结果…")
+				sendProgress(i18n.T(i18n.MsgAckProcessing, ctx.Lang))
 			case <-ackDone:
 				ackTimer.Stop()
 			}
@@ -958,6 +1001,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 	}
 
+	// pendingImageKey / pendingFiles / screenshotAlreadySent must live
+	// outside the per-iteration loop so they survive across LLM rounds.
+	var pendingImageKey string
+	type pendingFile struct {
+		name, mimeType, data string
+		forwardIM            bool
+		message              string // IM delivery prompt
+	}
+	var pendingFiles []pendingFile
+	screenshotAlreadySent := false
+
 	for iteration := 0; ; iteration++ {
 		ctx.SetIteration(iteration)
 
@@ -1033,15 +1087,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if iteration > 0 {
 			if isDebug() {
 				if maxIter > 0 || h.loopMaxOverride > 0 {
-					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d/%d 轮）…", iteration+1, effectiveMax))
+					sendProgress(i18n.Tf(i18n.MsgAgentRoundOf, ctx.Lang, iteration+1, effectiveMax))
 				} else {
-					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d 轮）…", iteration+1))
+					sendProgress(i18n.Tf(i18n.MsgAgentRound, ctx.Lang, iteration+1))
 				}
 			} else if onToken == nil && (iteration == 3 || (iteration > 3 && iteration%5 == 0)) {
 				// Non-debug, non-streaming mode: send a patience hint at iteration 4,
 				// then every 5 rounds so the user knows a long task is still alive.
 				// When streaming, the user already sees real-time output.
-				sendProgress("⏳ 任务较复杂，正在耐心处理中，稍后发你结果…")
+				sendProgress(i18n.T(i18n.MsgTaskComplex, ctx.Lang))
 			}
 		}
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
@@ -1161,6 +1215,44 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// even when tool_calls are present. We must check tool_calls first and only
 		// treat the response as final when there are genuinely no tool calls.
 		if len(choice.Message.ToolCalls) == 0 {
+			// Before returning text, check if a previous iteration captured
+			// a screenshot or prepared files that still need delivery.
+			if pendingImageKey != "" {
+				h.memory.save(userID, trimHistory(history))
+				if platform == "desktop" {
+					filePath, err := h.saveScreenshotToFile(pendingImageKey)
+					if err != nil {
+						return &IMAgentResponse{Text: fmt.Sprintf("📷 截图已捕获，但保存文件失败: %s", err.Error())}
+					}
+					thumb := pendingImageKey
+					if len(thumb) > 50000 {
+						if downsized, err := downsizeScreenshotBase64(thumb, 10000); err == nil {
+							thumb = downsized
+						}
+					}
+					return &IMAgentResponse{
+						Text:            "📷 截图已保存",
+						LocalFilePath:   filePath,
+						ThumbnailBase64: thumb,
+					}
+				}
+				// Downsize for IM delivery -- multi-monitor screenshots can be huge.
+				imgKey := pendingImageKey
+				if len(imgKey) > 2_000_000 {
+					if ds, err := downsizeScreenshotBase64(imgKey, 1_500_000); err == nil {
+						imgKey = ds
+					}
+				}
+				return &IMAgentResponse{
+					Text:     "",
+					ImageKey: imgKey,
+				}
+			}
+			if screenshotAlreadySent {
+				h.memory.save(userID, trimHistory(history))
+				return &IMAgentResponse{Text: "📷 截图已发送"}
+			}
+
 			// Check for capability gap before returning.
 			if h.capabilityGapDetector != nil && h.capabilityGapDetector.Detect(msgContent) {
 				skillName, result, err := h.capabilityGapDetector.Resolve(
@@ -1180,14 +1272,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		// Execute tool calls and feed results back.
-		var pendingImageKey string
-		type pendingFile struct {
-			name, mimeType, data string
-			forwardIM            bool
-			message              string // IM delivery prompt
-		}
-		var pendingFiles []pendingFile
-		screenshotAlreadySent := false
+		pendingImageKey = ""
+		pendingFiles = nil
+		screenshotAlreadySent = false
 		for _, tc := range choice.Message.ToolCalls {
 			sendToolProgress(fmt.Sprintf("⚙️ 正在执行工具: %s", tc.Function.Name))
 			// When debug is off, suppress intermediate progress from tool execution too.
@@ -1294,6 +1381,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		// If a direct screenshot was captured, return it immediately as an image response.
+		log.Printf("[runAgentLoop] post-toolcalls: pendingImageKey_len=%d screenshotAlreadySent=%v pendingFiles=%d platform=%s", len(pendingImageKey), screenshotAlreadySent, len(pendingFiles), platform)
 		if pendingImageKey != "" {
 			h.memory.save(userID, trimHistory(history))
 			// Desktop platform: save to local file and return path + thumbnail
@@ -1316,9 +1404,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					ThumbnailBase64: thumb,
 				}
 			}
+			// Downsize for IM delivery -- multi-monitor screenshots can be huge.
+			imgKey2 := pendingImageKey
+			if len(imgKey2) > 2_000_000 {
+				if ds, err := downsizeScreenshotBase64(imgKey2, 1_500_000); err == nil {
+					imgKey2 = ds
+				}
+			}
 			return &IMAgentResponse{
 				Text:     "",
-				ImageKey: pendingImageKey,
+				ImageKey: imgKey2,
 			}
 		}
 
@@ -1393,7 +1488,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// auto-continue one extra round so the agent can check session status,
 	// then ask the user whether to keep watching.
 	if h.manager != nil && h.manager.HasActiveSessions() {
-		sendProgress("⏳ 推理轮次已用完，但编程会话仍在运行，正在检查状态…")
+		sendProgress(i18n.T(i18n.MsgRoundsExhaust, ctx.Lang))
 
 		// Run one bonus iteration to let the agent observe current session state.
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
@@ -1469,7 +1564,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	h.memory.save(userID, trimHistory(history))
-	return &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
+	return &IMAgentResponse{Text: i18n.T(i18n.MsgMaxRounds, ctx.Lang)}
 }
 
 // saveScreenshotToFile saves base64-encoded PNG data to a local file under
@@ -1535,4 +1630,4 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 
 
 
-
+

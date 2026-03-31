@@ -54,17 +54,22 @@ func scheduleList(mgr *scheduler.Manager, args []string) error {
 		fmt.Println("No scheduled tasks.")
 		return nil
 	}
-	fmt.Printf("%-20s %-20s %-8s %-8s %-8s %-6s %s\n", "ID", "NAME", "TYPE", "STATUS", "TIME", "RUNS", "ACTION")
-	fmt.Println(strings.Repeat("-", 100))
+	fmt.Printf("%-20s %-20s %-8s %-8s %-10s %-6s %s\n", "ID", "NAME", "TYPE", "STATUS", "SCHEDULE", "RUNS", "ACTION")
+	fmt.Println(strings.Repeat("-", 105))
 	for _, t := range tasks {
 		action := TruncateDisplay(t.Action, 30)
-		timeStr := fmt.Sprintf("%02d:%02d", t.Hour, t.Minute)
+		var schedStr string
+		if t.IntervalMinutes > 0 {
+			schedStr = "每" + scheduler.FormatInterval(t.IntervalMinutes)
+		} else {
+			schedStr = fmt.Sprintf("%02d:%02d", t.Hour, t.Minute)
+		}
 		taskType := t.TaskType
 		if taskType == "" {
 			taskType = "reminder"
 		}
-		fmt.Printf("%-20s %-20s %-8s %-8s %-8s %-6d %s\n",
-			TruncateDisplay(t.ID, 20), TruncateDisplay(t.Name, 20), taskType, t.Status, timeStr, t.RunCount, action)
+		fmt.Printf("%-20s %-20s %-8s %-8s %-10s %-6d %s\n",
+			TruncateDisplay(t.ID, 20), TruncateDisplay(t.Name, 20), taskType, t.Status, schedStr, t.RunCount, action)
 	}
 	return nil
 }
@@ -77,6 +82,7 @@ func scheduleCreate(mgr *scheduler.Manager, args []string) error {
 	minute := fs.Int("minute", 0, "执行分钟 0-59")
 	dow := fs.Int("day-of-week", -1, "星期几 0=Sun..6=Sat, -1=每天")
 	dom := fs.Int("day-of-month", -1, "每月几号 1-31, -1=不限")
+	intervalMin := fs.Int("interval", 0, "重复间隔（分钟），>0 时启用间隔模式")
 	startDate := fs.String("start-date", "", "开始日期 YYYY-MM-DD")
 	endDate := fs.String("end-date", "", "结束日期 YYYY-MM-DD")
 	taskType := fs.String("type", "", "任务类型: reminder(提醒,默认) 或 process(处理)")
@@ -84,19 +90,20 @@ func scheduleCreate(mgr *scheduler.Manager, args []string) error {
 	fs.Parse(args)
 
 	if *name == "" || *action == "" {
-		return NewUsageError("usage: schedule create --name <name> --action <text> [--hour H] [--minute M] [--type reminder|process]")
+		return NewUsageError("usage: schedule create --name <name> --action <text> [--hour H] [--minute M] [--interval N] [--type reminder|process]")
 	}
 
 	task := scheduler.ScheduledTask{
-		Name:       *name,
-		Action:     *action,
-		Hour:       *hour,
-		Minute:     *minute,
-		DayOfWeek:  *dow,
-		DayOfMonth: *dom,
-		StartDate:  *startDate,
-		EndDate:    *endDate,
-		TaskType:   *taskType,
+		Name:            *name,
+		Action:          *action,
+		Hour:            *hour,
+		Minute:          *minute,
+		DayOfWeek:       *dow,
+		DayOfMonth:      *dom,
+		IntervalMinutes: *intervalMin,
+		StartDate:       *startDate,
+		EndDate:         *endDate,
+		TaskType:        *taskType,
 	}
 	id, err := mgr.Add(task)
 	if err != nil {

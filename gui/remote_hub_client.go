@@ -947,6 +947,13 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 			}
 		}
 		resp := c.imHandler.HandleIMMessageWithProgress(payload, onProgress)
+		// Downsize large screenshots before sending over WebSocket to Hub.
+		// Multi-monitor captures can be several MB; Hub WebSocket may timeout.
+		if resp != nil && len(resp.ImageKey) > 500_000 {
+			if ds, err := downsizeScreenshotBase64(resp.ImageKey, 400_000); err == nil {
+				resp.ImageKey = ds
+			}
+		}
 		if err := c.sendIMAgentResponse(requestID, resp); err != nil {
 			c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
 		}

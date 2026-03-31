@@ -11,11 +11,12 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 const pendingMediaTimeout = 10 * time.Second
@@ -161,9 +162,9 @@ func (b *pendingMediaBuffer) onTimeout(userID string) {
 // buildMediaPrompt creates the timeout prompt shown to the user.
 func buildMediaPrompt(count int) string {
 	if count == 1 {
-		return "📎 收到文件/图片了，请告诉我你希望怎么处理"
+		return i18n.T(i18n.MsgMediaSingle, "zh")
 	}
-	return fmt.Sprintf("📎 收到 %d 个文件/图片了，请告诉我你希望怎么处理", count)
+	return i18n.Tf(i18n.MsgMediaMultiple, "zh", count)
 }
 
 // canInferIntentFromHistory checks the last few conversation entries to see

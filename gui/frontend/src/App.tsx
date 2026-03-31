@@ -29,6 +29,7 @@ import { SkillsManagementPanel } from './components/remote/SkillsManagementPanel
 import { MCPManagementPanel } from './components/remote/MCPManagementPanel';
 import { LLMConfigPanel } from './components/remote/LLMConfigPanel';
 import { EmbeddingConfigPanel } from './components/remote/EmbeddingConfigPanel';
+import { ASRConfigPanel } from './components/remote/ASRConfigPanel';
 import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
@@ -3531,8 +3532,12 @@ ${instruction}`;
                                 { label: 'LLM', on: maclawLLMOnline },
                                 { label: lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet', on: clawNetRunning },
                                 { label: lang === 'zh-Hans' ? '移动端' : lang === 'zh-Hant' ? '行動端' : 'Mobile', on: !!remoteActivationStatus?.activated },
-                            ].map(({ label, on }) => (
-                                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '3px' }}>
+                                { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected', link: 'im' },
+                            ].map(({ label, on, link }) => (
+                                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '3px', cursor: link ? 'pointer' : undefined }}
+                                    onClick={link ? () => { setNavTab('settings'); setSettingsTab(link as any); } : undefined}
+                                    title={link && !on ? (lang?.startsWith('zh') ? '点击配置' : 'Click to configure') : undefined}
+                                >
                                     <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: on ? '#22c55e' : '#ccc', display: 'inline-block', flexShrink: 0 }}></span>
                                     <span>{label}</span>
                                     <span style={{ marginLeft: 'auto', color: on ? '#22c55e' : '#aaa' }}>
@@ -4217,6 +4222,7 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'embedding' ? 'block' : 'none' }}>
                                 <EmbeddingConfigPanel lang={lang} />
+                                <ASRConfigPanel lang={lang} />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'scheduler' ? 'block' : 'none' }}>
@@ -5610,10 +5616,16 @@ ${instruction}`;
                         {status}
                     </span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        {(!maclawLLMOnline || !remoteActivationStatus?.activated || !clawNetRunning) && !(navTab === 'settings' && settingsTab === 'llm') && (
+                        {(() => {
+                            const imConnected = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected';
+                            const anyImConfigured = !!(config as any)?.qqbot_enabled || !!(config as any)?.telegram_enabled || !!(config as any)?.weixin_enabled;
+                            const showImWarning = anyImConfigured && !imConnected;
+                            if ((!maclawLLMOnline || !remoteActivationStatus?.activated || !clawNetRunning || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm')) {
+                                const isImIssue = maclawLLMOnline && !!remoteActivationStatus?.activated && clawNetRunning && showImWarning;
+                                return (
                             <span
                                 style={{ fontSize: '0.72rem', color: '#f59e0b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
-                                onClick={() => { setNavTab('settings'); setSettingsTab('llm'); }}
+                                onClick={() => { if (isImIssue) { setNavTab('settings'); setSettingsTab('im'); } else { setNavTab('settings'); setSettingsTab('llm'); } }}
                                 title={lang?.startsWith('zh') ? '点击配置' : 'Click to configure'}
                             >
                                 <img src={(() => {
@@ -5626,9 +5638,14 @@ ${instruction}`;
                                         : (lang?.startsWith('zh') ? 'MaClaw 未配置 LLM，无法响应远程命令' : 'LLM not configured, remote commands unavailable'))
                                     : !remoteActivationStatus?.activated
                                         ? (lang?.startsWith('zh') ? '移动端未注册' : 'Mobile not registered')
-                                        : (lang?.startsWith('zh') ? '虾网未连接' : 'ClawNet not connected')}
+                                        : !clawNetRunning
+                                            ? (lang?.startsWith('zh') ? '虾网未连接' : 'ClawNet not connected')
+                                            : (lang?.startsWith('zh') ? 'IM 未连接' : 'IM not connected')}
                             </span>
-                        )}
+                                );
+                            }
+                            return null;
+                        })()}
                         {backgroundInstallStatus && (
                         <span style={{ 
                             fontSize: '0.75rem', 

@@ -508,3 +508,11 @@ export function SetVectorSearchEnabled(arg1:boolean):Promise<void>;
 export function CheckEmbeddingModel():Promise<{[key:string]:any}>;
 
 export function DownloadEmbeddingModel():Promise<void>;
+
+export function GetASREnabled():Promise<boolean>;
+
+export function SetASREnabled(arg1:boolean):Promise<void>;
+
+export function CheckASRModel():Promise<{[key:string]:any}>;
+
+export function DownloadASRModel():Promise<void>;

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -750,6 +751,40 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 		return fmt.Sprintf("截屏冷却中，请等待 %d 秒后再试", int(remaining.Seconds())+1)
 	}
 
+	// Check for display parameter — capture a specific monitor directly.
+	if displayRaw, ok := args["display"]; ok {
+		var displayIndex int
+		switch v := displayRaw.(type) {
+		case float64:
+			displayIndex = int(v)
+		case int:
+			displayIndex = v
+		case string:
+			if _, err := fmt.Sscanf(v, "%d", &displayIndex); err != nil {
+				return fmt.Sprintf("display 参数无效: %s", v)
+			}
+		default:
+			return fmt.Sprintf("display 参数类型无效: %T", displayRaw)
+		}
+		if h.manager == nil {
+			return "会话管理器未初始化"
+		}
+		captureStart := time.Now()
+		base64Data, err := h.manager.CaptureScreenshotDirectForDisplay(displayIndex)
+		log.Printf("[screenshot] CaptureScreenshotDirectForDisplay(%d) took %v, data_len=%d, err=%v",
+			displayIndex, time.Since(captureStart), len(base64Data), err)
+		if err != nil {
+			return fmt.Sprintf("截取显示器 %d 失败: %s", displayIndex, err.Error())
+		}
+		h.lastScreenshotAt = time.Now()
+		if len(base64Data) > 1_500_000 {
+			if ds, err := downsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
+				base64Data = ds
+			}
+		}
+		return fmt.Sprintf("[screenshot_base64]%s", base64Data)
+	}
+
 	sessionID, _ := args["session_id"].(string)
 
 	// 如果未指定 session_id，自动选择唯一活跃会话
@@ -769,11 +804,19 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 			return strings.Join(lines, "\n")
 		} else {
 			// 没有活跃会话时，直接截屏本机屏幕（不依赖 session）
+			captureStart := time.Now()
 			base64Data, err := h.manager.CaptureScreenshotDirect()
+			log.Printf("[screenshot] CaptureScreenshotDirect took %v, data_len=%d, err=%v", time.Since(captureStart), len(base64Data), err)
 			if err != nil {
 				return fmt.Sprintf("截图失败: %s", err.Error())
 			}
 			h.lastScreenshotAt = time.Now()
+			// Preemptive downsize for IM delivery (multi-monitor can be huge).
+			if len(base64Data) > 1_500_000 {
+				if ds, err := downsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
+					base64Data = ds
+				}
+			}
 			return fmt.Sprintf("[screenshot_base64]%s", base64Data)
 		}
 	}
@@ -792,11 +835,19 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 		platform = h.currentLoopCtx.Platform
 	}
 	if platform != "" && platform != "desktop" {
+		captureStart2 := time.Now()
 		base64Data, err := h.manager.CaptureScreenshotToBase64(sessionID)
+		log.Printf("[screenshot] CaptureScreenshotToBase64 took %v, data_len=%d, err=%v", time.Since(captureStart2), len(base64Data), err)
 		if err != nil {
 			return fmt.Sprintf("截图失败: %s", err.Error())
 		}
 		h.lastScreenshotAt = time.Now()
+		// Preemptive downsize for IM delivery.
+		if len(base64Data) > 1_500_000 {
+			if ds, err := downsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
+				base64Data = ds
+			}
+		}
 		return fmt.Sprintf("[screenshot_base64]%s", base64Data)
 	}
 

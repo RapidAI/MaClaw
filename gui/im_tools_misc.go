@@ -137,7 +137,7 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 	}
 
 	if h.app.skillHubClient == nil {
-		h.app.ensureRemoteInfra()
+		h.app.ensureSkillHubClient()
 	}
 	if h.app.skillHubClient == nil {
 		return "SkillHub 客户端未初始化，请检查配置中的 skill_hub_urls"
@@ -176,7 +176,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	}
 
 	if h.app.skillHubClient == nil {
-		h.app.ensureRemoteInfra()
+		h.app.ensureSkillHubClient()
 	}
 	if h.app.skillHubClient == nil {
 		return "SkillHub 客户端未初始化"
@@ -839,16 +839,22 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 		dom = int(v)
 	}
 
+	intervalMin := 0
+	if v, ok := args["interval_minutes"].(float64); ok {
+		intervalMin = int(v)
+	}
+
 	t := ScheduledTask{
-		Name:       name,
-		Action:     action,
-		Hour:       hour,
-		Minute:     minute,
-		DayOfWeek:  dow,
-		DayOfMonth: dom,
-		StartDate:  stringVal(args, "start_date"),
-		EndDate:    stringVal(args, "end_date"),
-		TaskType:   stringVal(args, "task_type"),
+		Name:            name,
+		Action:          action,
+		Hour:            hour,
+		Minute:          minute,
+		DayOfWeek:       dow,
+		DayOfMonth:      dom,
+		IntervalMinutes: intervalMin,
+		StartDate:       stringVal(args, "start_date"),
+		EndDate:         stringVal(args, "end_date"),
+		TaskType:        stringVal(args, "task_type"),
 	}
 
 	id, err := h.scheduledTaskManager.Add(t)
@@ -892,12 +898,17 @@ func (h *IMMessageHandler) toolListScheduledTasks() string {
 		b.WriteString(fmt.Sprintf("   操作: %s\n", t.Action))
 
 		// Schedule description
-		sched := fmt.Sprintf("每天 %02d:%02d", t.Hour, t.Minute)
-		if t.DayOfWeek >= 0 && t.DayOfWeek <= 6 {
-			sched = fmt.Sprintf("每%s %02d:%02d", weekdays[t.DayOfWeek], t.Hour, t.Minute)
-		}
-		if t.DayOfMonth > 0 {
-			sched = fmt.Sprintf("每月%d号 %02d:%02d", t.DayOfMonth, t.Hour, t.Minute)
+		var sched string
+		if t.IntervalMinutes > 0 {
+			sched = fmt.Sprintf("每%s（首次 %02d:%02d）", FormatInterval(t.IntervalMinutes), t.Hour, t.Minute)
+		} else {
+			sched = fmt.Sprintf("每天 %02d:%02d", t.Hour, t.Minute)
+			if t.DayOfWeek >= 0 && t.DayOfWeek <= 6 {
+				sched = fmt.Sprintf("每%s %02d:%02d", weekdays[t.DayOfWeek], t.Hour, t.Minute)
+			}
+			if t.DayOfMonth > 0 {
+				sched = fmt.Sprintf("每月%d号 %02d:%02d", t.DayOfMonth, t.Hour, t.Minute)
+			}
 		}
 		if t.StartDate != "" || t.EndDate != "" {
 			sched += fmt.Sprintf("（%s ~ %s）", t.StartDate, t.EndDate)

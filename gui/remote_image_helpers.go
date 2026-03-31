@@ -61,3 +61,23 @@ func NewImageTransferMessage(sessionID, mediaType, data string) ImageTransferMes
 		Timestamp: now.Unix(),
 	}
 }
+
+// ExceedsImageSizeLimit checks whether the base64-encoded data would exceed
+// sizeLimit when decoded, using a length estimate instead of a full decode.
+// This avoids allocating a multi-MB buffer just to check the size.
+func ExceedsImageSizeLimit(base64Data string, sizeLimit int) bool {
+	// Standard base64: every 4 chars encode 3 bytes.
+	n := len(base64Data)
+	if n == 0 {
+		return false
+	}
+	pad := 0
+	if base64Data[n-1] == '=' {
+		pad++
+		if n > 1 && base64Data[n-2] == '=' {
+			pad++
+		}
+	}
+	decodedSize := (n/4)*3 - pad
+	return decodedSize > sizeLimit
+}

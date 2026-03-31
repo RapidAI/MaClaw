@@ -42,6 +42,31 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s，已保存到 %s，当前模型不支持图片理解]", displayName, path))
 				}
 			}
+		} else if att.Type == "voice" {
+			// Voice attachment: decode, convert to WAV for ASR, then save.
+			decoded, decErr := base64.StdEncoding.DecodeString(att.Data)
+			if decErr != nil {
+				log.Printf("[IM] decode voice attachment %q failed: %v", att.FileName, decErr)
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s (解码失败: %v)]", att.FileName, decErr))
+				continue
+			}
+			wavData, wavName, wavMime := convertVoiceToWAV(decoded, att.FileName)
+			wavAtt := &MessageAttachment{
+				Type:     "voice",
+				FileName: wavName,
+				MimeType: wavMime,
+				Data:     base64.StdEncoding.EncodeToString(wavData),
+				Size:     int64(len(wavData)),
+			}
+			path, err := saveAttachmentToLocal(wavAtt)
+			if err != nil {
+				log.Printf("[IM] save voice %q failed: %v", att.FileName, err)
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s (保存失败: %v)]", att.FileName, err))
+			} else if wavMime == "audio/wav" {
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s → 已转换为WAV并保存到 %s，请使用ASR工具进行语音识别]", att.FileName, path))
+			} else {
+				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s → 转换失败，原始文件已保存到 %s]", att.FileName, path))
+			}
 		} else {
 			// Save non-image files to local disk so the agent can operate on them.
 			path, err := saveAttachmentToLocal(att)

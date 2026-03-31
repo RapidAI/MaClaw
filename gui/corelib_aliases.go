@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -336,3 +337,28 @@ func extractFailingSummary(output string) string {
 // downsizeScreenshotBase64 wraps remote.DownsizeScreenshotBase64 for use
 // within gui/ without a package qualifier.
 var downsizeScreenshotBase64 = remote.DownsizeScreenshotBase64
+
+// ── corelib/scheduler aliases ───────────────────────────────────────────────
+// These replace the former gui/scheduled_task.go and gui/scheduled_task_calendar.go
+// duplicates. The canonical implementation now lives solely in corelib/scheduler.
+
+type ScheduledTask = scheduler.ScheduledTask
+type ScheduledTaskManager = scheduler.Manager
+type TaskExecutor = scheduler.TaskExecutor
+
+// NewScheduledTaskManager wraps scheduler.NewManager for gui compatibility.
+var NewScheduledTaskManager = scheduler.NewManager
+
+// isRecurringTask wraps scheduler.IsRecurringTask (lowercase for gui-internal use).
+var isRecurringTask = scheduler.IsRecurringTask
+
+// SyncTaskToSystemCalendar wraps scheduler.SyncTaskToSystemCalendar.
+var SyncTaskToSystemCalendar = scheduler.SyncTaskToSystemCalendar
+
+// FormatInterval wraps scheduler.FormatInterval.
+var FormatInterval = scheduler.FormatInterval
+
+// truncateStr wraps scheduler.TruncateStr (lowercase for gui-internal use).
+func truncateStr(s string, maxLen int) string {
+	return scheduler.TruncateStr(s, maxLen)
+}

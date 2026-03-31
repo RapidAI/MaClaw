@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/telegram"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
@@ -163,7 +164,7 @@ func (m *telegramGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	}
 
 	a := m.app
-	a.ensureRemoteInfra()
+	a.ensureInteractionInfra()
 
 	h := NewIMMessageHandler(a, a.remoteSessions)
 	if a.capabilityGapDetector != nil {
@@ -246,7 +247,7 @@ func (m *telegramGatewayManager) notifyHubUnavailable(msg telegram.IncomingMessa
 	}
 	_ = gw.SendText(context.Background(), telegram.OutgoingText{
 		ChatID: msg.ChatID,
-		Text:   "⚠️ 当前为多机模式，但 Hub 未连接。消息已回退到本地处理。\n请检查 Hub 连接状态，或切换回单机模式。",
+		Text:   i18n.T(i18n.MsgHubUnavailable, "zh"),
 	})
 }
 
@@ -287,7 +288,7 @@ func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage
 		if gw != nil {
 			_ = gw.SendText(context.Background(), telegram.OutgoingText{
 				ChatID: msg.ChatID,
-				Text:   "⚠️ 本地 LLM 未配置，请先在设置中配置 MaClaw LLM。",
+				Text:   i18n.T(i18n.MsgLLMNotConfigured, "zh"),
 			})
 		}
 		return
@@ -336,7 +337,7 @@ func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage
 		lastProgress = now
 		_ = gw.SendText(context.Background(), telegram.OutgoingText{
 			ChatID: msg.ChatID,
-			Text:   "⏳ " + textutil.StripMarkdown(progressText),
+			Text:   i18n.T(i18n.MsgProgressPrefix, "zh") + textutil.StripMarkdown(progressText),
 		})
 	}
 
@@ -344,6 +345,7 @@ func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage
 		UserID:      strconv.FormatInt(msg.ChatID, 10),
 		Platform:    "telegram_local",
 		Text:        text,
+		Lang:        i18n.NormalizeLang(msg.LanguageCode),
 		Attachments: attachments,
 	}, onProgress)
 

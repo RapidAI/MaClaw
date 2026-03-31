@@ -72,6 +72,10 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 		logLabel = fmt.Sprintf("window %q", label)
 	}
 
+	// Ensure large image buffers are returned to the OS promptly after
+	// the screenshot pipeline completes, regardless of exit path.
+	defer remote.ReleaseScreenshotMemory()
+
 	// On macOS, try native CGO capture first (avoids screencapture subprocess
 	// which triggers its own TCC dialog on macOS 26+). Only for fullscreen
 	// captures (label == "" means no specific window title).
@@ -122,31 +126,32 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 		}
 
 		rawOut := stdout.String()
+		// Release the stdout buffer immediately — rawOut holds its own copy.
+		stdout.Reset()
+
+		// ParseScreenshotOutputOpt does parse + blank-check in one pass,
+		// avoiding a second base64-decode + PNG-decode round-trip.
+		var blank bool
 		var err error
-		base64Data, err = remote.ParseScreenshotOutput(rawOut)
+		base64Data, blank, err = remote.ParseScreenshotOutputOpt(rawOut)
+		rawOut = "" // allow GC
 		if err != nil {
-			preview := rawOut
-			if len(preview) > 120 {
-				preview = preview[:120] + "..."
-			}
-			m.app.log(fmt.Sprintf("[screenshot] failed to parse output for session=%s: %v (stdout_len=%d, stderr=%q, preview=%q)",
-				sessionID, err, len(rawOut), strings.TrimSpace(stderr.String()), preview))
+			m.app.log(fmt.Sprintf("[screenshot] failed to parse output for session=%s: %v (stderr=%q)",
+				sessionID, err, strings.TrimSpace(stderr.String())))
 			return fmt.Errorf("screenshot output parse error: %w", err)
 		}
+		if blank {
+			m.app.log(fmt.Sprintf("[screenshot] captured image is blank/black for session=%s — session may be locked or display is off", sessionID))
+			return fmt.Errorf("screenshot is blank (all black) — the session may be locked, the display may be off, or the remote desktop is disconnected")
+		}
+	} else {
+		// Native capture path — blank check was already done in the condition
+		// above (only non-blank images are assigned to base64Data), so no
+		// additional IsBlankImage call is needed here.
 	}
 
-	// Server-side blank image detection as a safety net. Even if the
-	// platform-specific command didn't detect a blank image (e.g. the
-	// blank-check tools weren't available), we validate here before
-	// sending a useless black image to the client.
-	if remote.IsBlankImage(base64Data) {
-		m.app.log(fmt.Sprintf("[screenshot] captured image is blank/black for session=%s — session may be locked or display is off", sessionID))
-		return fmt.Errorf("screenshot is blank (all black) — the session may be locked, the display may be off, or the remote desktop is disconnected")
-	}
-
-	msg := NewImageTransferMessage(sessionID, "image/png", base64Data)
-	if err := ValidateImageTransferMessage(msg, ImageOutputSizeLimit); err != nil {
-		// Image exceeds size limit — attempt to downsize before giving up.
+	// Quick size check without a full base64 decode.
+	if ExceedsImageSizeLimit(base64Data, ImageOutputSizeLimit) {
 		downsized, dsErr := remote.DownsizeScreenshotBase64(base64Data, ImageOutputSizeLimit)
 		if dsErr != nil {
 			m.app.log(fmt.Sprintf("[screenshot] downsize failed for session=%s: %v", sessionID, dsErr))
@@ -154,12 +159,14 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 		}
 		m.app.log(fmt.Sprintf("[screenshot] downsized image for session=%s", sessionID))
 		base64Data = downsized
-		msg = NewImageTransferMessage(sessionID, "image/png", base64Data)
-		if err := ValidateImageTransferMessage(msg, ImageOutputSizeLimit); err != nil {
-			m.app.log(fmt.Sprintf("[screenshot] image still exceeds size limit after downsize for session=%s: %v", sessionID, err))
-			return err
+		// Verify after downsize.
+		if ExceedsImageSizeLimit(base64Data, ImageOutputSizeLimit) {
+			m.app.log(fmt.Sprintf("[screenshot] image still exceeds size limit after downsize for session=%s", sessionID))
+			return fmt.Errorf("image transfer: decoded size exceeds limit after downsize")
 		}
 	}
+
+	msg := NewImageTransferMessage(sessionID, "image/png", base64Data)
 
 	if m.hubClient != nil {
 		if err := m.hubClient.SendSessionImage(msg); err != nil {
@@ -189,6 +196,8 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	if !available {
 		return "", fmt.Errorf("screenshot requires a graphical display environment: %s", reason)
 	}
+
+	defer remote.ReleaseScreenshotMemory()
 
 	// On macOS, try native CGO capture first (avoids screencapture TCC dialog).
 	if runtime.GOOS == "darwin" {
@@ -239,22 +248,89 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 	}
 
 	rawOut := stdout.String()
-	base64Data, err := remote.ParseScreenshotOutput(rawOut)
+	stdout.Reset()
+
+	base64Data, blank, err := remote.ParseScreenshotOutputOpt(rawOut)
+	rawOut = "" // allow GC
 	if err != nil {
-		preview := rawOut
-		if len(preview) > 120 {
-			preview = preview[:120] + "..."
-		}
-		m.app.log(fmt.Sprintf("[screenshot-direct] parse error: %v (stdout_len=%d, preview=%q)", err, len(rawOut), preview))
+		m.app.log(fmt.Sprintf("[screenshot-direct] parse error: %v (stderr=%q)", err, strings.TrimSpace(stderr.String())))
 		return "", fmt.Errorf("screenshot output parse error: %w", err)
 	}
 
-	if remote.IsBlankImage(base64Data) {
+	if blank {
 		m.app.log("[screenshot-direct] captured image is blank/black")
 		return "", fmt.Errorf("screenshot is blank (all black) — the display may be off or locked")
 	}
 
 	m.app.log("[screenshot-direct] successfully captured fullscreen (all monitors) via command-line")
+	return base64Data, nil
+}
+
+// CaptureScreenshotDirectForDisplay captures a single display by index.
+// It uses BuildSingleMonitorScreenshotCommandSafe which includes BitBlt
+// fallback for environments where CopyFromScreen returns blank images.
+func (m *RemoteSessionManager) CaptureScreenshotDirectForDisplay(displayIndex int) (string, error) {
+	if !EnsureScreenRecordingPermission() {
+		return "", fmt.Errorf("screen recording permission not granted")
+	}
+
+	available, reason := remote.DetectDisplayServer()
+	if !available {
+		return "", fmt.Errorf("screenshot requires a graphical display environment: %s", reason)
+	}
+
+	defer remote.ReleaseScreenshotMemory()
+
+	result, err := remote.BuildSingleMonitorScreenshotCommandSafe(displayIndex)
+	if err != nil {
+		return "", err
+	}
+	cmdStr := result.Command
+	if cmdStr == "" {
+		return "", fmt.Errorf("single monitor screenshot not supported on this platform")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	var shellName string
+	var shellArgs []string
+	if runtime.GOOS == "windows" {
+		shellName = "powershell"
+		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", cmdStr}
+	} else {
+		shellName = "bash"
+		shellArgs = []string{"-c", cmdStr}
+	}
+
+	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	hideCommandWindow(cmd)
+
+	m.app.log(fmt.Sprintf("[screenshot-display] capturing display %d", displayIndex))
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("screenshot command timed out after 45s")
+		}
+		return "", fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+
+	rawOut := stdout.String()
+	stdout.Reset()
+
+	base64Data, blank, err := remote.ParseScreenshotOutputOpt(rawOut)
+	rawOut = ""
+	if err != nil {
+		return "", fmt.Errorf("screenshot output parse error: %w", err)
+	}
+	if blank {
+		return "", fmt.Errorf("screenshot of display %d is blank (all black)", displayIndex)
+	}
+
+	m.app.log(fmt.Sprintf("[screenshot-display] successfully captured display %d", displayIndex))
 	return base64Data, nil
 }
 
@@ -285,6 +361,8 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 	if !available {
 		return "", fmt.Errorf("screenshot requires a graphical display: %s", reason)
 	}
+
+	defer remote.ReleaseScreenshotMemory()
 
 	// On macOS, try native CGO capture first (avoids screencapture TCC dialog).
 	if runtime.GOOS == "darwin" {
@@ -332,11 +410,15 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 		return "", fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 
-	base64Data, err := remote.ParseScreenshotOutput(stdout.String())
+	rawOut := stdout.String()
+	stdout.Reset()
+
+	base64Data, blank, err := remote.ParseScreenshotOutputOpt(rawOut)
+	rawOut = "" // allow GC
 	if err != nil {
 		return "", fmt.Errorf("screenshot output parse error: %w", err)
 	}
-	if remote.IsBlankImage(base64Data) {
+	if blank {
 		return "", fmt.Errorf("screenshot is blank — session may be locked or display is off")
 	}
 
