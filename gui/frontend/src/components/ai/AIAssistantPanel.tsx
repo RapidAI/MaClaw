@@ -19,6 +19,8 @@ interface AIAssistantPanelProps {
     scrollToTopSeq?: number; // bumped when panel should scroll to top (e.g. after news reload)
     inline?: boolean; // when true, render as inline content instead of overlay
     onHideWindow?: () => void; // hide the entire window (inline mode)
+    onboardingIncomplete?: boolean; // true when onboarding was dismissed before completion
+    onOpenOnboarding?: () => void; // callback to re-open the onboarding wizard
 }
 
 /* ── Theme definitions ── */
@@ -512,7 +514,7 @@ if (typeof document !== "undefined" && !document.getElementById("ai-blink-style"
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews, scrollToTopSeq, inline, onHideWindow }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews, scrollToTopSeq, inline, onHideWindow, onboardingIncomplete, onOpenOnboarding }: AIAssistantPanelProps) {
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -726,7 +728,26 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                 }}
                 onScroll={handleScroll}
             >
-                {!ready ? (
+                {onboardingIncomplete ? (
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "16px" }}>
+                        <div style={{ color: t.textMuted, fontSize: "13px" }}>
+                            {lang === "en" ? "Setup not completed" : "设置未完成"}
+                        </div>
+                        <button
+                            onClick={onOpenOnboarding}
+                            style={{
+                                padding: "10px 28px", fontSize: "15px", fontWeight: 600,
+                                background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+                                color: "#fff", border: "none", borderRadius: "8px",
+                                cursor: "pointer", transition: "opacity 0.2s",
+                            }}
+                            onMouseEnter={e => (e.currentTarget.style.opacity = "0.85")}
+                            onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
+                        >
+                            {lang === "en" ? "Complete Setup" : "完成设置"}
+                        </button>
+                    </div>
+                ) : !ready ? (
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "12px" }}>
                         <div style={{
                             width: "28px", height: "28px",

@@ -200,6 +200,34 @@ func (r *Router) ResetSession() {
 	r.sessionTools = nil
 }
 
+// WarmupDeferredEmbeddings pre-computes and caches embedding vectors for
+// deferred tool descriptions in the background. Call this after SearchDeferred
+// returns results so that when the tools are activated and enter the Route()
+// pipeline, their embeddings are already warm in ToolEmbeddingCache.
+// No-op when hybrid retrieval is not active.
+func (r *Router) WarmupDeferredEmbeddings(toolDefs []map[string]interface{}) {
+	if r.hybrid == nil || len(toolDefs) == 0 {
+		return
+	}
+	texts := make(map[string]string, len(toolDefs))
+	for _, def := range toolDefs {
+		name := ExtractToolName(def)
+		if name == "" {
+			continue
+		}
+		desc := ExtractToolDescription(def)
+		texts[name] = r.buildEmbeddingText(name, desc)
+	}
+	if len(texts) == 0 {
+		return
+	}
+	// Fire-and-forget: GetBatch populates the cache and triggers async disk save.
+	go func() {
+		_, _ = r.hybrid.toolCache.GetBatch(texts)
+		log.Printf("[Router] warmed up embeddings for %d deferred tools", len(texts))
+	}()
+}
+
 // buildSearchText returns the enriched search text for a tool if an enrichment
 // store is configured, otherwise falls back to name + description + tags.
 func (r *Router) buildSearchText(name, description string) string {

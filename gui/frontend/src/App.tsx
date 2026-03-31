@@ -3575,7 +3575,7 @@ ${instruction}`;
             <div className="main-container">
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
-                    <AIAssistantPanel onClose={() => { switchTool('settings'); }} lang={lang} inline={true} onHideWindow={() => WindowHide()} {...aiAssistant} />
+                    <AIAssistantPanel onClose={() => { switchTool('settings'); }} lang={lang} inline={true} onHideWindow={() => WindowHide()} onboardingIncomplete={!config?.onboarding_done && !showMaclawLLMPopup} onOpenOnboarding={() => setShowMaclawLLMPopup(true)} {...aiAssistant} />
                 ) : (
                 <><div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
