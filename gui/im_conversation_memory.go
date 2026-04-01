@@ -4,8 +4,10 @@ package main
 // and automatic TTL-based eviction.
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -45,6 +47,15 @@ type conversationSession struct {
 	lastAccess time.Time
 }
 
+type persistedConversationSession struct {
+	Entries    []conversationEntry `json:"entries"`
+	LastAccess time.Time           `json:"last_access"`
+}
+
+type conversationMemorySnapshot struct {
+	Sessions map[string]persistedConversationSession `json:"sessions"`
+}
+
 // memoryShardCount is the number of shards for conversation memory.
 // Must be a power of 2 for fast modulo via bitwise AND.
 const memoryShardCount = 16
@@ -57,9 +68,11 @@ type memoryShard struct {
 }
 
 type conversationMemory struct {
-	shards   [memoryShardCount]*memoryShard
-	stopCh   chan struct{}
-	archiver *ConversationArchiver
+	shards    [memoryShardCount]*memoryShard
+	stopCh    chan struct{}
+	archiver  *ConversationArchiver
+	persistMu sync.Mutex
+	storePath string
 }
 
 func newConversationMemory() *conversationMemory {
@@ -72,6 +85,13 @@ func newConversationMemory() *conversationMemory {
 		}
 	}
 	go cm.evictionLoop()
+	return cm
+}
+
+func newPersistentConversationMemory(storePath string) *conversationMemory {
+	cm := newConversationMemory()
+	cm.storePath = storePath
+	_ = cm.loadFromDisk()
 	return cm
 }
 
@@ -108,6 +128,7 @@ func (cm *conversationMemory) evictExpired() {
 		entries []conversationEntry
 	}
 	var toArchive []expiredEntry
+	changed := false
 
 	for _, sh := range cm.shards {
 		sh.mu.Lock()
@@ -117,9 +138,14 @@ func (cm *conversationMemory) evictExpired() {
 					toArchive = append(toArchive, expiredEntry{uid, s.entries})
 				}
 				delete(sh.sessions, uid)
+				changed = true
 			}
 		}
 		sh.mu.Unlock()
+	}
+
+	if changed {
+		_ = cm.saveToDisk()
 	}
 
 	// Archive outside any lock so slow I/O doesn't block other users.
@@ -135,6 +161,7 @@ func (cm *conversationMemory) stop() {
 	case cm.stopCh <- struct{}{}:
 	default:
 	}
+	_ = cm.saveToDisk()
 }
 
 func (cm *conversationMemory) load(userID string) []conversationEntry {
@@ -151,20 +178,91 @@ func (cm *conversationMemory) load(userID string) []conversationEntry {
 }
 
 func (cm *conversationMemory) save(userID string, entries []conversationEntry) {
+	copied := make([]conversationEntry, len(entries))
+	copy(copied, entries)
 	sh := cm.shard(userID)
 	sh.mu.Lock()
-	defer sh.mu.Unlock()
 	sh.sessions[userID] = &conversationSession{
-		entries:    entries,
+		entries:    copied,
 		lastAccess: time.Now(),
 	}
+	sh.mu.Unlock()
+	_ = cm.saveToDisk()
 }
 
 func (cm *conversationMemory) clear(userID string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
-	defer sh.mu.Unlock()
 	delete(sh.sessions, userID)
+	sh.mu.Unlock()
+	_ = cm.saveToDisk()
+}
+
+func (cm *conversationMemory) saveToDisk() error {
+	if cm.storePath == "" {
+		return nil
+	}
+	cm.persistMu.Lock()
+	defer cm.persistMu.Unlock()
+
+	snapshot := conversationMemorySnapshot{Sessions: make(map[string]persistedConversationSession)}
+	for _, sh := range cm.shards {
+		sh.mu.RLock()
+		for userID, session := range sh.sessions {
+			if session == nil {
+				continue
+			}
+			entries := make([]conversationEntry, len(session.entries))
+			copy(entries, session.entries)
+			snapshot.Sessions[userID] = persistedConversationSession{
+				Entries:    entries,
+				LastAccess: session.lastAccess,
+			}
+		}
+		sh.mu.RUnlock()
+	}
+
+	if err := os.MkdirAll(filepath.Dir(cm.storePath), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmpPath := cm.storePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, cm.storePath)
+}
+
+func (cm *conversationMemory) loadFromDisk() error {
+	if cm.storePath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(cm.storePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var snapshot conversationMemorySnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return err
+	}
+	for userID, session := range snapshot.Sessions {
+		entries := make([]conversationEntry, len(session.Entries))
+		copy(entries, session.Entries)
+		sh := cm.shard(userID)
+		sh.mu.Lock()
+		sh.sessions[userID] = &conversationSession{
+			entries:    entries,
+			lastAccess: session.LastAccess,
+		}
+		sh.mu.Unlock()
+	}
+	return nil
 }
 
 // lastAccessTime returns the last access time for a user's conversation session.

@@ -239,7 +239,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	h := &IMMessageHandler{
 		app:        app,
 		manager:    manager,
-		memory:     newConversationMemory(),
+		memory:     newPersistentConversationMemory(filepath.Join(app.GetDataDir(), "ai_assistant_conversation.json")),
 		client:        chatClient,
 		taskClient:    taskClient,
 		agentActivity: NewAgentActivityStore(),
@@ -789,6 +789,16 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 // ---------------------------------------------------------------------------
 // LLM types and HTTP client
 // ---------------------------------------------------------------------------
+
+// CancelCurrentSession cancels the currently running chat session.
+// Returns an error if no session is currently running.
+func (h *IMMessageHandler) CancelCurrentSession() error {
+	if h.currentLoopCtx == nil {
+		return fmt.Errorf("no active session to cancel")
+	}
+	h.currentLoopCtx.Cancel()
+	return nil
+}
 
 // parseSlotKind converts a string slot kind to the SlotKind enum.
 // Defaults to SlotKindScheduled for unknown values.

@@ -5,37 +5,17 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
-type llmResponse struct {
-	Choices []llmChoice `json:"choices"`
-	Usage   *llmUsage   `json:"usage,omitempty"`
-}
-
-type llmChoice struct {
-	Message      llmMessage `json:"message"`
-	FinishReason string     `json:"finish_reason"`
-}
-
-type llmMessage struct {
-	Role             string        `json:"role"`
-	Content          string        `json:"content"`
-	ReasoningContent string        `json:"reasoning_content,omitempty"`
-	ToolCalls        []llmToolCall `json:"tool_calls,omitempty"`
-}
-
-type llmToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
+type llmResponse = llm.Response
+type llmChoice = llm.Choice
+type llmMessage = llm.Message
+type llmToolCall = llm.ToolCall
 
 // doLLMRequest sends a chat completion request to the configured LLM.
 // Supports both OpenAI-compatible and Anthropic Messages API protocols.
@@ -81,12 +61,12 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []in
 		if len(msg) > 512 {
 			msg = msg[:512] + "..."
 		}
-		return nil, dumpLLMContext(resp.StatusCode, msg, data)
+		return nil, dumpLLMContext(resp.StatusCode, msg, data, h.app.GetTempDir())
 	}
 
 	var result llmResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
+		return nil, err
 	}
 	return &result, nil
 }
@@ -132,65 +112,119 @@ func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages [
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
+	return llm.ParseNonStreamAnthropicResponse(resp)
+}
+
+// ---------------------------------------------------------------------------
+// Shared Anthropic message/tool conversion helpers
+// ---------------------------------------------------------------------------
+
+// anthropicConvertedMessages holds the result of converting OpenAI-style
+// messages and tools into Anthropic API format.
+type anthropicConvertedMessages struct {
+	SystemText string
+	Messages   []interface{}
+}
+
+// convertToAnthropicMessages converts OpenAI-style conversation messages
+// into Anthropic Messages API format, separating the system prompt.
+func convertToAnthropicMessages(messages []interface{}) anthropicConvertedMessages {
+	var result anthropicConvertedMessages
+	for _, m := range messages {
+		mm, ok := m.(map[string]interface{})
+		if !ok {
+			if ms, ok2 := m.(map[string]string); ok2 {
+				mm = make(map[string]interface{}, len(ms))
+				for k, v := range ms {
+					mm[k] = v
+				}
+			} else {
+				result.Messages = append(result.Messages, m)
+				continue
+			}
 		}
-		return nil, dumpLLMContext(resp.StatusCode, msg, data)
-	}
-
-	// Parse Anthropic response and convert to internal llmResponse format
-	var anthropicResp struct {
-		Content    []anthropicContentBlock `json:"content"`
-		StopReason string                  `json:"stop_reason"`
-	}
-	if err := json.Unmarshal(body, &anthropicResp); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-
-	// Convert to llmResponse
-	msg := llmMessage{Role: "assistant"}
-	var textParts []string
-	for _, block := range anthropicResp.Content {
-		switch block.Type {
-		case "text":
-			textParts = append(textParts, block.Text)
-		case "tool_use":
-			argsJSON, _ := json.Marshal(block.Input)
-			msg.ToolCalls = append(msg.ToolCalls, llmToolCall{
-				ID:   block.ID,
-				Type: "function",
-				Function: struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				}{
-					Name:      block.Name,
-					Arguments: string(argsJSON),
-				},
+		role, _ := mm["role"].(string)
+		switch role {
+		case "system":
+			if content, _ := mm["content"].(string); content != "" {
+				result.SystemText = content
+			}
+		case "assistant":
+			var contentBlocks []interface{}
+			if text, _ := mm["content"].(string); text != "" {
+				contentBlocks = append(contentBlocks, map[string]interface{}{
+					"type": "text", "text": text,
+				})
+			}
+			if tcs, ok := mm["tool_calls"].([]llmToolCall); ok {
+				for _, tc := range tcs {
+					var inputObj interface{}
+					_ = json.Unmarshal([]byte(tc.Function.Arguments), &inputObj)
+					if inputObj == nil {
+						inputObj = map[string]interface{}{}
+					}
+					contentBlocks = append(contentBlocks, map[string]interface{}{
+						"type": "tool_use", "id": tc.ID,
+						"name": tc.Function.Name, "input": inputObj,
+					})
+				}
+			}
+			if len(contentBlocks) > 0 {
+				result.Messages = append(result.Messages, map[string]interface{}{
+					"role": "assistant", "content": contentBlocks,
+				})
+			}
+		case "tool":
+			toolCallID, _ := mm["tool_call_id"].(string)
+			content, _ := mm["content"].(string)
+			toolResultBlock := map[string]interface{}{
+				"type": "tool_result", "id": "toolrslt_" + toolCallID, "tool_use_id": toolCallID, "content": content,
+			}
+			merged := false
+			if len(result.Messages) > 0 {
+				if lastMsg, ok := result.Messages[len(result.Messages)-1].(map[string]interface{}); ok {
+					if lastRole, _ := lastMsg["role"].(string); lastRole == "user" {
+						if blocks, ok := lastMsg["content"].([]interface{}); ok && len(blocks) > 0 {
+							if firstBlock, ok := blocks[0].(map[string]interface{}); ok {
+								if firstBlock["type"] == "tool_result" {
+									lastMsg["content"] = append(blocks, toolResultBlock)
+									merged = true
+								}
+							}
+						}
+					}
+				}
+			}
+			if !merged {
+				result.Messages = append(result.Messages, map[string]interface{}{
+					"role": "user", "content": []interface{}{toolResultBlock},
+				})
+			}
+		default:
+			result.Messages = append(result.Messages, map[string]interface{}{
+				"role": role, "content": mm["content"],
 			})
 		}
 	}
-	msg.Content = strings.Join(textParts, "\n")
-
-	finishReason := "stop"
-	if anthropicResp.StopReason == "tool_use" {
-		finishReason = "tool_calls"
-	} else if anthropicResp.StopReason == "max_tokens" {
-		finishReason = "length"
-	}
-
-	return &llmResponse{
-		Choices: []llmChoice{{Message: msg, FinishReason: finishReason}},
-	}, nil
+	return result
 }
 
-// anthropicContentBlock represents a content block in the Anthropic Messages API response.
-type anthropicContentBlock struct {
-	Type  string                 `json:"type"`
-	Text  string                 `json:"text,omitempty"`
-	ID    string                 `json:"id,omitempty"`
-	Name  string                 `json:"name,omitempty"`
-	Input map[string]interface{} `json:"input,omitempty"`
+// convertToAnthropicTools converts OpenAI-style tool definitions to Anthropic format.
+func convertToAnthropicTools(tools []map[string]interface{}) []map[string]interface{} {
+	var anthropicTools []map[string]interface{}
+	for _, t := range tools {
+		fn, _ := t["function"].(map[string]interface{})
+		if fn == nil {
+			continue
+		}
+		at := map[string]interface{}{"name": fn["name"]}
+		if desc, ok := fn["description"]; ok {
+			at["description"] = desc
+		}
+		if params, ok := fn["parameters"]; ok {
+			at["input_schema"] = params
+		}
+		anthropicTools = append(anthropicTools, at)
+	}
+	return anthropicTools
 }

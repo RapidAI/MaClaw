@@ -229,7 +229,11 @@ func gitRepoHasCommits(path string) bool {
 }
 
 func ensureWorktreeRootDir() (string, error) {
-	root := filepath.Join(os.TempDir(), "maclaw-worktrees")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(home, ".maclaw", "temp", "maclaw-worktrees")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", fmt.Errorf("create worktree root: %w", err)
 	}

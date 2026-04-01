@@ -414,6 +414,8 @@ export function SendAIAssistantMessage(arg1:string):Promise<any>;
 
 export function ClearAIAssistantHistory():Promise<void>;
 
+export function CancelAIAssistantSession():Promise<void>;
+
 export function FetchNews():Promise<Array<any>>;
 
 // Background Loop bindings

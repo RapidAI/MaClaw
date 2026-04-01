@@ -890,6 +890,9 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.localMCPManager != nil {
 		a.localMCPManager.StopAll()
 	}
+	if hubClient := a.hubClient(); hubClient != nil && hubClient.imHandler != nil {
+		hubClient.imHandler.memory.stop()
+	}
 	if a.memPipeline != nil {
 		a.memPipeline.Stop()
 	}
@@ -1505,6 +1508,13 @@ func (a *App) GetUserHomeDir() string {
 // survives uninstalls and is easy to back up / transfer.
 func (a *App) GetDataDir() string {
 	return filepath.Join(a.GetUserHomeDir(), ".maclaw", "data")
+}
+
+// GetTempDir returns ~/.maclaw/temp — the temporary directory for maclaw.
+func (a *App) GetTempDir() string {
+	tmp := filepath.Join(a.GetUserHomeDir(), ".maclaw", "temp")
+	_ = os.MkdirAll(tmp, 0o755)
+	return tmp
 }
 
 // BrandInfo is the JSON-friendly brand information exposed to the frontend.
@@ -4633,7 +4643,7 @@ func (a *App) PackLog(logContent string) (string, error) {
 	// Create a temp file for the zip
 	timestamp := time.Now().Format("20060102_150405")
 	fileName := fmt.Sprintf("maclaw_log_%s.zip", timestamp)
-	tempDir := os.TempDir()
+	tempDir := a.GetTempDir()
 	zipPath := filepath.Join(tempDir, fileName)
 	// Create the zip file
 	zipFile, err := os.Create(zipPath)

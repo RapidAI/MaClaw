@@ -10,40 +10,51 @@ import (
 func TestDefaultMaclawLLMProviders(t *testing.T) {
 	providers := defaultMaclawLLMProviders()
 
-	// ── 1. First provider is OpenAI with correct fields ──
-	if len(providers) == 0 {
-		t.Fatal("defaultMaclawLLMProviders returned empty list")
+	if len(providers) < 7 {
+		t.Fatalf("provider count = %d, want >= 7", len(providers))
 	}
+
 	first := providers[0]
-	if first.Name != "OpenAI" {
-		t.Errorf("first provider Name = %q, want %q", first.Name, "OpenAI")
+	if first.Name != "免费" {
+		t.Errorf("first provider Name = %q, want %q", first.Name, "免费")
 	}
-	if first.URL != "https://api.openai.com/v1" {
-		t.Errorf("OpenAI URL = %q, want %q", first.URL, "https://api.openai.com/v1")
+	if first.URL != "http://localhost:18099/v1" {
+		t.Errorf("free provider URL = %q, want %q", first.URL, "http://localhost:18099/v1")
 	}
-	if first.Model != "gpt-4o" {
-		t.Errorf("OpenAI Model = %q, want %q", first.Model, "gpt-4o")
+	if first.Model != "free-proxy" {
+		t.Errorf("free provider Model = %q, want %q", first.Model, "free-proxy")
 	}
-	if first.AuthType != "oauth" {
-		t.Errorf("OpenAI AuthType = %q, want %q", first.AuthType, "oauth")
+	if first.AuthType != "none" {
+		t.Errorf("free provider AuthType = %q, want %q", first.AuthType, "none")
 	}
-	if first.ContextLength != 128000 {
-		t.Errorf("OpenAI ContextLength = %d, want %d", first.ContextLength, 128000)
-	}
-
-	// ── 2. At least 5 providers (OpenAI, 智谱, MiniMax, Custom1, Custom2) ──
-	if len(providers) < 5 {
-		t.Fatalf("provider count = %d, want >= 5", len(providers))
+	if first.ContextLength != 10000 {
+		t.Errorf("free provider ContextLength = %d, want %d", first.ContextLength, 10000)
 	}
 
-	expectedNames := []string{"OpenAI", "智谱", "MiniMax", "Custom1", "Custom2"}
+	openAI := providers[1]
+	if openAI.Name != "OpenAI" {
+		t.Errorf("providers[1].Name = %q, want %q", openAI.Name, "OpenAI")
+	}
+	if openAI.URL != "https://api.openai.com/v1" {
+		t.Errorf("OpenAI URL = %q, want %q", openAI.URL, "https://api.openai.com/v1")
+	}
+	if openAI.Model != "gpt-5.4" {
+		t.Errorf("OpenAI Model = %q, want %q", openAI.Model, "gpt-5.4")
+	}
+	if openAI.AuthType != "oauth" {
+		t.Errorf("OpenAI AuthType = %q, want %q", openAI.AuthType, "oauth")
+	}
+	if openAI.ContextLength != 128000 {
+		t.Errorf("OpenAI ContextLength = %d, want %d", openAI.ContextLength, 128000)
+	}
+
+	expectedNames := []string{"免费", "OpenAI", "智谱", "MiniMax", "Kimi", "Custom1", "Custom2"}
 	for i, want := range expectedNames {
 		if providers[i].Name != want {
 			t.Errorf("providers[%d].Name = %q, want %q", i, providers[i].Name, want)
 		}
 	}
 
-	// ── 3. Last two entries have IsCustom=true ──
 	n := len(providers)
 	if !providers[n-2].IsCustom {
 		t.Errorf("providers[%d] (%s) IsCustom = false, want true", n-2, providers[n-2].Name)

@@ -453,7 +453,7 @@ func (a *App) installNodeJSManually(targetDir string) error {
 
 	a.log(a.tr("Downloading Node.js from %s...", url))
 
-	tempDir := os.TempDir()
+	tempDir := a.GetTempDir()
 	tarPath := filepath.Join(tempDir, fileName)
 
 	// Download
@@ -619,7 +619,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	}
 
 	// Create shell script wrapper
-	scriptPath := filepath.Join(os.TempDir(), fmt.Sprintf("maclaw_launch_%d.sh", time.Now().UnixNano()))
+	scriptPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("maclaw_launch_%d.sh", time.Now().UnixNano()))
 	scriptContent := "#!/bin/bash\n"
 	scriptContent += fmt.Sprintf("cd \"%s\"\n", projectDir)
 	for k, v := range env {

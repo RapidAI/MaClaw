@@ -26,11 +26,10 @@ func TestSystemPrompt_FirstTurn_ContainsProactiveMemoryInstruction(t *testing.T)
 	prompt := h.buildSystemPromptWithMemory("hello", true)
 
 	keywords := []string{
-		"主动记忆",
-		"proactive",
-		"memory(action=save)",
-		"每次会话最多主动保存 5 条",
-		"💾 已主动记录",
+		"用户记忆",
+		"记忆管理指引",
+		"主动调用 memory(action: save)",
+		"user_fact | preference | project_knowledge | instruction",
 	}
 	for _, kw := range keywords {
 		if !strings.Contains(prompt, kw) {

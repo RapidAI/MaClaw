@@ -37,6 +37,11 @@ func makeBuiltinDefs() []map[string]interface{} {
 		toolDef("manage_config", "管理配置", nil, nil),
 		toolDef("web_search", "搜索网页", nil, nil),
 		toolDef("web_fetch", "获取网页内容", nil, nil),
+		toolDef("set_nickname", "设置昵称", nil, nil),
+		toolDef("browser_connect", "连接浏览器", nil, nil),
+		toolDef("browser_navigate", "浏览器跳转", nil, nil),
+		toolDef("browser_click", "浏览器点击", nil, nil),
+		toolDef("discover_tool", "发现工具", nil, nil),
 	}
 }
 

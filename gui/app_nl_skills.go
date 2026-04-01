@@ -137,10 +137,18 @@ func (e *SkillExecutor) Register(entry NLSkillEntry) error {
 		return fmt.Errorf("skill name is required")
 	}
 	skills := e.loadSkills()
+	primaryDir, primaryErr := skill.PrimarySkillsDir()
 	for _, s := range skills {
-		if s.Name == name {
-			return fmt.Errorf("skill %q already exists", name)
+		if s.Name != name {
+			continue
 		}
+		if entry.Source == "hub" && s.Source == "file" && primaryErr == nil {
+			extractedDir := filepath.Join(primaryDir, name)
+			if filepath.Clean(s.SkillDir) == filepath.Clean(extractedDir) {
+				continue
+			}
+		}
+		return fmt.Errorf("skill %q already exists", name)
 	}
 	entry.Name = name
 	if entry.Status == "" {
@@ -297,7 +305,8 @@ func (e *SkillExecutor) Delete(name string) error {
 // skill.yaml name matches the given name. Errors are silently ignored
 // so that config deletion is never blocked by a disk cleanup failure.
 func (e *SkillExecutor) removeSkillDirs(name string) {
-	for _, root := range skill.SkillScanRoots() {
+	cfg, _ := e.app.LoadConfig()
+	for _, root := range skill.SkillScanRootsWithExternal(cfg.ExternalSkillDirs) {
 		entries, _ := os.ReadDir(root)
 		for _, entry := range entries {
 			if !entry.IsDir() {
@@ -1081,7 +1090,7 @@ func (a *App) packageSkillForMarket(skillName string) (string, error) {
 	}
 
 	// 打包为 zip
-	zipPath := filepath.Join(os.TempDir(), fmt.Sprintf("skill-%s-%d.zip", toKebabCase(skillName), time.Now().UnixMilli()))
+	zipPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("skill-%s-%d.zip", toKebabCase(skillName), time.Now().UnixMilli()))
 	if err := zipDirectory(tmpDir, zipPath); err != nil {
 		return "", err
 	}

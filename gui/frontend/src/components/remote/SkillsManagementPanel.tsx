@@ -16,6 +16,7 @@ import {
     ListExternalSkillDirsDetailed,
     AddExternalSkillDir,
     RemoveExternalSkillDir,
+    SelectProjectDir,
 } from "../../../wailsjs/go/main/App";
 
 interface NLSkillStep {
@@ -1055,6 +1056,23 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             style={{ flex: 1, fontSize: "0.78rem" }}
                             disabled={extDirAdding}
                         />
+                        <button
+                            className="btn-secondary"
+                            style={{ fontSize: "0.78rem", padding: "4px 10px", flexShrink: 0 }}
+                            disabled={extDirAdding}
+                            onClick={async () => {
+                                setExtDirError("");
+                                try {
+                                    const selected = await SelectProjectDir();
+                                    if (selected) setExtDirInput(selected);
+                                } catch (err) {
+                                    setExtDirError(localizeHubError(String(err)));
+                                }
+                            }}
+                            title={localizeText("Browse for directory", "浏览目录", "瀏覽目錄")}
+                        >
+                            ...
+                        </button>
                         <button
                             className="btn-primary"
                             style={{ fontSize: "0.78rem", padding: "4px 12px", flexShrink: 0 }}

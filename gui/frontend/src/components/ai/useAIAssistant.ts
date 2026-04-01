@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 export interface ChatMessage {
@@ -358,7 +358,20 @@ export function useAIAssistant() {
         };
     }, []);
 
-    return { messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews: doFetchNews, scrollToTopSeq };
+    const cancelSession = useCallback(async () => {
+        try {
+            await CancelAIAssistantSession();
+        } catch (e) {
+            // ignore cancellation errors
+        }
+        // Reset local state
+        sendingRef.current = false;
+        setSending(false);
+        setStreaming(false);
+        streamingMsgIdRef.current = null;
+    }, []);
+
+    return { messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

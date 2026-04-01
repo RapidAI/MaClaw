@@ -25,15 +25,15 @@ type ChatResponseMsg struct {
 	Error string
 }
 
-// chatMessage 聊天记录中的一条消息。
-type chatMessage struct {
+// ChatMessage 聊天记录中的一条消息（导出用于 memoryshot 恢复）。
+type ChatMessage struct {
 	Role    string // "user" or "assistant" or "system"
 	Content string
 }
 
 // ChatModel 是 AI 助手聊天视图。
 type ChatModel struct {
-	messages  []chatMessage
+	messages  []ChatMessage
 	input     textinput.Model
 	waiting   bool // 等待 LLM 响应
 	agentMode bool // Agent 模式（带工具调用）
@@ -51,10 +51,25 @@ func NewChatModel() ChatModel {
 	return ChatModel{
 		input:     ti,
 		agentMode: true, // 默认开启 Agent 模式
-		messages: []chatMessage{
+		messages: []ChatMessage{
 			{Role: "system", Content: "AI 助手就绪 [Agent 模式]。支持工具调用（bash/文件操作/会话管理）。"},
 		},
 	}
+}
+
+// SetMessages 设置聊天消息列表（用于从 memoryshot 恢复）。
+func (m *ChatModel) SetMessages(msgs []ChatMessage) {
+	// 保留系统消息，追加恢复的消息
+	if len(m.messages) > 0 && m.messages[0].Role == "system" {
+		m.messages = append([]ChatMessage{m.messages[0]}, msgs...)
+	} else {
+		m.messages = msgs
+	}
+}
+
+// GetMessages 返回当前聊天消息列表。
+func (m ChatModel) GetMessages() []ChatMessage {
+	return append([]ChatMessage(nil), m.messages...)
 }
 
 // Init 实现 tea.Model。
@@ -81,9 +96,9 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	case ChatResponseMsg:
 		m.waiting = false
 		if msg.Error != "" {
-			m.messages = append(m.messages, chatMessage{Role: "system", Content: "错误: " + msg.Error})
+			m.messages = append(m.messages, ChatMessage{Role: "system", Content: "错误: " + msg.Error})
 		} else {
-			m.messages = append(m.messages, chatMessage{Role: "assistant", Content: msg.Text})
+			m.messages = append(m.messages, ChatMessage{Role: "assistant", Content: msg.Text})
 		}
 		m.scrollToBottom()
 		return m, nil
@@ -93,7 +108,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			if m.input.Focused() && !m.waiting {
 				text := strings.TrimSpace(m.input.Value())
 				if text != "" {
-					m.messages = append(m.messages, chatMessage{Role: "user", Content: text})
+					m.messages = append(m.messages, ChatMessage{Role: "user", Content: text})
 					m.input.SetValue("")
 					m.waiting = true
 					m.scrollToBottom()
@@ -131,7 +146,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		case "c":
 			// 清除聊天历史
 			if !m.input.Focused() && !m.waiting {
-				m.messages = []chatMessage{
+				m.messages = []ChatMessage{
 					{Role: "system", Content: "聊天历史已清除。"},
 				}
 				m.scroll = 0
@@ -145,7 +160,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				if m.agentMode {
 					mode = "Agent（工具调用）"
 				}
-				m.messages = append(m.messages, chatMessage{Role: "system", Content: fmt.Sprintf("已切换到 %s 模式", mode)})
+				m.messages = append(m.messages, ChatMessage{Role: "system", Content: fmt.Sprintf("已切换到 %s 模式", mode)})
 				m.scrollToBottom()
 			}
 		}

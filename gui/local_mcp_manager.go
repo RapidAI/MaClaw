@@ -31,7 +31,8 @@ func NewLocalMCPManager(registry *MCPRegistry) *LocalMCPManager {
 }
 
 // SyncFromConfig reads the local MCP server config and starts/stops
-// clients as needed. Call this on startup and after config changes.
+// clients as needed. Enabled servers are started whenever a sync happens.
+// App startup decides whether to trigger the initial sync based on AutoStart.
 func (m *LocalMCPManager) SyncFromConfig() {
 	// Don't start new processes if the manager is shutting down.
 	select {
@@ -48,7 +49,7 @@ func (m *LocalMCPManager) SyncFromConfig() {
 	// Build a set of desired server IDs
 	desired := make(map[string]LocalMCPServerEntry, len(entries))
 	for _, e := range entries {
-		if !e.Disabled && e.AutoStart {
+		if !e.Disabled {
 			desired[e.ID] = e
 		}
 	}

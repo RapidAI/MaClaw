@@ -505,9 +505,9 @@ func TestToolCreateSession_NoProviderBehaviorUnchanged(t *testing.T) {
 	if result == "缺少 tool 参数" || result == "缺少 tool 参数，且无法自动推荐工具" {
 		t.Errorf("should not report missing tool when tool is provided, got: %s", result)
 	}
-	// Error should be about session creation, not about provider.
-	if contains(result, "可用服务商") {
-		t.Errorf("should not list available providers when provider is not specified, got: %s", result)
+	// Error should be about session creation, not about provider resolution.
+	if contains(result, "至少一个有效的服务商") || contains(result, "未配置 API Key") || contains(result, "不存在") {
+		t.Errorf("should not fail at provider resolution when provider is omitted, got: %s", result)
 	}
 }
 

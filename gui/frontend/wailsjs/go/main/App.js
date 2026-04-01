@@ -943,6 +943,10 @@ export function ClearAIAssistantHistory() {
   return window['go']['main']['App']['ClearAIAssistantHistory']();
 }
 
+export function CancelAIAssistantSession() {
+  return window['go']['main']['App']['CancelAIAssistantSession']();
+}
+
 export function FetchNews() {
   return window['go']['main']['App']['FetchNews']();
 }

@@ -39,7 +39,24 @@ func dumpLLMContext(statusCode int, respMsg string, requestBody []byte) error {
 		return fmt.Errorf("HTTP %d: %s", statusCode, respMsg)
 	}
 	ctxLen := len(requestBody)
-	dumpFile := filepath.Join(os.TempDir(), fmt.Sprintf("llm_context_%d.json", time.Now().UnixMilli()))
+
+	// Use ~/.maclaw/temp if available, fallback to os.TempDir()
+	tempDir := os.TempDir()
+	if home, err := os.UserHomeDir(); err == nil {
+		maclawTmp := filepath.Join(home, ".maclaw", "temp")
+		if _, err := os.Stat(maclawTmp); err == nil {
+			tempDir = maclawTmp
+		} else {
+			// Try to create it if .maclaw exists
+			maclawDir := filepath.Join(home, ".maclaw")
+			if _, err := os.Stat(maclawDir); err == nil {
+				_ = os.MkdirAll(maclawTmp, 0o755)
+				tempDir = maclawTmp
+			}
+		}
+	}
+
+	dumpFile := filepath.Join(tempDir, fmt.Sprintf("llm_context_%d.json", time.Now().UnixMilli()))
 	if err := os.WriteFile(dumpFile, requestBody, 0644); err != nil {
 		return fmt.Errorf("HTTP %d (context %d bytes, dump failed: %v): %s", statusCode, ctxLen, err, respMsg)
 	}

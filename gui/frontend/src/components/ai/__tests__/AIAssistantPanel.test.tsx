@@ -12,6 +12,19 @@ import * as fc from 'fast-check';
 import { AIAssistantPanel } from '../AIAssistantPanel';
 import type { ChatMessage } from '../useAIAssistant';
 
+const scrollIntoViewMock = vi.fn();
+const scrollToMock = vi.fn();
+
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: scrollIntoViewMock,
+});
+
+Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+    configurable: true,
+    value: scrollToMock,
+});
+
 // ── Mock Wails runtime (not used by panel but imported transitively) ──
 vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOn: vi.fn(),
@@ -31,6 +44,103 @@ function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }
 describe('AIAssistantPanel property tests', () => {
     afterEach(() => {
         cleanup();
+        scrollIntoViewMock.mockClear();
+        scrollToMock.mockClear();
+    });
+
+    it('keeps latest conversation visible when reopened with history', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'system', id: 'news-1', content: 'Pinned news' }),
+            makeMsg({ role: 'user', content: 'Earlier question' }),
+            makeMsg({ role: 'assistant', content: 'Latest answer' }),
+        ];
+
+        render(
+            <AIAssistantPanel
+                onClose={() => {}}
+                lang="en"
+                messages={messages}
+                sending={false}
+                streaming={false}
+                ready={true}
+                sendMessage={async () => {}}
+                clearHistory={async () => {}}
+                executeAction={async () => {}}
+                refreshNews={() => {}}
+                scrollToTopSeq={1}
+            />
+        );
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+        expect(scrollIntoViewMock).toHaveBeenCalled();
+    });
+
+    it('scrolls to bottom when panel becomes ready with conversation history', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'system', id: 'news-1', content: 'Pinned news' }),
+            makeMsg({ role: 'user', content: 'Earlier question' }),
+            makeMsg({ role: 'assistant', content: 'Latest answer' }),
+        ];
+
+        const { rerender } = render(
+            <AIAssistantPanel
+                onClose={() => {}}
+                lang="en"
+                messages={messages}
+                sending={false}
+                streaming={false}
+                ready={false}
+                sendMessage={async () => {}}
+                clearHistory={async () => {}}
+                executeAction={async () => {}}
+                refreshNews={() => {}}
+            />
+        );
+
+        scrollIntoViewMock.mockClear();
+        scrollToMock.mockClear();
+
+        rerender(
+            <AIAssistantPanel
+                onClose={() => {}}
+                lang="en"
+                messages={messages}
+                sending={false}
+                streaming={false}
+                ready={true}
+                sendMessage={async () => {}}
+                clearHistory={async () => {}}
+                executeAction={async () => {}}
+                refreshNews={() => {}}
+            />
+        );
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto' });
+    });
+
+    it('scrolls to top when only pinned news exist', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'system', id: 'news-1', content: 'Pinned news' }),
+        ];
+
+        render(
+            <AIAssistantPanel
+                onClose={() => {}}
+                lang="en"
+                messages={messages}
+                sending={false}
+                streaming={false}
+                ready={true}
+                sendMessage={async () => {}}
+                clearHistory={async () => {}}
+                executeAction={async () => {}}
+                refreshNews={() => {}}
+                scrollToTopSeq={1}
+            />
+        );
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' });
     });
 
     // ─────────────────────────────────────────────────────────────────
