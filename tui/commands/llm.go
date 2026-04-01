@@ -197,14 +197,14 @@ func llmPing(args []string) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	endpoint := strings.TrimRight(llm.URL, "/") + "/models"
 	if llm.Protocol == "anthropic" {
-		endpoint = strings.TrimRight(llm.URL, "/") + "/v1/messages"
+		endpoint = corelib.AnthropicMessagesEndpoint(llm.URL)
 	}
 
 	start := time.Now()
 	req, _ := http.NewRequest(http.MethodGet, endpoint, nil)
 	if llm.Key != "" {
 		if llm.Protocol == "anthropic" {
-			req.Header.Set("x-api-key", llm.Key)
+			corelib.SetAnthropicAuthHeaders(req, llm.Key)
 			req.Header.Set("anthropic-version", "2023-06-01")
 		} else {
 			req.Header.Set("Authorization", "Bearer "+llm.Key)

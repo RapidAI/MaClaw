@@ -414,6 +414,30 @@ export function StartOpenAIOAuth() {
   return window['go']['main']['App']['StartOpenAIOAuth']();
 }
 
+export function StartCodeGenSSO() {
+  return window['go']['main']['App']['StartCodeGenSSO']();
+}
+
+export function StartCodeGenSSOEmbedded() {
+  return window['go']['main']['App']['StartCodeGenSSOEmbedded']();
+}
+
+export function WaitCodeGenSSOResult() {
+  return window['go']['main']['App']['WaitCodeGenSSOResult']();
+}
+
+export function CancelCodeGenSSOPolling() {
+  return window['go']['main']['App']['CancelCodeGenSSOPolling']();
+}
+
+export function FetchCodeGenModels() {
+  return window['go']['main']['App']['FetchCodeGenModels']();
+}
+
+export function SaveCodeGenModelChoice(arg1, arg2) {
+  return window['go']['main']['App']['SaveCodeGenModelChoice'](arg1, arg2);
+}
+
 export function GetOpenAIUsage() {
   return window['go']['main']['App']['GetOpenAIUsage']();
 }

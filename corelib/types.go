@@ -1,5 +1,10 @@
 package corelib
 
+import (
+	"net/http"
+	"strings"
+)
+
 // RequiredNodeVersion 是项目要求的最低 Node.js 版本。
 const RequiredNodeVersion = "24.13.0"
 
@@ -13,7 +18,7 @@ type ModelConfig struct {
 	ModelId         string `json:"model_id"`
 	ModelUrl        string `json:"model_url"`
 	ApiKey          string `json:"api_key"`
-	WireApi         string `json:"wire_api"`
+	WireApi         string `json:"wire_api"` // tool-facing protocol, e.g. "anthropic" or "responses"
 	IsCustom        bool   `json:"is_custom"`
 	IsBuiltin       bool   `json:"is_builtin"`
 	HasSubscription bool   `json:"has_subscription"`
@@ -173,6 +178,35 @@ func (c MaclawLLMConfig) UserAgent() string {
 		return c.AgentType
 	}
 	return "openclaw"
+}
+
+// AnthropicMessagesEndpoint returns the Anthropic Messages API endpoint
+// derived from the configured URL. If the URL already ends with "/v1",
+// it appends "/messages" directly; otherwise it appends "/v1/messages".
+// This avoids double "/v1" when the base URL is e.g. "https://host/api/v1".
+func AnthropicMessagesEndpoint(baseURL string) string {
+	trimmed := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(trimmed, "/v1") {
+		return trimmed + "/messages"
+	}
+	return trimmed + "/v1/messages"
+}
+
+// SetAnthropicAuthHeaders sets both x-api-key and Authorization Bearer headers
+// on the request for Anthropic-protocol compatibility. Standard Anthropic uses
+// x-api-key; CodeGen and other gateways use Authorization Bearer.
+func SetAnthropicAuthHeaders(req *http.Request, key string) {
+	if key == "" {
+		return
+	}
+	req.Header.Set("x-api-key", key)
+	req.Header.Set("Authorization", "Bearer "+key)
+}
+
+// IsAnthropicWireAPI reports whether a tool-facing provider uses the
+// Anthropic-compatible wire protocol.
+func IsAnthropicWireAPI(wireAPI string) bool {
+	return strings.EqualFold(strings.TrimSpace(wireAPI), "anthropic")
 }
 
 

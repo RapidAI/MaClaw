@@ -672,11 +672,13 @@ func (a *App) startup(ctx context.Context) {
 			}()
 		}
 		// CodeGen SSO token validation on startup (qianxin brand only).
-		// Runs in background — failure is logged but never blocks startup.
+		// After validation (which may refresh the token), start the local
+		// Anthropic→OpenAI proxy so Claude Code can reach CodeGen.
 		go func() {
 			if err := a.ensureCodeGenToken(); err != nil {
 				log.Printf("[CodeGen] startup token check failed: %v", err)
 			}
+			a.ensureCodeGenProxyIfNeeded()
 		}()
 		return
 	}

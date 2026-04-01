@@ -73,7 +73,7 @@ if not exist "node_modules" (
     )
 )
 if exist "dist" ( rmdir /s /q "dist" )
-%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "npm run build"
+call npm.cmd run build
 if !errorlevel! neq 0 (
     echo [ERROR] Frontend build failed.
     goto :error

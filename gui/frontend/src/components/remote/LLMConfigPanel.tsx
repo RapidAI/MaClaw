@@ -265,8 +265,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgSaving(true);
         setDlgTestResult(null);
 
-        // OAuth providers: save directly (token already obtained via OAuth flow)
-        if (sp.auth_type === "oauth") {
+        // OAuth / SSO providers: save directly (token already obtained via OAuth/SSO flow)
+        if (sp.auth_type === "oauth" || sp.auth_type === "sso") {
             try {
                 const saveName = sp.name;
                 await SaveMaclawLLMProviders(dlgProviders, saveName);

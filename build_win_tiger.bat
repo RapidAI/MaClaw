@@ -79,7 +79,7 @@ if not exist "node_modules" (
     )
 )
 if exist "dist" ( rmdir /s /q "dist" )
-%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "npm run build"
+call npm.cmd run build
 if !errorlevel! neq 0 (
     echo [ERROR] Frontend build failed.
     goto :error
@@ -232,7 +232,7 @@ if exist "%OUTPUT_DIR%\%TOOL_NAME%.exe" (
 )
 
 echo   - Creating Windows portable zip...
-powershell -Command "Compress-Archive -Path '%OUTPUT_DIR%\%APP_NAME%.exe','%OUTPUT_DIR%\%TUI_NAME%.exe','%OUTPUT_DIR%\%TOOL_NAME%.exe' -DestinationPath '%OUTPUT_DIR%\%APP_NAME%-Windows-Portable.zip' -Force"
+powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = '%OUTPUT_DIR%\%APP_NAME%-Windows-Portable.zip'; if (Test-Path $zip) { Remove-Item $zip -Force }; $tmp = Join-Path $env:TEMP ('tigerclaw_zip_' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $tmp | Out-Null; Copy-Item '%OUTPUT_DIR%\%APP_NAME%.exe','%OUTPUT_DIR%\%TUI_NAME%.exe','%OUTPUT_DIR%\%TOOL_NAME%.exe' -Destination $tmp; [System.IO.Compression.ZipFile]::CreateFromDirectory($tmp, $zip); Remove-Item $tmp -Recurse -Force; Write-Host '[INFO] Portable zip created.'"
 
 goto :success
 

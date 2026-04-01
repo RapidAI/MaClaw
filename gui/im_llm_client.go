@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 type llmResponse struct {
@@ -49,6 +52,7 @@ func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interfac
 
 func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
+	log.Printf("[LLM] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
 
 	reqBody := map[string]interface{}{
 		"model":    cfg.Model,
@@ -94,7 +98,7 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []in
 // doAnthropicLLMRequest sends a request using the Anthropic Messages API protocol
 // and converts the response to the internal llmResponse format for compatibility.
 func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
+	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
 
 	converted := convertToAnthropicMessages(messages)
 
@@ -122,9 +126,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequest(cfg MaclawLLMConfig, messages [
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if cfg.Key != "" {
-		req.Header.Set("x-api-key", cfg.Key)
-	}
+	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

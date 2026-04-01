@@ -7,6 +7,12 @@ import {
     ActivateRemote,
     ProbeRemoteHub,
     StartOpenAIOAuth,
+    StartCodeGenSSO,
+    StartCodeGenSSOEmbedded,
+    WaitCodeGenSSOResult,
+    CancelCodeGenSSOPolling,
+    FetchCodeGenModels,
+    SaveCodeGenModelChoice,
     GetWeixinStatus,
     StartWeixinQRLogin,
     WaitWeixinQRLogin,
@@ -40,6 +46,8 @@ type Props = {
     hubUrl: string;
     email: string;
     uiMode: string;
+    brandId?: string;
+    brandDisplayName?: string;
     onClose: () => void;
     onLLMConfigured: () => void;
     onRegistered: () => void;
@@ -59,38 +67,71 @@ const labelStyle: React.CSSProperties = {
     fontSize: "0.76rem", color: "#64748b", marginBottom: 4, display: "block",
 };
 
+// TigerClaw 品牌两步流程：SSO+注册 → 绑定微信
+const TIGERCLAW_TOTAL_STEPS = 2;
+const STEP_LABELS_ZH_TIGERCLAW = ["企业认证", "绑定微信"];
+const STEP_LABELS_EN_TIGERCLAW = ["SSO Auth", "WeChat"];
+
 const TOTAL_STEPS = 4;
 const STEP_LABELS_ZH = ["邮件注册", "界面模式", "配置 LLM", "绑定微信"];
 const STEP_LABELS_EN = ["Register", "UI Mode", "LLM", "WeChat"];
 
-export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
+export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
+
+    // 是否为 TigerClaw 品牌（oem_qianxin）
+    const isTigerclaw = brandId === 'qianxin';
+
+    // 品牌显示名称（动态替换硬编码的 "MaClaw"）
+    const displayName = brandDisplayName || 'MaClaw';
+
+    // TigerClaw 两步流程；普通品牌四步流程
+    const totalSteps = isTigerclaw ? TIGERCLAW_TOTAL_STEPS : TOTAL_STEPS;
 
     // ── Wizard step (1-based) ──
     const [step, setStep] = useState(1);
 
-    // ── Step 1: Registration ──
+    // ── Step 1: Registration（普通品牌）──
     const [regEmail, setRegEmail] = useState(email || "");
     const [invCode, setInvCode] = useState("");
     const [invRequired, setInvRequired] = useState(false);
     const [invError, setInvError] = useState("");
-    const [regBusy, setRegBusy] = useState(false);
-    const [regResult, setRegResult] = useState<{ ok: boolean; msg: string } | null>(null);
-    const [regDone, setRegDone] = useState(false);
     const [showConfirm, setShowConfirm] = useState(false);
     const [vipFlag, setVipFlag] = useState(false);
+    const [regResult, setRegResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
-    // ── Step 2: UI Mode ──
+    // ── SSO（TigerClaw Step 1）+ 注册状态（共用）──
+    const [ssoBusy, setSsoBusy] = useState(false);
+    const [ssoResult, setSsoResult] = useState<{ ok: boolean; msg: string } | null>(null);
+    // regBusy/regDone 在两种流程中均使用：普通品牌=手动注册，tigerclaw=SSO后自动注册
+    const [regBusy, setRegBusy] = useState(false);
+    const [regDone, setRegDone] = useState(false);
+
+    // ── 内嵌扫码状态（TigerClaw 品牌）──
+    const [qrCodeURL, setQrCodeURL] = useState("");
+    const [embeddedSSOLoading, setEmbeddedSSOLoading] = useState(false);
+    const [embeddedSSOError, setEmbeddedSSOError] = useState("");
+
+    // ── Step 2/3: UI Mode（普通品牌 step2；tigerclaw 不显示）──
     const [selectedMode, setSelectedMode] = useState<'pro' | 'lite'>(uiMode === 'pro' ? 'pro' : 'lite');
-    const [modeDone, setModeDone] = useState(!!uiMode && uiMode !== '');
+    // tigerclaw 默认 pro 模式，无需用户选择
+    const [modeDone, setModeDone] = useState(isTigerclaw ? true : (!!uiMode && uiMode !== ''));
 
-    // ── Step 3: LLM ──
+    // ── Step 3/2: LLM（普通品牌 step3；tigerclaw 在 step1 SSO 后自动完成）──
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
     const [llmSaving, setLlmSaving] = useState(false);
     const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
+
+    // ── TigerClaw 模型选择（SSO 成功后）──
+    const [codegenModels, setCodegenModels] = useState<{ id: string; name: string }[]>([]);
+    const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
+    const [maclawModel, setMaclawModel] = useState("");        // MaClaw Agent 使用的模型
+    const [claudeCodeModel, setClaudeCodeModel] = useState(""); // TigerClaw Code 使用的模型
+    const [modelSaving, setModelSaving] = useState(false);
+    const [modelSaved, setModelSaved] = useState(false);
 
     // ── Free proxy modal ──
     const [freeModalOpen, setFreeModalOpen] = useState(false);
@@ -114,12 +155,19 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
     const wxPollingRef = useRef(false);
 
     // Step completion map (memoized to avoid array re-creation)
-    const stepDone = useMemo(() => [false, regDone, modeDone, llmDone, wxDone], [regDone, modeDone, llmDone, wxDone]);
+    // TigerClaw 两步流程：step1=SSO+注册(llmDone&&regDone), step2=微信
+    // 普通品牌四步：step1=注册, step2=UI模式, step3=LLM, step4=微信
+    const stepDone = useMemo(() => {
+        if (isTigerclaw) {
+            return [false, llmDone && regDone, wxDone];
+        }
+        return [false, regDone, modeDone, llmDone, wxDone];
+    }, [regDone, modeDone, llmDone, wxDone, isTigerclaw]);
 
     // Navigation guards
-    const canNext = step < TOTAL_STEPS && stepDone[step];
+    const canNext = step < totalSteps && stepDone[step];
     const canPrev = step > 1;
-    const isLastStep = step === TOTAL_STEPS;
+    const isLastStep = step === totalSteps;
 
     // Load providers on mount
     useEffect(() => {
@@ -150,6 +198,11 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
         return () => { wxPollingRef.current = false; };
     }, [step]);
 
+    // Cancel embedded SSO polling on unmount
+    useEffect(() => {
+        return () => { CancelCodeGenSSOPolling().catch(() => {}); };
+    }, []);
+
     // Escape key to close (not if confirm dialog or free modal open)
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -164,12 +217,13 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
 
     // Auto-close when all done
     useEffect(() => {
-        if (regDone && modeDone && llmDone && wxDone) {
+        const allDone = isTigerclaw ? (llmDone && regDone && wxDone) : (regDone && modeDone && llmDone && wxDone);
+        if (allDone) {
             onSaveField({ onboarding_done: true });
             const timer = setTimeout(onClose, 1500);
             return () => clearTimeout(timer);
         }
-    }, [regDone, modeDone, llmDone, wxDone, onClose]);
+    }, [regDone, modeDone, llmDone, wxDone, isTigerclaw, onClose]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
 
@@ -263,11 +317,19 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
         setLlmSaving(true);
         setLlmResult(null);
         try {
-            const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
-            await SaveMaclawLLMProviders(providers, sp.name);
-            setLlmResult({ ok: true, msg: reply });
-            setLlmDone(true);
-            onLLMConfigured();
+            // SSO providers: save directly (token already validated via SSO flow)
+            if (sp.auth_type === "sso") {
+                await SaveMaclawLLMProviders(providers, sp.name);
+                setLlmResult({ ok: true, msg: t("已保存", "Saved") });
+                setLlmDone(true);
+                onLLMConfigured();
+            } else {
+                const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
+                await SaveMaclawLLMProviders(providers, sp.name);
+                setLlmResult({ ok: true, msg: reply });
+                setLlmDone(true);
+                onLLMConfigured();
+            }
         } catch (e) {
             setLlmResult({ ok: false, msg: String(e) });
         } finally {
@@ -289,6 +351,86 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
             setOauthBusy(false);
         }
     };
+
+    // ── TigerClaw SSO Login + 自动注册 Hub（内嵌扫码流程）──
+    const handleEmbeddedSSOLogin = async () => {
+        setSsoBusy(true);
+        setSsoResult(null);
+        setEmbeddedSSOError("");
+        setCodegenModels([]);
+        setModelSaved(false);
+        setEmbeddedSSOLoading(true);
+        try {
+            // Step 1: 启动 SSO 流程（打开浏览器 + 后台轮询）
+            await StartCodeGenSSOEmbedded();
+            setEmbeddedSSOLoading(false);
+
+            // Step 2: 等待扫码结果（阻塞直到浏览器中完成扫码）
+            const info = await WaitCodeGenSSOResult();
+            setLlmDone(true);
+            onLLMConfigured();
+
+            const userEmail = info.email || "";
+            setSsoResult({ ok: true, msg: info.message + (userEmail ? `\n账号：${userEmail}` : "") });
+
+            // Step 3: Fetch models (non-blocking)
+            setCodegenModelsFetching(true);
+            FetchCodeGenModels().then(models => {
+                setCodegenModels(models || []);
+                if (models && models.length > 0) {
+                    setMaclawModel(models[0].id);
+                    setClaudeCodeModel(models[0].id);
+                }
+            }).catch(err => {
+                console.warn("[TigerClaw] FetchCodeGenModels failed:", err);
+            }).finally(() => {
+                setCodegenModelsFetching(false);
+            });
+
+            // Step 4: Auto-register hub
+            if (userEmail) {
+                setRegBusy(true);
+                onSaveField({ remote_email: userEmail });
+                try {
+                    const result = await ActivateRemote(userEmail, "", "");
+                    if (result?.vip_flag) setVipFlag(true);
+                    setRegDone(true);
+                    onRegistered();
+                } catch (regErr) {
+                    console.warn("[TigerClaw] Hub 自动注册失败:", regErr);
+                    // 注册失败仍标记完成，避免用户卡在此步骤无法继续
+                    // SSO 认证已成功，Hub 注册可在后续自动重试（autoRegisterOnStartup）
+                    setRegDone(true);
+                    onRegistered();
+                    setSsoResult({ ok: true, msg: info.message + (userEmail ? `\n账号：${userEmail}` : "") + "\n" + t("（Hub 注册暂时失败，将在下次启动时自动重试）", " (Hub registration failed, will auto-retry on next launch)") });
+                } finally {
+                    setRegBusy(false);
+                }
+            } else {
+                setRegDone(true);
+            }
+        } catch (e) {
+            setEmbeddedSSOLoading(false);
+            const errMsg = String(e);
+            setEmbeddedSSOError(errMsg);
+            setSsoResult({ ok: false, msg: errMsg });
+        } finally {
+            setSsoBusy(false);
+        }
+    };
+
+    // ── TigerClaw 模型选择保存 ──
+    const handleModelSave = useCallback(async () => {
+        setModelSaving(true);
+        try {
+            await SaveCodeGenModelChoice(maclawModel, claudeCodeModel);
+            setModelSaved(true);
+        } catch (e) {
+            console.error("[TigerClaw] SaveCodeGenModelChoice failed:", e);
+        } finally {
+            setModelSaving(false);
+        }
+    }, [maclawModel, claudeCodeModel]);
 
     // ── Registration ──
     const handleRegisterClick = () => {
@@ -393,7 +535,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
     };
 
     // ── Step labels (memoized) ──
-    const labels = useMemo(() => lang?.startsWith("zh") ? STEP_LABELS_ZH : STEP_LABELS_EN, [lang]);
+    const labels = useMemo(() => {
+        if (isTigerclaw) {
+            return lang?.startsWith("zh") ? STEP_LABELS_ZH_TIGERCLAW : STEP_LABELS_EN_TIGERCLAW;
+        }
+        return lang?.startsWith("zh") ? STEP_LABELS_ZH : STEP_LABELS_EN;
+    }, [lang, isTigerclaw]);
 
     return (
         <div style={{
@@ -417,7 +564,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                     }}>&times;</button>
                     <div style={{ fontSize: "1.2rem", marginBottom: 2, lineHeight: 1 }}>👋</div>
                     <h3 style={{ margin: 0, color: "#4338ca", fontSize: "0.88rem", fontWeight: 600 }}>
-                        {t("来，配置一下 MaClaw 吧", "Let's get MaClaw ready!")}
+                        {t(`来，配置一下 ${displayName} 吧`, `Let's get ${displayName} ready!`)}
                     </h3>
                 </div>
 
@@ -426,7 +573,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                     display: "flex", alignItems: "center", justifyContent: "center",
                     gap: 0, padding: "14px 18px 6px", flexShrink: 0,
                 }}>
-                    {Array.from({ length: TOTAL_STEPS }, (_, i) => {
+                    {Array.from({ length: totalSteps }, (_, i) => {
                         const s = i + 1;
                         const done = stepDone[s];
                         const active = s === step;
@@ -451,7 +598,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                                         {labels[i]}
                                     </span>
                                 </div>
-                                {s < TOTAL_STEPS && (
+                                {s < totalSteps && (
                                     <div style={{
                                         width: 32, height: 2, background: stepDone[s] ? "#22c55e" : "#e2e8f0",
                                         margin: "0 2px", marginBottom: 14, transition: "background 0.2s",
@@ -465,8 +612,168 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                 {/* ── Step content ── */}
                 <div style={{ padding: "10px 18px 0", flex: 1, overflowY: "auto" }}>
 
-                    {/* ═══ Step 1: Registration ═══ */}
-                    {step === 1 && (
+                    {/* ═══ Step 1 ═══
+                        TigerClaw 品牌：企业 SSO 认证 + 自动注册 Hub（合并原 Step1+Step2）
+                        普通品牌：邮件注册
+                    */}
+                    {step === 1 && isTigerclaw && (
+                        <div>
+                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
+                                {t(
+                                    `使用企业账号一键登录，自动配置 ${displayName} 和 TigerClaw Code，并注册到 Hub。`,
+                                    `Sign in with your enterprise account to configure ${displayName}, TigerClaw Code, and register to Hub.`
+                                )}
+                            </p>
+                            <button onClick={handleEmbeddedSSOLogin} disabled={ssoBusy || (llmDone && regDone)} style={{
+                                width: "100%", padding: "12px 0", fontSize: "0.84rem", fontWeight: 600,
+                                background: ssoBusy || regBusy ? "#a5b4fc" : (llmDone && regDone) ? "#86efac" : "#6366f1",
+                                color: "#fff", border: "none", borderRadius: 6,
+                                cursor: (ssoBusy || regBusy || (llmDone && regDone)) ? "default" : "pointer",
+                                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                            }}>
+                                {ssoBusy
+                                    ? t("⏳ 等待浏览器授权...", "⏳ Waiting for browser auth...")
+                                    : regBusy
+                                        ? t("⏳ 注册中...", "⏳ Registering...")
+                                        : (llmDone && regDone)
+                                            ? t("✅ 认证并注册完成", "✅ Authenticated & Registered")
+                                            : t("🏢 企业 SSO 登录", "🏢 Enterprise SSO Login")}
+                            </button>
+                            {embeddedSSOLoading && (
+                                <div style={{ textAlign: "center", padding: "20px 0" }}>
+                                    <p style={{ fontSize: "0.76rem", color: "#94a3b8" }}>
+                                        {t("正在打开登录页面...", "Opening login page...")}
+                                    </p>
+                                </div>
+                            )}
+                            {ssoBusy && !embeddedSSOLoading && (
+                                <div style={{ textAlign: "center", padding: "16px 0" }}>
+                                    <div style={{ fontSize: "2rem", marginBottom: 8 }}>🔐</div>
+                                    <p style={{ fontSize: "0.76rem", color: "#64748b", marginTop: 10 }}>
+                                        {t("请在弹出的浏览器页面中扫码", "Please scan the QR code in the browser window")}
+                                    </p>
+                                    <p style={{ fontSize: "0.7rem", color: "#94a3b8" }}>
+                                        {t("扫码完成后将自动继续...", "Will continue automatically after scanning...")}
+                                    </p>
+                                </div>
+                            )}
+                            {embeddedSSOError && (
+                                <div style={{ marginTop: 10 }}>
+                                    <button onClick={() => {
+                                        StartCodeGenSSO().then(info => {
+                                            setLlmDone(true);
+                                            onLLMConfigured();
+                                            setSsoResult({ ok: true, msg: info.message });
+                                        }).catch(e => setSsoResult({ ok: false, msg: String(e) }));
+                                    }} style={{
+                                        width: "100%", padding: "8px 0", fontSize: "0.76rem",
+                                        background: "#f8fafc", color: "#6366f1", border: "1px solid #e2e8f0",
+                                        borderRadius: 6, cursor: "pointer", marginTop: 6,
+                                    }}>
+                                        {t("🌐 在浏览器中打开", "🌐 Open in Browser")}
+                                    </button>
+                                    <button onClick={handleEmbeddedSSOLogin} style={{
+                                        width: "100%", padding: "8px 0", fontSize: "0.76rem",
+                                        background: "#f8fafc", color: "#6366f1", border: "1px solid #e2e8f0",
+                                        borderRadius: 6, cursor: "pointer", marginTop: 6,
+                                    }}>
+                                        {t("🔄 重试", "🔄 Retry")}
+                                    </button>
+                                </div>
+                            )}
+                            {ssoResult && (
+                                <div style={{
+                                    marginTop: 10, padding: "8px 12px", borderRadius: 6, fontSize: "0.74rem",
+                                    lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
+                                    background: ssoResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
+                                    border: `1px solid ${ssoResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
+                                    color: ssoResult.ok ? "#22c55e" : "#ef4444",
+                                }}>
+                                    {ssoResult.ok ? `✅ ${ssoResult.msg}` : `❌ ${ssoResult.msg}`}
+                                </div>
+                            )}
+                            {!(llmDone && regDone) && !ssoBusy && !regBusy && !embeddedSSOLoading && !embeddedSSOError && (
+                                <p style={{ marginTop: 8, fontSize: "0.7rem", color: "#94a3b8", textAlign: "center" }}>
+                                    {t("点击后自动弹出企业登录页，扫码后自动完成所有配置", "Browser opens automatically; all config applied after login")}
+                                </p>
+                            )}
+
+                            {/* ── 模型选择区域（SSO 成功后显示）── */}
+                            {llmDone && (
+                                <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f8fafc" }}>
+                                    <div style={{ fontSize: "0.76rem", fontWeight: 600, color: "#334155", marginBottom: 10 }}>
+                                        {t("🔧 选择使用的模型（可选）", "🔧 Select Models (optional)")}
+                                    </div>
+
+                                    {codegenModelsFetching && (
+                                        <p style={{ fontSize: "0.72rem", color: "#94a3b8" }}>
+                                            {t("正在获取可用模型列表...", "Fetching available models...")}
+                                        </p>
+                                    )}
+
+                                    {!codegenModelsFetching && codegenModels.length > 0 && (
+                                        <>
+                                            {/* MaClaw 模型 */}
+                                            <div style={{ marginBottom: 10 }}>
+                                                <label style={{ fontSize: "0.72rem", color: "#64748b", display: "block", marginBottom: 4 }}>
+                                                    🤖 {t(`${displayName} Agent 模型`, `${displayName} Agent Model`)}
+                                                </label>
+                                                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                                    {codegenModels.map(m => (
+                                                        <button key={m.id} onClick={() => setMaclawModel(m.id)} style={{
+                                                            fontSize: "0.7rem", padding: "4px 10px", cursor: "pointer",
+                                                            background: maclawModel === m.id ? "#6366f1" : "#fff",
+                                                            color: maclawModel === m.id ? "#fff" : "#334155",
+                                                            border: `1px solid ${maclawModel === m.id ? "#6366f1" : "#e2e8f0"}`,
+                                                            borderRadius: 4, transition: "all 0.12s",
+                                                        }}>
+                                                            {m.name}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {/* TigerClaw Code 模型 */}
+                                            <div style={{ marginBottom: 10 }}>
+                                                <label style={{ fontSize: "0.72rem", color: "#64748b", display: "block", marginBottom: 4 }}>
+                                                    🐯 {t("TigerClaw Code 模型", "TigerClaw Code Model")}
+                                                </label>
+                                                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                                    {codegenModels.map(m => (
+                                                        <button key={m.id} onClick={() => setClaudeCodeModel(m.id)} style={{
+                                                            fontSize: "0.7rem", padding: "4px 10px", cursor: "pointer",
+                                                            background: claudeCodeModel === m.id ? "#0ea5e9" : "#fff",
+                                                            color: claudeCodeModel === m.id ? "#fff" : "#334155",
+                                                            border: `1px solid ${claudeCodeModel === m.id ? "#0ea5e9" : "#e2e8f0"}`,
+                                                            borderRadius: 4, transition: "all 0.12s",
+                                                        }}>
+                                                            {m.name}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {/* 保存按钮 */}
+                                            <button onClick={handleModelSave} disabled={modelSaving || modelSaved} style={{
+                                                width: "100%", padding: "7px 0", fontSize: "0.76rem", fontWeight: 600,
+                                                background: modelSaved ? "#86efac" : modelSaving ? "#a5b4fc" : "#6366f1",
+                                                color: "#fff", border: "none", borderRadius: 6,
+                                                cursor: modelSaving || modelSaved ? "default" : "pointer",
+                                            }}>
+                                                {modelSaved
+                                                    ? t("✅ 模型已保存", "✅ Models Saved")
+                                                    : modelSaving
+                                                        ? t("保存中...", "Saving...")
+                                                        : t("确认模型选择", "Confirm Model Selection")}
+                                            </button>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {step === 1 && !isTigerclaw && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
                                 {t("注册设备邮箱到 Hub，即可通过移动端操控。",
@@ -514,8 +821,11 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                         </div>
                     )}
 
-                    {/* ═══ Step 2: UI Mode ═══ */}
-                    {step === 2 && (
+                    {/* ═══ Step 2 ═══
+                        TigerClaw 品牌：绑定微信（原 Step 4）
+                        普通品牌：UI 模式选择（原 Step 2）
+                    */}
+                    {step === 2 && isTigerclaw && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
                                 {t("选择适合你的界面模式。", "Choose the interface mode that suits you.")}
@@ -557,8 +867,53 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                         </div>
                     )}
 
-                    {/* ═══ Step 3: LLM ═══ */}
-                    {step === 3 && (
+                    {/* ═══ Step 3 ═══
+                        TigerClaw 品牌：界面模式选择（原 Step 2）
+                        普通品牌：LLM 配置（原 Step 3）
+                    */}
+                    {step === 3 && isTigerclaw && (
+                        <div>
+                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
+                                {t("选择适合你的界面模式。", "Choose the interface mode that suits you.")}
+                            </p>
+                            <div style={{ display: "flex", gap: 10 }}>
+                                <div
+                                    onClick={() => { setSelectedMode('pro'); onSaveField({ ui_mode: 'pro' }); setModeDone(true); }}
+                                    style={{
+                                        flex: 1, padding: "14px 14px", borderRadius: 10, cursor: "pointer",
+                                        border: `2px solid ${selectedMode === 'pro' ? '#6366f1' : '#e2e8f0'}`,
+                                        background: selectedMode === 'pro' ? 'rgba(99,102,241,0.06)' : '#f8fafc',
+                                        transition: "all 0.15s",
+                                    }}
+                                >
+                                    <div style={{ fontSize: "0.88rem", fontWeight: 600, color: selectedMode === 'pro' ? '#4338ca' : '#334155', marginBottom: 4 }}>
+                                        🛠️ {t("专业模式", "Pro")}
+                                    </div>
+                                    <div style={{ fontSize: "0.72rem", color: "#94a3b8", lineHeight: 1.4 }}>
+                                        {t("包含完整编程工具链，适合开发者", "Full coding toolchain for developers")}
+                                    </div>
+                                </div>
+                                <div
+                                    onClick={() => { setSelectedMode('lite'); onSaveField({ ui_mode: 'lite' }); setModeDone(true); }}
+                                    style={{
+                                        flex: 1, padding: "14px 14px", borderRadius: 10, cursor: "pointer",
+                                        border: `2px solid ${selectedMode === 'lite' ? '#6366f1' : '#e2e8f0'}`,
+                                        background: selectedMode === 'lite' ? 'rgba(99,102,241,0.06)' : '#f8fafc',
+                                        transition: "all 0.15s",
+                                    }}
+                                >
+                                    <div style={{ fontSize: "0.88rem", fontWeight: 600, color: selectedMode === 'lite' ? '#4338ca' : '#334155', marginBottom: 4 }}>
+                                        ✨ {t("简洁模式", "Lite")}
+                                    </div>
+                                    <div style={{ fontSize: "0.72rem", color: "#94a3b8", lineHeight: 1.4 }}>
+                                        {t("专注 AI 助手与技能扩展，隐藏编程工具", "AI assistant & skills, coding tools hidden")}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {step === 3 && !isTigerclaw && (
                         <div>
                             <p style={{ margin: "0 0 8px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
                                 {t("选择一个 LLM 服务商，输入 API Key 后测试并保存。",
@@ -682,12 +1037,15 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                         </div>
                     )}
 
-                    {/* ═══ Step 4: WeChat ═══ */}
-                    {step === 4 && (
+                    {/* ═══ 微信绑定 ═══
+                        TigerClaw: step === 2
+                        普通品牌: step === 4
+                    */}
+                    {((isTigerclaw && step === 2) || (!isTigerclaw && step === 4)) && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
-                                {t("扫码绑定微信，即可通过微信与 MaClaw 交互。",
-                                    "Scan to bind WeChat for messaging with MaClaw.")}
+                                {t(`扫码绑定微信，即可通过微信与 ${displayName} 交互。`,
+                                    `Scan to bind WeChat for messaging with ${displayName}.`)}
                             </p>
                             {wxDone ? (
                                 <div style={{
@@ -773,7 +1131,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                     </button>
 
                     <span style={{ fontSize: "0.7rem", color: "#94a3b8" }}>
-                        {step} / {TOTAL_STEPS}
+                        {step} / {totalSteps}
                     </span>
 
                     {isLastStep ? (
@@ -810,7 +1168,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, onClose, onLLMCo
                         </div>
                     ) : (
                         <button
-                            onClick={() => setStep(s => Math.min(TOTAL_STEPS, s + 1))}
+                            onClick={() => setStep(s => Math.min(totalSteps, s + 1))}
                             disabled={!canNext}
                             style={{
                                 padding: "7px 20px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,

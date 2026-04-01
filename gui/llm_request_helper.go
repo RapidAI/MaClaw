@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // dumpLLMContext saves the request body to a temp file when an HTTP 500 error
@@ -101,7 +103,7 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg MaclawLLMConfig, messages []
 }
 
 func doSimpleAnthropicRequest(ctx context.Context, cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
+	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
 
 	// Separate system message from user/assistant messages
 	var systemText string
@@ -143,9 +145,7 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg MaclawLLMConfig, messages
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if cfg.Key != "" {
-		req.Header.Set("x-api-key", cfg.Key)
-	}
+	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
 
 	resp, err := client.Do(req)
 	if err != nil {

@@ -113,7 +113,7 @@ func doSimpleOpenAIRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, 
 }
 
 func doSimpleAnthropicRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*LLMSimpleResponse, error) {
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
+	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
 
 	var systemText string
 	var anthropicMsgs []interface{}
@@ -153,9 +153,7 @@ func doSimpleAnthropicRequest(cfg corelib.MaclawLLMConfig, messages []interface{
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if cfg.Key != "" {
-		req.Header.Set("x-api-key", cfg.Key)
-	}
+	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
 
 	resp, err := client.Do(req)
 	if err != nil {

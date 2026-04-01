@@ -3164,7 +3164,7 @@ ${instruction}`;
                                 setIsLoading(false);
                                 setIsManualCheck(false);
                             }} className="btn-hide" style={{ borderColor: '#6366f1', color: '#6366f1', padding: '4px 12px' }}>
-                                {t("close")}
+                                {lang === 'zh-Hans' ? '收起' : lang === 'zh-Hant' ? '收起' : 'Hide'}
                             </button>
                         ) : (
                             <button onClick={Quit} className="btn-hide" style={{ borderColor: '#ef4444', color: '#ef4444', padding: '4px 12px' }}>
@@ -4198,7 +4198,7 @@ ${instruction}`;
                                             scope_agent: config?.default_proxy_scope_agent || false,
                                         }); } catch {}
                                     }} style={{ padding: '8px 16px' }}>
-                                        {t("saveChanges")}
+                                        {localizeText("Save", "保存", "保存")}
                                     </button>
                                 </div>
                             </div>
@@ -6586,10 +6586,14 @@ ${instruction}`;
                     hubUrl={config?.remote_hub_url || ""}
                     email={config?.remote_email || ""}
                     uiMode={config?.ui_mode || ""}
+                    brandId={brandInfo?.id}
+                    brandDisplayName={brandInfo?.displayName}
                     onClose={() => setShowMaclawLLMPopup(false)}
                     onLLMConfigured={() => {
                         setMaclawLLMOnline(true);
                         setMaclawLLMConfigured(true);
+                        // Reload config to pick up CodeGen model injected into tool configs by SSO
+                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                     }}
                     onRegistered={() => {
                         refreshRemotePanel();
@@ -6863,17 +6867,17 @@ ${instruction}`;
                                 {t("cancel")}
                             </button>
                             <button className="btn-primary" onClick={() => {
-                                    SaveConfig(config);
-                                    setShowProxySettings(false);
                                     const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch);
                                     if (proj && !proj.use_proxy) {
                                         const newProjects = config.projects.map((p: any) => p.id === proj.id ? { ...p, use_proxy: true } : p);
                                         const newConfig = new main.AppConfig({ ...config, projects: newProjects });
                                         setConfig(newConfig);
                                         SaveConfig(newConfig);
+                                    } else {
+                                        SaveConfig(config);
                                     }
                                 }} style={{ padding: '8px 16px' }}>
-                                {t("saveChanges")}
+                                {localizeText("Save", "保存", "保存")}
                             </button>
                         </div>
                     </div>

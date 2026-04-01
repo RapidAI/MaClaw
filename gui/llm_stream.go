@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/freeproxy"
 )
 
@@ -426,6 +428,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	onToken TokenCallback,
 ) (*llmResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
+	log.Printf("[LLM Stream] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
 
 	reqBody := map[string]interface{}{
 		"model":    cfg.Model,
@@ -452,9 +455,14 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("HTTP 404: %s (endpoint=%s, model=%s, protocol=%s)", string(body), endpoint, cfg.Model, cfg.Protocol)
+	}
 
 	// Detect SSE: check Content-Type first, then sniff the body prefix.
 	// Some API gateways (e.g. NewAPI, OneAPI) return SSE data but with a
@@ -831,7 +839,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	httpClient *http.Client,
 	onToken TokenCallback,
 ) (*llmResponse, error) {
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/v1/messages"
+	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
 
 	converted := convertToAnthropicMessages(messages)
 
@@ -858,9 +866,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if cfg.Key != "" {
-		req.Header.Set("x-api-key", cfg.Key)
-	}
+	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

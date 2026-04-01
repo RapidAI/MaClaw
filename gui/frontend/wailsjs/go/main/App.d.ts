@@ -210,6 +210,18 @@ export function TestMaclawLLM(arg1:any):Promise<string>;
 
 export function StartOpenAIOAuth():Promise<string>;
 
+export function StartCodeGenSSO():Promise<{message: string; email: string}>;
+
+export function StartCodeGenSSOEmbedded():Promise<{qr_code_url: string}>;
+
+export function WaitCodeGenSSOResult():Promise<{message: string; email: string}>;
+
+export function CancelCodeGenSSOPolling():Promise<void>;
+
+export function FetchCodeGenModels():Promise<Array<{id: string; name: string}>>;
+
+export function SaveCodeGenModelChoice(arg1:string,arg2:string):Promise<void>;
+
 export function GetOpenAIUsage():Promise<any>;
 
 export function GetMaclawAgentMaxIterations():Promise<number>;

@@ -987,6 +987,8 @@ func (a *App) ensureCodeGenToken() error {
 				_ = a.SaveConfig(cfg)
 			}
 		}
+		// 同步更新本地 Anthropic→OpenAI 代理的上游凭证
+		go a.ensureCodeGenProxyIfNeeded()
 		return nil
 	}
 
@@ -1051,6 +1053,9 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 
 	// 6. 将 CodeGen 注入到各编程工具的服务商列表中
 	a.injectCodeGenModelIntoToolConfigs(result)
+
+	// 7. 启动本地 Anthropic→OpenAI 协议转换代理，供 Claude Code 使用
+	go a.ensureCodeGenProxyIfNeeded()
 
 	var msg string
 	if len(toolResult.Failed) == 0 {
@@ -1446,6 +1451,9 @@ func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
 
 		// 将 CodeGen 注入到各编程工具的服务商列表中
 		a.injectCodeGenModelIntoToolConfigs(result)
+
+		// 启动本地 Anthropic→OpenAI 协议转换代理，供 Claude Code 使用
+		go a.ensureCodeGenProxyIfNeeded()
 
 		var msg string
 		if len(toolResult.Failed) == 0 {

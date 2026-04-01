@@ -1117,7 +1117,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
 		}
 		if err != nil {
-			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s", err.Error())}
+			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol)}
 		}
 		if len(resp.Choices) == 0 {
 			return &IMAgentResponse{Error: "LLM 未返回有效回复"}
@@ -1535,4 +1535,4 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 
 
 
-
+
