@@ -116,6 +116,10 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("exec %q: %w", stmt[:min(len(stmt), 60)], err)
 		}
 	}
+	// Auth tables (sessions, tokens, password_hash column)
+	if err := s.migrateAuth(); err != nil {
+		return fmt.Errorf("auth migrate: %w", err)
+	}
 	return nil
 }
 

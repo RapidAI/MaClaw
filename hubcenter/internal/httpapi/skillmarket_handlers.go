@@ -34,6 +34,7 @@ type SkillMarketHandlers struct {
 	apiKeySvc      *skillmarket.APIKeyPoolService
 	refundSvc      *skillmarket.RefundService
 	rateLimiter    *skillmarket.RateLimiter
+	authSvc        *skillmarket.AuthService
 	rsaPrivKey     *rsa.PrivateKey
 	pendingDir     string
 	dataDir        string
@@ -53,6 +54,7 @@ type SkillMarketConfig struct {
 	APIKeySvc      *skillmarket.APIKeyPoolService
 	RefundSvc      *skillmarket.RefundService
 	RateLimiter    *skillmarket.RateLimiter
+	AuthSvc        *skillmarket.AuthService
 	RSAPrivKey     *rsa.PrivateKey
 	PendingDir     string
 	DataDir        string
@@ -73,6 +75,7 @@ func NewSkillMarketHandlers(cfg SkillMarketConfig) *SkillMarketHandlers {
 		apiKeySvc:      cfg.APIKeySvc,
 		refundSvc:      cfg.RefundSvc,
 		rateLimiter:    cfg.RateLimiter,
+		authSvc:        cfg.AuthSvc,
 		rsaPrivKey:     cfg.RSAPrivKey,
 		pendingDir:     cfg.PendingDir,
 		dataDir:        cfg.DataDir,

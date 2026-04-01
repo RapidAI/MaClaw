@@ -299,6 +299,23 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     }, [activeTab, loadExtDirs]);
 
+    const handleAddExtDir = useCallback(async () => {
+        const dir = extDirInput.trim();
+        if (!dir) return;
+        setExtDirAdding(true);
+        setExtDirError("");
+        try {
+            await AddExternalSkillDir(dir);
+            setExtDirInput("");
+            await loadExtDirs();
+            await loadData();
+        } catch (err) {
+            setExtDirError(localizeHubError(String(err)));
+        } finally {
+            setExtDirAdding(false);
+        }
+    }, [extDirInput, loadExtDirs, loadData]);
+
     const handleInstall = useCallback(async (skill: HubSkillMeta) => {
         setInstallingSkills((prev) => [...prev, skill.id]);
         try {
@@ -1035,20 +1052,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             onKeyDown={(e) => {
                                 if (e.key === "Enter" && extDirInput.trim()) {
                                     e.preventDefault();
-                                    (async () => {
-                                        setExtDirAdding(true);
-                                        setExtDirError("");
-                                        try {
-                                            await AddExternalSkillDir(extDirInput.trim());
-                                            setExtDirInput("");
-                                            await loadExtDirs();
-                                            await loadData();
-                                        } catch (err) {
-                                            setExtDirError(localizeHubError(String(err)));
-                                        } finally {
-                                            setExtDirAdding(false);
-                                        }
-                                    })();
+                                    handleAddExtDir();
                                 }
                             }}
                             placeholder={localizeText("Enter directory path...", "输入目录路径...", "輸入目錄路徑...")}
@@ -1077,20 +1081,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             className="btn-primary"
                             style={{ fontSize: "0.78rem", padding: "4px 12px", flexShrink: 0 }}
                             disabled={!extDirInput.trim() || extDirAdding}
-                            onClick={async () => {
-                                setExtDirAdding(true);
-                                setExtDirError("");
-                                try {
-                                    await AddExternalSkillDir(extDirInput.trim());
-                                    setExtDirInput("");
-                                    await loadExtDirs();
-                                    await loadData();
-                                } catch (err) {
-                                    setExtDirError(localizeHubError(String(err)));
-                                } finally {
-                                    setExtDirAdding(false);
-                                }
-                            }}
+                            onClick={handleAddExtDir}
                         >
                             {extDirAdding ? localizeText("Adding...", "添加中...", "添加中...") : localizeText("+ Add", "+ 添加", "+ 添加")}
                         </button>

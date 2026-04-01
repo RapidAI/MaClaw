@@ -748,6 +748,12 @@ func (a *App) ListExternalSkillDirsDetailed() []ExternalSkillDirInfo {
 // AddExternalSkillDir validates and adds an external skill directory (Wails binding).
 func (a *App) AddExternalSkillDir(dir string) (int, error) {
 	dir = filepath.Clean(dir)
+	// Reject built-in skill directories.
+	for _, builtin := range skill.SkillScanRoots() {
+		if filepath.Clean(builtin) == dir {
+			return 0, fmt.Errorf("this is a built-in skill directory, no need to add")
+		}
+	}
 	count, err := skill.ValidateExternalSkillDir(dir)
 	if err != nil {
 		return 0, err

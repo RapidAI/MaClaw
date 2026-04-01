@@ -570,7 +570,8 @@ func (a *App) CancelAIAssistantSession() error {
 	if hubClient == nil || hubClient.imHandler == nil {
 		return fmt.Errorf("AI assistant not initialized")
 	}
-	return hubClient.imHandler.CancelCurrentSession()
+	_, err := hubClient.imHandler.CancelCurrentSession()
+	return err
 }
 
 // ---------------------------------------------------------------------------

@@ -903,6 +903,60 @@ func (r *MessageRouter) deliverProgress(ctx context.Context, userID, platformNam
 	}
 }
 
+// CancelPendingForUser cancels all pending IM requests for the given user
+// by sending a nil response to their ResponseCh, causing routeToSingleMachine
+// to return immediately. Also sends an im.cancel_session message to the
+// user's selected machine so the client-side agent loop is aborted.
+// Returns the number of cancelled requests and the text of the first one.
+func (r *MessageRouter) CancelPendingForUser(ctx context.Context, userID string) (int, string) {
+	r.mu.Lock()
+	var toCancel []*PendingIMRequest
+	for _, req := range r.pendingReqs {
+		if req.UserID == userID {
+			toCancel = append(toCancel, req)
+		}
+	}
+	selectedMachine := r.selectedMachine[userID]
+	r.mu.Unlock()
+
+	var taskText string
+	for _, req := range toCancel {
+		if taskText == "" {
+			taskText = req.Text
+		}
+		// Send a deferred (suppressed) response so routeToSingleMachine
+		// unblocks without delivering a duplicate message to the user.
+		// The /cancel handler already sends the user-facing confirmation.
+		select {
+		case req.ResponseCh <- &AgentResponse{Deferred: true}:
+		default:
+		}
+	}
+
+	// Send cancel signal to the client machine.
+	if selectedMachine != "" && selectedMachine != broadcastMachineID {
+		cancelMsg := map[string]interface{}{
+			"type":    "im.cancel_session",
+			"ts":      time.Now().Unix(),
+			"payload": map[string]interface{}{"user_id": userID},
+		}
+		_ = r.devices.SendToMachine(selectedMachine, cancelMsg)
+	} else if selectedMachine == broadcastMachineID {
+		// Broadcast mode: send cancel to all online machines.
+		machines := r.devices.FindAllOnlineMachinesForUser(ctx, userID)
+		for _, m := range machines {
+			cancelMsg := map[string]interface{}{
+				"type":    "im.cancel_session",
+				"ts":      time.Now().Unix(),
+				"payload": map[string]interface{}{"user_id": userID},
+			}
+			_ = r.devices.SendToMachine(m.MachineID, cancelMsg)
+		}
+	}
+
+	return len(toCancel), taskText
+}
+
 // cleanupLoop periodically removes expired pending requests.
 func (r *MessageRouter) cleanupLoop() {
 	ticker := time.NewTicker(cleanupInterval)

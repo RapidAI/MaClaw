@@ -381,6 +381,15 @@ export function useAIAssistant() {
         setSending(false);
         setStreaming(false);
         streamingMsgIdRef.current = null;
+        // Remove the empty or partial assistant message left by the cancelled
+        // stream so the user sees a clean slate for the next interaction.
+        setMessages(prev => {
+            const lastIdx = findLastIndex(prev, m => m.role === 'assistant');
+            if (lastIdx >= 0 && prev[lastIdx].content === '') {
+                return prev.filter((_, i) => i !== lastIdx);
+            }
+            return prev;
+        });
     }, []);
 
     return { messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };

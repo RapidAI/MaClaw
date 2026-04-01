@@ -357,3 +357,51 @@ func sanitizeFileName(name string) string {
 	}
 	return name
 }
+
+// GenerateToFile 生成 PDF 并写入指定路径。
+// 如果 outputPath 为空，则自动生成到用户主目录。
+// 返回最终写入的绝对路径。
+func GenerateToFile(content, title, docTypeStr, outputPath string) (string, error) {
+	gen := NewSwarmDocGenerator()
+	if !gen.HasFont() {
+		return "", fmt.Errorf("未找到可用的中文字体，无法生成 PDF")
+	}
+
+	if title == "" {
+		title = "文档"
+	}
+
+	var dt DocType
+	switch docTypeStr {
+	case "requirements":
+		dt = DocTypeRequirements
+	case "design":
+		dt = DocTypeDesign
+	case "task_plan":
+		dt = DocTypeTaskPlan
+	default:
+		dt = DocType("general")
+	}
+
+	data, err := gen.GenerateSpecDoc(dt, title, content)
+	if err != nil {
+		return "", fmt.Errorf("生成 PDF 失败: %w", err)
+	}
+
+	if outputPath == "" {
+		home, _ := os.UserHomeDir()
+		outputPath = filepath.Join(home, fmt.Sprintf("%s_%s.pdf",
+			sanitizeFileName(title), time.Now().Format("20060102_150405")))
+	}
+
+	dir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("创建目录失败: %w", err)
+	}
+
+	if err := os.WriteFile(outputPath, data, 0644); err != nil {
+		return "", fmt.Errorf("写入 PDF 失败: %w", err)
+	}
+
+	return outputPath, nil
+}

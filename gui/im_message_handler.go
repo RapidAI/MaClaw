@@ -576,9 +576,25 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 	if trimmed == "/help" {
 		return &IMAgentResponse{Text: "📖 可用命令:\n" +
 			"/new /reset — 重置对话\n" +
+			"/cancel /取消 — 取消当前正在执行的任务\n" +
 			"/exit /quit — 终止所有会话，退出编程模式\n" +
 			"/sessions — 查看当前会话状态\n" +
 			"/help — 显示此帮助"}
+	}
+	if trimmed == "/cancel" || trimmed == "/取消" {
+		ctx := h.currentLoopCtx
+		if ctx == nil {
+			return &IMAgentResponse{Text: "ℹ️ 当前没有正在执行的任务。"}
+		}
+		taskText := h.lastUserText
+		ctx.Cancel()
+		// Don't wait for the loop to exit — the IM caller shouldn't block.
+		// The loop will detect cancellation and clean up on its own.
+		cancelMsg := "⏹️ 任务已取消。"
+		if preview := truncateRunes(taskText, 30); preview != "" {
+			cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", preview)
+		}
+		return &IMAgentResponse{Text: cancelMsg}
 	}
 
 	if !h.app.isMaclawLLMConfigured() {
@@ -801,11 +817,13 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 // CancelCurrentSession cancels the currently running chat session.
 // It signals the loop to stop and waits (up to 10s) for it to exit so that
 // a subsequent SendAIAssistantMessage call won't overlap with the old loop.
-func (h *IMMessageHandler) CancelCurrentSession() error {
+// Returns the cancelled task's user text (if any) for display purposes.
+func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 	ctx := h.currentLoopCtx
 	if ctx == nil {
-		return fmt.Errorf("no active session to cancel")
+		return "", fmt.Errorf("no active session to cancel")
 	}
+	taskText := h.lastUserText
 	ctx.Cancel()
 	// Wait for the loop goroutine to finish so the chatLoopMu is released
 	// before the caller sends a new message.
@@ -814,7 +832,7 @@ func (h *IMMessageHandler) CancelCurrentSession() error {
 	case <-time.After(10 * time.Second):
 		log.Printf("[CancelCurrentSession] timed out waiting for loop to exit")
 	}
-	return nil
+	return taskText, nil
 }
 
 // parseSlotKind converts a string slot kind to the SlotKind enum.
@@ -1215,8 +1233,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// instead of an LLM error.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
-				h.memory.save(userID, trimHistory(history))
-				return &IMAgentResponse{Text: "⏹️ 任务已取消。"}
+				// Don't save the cancelled task's conversation history —
+				// otherwise the next message will inherit the stale context
+				// and the LLM will continue executing the cancelled task.
+				h.memory.clear(userID)
+				cancelMsg := "⏹️ 任务已取消。"
+				if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
+					cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
+				}
+				return &IMAgentResponse{Text: cancelMsg}
 			}
 			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol)}
 		}
@@ -1294,8 +1319,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// executing tools after the user clicked cancel.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
-				h.memory.save(userID, trimHistory(history))
-				return &IMAgentResponse{Text: "⏹️ 任务已取消。"}
+				h.memory.clear(userID)
+				cancelMsg := "⏹️ 任务已取消。"
+				if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
+					cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
+				}
+				return &IMAgentResponse{Text: cancelMsg}
 			}
 			sendToolProgress(fmt.Sprintf("⚙️ 正在执行工具: %s", tc.Function.Name))
 			// When debug is off, suppress intermediate progress from tool execution too.
@@ -1500,8 +1529,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// When the loop exits due to cancellation, return a clean message
 	// and skip the bonus round / max-iterations logic.
 	if ctx.IsCancelled() {
-		h.memory.save(userID, trimHistory(history))
-		return &IMAgentResponse{Text: "⏹️ 任务已取消。"}
+		h.memory.clear(userID)
+		cancelMsg := "⏹️ 任务已取消。"
+		if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
+			cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
+		}
+		return &IMAgentResponse{Text: cancelMsg}
 	}
 
 	// When rounds are exhausted but coding sessions are still active,

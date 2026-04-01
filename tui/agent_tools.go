@@ -18,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/project"
+	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
@@ -787,7 +788,7 @@ func isOriginalBuiltin(name string) bool {
 		"memory": true, "list_mcp_tools": true, "call_mcp_tool": true,
 		"list_skills": true, "search_skill_hub": true, "install_skill_hub": true,
 		"run_skill": true, "clawnet_search": true, "clawnet_publish": true,
-		"query_audit_log": true, "send_file": true, "parallel_execute": true,
+		"query_audit_log": true, "send_file": true, "generate_pdf": true, "parallel_execute": true,
 		"switch_llm_provider": true, "set_max_iterations": true,
 		"recommend_tool": true, "screenshot": true,
 		"project_manage": true, "web_search": true, "web_fetch": true,
@@ -1199,6 +1200,32 @@ func (h *TUIAgentHandler) toolSendFile(args map[string]interface{}) string {
 		return fmt.Sprintf("发送失败: %v", err)
 	}
 	return fmt.Sprintf("已发送文件内容 (%d 字节) 到会话 %s", len(data), sid)
+}
+
+func (h *TUIAgentHandler) toolGeneratePDF(args map[string]interface{}) string {
+	content := stringArg(args, "content")
+	if content == "" {
+		return "缺少 content 参数（Markdown 格式的文档内容）"
+	}
+
+	title := stringArg(args, "title")
+	docTypeStr := stringArg(args, "doc_type")
+	outputPath := stringArg(args, "output_path")
+	if outputPath != "" {
+		outputPath = resolvePath(outputPath)
+	}
+
+	absPath, err := swarm.GenerateToFile(content, title, docTypeStr, outputPath)
+	if err != nil {
+		return err.Error()
+	}
+
+	info, _ := os.Stat(absPath)
+	size := int64(0)
+	if info != nil {
+		size = info.Size()
+	}
+	return fmt.Sprintf("已生成 PDF: %s（%d 字节）", absPath, size)
 }
 
 func (h *TUIAgentHandler) toolParallelExecute(args map[string]interface{}) string {

@@ -467,6 +467,12 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"session_id": map[string]interface{}{"type": "string", "description": "会话 ID"},
 			"file_path":  map[string]interface{}{"type": "string", "description": "文件路径"},
 		}, []string{"session_id", "file_path"}),
+		toolDef("generate_pdf", "将 Markdown 内容生成为排版精美的 PDF 文件。支持中文、标题、列表、粗体等格式。适用于生成需求文档、设计文档、报告、总结等。", map[string]interface{}{
+			"content":     map[string]interface{}{"type": "string", "description": "Markdown 格式的文档内容"},
+			"title":       map[string]interface{}{"type": "string", "description": "文档标题/项目名称（可选）"},
+			"doc_type":    map[string]interface{}{"type": "string", "description": "文档类型: requirements/design/task_plan（可选）"},
+			"output_path": map[string]interface{}{"type": "string", "description": "输出文件路径（可选）"},
+		}, []string{"content"}),
 		toolDef("parallel_execute", "并发执行多个命令", map[string]interface{}{
 			"commands": map[string]interface{}{"type": "array", "description": "命令列表", "items": map[string]interface{}{"type": "string"}},
 		}, []string{"commands"}),
@@ -634,6 +640,8 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 	// --- 实用工具 ---
 	case "send_file":
 		return h.toolSendFile(args)
+	case "generate_pdf":
+		return h.toolGeneratePDF(args)
 	case "parallel_execute":
 		return h.toolParallelExecute(args)
 	case "switch_llm_provider":

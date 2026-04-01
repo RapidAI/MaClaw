@@ -541,6 +541,36 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		return
 	}
 
+	// 3c-cancel. Handle /cancel command — cancel the currently running agent task.
+	if text == "/cancel" || text == "/取消" {
+		cancelled, taskText := a.messageRouter.CancelPendingForUser(ctx, unifiedID)
+		if cancelled > 0 {
+			body := "已发送取消信号，当前任务将尽快停止。"
+			if taskText != "" {
+				preview := taskText
+				runes := []rune(preview)
+				if len(runes) > 30 {
+					preview = string(runes[:30]) + "…"
+				}
+				body = fmt.Sprintf("⏹️ 已取消任务「%s」。", preview)
+			}
+			a.sendResponse(ctx, plugin, target, &GenericResponse{
+				StatusCode: 200,
+				StatusIcon: "⏹️",
+				Title:      "已取消",
+				Body:       body,
+			})
+		} else {
+			a.sendResponse(ctx, plugin, target, &GenericResponse{
+				StatusCode: 200,
+				StatusIcon: "ℹ️",
+				Title:      "无活跃任务",
+				Body:       "当前没有正在执行的任务。",
+			})
+		}
+		return
+	}
+
 	// 3c. Handle /stop command — stop active discussion + exit meeting.
 	if text == "/stop" {
 		resp := a.messageRouter.StopDiscussion(unifiedID)

@@ -104,6 +104,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	tierSvc := skillmarket.NewTierService(smStore)
 	rateLimiter := skillmarket.NewRateLimiter(smStore, tierSvc)
 
+	// Auth service
+	authSvc := skillmarket.NewAuthService(smStore, mailer, cfg.Server.PublicBaseURL)
+
 	smHandlers := httpapi.NewSkillMarketHandlers(httpapi.SkillMarketConfig{
 		Store:          smStore,
 		SkillStore:     skillStore,
@@ -117,6 +120,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		APIKeySvc:      apiKeySvc,
 		RefundSvc:      refundSvc,
 		RateLimiter:    rateLimiter,
+		AuthSvc:        authSvc,
 		RSAPrivKey:     rsaPrivKey,
 		PendingDir:     pendingDir,
 		DataDir:        dataDir,
@@ -134,6 +138,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 			<-ticker.C
 			_ = notifSvc.ProcessPendingNotifications(ctx)
 			trialMgr.ProcessExpiredTrials(ctx)
+			// Cleanup expired auth tokens and sessions
+			_ = smStore.DeleteExpiredAuthTokens(ctx)
+			_ = smStore.DeleteExpiredSessions(ctx)
 		}
 	}()
 

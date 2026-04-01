@@ -206,6 +206,20 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("DELETE /api/admin/news", RequireAdmin(adminService, AdminDeleteNewsHandler(newsRepo)))
 	// SkillMarket API
 	if smHandlers != nil {
+		// Auth rate limiters
+		authLoginRL := newGossipRateLimiter(10, 5*time.Minute)   // 10 login attempts per 5 min per IP
+		authRegisterRL := newGossipRateLimiter(5, 10*time.Minute) // 5 registrations per 10 min per IP
+		authLookupRL := newGossipRateLimiter(5, 10*time.Minute)   // 5 lookup emails per 10 min per IP
+		// Auth endpoints (no session required)
+		mux.HandleFunc("POST /api/v1/auth/register", gossipRateLimitMiddleware(authRegisterRL, smHandlers.Register))
+		mux.HandleFunc("GET /api/v1/auth/activate", smHandlers.Activate)
+		mux.HandleFunc("POST /api/v1/auth/login", gossipRateLimitMiddleware(authLoginRL, smHandlers.Login))
+		mux.HandleFunc("POST /api/v1/auth/logout", smHandlers.Logout)
+		mux.HandleFunc("POST /api/v1/auth/lookup", gossipRateLimitMiddleware(authLookupRL, smHandlers.SendLookupVerification))
+		mux.HandleFunc("GET /api/v1/auth/verify-identity", smHandlers.VerifyIdentity)
+		mux.HandleFunc("GET /api/v1/auth/session", smHandlers.ValidateSession)
+		mux.HandleFunc("POST /api/v1/auth/resend-activation", gossipRateLimitMiddleware(authLookupRL, smHandlers.ResendActivation))
+		// Existing endpoints
 		mux.HandleFunc("POST /api/v1/skills/submit", smHandlers.SubmitSkill)
 		mux.HandleFunc("GET /api/v1/skill-submissions/{id}", smHandlers.GetSubmissionStatus)
 		mux.HandleFunc("POST /api/v1/account/ensure", smHandlers.EnsureAccount)

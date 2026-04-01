@@ -16,8 +16,7 @@
     .tab{padding:8px 18px;cursor:pointer;border:none;background:none;font:inherit;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;transition:.2s}
     .tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
     .tab:hover{color:var(--text)}
-    .panel{display:none}
-    .panel.active{display:block}
+    .panel{display:none}.panel.active{display:block}
     .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);margin-bottom:16px}
     .card h3{font-size:15px;margin-bottom:10px}
     .stat-row{display:flex;gap:16px;flex-wrap:wrap}
@@ -27,16 +26,11 @@
     table{width:100%;border-collapse:collapse;font-size:13px}
     th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
     th{background:#f1f5f9;font-weight:600;color:var(--muted);font-size:12px}
-    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
-    .badge-trial{background:#fef3c7;color:#92400e}
-    .badge-published{background:#d1fae5;color:#065f46}
-    .badge-pending{background:#e0e7ff;color:#3730a3}
-    .badge-rejected{background:#fee2e2;color:#991b1b}
-    .badge-withdrawn{background:#f1f5f9;color:#475569}
     .btn{padding:6px 14px;border:none;border-radius:6px;font:inherit;font-size:12px;cursor:pointer;transition:.2s}
     .btn-primary{background:var(--primary);color:#fff}
     .btn-danger{background:var(--danger);color:#fff}
     .btn-success{background:var(--success);color:#fff}
+    .btn-outline{background:transparent;color:var(--primary);border:1px solid var(--primary)}
     .btn:disabled{opacity:.5;cursor:default}
     input,select{height:34px;padding:0 10px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:13px}
     .form-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
@@ -44,7 +38,15 @@
     .msg{padding:8px 12px;border-radius:6px;font-size:13px;margin-bottom:10px}
     .msg-ok{background:#d1fae5;color:#065f46}
     .msg-err{background:#fee2e2;color:#991b1b}
+    .msg-info{background:#e0e7ff;color:#3730a3}
     .empty{text-align:center;padding:32px;color:var(--muted)}
+    .captcha-box{display:flex;align-items:center;gap:8px}
+    .captcha-display{background:#f1f5f9;padding:4px 12px;border-radius:6px;font-size:16px;font-weight:700;letter-spacing:2px;user-select:none;color:var(--primary)}
+    .captcha-refresh{cursor:pointer;font-size:16px;color:var(--muted)}
+    .auth-toggle{font-size:12px;color:var(--primary);cursor:pointer;text-decoration:underline;margin-left:8px}
+    .logged-in-bar{display:flex;align-items:center;gap:12px;padding:8px 0;font-size:13px;color:var(--muted)}
+    .logged-in-bar .email{font-weight:600;color:var(--text)}
+    #auth-section .form-row input{flex:1}
   </style>
 </head>
 <body>
@@ -55,123 +57,210 @@
     <p style="margin-top:6px"><a href="/skillmarket" style="font-size:13px;color:var(--primary);text-decoration:none" data-i18n="nav.browse">← 返回 Skill 浏览</a></p>
   </header>
 
-  <div class="tabs">
-    <button class="tab active" data-panel="account" data-i18n="tab.account">账户</button>
-    <button class="tab" data-panel="myskills" data-i18n="tab.myskills">我的 Skill</button>
-    <button class="tab" data-panel="admin-review" data-i18n="tab.review">审核管理</button>
-    <button class="tab" data-panel="admin-config" data-i18n="tab.config">系统配置</button>
-  </div>
-
-  <!-- ═══ 账户面板 ═══ -->
-  <div id="panel-account" class="panel active">
-    <div id="login-section" class="card">
-      <h3 data-i18n="login.title">登录 / 查询账户</h3>
+  <!-- ═══ Auth Section (shown when not logged in) ═══ -->
+  <div id="auth-section" class="card">
+    <div id="auth-mode-login">
+      <h3 data-i18n="auth.login.title">登录</h3>
       <div class="form-row">
         <label>Email</label>
-        <input id="email-input" type="email" placeholder="your@email.com" style="flex:1">
-        <button class="btn btn-primary" onclick="loadAccount()" data-i18n="login.query">查询</button>
-        <button class="btn btn-success" onclick="ensureAccount()" data-i18n="login.create">创建账户</button>
+        <input id="login-email" type="email" placeholder="your@email.com">
       </div>
-      <div id="account-msg"></div>
-    </div>
-    <div id="account-info" class="card" style="display:none">
-      <h3 data-i18n="account.title">账户信息</h3>
-      <div class="stat-row">
-        <div class="stat"><div class="val" id="s-credits">0</div><div class="lbl" data-i18n="account.credits">Credits 余额</div></div>
-        <div class="stat"><div class="val" id="s-settled">0</div><div class="lbl" data-i18n="account.settled">已结算收益</div></div>
-        <div class="stat"><div class="val" id="s-pending">0</div><div class="lbl" data-i18n="account.pending">待结算收益</div></div>
-        <div class="stat"><div class="val" id="s-voucher">0</div><div class="lbl" data-i18n="account.voucher">体验券</div></div>
-        <div class="stat"><div class="val" id="s-status">-</div><div class="lbl" data-i18n="account.status">状态</div></div>
-      </div>
-    </div>
-    <div id="tier-info" class="card" style="display:none">
-      <h3 data-i18n="tier.title">信誉等级</h3>
-      <div class="stat-row">
-        <div class="stat"><div class="val" id="s-tier">-</div><div class="lbl" data-i18n="tier.level">等级</div></div>
-        <div class="stat"><div class="val" id="s-published">0</div><div class="lbl" data-i18n="tier.published">已发布</div></div>
-        <div class="stat"><div class="val" id="s-avgrating">-</div><div class="lbl" data-i18n="tier.avgrating">平均评分</div></div>
-        <div class="stat"><div class="val" id="s-downloads">0</div><div class="lbl" data-i18n="tier.downloads">总下载</div></div>
-      </div>
-    </div>
-    <div id="credits-section" class="card" style="display:none">
-      <h3 data-i18n="credits.title">充值 / 提现</h3>
       <div class="form-row">
-        <label data-i18n="credits.amount">金额</label>
-        <input id="credits-amount" type="number" min="1" value="100" style="width:120px">
-        <button class="btn btn-primary" onclick="topUp()" data-i18n="credits.topup">充值</button>
-        <button class="btn btn-danger" onclick="withdraw()" data-i18n="credits.withdraw">提现</button>
+        <label data-i18n="auth.password">密码</label>
+        <input id="login-password" type="password" placeholder="••••••">
       </div>
-      <div id="credits-msg"></div>
-      <h3 style="margin-top:16px" data-i18n="credits.history">交易记录</h3>
-      <table><thead><tr><th data-i18n="tx.time">时间</th><th data-i18n="tx.type">类型</th><th data-i18n="tx.amount">金额</th><th data-i18n="tx.balance">余额</th><th data-i18n="tx.desc">说明</th></tr></thead><tbody id="tx-list"></tbody></table>
+      <div class="form-row">
+        <label data-i18n="auth.captcha">验证码</label>
+        <div class="captcha-box">
+          <span class="captcha-display" id="login-captcha-q"></span>
+          <span>= </span>
+          <input id="login-captcha-a" type="text" style="width:60px" placeholder="?">
+          <span class="captcha-refresh" onclick="refreshCaptcha('login')" title="refresh">🔄</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label></label>
+        <button class="btn btn-primary" onclick="doLogin()" data-i18n="auth.login.btn">登录</button>
+        <span class="auth-toggle" onclick="showAuthMode('register')" data-i18n="auth.switch.register">没有账户？注册</span>
+        <span class="auth-toggle" onclick="showAuthMode('lookup')" data-i18n="auth.switch.lookup">邮件验证登录</span>
+      </div>
+      <div id="login-msg"></div>
+    </div>
+
+    <div id="auth-mode-register" style="display:none">
+      <h3 data-i18n="auth.register.title">注册新账户</h3>
+      <div class="form-row">
+        <label>Email</label>
+        <input id="reg-email" type="email" placeholder="your@email.com">
+      </div>
+      <div class="form-row">
+        <label data-i18n="auth.password">密码</label>
+        <input id="reg-password" type="password" placeholder="至少6位">
+      </div>
+      <div class="form-row">
+        <label data-i18n="auth.confirm.password">确认密码</label>
+        <input id="reg-password2" type="password" placeholder="再次输入密码">
+      </div>
+      <div class="form-row">
+        <label data-i18n="auth.captcha">验证码</label>
+        <div class="captcha-box">
+          <span class="captcha-display" id="reg-captcha-q"></span>
+          <span>= </span>
+          <input id="reg-captcha-a" type="text" style="width:60px" placeholder="?">
+          <span class="captcha-refresh" onclick="refreshCaptcha('reg')" title="refresh">🔄</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label></label>
+        <button class="btn btn-success" onclick="doRegister()" data-i18n="auth.register.btn">注册</button>
+        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">已有账户？登录</span>
+      </div>
+      <div id="reg-msg"></div>
+    </div>
+
+    <div id="auth-mode-lookup" style="display:none">
+      <h3 data-i18n="auth.lookup.title">邮件验证登录</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px" data-i18n="auth.lookup.desc">输入已注册的邮箱，我们将发送验证链接到您的邮箱，点击即可登录。</p>
+      <div class="form-row">
+        <label>Email</label>
+        <input id="lookup-email" type="email" placeholder="your@email.com" style="flex:1">
+      </div>
+      <div class="form-row">
+        <label data-i18n="auth.captcha">验证码</label>
+        <div class="captcha-box">
+          <span class="captcha-display" id="lookup-captcha-q"></span>
+          <span>= </span>
+          <input id="lookup-captcha-a" type="text" style="width:60px" placeholder="?">
+          <span class="captcha-refresh" onclick="refreshCaptcha('lookup')" title="refresh">🔄</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label></label>
+        <button class="btn btn-primary" onclick="doLookup()" data-i18n="auth.lookup.btn">发送验证邮件</button>
+        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">已有账户？登录</span>
+      </div>
+      <div id="lookup-msg"></div>
     </div>
   </div>
 
-  <!-- ═══ 我的 Skill 面板 ═══ -->
-  <div id="panel-myskills" class="panel">
-    <div class="card">
-      <h3 data-i18n="myskills.title">我的 Skill</h3>
-      <p class="empty" id="myskills-empty" data-i18n="myskills.empty">请先在账户面板登录</p>
-      <table id="myskills-table" style="display:none">
-        <thead><tr><th data-i18n="sk.name">名称</th><th data-i18n="sk.version">版本</th><th data-i18n="sk.status">状态</th><th data-i18n="sk.rating">评分</th><th data-i18n="sk.downloads">下载</th><th data-i18n="sk.actions">操作</th></tr></thead>
-        <tbody id="myskills-list"></tbody>
-      </table>
-    </div>
-    <div id="apikey-section" class="card" style="display:none">
-      <h3 data-i18n="apikey.title">API Key 管理</h3>
-      <div class="form-row">
-        <label>Skill ID</label>
-        <input id="apikey-skill-id" style="flex:1">
-        <button class="btn btn-primary" onclick="loadAPIKeyStatus()" data-i18n="apikey.query">查询</button>
-      </div>
-      <div id="apikey-status"></div>
-      <div class="form-row" style="margin-top:10px">
-        <label data-i18n="apikey.bulk">批量上传</label>
-        <textarea id="apikey-bulk" rows="4" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:12px" data-i18n-placeholder="apikey.placeholder" placeholder="每行一个 API Key"></textarea>
-        <button class="btn btn-success" onclick="uploadAPIKeys()" data-i18n="apikey.upload">上传</button>
-      </div>
-      <div id="apikey-msg"></div>
-    </div>
+  <!-- ═══ Logged-in bar ═══ -->
+  <div id="logged-in-bar" class="logged-in-bar" style="display:none">
+    <span data-i18n="auth.loggedAs">已登录：</span>
+    <span class="email" id="current-email"></span>
+    <button class="btn btn-outline" onclick="doLogout()" data-i18n="auth.logout">退出</button>
   </div>
 
-  <!-- ═══ 审核管理面板 ═══ -->
-  <div id="panel-admin-review" class="panel">
-    <div class="card">
-      <h3 data-i18n="review.title">待审核 Skill</h3>
-      <button class="btn btn-primary" onclick="loadPendingReview()" style="margin-bottom:10px" data-i18n="review.refresh">刷新</button>
-      <table><thead><tr><th data-i18n="sk.name">名称</th><th data-i18n="review.author">上传者</th><th data-i18n="sk.rating">评分</th><th data-i18n="review.ratingCount">评价人数</th><th data-i18n="sk.actions">操作</th></tr></thead><tbody id="review-list"></tbody></table>
-      <p class="empty" id="review-empty" data-i18n="review.empty">暂无待审核 Skill</p>
+  <!-- ═══ Main content (hidden until logged in) ═══ -->
+  <div id="main-content" style="display:none">
+    <div class="tabs">
+      <button class="tab active" data-panel="account" data-i18n="tab.account">账户</button>
+      <button class="tab" data-panel="myskills" data-i18n="tab.myskills">我的 Skill</button>
+      <button class="tab" data-panel="admin-review" data-i18n="tab.review">审核管理</button>
+      <button class="tab" data-panel="admin-config" data-i18n="tab.config">系统配置</button>
     </div>
-    <div class="card">
-      <h3 data-i18n="purchase.title">购买记录</h3>
-      <div class="form-row">
-        <input id="purchase-filter" data-i18n-placeholder="purchase.filter" placeholder="按 buyer email 或 skill_id 筛选" style="flex:1">
-        <button class="btn btn-primary" onclick="loadPurchases()" data-i18n="purchase.query">查询</button>
-      </div>
-      <table><thead><tr><th data-i18n="purchase.buyer">买家</th><th data-i18n="purchase.skill">Skill</th><th data-i18n="purchase.amount">金额</th><th data-i18n="purchase.type">类型</th><th data-i18n="purchase.status">状态</th><th data-i18n="sk.actions">操作</th></tr></thead><tbody id="purchase-list"></tbody></table>
-    </div>
-  </div>
 
-  <!-- ═══ 系统配置面板 ═══ -->
-  <div id="panel-admin-config" class="panel">
-    <div class="card">
-      <h3 data-i18n="config.trial.title">试用期配置</h3>
-      <div class="form-row">
-        <label data-i18n="config.trial.days">试用天数</label>
-        <input id="cfg-trial-days" type="number" min="1" value="7" style="width:80px">
+    <!-- ═══ 账户面板 ═══ -->
+    <div id="panel-account" class="panel active">
+      <div id="account-info" class="card">
+        <h3 data-i18n="account.title">账户信息</h3>
+        <div class="stat-row">
+          <div class="stat"><div class="val" id="s-credits">0</div><div class="lbl" data-i18n="account.credits">Credits 余额</div></div>
+          <div class="stat"><div class="val" id="s-settled">0</div><div class="lbl" data-i18n="account.settled">已结算收益</div></div>
+          <div class="stat"><div class="val" id="s-pending">0</div><div class="lbl" data-i18n="account.pending">待结算收益</div></div>
+          <div class="stat"><div class="val" id="s-voucher">0</div><div class="lbl" data-i18n="account.voucher">体验券</div></div>
+          <div class="stat"><div class="val" id="s-status">-</div><div class="lbl" data-i18n="account.status">状态</div></div>
+        </div>
       </div>
-      <div class="form-row">
-        <label data-i18n="config.threshold">自动上架阈值</label>
-        <input id="cfg-threshold" type="number" min="1" value="5" style="width:80px">
+      <div id="tier-info" class="card" style="display:none">
+        <h3 data-i18n="tier.title">信誉等级</h3>
+        <div class="stat-row">
+          <div class="stat"><div class="val" id="s-tier">-</div><div class="lbl" data-i18n="tier.level">等级</div></div>
+          <div class="stat"><div class="val" id="s-published">0</div><div class="lbl" data-i18n="tier.published">已发布</div></div>
+          <div class="stat"><div class="val" id="s-avgrating">-</div><div class="lbl" data-i18n="tier.avgrating">平均评分</div></div>
+          <div class="stat"><div class="val" id="s-downloads">0</div><div class="lbl" data-i18n="tier.downloads">总下载</div></div>
+        </div>
       </div>
-      <button class="btn btn-primary" onclick="saveTrialConfig()" data-i18n="config.save">保存</button>
-      <div id="config-msg"></div>
+      <div id="credits-section" class="card">
+        <h3 data-i18n="credits.title">充值 / 提现</h3>
+        <div class="form-row">
+          <label data-i18n="credits.amount">金额</label>
+          <input id="credits-amount" type="number" min="1" value="100" style="width:120px">
+          <button class="btn btn-primary" onclick="topUp()" data-i18n="credits.topup">充值</button>
+          <button class="btn btn-danger" onclick="withdraw()" data-i18n="credits.withdraw">提现</button>
+        </div>
+        <div id="credits-msg"></div>
+        <h3 style="margin-top:16px" data-i18n="credits.history">交易记录</h3>
+        <table><thead><tr><th data-i18n="tx.time">时间</th><th data-i18n="tx.type">类型</th><th data-i18n="tx.amount">金额</th><th data-i18n="tx.balance">余额</th><th data-i18n="tx.desc">说明</th></tr></thead><tbody id="tx-list"></tbody></table>
+      </div>
     </div>
-  </div>
+
+    <!-- ═══ 我的 Skill 面板 ═══ -->
+    <div id="panel-myskills" class="panel">
+      <div class="card">
+        <h3 data-i18n="myskills.title">我的 Skill</h3>
+        <p class="empty" id="myskills-empty" data-i18n="myskills.empty">暂无 Skill</p>
+        <table id="myskills-table" style="display:none">
+          <thead><tr><th data-i18n="sk.name">名称</th><th data-i18n="sk.version">版本</th><th data-i18n="sk.status">状态</th><th data-i18n="sk.rating">评分</th><th data-i18n="sk.downloads">下载</th><th data-i18n="sk.actions">操作</th></tr></thead>
+          <tbody id="myskills-list"></tbody>
+        </table>
+      </div>
+      <div id="apikey-section" class="card">
+        <h3 data-i18n="apikey.title">API Key 管理</h3>
+        <div class="form-row">
+          <label>Skill ID</label>
+          <input id="apikey-skill-id" style="flex:1">
+          <button class="btn btn-primary" onclick="loadAPIKeyStatus()" data-i18n="apikey.query">查询</button>
+        </div>
+        <div id="apikey-status"></div>
+        <div class="form-row" style="margin-top:10px">
+          <label data-i18n="apikey.bulk">批量上传</label>
+          <textarea id="apikey-bulk" rows="4" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:12px" data-i18n-placeholder="apikey.placeholder" placeholder="每行一个 API Key"></textarea>
+          <button class="btn btn-success" onclick="uploadAPIKeys()" data-i18n="apikey.upload">上传</button>
+        </div>
+        <div id="apikey-msg"></div>
+      </div>
+    </div>
+
+    <!-- ═══ 审核管理面板 ═══ -->
+    <div id="panel-admin-review" class="panel">
+      <div class="card">
+        <h3 data-i18n="review.title">待审核 Skill</h3>
+        <button class="btn btn-primary" onclick="loadPendingReview()" style="margin-bottom:10px" data-i18n="review.refresh">刷新</button>
+        <table><thead><tr><th data-i18n="sk.name">名称</th><th data-i18n="review.author">上传者</th><th data-i18n="sk.rating">评分</th><th data-i18n="review.ratingCount">评价人数</th><th data-i18n="sk.actions">操作</th></tr></thead><tbody id="review-list"></tbody></table>
+        <p class="empty" id="review-empty" data-i18n="review.empty">暂无待审核 Skill</p>
+      </div>
+      <div class="card">
+        <h3 data-i18n="purchase.title">购买记录</h3>
+        <div class="form-row">
+          <input id="purchase-filter" data-i18n-placeholder="purchase.filter" placeholder="按 buyer email 或 skill_id 筛选" style="flex:1">
+          <button class="btn btn-primary" onclick="loadPurchases()" data-i18n="purchase.query">查询</button>
+        </div>
+        <table><thead><tr><th data-i18n="purchase.buyer">买家</th><th data-i18n="purchase.skill">Skill</th><th data-i18n="purchase.amount">金额</th><th data-i18n="purchase.type">类型</th><th data-i18n="purchase.status">状态</th><th data-i18n="sk.actions">操作</th></tr></thead><tbody id="purchase-list"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ═══ 系统配置面板 ═══ -->
+    <div id="panel-admin-config" class="panel">
+      <div class="card">
+        <h3 data-i18n="config.trial.title">试用期配置</h3>
+        <div class="form-row">
+          <label data-i18n="config.trial.days">试用天数</label>
+          <input id="cfg-trial-days" type="number" min="1" value="7" style="width:80px">
+        </div>
+        <div class="form-row">
+          <label data-i18n="config.threshold">自动上架阈值</label>
+          <input id="cfg-threshold" type="number" min="1" value="5" style="width:80px">
+        </div>
+        <button class="btn btn-primary" onclick="saveTrialConfig()" data-i18n="config.save">保存</button>
+        <div id="config-msg"></div>
+      </div>
+    </div>
+  </div><!-- /main-content -->
 </div>
 
 <script>
 const API = '';
+let sessionToken = localStorage.getItem('sm_session') || '';
 let currentEmail = '';
 let currentUserID = '';
 
@@ -179,36 +268,28 @@ let currentUserID = '';
 const LANG = (navigator.language || 'zh').startsWith('zh') ? 'zh' : 'en';
 document.getElementById('html-root').lang = LANG === 'zh' ? 'zh-CN' : 'en';
 
-// API 错误消息（仅用于 parseApiError 匹配）
-const ERROR_MESSAGES = {
-  'account not found':        { zh: '账户不存在，请先创建账户', en: 'Account not found. Please create one first.' },
-  'insufficient credits':     { zh: '余额不足', en: 'Insufficient credits.' },
-  'skill not found':          { zh: 'Skill 不存在', en: 'Skill not found.' },
-  'unauthorized':             { zh: '未授权，请重新登录', en: 'Unauthorized. Please log in again.' },
-  'forbidden':                { zh: '没有权限执行此操作', en: 'Permission denied.' },
-  'email required':           { zh: '请输入邮箱地址', en: 'Email is required.' },
-  'invalid email':            { zh: '邮箱格式不正确', en: 'Invalid email format.' },
-  'already exists':           { zh: '该记录已存在', en: 'Record already exists.' },
-  'rate limited':             { zh: '操作过于频繁，请稍后再试', en: 'Too many requests. Please try again later.' },
-  'invalid amount':           { zh: '金额无效', en: 'Invalid amount.' },
-  'skill already withdrawn':  { zh: 'Skill 已下架', en: 'Skill already withdrawn.' },
-  'refund already processed': { zh: '退款已处理', en: 'Refund already processed.' },
-  'api key not found':        { zh: 'API Key 不存在', en: 'API Key not found.' },
-  'no keys available':        { zh: '暂无可用的 API Key', en: 'No API keys available.' },
-  'internal server error':    { zh: '服务器内部错误，请稍后再试', en: 'Internal server error. Please try again later.' },
-};
-
-// 页面静态文本
 const I18N = {
-  'title':              { zh: '龙虾盛宴 SkillMarket', en: 'SkillMarket' },
   'subtitle':           { zh: '账户管理 · Skill 管理 · 管理后台', en: 'Account · Skills · Admin' },
+  'nav.browse':         { zh: '← 返回 Skill 浏览', en: '← Back to Skill Browse' },
+  'auth.login.title':   { zh: '登录', en: 'Login' },
+  'auth.register.title':{ zh: '注册新账户', en: 'Create Account' },
+  'auth.lookup.title':  { zh: '邮件验证登录', en: 'Email Verification Login' },
+  'auth.lookup.desc':   { zh: '输入已注册的邮箱，我们将发送验证链接到您的邮箱，点击即可登录。', en: 'Enter your registered email. We will send a verification link to log you in.' },
+  'auth.password':      { zh: '密码', en: 'Password' },
+  'auth.confirm.password':{ zh: '确认密码', en: 'Confirm' },
+  'auth.captcha':       { zh: '验证码', en: 'Captcha' },
+  'auth.login.btn':     { zh: '登录', en: 'Login' },
+  'auth.register.btn':  { zh: '注册', en: 'Register' },
+  'auth.lookup.btn':    { zh: '发送验证邮件', en: 'Send Verification Email' },
+  'auth.switch.register':{ zh: '没有账户？注册', en: 'No account? Register' },
+  'auth.switch.login':  { zh: '已有账户？登录', en: 'Have an account? Login' },
+  'auth.switch.lookup': { zh: '邮件验证登录', en: 'Email verification login' },
+  'auth.loggedAs':      { zh: '已登录：', en: 'Logged in as:' },
+  'auth.logout':        { zh: '退出', en: 'Logout' },
   'tab.account':        { zh: '账户', en: 'Account' },
   'tab.myskills':       { zh: '我的 Skill', en: 'My Skills' },
   'tab.review':         { zh: '审核管理', en: 'Review' },
   'tab.config':         { zh: '系统配置', en: 'Settings' },
-  'login.title':        { zh: '登录 / 查询账户', en: 'Login / Lookup Account' },
-  'login.query':        { zh: '查询', en: 'Lookup' },
-  'login.create':       { zh: '创建账户', en: 'Create' },
   'account.title':      { zh: '账户信息', en: 'Account Info' },
   'account.credits':    { zh: 'Credits 余额', en: 'Credits' },
   'account.settled':    { zh: '已结算收益', en: 'Settled' },
@@ -231,7 +312,7 @@ const I18N = {
   'tx.balance':         { zh: '余额', en: 'Balance' },
   'tx.desc':            { zh: '说明', en: 'Description' },
   'myskills.title':     { zh: '我的 Skill', en: 'My Skills' },
-  'myskills.empty':     { zh: '请先在账户面板登录', en: 'Please log in from the Account tab first.' },
+  'myskills.empty':     { zh: '暂无 Skill', en: 'No skills yet.' },
   'sk.name':            { zh: '名称', en: 'Name' },
   'sk.version':         { zh: '版本', en: 'Version' },
   'sk.status':          { zh: '状态', en: 'Status' },
@@ -267,7 +348,6 @@ const I18N = {
   'config.trial.days':  { zh: '试用天数', en: 'Trial Days' },
   'config.threshold':   { zh: '自动上架阈值', en: 'Auto-publish Threshold' },
   'config.save':        { zh: '保存', en: 'Save' },
-  'msg.account.created':{ zh: '账户已创建/确认', en: 'Account created / confirmed.' },
   'msg.topup.ok':       { zh: '充值成功', en: 'Top-up successful.' },
   'msg.withdraw.ok':    { zh: '提现成功', en: 'Withdrawal successful.' },
   'msg.apikey.ok':      { zh: '上传成功', en: 'Upload successful.' },
@@ -277,91 +357,217 @@ const I18N = {
   'msg.refund.reason':  { zh: '退款原因：', en: 'Refund reason:' },
   'msg.withdraw.confirm':{ zh: '确认下架？', en: 'Confirm withdrawal?' },
   'err.network':        { zh: '网络错误，请检查连接', en: 'Network error. Please check your connection.' },
-  'nav.browse':         { zh: '← 返回 Skill 浏览', en: '← Back to Skill Browse' },
+  'err.captcha':        { zh: '验证码错误', en: 'Incorrect captcha.' },
+  'err.password.match': { zh: '两次密码不一致', en: 'Passwords do not match.' },
+  'err.password.short': { zh: '密码至少6位', en: 'Password must be at least 6 characters.' },
+  'msg.reg.ok':         { zh: '注册成功，激活邮件已发送到您的邮箱，请查收并点击激活链接。', en: 'Registration successful. Activation email sent. Please check your inbox.' },
+  'msg.lookup.ok':      { zh: '验证邮件已发送，请查收邮箱并点击链接登录。', en: 'Verification email sent. Please check your inbox and click the link.' },
+  'msg.activated':      { zh: '账户已激活，已自动登录。', en: 'Account activated. You are now logged in.' },
+  'msg.verified':       { zh: '身份已验证，已自动登录。', en: 'Identity verified. You are now logged in.' },
+  'msg.session.expired':{ zh: '登录已过期，请重新登录。', en: 'Session expired. Please log in again.' },
+};
+
+const ERROR_MESSAGES = {
+  'account not found':        { zh: '账户不存在', en: 'Account not found.' },
+  'insufficient credits':     { zh: '余额不足', en: 'Insufficient credits.' },
+  'invalid credentials':      { zh: '邮箱或密码错误', en: 'Invalid email or password.' },
+  'account not activated':    { zh: '账户未激活，请先查收激活邮件', en: 'Account not activated. Please check your activation email.' },
+  'account already exists':   { zh: '该邮箱已注册', en: 'This email is already registered.' },
+  'token expired or invalid': { zh: '链接已过期或无效', en: 'Link expired or invalid.' },
+  'password is required':     { zh: '密码至少6位', en: 'Password must be at least 6 characters.' },
+  'email is required':        { zh: '请输入邮箱', en: 'Email is required.' },
+  'rate limited':             { zh: '操作过于频繁，请稍后再试', en: 'Too many requests. Please try again later.' },
 };
 
 function t(key) { return (I18N[key] && I18N[key][LANG]) || key; }
-
-// HTML 转义，防止 XSS
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 function parseApiError(raw) {
-  // 处理非字符串（如 Error 对象、网络异常）
   if (raw instanceof Error) return t('err.network');
   if (typeof raw !== 'string') return String(raw);
   try {
     const obj = JSON.parse(raw);
     const msg = obj.error || obj.message || raw;
     const lower = msg.toLowerCase().trim();
-    // 精确匹配
     if (ERROR_MESSAGES[lower]) return ERROR_MESSAGES[lower][LANG];
-    // 模糊匹配（仅在错误消息字典中查找）
     for (const key of Object.keys(ERROR_MESSAGES)) {
       if (lower.includes(key)) return ERROR_MESSAGES[key][LANG];
     }
     return msg;
-  } catch(e) {
-    return raw;
-  }
+  } catch(e) { return raw; }
 }
 
-// ── Tab 切换 ──
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+async function readErrorBody(r) { try { return await r.text(); } catch(_) { return ''; } }
+
+function authHeaders() {
+  const h = {'Content-Type':'application/json'};
+  if (sessionToken) h['Authorization'] = 'Bearer ' + sessionToken;
+  return h;
+}
+
+// ── Captcha ──
+const captchas = {};
+function refreshCaptcha(prefix) {
+  const a = Math.floor(Math.random() * 20) + 1;
+  const b = Math.floor(Math.random() * 20) + 1;
+  captchas[prefix] = a + b;
+  document.getElementById(prefix + '-captcha-q').textContent = a + ' + ' + b;
+  document.getElementById(prefix + '-captcha-a').value = '';
+}
+function checkCaptcha(prefix) {
+  return parseInt(document.getElementById(prefix + '-captcha-a').value) === captchas[prefix];
+}
+
+// ── Auth mode switching ──
+function showAuthMode(mode) {
+  ['login','register','lookup'].forEach(m => {
+    document.getElementById('auth-mode-' + m).style.display = m === mode ? '' : 'none';
   });
-});
-
-// 安全读取响应体文本
-async function readErrorBody(r) {
-  try { return await r.text(); } catch(_) { return ''; }
+  refreshCaptcha(mode === 'register' ? 'reg' : mode);
 }
 
-// ── 账户 ──
-async function loadAccount() {
-  const email = document.getElementById('email-input').value.trim();
-  if (!email) return;
-  currentEmail = email;
+// ── Auth actions ──
+async function doLogin() {
+  if (!checkCaptcha('login')) { showMsg('login-msg', t('err.captcha'), true); refreshCaptcha('login'); return; }
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  if (!email || !password) return;
   try {
-    const r = await fetch(API + '/api/v1/account/' + encodeURIComponent(email));
-    if (!r.ok) throw await readErrorBody(r);
-    const d = await r.json();
-    currentUserID = d.id;
-    showAccountInfo(d);
-    loadTier(email);
-    loadTransactions();
-  } catch(e) { showMsg('account-msg', parseApiError(e), true); }
-}
-
-async function ensureAccount() {
-  const email = document.getElementById('email-input').value.trim();
-  if (!email) return;
-  currentEmail = email;
-  try {
-    const r = await fetch(API + '/api/v1/account/ensure', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({email})
+    const r = await fetch(API + '/api/v1/auth/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email, password})
     });
     if (!r.ok) throw await readErrorBody(r);
     const d = await r.json();
+    onLoginSuccess(d.session_token, d.email, d.user_id);
+  } catch(e) { showMsg('login-msg', parseApiError(e), true); refreshCaptcha('login'); }
+}
+
+async function doRegister() {
+  if (!checkCaptcha('reg')) { showMsg('reg-msg', t('err.captcha'), true); refreshCaptcha('reg'); return; }
+  const email = document.getElementById('reg-email').value.trim();
+  const pw = document.getElementById('reg-password').value;
+  const pw2 = document.getElementById('reg-password2').value;
+  if (!email) return;
+  if (pw.length < 6) { showMsg('reg-msg', t('err.password.short'), true); return; }
+  if (pw !== pw2) { showMsg('reg-msg', t('err.password.match'), true); return; }
+  try {
+    const r = await fetch(API + '/api/v1/auth/register', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email, password: pw})
+    });
+    if (!r.ok) throw await readErrorBody(r);
+    showMsg('reg-msg', t('msg.reg.ok'), false);
+  } catch(e) { showMsg('reg-msg', parseApiError(e), true); refreshCaptcha('reg'); }
+}
+
+async function doLookup() {
+  if (!checkCaptcha('lookup')) { showMsg('lookup-msg', t('err.captcha'), true); refreshCaptcha('lookup'); return; }
+  const email = document.getElementById('lookup-email').value.trim();
+  if (!email) return;
+  try {
+    const r = await fetch(API + '/api/v1/auth/lookup', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email})
+    });
+    if (!r.ok) throw await readErrorBody(r);
+    showMsg('lookup-msg', t('msg.lookup.ok'), false);
+  } catch(e) { showMsg('lookup-msg', parseApiError(e), true); refreshCaptcha('lookup'); }
+}
+
+async function doLogout() {
+  try {
+    await fetch(API + '/api/v1/auth/logout', { method:'POST', headers: authHeaders() });
+  } catch(e) {}
+  sessionToken = '';
+  currentEmail = '';
+  currentUserID = '';
+  localStorage.removeItem('sm_session');
+  updateUIState();
+}
+
+function onLoginSuccess(token, email, userID) {
+  sessionToken = token;
+  currentEmail = email;
+  currentUserID = userID;
+  localStorage.setItem('sm_session', token);
+  updateUIState();
+  loadAccountData();
+}
+
+function updateUIState() {
+  const loggedIn = !!sessionToken && !!currentEmail;
+  document.getElementById('auth-section').style.display = loggedIn ? 'none' : '';
+  document.getElementById('logged-in-bar').style.display = loggedIn ? 'flex' : 'none';
+  document.getElementById('main-content').style.display = loggedIn ? '' : 'none';
+  if (loggedIn) {
+    document.getElementById('current-email').textContent = currentEmail;
+  }
+}
+
+// ── Check URL params for activation/verification tokens ──
+async function checkURLTokens() {
+  const params = new URLSearchParams(window.location.search);
+  const activateToken = params.get('activate');
+  const verifyToken = params.get('verify');
+  if (activateToken) {
+    try {
+      const r = await fetch(API + '/api/v1/auth/activate?token=' + encodeURIComponent(activateToken));
+      if (!r.ok) throw await readErrorBody(r);
+      const d = await r.json();
+      onLoginSuccess(d.session_token, d.email, d.user_id);
+      showMsg('login-msg', t('msg.activated'), false);
+    } catch(e) { showMsg('login-msg', parseApiError(e), true); }
+    window.history.replaceState({}, '', window.location.pathname);
+    return;
+  }
+  if (verifyToken) {
+    try {
+      const r = await fetch(API + '/api/v1/auth/verify-identity?token=' + encodeURIComponent(verifyToken));
+      if (!r.ok) throw await readErrorBody(r);
+      const d = await r.json();
+      onLoginSuccess(d.session_token, d.email, d.user_id);
+      showMsg('login-msg', t('msg.verified'), false);
+    } catch(e) { showMsg('login-msg', parseApiError(e), true); }
+    window.history.replaceState({}, '', window.location.pathname);
+    return;
+  }
+}
+
+// ── Restore session ──
+async function restoreSession() {
+  if (!sessionToken) return false;
+  try {
+    const r = await fetch(API + '/api/v1/auth/session', { headers: authHeaders() });
+    if (!r.ok) throw 'expired';
+    const d = await r.json();
+    currentEmail = d.email;
+    currentUserID = d.user_id;
+    updateUIState();
+    loadAccountData();
+    return true;
+  } catch(e) {
+    sessionToken = '';
+    localStorage.removeItem('sm_session');
+    return false;
+  }
+}
+
+// ── Account data loading ──
+async function loadAccountData() {
+  if (!currentEmail) return;
+  try {
+    const r = await fetch(API + '/api/v1/account/' + encodeURIComponent(currentEmail), { headers: authHeaders() });
+    if (!r.ok) return;
+    const d = await r.json();
     currentUserID = d.id;
     showAccountInfo(d);
-    loadTier(email);
+    loadTier(currentEmail);
     loadTransactions();
-    showMsg('account-msg', t('msg.account.created'), false);
-  } catch(e) { showMsg('account-msg', parseApiError(e), true); }
+  } catch(e) {}
 }
 
 function showAccountInfo(d) {
-  document.getElementById('account-info').style.display = '';
-  document.getElementById('credits-section').style.display = '';
   document.getElementById('s-credits').textContent = d.credits || 0;
   document.getElementById('s-settled').textContent = d.settled_credits || 0;
   document.getElementById('s-pending').textContent = d.pending_settlement || 0;
@@ -371,21 +577,22 @@ function showAccountInfo(d) {
 
 async function loadTier(email) {
   try {
-    const r = await fetch(API + '/api/v1/account/' + encodeURIComponent(email) + '/tier');
+    const r = await fetch(API + '/api/v1/account/' + encodeURIComponent(email) + '/tier', { headers: authHeaders() });
     if (!r.ok) return;
     const d = await r.json();
+    const ti = d.tier || {};
     document.getElementById('tier-info').style.display = '';
-    document.getElementById('s-tier').textContent = 'Tier ' + (d.tier || 1);
-    document.getElementById('s-published').textContent = d.published_count || 0;
-    document.getElementById('s-avgrating').textContent = (d.avg_rating || 0).toFixed(1);
-    document.getElementById('s-downloads').textContent = d.total_downloads || 0;
+    document.getElementById('s-tier').textContent = 'Tier ' + (ti.tier || 1);
+    document.getElementById('s-published').textContent = ti.published_count || 0;
+    document.getElementById('s-avgrating').textContent = (ti.avg_rating || 0).toFixed(1);
+    document.getElementById('s-downloads').textContent = ti.total_downloads || 0;
   } catch(e) {}
 }
 
 async function loadTransactions() {
   if (!currentUserID) return;
   try {
-    const r = await fetch(API + '/api/v1/credits/transactions?user_id=' + encodeURIComponent(currentUserID));
+    const r = await fetch(API + '/api/v1/credits/transactions?user_id=' + encodeURIComponent(currentUserID), { headers: authHeaders() });
     if (!r.ok) return;
     const list = await r.json();
     const tbody = document.getElementById('tx-list');
@@ -401,12 +608,12 @@ async function topUp() {
   if (!amount || !currentUserID) return;
   try {
     const r = await fetch(API + '/api/v1/credits/topup', {
-      method:'POST', headers:{'Content-Type':'application/json'},
+      method:'POST', headers: authHeaders(),
       body: JSON.stringify({user_id: currentUserID, amount})
     });
     if (!r.ok) throw await readErrorBody(r);
     showMsg('credits-msg', t('msg.topup.ok'), false);
-    loadAccount();
+    loadAccountData();
   } catch(e) { showMsg('credits-msg', parseApiError(e), true); }
 }
 
@@ -415,73 +622,53 @@ async function withdraw() {
   if (!amount || !currentUserID) return;
   try {
     const r = await fetch(API + '/api/v1/credits/withdraw', {
-      method:'POST', headers:{'Content-Type':'application/json'},
+      method:'POST', headers: authHeaders(),
       body: JSON.stringify({user_id: currentUserID, amount})
     });
     if (!r.ok) throw await readErrorBody(r);
     showMsg('credits-msg', t('msg.withdraw.ok'), false);
-    loadAccount();
+    loadAccountData();
   } catch(e) { showMsg('credits-msg', parseApiError(e), true); }
 }
 
-// ── 审核 ──
+// ── Review ──
 async function loadPendingReview() {
-  // 简化：使用搜索 API 获取 trial 状态的 Skill
   try {
-    const r = await fetch(API + '/api/v1/skillmarket/search?q=&top_n=50');
+    const r = await fetch(API + '/api/v1/skillmarket/search?q=&top_n=50', { headers: authHeaders() });
     if (!r.ok) return;
     const data = await r.json();
     const list = data.results || data || [];
     const tbody = document.getElementById('review-list');
     tbody.innerHTML = '';
     const pending = (list || []).filter(s => s.status === 'pending_review' || s.status === 'trial');
-    if (pending.length === 0) {
-      document.getElementById('review-empty').style.display = '';
-      return;
-    }
+    if (pending.length === 0) { document.getElementById('review-empty').style.display = ''; return; }
     document.getElementById('review-empty').style.display = 'none';
     pending.forEach(s => {
-      tbody.innerHTML += `<tr>
-        <td>${esc(s.name)}</td><td>${esc(s.author||'-')}</td>
-        <td>${(s.avg_rating||0).toFixed(1)}</td><td>${s.rating_count||0}</td>
-        <td>
-          <button class="btn btn-success" onclick="approveSkill('${esc(s.id)}')">${t('review.approve')}</button>
-          <button class="btn btn-danger" onclick="rejectSkill('${esc(s.id)}')">${t('review.reject')}</button>
-        </td>
-      </tr>`;
+      tbody.innerHTML += `<tr><td>${esc(s.name)}</td><td>${esc(s.author||'-')}</td><td>${(s.avg_rating||0).toFixed(1)}</td><td>${s.rating_count||0}</td><td><button class="btn btn-success" onclick="approveSkill('${esc(s.id)}')">${t('review.approve')}</button> <button class="btn btn-danger" onclick="rejectSkill('${esc(s.id)}')">${t('review.reject')}</button></td></tr>`;
     });
   } catch(e) {}
 }
 
 async function approveSkill(id) {
-  try {
-    const r = await fetch(API + '/api/v1/admin/skillmarket/' + id + '/approve', {method:'POST'});
-    if (!r.ok) throw await readErrorBody(r);
-    loadPendingReview();
-  } catch(e) { alert(parseApiError(e)); }
+  try { const r = await fetch(API+'/api/v1/admin/skillmarket/'+id+'/approve',{method:'POST',headers:authHeaders()}); if(!r.ok) throw await readErrorBody(r); loadPendingReview(); } catch(e){alert(parseApiError(e));}
 }
-
 async function rejectSkill(id) {
-  try {
-    const r = await fetch(API + '/api/v1/admin/skillmarket/' + id + '/reject', {method:'POST'});
-    if (!r.ok) throw await readErrorBody(r);
-    loadPendingReview();
-  } catch(e) { alert(parseApiError(e)); }
+  try { const r = await fetch(API+'/api/v1/admin/skillmarket/'+id+'/reject',{method:'POST',headers:authHeaders()}); if(!r.ok) throw await readErrorBody(r); loadPendingReview(); } catch(e){alert(parseApiError(e));}
 }
 
-// ── 购买记录 & 退款 ──
+// ── Purchases ──
 async function loadPurchases() {
   const filter = document.getElementById('purchase-filter').value.trim();
   try {
     let url = API + '/api/v1/admin/purchases';
     if (filter) url += '?filter=' + encodeURIComponent(filter);
-    const r = await fetch(url);
+    const r = await fetch(url, { headers: authHeaders() });
     if (!r.ok) return;
     const list = await r.json();
     const tbody = document.getElementById('purchase-list');
     tbody.innerHTML = '';
     (list || []).forEach(p => {
-      const refundBtn = p.status === 'active' ? `<button class="btn btn-danger" onclick="refundPurchase('${esc(p.id)}')">${t('purchase.refund')}</button>` : `<span class="badge badge-rejected">${t('purchase.refunded')}</span>`;
+      const refundBtn = p.status === 'active' ? `<button class="btn btn-danger" onclick="refundPurchase('${esc(p.id)}')">${t('purchase.refund')}</button>` : `<span>${t('purchase.refunded')}</span>`;
       tbody.innerHTML += `<tr><td>${esc(p.buyer_email)}</td><td>${esc(p.skill_id)}</td><td>${esc(String(p.amount_paid))}</td><td>${esc(p.purchase_type)}</td><td>${esc(p.status)}</td><td>${refundBtn}</td></tr>`;
     });
   } catch(e) {}
@@ -491,14 +678,11 @@ async function refundPurchase(purchaseID) {
   const reason = prompt(t('msg.refund.reason'));
   if (!reason) return;
   try {
-    const r = await fetch(API + '/api/v1/admin/refund', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({purchase_record_id: purchaseID, reason})
-    });
-    if (!r.ok) throw await readErrorBody(r);
+    const r = await fetch(API+'/api/v1/admin/refund',{method:'POST',headers:authHeaders(),body:JSON.stringify({purchase_record_id:purchaseID,reason})});
+    if(!r.ok) throw await readErrorBody(r);
     alert(t('msg.refund.ok'));
     loadPurchases();
-  } catch(e) { alert(parseApiError(e)); }
+  } catch(e){alert(parseApiError(e));}
 }
 
 // ── API Key ──
@@ -506,11 +690,11 @@ async function loadAPIKeyStatus() {
   const skillID = document.getElementById('apikey-skill-id').value.trim();
   if (!skillID) return;
   try {
-    const r = await fetch(API + '/api/v1/skillmarket/' + skillID + '/apikeys/status');
-    if (!r.ok) throw await readErrorBody(r);
+    const r = await fetch(API+'/api/v1/skillmarket/'+skillID+'/apikeys/status',{headers:authHeaders()});
+    if(!r.ok) throw await readErrorBody(r);
     const d = await r.json();
-    document.getElementById('apikey-status').innerHTML = `<div class="msg msg-ok">${t('apikey.stock')}: ${esc(d.stock_status || '-')} | ${t('apikey.available')}: ${d.available || 0} | ${t('apikey.assigned')}: ${d.assigned || 0}</div>`;
-  } catch(e) { showMsg('apikey-msg', parseApiError(e), true); }
+    document.getElementById('apikey-status').innerHTML = `<div class="msg msg-ok">${t('apikey.stock')}: ${esc(d.stock_status||'-')} | ${t('apikey.available')}: ${d.available||0} | ${t('apikey.assigned')}: ${d.assigned||0}</div>`;
+  } catch(e){showMsg('apikey-msg',parseApiError(e),true);}
 }
 
 async function uploadAPIKeys() {
@@ -518,52 +702,51 @@ async function uploadAPIKeys() {
   const keys = document.getElementById('apikey-bulk').value.trim();
   if (!skillID || !keys) return;
   try {
-    const r = await fetch(API + '/api/v1/skillmarket/' + skillID + '/apikeys/upload', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({email: currentEmail, keys: keys.split('\n').filter(k=>k.trim())})
-    });
-    if (!r.ok) throw await readErrorBody(r);
-    showMsg('apikey-msg', t('msg.apikey.ok'), false);
+    const r = await fetch(API+'/api/v1/skillmarket/'+skillID+'/apikeys/upload',{method:'POST',headers:authHeaders(),body:JSON.stringify({email:currentEmail,keys:keys.split('\n').filter(k=>k.trim())})});
+    if(!r.ok) throw await readErrorBody(r);
+    showMsg('apikey-msg',t('msg.apikey.ok'),false);
     loadAPIKeyStatus();
-  } catch(e) { showMsg('apikey-msg', parseApiError(e), true); }
+  } catch(e){showMsg('apikey-msg',parseApiError(e),true);}
 }
 
-// ── 下架 ──
 async function withdrawSkill(id) {
   if (!confirm(t('msg.withdraw.confirm'))) return;
   try {
-    const r = await fetch(API + '/api/v1/skillmarket/' + id + '/withdraw', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({email: currentEmail})
-    });
-    if (!r.ok) throw await readErrorBody(r);
+    const r = await fetch(API+'/api/v1/skillmarket/'+id+'/withdraw',{method:'POST',headers:authHeaders(),body:JSON.stringify({email:currentEmail})});
+    if(!r.ok) throw await readErrorBody(r);
     alert(t('msg.withdrawn.ok'));
-  } catch(e) { alert(parseApiError(e)); }
+  } catch(e){alert(parseApiError(e));}
 }
 
-// ── 配置 ──
 async function saveTrialConfig() {
   const days = parseInt(document.getElementById('cfg-trial-days').value);
   const threshold = parseInt(document.getElementById('cfg-threshold').value);
   try {
-    const r = await fetch(API + '/api/v1/admin/config/trial', {
-      method:'PUT', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({trial_duration_days: days, auto_publish_threshold: threshold})
-    });
-    if (!r.ok) throw await readErrorBody(r);
-    showMsg('config-msg', t('msg.config.ok'), false);
-  } catch(e) { showMsg('config-msg', parseApiError(e), true); }
+    const r = await fetch(API+'/api/v1/admin/config/trial',{method:'PUT',headers:authHeaders(),body:JSON.stringify({trial_duration_days:days,auto_publish_threshold:threshold})});
+    if(!r.ok) throw await readErrorBody(r);
+    showMsg('config-msg',t('msg.config.ok'),false);
+  } catch(e){showMsg('config-msg',parseApiError(e),true);}
 }
 
-// ── helpers ──
+// ── Helpers ──
 function showMsg(id, msg, isErr) {
   const el = document.getElementById(id);
   el.className = 'msg ' + (isErr ? 'msg-err' : 'msg-ok');
   el.textContent = msg;
-  setTimeout(() => { el.textContent = ''; el.className = ''; }, 5000);
+  setTimeout(() => { el.textContent = ''; el.className = ''; }, 6000);
 }
 
-// ── i18n DOM 初始化 ──
+// ── Tab switching ──
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+  });
+});
+
+// ── i18n ──
 function applyI18n() {
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.getAttribute('data-i18n');
@@ -574,7 +757,28 @@ function applyI18n() {
     if (I18N[key]) el.placeholder = I18N[key][LANG];
   });
 }
-applyI18n();
+
+// ── Init ──
+async function init() {
+  applyI18n();
+  refreshCaptcha('login');
+  refreshCaptcha('reg');
+  refreshCaptcha('lookup');
+  // Enter key support
+  document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('login-captcha-a').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('reg-password2').addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
+  document.getElementById('reg-captcha-a').addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
+  document.getElementById('lookup-captcha-a').addEventListener('keydown', e => { if (e.key === 'Enter') doLookup(); });
+  await checkURLTokens();
+  if (!sessionToken) {
+    updateUIState();
+  } else {
+    const ok = await restoreSession();
+    if (!ok) updateUIState();
+  }
+}
+init();
 </script>
 </body>
 </html>

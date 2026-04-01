@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/swarm"
 )
 
 func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress ProgressCallback) string {
@@ -307,6 +309,36 @@ func (h *IMMessageHandler) toolOpen(args map[string]interface{}) string {
 		return fmt.Sprintf("已用默认浏览器打开: %s", target)
 	}
 	return fmt.Sprintf("已用默认程序打开: %s", target)
+}
+
+// ---------------------------------------------------------------------------
+// PDF Generation Tool
+// ---------------------------------------------------------------------------
+
+func (h *IMMessageHandler) toolGeneratePDF(args map[string]interface{}) string {
+	content, _ := args["content"].(string)
+	if content == "" {
+		return "缺少 content 参数（Markdown 格式的文档内容）"
+	}
+
+	title, _ := args["title"].(string)
+	docType, _ := args["doc_type"].(string)
+	outputPath, _ := args["output_path"].(string)
+	if outputPath != "" {
+		outputPath = resolvePath(outputPath)
+	}
+
+	absPath, err := swarm.GenerateToFile(content, title, docType, outputPath)
+	if err != nil {
+		return err.Error()
+	}
+
+	info, _ := os.Stat(absPath)
+	size := int64(0)
+	if info != nil {
+		size = info.Size()
+	}
+	return fmt.Sprintf("已生成 PDF: %s（%d 字节）", absPath, size)
 }
 
 // ---------------------------------------------------------------------------

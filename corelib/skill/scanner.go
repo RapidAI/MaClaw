@@ -73,12 +73,22 @@ func PrimarySkillsDir() (string, error) {
 
 // SkillScanRootsWithExternal returns SkillScanRoots() plus the given
 // external directories appended at the end (lower priority).
+// Duplicates of built-in roots are silently skipped.
 func SkillScanRootsWithExternal(externalDirs []string) []string {
 	roots := SkillScanRoots()
+	seen := make(map[string]bool, len(roots))
+	for _, r := range roots {
+		seen[filepath.Clean(r)] = true
+	}
 	for _, d := range externalDirs {
 		d = strings.TrimSpace(d)
-		if d != "" {
-			roots = append(roots, d)
+		if d == "" {
+			continue
+		}
+		cleaned := filepath.Clean(d)
+		if !seen[cleaned] {
+			roots = append(roots, cleaned)
+			seen[cleaned] = true
 		}
 	}
 	return roots
@@ -124,7 +134,9 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 			continue
 		}
 		subDir := filepath.Join(dir, entry.Name())
-		for _, name := range []string{"skill.md", "skill.yaml", "skill.yml"} {
+		// Check for skill.yaml/yml (parseable by ScanSkillDir) first,
+		// then fall back to skill.md as a valid marker.
+		for _, name := range []string{"skill.yaml", "skill.yml", "skill.md"} {
 			if _, err := os.Stat(filepath.Join(subDir, name)); err == nil {
 				count++
 				break

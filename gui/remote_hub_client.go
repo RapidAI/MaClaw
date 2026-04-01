@@ -784,6 +784,8 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleSessionScreenshot(msg)
 		case "im.user_message":
 			go c.handleIMUserMessage(msg)
+		case "im.cancel_session":
+			go c.handleIMCancelSession(msg)
 		case "im.gateway_reply":
 			go c.handleIMGatewayReply(msg)
 		case "im.gateway_claim_result":
@@ -958,6 +960,15 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 			c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
 		}
 	}()
+}
+
+// handleIMCancelSession handles im.cancel_session from Hub — cancels the
+// currently running agent loop so the user can start a new task.
+func (c *RemoteHubClient) handleIMCancelSession(msg inboundHubEnvelope) {
+	log.Printf("[hub-client] im.cancel_session received")
+	if c.imHandler != nil {
+		_, _ = c.imHandler.CancelCurrentSession()
+	}
 }
 
 // handleIMGatewayReply handles im.gateway_reply from Hub — delivers the
