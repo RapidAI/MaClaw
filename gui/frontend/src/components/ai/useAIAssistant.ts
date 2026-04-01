@@ -78,6 +78,10 @@ export function useAIAssistant() {
     const sendingRef = useRef(false);
     // Track the current streaming message ID so token events know where to append.
     const streamingMsgIdRef = useRef<string | null>(null);
+    // Generation counter: incremented on each sendMessage call. The finally
+    // block only resets sendingRef when its generation matches the current one,
+    // preventing a cancelled send's cleanup from clobbering a new send.
+    const sendGenRef = useRef(0);
     // Flag: when true, the next doFetchNews completion will scroll to top.
     const scrollOnNextNewsRef = useRef(true); // true on mount (app restart)
 
@@ -221,6 +225,7 @@ export function useAIAssistant() {
     const sendMessage = useCallback(async (text: string) => {
         if (text.trim() === "" || sendingRef.current) return;
         sendingRef.current = true;
+        const gen = ++sendGenRef.current;
         setSending(true);
         setStreaming(true);
 
@@ -303,9 +308,13 @@ export function useAIAssistant() {
             };
             setMessages(prev => [...prev, errorMsg]);
         } finally {
-            sendingRef.current = false;
-            setSending(false);
-            setStreaming(false);
+            // Only reset sending state if this is still the active send.
+            // A cancelled send should not clobber a newer send's state.
+            if (sendGenRef.current === gen) {
+                sendingRef.current = false;
+                setSending(false);
+                setStreaming(false);
+            }
             // Clean up empty assistant bubbles left over from tool-only rounds,
             // but keep the last assistant message (it may carry structured data
             // like fields/actions even with empty text content).
@@ -359,6 +368,9 @@ export function useAIAssistant() {
     }, []);
 
     const cancelSession = useCallback(async () => {
+        // Bump generation so the old sendMessage's finally block won't
+        // clobber state after we reset it here.
+        sendGenRef.current++;
         try {
             await CancelAIAssistantSession();
         } catch (e) {

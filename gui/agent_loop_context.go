@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"sync"
 	"time"
@@ -69,6 +70,7 @@ type LoopContext struct {
 	ContinueC chan int         // receive additional rounds (Background only)
 	StatusC   chan StatusEvent // send status events to Chat Loop
 	CancelC   chan struct{}    // signal to stop the loop
+	DoneC     chan struct{}    // closed when runAgentLoop exits; used to wait for cleanup
 
 	HTTPClient *http.Client // chat or task client
 	SessionID  string       // associated remote session (if any)
@@ -85,6 +87,7 @@ func NewLoopContext(id string, maxIter int, httpClient *http.Client) *LoopContex
 		maxIterations: maxIter,
 		status:        "running",
 		CancelC:       make(chan struct{}),
+		DoneC:         make(chan struct{}),
 		HTTPClient:    httpClient,
 		StartedAt:     time.Now(),
 	}
@@ -103,6 +106,7 @@ func NewBackgroundLoopContext(id string, slotKind SlotKind, description string,
 		ContinueC:     make(chan int, 1),
 		StatusC:       statusC,
 		CancelC:       make(chan struct{}),
+		DoneC:         make(chan struct{}),
 		HTTPClient:    httpClient,
 		StartedAt:     time.Now(),
 	}
@@ -182,6 +186,33 @@ func (c *LoopContext) IsCancelled() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// Context returns a context.Context that is cancelled when CancelC is closed.
+// This allows passing cancellation into HTTP requests and other context-aware APIs.
+// The returned cancel func MUST be called when the context is no longer needed
+// to avoid goroutine leaks.
+func (c *LoopContext) Context() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-c.CancelC:
+			cancel()
+		case <-ctx.Done():
+			// caller cancelled — goroutine exits cleanly
+		}
+	}()
+	return ctx, cancel
+}
+
+// Done marks the loop as finished. Must be called exactly once when
+// runAgentLoop exits.
+func (c *LoopContext) Done() {
+	select {
+	case <-c.DoneC:
+	default:
+		close(c.DoneC)
 	}
 }
 

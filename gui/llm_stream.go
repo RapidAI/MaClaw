@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,7 +81,10 @@ func newToolCallFilter(downstream TokenCallback) tokenStreamFilter {
 
 // ---------------------------------------------------------------------------
 // doLLMRequestStream sends a streaming LLM request.
+// The ctx parameter carries cancellation from the LoopContext so that
+// in-flight HTTP requests are aborted promptly when the user cancels.
 func (h *IMMessageHandler) doLLMRequestStream(
+	reqCtx context.Context,
 	cfg MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
@@ -91,9 +95,9 @@ func (h *IMMessageHandler) doLLMRequestStream(
 		return h.doLLMRequest(cfg, messages, tools, httpClient)
 	}
 	if cfg.Protocol == "anthropic" {
-		return h.doAnthropicLLMRequestStream(cfg, messages, tools, httpClient, onToken)
+		return h.doAnthropicLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, onToken)
 	}
-	return h.doOpenAILLMRequestStream(cfg, messages, tools, httpClient, onToken)
+	return h.doOpenAILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, onToken)
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +129,7 @@ type openAIStreamChunk struct {
 }
 
 func (h *IMMessageHandler) doOpenAILLMRequestStream(
+	reqCtx context.Context,
 	cfg MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
@@ -147,7 +152,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	}
 
 	data, _ := json.Marshal(reqBody)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -313,6 +318,7 @@ func parseNonStreamOpenAIResponse(resp *http.Response, requestBody []byte) (*llm
 // ---------------------------------------------------------------------------
 
 func (h *IMMessageHandler) doAnthropicLLMRequestStream(
+	reqCtx context.Context,
 	cfg MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
@@ -339,7 +345,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	}
 
 	data, _ := json.Marshal(reqBody)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}

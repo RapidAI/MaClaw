@@ -147,6 +147,7 @@ type IMMessageHandler struct {
 	// runAgentLoop. Used by tools (e.g. set_max_iterations) to interact
 	// with the active loop. Set at the start of runAgentLoop, cleared at end.
 	currentLoopCtx *LoopContext
+	chatLoopMu     sync.Mutex // serializes chat loop execution; prevents overlapping loops
 
 	// Background loop manager and session monitor (lazily initialized via setters).
 	bgManager      *BackgroundLoopManager
@@ -667,6 +668,12 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 	if h.bgManager != nil {
 		loopCtx.StatusC = h.bgManager.statusC
 	}
+
+	// Serialize chat loops: cancel any lingering previous loop and wait for
+	// it to release the mutex before starting a new one.
+	h.chatLoopMu.Lock()
+	defer h.chatLoopMu.Unlock()
+
 	return h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, onToken, onNewRound, msg.MinIterations, msg.Platform)
 }
 
@@ -792,12 +799,21 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 // ---------------------------------------------------------------------------
 
 // CancelCurrentSession cancels the currently running chat session.
-// Returns an error if no session is currently running.
+// It signals the loop to stop and waits (up to 10s) for it to exit so that
+// a subsequent SendAIAssistantMessage call won't overlap with the old loop.
 func (h *IMMessageHandler) CancelCurrentSession() error {
-	if h.currentLoopCtx == nil {
+	ctx := h.currentLoopCtx
+	if ctx == nil {
 		return fmt.Errorf("no active session to cancel")
 	}
-	h.currentLoopCtx.Cancel()
+	ctx.Cancel()
+	// Wait for the loop goroutine to finish so the chatLoopMu is released
+	// before the caller sends a new message.
+	select {
+	case <-ctx.DoneC:
+	case <-time.After(10 * time.Second):
+		log.Printf("[CancelCurrentSession] timed out waiting for loop to exit")
+	}
 	return nil
 }
 
@@ -846,7 +862,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	h.currentLoopCtx = ctx
 	h.lastUserText = userText
 	ctx.Platform = platform
-	defer func() { h.currentLoopCtx = nil; h.lastUserText = "" }()
+	defer func() { h.currentLoopCtx = nil; h.lastUserText = ""; ctx.Done() }()
+
+	// Derive a context.Context from the LoopContext's CancelC so that
+	// in-flight HTTP requests (LLM streaming) are aborted on cancel.
+	loopCtx, loopCtxCancel := ctx.Context()
+	defer loopCtxCancel()
 
 	// --- Initialize first-layer Harness modules (optional, nil-safe) ---
 	var loopGoalAnchor *GoalAnchor
@@ -1131,24 +1152,40 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if onNewRound != nil && iteration > 0 {
 			onNewRound()
 		}
-		resp, err := h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
+		resp, err := h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
 		// Retry on timeout / temporary network errors.
 		// When AdaptiveRetry is available, use it for smarter classification;
 		// otherwise fall back to the existing isRetryableLLMError logic.
 		if err != nil {
+			// If cancelled, don't retry — exit immediately.
+			if ctx.IsCancelled() {
+				ctx.SetState("stopped")
+				break
+			}
 			if loopAdaptiveRetry != nil {
 				category := loopAdaptiveRetry.Classify("llm_request", err)
 				decision := loopAdaptiveRetry.Decide("llm_request", category, 0)
 				loopAdaptiveRetry.RecordFailure("llm_request", category, decision)
-				if decision.Action == "retry" {
+				if decision.Action == "retry" && !ctx.IsCancelled() {
 					log.Printf("[LLM] AdaptiveRetry: %s 错误，%v 后重试: %v", string(category), decision.Delay, err)
-					time.Sleep(decision.Delay)
-					resp, err = h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
+					// Cancellation-aware sleep: abort wait if user cancels.
+					select {
+					case <-time.After(decision.Delay):
+					case <-ctx.CancelC:
+					}
+					if !ctx.IsCancelled() {
+						resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+					}
 				}
-			} else if isRetryableLLMError(err) {
+			} else if isRetryableLLMError(err) && !ctx.IsCancelled() {
 				log.Printf("[LLM] 首次请求超时/网络错误，2s 后重试: %v", err)
-				time.Sleep(2 * time.Second)
-				resp, err = h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
+				select {
+				case <-time.After(2 * time.Second):
+				case <-ctx.CancelC:
+				}
+				if !ctx.IsCancelled() {
+					resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+				}
 			}
 		}
 		// Accumulate token usage stats
@@ -1174,6 +1211,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
 		}
 		if err != nil {
+			// If the error is due to cancellation, return a clean message
+			// instead of an LLM error.
+			if ctx.IsCancelled() {
+				ctx.SetState("stopped")
+				h.memory.save(userID, trimHistory(history))
+				return &IMAgentResponse{Text: "⏹️ 任务已取消。"}
+			}
 			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol)}
 		}
 		if len(resp.Choices) == 0 {
@@ -1246,6 +1290,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		var pendingFiles []pendingFile
 		screenshotAlreadySent := false
 		for _, tc := range choice.Message.ToolCalls {
+			// Check cancellation between tool calls so we don't keep
+			// executing tools after the user clicked cancel.
+			if ctx.IsCancelled() {
+				ctx.SetState("stopped")
+				h.memory.save(userID, trimHistory(history))
+				return &IMAgentResponse{Text: "⏹️ 任务已取消。"}
+			}
 			sendToolProgress(fmt.Sprintf("⚙️ 正在执行工具: %s", tc.Function.Name))
 			// When debug is off, suppress intermediate progress from tool execution too.
 			toolOnProgress := onProgress
@@ -1446,6 +1497,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 	}
 
+	// When the loop exits due to cancellation, return a clean message
+	// and skip the bonus round / max-iterations logic.
+	if ctx.IsCancelled() {
+		h.memory.save(userID, trimHistory(history))
+		return &IMAgentResponse{Text: "⏹️ 任务已取消。"}
+	}
+
 	// When rounds are exhausted but coding sessions are still active,
 	// auto-continue one extra round so the agent can check session status,
 	// then ask the user whether to keep watching.
@@ -1457,7 +1515,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if onNewRound != nil {
 			onNewRound()
 		}
-		bonusResp, err := h.doLLMRequestStream(cfg, conversation, tools, httpClient, onToken)
+		bonusResp, err := h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
 		// Accumulate token usage stats for bonus round
 		if bonusResp != nil {
 			var input, output int
