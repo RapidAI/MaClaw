@@ -150,7 +150,7 @@ func buildClaudeEnv(cfg corelib.AppConfig, m *corelib.ModelConfig, projectDir st
 		// Write settings.json unless 百度千帆 (handled below with different URL)
 		lowerName := strings.ToLower(m.ModelName)
 		if lowerName != "百度千帆" && lowerName != "qianfan" {
-			if err := configfile.WriteClaudeSettings(m.ApiKey, m.ModelUrl, m.ModelId); err != nil {
+			if err := configfile.WriteClaudeProviderSettings(m.ModelName, m.ApiKey, m.ModelUrl, m.ModelId); err != nil {
 				fmt.Fprintf(os.Stderr, "[claude-config] failed to write settings.json: %v\n", err)
 			}
 		}
@@ -169,7 +169,7 @@ func buildClaudeEnv(cfg corelib.AppConfig, m *corelib.ModelConfig, projectDir st
 		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 		env["API_TIMEOUT_MS"] = "600000"
 		// Also write settings.json for 百度千帆
-		if err := configfile.WriteClaudeSettings(m.ApiKey, "https://qianfan.baidubce.com/anthropic/coding", modelID); err != nil {
+		if err := configfile.WriteClaudeProviderSettings(m.ModelName, m.ApiKey, "https://qianfan.baidubce.com/anthropic/coding", modelID); err != nil {
 			fmt.Fprintf(os.Stderr, "[claude-config] failed to write settings.json: %v\n", err)
 		}
 	}

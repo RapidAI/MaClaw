@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,10 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
 // MaclawLLMProvider, MaclawLLMConfig — see corelib_aliases.go
+
+const codegenProviderName = "CodeGen"
 
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []MaclawLLMProvider {
@@ -72,6 +78,12 @@ func (a *App) GetMaclawLLMProviders() struct {
 			if cl, ok := defaultCtx[providers[i].Name]; ok {
 				providers[i].ContextLength = cl
 			}
+		}
+		if providers[i].Name == codegenProviderName && providers[i].AuthType == "sso" {
+			providers[i].Protocol = "openai"
+			providers[i].URL = strings.TrimRight(strings.TrimSpace(providers[i].URL), "/")
+			providers[i].URL = strings.TrimSuffix(providers[i].URL, "/anthropic")
+			continue
 		}
 		// Keep preset provider URLs in sync (handles port changes etc.)
 		if !providers[i].IsCustom {
@@ -476,7 +488,9 @@ func (a *App) testAnthropicLLM(url, key, model, userAgent string) (string, error
 	}
 	data, _ := json.Marshal(reqBody)
 
-	endpoint := url + "/v1/messages"
+	// If the URL already ends with /v1, append /messages directly;
+	// otherwise append /v1/messages (standard Anthropic base URL).
+	endpoint := corelib.AnthropicMessagesEndpoint(url)
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
@@ -484,9 +498,7 @@ func (a *App) testAnthropicLLM(url, key, model, userAgent string) (string, error
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if key != "" {
-		req.Header.Set("x-api-key", key)
-	}
+	corelib.SetAnthropicAuthHeaders(req, key)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -598,7 +610,7 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 		"max_tokens": 20,
 	}
 	data, _ := json.Marshal(reqBody)
-	endpoint := baseURL + "/v1/messages"
+	endpoint := corelib.AnthropicMessagesEndpoint(baseURL)
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return false
@@ -606,9 +618,7 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if key != "" {
-		req.Header.Set("x-api-key", key)
-	}
+	corelib.SetAnthropicAuthHeaders(req, key)
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -691,6 +701,9 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	if err := a.ensureOAuthToken(); err != nil {
 		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
 	}
+	if err := a.ensureCodeGenToken(); err != nil {
+		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
+	}
 
 	llmCfg := a.GetMaclawLLMConfig()
 	baseURL := strings.TrimRight(strings.TrimSpace(llmCfg.URL), "/")
@@ -705,7 +718,8 @@ func (a *App) PingMaclawLLM() MaclawLLMStatus {
 	log.Printf("[LLM] PingMaclawLLM: agent_type=%q user_agent=%q", llmCfg.AgentType, ua)
 
 	if protocol == "anthropic" {
-		online, err := maclawAnthropicProbe(baseURL+"/v1/messages", key, ua)
+		probeEndpoint := corelib.AnthropicMessagesEndpoint(baseURL)
+		online, err := maclawAnthropicProbe(probeEndpoint, key, ua)
 		if err == nil {
 			return MaclawLLMStatus{Online: online, Configured: true}
 		}
@@ -755,7 +769,7 @@ func maclawLLMProbe(endpoint, key, userAgent string) (bool, error) {
 }
 
 // maclawAnthropicProbe sends a GET request to the Anthropic endpoint with
-// the x-api-key header to verify connectivity.
+// the x-api-key and Authorization Bearer headers to verify connectivity.
 func maclawAnthropicProbe(endpoint, key, userAgent string) (bool, error) {
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -763,9 +777,7 @@ func maclawAnthropicProbe(endpoint, key, userAgent string) (bool, error) {
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if key != "" {
-		req.Header.Set("x-api-key", key)
-	}
+	corelib.SetAnthropicAuthHeaders(req, key)
 
 	resp, err := maclawLLMPingClient.Do(req)
 	if err != nil {
@@ -880,3 +892,620 @@ func (a *App) ResetLLMTokenUsage(provider string) error {
 	}
 	return a.SaveConfig(cfg)
 }
+
+// ---------------------------------------------------------------------------
+// CodeGen SSO — TigerClaw 品牌企业 SSO 集成
+// ---------------------------------------------------------------------------
+
+// shouldSkipCodeGenSSO returns true when the given brand ID is not "qianxin",
+// meaning all CodeGen SSO logic should be skipped.
+func shouldSkipCodeGenSSO(brandID string) bool {
+	return brandID != "qianxin"
+}
+
+// ensureCodeGenToken 检查 CodeGen SSO token 是否有效。
+// 1. 非 qianxin 品牌直接返回 nil
+// 2. 查找 AuthType=="sso" 的 CodeGen provider
+// 3. TokenExpiresAt > 0 且未过期 → 返回 nil
+// 4. TokenExpiresAt > 0 且即将过期 → 尝试 RefreshCodeGenToken
+//    a. 刷新成功 → 更新 provider + WriteAllToolConfigs + 持久化
+//    b. 刷新失败 → 返回 "认证已过期" 错误
+// 5. TokenExpiresAt == 0 → ValidateCodeGenToken(API 调用验证)
+//    a. 有效 → 返回 nil
+//    b. 无效 → 返回 "认证已失效" 错误
+func (a *App) ensureCodeGenToken() error {
+	// 1. 品牌检查：非 qianxin 直接返回
+	if shouldSkipCodeGenSSO(brand.Current().ID) {
+		return nil
+	}
+
+	// 2. 查找 AuthType=="sso" 的 CodeGen provider
+	data := a.GetMaclawLLMProviders()
+	providerIdx := -1
+	var provider MaclawLLMProvider
+	for i, p := range data.Providers {
+		if p.Name == codegenProviderName && p.AuthType == "sso" {
+			providerIdx = i
+			provider = p
+			break
+		}
+	}
+	if providerIdx < 0 {
+		// 没有 SSO provider，跳过校验
+		return nil
+	}
+
+	// 3 & 4. TokenExpiresAt > 0: 检查是否需要刷新
+	if provider.TokenExpiresAt > 0 {
+		if !oauth.NeedsRefreshCodeGen(provider) {
+			return nil // token 仍然有效
+		}
+		// 即将过期 → 尝试静默刷新
+		if provider.RefreshToken == "" {
+			return fmt.Errorf("CodeGen 认证已过期，请重新进行企业 SSO 登录")
+		}
+		result, err := oauth.RefreshCodeGenToken(provider.RefreshToken)
+		if err != nil {
+			log.Printf("[CodeGen] token refresh failed: %v", err)
+			return fmt.Errorf("CodeGen 认证已过期，请重新进行企业 SSO 登录")
+		}
+		// 刷新成功 → 更新 provider 字段
+		updated := oauth.ApplyTokenResult(provider, result)
+		data.Providers[providerIdx] = updated
+		// 持久化到 config.json
+		if err := a.SaveMaclawLLMProviders(data.Providers, data.Current); err != nil {
+			log.Printf("[CodeGen] save refreshed token failed: %v", err)
+			return fmt.Errorf("CodeGen 认证刷新成功但保存失败: %w", err)
+		}
+		// 同步更新所有工具配置
+		tcResult := configfile.WriteAllToolConfigs(configfile.ToolConfigParams{
+			Token:            updated.Key,
+			BaseURL:          updated.URL,
+			AnthropicBaseURL: codegenAnthropicBaseURL(updated.URL),
+			ModelID:          updated.Model,
+			ProviderName:     codegenProviderName,
+		})
+		for _, f := range tcResult.Failed {
+			log.Printf("[CodeGen] WriteAllToolConfigs: %s failed: %v", f.Tool, f.Error)
+		}
+		// 同步更新编程工具模型列表中 CodeGen 条目的 api_key
+		if cfg, loadErr := a.LoadConfig(); loadErr == nil {
+			toolConfigs := []*ToolConfig{
+				&cfg.Claude, &cfg.Codex, &cfg.Opencode,
+				&cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
+			}
+			changed := false
+			for _, tc := range toolConfigs {
+				for i, m := range tc.Models {
+					if m.ModelName == codegenProviderName && m.ApiKey != updated.Key {
+						tc.Models[i].ApiKey = updated.Key
+						changed = true
+					}
+				}
+			}
+			if changed {
+				_ = a.SaveConfig(cfg)
+			}
+		}
+		return nil
+	}
+
+	// 5. TokenExpiresAt == 0 → 用 API 调用验证 token 有效性
+	if provider.TokenExpiresAt == 0 && provider.Key != "" {
+		if !oauth.ValidateCodeGenToken(provider.Key) {
+			return fmt.Errorf("CodeGen 认证已失效，请重新进行企业 SSO 登录")
+		}
+	}
+	return nil
+}
+
+// CodeGenSSOInfo 是 StartCodeGenSSO 的返回结果，包含 SSO 认证成功后的关键信息。
+type CodeGenSSOInfo struct {
+	// Message 是面向用户的成功/警告消息。
+	Message string `json:"message"`
+	// Email 是从 id_token 解析出的用户邮件地址，用于自动注册 Hub。
+	Email string `json:"email"`
+}
+
+// StartCodeGenSSO 执行企业 SSO 扫码登录流程，成功后：
+//  1. 将 "CodeGen" 服务商 upsert 到 MaClaw LLM providers 列表并设为当前服务商
+//  2. 将认证信息写入 ~/.claude/settings.json 供 TigerClaw Code 使用
+//  3. 返回用户 email（从 SSO 解析），供前端自动注册 Hub
+//
+// 仅在 TigerClaw 品牌（oem_qianxin）下的 Onboarding 第 1 步调用。
+func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
+	// 1. 启动扫码登录流程，弹出浏览器完成企业 SSO 登录
+	result, err := oauth.RunCodeGenSSOFlow()
+	if err != nil {
+		return CodeGenSSOInfo{}, fmt.Errorf("SSO 认证失败: %w", err)
+	}
+
+	// 2. 构造 CodeGen provider 条目并 upsert 到列表
+	data := a.GetMaclawLLMProviders()
+	updatedProviders := upsertCodeGenProvider(data.Providers, result)
+
+	// 3. 保存到 MaClaw 配置（~/.maclaw/config.json）
+	if err := a.SaveMaclawLLMProviders(updatedProviders, codegenProviderName); err != nil {
+		return CodeGenSSOInfo{}, fmt.Errorf("保存 MaClaw 配置失败: %w", err)
+	}
+
+	// 4. 如果拿到了 email，顺手存入配置，供后续自动注册 Hub 使用
+	if result.Email != "" {
+		if appCfg, err := a.LoadConfig(); err == nil {
+			if appCfg.RemoteEmail == "" {
+				appCfg.RemoteEmail = result.Email
+				_ = a.SaveConfig(appCfg)
+			}
+		}
+	}
+
+	// 5. 写入所有编程工具配置文件
+	// 非致命：MaClaw 已配置成功，部分工具写入失败仅记录警告
+	toolResult := configfile.WriteAllToolConfigs(configfile.ToolConfigParams{
+		Token:            result.AccessToken,
+		BaseURL:          result.BaseURL,
+		AnthropicBaseURL: codegenAnthropicBaseURL(result.BaseURL),
+		ModelID:          result.ModelID,
+		ProviderName:     codegenProviderName,
+	})
+
+	// 6. 将 CodeGen 注入到各编程工具的服务商列表中
+	a.injectCodeGenModelIntoToolConfigs(result)
+
+	var msg string
+	if len(toolResult.Failed) == 0 {
+		msg = "SSO 认证成功，所有工具配置已写入完毕"
+	} else {
+		failedNames := make([]string, 0, len(toolResult.Failed))
+		for _, f := range toolResult.Failed {
+			log.Printf("[CodeGen SSO] WriteAllToolConfigs: %s failed: %v", f.Tool, f.Error)
+			failedNames = append(failedNames, f.Tool)
+		}
+		msg = fmt.Sprintf("SSO 认证成功（注意：%s 配置写入失败，请手动检查）", strings.Join(failedNames, "、"))
+	}
+
+	return CodeGenSSOInfo{
+		Message: msg,
+		Email:   result.Email,
+	}, nil
+}
+
+// upsertCodeGenProvider 在 providers 列表中插入或更新 "CodeGen" 服务商条目。
+// 如果列表中已存在同名条目则覆盖，否则追加到列表末尾。
+// 返回新的 providers 切片（不修改原切片）。
+func upsertCodeGenProvider(providers []MaclawLLMProvider, result oauth.CodeGenSSOResult) []MaclawLLMProvider {
+	entry := MaclawLLMProvider{
+		Name:          codegenProviderName,
+		URL:           result.BaseURL,
+		Key:           result.AccessToken,
+		Model:         result.ModelID,
+		Protocol:      "openai",          // AI 助手通过 OpenAI 协议接入 CodeGen
+		AgentType:     "openclaw",        // MaClaw Agent 默认协议
+		AuthType:      "sso",             // 标识认证来源，区别于手动 API Key
+		ContextLength: result.ContextLength,
+	}
+	// 遍历查找并覆盖已有 CodeGen 条目
+	for i, p := range providers {
+		if p.Name == codegenProviderName {
+			updated := make([]MaclawLLMProvider, len(providers))
+			copy(updated, providers)
+			updated[i] = entry
+			return updated
+		}
+	}
+	// 未找到则追加
+	return append(providers, entry)
+}
+
+// codegenAnthropicBaseURL 将 CodeGen 的 openai 协议 base URL 转换为 anthropic 兼容端点。
+// CodeGen API 原生使用 openai 协议，Claude Code 需要 anthropic 协议，
+// 服务端在 base URL 后追加 /anthropic 路径提供兼容端点。
+// 例如：https://codegen.qianxin-inc.cn/api/v1 → https://codegen.qianxin-inc.cn/api/v1/anthropic
+func codegenAnthropicBaseURL(openaiBaseURL string) string {
+	return strings.TrimRight(openaiBaseURL, "/") + "/anthropic"
+}
+
+// injectCodeGenModelIntoToolConfigs 将 CodeGen 服务商作为模型条目注入到各编程工具的
+// 模型列表中（Claude、Codex、OpenCode 等），使其出现在前端的服务商选择网格中。
+// 如果已存在同名条目则更新，否则插入到 Custom 条目之前。
+//
+// 注意：Claude Code 使用 anthropic 协议，需要将 CodeGen 的 openai base URL
+// 转换为 anthropic 兼容端点（追加 /anthropic）。其他工具直接使用 openai URL。
+func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		log.Printf("[CodeGen SSO] injectCodeGenModelIntoToolConfigs: LoadConfig failed: %v", err)
+		return
+	}
+
+	openaiURL := result.BaseURL
+	anthropicURL := codegenAnthropicBaseURL(openaiURL)
+
+	// Claude Code 使用 anthropic 协议端点
+	claudeModel := ModelConfig{
+		ModelName: codegenProviderName,
+		ModelId:   result.ModelID,
+		ModelUrl:  anthropicURL,
+		ApiKey:    result.AccessToken,
+		WireApi:   "anthropic",
+	}
+	upsertModelInToolConfig(&cfg.Claude, claudeModel)
+
+	// 其他工具使用 openai 协议端点
+	openaiModel := ModelConfig{
+		ModelName: codegenProviderName,
+		ModelId:   result.ModelID,
+		ModelUrl:  openaiURL,
+		ApiKey:    result.AccessToken,
+		WireApi:   "responses",
+	}
+	openaiToolConfigs := []*ToolConfig{
+		&cfg.Codex,
+		&cfg.Opencode,
+		&cfg.CodeBuddy,
+		&cfg.IFlow,
+		&cfg.Kilo,
+	}
+	for _, tc := range openaiToolConfigs {
+		upsertModelInToolConfig(tc, openaiModel)
+	}
+
+	if err := a.SaveConfig(cfg); err != nil {
+		log.Printf("[CodeGen SSO] injectCodeGenModelIntoToolConfigs: SaveConfig failed: %v", err)
+	}
+}
+
+// upsertModelInToolConfig 在 ToolConfig 的 Models 列表中插入或更新指定名称的模型。
+// 如果已存在同名条目则更新其字段；否则插入到第一个 IsCustom 条目之前。
+func upsertModelInToolConfig(tc *ToolConfig, model ModelConfig) {
+	for i, m := range tc.Models {
+		if m.ModelName == model.ModelName {
+			tc.Models[i].ModelId = model.ModelId
+			tc.Models[i].ModelUrl = model.ModelUrl
+			tc.Models[i].ApiKey = model.ApiKey
+			tc.Models[i].WireApi = model.WireApi
+			return
+		}
+	}
+	// 插入到第一个 Custom 条目之前
+	insertIdx := len(tc.Models)
+	for i, m := range tc.Models {
+		if m.IsCustom {
+			insertIdx = i
+			break
+		}
+	}
+	newModels := make([]ModelConfig, 0, len(tc.Models)+1)
+	newModels = append(newModels, tc.Models[:insertIdx]...)
+	newModels = append(newModels, model)
+	newModels = append(newModels, tc.Models[insertIdx:]...)
+	tc.Models = newModels
+}
+
+// ---------------------------------------------------------------------------
+// CodeGen 模型列表 + 模型选择保存
+// ---------------------------------------------------------------------------
+
+// CodeGenModelItem 描述一个从 CodeGen 服务获取的可用模型。
+type CodeGenModelItem struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// FetchCodeGenModels 用当前 CodeGen provider 的 access_token 调用
+// {baseURL}/models 端点，返回该账号可用的模型列表。
+// 前端 SSO 成功后调用此函数填充模型选择器。
+func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
+	// 从已保存的 CodeGen provider 中读取认证信息
+	data := a.GetMaclawLLMProviders()
+	var codeGenProvider *MaclawLLMProvider
+	for i := range data.Providers {
+		if data.Providers[i].Name == codegenProviderName {
+			codeGenProvider = &data.Providers[i]
+			break
+		}
+	}
+	if codeGenProvider == nil || codeGenProvider.Key == "" {
+		return nil, fmt.Errorf("CodeGen SSO 未完成，请先完成企业认证")
+	}
+
+	baseURL := strings.TrimRight(strings.TrimSpace(codeGenProvider.URL), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("CodeGen base_url 未配置")
+	}
+
+	endpoint := baseURL + "/models"
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+codeGenProvider.Key)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("获取模型列表失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("服务器返回 HTTP %d: %s", resp.StatusCode, truncateCodeGenStr(string(body), 256))
+	}
+
+	// 解析 OpenAI 兼容格式：{"data": [{"id": "...", ...}, ...]}
+	// 同时兼容 Anthropic 格式：{"models": [{"id": "...", "display_name": "..."}]}
+	var result struct {
+		Data   []struct{ ID string `json:"id"` }             `json:"data"`
+		Models []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("解析模型列表失败: %w", err)
+	}
+
+	var items []CodeGenModelItem
+	// 优先 Anthropic 格式
+	if len(result.Models) > 0 {
+		for _, m := range result.Models {
+			name := m.DisplayName
+			if name == "" {
+				name = m.ID
+			}
+			items = append(items, CodeGenModelItem{ID: m.ID, Name: name})
+		}
+	} else {
+		for _, m := range result.Data {
+			items = append(items, CodeGenModelItem{ID: m.ID, Name: m.ID})
+		}
+	}
+
+	// 若服务端返回空列表，至少用 SSO 返回的默认模型填充
+	if len(items) == 0 && codeGenProvider.Model != "" {
+		items = append(items, CodeGenModelItem{ID: codeGenProvider.Model, Name: codeGenProvider.Model})
+	}
+
+	return items, nil
+}
+
+// SaveCodeGenModelChoice 保存用户在 SSO 后选择的模型：
+//   - maclawModel：用于驱动 MaClaw Agent（写入 config.json 的 CodeGen provider）
+//   - claudeCodeModel：用于驱动 TigerClaw Code（写入 ~/.claude/settings.json）
+//
+// 两个模型可以相同也可以不同，独立配置。
+func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error {
+	maclawModel = strings.TrimSpace(maclawModel)
+	claudeCodeModel = strings.TrimSpace(claudeCodeModel)
+
+	// 1. 更新 MaClaw CodeGen provider 的 model 字段
+	if maclawModel != "" {
+		data := a.GetMaclawLLMProviders()
+		updated := false
+		for i := range data.Providers {
+			if data.Providers[i].Name == codegenProviderName {
+				data.Providers[i].Model = maclawModel
+				updated = true
+				break
+			}
+		}
+		if updated {
+			if err := a.SaveMaclawLLMProviders(data.Providers, codegenProviderName); err != nil {
+				return fmt.Errorf("保存 MaClaw 模型选择失败: %w", err)
+			}
+		}
+	}
+
+	claudeTargetModel := claudeCodeModel
+	if claudeTargetModel == "" {
+		claudeTargetModel = maclawModel
+	}
+
+	// 2. 同步更新各编程工具模型列表中的 CodeGen 条目
+	if cfg, err := a.LoadConfig(); err == nil {
+		changed := false
+		var claudeEntry *ModelConfig
+
+		if claudeTargetModel != "" {
+			if cfg.Claude.CurrentModel != codegenProviderName {
+				cfg.Claude.CurrentModel = codegenProviderName
+				changed = true
+			}
+			for i := range cfg.Claude.Models {
+				if cfg.Claude.Models[i].ModelName == codegenProviderName {
+					if cfg.Claude.Models[i].ModelId != claudeTargetModel {
+						cfg.Claude.Models[i].ModelId = claudeTargetModel
+						changed = true
+					}
+					claudeEntry = &cfg.Claude.Models[i]
+					break
+				}
+			}
+		}
+
+		if maclawModel != "" {
+			toolConfigs := []*ToolConfig{
+				&cfg.Codex, &cfg.Opencode,
+				&cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
+			}
+			for _, tc := range toolConfigs {
+				for i := range tc.Models {
+					if tc.Models[i].ModelName == codegenProviderName && tc.Models[i].ModelId != maclawModel {
+						tc.Models[i].ModelId = maclawModel
+						changed = true
+					}
+				}
+			}
+		}
+
+		if changed {
+			if err := a.SaveConfig(cfg); err != nil {
+				log.Printf("[CodeGen] SaveCodeGenModelChoice: sync tool config model failed: %v", err)
+			} else if claudeEntry != nil && claudeEntry.ApiKey != "" {
+				if err := configfile.WriteClaudeSettings(claudeEntry.ApiKey, claudeEntry.ModelUrl, claudeEntry.ModelId); err != nil {
+					log.Printf("[CodeGen] SaveCodeGenModelChoice: update claude model failed: %v", err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// 内嵌二维码扫码 SSO — Embedded QR Code SSO
+// ---------------------------------------------------------------------------
+
+// ssoPollingResult 是后台轮询 goroutine 的结果。
+type ssoPollingResult struct {
+	info CodeGenSSOInfo
+	err  error
+}
+
+// ssoPollingSession 保存一次内嵌 SSO 轮询会话的状态。
+type ssoPollingSession struct {
+	cancel   context.CancelFunc
+	resultCh chan ssoPollingResult
+}
+
+// CodeGenSSOEmbeddedResult 是 StartCodeGenSSOEmbedded 的返回值。
+type CodeGenSSOEmbeddedResult struct {
+	QRCodeURL string `json:"qr_code_url"` // 二维码内容 URL，供前端 QRCodeSVG 渲染
+}
+
+// StartCodeGenSSOEmbedded 启动内嵌 SSO 扫码流程（本地回调模式）。
+//
+// 流程：
+//  1. 启动本地 HTTP 服务器接收 SSO 回调
+//  2. 打开浏览器访问 SSO 登录页（ref 指向本地服务器）
+//  3. 用户在浏览器中扫码，SSO 完成后浏览器自动重定向到本地服务器
+//  4. 本地服务器从 URL 参数中提取 token，自动完成配置
+//
+// 无需轮询，token 通过 HTTP 回调直接获取。
+func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
+	if brand.Current().ID != "qianxin" {
+		return CodeGenSSOEmbeddedResult{}, fmt.Errorf("内嵌扫码仅支持奇安信品牌")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan ssoPollingResult, 1)
+
+	session := &ssoPollingSession{
+		cancel:   cancel,
+		resultCh: resultCh,
+	}
+
+	a.ssoPollingMu.Lock()
+	if a.ssoPolling != nil {
+		a.ssoPolling.cancel()
+	}
+	a.ssoPolling = session
+	a.ssoPollingMu.Unlock()
+
+	// 后台 goroutine：本地回调模式 SSO 流程
+	go func() {
+		result, err := oauth.RunCodeGenSSOFlowWithCallback(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				resultCh <- ssoPollingResult{err: context.Canceled}
+				return
+			}
+			resultCh <- ssoPollingResult{err: err}
+			return
+		}
+
+		// 后处理：与 StartCodeGenSSO 完全一致
+		data := a.GetMaclawLLMProviders()
+		updatedProviders := upsertCodeGenProvider(data.Providers, result)
+
+		if err := a.SaveMaclawLLMProviders(updatedProviders, codegenProviderName); err != nil {
+			resultCh <- ssoPollingResult{err: fmt.Errorf("保存 MaClaw 配置失败: %w", err)}
+			return
+		}
+
+		if result.Email != "" {
+			if appCfg, err := a.LoadConfig(); err == nil {
+				if appCfg.RemoteEmail == "" {
+					appCfg.RemoteEmail = result.Email
+					_ = a.SaveConfig(appCfg)
+				}
+			}
+		}
+
+		toolResult := configfile.WriteAllToolConfigs(configfile.ToolConfigParams{
+			Token:            result.AccessToken,
+			BaseURL:          result.BaseURL,
+			AnthropicBaseURL: codegenAnthropicBaseURL(result.BaseURL),
+			ModelID:          result.ModelID,
+			ProviderName:     codegenProviderName,
+		})
+
+		// 将 CodeGen 注入到各编程工具的服务商列表中
+		a.injectCodeGenModelIntoToolConfigs(result)
+
+		var msg string
+		if len(toolResult.Failed) == 0 {
+			msg = "SSO 认证成功，所有工具配置已写入完毕"
+		} else {
+			failedNames := make([]string, 0, len(toolResult.Failed))
+			for _, f := range toolResult.Failed {
+				log.Printf("[CodeGen SSO Embedded] WriteAllToolConfigs: %s failed: %v", f.Tool, f.Error)
+				failedNames = append(failedNames, f.Tool)
+			}
+			msg = fmt.Sprintf("SSO 认证成功（注意：%s 配置写入失败，请手动检查）", strings.Join(failedNames, "、"))
+		}
+
+		resultCh <- ssoPollingResult{
+			info: CodeGenSSOInfo{Message: msg, Email: result.Email},
+		}
+	}()
+
+	return CodeGenSSOEmbeddedResult{}, nil
+}
+
+// WaitCodeGenSSOResult 阻塞等待内嵌 SSO 轮询结果。
+// 前端通过 Wails 异步调用此方法。
+func (a *App) WaitCodeGenSSOResult() (CodeGenSSOInfo, error) {
+	a.ssoPollingMu.Lock()
+	session := a.ssoPolling
+	a.ssoPollingMu.Unlock()
+
+	if session == nil {
+		return CodeGenSSOInfo{}, fmt.Errorf("没有正在进行的 SSO 轮询会话")
+	}
+
+	result, ok := <-session.resultCh
+	if !ok {
+		return CodeGenSSOInfo{}, fmt.Errorf("SSO 轮询会话已关闭")
+	}
+
+	if result.err != nil {
+		return CodeGenSSOInfo{}, result.err
+	}
+
+	return result.info, nil
+}
+
+// CancelCodeGenSSOPolling 取消正在进行的内嵌 SSO 轮询。
+// 前端在用户关闭/离开 OnboardingWizard 时调用。
+func (a *App) CancelCodeGenSSOPolling() {
+	a.ssoPollingMu.Lock()
+	defer a.ssoPollingMu.Unlock()
+
+	if a.ssoPolling != nil {
+		a.ssoPolling.cancel()
+		a.ssoPolling = nil
+	}
+}
+
+// truncateCodeGenStr 截断字符串到 maxLen，超出时追加 "..."。
+// 注意：避免与 scheduled_task.go 中的 truncateStr 重名，故加 CodeGen 前缀。
+func truncateCodeGenStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+

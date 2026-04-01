@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/gorilla/websocket"
 )
 
@@ -89,6 +91,7 @@ func TestBuildClaudeLaunchEnv_SetsAnthropicFields(t *testing.T) {
 		ModelId:   "claude-sonnet-4",
 		ModelUrl:  "https://api.example.com/anthropic",
 		ApiKey:    "sk-test",
+		WireApi:   "anthropic",
 	}
 
 	env, err := app.buildClaudeLaunchEnv(AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
@@ -110,6 +113,45 @@ func TestBuildClaudeLaunchEnv_SetsAnthropicFields(t *testing.T) {
 	}
 	if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != "128000" {
 		t.Fatalf("CLAUDE_CODE_MAX_OUTPUT_TOKENS = %q", env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"])
+	}
+}
+
+func TestBuildClaudeLaunchEnv_CodegenWritesDedicatedSettings(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{}
+	model := &ModelConfig{
+		ModelName: "codegen",
+		ModelId:   "claude-codegen-1",
+		ModelUrl:  "https://codegen.example/anthropic",
+		ApiKey:    "cg-test",
+		WireApi:   "anthropic",
+	}
+
+	env, err := app.buildClaudeLaunchEnv(AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
+	if err != nil {
+		t.Fatalf("buildClaudeLaunchEnv() error = %v", err)
+	}
+
+	if env["ANTHROPIC_BASE_URL"] != "https://codegen.example/anthropic" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q", env["ANTHROPIC_BASE_URL"])
+	}
+
+	codegenSettings, err := configfile.ReadCodeGenSettings()
+	if err != nil {
+		t.Fatalf("ReadCodeGenSettings() error = %v", err)
+	}
+	if codegenSettings == nil {
+		t.Fatal("expected codegen settings to be written")
+	}
+	envMap, _ := codegenSettings["env"].(map[string]interface{})
+	if got, _ := envMap["ANTHROPIC_AUTH_TOKEN"].(string); got != "cg-test" {
+		t.Fatalf("codegen ANTHROPIC_AUTH_TOKEN = %q", got)
+	}
+	if got, _ := envMap["ANTHROPIC_MODEL"].(string); got != "claude-codegen-1" {
+		t.Fatalf("codegen ANTHROPIC_MODEL = %q", got)
 	}
 }
 
@@ -139,6 +181,7 @@ func TestBuildClaudeLaunchEnv_EnablesTeamModeAndProxy(t *testing.T) {
 		ModelId:   "claude-sonnet-4",
 		ModelUrl:  "https://api.example.com/anthropic",
 		ApiKey:    "sk-test",
+		WireApi:   "anthropic",
 	}
 
 	env, err := app.buildClaudeLaunchEnv(cfg, model, projectPath, true)
@@ -152,6 +195,29 @@ func TestBuildClaudeLaunchEnv_EnablesTeamModeAndProxy(t *testing.T) {
 	wantProxy := "http://bob:pwd@proxy.local:8081"
 	if env["HTTP_PROXY"] != wantProxy || env["HTTPS_PROXY"] != wantProxy {
 		t.Fatalf("proxy env mismatch: HTTP_PROXY=%q HTTPS_PROXY=%q", env["HTTP_PROXY"], env["HTTPS_PROXY"])
+	}
+}
+
+func TestBuildClaudeLaunchEnv_RejectsNonAnthropicWireAPI(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{}
+	model := &ModelConfig{
+		ModelName: "ChatFire",
+		ModelId:   "claude-sonnet-4",
+		ModelUrl:  "https://api.example.com/v1",
+		ApiKey:    "sk-test",
+		WireApi:   "responses",
+	}
+
+	_, err := app.buildClaudeLaunchEnv(AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
+	if err == nil {
+		t.Fatal("expected error for non-anthropic wire_api, got nil")
+	}
+	if !strings.Contains(err.Error(), "must use anthropic wire_api") {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 

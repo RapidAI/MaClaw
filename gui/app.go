@@ -23,6 +23,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -104,6 +105,8 @@ type App struct {
 	telegramGateway      *telegramGatewayManager
 	weixinGateway        *weixinGatewayManager
 	tokenUsageMu         sync.Mutex // guards AccumulateLLMTokenUsage
+	ssoPolling           *ssoPollingSession // active embedded SSO polling session
+	ssoPollingMu         sync.Mutex         // guards ssoPolling
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -668,6 +671,13 @@ func (a *App) startup(ctx context.Context) {
 				a.ensureWeixinGateway()
 			}()
 		}
+		// CodeGen SSO token validation on startup (qianxin brand only).
+		// Runs in background — failure is logged but never blocks startup.
+		go func() {
+			if err := a.ensureCodeGenToken(); err != nil {
+				log.Printf("[CodeGen] startup token check failed: %v", err)
+			}
+		}()
 		return
 	}
 	a.setPowerOptimizationEnabled(false)
@@ -838,7 +848,11 @@ func (a *App) buildClaudeLaunchEnv(
 	env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
 	env["MAX_THINKING_TOKENS"] = "10000"
 
+	wireAPI := effectiveToolWireAPI("claude", *selectedModel)
 	if !selectedModel.IsBuiltin {
+		if strings.TrimSpace(selectedModel.WireApi) != "" && !corelib.IsAnthropicWireAPI(wireAPI) {
+			return nil, fmt.Errorf("claude provider %q must use anthropic wire_api", selectedModel.ModelName)
+		}
 		if selectedModel.ApiKey != "" {
 			env["ANTHROPIC_AUTH_TOKEN"] = selectedModel.ApiKey
 		}
@@ -879,6 +893,9 @@ func (a *App) buildClaudeLaunchEnv(
 	a.injectProxyEnv(env, config, projectDir, useProxy)
 
 	if !selectedModel.IsBuiltin {
+		if err := configfile.WriteClaudeProviderSettings(selectedModel.ModelName, selectedModel.ApiKey, env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_MODEL"]); err != nil {
+			return nil, fmt.Errorf("write claude provider settings: %w", err)
+		}
 		a.clearClaudeConfig()
 	} else {
 		// Restore native config so Claude can use its own Anthropic auth.
@@ -1714,6 +1731,22 @@ func (a *App) clearEnvVars() {
 		os.Unsetenv(v)
 	}
 }
+
+func effectiveToolWireAPI(toolName string, model ModelConfig) string {
+	wireAPI := strings.TrimSpace(model.WireApi)
+	if wireAPI != "" {
+		return wireAPI
+	}
+	if strings.EqualFold(toolName, "claude") {
+		trimmedURL := strings.TrimRight(strings.TrimSpace(model.ModelUrl), "/")
+		if trimmedURL == "" || strings.HasSuffix(trimmedURL, "/anthropic") || strings.Contains(trimmedURL, "/anthropic/") {
+			return "anthropic"
+		}
+		return "anthropic"
+	}
+	return ""
+}
+
 func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instanceID string) error {
 	var selectedModel *ModelConfig
 	for _, m := range config.Claude.Models {
@@ -1735,6 +1768,10 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 	}
 	settings := make(map[string]interface{})
 	env := make(map[string]string)
+	wireAPI := effectiveToolWireAPI("claude", *selectedModel)
+	if strings.TrimSpace(selectedModel.WireApi) != "" && !corelib.IsAnthropicWireAPI(wireAPI) {
+		return fmt.Errorf("claude provider %q must use anthropic wire_api", selectedModel.ModelName)
+	}
 	// Exclusively use AUTH_TOKEN for custom providers
 	env["ANTHROPIC_AUTH_TOKEN"] = selectedModel.ApiKey
 	env["CLAUDE_CODE_USE_COLORS"] = "true"
@@ -1836,6 +1873,14 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 			"allow": {},
 			"deny":  {},
 		}
+	case "codegen":
+		// CodeGen: use the configured Anthropic-compatible provider directly.
+		env["ANTHROPIC_BASE_URL"] = selectedModel.ModelUrl
+		modelId := selectedModel.ModelId
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
+		env["ANTHROPIC_MODEL"] = modelId
 	default:
 		env["ANTHROPIC_BASE_URL"] = selectedModel.ModelUrl
 		env["ANTHROPIC_MODEL"] = selectedModel.ModelId
@@ -3162,19 +3207,19 @@ func (a *App) LoadConfig() (AppConfig, error) {
 		config.Cursor.Models = defaultCursorModels
 		config.Cursor.CurrentModel = "Original"
 	}
-	ensureModel(&config.Claude.Models, "ChatFire", "https://api.chatfire.cn", "sonnet", "")
-	ensureModel(&config.Claude.Models, "DeepSeek", "https://api.deepseek.com/anthropic", "deepseek-chat", "")
-	ensureModel(&config.Claude.Models, "Kimi", "https://api.kimi.com/coding", "kimi-k2-thinking", "")
-	ensureModel(&config.Claude.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding", "doubao-seed-code-preview-latest", "")
-	ensureModel(&config.Claude.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic", "astron-code-latest", "", true)
-	ensureModel(&config.Claude.Models, "GLM", "https://open.bigmodel.cn/api/anthropic", "glm-4.7", "")
-	ensureModel(&config.Claude.Models, "MiniMax", "https://api.minimaxi.com/anthropic", "MiniMax-M2.1", "")
-	ensureModel(&config.Claude.Models, "百度千帆", "https://qianfan.baidubce.com/anthropic/coding", "qianfan-code-latest", "", true)
-	ensureModel(&config.Claude.Models, "XiaoMi", "https://api.xiaomimimo.com/anthropic", "mimo-v2-flash", "")
-	ensureModel(&config.Claude.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/anthropic", "glm-5", "", true)
-	ensureModel(&config.Claude.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net", "GLM-4.7", "", true)
-	ensureModel(&config.Claude.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "", true)
-	ensureModel(&config.Claude.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "", true)
+	ensureModel(&config.Claude.Models, "ChatFire", "https://api.chatfire.cn", "sonnet", "anthropic")
+	ensureModel(&config.Claude.Models, "DeepSeek", "https://api.deepseek.com/anthropic", "deepseek-chat", "anthropic")
+	ensureModel(&config.Claude.Models, "Kimi", "https://api.kimi.com/coding", "kimi-k2-thinking", "anthropic")
+	ensureModel(&config.Claude.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding", "doubao-seed-code-preview-latest", "anthropic")
+	ensureModel(&config.Claude.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic", "astron-code-latest", "anthropic", true)
+	ensureModel(&config.Claude.Models, "GLM", "https://open.bigmodel.cn/api/anthropic", "glm-4.7", "anthropic")
+	ensureModel(&config.Claude.Models, "MiniMax", "https://api.minimaxi.com/anthropic", "MiniMax-M2.1", "anthropic")
+	ensureModel(&config.Claude.Models, "百度千帆", "https://qianfan.baidubce.com/anthropic/coding", "qianfan-code-latest", "anthropic", true)
+	ensureModel(&config.Claude.Models, "XiaoMi", "https://api.xiaomimimo.com/anthropic", "mimo-v2-flash", "anthropic")
+	ensureModel(&config.Claude.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/anthropic", "glm-5", "anthropic", true)
+	ensureModel(&config.Claude.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net", "GLM-4.7", "anthropic", true)
+	ensureModel(&config.Claude.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "anthropic", true)
+	ensureModel(&config.Claude.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "anthropic", true)
 	ensureModel(&config.Gemini.Models, "ChatFire", "https://api.chatfire.cn/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro", "")
 	ensureModel(&config.Codex.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
 	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")

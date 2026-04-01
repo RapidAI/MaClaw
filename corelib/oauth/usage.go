@@ -50,6 +50,8 @@ func QueryUsageFrom(endpoint, accessToken string) (*UsageInfo, error) {
 	var totalUsed float64
 	afterParam := "" // 分页游标
 
+	client := &http.Client{Timeout: 15 * time.Second}
+
 	for {
 		u, err := url.Parse(endpoint)
 		if err != nil {
@@ -70,7 +72,6 @@ func QueryUsageFrom(endpoint, accessToken string) (*UsageInfo, error) {
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 		req.Header.Set("User-Agent", "claude-code/2.0.0")
 
-		client := &http.Client{Timeout: 15 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("costs request failed: %w", err)
@@ -88,6 +89,13 @@ func QueryUsageFrom(endpoint, accessToken string) (*UsageInfo, error) {
 				msg = msg[:256] + "..."
 			}
 			return nil, fmt.Errorf("costs API error (HTTP %d): %s", resp.StatusCode, msg)
+		}
+
+		var direct UsageInfo
+		if err := json.Unmarshal(body, &direct); err == nil {
+			if direct.TotalGranted != 0 || direct.TotalUsed != 0 || direct.TotalAvailable != 0 {
+				return &direct, nil
+			}
 		}
 
 		var costsResp costsResponse
