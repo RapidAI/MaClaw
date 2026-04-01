@@ -545,6 +545,28 @@ func (h *SkillMarketHandlers) GetLeaderboard(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "total": len(entries)})
 }
 
+// ── My Skills ────────────────────────────────────────────────────────────
+
+// ListMySkills handles GET /api/v1/skillmarket/my-skills.
+// Returns all skills uploaded by the authenticated user (session required).
+func (h *SkillMarketHandlers) ListMySkills(w http.ResponseWriter, r *http.Request) {
+	token := extractSessionToken(r)
+	if token == "" {
+		smError(w, http.StatusUnauthorized, "session token required")
+		return
+	}
+	sess, err := h.authSvc.ValidateSession(r.Context(), token)
+	if err != nil {
+		smError(w, http.StatusUnauthorized, "session expired or invalid")
+		return
+	}
+	skills := h.skillStore.ListByUploader(sess.Email)
+	if skills == nil {
+		skills = []skill.HubSkillMeta{}
+	}
+	writeJSON(w, http.StatusOK, skills)
+}
+
 // ── Search ───────────────────────────────────────────────────────────────
 
 // SearchSkillMarket handles GET /api/v1/skillmarket/search.

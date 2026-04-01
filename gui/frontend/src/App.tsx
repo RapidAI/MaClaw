@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, ListBackgroundLoops } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -2579,6 +2579,36 @@ function App() {
         }) || null;
     }, [remoteSessions, activeTool]);
 
+    // Track background loops for sidebar badge
+    const [sidebarBgLoops, setSidebarBgLoops] = useState<any[]>([]);
+    useEffect(() => {
+        let cancelled = false;
+        const refresh = async () => {
+            try {
+                const loops = await ListBackgroundLoops();
+                if (!cancelled) setSidebarBgLoops(loops || []);
+            } catch { if (!cancelled) setSidebarBgLoops([]); }
+        };
+        refresh();
+        const cleanup = EventsOn("background-loops-changed", refresh);
+        const timer = setInterval(refresh, 5000);
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+            if (typeof cleanup === "function") cleanup(); else EventsOff("background-loops-changed");
+        };
+    }, []);
+
+    // Count running (non-terminal) sessions + background loops for the sidebar badge
+    const runningTaskCount = useMemo(() => {
+        const remoteCount = remoteSessions.filter((session) => {
+            const status = String(session.status || session.summary?.status || "").toLowerCase();
+            return !TERMINAL_SESSION_STATUSES.has(status);
+        }).length;
+        const bgCount = sidebarBgLoops.filter((l: any) => l.status === "running" || l.status === "paused").length;
+        return remoteCount + bgCount;
+    }, [remoteSessions, sidebarBgLoops]);
+
     // Show onboarding wizard if remote registration is not done (checked once on startup).
     const onboardingRegCheckDone = useRef(false);
     useEffect(() => {
@@ -3324,10 +3354,34 @@ ${instruction}`;
                     <div
                         className={`sidebar-item ${navTab === 'remote' ? 'active' : ''}`}
                         onClick={() => switchTool('remote')}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center', position: 'relative' }}
                         title={lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}
                     >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>📡</span>
+                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem', position: 'relative' }}>
+                            📡
+                            {runningTaskCount > 0 && (
+                                <span style={{
+                                    position: 'absolute',
+                                    top: '-6px',
+                                    right: '-10px',
+                                    backgroundColor: '#e74c3c',
+                                    color: 'white',
+                                    fontSize: '9px',
+                                    fontWeight: 'bold',
+                                    lineHeight: 1,
+                                    minWidth: '16px',
+                                    height: '16px',
+                                    borderRadius: '8px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    padding: '0 4px',
+                                    boxSizing: 'border-box',
+                                    boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                                    zIndex: 10,
+                                }}>{runningTaskCount > 99 ? '99+' : runningTaskCount}</span>
+                            )}
+                        </span>
                         <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}</span>
                     </div>
 

@@ -189,10 +189,11 @@ func (s *SSHPTYSession) Close() error {
 // 与 SSHPool 的连接级 keepalive 互补：pool 保活 TCP 连接，这里保活 session channel。
 func (s *SSHPTYSession) sessionKeepalive(interval time.Duration) {
 	if interval <= 0 {
-		interval = 30 * time.Second
+		interval = 15 * time.Second
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	failCount := 0
 	for {
 		select {
 		case <-s.stopKA:
@@ -206,7 +207,16 @@ func (s *SSHPTYSession) sessionKeepalive(interval time.Duration) {
 				return
 			}
 			// SendRequest 在连接级别发心跳，同时也能保持 channel 活跃
-			_, _, _ = client.SendRequest("keepalive@openssh.com", true, nil)
+			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+			if err != nil {
+				failCount++
+				// 连续 3 次失败才放弃，避免瞬时网络抖动误判
+				if failCount >= 3 {
+					return
+				}
+			} else {
+				failCount = 0
+			}
 		}
 	}
 }

@@ -321,6 +321,18 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 		}
 	}
 
+	// Inject SSH background task guidance.
+	b.WriteString(`
+## SSH 远程服务器操作规则
+⚠️ 优先使用内置 SSH 工具：当需要执行 SSH 登录、远程命令、文件传输等操作时，必须使用内置的 ssh 工具
+（action=connect/exec/exec_background/upload/download 等），禁止通过 bash 调用 ssh/scp/rsync 命令，
+也禁止生成临时脚本来包装 SSH 操作。内置工具已处理连接复用、密钥认证、超时管理，手写脚本容易遗漏这些。
+
+对于安装软件（pip install、apt install、conda install）、编译（make、cargo build）、下载（wget、git clone）等
+可能超过 30 秒的命令，必须使用 exec_background 而非 exec。exec_background 通过 nohup 在服务器端后台运行，
+SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁轮询（间隔 15-30 秒）。
+`)
+
 	if h.app.skillExecutor != nil {
 		skills := h.app.skillExecutor.List()
 		if len(skills) > 0 {

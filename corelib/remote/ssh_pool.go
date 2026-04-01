@@ -95,15 +95,24 @@ func (p *SSHPool) Acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 	return client, nil
 }
 
-// Release 释放连接引用。当引用计数归零时不立即关闭，留给连接池复用。
+// Release 释放连接引用。当引用计数归零时主动关闭连接，避免空闲连接泄漏。
 func (p *SSHPool) Release(cfg SSHHostConfig) {
 	cfg.Defaults()
 	hostID := cfg.SSHHostID()
 
+	var toClose *ssh.Client
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if entry, ok := p.conns[hostID]; ok {
 		entry.refCount--
+		if entry.refCount <= 0 {
+			toClose = entry.client
+			delete(p.conns, hostID)
+		}
+	}
+	p.mu.Unlock()
+
+	if toClose != nil {
+		_ = toClose.Close()
 	}
 }
 
@@ -209,7 +218,7 @@ func (p *SSHPool) Reconnect(cfg SSHHostConfig) (*ssh.Client, error) {
 
 func (p *SSHPool) keepalive(hostID string, client *ssh.Client, interval time.Duration) {
 	if interval <= 0 {
-		interval = 30 * time.Second
+		interval = 15 * time.Second // 缩短默认心跳间隔，更快检测断连
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -218,8 +227,8 @@ func (p *SSHPool) keepalive(hostID string, client *ssh.Client, interval time.Dur
 		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
 		if err != nil {
 			failCount++
-			// 容忍 1 次瞬时失败，连续 2 次才判定断连
-			if failCount >= 2 {
+			// 容忍 2 次瞬时失败，连续 3 次才判定断连（约 45s）
+			if failCount >= 3 {
 				p.mu.Lock()
 				if entry, ok := p.conns[hostID]; ok && entry.client == client {
 					delete(p.conns, hostID)

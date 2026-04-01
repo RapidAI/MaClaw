@@ -219,6 +219,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("GET /api/v1/auth/verify-identity", smHandlers.VerifyIdentity)
 		mux.HandleFunc("GET /api/v1/auth/session", smHandlers.ValidateSession)
 		mux.HandleFunc("POST /api/v1/auth/resend-activation", gossipRateLimitMiddleware(authLookupRL, smHandlers.ResendActivation))
+		mux.HandleFunc("POST /api/v1/auth/forgot-password", gossipRateLimitMiddleware(authLookupRL, smHandlers.SendPasswordReset))
+		mux.HandleFunc("POST /api/v1/auth/reset-password", smHandlers.ResetPassword)
 		// Existing endpoints
 		mux.HandleFunc("POST /api/v1/skills/submit", smHandlers.SubmitSkill)
 		mux.HandleFunc("GET /api/v1/skill-submissions/{id}", smHandlers.GetSubmissionStatus)
@@ -233,6 +235,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("GET /api/v1/skillmarket/{id}/download", smHandlers.DownloadSkillMarket)
 		// Rating & Trial API
 		mux.HandleFunc("GET /api/v1/skillmarket/search", smHandlers.SearchSkillMarket)
+		mux.HandleFunc("GET /api/v1/skillmarket/my-skills", smHandlers.ListMySkills)
 		mux.HandleFunc("GET /api/v1/skillmarket/top", smHandlers.GetLeaderboard)
 		mux.HandleFunc("POST /api/v1/skillmarket/{id}/rate", smHandlers.RateSkill)
 		mux.HandleFunc("GET /api/v1/skillmarket/{id}/ratings", smHandlers.GetRatingStats)

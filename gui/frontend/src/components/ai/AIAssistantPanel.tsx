@@ -211,7 +211,10 @@ const baseActionBtnStyle: React.CSSProperties = {
 function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
     if (!text) return ["\u00A0"];
     const parts: React.ReactNode[] = [];
-    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[\w\\.\-]+(?:\.\w+)?)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))[\w/.\-]+)/g;
+    // Path matching: two strategies per platform
+    // 1. Broad match for paths with CJK/spaces — requires .ext ending as boundary anchor
+    // 2. Original ASCII-only match — works without .ext
+    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|:]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))[\w/.\-]+)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let idx = 0;
@@ -238,8 +241,13 @@ function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
             } else {
                 parts.push(m);
             }
-        } else if (match[5] || match[6]) {
-            const filePath = m;
+        } else if (match[5] || match[6] || match[7] || match[9]) {
+            // Trim trailing punctuation/whitespace that isn't part of the path
+            const filePath = m.replace(/[\s,;:!?。，；：！？）\]]+$/, "");
+            if (filePath.length !== m.length) {
+                // Rewind regex lastIndex so trimmed chars are re-processed
+                re.lastIndex -= (m.length - filePath.length);
+            }
             parts.push(
                 <a key={idx++}
                    href="#"
@@ -249,7 +257,7 @@ function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
                 >📂 {filePath}</a>
             );
         }
-        lastIndex = match.index + m.length;
+        lastIndex = re.lastIndex;
     }
     if (lastIndex < text.length) {
         parts.push(text.slice(lastIndex));

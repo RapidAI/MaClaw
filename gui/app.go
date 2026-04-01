@@ -4714,7 +4714,6 @@ func (a *App) ShowItemInFolder(path string) error {
 	case "windows":
 		path = filepath.FromSlash(path)
 		cmd = exec.Command("explorer", "/select,", path)
-		hideCommandWindow(cmd)
 	case "linux":
 		cmd = exec.Command("xdg-open", filepath.Dir(path))
 	default:

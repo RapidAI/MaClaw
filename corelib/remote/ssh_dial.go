@@ -5,12 +5,14 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	sshagent "golang.org/x/crypto/ssh/agent"
 )
 
 // dialSSH 根据 SSHHostConfig 建立 SSH 连接。
+// 使用 TCP keepalive 防止空闲连接被中间网络设备（NAT/防火墙）断开。
 func dialSSH(cfg SSHHostConfig) (*ssh.Client, error) {
 	authMethods, err := buildAuthMethods(cfg)
 	if err != nil {
@@ -25,11 +27,27 @@ func dialSSH(cfg SSHHostConfig) (*ssh.Client, error) {
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-	client, err := ssh.Dial("tcp", addr, sshCfg)
+
+	// 先建立 TCP 连接并启用 TCP keepalive，再在其上建立 SSH
+	tcpConn, err := net.DialTimeout("tcp", addr, cfg.ConnectTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("ssh connect to %s: %w", addr, err)
+		return nil, fmt.Errorf("tcp connect to %s: %w", addr, err)
 	}
-	return client, nil
+
+	// 启用 TCP 级别 keepalive，防止 NAT/防火墙超时断连
+	if tc, ok := tcpConn.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(15 * time.Second)
+	}
+
+	// 在 TCP 连接上建立 SSH
+	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, addr, sshCfg)
+	if err != nil {
+		_ = tcpConn.Close()
+		return nil, fmt.Errorf("ssh handshake to %s: %w", addr, err)
+	}
+
+	return ssh.NewClient(sshConn, chans, reqs), nil
 }
 
 // buildAuthMethods 根据配置构建 SSH 认证方法列表。

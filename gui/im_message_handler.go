@@ -154,7 +154,8 @@ type IMMessageHandler struct {
 	sessionMonitor *SessionMonitor
 
 	// SSH session manager (lazily initialized on first SSH tool call).
-	sshMgr *remote.SSHSessionManager
+	sshMgr    *remote.SSHSessionManager
+	bgTaskMgr *remote.SSHBackgroundTaskManager
 
 	// lastUserText stores the most recent user message text for the current
 	// agent loop. Used by toolCreateSession to detect non-coding tasks and

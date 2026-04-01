@@ -299,6 +299,7 @@ export function RemoteSessionConsole(props: Props) {
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const outputEndRef = useRef<HTMLDivElement | null>(null);
     const outputContainerRef = useRef<HTMLDivElement | null>(null);
+    const didInitialScroll = useRef(false);
     const [composing, setComposing] = useState(false);
     const inputValueRef = useRef("");
     const prevRawCountRef = useRef(0);
@@ -366,6 +367,19 @@ export function RemoteSessionConsole(props: Props) {
             }
         }
     }, [rawLines]);
+
+    // Scroll to bottom on initial mount so the user sees the latest output.
+    useEffect(() => {
+        if (!didInitialScroll.current) {
+            didInitialScroll.current = true;
+            // Use rAF + setTimeout to ensure DOM has fully laid out.
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    outputEndRef.current?.scrollIntoView();
+                }, 0);
+            });
+        }
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Focus input on open (with cleanup)
     useEffect(() => {

@@ -487,10 +487,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolWebFetch(args) })
 
 	// --- SSH remote server tools ---
-	reg("ssh", "SSH 远程服务器管理（connect/exec/list/close）。连接后会自动注册为后台任务，可在任务后台面板监看。",
-		ToolCategoryBuiltin, []string{"ssh", "remote", "server", "connect", "exec"},
+	reg("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）。长命令自动转后台模式，支持 SFTP 文件传输。",
+		ToolCategoryBuiltin, []string{"ssh", "remote", "server", "connect", "exec", "background", "upload", "download", "sftp"},
 		map[string]interface{}{
-			"action":          map[string]string{"type": "string", "description": "操作: connect/exec/list/close"},
+			"action":          map[string]string{"type": "string", "description": "操作: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close"},
 			"host":            map[string]string{"type": "string", "description": "远程主机地址（connect 时必填）"},
 			"user":            map[string]string{"type": "string", "description": "登录用户名（connect 时必填）"},
 			"port":            map[string]string{"type": "integer", "description": "SSH 端口（默认 22）"},
@@ -499,9 +499,13 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"password":        map[string]string{"type": "string", "description": "密码（可选）"},
 			"label":           map[string]string{"type": "string", "description": "主机标签（可选，如 prod-web-01）"},
 			"initial_command": map[string]string{"type": "string", "description": "连接后立即执行的命令（可选）"},
-			"session_id":      map[string]string{"type": "string", "description": "SSH 会话 ID（exec/close 时必填）"},
-			"command":         map[string]string{"type": "string", "description": "要执行的命令（exec 时必填）"},
-			"wait_seconds":    map[string]string{"type": "integer", "description": "等待输出秒数（exec 时可选，默认 5）"},
+			"session_id":      map[string]string{"type": "string", "description": "SSH 会话 ID（exec/exec_background/upload/download/close 时必填）"},
+			"command":         map[string]string{"type": "string", "description": "要执行的命令（exec/exec_background 时必填）"},
+			"wait_seconds":    map[string]string{"type": "integer", "description": "等待输出秒数（exec 时可选，默认 5，最大 600）"},
+			"task_id":         map[string]string{"type": "string", "description": "后台任务 ID（check_task/kill_task 时必填）"},
+			"tail_lines":      map[string]string{"type": "integer", "description": "查看日志尾部行数（check_task 时可选，默认 50）"},
+			"local_path":      map[string]string{"type": "string", "description": "本地文件/目录路径（upload/download 时必填）"},
+			"remote_path":     map[string]string{"type": "string", "description": "远程文件/目录路径（upload/download 时必填）"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolSSH(args) })
 }

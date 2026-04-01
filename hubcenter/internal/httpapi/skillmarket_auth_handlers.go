@@ -169,6 +169,43 @@ func (h *SkillMarketHandlers) ResendActivation(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]string{"status": "activation_email_sent"})
 }
 
+// SendPasswordReset handles POST /api/v1/auth/forgot-password.
+func (h *SkillMarketHandlers) SendPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		smError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	_ = h.authSvc.SendPasswordReset(r.Context(), strings.TrimSpace(req.Email))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reset_email_sent"})
+}
+
+// ResetPassword handles POST /api/v1/auth/reset-password.
+func (h *SkillMarketHandlers) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		smError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	sess, err := h.authSvc.ResetPassword(r.Context(), req.Token, req.Password)
+	if err != nil {
+		smError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "password_reset",
+		"session_token": sess.Token,
+		"email":         sess.Email,
+		"user_id":       sess.UserID,
+		"expires_at":    sess.ExpiresAt,
+	})
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────
 
 func extractSessionToken(r *http.Request) string {

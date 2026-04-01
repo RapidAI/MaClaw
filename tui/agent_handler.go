@@ -71,6 +71,7 @@ type TUIAgentHandler struct {
 	clawnetClient    *clawnet.Client
 	auditLog         *security.AuditLog
 	sshMgr           *remote.SSHSessionManager
+	bgTaskMgr        *remote.SSHBackgroundTaskManager
 	maxIterations    int
 	codingToolHealth *codingToolHealthCache // 编程工具健康状态缓存
 
@@ -136,7 +137,10 @@ func WithAuditLog(al *security.AuditLog) AgentHandlerOption {
 	return func(h *TUIAgentHandler) { h.auditLog = al }
 }
 func WithSSHManager(sm *remote.SSHSessionManager) AgentHandlerOption {
-	return func(h *TUIAgentHandler) { h.sshMgr = sm }
+	return func(h *TUIAgentHandler) {
+		h.sshMgr = sm
+		h.bgTaskMgr = remote.NewSSHBackgroundTaskManager(sm)
+	}
 }
 func WithMaxIterations(n int) AgentHandlerOption {
 	return func(h *TUIAgentHandler) {
@@ -280,7 +284,38 @@ func (h *TUIAgentHandler) buildSystemPrompt() string {
 🖥️ SSH 远程服务器管理：
 你有 ssh 工具，可以连接远程服务器并交互式执行命令。
 当用户提到"登录"、"服务器"、"远程"、"SSH"、"部署"、"运维"等关键词时，使用 ssh 工具。
-用法: ssh(action=connect/exec/list/close)。连接后可多次 exec 执行命令并观察输出。`
+
+⚠️ 优先使用内置 SSH 工具：当需要执行 SSH 登录、远程命令、文件传输等操作时，必须使用内置的 ssh 工具，
+禁止通过 bash 调用 ssh/scp/rsync 命令，也禁止生成临时脚本来包装 SSH 操作。
+内置工具已处理连接复用、密钥认证、超时管理，手写脚本容易遗漏这些。
+
+⚡ 关键规则 — 长命令必须用后台模式：
+对于安装软件（pip install、apt install、conda install、npm install）、编译（make、cargo build）、
+下载（wget、git clone、docker pull）等可能超过 30 秒的命令，必须使用 exec_background 而非 exec。
+exec_background 通过 nohup 在服务器端后台运行，SSH 断连不影响执行。
+
+用法:
+1. ssh(action=connect, host=..., user=...) — 连接服务器
+2. ssh(action=exec, session_id=..., command=...) — 执行短命令（ls、cat、echo 等）
+3. ssh(action=exec_background, session_id=..., command=...) — 执行长命令（安装、编译、下载等）
+4. ssh(action=check_task, task_id=...) — 查看后台任务进度和日志
+5. ssh(action=list_tasks) — 列出所有后台任务
+6. ssh(action=kill_task, task_id=...) — 终止后台任务
+7. ssh(action=upload, session_id=..., local_path=..., remote_path=...) — 上传文件/目录到服务器
+8. ssh(action=download, session_id=..., remote_path=..., local_path=...) — 从服务器下载文件/目录
+9. ssh(action=list) — 列出所有 SSH 会话
+10. ssh(action=close, session_id=...) — 关闭会话
+
+文件传输说明：
+- upload/download 支持单文件和整个目录（递归传输）
+- 基于 SFTP 协议，复用已有 SSH 连接，无需额外配置
+- 适合传输数据集、模型文件、脚本等（几 MB 到 GB 级别）
+
+后台任务工作流示例：
+- 提交: ssh(action=exec_background, session_id=xxx, command="pip install torch")
+- 等 10-30 秒后检查: ssh(action=check_task, task_id=bg_xxx)
+- 如果还在运行，再等一会儿再检查，不要频繁轮询
+- 完成后继续下一步操作`
 
 	// 注入已配置的 SSH 主机列表
 	if sshHosts := h.loadSSHHosts(); len(sshHosts) > 0 {

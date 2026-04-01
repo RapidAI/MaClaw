@@ -106,6 +106,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 
 	// Auth service
 	authSvc := skillmarket.NewAuthService(smStore, mailer, cfg.Server.PublicBaseURL)
+	authSvc.SetPublicBaseURLProvider(hubService)
 
 	smHandlers := httpapi.NewSkillMarketHandlers(httpapi.SkillMarketConfig{
 		Store:          smStore,

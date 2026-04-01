@@ -83,6 +83,7 @@
         <button class="btn btn-primary" onclick="doLogin()" data-i18n="auth.login.btn">登录</button>
         <span class="auth-toggle" onclick="showAuthMode('register')" data-i18n="auth.switch.register">没有账户？注册</span>
         <span class="auth-toggle" onclick="showAuthMode('lookup')" data-i18n="auth.switch.lookup">邮件验证登录</span>
+        <span class="auth-toggle" onclick="showAuthMode('forgot')" data-i18n="auth.switch.forgot">忘记密码？</span>
       </div>
       <div id="login-msg"></div>
     </div>
@@ -141,6 +142,47 @@
       </div>
       <div id="lookup-msg"></div>
     </div>
+
+    <div id="auth-mode-forgot" style="display:none">
+      <h3 data-i18n="auth.forgot.title">忘记密码</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px" data-i18n="auth.forgot.desc">输入已注册的邮箱，我们将发送密码重设链接。</p>
+      <div class="form-row">
+        <label>Email</label>
+        <input id="forgot-email" type="email" placeholder="your@email.com" style="flex:1">
+      </div>
+      <div class="form-row">
+        <label data-i18n="auth.captcha">验证码</label>
+        <div class="captcha-box">
+          <span class="captcha-display" id="forgot-captcha-q"></span>
+          <span>= </span>
+          <input id="forgot-captcha-a" type="text" style="width:60px" placeholder="?">
+          <span class="captcha-refresh" onclick="refreshCaptcha('forgot')" title="refresh">🔄</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label></label>
+        <button class="btn btn-primary" onclick="doForgotPassword()" data-i18n="auth.forgot.btn">发送重设邮件</button>
+        <span class="auth-toggle" onclick="showAuthMode('login')" data-i18n="auth.switch.login">已有账户？登录</span>
+      </div>
+      <div id="forgot-msg"></div>
+    </div>
+
+    <div id="auth-mode-reset" style="display:none">
+      <h3 data-i18n="auth.reset.title">重设密码</h3>
+      <div class="form-row">
+        <label data-i18n="auth.password">新密码</label>
+        <input id="reset-password" type="password" placeholder="至少6位">
+      </div>
+      <div class="form-row">
+        <label data-i18n="auth.confirm.password">确认密码</label>
+        <input id="reset-password2" type="password" placeholder="再次输入密码">
+      </div>
+      <div class="form-row">
+        <label></label>
+        <button class="btn btn-primary" onclick="doResetPassword()" data-i18n="auth.reset.btn">重设密码</button>
+      </div>
+      <div id="reset-msg"></div>
+    </div>
   </div>
 
   <!-- ═══ Logged-in bar ═══ -->
@@ -155,8 +197,6 @@
     <div class="tabs">
       <button class="tab active" data-panel="account" data-i18n="tab.account">账户</button>
       <button class="tab" data-panel="myskills" data-i18n="tab.myskills">我的 Skill</button>
-      <button class="tab" data-panel="admin-review" data-i18n="tab.review">审核管理</button>
-      <button class="tab" data-panel="admin-config" data-i18n="tab.config">系统配置</button>
     </div>
 
     <!-- ═══ 账户面板 ═══ -->
@@ -221,40 +261,6 @@
       </div>
     </div>
 
-    <!-- ═══ 审核管理面板 ═══ -->
-    <div id="panel-admin-review" class="panel">
-      <div class="card">
-        <h3 data-i18n="review.title">待审核 Skill</h3>
-        <button class="btn btn-primary" onclick="loadPendingReview()" style="margin-bottom:10px" data-i18n="review.refresh">刷新</button>
-        <table><thead><tr><th data-i18n="sk.name">名称</th><th data-i18n="review.author">上传者</th><th data-i18n="sk.rating">评分</th><th data-i18n="review.ratingCount">评价人数</th><th data-i18n="sk.actions">操作</th></tr></thead><tbody id="review-list"></tbody></table>
-        <p class="empty" id="review-empty" data-i18n="review.empty">暂无待审核 Skill</p>
-      </div>
-      <div class="card">
-        <h3 data-i18n="purchase.title">购买记录</h3>
-        <div class="form-row">
-          <input id="purchase-filter" data-i18n-placeholder="purchase.filter" placeholder="按 buyer email 或 skill_id 筛选" style="flex:1">
-          <button class="btn btn-primary" onclick="loadPurchases()" data-i18n="purchase.query">查询</button>
-        </div>
-        <table><thead><tr><th data-i18n="purchase.buyer">买家</th><th data-i18n="purchase.skill">Skill</th><th data-i18n="purchase.amount">金额</th><th data-i18n="purchase.type">类型</th><th data-i18n="purchase.status">状态</th><th data-i18n="sk.actions">操作</th></tr></thead><tbody id="purchase-list"></tbody></table>
-      </div>
-    </div>
-
-    <!-- ═══ 系统配置面板 ═══ -->
-    <div id="panel-admin-config" class="panel">
-      <div class="card">
-        <h3 data-i18n="config.trial.title">试用期配置</h3>
-        <div class="form-row">
-          <label data-i18n="config.trial.days">试用天数</label>
-          <input id="cfg-trial-days" type="number" min="1" value="7" style="width:80px">
-        </div>
-        <div class="form-row">
-          <label data-i18n="config.threshold">自动上架阈值</label>
-          <input id="cfg-threshold" type="number" min="1" value="5" style="width:80px">
-        </div>
-        <button class="btn btn-primary" onclick="saveTrialConfig()" data-i18n="config.save">保存</button>
-        <div id="config-msg"></div>
-      </div>
-    </div>
   </div><!-- /main-content -->
 </div>
 
@@ -284,6 +290,14 @@ const I18N = {
   'auth.switch.register':{ zh: '没有账户？注册', en: 'No account? Register' },
   'auth.switch.login':  { zh: '已有账户？登录', en: 'Have an account? Login' },
   'auth.switch.lookup': { zh: '邮件验证登录', en: 'Email verification login' },
+  'auth.switch.forgot': { zh: '忘记密码？', en: 'Forgot password?' },
+  'auth.forgot.title':  { zh: '忘记密码', en: 'Forgot Password' },
+  'auth.forgot.desc':   { zh: '输入已注册的邮箱，我们将发送密码重设链接。', en: 'Enter your registered email. We will send a password reset link.' },
+  'auth.forgot.btn':    { zh: '发送重设邮件', en: 'Send Reset Email' },
+  'auth.reset.title':   { zh: '重设密码', en: 'Reset Password' },
+  'auth.reset.btn':     { zh: '重设密码', en: 'Reset Password' },
+  'msg.forgot.ok':      { zh: '重设邮件已发送，请查收邮箱。', en: 'Reset email sent. Please check your inbox.' },
+  'msg.reset.ok':       { zh: '密码已重设，已自动登录。', en: 'Password reset. You are now logged in.' },
   'auth.loggedAs':      { zh: '已登录：', en: 'Logged in as:' },
   'auth.logout':        { zh: '退出', en: 'Logout' },
   'tab.account':        { zh: '账户', en: 'Account' },
@@ -420,10 +434,13 @@ function checkCaptcha(prefix) {
 
 // ── Auth mode switching ──
 function showAuthMode(mode) {
-  ['login','register','lookup'].forEach(m => {
+  ['login','register','lookup','forgot','reset'].forEach(m => {
     document.getElementById('auth-mode-' + m).style.display = m === mode ? '' : 'none';
   });
-  refreshCaptcha(mode === 'register' ? 'reg' : mode);
+  if (mode === 'forgot') refreshCaptcha('forgot');
+  else if (mode === 'register') refreshCaptcha('reg');
+  else if (mode === 'lookup') refreshCaptcha('lookup');
+  else if (mode === 'login') refreshCaptcha('login');
 }
 
 // ── Auth actions ──
@@ -475,6 +492,38 @@ async function doLookup() {
   } catch(e) { showMsg('lookup-msg', parseApiError(e), true); refreshCaptcha('lookup'); }
 }
 
+async function doForgotPassword() {
+  if (!checkCaptcha('forgot')) { showMsg('forgot-msg', t('err.captcha'), true); refreshCaptcha('forgot'); return; }
+  const email = document.getElementById('forgot-email').value.trim();
+  if (!email) return;
+  try {
+    const r = await fetch(API + '/api/v1/auth/forgot-password', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email})
+    });
+    if (!r.ok) throw await readErrorBody(r);
+    showMsg('forgot-msg', t('msg.forgot.ok'), false);
+  } catch(e) { showMsg('forgot-msg', parseApiError(e), true); refreshCaptcha('forgot'); }
+}
+
+let resetToken = '';
+async function doResetPassword() {
+  const pw = document.getElementById('reset-password').value;
+  const pw2 = document.getElementById('reset-password2').value;
+  if (pw.length < 6) { showMsg('reset-msg', t('err.password.short'), true); return; }
+  if (pw !== pw2) { showMsg('reset-msg', t('err.password.match'), true); return; }
+  try {
+    const r = await fetch(API + '/api/v1/auth/reset-password', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({token: resetToken, password: pw})
+    });
+    if (!r.ok) throw await readErrorBody(r);
+    const d = await r.json();
+    onLoginSuccess(d.session_token, d.email, d.user_id);
+    showMsg('reset-msg', t('msg.reset.ok'), false);
+  } catch(e) { showMsg('reset-msg', parseApiError(e), true); }
+}
+
 async function doLogout() {
   try {
     await fetch(API + '/api/v1/auth/logout', { method:'POST', headers: authHeaders() });
@@ -510,6 +559,7 @@ async function checkURLTokens() {
   const params = new URLSearchParams(window.location.search);
   const activateToken = params.get('activate');
   const verifyToken = params.get('verify');
+  const resetTokenParam = params.get('reset');
   if (activateToken) {
     try {
       const r = await fetch(API + '/api/v1/auth/activate?token=' + encodeURIComponent(activateToken));
@@ -529,6 +579,12 @@ async function checkURLTokens() {
       onLoginSuccess(d.session_token, d.email, d.user_id);
       showMsg('login-msg', t('msg.verified'), false);
     } catch(e) { showMsg('login-msg', parseApiError(e), true); }
+    window.history.replaceState({}, '', window.location.pathname);
+    return;
+  }
+  if (resetTokenParam) {
+    resetToken = resetTokenParam;
+    showAuthMode('reset');
     window.history.replaceState({}, '', window.location.pathname);
     return;
   }
@@ -564,6 +620,7 @@ async function loadAccountData() {
     showAccountInfo(d);
     loadTier(currentEmail);
     loadTransactions();
+    loadMySkills();
   } catch(e) {}
 }
 
@@ -629,6 +686,40 @@ async function withdraw() {
     showMsg('credits-msg', t('msg.withdraw.ok'), false);
     loadAccountData();
   } catch(e) { showMsg('credits-msg', parseApiError(e), true); }
+}
+
+// ── My Skills ──
+async function loadMySkills() {
+  if (!currentEmail) return;
+  try {
+    const r = await fetch(API + '/api/v1/skillmarket/my-skills', { headers: authHeaders() });
+    if (!r.ok) return;
+    const list = await r.json();
+    const tbody = document.getElementById('myskills-list');
+    const empty = document.getElementById('myskills-empty');
+    const table = document.getElementById('myskills-table');
+    tbody.innerHTML = '';
+    if (!list || list.length === 0) {
+      empty.style.display = '';
+      table.style.display = 'none';
+      return;
+    }
+    empty.style.display = 'none';
+    table.style.display = '';
+    list.forEach(s => {
+      const statusLabel = s.status || 'published';
+      const rating = (s.avg_rating || 0).toFixed(1);
+      const dl = s.download_count || s.downloads || 0;
+      tbody.innerHTML += `<tr>
+        <td>${esc(s.name)}</td>
+        <td>${esc(s.version || '-')}</td>
+        <td>${esc(statusLabel)}</td>
+        <td>${rating}</td>
+        <td>${dl}</td>
+        <td><button class="btn btn-danger" onclick="withdrawSkill('${esc(s.id)}')">${LANG==='zh'?'下架':'Withdraw'}</button></td>
+      </tr>`;
+    });
+  } catch(e) {}
 }
 
 // ── Review ──
@@ -743,6 +834,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+    if (tab.dataset.panel === 'myskills') loadMySkills();
   });
 });
 
@@ -764,12 +856,15 @@ async function init() {
   refreshCaptcha('login');
   refreshCaptcha('reg');
   refreshCaptcha('lookup');
+  refreshCaptcha('forgot');
   // Enter key support
   document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   document.getElementById('login-captcha-a').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   document.getElementById('reg-password2').addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
   document.getElementById('reg-captcha-a').addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
   document.getElementById('lookup-captcha-a').addEventListener('keydown', e => { if (e.key === 'Enter') doLookup(); });
+  document.getElementById('forgot-captcha-a').addEventListener('keydown', e => { if (e.key === 'Enter') doForgotPassword(); });
+  document.getElementById('reset-password2').addEventListener('keydown', e => { if (e.key === 'Enter') doResetPassword(); });
   await checkURLTokens();
   if (!sessionToken) {
     updateUIState();

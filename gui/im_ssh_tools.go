@@ -23,6 +23,7 @@ var sshMgrOnce sync.Once
 func (h *IMMessageHandler) ensureSSHManager() *remote.SSHSessionManager {
 	sshMgrOnce.Do(func() {
 		h.sshMgr = remote.NewSSHSessionManager(nil)
+		h.bgTaskMgr = remote.NewSSHBackgroundTaskManager(h.sshMgr)
 
 		// When an SSH session exits (abnormal disconnect, remote close, etc.)
 		// automatically mark the corresponding background loop as completed.
@@ -49,12 +50,24 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 		return h.sshConnect(args)
 	case "exec":
 		return h.sshExec(args)
+	case "exec_background":
+		return h.sshExecBackground(args)
+	case "check_task":
+		return h.sshCheckTask(args)
+	case "list_tasks":
+		return h.sshListTasks()
+	case "kill_task":
+		return h.sshKillTask(args)
+	case "upload":
+		return h.sshUpload(args)
+	case "download":
+		return h.sshDownload(args)
 	case "list":
 		return h.sshList()
 	case "close":
 		return h.sshClose(args)
 	default:
-		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/list/close）", action)
+		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）", action)
 	}
 }
 
@@ -139,6 +152,15 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 		return "错误: exec 需要 session_id 和 command 参数"
 	}
 
+	// 自动升级：长时间命令且 wait_seconds 未显式设置大值时，自动转为后台模式
+	waitSec := 5
+	if w, ok := args["wait_seconds"].(float64); ok && w > 0 {
+		waitSec = int(w)
+	}
+	if remote.IsLongRunningCommand(command) && waitSec <= 30 {
+		return h.sshExecBackground(args)
+	}
+
 	session, ok := mgr.Get(sessionID)
 	if !ok {
 		return fmt.Sprintf("错误: SSH 会话 %s 不存在", sessionID)
@@ -155,38 +177,29 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
 		}
 		reconnectNote = "⚠️ 连接已断开并自动重连\n"
-		// 等 shell 初始化
 		time.Sleep(2 * time.Second)
 	}
 
 	linesBefore := session.LineCount()
 
 	if sessionDead {
-		// 已经重连过，直接写入
 		if err := mgr.WriteInput(sessionID, command); err != nil {
 			return fmt.Sprintf("%s发送命令失败: %v", reconnectNote, err)
 		}
 	} else {
-		// 使用带健康检查的写入，支持自动重连
 		reconnected, err := mgr.WriteInputChecked(sessionID, command)
 		if err != nil {
 			return fmt.Sprintf("发送命令失败: %v", err)
 		}
 		if reconnected {
 			reconnectNote = "⚠️ 连接已断开并自动重连\n"
-			// 重连后等 shell 初始化，重新获取行号基线
 			time.Sleep(2 * time.Second)
 			linesBefore = session.LineCount()
 		}
 	}
 
-	// 智能等待：检测输出稳定而非盲等
-	waitSec := 5
-	if w, ok := args["wait_seconds"].(float64); ok && w > 0 {
-		waitSec = int(w)
-	}
-	if waitSec > 120 {
-		waitSec = 120
+	if waitSec > 600 {
+		waitSec = 600
 	}
 	maxWait := time.Duration(waitSec) * time.Second
 
@@ -204,6 +217,162 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 	h.bumpSSHLoopIteration(sessionID)
 
 	return fmt.Sprintf("%s[%s] 状态: %s\n$ %s\n%s", reconnectNote, sessionID, string(status), command, output)
+}
+
+// sshExecBackground runs a long-running command in the background via nohup.
+func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string {
+	mgr := h.ensureSSHManager()
+	if h.bgTaskMgr == nil {
+		h.bgTaskMgr = remote.NewSSHBackgroundTaskManager(mgr)
+	}
+
+	sessionID, _ := args["session_id"].(string)
+	command, _ := args["command"].(string)
+	if sessionID == "" || command == "" {
+		return "错误: exec_background 需要 session_id 和 command 参数"
+	}
+
+	// Auto-reconnect if needed.
+	status, _ := mgr.GetSessionStatus(sessionID)
+	if status == remote.SessionExited || status == remote.SessionError {
+		if err := mgr.ReconnectByID(sessionID); err != nil {
+			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	task, err := h.bgTaskMgr.Submit(sessionID, command)
+	if err != nil {
+		return fmt.Sprintf("提交后台任务失败: %v", err)
+	}
+
+	h.bumpSSHLoopIteration(sessionID)
+
+	return fmt.Sprintf("✅ 后台任务已提交\n"+
+		"任务 ID: %s\n"+
+		"命令: %s\n"+
+		"日志文件: %s\n"+
+		"PID: %s\n"+
+		"状态: running\n\n"+
+		"💡 使用 check_task (task_id=%s) 查看进度\n"+
+		"💡 SSH 断连不影响任务执行，重连后可继续查看",
+		task.TaskID, task.Command, task.LogFile, task.PID, task.TaskID)
+}
+
+// sshCheckTask checks the status and latest log output of a background task.
+func (h *IMMessageHandler) sshCheckTask(args map[string]interface{}) string {
+	if h.bgTaskMgr == nil {
+		return "错误: 无后台任务"
+	}
+
+	taskID, _ := args["task_id"].(string)
+	if taskID == "" {
+		return "错误: check_task 需要 task_id 参数"
+	}
+
+	tailLines := 50
+	if t, ok := args["tail_lines"].(float64); ok && t > 0 {
+		tailLines = int(t)
+	}
+
+	result, err := h.bgTaskMgr.CheckTask(taskID, tailLines)
+	if err != nil {
+		return fmt.Sprintf("检查任务失败: %v", err)
+	}
+
+	statusEmoji := "🔄"
+	switch result.Status {
+	case "completed":
+		statusEmoji = "✅"
+	case "failed":
+		statusEmoji = "❌"
+	case "killed":
+		statusEmoji = "🛑"
+	case "unknown":
+		statusEmoji = "❓"
+	}
+
+	logTail := result.LogTail
+	if logTail == "" {
+		logTail = "(无日志输出)"
+	}
+	if len(logTail) > 6000 {
+		logTail = logTail[:3000] + "\n... (截断) ...\n" + logTail[len(logTail)-3000:]
+	}
+
+	return fmt.Sprintf("%s 任务 %s\n命令: %s\n状态: %s\n进程存活: %v\n已运行: %s\n\n--- 最新日志 ---\n%s",
+		statusEmoji, result.TaskID, result.Command, result.Status,
+		result.IsAlive, result.Elapsed, logTail)
+}
+
+// sshListTasks lists all background tasks.
+func (h *IMMessageHandler) sshListTasks() string {
+	if h.bgTaskMgr == nil {
+		return "当前无后台任务"
+	}
+
+	tasks := h.bgTaskMgr.ListTasks()
+	if len(tasks) == 0 {
+		return "当前无后台任务"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("后台任务（%d 个）:\n", len(tasks)))
+	for _, t := range tasks {
+		elapsed := time.Since(t.StartedAt).Round(time.Second)
+		sb.WriteString(fmt.Sprintf("  - %s | PID: %s | 状态: %s | 已运行: %s\n    命令: %s\n",
+			t.TaskID, t.PID, t.Status, elapsed, t.Command))
+	}
+	return sb.String()
+}
+
+// sshKillTask terminates a background task.
+func (h *IMMessageHandler) sshKillTask(args map[string]interface{}) string {
+	if h.bgTaskMgr == nil {
+		return "错误: 无后台任务"
+	}
+
+	taskID, _ := args["task_id"].(string)
+	if taskID == "" {
+		return "错误: kill_task 需要 task_id 参数"
+	}
+
+	if err := h.bgTaskMgr.KillTask(taskID); err != nil {
+		return fmt.Sprintf("终止任务失败: %v", err)
+	}
+	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
+}
+
+// sshUpload uploads a local file/directory to the remote server via SFTP.
+func (h *IMMessageHandler) sshUpload(args map[string]interface{}) string {
+	mgr := h.ensureSSHManager()
+	sessionID, _ := args["session_id"].(string)
+	localPath, _ := args["local_path"].(string)
+	remotePath, _ := args["remote_path"].(string)
+	if sessionID == "" || localPath == "" || remotePath == "" {
+		return "错误: upload 需要 session_id、local_path 和 remote_path 参数"
+	}
+	result, err := mgr.SFTPTransfer(sessionID, "upload", localPath, remotePath)
+	if err != nil {
+		return fmt.Sprintf("上传失败: %v", err)
+	}
+	return fmt.Sprintf("✅ 上传完成: %s → %s\n%s", localPath, remotePath, result)
+}
+
+// sshDownload downloads a remote file/directory to local via SFTP.
+func (h *IMMessageHandler) sshDownload(args map[string]interface{}) string {
+	mgr := h.ensureSSHManager()
+	sessionID, _ := args["session_id"].(string)
+	localPath, _ := args["local_path"].(string)
+	remotePath, _ := args["remote_path"].(string)
+	if sessionID == "" || localPath == "" || remotePath == "" {
+		return "错误: download 需要 session_id、local_path 和 remote_path 参数"
+	}
+	result, err := mgr.SFTPTransfer(sessionID, "download", localPath, remotePath)
+	if err != nil {
+		return fmt.Sprintf("下载失败: %v", err)
+	}
+	return fmt.Sprintf("✅ 下载完成: %s → %s\n%s", remotePath, localPath, result)
 }
 
 func (h *IMMessageHandler) sshList() string {

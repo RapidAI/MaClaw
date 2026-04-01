@@ -14,8 +14,8 @@ import (
 // sshToolDefinitions 返回统一的 SSH 工具定义（单工具，action 分发）。
 func sshToolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
-		toolDef("ssh", "SSH 远程服务器管理（connect/exec/list/close）", map[string]interface{}{
-			"action":          map[string]interface{}{"type": "string", "description": "操作: connect/exec/list/close"},
+		toolDef("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）", map[string]interface{}{
+			"action":          map[string]interface{}{"type": "string", "description": "操作: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close"},
 			"host":            map[string]interface{}{"type": "string", "description": "远程主机地址（connect 时必填）"},
 			"user":            map[string]interface{}{"type": "string", "description": "登录用户名（connect 时必填）"},
 			"port":            map[string]interface{}{"type": "integer", "description": "SSH 端口（默认 22）"},
@@ -24,9 +24,13 @@ func sshToolDefinitions() []map[string]interface{} {
 			"password":        map[string]interface{}{"type": "string", "description": "密码（可选）"},
 			"label":           map[string]interface{}{"type": "string", "description": "主机标签（可选，如 prod-web-01）"},
 			"initial_command": map[string]interface{}{"type": "string", "description": "连接后立即执行的命令（可选）"},
-			"session_id":      map[string]interface{}{"type": "string", "description": "SSH 会话 ID（exec/close 时必填）"},
-			"command":         map[string]interface{}{"type": "string", "description": "要执行的命令（exec 时必填）"},
-			"wait_seconds":    map[string]interface{}{"type": "integer", "description": "等待输出秒数（exec 时可选，默认 5）"},
+			"session_id":      map[string]interface{}{"type": "string", "description": "SSH 会话 ID（exec/upload/download/close 时必填）"},
+			"command":         map[string]interface{}{"type": "string", "description": "要执行的命令（exec/exec_background 时必填）"},
+			"wait_seconds":    map[string]interface{}{"type": "integer", "description": "等待输出秒数（exec 时可选，默认 5，最大 600）"},
+			"task_id":         map[string]interface{}{"type": "string", "description": "后台任务 ID（check_task/kill_task 时必填）"},
+			"tail_lines":      map[string]interface{}{"type": "integer", "description": "查看日志尾部行数（check_task 时可选，默认 50）"},
+			"local_path":      map[string]interface{}{"type": "string", "description": "本地文件/目录路径（upload/download 时必填）"},
+			"remote_path":     map[string]interface{}{"type": "string", "description": "远程文件/目录路径（upload/download 时必填）"},
 		}, []string{"action"}),
 	}
 }
@@ -39,12 +43,24 @@ func (h *TUIAgentHandler) toolSSH(args map[string]interface{}) string {
 		return h.sshConnect(args)
 	case "exec":
 		return h.sshExec(args)
+	case "exec_background":
+		return h.sshExecBackground(args)
+	case "check_task":
+		return h.sshCheckTask(args)
+	case "list_tasks":
+		return h.sshListTasks()
+	case "kill_task":
+		return h.sshKillTask(args)
+	case "upload":
+		return h.sshUpload(args)
+	case "download":
+		return h.sshDownload(args)
 	case "list":
 		return h.sshList()
 	case "close":
 		return h.sshClose(args)
 	default:
-		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/list/close）", action)
+		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）", action)
 	}
 }
 
@@ -125,6 +141,12 @@ func (h *TUIAgentHandler) sshExec(args map[string]interface{}) string {
 		return "错误: exec 需要 session_id 和 command 参数"
 	}
 
+	// 自动升级：长时间命令且 wait_seconds 未显式设置大值时，自动转为后台模式
+	waitSec := intArg(args, "wait_seconds", 5)
+	if remote.IsLongRunningCommand(command) && waitSec <= 30 && h.bgTaskMgr != nil {
+		return h.sshExecBackground(args)
+	}
+
 	session, ok := h.sshMgr.Get(sessionID)
 	if !ok {
 		return fmt.Sprintf("错误: SSH 会话 %s 不存在", sessionID)
@@ -141,38 +163,32 @@ func (h *TUIAgentHandler) sshExec(args map[string]interface{}) string {
 			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
 		}
 		reconnectNote = "⚠️ 连接已断开并自动重连\n"
-		// 等 shell 初始化
 		time.Sleep(2 * time.Second)
 	}
 
 	linesBefore := session.LineCount()
 
 	if sessionDead {
-		// 已经重连过，直接写入
 		if err := h.sshMgr.WriteInput(sessionID, command); err != nil {
 			return fmt.Sprintf("%s发送命令失败: %v", reconnectNote, err)
 		}
 	} else {
-		// 使用带健康检查的写入，支持自动重连
 		reconnected, err := h.sshMgr.WriteInputChecked(sessionID, command)
 		if err != nil {
 			return fmt.Sprintf("发送命令失败: %v", err)
 		}
 		if reconnected {
 			reconnectNote = "⚠️ 连接已断开并自动重连\n"
-			// 重连后等 shell 初始化，重新获取行号基线
 			time.Sleep(2 * time.Second)
 			linesBefore = session.LineCount()
 		}
 	}
 
-	// 智能等待：检测输出稳定而非盲等
-	waitSec := intArg(args, "wait_seconds", 5)
 	if waitSec <= 0 {
 		waitSec = 5
 	}
-	if waitSec > 120 {
-		waitSec = 120
+	if waitSec > 600 {
+		waitSec = 600
 	}
 	maxWait := time.Duration(waitSec) * time.Second
 
@@ -187,6 +203,167 @@ func (h *TUIAgentHandler) sshExec(args map[string]interface{}) string {
 	}
 
 	return fmt.Sprintf("%s[%s] 状态: %s\n$ %s\n%s", reconnectNote, sessionID, string(status), command, output)
+}
+
+// sshExecBackground 在远程服务器上以后台模式执行长时间命令。
+// 命令通过 nohup 包装，输出重定向到日志文件，SSH 断连不影响执行。
+func (h *TUIAgentHandler) sshExecBackground(args map[string]interface{}) string {
+	if h.sshMgr == nil || h.bgTaskMgr == nil {
+		return "错误: SSH 会话管理器未初始化"
+	}
+
+	sessionID := stringArg(args, "session_id")
+	command := stringArg(args, "command")
+	if sessionID == "" || command == "" {
+		return "错误: exec_background 需要 session_id 和 command 参数"
+	}
+
+	// 检查会话是否存在且存活，必要时自动重连
+	status, _ := h.sshMgr.GetSessionStatus(sessionID)
+	if status == remote.SessionExited || status == remote.SessionError {
+		if err := h.sshMgr.ReconnectByID(sessionID); err != nil {
+			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	task, err := h.bgTaskMgr.Submit(sessionID, command)
+	if err != nil {
+		return fmt.Sprintf("提交后台任务失败: %v", err)
+	}
+
+	return fmt.Sprintf("✅ 后台任务已提交\n"+
+		"任务 ID: %s\n"+
+		"命令: %s\n"+
+		"日志文件: %s\n"+
+		"PID: %s\n"+
+		"状态: running\n\n"+
+		"💡 使用 check_task (task_id=%s) 查看进度\n"+
+		"💡 使用 kill_task (task_id=%s) 终止任务\n"+
+		"💡 SSH 断连不影响任务执行，重连后可继续查看",
+		task.TaskID, task.Command, task.LogFile, task.PID, task.TaskID, task.TaskID)
+}
+
+// sshCheckTask 检查后台任务的状态和最新日志输出。
+func (h *TUIAgentHandler) sshCheckTask(args map[string]interface{}) string {
+	if h.bgTaskMgr == nil {
+		return "错误: 后台任务管理器未初始化"
+	}
+
+	taskID := stringArg(args, "task_id")
+	if taskID == "" {
+		return "错误: check_task 需要 task_id 参数"
+	}
+
+	tailLines := intArg(args, "tail_lines", 50)
+	result, err := h.bgTaskMgr.CheckTask(taskID, tailLines)
+	if err != nil {
+		return fmt.Sprintf("检查任务失败: %v", err)
+	}
+
+	statusEmoji := "🔄"
+	switch result.Status {
+	case "completed":
+		statusEmoji = "✅"
+	case "failed":
+		statusEmoji = "❌"
+	case "killed":
+		statusEmoji = "🛑"
+	case "unknown":
+		statusEmoji = "❓"
+	}
+
+	logTail := result.LogTail
+	if logTail == "" {
+		logTail = "(无日志输出)"
+	}
+	if len(logTail) > 6000 {
+		logTail = logTail[:3000] + "\n... (截断) ...\n" + logTail[len(logTail)-3000:]
+	}
+
+	return fmt.Sprintf("%s 任务 %s\n"+
+		"命令: %s\n"+
+		"状态: %s\n"+
+		"进程存活: %v\n"+
+		"已运行: %s\n"+
+		"日志大小: %s bytes\n\n"+
+		"--- 最新日志 ---\n%s",
+		statusEmoji, result.TaskID, result.Command, result.Status,
+		result.IsAlive, result.Elapsed, result.LogSize, logTail)
+}
+
+// sshListTasks 列出所有后台任务。
+func (h *TUIAgentHandler) sshListTasks() string {
+	if h.bgTaskMgr == nil {
+		return "当前无后台任务（管理器未初始化）"
+	}
+
+	tasks := h.bgTaskMgr.ListTasks()
+	if len(tasks) == 0 {
+		return "当前无后台任务"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("后台任务（%d 个）:\n", len(tasks)))
+	for _, t := range tasks {
+		elapsed := time.Since(t.StartedAt).Round(time.Second)
+		sb.WriteString(fmt.Sprintf("  - %s | %s | PID: %s | 状态: %s | 已运行: %s\n    命令: %s\n",
+			t.TaskID, t.SessionID, t.PID, t.Status, elapsed, t.Command))
+	}
+	return sb.String()
+}
+
+// sshKillTask 终止后台任务。
+func (h *TUIAgentHandler) sshKillTask(args map[string]interface{}) string {
+	if h.bgTaskMgr == nil {
+		return "错误: 后台任务管理器未初始化"
+	}
+
+	taskID := stringArg(args, "task_id")
+	if taskID == "" {
+		return "错误: kill_task 需要 task_id 参数"
+	}
+
+	if err := h.bgTaskMgr.KillTask(taskID); err != nil {
+		return fmt.Sprintf("终止任务失败: %v", err)
+	}
+	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
+}
+
+// sshUpload 上传本地文件/目录到远程服务器。
+func (h *TUIAgentHandler) sshUpload(args map[string]interface{}) string {
+	if h.sshMgr == nil {
+		return "错误: SSH 会话管理器未初始化"
+	}
+	sessionID := stringArg(args, "session_id")
+	localPath := stringArg(args, "local_path")
+	remotePath := stringArg(args, "remote_path")
+	if sessionID == "" || localPath == "" || remotePath == "" {
+		return "错误: upload 需要 session_id、local_path 和 remote_path 参数"
+	}
+	result, err := h.sshMgr.SFTPTransfer(sessionID, "upload", localPath, remotePath)
+	if err != nil {
+		return fmt.Sprintf("上传失败: %v", err)
+	}
+	return fmt.Sprintf("✅ 上传完成: %s → %s\n%s", localPath, remotePath, result)
+}
+
+// sshDownload 从远程服务器下载文件/目录到本地。
+func (h *TUIAgentHandler) sshDownload(args map[string]interface{}) string {
+	if h.sshMgr == nil {
+		return "错误: SSH 会话管理器未初始化"
+	}
+	sessionID := stringArg(args, "session_id")
+	localPath := stringArg(args, "local_path")
+	remotePath := stringArg(args, "remote_path")
+	if sessionID == "" || localPath == "" || remotePath == "" {
+		return "错误: download 需要 session_id、local_path 和 remote_path 参数"
+	}
+	result, err := h.sshMgr.SFTPTransfer(sessionID, "download", localPath, remotePath)
+	if err != nil {
+		return fmt.Sprintf("下载失败: %v", err)
+	}
+	return fmt.Sprintf("✅ 下载完成: %s → %s\n%s", remotePath, localPath, result)
 }
 
 func (h *TUIAgentHandler) sshList() string {
