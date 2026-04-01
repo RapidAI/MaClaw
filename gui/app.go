@@ -4714,6 +4714,7 @@ func (a *App) ShowItemInFolder(path string) error {
 	case "windows":
 		path = filepath.FromSlash(path)
 		cmd = exec.Command("explorer", "/select,", path)
+		hideCommandWindow(cmd)
 	case "linux":
 		cmd = exec.Command("xdg-open", filepath.Dir(path))
 	default:
@@ -5713,6 +5714,7 @@ func (a *App) OpenSystemUrl(url string) error {
 		// Escape & to ^& for cmd.exe
 		escapedUrl := strings.ReplaceAll(url, "&", "^&")
 		cmd = exec.Command("cmd", "/c", "start", "", escapedUrl)
+		hideCommandWindow(cmd)
 	case "linux":
 		cmd = exec.Command("xdg-open", url)
 	default:

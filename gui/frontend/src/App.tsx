@@ -3701,6 +3701,22 @@ ${instruction}`;
                             padding: '0 15px',
                             boxSizing: 'border-box'
                         }}>
+                            <div style={{ marginBottom: '8px' }}>
+                                <button
+                                    className="btn-link"
+                                    onClick={() => switchTool('ai')}
+                                    style={{
+                                        fontSize: '0.8rem',
+                                        padding: '4px 12px',
+                                        cursor: 'pointer',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                    }}
+                                >
+                                    ← {lang === 'en' ? 'Back to AI Assistant' : lang === 'zh-Hant' ? '返回 AI 助手' : '返回 AI 助手'}
+                                </button>
+                            </div>
                             <div style={{
                                 position: 'relative',
                                 marginBottom: '5px'

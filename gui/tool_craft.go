@@ -270,6 +270,7 @@ func executeScript(scriptPath, language string, timeout int) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	hideCommandWindow(cmd)
 
 	err := cmd.Run()
 

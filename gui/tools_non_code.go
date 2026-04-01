@@ -193,6 +193,7 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 func runGitCmd(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	hideCommandWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -211,6 +212,7 @@ func searchFilesInProject(projectPath, pattern, filePattern string) string {
 	args = append(args, projectPath)
 
 	cmd := exec.Command("rg", args...)
+	hideCommandWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		result := string(out)
@@ -272,6 +274,7 @@ func checkProjectHealth(projectPath string) string {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "go", "vet", "./...")
 		cmd.Dir = projectPath
+		hideCommandWindow(cmd)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
 				results = append(results, "⚠️ Go vet 超时（30s），项目可能较大")
