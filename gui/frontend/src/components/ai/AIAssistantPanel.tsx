@@ -22,6 +22,7 @@ interface AIAssistantPanelProps {
     onboardingIncomplete?: boolean; // true when onboarding was dismissed before completion
     onOpenOnboarding?: () => void; // callback to re-open the onboarding wizard
     cancelSession?: () => Promise<void>; // cancel the current AI session
+    onOpenTutorial?: () => void; // open tutorial page
 }
 
 /* ── Theme definitions ── */
@@ -515,7 +516,7 @@ if (typeof document !== "undefined" && !document.getElementById("ai-blink-style"
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews, scrollToTopSeq, inline, onHideWindow, onboardingIncomplete, onOpenOnboarding, cancelSession }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews, scrollToTopSeq, inline, onHideWindow, onboardingIncomplete, onOpenOnboarding, cancelSession, onOpenTutorial }: AIAssistantPanelProps) {
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -699,6 +700,15 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                     }}>{title}</span>
                 </div>
                 <div style={{ display: "flex", gap: "4px", flexShrink: 0, ...(inline ? { '--wails-draggable': 'no-drag', position: 'relative', zIndex: 1000 } as any : {}) }}>
+                    {onOpenTutorial && (
+                    <button
+                        {...(inline ? { onMouseDown: onOpenTutorial } : { onClick: onOpenTutorial })}
+                        style={{ ...baseActionBtnStyle, color: t.actionBtnColor }}
+                        title={lang === "en" ? "Tutorial" : "教程"}
+                    >
+                        📚
+                    </button>
+                    )}
                     <button
                         {...(inline ? { onMouseDown: refreshNews } : { onClick: refreshNews })}
                         style={{ ...baseActionBtnStyle, color: t.actionBtnColor }}

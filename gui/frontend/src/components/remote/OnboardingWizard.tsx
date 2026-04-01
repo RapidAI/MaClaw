@@ -39,6 +39,7 @@ interface LLMProvider {
     is_custom?: boolean;
     auth_type?: string;
     agent_type?: string;
+    supports_vision?: boolean;
 }
 
 type Props = {
@@ -67,10 +68,10 @@ const labelStyle: React.CSSProperties = {
     fontSize: "0.76rem", color: "#64748b", marginBottom: 4, display: "block",
 };
 
-// TigerClaw 品牌两步流程：SSO+注册 → 绑定微信
-const TIGERCLAW_TOTAL_STEPS = 2;
-const STEP_LABELS_ZH_TIGERCLAW = ["企业认证", "绑定微信"];
-const STEP_LABELS_EN_TIGERCLAW = ["SSO Auth", "WeChat"];
+// TigerClaw 品牌三步流程：SSO+注册 → 界面选择 → 绑定微信
+const TIGERCLAW_TOTAL_STEPS = 3;
+const STEP_LABELS_ZH_TIGERCLAW = ["企业认证", "界面模式", "绑定微信"];
+const STEP_LABELS_EN_TIGERCLAW = ["SSO Auth", "UI Mode", "WeChat"];
 
 const TOTAL_STEPS = 4;
 const STEP_LABELS_ZH = ["邮件注册", "界面模式", "配置 LLM", "绑定微信"];
@@ -112,12 +113,11 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     const [embeddedSSOLoading, setEmbeddedSSOLoading] = useState(false);
     const [embeddedSSOError, setEmbeddedSSOError] = useState("");
 
-    // ── Step 2/3: UI Mode（普通品牌 step2；tigerclaw 不显示）──
+    // ── Step 2: UI Mode（普通品牌 step2；tigerclaw step2）──
     const [selectedMode, setSelectedMode] = useState<'pro' | 'lite'>(uiMode === 'pro' ? 'pro' : 'lite');
-    // tigerclaw 默认 pro 模式，无需用户选择
-    const [modeDone, setModeDone] = useState(isTigerclaw ? true : (!!uiMode && uiMode !== ''));
+    const [modeDone, setModeDone] = useState(!!uiMode && uiMode !== '');
 
-    // ── Step 3/2: LLM（普通品牌 step3；tigerclaw 在 step1 SSO 后自动完成）──
+    // ── Step 3: LLM（普通品牌 step3；tigerclaw 在 step1 SSO 后自动完成）──
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
     const [llmSaving, setLlmSaving] = useState(false);
@@ -159,11 +159,11 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     const wxCompleted = wxDone || wxSkipped;
 
     // Step completion map (memoized to avoid array re-creation)
-    // TigerClaw 两步流程：step1=SSO+注册(llmDone&&regDone), step2=微信
+    // TigerClaw 三步流程：step1=SSO+注册(llmDone&&regDone), step2=界面模式(modeDone), step3=微信
     // 普通品牌四步：step1=注册, step2=UI模式, step3=LLM, step4=微信
     const stepDone = useMemo(() => {
         if (isTigerclaw) {
-            return [false, llmDone && regDone, wxCompleted];
+            return [false, llmDone && regDone, modeDone, wxCompleted];
         }
         return [false, regDone, modeDone, llmDone, wxCompleted];
     }, [regDone, modeDone, llmDone, wxCompleted, isTigerclaw]);
@@ -196,11 +196,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
         }).catch(() => {});
     }, []);
 
-    // Stop WeChat polling when leaving step 4 or unmounting
+    // Stop WeChat polling when leaving the WeChat step or unmounting
+    const wxStep = isTigerclaw ? 3 : 4;
     useEffect(() => {
-        if (step !== 4) wxPollingRef.current = false;
+        if (step !== wxStep) wxPollingRef.current = false;
         return () => { wxPollingRef.current = false; };
-    }, [step]);
+    }, [step, wxStep]);
 
     // Cancel embedded SSO polling on unmount
     useEffect(() => {
@@ -221,13 +222,13 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
 
     // Auto-close when all done
     useEffect(() => {
-        const allDone = isTigerclaw ? (llmDone && regDone && wxCompleted) : (regDone && modeDone && llmDone && wxCompleted);
+        const allDone = isTigerclaw ? (llmDone && regDone && modeDone && wxCompleted) : (regDone && modeDone && llmDone && wxCompleted);
         if (allDone) {
             onSaveField({ onboarding_done: true });
             const timer = setTimeout(onClose, 1500);
             return () => clearTimeout(timer);
         }
-    }, [regDone, modeDone, llmDone, wxCompleted, isTigerclaw, onClose]);
+    }, [regDone, modeDone, llmDone, wxCompleted, isTigerclaw, onClose, onSaveField]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
 
@@ -330,6 +331,15 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
             } else {
                 const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
                 await SaveMaclawLLMProviders(providers, sp.name);
+
+                // Refresh providers to pick up auto-detected supports_vision from backend
+                try {
+                    const freshData = await GetMaclawLLMProviders();
+                    if (freshData?.providers) {
+                        setProviders(freshData.providers.map((p: LLMProvider) => ({ ...p })));
+                    }
+                } catch { /* non-fatal */ }
+
                 setLlmResult({ ok: true, msg: reply });
                 setLlmDone(true);
                 onLLMConfigured();
@@ -581,8 +591,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                         const s = i + 1;
                         const done = stepDone[s];
                         const active = s === step;
-                        // Step 4 skipped: show grey instead of green
-                        const skippedStep = s === 4 && wxSkipped && !wxDone;
+                        // Last step (WeChat) skipped: show grey instead of green
+                        const skippedStep = s === totalSteps && wxSkipped && !wxDone;
                         const circleColor = skippedStep ? "#94a3b8" : done ? "#22c55e" : active ? "#6366f1" : "#cbd5e1";
                         return (
                             <div key={s} style={{ display: "flex", alignItems: "center" }}>
@@ -828,10 +838,10 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     )}
 
                     {/* ═══ Step 2 ═══
-                        TigerClaw 品牌：绑定微信（原 Step 4）
-                        普通品牌：UI 模式选择（原 Step 2）
+                        TigerClaw 品牌：界面模式选择
+                        普通品牌：界面模式选择
                     */}
-                    {step === 2 && isTigerclaw && (
+                    {step === 2 && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
                                 {t("选择适合你的界面模式。", "Choose the interface mode that suits you.")}
@@ -874,50 +884,9 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     )}
 
                     {/* ═══ Step 3 ═══
-                        TigerClaw 品牌：界面模式选择（原 Step 2）
-                        普通品牌：LLM 配置（原 Step 3）
+                        TigerClaw 品牌：绑定微信
+                        普通品牌：LLM 配置
                     */}
-                    {step === 3 && isTigerclaw && (
-                        <div>
-                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
-                                {t("选择适合你的界面模式。", "Choose the interface mode that suits you.")}
-                            </p>
-                            <div style={{ display: "flex", gap: 10 }}>
-                                <div
-                                    onClick={() => { setSelectedMode('pro'); onSaveField({ ui_mode: 'pro' }); setModeDone(true); }}
-                                    style={{
-                                        flex: 1, padding: "14px 14px", borderRadius: 10, cursor: "pointer",
-                                        border: `2px solid ${selectedMode === 'pro' ? '#6366f1' : '#e2e8f0'}`,
-                                        background: selectedMode === 'pro' ? 'rgba(99,102,241,0.06)' : '#f8fafc',
-                                        transition: "all 0.15s",
-                                    }}
-                                >
-                                    <div style={{ fontSize: "0.88rem", fontWeight: 600, color: selectedMode === 'pro' ? '#4338ca' : '#334155', marginBottom: 4 }}>
-                                        🛠️ {t("专业模式", "Pro")}
-                                    </div>
-                                    <div style={{ fontSize: "0.72rem", color: "#94a3b8", lineHeight: 1.4 }}>
-                                        {t("包含完整编程工具链，适合开发者", "Full coding toolchain for developers")}
-                                    </div>
-                                </div>
-                                <div
-                                    onClick={() => { setSelectedMode('lite'); onSaveField({ ui_mode: 'lite' }); setModeDone(true); }}
-                                    style={{
-                                        flex: 1, padding: "14px 14px", borderRadius: 10, cursor: "pointer",
-                                        border: `2px solid ${selectedMode === 'lite' ? '#6366f1' : '#e2e8f0'}`,
-                                        background: selectedMode === 'lite' ? 'rgba(99,102,241,0.06)' : '#f8fafc',
-                                        transition: "all 0.15s",
-                                    }}
-                                >
-                                    <div style={{ fontSize: "0.88rem", fontWeight: 600, color: selectedMode === 'lite' ? '#4338ca' : '#334155', marginBottom: 4 }}>
-                                        ✨ {t("简洁模式", "Lite")}
-                                    </div>
-                                    <div style={{ fontSize: "0.72rem", color: "#94a3b8", lineHeight: 1.4 }}>
-                                        {t("专注 AI 助手与技能扩展，隐藏编程工具", "AI assistant & skills, coding tools hidden")}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
 
                     {step === 3 && !isTigerclaw && (
                         <div>
@@ -1094,10 +1063,10 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     )}
 
                     {/* ═══ 微信绑定 ═══
-                        TigerClaw: step === 2
+                        TigerClaw: step === 3
                         普通品牌: step === 4
                     */}
-                    {((isTigerclaw && step === 2) || (!isTigerclaw && step === 4)) && (
+                    {((isTigerclaw && step === 3) || (!isTigerclaw && step === 4)) && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
                                 {t(`扫码绑定微信，即可通过微信与 ${displayName} 交互。`,

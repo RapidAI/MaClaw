@@ -35,6 +35,7 @@ interface LLMProvider {
     is_custom?: boolean;
     auth_type?: string;
     agent_type?: string; // "openclaw" (default) or "claude_code"
+    supports_vision?: boolean; // whether the model supports image input
 }
 
 const NONE_PROVIDER = "__none__";
@@ -86,6 +87,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [dlgSaving, setDlgSaving] = useState(false);
     const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [dlgDirty, setDlgDirty] = useState(false);
+    const [dlgTested, setDlgTested] = useState(false); // true after successful test; allows save-only on subsequent saves
     const [oauthBusy, setOauthBusy] = useState(false);
     const [proxyRunning, setProxyRunning] = useState(false);
     const [proxyBusy, setProxyBusy] = useState(false);
@@ -153,6 +155,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgSaving(false);
         setDlgTestResult(null);
         setDlgDirty(false);
+        setDlgTested(false);
         setBrowserInfo(null);
         setBrowserLaunched(false);
         setDlgOpen(true);
@@ -226,12 +229,17 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         });
         setDlgDirty(true);
         setDlgTestResult(null);
+        // Reset tested flag when core connection fields change so re-test is required
+        if (["url", "key", "model", "protocol"].includes(field)) {
+            setDlgTested(false);
+        }
     }, [dlgSelectedIdx]);
 
     const dlgSelectProvider = useCallback((idx: number | null) => {
         setDlgSelectedIdx(idx);
         setDlgDirty(true);
         setDlgTestResult(null);
+        setDlgTested(false);
     }, []);
 
     const dlgQuickFill = useCallback((epName: string) => {
@@ -309,10 +317,34 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             setProviders(dlgProviders.map(p => ({ ...p })));
             setCurrentName(saveName);
 
+            // If already tested successfully, just save without re-testing.
+            // This allows the user to toggle supports_vision after a test
+            // without the probe overwriting their manual choice.
+            if (dlgTested) {
+                onStatusChange?.(true, true);
+                setDlgTestResult({ ok: true, msg: t("已保存", "Saved") });
+                setTimeout(() => setDlgOpen(false), 800);
+                setDlgSaving(false);
+                return;
+            }
+
             const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
+
+            // Refresh providers to pick up auto-detected supports_vision from backend
+            try {
+                const freshData = await GetMaclawLLMProviders();
+                if (freshData?.providers) {
+                    const fresh = freshData.providers.map((p: LLMProvider) => ({ ...p }));
+                    setDlgProviders(fresh);
+                    setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
+                }
+            } catch { /* non-fatal */ }
+
+            setDlgTested(true);
             setDlgTestResult({ ok: true, msg: reply });
             onStatusChange?.(true, true);
-            setTimeout(() => setDlgOpen(false), 1200);
+            // Don't auto-close: let user review the vision probe result and
+            // manually override supports_vision if needed before closing.
         } catch (e) {
             setDlgTestResult({ ok: false, msg: String(e) });
         }
@@ -949,6 +981,41 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     </p>
                                 </div>
 
+                                {/* Vision Support Toggle */}
+                                <div style={{
+                                    marginTop: 12, display: "flex", alignItems: "center",
+                                    justifyContent: "space-between", gap: 10,
+                                }}>
+                                    <div style={{ flex: 1 }}>
+                                        <label style={{ ...labelStyle, marginBottom: 2 }}>
+                                            {t("图片理解", "Vision Support")}
+                                        </label>
+                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: 0, lineHeight: 1.4 }}>
+                                            {dlgProvider.supports_vision
+                                                ? t("✅ 支持图片输入（微信发图可被模型理解）", "✅ Supports image input (WeChat images understood by model)")
+                                                : t("❌ 不支持图片（发图将保存为文件而非发送给模型）", "❌ No vision (images saved as files, not sent to model)")}
+                                        </p>
+                                        <p style={{ fontSize: "0.64rem", color: colors.textMuted, margin: "2px 0 0 0", lineHeight: 1.4 }}>
+                                            {t(
+                                                "保存时自动检测，如检测不准可手动切换",
+                                                "Auto-detected on save; toggle manually if detection is wrong"
+                                            )}
+                                        </p>
+                                    </div>
+                                    <input type="checkbox" checked={!!dlgProvider.supports_vision}
+                                        onChange={e => {
+                                            if (dlgSelectedIdx === null) return;
+                                            setDlgProviders(prev => {
+                                                const copy = [...prev];
+                                                copy[dlgSelectedIdx] = { ...copy[dlgSelectedIdx], supports_vision: e.target.checked };
+                                                return copy;
+                                            });
+                                            setDlgDirty(true);
+                                            setDlgTestResult(null);
+                                        }}
+                                        style={{ width: 18, height: 18, accentColor: "#6366f1", cursor: "pointer", flexShrink: 0 }} />
+                                </div>
+
 
                             </div>
                         )}
@@ -969,7 +1036,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 background: dlgDirty ? "#6366f1" : colors.bg, color: dlgDirty ? "#fff" : colors.textMuted,
                                 border: "none", borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
                             }}>
-                                {dlgSaving ? t("测试并保存中...", "Testing & Saving...") : t("保存", "Save")}
+                                {dlgSaving ? t("测试并保存中...", "Testing & Saving...") : dlgTested ? t("保存", "Save") : t("测试并保存", "Test & Save")}
                             </button>
                         </div>
 

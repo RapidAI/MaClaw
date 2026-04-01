@@ -584,8 +584,27 @@ func probeVisionOpenAI(baseURL, key, model, imgB64, userAgent string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	_, _ = io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-	return resp.StatusCode == http.StatusOK
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	// Verify the response actually contains a valid completion with content,
+	// not just a 200 with an error payload.
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error interface{} `json:"error"`
+	}
+	if json.Unmarshal(body, &result) != nil {
+		return false
+	}
+	if result.Error != nil {
+		return false
+	}
+	return len(result.Choices) > 0 && result.Choices[0].Message.Content != ""
 }
 
 func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
@@ -625,8 +644,31 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	_, _ = io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-	return resp.StatusCode == http.StatusOK
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	// Verify the response actually contains valid text content,
+	// not just a 200 with an error payload (some gateways do this).
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Error interface{} `json:"error"`
+	}
+	if json.Unmarshal(body, &result) != nil {
+		return false
+	}
+	if result.Error != nil {
+		return false
+	}
+	for _, block := range result.Content {
+		if block.Type == "text" && block.Text != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // saveVisionProbeResult persists the vision probe result into the matching

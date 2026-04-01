@@ -3423,16 +3423,6 @@ ${instruction}`;
 
                     <div style={{ flex: 1 }}></div>
 
-                    <div
-                        className={`sidebar-item ${navTab === 'tutorial' ? 'active' : ''}`}
-                        onClick={() => { switchTool('tutorial'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'tutorial' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={t("tutorial")}
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>📚</span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("tutorial")}</span>
-                    </div>
-
                     {gossipAllowed && (
                         <div
                             className={`sidebar-item ${navTab === 'gossip' ? 'active' : ''}`}
@@ -3575,7 +3565,7 @@ ${instruction}`;
             <div className="main-container">
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
-                    <AIAssistantPanel onClose={() => { switchTool('settings'); }} lang={lang} inline={true} onHideWindow={() => WindowHide()} onboardingIncomplete={!config?.onboarding_done && !showMaclawLLMPopup} onOpenOnboarding={() => setShowMaclawLLMPopup(true)} {...aiAssistant} />
+                    <AIAssistantPanel onClose={() => { switchTool('settings'); }} lang={lang} inline={true} onHideWindow={() => WindowHide()} onboardingIncomplete={!config?.onboarding_done && !showMaclawLLMPopup} onOpenOnboarding={() => setShowMaclawLLMPopup(true)} onOpenTutorial={() => switchTool('tutorial')} {...aiAssistant} />
                 ) : (
                 <><div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
