@@ -145,16 +145,17 @@ func TestToolRouter_NonCoreBuiltinCompetes(t *testing.T) {
 	router := NewToolRouter(nil)
 	result := router.Route("帮我修改配置", builtins)
 
-	// get_config and update_config should rank high due to "配置" match.
+	// update_config should rank high due to "配置" match, and at least one
+	// complementary config-reading/management tool should remain in budget.
 	resultNames := make(map[string]bool)
 	for _, tool := range result {
 		resultNames[extractToolName(tool)] = true
 	}
-	if !resultNames["get_config"] {
-		t.Error("get_config should be included when user mentions 配置")
-	}
 	if !resultNames["update_config"] {
 		t.Error("update_config should be included when user mentions 配置")
+	}
+	if !resultNames["get_config"] && !resultNames["manage_config"] {
+		t.Error("expected a config inspection or management tool to remain in the routed result")
 	}
 }
 

@@ -21,6 +21,7 @@ interface AIAssistantPanelProps {
     onHideWindow?: () => void; // hide the entire window (inline mode)
     onboardingIncomplete?: boolean; // true when onboarding was dismissed before completion
     onOpenOnboarding?: () => void; // callback to re-open the onboarding wizard
+    cancelSession?: () => Promise<void>; // cancel the current AI session
 }
 
 /* ── Theme definitions ── */
@@ -514,7 +515,7 @@ if (typeof document !== "undefined" && !document.getElementById("ai-blink-style"
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews, scrollToTopSeq, inline, onHideWindow, onboardingIncomplete, onOpenOnboarding }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews, scrollToTopSeq, inline, onHideWindow, onboardingIncomplete, onOpenOnboarding, cancelSession }: AIAssistantPanelProps) {
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -523,6 +524,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
     const userScrolledUpRef = useRef(false);
     const prevMsgCountRef = useRef(0);
     const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const prevReadyRef = useRef(ready);
 
     const t = inline ? lightTheme : overlayTheme;
 
@@ -546,6 +548,12 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
             ? (lang === "en" ? "Processing..." : "处理中...")
             : (lang === "en" ? "Type a message..." : "输入消息...");
 
+    // Reset scroll flag when component mounts (panel opened/re-shown)
+    useEffect(() => {
+        userScrolledUpRef.current = false;
+        outputEndRef.current?.scrollIntoView({ behavior: "auto" });
+    }, []);
+
     // Debounced auto-scroll: coalesce rapid token updates into a single scroll
     useEffect(() => {
         if (userScrolledUpRef.current) {
@@ -561,7 +569,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
         // Content update on existing message (streaming tokens) → debounce 80ms
         if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
         scrollTimerRef.current = setTimeout(() => {
-            outputEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            outputEndRef.current?.scrollIntoView({ behavior: "auto" });
         }, 80);
         return () => {
             if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
@@ -577,16 +585,31 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
             container.scrollHeight - container.scrollTop - container.clientHeight > threshold;
     }, []);
 
-    // Scroll to top when pinned news are (re)loaded — e.g. after clear history
-    // or app restart — so the user sees the pinned messages first.
+    useEffect(() => {
+        const becameReady = !prevReadyRef.current && ready;
+        prevReadyRef.current = ready;
+        if (!becameReady || userScrolledUpRef.current) return;
+        const hasConversationMessages = messages.some(
+            m => !(m.role === 'system' && m.id.startsWith('news-')),
+        );
+        if (!hasConversationMessages) return;
+        outputEndRef.current?.scrollIntoView({ behavior: "auto" });
+    }, [ready, messages]);
+
+    // Scroll to top when pinned news are (re)loaded only if there is no
+    // existing conversation yet, so reopening maclaw still shows the latest chat.
     useEffect(() => {
         if (!scrollToTopSeq) return;
+        const hasConversationMessages = messages.some(
+            m => !(m.role === 'system' && m.id.startsWith('news-')),
+        );
+        if (hasConversationMessages) return;
         const container = outputContainerRef.current;
         if (container) {
             container.scrollTo({ top: 0, behavior: "smooth" });
             userScrolledUpRef.current = true; // prevent auto-scroll-to-bottom from overriding
         }
-    }, [scrollToTopSeq]);
+    }, [scrollToTopSeq, messages]);
 
     // Focus input on mount
     useEffect(() => {
@@ -632,11 +655,8 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
 
     // Memoize rendered non-news messages
     const renderedOtherMessages = useMemo(() => {
-        const lastAssistantIdx = findLastIndex(messages, m => m.role === 'assistant');
-        return otherMessages.map(msg => {
-            const origIdx = messages.indexOf(msg);
-            return renderMessage(msg, executeAction, t, origIdx === lastAssistantIdx);
-        });
+        const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant') ?? null;
+        return otherMessages.map(msg => renderMessage(msg, executeAction, t, msg === lastAssistantMsg));
     }, [otherMessages, messages, executeAction, t]);
 
     const containerStyle: React.CSSProperties = inline
@@ -881,21 +901,37 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                     autoCorrect="off"
                     spellCheck={false}
                 />
-                <button
-                    onClick={handleSend}
-                    disabled={!ready || sending || !inputValue.trim()}
-                    style={{
-                        ...baseInputBtnStyle,
-                        ...(inline
-                            ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
-                            : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
-                        opacity: (!ready || sending || !inputValue.trim()) ? 0.5 : 1,
-                        marginBottom: "4px",
-                    }}
-                    title={lang === "en" ? "Send" : "发送"}
-                >
-                    {sending ? "…" : "⏎"}
-                </button>
+                {sending && cancelSession ? (
+                    <button
+                        onClick={cancelSession}
+                        style={{
+                            ...baseInputBtnStyle,
+                            color: t.errorText,
+                            borderColor: t.errorText,
+                            background: "transparent",
+                            marginBottom: "4px",
+                        }}
+                        title={lang === "en" ? "Cancel" : "取消"}
+                    >
+                        ✕
+                    </button>
+                ) : (
+                    <button
+                        onClick={handleSend}
+                        disabled={!ready || sending || !inputValue.trim()}
+                        style={{
+                            ...baseInputBtnStyle,
+                            ...(inline
+                                ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
+                                : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
+                            opacity: (!ready || sending || !inputValue.trim()) ? 0.5 : 1,
+                            marginBottom: "4px",
+                        }}
+                        title={lang === "en" ? "Send" : "发送"}
+                    >
+                        {sending ? "…" : "⏎"}
+                    </button>
+                )}
             </div>
         </div>
     );

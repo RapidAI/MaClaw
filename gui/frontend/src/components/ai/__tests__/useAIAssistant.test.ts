@@ -23,6 +23,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
         return mockSendResponse;
     }),
     ClearAIAssistantHistory: vi.fn(async () => {}),
+    IsAIAssistantReady: vi.fn(async () => true),
+    GetAIAssistantInitStatus: vi.fn(async () => 'ready'),
+    CancelAIAssistantSession: vi.fn(async () => {}),
+    FetchNews: vi.fn(async () => []),
 }));
 
 // Capture EventsOn handler so tests can simulate progress events.

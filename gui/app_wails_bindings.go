@@ -563,6 +563,16 @@ func (a *App) ClearAIAssistantHistory() error {
 	return nil
 }
 
+// CancelAIAssistantSession cancels the currently running AI assistant session.
+func (a *App) CancelAIAssistantSession() error {
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil || hubClient.imHandler == nil {
+		return fmt.Errorf("AI assistant not initialized")
+	}
+	return hubClient.imHandler.CancelCurrentSession()
+}
+
 // ---------------------------------------------------------------------------
 // Background Loop Wails bindings
 // ---------------------------------------------------------------------------

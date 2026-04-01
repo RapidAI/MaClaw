@@ -697,7 +697,7 @@ func (a *App) installNodeJSCLI() error {
 	}
 	headResp.Body.Close()
 
-	tempDir := os.TempDir()
+	tempDir := a.GetTempDir()
 	msiPath := filepath.Join(tempDir, fileName)
 
 	fmt.Println("  Downloading Node.js installer...")
@@ -786,7 +786,7 @@ func (a *App) installGitBashCLI() error {
 	downloadURL := fmt.Sprintf("https://github.com/git-for-windows/git/releases/download/%s/%s", fullVersion, fileName)
 	fmt.Printf("  Downloading from: %s\n", downloadURL)
 
-	tempDir := os.TempDir()
+	tempDir := a.GetTempDir()
 	exePath := filepath.Join(tempDir, fileName)
 
 	if err := a.downloadFileCLI(exePath, downloadURL); err != nil {
@@ -1002,7 +1002,7 @@ func (a *App) installNodeJS() error {
 	}
 	headResp.Body.Close()
 
-	tempDir := os.TempDir()
+	tempDir := a.GetTempDir()
 	msiPath := filepath.Join(tempDir, fileName)
 
 	if err := a.downloadFile(msiPath, downloadURL); err != nil {
@@ -1156,7 +1156,7 @@ func (a *App) installVCRedist() error {
 	fmt.Printf("  -Downloading from: %s\n", downloadURL)
 	a.log(a.tr("Downloading Visual C++ Redistributable..."))
 
-	tempDir := os.TempDir()
+	tempDir := a.GetTempDir()
 	exePath := filepath.Join(tempDir, fileName)
 	fmt.Printf("  -Download path: %s\n", exePath)
 
@@ -1248,7 +1248,7 @@ func (a *App) installGitBash() error {
 
 	a.log(a.tr("Downloading Git %s...", gitVersion))
 
-	tempDir := os.TempDir()
+	tempDir := a.GetTempDir()
 	exePath := filepath.Join(tempDir, fileName)
 
 	if err := a.downloadFile(exePath, downloadURL); err != nil {
@@ -1642,7 +1642,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	batchContent += "  echo ========================================\r\n"
 	batchContent += ")\r\n"
 
-	tempBatchPath := filepath.Join(os.TempDir(), fmt.Sprintf("maclaw_launch_%d.bat", time.Now().UnixNano()))
+	tempBatchPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("maclaw_launch_%d.bat", time.Now().UnixNano()))
 	err := os.WriteFile(tempBatchPath, []byte(batchContent), 0644)
 	if err != nil {
 		a.log("Error creating batch file: " + err.Error())
@@ -1738,7 +1738,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			codexBatchContent += "  echo ========================================\r\n"
 			codexBatchContent += ")\r\n"
 
-			codexBatchPath := filepath.Join(os.TempDir(), fmt.Sprintf("maclaw_codex_%d.bat", time.Now().UnixNano()))
+			codexBatchPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("maclaw_codex_%d.bat", time.Now().UnixNano()))
 			if err := os.WriteFile(codexBatchPath, []byte(codexBatchContent), 0644); err != nil {
 				a.log("Error creating codex batch file: " + err.Error())
 				a.ShowMessage("Launch Error", "Failed to create temporary batch file")

@@ -249,6 +249,8 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 
 func TestDefaultMaclawLLMProviders(t *testing.T) {
 	providers := defaultMaclawLLMProviders()
+
+
 	if len(providers) < 7 {
 		t.Fatalf("provider count = %d, want >= 7", len(providers))
 	}
@@ -270,6 +272,24 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("免费 ContextLength = %d, want %d", first.ContextLength, 10000)
 	}
 
+	openAI := providers[1]
+	if openAI.Name != "OpenAI" {
+		t.Errorf("providers[1].Name = %q, want %q", openAI.Name, "OpenAI")
+	}
+	if openAI.URL != "https://api.openai.com/v1" {
+		t.Errorf("OpenAI URL = %q, want %q", openAI.URL, "https://api.openai.com/v1")
+	}
+	if openAI.Model != "gpt-5.4" {
+		t.Errorf("OpenAI Model = %q, want %q", openAI.Model, "gpt-5.4")
+	}
+	if openAI.AuthType != "oauth" {
+		t.Errorf("OpenAI AuthType = %q, want %q", openAI.AuthType, "oauth")
+	}
+	if openAI.ContextLength != 128000 {
+		t.Errorf("OpenAI ContextLength = %d, want %d", openAI.ContextLength, 128000)
+	}
+
+
 	expectedNames := []string{"免费", "OpenAI", "智谱", "MiniMax", "Kimi", "Custom1", "Custom2"}
 	for i, want := range expectedNames {
 		if providers[i].Name != want {
@@ -277,15 +297,10 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		}
 	}
 
-	if got := providers[1].Model; got != "gpt-5.4" {
-		t.Errorf("OpenAI Model = %q, want %q", got, "gpt-5.4")
-	}
-	if got := providers[1].AuthType; got != "oauth" {
-		t.Errorf("OpenAI AuthType = %q, want %q", got, "oauth")
-	}
 	if got := providers[4].AgentType; got != "claude-code/2.0.0" {
 		t.Errorf("Kimi AgentType = %q, want %q", got, "claude-code/2.0.0")
 	}
+
 
 	n := len(providers)
 	if !providers[n-2].IsCustom {

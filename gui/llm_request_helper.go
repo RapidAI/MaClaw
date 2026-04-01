@@ -18,12 +18,15 @@ import (
 // dumpLLMContext saves the request body to a temp file when an HTTP 500 error
 // occurs, and returns an enriched error message containing the context length
 // (in bytes) and the dump file path.
-func dumpLLMContext(statusCode int, respMsg string, requestBody []byte) error {
+func dumpLLMContext(statusCode int, respMsg string, requestBody []byte, tempDir string) error {
 	if statusCode != http.StatusInternalServerError {
 		return fmt.Errorf("HTTP %d: %s", statusCode, respMsg)
 	}
 	ctxLen := len(requestBody)
-	dumpFile := filepath.Join(os.TempDir(), fmt.Sprintf("llm_context_%d.json", time.Now().UnixMilli()))
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	dumpFile := filepath.Join(tempDir, fmt.Sprintf("llm_context_%d.json", time.Now().UnixMilli()))
 	if err := os.WriteFile(dumpFile, requestBody, 0644); err != nil {
 		return fmt.Errorf("HTTP %d (context %d bytes, dump failed: %v): %s", statusCode, ctxLen, err, respMsg)
 	}
@@ -78,7 +81,7 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg MaclawLLMConfig, messages []
 		if len(msg) > 512 {
 			msg = msg[:512] + "..."
 		}
-		return nil, dumpLLMContext(resp.StatusCode, msg, data)
+		return nil, dumpLLMContext(resp.StatusCode, msg, data, "")
 	}
 
 	var result struct {
@@ -159,7 +162,7 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg MaclawLLMConfig, messages
 		if len(msg) > 512 {
 			msg = msg[:512] + "..."
 		}
-		return nil, dumpLLMContext(resp.StatusCode, msg, data)
+		return nil, dumpLLMContext(resp.StatusCode, msg, data, "")
 	}
 
 	var result struct {

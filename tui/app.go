@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/memoryshot"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -49,9 +50,10 @@ type TUIApp struct {
 	memPipeline    *memory.Pipeline
 	schedulerMgr   *scheduler.Manager
 	clawnetClient  *clawnet.Client
+	memShotMgr     *memoryshot.Manager
 
 	// AI 助手聊天
-	chatHistory []map[string]string // 对话历史 (role/content)
+	chatHistory []memoryshot.ChatMessage
 	llmClient   *http.Client
 
 	// Gossip 聊天八卦自动发帖
@@ -86,6 +88,74 @@ type sessionUpdateMsg struct {
 // pythonEnvMsg Python 环境检测/安装完成消息。
 type pythonEnvMsg struct {
 	status pyenv.Status
+}
+
+func copyChatHistory(history []memoryshot.ChatMessage) []memoryshot.ChatMessage {
+	if len(history) == 0 {
+		return nil
+	}
+	cloned := make([]memoryshot.ChatMessage, len(history))
+	copy(cloned, history)
+	return cloned
+}
+
+func chatHistoryToViewMessages(history []memoryshot.ChatMessage) []views.ChatMessage {
+	if len(history) == 0 {
+		return nil
+	}
+	msgs := make([]views.ChatMessage, 0, len(history))
+	for _, msg := range history {
+		msgs = append(msgs, views.ChatMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
+	return msgs
+}
+
+func (a *TUIApp) syncChatHistoryToMemoryShot(save bool) {
+	if a.memShotMgr == nil {
+		return
+	}
+	a.memShotMgr.UpdateChatHistory(copyChatHistory(a.chatHistory))
+	if save {
+		_ = a.memShotMgr.Save()
+	}
+}
+
+func (a *TUIApp) shutdown() {
+	if a.qqBotMgr != nil {
+		a.qqBotMgr.Stop()
+	}
+	if a.telegramMgr != nil {
+		a.telegramMgr.Stop()
+	}
+	if a.configWatcher != nil {
+		a.configWatcher.Stop()
+	}
+	if a.sessionMonitor != nil {
+		a.sessionMonitor.Close()
+	}
+	if a.schedulerMgr != nil {
+		a.schedulerMgr.Stop()
+	}
+	if a.memPipeline != nil {
+		a.memPipeline.Stop()
+	}
+	if a.memoryStore != nil {
+		a.memoryStore.Stop()
+	}
+	a.syncChatHistoryToMemoryShot(true)
+	if a.memShotMgr != nil {
+		a.memShotMgr.Stop()
+	}
+	if a.auditLog != nil {
+		_ = a.auditLog.Close()
+	}
+	if a.kernel != nil {
+		ctx := context.Background()
+		_ = a.kernel.Shutdown(ctx)
+	}
 }
 
 // NewTUIApp 创建 TUI 应用实例。
@@ -239,6 +309,22 @@ func (a *TUIApp) initKernel() tea.Msg {
 		}
 	}()
 
+	// --- 新增：MemoryShot Manager ---
+	mshotMgr, mshotErr := memoryshot.DefaultManager()
+	if mshotErr != nil {
+		logger.Error("memoryshot init failed: %v", mshotErr)
+	} else {
+		a.memShotMgr = mshotMgr
+		a.memShotMgr.Start(30 * time.Second)
+		// 恢复聊天历史
+		if loaded, err := mshotMgr.Load(); err == nil && loaded {
+			snap := mshotMgr.GetSnapshot()
+			a.chatHistory = copyChatHistory(snap.ChatHistory)
+			a.root.Chat.SetMessages(chatHistoryToViewMessages(snap.ChatHistory))
+			logger.Info("restored %d messages from memoryshot", len(snap.ChatHistory))
+		}
+	}
+
 	return kernelStartedMsg{}
 }
 
@@ -252,65 +338,11 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		chatFocused := a.root.ActiveTab() == views.TabChat && a.root.Chat.IsInputFocused()
 		switch msg.String() {
 		case "ctrl+c":
-			if a.qqBotMgr != nil {
-				a.qqBotMgr.Stop()
-			}
-			if a.telegramMgr != nil {
-				a.telegramMgr.Stop()
-			}
-			if a.configWatcher != nil {
-				a.configWatcher.Stop()
-			}
-			if a.sessionMonitor != nil {
-				a.sessionMonitor.Close()
-			}
-			if a.schedulerMgr != nil {
-				a.schedulerMgr.Stop()
-			}
-			if a.memPipeline != nil {
-				a.memPipeline.Stop()
-			}
-			if a.memoryStore != nil {
-				a.memoryStore.Stop()
-			}
-			if a.auditLog != nil {
-				_ = a.auditLog.Close()
-			}
-			if a.kernel != nil {
-				ctx := context.Background()
-				_ = a.kernel.Shutdown(ctx)
-			}
+			a.shutdown()
 			return a, tea.Quit
 		case "q":
 			if !configEditing && !auditFiltering && !chatFocused {
-				if a.qqBotMgr != nil {
-					a.qqBotMgr.Stop()
-				}
-				if a.telegramMgr != nil {
-					a.telegramMgr.Stop()
-				}
-				if a.configWatcher != nil {
-					a.configWatcher.Stop()
-				}
-				if a.sessionMonitor != nil {
-					a.sessionMonitor.Close()
-				}
-				if a.schedulerMgr != nil {
-					a.schedulerMgr.Stop()
-				}
-				if a.memPipeline != nil {
-					a.memPipeline.Stop()
-				}
-				if a.memoryStore != nil {
-					a.memoryStore.Stop()
-				}
-				if a.auditLog != nil {
-					_ = a.auditLog.Close()
-				}
-				if a.kernel != nil {
-					ctx := context.Background()
-					_ = a.kernel.Shutdown(ctx)
-				}
+				a.shutdown()
 				return a, tea.Quit
 			}
 		}
@@ -412,6 +444,10 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.ChatClearMsg:
 		a.chatHistory = nil
+		if a.memShotMgr != nil {
+			a.memShotMgr.ClearChatHistory()
+		}
+		a.syncChatHistoryToMemoryShot(true)
 		if a.gossipDetector != nil {
 			a.gossipDetector.ClearBuffer()
 		}
@@ -562,14 +598,23 @@ func isSensitiveConfigKey(key string) bool {
 // sendAgentMessage 在后台执行 Agent 循环（带工具调用）。
 func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 	// 追加用户消息到历史
-	a.chatHistory = append(a.chatHistory, map[string]string{
-		"role": "user", "content": text,
+	a.chatHistory = append(a.chatHistory, memoryshot.ChatMessage{
+		Role:    "user",
+		Content: text,
 	})
+	a.syncChatHistoryToMemoryShot(true)
 
 	// 保留最近 20 轮对话
 	history := a.chatHistory
 	if len(history) > 40 {
 		history = history[len(history)-40:]
+	}
+	conversation := make([]map[string]string, 0, len(history))
+	for _, msg := range history {
+		conversation = append(conversation, map[string]string{
+			"role":    msg.Role,
+			"content": msg.Content,
+		})
 	}
 
 	return func() tea.Msg {
@@ -584,18 +629,20 @@ func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 			WithClawnetClient(a.clawnetClient),
 			WithAuditLog(a.auditLog),
 		)
-		resp := handler.RunAgentLoop(text, history)
+		resp := handler.RunAgentLoop(text, conversation)
 		if resp.Error != "" {
 			return views.ChatResponseMsg{Error: resp.Error}
 		}
 		// 追加助手回复到历史
-		a.chatHistory = append(a.chatHistory, map[string]string{
-			"role": "assistant", "content": resp.Text,
+		a.chatHistory = append(a.chatHistory, memoryshot.ChatMessage{
+			Role:    "assistant",
+			Content: resp.Text,
 		})
 		// 触发聊天八卦检测
 		if a.gossipDetector != nil && resp.Text != "" {
 			a.gossipDetector.OnChatCompleted(text, resp.Text)
 		}
+		a.syncChatHistoryToMemoryShot(true)
 		return views.ChatResponseMsg{Text: resp.Text}
 	}
 }
@@ -629,9 +676,11 @@ func (a *TUIApp) checkPythonEnvCmd() tea.Cmd {
 // sendChatMessage 在后台调用 LLM 并返回响应。
 func (a *TUIApp) sendChatMessage(text string) tea.Cmd {
 	// 追加用户消息到历史
-	a.chatHistory = append(a.chatHistory, map[string]string{
-		"role": "user", "content": text,
+	a.chatHistory = append(a.chatHistory, memoryshot.ChatMessage{
+		Role:    "user",
+		Content: text,
 	})
+	a.syncChatHistoryToMemoryShot(true)
 
 	// Build system greeting with memory-based identity override.
 	greeting := tuiSystemGreeting()
@@ -653,7 +702,10 @@ func (a *TUIApp) sendChatMessage(text string) tea.Cmd {
 		history = history[len(history)-40:]
 	}
 	for _, h := range history {
-		msgs = append(msgs, h)
+		msgs = append(msgs, map[string]string{
+			"role":    h.Role,
+			"content": h.Content,
+		})
 	}
 
 	return func() tea.Msg {
@@ -672,9 +724,11 @@ func (a *TUIApp) sendChatMessage(text string) tea.Cmd {
 		}
 
 		// 追加助手回复到历史
-		a.chatHistory = append(a.chatHistory, map[string]string{
-			"role": "assistant", "content": resp.Content,
+		a.chatHistory = append(a.chatHistory, memoryshot.ChatMessage{
+			Role:    "assistant",
+			Content: resp.Content,
 		})
+		a.syncChatHistoryToMemoryShot(true)
 
 		return views.ChatResponseMsg{Text: resp.Content}
 	}
