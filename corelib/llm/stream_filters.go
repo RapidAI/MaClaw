@@ -9,7 +9,9 @@ import (
 type thinkFilter struct {
 	downstream TokenCallback
 	inside     bool
+	trimNext   bool // trim leading whitespace after exiting a think block
 	pending    strings.Builder
+	emitted    bool // true once any non-empty content has been sent downstream
 }
 
 const (
@@ -38,11 +40,29 @@ func (f *thinkFilter) drain() {
 			return
 		}
 
+		// Trim leading whitespace after exiting a think block or before first content
+		if (f.trimNext || !f.emitted) && !f.inside {
+			trimmed := strings.TrimLeft(s, " \t\r\n")
+			if trimmed == "" {
+				// All whitespace — consume and wait for more
+				f.pending.Reset()
+				return
+			}
+			if trimmed != s {
+				f.pending.Reset()
+				f.pending.WriteString(trimmed)
+				f.trimNext = false
+				continue
+			}
+			f.trimNext = false
+		}
+
 		if !f.inside {
 			if strings.Contains(s, thinkOpen) {
 				idx := strings.Index(s, thinkOpen)
 				if idx > 0 {
 					f.downstream(s[:idx])
+					f.emitted = true
 				}
 				f.inside = true
 				remaining := s[idx+len(thinkOpen):]
@@ -58,6 +78,7 @@ func (f *thinkFilter) drain() {
 					matchAny = true
 					if len(s) > i {
 						f.downstream(s[:len(s)-i])
+						f.emitted = true
 						f.pending.Reset()
 						f.pending.WriteString(thinkOpen[:i])
 					}
@@ -66,6 +87,7 @@ func (f *thinkFilter) drain() {
 			}
 			if !matchAny {
 				f.downstream(s)
+				f.emitted = true
 				f.pending.Reset()
 			}
 			return
@@ -73,6 +95,7 @@ func (f *thinkFilter) drain() {
 			if strings.Contains(s, thinkClose) {
 				idx := strings.Index(s, thinkClose)
 				f.inside = false
+				f.trimNext = true
 				remaining := s[idx+len(thinkClose):]
 				f.pending.Reset()
 				f.pending.WriteString(remaining)

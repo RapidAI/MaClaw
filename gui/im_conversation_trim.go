@@ -463,7 +463,7 @@ var thinkTagPattern = regexp.MustCompile(`(?si)<think>.*?</think>|<think>.*$`)
 // trims any leading whitespace left behind.
 func stripThinkingTags(s string) string {
 	if !strings.Contains(s, "<think>") {
-		return s
+		return strings.TrimSpace(s)
 	}
 	cleaned := thinkTagPattern.ReplaceAllString(s, "")
 	return strings.TrimSpace(cleaned)

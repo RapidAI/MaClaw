@@ -76,5 +76,10 @@ func DoOpenAIRequest(
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
+	// Strip <think>, function_call, and XML tool_call blocks from content,
+	// consistent with the streaming path.
+	for i := range result.Choices {
+		result.Choices[i].Message.Content = StripAllExtra(result.Choices[i].Message.Content)
+	}
 	return &result, nil
 }

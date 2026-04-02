@@ -25,7 +25,7 @@ var thinkTagPattern = regexp.MustCompile(`(?si)<think>.*?</think>|<think>.*$`)
 // StripThinkingTags removes <think>...</think> blocks from LLM output.
 func StripThinkingTags(s string) string {
 	if !strings.Contains(s, "<think>") {
-		return s
+		return strings.TrimSpace(s)
 	}
 	return strings.TrimSpace(thinkTagPattern.ReplaceAllString(s, ""))
 }
