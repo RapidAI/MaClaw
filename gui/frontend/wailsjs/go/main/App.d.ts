@@ -463,6 +463,8 @@ export function StopWeixin():Promise<void>;
 
 export function StartWeixinQRLogin():Promise<Record<string, string>>;
 
+export function PollWeixinQRStatus(arg1:string):Promise<Record<string, string>>;
+
 export function WaitWeixinQRLogin(arg1:string):Promise<Record<string, string>>;
 
 export function GetWeixinLocalMode():Promise<boolean>;

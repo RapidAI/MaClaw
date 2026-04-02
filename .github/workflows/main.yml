@@ -617,13 +617,59 @@ jobs:
           sed -i 's/^[[:space:]]*//' "$APP_DIR/${OUT_LOWER}.desktop"
 
           # AppRun (shebang must be at column 0)
-          cat > "$APP_DIR/AppRun" << REOF
+          cat > "$APP_DIR/AppRun" << 'REOF'
           #!/bin/bash
-          HERE="\$(dirname "\$(readlink -f "\${0}")")"
-          export PATH="\${HERE}/usr/bin:\${PATH}"
-          exec ${OUT_LOWER} "\$@"
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          export PATH="${HERE}/usr/bin:${PATH}"
+
+          # Check for WebKit2GTK runtime dependency
+          check_webkit() {
+            # Try 4.0 first, then 4.1
+            for lib in libwebkit2gtk-4.0.so.37 libwebkit2gtk-4.1.so.0; do
+              if ldconfig -p 2>/dev/null | grep -q "$lib"; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          if ! check_webkit; then
+            echo "=========================================="
+            echo " Missing dependency: libwebkit2gtk"
+            echo "=========================================="
+            echo ""
+            echo "This application requires WebKit2GTK to run."
+            echo "Please install it with your package manager:"
+            echo ""
+            echo "  Ubuntu/Debian:"
+            echo "    sudo apt install libwebkit2gtk-4.0-37"
+            echo "    (or: sudo apt install libwebkit2gtk-4.1-0)"
+            echo ""
+            echo "  Fedora:"
+            echo "    sudo dnf install webkit2gtk4.0"
+            echo ""
+            echo "  Arch Linux:"
+            echo "    sudo pacman -S webkit2gtk"
+            echo ""
+            echo "  openSUSE:"
+            echo "    sudo zypper install libwebkit2gtk-4_0-37"
+            echo ""
+
+            # Try to show a GUI dialog if possible
+            if command -v zenity &>/dev/null; then
+              zenity --error --title="Missing Dependency" \
+                --text="WebKit2GTK is required but not installed.\n\nUbuntu/Debian:\n  sudo apt install libwebkit2gtk-4.0-37\n\nFedora:\n  sudo dnf install webkit2gtk4.0\n\nArch:\n  sudo pacman -S webkit2gtk" \
+                --width=400 2>/dev/null
+            elif command -v kdialog &>/dev/null; then
+              kdialog --error "WebKit2GTK is required but not installed.\n\nUbuntu/Debian:\n  sudo apt install libwebkit2gtk-4.0-37\n\nFedora:\n  sudo dnf install webkit2gtk4.0\n\nArch:\n  sudo pacman -S webkit2gtk" 2>/dev/null
+            fi
+            exit 1
+          fi
+
+          exec APPRUN_EXEC "$@"
           REOF
           sed -i 's/^[[:space:]]*//' "$APP_DIR/AppRun"
+          sed -i "s|APPRUN_EXEC|${OUT_LOWER}|g" "$APP_DIR/AppRun"
           chmod +x "$APP_DIR/AppRun"
 
           # Download appimagetool
@@ -736,13 +782,57 @@ jobs:
           DEOF
           sed -i 's/^[[:space:]]*//' "$APP_DIR/${OUT_LOWER}.desktop"
 
-          cat > "$APP_DIR/AppRun" << REOF
+          cat > "$APP_DIR/AppRun" << 'REOF'
           #!/bin/bash
-          HERE="\$(dirname "\$(readlink -f "\${0}")")"
-          export PATH="\${HERE}/usr/bin:\${PATH}"
-          exec ${OUT_LOWER} "\$@"
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          export PATH="${HERE}/usr/bin:${PATH}"
+
+          # Check for WebKit2GTK runtime dependency
+          check_webkit() {
+            for lib in libwebkit2gtk-4.0.so.37 libwebkit2gtk-4.1.so.0; do
+              if ldconfig -p 2>/dev/null | grep -q "$lib"; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          if ! check_webkit; then
+            echo "=========================================="
+            echo " Missing dependency: libwebkit2gtk"
+            echo "=========================================="
+            echo ""
+            echo "This application requires WebKit2GTK to run."
+            echo "Please install it with your package manager:"
+            echo ""
+            echo "  Ubuntu/Debian:"
+            echo "    sudo apt install libwebkit2gtk-4.0-37"
+            echo "    (or: sudo apt install libwebkit2gtk-4.1-0)"
+            echo ""
+            echo "  Fedora:"
+            echo "    sudo dnf install webkit2gtk4.0"
+            echo ""
+            echo "  Arch Linux:"
+            echo "    sudo pacman -S webkit2gtk"
+            echo ""
+            echo "  openSUSE:"
+            echo "    sudo zypper install libwebkit2gtk-4_0-37"
+            echo ""
+
+            if command -v zenity &>/dev/null; then
+              zenity --error --title="Missing Dependency" \
+                --text="WebKit2GTK is required but not installed.\n\nUbuntu/Debian:\n  sudo apt install libwebkit2gtk-4.0-37\n\nFedora:\n  sudo dnf install webkit2gtk4.0\n\nArch:\n  sudo pacman -S webkit2gtk" \
+                --width=400 2>/dev/null
+            elif command -v kdialog &>/dev/null; then
+              kdialog --error "WebKit2GTK is required but not installed.\n\nUbuntu/Debian:\n  sudo apt install libwebkit2gtk-4.0-37\n\nFedora:\n  sudo dnf install webkit2gtk4.0\n\nArch:\n  sudo pacman -S webkit2gtk" 2>/dev/null
+            fi
+            exit 1
+          fi
+
+          exec APPRUN_EXEC "$@"
           REOF
           sed -i 's/^[[:space:]]*//' "$APP_DIR/AppRun"
+          sed -i "s|APPRUN_EXEC|${OUT_LOWER}|g" "$APP_DIR/AppRun"
           chmod +x "$APP_DIR/AppRun"
 
           wget -q -O appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage"

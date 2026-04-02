@@ -1035,6 +1035,10 @@ export function StartWeixinQRLogin() {
   return window['go']['main']['App']['StartWeixinQRLogin']();
 }
 
+export function PollWeixinQRStatus(arg1) {
+  return window['go']['main']['App']['PollWeixinQRStatus'](arg1);
+}
+
 export function WaitWeixinQRLogin(arg1) {
   return window['go']['main']['App']['WaitWeixinQRLogin'](arg1);
 }

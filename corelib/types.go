@@ -209,6 +209,70 @@ func IsAnthropicWireAPI(wireAPI string) bool {
 	return strings.EqualFold(strings.TrimSpace(wireAPI), "anthropic")
 }
 
+// NeedsSystemMerge returns true for providers that do not support the "system"
+// role in the messages array (e.g. MiniMax). For these providers the system
+// content must be merged into the first user message instead.
+func NeedsSystemMerge(cfg MaclawLLMConfig) bool {
+	return strings.Contains(cfg.URL, "minimaxi.com")
+}
+
+// MergeSystemIntoUser extracts system messages and prepends their content to
+// the first user message. Returns a new slice; the original is not modified.
+func MergeSystemIntoUser(messages []interface{}) []interface{} {
+	var systemParts []string
+	var rest []interface{}
+	for _, m := range messages {
+		role := ""
+		content := ""
+		switch mm := m.(type) {
+		case map[string]interface{}:
+			role, _ = mm["role"].(string)
+			content, _ = mm["content"].(string)
+		case map[string]string:
+			role = mm["role"]
+			content = mm["content"]
+		}
+		if role == "system" {
+			if content != "" {
+				systemParts = append(systemParts, content)
+			}
+			continue
+		}
+		rest = append(rest, m)
+	}
+	if len(systemParts) == 0 {
+		return messages // no system messages, return original slice as-is
+	}
+	prefix := strings.Join(systemParts, "\n")
+	for i, m := range rest {
+		switch mm := m.(type) {
+		case map[string]interface{}:
+			if r, _ := mm["role"].(string); r == "user" {
+				c, _ := mm["content"].(string)
+				patched := make(map[string]interface{}, len(mm))
+				for k, v := range mm {
+					patched[k] = v
+				}
+				patched["content"] = prefix + "\n\n" + c
+				rest[i] = patched
+				return rest
+			}
+		case map[string]string:
+			if mm["role"] == "user" {
+				patched := make(map[string]string, len(mm))
+				for k, v := range mm {
+					patched[k] = v
+				}
+				patched["content"] = prefix + "\n\n" + patched["content"]
+				rest[i] = patched
+				return rest
+			}
+		}
+	}
+	rest = append([]interface{}{map[string]interface{}{"role": "user", "content": prefix}}, rest...)
+	return rest
+}
+
 
 // EffectiveContextTokens returns the usable context window in tokens.
 // It uses the configured ContextLength, falling back to DefaultContextTokens.

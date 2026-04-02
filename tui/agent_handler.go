@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -21,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/clawnet"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -32,29 +31,10 @@ import (
 // agentMaxIterations 是 Agent 循环的默认最大轮数。
 const agentMaxIterations = 300
 
-// llmToolCall 表示 LLM 返回的工具调用。
-type llmToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
-
-// llmChoice 表示 LLM 返回的一个选择。
-type llmChoice struct {
-	Message struct {
-		Content          string        `json:"content"`
-		ReasoningContent string        `json:"reasoning_content,omitempty"`
-		ToolCalls        []llmToolCall `json:"tool_calls,omitempty"`
-	} `json:"message"`
-}
-
-// llmResponse 表示 LLM 的完整响应。
-type llmResponse struct {
-	Choices []llmChoice `json:"choices"`
-}
+// Type aliases — use shared types from corelib/llm.
+type llmToolCall = llm.ToolCall
+type llmChoice = llm.Choice
+type llmResponse = llm.Response
 
 // TUIAgentHandler 是 TUI 端的 Agent 循环处理器。
 // 支持 LLM 工具调用，集成 Firewall + Router + 40+ 工具。
@@ -848,47 +828,7 @@ func isRetryableLLMErrorTUI(err error) bool {
 
 // doLLMRequestWithTools 发送带工具定义的 LLM 请求。
 func (h *TUIAgentHandler) doLLMRequestWithTools(cfg corelib.MaclawLLMConfig, conversation []interface{}, tools []map[string]interface{}) (*llmResponse, error) {
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
-	reqBody := map[string]interface{}{
-		"model":    cfg.Model,
-		"messages": conversation,
-	}
-	if len(tools) > 0 {
-		reqBody["tools"] = tools
-	}
-	data, _ := json.Marshal(reqBody)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	if cfg.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Key)
-	}
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
-	}
-
-	var result llmResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
-	}
-	return &result, nil
+	return llm.DoOpenAIRequest(ctx, cfg, conversation, tools, h.httpClient)
 }

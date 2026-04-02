@@ -15,7 +15,7 @@ import {
     SaveCodeGenModelChoice,
     GetWeixinStatus,
     StartWeixinQRLogin,
-    WaitWeixinQRLogin,
+    PollWeixinQRStatus,
     StartFreeProxy,
     StopFreeProxy,
     IsFreeProxyRunning,
@@ -518,31 +518,60 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
             setWxMsg(t("请用微信扫描二维码", "Scan with WeChat"));
             setWxLoading(false);
 
-            // WaitWeixinQRLogin is a blocking call (up to 8 min) that returns
-            // only the final result: "connected" on success, or error/expired.
+            // Frontend-driven short polling (every 2s) instead of blocking call
             wxPollingRef.current = true;
-            try {
-                const poll = await WaitWeixinQRLogin(token);
-                if (!wxPollingRef.current) return; // unmounted or left step 4
-                const st = poll.status || "";
-                if (st === "connected" || st === "confirmed") {
-                    setWxStatus("confirmed");
-                    setWxMsg(poll.message || t("✅ 微信绑定成功", "✅ WeChat connected"));
-                    setWxDone(true);
-                } else if (poll.error) {
-                    setWxStatus("expired");
-                    setWxMsg("❌ " + poll.error);
-                } else {
-                    setWxStatus("expired");
-                    setWxMsg(poll.message || t("二维码已过期，请刷新", "QR expired, please refresh"));
-                }
-            } catch {
+            const pollStart = Date.now();
+            const maxPollMs = 8 * 60 * 1000; // 8 min timeout
+
+            const doPoll = async () => {
                 if (!wxPollingRef.current) return;
-                setWxStatus("error");
-                setWxMsg(t("连接失败，请重试", "Connection failed, please retry"));
-            } finally {
-                wxPollingRef.current = false;
-            }
+                if (Date.now() - pollStart > maxPollMs) {
+                    setWxStatus("expired");
+                    setWxMsg(t("二维码已过期，请刷新", "QR expired, please refresh"));
+                    wxPollingRef.current = false;
+                    return;
+                }
+                try {
+                    const poll = await PollWeixinQRStatus(token);
+                    if (!wxPollingRef.current) return;
+                    const st = poll.status || "";
+                    if (st === "confirmed") {
+                        if (!wxPollingRef.current) return;
+                        if (poll.error) {
+                            setWxStatus("error");
+                            setWxMsg("❌ " + poll.error);
+                        } else {
+                            setWxStatus("confirmed");
+                            setWxMsg(poll.message || t("✅ 微信绑定成功", "✅ WeChat connected"));
+                            setWxDone(true);
+                        }
+                        wxPollingRef.current = false;
+                        return;
+                    } else if (st === "scaned") {
+                        setWxMsg(t("已扫码，请在微信确认...", "Scanned, please confirm in WeChat..."));
+                    } else if (st === "expired") {
+                        setWxStatus("expired");
+                        setWxMsg(poll.message || t("二维码已过期，请刷新", "QR expired, please refresh"));
+                        wxPollingRef.current = false;
+                        return;
+                    } else if (poll.error) {
+                        setWxStatus("error");
+                        setWxMsg("❌ " + poll.error);
+                        wxPollingRef.current = false;
+                        return;
+                    }
+                    // "wait" — schedule next poll
+                    if (wxPollingRef.current) {
+                        setTimeout(doPoll, 2000);
+                    }
+                } catch {
+                    if (!wxPollingRef.current) return;
+                    setWxStatus("error");
+                    setWxMsg(t("连接失败，请重试", "Connection failed, please retry"));
+                    wxPollingRef.current = false;
+                }
+            };
+            doPoll();
         } catch (e) {
             setWxMsg("❌ " + String(e));
             setWxStatus("error");

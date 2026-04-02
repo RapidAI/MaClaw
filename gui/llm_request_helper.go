@@ -50,6 +50,9 @@ func doSimpleLLMRequest(ctx context.Context, cfg MaclawLLMConfig, messages []int
 
 func doSimpleOpenAIRequest(ctx context.Context, cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
+	if needsSystemMerge(cfg) {
+		messages = mergeSystemIntoUser(messages)
+	}
 	reqBody := map[string]interface{}{
 		"model":    cfg.Model,
 		"messages": messages,

@@ -139,6 +139,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
 	log.Printf("[LLM Stream] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
 
+	if needsSystemMerge(cfg) {
+		messages = mergeSystemIntoUser(messages)
+	}
+
 	reqBody := map[string]interface{}{
 		"model":    cfg.Model,
 		"messages": messages,

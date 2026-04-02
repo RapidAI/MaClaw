@@ -77,6 +77,9 @@ func DoSimpleLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, cli
 func doSimpleOpenAIRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*LLMSimpleResponse, error) {
 	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
 	log.Printf("[LLM Simple] POST %s model=%s protocol=%s (stream=true)", endpoint, cfg.Model, cfg.Protocol)
+	if corelib.NeedsSystemMerge(cfg) {
+		messages = corelib.MergeSystemIntoUser(messages)
+	}
 	reqBody := map[string]interface{}{
 		"model":    cfg.Model,
 		"messages": messages,

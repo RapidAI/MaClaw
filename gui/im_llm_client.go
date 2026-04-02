@@ -4,9 +4,8 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -30,48 +29,20 @@ func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interfac
 }
 
 func (h *IMMessageHandler) doOpenAILLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
-	log.Printf("[LLM] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
-
-	reqBody := map[string]interface{}{
-		"model":    cfg.Model,
-		"messages": messages,
-	}
-	if len(tools) > 0 {
-		reqBody["tools"] = tools
-	}
-
-	data, _ := json.Marshal(reqBody)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
+	ctx := context.Background()
+	resp, err := llm.DoOpenAIRequest(ctx, cfg, messages, tools, httpClient)
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	if cfg.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Key)
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
+		// Re-wrap with dumpLLMContext for HTTP 500 context dump support.
+		// DoOpenAIRequest returns "HTTP %d: ..." errors; extract status if 500.
+		if strings.Contains(err.Error(), "HTTP 500") {
+			data, _ := json.Marshal(map[string]interface{}{
+				"model": cfg.Model, "messages": messages, "tools": tools,
+			})
+			return nil, dumpLLMContext(500, err.Error(), data, h.app.GetTempDir())
 		}
-		return nil, dumpLLMContext(resp.StatusCode, msg, data, h.app.GetTempDir())
-	}
-
-	var result llmResponse
-	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
-	return &result, nil
+	return resp, nil
 }
 
 // doAnthropicLLMRequest sends a request using the Anthropic Messages API protocol
@@ -208,6 +179,19 @@ func convertToAnthropicMessages(messages []interface{}) anthropicConvertedMessag
 		}
 	}
 	return result
+}
+
+// needsSystemMerge returns true for providers that do not support the "system"
+// role in the messages array (e.g. MiniMax). For these providers we merge the
+// system content into the first user message instead.
+func needsSystemMerge(cfg MaclawLLMConfig) bool {
+	return corelib.NeedsSystemMerge(cfg)
+}
+
+// mergeSystemIntoUser extracts system messages and prepends their content to
+// the first user message. Returns a new slice; the original is not modified.
+func mergeSystemIntoUser(messages []interface{}) []interface{} {
+	return corelib.MergeSystemIntoUser(messages)
 }
 
 // convertToAnthropicTools converts OpenAI-style tool definitions to Anthropic format.

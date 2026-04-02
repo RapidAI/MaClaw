@@ -951,8 +951,60 @@ func (a *App) StartWeixinQRLogin() map[string]string {
 	}
 }
 
+// PollWeixinQRStatus performs a single poll of the QR code status.
+// Returns status ("wait", "scaned", "confirmed", "expired") and a message.
+// On "confirmed", automatically saves config and starts gateway (no separate confirm call needed).
+func (a *App) PollWeixinQRStatus(qrcodeToken string) map[string]string {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return map[string]string{"error": "无法加载配置: " + err.Error()}
+	}
+	baseURL := cfg.WeixinBaseURL
+	if baseURL == "" {
+		baseURL = weixin.DefaultBaseURL
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	result, status, err := weixin.PollQRStatus(ctx, baseURL, qrcodeToken)
+	if err != nil {
+		return map[string]string{"error": err.Error(), "status": "error"}
+	}
+	resp := map[string]string{
+		"status":  status,
+		"message": result.Message,
+	}
+	if status == "confirmed" {
+		if !result.Connected {
+			resp["error"] = result.Message
+			return resp
+		}
+		// Auto-save credentials and start gateway on confirmed
+		cfg.WeixinEnabled = true
+		cfg.WeixinToken = result.BotToken
+		cfg.WeixinAccountID = result.AccountID
+		if result.BaseURL != "" {
+			cfg.WeixinBaseURL = result.BaseURL
+		}
+		if cfg.WeixinLocalMode == nil {
+			local := true
+			cfg.WeixinLocalMode = &local
+			log.Printf("[weixin-mgr] first-time binding: auto-setting local mode")
+		}
+		if err := a.SaveConfig(cfg); err != nil {
+			resp["error"] = "登录成功但保存配置失败: " + err.Error()
+			return resp
+		}
+		go a.ensureWeixinGateway()
+		resp["account_id"] = result.AccountID
+	}
+	return resp
+}
+
 // WaitWeixinQRLogin waits for the user to scan the QR code and confirm login.
 // qrcodeToken is from StartWeixinQRLogin. On success, saves credentials to config.
+// Deprecated: prefer PollWeixinQRStatus + ConfirmWeixinQRLogin for non-blocking UI.
 func (a *App) WaitWeixinQRLogin(qrcodeToken string) map[string]string {
 	cfg, err := a.LoadConfig()
 	if err != nil {

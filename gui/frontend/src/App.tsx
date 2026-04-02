@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, ListBackgroundLoops } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, PollWeixinQRStatus, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, ListBackgroundLoops } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -4723,18 +4723,51 @@ ${instruction}`;
                                                             setWeixinQRLoading(false);
                                                             return;
                                                         }
+                                                        const token = res.qrcode_token || '';
                                                         setWeixinQRCode(res.qrcode_url || '');
                                                         setWeixinQRLoading(false);
                                                         setWeixinQRWaiting(true);
-                                                        const waitRes = await WaitWeixinQRLogin(res.qrcode_token || '');
-                                                        setWeixinQRWaiting(false);
-                                                        setWeixinQRCode('');
-                                                        if (waitRes.error) {
-                                                            setWeixinQRError(waitRes.error);
-                                                        } else {
-                                                            setWeixinStatus('connected');
-                                                            LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
-                                                        }
+
+                                                        // Frontend-driven short polling
+                                                        const pollStart = Date.now();
+                                                        const maxMs = 8 * 60 * 1000;
+                                                        const poll = async () => {
+                                                            if (Date.now() - pollStart > maxMs) {
+                                                                setWeixinQRWaiting(false);
+                                                                setWeixinQRCode('');
+                                                                setWeixinQRError(lang === 'zh-Hans' ? '二维码已过期' : 'QR expired');
+                                                                return;
+                                                            }
+                                                            try {
+                                                                const p = await PollWeixinQRStatus(token);
+                                                                const st = p.status || '';
+                                                                if (st === 'confirmed') {
+                                                                    setWeixinQRWaiting(false);
+                                                                    setWeixinQRCode('');
+                                                                    if (p.error) {
+                                                                        setWeixinQRError(p.error);
+                                                                    } else {
+                                                                        setWeixinStatus('connected');
+                                                                        LoadConfig().then((cfg: any) => setConfig(cfg)).catch(() => {});
+                                                                    }
+                                                                } else if (st === 'expired') {
+                                                                    setWeixinQRWaiting(false);
+                                                                    setWeixinQRCode('');
+                                                                    setWeixinQRError(p.message || 'QR expired');
+                                                                } else if (p.error) {
+                                                                    setWeixinQRWaiting(false);
+                                                                    setWeixinQRCode('');
+                                                                    setWeixinQRError(p.error);
+                                                                } else {
+                                                                    setTimeout(poll, 2000);
+                                                                }
+                                                            } catch (err: any) {
+                                                                setWeixinQRWaiting(false);
+                                                                setWeixinQRCode('');
+                                                                setWeixinQRError(err?.message || String(err));
+                                                            }
+                                                        };
+                                                        poll();
                                                     } catch (e: any) {
                                                         setWeixinQRError(e?.message || String(e));
                                                         setWeixinQRLoading(false);
