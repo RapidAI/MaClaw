@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -541,23 +542,233 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 		return h.registerAndExecuteSkill(ctx, imported, best.Name, "github", sendStatus)
 	}
 
-	// SkillMarket or ClawHub result → download via SkillHubClient if available.
-	if h.app.skillHubClient != nil {
-		smClient := NewSkillMarketClient(h.app)
-		hubURL := smClient.baseURL()
-		if best.Status == "clawhub" {
-			hubURL = ClawHubMirrorURL
+	// SkillMarket or ClawHub result → download and register locally.
+	sendStatus(fmt.Sprintf("⬇️ 正在安装: %s ...", best.Name))
+
+	if best.Status == "clawhub" {
+		// ClawHub skills are SKILL.md-based knowledge guides, not step-based
+		// automation. Download the SKILL.md content and register as a local skill.
+		skill, dlErr := downloadClawHubSkill(ctx, best.ID)
+		if dlErr != nil {
+			return fmt.Sprintf("🔎 找到 ClawHub Skill「%s」但下载失败: %v", best.Name, dlErr)
 		}
-		sendStatus(fmt.Sprintf("⬇️ 正在安装: %s ...", best.Name))
-		skill, installErr := h.app.skillHubClient.Install(ctx, best.ID, hubURL)
-		if installErr == nil {
-			return h.registerAndExecuteSkill(ctx, skill, best.Name, best.Status, sendStatus)
+		return h.registerAndExecuteSkill(ctx, skill, best.Name, "clawhub", sendStatus)
+	}
+
+	// SkillMarket result → download via HubCenter API.
+	smClient := NewSkillMarketClient(h.app)
+	base := smClient.baseURL()
+	if base == "" {
+		return fmt.Sprintf("🔎 找到 Skill「%s」但 HubCenter URL 未配置，无法下载", best.Name)
+	}
+	downloadURL := base + "/api/v1/skills/" + url.PathEscape(best.ID) + "/download"
+	skill, dlErr := downloadSkillJSON(ctx, downloadURL)
+	if dlErr != nil {
+		return fmt.Sprintf("🔎 找到 Skill「%s」: %s\n下载失败: %v\n请在设置面板的 Hub 市场中手动安装。",
+			best.Name, best.Description, dlErr)
+	}
+	return h.registerAndExecuteSkill(ctx, skill, best.Name, best.Status, sendStatus)
+}
+
+// downloadClawHubSkill fetches a skill from the ClawHub mirror and converts
+// the SKILL.md content into an NLSkillEntry with a single craft_tool step
+// that uses the SKILL.md as instructions.
+func downloadClawHubSkill(ctx context.Context, slug string) (*NLSkillEntry, error) {
+	endpoint := ClawHubMirrorURL + "/api/v1/skills/" + url.PathEscape(slug)
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var raw struct {
+		Skill struct {
+			Slug        string `json:"slug"`
+			DisplayName string `json:"displayName"`
+			Summary     string `json:"summary"`
+		} `json:"skill"`
+		MetaContent struct {
+			SkillMD string `json:"skillMd"`
+		} `json:"metaContent"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+
+	name := raw.Skill.DisplayName
+	if name == "" {
+		name = raw.Skill.Slug
+	}
+
+	// Convert SKILL.md content into a craft_tool step so the agent can
+	// use the knowledge guide to generate and execute a script.
+	skillMD := raw.MetaContent.SkillMD
+	if skillMD == "" {
+		return nil, fmt.Errorf("skill %s has no SKILL.md content", slug)
+	}
+
+	return &NLSkillEntry{
+		Name:        name,
+		Description: raw.Skill.Summary,
+		Triggers:    []string{raw.Skill.Slug},
+		Steps: []NLSkillStep{
+			{
+				Action: "craft_tool",
+				Params: map[string]interface{}{
+					"instructions": skillMD,
+				},
+			},
+		},
+		Status:     "active",
+		CreatedAt:  time.Now().Format(time.RFC3339),
+		Source:     "clawhub",
+		TrustLevel: "community",
+	}, nil
+}
+
+// downloadSkillJSON fetches a skill definition from the given URL and
+// converts it to an NLSkillEntry ready for local registration.
+// Handles both step-based skills (steps array) and file-based skills
+// (files map with SKILL.md in base64). All bundled files are extracted
+// to ~/.maclaw/data/skills/<name>/.
+func downloadSkillJSON(ctx context.Context, endpoint string) (*NLSkillEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "MaClaw/1.0")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var full struct {
+		ID          string            `json:"id"`
+		Name        string            `json:"name"`
+		Description string            `json:"description"`
+		Triggers    []string          `json:"triggers"`
+		TrustLevel  string            `json:"trust_level"`
+		Version     string            `json:"version"`
+		Steps       []json.RawMessage `json:"steps"`
+		Files       map[string]string `json:"files"` // path → base64 content
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 5<<20)).Decode(&full); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+
+	var steps []NLSkillStep
+
+	if len(full.Steps) > 0 {
+		for _, raw := range full.Steps {
+			var s struct {
+				Action  string                 `json:"action"`
+				Params  map[string]interface{} `json:"params"`
+				OnError string                 `json:"on_error"`
+			}
+			if err := json.Unmarshal(raw, &s); err == nil && s.Action != "" {
+				steps = append(steps, NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError})
+			}
 		}
 	}
 
-	// Fallback: report the found skill info.
-	return fmt.Sprintf("🔎 找到 Skill「%s」: %s\n评分: %.1f | 下载量: %d\n请在设置面板的 Hub 市场中手动安装。",
-		best.Name, best.Description, best.AvgRating, best.DownloadCount)
+	// Extract all bundled files to ~/.maclaw/data/skills/<name>/.
+	if len(full.Files) > 0 && full.Name != "" {
+		extractSkillFiles(full.Name, full.Files)
+	}
+
+	// File-based skill: extract SKILL.md content and wrap as craft_tool.
+	if len(steps) == 0 && len(full.Files) > 0 {
+		if b64, ok := full.Files["SKILL.md"]; ok {
+			decoded, err := base64.StdEncoding.DecodeString(b64)
+			if err == nil && len(decoded) > 0 {
+				steps = []NLSkillStep{
+					{
+						Action: "craft_tool",
+						Params: map[string]interface{}{
+							"instructions": string(decoded),
+						},
+					},
+				}
+			}
+		}
+	}
+
+	if len(steps) == 0 {
+		return nil, fmt.Errorf("skill %s has no steps and no SKILL.md", full.Name)
+	}
+
+	return &NLSkillEntry{
+		Name:        full.Name,
+		Description: full.Description,
+		Triggers:    full.Triggers,
+		Steps:       steps,
+		Status:      "active",
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		Source:      "hub",
+		HubSkillID:  full.ID,
+		HubVersion:  full.Version,
+		TrustLevel:  full.TrustLevel,
+	}, nil
+}
+
+// extractSkillFiles decodes base64-encoded files and writes them to
+// ~/.maclaw/data/skills/<skillName>/, preserving subdirectory structure.
+func extractSkillFiles(skillName string, files map[string]string) {
+	skillsRoot, err := cskill.PrimarySkillsDir()
+	if err != nil {
+		log.Printf("[skill-install] cannot determine skills dir: %v", err)
+		return
+	}
+	skillDir := filepath.Join(skillsRoot, skillName)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		log.Printf("[skill-install] cannot create %s: %v", skillDir, err)
+		return
+	}
+
+	for relPath, b64Content := range files {
+		data, err := base64.StdEncoding.DecodeString(b64Content)
+		if err != nil {
+			log.Printf("[skill-install] decode %s: %v", relPath, err)
+			continue
+		}
+
+		// Sanitize path — prevent directory traversal.
+		clean := filepath.ToSlash(filepath.Clean(relPath))
+		if strings.Contains(clean, "..") || filepath.IsAbs(relPath) || strings.HasPrefix(clean, "/") {
+			log.Printf("[skill-install] skipping unsafe path: %s", relPath)
+			continue
+		}
+
+		dest := filepath.Join(skillDir, filepath.FromSlash(clean))
+		if !strings.HasPrefix(dest, skillDir+string(filepath.Separator)) && dest != skillDir {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			continue
+		}
+		if err := os.WriteFile(dest, data, 0o644); err != nil {
+			log.Printf("[skill-install] write %s: %v", dest, err)
+		}
+	}
+	log.Printf("[skill-install] extracted %d files to %s", len(files), skillDir)
 }
 
 // registerAndExecuteSkill registers a skill locally, runs security review,

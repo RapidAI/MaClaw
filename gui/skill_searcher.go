@@ -70,11 +70,13 @@ func (s *SkillSearcher) Search(ctx context.Context, query string, tags []string,
 		return nil, fmt.Errorf("search failed: %s", resp.Status)
 	}
 
-	var results []SkillSearchResult
-	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+	var wrapper struct {
+		Results []SkillSearchResult `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
 		return nil, err
 	}
-	return results, nil
+	return wrapper.Results, nil
 }
 
 // ClawHubMirrorURL is the China mirror for ClawHub skill search.
@@ -124,9 +126,10 @@ func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*Sk
 }
 
 // searchClawHubMirror queries the ClawHub China mirror for skills.
+// API: GET /api/v1/search?q=<query> → {"results": [...]}
 // Returns nil on any error (non-fatal fallback).
 func (s *SkillSearcher) searchClawHubMirror(ctx context.Context, query string) []SkillSearchResult {
-	endpoint := ClawHubMirrorURL + "/api/v1/skills/search?q=" + url.QueryEscape(query) + "&page=1"
+	endpoint := ClawHubMirrorURL + "/api/v1/search?q=" + url.QueryEscape(query)
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		log.Printf("[skill-search] clawhub mirror request error: %v", err)
@@ -148,15 +151,14 @@ func (s *SkillSearcher) searchClawHubMirror(ctx context.Context, query string) [
 	}
 
 	var raw struct {
-		Skills []struct {
-			ID          string   `json:"id"`
-			Name        string   `json:"name"`
-			Description string   `json:"description"`
-			Tags        []string `json:"tags"`
-			Version     string   `json:"version"`
-			Downloads   int      `json:"downloads"`
-			AvgRating   float64  `json:"avg_rating"`
-		} `json:"skills"`
+		Results []struct {
+			Slug        string  `json:"slug"`
+			DisplayName string  `json:"displayName"`
+			Summary     string  `json:"summary"`
+			Version     string  `json:"version"`
+			Score       float64 `json:"score"`
+			UpdatedAt   int64   `json:"updatedAt"`
+		} `json:"results"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		log.Printf("[skill-search] clawhub mirror decode error: %v", err)
@@ -164,15 +166,17 @@ func (s *SkillSearcher) searchClawHubMirror(ctx context.Context, query string) [
 	}
 
 	var results []SkillSearchResult
-	for _, sk := range raw.Skills {
+	for _, r := range raw.Results {
+		name := r.DisplayName
+		if name == "" {
+			name = r.Slug
+		}
 		results = append(results, SkillSearchResult{
-			ID:            sk.ID,
-			Name:          sk.Name,
-			Description:   sk.Description,
-			Tags:          sk.Tags,
-			AvgRating:     sk.AvgRating,
-			DownloadCount: sk.Downloads,
-			Status:        "clawhub",
+			ID:          r.Slug,
+			Name:        name,
+			Description: r.Summary,
+			Score:       r.Score,
+			Status:      "clawhub",
 		})
 	}
 	if len(results) > 0 {

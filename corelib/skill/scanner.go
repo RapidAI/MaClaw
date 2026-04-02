@@ -13,38 +13,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// MigrateSkillsDir moves ~/.maclaw/skills to ~/.maclaw/data/skills if the old
-// directory exists and the new one does not. This is called once at startup to
-// consolidate data under ~/.maclaw/data/ for easier backup.
-func MigrateSkillsDir() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	oldDir := filepath.Join(home, ".maclaw", "skills")
-	newDir := filepath.Join(home, ".maclaw", "data", "skills")
-
-	// Only migrate when old exists and new does not.
-	if _, err := os.Stat(oldDir); err != nil {
-		return // old dir doesn't exist, nothing to migrate
-	}
-	if _, err := os.Stat(newDir); err == nil {
-		// Both exist — log a hint so the user knows to clean up.
-		log.Printf("[skill-scanner] migrate: both %s and %s exist; using new path, consider removing old one", oldDir, newDir)
-		return
-	}
-
-	// Ensure parent exists.
-	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
-		log.Printf("[skill-scanner] migrate: cannot create %s: %v", filepath.Dir(newDir), err)
-		return
-	}
-	if err := os.Rename(oldDir, newDir); err != nil {
-		log.Printf("[skill-scanner] migrate: rename %s → %s failed: %v", oldDir, newDir, err)
-	} else {
-		log.Printf("[skill-scanner] migrated skills: %s → %s", oldDir, newDir)
-	}
-}
+// MigrateSkillsDir is a no-op kept for backward compatibility.
+// The old ~/.maclaw/skills path is no longer supported.
+// Skills live exclusively in ~/.maclaw/data/skills.
+func MigrateSkillsDir() {}
 
 // SkillScanRoots returns all directories that should be scanned for
 // file-based skills, in priority order (first wins on name conflict):
