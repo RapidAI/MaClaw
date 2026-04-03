@@ -1,8 +1,12 @@
 package swarm
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	gopdf "github.com/VantageDataChat/GoPDF2"
 )
 
 func TestMarkdownToHTML_Headings(t *testing.T) {
@@ -39,8 +43,78 @@ func TestMarkdownToHTML_Lists(t *testing.T) {
 func TestMarkdownToHTML_NumberedList(t *testing.T) {
 	md := "1. 步骤一\n2. 步骤二"
 	html := markdownToHTML(md)
+	if !strings.Contains(html, "<ol>") {
+		t.Error("should contain <ol>")
+	}
 	if !strings.Contains(html, "<li>步骤一</li>") {
 		t.Error("should parse numbered list")
+	}
+	if strings.Contains(html, "<ul>") {
+		t.Error("numbered list should not render as <ul>")
+	}
+}
+
+func TestMarkdownToHTML_ImageAndTableRendering(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "diagram.png")
+	if err := os.WriteFile(imagePath, []byte("not-a-real-image"), 0644); err != nil {
+		t.Fatalf("write image fixture: %v", err)
+	}
+
+	md := strings.Join([]string{
+		"![系统架构图](" + filepath.ToSlash(imagePath) + ")",
+		"",
+		"| 模块 | 状态 | 备注 |",
+		"| --- | --- | --- |",
+		"| 用户模块 | 完成 | 已联调 |",
+	}, "\n")
+	html := markdownToHTML(md)
+	if !strings.Contains(html, "<img src=") {
+		t.Error("local image should render as img tag")
+	}
+	if strings.Contains(html, "![系统架构图]") {
+		t.Error("raw markdown image syntax should not remain")
+	}
+	if strings.Contains(html, "| 模块 | 状态 | 备注 |") {
+		t.Error("raw markdown table syntax should not remain")
+	}
+	if !strings.Contains(html, "<table>") {
+		t.Error("table should render as html table")
+	}
+	if !strings.Contains(html, "<th>模块</th>") || !strings.Contains(html, "<th>状态</th>") || !strings.Contains(html, "<th>备注</th>") {
+		t.Error("table headers should render as th cells")
+	}
+	if !strings.Contains(html, "<td>用户模块</td>") || !strings.Contains(html, "<td>完成</td>") || !strings.Contains(html, "<td>已联调</td>") {
+		t.Error("table row should render as td cells")
+	}
+}
+
+func TestMarkdownToHTML_RemoteImageFallback(t *testing.T) {
+	md := "![系统架构图](https://example.com/diagram.png)"
+	html := markdownToHTML(md)
+	if strings.Contains(html, "![系统架构图](https://example.com/diagram.png)") {
+		t.Error("raw remote image markdown should not remain")
+	}
+	if !strings.Contains(html, "暂不支持远程图片") {
+		t.Error("remote image should use readable fallback")
+	}
+}
+
+func TestMarkdownToHTML_MissingImageFallback(t *testing.T) {
+	md := "![系统架构图](missing/diagram.png)"
+	html := markdownToHTML(md)
+	if strings.Contains(html, "![系统架构图](missing/diagram.png)") {
+		t.Error("raw missing image markdown should not remain")
+	}
+	if !strings.Contains(html, "图片未找到") {
+		t.Error("missing image should use readable fallback")
+	}
+}
+
+func TestMarkdownToHTML_PipeTextNotTable(t *testing.T) {
+	md := "普通文本里有 | 符号，但不是表格"
+	html := markdownToHTML(md)
+	if !strings.Contains(html, "<p>普通文本里有 | 符号，但不是表格</p>") {
+		t.Error("plain pipe text should remain a paragraph")
 	}
 }
 
@@ -157,6 +231,10 @@ func TestSwarmDocGenerator_GenerateSpecDoc_NoFont(t *testing.T) {
 	if err == nil {
 		t.Error("should return error when no font available")
 	}
+	_, err = gen.GenerateSpecDocWithOptions(DocTypeRequirements, "test", "content", GeneratePDFOptions{PaperSize: "a4"})
+	if err == nil {
+		t.Error("should return error when no font available")
+	}
 }
 
 func TestSwarmDocGenerator_GenerateAndEncode_NoFont(t *testing.T) {
@@ -185,6 +263,145 @@ func TestBuildTitleHTML(t *testing.T) {
 	html = gen.buildTitleHTML(DocTypeTaskPlan, "proj")
 	if !strings.Contains(html, "任务计划") {
 		t.Error("task plan title should contain 任务计划")
+	}
+
+	html = gen.buildTitleHTML(DocType(""), "通用标题")
+	if !strings.Contains(html, "通用标题") {
+		t.Error("general title should use project name")
+	}
+	if strings.Contains(html, "文档") {
+		t.Error("general title should not add document type text")
+	}
+}
+
+func TestNormalizePaperSize(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"", "a4", false},
+		{"A4", "a4", false},
+		{"b5", "b5", false},
+		{"B5", "b5", false},
+		{"a5", "", true},
+	}
+	for _, tt := range tests {
+		got, err := normalizePaperSize(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Fatalf("normalizePaperSize(%q) expected error", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("normalizePaperSize(%q) unexpected error: %v", tt.input, err)
+		}
+		if got != tt.want {
+			t.Fatalf("normalizePaperSize(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestResolvePDFPageLayout(t *testing.T) {
+	a4, err := resolvePDFPageLayout("")
+	if err != nil {
+		t.Fatalf("default layout error: %v", err)
+	}
+	b5, err := resolvePDFPageLayout("b5")
+	if err != nil {
+		t.Fatalf("b5 layout error: %v", err)
+	}
+	if a4.pageW <= b5.pageW {
+		t.Fatalf("expected A4 width > B5 width, got %.2f <= %.2f", a4.pageW, b5.pageW)
+	}
+	if a4.pageH <= b5.pageH {
+		t.Fatalf("expected A4 height > B5 height, got %.2f <= %.2f", a4.pageH, b5.pageH)
+	}
+	if a4.contentW <= b5.contentW {
+		t.Fatalf("expected A4 content width > B5 content width, got %.2f <= %.2f", a4.contentW, b5.contentW)
+	}
+}
+
+func TestSplitOversizedMarkdownBlock(t *testing.T) {
+	block := strings.Repeat("这是一段很长的文本，用来测试超大块拆分。", 80)
+	parts := splitOversizedMarkdownBlock(block)
+	if len(parts) < 2 {
+		t.Fatalf("expected oversized block to split, got %d parts", len(parts))
+	}
+	for i, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			t.Fatalf("part %d should not be empty", i)
+		}
+	}
+}
+
+func TestSplitMarkdownBlockForFilling(t *testing.T) {
+	block := "这是第一句。这是第二句。这是第三句。"
+	parts := splitMarkdownBlockForFilling(block)
+	if len(parts) < 2 {
+		t.Fatalf("expected block to split into smaller parts, got %d", len(parts))
+	}
+}
+
+func TestSplitMarkdownBlockForFilling_TableKeepsWhole(t *testing.T) {
+	block := strings.Join([]string{
+		"| 模块 | 状态 |",
+		"| --- | --- |",
+		"| 用户模块 | 完成 |",
+		"| 支付模块 | 进行中 |",
+	}, "\n")
+	parts := splitMarkdownBlockForFilling(block)
+	if len(parts) != 1 {
+		t.Fatalf("expected table block to remain whole, got %d parts", len(parts))
+	}
+	if parts[0] != block {
+		t.Fatalf("expected table block to stay unchanged, got %q", parts[0])
+	}
+}
+
+func TestSplitParagraphForFilling_CommaFallback(t *testing.T) {
+	text := "需求分析，方案设计，接口联调，回归验证"
+	parts := splitParagraphForFilling(text)
+	if len(parts) < 2 {
+		t.Fatalf("expected comma-based split, got %d", len(parts))
+	}
+}
+
+func TestSplitParagraphForFilling_ListItemKeepsMarker(t *testing.T) {
+	text := "1. 子任务一：准备输入内容。"
+	parts := splitParagraphForFilling(text)
+	if len(parts) != 1 {
+		t.Fatalf("expected list item to remain whole, got %d parts", len(parts))
+	}
+	if parts[0] != text {
+		t.Fatalf("expected list item to stay unchanged, got %q", parts[0])
+	}
+}
+
+func TestChunkMarkdownForPages(t *testing.T) {
+	md := strings.Repeat("## 标题\n\n- 内容一\n- 内容二\n\n", 40)
+	chunks := chunkMarkdownForPages(md, 1200)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	for i, chunk := range chunks {
+		if strings.TrimSpace(chunk) == "" {
+			t.Fatalf("chunk %d should not be empty", i)
+		}
+	}
+}
+
+func TestRenderPagedMarkdown_RechunksRemainingPages(t *testing.T) {
+	md := strings.Repeat("## 标题\n\n- 内容一\n- 内容二\n\n", 80)
+	firstChunks := chunkMarkdownForPages(md, 500)
+	if len(firstChunks) < 2 {
+		t.Fatalf("expected first pass to produce multiple chunks, got %d", len(firstChunks))
+	}
+	remaining := strings.Join(firstChunks[1:], "\n\n")
+	otherChunks := chunkMarkdownForPages(remaining, 1000)
+	if len(otherChunks) >= len(firstChunks) {
+		t.Fatalf("expected rechunked remaining pages to use fewer chunks, got %d vs %d", len(otherChunks), len(firstChunks))
 	}
 }
 
@@ -252,4 +469,30 @@ func TestSwarmDocGenerator_GenerateAndEncode_Integration(t *testing.T) {
 		t.Errorf("fileName should end with .pdf, got %q", fileName)
 	}
 	t.Logf("文件名: %s, base64 长度: %d", fileName, len(b64))
+}
+
+func TestSwarmDocGenerator_GenerateSpecDoc_LongContent_Integration(t *testing.T) {
+	gen := NewSwarmDocGenerator()
+	if !gen.HasFont() {
+		t.Skip("跳过：系统未找到中文字体")
+	}
+
+	content := strings.Repeat("## 标题\n\n- 内容一\n- 内容二\n\n这是用于测试分页填充率的长段落。这是第二句。这是第三句。\n\n", 60)
+	data, err := gen.GenerateSpecDoc(DocTypeRequirements, "long-doc", content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data[:5]) != "%PDF-" {
+		t.Fatal("output should be a valid PDF")
+	}
+	pageSizes, err := gopdf.GetSourcePDFPageSizesFromBytes(data)
+	if err != nil {
+		t.Fatalf("read page sizes failed: %v", err)
+	}
+	if len(pageSizes) < 2 {
+		t.Fatalf("expected multiple pages, got %d", len(pageSizes))
+	}
+	if len(pageSizes) > 30 {
+		t.Fatalf("expected denser pagination, got %d pages", len(pageSizes))
+	}
 }

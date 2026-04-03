@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/UserExistsError/conpty v0.1.4
-	github.com/VantageDataChat/GoPDF2 v0.0.0-20260212145938-73f35b60835e
+	github.com/VantageDataChat/GoPDF2 v0.0.0-20260403061807-87cb97c2bda2
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -17,6 +17,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20
 	github.com/pion/opus v0.0.0-20260326165207-10397d92d9ba
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
+	github.com/pkg/sftp v1.13.10
 	github.com/refraction-networking/utls v1.8.2
 	github.com/tetratelabs/wazero v1.11.0
 	github.com/viterin/vek v0.4.3
@@ -70,7 +71,6 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pkg/sftp v1.13.10 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/samber/lo v1.49.1 // indirect
