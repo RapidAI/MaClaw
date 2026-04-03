@@ -323,12 +323,13 @@ func (h *IMMessageHandler) toolGeneratePDF(args map[string]interface{}) string {
 
 	title, _ := args["title"].(string)
 	docType, _ := args["doc_type"].(string)
+	paperSize, _ := args["paper_size"].(string)
 	outputPath, _ := args["output_path"].(string)
 	if outputPath != "" {
 		outputPath = resolvePath(outputPath)
 	}
 
-	absPath, err := swarm.GenerateToFile(content, title, docType, outputPath)
+	absPath, err := swarm.GenerateToFileWithOptions(content, title, docType, outputPath, swarm.GeneratePDFOptions{PaperSize: paperSize})
 	if err != nil {
 		return err.Error()
 	}

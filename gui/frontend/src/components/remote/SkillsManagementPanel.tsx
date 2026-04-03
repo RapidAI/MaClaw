@@ -5,8 +5,8 @@ import {
     UpdateNLSkill,
     DeleteNLSkill,
     ImportNLSkillZip,
-    SearchSkillHub,
-    InstallHubSkill,
+    SearchMixedSkills,
+    InstallMixedSkill,
     CheckHubSkillUpdates,
     UpdateHubSkill,
     ExportLearnedSkillsZip,
@@ -17,6 +17,7 @@ import {
     AddExternalSkillDir,
     RemoveExternalSkillDir,
     SelectProjectDir,
+    OpenSystemUrl,
 } from "../../../wailsjs/go/main/App";
 
 interface NLSkillStep {
@@ -50,18 +51,27 @@ interface HubSkillUpdateInfo {
     hub_url: string;
 }
 
-interface HubSkillMeta {
+interface MixedSkillSearchResult {
     id: string;
     name: string;
     description: string;
     tags: string[];
-    version: string;
-    author: string;
-    trust_level: string;
-    downloads: number;
-    hub_url: string;
+    source: string;
+    source_label: string;
+    install_ref?: string;
+    file_path?: string;
+    version?: string;
+    trust_level?: string;
     avg_rating: number;
     rating_count: number;
+    downloads: number;
+    score: number;
+    price: number;
+    repo_url?: string;
+    installed: boolean;
+    installed_name?: string;
+    can_update: boolean;
+    has_update: boolean;
 }
 
 type Props = {
@@ -114,8 +124,20 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
             fn: () => localizeText("Skill executor not initialized", "技能执行器未初始化", "技能執行器未初始化"),
         },
         {
-            re: /machine not registered/,
-            fn: () => localizeText("Machine not registered", "设备未注册", "裝置未註冊"),
+            re: /hubcenter URL not configured/,
+            fn: () => localizeText("HubCenter URL not configured", "HubCenter 地址未配置", "HubCenter 位址未配置"),
+        },
+        {
+            re: /missing github install ref/,
+            fn: () => localizeText("Missing GitHub install reference", "缺少 GitHub 安装引用", "缺少 GitHub 安裝引用"),
+        },
+        {
+            re: /invalid github install ref/,
+            fn: () => localizeText("Invalid GitHub install reference", "GitHub 安装引用无效", "GitHub 安裝引用無效"),
+        },
+        {
+            re: /unsupported skill source/,
+            fn: () => localizeText("Unsupported skill source", "不支持的技能来源", "不支援的技能來源"),
         },
     ];
     return (msg: string): string => {
@@ -136,7 +158,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     // Hub market state
     const [hubSearchQuery, setHubSearchQuery] = useState("");
-    const [hubResults, setHubResults] = useState<HubSkillMeta[]>([]);
+    const [hubResults, setHubResults] = useState<MixedSkillSearchResult[]>([]);
     const [hubSearching, setHubSearching] = useState(false);
     const [hubError, setHubError] = useState("");
     const [hubSearched, setHubSearched] = useState(false);
@@ -145,8 +167,8 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const localizeHubError = useMemo(() => makeLocalizeHubError(localizeText), [localizeText]);
 
     // Install/update state
-    const [installingSkills, setInstallingSkills] = useState<string[]>([]);
-    const [updatingSkills, setUpdatingSkills] = useState<string[]>([]);
+    const [installingSkills, setInstallingSkills] = useState<Set<string>>(new Set());
+    const [updatingSkills, setUpdatingSkills] = useState<Set<string>>(new Set());
     const [hubUpdates, setHubUpdates] = useState<HubSkillUpdateInfo[]>([]);
 
     // Form state
@@ -224,7 +246,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         setHubError("");
         setHubSearched(true);
         try {
-            const results = await SearchSkillHub(q);
+            const results = await SearchMixedSkills(q);
             setHubResults(Array.isArray(results) ? results : []);
         } catch (err) {
             setHubError(localizeHubError(String(err)));
@@ -232,35 +254,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         } finally {
             setHubSearching(false);
         }
-    }, [hubSearchQuery]);
-
-    // Compute installed Hub Skill IDs from local skills (memoized)
-    const installedSkillIds = useMemo(
-        () => new Set(
-            skills.filter((s) => s.source === "hub" && s.hub_skill_id).map((s) => s.hub_skill_id!)
-        ),
-        [skills]
-    );
-
-    // Map skill_name -> HubSkillUpdateInfo for quick lookup (memoized)
-    const updatesMap = useMemo(
-        () => new Map(hubUpdates.map((u) => [u.skill_name, u])),
-        [hubUpdates]
-    );
-
-    // Find the local skill name for a given hub skill ID (for update lookup, memoized)
-    const localSkillByHubId = useMemo(() => {
-        const map = new Map<string, NLSkillDefinition>();
-        for (const s of skills) {
-            if (s.source === "hub" && s.hub_skill_id) {
-                map.set(s.hub_skill_id, s);
-            }
-        }
-        return map;
-    }, [skills]);
-
-    const getLocalSkillForHubId = (hubId: string): NLSkillDefinition | undefined =>
-        localSkillByHubId.get(hubId);
+    }, [hubSearchQuery, localizeHubError]);
 
     // Check for Hub Skill updates
     const checkUpdates = useCallback(async () => {
@@ -316,21 +310,29 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     }, [extDirInput, loadExtDirs, loadData]);
 
-    const handleInstall = useCallback(async (skill: HubSkillMeta) => {
-        setInstallingSkills((prev) => [...prev, skill.id]);
+    const handleInstall = useCallback(async (skill: MixedSkillSearchResult) => {
+        setInstallingSkills((prev) => new Set(prev).add(skill.id));
         try {
-            await InstallHubSkill(skill.id, skill.hub_url);
+            await InstallMixedSkill(skill.source, skill.id, skill.install_ref || "");
             await loadData();
             await checkUpdates();
+            if (hubSearchQuery.trim()) {
+                const refreshed = await SearchMixedSkills(hubSearchQuery.trim());
+                setHubResults(Array.isArray(refreshed) ? refreshed : []);
+            }
         } catch (err) {
             setHubError(localizeHubError(String(err)));
         } finally {
-            setInstallingSkills((prev) => prev.filter((id) => id !== skill.id));
+            setInstallingSkills((prev) => {
+                const next = new Set(prev);
+                next.delete(skill.id);
+                return next;
+            });
         }
-    }, [loadData, checkUpdates]);
+    }, [loadData, checkUpdates, hubSearchQuery, localizeHubError]);
 
     const handleUpdate = useCallback(async (skillName: string) => {
-        setUpdatingSkills((prev) => [...prev, skillName]);
+        setUpdatingSkills((prev) => new Set(prev).add(skillName));
         try {
             await UpdateHubSkill(skillName);
             await loadData();
@@ -338,7 +340,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         } catch (err) {
             setHubError(localizeHubError(String(err)));
         } finally {
-            setUpdatingSkills((prev) => prev.filter((n) => n !== skillName));
+            setUpdatingSkills((prev) => {
+                const next = new Set(prev);
+                next.delete(skillName);
+                return next;
+            });
         }
     }, [loadData, checkUpdates]);
 
@@ -384,7 +390,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 const idx = trimmed.indexOf(":");
                 const key = trimmed.slice(0, idx).trim();
                 let val: any = trimmed.slice(idx + 1).trim();
-                try { val = JSON.parse(val); } catch { /* keep as string */ }
+                try { val = JSON.parse(val); } catch { }
                 params[key] = val;
             }
         }
@@ -392,6 +398,56 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             steps.push({ action: current.action || "", params: { ...params }, on_error: current.on_error || "stop" });
         }
         return steps;
+    };
+
+    const renderHubActionButton = (skill: MixedSkillSearchResult) => {
+        const isInstalling = installingSkills.has(skill.id);
+        const canUpdate = !!skill.installed && !!skill.can_update && !!skill.installed_name;
+        const isUpdating = !!skill.installed_name && updatingSkills.has(skill.installed_name);
+
+        if (isInstalling) {
+            return (
+                <button
+                    className="btn-primary"
+                    style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center", opacity: 0.7 }}
+                    disabled
+                >
+                    {localizeText("Installing...", "安装中...", "安裝中...")}
+                </button>
+            );
+        }
+        if (canUpdate && skill.has_update) {
+            return (
+                <button
+                    className="btn-primary"
+                    style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center" }}
+                    disabled={isUpdating}
+                    onClick={() => handleUpdate(skill.installed_name!)}
+                >
+                    {isUpdating ? localizeText("Updating...", "更新中...", "更新中...") : localizeText("Update", "更新", "更新")}
+                </button>
+            );
+        }
+        if (skill.installed) {
+            return (
+                <button
+                    className="btn-secondary"
+                    style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center", opacity: 0.6 }}
+                    disabled
+                >
+                    {localizeText("Installed", "已安装", "已安裝")}
+                </button>
+            );
+        }
+        return (
+            <button
+                className="btn-primary"
+                style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center" }}
+                onClick={() => handleInstall(skill)}
+            >
+                {localizeText("Install", "安装", "安裝")}
+            </button>
+        );
     };
 
     const openCreateForm = () => {
@@ -797,11 +853,51 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                         <div style={{ flex: 1, minWidth: 0 }}>
                                             <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                                                 <span style={{ fontWeight: 600, fontSize: "0.82rem", color: "#1a202c" }}>{skill.name}</span>
-                                                <span style={trustBadgeStyle(skill.trust_level)}>
-                                                    {skill.trust_level === "official" ? localizeText("Official", "官方", "官方") : skill.trust_level === "community" ? localizeText("Community", "社区", "社區") : localizeText("Unknown", "未知", "未知")}
+                                                <span style={{
+                                                    display: "inline-flex",
+                                                    alignItems: "center",
+                                                    gap: "4px",
+                                                    fontSize: "0.66rem",
+                                                    padding: "2px 6px",
+                                                    borderRadius: "999px",
+                                                    background: "#edf2f7",
+                                                    color: "#4a5568",
+                                                    border: "1px solid #e2e8f0",
+                                                }}>
+                                                    {skill.source_label}
                                                 </span>
-                                                <span style={{ fontSize: "0.68rem", color: "#8b95a5" }}>v{skill.version}</span>
+                                                {skill.trust_level && (
+                                                    <span style={trustBadgeStyle(skill.trust_level)}>
+                                                        {skill.trust_level === "official" ? localizeText("Official", "官方", "官方") : skill.trust_level === "community" ? localizeText("Community", "社区", "社區") : localizeText("Unknown", "未知", "未知")}
+                                                    </span>
+                                                )}
+                                                {skill.version && (
+                                                    <span style={{ fontSize: "0.68rem", color: "#8b95a5" }}>v{skill.version}</span>
+                                                )}
                                             </div>
+                                            {skill.source === "github" && (skill.repo_url || skill.file_path) && (
+                                                <div style={{ fontSize: "0.68rem", color: "#8b95a5", marginTop: "4px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                                                    {skill.repo_url && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => OpenSystemUrl(skill.repo_url!)}
+                                                            style={{
+                                                                padding: 0,
+                                                                border: "none",
+                                                                background: "transparent",
+                                                                color: "#3182ce",
+                                                                cursor: "pointer",
+                                                                fontSize: "0.68rem",
+                                                                textDecoration: "underline",
+                                                            }}
+                                                            title={skill.repo_url}
+                                                        >
+                                                            {skill.repo_url}
+                                                        </button>
+                                                    )}
+                                                    {skill.file_path && <span>{skill.file_path}</span>}
+                                                </div>
+                                            )}
                                             <div style={{ fontSize: "0.76rem", color: "#5a6577", marginTop: "4px", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }} title={skill.description || undefined}>
                                                 {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
                                             </div>
@@ -809,68 +905,23 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 {(skill.tags || []).map((tag, i) => (
                                                     <span key={i} style={tagStyle}>{tag}</span>
                                                 ))}
-                                                <span style={{ fontSize: "0.68rem", color: "#8b95a5", marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+                                                <span style={{ fontSize: "0.68rem", color: "#8b95a5", marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                                                     {skill.rating_count > 0 && (
                                                         <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
                                                             <span style={{ color: "#f59e0b" }}>{renderStars(skill.avg_rating)}</span>
                                                             <span>({skill.rating_count})</span>
                                                         </span>
                                                     )}
-                                                    ⬇ {formatDownloads(skill.downloads)}
+                                                    {skill.downloads > 0 && (
+                                                        <span>⬇ {formatDownloads(skill.downloads)}</span>
+                                                    )}
+                                                    {skill.price > 0 && (
+                                                        <span>{localizeText(`Price ${skill.price}`, `价格 ${skill.price}`, `價格 ${skill.price}`)}</span>
+                                                    )}
                                                 </span>
                                             </div>
                                         </div>
-                                        {(() => {
-                                            const isInstalling = installingSkills.includes(skill.id);
-                                            const isInstalled = installedSkillIds.has(skill.id);
-                                            const localSkill = getLocalSkillForHubId(skill.id);
-                                            const updateInfo = localSkill ? updatesMap.get(localSkill.name) : undefined;
-                                            const isUpdating = localSkill ? updatingSkills.includes(localSkill.name) : false;
-
-                                            if (isInstalling) {
-                                                return (
-                                                    <button
-                                                        className="btn-primary"
-                                                        style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center", opacity: 0.7 }}
-                                                        disabled
-                                                    >
-                                                        {localizeText("Installing...", "安装中...", "安裝中...")}
-                                                    </button>
-                                                );
-                                            }
-                                            if (isInstalled && updateInfo) {
-                                                return (
-                                                    <button
-                                                        className="btn-primary"
-                                                        style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center" }}
-                                                        disabled={isUpdating}
-                                                        onClick={() => handleUpdate(localSkill!.name)}
-                                                    >
-                                                        {isUpdating ? localizeText("Updating...", "更新中...", "更新中...") : localizeText("Update", "更新", "更新")}
-                                                    </button>
-                                                );
-                                            }
-                                            if (isInstalled) {
-                                                return (
-                                                    <button
-                                                        className="btn-secondary"
-                                                        style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center", opacity: 0.6 }}
-                                                        disabled
-                                                    >
-                                                        {localizeText("Installed", "已安装", "已安裝")}
-                                                    </button>
-                                                );
-                                            }
-                                            return (
-                                                <button
-                                                    className="btn-primary"
-                                                    style={{ fontSize: "0.74rem", padding: "4px 14px", flexShrink: 0, alignSelf: "center" }}
-                                                    onClick={() => handleInstall(skill)}
-                                                >
-                                                    {localizeText("Install", "安装", "安裝")}
-                                                </button>
-                                            );
-                                        })()}
+                                        {renderHubActionButton(skill)}
                                     </div>
                                 </div>
                             ))}

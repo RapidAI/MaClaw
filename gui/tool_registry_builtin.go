@@ -293,6 +293,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"content":     map[string]string{"type": "string", "description": "Markdown 格式的文档内容"},
 			"title":       map[string]string{"type": "string", "description": "文档标题/项目名称（显示在 PDF 封面，可选，默认'文档'）"},
 			"doc_type":    map[string]string{"type": "string", "description": "文档类型: requirements(需求文档)/design(设计文档)/task_plan(任务计划)，可选，影响封面样式"},
+			"paper_size":  map[string]string{"type": "string", "description": "纸张大小: a4/b5（可选，默认 a4）"},
 			"output_path": map[string]string{"type": "string", "description": "输出文件路径（可选，默认保存到用户主目录）"},
 		}, []string{"content"},
 		func(args map[string]interface{}) string { return h.toolGeneratePDF(args) })

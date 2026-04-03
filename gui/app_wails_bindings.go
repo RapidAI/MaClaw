@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os/exec"
+	"strings"
 	"time"
 
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -109,6 +113,61 @@ func (a *App) SearchSkillHub(query string) ([]HubSkillMeta, error) {
 	return a.skillHubClient.Search(context.Background(), query)
 }
 
+// SearchMixedSkills searches SkillMarket, ClawHub mirror, and GitHub for Skills matching the query (Wails binding).
+func (a *App) SearchMixedSkills(query string) ([]MixedSkillSearchResult, error) {
+	a.ensureInteractionInfra()
+	searcher := NewSkillSearcher(NewSkillMarketClient(a))
+	return searcher.SearchAll(context.Background(), query)
+}
+
+// InstallMixedSkill installs a skill result from mixed search sources (Wails binding).
+func (a *App) InstallMixedSkill(source, id, installRef string) error {
+	a.ensureInteractionInfra()
+	if a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	ctx := context.Background()
+	switch strings.TrimSpace(source) {
+	case "skillmarket":
+		base := NewSkillMarketClient(a).baseURL()
+		if base == "" {
+			return fmt.Errorf("hubcenter URL not configured")
+		}
+		skill, err := downloadSkillJSON(ctx, base+"/api/v1/skills/"+url.PathEscape(id)+"/download")
+		if err != nil {
+			return err
+		}
+		return a.skillExecutor.Register(*skill)
+	case "clawhub":
+		skill, err := downloadClawHubSkill(ctx, id)
+		if err != nil {
+			return err
+		}
+		return a.skillExecutor.Register(*skill)
+	case "github":
+		var candidate cskill.GitHubSkillCandidate
+		if strings.TrimSpace(installRef) == "" {
+			return fmt.Errorf("missing github install ref")
+		}
+		if err := json.Unmarshal([]byte(installRef), &candidate); err != nil {
+			return fmt.Errorf("invalid github install ref: %w", err)
+		}
+		if strings.TrimSpace(candidate.RawURL) == "" {
+			return fmt.Errorf("invalid github install ref: missing raw_url")
+		}
+		if strings.TrimSpace(candidate.RepoFullName) == "" {
+			candidate.RepoFullName = id
+		}
+		skill, err := cskill.NewGitHubSearcher("").ImportFromCandidate(candidate)
+		if err != nil {
+			return err
+		}
+		return a.skillExecutor.Register(*skill)
+	default:
+		return fmt.Errorf("unsupported skill source %q", source)
+	}
+}
+
 // InstallHubSkill downloads a Skill from the specified Hub and registers it locally (Wails binding).
 func (a *App) InstallHubSkill(skillID, hubURL string) error {
 	a.ensureSkillHubClient()
@@ -155,6 +214,14 @@ func (a *App) CheckHubSkillUpdates() ([]HubSkillUpdateInfo, error) {
 		})
 	}
 	return updates, nil
+}
+
+func (a *App) checkHubSkillUpdatesSafe() []HubSkillUpdateInfo {
+	updates, err := a.CheckHubSkillUpdates()
+	if err != nil {
+		return nil
+	}
+	return updates
 }
 
 // UpdateHubSkill updates a locally installed Hub Skill to the latest version (Wails binding).
@@ -564,14 +631,13 @@ func (a *App) ClearAIAssistantHistory() error {
 }
 
 // CancelAIAssistantSession cancels the currently running AI assistant session.
-func (a *App) CancelAIAssistantSession() error {
+func (a *App) CancelAIAssistantSession() (string, error) {
 	a.ensureInteractionInfra()
 	hubClient := a.hubClient()
 	if hubClient == nil || hubClient.imHandler == nil {
-		return fmt.Errorf("AI assistant not initialized")
+		return "", fmt.Errorf("AI assistant not initialized")
 	}
-	_, err := hubClient.imHandler.CancelCurrentSession()
-	return err
+	return hubClient.imHandler.CancelCurrentSession()
 }
 
 // ---------------------------------------------------------------------------

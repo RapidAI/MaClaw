@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+
+export interface CancelAIAssistantResult {
+    canceledText: string;
+}
 
 export interface ChatMessage {
     id: string;
@@ -62,6 +67,18 @@ function persistMessages(msgs: ChatMessage[]) {
     } catch {
         // localStorage full or unavailable — silently ignore
     }
+}
+
+function resetSessionState(
+    sendingRef: MutableRefObject<boolean>,
+    streamingMsgIdRef: MutableRefObject<string | null>,
+    setSending: Dispatch<SetStateAction<boolean>>,
+    setStreaming: Dispatch<SetStateAction<boolean>>,
+) {
+    sendingRef.current = false;
+    setSending(false);
+    setStreaming(false);
+    streamingMsgIdRef.current = null;
 }
 
 export function useAIAssistant() {
@@ -336,10 +353,7 @@ export function useAIAssistant() {
             // ignore clear errors
         }
         // Reset sending state in case it was stuck (e.g. after max iterations).
-        sendingRef.current = false;
-        setSending(false);
-        setStreaming(false);
-        streamingMsgIdRef.current = null;
+        resetSessionState(sendingRef, streamingMsgIdRef, setSending, setStreaming);
         setMessages([]);
         localStorage.removeItem(STORAGE_KEY);
         // Re-fetch pinned news so they reappear after clearing history.
@@ -367,20 +381,18 @@ export function useAIAssistant() {
         };
     }, []);
 
-    const cancelSession = useCallback(async () => {
+    const cancelSession = useCallback(async (): Promise<CancelAIAssistantResult> => {
         // Bump generation so the old sendMessage's finally block won't
         // clobber state after we reset it here.
         sendGenRef.current++;
+        let canceledText = "";
         try {
-            await CancelAIAssistantSession();
+            canceledText = (await CancelAIAssistantSession()) || "";
         } catch (e) {
             // ignore cancellation errors
         }
         // Reset local state
-        sendingRef.current = false;
-        setSending(false);
-        setStreaming(false);
-        streamingMsgIdRef.current = null;
+        resetSessionState(sendingRef, streamingMsgIdRef, setSending, setStreaming);
         // Remove the empty or partial assistant message left by the cancelled
         // stream so the user sees a clean slate for the next interaction.
         setMessages(prev => {
@@ -390,6 +402,7 @@ export function useAIAssistant() {
             }
             return prev;
         });
+        return { canceledText };
     }, []);
 
     return { messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };

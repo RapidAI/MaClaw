@@ -1210,12 +1210,13 @@ func (h *TUIAgentHandler) toolGeneratePDF(args map[string]interface{}) string {
 
 	title := stringArg(args, "title")
 	docTypeStr := stringArg(args, "doc_type")
+	paperSize := stringArg(args, "paper_size")
 	outputPath := stringArg(args, "output_path")
 	if outputPath != "" {
 		outputPath = resolvePath(outputPath)
 	}
 
-	absPath, err := swarm.GenerateToFile(content, title, docTypeStr, outputPath)
+	absPath, err := swarm.GenerateToFileWithOptions(content, title, docTypeStr, outputPath, swarm.GeneratePDFOptions{PaperSize: paperSize})
 	if err != nil {
 		return err.Error()
 	}

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,18 +23,48 @@ type SkillSearchResult struct {
 	Score         float64  `json:"score"`
 	Price         int      `json:"price"`
 	Status        string   `json:"status"`
+	InstallRef    string   `json:"install_ref,omitempty"`
 	AvgRating     float64  `json:"avg_rating"`
 	DownloadCount int      `json:"download_count"`
+}
+
+// MixedSkillSearchResult is the GUI-facing unified search result model.
+type MixedSkillSearchResult struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description"`
+	Tags          []string `json:"tags"`
+	Source        string   `json:"source"`
+	SourceLabel   string   `json:"source_label"`
+	InstallRef    string   `json:"install_ref,omitempty"`
+	FilePath      string   `json:"file_path,omitempty"`
+	Version       string   `json:"version,omitempty"`
+	TrustLevel    string   `json:"trust_level,omitempty"`
+	AvgRating     float64  `json:"avg_rating"`
+	RatingCount   int      `json:"rating_count"`
+	Downloads     int      `json:"downloads"`
+	Score         float64  `json:"score"`
+	Price         int      `json:"price"`
+	RepoURL       string   `json:"repo_url,omitempty"`
+	Installed     bool     `json:"installed"`
+	InstalledName string   `json:"installed_name,omitempty"`
+	CanUpdate     bool     `json:"can_update"`
+	HasUpdate     bool     `json:"has_update"`
 }
 
 // SkillSearcher MaClaw 端智能搜索模块。
 type SkillSearcher struct {
 	client *SkillMarketClient
+	app    *App
 }
 
 // NewSkillSearcher 创建搜索模块。
 func NewSkillSearcher(client *SkillMarketClient) *SkillSearcher {
-	return &SkillSearcher{client: client}
+	var app *App
+	if client != nil {
+		app = client.app
+	}
+	return &SkillSearcher{client: client, app: app}
 }
 
 // Search 调用 HubCenter 搜索 API。
@@ -81,6 +112,168 @@ func (s *SkillSearcher) Search(ctx context.Context, query string, tags []string,
 
 // ClawHubMirrorURL is the China mirror for ClawHub skill search.
 const ClawHubMirrorURL = "https://cn.clawhub-mirror.com"
+
+// SearchAll aggregates SkillMarket, ClawHub mirror, and GitHub results for GUI search.
+func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSkillSearchResult, error) {
+	var results []MixedSkillSearchResult
+	var errs []string
+
+	marketResults, err := s.Search(ctx, query, nil, 10)
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("skillmarket: %v", err))
+	} else {
+		for _, r := range marketResults {
+			results = append(results, s.toMixedSkillSearchResult(r))
+		}
+	}
+
+	for _, r := range s.searchClawHubMirror(ctx, query) {
+		results = append(results, s.toMixedSkillSearchResult(r))
+	}
+
+	gs := cskill.NewGitHubSearcher("")
+	ghResults, err := gs.SearchGitHub(query)
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("github: %v", err))
+	} else {
+		for _, c := range ghResults {
+			results = append(results, s.toMixedGitHubResult(c))
+		}
+	}
+
+	s.enrichInstalledState(results)
+	if len(results) == 0 && len(errs) > 0 {
+		return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		li := sourcePriority(results[i].Source)
+		lj := sourcePriority(results[j].Source)
+		if li != lj {
+			return li < lj
+		}
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
+	})
+	return results, nil
+}
+
+func sourcePriority(source string) int {
+	switch source {
+	case "skillmarket":
+		return 0
+	case "clawhub":
+		return 1
+	case "github":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func mixedSourceLabel(source string) string {
+	switch source {
+	case "skillmarket":
+		return "SkillMarket"
+	case "clawhub":
+		return "ClawHub"
+	case "github":
+		return "GitHub"
+	default:
+		return source
+	}
+}
+
+func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkillSearchResult {
+	source := "skillmarket"
+	if r.Status == "clawhub" {
+		source = "clawhub"
+	}
+	return MixedSkillSearchResult{
+		ID:          r.ID,
+		Name:        r.Name,
+		Description: r.Description,
+		Tags:        r.Tags,
+		Source:      source,
+		SourceLabel: mixedSourceLabel(source),
+		TrustLevel:  mixedTrustLevel(source),
+		AvgRating:   r.AvgRating,
+		Downloads:   r.DownloadCount,
+		Score:       r.Score,
+		Price:       r.Price,
+	}
+}
+
+func (s *SkillSearcher) toMixedGitHubResult(c cskill.GitHubSkillCandidate) MixedSkillSearchResult {
+	installRefBytes, _ := json.Marshal(c)
+	name := c.RepoFullName
+	if strings.TrimSpace(c.FilePath) != "" {
+		name = fmt.Sprintf("%s · %s", c.RepoFullName, c.FilePath)
+	}
+	return MixedSkillSearchResult{
+		ID:          c.RepoFullName,
+		Name:        name,
+		Description: c.Description,
+		Source:      "github",
+		SourceLabel: mixedSourceLabel("github"),
+		InstallRef:  string(installRefBytes),
+		FilePath:    c.FilePath,
+		TrustLevel:  mixedTrustLevel("github"),
+		Downloads:   c.Stars,
+		RepoURL:     c.RepoURL,
+	}
+}
+
+func mixedTrustLevel(source string) string {
+	switch source {
+	case "clawhub", "github":
+		return "community"
+	default:
+		return ""
+	}
+}
+
+func (s *SkillSearcher) enrichInstalledState(results []MixedSkillSearchResult) {
+	if s.app == nil || s.app.skillExecutor == nil {
+		return
+	}
+	skills := s.app.skillExecutor.loadSkills()
+	updatesByHubID := map[string]bool{}
+	for _, update := range s.app.checkHubSkillUpdatesSafe() {
+		for _, skill := range skills {
+			if skill.Name == update.SkillName && skill.HubSkillID != "" {
+				updatesByHubID[skill.HubSkillID] = true
+			}
+		}
+	}
+	for i := range results {
+		for _, skill := range skills {
+			if mixedResultMatchesSkill(results[i], skill) {
+				results[i].Installed = true
+				results[i].InstalledName = skill.Name
+				if skill.Source == "hub" && skill.HubSkillID != "" {
+					results[i].CanUpdate = true
+					results[i].HasUpdate = updatesByHubID[skill.HubSkillID]
+				}
+				break
+			}
+		}
+	}
+}
+
+func mixedResultMatchesSkill(result MixedSkillSearchResult, skill NLSkillEntry) bool {
+	switch result.Source {
+	case "skillmarket":
+		return skill.Source == "hub" && skill.HubSkillID == result.ID
+	case "clawhub":
+		return skill.Source == "clawhub" && strings.EqualFold(skill.Name, result.Name)
+	case "github":
+		return skill.Source == "github" && (strings.EqualFold(skill.SourceProject, result.RepoURL) || strings.EqualFold(skill.Name, result.Name))
+	default:
+		return false
+	}
+}
 
 // SearchAndInstall 搜索并自动安装最佳匹配的 Skill。
 // 搜索顺序: SkillMarket → ClawHub 中国镜像 → GitHub。
@@ -199,11 +392,13 @@ func (s *SkillSearcher) searchGitHubFallback(ctx context.Context, query string) 
 		return nil, nil
 	}
 	best := candidates[0]
+	installRefBytes, _ := json.Marshal(best)
 	log.Printf("[skill-search] GitHub fallback found: %s (★%d)", best.RepoFullName, best.Stars)
 	return &SkillSearchResult{
 		ID:          best.RepoFullName,
 		Name:        best.RepoFullName,
 		Description: best.Description,
 		Status:      "github",
+		InstallRef:  string(installRefBytes),
 	}, nil
 }

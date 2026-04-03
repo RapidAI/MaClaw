@@ -259,6 +259,10 @@ export function ValidateSkillHub(arg1:string):Promise<any>;
 // SkillHub market bindings
 export function SearchSkillHub(arg1:string):Promise<Array<any>>;
 
+export function SearchMixedSkills(arg1:string):Promise<Array<any>>;
+
+export function InstallMixedSkill(arg1:string, arg2:string, arg3:string):Promise<void>;
+
 export function InstallHubSkill(arg1:string, arg2:string):Promise<void>;
 
 export function CheckHubSkillUpdates():Promise<Array<any>>;
@@ -426,7 +430,7 @@ export function SendAIAssistantMessage(arg1:string):Promise<any>;
 
 export function ClearAIAssistantHistory():Promise<void>;
 
-export function CancelAIAssistantSession():Promise<void>;
+export function CancelAIAssistantSession():Promise<string>;
 
 export function FetchNews():Promise<Array<any>>;
 

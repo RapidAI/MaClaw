@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -82,8 +82,6 @@ type IMResponseAction struct {
 // ---------------------------------------------------------------------------
 // Conversation Memory
 // ---------------------------------------------------------------------------
-
-
 
 // toolsCacheTTL is the maximum age of the cached tool definitions.
 // When MCP_Registry changes, tools are regenerated within this window.
@@ -182,7 +180,6 @@ type IMMessageHandler struct {
 	// conversation context so users don't need to manually /new.
 	topicDetector *topicSwitchDetector
 
-
 	// --- First-layer Harness modules (lazily initialized via setters) ---
 
 	// goalAnchor periodically re-injects the original user goal into the
@@ -214,11 +211,11 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		}).DialContext,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		MaxConnsPerHost:     20,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  true, // 禁止自动 gzip，避免 SSE 流式被压缩缓冲
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		MaxConnsPerHost:       20,
+		IdleConnTimeout:       90 * time.Second,
+		DisableCompression:    true, // 禁止自动 gzip，避免 SSE 流式被压缩缓冲
 	}
 	// Separate transport for background tasks (scheduled tasks, auto-picked
 	// ClawNet tasks) so they never starve the chat connection pool.
@@ -230,20 +227,20 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		}).DialContext,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 120 * time.Second,
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 10,
-		MaxConnsPerHost:     10,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  true,
+		MaxIdleConns:          50,
+		MaxIdleConnsPerHost:   10,
+		MaxConnsPerHost:       10,
+		IdleConnTimeout:       90 * time.Second,
+		DisableCompression:    true,
 	}
 
 	chatClient := &http.Client{Transport: chatTransport}
 	taskClient := &http.Client{Transport: taskTransport}
 
 	h := &IMMessageHandler{
-		app:        app,
-		manager:    manager,
-		memory:     newPersistentConversationMemory(filepath.Join(app.GetDataDir(), "ai_assistant_conversation.json")),
+		app:           app,
+		manager:       manager,
+		memory:        newPersistentConversationMemory(filepath.Join(app.GetDataDir(), "ai_assistant_conversation.json")),
 		client:        chatClient,
 		taskClient:    taskClient,
 		agentActivity: NewAgentActivityStore(),
@@ -526,18 +523,25 @@ func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}
 // and execution of a found skill. Shared by both active (tool call) and
 // passive (capability gap) paths.
 func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *SkillSearchResult, query string, sendStatus func(string)) string {
-	// GitHub result → import via GitHubSearcher.
-	// We re-search by the exact repo name (best.ID = "owner/repo") to get
-	// the GitHubSkillCandidate with RawURL needed for ImportFromCandidate.
+	// GitHub result → import via a stable install ref when available.
 	if best.Status == "github" {
-		gs := cskill.NewGitHubSearcher("")
-		candidates, err := gs.SearchGitHub(best.ID)
-		if err != nil || len(candidates) == 0 {
-			return fmt.Sprintf("找到 GitHub Skill「%s」但导入失败", best.Name)
+		var imported *NLSkillEntry
+		if strings.TrimSpace(best.InstallRef) != "" {
+			var candidate cskill.GitHubSkillCandidate
+			if err := json.Unmarshal([]byte(best.InstallRef), &candidate); err == nil && strings.TrimSpace(candidate.RawURL) != "" {
+				imported, err = cskill.NewGitHubSearcher("").ImportFromCandidate(candidate)
+			}
 		}
-		imported, err := gs.ImportFromCandidate(candidates[0])
-		if err != nil {
-			return fmt.Sprintf("GitHub Skill 导入失败: %v", err)
+		if imported == nil {
+			gs := cskill.NewGitHubSearcher("")
+			candidates, err := gs.SearchGitHub(best.ID)
+			if err != nil || len(candidates) == 0 {
+				return fmt.Sprintf("找到 GitHub Skill「%s」但导入失败", best.Name)
+			}
+			imported, err = gs.ImportFromCandidate(candidates[0])
+			if err != nil {
+				return fmt.Sprintf("GitHub Skill 导入失败: %v", err)
+			}
 		}
 		return h.registerAndExecuteSkill(ctx, imported, best.Name, "github", sendStatus)
 	}
@@ -908,7 +912,6 @@ func (h *IMMessageHandler) WarmupHTTPConn() {
 	resp.Body.Close()
 	log.Printf("[Warmup] HTTP connection warmed up (status=%d)", resp.StatusCode)
 }
-
 
 // HandleIMMessage processes an IM user message and returns the Agent's response.
 func (h *IMMessageHandler) HandleIMMessage(msg IMUserMessage) *IMAgentResponse {
@@ -2055,11 +2058,3 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 // ---------------------------------------------------------------------------
 // Attachment → LLM Content Builder
 // ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-

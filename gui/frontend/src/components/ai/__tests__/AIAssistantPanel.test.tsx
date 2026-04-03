@@ -7,10 +7,10 @@
  * Uses fast-check for property-based testing with ≥100 iterations.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import * as fc from 'fast-check';
 import { AIAssistantPanel } from '../AIAssistantPanel';
-import type { ChatMessage } from '../useAIAssistant';
+import type { ChatMessage, CancelAIAssistantResult } from '../useAIAssistant';
 
 const scrollIntoViewMock = vi.fn();
 const scrollToMock = vi.fn();
@@ -39,6 +39,23 @@ function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }
         timestamp: Date.now(),
         ...overrides,
     };
+}
+
+function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantPanel>> = {}) {
+    const props: React.ComponentProps<typeof AIAssistantPanel> = {
+        onClose: () => {},
+        lang: 'en',
+        messages: [],
+        sending: false,
+        streaming: false,
+        ready: true,
+        sendMessage: async () => {},
+        clearHistory: async () => {},
+        executeAction: async () => {},
+        refreshNews: () => {},
+        ...overrides,
+    };
+    return render(<AIAssistantPanel {...props} />);
 }
 
 describe('AIAssistantPanel property tests', () => {
@@ -143,15 +160,70 @@ describe('AIAssistantPanel property tests', () => {
         expect(scrollToMock).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' });
     });
 
-    // ─────────────────────────────────────────────────────────────────
-    // Feature: ai-assistant-sidebar-icon, Property 8: 响应渲染完整性
-    //
-    // Validates: Requirements 4.2, 4.3, 4.4
-    // For any IMAgentResponse with fields, actions, and/or error:
-    //   - Every field label/value is rendered
-    //   - Action button count matches actions array length
-    //   - Error text is rendered with error styling
-    // ─────────────────────────────────────────────────────────────────
+    it('restores canceled text back into the textarea', async () => {
+        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockResolvedValue({
+            canceledText: 'repeat this request',
+        });
+
+        const { getByTestId } = renderPanel({
+            sending: true,
+            cancelSession,
+        });
+
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+
+        await waitFor(() => {
+            expect(cancelSession).toHaveBeenCalledTimes(1);
+            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('repeat this request');
+        });
+    });
+
+    it('shows animated progress cancel control while sending', () => {
+        const { getByTestId, queryByTitle } = renderPanel({
+            sending: true,
+            cancelSession: async () => ({ canceledText: '' }),
+        });
+
+        expect(getByTestId('ai-cancel-progress')).toBeTruthy();
+        expect(queryByTitle('Send')).toBeNull();
+    });
+
+    it('clicking the progress control triggers cancel', async () => {
+        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockResolvedValue({
+            canceledText: '',
+        });
+        const { getByTestId } = renderPanel({
+            sending: true,
+            cancelSession,
+        });
+
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+
+        await waitFor(() => {
+            expect(cancelSession).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it('does not overwrite newer input typed while cancel is resolving', async () => {
+        let resolveCancel: ((value: CancelAIAssistantResult) => void) | undefined;
+        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockImplementation(() => new Promise(resolve => {
+            resolveCancel = resolve;
+        }));
+        const { getByTestId } = renderPanel({
+            sending: true,
+            cancelSession,
+        });
+
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'new draft' } });
+        resolveCancel?.({ canceledText: 'stale draft' });
+
+        await waitFor(() => {
+            expect(cancelSession).toHaveBeenCalledTimes(1);
+            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('new draft');
+        });
+    });
+
     it('Property 8: fields, actions, and errors are fully rendered', () => {
         const fieldArb = fc.record({
             label: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),

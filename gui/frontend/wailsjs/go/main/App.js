@@ -511,6 +511,14 @@ export function SearchSkillHub(arg1) {
   return window['go']['main']['App']['SearchSkillHub'](arg1);
 }
 
+export function SearchMixedSkills(arg1) {
+  return window['go']['main']['App']['SearchMixedSkills'](arg1);
+}
+
+export function InstallMixedSkill(arg1, arg2, arg3) {
+  return window['go']['main']['App']['InstallMixedSkill'](arg1, arg2, arg3);
+}
+
 export function InstallHubSkill(arg1, arg2) {
   return window['go']['main']['App']['InstallHubSkill'](arg1, arg2);
 }

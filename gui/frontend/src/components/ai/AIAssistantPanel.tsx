@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
-import type { ChatMessage } from "./useAIAssistant";
+import type { ChatMessage, CancelAIAssistantResult } from "./useAIAssistant";
 import { findLastIndex } from "./useAIAssistant";
 
 interface AIAssistantPanelProps {
@@ -21,7 +21,7 @@ interface AIAssistantPanelProps {
     onHideWindow?: () => void; // hide the entire window (inline mode)
     onboardingIncomplete?: boolean; // true when onboarding was dismissed before completion
     onOpenOnboarding?: () => void; // callback to re-open the onboarding wizard
-    cancelSession?: () => Promise<void>; // cancel the current AI session
+    cancelSession?: () => Promise<CancelAIAssistantResult>; // cancel the current AI session
     onOpenTutorial?: () => void; // open tutorial page
 }
 
@@ -518,7 +518,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
 if (typeof document !== "undefined" && !document.getElementById("ai-blink-style")) {
     const style = document.createElement("style");
     style.id = "ai-blink-style";
-    style.textContent = "@keyframes blink { 50% { opacity: 0; } }";
+    style.textContent = "@keyframes blink { 50% { opacity: 0; } } @keyframes ai-cancel-progress { 0% { transform: translateX(-140%); } 100% { transform: translateX(220%); } }";
     document.head.appendChild(style);
 }
 
@@ -528,6 +528,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
+    const cancelRestoreSeqRef = useRef(0);
     const outputEndRef = useRef<HTMLDivElement | null>(null);
     const outputContainerRef = useRef<HTMLDivElement | null>(null);
     const userScrolledUpRef = useRef(false);
@@ -647,6 +648,25 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
         userScrolledUpRef.current = false;
         await sendMessage(text);
     }, [inputValue, sending, sendMessage]);
+
+    const resizeInput = useCallback(() => {
+        if (!inputRef.current) return;
+        inputRef.current.style.height = "auto";
+        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
+    }, []);
+
+    const handleCancel = useCallback(async () => {
+        if (!cancelSession) return;
+        const restoreSeq = ++cancelRestoreSeqRef.current;
+        const previousInputValue = inputValue;
+        const { canceledText } = await cancelSession();
+        if (cancelRestoreSeqRef.current !== restoreSeq) return;
+        setInputValue(currentValue => currentValue === previousInputValue ? canceledText : currentValue);
+        requestAnimationFrame(() => {
+            resizeInput();
+            inputRef.current?.focus();
+        });
+    }, [cancelSession, inputValue, resizeInput]);
 
     // Split messages: pinned news vs regular messages
     const { pinnedNews, otherMessages } = useMemo(() => {
@@ -886,6 +906,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                 }}>❯</span>
                 <textarea
                     ref={inputRef}
+                    data-testid="ai-input"
                     disabled={!ready}
                     style={{
                         flex: 1, minWidth: 0, background: "transparent",
@@ -901,10 +922,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                     value={inputValue}
                     onChange={(e) => {
                         setInputValue(e.target.value);
-                        // Auto-resize height
-                        const el = e.target;
-                        el.style.height = "auto";
-                        el.style.height = Math.min(el.scrollHeight, 120) + "px";
+                        resizeInput();
                     }}
                     onCompositionStart={() => setComposing(true)}
                     onCompositionEnd={() => setComposing(false)}
@@ -921,20 +939,54 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                 />
                 {sending && cancelSession ? (
                     <button
-                        onClick={cancelSession}
+                        type="button"
+                        onClick={handleCancel}
+                        data-testid="ai-cancel-progress"
                         style={{
                             ...baseInputBtnStyle,
-                            color: t.errorText,
-                            borderColor: t.errorText,
-                            background: "transparent",
+                            position: "relative",
+                            overflow: "hidden",
+                            width: inline ? "60px" : "64px",
+                            padding: 0,
                             marginBottom: "4px",
+                            background: "transparent",
+                            borderColor: t.errorText,
+                            color: t.errorText,
                         }}
                         title={lang === "en" ? "Cancel" : "取消"}
+                        aria-label={lang === "en" ? "Cancel" : "取消"}
                     >
-                        ✕
+                        <span
+                            aria-hidden="true"
+                            style={{
+                                position: "absolute",
+                                inset: "7px 8px",
+                                borderRadius: "999px",
+                                background: t.errorBg,
+                                border: `1px solid ${t.errorBorder}`,
+                            }}
+                        />
+                        <span
+                            aria-hidden="true"
+                            style={{
+                                position: "absolute",
+                                top: "7px",
+                                bottom: "7px",
+                                left: "8px",
+                                width: "18px",
+                                borderRadius: "999px",
+                                background: `linear-gradient(90deg, transparent 0%, ${t.errorBorder} 30%, ${t.errorBorder} 70%, transparent 100%)`,
+                                opacity: 0.9,
+                                animation: "ai-cancel-progress 1s linear infinite",
+                            }}
+                        />
+                        <span style={{ position: "relative", opacity: 0, pointerEvents: "none" }}>
+                            {lang === "en" ? "Cancel" : "取消"}
+                        </span>
                     </button>
                 ) : (
                     <button
+                        type="button"
                         onClick={handleSend}
                         disabled={!ready || sending || !inputValue.trim()}
                         style={{
