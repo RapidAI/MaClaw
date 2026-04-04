@@ -98,6 +98,14 @@ describe('AIAssistantPanel property tests', () => {
         scrollToMock.mockClear();
     });
 
+    it('shows trial-reflect badge when mode is enabled', () => {
+        const { getByText } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true, trialReflectEnabled: true },
+        });
+
+        expect(getByText('Trial+Reflect')).toBeTruthy();
+    });
+
     it('keeps latest conversation visible when reopened with history', () => {
         const messages: ChatMessage[] = [
             makeNews('1'),
@@ -169,6 +177,65 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
+    it('shows background launch control when available', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: {
+                sendMessage: async () => {},
+                sendMessageInBackground: async () => {},
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+            },
+        });
+
+        expect(getByTestId('ai-send-background').getAttribute('title')).toBe('Run in background');
+    });
+
+    it('ctrl+enter sends to background when available', async () => {
+        const sendMessage = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const sendMessageInBackground = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: {
+                sendMessage,
+                sendMessageInBackground,
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+            },
+        });
+
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'background via shortcut' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter', ctrlKey: true });
+
+        await waitFor(() => {
+            expect(sendMessageInBackground).toHaveBeenCalledWith('background via shortcut');
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('clicking background launch control triggers background send', async () => {
+        const sendMessageInBackground = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: {
+                sendMessage: async () => {},
+                sendMessageInBackground,
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+            },
+        });
+
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'long task' } });
+        fireEvent.click(getByTestId('ai-send-background'));
+
+        await waitFor(() => {
+            expect(sendMessageInBackground).toHaveBeenCalledWith('long task');
+        });
+    });
+
     it('shows animated progress cancel control while sending', () => {
         const { getByTestId, queryByTitle } = renderPanel({
             state: { messages: [], sending: true, streaming: false, ready: true },
@@ -187,6 +254,37 @@ describe('AIAssistantPanel property tests', () => {
 
         expect(getByTestId('ai-cancel-progress').textContent).toContain('■');
         expect(queryByTitle('Send')).toBeNull();
+    });
+
+    it('keeps the textarea read-only while the request is still in flight', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, visualBusy: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(false);
+        expect(input.readOnly).toBe(true);
+        expect(input.getAttribute('aria-readonly')).toBe('true');
+    });
+
+    it('keeps the textarea disabled while initialization is not ready', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: false },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(true);
+        expect(input.readOnly).toBe(false);
+    });
+
+    it('falls back to streaming state for the busy spinner when visualBusy is omitted', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: true, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
+        });
+
+        expect(getByTestId('ai-cancel-progress').textContent).not.toContain('■');
     });
 
     it('clicking the progress control triggers cancel', async () => {

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -52,18 +53,31 @@ type IMUserMessage struct {
 
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
-	Text            string             `json:"text"`
-	Fields          []IMResponseField  `json:"fields,omitempty"`
-	Actions         []IMResponseAction `json:"actions,omitempty"`
-	ImageKey        string             `json:"image_key,omitempty"`
-	FileData        string             `json:"file_data,omitempty"`
-	FileName        string             `json:"file_name,omitempty"`
-	FileMimeType    string             `json:"file_mime_type,omitempty"`
-	LocalFilePath   string             `json:"local_file_path,omitempty"`
-	LocalFilePaths  []string           `json:"local_file_paths,omitempty"`
-	ThumbnailBase64 string             `json:"thumbnail_base64,omitempty"`
-	Error           string             `json:"error,omitempty"`
-	Deferred        bool               `json:"deferred,omitempty"`
+	Text               string             `json:"text"`
+	Fields             []IMResponseField  `json:"fields,omitempty"`
+	Actions            []IMResponseAction `json:"actions,omitempty"`
+	ImageKey           string             `json:"image_key,omitempty"`
+	FileData           string             `json:"file_data,omitempty"`
+	FileName           string             `json:"file_name,omitempty"`
+	FileMimeType       string             `json:"file_mime_type,omitempty"`
+	LocalFilePath      string             `json:"local_file_path,omitempty"`
+	LocalFilePaths     []string           `json:"local_file_paths,omitempty"`
+	ThumbnailBase64    string             `json:"thumbnail_base64,omitempty"`
+	Error              string             `json:"error,omitempty"`
+	Deferred           bool               `json:"deferred,omitempty"`
+	JobID              string             `json:"job_id,omitempty"`
+	RunID              string             `json:"run_id,omitempty"`
+	RequestID          string             `json:"request_id,omitempty"`
+	TraceSummary       string             `json:"trace_summary,omitempty"`
+	TraceEventCount    int                `json:"trace_event_count,omitempty"`
+	EvidenceCount      int                `json:"evidence_count,omitempty"`
+	HandlerTailNanos     int64 `json:"-"`
+	FinalizeTraceNanos   int64 `json:"-"`
+	MemorySaveNanos      int64 `json:"-"`
+	CapabilityGapNanos   int64 `json:"-"`
+	FileMaterializeNanos int64 `json:"-"`
+	PreLLMPrepNanos      int64 `json:"-"`
+	FirstTokenWaitNanos  int64 `json:"-"`
 }
 
 // IMResponseField is a key-value field in the agent response.
@@ -125,6 +139,8 @@ type IMMessageHandler struct {
 
 	// Scheduled task manager (lazily initialized via setter).
 	scheduledTaskManager *ScheduledTaskManager
+
+	traceService *AITraceService
 
 	// Smart session startup components (lazily initialized via setters).
 	contextResolver *SessionContextResolver
@@ -240,7 +256,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	h := &IMMessageHandler{
 		app:           app,
 		manager:       manager,
-		memory:        newPersistentConversationMemory(filepath.Join(app.GetDataDir(), "ai_assistant_conversation.json")),
+		memory:        app.ensureConversationMemory(),
 		client:        chatClient,
 		taskClient:    taskClient,
 		agentActivity: NewAgentActivityStore(),
@@ -325,6 +341,21 @@ func (h *IMMessageHandler) SetConfigManager(cm *ConfigManager) {
 // SetMemoryStore configures the long-term memory store.
 func (h *IMMessageHandler) SetMemoryStore(ms *MemoryStore) {
 	h.memoryStore = ms
+}
+
+func (h *IMMessageHandler) SetTraceService(trace *AITraceService) {
+	h.traceService = trace
+}
+
+func (h *IMMessageHandler) traceContextResolver() *SessionContextResolver {
+	if h.contextResolver != nil {
+		return h.contextResolver
+	}
+	if h.app != nil {
+		h.app.ensureContextResolver()
+		return h.app.contextResolver
+	}
+	return nil
 }
 
 // SetTemplateManager configures the session template manager.
@@ -787,6 +818,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 		sendStatus("🔒 正在进行安全审查...")
 		assessment := h.app.riskAssessor.AssessSkill(skill, skill.TrustLevel)
 		if assessment.Level == RiskCritical {
+			h.app.ensureAuditLog()
 			if h.app.auditLog != nil {
 				_ = h.app.auditLog.Log(AuditEntry{
 					Timestamp:    time.Now(),
@@ -807,6 +839,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 	}
 
 	// Audit log.
+	h.app.ensureAuditLog()
 	if h.app.auditLog != nil {
 		_ = h.app.auditLog.Log(AuditEntry{
 			Timestamp:    time.Now(),
@@ -913,6 +946,158 @@ func (h *IMMessageHandler) WarmupHTTPConn() {
 	log.Printf("[Warmup] HTTP connection warmed up (status=%d)", resp.StatusCode)
 }
 
+func (h *IMMessageHandler) runTraceStatus(ctx *LoopContext, result *IMAgentResponse) TraceRunStatus {
+	if ctx == nil {
+		return TraceRunStatusRunning
+	}
+	if result != nil && result.Error != "" {
+		return TraceRunStatusFailed
+	}
+	switch state := ctx.State(); state {
+	case "completed":
+		return TraceRunStatusCompleted
+	case "failed":
+		return TraceRunStatusFailed
+	case "stopped":
+		return TraceRunStatusCancelled
+	case "timeout":
+		return TraceRunStatusTimeout
+	case "paused":
+		return TraceRunStatusPaused
+	default:
+		return traceStatusFromLoopState(state)
+	}
+}
+
+func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentResponse, summary, errText string) *IMAgentResponse {
+	if resp == nil {
+		resp = &IMAgentResponse{}
+	}
+	if ctx == nil || h.traceService == nil || ctx.RunID == "" {
+		return resp
+	}
+	status := h.runTraceStatus(ctx, resp)
+	h.traceService.UpdateRun(ctx.RunID, status, summary, errText)
+	resp.JobID = ctx.JobID
+	resp.RunID = ctx.RunID
+	resp.TraceSummary = h.traceService.TraceSummary(ctx.RunID)
+	resp.TraceEventCount, resp.EvidenceCount = h.traceService.TraceCounts(ctx.RunID)
+	return resp
+}
+
+func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []conversationEntry, resp *IMAgentResponse) {
+	startedAt := time.Now()
+	h.memory.save(userID, trimHistory(history))
+	if resp != nil {
+		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
+	}
+}
+
+func (h *IMMessageHandler) appendTraceEvent(ctx *LoopContext, kind, severity, title, summary, relatedFile, command string) {
+	if ctx == nil || h.traceService == nil || ctx.RunID == "" {
+		return
+	}
+	h.traceService.AppendEvent(ctx.RunID, TraceEvent{
+		Kind:        kind,
+		Severity:    severity,
+		Title:       firstNonEmptyTraceText(title, kind),
+		Summary:     summary,
+		RelatedFile: relatedFile,
+		Command:     command,
+		ProjectPath: h.traceProjectPath(),
+		CreatedAt:   traceNowMillis(),
+	})
+}
+
+func (h *IMMessageHandler) appendTraceEvidence(ctx *LoopContext, sourceKind, category, summary, snippet, relatedFile, command string) {
+	if ctx == nil || h.traceService == nil || ctx.RunID == "" {
+		return
+	}
+	h.traceService.AppendEvidence(ctx.RunID, EvidenceRecord{
+		SourceKind:     sourceKind,
+		Category:       category,
+		Summary:        summary,
+		ContentSnippet: snippet,
+		RelatedFile:    relatedFile,
+		Command:        command,
+		ProjectPath:    h.traceProjectPath(),
+		CreatedAt:      traceNowMillis(),
+	})
+}
+
+func (h *IMMessageHandler) traceProjectPath() string {
+	resolver := h.traceContextResolver()
+	if resolver == nil {
+		return ""
+	}
+	projectPath, _ := resolver.ResolveProject()
+	return strings.TrimSpace(projectPath)
+}
+
+func (h *IMMessageHandler) buildTraceEvidencePrompt(userMessage string) string {
+	if h.traceService == nil {
+		return ""
+	}
+	projectPath := h.traceProjectPath()
+	evidence := h.traceService.RecallEvidence(projectPath, userMessage, 3)
+	if len(evidence) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## 最近执行证据\n")
+	for _, item := range evidence {
+		line := firstNonEmptyTraceText(item.Summary, item.ContentSnippet)
+		if line == "" {
+			continue
+		}
+		if item.RelatedFile != "" {
+			line += " [file=" + item.RelatedFile + "]"
+		}
+		if item.Command != "" {
+			line += " [cmd=" + item.Command + "]"
+		}
+		b.WriteString("- ")
+		b.WriteString(truncateTraceText(line, 220))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func traceCategoryForToolResult(toolName, result string) string {
+	lower := strings.ToLower(result)
+	switch {
+	case strings.Contains(lower, "失败") || strings.Contains(lower, "error") || strings.Contains(lower, "failed"):
+		return "error"
+	case toolName == "create_session":
+		return "result"
+	case strings.Contains(lower, "文件") || strings.Contains(lower, "saved"):
+		return "file"
+	default:
+		return "event"
+	}
+}
+
+func (h *IMMessageHandler) linkTraceToLatestAISession(ctx *LoopContext, result string) string {
+	if ctx == nil || h.traceService == nil || h.manager == nil {
+		return ""
+	}
+	sessionID := ""
+	if start := strings.Index(result, "["); start >= 0 {
+		if end := strings.Index(result[start:], "]"); end > 1 {
+			sessionID = strings.TrimSpace(result[start+1 : start+end])
+		}
+	}
+	if sessionID == "" {
+		return ""
+	}
+	session, ok := h.manager.Get(sessionID)
+	if !ok || session == nil || session.RunID == "" {
+		return ""
+	}
+	h.traceService.LinkRuns(ctx.RunID, session.RunID)
+	return session.RunID
+}
+
 // HandleIMMessage processes an IM user message and returns the Agent's response.
 func (h *IMMessageHandler) HandleIMMessage(msg IMUserMessage) *IMAgentResponse {
 	return h.HandleIMMessageWithProgress(msg, nil)
@@ -931,7 +1116,136 @@ func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProg
 // LLM text delta is pushed in real-time. When onNewRound is non-nil, it is called
 // at the start of each new agent loop iteration (after the first) so the frontend
 // can create a new message bubble. IM platforms pass nil for both.
+func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) (*AIAssistantBackgroundTaskResult, error) {
+	trimmedText := strings.TrimSpace(text)
+	if trimmedText == "" {
+		return &AIAssistantBackgroundTaskResult{
+			Accepted: false,
+			Mode:     "background",
+			Error:    "empty task text",
+		}, nil
+	}
+	if h.manager == nil {
+		return nil, fmt.Errorf("remote session manager not initialized")
+	}
+	loopCtx := NewLoopContext(fmt.Sprintf("ai-bg-%d", time.Now().UnixNano()), h.app.GetMaclawAgentMaxIterations(), h.taskClient)
+	loopCtx.Platform = "desktop"
+	if h.traceService != nil {
+		job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, trimmedText, "desktop", "desktop-user", strings.TrimSpace(projectPath))
+		loopCtx.JobID = job.JobID
+		loopCtx.RunID = run.RunID
+		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
+		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 后台任务已接收", truncateTraceText(trimmedText, 180), "", "")
+	}
+	title := truncateRunes(trimmedText, 72)
+	session := h.manager.CreateAIBackgroundSession(title, projectPath, loopCtx)
+	if session == nil {
+		return nil, fmt.Errorf("failed to create background AI session")
+	}
+	if h.traceService != nil && loopCtx.RunID != "" {
+		h.traceService.SetRunSessionID(loopCtx.RunID, session.ID)
+	}
+	go h.runDesktopBackgroundTask(session.ID, loopCtx, trimmedText, strings.TrimSpace(projectPath))
+	return &AIAssistantBackgroundTaskResult{
+		Accepted:  true,
+		Mode:      "background",
+		SessionID: session.ID,
+		JobID:     session.JobID,
+		RunID:     session.RunID,
+	}, nil
+}
+
+func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *LoopContext, text, _ string) {
+	msg := IMUserMessage{
+		UserID:       "desktop-user",
+		Platform:     "desktop",
+		Text:         text,
+		IsBackground: true,
+		Lang:         "zh",
+		MinIterations: h.app.GetMaclawAgentMaxIterations(),
+		BackgroundSlotKind: "scheduled",
+	}
+	onProgress := func(progressText string) {
+		if progressText == "" || progressText == imHeartbeatMsg || h.manager == nil {
+			return
+		}
+		h.manager.UpdateBackgroundAISummary(sessionID, func(s *RemoteSession) {
+			s.Status = SessionBusy
+			s.Summary.Status = string(SessionBusy)
+			s.Summary.WaitingForUser = false
+			s.Summary.ProgressSummary = progressText
+			s.Summary.CurrentTask = firstNonEmptyTraceText(progressText, s.Title)
+		})
+		h.manager.AppendBackgroundAIOutput(sessionID, progressText)
+	}
+	resp := h.HandleIMMessageWithExistingLoop(msg, loopCtx, onProgress, nil, nil, nil)
+	if h.manager == nil {
+		return
+	}
+	if resp != nil && resp.Error != "" {
+		h.manager.UpdateBackgroundAISummary(sessionID, func(s *RemoteSession) {
+			s.Status = SessionError
+			s.Summary.Status = string(SessionError)
+			s.Summary.Severity = "error"
+			s.Summary.LastResult = resp.Error
+			s.Summary.ProgressSummary = firstNonEmptyTraceText(resp.Error, s.Summary.ProgressSummary)
+		})
+		h.manager.AddBackgroundAIEvent(sessionID, ImportantEvent{
+			Type:     "ai.background.error",
+			Severity: "error",
+			Title:    "AI background task failed",
+			Summary:  truncateTraceText(resp.Error, 220),
+		})
+		return
+	}
+	if loopCtx.IsCancelled() {
+		h.manager.UpdateBackgroundAISummary(sessionID, func(s *RemoteSession) {
+			s.Status = SessionExited
+			s.Summary.Status = string(SessionExited)
+			s.Summary.Severity = "warn"
+			s.Summary.LastResult = "Canceled"
+			s.Summary.ProgressSummary = "任务已取消"
+		})
+		h.manager.AddBackgroundAIEvent(sessionID, ImportantEvent{
+			Type:     "ai.background.canceled",
+			Severity: "warn",
+			Title:    "AI background task canceled",
+			Summary:  truncateTraceText(text, 180),
+		})
+		return
+	}
+	resultText := ""
+	if resp != nil {
+		resultText = firstNonEmptyTraceText(resp.Text, resp.TraceSummary)
+	}
+	h.manager.UpdateBackgroundAISummary(sessionID, func(s *RemoteSession) {
+		s.Status = SessionExited
+		s.Summary.Status = string(SessionExited)
+		s.Summary.Severity = "info"
+		s.Summary.WaitingForUser = false
+		s.Summary.ProgressSummary = firstNonEmptyTraceText(resultText, "任务已完成")
+		s.Summary.LastResult = resultText
+	})
+	if resultText != "" {
+		h.manager.AppendBackgroundAIOutput(sessionID, resultText)
+	}
+	h.manager.AddBackgroundAIEvent(sessionID, ImportantEvent{
+		Type:     "ai.background.completed",
+		Severity: "info",
+		Title:    "AI background task completed",
+		Summary:  truncateTraceText(firstNonEmptyTraceText(resultText, text), 220),
+	})
+}
+
+func (h *IMMessageHandler) HandleIMMessageWithExistingLoop(msg IMUserMessage, loopCtx *LoopContext, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
+	return h.handleIMMessageWithLoop(msg, loopCtx, onProgress, onToken, onNewRound, onStreamDone)
+}
+
 func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessage, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
+	return h.handleIMMessageWithLoop(msg, nil, onProgress, onToken, onNewRound, onStreamDone)
+}
+
+func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
 	trimmed := strings.TrimSpace(msg.Text)
 
 	// Slash commands are processed before the LLM config check — they don't
@@ -939,7 +1253,11 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 	// is misconfigured.
 	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
 		h.memory.clear(msg.UserID)
-		return &IMAgentResponse{Text: "对话已重置。"}
+		resp := &IMAgentResponse{Text: "对话已重置。"}
+		if h.currentLoopCtx != nil {
+			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, "")
+		}
+		return resp
 	}
 	if trimmed == "/exit" || trimmed == "/quit" {
 		return h.handleExitCommand(msg.UserID)
@@ -1005,7 +1323,7 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 	}
 
 	// --- Background routing: delegate to BackgroundLoopManager ---
-	if msg.IsBackground && h.bgManager != nil {
+	if msg.IsBackground && h.bgManager != nil && providedLoopCtx == nil {
 		slotKind := parseSlotKind(msg.BackgroundSlotKind)
 		maxIter := h.app.GetMaclawAgentMaxIterations()
 		if msg.MinIterations > maxIter {
@@ -1021,6 +1339,13 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 			return &IMAgentResponse{Error: "后台任务启动失败：无法获取执行槽位"}
 		}
 		loopCtx.HTTPClient = httpClient
+		if h.traceService != nil && loopCtx.RunID == "" {
+			job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, msg.Text, msg.Platform, msg.UserID, h.traceProjectPath())
+			loopCtx.JobID = job.JobID
+			loopCtx.RunID = run.RunID
+			h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
+			h.appendTraceEvent(loopCtx, "request.accepted", "info", "后台任务已接收", truncateTraceText(msg.Text, 180), "", "")
+		}
 
 		var systemPrompt string
 		history := h.memory.load(msg.UserID)
@@ -1030,8 +1355,9 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 		} else {
 			systemPrompt = h.buildSystemPrompt()
 		}
+		systemPrompt += h.buildTraceEvidencePrompt(msg.Text)
 
-		result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, nil, nil, msg.MinIterations, msg.Platform)
+		result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, nil, nil, nil, msg.MinIterations, msg.Platform)
 
 		// Mark loop as completed/failed and dequeue next.
 		if result != nil && result.Error != "" {
@@ -1039,6 +1365,13 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 		} else {
 			loopCtx.SetState("completed")
 		}
+		summaryText := ""
+		errText := ""
+		if result != nil {
+			summaryText = firstNonEmptyTraceText(result.Text, result.TraceSummary)
+			errText = result.Error
+		}
+		result = h.finalizeTraceResult(loopCtx, result, summaryText, errText)
 		h.bgManager.Complete(loopCtx.ID)
 		return result
 	}
@@ -1051,20 +1384,43 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 	} else {
 		systemPrompt = h.buildSystemPrompt()
 	}
+	systemPrompt += h.buildTraceEvidencePrompt(msg.Text)
 
 	// Create a LoopContext for this chat loop.
-	loopCtx := NewLoopContext("chat", h.app.GetMaclawAgentMaxIterations(), httpClient)
+	loopCtx := providedLoopCtx
+	if loopCtx == nil {
+		loopCtx = NewLoopContext("chat", h.app.GetMaclawAgentMaxIterations(), httpClient)
+	}
+	if loopCtx.HTTPClient == nil {
+		loopCtx.HTTPClient = httpClient
+	}
+	if h.traceService != nil && loopCtx.RunID == "" {
+		job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, msg.Text, msg.Platform, msg.UserID, h.traceProjectPath())
+		loopCtx.JobID = job.JobID
+		loopCtx.RunID = run.RunID
+		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
+		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 请求已接收", truncateTraceText(msg.Text, 180), "", "")
+	}
 	// Wire the bgManager's statusC so the chat loop can drain background events.
-	if h.bgManager != nil {
+	if h.bgManager != nil && loopCtx.StatusC == nil {
 		loopCtx.StatusC = h.bgManager.statusC
 	}
 
 	// Serialize chat loops: cancel any lingering previous loop and wait for
 	// it to release the mutex before starting a new one.
-	h.chatLoopMu.Lock()
-	defer h.chatLoopMu.Unlock()
+	if providedLoopCtx == nil {
+		h.chatLoopMu.Lock()
+		defer h.chatLoopMu.Unlock()
+	}
 
-	return h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, onToken, onNewRound, msg.MinIterations, msg.Platform)
+	resp := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, onToken, onNewRound, onStreamDone, msg.MinIterations, msg.Platform)
+	if resp == nil {
+		resp = &IMAgentResponse{}
+	}
+	finalizeStartedAt := time.Now()
+	resp = h.finalizeTraceResult(loopCtx, resp, firstNonEmptyTraceText(resp.Text, resp.TraceSummary), resp.Error)
+	resp.FinalizeTraceNanos = time.Since(finalizeStartedAt).Nanoseconds()
+	return resp
 }
 
 // handleExitCommand terminates all active sessions, resets conversation
@@ -1242,7 +1598,115 @@ func drainStatusEvents(ctx *LoopContext, conversation *[]interface{}, sendProgre
 	}
 }
 
-func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []conversationEntry, userText string, attachments []MessageAttachment, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, minIterations int, platform string) (result *IMAgentResponse) {
+type trialReflectState struct {
+	enabled            bool
+	pendingNote        string
+	lastObservation    string
+	failedActionCounts map[string]int
+}
+
+func newTrialReflectState(enabled bool) *trialReflectState {
+	return &trialReflectState{
+		enabled:            enabled,
+		failedActionCounts: make(map[string]int),
+	}
+}
+
+func classifyTrialOutcome(result string) string {
+	lower := strings.ToLower(strings.TrimSpace(result))
+	if lower == "" {
+		return "uncertain"
+	}
+	failureHints := []string{
+		"error", "failed", "not found", "timeout", "timed out", "denied", "invalid",
+		"panic", "exception", "unable", "cannot", "can't", "permission", "no such file",
+		"不存在", "失败", "错误", "超时", "拒绝", "无权限", "未找到", "异常",
+	}
+	for _, hint := range failureHints {
+		if strings.Contains(lower, hint) {
+			return "failed"
+		}
+	}
+	successHints := []string{
+		"success", "completed", "done", "saved", "created", "updated", "ok", "ready",
+		"成功", "已完成", "完成", "已保存", "已创建", "已更新", "就绪",
+	}
+	for _, hint := range successHints {
+		if strings.Contains(lower, hint) {
+			return "succeeded"
+		}
+	}
+	return "uncertain"
+}
+
+func trialActionSignature(name, args string) string {
+	hash := sha256.Sum256([]byte(strings.TrimSpace(args)))
+	return fmt.Sprintf("%s#%x", strings.TrimSpace(name), hash[:4])
+}
+
+func buildTrialReflectNote(toolNames []string, observations []string, repeatedFailures []string) string {
+	if len(toolNames) == 0 || len(observations) == 0 {
+		return ""
+	}
+	toolSummary := strings.Join(toolNames, ", ")
+	observation := strings.Join(observations, "；")
+	var b strings.Builder
+	b.WriteString("[试错反思]\n")
+	b.WriteString("上一轮尝试：")
+	b.WriteString(toolSummary)
+	b.WriteString("\n")
+	b.WriteString("观察结果：")
+	b.WriteString(observation)
+	b.WriteString("\n")
+	b.WriteString("下一轮要求：先根据这些结果调整方法，再继续动作；不要原样重复已经失败的尝试。")
+	if len(repeatedFailures) > 0 {
+		sort.Strings(repeatedFailures)
+		b.WriteString("\n避免重复：")
+		b.WriteString(strings.Join(repeatedFailures, ", "))
+	}
+	return b.String()
+}
+
+func (s *trialReflectState) observeIteration(toolCalls []llmToolCall, toolResults []string) (string, string, []string) {
+	if s == nil || !s.enabled || len(toolCalls) == 0 || len(toolCalls) != len(toolResults) {
+		return "", "", nil
+	}
+	toolNames := make([]string, 0, len(toolCalls))
+	observations := make([]string, 0, len(toolCalls))
+	repeatedFailures := make([]string, 0)
+	overall := "succeeded"
+	for i, tc := range toolCalls {
+		name := strings.TrimSpace(tc.Function.Name)
+		toolNames = append(toolNames, name)
+		outcome := classifyTrialOutcome(toolResults[i])
+		summary := truncateTraceText(strings.TrimSpace(toolResults[i]), 120)
+		if summary == "" {
+			summary = "无明确输出"
+		}
+		observations = append(observations, fmt.Sprintf("%s=%s（%s）", name, outcome, summary))
+		sig := trialActionSignature(name, tc.Function.Arguments)
+		switch outcome {
+		case "failed":
+			s.failedActionCounts[sig]++
+			if s.failedActionCounts[sig] >= 1 {
+				repeatedFailures = append(repeatedFailures, name)
+			}
+			overall = "failed"
+		case "uncertain":
+			if overall == "succeeded" {
+				overall = "uncertain"
+			}
+		default:
+			delete(s.failedActionCounts, sig)
+		}
+	}
+	note := buildTrialReflectNote(toolNames, observations, repeatedFailures)
+	s.pendingNote = note
+	s.lastObservation = strings.Join(observations, "；")
+	return overall, s.lastObservation, repeatedFailures
+}
+
+func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []conversationEntry, userText string, attachments []MessageAttachment, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback, minIterations int, platform string) (result *IMAgentResponse) {
 	// panic recovery — 防止工具执行异常导致 goroutine 崩溃
 	defer func() {
 		if r := recover(); r != nil {
@@ -1251,9 +1715,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}()
 
 	// Wire the loop context so tools can access it.
+	loopStartedAt := time.Now()
 	h.currentLoopCtx = ctx
 	h.lastUserText = userText
 	ctx.Platform = platform
+	if h.traceService != nil && ctx.RunID != "" {
+		h.traceService.SetRunLoopID(ctx.RunID, ctx.ID)
+		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", truncateTraceText(userText, 180), "", "")
+	}
 	defer func() { h.currentLoopCtx = nil; h.lastUserText = ""; ctx.Done() }()
 
 	// Derive a context.Context from the LoopContext's CancelC so that
@@ -1288,6 +1757,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	sendProgress := func(text string) {
 		if onProgress != nil {
 			onProgress(text)
+		}
+	}
+	var streamDoneAt time.Time
+	streamDoneCallback := onStreamDone
+	if onStreamDone != nil {
+		streamDoneCallback = func() {
+			if streamDoneAt.IsZero() {
+				streamDoneAt = time.Now()
+			}
+			onStreamDone()
 		}
 	}
 
@@ -1359,6 +1838,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	defer close(heartbeatDone)
 
 	cfg := h.app.GetMaclawLLMConfig()
+	trialReflectEnabled := false
+	if appCfg, err := h.app.LoadConfig(); err == nil {
+		trialReflectEnabled = appCfg.UIMode == "pro" && appCfg.TrialReflectEnabled
+	}
+	trialState := newTrialReflectState(trialReflectEnabled)
 	maxIter := h.app.GetMaclawAgentMaxIterations()
 	h.loopMaxOverride = 0 // reset dynamic override for this loop
 	// Sync initial maxIter into the LoopContext so ctx is the source of truth.
@@ -1427,6 +1911,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			effectiveMax = maxAgentIterationsCap
 		}
 	}
+	var firstLLMRequestStartedAt time.Time
+	var firstLLMResponseAt time.Time
+	firstLLMRequestMarked := false
 
 	for iteration := 0; ; iteration++ {
 		ctx.SetIteration(iteration)
@@ -1500,6 +1987,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			break
 		}
 
+		if h.traceService != nil && ctx.RunID != "" {
+			h.traceService.UpdateRun(ctx.RunID, TraceRunStatusRunning, firstNonEmptyTraceText(ctx.Description, userText), "")
+		}
+
 		if iteration > 0 {
 			if isDebug() {
 				if maxIter > 0 || h.loopMaxOverride > 0 {
@@ -1538,13 +2029,34 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				})
 			}
 		}
+		if trialState.enabled && strings.TrimSpace(trialState.pendingNote) != "" {
+			conversation = append(conversation, map[string]string{
+				"role": "system",
+				"content": trialState.pendingNote,
+			})
+			if h.traceService != nil && ctx.RunID != "" {
+				h.appendTraceEvent(ctx, "trial.adjusted", "info", "Injected reflection note", truncateTraceText(trialState.pendingNote, 220), "", "")
+			}
+			trialState.pendingNote = ""
+		}
 
 		// Notify frontend of new round (for streaming UI) — skip first iteration
 		// since the frontend already created a placeholder message.
 		if onNewRound != nil && iteration > 0 {
 			onNewRound()
 		}
+		llmCallStartedAt := time.Now()
+		if !firstLLMRequestMarked {
+			firstLLMRequestMarked = true
+			firstLLMRequestStartedAt = llmCallStartedAt
+		}
 		resp, err := h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+		if err == nil && firstLLMResponseAt.IsZero() {
+			firstLLMResponseAt = time.Now()
+		}
+		if err == nil && streamDoneCallback != nil {
+			streamDoneCallback()
+		}
 		// Retry on timeout / temporary network errors.
 		// When AdaptiveRetry is available, use it for smarter classification;
 		// otherwise fall back to the existing isRetryableLLMError logic.
@@ -1566,7 +2078,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					case <-ctx.CancelC:
 					}
 					if !ctx.IsCancelled() {
+						llmCallStartedAt = time.Now()
 						resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+						if err == nil && firstLLMResponseAt.IsZero() {
+							firstLLMResponseAt = time.Now()
+						}
+						if err == nil && streamDoneCallback != nil {
+							streamDoneCallback()
+						}
 					}
 				}
 			} else if isRetryableLLMError(err) && !ctx.IsCancelled() {
@@ -1576,7 +2095,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				case <-ctx.CancelC:
 				}
 				if !ctx.IsCancelled() {
+					llmCallStartedAt = time.Now()
 					resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+					if err == nil && firstLLMResponseAt.IsZero() {
+						firstLLMResponseAt = time.Now()
+					}
+					if err == nil && streamDoneCallback != nil {
+						streamDoneCallback()
+					}
 				}
 			}
 		}
@@ -1637,6 +2163,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			"role":    "assistant",
 			"content": msgContent,
 		}
+		if h.traceService != nil && ctx.RunID != "" {
+			h.appendTraceEvent(ctx, "assistant.response", "info", "Assistant response", truncateTraceText(msgContent, 220), "", "")
+		}
 		if msgReasoning != "" {
 			assistantMsg["reasoning_content"] = msgReasoning
 		}
@@ -1666,6 +2195,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// unified search order, then installAndExecuteSkill for the install
 			// path — no duplicate searches.
 			if h.capabilityGapDetector != nil && h.capabilityGapDetector.Detect(msgContent) {
+				capabilityGapStartedAt := time.Now()
 				goCtx, goCancel := ctx.Context()
 				smClient := NewSkillMarketClient(h.app)
 				searcher := NewSkillSearcher(smClient)
@@ -1676,18 +2206,42 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						func(status string) { sendProgress(status) })
 					goCancel()
 					if strings.HasPrefix(installResult, "✅") {
-						h.memory.save(userID, trimHistory(history))
-						return &IMAgentResponse{Text: stripThinkingTags(installResult)}
+						resp := &IMAgentResponse{Text: stripThinkingTags(installResult)}
+						if !firstLLMRequestStartedAt.IsZero() {
+							resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+						}
+						if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
+							resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
+						}
+						if !streamDoneAt.IsZero() {
+							resp.HandlerTailNanos = time.Since(streamDoneAt).Nanoseconds()
+						}
+						resp.CapabilityGapNanos = time.Since(capabilityGapStartedAt).Nanoseconds()
+						h.saveConversationHistoryTimed(userID, history, resp)
+						return resp
 					}
 				} else {
 					goCancel()
 				}
 			}
-			h.memory.save(userID, trimHistory(history))
-			return &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+			resp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+			if !firstLLMRequestStartedAt.IsZero() {
+				resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+			}
+			if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
+				resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
+			}
+			if !streamDoneAt.IsZero() {
+				resp.HandlerTailNanos = time.Since(streamDoneAt).Nanoseconds()
+			}
+			h.saveConversationHistoryTimed(userID, history, resp)
+			return resp
 		}
 
 		// Execute tool calls and feed results back.
+		if trialState.enabled && h.traceService != nil && ctx.RunID != "" {
+			h.appendTraceEvent(ctx, "trial.started", "info", "Trial iteration started", fmt.Sprintf("iteration=%d tool_calls=%d", iteration+1, len(choice.Message.ToolCalls)), "", "")
+		}
 		var pendingImageKey string
 		type pendingFile struct {
 			name, mimeType, data string
@@ -1696,6 +2250,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		var pendingFiles []pendingFile
 		screenshotAlreadySent := false
+		toolResults := make([]string, 0, len(choice.Message.ToolCalls))
 		for _, tc := range choice.Message.ToolCalls {
 			// Check cancellation between tool calls so we don't keep
 			// executing tools after the user clicked cancel.
@@ -1715,6 +2270,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				toolOnProgress = nil
 			}
 			result := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+			toolResults = append(toolResults, result)
+			if h.traceService != nil && ctx.RunID != "" {
+				h.appendTraceEvent(ctx, "tool.executed", "info", tc.Function.Name, truncateTraceText(result, 220), "", tc.Function.Name)
+				h.appendTraceEvidence(ctx, "ai_tool", traceCategoryForToolResult(tc.Function.Name, result), tc.Function.Name, truncateTraceText(result, 400), "", tc.Function.Name)
+				if tc.Function.Name == "create_session" && h.manager != nil {
+					if linkedRunID := h.linkTraceToLatestAISession(ctx, result); linkedRunID != "" {
+						h.appendTraceEvent(ctx, "session.linked", "info", "Linked remote session", linkedRunID, "", "")
+					}
+				}
+			}
 
 			// Intercept direct screenshot results: extract base64 image data
 			// so it can be delivered via IM image channel instead of text.
@@ -1803,18 +2368,43 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					})
 					loopDriftDetector.ResetWindow()
 					if driftResult.NeedHumanHelp {
-						h.memory.save(userID, trimHistory(history))
-						return &IMAgentResponse{
+						resp := &IMAgentResponse{
 							Text: "⚠️ Agent 检测到重复漂移模式，需要人工介入。请检查当前任务状态并提供新的指示。",
 						}
+						h.saveConversationHistoryTimed(userID, history, resp)
+						return resp
 					}
+				}
+			}
+		}
+		if trialState.enabled {
+			outcome, observation, repeatedFailures := trialState.observeIteration(choice.Message.ToolCalls, toolResults)
+			if observation != "" && h.traceService != nil && ctx.RunID != "" {
+				h.appendTraceEvent(ctx, "trial.observed", "info", "Trial outcome", truncateTraceText(observation, 220), "", "")
+				h.appendTraceEvidence(ctx, "trial_reflect", outcome, "trial observation", truncateTraceText(observation, 400), "", "")
+			}
+			if strings.TrimSpace(trialState.pendingNote) != "" && h.traceService != nil && ctx.RunID != "" {
+				severity := "info"
+				if outcome == "failed" {
+					severity = "warn"
+				}
+				h.appendTraceEvent(ctx, "trial.reflected", severity, "Trial reflection", truncateTraceText(trialState.pendingNote, 220), "", "")
+				if len(repeatedFailures) > 0 {
+					h.appendTraceEvidence(ctx, "trial_reflect", "repeat_guard", "avoid repeating failed actions", strings.Join(repeatedFailures, ", "), "", "")
 				}
 			}
 		}
 
 		// If a direct screenshot was captured, return it immediately as an image response.
 		if pendingImageKey != "" {
-			h.memory.save(userID, trimHistory(history))
+			resp := &IMAgentResponse{}
+			if !firstLLMRequestStartedAt.IsZero() {
+				resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+			}
+			if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
+				resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
+			}
+			h.saveConversationHistoryTimed(userID, history, resp)
 			// Desktop platform: save to local file and return path + thumbnail
 			if platform == "desktop" {
 				filePath, err := h.saveScreenshotToFile(pendingImageKey)
@@ -1829,30 +2419,42 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						thumb = downsized
 					}
 				}
-				return &IMAgentResponse{
-					Text:            "📷 截图已保存",
-					LocalFilePath:   filePath,
-					ThumbnailBase64: thumb,
-				}
+				resp.Text = "📷 截图已保存"
+				resp.LocalFilePath = filePath
+				resp.ThumbnailBase64 = thumb
+				return resp
 			}
-			return &IMAgentResponse{
-				Text:     "",
-				ImageKey: pendingImageKey,
-			}
+			resp.Text = ""
+			resp.ImageKey = pendingImageKey
+			return resp
 		}
 
 		// If screenshot was already delivered via session.image channel,
 		// stop the loop immediately — no further agent reasoning needed.
 		if screenshotAlreadySent {
-			h.memory.save(userID, trimHistory(history))
-			return &IMAgentResponse{Text: "📷 截图已发送"}
+			resp := &IMAgentResponse{Text: "📷 截图已发送"}
+			if !firstLLMRequestStartedAt.IsZero() {
+				resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+			}
+			if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
+				resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
+			}
+			h.saveConversationHistoryTimed(userID, history, resp)
+			return resp
 		}
 
 		// If file(s) were prepared, return them for delivery.
 		if len(pendingFiles) > 0 {
-			h.memory.save(userID, trimHistory(history))
-			// Desktop platform: save all files locally and return paths
+			resp := &IMAgentResponse{}
+			if !firstLLMRequestStartedAt.IsZero() {
+				resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+			}
+			if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
+				resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
+			}
+			h.saveConversationHistoryTimed(userID, history, resp)
 			if platform == "desktop" {
+				fileMaterializeStartedAt := time.Now()
 				var savedPaths []string
 				var failLines []string
 				var imForwardedCount int
@@ -1887,10 +2489,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						text = imNote
 					}
 				}
-				resp := &IMAgentResponse{
-					Text:           text,
-					LocalFilePaths: savedPaths,
-				}
+				resp.Text = text
+				resp.LocalFilePaths = savedPaths
+				resp.FileMaterializeNanos = time.Since(fileMaterializeStartedAt).Nanoseconds()
 				// Keep backward compat: also set singular field to first path
 				if len(savedPaths) > 0 {
 					resp.LocalFilePath = savedPaths[0]
@@ -1899,12 +2500,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 			// IM platforms: send the last file (IM channels support one attachment per message)
 			last := pendingFiles[len(pendingFiles)-1]
-			return &IMAgentResponse{
-				Text:         "",
-				FileData:     last.data,
-				FileName:     last.name,
-				FileMimeType: last.mimeType,
-			}
+			resp.Text = ""
+			resp.FileData = last.data
+			resp.FileName = last.name
+			resp.FileMimeType = last.mimeType
+			return resp
 		}
 	}
 
@@ -1931,6 +2531,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			onNewRound()
 		}
 		bonusResp, err := h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+		if err == nil && streamDoneCallback != nil {
+			streamDoneCallback()
+		}
 		// Accumulate token usage stats for bonus round
 		if bonusResp != nil {
 			var input, output int
@@ -1994,12 +2597,26 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 		}
 
-		h.memory.save(userID, trimHistory(history))
-		return &IMAgentResponse{Text: "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。"}
+		h.saveConversationHistoryTimed(userID, history, &IMAgentResponse{})
+		resp := &IMAgentResponse{Text: "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。"}
+		if !firstLLMRequestStartedAt.IsZero() {
+			resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+		}
+		if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
+			resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
+		}
+		return resp
 	}
 
-	h.memory.save(userID, trimHistory(history))
-	return &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
+	resp := &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
+	if !firstLLMRequestStartedAt.IsZero() {
+		resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+	}
+	if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
+		resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
+	}
+	h.saveConversationHistoryTimed(userID, history, resp)
+	return resp
 }
 
 // saveScreenshotToFile saves base64-encoded PNG data to a local file under

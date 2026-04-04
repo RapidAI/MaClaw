@@ -242,6 +242,10 @@ export function SelectProjectDir() {
   return window['go']['main']['App']['SelectProjectDir']();
 }
 
+export function SelectAIAssistantFile() {
+  return window['go']['main']['App']['SelectAIAssistantFile']();
+}
+
 export function SelectSkillFile() {
   return window['go']['main']['App']['SelectSkillFile']();
 }
@@ -476,6 +480,14 @@ export function GetLLMTrajectoryLogging() {
 
 export function SetLLMTrajectoryLogging(arg1) {
   return window['go']['main']['App']['SetLLMTrajectoryLogging'](arg1);
+}
+
+export function GetTrialReflectEnabled() {
+  return window['go']['main']['App']['GetTrialReflectEnabled']();
+}
+
+export function SetTrialReflectEnabled(arg1) {
+  return window['go']['main']['App']['SetTrialReflectEnabled'](arg1);
 }
 
 export function GetUIZoomFactor() {
@@ -971,12 +983,20 @@ export function SendAIAssistantMessage(arg1) {
   return window['go']['main']['App']['SendAIAssistantMessage'](arg1);
 }
 
+export function StartAIAssistantBackgroundTask(arg1) {
+  return window['go']['main']['App']['StartAIAssistantBackgroundTask'](arg1);
+}
+
 export function ClearAIAssistantHistory() {
   return window['go']['main']['App']['ClearAIAssistantHistory']();
 }
 
 export function CancelAIAssistantSession() {
   return window['go']['main']['App']['CancelAIAssistantSession']();
+}
+
+export function CancelAIAssistantTask(arg1) {
+  return window['go']['main']['App']['CancelAIAssistantTask'](arg1);
 }
 
 export function FetchNews() {

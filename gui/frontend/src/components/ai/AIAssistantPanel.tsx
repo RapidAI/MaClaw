@@ -13,6 +13,7 @@ interface AIAssistantPanelStateProps {
     ready: boolean;
     initStatus?: AIAssistantInitStatus;
     selectedFilePath?: string;
+    trialReflectEnabled?: boolean;
     scrollToTopSeq?: number;
     onboardingIncomplete?: boolean;
 }
@@ -21,6 +22,7 @@ interface AIAssistantPanelActionProps {
     browseFile?: () => Promise<void>;
     clearSelectedFile?: () => void;
     sendMessage: (text: string) => Promise<void>;
+    sendMessageInBackground?: (text: string) => Promise<void>;
     clearHistory: () => Promise<void>;
     executeAction: (command: string) => Promise<void>;
     refreshNews: () => void;
@@ -635,6 +637,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         ready,
         initStatus,
         selectedFilePath = "",
+        trialReflectEnabled = false,
         scrollToTopSeq,
         onboardingIncomplete,
     } = state;
@@ -642,6 +645,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         browseFile,
         clearSelectedFile,
         sendMessage,
+        sendMessageInBackground,
         clearHistory,
         executeAction,
         refreshNews,
@@ -657,6 +661,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     } = panelWindow || {};
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
+    const [cancelPending, setCancelPending] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const outputEndRef = useRef<HTMLDivElement | null>(null);
@@ -673,8 +678,9 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const thinkingText = lang === "en" ? "Thinking..." : "正在思考...";
     const savedFileLabel = lang === "en" ? "Saved file" : "文件已保存";
     const isBusy = sending;
+    const inputLocked = isBusy || cancelPending;
     const showThinkingState = streaming;
-    const showBusySpinner = visualBusy;
+    const showBusySpinner = visualBusy ?? streaming;
 
     const initStatusLabels: Record<AIAssistantInitStatus, { en: string; zh: string }> = {
         connecting: { en: "Connecting to Hub...", zh: "正在连接 Hub..." },
@@ -689,10 +695,10 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         ? initLabel
         : showBusySpinner
             ? (lang === "en" ? "Thinking..." : "正在思考...")
-            : isBusy
+            : inputLocked
                 ? (lang === "en" ? "Processing..." : "处理中...")
-            : (lang === "en" ? "Type a message..." : "输入消息...");
-    const canSend = ready && !isBusy && (!!inputValue.trim() || !!selectedFilePath.trim());
+                : (lang === "en" ? "Type a message..." : "输入消息...");
+    const canSend = ready && !inputLocked && (!!inputValue.trim() || !!selectedFilePath.trim());
     const selectedFileName = selectedFilePath ? selectedFilePath.split(/[/\\]/).pop() || selectedFilePath : "";
     const { pinnedNews, otherMessages } = useMemo(() => {
         const pinned: ChatMessage[] = [];
@@ -795,6 +801,17 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         await sendMessage(text);
     }, [inputValue, selectedFilePath, isBusy, sendMessage]);
 
+    const handleSendBackground = useCallback(async () => {
+        const text = inputValue.trim();
+        if ((!text && !selectedFilePath.trim()) || isBusy || !sendMessageInBackground) return;
+        setInputValue("");
+        if (inputRef.current) {
+            inputRef.current.style.height = "auto";
+        }
+        userScrolledUpRef.current = false;
+        await sendMessageInBackground(text);
+    }, [inputValue, selectedFilePath, isBusy, sendMessageInBackground]);
+
     const resizeInput = useCallback(() => {
         if (!inputRef.current) return;
         inputRef.current.style.height = "auto";
@@ -802,17 +819,22 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     }, []);
 
     const handleCancel = useCallback(async () => {
-        if (!cancelSession) return;
+        if (!cancelSession || cancelPending) return;
         const restoreSeq = ++cancelRestoreSeqRef.current;
         const previousInputValue = inputValue;
-        const { canceledText } = await cancelSession();
-        if (cancelRestoreSeqRef.current !== restoreSeq) return;
-        setInputValue(currentValue => currentValue === previousInputValue ? canceledText : currentValue);
-        requestAnimationFrame(() => {
-            resizeInput();
-            inputRef.current?.focus();
-        });
-    }, [cancelSession, inputValue, resizeInput]);
+        setCancelPending(true);
+        try {
+            const { canceledText } = await cancelSession();
+            if (cancelRestoreSeqRef.current !== restoreSeq) return;
+            setInputValue(currentValue => currentValue === previousInputValue ? canceledText : currentValue);
+            requestAnimationFrame(() => {
+                resizeInput();
+                inputRef.current?.focus();
+            });
+        } finally {
+            setCancelPending(false);
+        }
+    }, [cancelPending, cancelSession, inputValue, resizeInput]);
 
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => {
@@ -866,6 +888,20 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                         transform: "translateY(-0.5px)",
                     }}>{title}</span>
+                    {trialReflectEnabled && (
+                        <span style={{
+                            fontSize: "10px",
+                            lineHeight: 1,
+                            padding: "3px 6px",
+                            borderRadius: "999px",
+                            background: "rgba(99, 102, 241, 0.12)",
+                            color: t.headingColor,
+                            border: `1px solid ${t.titleBarBorder}`,
+                            flexShrink: 0,
+                        }}>
+                            {lang === "en" ? "Trial+Reflect" : "试错反思"}
+                        </span>
+                    )}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", flexShrink: 0, paddingRight: inline ? 0 : 2, ...(inline ? { '--wails-draggable': 'no-drag', position: 'relative', zIndex: 1000 } as any : {}) }}>
                     <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "4px", alignItems: "center", paddingTop: 1 }}>
@@ -1128,13 +1164,13 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         <button
                             type="button"
                             onClick={clearSelectedFile}
-                            disabled={isBusy}
+                            disabled={inputLocked}
                             style={{
                                 ...baseActionBtnStyle,
                                 color: t.errorText,
                                 border: `1px solid ${t.errorBorder}`,
                                 background: "transparent",
-                                opacity: isBusy ? 0.5 : 1,
+                                opacity: inputLocked ? 0.5 : 1,
                             }}
                             title={lang === "en" ? "Clear selected file" : "清除已选文件"}
                         >
@@ -1154,6 +1190,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         ref={inputRef}
                         data-testid="ai-input"
                         disabled={!ready}
+                        readOnly={inputLocked}
+                        aria-readonly={inputLocked}
                         style={{
                             flex: 1, minWidth: 0, background: "transparent",
                             border: "none", outline: "none", color: t.inputText,
@@ -1163,6 +1201,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             minHeight: "36px", maxHeight: "120px",
                             lineHeight: 1.4,
                             opacity: ready ? 1 : 0.5,
+                            cursor: inputLocked ? "default" : "text",
                         }}
                         rows={1}
                         value={inputValue}
@@ -1175,6 +1214,10 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         onKeyDown={(e) => {
                             if (e.key === "Enter" && !e.shiftKey && !composing) {
                                 e.preventDefault();
+                                if ((e.ctrlKey || e.metaKey) && sendMessageInBackground) {
+                                    handleSendBackground();
+                                    return;
+                                }
                                 handleSend();
                             }
                         }}
@@ -1186,12 +1229,12 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     <button
                         type="button"
                         onClick={browseFile}
-                        disabled={!ready || isBusy}
+                        disabled={!ready || inputLocked}
                         style={{
                             ...baseInputBtnStyle,
                             color: t.pathColor,
                             borderColor: t.pathColor,
-                            opacity: (!ready || isBusy) ? 0.5 : 1,
+                            opacity: (!ready || inputLocked) ? 0.5 : 1,
                             marginBottom: "4px",
                         }}
                         title={lang === "en" ? "Choose file" : "选择文件"}
@@ -1248,22 +1291,42 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             </span>
                         </button>
                     ) : (
-                        <button
-                            type="button"
-                            onClick={handleSend}
-                            disabled={!canSend}
-                            style={{
-                                ...baseInputBtnStyle,
-                                ...(inline
-                                    ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
-                                    : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
-                                opacity: canSend ? 1 : 0.5,
-                                marginBottom: "4px",
-                            }}
-                            title={lang === "en" ? "Send" : "发送"}
-                        >
-                            {isBusy ? "…" : "⏎"}
-                        </button>
+                        <>
+                            {sendMessageInBackground && (
+                                <button
+                                    type="button"
+                                    onClick={handleSendBackground}
+                                    disabled={!canSend}
+                                    data-testid="ai-send-background"
+                                    style={{
+                                        ...baseInputBtnStyle,
+                                        color: t.promptColor,
+                                        borderColor: t.promptColor,
+                                        opacity: canSend ? 1 : 0.5,
+                                        marginBottom: "4px",
+                                    }}
+                                    title={lang === "en" ? "Run in background" : "后台运行"}
+                                >
+                                    {lang === "en" ? "BG" : "后台"}
+                                </button>
+                            )}
+                            <button
+                                type="button"
+                                onClick={handleSend}
+                                disabled={!canSend}
+                                style={{
+                                    ...baseInputBtnStyle,
+                                    ...(inline
+                                        ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
+                                        : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
+                                    opacity: canSend ? 1 : 0.5,
+                                    marginBottom: "4px",
+                                }}
+                                title={lang === "en" ? "Send" : "发送"}
+                            >
+                                {isBusy ? "…" : "⏎"}
+                            </button>
+                        </>
                     )}
                 </div>
             </div>

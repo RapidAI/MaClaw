@@ -122,6 +122,8 @@ export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 
 export function SelectProjectDir():Promise<string>;
 
+export function SelectAIAssistantFile():Promise<string>;
+
 export function SelectSkillFile():Promise<string>;
 
 export function SendRemoteSessionImage(arg1:string,arg2:string,arg3:string):Promise<void>;
@@ -239,6 +241,10 @@ export function SetMaclawAgentMaxIterations(arg1:number):Promise<void>;
 export function GetLLMTrajectoryLogging():Promise<boolean>;
 
 export function SetLLMTrajectoryLogging(arg1:boolean):Promise<void>;
+
+export function GetTrialReflectEnabled():Promise<boolean>;
+
+export function SetTrialReflectEnabled(arg1:boolean):Promise<void>;
 
 export function GetUIZoomFactor():Promise<number>;
 
@@ -426,11 +432,15 @@ export function IsAIAssistantReady():Promise<boolean>;
 
 export function GetAIAssistantInitStatus():Promise<string>;
 
-export function SendAIAssistantMessage(arg1:string):Promise<any>;
+export function SendAIAssistantMessage(arg1:any):Promise<any>;
+
+export function StartAIAssistantBackgroundTask(arg1:any):Promise<any>;
 
 export function ClearAIAssistantHistory():Promise<void>;
 
 export function CancelAIAssistantSession():Promise<string>;
+
+export function CancelAIAssistantTask(arg1:string):Promise<void>;
 
 export function FetchNews():Promise<Array<any>>;
 

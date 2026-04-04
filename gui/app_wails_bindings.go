@@ -554,10 +554,16 @@ func (a *App) TriggerScheduledTask(id string) error {
 // ---------------------------------------------------------------------------
 
 // IsAIAssistantReady returns true when the AI assistant backend is fully
-// initialized and ready to handle messages (Hub connected + warmup done).
+// initialized and ready to handle messages without further chat-path setup.
 func (a *App) IsAIAssistantReady() bool {
 	hubClient := a.hubClient()
-	return hubClient != nil && hubClient.imHandler != nil && a.warmupDone.Load()
+	if hubClient == nil {
+		return false
+	}
+	if !a.warmupDone.Load() {
+		return false
+	}
+	return hubClient.imHandler != nil && a.interactionInfraReady()
 }
 
 // GetAIAssistantInitStatus returns a human-readable initialization status
@@ -565,53 +571,210 @@ func (a *App) IsAIAssistantReady() bool {
 func (a *App) GetAIAssistantInitStatus() string {
 	hubClient := a.hubClient()
 	if hubClient == nil {
+		if a.interactionInfraReady() {
+			return "loading"
+		}
 		return "connecting"
-	}
-	if hubClient.imHandler == nil {
-		return "loading"
 	}
 	if !a.warmupDone.Load() {
 		return "warming"
 	}
+	if hubClient.imHandler == nil || !a.interactionInfraReady() {
+		return "loading"
+	}
 	return "ready"
 }
 
+func (a *App) GetAIAssistantTrace(runID string) (*AIAssistantTraceView, error) {
+	a.ensureInteractionInfra()
+	a.ensureAITrace()
+	if a.aiTrace == nil {
+		return nil, fmt.Errorf("AI trace service not initialized")
+	}
+	view, ok := a.aiTrace.GetTrace(runID)
+	if !ok {
+		return nil, fmt.Errorf("trace not found: %s", runID)
+	}
+	return &view, nil
+}
+
+type AIAssistantSendRequest struct {
+	Text      string `json:"text"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+type AIAssistantBackgroundTaskRequest struct {
+	Text            string `json:"text"`
+	ProjectPath     string `json:"project_path,omitempty"`
+	ForceBackground bool   `json:"force_background,omitempty"`
+}
+
+type AIAssistantBackgroundTaskResult struct {
+	Accepted  bool   `json:"accepted"`
+	Mode      string `json:"mode"`
+	SessionID string `json:"session_id,omitempty"`
+	JobID     string `json:"job_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+type AIAssistantStreamEvent struct {
+	RequestID string `json:"request_id,omitempty"`
+	Text      string `json:"text,omitempty"`
+}
+
 // SendAIAssistantMessage handles a desktop AI assistant message (Wails binding).
-func (a *App) SendAIAssistantMessage(text string) (*IMAgentResponse, error) {
+func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentResponse, error) {
+	sendStartedAt := time.Now()
+	readyAt, firstChatLogPending := a.beginFirstAIAssistantChatTelemetry()
+	var ensureInteractionInfraElapsed time.Duration
+	var ensureIMHandlerElapsed time.Duration
+	var agentLoopElapsed time.Duration
+	var traceEnrichElapsed time.Duration
+	var gossipSetupElapsed time.Duration
+	var finalizeTraceElapsed time.Duration
+	var memorySaveElapsed time.Duration
+	var capabilityGapElapsed time.Duration
+	var fileMaterializeElapsed time.Duration
+	var preLLMPrepElapsed time.Duration
+	var firstTokenWaitElapsed time.Duration
+	var firstTokenElapsed time.Duration
+	var streamVisibleElapsed time.Duration
+	var streamTailElapsed time.Duration
+	var handlerTailElapsed time.Duration
+	var firstTokenAt time.Time
+	var streamDoneAt time.Time
+	defer func() {
+		if !firstChatLogPending {
+			return
+		}
+		readyElapsed := time.Duration(0)
+		if readyAt > 0 {
+			readyElapsed = sendStartedAt.Sub(time.Unix(0, readyAt))
+		}
+		postResponseElapsed := time.Since(sendStartedAt) - ensureInteractionInfraElapsed - ensureIMHandlerElapsed - agentLoopElapsed - traceEnrichElapsed - gossipSetupElapsed
+		if postResponseElapsed < 0 {
+			postResponseElapsed = 0
+		}
+		log.Printf("[AI assistant] first desktop chat after ready: since_ready=%v total=%v ensure_interaction_infra=%v ensure_im_handler=%v agent_loop=%v first_token=%v pre_llm_prep=%v first_token_wait=%v stream_visible=%v stream_tail=%v handler_tail=%v memory_save=%v capability_gap=%v file_materialize=%v finalize_trace=%v trace_enrich=%v gossip_setup=%v post_response=%v interaction_infra_ready=%v warmup_done=%v", readyElapsed, time.Since(sendStartedAt), ensureInteractionInfraElapsed, ensureIMHandlerElapsed, agentLoopElapsed, firstTokenElapsed, preLLMPrepElapsed, firstTokenWaitElapsed, streamVisibleElapsed, streamTailElapsed, handlerTailElapsed, memorySaveElapsed, capabilityGapElapsed, fileMaterializeElapsed, finalizeTraceElapsed, traceEnrichElapsed, gossipSetupElapsed, postResponseElapsed, a.interactionInfraReady(), a.warmupDone.Load())
+	}()
+
 	t0 := time.Now()
 	a.ensureInteractionInfra()
-	if elapsed := time.Since(t0); elapsed > 100*time.Millisecond {
-		log.Printf("[SendAIAssistantMessage] ensureInteractionInfra took %v", elapsed)
+	ensureInteractionInfraElapsed = time.Since(t0)
+	if ensureInteractionInfraElapsed > 100*time.Millisecond {
+		log.Printf("[SendAIAssistantMessage] ensureInteractionInfra took %v", ensureInteractionInfraElapsed)
 	}
 	hubClient := a.hubClient()
-	if hubClient == nil || hubClient.imHandler == nil {
+	if hubClient == nil {
 		return nil, fmt.Errorf("AI assistant not initialized")
+	}
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		return nil, fmt.Errorf("message text is required")
 	}
 	msg := IMUserMessage{
 		UserID:   "desktop-user",
 		Platform: "desktop",
 		Text:     text,
 	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = fmt.Sprintf("desktop-ai-%d", time.Now().UnixNano())
+	}
+	emitEvent := func(name, value string) {
+		payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: value})
+		if err != nil {
+			log.Printf("[SendAIAssistantMessage] marshal %s event failed: %v", name, err)
+			return
+		}
+		runtime.EventsEmit(a.ctx, name, string(payload))
+	}
 	onProgress := func(progressText string) {
 		if progressText == imHeartbeatMsg {
 			return
 		}
-		runtime.EventsEmit(a.ctx, "ai-assistant-progress", progressText)
+		emitEvent("ai-assistant-progress", progressText)
 	}
 	onToken := func(delta string) {
-		runtime.EventsEmit(a.ctx, "ai-assistant-token", delta)
+		if firstTokenAt.IsZero() {
+			firstTokenAt = time.Now()
+			firstTokenElapsed = firstTokenAt.Sub(sendStartedAt)
+		}
+		emitEvent("ai-assistant-token", delta)
 	}
 	onNewRound := func() {
-		runtime.EventsEmit(a.ctx, "ai-assistant-new-round")
+		emitEvent("ai-assistant-new-round", "")
 	}
 	onStreamDone := func() {
-		runtime.EventsEmit(a.ctx, "ai-assistant-stream-done")
+		if streamDoneAt.IsZero() {
+			streamDoneAt = time.Now()
+			if firstTokenAt.IsZero() {
+				streamVisibleElapsed = streamDoneAt.Sub(sendStartedAt)
+			} else {
+				streamVisibleElapsed = streamDoneAt.Sub(firstTokenAt)
+			}
+		}
+		emitEvent("ai-assistant-stream-done", "")
 	}
-	resp := hubClient.imHandler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
+	imHandlerStartedAt := time.Now()
+	handler := hubClient.ensureIMHandler()
+	ensureIMHandlerElapsed = time.Since(imHandlerStartedAt)
+	agentLoopStartedAt := time.Now()
+	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
+	if resp != nil {
+		resp.RequestID = requestID
+	}
+	agentLoopElapsed = time.Since(agentLoopStartedAt)
+	if !streamDoneAt.IsZero() {
+		if resp != nil && resp.HandlerTailNanos > 0 {
+			handlerTailElapsed = time.Duration(resp.HandlerTailNanos)
+		} else {
+			handlerTailElapsed = time.Since(streamDoneAt)
+		}
+	} else if !firstTokenAt.IsZero() {
+		streamVisibleElapsed = agentLoopElapsed - firstTokenElapsed
+		if streamVisibleElapsed < 0 {
+			streamVisibleElapsed = 0
+		}
+	}
+	if resp != nil && resp.MemorySaveNanos > 0 {
+		memorySaveElapsed = time.Duration(resp.MemorySaveNanos)
+	}
+	if resp != nil && resp.CapabilityGapNanos > 0 {
+		capabilityGapElapsed = time.Duration(resp.CapabilityGapNanos)
+	}
+	if resp != nil && resp.FileMaterializeNanos > 0 {
+		fileMaterializeElapsed = time.Duration(resp.FileMaterializeNanos)
+	}
+	if resp != nil && resp.PreLLMPrepNanos > 0 {
+		preLLMPrepElapsed = time.Duration(resp.PreLLMPrepNanos)
+	}
+	if resp != nil && resp.FirstTokenWaitNanos > 0 {
+		firstTokenWaitElapsed = time.Duration(resp.FirstTokenWaitNanos)
+	}
+	if resp != nil && resp.FinalizeTraceNanos > 0 {
+		finalizeTraceElapsed = time.Duration(resp.FinalizeTraceNanos)
+	}
+	if resp != nil && resp.RunID != "" {
+		traceStartedAt := time.Now()
+		if traceView, err := a.GetAIAssistantTrace(resp.RunID); err == nil && traceView != nil {
+			resp.TraceSummary = traceView.Summary
+			resp.TraceEventCount = traceView.EventCount
+			resp.EvidenceCount = traceView.EvidenceCount
+		}
+		traceEnrichElapsed = time.Since(traceStartedAt)
+	}
 	// 触发聊天八卦检测
-	if a.gossipAutoPublish != nil && resp != nil && resp.Text != "" {
-		go a.gossipAutoPublish.OnChatCompleted(text, resp.Text)
+	if resp != nil && resp.Text != "" {
+		gossipStartedAt := time.Now()
+		a.ensureGossipAutoPublish()
+		if a.gossipAutoPublish != nil {
+			go a.gossipAutoPublish.OnChatCompleted(text, resp.Text)
+		}
+		gossipSetupElapsed = time.Since(gossipStartedAt)
 	}
+	streamTailElapsed = handlerTailElapsed + memorySaveElapsed + capabilityGapElapsed + fileMaterializeElapsed + finalizeTraceElapsed + traceEnrichElapsed + gossipSetupElapsed
 	return resp, nil
 }
 
@@ -619,10 +782,11 @@ func (a *App) SendAIAssistantMessage(text string) (*IMAgentResponse, error) {
 func (a *App) ClearAIAssistantHistory() error {
 	a.ensureInteractionInfra()
 	hubClient := a.hubClient()
-	if hubClient == nil || hubClient.imHandler == nil {
+	if hubClient == nil {
 		return fmt.Errorf("AI assistant not initialized")
 	}
-	hubClient.imHandler.memory.clear("desktop-user")
+	handler := hubClient.ensureIMHandler()
+	handler.memory.clear("desktop-user")
 	// 同步清空 gossip 检测缓冲区
 	if a.gossipAutoPublish != nil {
 		a.gossipAutoPublish.ClearBuffer()
@@ -630,14 +794,51 @@ func (a *App) ClearAIAssistantHistory() error {
 	return nil
 }
 
+// StartAIAssistantBackgroundTask starts a visible AI background task and returns immediately.
+func (a *App) StartAIAssistantBackgroundTask(req AIAssistantBackgroundTaskRequest) (*AIAssistantBackgroundTaskResult, error) {
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return nil, fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return nil, fmt.Errorf("AI assistant handler not initialized")
+	}
+	projectPath := strings.TrimSpace(req.ProjectPath)
+	if projectPath == "" {
+		projectPath = a.GetCurrentProjectPath()
+	}
+	result, err := handler.StartDesktopBackgroundTask(strings.TrimSpace(req.Text), projectPath)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return &AIAssistantBackgroundTaskResult{Accepted: false, Mode: "background", Error: "failed to start background task"}, nil
+	}
+	return result, nil
+}
+
+// CancelAIAssistantTask cancels a background AI task by remote session ID.
+func (a *App) CancelAIAssistantTask(sessionID string) error {
+	a.ensureInteractionInfra()
+	if a.remoteSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	if a.remoteSessions == nil {
+		return fmt.Errorf("remote sessions not initialized")
+	}
+	return a.remoteSessions.Interrupt(strings.TrimSpace(sessionID))
+}
+
 // CancelAIAssistantSession cancels the currently running AI assistant session.
 func (a *App) CancelAIAssistantSession() (string, error) {
 	a.ensureInteractionInfra()
 	hubClient := a.hubClient()
-	if hubClient == nil || hubClient.imHandler == nil {
+	if hubClient == nil {
 		return "", fmt.Errorf("AI assistant not initialized")
 	}
-	return hubClient.imHandler.CancelCurrentSession()
+	return hubClient.ensureIMHandler().CancelCurrentSession()
 }
 
 // ---------------------------------------------------------------------------
@@ -647,29 +848,41 @@ func (a *App) CancelAIAssistantSession() (string, error) {
 // ListBackgroundLoops returns all active background loops for the frontend.
 func (a *App) ListBackgroundLoops() []BackgroundLoopView {
 	hubClient := a.hubClient()
-	if hubClient == nil || hubClient.imHandler == nil || hubClient.imHandler.bgManager == nil {
+	if hubClient == nil {
 		return nil
 	}
-	return hubClient.imHandler.bgManager.ListViews()
+	handler := hubClient.ensureIMHandler()
+	if handler.bgManager == nil {
+		return nil
+	}
+	return handler.bgManager.ListViews()
 }
 
 // StopBackgroundLoop gracefully stops a background loop by ID.
 func (a *App) StopBackgroundLoop(loopID string) error {
 	hubClient := a.hubClient()
-	if hubClient == nil || hubClient.imHandler == nil || hubClient.imHandler.bgManager == nil {
+	if hubClient == nil {
 		return fmt.Errorf("background loop manager not initialized")
 	}
-	hubClient.imHandler.bgManager.Stop(loopID)
+	handler := hubClient.ensureIMHandler()
+	if handler.bgManager == nil {
+		return fmt.Errorf("background loop manager not initialized")
+	}
+	handler.bgManager.Stop(loopID)
 	return nil
 }
 
 // ContinueBackgroundLoop sends additional rounds to a paused loop.
 func (a *App) ContinueBackgroundLoop(loopID string, additionalRounds int) error {
 	hubClient := a.hubClient()
-	if hubClient == nil || hubClient.imHandler == nil || hubClient.imHandler.bgManager == nil {
+	if hubClient == nil {
 		return fmt.Errorf("background loop manager not initialized")
 	}
-	return hubClient.imHandler.bgManager.SendContinue(loopID, additionalRounds)
+	handler := hubClient.ensureIMHandler()
+	if handler.bgManager == nil {
+		return fmt.Errorf("background loop manager not initialized")
+	}
+	return handler.bgManager.SendContinue(loopID, additionalRounds)
 }
 
 // GetBackgroundLoopOutput returns the terminal output lines for a background
@@ -681,9 +894,12 @@ func (a *App) GetBackgroundLoopOutput(sessionID string) []string {
 	}
 	// Try SSH session manager first (SSH loops store sessions there).
 	hubClient := a.hubClient()
-	if hubClient != nil && hubClient.imHandler != nil && hubClient.imHandler.sshMgr != nil {
-		if sess, ok := hubClient.imHandler.sshMgr.Get(sessionID); ok {
-			return sess.PreviewTail(2000)
+	if hubClient != nil {
+		handler := hubClient.ensureIMHandler()
+		if handler.sshMgr != nil {
+			if sess, ok := handler.sshMgr.Get(sessionID); ok {
+				return sess.PreviewTail(2000)
+			}
 		}
 	}
 	// Fall back to remote session manager.

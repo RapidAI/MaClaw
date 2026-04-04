@@ -2,25 +2,31 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import * as fc from 'fast-check';
 
-let mockSendResponse: any = { text: 'ok', error: '', fields: null, actions: null };
+let mockSendResponse: any = { text: 'ok', error: '', fields: null, actions: null, request_id: 'req-default' };
 let mockSendError: Error | null = null;
-const runtimeHandlers = new Map<string, (payload?: string) => void>();
+const runtimeHandlers = new Map<string, (payload?: unknown) => void>();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
-    SendAIAssistantMessage: vi.fn(async (_text: string) => {
+    SendAIAssistantMessage: vi.fn(async (req: string | { text?: string; request_id?: string }) => {
         if (mockSendError) throw mockSendError;
+        if (mockSendResponse && typeof req === 'object' && req?.request_id && !mockSendResponse.request_id) {
+            return { ...mockSendResponse, request_id: req.request_id };
+        }
         return mockSendResponse;
     }),
     ClearAIAssistantHistory: vi.fn(async () => {}),
     IsAIAssistantReady: vi.fn(async () => true),
     GetAIAssistantInitStatus: vi.fn(async () => 'ready'),
+    GetTrialReflectEnabled: vi.fn(async () => false),
     CancelAIAssistantSession: vi.fn(async () => {}),
+    CancelAIAssistantTask: vi.fn(async () => {}),
+    StartAIAssistantBackgroundTask: vi.fn(async () => ({ accepted: true, session_id: 'session-test' })),
     FetchNews: vi.fn(async () => []),
     SelectAIAssistantFile: vi.fn(async () => ''),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
-    EventsOn: vi.fn((event: string, handler: (text?: string) => void) => {
+    EventsOn: vi.fn((event: string, handler: (payload?: unknown) => void) => {
         runtimeHandlers.set(event, handler);
     }),
     EventsOff: vi.fn((event: string) => {
@@ -29,17 +35,35 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { useAIAssistant, buildOutgoingMessage, AI_ASSISTANT_HISTORY_STORAGE_KEY, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, FetchNews, SelectAIAssistantFile, GetAIAssistantInitStatus, IsAIAssistantReady } from '../../../../wailsjs/go/main/App';
+import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFile, GetAIAssistantInitStatus, GetTrialReflectEnabled, IsAIAssistantReady } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook() {
     return renderHook(() => useAIAssistant());
+}
+
+function parseSentRequest(index = 0) {
+    const calls = (SendAIAssistantMessage as any).mock.calls;
+    const request = calls[index]?.[0];
+    expect(request).toBeDefined();
+    return request as { text: string; request_id?: string };
+}
+
+function requestEvent(indexOrText: number | string = 0, text = '') {
+    const index = typeof indexOrText === 'number' ? indexOrText : 0;
+    const eventText = typeof indexOrText === 'string' ? indexOrText : text;
+    const req = parseSentRequest(index);
+    return { request_id: req.request_id || '', text: eventText };
+}
+
+function otherRequestEvent(text = '') {
+    return { request_id: 'other-request', text };
 }
 
 function messageContents(messages: Array<{ content: string }>) {
     return messages.map(message => message.content);
 }
 
-function emitRuntimeEvent(event: string, payload = '') {
+function emitRuntimeEvent(event: string, payload: unknown = '') {
     const handler = runtimeHandlers.get(event);
     expect(handler).toBeDefined();
     handler?.(payload);
@@ -61,9 +85,11 @@ function deferred<T>() {
 
 describe('useAIAssistant property tests', () => {
     beforeEach(() => {
-        mockSendResponse = { text: 'ok', error: '', fields: null, actions: null };
+        mockSendResponse = { text: 'ok', error: '', fields: null, actions: null, request_id: 'req-default' };
         mockSendError = null;
         runtimeHandlers.clear();
+        (GetTrialReflectEnabled as any).mockResolvedValue(false);
+        (StartAIAssistantBackgroundTask as any).mockResolvedValue({ accepted: true, session_id: 'session-test' });
         localStorage.clear();
     });
 
@@ -71,6 +97,17 @@ describe('useAIAssistant property tests', () => {
         localStorage.clear();
         runtimeHandlers.clear();
         vi.clearAllMocks();
+    });
+
+    it('loads trial-reflect mode from config on mount', async () => {
+        (GetTrialReflectEnabled as any).mockResolvedValueOnce(true);
+
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(GetTrialReflectEnabled).toHaveBeenCalledTimes(1);
+            expect(result.current.trialReflectEnabled).toBe(true);
+        });
     });
 
     it('Property 2: sendMessage grows message list with user message', async () => {
@@ -119,7 +156,10 @@ describe('useAIAssistant property tests', () => {
             await result.current.sendMessage('inspect this');
         });
 
-        expect(SendAIAssistantMessage).toHaveBeenLastCalledWith(buildOutgoingMessage('inspect this', '/tmp/example.png'));
+        expect(SendAIAssistantMessage).toHaveBeenLastCalledWith({
+            text: buildOutgoingMessage('inspect this', '/tmp/example.png'),
+            request_id: expect.any(String),
+        });
         expect(result.current.selectedFilePath).toBe('');
     });
 
@@ -279,8 +319,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-new-round');
-            emitRuntimeEvent('ai-assistant-new-round');
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
         });
 
         expect(assistantMessages(result.current.messages).length).toBe(1);
@@ -306,10 +346,10 @@ describe('useAIAssistant property tests', () => {
         });
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-token', 'hello');
-            emitRuntimeEvent('ai-assistant-new-round');
-            emitRuntimeEvent('ai-assistant-token', ' world');
-            emitRuntimeEvent('ai-assistant-stream-done');
+            emitRuntimeEvent('ai-assistant-token', requestEvent('hello'));
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent(' world'));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
         });
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
@@ -342,15 +382,15 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.visualBusy).toBe(false);
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-new-round');
-            emitRuntimeEvent('ai-assistant-token', 'hello');
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent('hello'));
         });
 
         expect(result.current.streaming).toBe(true);
         expect(result.current.visualBusy).toBe(true);
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-stream-done');
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
         });
 
         expect(result.current.sending).toBe(true);
@@ -377,9 +417,9 @@ describe('useAIAssistant property tests', () => {
         });
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-new-round');
-            emitRuntimeEvent('ai-assistant-token', 'streamed');
-            emitRuntimeEvent('ai-assistant-stream-done');
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent('streamed'));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
         });
 
         await act(async () => {
@@ -402,11 +442,11 @@ describe('useAIAssistant property tests', () => {
         });
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-new-round');
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
             for (let i = 0; i < 50; i++) {
-                emitRuntimeEvent('ai-assistant-token', String(i % 10));
+                emitRuntimeEvent('ai-assistant-token', requestEvent(String(i % 10)));
             }
-            emitRuntimeEvent('ai-assistant-stream-done');
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
         });
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
@@ -432,10 +472,10 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.streaming).toBe(false);
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-new-round');
-            emitRuntimeEvent('ai-assistant-new-round');
-            emitRuntimeEvent('ai-assistant-stream-done');
-            emitRuntimeEvent('ai-assistant-stream-done');
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
         });
 
         expect(result.current.sending).toBe(true);
@@ -463,8 +503,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-new-round');
-            emitRuntimeEvent('ai-assistant-token', 'partial');
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent('partial'));
         });
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
@@ -583,6 +623,53 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.scrollToTopSeq).toBe(previousScrollSeq);
     });
 
+    it('ignores stream events from a different request id', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('only my stream');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', otherRequestEvent());
+            emitRuntimeEvent('ai-assistant-token', otherRequestEvent('wrong'));
+            emitRuntimeEvent('ai-assistant-stream-done', otherRequestEvent());
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('');
+        expect(result.current.streaming).toBe(false);
+        expect(result.current.sending).toBe(true);
+
+        const req = parseSentRequest();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', { request_id: req.request_id || '', text: '' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id || '', text: 'right' });
+            emitRuntimeEvent('ai-assistant-stream-done', { request_id: req.request_id || '', text: '' });
+        });
+
+        expect(assistantMessages(result.current.messages)[0].content).toBe('right');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('accepts legacy string progress payloads', async () => {
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', 'legacy progress');
+        });
+
+        expect(result.current.progressMessages).toHaveLength(1);
+        expect(result.current.progressMessages[0].content).toBe('legacy progress');
+    });
+
     it('Property 9: progress events appear as progress messages', async () => {
         await fc.assert(
             fc.asyncProperty(
@@ -591,7 +678,7 @@ describe('useAIAssistant property tests', () => {
                     const { result, unmount } = renderAssistantHook();
 
                     await act(async () => {
-                        emitRuntimeEvent('ai-assistant-progress', progressText);
+                        emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: progressText });
                     });
 
                     const progressMsgs = result.current.progressMessages;
@@ -609,9 +696,9 @@ describe('useAIAssistant property tests', () => {
         const { result } = renderAssistantHook();
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-progress', 'same progress');
-            emitRuntimeEvent('ai-assistant-progress', 'same progress');
-            emitRuntimeEvent('ai-assistant-progress', 'same progress');
+            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
         });
 
         expect(result.current.progressMessages).toHaveLength(1);
@@ -622,8 +709,8 @@ describe('useAIAssistant property tests', () => {
         const { result } = renderAssistantHook();
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-progress', 'same progress');
-            emitRuntimeEvent('ai-assistant-progress', 'same progress');
+            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
         });
         expect(result.current.progressMessages).toHaveLength(1);
 
@@ -633,7 +720,7 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.progressMessages).toEqual([]);
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-progress', 'same progress');
+            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
         });
         expect(result.current.progressMessages).toHaveLength(1);
         expect(result.current.progressMessages[0].content).toBe('same progress');
@@ -647,13 +734,12 @@ describe('useAIAssistant property tests', () => {
                 async (userText, progressTexts) => {
                     const { result, unmount } = renderAssistantHook();
 
-                    (SendAIAssistantMessage as any).mockImplementationOnce(async () => {
-                        await act(async () => {
-                            for (const pt of progressTexts) {
-                                emitRuntimeEvent('ai-assistant-progress', pt);
-                            }
-                        });
-                        return { text: 'done', error: '', fields: null, actions: null };
+                    (SendAIAssistantMessage as any).mockImplementationOnce(async (req: { request_id?: string }) => {
+                        await Promise.resolve();
+                        for (const pt of progressTexts) {
+                            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id || '', text: pt });
+                        }
+                        return { text: 'done', error: '', fields: null, actions: null, request_id: req.request_id || '' };
                     });
 
                     await act(async () => {
