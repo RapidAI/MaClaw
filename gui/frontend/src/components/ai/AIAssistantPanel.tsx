@@ -879,7 +879,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         <span
                             aria-hidden="true"
                             style={{
-                                fontSize: "13px",
+                                fontSize: "15px",
                                 lineHeight: 1,
                                 transform: "translateY(-0.5px)",
                             }}
@@ -897,7 +897,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         <span
                             aria-hidden="true"
                             style={{
-                                fontSize: "12px",
+                                fontSize: "14px",
                                 lineHeight: 1,
                                 transform: "translateY(-0.5px)",
                             }}
@@ -914,7 +914,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         <span
                             aria-hidden="true"
                             style={{
-                                fontSize: "12px",
+                                fontSize: "14px",
                                 lineHeight: 1,
                                 transform: "translateY(-0.5px)",
                             }}
