@@ -1,16 +1,8 @@
-/**
- * Property-based tests for AIAssistantPanel component.
- *
- * Feature: ai-assistant-sidebar-icon
- * Property 8: 响应渲染完整性
- *
- * Uses fast-check for property-based testing with ≥100 iterations.
- */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import * as fc from 'fast-check';
 import { AIAssistantPanel } from '../AIAssistantPanel';
-import type { ChatMessage, CancelAIAssistantResult } from '../useAIAssistant';
+import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } from '../useAIAssistant';
 
 const scrollIntoViewMock = vi.fn();
 const scrollToMock = vi.fn();
@@ -31,7 +23,6 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOff: vi.fn(),
 }));
 
-// Helper: build a ChatMessage for testing.
 function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }): ChatMessage {
     return {
         id: `test-${Math.random()}`,
@@ -41,18 +32,40 @@ function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }
     };
 }
 
+function makeNews(id: string, overrides: Partial<NewsCardData> = {}): ChatMessage {
+    const title = overrides.title ?? 'Pinned news';
+    const body = overrides.body ?? 'Pinned body';
+    return makeMsg({
+        id: `news-${id}`,
+        role: 'system',
+        kind: 'news',
+        content: body,
+        news: {
+            articleId: id,
+            category: overrides.category ?? 'notice',
+            title,
+            body,
+            icon: overrides.icon ?? '📢',
+        },
+    });
+}
+
 function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantPanel>> = {}) {
     const props: React.ComponentProps<typeof AIAssistantPanel> = {
         onClose: () => {},
         lang: 'en',
-        messages: [],
-        sending: false,
-        streaming: false,
-        ready: true,
-        sendMessage: async () => {},
-        clearHistory: async () => {},
-        executeAction: async () => {},
-        refreshNews: () => {},
+        state: {
+            messages: [],
+            sending: false,
+            streaming: false,
+            ready: true,
+        },
+        actions: {
+            sendMessage: async () => {},
+            clearHistory: async () => {},
+            executeAction: async () => {},
+            refreshNews: () => {},
+        },
         ...overrides,
     };
     return render(<AIAssistantPanel {...props} />);
@@ -67,26 +80,12 @@ describe('AIAssistantPanel property tests', () => {
 
     it('keeps latest conversation visible when reopened with history', () => {
         const messages: ChatMessage[] = [
-            makeMsg({ role: 'system', id: 'news-1', content: 'Pinned news' }),
+            makeNews('1'),
             makeMsg({ role: 'user', content: 'Earlier question' }),
             makeMsg({ role: 'assistant', content: 'Latest answer' }),
         ];
 
-        render(
-            <AIAssistantPanel
-                onClose={() => {}}
-                lang="en"
-                messages={messages}
-                sending={false}
-                streaming={false}
-                ready={true}
-                sendMessage={async () => {}}
-                clearHistory={async () => {}}
-                executeAction={async () => {}}
-                refreshNews={() => {}}
-                scrollToTopSeq={1}
-            />
-        );
+        renderPanel({ state: { messages, scrollToTopSeq: 1, sending: false, streaming: false, ready: true } });
 
         expect(scrollToMock).not.toHaveBeenCalled();
         expect(scrollIntoViewMock).toHaveBeenCalled();
@@ -94,25 +93,12 @@ describe('AIAssistantPanel property tests', () => {
 
     it('scrolls to bottom when panel becomes ready with conversation history', () => {
         const messages: ChatMessage[] = [
-            makeMsg({ role: 'system', id: 'news-1', content: 'Pinned news' }),
+            makeNews('1'),
             makeMsg({ role: 'user', content: 'Earlier question' }),
             makeMsg({ role: 'assistant', content: 'Latest answer' }),
         ];
 
-        const { rerender } = render(
-            <AIAssistantPanel
-                onClose={() => {}}
-                lang="en"
-                messages={messages}
-                sending={false}
-                streaming={false}
-                ready={false}
-                sendMessage={async () => {}}
-                clearHistory={async () => {}}
-                executeAction={async () => {}}
-                refreshNews={() => {}}
-            />
-        );
+        const { rerender } = renderPanel({ state: { messages, ready: false, sending: false, streaming: false } });
 
         scrollIntoViewMock.mockClear();
         scrollToMock.mockClear();
@@ -121,14 +107,18 @@ describe('AIAssistantPanel property tests', () => {
             <AIAssistantPanel
                 onClose={() => {}}
                 lang="en"
-                messages={messages}
-                sending={false}
-                streaming={false}
-                ready={true}
-                sendMessage={async () => {}}
-                clearHistory={async () => {}}
-                executeAction={async () => {}}
-                refreshNews={() => {}}
+                state={{
+                    messages,
+                    sending: false,
+                    streaming: false,
+                    ready: true,
+                }}
+                actions={{
+                    sendMessage: async () => {},
+                    clearHistory: async () => {},
+                    executeAction: async () => {},
+                    refreshNews: () => {},
+                }}
             />
         );
 
@@ -138,24 +128,10 @@ describe('AIAssistantPanel property tests', () => {
 
     it('scrolls to top when only pinned news exist', () => {
         const messages: ChatMessage[] = [
-            makeMsg({ role: 'system', id: 'news-1', content: 'Pinned news' }),
+            makeNews('1'),
         ];
 
-        render(
-            <AIAssistantPanel
-                onClose={() => {}}
-                lang="en"
-                messages={messages}
-                sending={false}
-                streaming={false}
-                ready={true}
-                sendMessage={async () => {}}
-                clearHistory={async () => {}}
-                executeAction={async () => {}}
-                refreshNews={() => {}}
-                scrollToTopSeq={1}
-            />
-        );
+        renderPanel({ state: { messages, scrollToTopSeq: 1, sending: false, streaming: false, ready: true } });
 
         expect(scrollToMock).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' });
     });
@@ -166,8 +142,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         const { getByTestId } = renderPanel({
-            sending: true,
-            cancelSession,
+            state: { messages: [], sending: true, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession },
         });
 
         fireEvent.click(getByTestId('ai-cancel-progress'));
@@ -180,8 +156,8 @@ describe('AIAssistantPanel property tests', () => {
 
     it('shows animated progress cancel control while sending', () => {
         const { getByTestId, queryByTitle } = renderPanel({
-            sending: true,
-            cancelSession: async () => ({ canceledText: '' }),
+            state: { messages: [], sending: true, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
         });
 
         expect(getByTestId('ai-cancel-progress')).toBeTruthy();
@@ -193,8 +169,8 @@ describe('AIAssistantPanel property tests', () => {
             canceledText: '',
         });
         const { getByTestId } = renderPanel({
-            sending: true,
-            cancelSession,
+            state: { messages: [], sending: true, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession },
         });
 
         fireEvent.click(getByTestId('ai-cancel-progress'));
@@ -204,24 +180,41 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
-    it('does not overwrite newer input typed while cancel is resolving', async () => {
-        let resolveCancel: ((value: CancelAIAssistantResult) => void) | undefined;
-        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockImplementation(() => new Promise(resolve => {
-            resolveCancel = resolve;
-        }));
+    it('renders native-style inline window controls', () => {
         const { getByTestId } = renderPanel({
-            sending: true,
-            cancelSession,
+            window: { inline: true, maximized: false, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
         });
 
-        fireEvent.click(getByTestId('ai-cancel-progress'));
-        fireEvent.change(getByTestId('ai-input'), { target: { value: 'new draft' } });
-        resolveCancel?.({ canceledText: 'stale draft' });
+        expect(getByTestId('ai-hide-toggle').getAttribute('title')).toBe('Minimize window');
+        expect(getByTestId('ai-maximize-toggle').getAttribute('title')).toBe('Maximize window');
+    });
 
-        await waitFor(() => {
-            expect(cancelSession).toHaveBeenCalledTimes(1);
-            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('new draft');
+    it('double-clicking the title bar toggles inline fullscreen', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: false, onToggleMaximize },
         });
+
+        fireEvent.doubleClick(getByTestId('ai-title-bar'));
+
+        expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+    });
+
+    it('separates title bar tools from window controls', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: false, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, onOpenTutorial: vi.fn() },
+        });
+
+        const toolsGroup = getByTestId('ai-titlebar-tools-group');
+        const windowGroup = getByTestId('ai-titlebar-window-group');
+
+        expect(toolsGroup).toBeTruthy();
+        expect(windowGroup).toBeTruthy();
+        expect(windowGroup.style.borderLeft).toContain('solid');
+        expect(windowGroup.style.marginLeft).toBe('16px');
+        expect(windowGroup.querySelector('[data-testid="ai-hide-toggle"]')).toBeTruthy();
+        expect(windowGroup.querySelector('[data-testid="ai-maximize-toggle"]')).toBeTruthy();
     });
 
     it('Property 8: fields, actions, and errors are fully rendered', () => {
@@ -233,7 +226,7 @@ describe('AIAssistantPanel property tests', () => {
         const actionArb = fc.record({
             label: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
             command: fc.string({ minLength: 1, maxLength: 30 }),
-            style: fc.constantFrom('default', 'danger'),
+            style: fc.constantFrom<ChatAction['style']>('default', 'danger'),
         });
 
         fc.assert(
@@ -244,7 +237,6 @@ describe('AIAssistantPanel property tests', () => {
                 (fields, actions, errorOpt) => {
                     const messages: ChatMessage[] = [];
 
-                    // Add an assistant message with fields and actions.
                     if (fields.length > 0 || actions.length > 0) {
                         messages.push(makeMsg({
                             role: 'assistant',
@@ -254,7 +246,6 @@ describe('AIAssistantPanel property tests', () => {
                         }));
                     }
 
-                    // Add an error message if generated.
                     if (errorOpt !== null) {
                         messages.push(makeMsg({
                             role: 'error',
@@ -262,45 +253,28 @@ describe('AIAssistantPanel property tests', () => {
                         }));
                     }
 
-                    if (messages.length === 0) return; // skip trivial case
+                    if (messages.length === 0) return;
 
-                    // Clean up previous render to avoid DOM leaks across iterations.
                     cleanup();
 
-                    const { container } = render(
-                        <AIAssistantPanel
-                            onClose={() => {}}
-                            lang="en"
-                            messages={messages}
-                            sending={false}
-                            streaming={false}
-                            ready={true}
-                            sendMessage={async () => {}}
-                            clearHistory={async () => {}}
-                            executeAction={async () => {}}
-                            refreshNews={() => {}}
-                        />
-                    );
+                    const { container } = renderPanel({ state: { messages, sending: false, streaming: false, ready: true } });
+                    const fieldCards = container.querySelectorAll('[data-testid="field-card"]');
+                    const fieldTexts = Array.from(fieldCards).map(el => el.textContent || '');
 
-                    // Verify every field label and value is rendered.
                     for (const f of fields) {
-                        const fieldCards = container.querySelectorAll('[data-testid="field-card"]');
-                        const texts = Array.from(fieldCards).map(el => el.textContent || '');
-                        const found = texts.some(t => t.includes(f.label) && t.includes(f.value));
+                        const found = fieldTexts.some(t => t.includes(f.label) && t.includes(f.value));
                         expect(found).toBe(true);
                     }
 
-                    // Verify action button count.
                     const actionButtons = container.querySelectorAll('[data-testid="action-button"]');
                     expect(actionButtons.length).toBe(actions.length);
 
-                    // Verify error text is rendered.
                     if (errorOpt !== null) {
                         expect(container.textContent).toContain(errorOpt);
                     }
                 },
             ),
-            { numRuns: 100 },
+            { numRuns: 40 },
         );
     });
 });

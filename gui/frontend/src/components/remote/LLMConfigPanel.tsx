@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+
 import {
     GetMaclawLLMProviders,
     SaveMaclawLLMProviders,
@@ -39,6 +40,7 @@ interface LLMProvider {
 }
 
 const NONE_PROVIDER = "__none__";
+const LLM_CONFIG_LOAD_TIMEOUT_MS = 5000;
 
 /** Known OpenAI-compatible providers for quick-fill in custom provider config. */
 const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number }[] = [
@@ -71,7 +73,29 @@ const readonlyStyle: React.CSSProperties = {
     ...inputStyle, background: colors.bg, color: colors.textMuted, cursor: "default",
 };
 
-type Props = { lang: string; codexModels?: any[]; onStatusChange?: (online: boolean, configured: boolean) => void };
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+            reject(new Error(`${label} timeout`));
+        }, timeoutMs);
+        promise.then(
+            value => {
+                window.clearTimeout(timer);
+                resolve(value);
+            },
+            error => {
+                window.clearTimeout(timer);
+                reject(error);
+            },
+        );
+    });
+}
+
+interface Props {
+    lang?: string;
+    codexModels?: unknown[];
+    onStatusChange?: (online: boolean, configured: boolean) => void;
+}
 
 export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const { showAlert, showConfirm } = useDialog();
@@ -99,6 +123,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [freeModels, setFreeModels] = useState<{id: string; name: string}[]>([]);
     const [freeSelectedModel, setFreeSelectedModel] = useState("");
     const [trajectoryLogging, setTrajectoryLogging] = useState(false);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const loadSeqRef = useRef(0);
 
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
 
@@ -387,14 +413,14 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             {/* Usage display for OAuth providers */}
             {!isNone && providers.find(p => p.name === currentName)?.auth_type === "oauth" && (
                 <div style={{ marginBottom: 16 }}>
-                    <UsageDisplay lang={lang} />
+                    <UsageDisplay lang={lang || ""} />
                 </div>
             )}
 
             {/* Token usage statistics */}
             {!isNone && (
                 <div style={{ marginBottom: 16 }}>
-                    <TokenUsagePanel lang={lang} />
+                    <TokenUsagePanel lang={lang || ""} />
                 </div>
             )}
 

@@ -44,10 +44,25 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
-#App {
+.app-viewport {
+    width: 100vw;
     height: 100vh;
     height: 100dvh;
-    width: 100vw;
+    overflow: hidden;
+    background-color: var(--bg-color);
+    --ui-scale: 1;
+}
+
+.app-scale-layer {
+    width: calc(100% / var(--ui-scale));
+    height: calc(100% / var(--ui-scale));
+    transform: scale(var(--ui-scale));
+    transform-origin: top left;
+}
+
+#App {
+    height: 100%;
+    width: 100%;
     margin: 0;
     display: flex;
     flex-direction: row;

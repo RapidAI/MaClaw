@@ -14,8 +14,9 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, PollWeixinQRStatus, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, ListBackgroundLoops } from "../wailsjs/go/main/App";
-import { EventsOn, EventsOff, BrowserOpenURL, Quit } from "../wailsjs/runtime";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, PollWeixinQRStatus, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, ListBackgroundLoops } from "../wailsjs/go/main/App";
+
+import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -1612,6 +1613,7 @@ function App() {
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
+    const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
     const navTabRef = useRef(navTab);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
@@ -1625,7 +1627,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
@@ -1681,6 +1683,13 @@ function App() {
 
     const [showModelSettings, setShowModelSettings] = useState(false);
     const [showProxySettings, setShowProxySettings] = useState(false);
+
+    useEffect(() => {
+        if (navTab !== 'ai' && aiPanelMaximized) {
+            WindowUnfullscreen();
+            setAiPanelMaximized(false);
+        }
+    }, [navTab, aiPanelMaximized]);
 
     useEffect(() => {
         if (showModelSettings && activeTab === 0) {
@@ -1870,8 +1879,17 @@ function App() {
         }
     };
 
+    const handleAIPanelMaximizeToggle = () => {
+        if (aiPanelMaximized) {
+            WindowUnfullscreen();
+            setAiPanelMaximized(false);
+            return;
+        }
+        WindowFullscreen();
+        setAiPanelMaximized(true);
+    };
+
     const handleWindowHide = (e: React.MouseEvent) => {
-        // Prevent event bubbling and default behavior
         e.preventDefault();
         e.stopPropagation();
 
@@ -2049,7 +2067,6 @@ function App() {
             GetUIZoomFactor().then((z) => {
                 if (z > 0) {
                     setUiZoom(z);
-                    (document.documentElement.style as any).zoom = String(z);
                 }
             }).catch(() => {});
 
@@ -2117,6 +2134,11 @@ function App() {
         // Listen for external config changes (e.g. from Tray)
         const handleConfigChange = (cfg: main.AppConfig) => {
             setConfig(cfg);
+            GetUIZoomFactor().then((z) => {
+                if (z > 0) {
+                    setUiZoom(z);
+                }
+            }).catch(() => {});
             // Sync with tray menu changes — but don't yank the user away from
             // the AI assistant panel.  'ai' is never persisted as active_tool,
             // so a config-changed event would always overwrite it.
@@ -3269,6 +3291,11 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '全局网络代理配置' : lang === 'zh-Hant' ? '全局網路代理配置' : 'Global network proxy configuration',
         },
         {
+            id: 'ui' as const,
+            label: lang === 'zh-Hans' ? 'UI配置' : lang === 'zh-Hant' ? 'UI配置' : 'UI Config',
+            desc: lang === 'zh-Hans' ? '界面缩放与整体显示行为' : lang === 'zh-Hant' ? '介面縮放與整體顯示行為' : 'UI scaling and display behavior',
+        },
+        {
             id: 'display' as const,
             label: lang === 'zh-Hans' ? '编程工具' : lang === 'zh-Hant' ? '編程工具' : 'Dev CLI',
             desc: lang === 'zh-Hans' ? '工具显示与启动页行为' : lang === 'zh-Hant' ? '工具顯示與啟動頁行為' : 'Tool visibility and startup behavior',
@@ -3330,7 +3357,12 @@ ${instruction}`;
     const isLiteMode = config?.ui_mode !== 'pro';
 
     return (
-        <div id="App">
+        <div
+            className="app-viewport"
+            style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
+        >
+            <div className="app-scale-layer">
+                <div id="App">
             <div style={{
                 height: '30px',
                 width: isLiteMode ? '60px' : '180px',
@@ -3636,7 +3668,39 @@ ${instruction}`;
             <div className="main-container">
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
-                    <AIAssistantPanel onClose={() => { switchTool('settings'); }} lang={lang} inline={true} onHideWindow={() => WindowHide()} onboardingIncomplete={!config?.onboarding_done && !showMaclawLLMPopup} onOpenOnboarding={() => setShowMaclawLLMPopup(true)} onOpenTutorial={() => switchTool('tutorial')} {...aiAssistant} />
+                    <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>
+                        <AIAssistantPanel
+                            onClose={() => { switchTool('settings'); }}
+                            lang={lang}
+                            state={{
+                                messages: aiAssistant.messages,
+                                sending: aiAssistant.sending,
+                                streaming: aiAssistant.streaming,
+                                ready: aiAssistant.ready,
+                                initStatus: aiAssistant.initStatus,
+                                selectedFilePath: aiAssistant.selectedFilePath,
+                                scrollToTopSeq: aiAssistant.scrollToTopSeq,
+                                onboardingIncomplete: !config?.onboarding_done && !showMaclawLLMPopup,
+                            }}
+                            actions={{
+                                browseFile: aiAssistant.browseFile,
+                                clearSelectedFile: aiAssistant.clearSelectedFile,
+                                sendMessage: aiAssistant.sendMessage,
+                                clearHistory: aiAssistant.clearHistory,
+                                executeAction: aiAssistant.executeAction,
+                                refreshNews: aiAssistant.refreshNews,
+                                onOpenOnboarding: () => setShowMaclawLLMPopup(true),
+                                cancelSession: aiAssistant.cancelSession,
+                                onOpenTutorial: () => switchTool('tutorial'),
+                            }}
+                            window={{
+                                inline: true,
+                                maximized: aiPanelMaximized,
+                                onToggleMaximize: handleAIPanelMaximizeToggle,
+                                onHideWindow: () => WindowHide(),
+                            }}
+                        />
+                    </div>
                 ) : (
                 <><div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
@@ -4158,7 +4222,7 @@ ${instruction}`;
                                     {t("uiModePro")}
                                 </label>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                    <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); const currentTab: string = navTab; if (currentTab === 'remote' || currentTab === 'skills' || currentTab === 'mcp' || isToolTab(currentTab)) { setNavTab('ai'); } if (settingsTab === 'display' || settingsTab === 'remote') { setSettingsTab('general'); } } }} />
+                                    <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); const currentTab: string = navTab; if (currentTab === 'remote' || currentTab === 'skills' || currentTab === 'mcp' || isToolTab(currentTab)) { setNavTab('ai'); } if (settingsTab === 'display' || settingsTab === 'remote' || settingsTab === 'ui') { setSettingsTab('general'); } } }} />
                                     {t("uiModeLite")}
                                 </label>
                                 <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
@@ -4304,7 +4368,7 @@ ${instruction}`;
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'llm' ? 'block' : 'none' }}>
-                                <LLMConfigPanel lang={lang} codexModels={config?.codex?.models} onStatusChange={(online, configured) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }} />
+                                <LLMConfigPanel lang={lang} codexModels={config?.codex?.models} onStatusChange={(online: boolean, configured: boolean) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }} />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'role' ? 'block' : 'none' }}>
@@ -4929,30 +4993,34 @@ ${instruction}`;
                                 </div>
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
-
-                            {/* UI Zoom */}
-                            <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0', marginBottom: '16px' }}>
-                                <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '界面缩放' : lang === 'zh-Hant' ? '介面縮放' : 'UI Zoom'}</h4>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                    <input type="range" min={50} max={200} step={5} value={Math.round(uiZoom * 100)}
-                                        onChange={e => {
-                                            const v = Number(e.target.value) / 100;
-                                            setUiZoom(v);
-                                            (document.documentElement.style as any).zoom = String(v);
-                                        }}
-                                        onPointerUp={() => { SetUIZoomFactor(uiZoom).catch(() => {}); }}
-                                        style={{ flex: 1, accentColor: '#6366f1' }} />
-                                    <span style={{ fontSize: '0.78rem', color: '#4b5563', minWidth: '42px', textAlign: 'center' }}>{Math.round(uiZoom * 100)}%</span>
-                                    <button onClick={() => { setUiZoom(1.0); (document.documentElement.style as any).zoom = '1'; SetUIZoomFactor(1.0).catch(() => {}); }}
-                                        style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: '#f3f4f6', color: '#4b5563', border: '1px solid #e5e7eb', borderRadius: 4 }}>
-                                        {lang === 'zh-Hans' ? '重置' : lang === 'zh-Hant' ? '重置' : 'Reset'}
-                                    </button>
+                            <div className="settings-panel" style={{ display: settingsTab === 'ui' ? 'block' : 'none' }}>
+                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0', marginBottom: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '界面缩放' : lang === 'zh-Hant' ? '介面縮放' : 'UI Zoom'}</h4>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        <input type="range" min={50} max={200} step={5} value={Math.round(uiZoom * 100)}
+                                            onChange={e => {
+                                                const v = Number(e.target.value) / 100;
+                                                setUiZoom(v);
+                                            }}
+                                            onPointerUp={async (e) => {
+                                                const v = Number((e.currentTarget as HTMLInputElement).value) / 100;
+                                                setUiZoom(v);
+                                                await SetUIZoomFactor(v).catch(() => {});
+                                            }}
+                                            style={{ flex: 1, accentColor: '#6366f1' }} />
+                                        <span style={{ fontSize: '0.78rem', color: '#4b5563', minWidth: '42px', textAlign: 'center' }}>{Math.round(uiZoom * 100)}%</span>
+                                        <button onClick={() => { setUiZoom(1.0); SetUIZoomFactor(1.0).catch(() => {}); }}
+                                            style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: '#f3f4f6', color: '#4b5563', border: '1px solid #e5e7eb', borderRadius: 4 }}>
+                                            {lang === 'zh-Hans' ? '重置' : lang === 'zh-Hant' ? '重置' : 'Reset'}
+                                        </button>
+                                    </div>
+                                    <p style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '6px', marginBottom: 0 }}>
+                                        {lang === 'zh-Hans' ? '调整界面整体缩放比例，适配高 DPI 屏幕或个人偏好。' : lang === 'zh-Hant' ? '調整介面整體縮放比例，適配高 DPI 螢幕或個人偏好。' : 'Adjust overall UI scale for HiDPI displays or personal preference.'}
+                                    </p>
                                 </div>
-                                <p style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '6px', marginBottom: 0 }}>
-                                    {lang === 'zh-Hans' ? '调整界面整体缩放比例，适配高 DPI 屏幕或个人偏好。' : lang === 'zh-Hant' ? '調整介面整體縮放比例，適配高 DPI 螢幕或個人偏好。' : 'Adjust overall UI scale for HiDPI displays or personal preference.'}
-                                </p>
                             </div>
+
+                            <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
 
                             <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                 <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '工具显示' : lang === 'zh-Hant' ? '工具顯示' : 'Tool Visibility'}</h4>
@@ -7315,6 +7383,8 @@ ${instruction}`;
                     {toastMessage}
                 </div>
             )}
+                </div>
+            </div>
         </div>
     );
 }
