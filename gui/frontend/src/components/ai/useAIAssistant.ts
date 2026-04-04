@@ -8,11 +8,14 @@ export interface CancelAIAssistantResult {
 
 export interface NewsCardData {
     articleId: string;
-    category: string;
+    category: NewsCategory;
     title: string;
     body: string;
     icon: string;
 }
+
+export type NewsCategory = 'notice' | 'update' | 'tip' | 'alert' | '';
+export type AIAssistantInitStatus = 'connecting' | 'loading' | 'warming' | 'ready';
 
 export type ChatActionStyle = 'default' | 'danger';
 
@@ -45,6 +48,8 @@ function nextId(): string {
 const STREAM_TOKEN_EVENT = "ai-assistant-token";
 const NEW_ROUND_EVENT = "ai-assistant-new-round";
 const STREAM_DONE_EVENT = "ai-assistant-stream-done";
+const INIT_PROGRESS_EVENT = "ai-assistant-init-progress";
+const PROGRESS_EVENT = "ai-assistant-progress";
 
 // ---------------------------------------------------------------------------
 // localStorage persistence for chat history across app restarts
@@ -53,6 +58,28 @@ export const AI_ASSISTANT_HISTORY_STORAGE_KEY = "ai-assistant-history";
 const MAX_PERSISTED_MESSAGES = 200;
 const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
+const MAX_LIVE_PROGRESS_MESSAGES = 100;
+
+function removeMessageAtIndex(messages: ChatMessage[], index: number): ChatMessage[] {
+    if (index < 0 || index >= messages.length) return messages;
+    if (index === messages.length - 1) return messages.slice(0, -1);
+    return [...messages.slice(0, index), ...messages.slice(index + 1)];
+}
+
+function appendProgressText(messages: ChatMessage[], progressText: string): ChatMessage[] {
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage?.content === progressText) {
+        return messages;
+    }
+    const next = [...messages, {
+        id: nextId(),
+        role: 'progress' as const,
+        content: progressText,
+        timestamp: Date.now(),
+    }];
+    if (next.length <= MAX_LIVE_PROGRESS_MESSAGES) return next;
+    return next.slice(-MAX_LIVE_PROGRESS_MESSAGES);
+}
 
 export function isImageFilePath(filePath: string): boolean {
     const normalized = filePath.trim().toLowerCase();
@@ -77,6 +104,14 @@ export function buildOutgoingMessage(text: string, selectedFilePath: string): st
     return trimmedText ? `${trimmedText}\n\n${fileBlock}` : fileBlock;
 }
 
+function normalizeSelectedFilePath(filePath: string): string {
+    return filePath.trim();
+}
+
+function sameSelectedFilePath(left: string, right: string): boolean {
+    return normalizeSelectedFilePath(left) === normalizeSelectedFilePath(right);
+}
+
 function loadPersistedMessages(): ChatMessage[] {
     try {
         const raw = localStorage.getItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
@@ -93,23 +128,28 @@ function loadPersistedMessages(): ChatMessage[] {
     }
 }
 
+function serializePersistedMessages(msgs: ChatMessage[]): string | null {
+    // Only persist meaningful messages; skip progress, system, and empty content.
+    // Strip thumbnailBase64 to avoid blowing up localStorage (5MB limit).
+    const toSave = msgs
+        .filter(m => m.role !== 'progress' && m.role !== 'system' && m.content !== '')
+        .slice(-MAX_PERSISTED_MESSAGES)
+        .map(m => {
+            if (!m.thumbnailBase64) return m;
+            const { thumbnailBase64: _, ...rest } = m;
+            return rest;
+        });
+    return toSave.length === 0 ? null : JSON.stringify(toSave);
+}
+
 function persistMessages(msgs: ChatMessage[]) {
     try {
-        // Only persist meaningful messages; skip progress, system, and empty content.
-        // Strip thumbnailBase64 to avoid blowing up localStorage (5MB limit).
-        const toSave = msgs
-            .filter(m => m.role !== 'progress' && m.role !== 'system' && m.content !== '')
-            .slice(-MAX_PERSISTED_MESSAGES)
-            .map(m => {
-                if (!m.thumbnailBase64) return m;
-                const { thumbnailBase64: _, ...rest } = m;
-                return rest;
-            });
-        if (toSave.length === 0) {
+        const serialized = serializePersistedMessages(msgs);
+        if (serialized === null) {
             localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
             return;
         }
-        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify(toSave));
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, serialized);
     } catch {
         // localStorage full or unavailable — silently ignore
     }
@@ -121,11 +161,25 @@ interface ActiveRound {
     assistantMessageId: string | null;
 }
 
-const IDLE_ROUND: ActiveRound = {
-    generation: 0,
-    phase: 'idle',
-    assistantMessageId: null,
-};
+function createIdleRound(generation: number): ActiveRound {
+    return {
+        generation,
+        phase: 'idle',
+        assistantMessageId: null,
+    };
+}
+
+function isRoundIdle(round: ActiveRound): boolean {
+    return round.phase === 'idle' && round.assistantMessageId === null;
+}
+
+function sameActiveRound(left: ActiveRound, right: ActiveRound): boolean {
+    return left.generation === right.generation
+        && left.phase === right.phase
+        && left.assistantMessageId === right.assistantMessageId;
+}
+
+const IDLE_ROUND: ActiveRound = createIdleRound(0);
 
 function isAssistantPlaceholder(msg: ChatMessage): boolean {
     return msg.role === 'assistant' && msg.content === '' && !msg.fields?.length && !msg.thumbnailBase64 && !msg.localFilePaths?.length && !msg.localFilePath;
@@ -158,34 +212,79 @@ function updateTailMessage(messages: ChatMessage[], messageId: string | null, up
 
 function updateMessageById(messages: ChatMessage[], messageId: string | null, updater: (message: ChatMessage) => ChatMessage | null): ChatMessage[] {
     if (!messageId) return messages;
-    const index = messages.findIndex(msg => msg.id === messageId);
+    const index = findLastIndex(messages, msg => msg.id === messageId);
     if (index < 0) return messages;
     const updated = updater(messages[index]);
     if (updated === messages[index]) return messages;
     if (updated === null) {
-        return messages.filter((_, i) => i !== index);
+        return removeMessageAtIndex(messages, index);
     }
     const next = [...messages];
     next[index] = updated;
     return next;
 }
 
-function appendTokenContent(message: ChatMessage, delta: string): ChatMessage {
-    if (isAssistantPlaceholder(message) && message.content === '') {
-        return {
-            ...message,
-            content: delta,
-        };
-    }
+function appendTokenToMessage(message: ChatMessage, delta: string): ChatMessage {
+    const nextContent = message.content ? message.content + delta : delta;
+    if (nextContent === message.content) return message;
     return {
         ...message,
-        content: message.content + delta,
+        content: nextContent,
     };
 }
 
 function appendTokenToRound(messages: ChatMessage[], assistantMessageId: string | null, delta: string): ChatMessage[] {
-    return updateTailMessage(messages, assistantMessageId, message => appendTokenContent(message, delta))
-        ?? updateMessageById(messages, assistantMessageId, message => appendTokenContent(message, delta));
+    if (!assistantMessageId || !delta || messages.length === 0) return messages;
+    const lastIndex = messages.length - 1;
+    const tail = messages[lastIndex];
+    if (tail.id === assistantMessageId) {
+        const updatedTail = appendTokenToMessage(tail, delta);
+        if (updatedTail === tail) return messages;
+        const next = [...messages];
+        next[lastIndex] = updatedTail;
+        return next;
+    }
+    const index = findLastIndex(messages, message => message.id === assistantMessageId);
+    if (index < 0) return messages;
+    const updatedMessage = appendTokenToMessage(messages[index], delta);
+    if (updatedMessage === messages[index]) return messages;
+    const next = [...messages];
+    next[index] = updatedMessage;
+    return next;
+}
+
+function hasEmptyAssistantPlaceholder(messages: ChatMessage[], assistantMessageId: string | null): boolean {
+    if (!assistantMessageId) return false;
+    const tail = messages[messages.length - 1];
+    if (tail?.id === assistantMessageId) {
+        return isAssistantPlaceholder(tail);
+    }
+    const index = findLastIndex(messages, message => message.id === assistantMessageId);
+    return index >= 0 && isAssistantPlaceholder(messages[index]);
+}
+
+function checkInitReadiness(): Promise<{ ready: boolean; status: AIAssistantInitStatus }> {
+    return Promise.allSettled([IsAIAssistantReady(), GetAIAssistantInitStatus()]).then(([readyResult, statusResult]) => ({
+        ready: readyResult.status === 'fulfilled' && !!readyResult.value,
+        status: statusResult.status === 'fulfilled' ? normalizeInitStatus(statusResult.value) : 'connecting',
+    }));
+}
+
+function replaceNewsMessages(messages: ChatMessage[], newsMessages: ChatMessage[]): ChatMessage[] {
+    const existingNews = messages.filter(isPinnedNewsMessage);
+    if (existingNews.length === newsMessages.length && existingNews.every((msg, idx) => samePinnedNews(msg, newsMessages[idx]))) {
+        return messages;
+    }
+    const filtered = messages.filter(message => !isPinnedNewsMessage(message));
+    return [...newsMessages, ...filtered];
+}
+
+function serializeNewsMessages(newsMessages: ChatMessage[]): string {
+    return JSON.stringify(newsMessages.map(message => ({
+        id: message.id,
+        content: message.content,
+        news: message.news,
+    })));
 }
 
 function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, response: any): ChatMessage[] {
@@ -226,8 +325,23 @@ function removeRoundMessage(messages: ChatMessage[], assistantMessageId: string 
         ?? updateMessageById(messages, assistantMessageId, () => null);
 }
 
+function resolveSendResult(messages: ChatMessage[], assistantMessageId: string, response: any, errorText?: string): ChatMessage[] {
+    const nextMessages = errorText
+        ? replaceRoundWithError(messages, assistantMessageId, errorText)
+        : response?.error
+            ? replaceRoundWithError(messages, assistantMessageId, response.error)
+            : finalizeRoundMessage(messages, assistantMessageId, response);
+    return hasEmptyAssistantPlaceholder(nextMessages, assistantMessageId)
+        ? removeRoundMessage(nextMessages, assistantMessageId)
+        : nextMessages;
+}
+
 function normalizeActionStyle(style: unknown): ChatActionStyle {
     return style === 'danger' ? 'danger' : 'default';
+}
+
+function normalizeInitStatus(status: unknown): AIAssistantInitStatus {
+    return status === 'loading' || status === 'warming' || status === 'ready' ? status : 'connecting';
 }
 
 function normalizeActions(actions: any): ChatAction[] | undefined {
@@ -241,9 +355,13 @@ function normalizeActions(actions: any): ChatAction[] | undefined {
         }));
 }
 
+function normalizeNewsCategory(category: unknown): NewsCategory {
+    return category === 'notice' || category === 'update' || category === 'tip' || category === 'alert' ? category : '';
+}
+
 function createNewsMessage(article: any): ChatMessage {
-    const iconByCategory: Record<string, string> = { notice: '📢', update: '🚀', tip: '💡', alert: '⚠️' };
-    const category = typeof article?.category === 'string' ? article.category : '';
+    const iconByCategory: Record<Exclude<NewsCategory, ''>, string> = { notice: '📢', update: '🚀', tip: '💡', alert: '⚠️' };
+    const category = normalizeNewsCategory(article?.category);
     const title = typeof article?.title === 'string' ? article.title : '';
     const body = typeof article?.content === 'string' ? article.content : '';
     const articleId = String(article?.id ?? nextId());
@@ -257,7 +375,7 @@ function createNewsMessage(article: any): ChatMessage {
             category,
             title,
             body,
-            icon: iconByCategory[category] || '📄',
+            icon: category ? iconByCategory[category] : '📄',
         },
         timestamp: Date.now(),
     };
@@ -281,87 +399,125 @@ function samePinnedNews(left: ChatMessage, right: ChatMessage): boolean {
 
 export function useAIAssistant() {
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
-    const [ready, setReady] = useState(false);
+    const [progressMessages, setProgressMessages] = useState<ChatMessage[]>([]);
     const [selectedFilePath, setSelectedFilePath] = useState("");
-    const [initStatus, setInitStatus] = useState<string>("connecting");
+    const [initStatus, setInitStatus] = useState<AIAssistantInitStatus>("connecting");
     const [scrollToTopSeq, setScrollToTopSeq] = useState(0);
     const [activeRound, setActiveRound] = useState<ActiveRound>(IDLE_ROUND);
     const activeRoundRef = useRef<ActiveRound>(IDLE_ROUND);
+    const initStatusRef = useRef<AIAssistantInitStatus>("connecting");
+    const selectedFilePathRef = useRef("");
+    const latestNewsPayloadRef = useRef<string>("[]");
+    const progressTailRef = useRef<string | null>(null);
     const scrollOnNextNewsRef = useRef(true);
-
-    useEffect(() => {
-        activeRoundRef.current = activeRound;
-    }, [activeRound]);
 
     const sending = activeRound.phase !== 'idle';
     const streaming = activeRound.phase === 'streaming';
+    const visualBusy = streaming;
+    const ready = initStatus === 'ready';
+
+    const setInitStatusState = useCallback((nextStatus: AIAssistantInitStatus) => {
+        if (initStatusRef.current === nextStatus) {
+            return nextStatus;
+        }
+        initStatusRef.current = nextStatus;
+        setInitStatus(current => current === nextStatus ? current : nextStatus);
+        return nextStatus;
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
-        let ready = false;
-        let timer: ReturnType<typeof setTimeout> | null = null;
-        const scheduleCheck = () => {
-            if (cancelled || ready || timer) return;
-            timer = setTimeout(() => {
-                timer = null;
-                check();
-            }, 1500);
-        };
-        const check = () => {
-            IsAIAssistantReady().then(ok => {
-                if (cancelled || ready) return;
-                if (ok) {
-                    ready = true;
-                    setReady(true);
-                    setInitStatus("ready");
-                } else {
-                    GetAIAssistantInitStatus().then(status => {
-                        if (!cancelled && !ready) setInitStatus(status || "connecting");
-                    }).catch(() => {});
-                    scheduleCheck();
-                }
-            }).catch(() => {
-                if (!cancelled && !ready) scheduleCheck();
-            });
-        };
-        check();
+        let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
-        const progressHandler = (status: string) => {
-            if (status === "ready") {
-                ready = true;
-                if (timer) {
-                    clearTimeout(timer);
-                    timer = null;
-                }
-                setReady(true);
-                setInitStatus("ready");
-            } else {
-                setInitStatus(status);
+        const clearPollTimer = () => {
+            if (pollTimer) {
+                clearTimeout(pollTimer);
+                pollTimer = null;
             }
         };
-        EventsOn("ai-assistant-init-progress", progressHandler);
+
+        const scheduleCheck = () => {
+            if (cancelled || initStatusRef.current === 'ready' || pollTimer) return;
+            pollTimer = setTimeout(() => {
+                pollTimer = null;
+                void check();
+            }, 1500);
+        };
+
+        const check = async () => {
+            try {
+                const { ready: isReady, status } = await checkInitReadiness();
+                if (cancelled || initStatusRef.current === 'ready') return;
+                if (isReady) {
+                    clearPollTimer();
+                    setInitStatusState('ready');
+                    return;
+                }
+                setInitStatusState(status);
+                scheduleCheck();
+            } catch {
+                if (!cancelled && initStatusRef.current !== 'ready') {
+                    scheduleCheck();
+                }
+            }
+        };
+
+        void check();
+
+        const progressHandler = (status: string) => {
+            const nextStatus = normalizeInitStatus(status);
+            if (nextStatus === 'ready') {
+                clearPollTimer();
+            }
+            setInitStatusState(nextStatus);
+        };
+        EventsOn(INIT_PROGRESS_EVENT, progressHandler);
 
         return () => {
             cancelled = true;
-            if (timer) {
-                clearTimeout(timer);
-                timer = null;
-            }
-            EventsOff("ai-assistant-init-progress");
+            clearPollTimer();
+            EventsOff(INIT_PROGRESS_EVENT);
         };
+    }, [setInitStatusState]);
+
+    const setSelectedFile = useCallback((nextPath: string) => {
+        const normalizedNext = normalizeSelectedFilePath(nextPath);
+        if (sameSelectedFilePath(selectedFilePathRef.current, normalizedNext)) {
+            return selectedFilePathRef.current;
+        }
+        selectedFilePathRef.current = normalizedNext;
+        setSelectedFilePath(current => sameSelectedFilePath(current, normalizedNext) ? current : normalizedNext);
+        return normalizedNext;
+    }, []);
+
+    const setRoundState = useCallback((next: ActiveRound) => {
+        const current = activeRoundRef.current;
+        if (sameActiveRound(current, next)) {
+            return current;
+        }
+        activeRoundRef.current = next;
+        setActiveRound(prev => sameActiveRound(prev, next) ? prev : next);
+        return next;
     }, []);
 
     const transitionRound = useCallback((updater: (current: ActiveRound) => ActiveRound) => {
         const next = updater(activeRoundRef.current);
-        activeRoundRef.current = next;
-        setActiveRound(next);
-        return next;
-    }, []);
+        if (next === activeRoundRef.current || sameActiveRound(next, activeRoundRef.current)) {
+            return activeRoundRef.current;
+        }
+        return setRoundState(next);
+    }, [setRoundState]);
 
-    const resetActiveRound = useCallback(() => {
-        activeRoundRef.current = IDLE_ROUND;
-        setActiveRound(IDLE_ROUND);
-    }, []);
+    const resetActiveRound = useCallback((generation?: number) => {
+        const current = activeRoundRef.current;
+        const next = generation === undefined
+            ? (current.generation === 0 ? IDLE_ROUND : createIdleRound(current.generation))
+            : (generation === 0 ? IDLE_ROUND : createIdleRound(generation));
+        if (sameActiveRound(current, next)) {
+            return current;
+        }
+        return setRoundState(next);
+    }, [setRoundState]);
 
     const ensureRoundPlaceholder = useCallback((generation: number) => {
         const current = activeRoundRef.current;
@@ -369,16 +525,16 @@ export function useAIAssistant() {
             return null;
         }
         const assistantMessageId = current.assistantMessageId || nextId();
-        const nextRound: ActiveRound = {
-            generation,
-            phase: 'streaming',
-            assistantMessageId,
-        };
-        activeRoundRef.current = nextRound;
-        setActiveRound(nextRound);
+        if (current.phase !== 'streaming' || current.assistantMessageId !== assistantMessageId) {
+            setRoundState({
+                generation,
+                phase: 'streaming',
+                assistantMessageId,
+            });
+        }
         setMessages(prev => appendAssistantPlaceholder(prev, assistantMessageId));
         return assistantMessageId;
-    }, []);
+    }, [setRoundState]);
 
     const finalizeRound = useCallback((generation: number) => {
         if (activeRoundRef.current.generation !== generation) return;
@@ -387,15 +543,34 @@ export function useAIAssistant() {
 
     const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const latestMessagesRef = useRef(messages);
+    const lastPersistedPayloadRef = useRef<string | null>(null);
     useEffect(() => {
         latestMessagesRef.current = messages;
+        const nextPayload = serializePersistedMessages(messages);
+        if (nextPayload === lastPersistedPayloadRef.current) {
+            if (persistTimerRef.current) {
+                clearTimeout(persistTimerRef.current);
+                persistTimerRef.current = null;
+            }
+            return;
+        }
         if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
         persistTimerRef.current = setTimeout(() => {
             persistTimerRef.current = null;
+            const payload = serializePersistedMessages(latestMessagesRef.current);
+            if (payload === lastPersistedPayloadRef.current) return;
+            lastPersistedPayloadRef.current = payload;
             persistMessages(latestMessagesRef.current);
         }, 300);
+        return () => {
+            if (persistTimerRef.current) {
+                clearTimeout(persistTimerRef.current);
+                persistTimerRef.current = null;
+            }
+        };
     }, [messages]);
     useEffect(() => {
+        lastPersistedPayloadRef.current = serializePersistedMessages(latestMessagesRef.current);
         return () => {
             if (persistTimerRef.current) {
                 clearTimeout(persistTimerRef.current);
@@ -408,17 +583,14 @@ export function useAIAssistant() {
     // Fetch latest news from Hub Center and prepend as system messages.
     const doFetchNews = useCallback(() => {
         FetchNews().then((articles: any[]) => {
-            if (!articles || articles.length === 0) return;
-            const newsMessages = articles.map(createNewsMessage);
-            setMessages(prev => {
-                const existingNews = prev.filter(isPinnedNewsMessage);
-                if (existingNews.length === newsMessages.length && existingNews.every((msg, idx) => samePinnedNews(msg, newsMessages[idx]))) {
-                    return prev;
-                }
-                const filtered = prev.filter(m => !isPinnedNewsMessage(m));
-                return [...newsMessages, ...filtered];
-            });
-            if (scrollOnNextNewsRef.current) {
+            const newsMessages = Array.isArray(articles) ? articles.map(createNewsMessage) : [];
+            const nextPayload = serializeNewsMessages(newsMessages);
+            if (nextPayload === latestNewsPayloadRef.current) {
+                return;
+            }
+            latestNewsPayloadRef.current = nextPayload;
+            setMessages(prev => replaceNewsMessages(prev, newsMessages));
+            if (scrollOnNextNewsRef.current && newsMessages.length > 0) {
                 scrollOnNextNewsRef.current = false;
                 setScrollToTopSeq(s => s + 1);
             }
@@ -468,7 +640,7 @@ export function useAIAssistant() {
     }, [ensureRoundPlaceholder, transitionRound]);
 
     const sendMessage = useCallback(async (text: string) => {
-        const outgoingText = buildOutgoingMessage(text, selectedFilePath);
+        const outgoingText = buildOutgoingMessage(text, selectedFilePathRef.current);
         if (outgoingText.trim() === "" || activeRoundRef.current.phase !== 'idle') return;
 
         const generation = activeRoundRef.current.generation + 1;
@@ -486,57 +658,53 @@ export function useAIAssistant() {
             timestamp: Date.now(),
         };
 
-        activeRoundRef.current = {
+        setRoundState({
             generation,
             phase: 'requesting',
             assistantMessageId,
-        };
-        setActiveRound(activeRoundRef.current);
+        });
         setMessages(prev => [...prev, userMsg, placeholderMsg]);
 
         try {
             const response = await SendAIAssistantMessage(outgoingText);
-            setSelectedFilePath("");
-
-            if (response.error) {
-                setMessages(prev => replaceRoundWithError(prev, assistantMessageId, response.error));
-            } else {
-                setMessages(prev => finalizeRoundMessage(prev, assistantMessageId, response));
-            }
+            setSelectedFile("");
+            setMessages(prev => resolveSendResult(prev, assistantMessageId, response));
         } catch (err: any) {
-            setMessages(prev => replaceRoundWithError(prev, assistantMessageId, err?.message || String(err)));
+            setMessages(prev => resolveSendResult(prev, assistantMessageId, null, err?.message || String(err)));
         } finally {
             finalizeRound(generation);
         }
-    }, [finalizeRound, selectedFilePath]);
+    }, [finalizeRound, setRoundState, setSelectedFile]);
 
     const browseFile = useCallback(async () => {
         const selected = (await SelectAIAssistantFile()) || "";
-        if (selected.trim()) {
-            setSelectedFilePath(selected);
-        }
-    }, []);
+        setSelectedFile(selected);
+    }, [setSelectedFile]);
 
     const clearSelectedFile = useCallback(() => {
-        setSelectedFilePath("");
-    }, []);
+        setSelectedFile("");
+    }, [setSelectedFile]);
 
     const clearHistory = useCallback(async () => {
-        try {
-            await ClearAIAssistantHistory();
-        } catch (_) {
-        }
         resetActiveRound();
-        setSelectedFilePath("");
+        setSelectedFile("");
         if (persistTimerRef.current) {
             clearTimeout(persistTimerRef.current);
             persistTimerRef.current = null;
         }
+        latestMessagesRef.current = [];
         persistMessages([]);
         setMessages([]);
+        progressTailRef.current = null;
+        setProgressMessages([]);
+        latestNewsPayloadRef.current = '[]';
         scrollOnNextNewsRef.current = true;
         doFetchNews();
-    }, [doFetchNews, resetActiveRound]);
+        try {
+            await ClearAIAssistantHistory();
+        } catch (_) {
+        }
+    }, [doFetchNews, resetActiveRound, setSelectedFile]);
 
     const executeAction = useCallback((command: string) => {
         return sendMessage(command);
@@ -544,41 +712,38 @@ export function useAIAssistant() {
 
     useEffect(() => {
         const handler = (progressText: string) => {
-            const progressMsg: ChatMessage = {
-                id: nextId(),
-                role: 'progress',
-                content: progressText,
-                timestamp: Date.now(),
-            };
-            setMessages(prev => [...prev, progressMsg]);
+            if (progressTailRef.current === progressText) {
+                return;
+            }
+            progressTailRef.current = progressText;
+            setProgressMessages(prev => appendProgressText(prev, progressText));
         };
-        EventsOn("ai-assistant-progress", handler);
+        EventsOn(PROGRESS_EVENT, handler);
         return () => {
-            EventsOff("ai-assistant-progress");
+            EventsOff(PROGRESS_EVENT);
         };
     }, []);
 
     const cancelSession = useCallback(async (): Promise<CancelAIAssistantResult> => {
         const canceledRound = activeRoundRef.current;
         const nextGeneration = canceledRound.generation + 1;
-        let canceledText = "";
-        try {
-            canceledText = (await CancelAIAssistantSession()) || "";
-        } catch (e) {
+        if (!canceledRound.assistantMessageId && isRoundIdle(canceledRound)) {
+            return { canceledText: "" };
         }
         if (canceledRound.assistantMessageId) {
             setMessages(prev => removeRoundMessage(prev, canceledRound.assistantMessageId));
         }
-        activeRoundRef.current = {
-            generation: nextGeneration,
-            phase: 'idle',
-            assistantMessageId: null,
-        };
-        setActiveRound(activeRoundRef.current);
-        return { canceledText };
-    }, []);
+        resetActiveRound(nextGeneration);
+        try {
+            return {
+                canceledText: (await CancelAIAssistantSession()) || "",
+            };
+        } catch {
+            return { canceledText: "" };
+        }
+    }, [resetActiveRound]);
 
-    return { messages, sending, streaming, ready, initStatus, selectedFilePath, browseFile, clearSelectedFile, sendMessage, clearHistory, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
+    return { messages, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePath, browseFile, clearSelectedFile, sendMessage, clearHistory, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

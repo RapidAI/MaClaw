@@ -50,12 +50,13 @@ function makeNews(id: string, overrides: Partial<NewsCardData> = {}): ChatMessag
     });
 }
 
-function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantPanel>> = {}) {
-    const props: React.ComponentProps<typeof AIAssistantPanel> = {
+function defaultPanelProps(): React.ComponentProps<typeof AIAssistantPanel> {
+    return {
         onClose: () => {},
         lang: 'en',
         state: {
             messages: [],
+            progressMessages: [],
             sending: false,
             streaming: false,
             ready: true,
@@ -66,7 +67,26 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantP
             executeAction: async () => {},
             refreshNews: () => {},
         },
+    };
+}
+
+function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantPanel>> = {}) {
+    const base = defaultPanelProps();
+    const props: React.ComponentProps<typeof AIAssistantPanel> = {
+        ...base,
         ...overrides,
+        state: {
+            ...base.state,
+            ...overrides.state,
+        },
+        actions: {
+            ...base.actions,
+            ...overrides.actions,
+        },
+        window: {
+            ...base.window,
+            ...overrides.window,
+        },
     };
     return render(<AIAssistantPanel {...props} />);
 }
@@ -98,6 +118,7 @@ describe('AIAssistantPanel property tests', () => {
             makeMsg({ role: 'assistant', content: 'Latest answer' }),
         ];
 
+        const props = defaultPanelProps();
         const { rerender } = renderPanel({ state: { messages, ready: false, sending: false, streaming: false } });
 
         scrollIntoViewMock.mockClear();
@@ -105,19 +126,13 @@ describe('AIAssistantPanel property tests', () => {
 
         rerender(
             <AIAssistantPanel
-                onClose={() => {}}
-                lang="en"
+                {...props}
                 state={{
+                    ...props.state,
                     messages,
                     sending: false,
                     streaming: false,
                     ready: true,
-                }}
-                actions={{
-                    sendMessage: async () => {},
-                    clearHistory: async () => {},
-                    executeAction: async () => {},
-                    refreshNews: () => {},
                 }}
             />
         );
@@ -161,6 +176,16 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         expect(getByTestId('ai-cancel-progress')).toBeTruthy();
+        expect(queryByTitle('Send')).toBeNull();
+    });
+
+    it('shows cancel without spinner after streaming finishes but request is still locked', () => {
+        const { getByTestId, queryByTitle } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, visualBusy: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
+        });
+
+        expect(getByTestId('ai-cancel-progress').textContent).toContain('■');
         expect(queryByTitle('Send')).toBeNull();
     });
 
@@ -223,10 +248,10 @@ describe('AIAssistantPanel property tests', () => {
             value: fc.string({ minLength: 1, maxLength: 40 }).filter(s => s.trim().length > 0),
         });
 
-        const actionArb = fc.record({
+        const actionArb: fc.Arbitrary<Pick<ChatAction, 'label' | 'command' | 'style'>> = fc.record({
             label: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
             command: fc.string({ minLength: 1, maxLength: 30 }),
-            style: fc.constantFrom<ChatAction['style']>('default', 'danger'),
+            style: fc.constantFrom('default', 'danger'),
         });
 
         fc.assert(

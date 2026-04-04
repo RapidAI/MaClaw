@@ -1,28 +1,47 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
-import type { ChatMessage, CancelAIAssistantResult } from "./useAIAssistant";
-import { findLastIndex } from "./useAIAssistant";
+import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus } from "./useAIAssistant";
+import { findLastIndex, isPinnedNewsMessage } from "./useAIAssistant";
 
-interface AIAssistantPanelProps {
-    onClose: () => void;
-    lang: string; // 'zh-Hans' | 'zh-Hant' | 'en'
+interface AIAssistantPanelStateProps {
     messages: ChatMessage[];
+    progressMessages?: ChatMessage[];
     sending: boolean;
     streaming: boolean;
+    visualBusy?: boolean;
     ready: boolean;
-    initStatus?: string; // "connecting" | "loading" | "warming" | "ready"
+    initStatus?: AIAssistantInitStatus;
+    selectedFilePath?: string;
+    scrollToTopSeq?: number;
+    onboardingIncomplete?: boolean;
+}
+
+interface AIAssistantPanelActionProps {
+    browseFile?: () => Promise<void>;
+    clearSelectedFile?: () => void;
     sendMessage: (text: string) => Promise<void>;
     clearHistory: () => Promise<void>;
     executeAction: (command: string) => Promise<void>;
     refreshNews: () => void;
-    scrollToTopSeq?: number; // bumped when panel should scroll to top (e.g. after news reload)
-    inline?: boolean; // when true, render as inline content instead of overlay
-    onHideWindow?: () => void; // hide the entire window (inline mode)
-    onboardingIncomplete?: boolean; // true when onboarding was dismissed before completion
-    onOpenOnboarding?: () => void; // callback to re-open the onboarding wizard
-    cancelSession?: () => Promise<CancelAIAssistantResult>; // cancel the current AI session
-    onOpenTutorial?: () => void; // open tutorial page
+    onOpenOnboarding?: () => void;
+    cancelSession?: () => Promise<CancelAIAssistantResult>;
+    onOpenTutorial?: () => void;
+}
+
+interface AIAssistantPanelWindowProps {
+    inline?: boolean;
+    maximized?: boolean;
+    onToggleMaximize?: () => void;
+    onHideWindow?: () => void;
+}
+
+interface AIAssistantPanelProps {
+    onClose: () => void;
+    lang: string; // 'zh-Hans' | 'zh-Hant' | 'en'
+    state: AIAssistantPanelStateProps;
+    actions: AIAssistantPanelActionProps;
+    window?: AIAssistantPanelWindowProps;
 }
 
 /* ── Theme definitions ── */
@@ -169,6 +188,21 @@ const overlayStyle: React.CSSProperties = {
     boxShadow: "0 0 40px rgba(0,0,0,0.08)",
 };
 
+const maximizedInlineStyle: React.CSSProperties = {
+    position: "fixed",
+    inset: 0,
+    zIndex: 12000,
+    display: "flex",
+    flexDirection: "column",
+    width: "100vw",
+    height: "100vh",
+    minHeight: 0,
+    background: lightTheme.bg,
+    textAlign: "left",
+    boxShadow: "0 0 40px rgba(0,0,0,0.12)",
+    overflow: "hidden",
+};
+
 const dotBase: React.CSSProperties = {
     width: 10,
     height: 10,
@@ -190,21 +224,83 @@ const baseInputBtnStyle: React.CSSProperties = {
     flexShrink: 0,
 };
 
+const baseWindowControlBtnStyle: React.CSSProperties = {
+    width: "36px",
+    height: "28px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "transparent",
+    border: "none",
+    borderRadius: "4px",
+    cursor: "pointer",
+    padding: 0,
+    lineHeight: 1,
+    flexShrink: 0,
+    fontFamily: "'Segoe UI Symbol', 'Segoe UI', sans-serif",
+    transition: "background 120ms ease, color 120ms ease",
+};
+
+
 const baseActionBtnStyle: React.CSSProperties = {
     background: "transparent",
     border: "none",
-    fontSize: "11px",
-    fontFamily: "Consolas, monospace",
+    fontSize: "12px",
+    fontFamily: "'Segoe UI Symbol', 'Segoe UI', sans-serif",
     cursor: "pointer",
-    padding: "4px 8px",
+    padding: 0,
     borderRadius: "4px",
     lineHeight: 1,
     minHeight: "28px",
     minWidth: "28px",
+    width: "32px",
+    height: "28px",
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
+    transition: "background 120ms ease, color 120ms ease",
 };
+
+const AI_PANEL_STATIC_STYLE_ID = "ai-panel-static-style";
+const AI_PANEL_STATIC_STYLE_TEXT = `
+    @keyframes blink { 50% { opacity: 0; } }
+    @keyframes ai-spinner-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes maclaw-spin { to { transform: rotate(360deg); } }
+    .pinned-news-card > div { margin-top: 0 !important; margin-bottom: 0 !important; }
+    .ai-window-control:hover { background: var(--ai-window-control-hover-bg, rgba(148, 163, 184, 0.14)) !important; }
+    .ai-window-control:active { filter: brightness(0.96); }
+    .ai-window-control:focus-visible {
+        outline: 2px solid rgba(99, 102, 241, 0.55);
+        outline-offset: 1px;
+    }
+    .ai-titlebar-tool:hover { background: var(--ai-titlebar-tool-hover-bg, rgba(148, 163, 184, 0.12)) !important; }
+    .ai-titlebar-tool:active { filter: brightness(0.96); }
+    .ai-titlebar-tool:focus-visible {
+        outline: 2px solid rgba(99, 102, 241, 0.4);
+        outline-offset: 1px;
+    }
+`;
+
+function getTitleBarToolButtonStyle(t: Theme, variant: "default" | "danger" = "default"): React.CSSProperties {
+    const isDanger = variant === "danger";
+    return {
+        ...baseActionBtnStyle,
+        color: isDanger ? "#b91c1c" : t.actionBtnColor,
+        background: isDanger ? "rgba(220, 38, 38, 0.04)" : "transparent",
+        ['--ai-titlebar-tool-hover-bg' as any]: isDanger ? "rgba(220, 38, 38, 0.12)" : "rgba(148, 163, 184, 0.12)",
+    };
+}
+
+function getWindowControlButtonStyle(t: Theme, variant: "hide" | "fullscreen", active = false): React.CSSProperties {
+    const hoverBg = variant === "hide" ? "rgba(148, 163, 184, 0.14)" : "rgba(99, 102, 241, 0.12)";
+    return {
+        ...baseWindowControlBtnStyle,
+        color: active ? "#1f2937" : t.actionBtnColor,
+        background: active ? "rgba(99, 102, 241, 0.16)" : "transparent",
+        boxShadow: active ? "inset 0 0 0 1px rgba(99, 102, 241, 0.08)" : "none",
+        ['--ai-window-control-hover-bg' as any]: hoverBg,
+    };
+}
 
 /* ── Themed inline markdown rendering ── */
 
@@ -251,7 +347,7 @@ function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
             parts.push(
                 <a key={idx++}
                    href="#"
-                   onClick={(e) => { e.preventDefault(); ShowItemInFolder(filePath); }}
+                   onClick={(event) => openFileInFolder(event, filePath)}
                    style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }}
                    title={filePath}
                 >📂 {filePath}</a>
@@ -386,7 +482,7 @@ function renderFields(fields: Array<{ label: string; value: string }>, t: Theme)
 }
 
 function renderActions(
-    actions: Array<{ label: string; command: string; style: string }>,
+    actions: ChatAction[],
     executeAction: (command: string) => void,
     t: Theme,
 ): React.ReactNode {
@@ -413,9 +509,14 @@ function renderActions(
     );
 }
 
+function openFileInFolder(event: React.MouseEvent, filePath: string) {
+    event.preventDefault();
+    ShowItemInFolder(filePath);
+}
+
 /* ── Render a single ChatMessage ── */
 
-function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean): React.ReactNode {
+function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string): React.ReactNode {
     switch (msg.role) {
         case "user":
             return (
@@ -440,7 +541,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     )}
                     {msg.thumbnailBase64 && msg.localFilePath && (
                         <div style={{ margin: "4px 0 6px 0" }}>
-                            <a href="#" onClick={(e) => { e.preventDefault(); ShowItemInFolder(msg.localFilePath!); }}
+                            <a href="#" onClick={(event) => openFileInFolder(event, msg.localFilePath!)}
                                style={{ display: "inline-block", cursor: "pointer" }}
                                title={msg.localFilePath}>
                                 <img
@@ -461,10 +562,10 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                             {msg.localFilePaths.map((fp, i) => (
                                 <div key={i} style={{ padding: "2px 0" }}>
                                     <a href="#"
-                                       onClick={(e) => { e.preventDefault(); ShowItemInFolder(fp); }}
+                                       onClick={(event) => openFileInFolder(event, fp)}
                                        style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer", wordBreak: "break-all" }}
                                        title={fp}>
-                                        📄 文件已保存: 📁 {fp}
+                                        📄 {savedFileLabel}: 📁 {fp}
                                     </a>
                                 </div>
                             ))}
@@ -514,17 +615,46 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
     }
 }
 
-/* ── Inject blink animation once at module level ── */
-if (typeof document !== "undefined" && !document.getElementById("ai-blink-style")) {
+/* ── Inject static panel styles once at module level ── */
+if (typeof document !== "undefined" && !document.getElementById(AI_PANEL_STATIC_STYLE_ID)) {
     const style = document.createElement("style");
-    style.id = "ai-blink-style";
-    style.textContent = "@keyframes blink { 50% { opacity: 0; } } @keyframes ai-cancel-progress { 0% { transform: translateX(-140%); } 100% { transform: translateX(220%); } }";
+    style.id = AI_PANEL_STATIC_STYLE_ID;
+    style.textContent = AI_PANEL_STATIC_STYLE_TEXT;
     document.head.appendChild(style);
 }
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, ready, initStatus, sendMessage, clearHistory, executeAction, refreshNews, scrollToTopSeq, inline, onHideWindow, onboardingIncomplete, onOpenOnboarding, cancelSession, onOpenTutorial }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, state, actions, window: panelWindow }: AIAssistantPanelProps) {
+    const {
+        messages,
+        progressMessages = [],
+        sending,
+        streaming,
+        visualBusy,
+        ready,
+        initStatus,
+        selectedFilePath = "",
+        scrollToTopSeq,
+        onboardingIncomplete,
+    } = state;
+    const {
+        browseFile,
+        clearSelectedFile,
+        sendMessage,
+        clearHistory,
+        executeAction,
+        refreshNews,
+        onOpenOnboarding,
+        cancelSession,
+        onOpenTutorial,
+    } = actions;
+    const {
+        inline,
+        maximized = false,
+        onToggleMaximize,
+        onHideWindow,
+    } = panelWindow || {};
     const [inputValue, setInputValue] = useState("");
     const [composing, setComposing] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -537,26 +667,46 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
     const prevReadyRef = useRef(ready);
 
     const t = inline ? lightTheme : overlayTheme;
+    const showMaximizeToggle = inline && !!onToggleMaximize;
 
     const title = lang === "en" ? "AI Assistant" : "AI 助手";
     const thinkingText = lang === "en" ? "Thinking..." : "正在思考...";
+    const savedFileLabel = lang === "en" ? "Saved file" : "文件已保存";
+    const isBusy = sending;
+    const showThinkingState = streaming;
+    const showBusySpinner = visualBusy;
 
-    const initStatusLabels: Record<string, Record<string, string>> = {
+    const initStatusLabels: Record<AIAssistantInitStatus, { en: string; zh: string }> = {
         connecting: { en: "Connecting to Hub...", zh: "正在连接 Hub..." },
         loading:    { en: "Loading components...", zh: "正在加载组件..." },
         warming:    { en: "Warming up...", zh: "正在预热..." },
         ready:      { en: "Ready", zh: "就绪" },
     };
-    const statusKey = initStatus || "connecting";
-    const initLabel = (initStatusLabels[statusKey] || initStatusLabels.connecting)[lang === "en" ? "en" : "zh"];
+    const statusKey = initStatus ?? "connecting";
+    const initLabel = initStatusLabels[statusKey][lang === "en" ? "en" : "zh"];
 
     const placeholderText = !ready
         ? initLabel
-        : streaming
-        ? (lang === "en" ? "Thinking..." : "正在思考...")
-        : sending
-            ? (lang === "en" ? "Processing..." : "处理中...")
+        : showBusySpinner
+            ? (lang === "en" ? "Thinking..." : "正在思考...")
+            : isBusy
+                ? (lang === "en" ? "Processing..." : "处理中...")
             : (lang === "en" ? "Type a message..." : "输入消息...");
+    const canSend = ready && !isBusy && (!!inputValue.trim() || !!selectedFilePath.trim());
+    const selectedFileName = selectedFilePath ? selectedFilePath.split(/[/\\]/).pop() || selectedFilePath : "";
+    const { pinnedNews, otherMessages } = useMemo(() => {
+        const pinned: ChatMessage[] = [];
+        const other: ChatMessage[] = [];
+        for (const m of messages) {
+            if (isPinnedNewsMessage(m)) {
+                pinned.push(m);
+            } else {
+                other.push(m);
+            }
+        }
+        return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
+    }, [messages]);
+    const hasConversation = otherMessages.length + progressMessages.length > 0;
 
     // Reset scroll flag when component mounts (panel opened/re-shown)
     useEffect(() => {
@@ -598,28 +748,20 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
     useEffect(() => {
         const becameReady = !prevReadyRef.current && ready;
         prevReadyRef.current = ready;
-        if (!becameReady || userScrolledUpRef.current) return;
-        const hasConversationMessages = messages.some(
-            m => !(m.role === 'system' && m.id.startsWith('news-')),
-        );
-        if (!hasConversationMessages) return;
+        if (!becameReady || userScrolledUpRef.current || !hasConversation) return;
         outputEndRef.current?.scrollIntoView({ behavior: "auto" });
-    }, [ready, messages]);
+    }, [ready, hasConversation]);
 
     // Scroll to top when pinned news are (re)loaded only if there is no
     // existing conversation yet, so reopening maclaw still shows the latest chat.
     useEffect(() => {
-        if (!scrollToTopSeq) return;
-        const hasConversationMessages = messages.some(
-            m => !(m.role === 'system' && m.id.startsWith('news-')),
-        );
-        if (hasConversationMessages) return;
+        if (!scrollToTopSeq || hasConversation) return;
         const container = outputContainerRef.current;
         if (container) {
             container.scrollTo({ top: 0, behavior: "smooth" });
             userScrolledUpRef.current = true; // prevent auto-scroll-to-bottom from overriding
         }
-    }, [scrollToTopSeq, messages]);
+    }, [scrollToTopSeq, hasConversation]);
 
     // Focus input on mount
     useEffect(() => {
@@ -627,27 +769,31 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
         return () => clearTimeout(timer);
     }, []);
 
-    // Escape key closes panel (only in overlay mode, not inline)
+    // Escape key closes overlay mode, or exits maximized inline mode.
     useEffect(() => {
-        if (inline) return;
+        if (!maximized && inline) return;
         const handler = (e: KeyboardEvent) => {
-            if (e.key === "Escape") onClose();
+            if (e.key !== "Escape") return;
+            if (inline && maximized) {
+                onToggleMaximize?.();
+                return;
+            }
+            if (!inline) onClose();
         };
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [onClose, inline]);
+    }, [onClose, inline, maximized, onToggleMaximize]);
 
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
-        if (!text || sending) return;
+        if ((!text && !selectedFilePath.trim()) || isBusy) return;
         setInputValue("");
-        // Reset textarea height after send
         if (inputRef.current) {
             inputRef.current.style.height = "auto";
         }
         userScrolledUpRef.current = false;
         await sendMessage(text);
-    }, [inputValue, sending, sendMessage]);
+    }, [inputValue, selectedFilePath, isBusy, sendMessage]);
 
     const resizeInput = useCallback(() => {
         if (!inputRef.current) return;
@@ -668,35 +814,25 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
         });
     }, [cancelSession, inputValue, resizeInput]);
 
-    // Split messages: pinned news vs regular messages
-    const { pinnedNews, otherMessages } = useMemo(() => {
-        const pinned: ChatMessage[] = [];
-        const other: ChatMessage[] = [];
-        for (const m of messages) {
-            if (m.role === 'system' && m.id.startsWith('news-')) {
-                pinned.push(m);
-            } else {
-                other.push(m);
-            }
-        }
-        return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
-    }, [messages]);
-
-    // Memoize rendered non-news messages
+    const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => {
-        const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant') ?? null;
-        return otherMessages.map(msg => renderMessage(msg, executeAction, t, msg === lastAssistantMsg));
-    }, [otherMessages, messages, executeAction, t]);
+        return otherMessages.map((msg, idx) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel));
+    }, [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel]);
+
+    const renderedProgressMessages = useMemo(() => {
+        return progressMessages.map(msg => renderMessage(msg, executeAction, t, false, savedFileLabel));
+    }, [progressMessages, executeAction, t, savedFileLabel]);
 
     const containerStyle: React.CSSProperties = inline
-        ? { display: "flex", flexDirection: "column", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }
+        ? (maximized
+            ? maximizedInlineStyle
+            : { display: "flex", flexDirection: "column", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" })
         : overlayStyle;
 
     return (
-        <div style={containerStyle}>
-            <style>{`.pinned-news-card > div { margin-top: 0 !important; margin-bottom: 0 !important; }`}</style>
+        <div data-testid="ai-panel-root" style={containerStyle}>
             {/* ── Drag overlay (inline mode) ── */}
-            {inline && (
+            {inline && !maximized && (
                 <div style={{
                     height: "30px", width: "100%",
                     position: "absolute", top: 0, left: 0, zIndex: 999,
@@ -704,14 +840,17 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                 } as any} />
             )}
             {/* ── Title bar ── */}
-            <div style={{
+            <div
+                data-testid="ai-title-bar"
+                onDoubleClick={() => { if (inline) onToggleMaximize?.(); }}
+                style={{
                 display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "0 10px", height: "36px",
+                padding: "0 12px 0 10px", height: "38px",
                 background: t.titleBarBg, borderBottom: `1px solid ${t.titleBarBorder}`,
-                flexShrink: 0, gap: "6px",
-                ...(inline ? { '--wails-draggable': 'drag' } as any : {}),
+                flexShrink: 0, gap: "8px",
+                ...(inline && !maximized ? { '--wails-draggable': 'drag' } as any : {}),
             }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0, flex: 1 }}>
                     {!inline && (
                         <div style={{ display: "flex", gap: "5px", flexShrink: 0 }}>
                             <span
@@ -722,54 +861,126 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                         </div>
                     )}
                     <span style={{
-                        color: t.titleText, fontSize: "11px",
-                        fontFamily: "Consolas, 'SF Mono', monospace",
+                        color: t.titleText, fontSize: "11px", fontWeight: 600, letterSpacing: "0.02em",
+                        fontFamily: "'Segoe UI', 'SF Pro Text', system-ui, sans-serif",
                         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        transform: "translateY(-0.5px)",
                     }}>{title}</span>
                 </div>
-                <div style={{ display: "flex", gap: "4px", flexShrink: 0, ...(inline ? { '--wails-draggable': 'no-drag', position: 'relative', zIndex: 1000 } as any : {}) }}>
+                <div style={{ display: "flex", alignItems: "center", flexShrink: 0, paddingRight: inline ? 0 : 2, ...(inline ? { '--wails-draggable': 'no-drag', position: 'relative', zIndex: 1000 } as any : {}) }}>
+                    <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "4px", alignItems: "center", paddingTop: 1 }}>
                     {onOpenTutorial && (
                     <button
+                        className="ai-titlebar-tool"
                         {...(inline ? { onMouseDown: onOpenTutorial } : { onClick: onOpenTutorial })}
-                        style={{ ...baseActionBtnStyle, color: t.actionBtnColor }}
+                        style={getTitleBarToolButtonStyle(t)}
                         title={lang === "en" ? "Tutorial" : "教程"}
                     >
-                        📚
+                        <span
+                            aria-hidden="true"
+                            style={{
+                                fontSize: "13px",
+                                lineHeight: 1,
+                                transform: "translateY(-0.5px)",
+                            }}
+                        >
+                            📚
+                        </span>
                     </button>
                     )}
                     <button
+                        className="ai-titlebar-tool"
                         {...(inline ? { onMouseDown: refreshNews } : { onClick: refreshNews })}
-                        style={{ ...baseActionBtnStyle, color: t.actionBtnColor }}
+                        style={getTitleBarToolButtonStyle(t)}
                         title={lang === "en" ? "Refresh news" : "刷新消息"}
                     >
-                        🔄
+                        <span
+                            aria-hidden="true"
+                            style={{
+                                fontSize: "12px",
+                                lineHeight: 1,
+                                transform: "translateY(-0.5px)",
+                            }}
+                        >
+                            ↻
+                        </span>
                     </button>
                     <button
+                        className="ai-titlebar-tool"
                         {...(inline ? { onMouseDown: clearHistory } : { onClick: clearHistory })}
-                        style={{ ...baseActionBtnStyle, color: t.actionBtnColor }}
+                        style={getTitleBarToolButtonStyle(t, "danger")}
                         title={lang === "en" ? "Clear history" : "清空历史"}
                     >
-                        🗑️
+                        <span
+                            aria-hidden="true"
+                            style={{
+                                fontSize: "12px",
+                                lineHeight: 1,
+                                transform: "translateY(-0.5px)",
+                            }}
+                        >
+                            🗑
+                        </span>
                     </button>
+                    </div>
+                    <div data-testid="ai-titlebar-window-group" style={{ display: "flex", gap: "2px", alignItems: "center", marginLeft: inline ? "16px" : "12px", paddingLeft: inline ? "14px" : "12px", paddingTop: 1, borderLeft: `1px solid ${t.titleBarBorder}` }}>
                     {inline && onHideWindow && (
                     <button
+                        className="ai-window-control"
                         onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onHideWindow(); }}
-                        className="btn-hide"
-                        style={{ fontSize: "11px", padding: "1px 8px", cursor: "pointer" }}
-                        title={lang === "en" ? "Hide" : "隐藏"}
+                        data-testid="ai-hide-toggle"
+                        aria-label={lang === "en" ? "Minimize window" : "最小化窗口"}
+                        style={getWindowControlButtonStyle(t, "hide")}
+                        title={lang === "en" ? "Minimize window" : "最小化窗口"}
                     >
-                        {lang === "en" ? "Hide" : lang === "zh-Hant" ? "隱藏" : "隐藏"}
+                        <span style={{ width: "10px", borderTop: "1.5px solid currentColor", transform: "translateY(4px)" }} />
+                    </button>
+                    )}
+                    {showMaximizeToggle && (
+                    <button
+                        className="ai-window-control"
+                        onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onToggleMaximize?.(); }}
+                        data-testid="ai-maximize-toggle"
+                        aria-label={maximized ? (lang === "en" ? "Restore window" : "还原窗口") : (lang === "en" ? "Maximize window" : "最大化窗口")}
+                        style={getWindowControlButtonStyle(t, "fullscreen", maximized)}
+                        title={maximized ? (lang === "en" ? "Restore window" : "还原窗口") : (lang === "en" ? "Maximize window" : "最大化窗口")}
+                    >
+                        <span style={{
+                            position: "relative",
+                            width: "12px",
+                            height: "12px",
+                            display: "inline-block",
+                        }}>
+                            <span style={{
+                                position: "absolute",
+                                inset: maximized ? "2px 0 0 2px" : 0,
+                                border: "1.5px solid currentColor",
+                                borderRadius: "1px",
+                                background: "transparent",
+                            }} />
+                            {maximized && (
+                                <span style={{
+                                    position: "absolute",
+                                    inset: "0 2px 2px 0",
+                                    border: "1.5px solid currentColor",
+                                    borderRadius: "1px",
+                                    background: t.titleBarBg,
+                                }} />
+                            )}
+                        </span>
                     </button>
                     )}
                     {!inline && (
                     <button
+                        className="ai-window-control"
                         onClick={onClose}
-                        style={{ ...baseActionBtnStyle, color: t.closeBtnColor, fontSize: "14px", padding: "0 8px" }}
+                        style={{ ...getWindowControlButtonStyle(t, "hide"), color: t.closeBtnColor, fontSize: "14px" }}
                         title={lang === "en" ? "Close" : "关闭"}
                     >
                         ✕
                     </button>
                     )}
+                    </div>
                 </div>
             </div>
 
@@ -814,7 +1025,6 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                             borderRadius: "50%",
                             animation: "maclaw-spin 0.8s linear infinite",
                         }} />
-                        <style>{`@keyframes maclaw-spin { to { transform: rotate(360deg); } }`}</style>
                         <div style={{ color: t.textMuted, fontSize: "12px" }}>
                             {initLabel}
                         </div>
@@ -833,15 +1043,9 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                                 marginBottom: '6px',
                             }}>
                                 {pinnedNews.map(msg => {
-                                    // Split content into title (first line) and body (rest)
-                                    const lines = msg.content.split('\n');
-                                    const titleLine = lines[0] || '';
-                                    const bodyLines = lines.slice(1).filter(l => l.trim() !== '');
-                                    const bodyText = bodyLines.join('\n');
-                                    // Plain text for tooltip (strip markdown bold markers)
-                                    const plainTitle = titleLine.replace(/\*\*/g, '');
-                                    const plainBody = bodyLines.map(l => l.replace(/\*\*/g, '')).join('\n');
-                                    const tooltipText = plainTitle + (plainBody ? '\n' + plainBody : '');
+                                    const news = msg.news;
+                                    if (!news) return null;
+                                    const tooltipText = news.title + (news.body ? '\n' + news.body : '');
                                     return (
                                     <div key={msg.id} className="pinned-news-card" title={tooltipText} style={{
                                         padding: "6px 8px",
@@ -853,17 +1057,16 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                                         lineHeight: "1.4",
                                         overflow: "hidden",
                                     }}>
-                                        {/* Title: single line, ellipsis */}
                                         <div style={{
                                             overflow: "hidden",
                                             textOverflow: "ellipsis",
                                             whiteSpace: "nowrap",
                                             fontWeight: 600,
                                         }}>
-                                            {renderInlineMarkdown(titleLine, t)}
+                                            <span>{news.icon} </span>
+                                            {renderInlineMarkdown(news.title, t)}
                                         </div>
-                                        {/* Body: max 2 lines, ellipsis */}
-                                        {bodyText && (
+                                        {news.body && (
                                         <div style={{
                                             overflow: "hidden",
                                             display: "-webkit-box",
@@ -872,7 +1075,7 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                                             marginTop: "2px",
                                             color: t.textMuted,
                                         }}>
-                                            {renderInlineMarkdown(bodyText, t)}
+                                            {renderInlineMarkdown(news.body, t)}
                                         </div>
                                         )}
                                     </div>
@@ -881,9 +1084,10 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
                             </div>
                         )}
                         {renderedOtherMessages}
+                        {renderedProgressMessages}
                     </>
                 )}
-                {streaming && (
+                {showThinkingState && (
                     <div style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>
                         {thinkingText}
                     </div>
@@ -893,115 +1097,175 @@ export function AIAssistantPanel({ onClose, lang, messages, sending, streaming, 
 
             {/* ── Input bar ── */}
             <div style={{
-                display: "flex", alignItems: "flex-end", gap: "8px",
+                display: "flex", flexDirection: "column", gap: "6px",
                 padding: "8px 12px", paddingBottom: "max(8px, env(safe-area-inset-bottom))",
                 background: t.inputBarBg, borderTop: inline ? `1px solid ${t.inputBarBorder}` : "none",
                 flexShrink: 0,
                 ...(inline ? {} : { margin: "0 10px 10px 10px", borderRadius: "8px", border: `1.5px solid ${t.inputBarBorder}` }),
             }}>
-                <span style={{
-                    color: t.promptColor, fontFamily: "Consolas, monospace",
-                    fontSize: "13px", flexShrink: 0, userSelect: "none",
-                    paddingBottom: "8px",
-                }}>❯</span>
-                <textarea
-                    ref={inputRef}
-                    data-testid="ai-input"
-                    disabled={!ready}
-                    style={{
-                        flex: 1, minWidth: 0, background: "transparent",
-                        border: "none", outline: "none", color: t.inputText,
-                        fontFamily: "Consolas, 'Courier New', monospace",
-                        fontSize: "14px", padding: "8px 0",
-                        resize: "none", overflow: "auto",
-                        minHeight: "36px", maxHeight: "120px",
-                        lineHeight: 1.4,
-                        opacity: ready ? 1 : 0.5,
-                    }}
-                    rows={1}
-                    value={inputValue}
-                    onChange={(e) => {
-                        setInputValue(e.target.value);
-                        resizeInput();
-                    }}
-                    onCompositionStart={() => setComposing(true)}
-                    onCompositionEnd={() => setComposing(false)}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey && !composing) {
-                            e.preventDefault();
-                            handleSend();
-                        }
-                    }}
-                    placeholder={placeholderText}
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    spellCheck={false}
-                />
-                {sending && cancelSession ? (
-                    <button
-                        type="button"
-                        onClick={handleCancel}
-                        data-testid="ai-cancel-progress"
-                        style={{
-                            ...baseInputBtnStyle,
-                            position: "relative",
-                            overflow: "hidden",
-                            width: inline ? "60px" : "64px",
-                            padding: 0,
-                            marginBottom: "4px",
-                            background: "transparent",
-                            borderColor: t.errorText,
-                            color: t.errorText,
-                        }}
-                        title={lang === "en" ? "Cancel" : "取消"}
-                        aria-label={lang === "en" ? "Cancel" : "取消"}
-                    >
-                        <span
-                            aria-hidden="true"
+                {selectedFilePath && (
+                    <div style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        minWidth: 0,
+                        padding: "6px 8px",
+                        borderRadius: "6px",
+                        background: t.codeBlockBg,
+                        border: `1px solid ${t.codeBlockBorder}`,
+                        color: t.text,
+                        fontSize: "12px",
+                    }}>
+                        <span style={{ color: t.pathColor, flexShrink: 0 }}>📎</span>
+                        <div style={{ minWidth: 0, flex: 1 }} title={selectedFilePath}>
+                            <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600 }}>
+                                {selectedFileName}
+                            </div>
+                            <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: t.textMuted, fontSize: "11px" }}>
+                                {selectedFilePath}
+                            </div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={clearSelectedFile}
+                            disabled={isBusy}
                             style={{
-                                position: "absolute",
-                                inset: "7px 8px",
-                                borderRadius: "999px",
-                                background: t.errorBg,
+                                ...baseActionBtnStyle,
+                                color: t.errorText,
                                 border: `1px solid ${t.errorBorder}`,
+                                background: "transparent",
+                                opacity: isBusy ? 0.5 : 1,
                             }}
-                        />
-                        <span
-                            aria-hidden="true"
-                            style={{
-                                position: "absolute",
-                                top: "7px",
-                                bottom: "7px",
-                                left: "8px",
-                                width: "18px",
-                                borderRadius: "999px",
-                                background: `linear-gradient(90deg, transparent 0%, ${t.errorBorder} 30%, ${t.errorBorder} 70%, transparent 100%)`,
-                                opacity: 0.9,
-                                animation: "ai-cancel-progress 1s linear infinite",
-                            }}
-                        />
-                        <span style={{ position: "relative", opacity: 0, pointerEvents: "none" }}>
-                            {lang === "en" ? "Cancel" : "取消"}
-                        </span>
-                    </button>
-                ) : (
+                            title={lang === "en" ? "Clear selected file" : "清除已选文件"}
+                        >
+                            ×
+                        </button>
+                    </div>
+                )}
+                <div style={{
+                    display: "flex", alignItems: "flex-end", gap: "8px",
+                }}>
+                    <span style={{
+                        color: t.promptColor, fontFamily: "Consolas, monospace",
+                        fontSize: "13px", flexShrink: 0, userSelect: "none",
+                        paddingBottom: "8px",
+                    }}>❯</span>
+                    <textarea
+                        ref={inputRef}
+                        data-testid="ai-input"
+                        disabled={!ready}
+                        style={{
+                            flex: 1, minWidth: 0, background: "transparent",
+                            border: "none", outline: "none", color: t.inputText,
+                            fontFamily: "Consolas, 'Courier New', monospace",
+                            fontSize: "14px", padding: "8px 0",
+                            resize: "none", overflow: "auto",
+                            minHeight: "36px", maxHeight: "120px",
+                            lineHeight: 1.4,
+                            opacity: ready ? 1 : 0.5,
+                        }}
+                        rows={1}
+                        value={inputValue}
+                        onChange={(e) => {
+                            setInputValue(e.target.value);
+                            resizeInput();
+                        }}
+                        onCompositionStart={() => setComposing(true)}
+                        onCompositionEnd={() => setComposing(false)}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey && !composing) {
+                                e.preventDefault();
+                                handleSend();
+                            }
+                        }}
+                        placeholder={placeholderText}
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                    />
                     <button
                         type="button"
-                        onClick={handleSend}
-                        disabled={!ready || sending || !inputValue.trim()}
+                        onClick={browseFile}
+                        disabled={!ready || isBusy}
                         style={{
                             ...baseInputBtnStyle,
-                            ...(inline
-                                ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
-                                : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
-                            opacity: (!ready || sending || !inputValue.trim()) ? 0.5 : 1,
+                            color: t.pathColor,
+                            borderColor: t.pathColor,
+                            opacity: (!ready || isBusy) ? 0.5 : 1,
                             marginBottom: "4px",
                         }}
-                        title={lang === "en" ? "Send" : "发送"}
+                        title={lang === "en" ? "Choose file" : "选择文件"}
                     >
-                        {sending ? "…" : "⏎"}
+                        📎
                     </button>
-                )}
+                    {isBusy && cancelSession ? (
+                        <button
+                            type="button"
+                            onClick={handleCancel}
+                            data-testid="ai-cancel-progress"
+                            style={{
+                                ...baseInputBtnStyle,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                width: inline ? "60px" : "64px",
+                                padding: 0,
+                                marginBottom: "4px",
+                                background: inline ? "transparent" : "rgba(99, 102, 241, 0.08)",
+                                borderColor: inline ? "#6366f1" : "#7c3aed",
+                                color: inline ? "#6366f1" : "#7c3aed",
+                            }}
+                            title={lang === "en" ? "Cancel" : "取消"}
+                            aria-label={lang === "en" ? "Cancel" : "取消"}
+                        >
+                            {showBusySpinner ? (
+                                <span
+                                    aria-hidden="true"
+                                    style={{
+                                        width: "18px",
+                                        height: "18px",
+                                        borderRadius: "50%",
+                                        border: `2px solid ${inline ? "rgba(99, 102, 241, 0.22)" : "rgba(124, 58, 237, 0.22)"}`,
+                                        borderTopColor: inline ? "#6366f1" : "#7c3aed",
+                                        borderRightColor: inline ? "#6366f1" : "#7c3aed",
+                                        animation: "ai-spinner-spin 0.8s linear infinite",
+                                    }}
+                                />
+                            ) : (
+                                <span
+                                    aria-hidden="true"
+                                    style={{
+                                        fontSize: "16px",
+                                        lineHeight: 1,
+                                        fontWeight: 700,
+                                    }}
+                                >
+                                    ■
+                                </span>
+                            )}
+                            <span style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}>
+                                {lang === "en" ? "Cancel" : "取消"}
+                            </span>
+                        </button>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={handleSend}
+                            disabled={!canSend}
+                            style={{
+                                ...baseInputBtnStyle,
+                                ...(inline
+                                    ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
+                                    : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
+                                opacity: canSend ? 1 : 0.5,
+                                marginBottom: "4px",
+                            }}
+                            title={lang === "en" ? "Send" : "发送"}
+                        >
+                            {isBusy ? "…" : "⏎"}
+                        </button>
+                    )}
+                </div>
             </div>
         </div>
     );

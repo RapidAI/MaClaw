@@ -1666,9 +1666,6 @@ function App() {
     const [clawNetRunning, setClawNetRunning] = useState<boolean>(false);
     const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
 
-    // Ref to prevent multiple hide clicks
-    const isHidingRef = useRef(false);
-
     useEffect(() => {
         // activeTab 0 is Original (hidden), so configurable models start at 1.
         // We map activeTab to a 0-based index for the configurable list.
@@ -1892,32 +1889,8 @@ function App() {
     const handleWindowHide = (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
-
-        console.log("Hide button clicked"); // Debug log
-
-        // Prevent multiple rapid clicks
-        if (isHidingRef.current) {
-            console.log("Already hiding, ignoring click");
-            return;
-        }
-        isHidingRef.current = true;
-
-        console.log("Calling WindowHide");
         WindowHide();
-
-        // Reset flag after a short delay
-        setTimeout(() => {
-            isHidingRef.current = false;
-        }, 1000);
     };
-
-    useEffect(() => {
-        const handleClick = () => {
-            setSkillContextMenu(prev => ({ ...prev, visible: false }));
-        };
-        window.addEventListener('click', handleClick);
-        return () => window.removeEventListener('click', handleClick);
-    }, [skillContextMenu]);
 
     const logEndRef = useRef<HTMLTextAreaElement>(null);
 
@@ -3674,6 +3647,7 @@ ${instruction}`;
                             lang={lang}
                             state={{
                                 messages: aiAssistant.messages,
+                                progressMessages: aiAssistant.progressMessages,
                                 sending: aiAssistant.sending,
                                 streaming: aiAssistant.streaming,
                                 ready: aiAssistant.ready,
