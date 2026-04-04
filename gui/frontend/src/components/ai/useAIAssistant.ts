@@ -142,6 +142,20 @@ function appendAssistantPlaceholder(messages: ChatMessage[], assistantMessageId:
     }];
 }
 
+function updateTailMessage(messages: ChatMessage[], messageId: string | null, updater: (message: ChatMessage) => ChatMessage | null): ChatMessage[] | null {
+    if (!messageId || messages.length === 0) return null;
+    const lastIndex = messages.length - 1;
+    if (messages[lastIndex].id !== messageId) return null;
+    const updated = updater(messages[lastIndex]);
+    if (updated === messages[lastIndex]) return messages;
+    if (updated === null) {
+        return messages.slice(0, -1);
+    }
+    const next = [...messages];
+    next[lastIndex] = updated;
+    return next;
+}
+
 function updateMessageById(messages: ChatMessage[], messageId: string | null, updater: (message: ChatMessage) => ChatMessage | null): ChatMessage[] {
     if (!messageId) return messages;
     const index = messages.findIndex(msg => msg.id === messageId);
@@ -170,20 +184,12 @@ function appendTokenContent(message: ChatMessage, delta: string): ChatMessage {
 }
 
 function appendTokenToRound(messages: ChatMessage[], assistantMessageId: string | null, delta: string): ChatMessage[] {
-    if (!assistantMessageId || messages.length === 0) return messages;
-    const lastIndex = messages.length - 1;
-    if (messages[lastIndex].id === assistantMessageId) {
-        const updated = appendTokenContent(messages[lastIndex], delta);
-        if (updated === messages[lastIndex]) return messages;
-        const next = [...messages];
-        next[lastIndex] = updated;
-        return next;
-    }
-    return updateMessageById(messages, assistantMessageId, message => appendTokenContent(message, delta));
+    return updateTailMessage(messages, assistantMessageId, message => appendTokenContent(message, delta))
+        ?? updateMessageById(messages, assistantMessageId, message => appendTokenContent(message, delta));
 }
 
 function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, response: any): ChatMessage[] {
-    return updateMessageById(messages, assistantMessageId, message => ({
+    const finalizeMessage = (message: ChatMessage): ChatMessage => ({
         ...message,
         content: message.content || response.text || '',
         fields: response.fields,
@@ -191,7 +197,9 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
         localFilePath: response.local_file_path,
         localFilePaths: response.local_file_paths,
         thumbnailBase64: response.thumbnail_base64,
-    }));
+    });
+    return updateTailMessage(messages, assistantMessageId, finalizeMessage)
+        ?? updateMessageById(messages, assistantMessageId, finalizeMessage);
 }
 
 function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: string | null, errorText: string): ChatMessage[] {
@@ -203,16 +211,19 @@ function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: stri
             timestamp: Date.now(),
         }];
     }
-    return updateMessageById(messages, assistantMessageId, message => ({
+    const replaceWithError = (message: ChatMessage): ChatMessage => ({
         id: message.id,
         role: 'error',
         content: errorText,
         timestamp: Date.now(),
-    }));
+    });
+    return updateTailMessage(messages, assistantMessageId, replaceWithError)
+        ?? updateMessageById(messages, assistantMessageId, replaceWithError);
 }
 
 function removeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null): ChatMessage[] {
-    return updateMessageById(messages, assistantMessageId, () => null);
+    return updateTailMessage(messages, assistantMessageId, () => null)
+        ?? updateMessageById(messages, assistantMessageId, () => null);
 }
 
 function normalizeActionStyle(style: unknown): ChatActionStyle {

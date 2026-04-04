@@ -155,17 +155,66 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     }, [t, onStatusChange]);
 
     const loadProviders = useCallback(async () => {
+        const loadSeq = ++loadSeqRef.current;
         setLoading(true);
+        setLoadError(null);
+        console.info("[LLMConfigPanel] load start");
         try {
-            const data = await GetMaclawLLMProviders();
-            if (data?.providers) { setProviders(data.providers); setCurrentName(data.current || NONE_PROVIDER); }
-            const iter = await GetMaclawAgentMaxIterations();
-            setMaxIter(typeof iter === "number" ? iter : 0);
-            const trajLog = await GetLLMTrajectoryLogging();
-            setTrajectoryLogging(!!trajLog);
-        } catch { /* ignore */ }
-        setLoading(false);
-    }, []);
+            const [providersResult, iterResult, trajectoryResult] = await Promise.allSettled([
+                withTimeout(GetMaclawLLMProviders(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawLLMProviders"),
+                withTimeout(GetMaclawAgentMaxIterations(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawAgentMaxIterations"),
+                withTimeout(GetLLMTrajectoryLogging(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetLLMTrajectoryLogging"),
+            ]);
+            if (loadSeq !== loadSeqRef.current) return;
+
+            let failed = false;
+
+            if (providersResult.status === "fulfilled") {
+                const data = providersResult.value;
+                if (data?.providers) {
+                    setProviders(data.providers);
+                    setCurrentName(data.current || NONE_PROVIDER);
+                } else {
+                    setProviders([]);
+                    setCurrentName(NONE_PROVIDER);
+                }
+                console.info("[LLMConfigPanel] providers loaded");
+            } else {
+                failed = true;
+                setProviders([]);
+                setCurrentName(NONE_PROVIDER);
+                console.warn("[LLMConfigPanel] providers load failed", providersResult.reason);
+            }
+
+            if (iterResult.status === "fulfilled") {
+                const iter = iterResult.value;
+                setMaxIter(typeof iter === "number" ? iter : 0);
+                console.info("[LLMConfigPanel] max iterations loaded");
+            } else {
+                failed = true;
+                setMaxIter(0);
+                console.warn("[LLMConfigPanel] max iterations load failed", iterResult.reason);
+            }
+
+            if (trajectoryResult.status === "fulfilled") {
+                setTrajectoryLogging(!!trajectoryResult.value);
+                console.info("[LLMConfigPanel] trajectory logging loaded");
+            } else {
+                failed = true;
+                setTrajectoryLogging(false);
+                console.warn("[LLMConfigPanel] trajectory logging load failed", trajectoryResult.reason);
+            }
+
+            if (failed) {
+                setLoadError(t("部分 LLM 配置加载失败，可点击重试。", "Some LLM settings failed to load. Click retry."));
+            }
+        } finally {
+            if (loadSeq === loadSeqRef.current) {
+                console.info("[LLMConfigPanel] load finished");
+                setLoading(false);
+            }
+        }
+    }, [t]);
 
     useEffect(() => { loadProviders(); }, [loadProviders]);
 
