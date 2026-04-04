@@ -60,6 +60,7 @@ function defaultPanelProps(): React.ComponentProps<typeof AIAssistantPanel> {
             sending: false,
             streaming: false,
             ready: true,
+            submittedPrompts: [],
         },
         actions: {
             sendMessage: async () => {},
@@ -233,6 +234,263 @@ describe('AIAssistantPanel property tests', () => {
 
         await waitFor(() => {
             expect(sendMessageInBackground).toHaveBeenCalledWith('long task');
+        });
+    });
+
+    it('renders background launch identifiers inside a visible system message', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'system',
+                content: [
+                    '已转到后台运行。',
+                    '任务会显示在“任务管理”里的后台列表。',
+                    'session_id: session-trace',
+                    'job_id: job-trace',
+                    'run_id: run-trace',
+                ].join('\n'),
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByText('session_id: session-trace')).toBeTruthy();
+        expect(getByText('job_id: job-trace')).toBeTruthy();
+        expect(getByText('run_id: run-trace')).toBeTruthy();
+    });
+
+    it('renders session-only background launch messages without extra ids', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'system',
+                content: [
+                    '已转到后台运行。',
+                    '任务会显示在“任务管理”里的后台列表。',
+                    'session_id: session-only',
+                ].join('\n'),
+            }),
+        ];
+
+        const { container, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByText('session_id: session-only')).toBeTruthy();
+        expect(container.textContent).not.toContain('job_id:');
+        expect(container.textContent).not.toContain('run_id:');
+    });
+
+    it('renders trace summary and counts as assistant field cards', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'done',
+                fields: [
+                    { label: 'Trace', value: 'trial loop stabilized after one retry' },
+                    { label: 'Trace events', value: '8' },
+                    { label: 'Evidence', value: '3' },
+                    { label: 'Run ID', value: 'run-trace-1' },
+                    { label: 'Job ID', value: 'job-trace-1' },
+                ],
+                actions: [{ label: 'View trace', command: '__view_trace__ run-trace-1', style: 'default' }],
+            }),
+        ];
+
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const { container, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        const fieldCards = Array.from(container.querySelectorAll('[data-testid="field-card"]')).map(el => el.textContent || '');
+        expect(fieldCards).toContain('Trace:trial loop stabilized after one retry');
+        expect(fieldCards).toContain('Trace events:8');
+        expect(fieldCards).toContain('Evidence:3');
+        expect(fieldCards).toContain('Run ID:run-trace-1');
+        expect(fieldCards).toContain('Job ID:job-trace-1');
+        expect(getByText('View trace')).toBeTruthy();
+    });
+
+    it('renders trace detail system messages with trace field cards', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'system',
+                kind: 'trace',
+                content: [
+                    'Trace details for run-trace-1',
+                    'Summary: trial loop stabilized after one retry',
+                    'Event kinds: trial.started, trial.observed',
+                ].join('\n'),
+                fields: [
+                    { label: 'Run ID', value: 'run-trace-1' },
+                    { label: 'Job ID', value: 'job-trace-1' },
+                    { label: 'Trace events', value: '8' },
+                    { label: 'Evidence', value: '3' },
+                    { label: 'Status', value: 'completed' },
+                ],
+            }),
+        ];
+
+        const { container, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        const fieldCards = Array.from(container.querySelectorAll('[data-testid="field-card"]')).map(el => el.textContent || '');
+        expect(fieldCards).toContain('Run ID:run-trace-1');
+        expect(fieldCards).toContain('Job ID:job-trace-1');
+        expect(fieldCards).toContain('Trace events:8');
+        expect(fieldCards).toContain('Evidence:3');
+        expect(fieldCards).toContain('Status:completed');
+        expect(getByText('Trace details for run-trace-1')).toBeTruthy();
+        expect(getByText('Summary: trial loop stabilized after one retry')).toBeTruthy();
+    });
+
+    it('ctrl+enter background send records prompt into history', async () => {
+        const sendMessageInBackground = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const recordSubmittedPrompt = vi.fn();
+        const { getByTestId } = renderPanel({
+            state: { messages: [], submittedPrompts: [], sending: false, streaming: false, ready: true },
+            actions: {
+                sendMessage: async () => {},
+                sendMessageInBackground,
+                recordSubmittedPrompt,
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'background via shortcut' } });
+        fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+
+        await waitFor(() => {
+            expect(recordSubmittedPrompt).toHaveBeenCalledWith('background via shortcut');
+            expect(sendMessageInBackground).toHaveBeenCalledWith('background via shortcut');
+        });
+    });
+
+    it('normal send records each manual prompt once so consecutive duplicates can be deduplicated upstream', async () => {
+        const sendMessage = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const recordSubmittedPrompt = vi.fn();
+        const { getByTestId } = renderPanel({
+            state: { messages: [], submittedPrompts: [], sending: false, streaming: false, ready: true },
+            actions: {
+                sendMessage,
+                recordSubmittedPrompt,
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'same prompt' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => {
+            expect(recordSubmittedPrompt).toHaveBeenCalledTimes(1);
+            expect(recordSubmittedPrompt).toHaveBeenCalledWith('same prompt');
+            expect(sendMessage).toHaveBeenCalledWith('same prompt');
+        });
+    });
+
+    it('Escape exits history browsing and restores the pre-history draft', async () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], submittedPrompts: ['older prompt', 'latest prompt'], sending: false, streaming: false, ready: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft text' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+        await waitFor(() => expect(input.value).toBe('latest prompt'));
+
+        fireEvent.keyDown(input, { key: 'Escape' });
+        await waitFor(() => expect(input.value).toBe('draft text'));
+    });
+
+    it('preserves edited history entries while browsing', async () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], submittedPrompts: ['older prompt', 'latest prompt'], sending: false, streaming: false, ready: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft text' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+        await waitFor(() => expect(input.value).toBe('latest prompt'));
+
+        fireEvent.change(input, { target: { value: 'latest prompt edited' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+        await waitFor(() => expect(input.value).toBe('older prompt'));
+
+        input.setSelectionRange(input.value.length, input.value.length);
+        fireEvent.keyDown(input, { key: 'ArrowDown' });
+        await waitFor(() => expect(input.value).toBe('latest prompt edited'));
+    });
+
+    it('does not recall history when ArrowUp is pressed away from the first line', async () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], submittedPrompts: ['history prompt'], sending: false, streaming: false, ready: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'line 1\nline 2' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+
+        await waitFor(() => expect(input.value).toBe('line 1\nline 2'));
+    });
+    it('keeps draft text when the panel is closed and reopened through controlled state', async () => {
+        let draftInputValue = '';
+        const setDraftInputValue = vi.fn((next: string) => {
+            draftInputValue = next;
+        });
+        const props = defaultPanelProps();
+
+        const { getByTestId, rerender } = render(
+            <AIAssistantPanel
+                {...props}
+                state={{
+                    ...props.state,
+                    ready: true,
+                    draftInputValue,
+                }}
+                actions={{
+                    ...props.actions,
+                    setDraftInputValue,
+                }}
+            />
+        );
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft survives reopen' } });
+
+        rerender(<div />);
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                state={{
+                    ...props.state,
+                    ready: true,
+                    draftInputValue,
+                }}
+                actions={{
+                    ...props.actions,
+                    setDraftInputValue,
+                }}
+            />
+        );
+
+        await waitFor(() => {
+            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('draft survives reopen');
         });
     });
 

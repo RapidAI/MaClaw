@@ -18,6 +18,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     IsAIAssistantReady: vi.fn(async () => true),
     GetAIAssistantInitStatus: vi.fn(async () => 'ready'),
     GetTrialReflectEnabled: vi.fn(async () => false),
+    GetAIAssistantTrace: vi.fn(async () => ({ summary: 'trace ok', event_count: 2, evidence_count: 1, events: [], evidence: [] })),
     CancelAIAssistantSession: vi.fn(async () => {}),
     CancelAIAssistantTask: vi.fn(async () => {}),
     StartAIAssistantBackgroundTask: vi.fn(async () => ({ accepted: true, session_id: 'session-test' })),
@@ -34,8 +35,8 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, buildOutgoingMessage, AI_ASSISTANT_HISTORY_STORAGE_KEY, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFile, GetAIAssistantInitStatus, GetTrialReflectEnabled, IsAIAssistantReady } from '../../../../wailsjs/go/main/App';
+import { useAIAssistant, buildOutgoingMessage, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
+import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFile, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook() {
     return renderHook(() => useAIAssistant());
@@ -108,6 +109,57 @@ describe('useAIAssistant property tests', () => {
             expect(GetTrialReflectEnabled).toHaveBeenCalledTimes(1);
             expect(result.current.trialReflectEnabled).toBe(true);
         });
+    });
+
+    it('background launch stores visible session, job, and run identifiers in a system message', async () => {
+        (StartAIAssistantBackgroundTask as any).mockResolvedValueOnce({
+            accepted: true,
+            session_id: 'session-trace',
+            job_id: 'job-trace',
+            run_id: 'run-trace',
+        });
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessageInBackground('trace this task');
+        });
+
+        expect(StartAIAssistantBackgroundTask).toHaveBeenCalledWith({
+            text: buildOutgoingMessage('trace this task', ''),
+            force_background: true,
+        });
+        expect(result.current.messages.map(m => ({ role: m.role, content: m.content }))).toEqual([
+            { role: 'user', content: 'trace this task' },
+            {
+                role: 'system',
+                content: [
+                    '已转到后台运行。',
+                    '任务会显示在“任务管理”里的后台列表。',
+                    'session_id: session-trace',
+                    'job_id: job-trace',
+                    'run_id: run-trace',
+                ].join('\n'),
+            },
+        ]);
+    });
+
+    it('background launch still shows session identifier when job and run ids are absent', async () => {
+        (StartAIAssistantBackgroundTask as any).mockResolvedValueOnce({
+            accepted: true,
+            session_id: 'session-only',
+        });
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessageInBackground('background only');
+        });
+
+        const systemMessage = result.current.messages.find(m => m.role === 'system');
+        expect(systemMessage?.content).toContain('session_id: session-only');
+        expect(systemMessage?.content).not.toContain('job_id:');
+        expect(systemMessage?.content).not.toContain('run_id:');
     });
 
     it('Property 2: sendMessage grows message list with user message', async () => {
@@ -229,6 +281,42 @@ describe('useAIAssistant property tests', () => {
             ),
             { numRuns: 100 },
         );
+    });
+
+    it('records submitted prompts and restores them on remount', async () => {
+        const { result, unmount } = renderAssistantHook();
+
+        await act(async () => {
+            result.current.recordSubmittedPrompt('first prompt');
+            await result.current.sendMessage('first prompt');
+            result.current.recordSubmittedPrompt('second prompt');
+            await result.current.sendMessage('second prompt');
+        });
+
+        expect(result.current.submittedPrompts).toEqual(['first prompt', 'second prompt']);
+        await waitFor(() => {
+            expect(JSON.parse(localStorage.getItem(AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY) || '[]')).toEqual(['first prompt', 'second prompt']);
+        });
+
+        unmount();
+
+        const { result: remounted } = renderAssistantHook();
+        expect(remounted.current.submittedPrompts).toEqual(['first prompt', 'second prompt']);
+    });
+
+    it('deduplicates consecutive submitted prompts', async () => {
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            result.current.recordSubmittedPrompt('same prompt');
+            await result.current.sendMessage('same prompt');
+            result.current.recordSubmittedPrompt('same prompt');
+            await result.current.sendMessage('same prompt');
+            result.current.recordSubmittedPrompt('different prompt');
+            await result.current.sendMessage('different prompt');
+        });
+
+        expect(result.current.submittedPrompts).toEqual(['same prompt', 'different prompt']);
     });
 
     it('Property 3b: persisted history is restored on remount and reset by clearHistory', async () => {
@@ -577,6 +665,123 @@ describe('useAIAssistant property tests', () => {
             { label: 'Delete', command: 'danger-cmd', style: 'danger' },
             { label: 'Fallback', command: 'fallback-cmd', style: 'default' },
         ] satisfies ChatAction[]);
+    });
+
+    it('preserves draft input state across rerenders until cleared', async () => {
+        const { result, rerender } = renderAssistantHook();
+
+        act(() => {
+            result.current.setDraftInputValue('draft survives rerender');
+        });
+        rerender();
+
+        expect(result.current.draftInputValue).toBe('draft survives rerender');
+
+        await act(async () => {
+            await result.current.clearHistory();
+        });
+
+        expect(result.current.draftInputValue).toBe('');
+    });
+
+    it('appends trace summary fields onto assistant responses', async () => {
+        mockSendResponse = {
+            text: 'done',
+            error: '',
+            fields: [{ label: 'Existing', value: 'keep me' }],
+            actions: null,
+            trace_summary: 'trial loop stabilized after one retry',
+            trace_event_count: 8,
+            evidence_count: 3,
+            run_id: 'run-trace-1',
+            job_id: 'job-trace-1',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('show trace');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'Existing', value: 'keep me' },
+            { label: 'Trace', value: 'trial loop stabilized after one retry' },
+            { label: 'Trace events', value: '8' },
+            { label: 'Evidence', value: '3' },
+            { label: 'Run ID', value: 'run-trace-1' },
+            { label: 'Job ID', value: 'job-trace-1' },
+        ]);
+        expect(assistantMsg?.actions).toEqual([
+            { label: 'View trace', command: '__view_trace__ run-trace-1', style: 'default' },
+        ]);
+    });
+
+    it('executeAction fetches and appends trace detail messages for trace actions', async () => {
+        (GetAIAssistantTrace as any).mockResolvedValueOnce({
+            job_id: 'job-trace-1',
+            status: 'completed',
+            summary: 'trial loop stabilized after one retry',
+            event_count: 8,
+            evidence_count: 3,
+            events: [{ kind: 'trial.started' }, { kind: 'trial.observed' }],
+            evidence: [{ source_kind: 'trial_reflect', category: 'repeat_guard' }],
+        });
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.executeAction('__view_trace__ run-trace-1');
+        });
+
+        expect(GetAIAssistantTrace).toHaveBeenCalledWith('run-trace-1');
+        const systemMessage = result.current.messages.findLast(m => m.role === 'system');
+        expect(systemMessage?.kind).toBe('trace');
+        expect(systemMessage?.fields).toEqual([
+            { label: 'Run ID', value: 'run-trace-1' },
+            { label: 'Job ID', value: 'job-trace-1' },
+            { label: 'Trace events', value: '8' },
+            { label: 'Evidence', value: '3' },
+            { label: 'Status', value: 'completed' },
+        ]);
+        expect(systemMessage?.content).toContain('Trace details for run-trace-1');
+        expect(systemMessage?.content).toContain('Summary: trial loop stabilized after one retry');
+        expect(systemMessage?.content).toContain('Events: 8');
+        expect(systemMessage?.content).toContain('Evidence: 3');
+        expect(systemMessage?.content).toContain('Event kinds: trial.started, trial.observed');
+        expect(systemMessage?.content).toContain('Evidence kinds: trial_reflect/repeat_guard');
+    });
+
+    it('executeAction surfaces trace fetch failures as error messages', async () => {
+        (GetAIAssistantTrace as any).mockRejectedValueOnce(new Error('trace not found'));
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.executeAction('__view_trace__ missing-run');
+        });
+
+        const errorMessage = result.current.messages.findLast(m => m.role === 'error');
+        expect(errorMessage?.content).toBe('trace not found');
+    });
+
+    it('omits empty trace summary fields when counts are absent', async () => {
+        mockSendResponse = {
+            text: 'done',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: '   ',
+            trace_event_count: 0,
+            evidence_count: 0,
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('show no trace');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.fields).toBeUndefined();
     });
 
     it('maps fetched news into typed pinned messages', async () => {

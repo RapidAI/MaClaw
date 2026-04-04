@@ -13,6 +13,8 @@ interface AIAssistantPanelStateProps {
     ready: boolean;
     initStatus?: AIAssistantInitStatus;
     selectedFilePath?: string;
+    submittedPrompts?: string[];
+    draftInputValue?: string;
     trialReflectEnabled?: boolean;
     scrollToTopSeq?: number;
     onboardingIncomplete?: boolean;
@@ -24,6 +26,8 @@ interface AIAssistantPanelActionProps {
     sendMessage: (text: string) => Promise<void>;
     sendMessageInBackground?: (text: string) => Promise<void>;
     clearHistory: () => Promise<void>;
+    recordSubmittedPrompt?: (text: string) => void;
+    setDraftInputValue?: (text: string) => void;
     executeAction: (command: string) => Promise<void>;
     refreshNews: () => void;
     onOpenOnboarding?: () => void;
@@ -595,6 +599,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     fontSize: "12px",
                     lineHeight: "1.6",
                 }}>
+                    {msg.kind === 'trace' && msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
                     {renderContentWithCodeBlocks(msg.content, t)}
                 </div>
             );
@@ -637,6 +642,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         ready,
         initStatus,
         selectedFilePath = "",
+        submittedPrompts = [],
+        draftInputValue = "",
         trialReflectEnabled = false,
         scrollToTopSeq,
         onboardingIncomplete,
@@ -647,6 +654,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         sendMessage,
         sendMessageInBackground,
         clearHistory,
+        recordSubmittedPrompt,
+        setDraftInputValue,
         executeAction,
         refreshNews,
         onOpenOnboarding,
@@ -659,8 +668,11 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         onToggleMaximize,
         onHideWindow,
     } = panelWindow || {};
-    const [inputValue, setInputValue] = useState("");
+    const [localDraftInputValue, setLocalDraftInputValue] = useState(draftInputValue);
     const [composing, setComposing] = useState(false);
+    const [historyIndex, setHistoryIndex] = useState(-1);
+    const [draftBeforeHistory, setDraftBeforeHistory] = useState<string | null>(null);
+    const [historyEdits, setHistoryEdits] = useState<Record<number, string>>({});
     const [cancelPending, setCancelPending] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
@@ -698,6 +710,11 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
             : inputLocked
                 ? (lang === "en" ? "Processing..." : "处理中...")
                 : (lang === "en" ? "Type a message..." : "输入消息...");
+    const inputValue = localDraftInputValue;
+    const updateInputValue = useCallback((nextValue: string) => {
+        setLocalDraftInputValue(nextValue);
+        setDraftInputValue?.(nextValue);
+    }, [setDraftInputValue]);
     const canSend = ready && !inputLocked && (!!inputValue.trim() || !!selectedFilePath.trim());
     const selectedFileName = selectedFilePath ? selectedFilePath.split(/[/\\]/).pop() || selectedFilePath : "";
     const { pinnedNews, otherMessages } = useMemo(() => {
@@ -713,6 +730,17 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [messages]);
     const hasConversation = otherMessages.length + progressMessages.length > 0;
+
+    const resizeInput = useCallback(() => {
+        if (!inputRef.current) return;
+        inputRef.current.style.height = "auto";
+        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
+    }, []);
+
+    // Sync local draft from parent-owned draft state.
+    useEffect(() => {
+        setLocalDraftInputValue(draftInputValue);
+    }, [draftInputValue]);
 
     // Reset scroll flag when component mounts (panel opened/re-shown)
     useEffect(() => {
@@ -741,6 +769,11 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
             if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
         };
     }, [messages]);
+
+    useEffect(() => {
+        if (!inputRef.current) return;
+        resizeInput();
+    }, [inputValue, resizeInput]);
 
     // Track user scroll position
     const handleScroll = useCallback(() => {
@@ -793,30 +826,101 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
         if ((!text && !selectedFilePath.trim()) || isBusy) return;
-        setInputValue("");
+        recordSubmittedPrompt?.(text);
+        setHistoryIndex(-1);
+        setDraftBeforeHistory(null);
+        setHistoryEdits({});
+        updateInputValue("");
         if (inputRef.current) {
             inputRef.current.style.height = "auto";
         }
         userScrolledUpRef.current = false;
         await sendMessage(text);
-    }, [inputValue, selectedFilePath, isBusy, sendMessage]);
+    }, [inputValue, selectedFilePath, isBusy, recordSubmittedPrompt, sendMessage, updateInputValue]);
 
     const handleSendBackground = useCallback(async () => {
         const text = inputValue.trim();
         if ((!text && !selectedFilePath.trim()) || isBusy || !sendMessageInBackground) return;
-        setInputValue("");
+        recordSubmittedPrompt?.(text);
+        setHistoryIndex(-1);
+        setDraftBeforeHistory(null);
+        setHistoryEdits({});
+        updateInputValue("");
         if (inputRef.current) {
             inputRef.current.style.height = "auto";
         }
         userScrolledUpRef.current = false;
         await sendMessageInBackground(text);
-    }, [inputValue, selectedFilePath, isBusy, sendMessageInBackground]);
+    }, [inputValue, selectedFilePath, isBusy, recordSubmittedPrompt, sendMessageInBackground, updateInputValue]);
 
-    const resizeInput = useCallback(() => {
-        if (!inputRef.current) return;
-        inputRef.current.style.height = "auto";
-        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
+    const applyInputValue = useCallback((nextValue: string) => {
+        updateInputValue(nextValue);
+        requestAnimationFrame(() => {
+            resizeInput();
+            if (!inputRef.current) return;
+            inputRef.current.focus();
+            const caret = nextValue.length;
+            inputRef.current.setSelectionRange(caret, caret);
+        });
+    }, [resizeInput, updateInputValue]);
+
+    const isSelectionCollapsedAtBoundary = useCallback((direction: 'up' | 'down') => {
+        const input = inputRef.current;
+        if (!input) return false;
+        const { selectionStart, selectionEnd, value } = input;
+        if (selectionStart !== selectionEnd) return false;
+        if (selectionStart == null || selectionEnd == null) return false;
+        if (direction === 'up') {
+            return !value.slice(0, selectionStart).includes("\n");
+        }
+        return !value.slice(selectionEnd).includes("\n");
     }, []);
+
+    const recallHistory = useCallback((direction: 'up' | 'down') => {
+        if (submittedPrompts.length === 0) return false;
+
+        const currentEdits = historyEdits;
+        const currentHistoryIndex = historyIndex;
+        const currentInputValue = inputValue;
+
+        const rememberCurrentEntry = () => {
+            if (currentHistoryIndex < 0) return;
+            setHistoryEdits(prev => ({ ...prev, [currentHistoryIndex]: currentInputValue }));
+        };
+
+        if (direction === 'up') {
+            if (currentHistoryIndex >= 0) {
+                rememberCurrentEntry();
+            } else {
+                setDraftBeforeHistory(currentInputValue);
+            }
+            const nextIndex = currentHistoryIndex < 0 ? submittedPrompts.length - 1 : Math.max(0, currentHistoryIndex - 1);
+            setHistoryIndex(nextIndex);
+            applyInputValue(currentEdits[nextIndex] ?? submittedPrompts[nextIndex]);
+            return true;
+        }
+
+        if (currentHistoryIndex < 0) return false;
+        rememberCurrentEntry();
+        if (currentHistoryIndex >= submittedPrompts.length - 1) {
+            setHistoryIndex(-1);
+            applyInputValue(draftBeforeHistory ?? "");
+            return true;
+        }
+        const nextIndex = currentHistoryIndex + 1;
+        setHistoryIndex(nextIndex);
+        applyInputValue(currentEdits[nextIndex] ?? submittedPrompts[nextIndex]);
+        return true;
+    }, [submittedPrompts, historyIndex, inputValue, draftBeforeHistory, historyEdits, applyInputValue]);
+
+    const exitHistoryBrowsing = useCallback(() => {
+        if (historyIndex < 0) return false;
+        setHistoryIndex(-1);
+        setHistoryEdits({});
+        applyInputValue(draftBeforeHistory ?? "");
+        setDraftBeforeHistory(null);
+        return true;
+    }, [historyIndex, draftBeforeHistory, applyInputValue]);
 
     const handleCancel = useCallback(async () => {
         if (!cancelSession || cancelPending) return;
@@ -826,7 +930,12 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         try {
             const { canceledText } = await cancelSession();
             if (cancelRestoreSeqRef.current !== restoreSeq) return;
-            setInputValue(currentValue => currentValue === previousInputValue ? canceledText : currentValue);
+            if (draftInputValue === previousInputValue) {
+                updateInputValue(canceledText);
+            }
+            setHistoryIndex(-1);
+            setDraftBeforeHistory(null);
+            setHistoryEdits({});
             requestAnimationFrame(() => {
                 resizeInput();
                 inputRef.current?.focus();
@@ -834,7 +943,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         } finally {
             setCancelPending(false);
         }
-    }, [cancelPending, cancelSession, inputValue, resizeInput]);
+    }, [cancelPending, cancelSession, inputValue, resizeInput, updateInputValue]);
 
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => {
@@ -1206,13 +1315,35 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         rows={1}
                         value={inputValue}
                         onChange={(e) => {
-                            setInputValue(e.target.value);
+                            if (historyIndex >= 0) {
+                                setHistoryEdits(prev => ({ ...prev, [historyIndex]: e.target.value }));
+                            }
+                            updateInputValue(e.target.value);
                             resizeInput();
                         }}
                         onCompositionStart={() => setComposing(true)}
                         onCompositionEnd={() => setComposing(false)}
                         onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey && !composing) {
+                            if (composing) return;
+                            if (e.key === "ArrowUp" && isSelectionCollapsedAtBoundary('up')) {
+                                if (recallHistory('up')) {
+                                    e.preventDefault();
+                                    return;
+                                }
+                            }
+                            if (e.key === "ArrowDown" && isSelectionCollapsedAtBoundary('down')) {
+                                if (recallHistory('down')) {
+                                    e.preventDefault();
+                                    return;
+                                }
+                            }
+                            if (e.key === "Escape") {
+                                if (exitHistoryBrowsing()) {
+                                    e.preventDefault();
+                                }
+                                return;
+                            }
+                            if (e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
                                 if ((e.ctrlKey || e.metaKey) && sendMessageInBackground) {
                                     handleSendBackground();

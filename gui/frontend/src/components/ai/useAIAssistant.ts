@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFile, StartAIAssistantBackgroundTask, GetTrialReflectEnabled } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFile, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 export interface CancelAIAssistantResult {
@@ -33,6 +33,11 @@ interface AIAssistantSendResult {
     local_file_paths?: string[];
     thumbnail_base64?: string;
     request_id?: string;
+    trace_summary?: string;
+    trace_event_count?: number;
+    evidence_count?: number;
+    job_id?: string;
+    run_id?: string;
 }
 
 interface AIAssistantStreamEvent {
@@ -59,10 +64,21 @@ export interface ChatAction {
     style: ChatActionStyle;
 }
 
+interface AIAssistantTraceView {
+    job_id?: string;
+    run_id?: string;
+    status?: string;
+    summary?: string;
+    event_count?: number;
+    evidence_count?: number;
+    events?: Array<{ kind?: string; summary?: string }>;
+    evidence?: Array<{ source_kind?: string; category?: string; summary?: string }>;
+}
+
 export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant' | 'progress' | 'error' | 'system';
-    kind?: 'news';
+    kind?: 'news' | 'trace';
     content: string;
     news?: NewsCardData;
     fields?: Array<{ label: string; value: string }>;
@@ -89,7 +105,9 @@ const PROGRESS_EVENT = "ai-assistant-progress";
 // localStorage persistence for chat history across app restarts
 // ---------------------------------------------------------------------------
 export const AI_ASSISTANT_HISTORY_STORAGE_KEY = "ai-assistant-history";
+export const AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY = "ai-assistant-prompt-history";
 const MAX_PERSISTED_MESSAGES = 200;
+const MAX_PERSISTED_PROMPTS = 100;
 const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
 const MAX_LIVE_PROGRESS_MESSAGES = 100;
@@ -162,6 +180,22 @@ function loadPersistedMessages(): ChatMessage[] {
     }
 }
 
+function loadPersistedPrompts(): string[] {
+    try {
+        const raw = localStorage.getItem(AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .filter((value: unknown): value is string => typeof value === 'string')
+            .map(value => value.trim())
+            .filter(Boolean)
+            .slice(-MAX_PERSISTED_PROMPTS);
+    } catch {
+        return [];
+    }
+}
+
 function serializePersistedMessages(msgs: ChatMessage[]): string | null {
     // Only persist meaningful messages; skip progress, system, and empty content.
     // Strip thumbnailBase64 to avoid blowing up localStorage (5MB limit).
@@ -184,6 +218,29 @@ function persistMessages(msgs: ChatMessage[]) {
             return;
         }
         localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, serialized);
+    } catch {
+        // localStorage full or unavailable — silently ignore
+    }
+}
+
+function appendSubmittedPrompt(prompts: string[], prompt: string): string[] {
+    const trimmed = prompt.trim();
+    if (!trimmed) return prompts;
+    if (prompts[prompts.length - 1] === trimmed) return prompts;
+    return [...prompts, trimmed].slice(-MAX_PERSISTED_PROMPTS);
+}
+
+function persistPrompts(prompts: string[]) {
+    try {
+        const normalized = prompts
+            .map(prompt => prompt.trim())
+            .filter(Boolean)
+            .slice(-MAX_PERSISTED_PROMPTS);
+        if (normalized.length === 0) {
+            localStorage.removeItem(AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY);
+            return;
+        }
+        localStorage.setItem(AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, JSON.stringify(normalized));
     } catch {
         // localStorage full or unavailable — silently ignore
     }
@@ -314,11 +371,108 @@ function serializeNewsMessages(newsMessages: ChatMessage[]): string {
     })));
 }
 
+function normalizeTraceFields(response: any): Array<{ label: string; value: string }> {
+    const fields: Array<{ label: string; value: string }> = [];
+    const traceSummary = typeof response?.trace_summary === 'string' ? response.trace_summary.trim() : '';
+    const traceEventCount = typeof response?.trace_event_count === 'number' ? response.trace_event_count : 0;
+    const evidenceCount = typeof response?.evidence_count === 'number' ? response.evidence_count : 0;
+    const runID = typeof response?.run_id === 'string' ? response.run_id.trim() : '';
+    const jobID = typeof response?.job_id === 'string' ? response.job_id.trim() : '';
+    if (traceSummary) {
+        fields.push({ label: 'Trace', value: traceSummary });
+    }
+    if (traceEventCount > 0) {
+        fields.push({ label: 'Trace events', value: String(traceEventCount) });
+    }
+    if (evidenceCount > 0) {
+        fields.push({ label: 'Evidence', value: String(evidenceCount) });
+    }
+    if (runID) {
+        fields.push({ label: 'Run ID', value: runID });
+    }
+    if (jobID) {
+        fields.push({ label: 'Job ID', value: jobID });
+    }
+    return fields;
+}
+
+function mergeResponseFields(responseFields: any, traceFields: Array<{ label: string; value: string }>): Array<{ label: string; value: string }> | undefined {
+    const baseFields = Array.isArray(responseFields) ? responseFields : [];
+    const merged = [...baseFields, ...traceFields];
+    return merged.length > 0 ? merged : undefined;
+}
+
+function buildTraceDetailCommand(runID: string): string {
+    return `__view_trace__ ${runID}`;
+}
+
+function buildTraceDetailFields(view: AIAssistantTraceView, runID: string): Array<{ label: string; value: string }> {
+    const fields: Array<{ label: string; value: string }> = [
+        { label: 'Run ID', value: runID },
+    ];
+    const jobID = typeof view.job_id === 'string' ? view.job_id.trim() : '';
+    const status = typeof view.status === 'string' ? view.status.trim() : '';
+    if (jobID) {
+        fields.push({ label: 'Job ID', value: jobID });
+    }
+    if (typeof view.event_count === 'number' && view.event_count > 0) {
+        fields.push({ label: 'Trace events', value: String(view.event_count) });
+    }
+    if (typeof view.evidence_count === 'number' && view.evidence_count > 0) {
+        fields.push({ label: 'Evidence', value: String(view.evidence_count) });
+    }
+    if (status) {
+        fields.push({ label: 'Status', value: status });
+    }
+    return fields;
+}
+
+function buildTraceDetailMessage(view: AIAssistantTraceView, runID: string): string {
+    const lines: string[] = [`Trace details for ${runID}`];
+    if (typeof view.summary === 'string' && view.summary.trim()) {
+        lines.push(`Summary: ${view.summary.trim()}`);
+    }
+    if (typeof view.event_count === 'number' && view.event_count > 0) {
+        lines.push(`Events: ${view.event_count}`);
+    }
+    if (typeof view.evidence_count === 'number' && view.evidence_count > 0) {
+        lines.push(`Evidence: ${view.evidence_count}`);
+    }
+    const eventKinds = Array.isArray(view.events)
+        ? view.events.map(event => String(event?.kind || '').trim()).filter(Boolean).slice(0, 4)
+        : [];
+    if (eventKinds.length > 0) {
+        lines.push(`Event kinds: ${eventKinds.join(', ')}`);
+    }
+    const evidenceKinds = Array.isArray(view.evidence)
+        ? view.evidence
+            .map(item => {
+                const source = String(item?.source_kind || '').trim();
+                const category = String(item?.category || '').trim();
+                return [source, category].filter(Boolean).join('/');
+            })
+            .filter(Boolean)
+            .slice(0, 4)
+        : [];
+    if (evidenceKinds.length > 0) {
+        lines.push(`Evidence kinds: ${evidenceKinds.join(', ')}`);
+    }
+    return lines.join('\n');
+}
+
+function buildTraceDetailAction(response: any): ChatAction[] | undefined {
+    const runID = typeof response?.run_id === 'string' ? response.run_id.trim() : '';
+    if (!runID) return undefined;
+    return [{ label: 'View trace', command: buildTraceDetailCommand(runID), style: 'default' }];
+}
+
 function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, response: any): ChatMessage[] {
     const finalizeMessage = (message: ChatMessage): ChatMessage | null => {
         const nextContent = message.content || response.text || '';
-        const nextFields = response.fields;
-        const nextActions = normalizeActions(response.actions);
+        const nextFields = mergeResponseFields(response.fields, normalizeTraceFields(response));
+        const responseActions = normalizeActions(response.actions) || [];
+        const traceActions = buildTraceDetailAction(response) || [];
+        const nextActions = [...responseActions, ...traceActions];
         const nextLocalFilePath = response.local_file_path;
         const nextLocalFilePaths = response.local_file_paths;
         const nextThumbnailBase64 = response.thumbnail_base64;
@@ -329,7 +483,7 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
             ...message,
             content: nextContent,
             fields: nextFields,
-            actions: nextActions,
+            actions: nextActions.length > 0 ? nextActions : undefined,
             localFilePath: nextLocalFilePath,
             localFilePaths: nextLocalFilePaths,
             thumbnailBase64: nextThumbnailBase64,
@@ -467,6 +621,17 @@ function createSystemMessage(content: string): ChatMessage {
     };
 }
 
+function createTraceMessage(content: string, fields: Array<{ label: string; value: string }>): ChatMessage {
+    return {
+        id: nextId(),
+        role: 'system',
+        kind: 'trace',
+        content,
+        fields,
+        timestamp: Date.now(),
+    };
+}
+
 function createUserMessage(content: string): ChatMessage {
     return {
         id: nextId(),
@@ -533,6 +698,8 @@ function samePinnedNews(left: ChatMessage, right: ChatMessage): boolean {
 
 export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<void> }) {
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
+    const [submittedPrompts, setSubmittedPrompts] = useState<string[]>(loadPersistedPrompts);
+    const [draftInputValue, setDraftInputValue] = useState("");
     const [progressMessages, setProgressMessages] = useState<ChatMessage[]>([]);
     const [selectedFilePath, setSelectedFilePath] = useState("");
     const [trialReflectEnabled, setTrialReflectEnabled] = useState(false);
@@ -698,7 +865,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
     const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const latestMessagesRef = useRef(messages);
+    const latestPromptsRef = useRef(submittedPrompts);
     const lastPersistedPayloadRef = useRef<string | null>(null);
+    const lastPersistedPromptsPayloadRef = useRef<string | null>(null);
     const persistOnUnmountRef = useRef(true);
     useEffect(() => {
         latestMessagesRef.current = messages;
@@ -720,7 +889,17 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }, 300);
     }, [messages]);
     useEffect(() => {
+        latestPromptsRef.current = submittedPrompts;
+        const nextPayload = JSON.stringify(submittedPrompts);
+        if (nextPayload === lastPersistedPromptsPayloadRef.current) {
+            return;
+        }
+        lastPersistedPromptsPayloadRef.current = nextPayload;
+        persistPrompts(submittedPrompts);
+    }, [submittedPrompts]);
+    useEffect(() => {
         lastPersistedPayloadRef.current = serializePersistedMessages(latestMessagesRef.current);
+        lastPersistedPromptsPayloadRef.current = JSON.stringify(latestPromptsRef.current);
         return () => {
             if (persistTimerRef.current) {
                 clearTimeout(persistTimerRef.current);
@@ -730,11 +909,15 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 return;
             }
             const payload = serializePersistedMessages(latestMessagesRef.current);
-            if (payload === lastPersistedPayloadRef.current) {
-                return;
+            if (payload !== lastPersistedPayloadRef.current) {
+                lastPersistedPayloadRef.current = payload;
+                persistMessages(latestMessagesRef.current);
             }
-            lastPersistedPayloadRef.current = payload;
-            persistMessages(latestMessagesRef.current);
+            const promptPayload = JSON.stringify(latestPromptsRef.current);
+            if (promptPayload !== lastPersistedPromptsPayloadRef.current) {
+                lastPersistedPromptsPayloadRef.current = promptPayload;
+                persistPrompts(latestPromptsRef.current);
+            }
         };
     }, []);
 
@@ -905,10 +1088,15 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             persistTimerRef.current = null;
         }
         latestMessagesRef.current = [];
+        latestPromptsRef.current = [];
         lastPersistedPayloadRef.current = null;
+        lastPersistedPromptsPayloadRef.current = null;
         persistOnUnmountRef.current = false;
         localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
+        localStorage.removeItem(AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY);
         setMessages([]);
+        setSubmittedPrompts([]);
+        setDraftInputValue("");
         progressTailRef.current = null;
         setProgressMessages([]);
         latestNewsPayloadRef.current = '[]';
@@ -922,7 +1110,23 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, [doFetchNews, resetActiveRound, setSelectedFile]);
 
-    const executeAction = useCallback((command: string) => {
+    const recordSubmittedPrompt = useCallback((prompt: string) => {
+        setSubmittedPrompts(prev => appendSubmittedPrompt(prev, prompt));
+    }, []);
+
+    const executeAction = useCallback(async (command: string) => {
+        const traceMatch = command.match(/^__view_trace__\s+(\S+)$/);
+        if (traceMatch) {
+            const runID = traceMatch[1]?.trim() || '';
+            if (!runID) return;
+            try {
+                const view = await GetAIAssistantTrace(runID) as AIAssistantTraceView;
+                setMessages(prev => [...prev, createTraceMessage(buildTraceDetailMessage(view, runID), buildTraceDetailFields(view, runID))]);
+            } catch (err: any) {
+                setMessages(prev => [...prev, createErrorMessage(err?.message || String(err))]);
+            }
+            return;
+        }
         return sendMessage(command);
     }, [sendMessage]);
 
@@ -976,7 +1180,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, [resetActiveRound]);
 
-    return { messages, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePath, trialReflectEnabled, browseFile, clearSelectedFile, sendMessage, sendMessageInBackground, clearHistory, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
+    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePath, trialReflectEnabled, browseFile, clearSelectedFile, sendMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)
