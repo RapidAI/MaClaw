@@ -194,22 +194,6 @@ const (
 // NewSwarmRunID re-exports the corelib/swarm function.
 var NewSwarmRunID = swarm.NewSwarmRunID
 
-// ── corelib/swarm DocType aliases ────────────────────────────────────────────
-
-type DocType = swarm.DocType
-
-const (
-	DocTypeRequirements = swarm.DocTypeRequirements
-	DocTypeDesign       = swarm.DocTypeDesign
-	DocTypeTaskPlan     = swarm.DocTypeTaskPlan
-)
-
-// SwarmDocGenerator re-exports the corelib/swarm type.
-type SwarmDocGenerator = swarm.SwarmDocGenerator
-
-// NewSwarmDocGenerator re-exports the corelib/swarm constructor.
-var NewSwarmDocGenerator = swarm.NewSwarmDocGenerator
-
 // ── corelib/swarm component aliases ─────────────────────────────────────────
 
 type TaskSplitter = swarm.TaskSplitter
