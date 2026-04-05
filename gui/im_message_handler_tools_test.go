@@ -3,13 +3,91 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/swarm"
 )
 
 // ---------------------------------------------------------------------------
 // Tests for IMMessageHandler dynamic tool integration (Task 6.3)
 // ---------------------------------------------------------------------------
+
+func TestTrialReflectObserveIteration_BuildsReflectionNote(t *testing.T) {
+	state := newTrialReflectState(true)
+	toolCalls := []llmToolCall{
+		{
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{
+				Name:      "bash",
+				Arguments: `{"command":"npm test"}`,
+			},
+		},
+	}
+	toolResults := []string{"error: test failed"}
+
+	outcome, observation, repeatedFailures := state.observeIteration(toolCalls, toolResults)
+	if outcome != "failed" {
+		t.Fatalf("expected failed outcome, got %q", outcome)
+	}
+	if !contains(observation, "bash=failed") {
+		t.Fatalf("expected failed observation, got %q", observation)
+	}
+	if !contains(state.pendingNote, "[试错反思]") || !contains(state.pendingNote, "不要原样重复已经失败的尝试") {
+		t.Fatalf("expected reflection note, got %q", state.pendingNote)
+	}
+	if len(repeatedFailures) != 1 || repeatedFailures[0] != "bash" {
+		t.Fatalf("expected repeated failure guard for bash, got %#v", repeatedFailures)
+	}
+}
+
+func TestTrialReflectObserveIteration_ClearsFailureAfterSuccess(t *testing.T) {
+	state := newTrialReflectState(true)
+	toolCalls := []llmToolCall{
+		{
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{
+				Name:      "bash",
+				Arguments: `{"command":"npm test"}`,
+			},
+		},
+	}
+
+	state.observeIteration(toolCalls, []string{"error: failed"})
+	outcome, observation, repeatedFailures := state.observeIteration(toolCalls, []string{"success: completed"})
+	if outcome != "succeeded" {
+		t.Fatalf("expected succeeded outcome, got %q", outcome)
+	}
+	if !contains(observation, "bash=succeeded") {
+		t.Fatalf("expected succeeded observation, got %q", observation)
+	}
+	if len(repeatedFailures) != 0 {
+		t.Fatalf("expected repeated failures to clear after success, got %#v", repeatedFailures)
+	}
+}
+
+func TestToolGeneratePDFValidation_RejectsOversizedContent(t *testing.T) {
+	if err := swarm.ValidatePDFContent(strings.Repeat("a", 181*1024)); err == nil || !strings.Contains(err.Error(), "PDF 内容过长") {
+		t.Fatalf("expected oversized content error, got %v", err)
+	}
+}
+
+func TestToolGeneratePDFValidation_RejectsOversizedParagraph(t *testing.T) {
+	if err := swarm.ValidatePDFContent(strings.Repeat("段", 48*1024+1)); err == nil || !strings.Contains(err.Error(), "过长段落") {
+		t.Fatalf("expected oversized paragraph error, got %v", err)
+	}
+}
+
+func TestToolGeneratePDFValidation_RejectsFilePayloadMarker(t *testing.T) {
+	if err := swarm.ValidatePDFContent("# 报告\n\n[file_base64|x|application/pdf]AAAA"); err == nil || !strings.Contains(err.Error(), "文件载荷") {
+		t.Fatalf("expected file payload error, got %v", err)
+	}
+}
 
 // TestGetTools_FallbackWithoutGenerator verifies that getTools() returns
 // the hardcoded buildToolDefinitions() output when no generator is set.
@@ -363,6 +441,65 @@ func TestExecuteTool_TemplateToolsRouting(t *testing.T) {
 	// Should get past template lookup (routing works) — will fail at session creation
 	if contains(result, "未知工具") || contains(result, "模板管理器未初始化") {
 		t.Errorf("launch_template routing failed: %s", result)
+	}
+}
+
+func TestExecuteTool_GeneratePDF_IsNotExposed(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	handler := &IMMessageHandler{app: app}
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+
+	result := handler.executeTool("generate_pdf", `{"content":"# 标题\n\n正文","title":"通用标题"}`, nil)
+	if !contains(result, "未知工具: generate_pdf") {
+		t.Fatalf("generate_pdf should not be exposed, got: %s", result)
+	}
+}
+
+// Regression coverage for the uploaded-image flow through the real tool dispatcher:
+// even if the model tries to call screenshot, executeTool must return the
+// guard message before any screenshot/session logic runs.
+func TestExecuteTool_ScreenshotBlockedForUserSuppliedImagePath(t *testing.T) {
+	handler := &IMMessageHandler{
+		app: &App{},
+		lastUserText: strings.Join([]string{
+			"图上有什么？",
+			"",
+			"[用户选择的本地文件路径]",
+			`C:\Users\ma139\Pictures\Screenshots\屏幕截图 2026-03-14 073217.png`,
+			"这是用户已经提供的本地图片文件。不要调用 screenshot 或重新截图；请直接使用这些路径，并优先用 read_file 或 open 查看图片内容后回答。",
+		}, "\n"),
+	}
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+
+	result := handler.executeTool("screenshot", "", nil)
+	if !contains(result, "不要调用 screenshot") {
+		t.Fatalf("expected screenshot guard via executeTool, got: %s", result)
+	}
+	if contains(result, "缺少 session_id") {
+		t.Fatalf("expected guard to trigger before screenshot execution flow, got: %s", result)
+	}
+}
+
+func TestShouldAutoClearIncompleteTaskContext_RequiresExplicitResume(t *testing.T) {
+	entries := []conversationEntry{
+		{Role: "user", Content: "搜索 huggingface daily papers，生成每日论文综述，生成pdf发我"},
+		{Role: "assistant", Content: "(已达到最大推理轮次，请继续发送消息以完成任务)"},
+	}
+
+	if !shouldAutoClearIncompleteTaskContext("现在最新的还是不能做完任务，会提前中止", entries) {
+		t.Fatal("expected unrelated follow-up message to clear incomplete task context")
+	}
+	if shouldAutoClearIncompleteTaskContext("继续", entries) {
+		t.Fatal("expected explicit resume message to keep incomplete task context")
+	}
+	if shouldAutoClearIncompleteTaskContext("继续做完上次的 pdf", entries) {
+		t.Fatal("expected explicit resume request to keep incomplete task context")
 	}
 }
 

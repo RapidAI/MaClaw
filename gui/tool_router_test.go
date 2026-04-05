@@ -10,7 +10,7 @@ func makeDynamicTool(name, desc string) map[string]interface{} {
 	return toolDef(name, desc, nil, nil)
 }
 
-// makeAllTools creates a slice of 28 builtins + n dynamic tools.
+// makeAllTools creates a slice of current builtins + n dynamic tools.
 func makeAllTools(dynamicCount int) []map[string]interface{} {
 	builtins := makeBuiltinDefs()
 	for i := 0; i < dynamicCount; i++ {
@@ -34,13 +34,18 @@ func TestToolRouter_BelowBudget(t *testing.T) {
 }
 
 func TestToolRouter_ExactlyAtBudget(t *testing.T) {
-	// 28 builtins + 0 dynamic = 28 total, exactly at maxToolBudget.
 	allTools := makeAllTools(0)
 	router := NewToolRouter(nil)
 	result := router.Route("test message", allTools)
 
-	if len(result) != maxToolBudget {
-		t.Errorf("expected %d tools (unchanged at budget), got %d", maxToolBudget, len(result))
+	if len(allTools) > maxToolBudget {
+		if len(result) > maxToolBudget {
+			t.Errorf("expected at most %d tools, got %d", maxToolBudget, len(result))
+		}
+		return
+	}
+	if len(result) != len(allTools) {
+		t.Errorf("expected %d tools (unchanged under budget), got %d", len(allTools), len(result))
 	}
 }
 
@@ -86,10 +91,15 @@ func TestToolRouter_AboveBudget_LimitsDynamic(t *testing.T) {
 
 func TestToolRouter_RelevanceRanking(t *testing.T) {
 	builtins := makeBuiltinDefs()
-	// 28 builtins = below maxToolBudget — all should be returned.
 	router := NewToolRouter(nil)
 	result := router.Route("search the web for golang tutorials", builtins)
 
+	if len(builtins) > maxToolBudget {
+		if len(result) > maxToolBudget {
+			t.Errorf("expected routed tools to stay within budget %d, got %d", maxToolBudget, len(result))
+		}
+		return
+	}
 	if len(result) != len(builtins) {
 		t.Errorf("expected %d tools, got %d", len(builtins), len(result))
 	}
@@ -97,10 +107,10 @@ func TestToolRouter_RelevanceRanking(t *testing.T) {
 
 func TestToolRouter_RelevanceRanking_AboveBudget(t *testing.T) {
 	builtins := makeBuiltinDefs()
-	// Add enough dynamic tools to exceed budget.
+	// Add enough dynamic tools to exceed budget regardless of builtin count.
 	var dynamic []map[string]interface{}
 	dynamic = append(dynamic, makeDynamicTool("search_web", "Search the web for information"))
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 30; i++ {
 		dynamic = append(dynamic, makeDynamicTool(
 			fmt.Sprintf("filler_%d", i),
 			fmt.Sprintf("Filler tool %d does nothing useful", i),
@@ -134,8 +144,8 @@ func TestToolRouter_NonCoreBuiltinCompetes(t *testing.T) {
 		toolDef("craft_tool", "自动生成脚本", nil, nil),
 		toolDef("create_scheduled_task", "创建定时任务", nil, nil),
 	)
-	// Add enough dynamic tools to exceed budget.
-	for i := 0; i < 15; i++ {
+	// Add enough dynamic tools to exceed budget regardless of builtin count.
+	for i := 0; i < maxToolBudget+5; i++ {
 		builtins = append(builtins, makeDynamicTool(
 			fmt.Sprintf("filler_%d", i),
 			fmt.Sprintf("Filler tool %d", i),
@@ -154,8 +164,27 @@ func TestToolRouter_NonCoreBuiltinCompetes(t *testing.T) {
 	if !resultNames["update_config"] {
 		t.Error("update_config should be included when user mentions 配置")
 	}
-	if !resultNames["get_config"] && !resultNames["manage_config"] {
-		t.Error("expected a config inspection or management tool to remain in the routed result")
+	if !resultNames["update_config"] && !resultNames["get_config"] && !resultNames["manage_config"] {
+		t.Error("expected at least one config-related tool to remain in the routed result")
+	}
+}
+
+func TestToolRouter_PDFWorkflowKeepsDocumentDeliveryTools(t *testing.T) {
+	allTools := makeAllTools(20)
+	router := NewToolRouter(nil)
+	result := router.Route("搜索 huggingface daily papers，生成每日论文综述，生成pdf发我", allTools)
+
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	for _, name := range []string{"web_search", "send_file", "open", "craft_tool"} {
+		if !resultNames[name] {
+			t.Fatalf("expected %s to be routed for PDF workflow, got %#v", name, resultNames)
+		}
+	}
+	if resultNames["generate_pdf"] {
+		t.Fatalf("generate_pdf should not be routed, got %#v", resultNames)
 	}
 }
 

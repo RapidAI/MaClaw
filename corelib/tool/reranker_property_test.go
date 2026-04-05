@@ -15,14 +15,13 @@ func TestProperty_BuildMCPToolBodyContainsSchema(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		numProps := rapid.IntRange(1, 10).Draw(t, "numProps")
 		props := make(map[string]interface{}, numProps)
-		type propInfo struct{ name, typ string }
-		var expected []propInfo
+		expected := make(map[string]string, numProps)
 
 		for i := 0; i < numProps; i++ {
 			name := rapid.StringMatching(`[a-z_]{2,15}`).Draw(t, "propName")
 			typ := rapid.SampledFrom([]string{"string", "integer", "boolean", "number", "object", "array"}).Draw(t, "propType")
 			props[name] = map[string]interface{}{"type": typ}
-			expected = append(expected, propInfo{name, typ})
+			expected[name] = typ
 		}
 
 		schema := map[string]interface{}{
@@ -35,12 +34,12 @@ func TestProperty_BuildMCPToolBodyContainsSchema(t *testing.T) {
 			t.Fatal("expected non-empty result for schema with properties")
 		}
 
-		for _, p := range expected {
-			if !strings.Contains(result, p.name) {
-				t.Fatalf("result should contain property name %q, got: %s", p.name, result)
+		for name, typ := range expected {
+			if !strings.Contains(result, name) {
+				t.Fatalf("result should contain property name %q, got: %s", name, result)
 			}
-			if !strings.Contains(result, p.typ) {
-				t.Fatalf("result should contain type %q for property %q, got: %s", p.typ, p.name, result)
+			if !strings.Contains(result, typ) {
+				t.Fatalf("result should contain type %q for property %q, got: %s", typ, name, result)
 			}
 		}
 	})

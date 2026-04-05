@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,31 +54,238 @@ type IMUserMessage struct {
 
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
-	Text               string             `json:"text"`
-	Fields             []IMResponseField  `json:"fields,omitempty"`
-	Actions            []IMResponseAction `json:"actions,omitempty"`
-	ImageKey           string             `json:"image_key,omitempty"`
-	FileData           string             `json:"file_data,omitempty"`
-	FileName           string             `json:"file_name,omitempty"`
-	FileMimeType       string             `json:"file_mime_type,omitempty"`
-	LocalFilePath      string             `json:"local_file_path,omitempty"`
-	LocalFilePaths     []string           `json:"local_file_paths,omitempty"`
-	ThumbnailBase64    string             `json:"thumbnail_base64,omitempty"`
-	Error              string             `json:"error,omitempty"`
-	Deferred           bool               `json:"deferred,omitempty"`
-	JobID              string             `json:"job_id,omitempty"`
-	RunID              string             `json:"run_id,omitempty"`
-	RequestID          string             `json:"request_id,omitempty"`
-	TraceSummary       string             `json:"trace_summary,omitempty"`
-	TraceEventCount    int                `json:"trace_event_count,omitempty"`
-	EvidenceCount      int                `json:"evidence_count,omitempty"`
-	HandlerTailNanos     int64 `json:"-"`
-	FinalizeTraceNanos   int64 `json:"-"`
-	MemorySaveNanos      int64 `json:"-"`
-	CapabilityGapNanos   int64 `json:"-"`
-	FileMaterializeNanos int64 `json:"-"`
-	PreLLMPrepNanos      int64 `json:"-"`
-	FirstTokenWaitNanos  int64 `json:"-"`
+	Text                                string             `json:"text"`
+	Fields                              []IMResponseField  `json:"fields,omitempty"`
+	Actions                             []IMResponseAction `json:"actions,omitempty"`
+	ImageKey                            string             `json:"image_key,omitempty"`
+	FileData                            string             `json:"file_data,omitempty"`
+	FileName                            string             `json:"file_name,omitempty"`
+	FileMimeType                        string             `json:"file_mime_type,omitempty"`
+	LocalFilePath                       string             `json:"local_file_path,omitempty"`
+	LocalFilePaths                      []string           `json:"local_file_paths,omitempty"`
+	ThumbnailBase64                     string             `json:"thumbnail_base64,omitempty"`
+	Error                               string             `json:"error,omitempty"`
+	Deferred                            bool               `json:"deferred,omitempty"`
+	JobID                               string             `json:"job_id,omitempty"`
+	RunID                               string             `json:"run_id,omitempty"`
+	RequestID                           string             `json:"request_id,omitempty"`
+	TraceSummary                        string             `json:"trace_summary,omitempty"`
+	TraceEventCount                     int                `json:"trace_event_count,omitempty"`
+	EvidenceCount                       int                `json:"evidence_count,omitempty"`
+	TrialReflectSummary                 string             `json:"trial_reflect_summary,omitempty"`
+	TrialReflectStatus                  string             `json:"trial_reflect_status,omitempty"`
+	TrialReflectFailures                int                `json:"trial_reflect_failures,omitempty"`
+	InputTokens                         int                `json:"input_tokens,omitempty"`
+	OutputTokens                        int                `json:"output_tokens,omitempty"`
+	TotalTokens                         int                `json:"total_tokens,omitempty"`
+	HandlerTailNanos                    int64              `json:"-"`
+	HandlerBlackholeAfterUsageNanos     int64              `json:"-"`
+	HandlerBlackholeBeforeReturnNanos   int64              `json:"-"`
+	HandlerPostStreamUsageNanos         int64              `json:"-"`
+	HandlerPostStreamResponseNanos      int64              `json:"-"`
+	HandlerPostStreamToolExecNanos      int64              `json:"-"`
+	HandlerPostStreamChoiceNanos        int64              `json:"-"`
+	HandlerPostStreamAssistantMsgNanos  int64              `json:"-"`
+	HandlerPostStreamHistoryAppendNanos int64              `json:"-"`
+	HandlerPostStreamNoToolBranchNanos  int64              `json:"-"`
+	FinalizeTraceNanos                  int64              `json:"-"`
+	MemorySaveNanos                     int64              `json:"-"`
+	CapabilityGapNanos                  int64              `json:"-"`
+	FileMaterializeNanos                int64              `json:"-"`
+	PreLLMPrepNanos                     int64              `json:"-"`
+	PreLLMConfigNanos                   int64              `json:"-"`
+	PreLLMToolsNanos                    int64              `json:"-"`
+	PreLLMConversationNanos             int64              `json:"-"`
+	PreLLMIterationPrepNanos            int64              `json:"-"`
+	FirstTokenWaitNanos                 int64              `json:"-"`
+	LLMRequestBuildNanos                int64              `json:"-"`
+	LLMHTTPDoNanos                      int64              `json:"-"`
+	LLMFirstSSEWaitNanos                int64              `json:"-"`
+	LLMRetryWaitNanos                   int64              `json:"-"`
+	LLMStreamMaxTokenGapNanos           int64              `json:"-"`
+	LLMRetryCount                       int                `json:"-"`
+	LLMIdleTimeoutCount                 int                `json:"-"`
+	LLMIdleTimeoutAfterToken            bool               `json:"-"`
+}
+
+func shouldClearHistoryForIncompleteTask(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if countWords(trimmed) < 4 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	explicitResumePhrases := []string{
+		"继续", "继续呀", "接着做", "继续做", "继续完成", "接着完成", "继续上次", "接着上次",
+		"continue", "continue it", "continue this", "resume", "resume it", "resume this",
+	}
+	for _, phrase := range explicitResumePhrases {
+		if strings.Contains(lower, phrase) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasIncompleteTaskMarker(entries []conversationEntry) bool {
+	for i := len(entries) - 1; i >= 0; i-- {
+		text, ok := entries[i].Content.(string)
+		if !ok {
+			continue
+		}
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(trimmed, "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。") {
+			return true
+		}
+		if strings.Contains(trimmed, "(已达到最大推理轮次，请继续发送消息以完成任务)") {
+			return true
+		}
+		if strings.Contains(trimmed, "已接近最大推理轮次") {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldAutoClearIncompleteTaskContext(newMessage string, entries []conversationEntry) bool {
+	if !hasIncompleteTaskMarker(entries) {
+		return false
+	}
+	return shouldClearHistoryForIncompleteTask(newMessage)
+}
+
+func looksLikePromiseOnlyDeliverableReply(text string) bool {
+	trimmed := strings.TrimSpace(stripThinkingTags(text))
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	deliverableHints := []string{
+		"pdf", "生成pdf", "生成 pdf", "报告", "文档", "文件", "综述", "发送给你", "发你",
+		"report", "document", "file", "send you", "deliver", "summary",
+	}
+	hasDeliverableIntent := false
+	for _, hint := range deliverableHints {
+		if strings.Contains(lower, hint) {
+			hasDeliverableIntent = true
+			break
+		}
+	}
+	if !hasDeliverableIntent {
+		return false
+	}
+	promiseHints := []string{
+		"我来", "我会", "马上", "立刻", "直接", "继续", "执行", "生成", "发送", "整理",
+		"i will", "i'll", "let me", "going to", "about to", "right away", "prepare", "generate", "send",
+	}
+	hasPromiseHint := false
+	for _, hint := range promiseHints {
+		if strings.Contains(lower, hint) {
+			hasPromiseHint = true
+			break
+		}
+	}
+	if !hasPromiseHint {
+		return false
+	}
+	completionHints := []string{
+		"已生成", "已保存", "文件已保存", "将发送给用户", "已准备好，将发送给用户", "失败原因", "无法生成", "localfile", "[file_base64|",
+	}
+	for _, hint := range completionHints {
+		if strings.Contains(lower, hint) {
+			return false
+		}
+	}
+	return true
+}
+
+func looksLikePromiseOnlyPDFReply(text string) bool {
+	trimmed := strings.TrimSpace(stripThinkingTags(text))
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	hasPDFIntent := strings.Contains(lower, "pdf") || strings.Contains(lower, "生成pdf") || strings.Contains(lower, "生成 pdf")
+	if !hasPDFIntent {
+		return false
+	}
+	return looksLikePromiseOnlyDeliverableReply(text)
+}
+
+func shouldForceAnotherRoundForDeliverable(text string, toolCalls int, pendingFiles int) bool {
+	if toolCalls > 0 || pendingFiles > 0 {
+		return false
+	}
+	return looksLikePromiseOnlyDeliverableReply(text)
+}
+
+func shouldForceAnotherRoundForPDF(text string, toolCalls int, pendingFiles int) bool {
+	if toolCalls > 0 || pendingFiles > 0 {
+		return false
+	}
+	return looksLikePromiseOnlyPDFReply(text)
+}
+
+func hasVisibleIMResult(resp *IMAgentResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if strings.TrimSpace(resp.Text) != "" || strings.TrimSpace(resp.Error) != "" {
+		return true
+	}
+	if len(resp.Fields) > 0 || len(resp.Actions) > 0 || strings.TrimSpace(resp.ImageKey) != "" {
+		return true
+	}
+	if strings.TrimSpace(resp.FileData) != "" || strings.TrimSpace(resp.FileName) != "" || strings.TrimSpace(resp.FileMimeType) != "" {
+		return true
+	}
+	if strings.TrimSpace(resp.LocalFilePath) != "" || len(resp.LocalFilePaths) > 0 || strings.TrimSpace(resp.ThumbnailBase64) != "" {
+		return true
+	}
+	return false
+}
+
+func ensureTraceAction(resp *IMAgentResponse) {
+	if resp == nil || strings.TrimSpace(resp.RunID) == "" {
+		return
+	}
+	command := "__view_trace__ " + resp.RunID
+	for _, action := range resp.Actions {
+		if strings.TrimSpace(action.Command) == command {
+			return
+		}
+	}
+	resp.Actions = append(resp.Actions, IMResponseAction{
+		Label:   "View trace",
+		Command: command,
+		Style:   "default",
+	})
+}
+
+func buildEmptyResultFallback(status TraceRunStatus, traceSummary string) string {
+	summary := strings.TrimSpace(traceSummary)
+	switch status {
+	case TraceRunStatusFailed, TraceRunStatusTimeout, TraceRunStatusCancelled, TraceRunStatusStopped:
+		if summary != "" {
+			return fmt.Sprintf("任务未完成可交付结果。%s", summary)
+		}
+		return "任务未完成可交付结果。可查看 Trace 了解失败位置。"
+	case TraceRunStatusCompleted, TraceRunStatusExited:
+		if summary != "" {
+			return fmt.Sprintf("任务已结束，但没有生成可展示的结果。%s", summary)
+		}
+		return "任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。"
+	default:
+		if summary != "" {
+			return fmt.Sprintf("任务已停止，但没有返回可显示的结果。%s", summary)
+		}
+		return "任务已停止，但没有返回可显示的结果。可查看 Trace 了解详情。"
+	}
 }
 
 // IMResponseField is a key-value field in the agent response.
@@ -93,9 +301,58 @@ type IMResponseAction struct {
 	Style   string `json:"style"`
 }
 
-// ---------------------------------------------------------------------------
-// Conversation Memory
-// ---------------------------------------------------------------------------
+func tokenUsageResponseFields(input, output int) []IMResponseField {
+	if input <= 0 && output <= 0 {
+		return nil
+	}
+	fields := make([]IMResponseField, 0, 3)
+	if input > 0 {
+		fields = append(fields, IMResponseField{Label: "Input tokens", Value: strconv.Itoa(input)})
+	}
+	if output > 0 {
+		fields = append(fields, IMResponseField{Label: "Output tokens", Value: strconv.Itoa(output)})
+	}
+	total := input + output
+	if total > 0 {
+		fields = append(fields, IMResponseField{Label: "Total tokens", Value: strconv.Itoa(total)})
+	}
+	return fields
+}
+
+func deriveLLMTokenUsage(resp *llmResponse, conversation []interface{}) (int, int) {
+	if resp == nil {
+		return 0, 0
+	}
+	input := 0
+	output := 0
+	if resp.Usage != nil {
+		u := resp.Usage
+		input = u.PromptTokens
+		output = u.CompletionTokens
+		if input == 0 && u.InputTokens > 0 {
+			input = u.InputTokens
+		}
+		if output == 0 && u.OutputTokens > 0 {
+			output = u.OutputTokens
+		}
+	}
+	if input == 0 {
+		input = estimateConversationTokens(conversation)
+	}
+	if output == 0 && len(resp.Choices) > 0 {
+		output = estimateBytesToTokens([]byte(resp.Choices[0].Message.Content))
+	}
+	return input, output
+}
+
+func mergeIMResponseFields(base []IMResponseField, extra []IMResponseField) []IMResponseField {
+	if len(extra) == 0 {
+		return base
+	}
+	merged := append([]IMResponseField{}, base...)
+	merged = append(merged, extra...)
+	return merged
+}
 
 // toolsCacheTTL is the maximum age of the cached tool definitions.
 // When MCP_Registry changes, tools are regenerated within this window.
@@ -213,10 +470,14 @@ type IMMessageHandler struct {
 	// adaptiveRetry classifies tool_call failures and decides retry
 	// strategy, supplementing the existing isRetryableLLMError logic.
 	adaptiveRetry *AdaptiveRetry
+
+	trajectoryRecorderFactory func() *TrajectoryRecorder
 }
 
 // NewIMMessageHandler creates a new handler.
 func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
+	llmCfg := app.GetMaclawLLMConfig()
+	responseHeaderTimeout := time.Duration(llmCfg.EffectiveTimeoutSec()) * time.Second
 	// Optimised transport for interactive chat — larger connection pool
 	// so concurrent requests don't queue behind each other.
 	chatTransport := &http.Transport{
@@ -226,7 +487,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 60 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
 		MaxConnsPerHost:       20,
@@ -242,7 +503,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 120 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		MaxIdleConns:          50,
 		MaxIdleConnsPerHost:   10,
 		MaxConnsPerHost:       10,
@@ -267,7 +528,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	// Register non-code tools (Git, file search, health check).
 	registerNonCodeTools(h.registry, app)
 	// Register browser automation tools (CDP-based).
-	registerBrowserTools(h.registry)
+	registerBrowserTools(h.registry, app)
 	h.toolBuilder = NewDynamicToolBuilder(h.registry)
 
 	// Initialize automatic topic switch detector.
@@ -402,6 +663,10 @@ func (h *IMMessageHandler) SetHarnessProgressTracker(pt *HarnessProgressTracker)
 // SetAdaptiveRetry configures the adaptive retry module for the agent loop.
 func (h *IMMessageHandler) SetAdaptiveRetry(ar *AdaptiveRetry) {
 	h.adaptiveRetry = ar
+}
+
+func (h *IMMessageHandler) SetTrajectoryRecorderFactory(factory func() *TrajectoryRecorder) {
+	h.trajectoryRecorderFactory = factory
 }
 
 // getTools returns the current tool definitions, using the generator with
@@ -854,7 +1119,8 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 	sendStatus(fmt.Sprintf("▶️ 正在执行 Skill: %s ...", skill.Name))
 	execResult, execErr := h.app.skillExecutor.Execute(skill.Name)
 	if execErr != nil {
-		return fmt.Sprintf("✅ 已安装 Skill「%s」但执行失败: %v", skill.Name, execErr)
+		log.Printf("[skill-auto] execute skill %s failed: %v", skill.Name, execErr)
+		return fmt.Sprintf("⚠️ Skill「%s」已安装，但执行失败: %v", skill.Name, execErr)
 	}
 	return fmt.Sprintf("✅ 已自动安装并执行 Skill「%s」\n%s", skill.Name, execResult)
 }
@@ -981,7 +1247,20 @@ func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentRe
 	resp.JobID = ctx.JobID
 	resp.RunID = ctx.RunID
 	resp.TraceSummary = h.traceService.TraceSummary(ctx.RunID)
+	if view, ok := h.traceService.GetTrace(ctx.RunID); ok && view.TrialReflectSummary != nil {
+		resp.TrialReflectSummary = view.TrialReflectSummary.StrategyNote
+		resp.TrialReflectStatus = view.TrialReflectSummary.FinalOutcome
+		resp.TrialReflectFailures = view.TrialReflectSummary.FailureCount
+		if shouldPersistTrialReflectSummary(view.TrialReflectSummary) {
+			h.appendTraceEvidence(ctx, "trial_reflect_summary", "decision", "trial-reflect summary", view.TrialReflectSummary.StrategyNote, "", "")
+			resp.TraceSummary = h.traceService.TraceSummary(ctx.RunID)
+		}
+	}
 	resp.TraceEventCount, resp.EvidenceCount = h.traceService.TraceCounts(ctx.RunID)
+	if !hasVisibleIMResult(resp) {
+		resp.Text = buildEmptyResultFallback(status, resp.TraceSummary)
+		ensureTraceAction(resp)
+	}
 	return resp
 }
 
@@ -1025,6 +1304,21 @@ func (h *IMMessageHandler) appendTraceEvidence(ctx *LoopContext, sourceKind, cat
 	})
 }
 
+func shouldPersistTrialReflectSummary(summary *TrialReflectSummary) bool {
+	if summary == nil {
+		return false
+	}
+	if summary.FailureCount > 0 || summary.Recovered {
+		return true
+	}
+	for _, category := range summary.FailureCategories {
+		if strings.TrimSpace(category) != "" {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(summary.StrategyNote), "repeat guard")
+}
+
 func (h *IMMessageHandler) traceProjectPath() string {
 	resolver := h.traceContextResolver()
 	if resolver == nil {
@@ -1046,7 +1340,12 @@ func (h *IMMessageHandler) buildTraceEvidencePrompt(userMessage string) string {
 	var b strings.Builder
 	b.WriteString("\n## 最近执行证据\n")
 	for _, item := range evidence {
-		line := firstNonEmptyTraceText(item.Summary, item.ContentSnippet)
+		line := ""
+		if item.SourceKind == "trial_reflect_summary" {
+			line = firstNonEmptyTraceText(item.ContentSnippet, item.Summary)
+		} else {
+			line = firstNonEmptyTraceText(item.Summary, item.ContentSnippet)
+		}
 		if line == "" {
 			continue
 		}
@@ -1157,12 +1456,12 @@ func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) 
 
 func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *LoopContext, text, _ string) {
 	msg := IMUserMessage{
-		UserID:       "desktop-user",
-		Platform:     "desktop",
-		Text:         text,
-		IsBackground: true,
-		Lang:         "zh",
-		MinIterations: h.app.GetMaclawAgentMaxIterations(),
+		UserID:             "desktop-user",
+		Platform:           "desktop",
+		Text:               text,
+		IsBackground:       true,
+		Lang:               "zh",
+		MinIterations:      h.app.GetMaclawAgentMaxIterations(),
 		BackgroundSlotKind: "scheduled",
 	}
 	onProgress := func(progressText string) {
@@ -1300,6 +1599,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	httpClient := h.client
 	if msg.IsBackground {
 		httpClient = h.taskClient
+	}
+
+	if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, h.memory.load(msg.UserID)) {
+		h.memory.clear(msg.UserID)
+		log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
 	}
 
 	// --- Automatic topic switch detection ---
@@ -1716,6 +2020,81 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	// Wire the loop context so tools can access it.
 	loopStartedAt := time.Now()
+	var preLLMConfigElapsed time.Duration
+	var preLLMToolsElapsed time.Duration
+	var preLLMConversationElapsed time.Duration
+	var preLLMIterationPrepElapsed time.Duration
+	var firstLLMRequestStartedAt time.Time
+	var firstLLMResponseAt time.Time
+	var firstLLMRequestBuildElapsed time.Duration
+	var firstLLMHTTPDoElapsed time.Duration
+	var firstLLMFirstSSEWaitElapsed time.Duration
+	var firstLLMRetryWaitElapsed time.Duration
+	var firstLLMStreamMaxTokenGapElapsed time.Duration
+	var firstLLMRetryCount int
+	var firstLLMIdleTimeoutCount int
+	var firstLLMIdleTimeoutAfterToken bool
+	var firstLLMRequestMarked bool
+	var streamDoneAt time.Time
+	var postStreamUsageDoneAt time.Time
+	var postStreamLastReturnPrepAt time.Time
+	var handlerPostStreamUsageElapsed time.Duration
+	var handlerPostStreamResponseElapsed time.Duration
+	var handlerPostStreamToolExecElapsed time.Duration
+	var handlerPostStreamChoiceElapsed time.Duration
+	var handlerPostStreamAssistantMsgElapsed time.Duration
+	var handlerPostStreamHistoryAppendElapsed time.Duration
+	var handlerPostStreamNoToolBranchElapsed time.Duration
+	var lastLLMInputTokens int
+	var lastLLMOutputTokens int
+	attachLLMTelemetry := func(resp *IMAgentResponse) {
+		if resp == nil {
+			return
+		}
+		if !firstLLMRequestStartedAt.IsZero() {
+			resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+			resp.PreLLMConfigNanos = preLLMConfigElapsed.Nanoseconds()
+			resp.PreLLMToolsNanos = preLLMToolsElapsed.Nanoseconds()
+			resp.PreLLMConversationNanos = preLLMConversationElapsed.Nanoseconds()
+			resp.PreLLMIterationPrepNanos = preLLMIterationPrepElapsed.Nanoseconds()
+		}
+		if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
+			resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
+			resp.LLMRequestBuildNanos = firstLLMRequestBuildElapsed.Nanoseconds()
+			resp.LLMHTTPDoNanos = firstLLMHTTPDoElapsed.Nanoseconds()
+			resp.LLMFirstSSEWaitNanos = firstLLMFirstSSEWaitElapsed.Nanoseconds()
+			resp.LLMRetryWaitNanos = firstLLMRetryWaitElapsed.Nanoseconds()
+			resp.LLMStreamMaxTokenGapNanos = firstLLMStreamMaxTokenGapElapsed.Nanoseconds()
+			resp.LLMRetryCount = firstLLMRetryCount
+			resp.LLMIdleTimeoutCount = firstLLMIdleTimeoutCount
+			resp.LLMIdleTimeoutAfterToken = firstLLMIdleTimeoutAfterToken
+		}
+		if !streamDoneAt.IsZero() && resp.HandlerTailNanos == 0 {
+			resp.HandlerTailNanos = time.Since(streamDoneAt).Nanoseconds()
+		}
+		if lastLLMInputTokens > 0 || lastLLMOutputTokens > 0 {
+			resp.Fields = mergeIMResponseFields(resp.Fields, tokenUsageResponseFields(lastLLMInputTokens, lastLLMOutputTokens))
+			resp.InputTokens = lastLLMInputTokens
+			resp.OutputTokens = lastLLMOutputTokens
+			resp.TotalTokens = lastLLMInputTokens + lastLLMOutputTokens
+		}
+		resp.HandlerPostStreamUsageNanos = handlerPostStreamUsageElapsed.Nanoseconds()
+		resp.HandlerPostStreamResponseNanos = handlerPostStreamResponseElapsed.Nanoseconds()
+		resp.HandlerPostStreamToolExecNanos = handlerPostStreamToolExecElapsed.Nanoseconds()
+		resp.HandlerPostStreamChoiceNanos = handlerPostStreamChoiceElapsed.Nanoseconds()
+		resp.HandlerPostStreamAssistantMsgNanos = handlerPostStreamAssistantMsgElapsed.Nanoseconds()
+		resp.HandlerPostStreamHistoryAppendNanos = handlerPostStreamHistoryAppendElapsed.Nanoseconds()
+		resp.HandlerPostStreamNoToolBranchNanos = handlerPostStreamNoToolBranchElapsed.Nanoseconds()
+		if !streamDoneAt.IsZero() && !postStreamUsageDoneAt.IsZero() && postStreamUsageDoneAt.After(streamDoneAt) {
+			resp.HandlerBlackholeAfterUsageNanos = time.Since(postStreamUsageDoneAt).Nanoseconds() - resp.HandlerPostStreamResponseNanos - resp.MemorySaveNanos - resp.CapabilityGapNanos - resp.FileMaterializeNanos
+			if resp.HandlerBlackholeAfterUsageNanos < 0 {
+				resp.HandlerBlackholeAfterUsageNanos = 0
+			}
+		}
+		if !streamDoneAt.IsZero() && !postStreamLastReturnPrepAt.IsZero() && postStreamLastReturnPrepAt.After(streamDoneAt) {
+			resp.HandlerBlackholeBeforeReturnNanos = time.Since(postStreamLastReturnPrepAt).Nanoseconds()
+		}
+	}
 	h.currentLoopCtx = ctx
 	h.lastUserText = userText
 	ctx.Platform = platform
@@ -1740,7 +2119,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	var loopDriftDetector *DriftDetector
 	if h.driftDetector != nil {
-		loopDriftDetector = h.driftDetector
+		loopDriftDetector = NewDriftDetector(h.driftDetector.windowSize, h.driftDetector.similarityThresh)
+	} else {
+		loopDriftDetector = NewDriftDetector(0, 0)
 	}
 
 	var loopProgressTracker *HarnessProgressTracker
@@ -1759,7 +2140,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			onProgress(text)
 		}
 	}
-	var streamDoneAt time.Time
 	streamDoneCallback := onStreamDone
 	if onStreamDone != nil {
 		streamDoneCallback = func() {
@@ -1837,11 +2217,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}()
 	defer close(heartbeatDone)
 
+	configStartedAt := time.Now()
 	cfg := h.app.GetMaclawLLMConfig()
 	trialReflectEnabled := false
 	if appCfg, err := h.app.LoadConfig(); err == nil {
 		trialReflectEnabled = appCfg.UIMode == "pro" && appCfg.TrialReflectEnabled
 	}
+	preLLMConfigElapsed = time.Since(configStartedAt)
 	trialState := newTrialReflectState(trialReflectEnabled)
 	maxIter := h.app.GetMaclawAgentMaxIterations()
 	h.loopMaxOverride = 0 // reset dynamic override for this loop
@@ -1849,10 +2231,53 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	if ctx.MaxIterations() <= 0 {
 		ctx.SetMaxIterations(maxIter)
 	}
+	toolsStartedAt := time.Now()
 	allTools := h.getTools()
 	tools := h.routeTools(userText, allTools)
 	toolsTokenBudget := estimateToolsTokens(tools)
+	preLLMToolsElapsed = time.Since(toolsStartedAt)
 	httpClient := ctx.HTTPClient
+
+	var recorder *TrajectoryRecorder
+	if h.trajectoryRecorderFactory != nil {
+		recorder = h.trajectoryRecorderFactory()
+	}
+	if recorder != nil {
+		defer recorder.Flush()
+		if loopAdaptiveRetry == nil {
+			loopAdaptiveRetry = NewAdaptiveRetry(recorder)
+		}
+	}
+	recordSystemMessages := func(start int, items []interface{}) {
+		if recorder == nil {
+			return
+		}
+		for i := start; i < len(items); i++ {
+			msg, ok := items[i].(map[string]string)
+			if !ok {
+				continue
+			}
+			if msg["role"] != "system" {
+				continue
+			}
+			recorder.Record("system", msg["content"], nil, "", "")
+		}
+	}
+	recordToolCall := func(id, name, args string) {
+		if recorder == nil {
+			return
+		}
+		recorder.Record("tool", map[string]interface{}{
+			"name":      name,
+			"arguments": args,
+		}, nil, id, "")
+	}
+	recordToolResult := func(id string, content interface{}) {
+		if recorder == nil {
+			return
+		}
+		recorder.Record("tool_result", content, nil, id, "")
+	}
 
 	// Cross-channel activity: report this loop so the other channel can see it.
 	activitySource := "im"
@@ -1883,6 +2308,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		systemPrompt += extra
 	}
 
+	conversationStartedAt := time.Now()
 	var conversation []interface{}
 	conversation = append(conversation, map[string]string{"role": "system", "content": systemPrompt})
 	for _, entry := range history {
@@ -1894,10 +2320,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 
 	history = append(history, conversationEntry{Role: "user", Content: userContent})
+	preLLMConversationElapsed = time.Since(conversationStartedAt)
+	if recorder != nil {
+		recorder.StartSession(ctx.ID, h.app.GetMaclawLLMProviders().Current, cfg.Model, cfg.Protocol, userID, platform, tools)
+		recorder.Record("system", systemPrompt, nil, "", "")
+		recorder.Record("user", userContent, nil, "", "")
+	}
 
 	// maxIter defaults to 300 (MaxAgentIterationsCap).
 	// We still enforce a hard safety cap to prevent runaway loops.
 	effectiveMax := maxIter
+	chatFinalizeGrace := 0
+	if ctx.Kind == LoopKindChat {
+		chatFinalizeGrace = 2
+	}
 	if effectiveMax <= 0 {
 		effectiveMax = maxAgentIterationsCap
 	}
@@ -1911,9 +2347,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			effectiveMax = maxAgentIterationsCap
 		}
 	}
-	var firstLLMRequestStartedAt time.Time
-	var firstLLMResponseAt time.Time
-	firstLLMRequestMarked := false
 
 	for iteration := 0; ; iteration++ {
 		ctx.SetIteration(iteration)
@@ -1933,6 +2366,26 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// ctx may have been updated externally (e.g. by ContinueC).
 			if cm := ctx.MaxIterations(); cm > 0 && cm != effectiveMax {
 				effectiveMax = cm
+			}
+		}
+		if ctx.Kind == LoopKindChat && effectiveMax > 0 {
+			remaining := effectiveMax - iteration
+			if remaining <= 2 {
+				driftPreview := loopDriftDetector.PreviewDrift()
+				if !driftPreview.Drifted || !driftPreview.NeedHumanHelp {
+					autoExtended := effectiveMax + 30
+					if autoExtended > maxAgentIterationsCap {
+						autoExtended = maxAgentIterationsCap
+					}
+					if autoExtended > effectiveMax {
+						effectiveMax = autoExtended
+						ctx.SetMaxIterations(effectiveMax)
+						sendProgress(fmt.Sprintf("⏳ 当前任务较长，已自动扩展推理轮次到 %d 轮，继续完成最终结果…", effectiveMax))
+						if h.traceService != nil && ctx.RunID != "" {
+							h.appendTraceEvent(ctx, "loop.extended", "info", "Auto-extended iteration limit", truncateTraceText(fmt.Sprintf("remaining=%d new_max=%d", remaining, effectiveMax), 220), "", "")
+						}
+					}
+				}
 			}
 		}
 
@@ -1972,7 +2425,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		// --- Normal iteration limit check ---
-		if iteration >= effectiveMax {
+		if iteration >= effectiveMax+chatFinalizeGrace {
 			break
 		}
 
@@ -1992,6 +2445,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		if iteration > 0 {
+			if iteration >= effectiveMax && ctx.Kind == LoopKindChat {
+				sendProgress("⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…")
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": "[收尾要求]\n你已接近最大推理轮次。禁止继续扩展搜索范围；优先基于当前已有信息直接收尾并交付最终结果。若已有文档内容，请立即生成并发送 PDF；若仍无法生成 PDF，请明确说明当前已完成部分、缺少什么，并给出可见终态。[/收尾要求]",
+				})
+			}
 			if isDebug() {
 				if maxIter > 0 || h.loopMaxOverride > 0 {
 					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d/%d 轮）…", iteration+1, effectiveMax))
@@ -2005,9 +2465,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				sendProgress("⏳ 任务较复杂，正在耐心处理中，稍后发你结果…")
 			}
 		}
+		iterationPrepStartedAt := time.Now()
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
 
 		// --- Harness: inject GoalAnchor content ---
+		systemMessagesStart := len(conversation)
 		if loopGoalAnchor != nil && loopGoalAnchor.ShouldAnchor(iteration) {
 			var progressSummary string
 			if loopProgressTracker != nil {
@@ -2031,13 +2493,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		if trialState.enabled && strings.TrimSpace(trialState.pendingNote) != "" {
 			conversation = append(conversation, map[string]string{
-				"role": "system",
+				"role":    "system",
 				"content": trialState.pendingNote,
 			})
 			if h.traceService != nil && ctx.RunID != "" {
 				h.appendTraceEvent(ctx, "trial.adjusted", "info", "Injected reflection note", truncateTraceText(trialState.pendingNote, 220), "", "")
 			}
 			trialState.pendingNote = ""
+		}
+		recordSystemMessages(systemMessagesStart, conversation)
+		if !firstLLMRequestMarked {
+			preLLMIterationPrepElapsed += time.Since(iterationPrepStartedAt)
 		}
 
 		// Notify frontend of new round (for streaming UI) — skip first iteration
@@ -2050,9 +2516,22 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			firstLLMRequestMarked = true
 			firstLLMRequestStartedAt = llmCallStartedAt
 		}
-		resp, err := h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+		streamMetrics := &llmStreamMetrics{}
+		resp, err := h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken, streamMetrics)
+		if !firstLLMRequestMarked || firstLLMRequestBuildElapsed == 0 {
+			firstLLMRequestBuildElapsed += time.Duration(streamMetrics.RequestBuildNanos)
+			firstLLMHTTPDoElapsed += time.Duration(streamMetrics.HTTPDoNanos)
+			firstLLMFirstSSEWaitElapsed += time.Duration(streamMetrics.FirstSSEWaitNanos)
+			firstLLMStreamMaxTokenGapElapsed += time.Duration(streamMetrics.MaxTokenGapNanos)
+			firstLLMIdleTimeoutCount += streamMetrics.IdleTimeoutCount
+			firstLLMIdleTimeoutAfterToken = firstLLMIdleTimeoutAfterToken || streamMetrics.IdleTimeoutAfterToken
+		}
 		if err == nil && firstLLMResponseAt.IsZero() {
-			firstLLMResponseAt = time.Now()
+			if !streamMetrics.FirstTokenAt.IsZero() {
+				firstLLMResponseAt = streamMetrics.FirstTokenAt
+			} else {
+				firstLLMResponseAt = time.Now()
+			}
 		}
 		if err == nil && streamDoneCallback != nil {
 			streamDoneCallback()
@@ -2070,8 +2549,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				category := loopAdaptiveRetry.Classify("llm_request", err)
 				decision := loopAdaptiveRetry.Decide("llm_request", category, 0)
 				loopAdaptiveRetry.RecordFailure("llm_request", category, decision)
+				h.appendTraceEvent(ctx, "trial.retry_decided", "warn", "Adaptive retry decision", truncateTraceText(fmt.Sprintf("llm_request category=%s action=%s attempt=%d", category, decision.Action, decision.Attempt), 220), "", "")
+				h.appendTraceEvidence(ctx, "adaptive_retry", string(category), "retry decision", truncateTraceText(firstNonEmptyTraceText(decision.ErrorContext, err.Error()), 400), "", "llm_request")
 				if decision.Action == "retry" && !ctx.IsCancelled() {
 					log.Printf("[LLM] AdaptiveRetry: %s 错误，%v 后重试: %v", string(category), decision.Delay, err)
+					firstLLMRetryWaitElapsed += decision.Delay
+					firstLLMRetryCount++
 					// Cancellation-aware sleep: abort wait if user cancels.
 					select {
 					case <-time.After(decision.Delay):
@@ -2079,10 +2562,23 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					}
 					if !ctx.IsCancelled() {
 						llmCallStartedAt = time.Now()
-						resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+						retryMetrics := &llmStreamMetrics{}
+						resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
 						if err == nil && firstLLMResponseAt.IsZero() {
-							firstLLMResponseAt = time.Now()
+							if !retryMetrics.FirstTokenAt.IsZero() {
+								firstLLMResponseAt = retryMetrics.FirstTokenAt
+							} else {
+								firstLLMResponseAt = time.Now()
+							}
 						}
+						if !firstLLMRequestMarked || firstLLMRequestBuildElapsed == 0 {
+							firstLLMRequestBuildElapsed += time.Duration(retryMetrics.RequestBuildNanos)
+							firstLLMHTTPDoElapsed += time.Duration(retryMetrics.HTTPDoNanos)
+							firstLLMFirstSSEWaitElapsed += time.Duration(retryMetrics.FirstSSEWaitNanos)
+							firstLLMStreamMaxTokenGapElapsed += time.Duration(retryMetrics.MaxTokenGapNanos)
+						}
+						firstLLMIdleTimeoutCount += retryMetrics.IdleTimeoutCount
+						firstLLMIdleTimeoutAfterToken = firstLLMIdleTimeoutAfterToken || retryMetrics.IdleTimeoutAfterToken
 						if err == nil && streamDoneCallback != nil {
 							streamDoneCallback()
 						}
@@ -2090,16 +2586,29 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 			} else if isRetryableLLMError(err) && !ctx.IsCancelled() {
 				log.Printf("[LLM] 首次请求超时/网络错误，2s 后重试: %v", err)
+				firstLLMRetryWaitElapsed += 2 * time.Second
+				firstLLMRetryCount++
 				select {
 				case <-time.After(2 * time.Second):
 				case <-ctx.CancelC:
 				}
 				if !ctx.IsCancelled() {
 					llmCallStartedAt = time.Now()
-					resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+					retryMetrics := &llmStreamMetrics{}
+					resp, err = h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
 					if err == nil && firstLLMResponseAt.IsZero() {
-						firstLLMResponseAt = time.Now()
+						if !retryMetrics.FirstTokenAt.IsZero() {
+							firstLLMResponseAt = retryMetrics.FirstTokenAt
+						} else {
+							firstLLMResponseAt = time.Now()
+						}
 					}
+					firstLLMRequestBuildElapsed += time.Duration(retryMetrics.RequestBuildNanos)
+					firstLLMHTTPDoElapsed += time.Duration(retryMetrics.HTTPDoNanos)
+					firstLLMFirstSSEWaitElapsed += time.Duration(retryMetrics.FirstSSEWaitNanos)
+					firstLLMStreamMaxTokenGapElapsed += time.Duration(retryMetrics.MaxTokenGapNanos)
+					firstLLMIdleTimeoutCount += retryMetrics.IdleTimeoutCount
+					firstLLMIdleTimeoutAfterToken = firstLLMIdleTimeoutAfterToken || retryMetrics.IdleTimeoutAfterToken
 					if err == nil && streamDoneCallback != nil {
 						streamDoneCallback()
 					}
@@ -2108,25 +2617,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		// Accumulate token usage stats
 		if resp != nil {
-			var input, output int
-			if resp.Usage != nil {
-				u := resp.Usage
-				input = u.PromptTokens
-				output = u.CompletionTokens
-				if input == 0 && u.InputTokens > 0 {
-					input = u.InputTokens
-				}
-				if output == 0 && u.OutputTokens > 0 {
-					output = u.OutputTokens
-				}
-			} else {
-				// Fallback: estimate tokens when provider doesn't return usage in streaming mode.
-				input = estimateConversationTokens(conversation)
-				if len(resp.Choices) > 0 {
-					output = estimateBytesToTokens([]byte(resp.Choices[0].Message.Content))
-				}
-			}
+			usageStartedAt := time.Now()
+			input, output := deriveLLMTokenUsage(resp, conversation)
 			h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
+			lastLLMInputTokens = input
+			lastLLMOutputTokens = output
+			if !streamDoneAt.IsZero() {
+				handlerPostStreamUsageElapsed += time.Since(usageStartedAt)
+				postStreamUsageDoneAt = time.Now()
+			}
 		}
 		if err != nil {
 			// If the error is due to cancellation, return a clean message
@@ -2149,10 +2648,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			return &IMAgentResponse{Error: "LLM 未返回有效回复"}
 		}
 
+		choiceStartedAt := time.Now()
 		choice := resp.Choices[0]
+		if !streamDoneAt.IsZero() {
+			handlerPostStreamChoiceElapsed += time.Since(choiceStartedAt)
+		}
 
 		// Kimi's kimi-for-coding puts all output in reasoning_content with empty content.
 		// Promote reasoning to content so the assistant message is never empty.
+		assistantMsgStartedAt := time.Now()
 		msgContent := choice.Message.Content
 		msgReasoning := choice.Message.ReasoningContent
 		if msgContent == "" && msgReasoning != "" {
@@ -2173,23 +2677,51 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			assistantMsg["tool_calls"] = choice.Message.ToolCalls
 		}
 		conversation = append(conversation, assistantMsg)
+		if recorder != nil {
+			recorder.Record("assistant", msgContent, choice.Message.ToolCalls, "", msgReasoning)
+		}
+		if !streamDoneAt.IsZero() {
+			handlerPostStreamAssistantMsgElapsed += time.Since(assistantMsgStartedAt)
+		}
 
 		// Update cross-channel activity every 5 iterations.
 		if iteration%5 == 0 {
 			reportActivity(iteration, effectiveMax, msgContent)
 		}
 
+		historyAppendStartedAt := time.Now()
 		historyEntry := conversationEntry{Role: "assistant", Content: msgContent, ReasoningContent: msgReasoning}
 		if len(choice.Message.ToolCalls) > 0 {
 			historyEntry.ToolCalls = choice.Message.ToolCalls
 		}
 		history = append(history, historyEntry)
+		if !streamDoneAt.IsZero() {
+			handlerPostStreamHistoryAppendElapsed += time.Since(historyAppendStartedAt)
+		}
 
+		if !streamDoneAt.IsZero() {
+			noToolBranchStartedAt := time.Now()
+			defer func() {
+				handlerPostStreamNoToolBranchElapsed += time.Since(noToolBranchStartedAt)
+			}()
+		}
 		// No tool calls → final response.
 		// NOTE: Some LLM providers (e.g. DeepSeek, Qwen) return finish_reason="stop"
 		// even when tool_calls are present. We must check tool_calls first and only
 		// treat the response as final when there are genuinely no tool calls.
 		if len(choice.Message.ToolCalls) == 0 {
+			if shouldForceAnotherRoundForDeliverable(msgContent, len(choice.Message.ToolCalls), 0) {
+				systemMessagesStart := len(conversation)
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": "[交付要求]\n不要再重复承诺将要生成、整理或发送结果。请立即调用真实工具完成交付；若目标是文档，优先调用当前可用的文档/文件交付工具；若确实失败，必须直接说明失败原因，而不是继续说‘马上处理’。[/交付要求]",
+				})
+				recordSystemMessages(systemMessagesStart, conversation)
+				if h.traceService != nil && ctx.RunID != "" {
+					h.appendTraceEvent(ctx, "delivery.nudged", "warn", "Forced deliverable follow-up", truncateTraceText(msgContent, 220), "", "")
+				}
+				continue
+			}
 			// Check for capability gap before returning.
 			// Uses SkillSearcher (SkillMarket → ClawHub mirror → GitHub) for
 			// unified search order, then installAndExecuteSkill for the install
@@ -2201,39 +2733,36 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				searcher := NewSkillSearcher(smClient)
 				best, searchErr := searcher.SearchAndInstall(goCtx, userText)
 				if searchErr == nil && best != nil {
-					sendProgress(fmt.Sprintf("📦 找到 Skill: %s", best.Name))
+					log.Printf("[skill-auto] found skill: %s (%s)", best.Name, best.Status)
 					installResult := h.installAndExecuteSkill(goCtx, best, userText,
-						func(status string) { sendProgress(status) })
+						func(status string) {
+							log.Printf("[skill-auto] %s", status)
+						})
 					goCancel()
 					if strings.HasPrefix(installResult, "✅") {
 						resp := &IMAgentResponse{Text: stripThinkingTags(installResult)}
-						if !firstLLMRequestStartedAt.IsZero() {
-							resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
-						}
-						if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
-							resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
-						}
 						if !streamDoneAt.IsZero() {
-							resp.HandlerTailNanos = time.Since(streamDoneAt).Nanoseconds()
+							postStreamLastReturnPrepAt = time.Now()
 						}
+						attachLLMTelemetry(resp)
 						resp.CapabilityGapNanos = time.Since(capabilityGapStartedAt).Nanoseconds()
 						h.saveConversationHistoryTimed(userID, history, resp)
 						return resp
 					}
+					log.Printf("[skill-auto] skill install/execute finished without user-visible adoption: %s", installResult)
 				} else {
 					goCancel()
 				}
 			}
 			resp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
-			if !firstLLMRequestStartedAt.IsZero() {
-				resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
-			}
-			if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
-				resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
-			}
 			if !streamDoneAt.IsZero() {
-				resp.HandlerTailNanos = time.Since(streamDoneAt).Nanoseconds()
+				postStreamLastReturnPrepAt = time.Now()
+				handlerPostStreamResponseStartedAt := time.Now()
+				defer func() {
+					handlerPostStreamResponseElapsed += time.Since(handlerPostStreamResponseStartedAt)
+				}()
 			}
+			attachLLMTelemetry(resp)
 			h.saveConversationHistoryTimed(userID, history, resp)
 			return resp
 		}
@@ -2269,24 +2798,31 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if !isDebug() {
 				toolOnProgress = nil
 			}
+			toolExecStartedAt := time.Now()
+			recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 			result := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
-			toolResults = append(toolResults, result)
-			if h.traceService != nil && ctx.RunID != "" {
-				h.appendTraceEvent(ctx, "tool.executed", "info", tc.Function.Name, truncateTraceText(result, 220), "", tc.Function.Name)
-				h.appendTraceEvidence(ctx, "ai_tool", traceCategoryForToolResult(tc.Function.Name, result), tc.Function.Name, truncateTraceText(result, 400), "", tc.Function.Name)
-				if tc.Function.Name == "create_session" && h.manager != nil {
-					if linkedRunID := h.linkTraceToLatestAISession(ctx, result); linkedRunID != "" {
-						h.appendTraceEvent(ctx, "session.linked", "info", "Linked remote session", linkedRunID, "", "")
-					}
-				}
+			traceResult := result
+			toolContent := result
+			if strings.HasPrefix(result, "[screenshot_base64]") {
+				traceResult = "截图已成功捕获，将作为图片发送给用户。"
+				toolContent = traceResult
 			}
+			if result == "[screenshot_sent]" {
+				traceResult = "截图已成功捕获并发送给用户。"
+				toolContent = traceResult
+			}
+			if strings.HasPrefix(result, "[file_base64|") {
+				traceResult = "文件已生成，等待解析发送结果。"
+			}
+			if !streamDoneAt.IsZero() {
+				handlerPostStreamToolExecElapsed += time.Since(toolExecStartedAt)
+			}
+			toolResults = append(toolResults, traceResult)
 
 			// Intercept direct screenshot results: extract base64 image data
 			// so it can be delivered via IM image channel instead of text.
-			toolContent := result
 			if strings.HasPrefix(result, "[screenshot_base64]") {
 				pendingImageKey = strings.TrimPrefix(result, "[screenshot_base64]")
-				toolContent = "截图已成功捕获，将作为图片发送给用户。"
 			}
 
 			// Intercept session-based screenshot: image was already pushed
@@ -2294,7 +2830,6 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// the agent loop — no image data to carry in the response.
 			if result == "[screenshot_sent]" {
 				screenshotAlreadySent = true
-				toolContent = "截图已成功捕获并发送给用户。"
 			}
 
 			// Intercept file send results: collect ALL files (not just the last one).
@@ -2338,11 +2873,22 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						} else {
 							toolContent = fmt.Sprintf("文件 %s 已准备好，将发送给用户。", parts[0])
 						}
+						traceResult = toolContent
+					}
+				}
+			}
+			if h.traceService != nil && ctx.RunID != "" {
+				h.appendTraceEvent(ctx, "tool.executed", "info", tc.Function.Name, truncateTraceText(traceResult, 220), "", tc.Function.Name)
+				h.appendTraceEvidence(ctx, "ai_tool", traceCategoryForToolResult(tc.Function.Name, traceResult), tc.Function.Name, truncateTraceText(traceResult, 400), "", tc.Function.Name)
+				if tc.Function.Name == "create_session" && h.manager != nil {
+					if linkedRunID := h.linkTraceToLatestAISession(ctx, result); linkedRunID != "" {
+						h.appendTraceEvent(ctx, "session.linked", "info", "Linked remote session", linkedRunID, "", "")
 					}
 				}
 			}
 
 			truncated := truncateToolResultForTool(tc.Function.Name, toolContent)
+			recordToolResult(tc.ID, truncated)
 			conversation = append(conversation, map[string]interface{}{
 				"role":         "tool",
 				"tool_call_id": tc.ID,
@@ -2366,6 +2912,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					conversation = append(conversation, map[string]string{
 						"role": "system", "content": driftResult.ReplanPrompt,
 					})
+					recordSystemMessages(len(conversation)-1, conversation)
 					loopDriftDetector.ResetWindow()
 					if driftResult.NeedHumanHelp {
 						resp := &IMAgentResponse{
@@ -2398,12 +2945,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// If a direct screenshot was captured, return it immediately as an image response.
 		if pendingImageKey != "" {
 			resp := &IMAgentResponse{}
-			if !firstLLMRequestStartedAt.IsZero() {
-				resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+			if !streamDoneAt.IsZero() {
+				postStreamLastReturnPrepAt = time.Now()
 			}
-			if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
-				resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
-			}
+			attachLLMTelemetry(resp)
 			h.saveConversationHistoryTimed(userID, history, resp)
 			// Desktop platform: save to local file and return path + thumbnail
 			if platform == "desktop" {
@@ -2433,12 +2978,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// stop the loop immediately — no further agent reasoning needed.
 		if screenshotAlreadySent {
 			resp := &IMAgentResponse{Text: "📷 截图已发送"}
-			if !firstLLMRequestStartedAt.IsZero() {
-				resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
-			}
-			if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
-				resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
-			}
+			attachLLMTelemetry(resp)
 			h.saveConversationHistoryTimed(userID, history, resp)
 			return resp
 		}
@@ -2446,12 +2986,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// If file(s) were prepared, return them for delivery.
 		if len(pendingFiles) > 0 {
 			resp := &IMAgentResponse{}
-			if !firstLLMRequestStartedAt.IsZero() {
-				resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
+			if !streamDoneAt.IsZero() {
+				postStreamLastReturnPrepAt = time.Now()
 			}
-			if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
-				resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
-			}
+			attachLLMTelemetry(resp)
 			h.saveConversationHistoryTimed(userID, history, resp)
 			if platform == "desktop" {
 				fileMaterializeStartedAt := time.Now()
@@ -2530,31 +3068,28 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if onNewRound != nil {
 			onNewRound()
 		}
-		bonusResp, err := h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken)
+		bonusMetrics := &llmStreamMetrics{}
+		bonusResp, err := h.doLLMRequestStream(loopCtx, cfg, conversation, tools, httpClient, onToken, bonusMetrics)
+		firstLLMRequestBuildElapsed += time.Duration(bonusMetrics.RequestBuildNanos)
+		firstLLMHTTPDoElapsed += time.Duration(bonusMetrics.HTTPDoNanos)
+		firstLLMFirstSSEWaitElapsed += time.Duration(bonusMetrics.FirstSSEWaitNanos)
+		firstLLMStreamMaxTokenGapElapsed += time.Duration(bonusMetrics.MaxTokenGapNanos)
+		firstLLMIdleTimeoutCount += bonusMetrics.IdleTimeoutCount
+		firstLLMIdleTimeoutAfterToken = firstLLMIdleTimeoutAfterToken || bonusMetrics.IdleTimeoutAfterToken
 		if err == nil && streamDoneCallback != nil {
 			streamDoneCallback()
 		}
 		// Accumulate token usage stats for bonus round
 		if bonusResp != nil {
-			var input, output int
-			if bonusResp.Usage != nil {
-				u := bonusResp.Usage
-				input = u.PromptTokens
-				output = u.CompletionTokens
-				if input == 0 && u.InputTokens > 0 {
-					input = u.InputTokens
-				}
-				if output == 0 && u.OutputTokens > 0 {
-					output = u.OutputTokens
-				}
-			} else {
-				// Fallback: estimate tokens when provider doesn't return usage in streaming mode.
-				input = estimateConversationTokens(conversation)
-				if len(bonusResp.Choices) > 0 {
-					output = estimateBytesToTokens([]byte(bonusResp.Choices[0].Message.Content))
-				}
-			}
+			usageStartedAt := time.Now()
+			input, output := deriveLLMTokenUsage(bonusResp, conversation)
 			h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
+			lastLLMInputTokens = input
+			lastLLMOutputTokens = output
+			if !streamDoneAt.IsZero() {
+				handlerPostStreamUsageElapsed += time.Since(usageStartedAt)
+				postStreamUsageDoneAt = time.Now()
+			}
 		}
 		if err == nil && len(bonusResp.Choices) > 0 {
 			bc := bonusResp.Choices[0]
@@ -2574,6 +3109,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				assistantMsg["tool_calls"] = bc.Message.ToolCalls
 			}
 			conversation = append(conversation, assistantMsg)
+			if recorder != nil {
+				recorder.Record("assistant", bcContent, bc.Message.ToolCalls, "", bcReasoning)
+			}
 			history = append(history, conversationEntry{
 				Role: "assistant", Content: bcContent, ReasoningContent: bcReasoning, ToolCalls: bc.Message.ToolCalls,
 			})
@@ -2584,8 +3122,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				if !isDebug() {
 					toolOnProgress = nil
 				}
+				toolExecStartedAt := time.Now()
+				recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 				toolResult := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+				if !streamDoneAt.IsZero() {
+					handlerPostStreamToolExecElapsed += time.Since(toolExecStartedAt)
+				}
 				truncated := truncateToolResultForTool(tc.Function.Name, toolResult)
+				recordToolResult(tc.ID, truncated)
 				conversation = append(conversation, map[string]interface{}{
 					"role":         "tool",
 					"tool_call_id": tc.ID,
@@ -2598,23 +3142,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		h.saveConversationHistoryTimed(userID, history, &IMAgentResponse{})
-		resp := &IMAgentResponse{Text: "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。"}
-		if !firstLLMRequestStartedAt.IsZero() {
-			resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
-		}
-		if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
-			resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
-		}
+		resp := &IMAgentResponse{Text: "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。", Deferred: true}
+		attachLLMTelemetry(resp)
 		return resp
 	}
 
 	resp := &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
-	if !firstLLMRequestStartedAt.IsZero() {
-		resp.PreLLMPrepNanos = firstLLMRequestStartedAt.Sub(loopStartedAt).Nanoseconds()
-	}
-	if !firstLLMRequestStartedAt.IsZero() && !firstLLMResponseAt.IsZero() {
-		resp.FirstTokenWaitNanos = firstLLMResponseAt.Sub(firstLLMRequestStartedAt).Nanoseconds()
-	}
+	attachLLMTelemetry(resp)
 	h.saveConversationHistoryTimed(userID, history, resp)
 	return resp
 }

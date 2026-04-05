@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
@@ -21,6 +22,21 @@ const (
 	MaxDynamicRouted = 18
 )
 
+var logDetailEnabled atomic.Bool
+
+func init() {
+	logDetailEnabled.Store(false)
+	// Ensure every core tool is also recognized as builtin.
+	for name := range CoreToolNames {
+		BuiltinToolNames[name] = true
+	}
+}
+
+// SetLogDetailEnabled updates the detailed routing log gate.
+func SetLogDetailEnabled(enabled bool) {
+	logDetailEnabled.Store(enabled)
+}
+
 // CoreToolNames are always included regardless of the user message.
 var CoreToolNames = map[string]bool{
 	"list_sessions": true, "create_session": true,
@@ -29,6 +45,7 @@ var CoreToolNames = map[string]bool{
 	"bash": true, "read_file": true, "write_file": true, "list_directory": true,
 	"call_mcp_tool": true, "list_skills": true, "run_skill": true,
 	"screenshot": true, "send_file": true,
+	"open": true, "craft_tool": true,
 	"memory": true,
 	"web_search": true, "web_fetch": true,
 	"set_nickname": true,
@@ -555,6 +572,9 @@ func writeRouteLog(
 	selectedNames []string,
 	rerankerResult []string,
 ) {
+	if !logDetailEnabled.Load() {
+		return
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return

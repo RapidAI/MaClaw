@@ -62,6 +62,10 @@ type TUIAgentHandler struct {
 
 // NewTUIAgentHandler 创建 Agent 处理器。
 func NewTUIAgentHandler(sessionMgr *TUISessionManager, opts ...AgentHandlerOption) *TUIAgentHandler {
+	responseHeaderTimeout := time.Duration(corelib.DefaultLLMTimeoutSec) * time.Second
+	if cfg, err := commands.LoadLLMConfig(); err == nil {
+		responseHeaderTimeout = time.Duration(cfg.EffectiveTimeoutSec()) * time.Second
+	}
 	h := &TUIAgentHandler{
 		sessionMgr:       sessionMgr,
 		httpClient:       &http.Client{Transport: &http.Transport{
@@ -71,7 +75,7 @@ func NewTUIAgentHandler(sessionMgr *TUISessionManager, opts ...AgentHandlerOptio
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
 			TLSHandshakeTimeout:   15 * time.Second,
-			ResponseHeaderTimeout: 180 * time.Second,
+			ResponseHeaderTimeout: responseHeaderTimeout,
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   20,
 			IdleConnTimeout:       90 * time.Second,
@@ -152,7 +156,7 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 		return AgentResponse{Error: "LLM 未配置，请先设置 maclaw_llm_url 和 maclaw_llm_model"}
 	}
 
-	systemPrompt := h.buildSystemPrompt()
+	systemPrompt := h.buildSystemPromptWithHistory(userText, history)
 	tools := h.buildToolDefinitions()
 
 	// Router: 当工具总数 > MaxToolBudget 时裁剪
@@ -224,20 +228,44 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 }
 
 func (h *TUIAgentHandler) buildSystemPrompt() string {
+	return h.buildSystemPromptWithHistory("", nil)
+}
+
+func (h *TUIAgentHandler) buildSystemPromptWithHistory(userText string, history []map[string]string) string {
+	return h.buildSystemPromptWithFirstTurn(userText, isFirstTurnHistory(userText, history))
+}
+
+func isFirstTurnHistory(userText string, history []map[string]string) bool {
+	if len(history) == 0 {
+		return true
+	}
+	if len(history) == 1 && history[0]["role"] == "user" && history[0]["content"] == userText {
+		return true
+	}
+	return false
+}
+
+func buildTUIIdentityPrompt(memoryStore *memory.Store, roleTitle string, withTools bool) string {
+	if memoryStore != nil {
+		if si := memoryStore.SelfIdentitySummary(600); si != "" {
+			suffix := "你运行在 TUI 终端中。你可以使用工具来帮助用户完成任务。"
+			if !withTools {
+				suffix = "你运行在 TUI 终端中。请用简洁的中文回答用户问题。"
+			}
+			return fmt.Sprintf("你的自我认知（来自记忆）：%s\n%s", si, suffix)
+		}
+	}
+	if withTools {
+		return fmt.Sprintf("你是 MaClaw %s，运行在 TUI 终端中。你可以使用工具来帮助用户完成任务。", roleTitle)
+	}
+	return fmt.Sprintf("你是 MaClaw %s，运行在 TUI 终端中。请用简洁的中文回答用户问题。", roleTitle)
+}
+
+func (h *TUIAgentHandler) buildSystemPromptWithFirstTurn(_ string, isFirstTurn bool) string {
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
 	roleTitle := tuiRoleTitle()
-
-	// Override identity from memory self_identity if present.
-	var identity string
-	if h.memoryStore != nil {
-		if si := h.memoryStore.SelfIdentitySummary(600); si != "" {
-			identity = fmt.Sprintf("你的自我认知（来自记忆）：%s\n你运行在 TUI 终端中。你可以使用工具来帮助用户完成任务。", si)
-		}
-	}
-	if identity == "" {
-		identity = fmt.Sprintf("你是 MaClaw %s，运行在 TUI 终端中。你可以使用工具来帮助用户完成任务。", roleTitle)
-	}
+	identity := buildTUIIdentityPrompt(h.memoryStore, roleTitle, true)
 
 	prompt := fmt.Sprintf(`%s
 当前系统: %s/%s
@@ -309,19 +337,9 @@ exec_background 通过 nohup 在服务器端后台运行，SSH 断连不影响�
 		}
 	}
 
-	// 注入主动记忆指令 — 引导 Agent 在会话中主动保存非显而易见的技术发现
-	if h.memoryStore != nil {
-		prompt += `
-
-## 主动记忆
-当你在会话中发现以下类型的非显而易见信息时，应主动使用 memory(action=save) 保存：
-- 调试过程中发现的 workaround 或未文档化行为
-- 配置细节、环境特殊性
-- 用户项目的架构决策或约定
-- 重要的错误原因和解决方案
-
-保存时使用 category=project_knowledge 或 instruction，并添加 tag "proactive"。
-每次会话最多主动保存 5 条。保存后在回复中简要提示：💾 已主动记录: <摘要>`
+	// 注入主动记忆指令 — 引导 Agent 在首轮会话中主动保存非显而易见的技术发现
+	if h.memoryStore != nil && isFirstTurn {
+		prompt += "\n\n" + memory.BuildTUIProactiveMemoryPrompt()
 	}
 
 	return prompt
@@ -482,13 +500,6 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"session_id": map[string]interface{}{"type": "string", "description": "会话 ID"},
 			"file_path":  map[string]interface{}{"type": "string", "description": "文件路径"},
 		}, []string{"session_id", "file_path"}),
-		toolDef("generate_pdf", "将 Markdown 内容生成为排版精美的 PDF 文件。支持中文、标题、列表、粗体等格式。适用于生成需求文档、设计文档、报告、总结等。", map[string]interface{}{
-			"content":     map[string]interface{}{"type": "string", "description": "Markdown 格式的文档内容"},
-			"title":       map[string]interface{}{"type": "string", "description": "文档标题/项目名称（可选）"},
-			"doc_type":    map[string]interface{}{"type": "string", "description": "文档类型: requirements/design/task_plan（可选）"},
-			"paper_size":  map[string]interface{}{"type": "string", "description": "纸张大小: a4/b5（可选，默认 a4）"},
-			"output_path": map[string]interface{}{"type": "string", "description": "输出文件路径（可选）"},
-		}, []string{"content"}),
 		toolDef("parallel_execute", "并发执行多个命令", map[string]interface{}{
 			"commands": map[string]interface{}{"type": "array", "description": "命令列表", "items": map[string]interface{}{"type": "string"}},
 		}, []string{"commands"}),
@@ -656,8 +667,6 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 	// --- 实用工具 ---
 	case "send_file":
 		return h.toolSendFile(args)
-	case "generate_pdf":
-		return h.toolGeneratePDF(args)
 	case "parallel_execute":
 		return h.toolParallelExecute(args)
 	case "switch_llm_provider":

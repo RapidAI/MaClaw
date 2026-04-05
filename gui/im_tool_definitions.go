@@ -130,14 +130,6 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"file_name":     map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）"},
 				"forward_to_im": map[string]string{"type": "boolean", "description": "是否同时转发到用户的 IM 平台（飞书/微信/QQ等）。仅在用户明确要求发送到飞书、微信、QQ等 IM 时设为 true，默认 false"},
 			}, []string{"path"}),
-		toolDef("generate_pdf", "将 Markdown 内容生成为排版精美的 PDF 文件。支持中文、标题、列表、粗体等格式。适用于生成需求文档、设计文档、报告、总结等。生成后可用 send_file 发送给用户或用 open 打开预览。",
-			map[string]interface{}{
-				"content":     map[string]string{"type": "string", "description": "Markdown 格式的文档内容"},
-				"title":       map[string]string{"type": "string", "description": "文档标题/项目名称（显示在 PDF 封面，可选，默认'文档'）"},
-				"doc_type":    map[string]string{"type": "string", "description": "文档类型: requirements(需求文档)/design(设计文档)/task_plan(任务计划)，可选，影响封面样式"},
-				"paper_size":  map[string]string{"type": "string", "description": "纸张大小: a4/b5（可选，默认 a4）"},
-				"output_path": map[string]string{"type": "string", "description": "输出文件路径（可选，默认保存到用户主目录）"},
-			}, []string{"content"}),
 		toolDef("open", "用操作系统默认程序打开文件或网址。例如：打开 PDF 用默认阅读器、打开 .xlsx 用 Excel、打开 URL 用默认浏览器、打开文件夹用资源管理器。也支持 mailto: 链接。",
 			map[string]interface{}{
 				"target": map[string]string{"type": "string", "description": "要打开的文件路径、目录路径或 URL（如 C:\\Users\\test\\doc.pdf、https://example.com、mailto:test@example.com）"},
@@ -193,7 +185,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"json_data": map[string]string{"type": "string", "description": "要导入的配置 JSON 字符串"},
 			}, []string{"json_data"}),
 		// --- Agent 自管理工具 ---
-		toolDef("set_max_iterations", fmt.Sprintf("调整最大推理轮数。设置后会持久化保存，后续对话也会生效。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。范围 %d-%d。", minAgentIterations, maxAgentIterationsCap),
+		toolDef("set_max_iterations", fmt.Sprintf("调整当前任务的最大推理轮数。仅影响当前推理循环，不会修改设置页中的持久化配置。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。范围 %d-%d。", minAgentIterations, maxAgentIterationsCap),
 			map[string]interface{}{
 				"max_iterations": map[string]string{"type": "integer", "description": fmt.Sprintf("新的最大轮数（%d-%d）", minAgentIterations, maxAgentIterationsCap)},
 				"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},

@@ -31,6 +31,7 @@ func makeBuiltinDefs() []map[string]interface{} {
 		toolDef("list_directory", "列出目录", nil, nil),
 		toolDef("send_file", "发送文件", nil, nil),
 		toolDef("open", "打开文件或网址", nil, nil),
+		toolDef("craft_tool", "自动生成脚本", nil, nil),
 		toolDef("memory", "管理长期记忆", nil, nil),
 		toolDef("send_and_observe", "发送并观察输出", nil, nil),
 		toolDef("control_session", "控制会话", nil, nil),
