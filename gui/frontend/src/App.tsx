@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, PollWeixinQRStatus, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, ListBackgroundLoops } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, PollWeixinQRStatus, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
@@ -80,6 +80,21 @@ interface RemoteCenterHubOption {
     enrollment_mode?: string;
     status?: string;
 }
+
+interface SidebarTokenUsageStat {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    InputTokens?: number;
+    OutputTokens?: number;
+    TotalTokens?: number;
+}
+
+const sidebarProviderAliases: Record<string, string[]> = {
+    "智谱": ["GLM(智谱)", "GLM (智谱)"],
+    "GLM(智谱)": ["智谱", "GLM (智谱)"],
+    "GLM (智谱)": ["智谱", "GLM(智谱)"],
+};
 
 const PROJECT_PAGE_SIZE = 5;
 
@@ -1609,10 +1624,13 @@ const ToolConfiguration = ({
     );
 };
 
+type DiWorkerTab = 'welcome' | 'colleagues' | 'new-task' | 'history';
+
 function App() {
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
+    const [diWorkerTab, setDiWorkerTab] = useState<DiWorkerTab>('welcome');
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
     const navTabRef = useRef(navTab);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
@@ -1660,6 +1678,7 @@ function App() {
     // MaClaw LLM online status (lobster indicator)
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
+    const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<{ provider: string; input: number; output: number; total: number }>({ provider: '', input: 0, output: 0, total: 0 });
     const maclawLLMFirstPingDone = useRef(false);
 
     // ClawNet P2P network running status (globe indicator)
@@ -1757,9 +1776,9 @@ function App() {
     const [toastMessage, setToastMessage] = useState<string>("");
     const [showToast, setShowToast] = useState(false);
     const [skills, setSkills] = useState<main.Skill[]>([]);
+
     const [showAddSkillModal, setShowAddSkillModal] = useState(false);
     const [gossipAllowed, setGossipAllowed] = useState(true);
-    const aiAssistant = useAIAssistant();
     const [showRemoteActivationModal, setShowRemoteActivationModal] = useState(false);
     const [pendingRemoteLaunchTool, setPendingRemoteLaunchTool] = useState<string>("");
     const [remoteActivationDraft, setRemoteActivationDraft] = useState({ hub_url: "", hubcenter_url: "", email: "" });
@@ -2376,6 +2395,9 @@ function App() {
 
     const switchTool = (tool: string) => {
         setNavTab(tool);
+        if (tool === 'diworker') {
+            setDiWorkerTab('welcome');
+        }
         if (isToolTab(tool)) {
             setActiveTool(tool);
             setActiveTab(0);
@@ -2431,6 +2453,180 @@ function App() {
     };
 
     const t = translate;
+    const diWorkerTabs: { id: DiWorkerTab; icon: string; label: string }[] = [
+        { id: 'welcome', icon: '🏠', label: lang === 'zh-Hans' ? '首页' : lang === 'zh-Hant' ? '首頁' : 'Welcome' },
+        { id: 'colleagues', icon: '🧑‍🤝‍🧑', label: lang === 'zh-Hans' ? '找同事' : lang === 'zh-Hant' ? '找同事' : 'Colleagues' },
+        { id: 'new-task', icon: '📝', label: lang === 'zh-Hans' ? '新建任务' : lang === 'zh-Hant' ? '新建任務' : 'New Task' },
+        { id: 'history', icon: '🕘', label: lang === 'zh-Hans' ? '历史任务' : lang === 'zh-Hant' ? '歷史任務' : 'History' },
+    ];
+
+    const renderDiWorkerPanel = () => {
+        const sectionTitle = lang === 'zh-Hans' ? 'DiWorker，你的数字化同事' : lang === 'zh-Hant' ? 'DiWorker，你的數字化同事' : 'DiWorker, your digital coworker';
+        const sectionDesc = lang === 'zh-Hans'
+            ? '先把四页工作台骨架搭起来，后续逐步接入真实同事、任务与中心端数据。'
+            : lang === 'zh-Hant'
+                ? '先把四頁工作台骨架搭起來，後續逐步接入真實同事、任務與中心端資料。'
+                : 'This is the first DiWorker shell. Real colleagues, tasks, and center-backed data will be wired in next.';
+
+        const cardStyle: React.CSSProperties = {
+            background: '#fff',
+            border: '1px solid var(--border-color)',
+            borderRadius: '12px',
+            padding: '16px',
+            boxShadow: '0 4px 14px rgba(15, 23, 42, 0.04)',
+        };
+
+        if (diWorkerTab === 'history') {
+            return (
+                <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                    <div style={{ padding: '20px 20px 0' }}>
+                        <div style={cardStyle}>
+                            <div style={{ fontSize: '1rem', fontWeight: 700, color: '#1f2937', marginBottom: '6px' }}>{sectionTitle}</div>
+                            <div style={{ fontSize: '0.82rem', color: '#6b7280' }}>{lang === 'zh-Hans' ? '历史任务页先复用现有远程会话列表，后续会把 session 语义进一步收敛成 task。' : lang === 'zh-Hant' ? '歷史任務頁先復用現有遠端會話列表，後續會把 session 語義進一步收斂成 task。' : 'History initially reuses the existing remote session list and will later be refined into task semantics.'}</div>
+                        </div>
+                    </div>
+                    <div style={{ flex: 1, overflowY: 'auto', padding: '20px', overflowX: 'hidden' }}>
+                        <RemoteSessionList
+                            remoteSessions={remoteSessions}
+                            remoteInputDrafts={remoteInputDrafts}
+                            setRemoteInputDrafts={setRemoteInputDrafts}
+                            interruptRemoteSession={interruptRemoteSession}
+                            killRemoteSession={killRemoteSession}
+                            refreshSessionsOnly={refreshSessionsOnly}
+                            showToastMessage={showToastMessage}
+                            translate={translate}
+                            formatText={formatText}
+                            localizeText={localizeText}
+                        />
+                    </div>
+                </div>
+            );
+        }
+
+        if (diWorkerTab === 'new-task') {
+            return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '20px', height: '100%', overflowY: 'auto' }}>
+                    <div style={cardStyle}>
+                        <div style={{ fontSize: '1rem', fontWeight: 700, color: '#1f2937', marginBottom: '6px' }}>{sectionTitle}</div>
+                        <div style={{ fontSize: '0.82rem', color: '#6b7280' }}>{lang === 'zh-Hans' ? '新建任务页先复用现有 AI 输入与任务能力，后续补“选择同事”“输出格式”“任务模板”。' : lang === 'zh-Hant' ? '新建任務頁先復用現有 AI 輸入與任務能力，後續補「選擇同事」「輸出格式」「任務模板」。' : 'New Task starts from the existing AI input and task capabilities, with colleague selection and templates added later.'}</div>
+                    </div>
+                    <div style={cardStyle}>
+                        <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#374151', marginBottom: '10px' }}>{lang === 'zh-Hans' ? '任务草拟器' : lang === 'zh-Hant' ? '任務草擬器' : 'Task Drafting'}</div>
+                        <div style={{ fontSize: '0.8rem', color: '#6b7280', marginBottom: '12px' }}>{lang === 'zh-Hans' ? '先用 AI 助手描述需求、整理素材、起草任务说明。' : lang === 'zh-Hant' ? '先用 AI 助手描述需求、整理素材、起草任務說明。' : 'Use the AI assistant to describe work, organize context, and draft the task.'}</div>
+                        <button className="btn-primary" onClick={() => switchTool('ai')} style={{ padding: '8px 14px', fontSize: '0.82rem' }}>
+                            {lang === 'zh-Hans' ? '打开 AI 助手' : lang === 'zh-Hant' ? '打開 AI 助手' : 'Open AI Assistant'}
+                        </button>
+                    </div>
+                    <div style={cardStyle}>
+                        <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#374151', marginBottom: '10px' }}>{lang === 'zh-Hans' ? '任务执行骨架' : lang === 'zh-Hant' ? '任務執行骨架' : 'Task Execution Shell'}</div>
+                        <div style={{ fontSize: '0.8rem', color: '#6b7280', marginBottom: '14px' }}>{lang === 'zh-Hans' ? '下面直接复用现有任务面板，后续会收敛成 DiWorker 任务页。' : lang === 'zh-Hant' ? '下面直接復用現有任務面板，後續會收斂成 DiWorker 任務頁。' : 'The panel below directly reuses the existing task board and will later be shaped into the DiWorker task page.'}</div>
+                        <div style={{ minHeight: '520px', border: '1px solid #eef2f7', borderRadius: '10px', overflow: 'hidden' }}>
+                            <ClawNetTabContainer lang={lang} clawNetRunning={clawNetRunning} />
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        if (diWorkerTab === 'colleagues') {
+            const colleagues = [
+                {
+                    name: lang === 'zh-Hans' ? '小迪' : lang === 'zh-Hant' ? '小迪' : 'XiaoDi',
+                    title: lang === 'zh-Hans' ? '你的办公同事' : lang === 'zh-Hant' ? '你的辦公同事' : 'Your office coworker',
+                    strong: lang === 'zh-Hans' ? '通知、纪要、周报、邮件' : lang === 'zh-Hant' ? '通知、紀要、週報、郵件' : 'Notices, minutes, weekly reports, emails',
+                },
+                {
+                    name: lang === 'zh-Hans' ? '阿宁' : lang === 'zh-Hant' ? '阿寧' : 'ANing',
+                    title: lang === 'zh-Hans' ? '你的数据同事' : lang === 'zh-Hant' ? '你的數據同事' : 'Your data coworker',
+                    strong: lang === 'zh-Hans' ? '表格整理、汇总、图表分析' : lang === 'zh-Hant' ? '表格整理、匯總、圖表分析' : 'Spreadsheets, summaries, charts',
+                },
+                {
+                    name: lang === 'zh-Hans' ? '老陈' : lang === 'zh-Hant' ? '老陳' : 'LaoChen',
+                    title: lang === 'zh-Hans' ? '你的生产同事' : lang === 'zh-Hant' ? '你的生產同事' : 'Your production coworker',
+                    strong: lang === 'zh-Hans' ? '日报、交接班、异常汇总' : lang === 'zh-Hant' ? '日報、交接班、異常匯總' : 'Daily reports, shift handoff, incidents',
+                },
+            ];
+            return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '20px', height: '100%', overflowY: 'auto' }}>
+                    <div style={cardStyle}>
+                        <div style={{ fontSize: '1rem', fontWeight: 700, color: '#1f2937', marginBottom: '6px' }}>{sectionTitle}</div>
+                        <div style={{ fontSize: '0.82rem', color: '#6b7280' }}>{lang === 'zh-Hans' ? '同事页先用产品原型卡片占位，后续接入真实 colleagues/runtime 数据。' : lang === 'zh-Hant' ? '同事頁先用產品原型卡片佔位，後續接入真實 colleagues/runtime 資料。' : 'The colleagues page starts with product-style cards and will later connect to real colleagues/runtime data.'}</div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '14px' }}>
+                        {colleagues.map((item) => (
+                            <div key={item.name} style={{ ...cardStyle, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                    <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'linear-gradient(135deg, #c7d2fe, #e9d5ff)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem', fontWeight: 700, color: '#4338ca' }}>
+                                        {item.name.slice(0, 1)}
+                                    </div>
+                                    <div>
+                                        <div style={{ fontSize: '0.95rem', fontWeight: 700, color: '#1f2937' }}>{item.name}</div>
+                                        <div style={{ fontSize: '0.78rem', color: '#6b7280' }}>{item.title}</div>
+                                    </div>
+                                </div>
+                                <div style={{ fontSize: '0.8rem', color: '#4b5563', lineHeight: 1.6 }}>
+                                    <div style={{ fontWeight: 600, marginBottom: '4px' }}>{lang === 'zh-Hans' ? '更擅长' : lang === 'zh-Hant' ? '更擅長' : 'Best at'}</div>
+                                    <div>{item.strong}</div>
+                                </div>
+                                <button className="btn-secondary" onClick={() => setDiWorkerTab('new-task')} style={{ alignSelf: 'flex-start', padding: '7px 12px', fontSize: '0.8rem' }}>
+                                    {lang === 'zh-Hans' ? '找 TA 帮忙' : lang === 'zh-Hant' ? '找 TA 幫忙' : 'Ask for help'}
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                    <div style={cardStyle}>
+                        <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#374151', marginBottom: '10px' }}>{lang === 'zh-Hans' ? '角色配置复用区' : lang === 'zh-Hant' ? '角色配置復用區' : 'Role Config Reuse'}</div>
+                        <MaclawRolePanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
+                    </div>
+                </div>
+            );
+        }
+
+        return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '20px', height: '100%', overflowY: 'auto' }}>
+                <div style={cardStyle}>
+                    <div style={{ fontSize: '1rem', fontWeight: 700, color: '#1f2937', marginBottom: '6px' }}>{sectionTitle}</div>
+                    <div style={{ fontSize: '0.82rem', color: '#6b7280' }}>{sectionDesc}</div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
+                    {[
+                        { title: lang === 'zh-Hans' ? '连接状态' : lang === 'zh-Hant' ? '連線狀態' : 'Connection', value: remoteConnectionStatus?.connected ? (lang?.startsWith('zh') ? '已连接' : 'Connected') : (lang?.startsWith('zh') ? '未连接' : 'Disconnected') },
+                        { title: lang === 'zh-Hans' ? '移动端注册' : lang === 'zh-Hant' ? '行動端註冊' : 'Mobile Enrollment', value: remoteActivationStatus?.activated ? (lang?.startsWith('zh') ? '已注册' : 'Activated') : (lang?.startsWith('zh') ? '未注册' : 'Not activated') },
+                        { title: lang === 'zh-Hans' ? '运行中任务' : lang === 'zh-Hant' ? '運行中任務' : 'Running Tasks', value: String(runningTaskCount) },
+                    ].map((item) => (
+                        <div key={item.title} style={cardStyle}>
+                            <div style={{ fontSize: '0.78rem', color: '#6b7280', marginBottom: '8px' }}>{item.title}</div>
+                            <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#1f2937' }}>{item.value}</div>
+                        </div>
+                    ))}
+                </div>
+                <div style={cardStyle}>
+                    <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#374151', marginBottom: '10px' }}>{lang === 'zh-Hans' ? '快速开始' : lang === 'zh-Hant' ? '快速開始' : 'Quick Start'}</div>
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                        <button className="btn-primary" onClick={() => setDiWorkerTab('new-task')} style={{ padding: '8px 14px', fontSize: '0.82rem' }}>{lang === 'zh-Hans' ? '新建任务' : lang === 'zh-Hant' ? '新建任務' : 'Create Task'}</button>
+                        <button className="btn-secondary" onClick={() => setDiWorkerTab('colleagues')} style={{ padding: '8px 14px', fontSize: '0.82rem' }}>{lang === 'zh-Hans' ? '找同事' : lang === 'zh-Hant' ? '找同事' : 'Find Colleagues'}</button>
+                        <button className="btn-secondary" onClick={() => setDiWorkerTab('history')} style={{ padding: '8px 14px', fontSize: '0.82rem' }}>{lang === 'zh-Hans' ? '查看历史任务' : lang === 'zh-Hant' ? '查看歷史任務' : 'View History'}</button>
+                    </div>
+                </div>
+                <div style={{ ...cardStyle, paddingBottom: '6px' }}>
+                    <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#374151', marginBottom: '12px' }}>{lang === 'zh-Hans' ? '接入配置' : lang === 'zh-Hant' ? '接入配置' : 'Connection Setup'}</div>
+                    <RemoteSettingsPanel
+                        config={config}
+                        saveRemoteConfigField={saveRemoteConfigField}
+                        translate={translate}
+                        remoteBusy={remoteBusy}
+                        remoteActivationStatus={remoteActivationStatus}
+                        activateRemoteWithEmail={activateRemoteWithEmail}
+                        clearRemoteActivationState={clearRemoteActivationState}
+                        invitationCodeRequired={invitationCodeRequired}
+                        invitationCode={invitationCode}
+                        setInvitationCode={setInvitationCode}
+                        invitationCodeError={invitationCodeError}
+                    />
+                </div>
+            </div>
+        );
+    };
 
     const allProjects = config?.projects || [];
     const normalizedProjectKeyword = projectSearchKeyword.trim().toLowerCase();
@@ -2583,6 +2779,87 @@ function App() {
         onDemandInstallingTool,
         setOnDemandInstallingTool,
     });
+    const aiAssistant = useAIAssistant({ refreshSessionsOnly });
+
+    useEffect(() => {
+        let cancelled = false;
+        const normalizeUsage = (stat?: SidebarTokenUsageStat | null) => {
+            const input = stat?.input_tokens ?? stat?.InputTokens ?? 0;
+            const output = stat?.output_tokens ?? stat?.OutputTokens ?? 0;
+            const total = stat?.total_tokens ?? stat?.TotalTokens ?? input + output;
+            return { input, output, total };
+        };
+        const normalizeProviderState = (data?: {
+            providers?: Array<{ name?: string; Name?: string }>;
+            Providers?: Array<{ name?: string; Name?: string }>;
+            current?: string;
+            Current?: string;
+        } | null) => {
+            const list = (data?.providers ?? data?.Providers ?? [])
+                .map((provider) => provider?.name ?? provider?.Name ?? '')
+                .filter(Boolean);
+            const current = data?.current ?? data?.Current ?? '';
+            return { providers: list, current };
+        };
+        const getUsageForProvider = (usageMap: Record<string, SidebarTokenUsageStat>, provider: string) => {
+            if (!provider) return { input: 0, output: 0, total: 0 };
+            const direct = usageMap[provider];
+            if (direct) return normalizeUsage(direct);
+            for (const alias of sidebarProviderAliases[provider] || []) {
+                const stat = usageMap[alias];
+                if (stat) return normalizeUsage(stat);
+            }
+            return { input: 0, output: 0, total: 0 };
+        };
+        const hasUsage = (usageMap: Record<string, SidebarTokenUsageStat>, provider: string) => {
+            return getUsageForProvider(usageMap, provider).total > 0;
+        };
+        const getPreferredProvider = (providerNames: string[], currentProviderName: string, usageMap: Record<string, SidebarTokenUsageStat>) => {
+            const providerWithUsage = providerNames.find((provider) => hasUsage(usageMap, provider));
+            if (currentProviderName && providerNames.includes(currentProviderName) && (hasUsage(usageMap, currentProviderName) || !providerWithUsage)) {
+                return currentProviderName;
+            }
+            return providerWithUsage || currentProviderName || providerNames[0] || '';
+        };
+        const refreshSidebarTokenUsage = async () => {
+            try {
+                const [usageMap, providerState] = await Promise.all([
+                    GetAllLLMTokenUsage() as Promise<Record<string, SidebarTokenUsageStat> | null>,
+                    GetMaclawLLMProviders() as Promise<{
+                        providers?: Array<{ name?: string; Name?: string }>;
+                        Providers?: Array<{ name?: string; Name?: string }>;
+                        current?: string;
+                        Current?: string;
+                    } | null>,
+                ]);
+                const normalizedMap = usageMap || {};
+                const normalizedProviderState = normalizeProviderState(providerState);
+                const providerNames = normalizedProviderState.providers.length > 0
+                    ? normalizedProviderState.providers
+                    : providers.map((provider) => provider.name).filter(Boolean);
+                const currentProviderName = getPreferredProvider(
+                    providerNames,
+                    normalizedProviderState.current || selectedProvider || providers[0]?.name || '',
+                    normalizedMap,
+                );
+                const currentProviderUsage = getUsageForProvider(normalizedMap, currentProviderName);
+                if (!cancelled) {
+                    setSidebarCurrentProviderTokenUsage({ provider: currentProviderName, ...currentProviderUsage });
+                }
+            } catch {
+                if (!cancelled) {
+                    setSidebarCurrentProviderTokenUsage({ provider: '', input: 0, output: 0, total: 0 });
+                }
+            }
+        };
+        void refreshSidebarTokenUsage();
+        const onTokenUsageChanged = () => { void refreshSidebarTokenUsage(); };
+        EventsOn("llm-token-usage-changed", onTokenUsageChanged);
+        return () => {
+            cancelled = true;
+            EventsOff("llm-token-usage-changed");
+        };
+    }, [providers, selectedProvider]);
     const activeRemoteSessionForTool = useMemo(() => {
         return remoteSessions.find((session) => {
             if (session.tool !== activeTool) return false;
@@ -3497,7 +3774,7 @@ ${instruction}`;
                         </span>
                     </div>
 
-                    <div style={{ flex: 1 }}></div>
+                    <div style={{ height: '18px', flexShrink: 0 }}></div>
 
                     {gossipAllowed && (
                         <div
@@ -3510,6 +3787,16 @@ ${instruction}`;
                             <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("gossip")}</span>
                         </div>
                     )}
+
+                    <div
+                        className={`sidebar-item ${navTab === 'diworker' ? 'active' : ''}`}
+                        onClick={() => { switchTool('diworker'); }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'diworker' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        title="DiWorker"
+                    >
+                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>👔</span>
+                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>DiWorker</span>
+                    </div>
 
                     <div
                         className={`sidebar-item ${navTab === 'clawnet' ? 'active' : ''}`}
@@ -3606,10 +3893,10 @@ ${instruction}`;
                     </div>
 
                     {/* Status dashboard */}
-                    <div style={{ flexShrink: 0, padding: '0 6px', marginTop: 'auto' }}>
-                        <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '8px auto' }}></div>
-                        <div style={{ fontSize: '0.6rem', color: '#888', fontFamily: "'Segoe UI', 'SF Pro Text', -apple-system, sans-serif" }}>
-                            <div style={{ marginBottom: '6px', fontWeight: 600, color: '#666', fontSize: '0.62rem' }}>
+                    <div style={{ flexShrink: 0, padding: '0 5px 1px', marginTop: '6px' }}>
+                        <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '6px auto' }}></div>
+                        <div style={{ fontSize: '0.58rem', color: '#888', fontFamily: "'Segoe UI', 'SF Pro Text', -apple-system, sans-serif" }}>
+                            <div style={{ marginBottom: '4px', fontWeight: 600, color: '#666', fontSize: '0.6rem' }}>
                                 {lang === 'zh-Hans' ? '系统状态' : lang === 'zh-Hant' ? '系統狀態' : 'Status'}
                             </div>
                             {[
@@ -3618,20 +3905,41 @@ ${instruction}`;
                                 { label: lang === 'zh-Hans' ? '移动端' : lang === 'zh-Hant' ? '行動端' : 'Mobile', on: !!remoteActivationStatus?.activated },
                                 { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected', link: 'im' },
                             ].map(({ label, on, link }) => (
-                                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '3px', cursor: link ? 'pointer' : undefined }}
+                                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '2px', cursor: link ? 'pointer' : undefined }}
                                     onClick={link ? () => { setNavTab('settings'); setSettingsTab(link as any); } : undefined}
                                     title={link && !on ? (lang?.startsWith('zh') ? '点击配置' : 'Click to configure') : undefined}
                                 >
-                                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: on ? '#22c55e' : '#ccc', display: 'inline-block', flexShrink: 0 }}></span>
+                                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: on ? '#22c55e' : '#ccc', display: 'inline-block', flexShrink: 0 }}></span>
                                     <span>{label}</span>
-                                    <span style={{ marginLeft: 'auto', color: on ? '#22c55e' : '#aaa' }}>
+                                    <span style={{ marginLeft: 'auto', color: on ? '#22c55e' : '#aaa', fontSize: '0.56rem' }}>
                                         {on ? (lang?.startsWith('zh') ? '在线' : 'Online') : (lang?.startsWith('zh') ? '离线' : 'Offline')}
                                     </span>
                                 </div>
                             ))}
                         </div>
-                        <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '8px auto' }}></div>
-                        <div style={{ textAlign: 'center', fontSize: '0.55rem', color: '#bbb', paddingBottom: '6px', fontFamily: "'Segoe UI', 'SF Pro Text', -apple-system, sans-serif" }}>
+                        <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(212, 212, 247, 0.7)', fontSize: '0.58rem', color: '#777' }}>
+                            <div style={{ padding: '7px 8px', borderRadius: '8px', background: 'rgba(255,255,255,0.72)', border: '1px solid rgba(212, 212, 247, 0.6)', minWidth: 0, boxShadow: '0 1px 2px rgba(99, 102, 241, 0.08)' }}>
+                                <div style={{ color: '#555', fontWeight: 700, fontSize: '0.6rem', marginBottom: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={lang === 'zh-Hans' ? '当前' : lang === 'zh-Hant' ? '當前' : 'Current'}>
+                                    {lang === 'zh-Hans' ? '当前' : lang === 'zh-Hant' ? '當前' : 'Current'}
+                                </div>
+                                <div style={{ display: 'grid', gap: '5px' }}>
+                                    {[
+                                        { label: lang === 'zh-Hans' ? '输入' : lang === 'zh-Hant' ? '輸入' : 'In', value: sidebarCurrentProviderTokenUsage.input, color: '#2563eb' },
+                                        { label: lang === 'zh-Hans' ? '输出' : lang === 'zh-Hant' ? '輸出' : 'Out', value: sidebarCurrentProviderTokenUsage.output, color: '#7c3aed' },
+                                        { label: lang === 'zh-Hans' ? '总计' : lang === 'zh-Hant' ? '總計' : 'Total', value: sidebarCurrentProviderTokenUsage.total, color: '#111827', bold: true },
+                                    ].map(({ label, value, color, bold }) => (
+                                        <div key={label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', minWidth: 0 }}>
+                                            <div style={{ fontSize: '0.54rem', color: '#7a7a7a', whiteSpace: 'nowrap', fontWeight: 600 }}>{label}</div>
+                                            <div style={{ color, fontWeight: bold ? 800 : 700, fontSize: bold ? '0.66rem' : '0.62rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }} title={value.toLocaleString()}>
+                                                {value.toLocaleString()}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                        <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '6px auto' }}></div>
+                        <div style={{ textAlign: 'center', fontSize: '0.52rem', color: '#bbb', paddingBottom: '4px', fontFamily: "'Segoe UI', 'SF Pro Text', -apple-system, sans-serif" }}>
                             V{APP_VERSION}
                         </div>
                     </div>
@@ -3650,17 +3958,24 @@ ${instruction}`;
                                 progressMessages: aiAssistant.progressMessages,
                                 sending: aiAssistant.sending,
                                 streaming: aiAssistant.streaming,
+                                visualBusy: aiAssistant.visualBusy,
                                 ready: aiAssistant.ready,
                                 initStatus: aiAssistant.initStatus,
                                 selectedFilePath: aiAssistant.selectedFilePath,
+                                submittedPrompts: aiAssistant.submittedPrompts,
+                                draftInputValue: aiAssistant.draftInputValue,
+                                trialReflectEnabled: aiAssistant.trialReflectEnabled,
                                 scrollToTopSeq: aiAssistant.scrollToTopSeq,
                                 onboardingIncomplete: !config?.onboarding_done && !showMaclawLLMPopup,
+                                showTraceEntry: !!config?.show_ai_trace_entry,
                             }}
                             actions={{
                                 browseFile: aiAssistant.browseFile,
                                 clearSelectedFile: aiAssistant.clearSelectedFile,
                                 sendMessage: aiAssistant.sendMessage,
                                 clearHistory: aiAssistant.clearHistory,
+                                recordSubmittedPrompt: aiAssistant.recordSubmittedPrompt,
+                                setDraftInputValue: aiAssistant.setDraftInputValue,
                                 executeAction: aiAssistant.executeAction,
                                 refreshNews: aiAssistant.refreshNews,
                                 onOpenOnboarding: () => setShowMaclawLLMPopup(true),
@@ -3688,6 +4003,7 @@ ${instruction}`;
                                                         navTab === 'cursor' ? 'Cursor Agent' :
                                                                             navTab === 'iflow' ? 'iFlow CLI' :
                                                                 navTab === 'kilo' ? 'Kilo Code CLI' :
+                                                                    navTab === 'diworker' ? 'DiWorker' :
                                                                         navTab === 'projects' ? t("projectManagement") :
                                                                     navTab === 'skills' ? t("skills") :
                                                                         navTab === 'tutorial' ? t("tutorial") :
@@ -3877,6 +4193,38 @@ ${instruction}`;
                     )}
                     {navTab === 'gossip' && gossipAllowed && (
                         <GossipPanel lang={lang} />
+                    )}
+                    {navTab === 'diworker' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                            <div style={{ display: 'flex', gap: '8px', padding: '16px 20px 0', flexWrap: 'wrap' }}>
+                                {diWorkerTabs.map((tab) => (
+                                    <button
+                                        key={tab.id}
+                                        type="button"
+                                        onClick={() => setDiWorkerTab(tab.id)}
+                                        style={{
+                                            border: diWorkerTab === tab.id ? '1px solid #6366f1' : '1px solid #dbe2ea',
+                                            background: diWorkerTab === tab.id ? '#eef2ff' : '#fff',
+                                            color: diWorkerTab === tab.id ? '#4338ca' : '#475569',
+                                            borderRadius: '999px',
+                                            padding: '8px 14px',
+                                            fontSize: '0.8rem',
+                                            fontWeight: 600,
+                                            cursor: 'pointer',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '6px',
+                                        }}
+                                    >
+                                        <span>{tab.icon}</span>
+                                        <span>{tab.label}</span>
+                                    </button>
+                                ))}
+                            </div>
+                            <div style={{ flex: 1, minHeight: 0 }}>
+                                {renderDiWorkerPanel()}
+                            </div>
+                        </div>
                     )}
                     {navTab === 'remote' && (
                         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -4201,6 +4549,25 @@ ${instruction}`;
                                 </label>
                                 <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
                                     {isLiteMode ? t("uiModeLiteDesc") : t("uiModeProDesc")}
+                                </span>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={config?.log_detail_enabled || false}
+                                        onChange={(e) => {
+                                            if (!config) return;
+                                            const c = new main.AppConfig({ ...config, log_detail_enabled: e.target.checked });
+                                            setConfig(c);
+                                            SaveConfig(c);
+                                        }}
+                                    />
+                                    <span>{lang === 'zh-Hans' ? '日志详情' : lang === 'zh-Hant' ? '日誌詳情' : 'Detailed logs'}</span>
+                                </label>
+                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
+                                    {lang === 'zh-Hans' ? '关闭时仅保留错误日志' : lang === 'zh-Hant' ? '關閉時僅保留錯誤日誌' : 'When off, only error logs are kept'}
                                 </span>
                             </div>
                             </div>
@@ -5205,22 +5572,24 @@ ${instruction}`;
                                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                     <input
                                         type="checkbox"
-                                        checked={config?.maclaw_debug_tool_calls || false}
+                                        checked={config?.show_ai_trace_entry || false}
                                         onChange={(e) => {
                                             if (config) {
-                                                const newConfig = new main.AppConfig({ ...config, maclaw_debug_tool_calls: e.target.checked });
+                                                const newConfig = new main.AppConfig({ ...config, show_ai_trace_entry: e.target.checked });
                                                 setConfig(newConfig);
                                                 SaveConfig(newConfig);
                                             }
                                         }}
                                         style={{ width: '16px', height: '16px' }}
                                     />
-                                    <span style={{ fontSize: '0.8rem', color: '#374151' }}>MaClaw Debug</span>
+                                    <span style={{ fontSize: '0.8rem', color: '#374151' }}>
+                                        {lang === 'zh-Hans' || lang === 'zh' ? '显示 AI 运行详情' : lang === 'zh-Hant' ? '顯示 AI 執行詳情' : 'Show AI run details'}
+                                    </span>
                                 </label>
                                 <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginLeft: '24px', marginTop: '4px' }}>
-                                    {lang === 'zh-Hans' || lang === 'zh' ? '开启后，远程会话中将显示工具调用过程（如"正在执行工具…"）；关闭后仅显示最终结果和错误信息' :
-                                        lang === 'zh-Hant' ? '開啟後，遠端會話中將顯示工具調用過程；關閉後僅顯示最終結果和錯誤信息' :
-                                            'When enabled, tool call progress (e.g. "Executing tool…") is shown during remote sessions. When disabled, only final results and errors are displayed.'}
+                                    {lang === 'zh-Hans' || lang === 'zh' ? '开启后，AI 助手消息中会显示 Trace / 运行详情入口；默认关闭。' :
+                                        lang === 'zh-Hant' ? '開啟後，AI 助手消息中會顯示 Trace / 執行詳情入口；預設關閉。' :
+                                            'When enabled, AI assistant messages show a Trace / run details entry. Disabled by default.'}
                                 </p>
                             </div>
                             </div>
@@ -6793,8 +7162,10 @@ ${instruction}`;
                             });
                         }, 500);
                     }}
-                    onRegistered={() => {
-                        refreshRemotePanel();
+                    onRegistered={async () => {
+                        console.info("[onboarding] App:onRegistered:start");
+                        await refreshRemotePanel();
+                        console.info("[onboarding] App:onRegistered:done");
                     }}
                     onSaveField={(patch) => {
                         // If ui_mode changed, merge into config for immediate reactivity
@@ -6803,7 +7174,9 @@ ${instruction}`;
                             const c = new main.AppConfig({ ...config, ...patch });
                             setConfig(c);
                         }
-                        saveRemoteConfigField(patch as any);
+                        setTimeout(() => {
+                            void saveRemoteConfigField(patch as any);
+                        }, 0);
                     }}
                 />
             )}
