@@ -803,6 +803,13 @@ func (m *RemoteSessionManager) WriteInput(sessionID, text string) error {
 		return fmt.Errorf("session execution not available: %s", sessionID)
 	}
 
+	s.mu.RLock()
+	hasPendingQuestion := s.PendingUserQuestion != nil
+	s.mu.RUnlock()
+	if hasPendingQuestion {
+		return m.writeSDKInput(s, sessionID, text, "structured")
+	}
+
 	// SDK handles accept JSON messages — skip PTY line-ending normalization.
 	if _, isSDK := s.Exec.(*SDKExecutionHandle); isSDK {
 		return m.writeSDKInput(s, sessionID, text, "sdk")
@@ -849,53 +856,61 @@ func (m *RemoteSessionManager) writeSDKInput(s *RemoteSession, sessionID, text, 
 	m.app.log(fmt.Sprintf("[remote-write-%s] session=%s, len=%d, text=%q",
 		tag, sessionID, len(text), text))
 
-	// Check if there's a pending AskUserQuestion — if so, wrap the user's
-	// reply as a tool_result instead of a new user message.
-	s.mu.Lock()
-	pending := s.PendingUserQuestion
-	s.PendingUserQuestion = nil // consume it
-	s.mu.Unlock()
+	trimmed := strings.TrimSpace(text)
 
-	if pending != nil && tag == "sdk" {
-		sdkHandle, ok := s.Exec.(*SDKExecutionHandle)
-		if ok {
+	s.mu.RLock()
+	pending := s.PendingUserQuestion
+	s.mu.RUnlock()
+
+	markWaitingInputSubmitted := func(currentTask string) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.Status != SessionWaitingInput {
+			return
+		}
+		s.Status = SessionBusy
+		s.Summary.Status = string(SessionBusy)
+		s.Summary.WaitingForUser = false
+		if strings.TrimSpace(currentTask) != "" {
+			s.Summary.CurrentTask = currentTask
+		}
+		s.Summary.SuggestedAction = ""
+		s.Summary.UpdatedAt = time.Now().Unix()
+	}
+
+	if pending != nil {
+		if responder, ok := s.Exec.(AskUserQuestionResponder); ok {
 			m.app.log(fmt.Sprintf("[remote-write-%s] session=%s: answering AskUserQuestion tool_use_id=%s",
 				tag, sessionID, pending.ToolUseID))
-			resultMsg := map[string]interface{}{
-				"type": "user",
-				"message": map[string]interface{}{
-					"role": "user",
-					"content": []map[string]interface{}{
-						{
-							"type":        "tool_result",
-							"tool_use_id": pending.ToolUseID,
-							"content":     strings.TrimSpace(text),
-						},
-					},
-				},
-				"session_id":         "default",
-				"parent_tool_use_id": nil,
-			}
-			err := sdkHandle.writeJSON(resultMsg)
-			if err != nil {
+			if err := responder.WriteAskUserQuestionAnswer(pending, trimmed); err != nil {
 				m.app.log(fmt.Sprintf("[remote-write-%s] tool_result FAILED session=%s: %v", tag, sessionID, err))
 				return err
 			}
+			s.mu.Lock()
+			if s.PendingUserQuestion != nil && s.PendingUserQuestion.ToolUseID == pending.ToolUseID {
+				s.PendingUserQuestion = nil
+				s.Summary.PendingQuestion = nil
+				s.Summary.WaitingForUser = false
+				s.Status = SessionBusy
+				s.Summary.Status = string(SessionBusy)
+				s.Summary.CurrentTask = "Submitting your answer"
+				s.Summary.SuggestedAction = ""
+				s.Summary.UpdatedAt = time.Now().Unix()
+			}
+			s.mu.Unlock()
 			m.echoUserInput(s, sessionID, text)
 			return nil
 		}
-		// Type assertion failed — restore pending so it's not lost.
-		s.mu.Lock()
-		s.PendingUserQuestion = pending
-		s.mu.Unlock()
 	}
 
 	err := s.Exec.Write([]byte(text))
 	if err != nil {
 		m.app.log(fmt.Sprintf("[remote-write-%s] FAILED session=%s: %v", tag, sessionID, err))
+		return err
 	}
+	markWaitingInputSubmitted("Processing your input")
 	m.echoUserInput(s, sessionID, text)
-	return err
+	return nil
 }
 
 // echoUserInput appends user input to raw output and preview for display.
@@ -1466,15 +1481,28 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 							// waiting_input and record the pending tool_use so
 							// WriteInput can wrap the reply as a tool_result.
 							if block.Name == "AskUserQuestion" && block.ID != "" {
+								questionView := buildAskUserQuestionView(block.ID, block.Name, block.Input)
+								rawInput, _ := block.Input.(map[string]interface{})
 								s.PendingUserQuestion = &PendingToolUse{
 									ToolUseID: block.ID,
 									ToolName:  block.Name,
+									Question:  questionView,
+									RawInput:  rawInput,
 								}
 								s.Status = SessionWaitingInput
 								s.Summary.Status = string(SessionWaitingInput)
 								s.Summary.WaitingForUser = true
-								s.Summary.CurrentTask = "Waiting for your answer"
-								s.Summary.SuggestedAction = "Answer the question to continue"
+								s.Summary.PendingQuestion = clonePendingQuestionView(questionView)
+								if questionView != nil && strings.TrimSpace(questionView.Question) != "" {
+									s.Summary.CurrentTask = questionView.Question
+								} else {
+									s.Summary.CurrentTask = "Waiting for your answer"
+								}
+								if questionView != nil && len(questionView.Options) > 0 {
+									s.Summary.SuggestedAction = "Choose an option or answer to continue"
+								} else {
+									s.Summary.SuggestedAction = "Answer the question to continue"
+								}
 							}
 						}
 					}
@@ -1531,6 +1559,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				s.Summary.Status = string(SessionWaitingInput)
 				s.Summary.WaitingForUser = true
 				s.PendingUserQuestion = nil // Clear any stale pending question
+				s.Summary.PendingQuestion = nil
 				// Clear thinking state inline so the snapshot is consistent.
 				s.ThinkingState = ThinkingIdle
 				s.ThinkingSince = time.Time{}
@@ -1927,11 +1956,15 @@ func buildResumeContext(s *RemoteSession, reason string) *SessionResumeContext {
 		LastProgress: s.Summary.ProgressSummary,
 		ExitReason:   reason,
 	}
-	// Capture Claude Code's internal session ID for --resume support.
+	// Capture provider-native structured session IDs for --resume support.
 	// This allows the auto-resume logic to continue the exact conversation
 	// instead of starting fresh, preserving full context history.
 	if sdkHandle, ok := s.Exec.(*SDKExecutionHandle); ok {
-		rc.ClaudeSessionID = sdkHandle.ClaudeSessionID()
+		rc.ResumeSessionID = sdkHandle.ClaudeSessionID()
+		rc.ClaudeSessionID = rc.ResumeSessionID
+	}
+	if codexHandle, ok := s.Exec.(*CodexSDKExecutionHandle); ok {
+		rc.ResumeSessionID = codexHandle.ThreadID()
 	}
 	// Carry forward resume count and original task from previous session.
 	if s.ResumeContext != nil {
@@ -2001,6 +2034,10 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	s.Summary.Status = string(s.Status)
 	s.Summary.UpdatedAt = now.Unix()
 	s.Summary.WaitingForUser = false
+	s.ThinkingState = ThinkingIdle
+	s.ThinkingSince = time.Time{}
+	s.Summary.Thinking = false
+	s.Summary.ThinkingSince = 0
 
 	// When the session exits very quickly (within 10 seconds of creation),
 	// it usually means the tool binary failed to start properly (bad config,
@@ -2147,7 +2184,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 			_ = m.app.sessionCheckpointer.SaveCheckpoint(s)
 		}()
 	}
-	if s.ResumeContext != nil && m.app != nil {
+	if shouldCreatePendingResumeSlot(s) && m.app != nil {
 		mem := m.app.ensureConversationMemory()
 		if mem != nil {
 			slotID := fmt.Sprintf("unfinished-%s", s.ID)
@@ -2178,6 +2215,27 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	}
 	m.app.refreshPowerOptimizationState()
 	m.app.emitRemoteStateChanged()
+}
+
+func shouldCreatePendingResumeSlot(s *RemoteSession) bool {
+	if s == nil || s.ResumeContext == nil {
+		return false
+	}
+	return s.CompletionLevel == CompletionIncomplete
+}
+
+func (m *RemoteSessionManager) SuppressResumeForSession(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	s, ok := m.Get(sessionID)
+	if !ok || s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.ResumeContext = nil
+	s.mu.Unlock()
 }
 
 func isActiveRemoteSessionStatus(status SessionStatus) bool {
@@ -2266,6 +2324,138 @@ func validateAndBuildImage(sessionID string, source *SDKImageSource, logPrefix s
 		app.log(fmt.Sprintf("[%s] session=%s: extracted image, media_type=%s, size=%d", logPrefix, sessionID, source.MediaType, len(decoded)))
 	}
 	return NewImageTransferMessage(sessionID, source.MediaType, source.Data), true
+}
+
+func buildAskUserQuestionView(toolUseID, toolName string, input interface{}) *PendingQuestionView {
+	view := &PendingQuestionView{
+		ToolUseID: strings.TrimSpace(toolUseID),
+		ToolName:  strings.TrimSpace(toolName),
+	}
+	payload, ok := input.(map[string]interface{})
+	if !ok {
+		if view.ToolUseID == "" && view.ToolName == "" {
+			return nil
+		}
+		return view
+	}
+	questions := parseAskUserQuestionEntries(payload)
+	if len(questions) > 0 {
+		first := questions[0]
+		view.Header = first.Header
+		view.Question = first.Question
+		view.Hint = first.Hint
+		view.Multi = first.Multi
+		view.Options = first.Options
+		return view
+	}
+	if text := firstNonEmptyString(payload, "question", "prompt", "text", "message", "title"); text != "" {
+		view.Question = text
+	}
+	if hint := firstNonEmptyString(payload, "hint", "description", "instructions"); hint != "" {
+		view.Hint = hint
+	}
+	if view.ToolUseID == "" && view.ToolName == "" && view.Question == "" && view.Hint == "" {
+		return nil
+	}
+	return view
+}
+
+func parseAskUserQuestionEntries(payload map[string]interface{}) []PendingQuestionView {
+	raw, ok := payload["questions"]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	views := make([]PendingQuestionView, 0, len(items))
+	for _, item := range items {
+		qmap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		question := PendingQuestionView{
+			Header:   firstNonEmptyString(qmap, "header", "title", "label"),
+			Question: firstNonEmptyString(qmap, "question", "prompt", "text", "title"),
+			Hint:     firstNonEmptyString(qmap, "description", "hint", "help_text"),
+			Multi:    askUserQuestionBoolValue(qmap["multiSelect"]),
+		}
+		if rawOptions, ok := qmap["options"].([]interface{}); ok {
+			for _, rawOpt := range rawOptions {
+				omap, ok := rawOpt.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				question.Options = append(question.Options, PendingQuestionOption{
+					Label:       firstNonEmptyString(omap, "label", "title", "value"),
+					Description: firstNonEmptyString(omap, "description", "hint"),
+					Preview:     firstNonEmptyString(omap, "preview"),
+				})
+			}
+		}
+		if question.Header == "" && question.Question == "" && len(question.Options) == 0 {
+			continue
+		}
+		views = append(views, question)
+	}
+	return views
+}
+
+func firstNonEmptyString(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		value, ok := m[key]
+		if !ok {
+			continue
+		}
+		if s, ok := value.(string); ok {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
+}
+
+func askUserQuestionBoolValue(v interface{}) bool {
+	b, _ := v.(bool)
+	return b
+}
+
+func buildAskUserQuestionAnswerContent(pending *PendingToolUse, text string) interface{} {
+	trimmed := strings.TrimSpace(text)
+	if pending == nil || pending.Question == nil {
+		return trimmed
+	}
+	question := pending.Question
+	if len(question.Options) == 0 {
+		return trimmed
+	}
+	answer := map[string]interface{}{
+		"text": trimmed,
+	}
+	matched := make([]string, 0, 1)
+	lowered := strings.ToLower(trimmed)
+	for _, option := range question.Options {
+		label := strings.TrimSpace(option.Label)
+		if label == "" {
+			continue
+		}
+		if strings.EqualFold(label, trimmed) || strings.Contains(strings.ToLower(label), lowered) || strings.Contains(lowered, strings.ToLower(label)) {
+			matched = append(matched, label)
+			if !question.Multi {
+				break
+			}
+		}
+	}
+	if len(matched) > 0 {
+		if question.Multi {
+			answer["selected_options"] = matched
+		} else {
+			answer["selected_option"] = matched[0]
+		}
+	}
+	return answer
 }
 
 // buildSDKToolUseEvent creates an ImportantEvent from an SDK tool_use content block.

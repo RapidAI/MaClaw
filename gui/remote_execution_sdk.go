@@ -51,7 +51,7 @@ func (s *SDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
 		pid:       c.Process.Pid,
 		outputCh:  rc.Output(),
 		exitCh:    make(chan PTYExit, 1),
-		msgCh:     make(chan SDKMessage, 64),
+		msgCh:     make(chan SDKMessage, 256),
 		ctrlReqCh: make(chan SDKControlRequest, 16),
 		readerRC:  rc,
 	}
@@ -138,6 +138,33 @@ func (h *SDKExecutionHandle) WriteUserInput(msg SDKUserInput) error {
 		return fmt.Errorf("sdk session closed")
 	}
 	return h.writeJSON(msg)
+}
+
+func (h *SDKExecutionHandle) WriteAskUserQuestionAnswer(pending *PendingToolUse, text string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return fmt.Errorf("sdk session closed")
+	}
+	if pending == nil || strings.TrimSpace(pending.ToolUseID) == "" {
+		return fmt.Errorf("sdk: missing pending AskUserQuestion tool_use_id")
+	}
+	resultMsg := map[string]interface{}{
+		"type": "user",
+		"message": map[string]interface{}{
+			"role": "user",
+			"content": []map[string]interface{}{
+				{
+					"type":        "tool_result",
+					"tool_use_id": pending.ToolUseID,
+					"content":     buildAskUserQuestionAnswerContent(pending, text),
+				},
+			},
+		},
+		"session_id":         "default",
+		"parent_tool_use_id": nil,
+	}
+	return h.writeJSON(resultMsg)
 }
 
 // Interrupt sends an interrupt control request to Claude Code.
@@ -304,11 +331,9 @@ func (h *SDKExecutionHandle) readStdout() {
 					continue
 				}
 
-				// Send to structured channel (non-blocking)
-				select {
-				case h.msgCh <- msg:
-				default:
-				}
+				// Send to structured channel reliably — dropping assistant/user/result
+				// messages can leave the session stuck in busy forever.
+				h.msgCh <- msg
 
 				// Also convert to human-readable text for the output pipeline
 				text := sdkMessageToText(msg)
@@ -432,6 +457,12 @@ func sdkMessageToText(msg SDKMessage) string {
 			case "text":
 				// Skip — already streamed incrementally via stream_event
 			case "tool_use":
+				if block.Name == "AskUserQuestion" {
+					if details := formatAskUserQuestionBlock(block); details != "" {
+						parts = append(parts, details)
+						continue
+					}
+				}
 				summary := block.Name
 				if input, ok := block.Input.(map[string]interface{}); ok {
 					// Show key details for common tools
@@ -480,6 +511,31 @@ func sdkMessageToText(msg SDKMessage) string {
 	default:
 		return ""
 	}
+}
+
+func formatAskUserQuestionBlock(block SDKContentBlock) string {
+	view := buildAskUserQuestionView(block.ID, block.Name, block.Input)
+	if view == nil {
+		return "⚡ AskUserQuestion"
+	}
+	parts := []string{"⚡ AskUserQuestion"}
+	if view.Header != "" {
+		parts = append(parts, view.Header)
+	}
+	if view.Question != "" {
+		parts = append(parts, view.Question)
+	}
+	for _, option := range view.Options {
+		line := "- " + option.Label
+		if option.Description != "" {
+			line += ": " + option.Description
+		}
+		parts = append(parts, line)
+	}
+	if view.Hint != "" {
+		parts = append(parts, "Hint: "+view.Hint)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // extractStreamEventText extracts displayable text from a raw Claude API

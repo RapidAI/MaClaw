@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -103,6 +104,49 @@ func (f *fakeExecutionHandle) Output() <-chan []byte { return f.outputCh }
 func (f *fakeExecutionHandle) Exit() <-chan PTYExit  { return f.exitCh }
 func (f *fakeExecutionHandle) Close() error          { return nil }
 
+type fakeSDKExecutionHandle struct {
+	*fakeExecutionHandle
+	messages chan SDKMessage
+}
+
+type nopWriteCloser struct {
+	*bytes.Buffer
+}
+
+func (n nopWriteCloser) Close() error { return nil }
+
+func newFakeSDKExecutionHandle(pid int) *fakeSDKExecutionHandle {
+	return &fakeSDKExecutionHandle{
+		fakeExecutionHandle: newFakeExecutionHandle(pid),
+		messages:            make(chan SDKMessage, 8),
+	}
+}
+
+func (f *fakeSDKExecutionHandle) Messages() <-chan SDKMessage {
+	return f.messages
+}
+
+func (f *fakeSDKExecutionHandle) ControlRequests() <-chan SDKControlRequest {
+	return nil
+}
+
+type fakeAskUserResponderHandle struct {
+	*fakeExecutionHandle
+	lastPending *PendingToolUse
+	lastText    string
+	respondErr  error
+}
+
+func newFakeAskUserResponderHandle(pid int) *fakeAskUserResponderHandle {
+	return &fakeAskUserResponderHandle{fakeExecutionHandle: newFakeExecutionHandle(pid)}
+}
+
+func (f *fakeAskUserResponderHandle) WriteAskUserQuestionAnswer(pending *PendingToolUse, text string) error {
+	f.lastPending = pending
+	f.lastText = text
+	return f.respondErr
+}
+
 type fakeWorkspacePreparer struct {
 	workspace    *PreparedWorkspace
 	prepareErr   error
@@ -160,6 +204,229 @@ func (s *stubSummaryReducer) Apply(current SessionSummary, events []ImportantEve
 	out := s.summary
 	out.SessionID = current.SessionID
 	return out
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, check func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if check() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !check() {
+		t.Fatal("condition not met before timeout")
+	}
+}
+
+func TestRemoteSessionManagerWriteInputAnswersPendingQuestion(t *testing.T) {
+	app := &App{}
+	manager := NewRemoteSessionManager(app)
+	handle := newFakeAskUserResponderHandle(99)
+	session := &RemoteSession{
+		ID:          "sess_pending",
+		Tool:        "claude",
+		Title:       "pending",
+		ProjectPath: `D:\\workprj\\demo`,
+		Exec:        handle,
+		Status:      SessionWaitingInput,
+		Summary: SessionSummary{
+			Status:         string(SessionWaitingInput),
+			WaitingForUser: true,
+			PendingQuestion: &PendingQuestionView{Question: "Choose one"},
+		},
+		PendingUserQuestion: &PendingToolUse{
+			ToolUseID: "call_1",
+			ToolName:  "AskUserQuestion",
+			Question:  &PendingQuestionView{Question: "Choose one"},
+		},
+	}
+	manager.sessions[session.ID] = session
+
+	if err := manager.WriteInput(session.ID, "continue\n"); err != nil {
+		t.Fatalf("WriteInput() error = %v", err)
+	}
+	if handle.lastPending == nil || handle.lastPending.ToolUseID != "call_1" {
+		t.Fatal("expected pending AskUserQuestion to be routed to responder")
+	}
+	if got := handle.lastText; got != "continue" {
+		t.Fatalf("responder text = %q, want %q", got, "continue")
+	}
+	if session.PendingUserQuestion != nil {
+		t.Fatal("expected pending question to be cleared after successful submit")
+	}
+	if session.Summary.PendingQuestion != nil {
+		t.Fatal("expected summary pending question to be cleared after successful submit")
+	}
+	if session.Status != SessionBusy {
+		t.Fatalf("session status = %q, want %q", session.Status, SessionBusy)
+	}
+	if session.Summary.WaitingForUser {
+		t.Fatal("expected waiting_for_user to be false after answering pending question")
+	}
+}
+
+func TestRemoteSessionManagerWriteInputMarksSDKSessionBusyAfterWrite(t *testing.T) {
+	app := &App{}
+	manager := NewRemoteSessionManager(app)
+	stdin := &bytes.Buffer{}
+	handle := &SDKExecutionHandle{
+		stdin:    nopWriteCloser{stdin},
+		outputCh: make(chan []byte, 1),
+		exitCh:   make(chan PTYExit, 1),
+		msgCh:    make(chan SDKMessage, 1),
+	}
+	session := &RemoteSession{
+		ID:          "sess_sdk_busy",
+		Tool:        "claude",
+		Title:       "sdk busy",
+		ProjectPath: `D:\\workprj\\demo`,
+		Exec:        handle,
+		Status:      SessionWaitingInput,
+		Summary: SessionSummary{
+			Status:         string(SessionWaitingInput),
+			WaitingForUser: true,
+			CurrentTask:    "Waiting for input",
+		},
+	}
+	manager.sessions[session.ID] = session
+
+	if err := manager.WriteInput(session.ID, "build a tiny python project\n"); err != nil {
+		t.Fatalf("WriteInput() error = %v", err)
+	}
+	payload := stdin.String()
+	if !strings.Contains(payload, "\"type\":\"user\"") {
+		t.Fatalf("write payload = %q, want sdk user message json", payload)
+	}
+	if !strings.Contains(payload, "build a tiny python project") {
+		t.Fatalf("write payload = %q, want prompt text", payload)
+	}
+	if session.Status != SessionBusy {
+		t.Fatalf("session status = %q, want %q", session.Status, SessionBusy)
+	}
+	if session.Summary.Status != string(SessionBusy) {
+		t.Fatalf("summary status = %q, want %q", session.Summary.Status, SessionBusy)
+	}
+	if session.Summary.WaitingForUser {
+		t.Fatal("expected waiting_for_user to be false after successful SDK write")
+	}
+	if session.Summary.CurrentTask != "Processing your input" {
+		t.Fatalf("current task = %q, want %q", session.Summary.CurrentTask, "Processing your input")
+	}
+}
+
+func TestRemoteSessionManagerWriteInputKeepsPendingQuestionOnResponderError(t *testing.T) {
+	app := &App{}
+	manager := NewRemoteSessionManager(app)
+	handle := newFakeAskUserResponderHandle(100)
+	handle.respondErr = fmt.Errorf("submit failed")
+	pending := &PendingToolUse{ToolUseID: "call_2", ToolName: "AskUserQuestion", Question: &PendingQuestionView{Question: "Still waiting"}}
+	session := &RemoteSession{
+		ID:                 "sess_pending_error",
+		Tool:               "claude",
+		Title:              "pending error",
+		ProjectPath:        `D:\\workprj\\demo`,
+		Exec:               handle,
+		Status:             SessionWaitingInput,
+		Summary:            SessionSummary{Status: string(SessionWaitingInput), WaitingForUser: true, PendingQuestion: &PendingQuestionView{Question: "Still waiting"}},
+		PendingUserQuestion: pending,
+	}
+	manager.sessions[session.ID] = session
+
+	err := manager.WriteInput(session.ID, "retry\n")
+	if err == nil {
+		t.Fatal("expected responder error")
+	}
+	if session.PendingUserQuestion == nil || session.PendingUserQuestion.ToolUseID != pending.ToolUseID {
+		t.Fatal("expected pending question to be preserved on responder error")
+	}
+	if session.Summary.PendingQuestion == nil {
+		t.Fatal("expected summary pending question to remain on responder error")
+	}
+}
+
+func TestRemoteSessionManagerSDKLoopReturnsToWaitingInputAfterToolResult(t *testing.T) {
+	app := &App{}
+	manager := NewRemoteSessionManager(app)
+	handle := &SDKExecutionHandle{
+		outputCh:  make(chan []byte, 8),
+		exitCh:    make(chan PTYExit, 1),
+		msgCh:     make(chan SDKMessage, 8),
+		ctrlReqCh: make(chan SDKControlRequest, 1),
+	}
+	session := &RemoteSession{
+		ID:          "sess_sdk_loop",
+		Tool:        "claude",
+		Title:       "sdk loop",
+		ProjectPath: `D:\\workprj\\demo`,
+		Exec:        handle,
+		Status:      SessionStarting,
+		CreatedAt:   time.Now(),
+		Summary: SessionSummary{
+			Status: string(SessionStarting),
+		},
+		Preview: SessionPreview{SessionID: "sess_sdk_loop"},
+	}
+	manager.sessions[session.ID] = session
+
+	done := make(chan struct{})
+	go func() {
+		manager.runSDKOutputLoop(session)
+		close(done)
+	}()
+
+	handle.msgCh <- SDKMessage{Type: "system", Subtype: "init", SessionID: "sdk-session-1"}
+	waitForCondition(t, time.Second, func() bool {
+		session.mu.RLock()
+		defer session.mu.RUnlock()
+		return session.Status == SessionWaitingInput && session.Summary.WaitingForUser
+	})
+
+	handle.msgCh <- SDKMessage{
+		Type: "assistant",
+		Message: &SDKAssistantPayload{
+			Role: "assistant",
+			Content: []SDKContentBlock{{
+				Type:  "tool_use",
+				ID:    "toolu_1",
+				Name:  "Write",
+				Input: map[string]interface{}{"file_path": "D:/workprj/aicoder/TODO.md"},
+			}},
+		},
+	}
+	waitForCondition(t, time.Second, func() bool {
+		session.mu.RLock()
+		defer session.mu.RUnlock()
+		return session.Status == SessionBusy && !session.Summary.WaitingForUser
+	})
+
+	handle.msgCh <- SDKMessage{
+		Type: "user",
+		Message: &SDKAssistantPayload{
+			Role: "user",
+			Content: []SDKContentBlock{{
+				Type:      "tool_result",
+				ToolUseID: "toolu_1",
+				Content:   "ok",
+			}},
+		},
+	}
+	handle.msgCh <- SDKMessage{Type: "result", Result: &SDKResultPayload{Duration: 1200, NumTurns: 1}}
+	waitForCondition(t, time.Second, func() bool {
+		session.mu.RLock()
+		defer session.mu.RUnlock()
+		return session.Status == SessionWaitingInput && session.Summary.WaitingForUser && !session.Summary.Thinking
+	})
+
+	close(handle.msgCh)
+	close(handle.outputCh)
+	close(handle.ctrlReqCh)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runSDKOutputLoop did not exit")
+	}
 }
 
 func TestRemoteSessionManagerCreateUsesFactoriesAndStoresSession(t *testing.T) {
@@ -250,6 +517,45 @@ func TestRemoteSessionManagerCreateUsesFactoriesAndStoresSession(t *testing.T) {
 	}
 }
 
+func TestRemoteSessionManagerInterruptCancelsBackgroundAISession(t *testing.T) {
+	manager := NewRemoteSessionManager(&App{})
+	loopCtx := NewBackgroundLoopContext("bg-1", SlotKindScheduled, "ai task", 4, nil, nil)
+	session := manager.CreateAIBackgroundSession("AI task", `D:\workprj\demo`, loopCtx)
+	if session == nil {
+		t.Fatal("expected background AI session")
+	}
+	if err := manager.Interrupt(session.ID); err != nil {
+		t.Fatalf("Interrupt() error = %v", err)
+	}
+	select {
+	case <-loopCtx.CancelC:
+	default:
+		t.Fatal("expected loop context to be cancelled")
+	}
+}
+
+func TestRemoteSessionManagerCreateAIBackgroundSessionStoresMetadata(t *testing.T) {
+	manager := NewRemoteSessionManager(&App{})
+	loopCtx := NewLoopContext("bg-2", 4, nil)
+	loopCtx.JobID = "job-1"
+	loopCtx.RunID = "run-1"
+	session := manager.CreateAIBackgroundSession("Summarize repo", `D:\workprj\demo`, loopCtx)
+	if session == nil {
+		t.Fatal("expected session")
+	}
+	if session.LaunchSource != RemoteLaunchSourceAI {
+		t.Fatalf("launch source = %q, want %q", session.LaunchSource, RemoteLaunchSourceAI)
+	}
+	if session.AgentLoop != loopCtx {
+		t.Fatal("expected agent loop to be stored on session")
+	}
+	if session.Summary.Status != string(SessionBusy) {
+		t.Fatalf("summary status = %q, want %q", session.Summary.Status, SessionBusy)
+	}
+	if session.JobID != "job-1" || session.RunID != "run-1" {
+		t.Fatalf("trace ids = (%q, %q), want (job-1, run-1)", session.JobID, session.RunID)
+	}
+}
 func TestRemoteSessionManagerDefaultProviderFactorySupportsOpencode(t *testing.T) {
 	manager := NewRemoteSessionManager(&App{})
 
@@ -439,6 +745,113 @@ func TestCodexAdapterBuildCommandYoloMode(t *testing.T) {
 	argsStr := strings.Join(cmd.Args, " ")
 	if !strings.Contains(argsStr, "--full-auto") {
 		t.Fatalf("Args = %v, want '--full-auto' flag in yolo mode", cmd.Args)
+	}
+}
+
+func TestCodexAdapterBuildCommandResumeSession(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	toolsDir := filepath.Join(tempHome, ".maclaw", "data", "tools")
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(toolsDir) error = %v", err)
+	}
+
+	binaryName := "codex"
+	if runtime.GOOS == "windows" {
+		binaryName = "codex.cmd"
+	}
+	binaryPath := filepath.Join(toolsDir, binaryName)
+	if err := os.WriteFile(binaryPath, []byte("stub"), 0o644); err != nil {
+		t.Fatalf("WriteFile(codex) error = %v", err)
+	}
+
+	projectDir := filepath.Join(tempHome, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+
+	adapter := NewCodexAdapter(&App{})
+	cmd, err := adapter.BuildCommand(LaunchSpec{
+		Tool:            "codex",
+		ProjectPath:     projectDir,
+		ModelID:         "gpt-5.2-codex",
+		ResumeSessionID: "thread_123",
+		Env:             map[string]string{"OPENAI_API_KEY": "test-key"},
+	})
+	if err != nil {
+		t.Fatalf("BuildCommand() error = %v", err)
+	}
+	wantArgs := []string{"exec", "resume", "--json", "--model", "gpt-5.2-codex", "thread_123", "-"}
+	if len(cmd.Args) != len(wantArgs) {
+		t.Fatalf("Args len = %d, want %d: %v", len(cmd.Args), len(wantArgs), cmd.Args)
+	}
+	for i, want := range wantArgs {
+		if cmd.Args[i] != want {
+			t.Fatalf("Args[%d] = %q, want %q (all args: %v)", i, cmd.Args[i], want, cmd.Args)
+		}
+	}
+}
+
+func TestShouldCreatePendingResumeSlotRequiresIncompleteCompletion(t *testing.T) {
+	session := &RemoteSession{
+		ResumeContext:   &SessionResumeContext{OriginalTask: "resume me"},
+		CompletionLevel: CompletionCompleted,
+	}
+	if shouldCreatePendingResumeSlot(session) {
+		t.Fatal("shouldCreatePendingResumeSlot() = true, want false for completed sessions")
+	}
+
+	session.CompletionLevel = CompletionIncomplete
+	if !shouldCreatePendingResumeSlot(session) {
+		t.Fatal("shouldCreatePendingResumeSlot() = false, want true for incomplete sessions")
+	}
+}
+
+func TestRemoteSessionManagerSuppressResumeForSessionClearsResumeContext(t *testing.T) {
+	manager := NewRemoteSessionManager(&App{})
+	session := &RemoteSession{ID: "sess-1", ResumeContext: &SessionResumeContext{OriginalTask: "resume me"}}
+	manager.sessions[session.ID] = session
+
+	manager.SuppressResumeForSession("sess-1")
+
+	session.mu.RLock()
+	defer session.mu.RUnlock()
+	if session.ResumeContext != nil {
+		t.Fatalf("ResumeContext = %#v, want nil", session.ResumeContext)
+	}
+}
+
+func TestBuildResumeContextCapturesCodexThreadID(t *testing.T) {
+	handle := &CodexSDKExecutionHandle{threadID: "thread_456"}
+	session := &RemoteSession{
+		ProjectPath: "D:/workprj/demo",
+		Tool:        "codex",
+		Exec:        handle,
+		Summary: SessionSummary{
+			ProgressSummary: "halfway",
+			ImportantFiles:  []string{"a.go", "b.go"},
+		},
+		RawOutputLines: []string{"line1", "line2"},
+	}
+
+	rc := buildResumeContext(session, "token_limit")
+	if rc == nil {
+		t.Fatal("expected resume context")
+	}
+	if rc.ResumeSessionID != "thread_456" {
+		t.Fatalf("ResumeSessionID = %q, want %q", rc.ResumeSessionID, "thread_456")
+	}
+	if rc.ClaudeSessionID != "" {
+		t.Fatalf("ClaudeSessionID = %q, want empty", rc.ClaudeSessionID)
+	}
+	if rc.Tool != "codex" {
+		t.Fatalf("Tool = %q, want %q", rc.Tool, "codex")
+	}
+	if rc.ProjectPath != "D:/workprj/demo" {
+		t.Fatalf("ProjectPath = %q, want %q", rc.ProjectPath, "D:/workprj/demo")
 	}
 }
 
