@@ -50,62 +50,359 @@ type IMUserMessage struct {
 	MinIterations      int                 `json:"min_iterations,omitempty"`       // floor for agent loop iterations (used by scheduled tasks)
 	IsBackground       bool                `json:"is_background,omitempty"`        // true for scheduled tasks / auto-picked tasks (uses separate HTTP client)
 	BackgroundSlotKind string              `json:"background_slot_kind,omitempty"` // "coding", "scheduled", "auto" — determines concurrency slot (default: "scheduled")
+	ResumeSlotID       string              `json:"resume_slot_id,omitempty"`
+	StartNewTask       bool                `json:"start_new_task,omitempty"`
+	DismissSlotID      string              `json:"dismiss_slot_id,omitempty"`
 }
 
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
-	Text                                string             `json:"text"`
-	Fields                              []IMResponseField  `json:"fields,omitempty"`
-	Actions                             []IMResponseAction `json:"actions,omitempty"`
-	ImageKey                            string             `json:"image_key,omitempty"`
-	FileData                            string             `json:"file_data,omitempty"`
-	FileName                            string             `json:"file_name,omitempty"`
-	FileMimeType                        string             `json:"file_mime_type,omitempty"`
-	LocalFilePath                       string             `json:"local_file_path,omitempty"`
-	LocalFilePaths                      []string           `json:"local_file_paths,omitempty"`
-	ThumbnailBase64                     string             `json:"thumbnail_base64,omitempty"`
-	Error                               string             `json:"error,omitempty"`
-	Deferred                            bool               `json:"deferred,omitempty"`
-	JobID                               string             `json:"job_id,omitempty"`
-	RunID                               string             `json:"run_id,omitempty"`
-	RequestID                           string             `json:"request_id,omitempty"`
-	TraceSummary                        string             `json:"trace_summary,omitempty"`
-	TraceEventCount                     int                `json:"trace_event_count,omitempty"`
-	EvidenceCount                       int                `json:"evidence_count,omitempty"`
-	TrialReflectSummary                 string             `json:"trial_reflect_summary,omitempty"`
-	TrialReflectStatus                  string             `json:"trial_reflect_status,omitempty"`
-	TrialReflectFailures                int                `json:"trial_reflect_failures,omitempty"`
-	InputTokens                         int                `json:"input_tokens,omitempty"`
-	OutputTokens                        int                `json:"output_tokens,omitempty"`
-	TotalTokens                         int                `json:"total_tokens,omitempty"`
-	HandlerTailNanos                    int64              `json:"-"`
-	HandlerBlackholeAfterUsageNanos     int64              `json:"-"`
-	HandlerBlackholeBeforeReturnNanos   int64              `json:"-"`
-	HandlerPostStreamUsageNanos         int64              `json:"-"`
-	HandlerPostStreamResponseNanos      int64              `json:"-"`
-	HandlerPostStreamToolExecNanos      int64              `json:"-"`
-	HandlerPostStreamChoiceNanos        int64              `json:"-"`
-	HandlerPostStreamAssistantMsgNanos  int64              `json:"-"`
-	HandlerPostStreamHistoryAppendNanos int64              `json:"-"`
-	HandlerPostStreamNoToolBranchNanos  int64              `json:"-"`
-	FinalizeTraceNanos                  int64              `json:"-"`
-	MemorySaveNanos                     int64              `json:"-"`
-	CapabilityGapNanos                  int64              `json:"-"`
-	FileMaterializeNanos                int64              `json:"-"`
-	PreLLMPrepNanos                     int64              `json:"-"`
-	PreLLMConfigNanos                   int64              `json:"-"`
-	PreLLMToolsNanos                    int64              `json:"-"`
-	PreLLMConversationNanos             int64              `json:"-"`
-	PreLLMIterationPrepNanos            int64              `json:"-"`
-	FirstTokenWaitNanos                 int64              `json:"-"`
-	LLMRequestBuildNanos                int64              `json:"-"`
-	LLMHTTPDoNanos                      int64              `json:"-"`
-	LLMFirstSSEWaitNanos                int64              `json:"-"`
-	LLMRetryWaitNanos                   int64              `json:"-"`
-	LLMStreamMaxTokenGapNanos           int64              `json:"-"`
-	LLMRetryCount                       int                `json:"-"`
-	LLMIdleTimeoutCount                 int                `json:"-"`
-	LLMIdleTimeoutAfterToken            bool               `json:"-"`
+	Text                                string                  `json:"text"`
+	Fields                              []IMResponseField       `json:"fields,omitempty"`
+	Actions                             []IMResponseAction      `json:"actions,omitempty"`
+	Confirmation                        *IMResponseConfirmation `json:"confirmation,omitempty"`
+	ImageKey                            string                  `json:"image_key,omitempty"`
+	FileData                            string                  `json:"file_data,omitempty"`
+	FileName                            string                  `json:"file_name,omitempty"`
+	FileMimeType                        string                  `json:"file_mime_type,omitempty"`
+	LocalFilePath                       string                  `json:"local_file_path,omitempty"`
+	LocalFilePaths                      []string                `json:"local_file_paths,omitempty"`
+	ThumbnailBase64                     string                  `json:"thumbnail_base64,omitempty"`
+	Error                               string                  `json:"error,omitempty"`
+	Deferred                            bool                    `json:"deferred,omitempty"`
+	JobID                               string                  `json:"job_id,omitempty"`
+	RunID                               string                  `json:"run_id,omitempty"`
+	RequestID                           string                  `json:"request_id,omitempty"`
+	TraceSummary                        string                  `json:"trace_summary,omitempty"`
+	TraceEventCount                     int                     `json:"trace_event_count,omitempty"`
+	EvidenceCount                       int                     `json:"evidence_count,omitempty"`
+	TrialReflectSummary                 string                  `json:"trial_reflect_summary,omitempty"`
+	TrialReflectStatus                  string                  `json:"trial_reflect_status,omitempty"`
+	TrialReflectFailures                int                     `json:"trial_reflect_failures,omitempty"`
+	InputTokens                         int                     `json:"input_tokens,omitempty"`
+	OutputTokens                        int                     `json:"output_tokens,omitempty"`
+	TotalTokens                         int                     `json:"total_tokens,omitempty"`
+	HandlerTailNanos                    int64                   `json:"-"`
+	HandlerBlackholeAfterUsageNanos     int64                   `json:"-"`
+	HandlerBlackholeBeforeReturnNanos   int64                   `json:"-"`
+	HandlerPostStreamUsageNanos         int64                   `json:"-"`
+	HandlerPostStreamResponseNanos      int64                   `json:"-"`
+	HandlerPostStreamToolExecNanos      int64                   `json:"-"`
+	HandlerPostStreamChoiceNanos        int64                   `json:"-"`
+	HandlerPostStreamAssistantMsgNanos  int64                   `json:"-"`
+	HandlerPostStreamHistoryAppendNanos int64                   `json:"-"`
+	HandlerPostStreamNoToolBranchNanos  int64                   `json:"-"`
+	FinalizeTraceNanos                  int64                   `json:"-"`
+	MemorySaveNanos                     int64                   `json:"-"`
+	CapabilityGapNanos                  int64                   `json:"-"`
+	FileMaterializeNanos                int64                   `json:"-"`
+	PreLLMPrepNanos                     int64                   `json:"-"`
+	PreLLMConfigNanos                   int64                   `json:"-"`
+	PreLLMToolsNanos                    int64                   `json:"-"`
+	PreLLMConversationNanos             int64                   `json:"-"`
+	PreLLMIterationPrepNanos            int64                   `json:"-"`
+	FirstTokenWaitNanos                 int64                   `json:"-"`
+	LLMRequestBuildNanos                int64                   `json:"-"`
+	LLMHTTPDoNanos                      int64                   `json:"-"`
+	LLMFirstSSEWaitNanos                int64                   `json:"-"`
+	LLMRetryWaitNanos                   int64                   `json:"-"`
+	LLMStreamMaxTokenGapNanos           int64                   `json:"-"`
+	LLMRetryCount                       int                     `json:"-"`
+	LLMIdleTimeoutCount                 int                     `json:"-"`
+	LLMIdleTimeoutAfterToken            bool                    `json:"-"`
+}
+
+const stalledNoToolRecoverThreshold = 2
+
+type agentLoopStage string
+
+const (
+	agentStageOrient   agentLoopStage = "orient"
+	agentStageExecute  agentLoopStage = "execute"
+	agentStageRecover  agentLoopStage = "recover"
+	agentStageConverge agentLoopStage = "converge"
+	agentStageFinalize agentLoopStage = "finalize"
+)
+
+type agentLoopPhase struct {
+	Stage                agentLoopStage
+	ConsecutiveNoTool    int
+	ForceSkillPreference bool
+	PreferredSkillName   string
+	PreferredSkillReason string
+	SkillAttempted       bool
+	SkillFailed          bool
+	RecoverReason        string
+	RecoverPrompt        string
+}
+
+func shouldPreferSkillForTask(text string) bool {
+	result := classifyTaskIntent(text)
+	if result.Intent == intentCoding || result.Intent == intentSSH {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	hints := []string{
+		"pdf", "报告", "文档", "综述", "总结", "markdown", "导出", "转换",
+		"生成文件", "发送文件", "daily papers", "paper", "report",
+	}
+	for _, hint := range hints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, string) {
+	if exec == nil {
+		return "", ""
+	}
+	lower := strings.ToLower(strings.TrimSpace(userText))
+	if lower == "" {
+		return "", ""
+	}
+	bestName := ""
+	bestReason := ""
+	bestScore := 0
+	for _, skill := range exec.List() {
+		if strings.TrimSpace(skill.Name) == "" {
+			continue
+		}
+		score := 0
+		for _, trigger := range skill.Triggers {
+			trigger = strings.ToLower(strings.TrimSpace(trigger))
+			if trigger == "" {
+				continue
+			}
+			if strings.Contains(lower, trigger) {
+				score += 3
+			}
+		}
+		desc := strings.ToLower(strings.TrimSpace(skill.Description))
+		if desc != "" {
+			for _, token := range []string{"pdf", "报告", "文档", "综述", "markdown", "daily papers", "report"} {
+				if strings.Contains(lower, token) && strings.Contains(desc, token) {
+					score += 2
+				}
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			bestName = skill.Name
+			bestReason = firstNonEmptyTraceText(skill.Description, strings.Join(skill.Triggers, ", "))
+		}
+	}
+	if bestScore <= 0 {
+		return "", ""
+	}
+	return bestName, bestReason
+}
+
+func shouldBypassSkillPreference(toolCalls []llmToolCall) bool {
+	for _, tc := range toolCalls {
+		name := strings.TrimSpace(tc.Function.Name)
+		switch name {
+		case "run_skill", "list_skills", "search_skill_hub", "install_skill_hub", "search_and_install_skill":
+			return true
+		}
+	}
+	return false
+}
+
+func filterToolsForSkillPreference(toolDefs []map[string]interface{}) []map[string]interface{} {
+	if len(toolDefs) == 0 {
+		return toolDefs
+	}
+	filtered := make([]map[string]interface{}, 0, len(toolDefs))
+	for _, def := range toolDefs {
+		name := extractToolName(def)
+		switch name {
+		case "craft_tool", "bash", "create_session":
+			continue
+		default:
+			filtered = append(filtered, def)
+		}
+	}
+	if len(filtered) == 0 {
+		return toolDefs
+	}
+	return filtered
+}
+
+func enterRecoverPhase(phase *agentLoopPhase, reason, prompt string) {
+	if phase == nil {
+		return
+	}
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return
+	}
+	phase.Stage = agentStageRecover
+	phase.RecoverReason = strings.TrimSpace(reason)
+	phase.RecoverPrompt = prompt
+}
+
+func buildSkillRecoverPrompt(skillName string) string {
+	skillName = strings.TrimSpace(skillName)
+	if skillName == "" {
+		return "[Recover 阶段]\n本地 Skill 已尝试且失败，当前进入 Recover 阶段。不要重复同一个失败 Skill。请基于已知失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n[/Recover 阶段]"
+	}
+	return fmt.Sprintf("[Recover 阶段]\n本地 Skill「%s」已尝试且失败，当前进入 Recover 阶段。不要再次调用同一个 Skill。请基于失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n[/Recover 阶段]", skillName)
+}
+
+func buildDriftRecoverPrompt(drift DriftResult) string {
+	detail := strings.TrimSpace(drift.ReplanPrompt)
+	if detail == "" {
+		detail = "检测到执行路径出现漂移或循环，请停止重复同一做法，回到原始目标并改用不同路径继续完成任务。"
+	}
+	return "[Recover 阶段]\n检测到执行路径出现漂移或循环，当前进入 Recover 阶段。请先暂停重复操作，回到原始目标，基于已知结果改用不同路径继续完成任务。\n" + detail + "\n[/Recover 阶段]"
+}
+
+func buildDeliverableRecoverPrompt(skillName string, preferSkill bool) string {
+	skillName = strings.TrimSpace(skillName)
+	if preferSkill && skillName != "" {
+		return fmt.Sprintf("[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，优先直接调用 run_skill(name=\"%s\") 完成交付；若该 Skill 明确失败，再切换到其他真实工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]", skillName)
+	}
+	return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，请立即调用真实工具完成交付；若目标是文档，优先选择当前可用的文档/文件交付工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
+}
+
+func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []string) string {
+	var b strings.Builder
+	b.WriteString("[Recover 阶段]\n上一轮真实工具执行已出现失败，当前进入 Recover 阶段。请先根据失败结果调整计划，不要原样重复已经失败的尝试。")
+	if obs := strings.TrimSpace(observation); obs != "" {
+		b.WriteString("\n失败观察: ")
+		b.WriteString(obs)
+	}
+	if len(repeatedFailures) > 0 {
+		items := append([]string(nil), repeatedFailures...)
+		sort.Strings(items)
+		b.WriteString("\n避免重复: ")
+		b.WriteString(strings.Join(items, ", "))
+	}
+	b.WriteString("\n下一步：优先改用不同路径或修正参数后继续完成任务；若仍无法完成，直接说明失败原因和当前状态。\n[/Recover 阶段]")
+	return b.String()
+}
+
+func buildNoToolActionPrompt(preferSkill bool, skillName string) string {
+	skillName = strings.TrimSpace(skillName)
+	if preferSkill && skillName != "" {
+		return fmt.Sprintf("[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。优先立即调用 run_skill(name=\"%s\") 开始执行；若该 Skill 不适用或失败，再切换到其他真实工具。\n[/执行要求]", skillName)
+	}
+	return "[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成、编辑或发送相关工具。\n[/执行要求]"
+}
+
+func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName string) string {
+	skillName = strings.TrimSpace(skillName)
+	if preferSkill && skillName != "" {
+		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。优先立即调用 run_skill(name=\"%s\") 启动实际执行；若该 Skill 不适用或失败，再切换到其他真实工具完成任务。\n[/Recover 阶段]", consecutive, skillName)
+	}
+	return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成或发送相关工具。\n[/Recover 阶段]", consecutive)
+}
+
+func didSkillToolFail(toolCalls []llmToolCall, toolResults []string) bool {
+	if len(toolCalls) == 0 || len(toolCalls) != len(toolResults) {
+		return false
+	}
+	for i, tc := range toolCalls {
+		if strings.TrimSpace(tc.Function.Name) != "run_skill" {
+			continue
+		}
+		if classifyTrialOutcome(toolResults[i]) == "failed" {
+			return true
+		}
+	}
+	return false
+}
+
+func userFacingToolProgressText(toolName string) string {
+	switch toolName {
+	case "craft_tool":
+		return "🛠️ 正在生成并执行脚本，准备继续完成交付..."
+	case "bash":
+		return "🖥️ 正在执行命令处理文件，请稍候..."
+	case "send_file":
+		return "📤 正在整理并发送生成的文件..."
+	case "generate_pdf":
+		return "📄 正在生成 PDF 文件..."
+	default:
+		return "⚙️ 正在执行工具，请稍候..."
+	}
+}
+
+func shouldExposeToolInternalProgress(toolName string) bool {
+	switch toolName {
+	case "craft_tool", "bash":
+		return true
+	default:
+		return false
+	}
+}
+
+func filterUserFacingToolProgress(toolName, msg string) string {
+	trimmed := strings.TrimSpace(msg)
+	if trimmed == "" {
+		return ""
+	}
+	if shouldExposeToolInternalProgress(toolName) {
+		switch toolName {
+		case "craft_tool":
+			allowedPrefixes := []string{"🧠 ", "💾 ", "🚀 ", "📦 ", "⏳ "}
+			for _, prefix := range allowedPrefixes {
+				if strings.HasPrefix(trimmed, prefix) {
+					return trimmed
+				}
+			}
+			return ""
+		case "bash":
+			if strings.HasPrefix(trimmed, "⏳ ") {
+				return trimmed
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+func shouldResumeIncompleteTask(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	resumePhrases := []string{
+		"继续", "继续呀", "继续做", "继续完成", "继续上次", "接着做", "接着完成", "接着上次", "恢复上次", "做完上次",
+		"continue", "continue it", "continue this", "resume", "resume it", "resume this", "pick up where you left off",
+	}
+	for _, phrase := range resumePhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeFreshTaskRequest(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || shouldResumeIncompleteTask(trimmed) {
+		return false
+	}
+	if countWords(trimmed) < 4 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	freshTaskHints := []string{
+		"帮我", "请你", "请帮我", "现在去", "把", "整理", "分析", "搜索", "生成", "写", "修", "移动", "复制", "放入", "导入",
+		"please", "help me", "can you", "now", "move", "copy", "write", "generate", "summarize", "analyze", "search", "import",
+	}
+	for _, hint := range freshTaskHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldClearHistoryForIncompleteTask(text string) bool {
@@ -113,18 +410,14 @@ func shouldClearHistoryForIncompleteTask(text string) bool {
 	if trimmed == "" {
 		return false
 	}
-	if countWords(trimmed) < 4 {
+	if shouldResumeIncompleteTask(trimmed) {
 		return false
 	}
-	lower := strings.ToLower(trimmed)
-	explicitResumePhrases := []string{
-		"继续", "继续呀", "接着做", "继续做", "继续完成", "接着完成", "继续上次", "接着上次",
-		"continue", "continue it", "continue this", "resume", "resume it", "resume this",
+	if looksLikeFreshTaskRequest(trimmed) {
+		return true
 	}
-	for _, phrase := range explicitResumePhrases {
-		if strings.Contains(lower, phrase) {
-			return false
-		}
+	if countWords(trimmed) < 4 {
+		return false
 	}
 	return true
 }
@@ -157,6 +450,279 @@ func shouldAutoClearIncompleteTaskContext(newMessage string, entries []conversat
 		return false
 	}
 	return shouldClearHistoryForIncompleteTask(newMessage)
+}
+
+type explicitTaskSlotDecision struct {
+	ResumeSlotID  string
+	StartNewTask  bool
+	DismissSlotID string
+}
+
+func resolveExplicitTaskSlotDecision(msg IMUserMessage, slot *unfinishedTaskSlot) explicitTaskSlotDecision {
+	decision := explicitTaskSlotDecision{
+		ResumeSlotID:  strings.TrimSpace(msg.ResumeSlotID),
+		StartNewTask:  msg.StartNewTask,
+		DismissSlotID: strings.TrimSpace(msg.DismissSlotID),
+	}
+	if decision.ResumeSlotID != "" && (slot == nil || slot.SlotID != decision.ResumeSlotID) {
+		decision.ResumeSlotID = ""
+	}
+	return decision
+}
+
+func buildUnfinishedSlotResumeContext(slot *unfinishedTaskSlot) string {
+	if slot == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## 显式恢复未完成任务\n")
+	if slot.LastTask != "" {
+		b.WriteString("- 任务: ")
+		b.WriteString(slot.LastTask)
+		b.WriteString("\n")
+	}
+	if slot.Summary != "" {
+		b.WriteString("- 当前进度: ")
+		b.WriteString(slot.Summary)
+		b.WriteString("\n")
+	}
+	if slot.ResumePrompt != "" {
+		b.WriteString(slot.ResumePrompt)
+		if !strings.HasSuffix(slot.ResumePrompt, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("用户已显式选择继续这个未完成任务。请仅围绕该任务继续，不要混入其他旧任务。\n")
+	return b.String()
+}
+
+func buildResumeSlotActions(slot *unfinishedTaskSlot) []IMResponseAction {
+	if slot == nil || strings.TrimSpace(slot.SlotID) == "" {
+		return nil
+	}
+	resumeLabel := "继续上次任务"
+	if title := strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary)); title != "" {
+		resumeLabel = "继续：" + truncateRunes(title, 20)
+	}
+	return []IMResponseAction{
+		{Label: resumeLabel, Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
+		{Label: "开始新任务", Command: "__start_new_task__", Style: "default"},
+		{Label: "放弃旧任务", Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "danger"},
+	}
+}
+
+func buildUnfinishedSlotHint(slot *unfinishedTaskSlot) string {
+	if slot == nil {
+		return ""
+	}
+	title := strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary, slot.ProjectPath))
+	if title == "" {
+		title = "上次未完成任务"
+	}
+	return "检测到一个未完成任务：" + truncateRunes(title, 60) + "。如需继续，请显式选择“继续上次任务”。"
+}
+
+func isSlotActionCommand(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "__resume_unfinished__ ") || trimmed == "__start_new_task__" || strings.HasPrefix(trimmed, "__dismiss_unfinished__ ")
+}
+
+func isConfirmationApproval(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	phrases := []string{
+		"确认", "确认了", "可以", "可以开始", "开始吧", "继续", "继续吧", "没问题", "好的开始", "就这样", "按这个来",
+		"ok", "okay", "confirmed", "confirm", "go ahead", "looks good", "start", "continue",
+	}
+	for _, phrase := range phrases {
+		if lower == phrase || strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func isConfirmationCancel(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	phrases := []string{"取消", "先别做", "不用做了", "停止", "算了", "cancel", "stop", "never mind"}
+	for _, phrase := range phrases {
+		if lower == phrase || strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldRequireExecutionConfirmation(msg IMUserMessage, pending *pendingConfirmation) bool {
+	if msg.IsBackground || pending != nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(msg.Text)
+	if trimmed == "" || !looksLikeFreshTaskRequest(trimmed) {
+		return false
+	}
+	intent := classifyTaskIntent(trimmed)
+	return intent.Intent == intentCoding || intent.Intent == intentSSH || intent.Intent == intentAmbiguous
+}
+
+func confirmationTaskLabel(intent taskIntent) string {
+	switch intent {
+	case intentCoding:
+		return "coding"
+	case intentSSH:
+		return "ssh"
+	case intentAmbiguous:
+		return "ambiguous"
+	default:
+		return string(intent)
+	}
+}
+
+func confirmationPlannedActions(intent taskIntent) []string {
+	switch intent {
+	case intentCoding:
+		return []string{"确认项目目录", "确认任务目标", "确认后开始修改代码"}
+	case intentSSH:
+		return []string{"确认目标服务器/目录", "确认排查目标", "确认后执行远程操作"}
+	case intentAmbiguous:
+		return []string{"确认这是改代码还是远程处理", "确认工作目录/目标环境", "确认后再执行"}
+	default:
+		return []string{"确认任务理解", "确认后开始执行"}
+	}
+}
+
+func confirmationRiskFlags(intent taskIntent) []string {
+	switch intent {
+	case intentCoding:
+		return []string{"未经确认直接执行可能在错误目录修改代码"}
+	case intentSSH:
+		return []string{"未经确认直接执行可能连错服务器或操作错环境"}
+	case intentAmbiguous:
+		return []string{"当前请求同时包含多种执行路径，直接执行容易跑偏"}
+	default:
+		return nil
+	}
+}
+
+func confirmationRevisionHints(intent taskIntent) []string {
+	switch intent {
+	case intentAmbiguous:
+		return []string{"补充这是改代码还是 SSH/服务器操作", "补充正确的项目目录或主机信息"}
+	default:
+		return []string{"如果目录不对，请直接回复正确目录", "如果任务理解不对，请直接回复要修正的点"}
+	}
+}
+
+func buildPendingConfirmation(app *App, userID, text string, result taskIntentResult) *pendingConfirmation {
+	now := time.Now()
+	projectPath := ""
+	if app != nil {
+		projectPath = strings.TrimSpace(app.GetCurrentProjectPath())
+	}
+	targetPaths := make([]string, 0, 1)
+	if projectPath != "" {
+		targetPaths = append(targetPaths, projectPath)
+	}
+	summary := fmt.Sprintf("我理解你想让我处理这项任务：%s", strings.TrimSpace(text))
+	if projectPath != "" {
+		summary += fmt.Sprintf("\n默认工作目录：%s", projectPath)
+	}
+	if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "未命中特征词" {
+		summary += fmt.Sprintf("\n识别到的任务类型：%s（依据：%s）", confirmationTaskLabel(result.Intent), ev)
+	}
+	return &pendingConfirmation{
+		ID:              fmt.Sprintf("confirm-%d", now.UnixNano()),
+		UserID:          userID,
+		OriginalText:    strings.TrimSpace(text),
+		ResumeText:      strings.TrimSpace(text),
+		Summary:         summary,
+		TaskType:        confirmationTaskLabel(result.Intent),
+		TargetPaths:     targetPaths,
+		PlannedActions:  confirmationPlannedActions(result.Intent),
+		RiskFlags:       confirmationRiskFlags(result.Intent),
+		RevisionHints:   confirmationRevisionHints(result.Intent),
+		Status:          "pending",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		LastProjectPath: projectPath,
+	}
+}
+
+func buildConfirmationPayload(item *pendingConfirmation) *IMResponseConfirmation {
+	if item == nil {
+		return nil
+	}
+	return &IMResponseConfirmation{
+		ID:             item.ID,
+		Summary:        item.Summary,
+		TaskType:       item.TaskType,
+		TargetPaths:    append([]string(nil), item.TargetPaths...),
+		PlannedActions: append([]string(nil), item.PlannedActions...),
+		RiskFlags:      append([]string(nil), item.RiskFlags...),
+		RevisionHints:  append([]string(nil), item.RevisionHints...),
+		Status:         item.Status,
+	}
+}
+
+func buildConfirmationResponse(item *pendingConfirmation) *IMAgentResponse {
+	if item == nil {
+		return &IMAgentResponse{Text: "请确认后再继续。"}
+	}
+	text := item.Summary + "\n\n请先确认我的理解是否正确。确认后我再开始执行；如果有偏差，直接回复要修改的目录、目标或前提。"
+	return &IMAgentResponse{
+		Text:         text,
+		Confirmation: buildConfirmationPayload(item),
+		Actions: []IMResponseAction{
+			{Label: "确认并开始", Command: "确认，按这个开始", Style: "primary"},
+			{Label: "取消", Command: "取消这个任务", Style: "secondary"},
+		},
+	}
+}
+
+func applyConfirmationRevision(item *pendingConfirmation, revision string) *pendingConfirmation {
+	if item == nil {
+		return nil
+	}
+	revision = strings.TrimSpace(revision)
+	if revision == "" {
+		return item
+	}
+	clone := *item
+	clone.ResumeText = strings.TrimSpace(item.OriginalText + "\n\n用户补充/修正：" + revision)
+	clone.Summary = item.Summary + "\n用户补充/修正：" + revision
+	clone.RevisionHints = append([]string(nil), item.RevisionHints...)
+	clone.UpdatedAt = time.Now()
+	return &clone
+}
+
+func confirmationApprovedText(item *pendingConfirmation) string {
+	if item == nil {
+		return ""
+	}
+	return strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
+}
+
+func looksLikeNoToolStallReply(text string) bool {
+	trimmed := strings.TrimSpace(stripThinkingTags(text))
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	stallHints := []string{
+		"我先想想", "先想想", "再想想", "整理一下步骤", "整理步骤", "先整理", "先分析", "先看看", "先确认", "先梳理",
+		"let me think", "i'll think", "think first", "organize the steps", "plan this out", "analyze first", "check first",
+	}
+	for _, hint := range stallHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikePromiseOnlyDeliverableReply(text string) bool {
@@ -301,6 +867,17 @@ type IMResponseAction struct {
 	Style   string `json:"style"`
 }
 
+type IMResponseConfirmation struct {
+	ID             string   `json:"id"`
+	Summary        string   `json:"summary"`
+	TaskType       string   `json:"task_type,omitempty"`
+	TargetPaths    []string `json:"target_paths,omitempty"`
+	PlannedActions []string `json:"planned_actions,omitempty"`
+	RiskFlags      []string `json:"risk_flags,omitempty"`
+	RevisionHints  []string `json:"revision_hints,omitempty"`
+	Status         string   `json:"status,omitempty"`
+}
+
 func tokenUsageResponseFields(input, output int) []IMResponseField {
 	if input <= 0 && output <= 0 {
 		return nil
@@ -390,6 +967,9 @@ type IMMessageHandler struct {
 
 	// Long-term memory store (lazily initialized via setter).
 	memoryStore *MemoryStore
+
+	// Pending confirmation store for pre-execution confirmation gating.
+	confirmationStore *aiConfirmationStore
 
 	// Session template manager (lazily initialized via setter).
 	templateManager *SessionTemplateManager
@@ -515,12 +1095,13 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	taskClient := &http.Client{Transport: taskTransport}
 
 	h := &IMMessageHandler{
-		app:           app,
-		manager:       manager,
-		memory:        app.ensureConversationMemory(),
-		client:        chatClient,
-		taskClient:    taskClient,
-		agentActivity: NewAgentActivityStore(),
+		app:               app,
+		manager:           manager,
+		memory:            app.ensureConversationMemory(),
+		confirmationStore: app.ensureAIConfirmationStore(),
+		client:            chatClient,
+		taskClient:        taskClient,
+		agentActivity:     NewAgentActivityStore(),
 	}
 	// Initialize ToolRegistry and register builtin tools.
 	h.registry = NewToolRegistry()
@@ -602,6 +1183,11 @@ func (h *IMMessageHandler) SetConfigManager(cm *ConfigManager) {
 // SetMemoryStore configures the long-term memory store.
 func (h *IMMessageHandler) SetMemoryStore(ms *MemoryStore) {
 	h.memoryStore = ms
+}
+
+// SetConfirmationStore configures the pending confirmation store.
+func (h *IMMessageHandler) SetConfirmationStore(store *aiConfirmationStore) {
+	h.confirmationStore = store
 }
 
 func (h *IMMessageHandler) SetTraceService(trace *AITraceService) {
@@ -1332,6 +1918,13 @@ func (h *IMMessageHandler) buildTraceEvidencePrompt(userMessage string) string {
 	if h.traceService == nil {
 		return ""
 	}
+	if activeSlot := h.memory.activeUnfinishedSlot("desktop-user"); activeSlot == nil {
+		trimmed := strings.TrimSpace(userMessage)
+		if looksLikeFreshTaskRequest(trimmed) && !shouldResumeIncompleteTask(trimmed) {
+			return ""
+		}
+		return ""
+	}
 	projectPath := h.traceProjectPath()
 	evidence := h.traceService.RecallEvidence(projectPath, userMessage, 3)
 	if len(evidence) == 0 {
@@ -1552,6 +2145,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// is misconfigured.
 	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
 		h.memory.clear(msg.UserID)
+		if h.confirmationStore != nil {
+			h.confirmationStore.clear(msg.UserID)
+		}
 		resp := &IMAgentResponse{Text: "对话已重置。"}
 		if h.currentLoopCtx != nil {
 			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, "")
@@ -1573,6 +2169,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			"/help — 显示此帮助"}
 	}
 	if trimmed == "/cancel" || trimmed == "/取消" {
+		if h.confirmationStore != nil {
+			if pending := h.confirmationStore.get(msg.UserID); pending != nil {
+				h.confirmationStore.clear(msg.UserID)
+				return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
+			}
+		}
 		ctx := h.currentLoopCtx
 		if ctx == nil {
 			return &IMAgentResponse{Text: "ℹ️ 当前没有正在执行的任务。"}
@@ -1600,16 +2202,37 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if msg.IsBackground {
 		httpClient = h.taskClient
 	}
+	if h.confirmationStore != nil {
+		h.confirmationStore.clearExpired(time.Now())
+	}
 
-	if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, h.memory.load(msg.UserID)) {
-		h.memory.clear(msg.UserID)
-		log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
+	EntriesBeforeClear := h.memory.load(msg.UserID)
+	unfinishedSlot := h.memory.getUnfinishedSlot(msg.UserID)
+	decision := resolveExplicitTaskSlotDecision(msg, unfinishedSlot)
+	if decision.DismissSlotID != "" {
+		h.memory.dismissUnfinishedSlot(msg.UserID, decision.DismissSlotID)
+		unfinishedSlot = nil
+		decision.ResumeSlotID = ""
+	}
+	if decision.StartNewTask {
+		h.memory.clearConversationButKeepSlot(msg.UserID)
+		EntriesBeforeClear = nil
+	} else if decision.ResumeSlotID != "" {
+		if h.memory.bindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
+			unfinishedSlot = h.memory.activeUnfinishedSlot(msg.UserID)
+		}
+	} else {
+		if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, EntriesBeforeClear) {
+			h.memory.clearConversationButKeepSlot(msg.UserID)
+			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
+			EntriesBeforeClear = nil
+		}
 	}
 
 	// --- Automatic topic switch detection ---
 	// For interactive (non-background) messages, detect if the user has
 	// switched topics and auto-clear stale conversation context.
-	if !msg.IsBackground && h.topicDetector != nil {
+	if !msg.IsBackground && h.topicDetector != nil && len(EntriesBeforeClear) > 0 && !hasIncompleteTaskMarker(EntriesBeforeClear) && decision.ResumeSlotID == "" && !decision.StartNewTask {
 		if h.topicDetector.detect(trimmed, msg.UserID, h.memory) == TopicNew {
 			// Archive a one-line summary before clearing.
 			if h.memoryStore != nil {
@@ -1659,7 +2282,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		} else {
 			systemPrompt = h.buildSystemPrompt()
 		}
-		systemPrompt += h.buildTraceEvidencePrompt(msg.Text)
+		if activeSlot := h.memory.activeUnfinishedSlot(msg.UserID); activeSlot != nil {
+			systemPrompt += buildUnfinishedSlotResumeContext(activeSlot)
+			systemPrompt += h.buildTraceEvidencePrompt(activeSlot.LastTask)
+		} else {
+			systemPrompt += h.buildTraceEvidencePrompt(msg.Text)
+		}
 
 		result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, nil, nil, nil, msg.MinIterations, msg.Platform)
 
@@ -1680,6 +2308,44 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return result
 	}
 
+	pending := (*pendingConfirmation)(nil)
+	if h.confirmationStore != nil {
+		pending = h.confirmationStore.get(msg.UserID)
+	}
+	if pending != nil {
+		switch {
+		case isConfirmationCancel(trimmed):
+			h.confirmationStore.clear(msg.UserID)
+			return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
+		case isConfirmationApproval(trimmed):
+			h.confirmationStore.clear(msg.UserID)
+			msg.Text = confirmationApprovedText(pending)
+			trimmed = strings.TrimSpace(msg.Text)
+		case !msg.IsBackground:
+			updated := applyConfirmationRevision(pending, trimmed)
+			h.confirmationStore.set(updated)
+			return buildConfirmationResponse(updated)
+		}
+	}
+	if shouldRequireExecutionConfirmation(msg, pending) {
+		intent := classifyTaskIntent(trimmed)
+		item := buildPendingConfirmation(h.app, msg.UserID, trimmed, intent)
+		if h.confirmationStore != nil {
+			h.confirmationStore.set(item)
+		}
+		return buildConfirmationResponse(item)
+	}
+	if unfinishedSlot != nil && !msg.IsBackground && !isSlotActionCommand(trimmed) && !decision.StartNewTask && decision.ResumeSlotID == "" {
+		if hint := buildUnfinishedSlotHint(unfinishedSlot); hint != "" {
+			responseActions := buildResumeSlotActions(unfinishedSlot)
+			resp := &IMAgentResponse{Text: hint}
+			if len(responseActions) > 0 {
+				resp.Actions = responseActions
+			}
+			return resp
+		}
+	}
+
 	history := h.memory.load(msg.UserID)
 	history = h.compactHistory(history, httpClient)
 	var systemPrompt string
@@ -1688,7 +2354,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	} else {
 		systemPrompt = h.buildSystemPrompt()
 	}
-	systemPrompt += h.buildTraceEvidencePrompt(msg.Text)
+	if activeSlot := h.memory.activeUnfinishedSlot(msg.UserID); activeSlot != nil {
+		systemPrompt += buildUnfinishedSlotResumeContext(activeSlot)
+		systemPrompt += h.buildTraceEvidencePrompt(activeSlot.LastTask)
+	} else {
+		systemPrompt += h.buildTraceEvidencePrompt(msg.Text)
+	}
 
 	// Create a LoopContext for this chat loop.
 	loopCtx := providedLoopCtx
@@ -2168,11 +2839,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		return cachedDebug
 	}
 
-	// sendToolProgress sends tool-execution progress only when debug is on.
+	// sendToolProgress sends user-visible tool stage progress. Detailed tool
+	// internals remain gated by debug mode via toolOnProgress below, but users
+	// should still see that the assistant is actively executing a tool.
 	sendToolProgress := func(text string) {
-		if isDebug() {
-			sendProgress(text)
-		}
+		sendProgress(text)
 	}
 
 	// Delayed acknowledgment: when debug is off and streaming is not active,
@@ -2231,9 +2902,22 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	if ctx.MaxIterations() <= 0 {
 		ctx.SetMaxIterations(maxIter)
 	}
+	phase := agentLoopPhase{Stage: agentStageOrient}
+	if shouldPreferSkillForTask(userText) {
+		if skillName, skillReason := matchPreferredLocalSkill(h.app.skillExecutor, userText); skillName != "" {
+			phase.ForceSkillPreference = true
+			phase.PreferredSkillName = skillName
+			phase.PreferredSkillReason = skillReason
+		}
+	}
+
 	toolsStartedAt := time.Now()
 	allTools := h.getTools()
-	tools := h.routeTools(userText, allTools)
+	baseTools := h.routeTools(userText, allTools)
+	tools := baseTools
+	if phase.ForceSkillPreference {
+		tools = filterToolsForSkillPreference(baseTools)
+	}
 	toolsTokenBudget := estimateToolsTokens(tools)
 	preLLMToolsElapsed = time.Since(toolsStartedAt)
 	httpClient := ctx.HTTPClient
@@ -2501,7 +3185,40 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 			trialState.pendingNote = ""
 		}
+		if phase.Stage == agentStageRecover && strings.TrimSpace(phase.RecoverPrompt) != "" {
+			conversation = append(conversation, map[string]string{
+				"role":    "system",
+				"content": phase.RecoverPrompt,
+			})
+			if phase.RecoverReason == "skill_failed" {
+				phase.SkillFailed = false
+				phase.ForceSkillPreference = false
+				tools = baseTools
+				toolsTokenBudget = estimateToolsTokens(tools)
+			}
+			recoverReason := firstNonEmptyTraceText(phase.RecoverReason, "recover")
+			if h.traceService != nil && ctx.RunID != "" {
+				h.appendTraceEvent(ctx, "loop.recover_entered", "warn", "Entered Recover stage", truncateTraceText(recoverReason, 220), "", "")
+			}
+			phase.RecoverPrompt = ""
+			phase.RecoverReason = ""
+			phase.Stage = agentStageConverge
+		}
 		recordSystemMessages(systemMessagesStart, conversation)
+		if phase.Stage == agentStageOrient && phase.ForceSkillPreference {
+			convergePrompt := ""
+			if phase.PreferredSkillName != "" {
+				convergePrompt = fmt.Sprintf("[Skill 优先要求]\n检测到本地已有可复用 Skill「%s」。本轮优先调用 run_skill(name=\"%s\") 完成任务，不要先使用 craft_tool 或 bash 自建脚本。若该 Skill 失败，再基于失败原因切换到其他工具路径。", phase.PreferredSkillName, phase.PreferredSkillName)
+				if phase.PreferredSkillReason != "" {
+					convergePrompt += fmt.Sprintf("\n匹配依据: %s", truncateTraceText(phase.PreferredSkillReason, 160))
+				}
+				convergePrompt += "\n[/Skill 优先要求]"
+			}
+			if convergePrompt != "" {
+				conversation = append(conversation, map[string]string{"role": "system", "content": convergePrompt})
+				recordSystemMessages(len(conversation)-1, conversation)
+			}
+		}
 		if !firstLLMRequestMarked {
 			preLLMIterationPrepElapsed += time.Since(iterationPrepStartedAt)
 		}
@@ -2619,7 +3336,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if resp != nil {
 			usageStartedAt := time.Now()
 			input, output := deriveLLMTokenUsage(resp, conversation)
-			h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
+			providerName := h.app.GetMaclawLLMProviders().Current
+			log.Printf("[LLM] usage main_round provider=%q input=%d output=%d usage_nil=%t choices=%d", providerName, input, output, resp.Usage == nil, len(resp.Choices))
+			h.app.AccumulateLLMTokenUsage(providerName, input, output)
 			lastLLMInputTokens = input
 			lastLLMOutputTokens = output
 			if !streamDoneAt.IsZero() {
@@ -2705,18 +3424,31 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				handlerPostStreamNoToolBranchElapsed += time.Since(noToolBranchStartedAt)
 			}()
 		}
-		// No tool calls → final response.
-		// NOTE: Some LLM providers (e.g. DeepSeek, Qwen) return finish_reason="stop"
-		// even when tool_calls are present. We must check tool_calls first and only
-		// treat the response as final when there are genuinely no tool calls.
 		if len(choice.Message.ToolCalls) == 0 {
-			if shouldForceAnotherRoundForDeliverable(msgContent, len(choice.Message.ToolCalls), 0) {
+			phase.Stage = agentStageConverge
+			phase.ConsecutiveNoTool++
+			noToolStall := looksLikeNoToolStallReply(msgContent)
+			if phase.ConsecutiveNoTool == 1 && (noToolStall || (phase.ForceSkillPreference && phase.PreferredSkillName != "" && !phase.SkillAttempted)) {
 				systemMessagesStart := len(conversation)
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": "[交付要求]\n不要再重复承诺将要生成、整理或发送结果。请立即调用真实工具完成交付；若目标是文档，优先调用当前可用的文档/文件交付工具；若确实失败，必须直接说明失败原因，而不是继续说‘马上处理’。[/交付要求]",
+					"content": buildNoToolActionPrompt(phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillName),
 				})
 				recordSystemMessages(systemMessagesStart, conversation)
+				if phase.ForceSkillPreference && phase.PreferredSkillName != "" {
+					phase.SkillAttempted = true
+				}
+				continue
+			}
+			if noToolStall && phase.ConsecutiveNoTool >= stalledNoToolRecoverThreshold {
+				enterRecoverPhase(&phase, "no_tool_stall", buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillName))
+				continue
+			}
+			if shouldForceAnotherRoundForDeliverable(msgContent, len(choice.Message.ToolCalls), 0) {
+				enterRecoverPhase(&phase, "deliverable_pending", buildDeliverableRecoverPrompt(phase.PreferredSkillName, phase.ForceSkillPreference && phase.PreferredSkillName != ""))
+				if shouldBypassSkillPreference(choice.Message.ToolCalls) {
+					phase.ForceSkillPreference = false
+				}
 				if h.traceService != nil && ctx.RunID != "" {
 					h.appendTraceEvent(ctx, "delivery.nudged", "warn", "Forced deliverable follow-up", truncateTraceText(msgContent, 220), "", "")
 				}
@@ -2754,7 +3486,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					goCancel()
 				}
 			}
-			resp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+			phase.Stage = agentStageFinalize
+			finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
 			if !streamDoneAt.IsZero() {
 				postStreamLastReturnPrepAt = time.Now()
 				handlerPostStreamResponseStartedAt := time.Now()
@@ -2762,11 +3495,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					handlerPostStreamResponseElapsed += time.Since(handlerPostStreamResponseStartedAt)
 				}()
 			}
-			attachLLMTelemetry(resp)
-			h.saveConversationHistoryTimed(userID, history, resp)
-			return resp
+			attachLLMTelemetry(finalResp)
+			h.saveConversationHistoryTimed(userID, history, finalResp)
+			return finalResp
 		}
 
+		phase.Stage = agentStageExecute
+		phase.ConsecutiveNoTool = 0
 		// Execute tool calls and feed results back.
 		if trialState.enabled && h.traceService != nil && ctx.RunID != "" {
 			h.appendTraceEvent(ctx, "trial.started", "info", "Trial iteration started", fmt.Sprintf("iteration=%d tool_calls=%d", iteration+1, len(choice.Message.ToolCalls)), "", "")
@@ -2792,11 +3527,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 				return &IMAgentResponse{Text: cancelMsg}
 			}
-			sendToolProgress(fmt.Sprintf("⚙️ 正在执行工具: %s", tc.Function.Name))
+			toolLabel := userFacingToolProgressText(tc.Function.Name)
+			sendToolProgress(toolLabel)
 			// When debug is off, suppress intermediate progress from tool execution too.
 			toolOnProgress := onProgress
 			if !isDebug() {
 				toolOnProgress = nil
+				if onProgress != nil && shouldExposeToolInternalProgress(tc.Function.Name) {
+					toolName := tc.Function.Name
+					toolOnProgress = func(msg string) {
+						if filtered := filterUserFacingToolProgress(toolName, msg); filtered != "" {
+							onProgress(filtered)
+						}
+					}
+				}
 			}
 			toolExecStartedAt := time.Now()
 			recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
@@ -2921,11 +3665,27 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						h.saveConversationHistoryTimed(userID, history, resp)
 						return resp
 					}
+					enterRecoverPhase(&phase, "drift_detected", buildDriftRecoverPrompt(driftResult))
 				}
+			}
+		}
+		skillToolAttempted := shouldBypassSkillPreference(choice.Message.ToolCalls)
+		if skillToolAttempted {
+			phase.SkillAttempted = true
+			phase.ForceSkillPreference = false
+			if didSkillToolFail(choice.Message.ToolCalls, toolResults) {
+				phase.SkillFailed = true
+				enterRecoverPhase(&phase, "skill_failed", buildSkillRecoverPrompt(phase.PreferredSkillName))
 			}
 		}
 		if trialState.enabled {
 			outcome, observation, repeatedFailures := trialState.observeIteration(choice.Message.ToolCalls, toolResults)
+			if outcome == "failed" && phase.Stage != agentStageRecover {
+				enterRecoverPhase(&phase, "trial_failed", buildTrialFailureRecoverPrompt(observation, repeatedFailures))
+			}
+			if phase.Stage != agentStageRecover {
+				phase.Stage = agentStageConverge
+			}
 			if observation != "" && h.traceService != nil && ctx.RunID != "" {
 				h.appendTraceEvent(ctx, "trial.observed", "info", "Trial outcome", truncateTraceText(observation, 220), "", "")
 				h.appendTraceEvidence(ctx, "trial_reflect", outcome, "trial observation", truncateTraceText(observation, 400), "", "")
@@ -3083,7 +3843,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if bonusResp != nil {
 			usageStartedAt := time.Now()
 			input, output := deriveLLMTokenUsage(bonusResp, conversation)
-			h.app.AccumulateLLMTokenUsage(h.app.GetMaclawLLMProviders().Current, input, output)
+			providerName := h.app.GetMaclawLLMProviders().Current
+			log.Printf("[LLM] usage bonus_round provider=%q input=%d output=%d usage_nil=%t choices=%d", providerName, input, output, bonusResp.Usage == nil, len(bonusResp.Choices))
+			h.app.AccumulateLLMTokenUsage(providerName, input, output)
 			lastLLMInputTokens = input
 			lastLLMOutputTokens = output
 			if !streamDoneAt.IsZero() {
@@ -3118,9 +3880,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 			// Execute any tool calls from the bonus round.
 			for _, tc := range bc.Message.ToolCalls {
+				sendToolProgress(userFacingToolProgressText(tc.Function.Name))
 				toolOnProgress := onProgress
 				if !isDebug() {
 					toolOnProgress = nil
+					if onProgress != nil && shouldExposeToolInternalProgress(tc.Function.Name) {
+						toolName := tc.Function.Name
+						toolOnProgress = func(msg string) {
+							if filtered := filterUserFacingToolProgress(toolName, msg); filtered != "" {
+								onProgress(filtered)
+							}
+						}
+					}
 				}
 				toolExecStartedAt := time.Now()
 				recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)

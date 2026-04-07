@@ -29,7 +29,6 @@ func MatMul(out, a, b []float32, M, N, K int) {
 	}
 }
 
-
 func matMulParallel(out, a, b []float32, M, N, K int) {
 	nWorkers := getMatMulWorkers()
 	if nWorkers > M {
@@ -113,25 +112,41 @@ func SiLU(x []float32) {
 }
 
 // ElemMul computes element-wise multiplication: out[i] = a[i] * b[i].
-// out may alias a or b.
+// out may alias a or b when they share the same starting address.
 func ElemMul(out, a, b []float32) {
-	if len(out) > 0 && &out[0] == &a[0] {
+	if len(out) == 0 {
+		return
+	}
+	if &out[0] == &a[0] {
 		// out aliases a — use in-place variant (out *= b).
 		vek32.Mul_Inplace(out, b)
-	} else {
-		vek32.Mul_Into(out, a, b)
+		return
 	}
+	if &out[0] == &b[0] {
+		// out aliases b — use in-place variant (out *= a).
+		vek32.Mul_Inplace(out, a)
+		return
+	}
+	vek32.Mul_Into(out, a, b)
 }
 
 // Add computes element-wise addition: out[i] = a[i] + b[i].
-// out may alias a or b (safe for in-place residual add).
+// out may alias a or b when they share the same starting address.
 func Add(out, a, b []float32) {
-	if len(out) > 0 && &out[0] == &a[0] {
+	if len(out) == 0 {
+		return
+	}
+	if &out[0] == &a[0] {
 		// out aliases a — use in-place variant (out += b).
 		vek32.Add_Inplace(out, b)
-	} else {
-		vek32.Add_Into(out, a, b)
+		return
 	}
+	if &out[0] == &b[0] {
+		// out aliases b — use in-place variant (out += a).
+		vek32.Add_Inplace(out, a)
+		return
+	}
+	vek32.Add_Into(out, a, b)
 }
 
 // Scale multiplies all elements by a scalar, in-place.
@@ -228,8 +243,6 @@ func GroupNorm1(data []float32, time, channels int, weight, bias []float32, eps 
 		}
 	}
 }
-
-
 
 // Tanh applies tanh activation in-place.
 func Tanh(x []float32) {

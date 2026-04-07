@@ -13,11 +13,11 @@ const defaultUnloadDelay = 5 * time.Minute
 // Manager provides lazy-loaded, auto-unloading ASR.
 // Call Transcribe/TranscribeWAV; model loads on first use, unloads after idle.
 type Manager struct {
-	modelPath    string
-	unloadDelay  time.Duration
-	mu           sync.Mutex
-	model        *MoonshineModel
-	unloadTimer  *time.Timer
+	modelPath   string
+	unloadDelay time.Duration
+	mu          sync.Mutex
+	model       *MoonshineModel
+	unloadTimer *time.Timer
 }
 
 // NewManager creates an ASR manager. Model is NOT loaded until first use.
@@ -32,10 +32,14 @@ func (mgr *Manager) SetUnloadDelay(d time.Duration) {
 	mgr.unloadDelay = d
 }
 
-// ensure loads the model if not already loaded, resets unload timer.
+// ensure loads the model if not already loaded and prevents idle unload while in use.
 func (mgr *Manager) ensure() (*MoonshineModel, error) {
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
+	if mgr.unloadTimer != nil {
+		mgr.unloadTimer.Stop()
+		mgr.unloadTimer = nil
+	}
 	if mgr.model == nil {
 		log.Printf("[asr] loading model from %s", mgr.modelPath)
 		t0 := time.Now()
@@ -46,7 +50,6 @@ func (mgr *Manager) ensure() (*MoonshineModel, error) {
 		mgr.model = m
 		log.Printf("[asr] model loaded in %v", time.Since(t0))
 	}
-	mgr.resetTimer()
 	return mgr.model, nil
 }
 

@@ -16,18 +16,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	githubDefinitionYAML    = "yaml"
+	githubDefinitionSkillMD = "skill_md"
+)
+
 // GitHubSkillCandidate represents a skill found via GitHub search.
 type GitHubSkillCandidate struct {
-	RepoFullName string `json:"repo_full_name"` // "owner/repo"
-	RepoURL      string `json:"repo_url"`
-	Description  string `json:"description"`
-	Stars        int    `json:"stars"`
-	FilePath     string `json:"file_path"` // path to skill.yaml in repo
-	RawURL       string `json:"raw_url"`   // direct download URL
-	Branch       string `json:"branch"`
+	RepoFullName   string `json:"repo_full_name"` // "owner/repo"
+	RepoURL        string `json:"repo_url"`
+	Description    string `json:"description"`
+	Stars          int    `json:"stars"`
+	FilePath       string `json:"file_path"` // path to SKILL.md / skill.yaml / skill.yml in repo
+	RawURL         string `json:"raw_url"`   // direct download URL
+	Branch         string `json:"branch"`
+	DefinitionType string `json:"definition_type,omitempty"`
 }
 
-// GitHubSearcher searches GitHub for skill.yaml files and imports them.
+// GitHubSearcher searches GitHub for supported skill definition files and imports them.
 type GitHubSearcher struct {
 	client *http.Client
 	token  string // optional GitHub token for higher rate limits
@@ -43,7 +49,7 @@ func NewGitHubSearcher(token string) *GitHubSearcher {
 
 // ghCodeSearchResponse is the GitHub Code Search API response.
 type ghCodeSearchResponse struct {
-	TotalCount int              `json:"total_count"`
+	TotalCount int                `json:"total_count"`
 	Items      []ghCodeSearchItem `json:"items"`
 }
 
@@ -55,15 +61,21 @@ type ghCodeSearchItem struct {
 }
 
 type ghSearchRepo struct {
-	FullName    string `json:"full_name"`
-	HTMLURL     string `json:"html_url"`
-	Description string `json:"description"`
-	Stars       int    `json:"stargazers_count"`
+	FullName      string `json:"full_name"`
+	HTMLURL       string `json:"html_url"`
+	Description   string `json:"description"`
+	Stars         int    `json:"stargazers_count"`
 	DefaultBranch string `json:"default_branch"`
 }
 
-// SearchGitHub searches GitHub for repositories containing skill.yaml
-// files matching the given query. Returns up to 10 candidates.
+type githubSearchTarget struct {
+	filename       string
+	definitionType string
+}
+
+// SearchGitHub searches GitHub for repositories containing supported skill
+// definition files matching the given query. Returns up to 10 candidates per
+// definition type and merges them by repo/path.
 func (gs *GitHubSearcher) SearchGitHub(query string) ([]GitHubSkillCandidate, error) {
 	if query == "" {
 		return nil, fmt.Errorf("empty search query")
@@ -76,59 +88,75 @@ func (gs *GitHubSearcher) SearchGitHub(query string) ([]GitHubSkillCandidate, er
 		return nil, fmt.Errorf("query contains only special characters")
 	}
 
-	// GitHub Code Search: find skill.yaml files with matching content/repo
-	searchQuery := fmt.Sprintf("filename:skill.yaml %s", sanitized)
-	endpoint := fmt.Sprintf("https://api.github.com/search/code?q=%s&per_page=10",
-		url.QueryEscape(searchQuery))
-
-	body, err := gs.httpGet(endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("GitHub search failed: %w", err)
+	targets := []githubSearchTarget{
+		{filename: "SKILL.md", definitionType: githubDefinitionSkillMD},
+		{filename: "skill.yaml", definitionType: githubDefinitionYAML},
+		{filename: "skill.yml", definitionType: githubDefinitionYAML},
 	}
-
-	var resp ghCodeSearchResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("parse GitHub response: %w", err)
-	}
-
 	var candidates []GitHubSkillCandidate
 	seen := make(map[string]bool)
-	for _, item := range resp.Items {
-		key := item.Repository.FullName + ":" + item.Path
-		if seen[key] {
+	var errs []string
+	for _, target := range targets {
+		resp, err := gs.searchGitHubByFilename(sanitized, target)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", target.filename, err))
 			continue
 		}
-		seen[key] = true
-
-		branch := item.Repository.DefaultBranch
-		if branch == "" {
-			branch = "main"
+		for _, item := range resp.Items {
+			key := item.Repository.FullName + ":" + item.Path
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			candidates = append(candidates, newGitHubCandidate(item, target.definitionType))
 		}
-
-		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s",
-			item.Repository.FullName, branch, item.Path)
-
-		candidates = append(candidates, GitHubSkillCandidate{
-			RepoFullName: item.Repository.FullName,
-			RepoURL:      item.Repository.HTMLURL,
-			Description:  item.Repository.Description,
-			Stars:        item.Repository.Stars,
-			FilePath:     item.Path,
-			RawURL:       rawURL,
-			Branch:       branch,
-		})
+	}
+	if len(candidates) == 0 && len(errs) > 0 {
+		return nil, fmt.Errorf("GitHub search failed: %s", strings.Join(errs, "; "))
 	}
 	return candidates, nil
 }
 
-// ImportFromCandidate downloads a skill.yaml from a GitHub candidate
-// and converts it to an NLSkillEntry ready for local registration.
+func (gs *GitHubSearcher) searchGitHubByFilename(query string, target githubSearchTarget) (*ghCodeSearchResponse, error) {
+	searchQuery := fmt.Sprintf("filename:%s %s", target.filename, query)
+	endpoint := fmt.Sprintf("https://api.github.com/search/code?q=%s&per_page=10",
+		url.QueryEscape(searchQuery))
+	body, err := gs.httpGet(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	var resp ghCodeSearchResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parse GitHub response: %w", err)
+	}
+	return &resp, nil
+}
+
+func newGitHubCandidate(item ghCodeSearchItem, fallbackType string) GitHubSkillCandidate {
+	branch := item.Repository.DefaultBranch
+	if branch == "" {
+		branch = "main"
+	}
+	return GitHubSkillCandidate{
+		RepoFullName:   item.Repository.FullName,
+		RepoURL:        item.Repository.HTMLURL,
+		Description:    item.Repository.Description,
+		Stars:          item.Repository.Stars,
+		FilePath:       item.Path,
+		RawURL:         fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", item.Repository.FullName, branch, item.Path),
+		Branch:         branch,
+		DefinitionType: definitionTypeForPath(item.Path, fallbackType),
+	}
+}
+
+// ImportFromCandidate downloads a supported GitHub skill definition file and
+// converts it to an NLSkillEntry ready for local registration.
 func (gs *GitHubSearcher) ImportFromCandidate(c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
 	data, err := gs.httpGet(c.RawURL)
 	if err != nil {
-		return nil, fmt.Errorf("download skill.yaml: %w", err)
+		return nil, fmt.Errorf("download GitHub skill file: %w", err)
 	}
-	return gs.parseSkillYAML(data, c)
+	return gs.parseCandidateData(data, c)
 }
 
 // ImportFromRepoURL imports all skills from a GitHub repository URL.
@@ -203,8 +231,8 @@ func (gs *GitHubSearcher) scanRepoTree(owner, repo, branch, subPath, sourceURL s
 		if entry.Type != "blob" {
 			continue
 		}
-		base := path.Base(entry.Path)
-		if base != "skill.yaml" && base != "skill.yml" {
+		definitionType := definitionTypeForPath(entry.Path, "")
+		if definitionType == "" {
 			continue
 		}
 		if subPath != "" && !strings.HasPrefix(entry.Path, subPath) {
@@ -220,13 +248,14 @@ func (gs *GitHubSearcher) scanRepoTree(owner, repo, branch, subPath, sourceURL s
 		}
 
 		candidate := GitHubSkillCandidate{
-			RepoFullName: owner + "/" + repo,
-			RepoURL:      fmt.Sprintf("https://github.com/%s/%s", owner, repo),
-			FilePath:     entry.Path,
-			RawURL:       rawURL,
-			Branch:       branch,
+			RepoFullName:   owner + "/" + repo,
+			RepoURL:        sourceURL,
+			FilePath:       entry.Path,
+			RawURL:         rawURL,
+			Branch:         branch,
+			DefinitionType: definitionType,
 		}
-		sk, err := gs.parseSkillYAML(data, candidate)
+		sk, err := gs.parseCandidateData(data, candidate)
 		if err != nil {
 			log.Printf("[github-search] skip %s: parse failed: %v", entry.Path, err)
 			continue
@@ -235,12 +264,34 @@ func (gs *GitHubSearcher) scanRepoTree(owner, repo, branch, subPath, sourceURL s
 	}
 
 	if len(results) == 0 {
-		return nil, fmt.Errorf("no skill.yaml found in %s/%s", owner, repo)
+		return nil, fmt.Errorf("no supported skill definition found in %s/%s", owner, repo)
 	}
 	return results, nil
 }
 
-// ── YAML parsing ───────────────────────────────────────────────────────
+func definitionTypeForPath(filePath, fallback string) string {
+	switch path.Base(filePath) {
+	case "skill.yaml", "skill.yml":
+		return githubDefinitionYAML
+	case "SKILL.md":
+		return githubDefinitionSkillMD
+	default:
+		return fallback
+	}
+}
+
+func (gs *GitHubSearcher) parseCandidateData(data []byte, c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
+	switch definitionTypeForPath(c.FilePath, c.DefinitionType) {
+	case githubDefinitionSkillMD:
+		return gs.parseSkillMarkdown(data, c)
+	case githubDefinitionYAML:
+		return gs.parseSkillYAML(data, c)
+	default:
+		return nil, fmt.Errorf("unsupported GitHub skill file %q", c.FilePath)
+	}
+}
+
+// ── YAML / Markdown parsing ────────────────────────────────────────────
 
 // parseSkillYAML uses raw map parsing (like hubcenter's RemoteImporter)
 // to avoid losing fields such as author, tags, version, permissions that
@@ -256,12 +307,7 @@ func (gs *GitHubSearcher) parseSkillYAML(data []byte, c GitHubSkillCandidate) (*
 
 	name := strings.TrimSpace(strVal(raw, "name"))
 	if name == "" {
-		dir := path.Dir(c.FilePath)
-		if dir != "" && dir != "." {
-			name = path.Base(dir)
-		} else {
-			name = "github-imported-skill"
-		}
+		name = inferSkillName(c)
 	}
 
 	status := strVal(raw, "status")
@@ -282,10 +328,117 @@ func (gs *GitHubSearcher) parseSkillYAML(data []byte, c GitHubSkillCandidate) (*
 		Source:        "github",
 		SourceProject: c.RepoURL,
 		Platforms:     strSlice(raw, "platforms"),
-		RequiresGUI:  requiresGUI,
-		TrustLevel:   "community",
-		CreatedAt:    now,
+		RequiresGUI:   requiresGUI,
+		TrustLevel:    "community",
+		CreatedAt:     now,
 	}, nil
+}
+
+func (gs *GitHubSearcher) parseSkillMarkdown(data []byte, c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
+	skillMD := strings.TrimSpace(string(data))
+	if skillMD == "" {
+		return nil, fmt.Errorf("empty SKILL.md document")
+	}
+	name := firstMarkdownHeading(skillMD)
+	if name == "" {
+		name = inferSkillName(c)
+	}
+	description := strings.TrimSpace(c.Description)
+	if description == "" {
+		description = firstMarkdownParagraph(skillMD)
+	}
+	return &corelib.NLSkillEntry{
+		Name:        name,
+		Description: description,
+		Triggers:    inferSkillTriggers(name, c),
+		Steps: []corelib.NLSkillStep{
+			{
+				Action: "craft_tool",
+				Params: map[string]interface{}{
+					"instructions": skillMD,
+				},
+			},
+		},
+		Status:        "active",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		Source:        "github",
+		SourceProject: c.RepoURL,
+		TrustLevel:    "community",
+	}, nil
+}
+
+func inferSkillName(c GitHubSkillCandidate) string {
+	dir := path.Dir(c.FilePath)
+	if dir != "" && dir != "." {
+		name := path.Base(dir)
+		if strings.TrimSpace(name) != "" && name != "." {
+			return name
+		}
+	}
+	repoName := path.Base(c.RepoFullName)
+	if strings.TrimSpace(repoName) != "" && repoName != "." {
+		return repoName
+	}
+	return "github-imported-skill"
+}
+
+func inferSkillTriggers(name string, c GitHubSkillCandidate) []string {
+	var triggers []string
+	for _, candidate := range []string{name, inferSkillName(c), path.Base(c.RepoFullName)} {
+		trigger := normalizeTrigger(candidate)
+		if trigger == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range triggers {
+			if existing == trigger {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			triggers = append(triggers, trigger)
+		}
+	}
+	return triggers
+}
+
+var triggerCleanupRe = regexp.MustCompile(`[^a-z0-9._-]+`)
+
+func normalizeTrigger(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return ""
+	}
+	v = strings.ReplaceAll(v, " ", "-")
+	v = triggerCleanupRe.ReplaceAllString(v, "-")
+	v = strings.Trim(v, "-._")
+	return v
+}
+
+func firstMarkdownHeading(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#") {
+			continue
+		}
+		heading := strings.TrimSpace(strings.TrimLeft(line, "#"))
+		if heading != "" {
+			return heading
+		}
+	}
+	return ""
+}
+
+func firstMarkdownParagraph(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return line
+	}
+	return ""
 }
 
 // ── raw YAML helpers (mirrors hubcenter/internal/skill/remote_import.go) ──

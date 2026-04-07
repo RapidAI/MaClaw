@@ -3,9 +3,11 @@ package asr
 import (
 	"fmt"
 	"os"
-	"time"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 // findModel searches for the moonshine GGUF model in common locations.
@@ -181,6 +183,23 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+func TestDecoderSwiGLUAliasPath(t *testing.T) {
+	fc1Out := []float32{2, -4, 1, 0}
+	intermediate := len(fc1Out) / 2
+	valuePart := fc1Out[:intermediate]
+	gatePart := fc1Out[intermediate:]
+
+	tensor.SiLU(gatePart)
+	tensor.ElemMul(valuePart, gatePart, valuePart)
+
+	want := []float32{1.4621172, -0}
+	for i, got := range valuePart {
+		if diff := got - want[i]; diff < -1e-6 || diff > 1e-6 {
+			t.Fatalf("valuePart[%d] = %v, want %v", i, got, want[i])
+		}
+	}
 }
 
 func TestManagerLazyLoadAndUnload(t *testing.T) {

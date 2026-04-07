@@ -27,7 +27,7 @@ type SSHHostConfig struct {
 	KnownHostsPath string `json:"known_hosts_path,omitempty"`
 	// ConnectTimeout 连接超时，默认 10s。
 	ConnectTimeout time.Duration `json:"connect_timeout,omitempty"`
-	// KeepaliveInterval 心跳间隔，默认 15s。
+	// KeepaliveInterval 心跳间隔，默认 30s。
 	KeepaliveInterval time.Duration `json:"keepalive_interval,omitempty"`
 }
 
@@ -49,7 +49,7 @@ func (c *SSHHostConfig) Defaults() {
 		c.ConnectTimeout = 10 * time.Second
 	}
 	if c.KeepaliveInterval == 0 {
-		c.KeepaliveInterval = 15 * time.Second
+		c.KeepaliveInterval = 30 * time.Second
 	}
 	if c.AuthMethod == "" {
 		c.AuthMethod = "key"
@@ -81,4 +81,3 @@ type SSHSessionSummary struct {
 	LastOutput string `json:"last_output,omitempty"`
 	UpdatedAt  int64  `json:"updated_at"`
 }
-
