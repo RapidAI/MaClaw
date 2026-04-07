@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"gopkg.in/yaml.v3"
@@ -56,6 +57,8 @@ type SkillExecutor struct {
 	app         *App
 	mcpRegistry *MCPRegistry
 	manager     *RemoteSessionManager
+	sshMgr      *remote.SSHSessionManager
+	bgTaskMgr   *remote.SSHBackgroundTaskManager
 	mu          sync.RWMutex
 }
 
@@ -491,6 +494,56 @@ func (e *SkillExecutor) readSkillBody(entry NLSkillEntry) string {
 	return ""
 }
 
+func (e *SkillExecutor) executeSkillSteps(skill *NLSkillEntry) (string, error) {
+	var results []string
+	var execErr error
+	lastSessionID := ""
+	for i, step := range skill.Steps {
+		stepCopy := step
+		if lastSessionID != "" {
+			if _, ok := stepCopy.Params["session_id"]; !ok {
+				if stepCopy.Action == "send_input" || stepCopy.Action == "send_and_observe" {
+					if stepCopy.Params == nil {
+						stepCopy.Params = map[string]interface{}{}
+					}
+					stepCopy.Params["session_id"] = lastSessionID
+				}
+			}
+		}
+		result, err := e.executeStep(stepCopy, skill.Description)
+		if stepCopy.Action == "create_session" {
+			if sessionID := parseCreatedSessionID(result); sessionID != "" {
+				lastSessionID = sessionID
+			}
+		}
+		if err != nil {
+			errMsg := fmt.Sprintf("步骤 %d (%s) 失败: %s", i+1, step.Action, err.Error())
+			if step.OnError == "continue" {
+				results = append(results, errMsg)
+				continue
+			}
+			results = append(results, errMsg)
+			execErr = fmt.Errorf("skill execution stopped at step %d: %w", i+1, err)
+			break
+		}
+		results = append(results, result)
+	}
+	output := strings.Join(results, "\n")
+	if execErr != nil {
+		return output, execErr
+	}
+	return output, nil
+}
+
+func parseCreatedSessionID(result string) string {
+	const prefix = "会话已创建: ID="
+	trimmed := strings.TrimSpace(result)
+	if !strings.HasPrefix(trimmed, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+}
+
 // Execute runs a Skill by name. Steps are executed sequentially; if a step
 // fails and OnError is "stop" (default), execution halts.
 // Usage statistics (count, success rate, last error) are updated after execution.
@@ -510,22 +563,7 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 		return "", fmt.Errorf("skill %q not found or disabled", name)
 	}
 
-	var results []string
-	var execErr error
-	for i, step := range target.Steps {
-		result, err := e.executeStep(step)
-		if err != nil {
-			errMsg := fmt.Sprintf("步骤 %d (%s) 失败: %s", i+1, step.Action, err.Error())
-			if step.OnError == "continue" {
-				results = append(results, errMsg)
-				continue
-			}
-			results = append(results, errMsg)
-			execErr = fmt.Errorf("skill execution stopped at step %d: %w", i+1, err)
-			break
-		}
-		results = append(results, result)
-	}
+	output, execErr := e.executeSkillSteps(target)
 
 	// Update usage statistics under write lock.
 	// Skip for file-based skills since stats can't be persisted back to YAML.
@@ -546,9 +584,8 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 
 				// Auto-rate hub skills after execution.
 				if s.Source == "hub" && s.HubSkillID != "" && e.app.capabilityGapDetector != nil {
-					resultText := strings.Join(results, "\n")
 					go e.app.capabilityGapDetector.autoRate(
-						context.Background(), s.HubSkillID, resultText, execErr,
+						context.Background(), s.HubSkillID, output, execErr,
 					)
 				}
 				break
@@ -557,7 +594,6 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 		e.mu.Unlock()
 	}
 
-	output := strings.Join(results, "\n")
 	if execErr != nil {
 		return output, execErr
 	}
@@ -565,23 +601,40 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 }
 
 // executeStep runs a single skill step.
-func (e *SkillExecutor) executeStep(step NLSkillStep) (string, error) {
+func (e *SkillExecutor) executeStep(step NLSkillStep, skillDescription string) (string, error) {
 	switch step.Action {
 	case "create_session":
 		tool, _ := step.Params["tool"].(string)
 		projectPath, _ := step.Params["project_path"].(string)
+		projectID, _ := step.Params["project_id"].(string)
+		provider, _ := step.Params["provider"].(string)
+		resumeSessionID, _ := step.Params["resume_session_id"].(string)
 		if tool == "" {
 			return "", fmt.Errorf("missing tool parameter")
 		}
-		view, err := e.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-			Tool:         tool,
-			ProjectPath:  projectPath,
-			LaunchSource: RemoteLaunchSourceAI,
+		if hint := skillCreateSessionGuard(skillDescription, step); hint != "" {
+			return "", fmt.Errorf("%s", hint)
+		}
+		starter := e.app.sessionStarter
+		if starter == nil {
+			e.app.ensureInteractionInfra()
+			starter = e.app.sessionStarter
+		}
+		if starter == nil {
+			return "", fmt.Errorf("session starter not initialized")
+		}
+		startResult, err := starter.Start(CodingSessionStartRequest{
+			Tool:            tool,
+			ProjectID:       projectID,
+			ProjectPath:     projectPath,
+			Provider:        provider,
+			ResumeSessionID: resumeSessionID,
+			LaunchSource:    RemoteLaunchSourceAI,
 		})
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("会话已创建: ID=%s", view.ID), nil
+		return fmt.Sprintf("会话已创建: ID=%s", startResult.View.ID), nil
 
 	case "send_input":
 		sessionID, _ := step.Params["session_id"].(string)
@@ -596,6 +649,24 @@ func (e *SkillExecutor) executeStep(step NLSkillStep) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("已发送到会话 %s", sessionID), nil
+
+	case "send_and_observe":
+		sessionID, _ := step.Params["session_id"].(string)
+		text, _ := step.Params["text"].(string)
+		timeoutSeconds, _ := step.Params["timeout_seconds"].(float64)
+		if sessionID == "" || text == "" {
+			return "", fmt.Errorf("missing session_id or text parameter")
+		}
+		if e.manager == nil {
+			return "", fmt.Errorf("session manager not initialized")
+		}
+		return SendAndObserveSession(e.manager, sessionID, text, SessionObserveOptions{
+			TimeoutSeconds: timeoutSeconds,
+			Lines:          40,
+		}, func(renderArgs map[string]interface{}) string {
+			h := &IMMessageHandler{app: e.app, manager: e.manager}
+			return h.toolGetSessionOutput(renderArgs)
+		}), nil
 
 	case "call_mcp_tool":
 		serverID, _ := step.Params["server_id"].(string)
@@ -614,6 +685,9 @@ func (e *SkillExecutor) executeStep(step NLSkillStep) (string, error) {
 		}
 		return e.mcpRegistry.CallTool(serverID, toolName, args)
 
+	case "ssh":
+		return e.executeSSHStep(step.Params)
+
 	case "bash":
 		command, _ := step.Params["command"].(string)
 		if command == "" {
@@ -621,9 +695,382 @@ func (e *SkillExecutor) executeStep(step NLSkillStep) (string, error) {
 		}
 		return executeBashStep(command, step.Params)
 
+	case "craft_tool":
+		if e.app == nil {
+			return "", fmt.Errorf("app not initialized")
+		}
+		return executeCraftToolCore(e.app, nil, step.Params, nil)
+
 	default:
 		return "", fmt.Errorf("unknown action: %s", step.Action)
 	}
+}
+
+func (e *SkillExecutor) ensureSSHManager() *remote.SSHSessionManager {
+	if e.sshMgr == nil {
+		e.sshMgr = remote.NewSSHSessionManager(nil)
+	}
+	if e.bgTaskMgr == nil {
+		e.bgTaskMgr = remote.NewSSHBackgroundTaskManager(e.sshMgr)
+	}
+	return e.sshMgr
+}
+
+func (e *SkillExecutor) executeSSHStep(args map[string]interface{}) (string, error) {
+	action, _ := args["action"].(string)
+	switch action {
+	case "connect":
+		return e.sshConnect(args), nil
+	case "exec":
+		return e.sshExec(args), nil
+	case "exec_background":
+		return e.sshExecBackground(args), nil
+	case "check_task":
+		return e.sshCheckTask(args), nil
+	case "list_tasks":
+		return e.sshListTasks(), nil
+	case "kill_task":
+		return e.sshKillTask(args), nil
+	case "upload":
+		return e.sshUpload(args), nil
+	case "download":
+		return e.sshDownload(args), nil
+	case "list":
+		return e.sshList(), nil
+	case "close":
+		return e.sshClose(args), nil
+	default:
+		return "", fmt.Errorf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）", action)
+	}
+}
+
+func (e *SkillExecutor) sshConnect(args map[string]interface{}) string {
+	mgr := e.ensureSSHManager()
+
+	host, _ := args["host"].(string)
+	user, _ := args["user"].(string)
+	label, _ := args["label"].(string)
+
+	if host == "" || user == "" {
+		return "错误: connect 需要 host 和 user 参数"
+	}
+
+	port := 22
+	if p, ok := args["port"].(float64); ok && p > 0 {
+		port = int(p)
+	}
+
+	cfg := remote.SSHHostConfig{
+		Host:       host,
+		User:       user,
+		Port:       port,
+		AuthMethod: sshSkillStrArg(args, "auth_method"),
+		KeyPath:    sshSkillStrArg(args, "key_path"),
+		Password:   sshSkillStrArg(args, "password"),
+		Label:      label,
+	}
+
+	spec := remote.SSHSessionSpec{
+		HostConfig:     cfg,
+		InitialCommand: sshSkillStrArg(args, "initial_command"),
+		Cols:           120,
+		Rows:           40,
+	}
+
+	session, err := mgr.Create(spec)
+	if err != nil {
+		return fmt.Sprintf("SSH 连接失败: %v", err)
+	}
+
+	time.Sleep(2 * time.Second)
+	preview := strings.Join(session.PreviewTail(20), "\n")
+	result := fmt.Sprintf("✅ SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: running", session.ID, cfg.SSHHostID())
+	if preview != "" {
+		result += "\n\n--- 初始输出 ---\n" + preview
+	}
+	return result
+}
+
+func (e *SkillExecutor) sshExec(args map[string]interface{}) string {
+	mgr := e.ensureSSHManager()
+
+	sessionID, _ := args["session_id"].(string)
+	command, _ := args["command"].(string)
+	if sessionID == "" || command == "" {
+		return "错误: exec 需要 session_id 和 command 参数"
+	}
+
+	waitSec := 5
+	if w, ok := args["wait_seconds"].(float64); ok && w > 0 {
+		waitSec = int(w)
+	}
+	if remote.IsLongRunningCommand(command) && waitSec <= 30 {
+		return e.sshExecBackground(args)
+	}
+
+	session, ok := mgr.Get(sessionID)
+	if !ok {
+		return fmt.Sprintf("错误: SSH 会话 %s 不存在", sessionID)
+	}
+
+	reconnectNote := ""
+	status, _ := mgr.GetSessionStatus(sessionID)
+	sessionDead := status == remote.SessionExited || status == remote.SessionError
+	if sessionDead {
+		if err := mgr.ReconnectByID(sessionID); err != nil {
+			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
+		}
+		reconnectNote = "⚠️ 连接已断开并自动重连\n"
+		time.Sleep(2 * time.Second)
+	}
+
+	linesBefore := session.LineCount()
+	if sessionDead {
+		if err := mgr.WriteInput(sessionID, command); err != nil {
+			return fmt.Sprintf("%s发送命令失败: %v", reconnectNote, err)
+		}
+	} else {
+		reconnected, err := mgr.WriteInputChecked(sessionID, command)
+		if err != nil {
+			return fmt.Sprintf("发送命令失败: %v", err)
+		}
+		if reconnected {
+			reconnectNote = "⚠️ 连接已断开并自动重连\n"
+			time.Sleep(2 * time.Second)
+			linesBefore = session.LineCount()
+		}
+	}
+
+	if waitSec > 600 {
+		waitSec = 600
+	}
+	newLines, status := mgr.WaitForOutput(sessionID, linesBefore, time.Duration(waitSec)*time.Second)
+	output := strings.Join(newLines, "\n")
+	if output == "" {
+		output = "(无新输出)"
+	}
+	if len(output) > 8000 {
+		output = output[:4000] + "\n... (截断) ...\n" + output[len(output)-4000:]
+	}
+	return fmt.Sprintf("%s[%s] 状态: %s\n$ %s\n%s", reconnectNote, sessionID, string(status), command, output)
+}
+
+func (e *SkillExecutor) sshExecBackground(args map[string]interface{}) string {
+	mgr := e.ensureSSHManager()
+
+	sessionID, _ := args["session_id"].(string)
+	command, _ := args["command"].(string)
+	if sessionID == "" || command == "" {
+		return "错误: exec_background 需要 session_id 和 command 参数"
+	}
+
+	status, _ := mgr.GetSessionStatus(sessionID)
+	if status == remote.SessionExited || status == remote.SessionError {
+		if err := mgr.ReconnectByID(sessionID); err != nil {
+			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	task, err := e.bgTaskMgr.Submit(sessionID, command)
+	if err != nil {
+		return fmt.Sprintf("提交后台任务失败: %v", err)
+	}
+
+	return fmt.Sprintf("✅ 后台任务已提交\n任务 ID: %s\n命令: %s\n日志文件: %s\nPID: %s\n状态: running\n\n💡 使用 check_task (task_id=%s) 查看进度\n💡 SSH 断连不影响任务执行，重连后可继续查看",
+		task.TaskID, task.Command, task.LogFile, task.PID, task.TaskID)
+}
+
+func (e *SkillExecutor) sshCheckTask(args map[string]interface{}) string {
+	if e.bgTaskMgr == nil {
+		return "错误: 无后台任务"
+	}
+	taskID, _ := args["task_id"].(string)
+	if taskID == "" {
+		return "错误: check_task 需要 task_id 参数"
+	}
+	tailLines := 50
+	if t, ok := args["tail_lines"].(float64); ok && t > 0 {
+		tailLines = int(t)
+	}
+	result, err := e.bgTaskMgr.CheckTask(taskID, tailLines)
+	if err != nil {
+		return fmt.Sprintf("检查任务失败: %v", err)
+	}
+	statusEmoji := "🔄"
+	switch result.Status {
+	case "completed":
+		statusEmoji = "✅"
+	case "failed":
+		statusEmoji = "❌"
+	case "killed":
+		statusEmoji = "🛑"
+	case "unknown":
+		statusEmoji = "❓"
+	}
+	logTail := result.LogTail
+	if logTail == "" {
+		logTail = "(无日志输出)"
+	}
+	if len(logTail) > 6000 {
+		logTail = logTail[:3000] + "\n... (截断) ...\n" + logTail[len(logTail)-3000:]
+	}
+	return fmt.Sprintf("%s 任务 %s\n命令: %s\n状态: %s\n进程存活: %v\n已运行: %s\n\n--- 最新日志 ---\n%s",
+		statusEmoji, result.TaskID, result.Command, result.Status, result.IsAlive, result.Elapsed, logTail)
+}
+
+func (e *SkillExecutor) sshListTasks() string {
+	if e.bgTaskMgr == nil {
+		return "当前无后台任务"
+	}
+	tasks := e.bgTaskMgr.ListTasks()
+	if len(tasks) == 0 {
+		return "当前无后台任务"
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("后台任务（%d 个）:\n", len(tasks)))
+	for _, t := range tasks {
+		elapsed := time.Since(t.StartedAt).Round(time.Second)
+		sb.WriteString(fmt.Sprintf("  - %s | PID: %s | 状态: %s | 已运行: %s\n    命令: %s\n", t.TaskID, t.PID, t.Status, elapsed, t.Command))
+	}
+	return sb.String()
+}
+
+func (e *SkillExecutor) sshKillTask(args map[string]interface{}) string {
+	if e.bgTaskMgr == nil {
+		return "错误: 无后台任务"
+	}
+	taskID, _ := args["task_id"].(string)
+	if taskID == "" {
+		return "错误: kill_task 需要 task_id 参数"
+	}
+	if err := e.bgTaskMgr.KillTask(taskID); err != nil {
+		return fmt.Sprintf("终止任务失败: %v", err)
+	}
+	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
+}
+
+func (e *SkillExecutor) sshUpload(args map[string]interface{}) string {
+	mgr := e.ensureSSHManager()
+	sessionID, _ := args["session_id"].(string)
+	localPath, _ := args["local_path"].(string)
+	remotePath, _ := args["remote_path"].(string)
+	if sessionID == "" || localPath == "" || remotePath == "" {
+		return "错误: upload 需要 session_id、local_path 和 remote_path 参数"
+	}
+	result, err := mgr.SFTPTransfer(sessionID, "upload", localPath, remotePath)
+	if err != nil {
+		return fmt.Sprintf("上传失败: %v", err)
+	}
+	return fmt.Sprintf("✅ 上传完成: %s → %s\n%s", localPath, remotePath, result)
+}
+
+func (e *SkillExecutor) sshDownload(args map[string]interface{}) string {
+	mgr := e.ensureSSHManager()
+	sessionID, _ := args["session_id"].(string)
+	localPath, _ := args["local_path"].(string)
+	remotePath, _ := args["remote_path"].(string)
+	if sessionID == "" || localPath == "" || remotePath == "" {
+		return "错误: download 需要 session_id、local_path 和 remote_path 参数"
+	}
+	result, err := mgr.SFTPTransfer(sessionID, "download", localPath, remotePath)
+	if err != nil {
+		return fmt.Sprintf("下载失败: %v", err)
+	}
+	return fmt.Sprintf("✅ 下载完成: %s → %s\n%s", remotePath, localPath, result)
+}
+
+func (e *SkillExecutor) sshList() string {
+	if e.sshMgr == nil {
+		return "当前无活跃 SSH 会话"
+	}
+	sessions := e.sshMgr.List()
+	if len(sessions) == 0 {
+		return "当前无活跃 SSH 会话"
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("SSH 会话（%d 个）:\n", len(sessions)))
+	for _, s := range sessions {
+		summary := s.GetSummary()
+		sb.WriteString(fmt.Sprintf("  - %s | %s | 状态: %s\n", s.ID, summary.HostLabel, summary.Status))
+	}
+	poolStats := e.sshMgr.Pool().Stats()
+	if len(poolStats) > 0 {
+		sb.WriteString("连接池:\n")
+		for hostID, ref := range poolStats {
+			sb.WriteString(fmt.Sprintf("  - %s (引用: %d)\n", hostID, ref))
+		}
+	}
+	return sb.String()
+}
+
+func (e *SkillExecutor) sshClose(args map[string]interface{}) string {
+	if e.sshMgr == nil {
+		return "错误: SSH 会话管理器未初始化"
+	}
+	sessionID, _ := args["session_id"].(string)
+	if sessionID == "" {
+		return "错误: close 需要 session_id 参数"
+	}
+	if err := e.sshMgr.Kill(sessionID); err != nil {
+		return fmt.Sprintf("关闭失败: %v", err)
+	}
+	return fmt.Sprintf("✅ SSH 会话 %s 已关闭", sessionID)
+}
+
+func sshSkillStrArg(args map[string]interface{}, key string) string {
+	s, _ := args[key].(string)
+	return s
+}
+
+func skillCreateSessionGuard(skillDescription string, step NLSkillStep) string {
+	taskText := resolveSkillTaskText(skillDescription, step)
+	result := classifyTaskIntent(taskText)
+	switch result.Intent {
+	case intentCoding:
+		return ""
+	case intentSSH:
+		return fmt.Sprintf(`⚠️ 任务类型检测：当前 Skill 步骤更像 SSH/服务器操作任务（检测到特征：%s），不要创建编程会话。
+
+请改用 ssh 工具处理远程操作：
+- ssh(action="connect", ...)：连接服务器
+- ssh(action="exec", session_id="...", command="...")：执行短命令
+- ssh(action="exec_background", session_id="...", command="...")：执行长命令/部署/安装/编译
+- ssh(action="upload"/"download", ...)：传输文件
+
+只有明确需要修改项目代码时，才调用 create_session。`, formatIntentEvidence(result))
+	case intentNonCoding:
+		return fmt.Sprintf("⚠️ 任务类型检测：当前 Skill 步骤看起来不是编程任务（检测到特征：%s），不要创建编程会话。", formatIntentEvidence(result))
+	case intentUnknown, intentAmbiguous:
+		return fmt.Sprintf("⚠️ 任务类型检测：当前 Skill 步骤还不能确定是编程任务还是 SSH/服务器操作（检测到特征：%s），先澄清后再决定是否创建编程会话。", formatIntentEvidence(result))
+	default:
+		return ""
+	}
+}
+
+func resolveSkillTaskText(skillDescription string, step NLSkillStep) string {
+	candidates := []string{
+		stringParam(step.Params, "task"),
+		stringParam(step.Params, "task_description"),
+		stringParam(step.Params, "description"),
+		stringParam(step.Params, "prompt"),
+		skillDescription,
+	}
+	for _, candidate := range candidates {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return stringParam(step.Params, "project_path")
+}
+
+func stringParam(params map[string]interface{}, key string) string {
+	if params == nil {
+		return ""
+	}
+	value, _ := params[key].(string)
+	return value
 }
 
 // --- Wails binding functions ---
@@ -956,7 +1403,7 @@ func (a *App) CleanupStaleNLSkills() []string {
 
 // RunNLSkillAsync 异步启动 skill 执行，返回 runID（Wails binding）。
 func (a *App) RunNLSkillAsync(skillName string) (string, error) {
-	a.ensureInteractionInfra()
+	a.ensureSkillRunner()
 	if a.skillRunner == nil {
 		return "", fmt.Errorf("skill runner not initialized")
 	}
@@ -965,7 +1412,7 @@ func (a *App) RunNLSkillAsync(skillName string) (string, error) {
 
 // GetNLSkillRunStatus 获取 skill 执行状态（Wails binding）。
 func (a *App) GetNLSkillRunStatus(runID string) (*SkillRunStatus, error) {
-	a.ensureInteractionInfra()
+	a.ensureSkillRunner()
 	if a.skillRunner == nil {
 		return nil, fmt.Errorf("skill runner not initialized")
 	}
@@ -974,7 +1421,7 @@ func (a *App) GetNLSkillRunStatus(runID string) (*SkillRunStatus, error) {
 
 // CancelNLSkillRun 取消正在执行的 skill（Wails binding）。
 func (a *App) CancelNLSkillRun(runID string) error {
-	a.ensureInteractionInfra()
+	a.ensureSkillRunner()
 	if a.skillRunner == nil {
 		return fmt.Errorf("skill runner not initialized")
 	}
@@ -987,6 +1434,7 @@ func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
 	if a.skillExecutor == nil {
 		return "", fmt.Errorf("skill executor not initialized")
 	}
+	a.ensureSkillMarketClient()
 	if a.skillMarketClient == nil {
 		return "", fmt.Errorf("skill market client not initialized")
 	}

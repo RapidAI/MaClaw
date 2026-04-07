@@ -188,7 +188,7 @@ Return a JSON array. Each pattern must have:
 - "name": a short, descriptive kebab-case name (e.g. "deploy-staging", "run-coverage-tests")
 - "description": what the pattern does and when to use it
 - "triggers": list of 3-5 keywords or phrases that would trigger this pattern
-- "steps": list of steps, each with "action" (create_session/send_input/call_mcp_tool/bash), "params" (key-value map), and optional "on_error" ("stop" or "continue")
+- "steps": list of steps, each with "action" (create_session/send_input/send_and_observe/call_mcp_tool/bash), "params" (key-value map), and optional "on_error" ("stop" or "continue")
 
 Return ONLY a JSON array. If no genuinely reusable patterns are found, return [].
 Quality over quantity — only extract patterns you're confident are reusable.`
@@ -244,7 +244,7 @@ func (e *ExperienceExtractor) registerPattern(p extractedPattern, session *Remot
 
 	// Validate step actions — reject patterns with unknown actions.
 	validActions := map[string]bool{
-		"create_session": true, "send_input": true,
+		"create_session": true, "send_input": true, "send_and_observe": true,
 		"call_mcp_tool": true, "bash": true, "skill_md": true,
 	}
 	for _, s := range p.Steps {

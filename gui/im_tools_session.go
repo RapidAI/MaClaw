@@ -26,6 +26,8 @@ var nonCodingKeywords = []string{
 	"发邮件", "写邮件", "发送邮件",
 	"提醒我", "设个闹钟",
 	"播放音乐", "放首歌",
+	"知识库", "放入知识库", "导入知识库", "入库",
+	"报告", "评测报告", "文档处理",
 	"arxiv",
 }
 
@@ -33,7 +35,7 @@ var nonCodingKeywords = []string{
 // If any of these appear, the guard does NOT block session creation.
 // All entries MUST be lowercase (matched against lowercased user text).
 var codingKeywords = []string{
-	"写代码", "编程", "开发", "修bug", "修 bug", "修复bug", "修复 bug",
+	"写代码", "改代码", "修改代码", "编程", "开发", "修bug", "修 bug", "修复bug", "修复 bug",
 	"重构", "refactor", "实现", "添加功能", "新增功能",
 	"写脚本", "写一个脚本", "写个脚本",
 	"写函数", "写方法", "写接口", "写api", "写 api",
@@ -46,51 +48,54 @@ var codingKeywords = []string{
 	"create_session", // explicit tool name = intentional
 }
 
-// checkNonCodingTaskGuard returns a non-empty hint string when the current
-// user message looks like a non-coding task. Returns "" to allow session creation.
-func (h *IMMessageHandler) checkNonCodingTaskGuard() string {
-	msg := strings.ToLower(h.lastUserText)
-	if msg == "" {
-		return "" // no context available, allow
-	}
+// checkSessionTaskGuard returns a non-empty hint string when the current
+// user message should NOT create a coding session. Returns "" only for
+// explicit coding tasks.
+func (h *IMMessageHandler) checkSessionTaskGuard() string {
+	result := classifyTaskIntent(h.lastUserText)
+	switch result.Intent {
+	case intentCoding:
+		return ""
+	case intentSSH:
+		return fmt.Sprintf(`⚠️ 任务类型检测：当前请求更像 SSH/服务器操作任务（检测到特征：%s），不要创建编程会话。
 
-	// If any coding keyword is present, always allow.
-	for _, kw := range codingKeywords {
-		if strings.Contains(msg, kw) {
-			return ""
-		}
-	}
+请改用 ssh 工具处理远程操作：
+- ssh(action="connect", ...)：连接服务器
+- ssh(action="exec", session_id="...", command="...")：执行短命令
+- ssh(action="exec_background", session_id="...", command="...")：执行长命令/部署/安装/编译
+- ssh(action="upload"/"download", ...)：传输文件
 
-	// Check for non-coding keywords.
-	matched := ""
-	for _, kw := range nonCodingKeywords {
-		if strings.Contains(msg, kw) {
-			matched = kw
-			break
-		}
-	}
-	if matched == "" {
-		return "" // no non-coding signal, allow
-	}
-
-	return fmt.Sprintf(`⚠️ 任务类型检测：当前请求看起来不是编程任务（检测到关键词：%q），不需要创建编程会话。
+只有明确需要修改项目代码时，才调用 create_session。`, formatIntentEvidence(result))
+	case intentNonCoding:
+		return fmt.Sprintf(`⚠️ 任务类型检测：当前请求看起来不是编程任务（检测到特征：%s），不需要创建编程会话。
 
 请直接使用以下工具完成任务：
 - bash：执行命令行操作（如 curl 下载、脚本执行）
 - craft_tool：自动生成并执行脚本（适合数据处理、API 调用、文件转换）
-- read_file / write_file：读写本地文件
+- read_file / write_file / edit_file：读写和局部编辑本地文件
 - send_file：将文件发送给用户
 - open：打开文件或网址
 - memory：保存/检索信息
 
-如果确实需要编程会话，请在下一轮重新调用 create_session。`, matched)
+如果确实需要编程会话，请在下一轮重新调用 create_session。`, formatIntentEvidence(result))
+	case intentUnknown, intentAmbiguous:
+		return fmt.Sprintf(`⚠️ 任务类型检测：当前请求还不能确定是编程任务还是 SSH/服务器操作（检测到特征：%s）。
+
+现在不要创建编程会话。请先澄清目标：
+- 如果是修改项目代码、修 bug、实现功能，再调用 create_session
+- 如果是登录服务器、查看日志、重启服务、上传下载文件，请改用 ssh 工具
+
+在任务不明确时，不要自动打开编程工具。`, formatIntentEvidence(result))
+	default:
+		return ""
+	}
 }
 
 func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string {
-	// --- Non-coding task guard ---
-	// Detect when the LLM incorrectly tries to create a coding session for
-	// tasks that don't require one (e.g. search, translate, generate PDF).
-	if hint := h.checkNonCodingTaskGuard(); hint != "" {
+	// --- Intent guard ---
+	// Only explicit coding tasks may create a coding session. SSH/server tasks
+	// must go through the ssh tool, and ambiguous tasks must clarify first.
+	if hint := h.checkSessionTaskGuard(); hint != "" {
 		return hint
 	}
 
@@ -191,18 +196,43 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 
 	resumeSessionID, _ := args["resume_session_id"].(string)
 
-	view, err := h.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-		Tool: tool, ProjectPath: projectPath, Provider: resolvedProvider,
-		LaunchSource:    RemoteLaunchSourceAI,
+	starter := h.app.sessionStarter
+	if starter == nil {
+		h.app.ensureInteractionInfra()
+		starter = h.app.sessionStarter
+	}
+	if starter == nil {
+		return "会话启动器未初始化"
+	}
+	parentRunID := ""
+	if h.currentLoopCtx != nil {
+		parentRunID = h.currentLoopCtx.RunID
+	}
+	startResult, err := starter.Start(CodingSessionStartRequest{
+		Tool:            tool,
+		ProjectID:       projectID,
+		ProjectPath:     projectPath,
+		Provider:        provider,
 		ResumeSessionID: resumeSessionID,
+		LaunchSource:    RemoteLaunchSourceAI,
+		ParentRunID:     parentRunID,
 	})
 	if err != nil {
 		errMsg := fmt.Sprintf("❌ 创建会话失败: %s", err.Error())
 		errMsg += fmt.Sprintf("\n💡 修复建议:\n- 检查 %s 是否已安装并可正常运行\n- 确认项目路径 %s 存在且可访问\n- 使用 list_providers 查看可用服务商配置", tool, projectPath)
 		return errMsg
 	}
+	view := startResult.View
+	resolvedProvider = startResult.ResolvedProvider
+	if strings.TrimSpace(startResult.ResolvedProjectPath) != "" {
+		projectPath = startResult.ResolvedProjectPath
+	}
+	if len(startResult.Hints) > 0 {
+		hints = append(hints, startResult.Hints...)
+	}
 
 	// Start monitoring session startup progress in background.
+	h.app.ensureStartupFeedback()
 	if h.startupFeedback != nil {
 		h.startupFeedback.WatchStartup(view.ID, func(msg string) {
 			// Progress messages are logged; in a real IM context the
@@ -332,7 +362,12 @@ func writeAutoResumeHint(b *strings.Builder, rc *SessionResumeContext, reason st
 	}
 	b.WriteString(fmt.Sprintf("\n🔄 %s", reason))
 	b.WriteString(fmt.Sprintf("\n📌 自动续接指令（第 %d 次续接）：", rc.ResumeCount+1))
-	b.WriteString("\n1. 立即调用 create_session 创建新会话（使用相同的 tool 和 project_path）")
+	if strings.TrimSpace(rc.ClaudeSessionID) != "" {
+		b.WriteString("\n1. 立即调用 create_session 创建新会话（使用相同的 tool 和 project_path，并传入 resume_session_id）")
+		b.WriteString(fmt.Sprintf("\n   例如：create_session(tool=%q, project_path=%q, resume_session_id=%q)", rc.Tool, rc.ProjectPath, rc.ClaudeSessionID))
+	} else {
+		b.WriteString("\n1. 立即调用 create_session 创建新会话（使用相同的 tool 和 project_path）")
+	}
 	b.WriteString("\n2. 用 send_and_observe 发送续接指令：")
 	b.WriteString("\n   「请检查项目当前状态，继续完成之前未完成的任务。")
 	if rc.OriginalTask != "" {
@@ -612,99 +647,13 @@ func (h *IMMessageHandler) toolKillSession(args map[string]interface{}) string {
 func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
 	text, _ := args["text"].(string)
-	if sessionID == "" || text == "" {
-		return "缺少 session_id 或 text 参数"
-	}
-	if h.manager == nil {
-		return "会话管理器未初始化"
-	}
-
-	// Snapshot line count and image count BEFORE sending so we can detect new output/images.
-	session, ok := h.manager.Get(sessionID)
-	if !ok {
-		return fmt.Sprintf("会话 %s 不存在", sessionID)
-	}
-	session.mu.RLock()
-	baseLineCount := len(session.RawOutputLines)
-	baseImageCount := len(session.OutputImages)
-	session.mu.RUnlock()
-
-	if err := h.manager.WriteInput(sessionID, text); err != nil {
-		return fmt.Sprintf("发送失败: %s", err.Error())
-	}
-
-	// Poll up to ~30s with increasing intervals, waiting for meaningful output.
-	// We use newLines > 1 (not > 0) because the PTY echo of the sent text
-	// typically produces 1 line immediately; real output starts after that.
-	//
-	// If the caller provides a positive timeout_seconds (capped at 120s),
-	// we build a custom polling array that totals approximately that many
-	// seconds, starting with the same ramp-up pattern and then filling
-	// with 3 000 ms intervals.
-	waitMs := []int{500, 500, 1000, 1000, 1500, 1500, 2000, 2000, 3000, 3000, 3000, 3000, 3000, 3000, 3000}
-	if ts, ok := args["timeout_seconds"].(float64); ok && ts > 0 {
-		if ts > 120.0 {
-			ts = 120.0
-		}
-		targetMs := int(ts * 1000)
-		base := []int{500, 500, 1000, 1000, 1500, 1500, 2000}
-		sum := 0
-		for _, v := range base {
-			sum += v
-		}
-		custom := make([]int, len(base))
-		copy(custom, base)
-		for sum < targetMs {
-			custom = append(custom, 3000)
-			sum += 3000
-		}
-		waitMs = custom
-	}
-	for _, ms := range waitMs {
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-		session.mu.RLock()
-		newLines := len(session.RawOutputLines) - baseLineCount
-		waiting := session.Summary.WaitingForUser
-		status := session.Status
-		session.mu.RUnlock()
-		// Stop early if: meaningful new output, session waiting for input, or session ended.
-		if newLines > 1 || waiting || status == SessionExited || status == SessionError {
-			break
-		}
-	}
-
-	// Check if session is still busy after polling — read stall state for precise hint.
-	session.mu.RLock()
-	stillBusy := session.Status == SessionBusy
-	stallState := session.StallState
-	session.mu.RUnlock()
-
-	// Check if new images were produced during the command execution.
-	// Images from SDK sessions are already delivered to the user via the
-	// session.image WebSocket channel (Hub → Feishu notifier), so we do NOT
-	// return [screenshot_base64] here (that would cause duplicate delivery).
-	// Instead, append a note to the text output so the AI knows an image
-	// was sent and can reference it in its response.
-	session.mu.RLock()
-	newImageCount := len(session.OutputImages) - baseImageCount
-	session.mu.RUnlock()
-
-	output := h.toolGetSessionOutput(map[string]interface{}{
-		"session_id": sessionID,
-		"lines":      float64(40),
+	timeoutSeconds, _ := args["timeout_seconds"].(float64)
+	return SendAndObserveSession(h.manager, sessionID, text, SessionObserveOptions{
+		TimeoutSeconds: timeoutSeconds,
+		Lines:          40,
+	}, func(renderArgs map[string]interface{}) string {
+		return h.toolGetSessionOutput(renderArgs)
 	})
-
-	// NOTE: busy/stall hints are already appended by toolGetSessionOutput above,
-	// so we do NOT duplicate them here. The stillBusy/stallState variables are
-	// retained for potential future use (e.g. deciding whether to retry).
-	_ = stillBusy
-	_ = stallState
-
-	if newImageCount > 0 {
-		output += fmt.Sprintf("\n\n📷 会话产生了 %d 张图片，已自动通过 IM 发送给用户。", newImageCount)
-	}
-
-	return output
 }
 
 // toolControlSession merges interrupt_session and kill_session into one tool.
@@ -758,7 +707,35 @@ func (h *IMMessageHandler) toolManageConfig(args map[string]interface{}) string 
 // to prevent accidental rapid-fire captures by the LLM.
 const screenshotCooldown = 30 * time.Second
 
+func hasSelectedLocalImagePath(userText string) bool {
+	const filePathPromptPrefix = "[用户选择的本地文件路径]"
+	lower := strings.ToLower(userText)
+	idx := strings.Index(lower, strings.ToLower(filePathPromptPrefix))
+	if idx < 0 {
+		return false
+	}
+	block := userText[idx+len(filePathPromptPrefix):]
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(line, "-"))
+		if trimmed == "" {
+			continue
+		}
+		lowerLine := strings.ToLower(trimmed)
+		if strings.HasPrefix(lowerLine, "这是用户已经提供的本地图片文件") || strings.HasPrefix(lowerLine, "请直接使用这些路径") {
+			continue
+		}
+		if strings.HasSuffix(lowerLine, ".png") || strings.HasSuffix(lowerLine, ".jpg") || strings.HasSuffix(lowerLine, ".jpeg") || strings.HasSuffix(lowerLine, ".gif") || strings.HasSuffix(lowerLine, ".bmp") || strings.HasSuffix(lowerLine, ".webp") || strings.HasSuffix(lowerLine, ".svg") || strings.HasSuffix(lowerLine, ".ico") || strings.HasSuffix(lowerLine, ".tif") || strings.HasSuffix(lowerLine, ".tiff") {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
+	if hasSelectedLocalImagePath(h.lastUserText) {
+		return "用户消息里已经提供了本地图片文件路径。不要调用 screenshot 或重新截图；请直接使用这些路径，并优先用 read_file 或 open 查看图片内容。"
+	}
+
 	// Enforce cooldown to prevent accidental repeated screenshots.
 	if !h.lastScreenshotAt.IsZero() && time.Since(h.lastScreenshotAt) < screenshotCooldown {
 		remaining := screenshotCooldown - time.Since(h.lastScreenshotAt)

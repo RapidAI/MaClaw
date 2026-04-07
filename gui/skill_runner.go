@@ -17,15 +17,42 @@ import (
 
 // ── Run Status ──────────────────────────────────────────────────────────
 
+// SkillRunSessionMeta captures the remote session associated with a skill run.
+type SkillRunSessionMeta struct {
+	SessionID       string `json:"session_id,omitempty"`
+	Tool            string `json:"tool,omitempty"`
+	ProjectPath     string `json:"project_path,omitempty"`
+	Status          string `json:"status,omitempty"`
+	JobID           string `json:"job_id,omitempty"`
+	RunID           string `json:"run_id,omitempty"`
+	ResumeSessionID string `json:"resume_session_id,omitempty"`
+	LaunchSource    string `json:"launch_source,omitempty"`
+}
+
+// SkillRunSummary provides a compact, user-facing summary of the most
+// important state for a skill run.
+type SkillRunSummary struct {
+	CurrentStepIndex       int    `json:"current_step_index,omitempty"`
+	CurrentStep            string `json:"current_step,omitempty"`
+	CurrentStepStatus      string `json:"current_step_status,omitempty"`
+	LastCompletedStep      string `json:"last_completed_step,omitempty"`
+	LastCompletedStepIndex int    `json:"last_completed_step_index,omitempty"`
+	LastOutputSnippet      string `json:"last_output_snippet,omitempty"`
+	LastErrorSnippet       string `json:"last_error_snippet,omitempty"`
+	HasSessionBinding      bool   `json:"has_session_binding,omitempty"`
+}
+
 // SkillRunStatus 表示一次 skill 执行的状态。
 type SkillRunStatus struct {
-	RunID     string           `json:"run_id"`
-	Skill     string           `json:"skill"`
-	Status    string           `json:"status"` // "running", "success", "failed", "cancelled"
-	Steps     []StepResult     `json:"steps"`
-	StartedAt string           `json:"started_at"`
-	EndedAt   string           `json:"ended_at,omitempty"`
-	Error     string           `json:"error,omitempty"`
+	RunID     string               `json:"run_id"`
+	Skill     string               `json:"skill"`
+	Status    string               `json:"status"` // "running", "success", "failed", "cancelled"
+	Steps     []StepResult         `json:"steps"`
+	Session   *SkillRunSessionMeta `json:"session,omitempty"`
+	Summary   SkillRunSummary      `json:"summary,omitempty"`
+	StartedAt string               `json:"started_at"`
+	EndedAt   string               `json:"ended_at,omitempty"`
+	Error     string               `json:"error,omitempty"`
 }
 
 // StepResult 记录单步执行结果。
@@ -125,14 +152,18 @@ func (r *SkillRunner) StartRun(skillName string) (string, error) {
 // GetRunStatus 返回指定 runID 的执行状态（深拷贝）。
 func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	run, ok := r.runs[runID]
 	if !ok {
+		r.mu.RUnlock()
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
 	cp := run.status
 	cp.Steps = make([]StepResult, len(run.status.Steps))
 	copy(cp.Steps, run.status.Steps)
+	r.mu.RUnlock()
+
+	r.hydrateRunSessionMeta(&cp)
+	summarizeSkillRun(&cp)
 	return &cp, nil
 }
 
@@ -151,10 +182,17 @@ func (r *SkillRunner) CancelRun(runID string) error {
 // ListRuns 返回所有执行记录。
 func (r *SkillRunner) ListRuns() []SkillRunStatus {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	result := make([]SkillRunStatus, 0, len(r.runs))
 	for _, run := range r.runs {
-		result = append(result, run.status)
+		cp := run.status
+		cp.Steps = make([]StepResult, len(run.status.Steps))
+		copy(cp.Steps, run.status.Steps)
+		result = append(result, cp)
+	}
+	r.mu.RUnlock()
+	for i := range result {
+		r.hydrateRunSessionMeta(&result[i])
+		summarizeSkillRun(&result[i])
 	}
 	return result
 }
@@ -194,6 +232,121 @@ func (r *SkillRunner) CleanupFinished(maxKeep int) {
 	}
 }
 
+func (r *SkillRunner) SetRunSessionMeta(runID string, meta SkillRunSessionMeta) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	run, ok := r.runs[runID]
+	if !ok {
+		return
+	}
+	metaCopy := meta
+	run.status.Session = &metaCopy
+}
+
+func (r *SkillRunner) hydrateRunSessionMeta(status *SkillRunStatus) {
+	if status == nil || status.Session == nil || status.Session.SessionID == "" || r.executor == nil || r.executor.manager == nil {
+		return
+	}
+	session, ok := r.executor.manager.Get(status.Session.SessionID)
+	if !ok || session == nil {
+		return
+	}
+	session.mu.RLock()
+	status.Session.Status = string(session.Status)
+	if status.Session.JobID == "" {
+		status.Session.JobID = session.JobID
+	}
+	if status.Session.RunID == "" {
+		status.Session.RunID = session.RunID
+	}
+	session.mu.RUnlock()
+}
+
+func summarizeSkillRun(status *SkillRunStatus) {
+	if status == nil {
+		return
+	}
+	status.Summary = SkillRunSummary{}
+	if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
+		status.Summary.HasSessionBinding = true
+	}
+	for i, step := range status.Steps {
+		switch step.Status {
+		case "running":
+			status.Summary.CurrentStepIndex = i
+			status.Summary.CurrentStep = step.Action
+			status.Summary.CurrentStepStatus = step.Status
+		case "success":
+			status.Summary.LastCompletedStepIndex = i
+			status.Summary.LastCompletedStep = step.Action
+			if snippet := strings.TrimSpace(step.Output); snippet != "" {
+				status.Summary.LastOutputSnippet = truncateSkillRunSnippet(snippet)
+			}
+		case "failed":
+			status.Summary.CurrentStepIndex = i
+			status.Summary.CurrentStep = step.Action
+			status.Summary.CurrentStepStatus = step.Status
+			if snippet := strings.TrimSpace(firstNonEmptyTraceText(step.Error, step.Output)); snippet != "" {
+				status.Summary.LastErrorSnippet = truncateSkillRunSnippet(snippet)
+			}
+		}
+	}
+	if status.Summary.CurrentStep == "" && len(status.Steps) > 0 {
+		for i := len(status.Steps) - 1; i >= 0; i-- {
+			step := status.Steps[i]
+			if step.Status != "pending" {
+				status.Summary.CurrentStepIndex = i
+				status.Summary.CurrentStep = step.Action
+				status.Summary.CurrentStepStatus = step.Status
+				break
+			}
+		}
+	}
+	if status.Summary.LastOutputSnippet == "" {
+		for i := len(status.Steps) - 1; i >= 0; i-- {
+			if snippet := strings.TrimSpace(status.Steps[i].Output); snippet != "" {
+				status.Summary.LastOutputSnippet = truncateSkillRunSnippet(snippet)
+				break
+			}
+		}
+	}
+	if status.Summary.LastErrorSnippet == "" {
+		if snippet := strings.TrimSpace(status.Error); snippet != "" {
+			status.Summary.LastErrorSnippet = truncateSkillRunSnippet(snippet)
+		}
+	}
+}
+
+func truncateSkillRunSnippet(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if len(text) > 160 {
+		return text[:160] + "..."
+	}
+	return text
+}
+
+func (r *SkillRunner) latestRunSessionID(runID string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	run, ok := r.runs[runID]
+	if !ok || run.status.Session == nil {
+		return ""
+	}
+	return strings.TrimSpace(run.status.Session.SessionID)
+}
+
+func (r *SkillRunner) resolveStepSessionID(runID string, step NLSkillStep) string {
+	sessionID, _ := step.Params["session_id"].(string)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID != "" {
+		return sessionID
+	}
+	return r.latestRunSessionID(runID)
+}
+
 // ── 异步执行核心 ────────────────────────────────────────────────────────
 
 func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NLSkillEntry) {
@@ -228,7 +381,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 		run.status.Steps[i].Status = "running"
 		r.mu.Unlock()
 
-		result, err := r.executeStepWithContext(ctx, step, skill.SkillDir)
+		result, err := r.executeStepWithContext(ctx, run.status.RunID, step, skill.SkillDir)
 
 		r.mu.Lock()
 		if err != nil {
@@ -375,29 +528,57 @@ func skillDirHash(dir string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-
 // ── Step 执行（带 context） ─────────────────────────────────────────────
 
-func (r *SkillRunner) executeStepWithContext(ctx context.Context, step NLSkillStep, skillDir string) (string, error) {
+func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, step NLSkillStep, skillDir string) (string, error) {
 	switch step.Action {
 	case "create_session":
 		tool, _ := step.Params["tool"].(string)
 		projectPath, _ := step.Params["project_path"].(string)
+		projectID, _ := step.Params["project_id"].(string)
+		provider, _ := step.Params["provider"].(string)
+		resumeSessionID, _ := step.Params["resume_session_id"].(string)
 		if tool == "" {
 			return "", fmt.Errorf("missing tool parameter")
 		}
-		view, err := r.executor.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-			Tool:         tool,
-			ProjectPath:  projectPath,
-			LaunchSource: RemoteLaunchSourceAI,
+		starter := r.executor.app.sessionStarter
+		if starter == nil {
+			r.executor.app.ensureInteractionInfra()
+			starter = r.executor.app.sessionStarter
+		}
+		if starter == nil {
+			return "", fmt.Errorf("session starter not initialized")
+		}
+		startResult, err := starter.Start(CodingSessionStartRequest{
+			Tool:            tool,
+			ProjectID:       projectID,
+			ProjectPath:     projectPath,
+			Provider:        provider,
+			ResumeSessionID: resumeSessionID,
+			LaunchSource:    RemoteLaunchSourceAI,
+			ParentRunID:     runID,
 		})
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("会话已创建: ID=%s", view.ID), nil
+		resolvedProjectPath := projectPath
+		if strings.TrimSpace(startResult.ResolvedProjectPath) != "" {
+			resolvedProjectPath = startResult.ResolvedProjectPath
+		}
+		r.SetRunSessionMeta(runID, SkillRunSessionMeta{
+			SessionID:       startResult.View.ID,
+			Tool:            startResult.View.Tool,
+			ProjectPath:     resolvedProjectPath,
+			Status:          string(startResult.View.Status),
+			JobID:           startResult.View.JobID,
+			RunID:           startResult.View.RunID,
+			ResumeSessionID: strings.TrimSpace(resumeSessionID),
+			LaunchSource:    string(normalizeRemoteLaunchSource(RemoteLaunchSourceAI)),
+		})
+		return fmt.Sprintf("会话已创建: ID=%s", startResult.View.ID), nil
 
 	case "send_input":
-		sessionID, _ := step.Params["session_id"].(string)
+		sessionID := r.resolveStepSessionID(runID, step)
 		text, _ := step.Params["text"].(string)
 		if sessionID == "" || text == "" {
 			return "", fmt.Errorf("missing session_id or text parameter")
@@ -409,6 +590,24 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, step NLSkillSt
 			return "", err
 		}
 		return fmt.Sprintf("已发送到会话 %s", sessionID), nil
+
+	case "send_and_observe":
+		sessionID := r.resolveStepSessionID(runID, step)
+		text, _ := step.Params["text"].(string)
+		timeoutSeconds, _ := step.Params["timeout_seconds"].(float64)
+		if sessionID == "" || text == "" {
+			return "", fmt.Errorf("missing session_id or text parameter")
+		}
+		if r.executor.manager == nil {
+			return "", fmt.Errorf("session manager not initialized")
+		}
+		return SendAndObserveSession(r.executor.manager, sessionID, text, SessionObserveOptions{
+			TimeoutSeconds: timeoutSeconds,
+			Lines:          40,
+		}, func(renderArgs map[string]interface{}) string {
+			h := &IMMessageHandler{app: r.executor.app, manager: r.executor.manager}
+			return h.toolGetSessionOutput(renderArgs)
+		}), nil
 
 	case "call_mcp_tool":
 		serverID, _ := step.Params["server_id"].(string)
@@ -431,6 +630,12 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, step NLSkillSt
 			return "", fmt.Errorf("missing command parameter")
 		}
 		return runBashStepWithContext(ctx, command, step.Params, skillDir)
+
+	case "craft_tool":
+		if r.executor == nil || r.executor.app == nil {
+			return "", fmt.Errorf("app not initialized")
+		}
+		return executeCraftToolCore(r.executor.app, nil, step.Params, nil)
 
 	default:
 		return "", fmt.Errorf("unknown action: %s", step.Action)

@@ -50,13 +50,14 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		nil, nil,
 		func(args map[string]interface{}) string { return h.toolListSessions() })
 
-	reg("create_session", "创建远程编程会话。创建后编程工具会等待输入，需用 send_and_observe 发送编程指令。如果用户需求模糊，建议先澄清再创建。",
+	reg("create_session", "创建远程编程会话。仅用于明确的代码修改/编程任务。服务器运维、SSH 登录、日志排查请使用 ssh；如果用户需求模糊，建议先澄清再创建。创建后编程工具会等待输入，需用 send_and_observe 发送编程指令。",
 		ToolCategoryBuiltin, []string{"session", "create", "launch"},
 		map[string]interface{}{
-			"tool":         map[string]string{"type": "string", "description": "工具名称，如 claude, codex, cursor, gemini, opencode"},
-			"project_path": map[string]string{"type": "string", "description": "项目路径（可选）"},
-			"project_id":   map[string]string{"type": "string", "description": "预设项目 ID（可选，与 project_path 二选一）"},
-			"provider":     map[string]string{"type": "string", "description": "服务商名称（可选，如 Original, DeepSeek, 百度千帆）。不指定则使用桌面端当前选中的服务商"},
+			"tool":              map[string]string{"type": "string", "description": "工具名称，如 claude, codex, cursor, gemini, opencode"},
+			"project_path":      map[string]string{"type": "string", "description": "项目路径（可选）"},
+			"project_id":        map[string]string{"type": "string", "description": "预设项目 ID（可选，与 project_path 二选一）"},
+			"provider":          map[string]string{"type": "string", "description": "服务商名称（可选，如 Original, DeepSeek, 百度千帆）。不指定则使用桌面端当前选中的服务商"},
+			"resume_session_id": map[string]string{"type": "string", "description": "续接会话 ID（可选）。用于恢复之前的结构化编程会话；Claude 会优先映射到 --resume 以续接完整对话历史"},
 		}, []string{"tool"},
 		func(args map[string]interface{}) string { return h.toolCreateSession(args) })
 
@@ -136,11 +137,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("manage_config", "管理 MaClaw 配置。action 可选: get（读取配置）、update（修改单项）、batch_update（批量修改）、list_schema（查看所有可配置项）、export（导出）、import（导入）",
 		ToolCategoryBuiltin, []string{"config", "settings", "get", "update", "export", "import"},
 		map[string]interface{}{
-			"action":  map[string]string{"type": "string", "description": "操作类型: get/update/batch_update/list_schema/export/import"},
-			"section": map[string]string{"type": "string", "description": "配置区域（get/update 时使用，如 claude/gemini/remote/maclaw_llm）"},
-			"key":     map[string]string{"type": "string", "description": "配置项名称（update 时必填）"},
-			"value":   map[string]string{"type": "string", "description": "新值（update 时必填）"},
-			"changes": map[string]string{"type": "string", "description": "JSON 数组（batch_update 时必填）"},
+			"action":    map[string]string{"type": "string", "description": "操作类型: get/update/batch_update/list_schema/export/import"},
+			"section":   map[string]string{"type": "string", "description": "配置区域（get/update 时使用，如 claude/gemini/remote/maclaw_llm）"},
+			"key":       map[string]string{"type": "string", "description": "配置项名称（update 时必填）"},
+			"value":     map[string]string{"type": "string", "description": "新值（update 时必填）"},
+			"changes":   map[string]string{"type": "string", "description": "JSON 数组（batch_update 时必填）"},
 			"json_data": map[string]string{"type": "string", "description": "配置 JSON（import 时必填）"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolManageConfig(args) })
@@ -184,16 +185,18 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("install_skill_hub", "从 SkillHub 安装指定的 Skill 到本地。设置 auto_run=true 可安装后立即执行。",
 		ToolCategoryBuiltin, []string{"skill", "install", "hub"},
 		map[string]interface{}{
-			"skill_id": map[string]string{"type": "string", "description": "Skill ID（从 search_skill_hub 结果中获取）"},
-			"hub_url":  map[string]string{"type": "string", "description": "来源 Hub URL（从 search_skill_hub 结果中获取）"},
-			"auto_run": map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（默认 true）"},
+			"skill_id":     map[string]string{"type": "string", "description": "Skill ID（从 search_skill_hub 结果中获取）"},
+			"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（从 search_skill_hub 结果中获取）"},
+			"auto_run":     map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（默认 true）"},
+			"wait_seconds": map[string]string{"type": "number", "description": "可选：auto_run=true 时等待状态快照的秒数（默认 2，最大 30）。时间越长，初始返回越可能包含会话信息。"},
 		}, []string{"skill_id", "hub_url"},
 		func(args map[string]interface{}) string { return h.toolInstallSkillHub(args) })
 
 	reg("run_skill", "执行指定的 Skill",
 		ToolCategoryBuiltin, []string{"skill", "run", "execute"},
 		map[string]interface{}{
-			"name": map[string]string{"type": "string", "description": "Skill 名称"},
+			"name":         map[string]string{"type": "string", "description": "Skill 名称"},
+			"wait_seconds": map[string]string{"type": "number", "description": "可选：启动后等待状态快照的秒数（默认 2，最大 30）。时间越长，初始返回越可能包含会话信息。"},
 		}, []string{"name"},
 		func(args map[string]interface{}) string { return h.toolRunSkill(args) })
 
@@ -264,13 +267,24 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolReadFile(args) })
 
-	reg("write_file", "写入内容到本机文件（会创建不存在的目录）",
+	reg("write_file", "写入内容到本机文件（支持覆盖或追加，允许空内容，会创建不存在的目录）",
 		ToolCategoryBuiltin, []string{"file", "write"},
 		map[string]interface{}{
 			"path":    map[string]string{"type": "string", "description": "文件路径"},
-			"content": map[string]string{"type": "string", "description": "文件内容"},
+			"content": map[string]string{"type": "string", "description": "文件内容，可为空字符串"},
+			"mode":    map[string]string{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
 		}, []string{"path", "content"},
 		func(args map[string]interface{}) string { return h.toolWriteFile(args) })
+
+	reg("edit_file", "编辑已有文件内容（按文本替换，支持替换首处或全部匹配）",
+		ToolCategoryBuiltin, []string{"file", "edit", "replace"},
+		map[string]interface{}{
+			"path":        map[string]string{"type": "string", "description": "文件路径"},
+			"old_string":  map[string]string{"type": "string", "description": "要查找的原始文本"},
+			"new_string":  map[string]string{"type": "string", "description": "替换后的文本，可为空字符串"},
+			"replace_all": map[string]string{"type": "boolean", "description": "是否替换全部匹配，默认 false"},
+		}, []string{"path", "old_string", "new_string"},
+		func(args map[string]interface{}) string { return h.toolEditFile(args) })
 
 	reg("list_directory", "列出本机目录内容",
 		ToolCategoryBuiltin, []string{"file", "directory", "list"},

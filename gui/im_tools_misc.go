@@ -22,6 +22,9 @@ func (h *IMMessageHandler) toolListMCPTools() string {
 	hasAny := false
 
 	// List local (stdio) MCP servers
+	if h.app.localMCPManager == nil {
+		h.app.ensureLocalMCPManager()
+	}
 	if mgr := h.app.localMCPManager; mgr != nil {
 		for _, ts := range mgr.GetAllTools() {
 			hasAny = true
@@ -64,6 +67,9 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	}
 	toolArgs, _ := args["arguments"].(map[string]interface{})
 
+	if h.app.localMCPManager == nil {
+		h.app.ensureLocalMCPManager()
+	}
 	// Try local MCP manager first (stdio-based servers)
 	if mgr := h.app.localMCPManager; mgr != nil && mgr.IsRunning(serverID) {
 		result, err := mgr.CallTool(serverID, toolName, toolArgs)
@@ -195,6 +201,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	if h.app.riskAssessor != nil {
 		assessment := h.app.riskAssessor.AssessSkill(entry, entry.TrustLevel)
 		if assessment.Level == RiskCritical {
+			h.app.ensureAuditLog()
 			if h.app.auditLog != nil {
 				_ = h.app.auditLog.Log(AuditEntry{
 					Timestamp:    time.Now(),
@@ -216,6 +223,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	}
 
 	// Audit log
+	h.app.ensureAuditLog()
 	if h.app.auditLog != nil {
 		_ = h.app.auditLog.Log(AuditEntry{
 			Timestamp:    time.Now(),
@@ -244,11 +252,17 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 
 	if autoRun {
 		b.WriteString(fmt.Sprintf("\n正在立即执行 Skill「%s」...\n", entry.Name))
-		result, err := h.app.skillExecutor.Execute(entry.Name)
+		runID, err := h.app.RunNLSkillAsync(entry.Name)
 		if err != nil {
-			b.WriteString(fmt.Sprintf("执行失败: %s\n%s", err.Error(), result))
+			b.WriteString(fmt.Sprintf("执行启动失败: %s", err.Error()))
 		} else {
-			b.WriteString(fmt.Sprintf("执行结果:\n%s", result))
+			waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
+			status, statusErr := waitForSkillRunnerSnapshot(h.app.skillRunner, runID, waitDuration)
+			if statusErr != nil {
+				b.WriteString(fmt.Sprintf("已启动（run_id=%s），但读取状态失败: %s", runID, statusErr.Error()))
+			} else {
+				appendSkillRunSummary(&b, status, runID)
+			}
 		}
 	} else {
 		b.WriteString(fmt.Sprintf("\n可以使用 run_skill 工具执行，名称为: %s", entry.Name))
@@ -257,20 +271,119 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	return b.String()
 }
 
+func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID string) {
+	if b == nil {
+		return
+	}
+	b.WriteString("## 运行信息\n")
+	b.WriteString(fmt.Sprintf("- run_id: %s\n", runID))
+	if status == nil {
+		b.WriteString("- status: unknown\n")
+		return
+	}
+	b.WriteString(fmt.Sprintf("- skill: %s\n", status.Skill))
+	b.WriteString(fmt.Sprintf("- status: %s\n", status.Status))
+	if len(status.Steps) > 0 {
+		b.WriteString(fmt.Sprintf("- steps: %d\n", len(status.Steps)))
+		lastStep := status.Steps[len(status.Steps)-1]
+		b.WriteString(fmt.Sprintf("- last_step: %s (%s)\n", lastStep.Action, lastStep.Status))
+	}
+	if status.Session != nil {
+		b.WriteString("## 会话信息\n")
+		if strings.TrimSpace(status.Session.SessionID) != "" {
+			b.WriteString(fmt.Sprintf("- session_id: %s\n", status.Session.SessionID))
+		}
+		if strings.TrimSpace(status.Session.Tool) != "" {
+			b.WriteString(fmt.Sprintf("- tool: %s\n", status.Session.Tool))
+		}
+		if strings.TrimSpace(status.Session.ProjectPath) != "" {
+			b.WriteString(fmt.Sprintf("- project_path: %s\n", status.Session.ProjectPath))
+		}
+		if strings.TrimSpace(status.Session.Status) != "" {
+			b.WriteString(fmt.Sprintf("- session_status: %s\n", status.Session.Status))
+		}
+		if strings.TrimSpace(status.Session.ResumeSessionID) != "" {
+			b.WriteString(fmt.Sprintf("- resume_session_id: %s\n", status.Session.ResumeSessionID))
+		}
+	}
+	b.WriteString("## 下一步\n")
+	b.WriteString("- 使用 GetNLSkillRunStatus(run_id) 继续观察执行进度。\n")
+	if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
+		b.WriteString("- 若需要继续驱动会话，可结合 session_id 使用 get_session_output / send_and_observe。\n")
+	}
+}
+
+func normalizeSkillRunWaitSeconds(raw interface{}) time.Duration {
+	seconds := 2.0
+	switch v := raw.(type) {
+	case float64:
+		if v > 0 {
+			seconds = v
+		}
+	case int:
+		if v > 0 {
+			seconds = float64(v)
+		}
+	}
+	if seconds > 30 {
+		seconds = 30
+	}
+	return time.Duration(seconds * float64(time.Second))
+}
+
+func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.Duration) (*SkillRunStatus, error) {
+	if runner == nil {
+		return nil, fmt.Errorf("skill runner not initialized")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		status, err := runner.GetRunStatus(runID)
+		if err != nil {
+			return nil, err
+		}
+		if status != nil {
+			if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
+				return status, nil
+			}
+			if status.Status != "running" {
+				return status, nil
+			}
+			for _, step := range status.Steps {
+				if step.Status == "success" || step.Status == "failed" {
+					return status, nil
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return status, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}) string {
-	exec := h.app.skillExecutor
-	if exec == nil {
-		return "Skill Executor 未初始化"
+	h.app.ensureSkillRunner()
+	runner := h.app.skillRunner
+	if runner == nil {
+		return "Skill Runner 未初始化"
 	}
 	name, _ := args["name"].(string)
 	if name == "" {
 		return "缺少 name 参数"
 	}
-	result, err := exec.Execute(name)
+	waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
+	runID, err := runner.StartRun(name)
 	if err != nil {
-		return fmt.Sprintf("Skill 执行失败: %s\n%s", err.Error(), result)
+		return fmt.Sprintf("Skill 启动失败: %s", err.Error())
 	}
-	return result
+	status, err := waitForSkillRunnerSnapshot(runner, runID, waitDuration)
+	if err != nil {
+		return fmt.Sprintf("Skill 已启动，但读取状态失败: %s（run_id=%s）", err.Error(), runID)
+	}
+	var b strings.Builder
+	b.WriteString("✅ Skill 已启动\n")
+	appendSkillRunSummary(&b, status, runID)
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // stringVal extracts a string value from a map, returning "" if the key is
@@ -281,6 +394,7 @@ func stringVal(m map[string]interface{}, key string) string {
 }
 
 func (h *IMMessageHandler) toolParallelExecute(args map[string]interface{}) string {
+	h.app.ensureOrchestrator()
 	orch := h.app.orchestrator
 	if orch == nil {
 		return "Orchestrator 未初始化"
@@ -356,11 +470,65 @@ func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string
 // ---------------------------------------------------------------------------
 
 const (
-	bashDefaultTimeout = 30
-	bashMaxTimeout     = 120
-	readFileMaxLines   = 200
-	writeFileMaxSize   = 1 << 20 // 1 MB
+	bashDefaultTimeout      = 30
+	bashMaxTimeout          = 120
+	bashPDFTimeout          = bashMaxTimeout
+	craftToolDefaultTimeout = 60
+	craftToolMaxTimeout     = 300
+	craftToolPDFTimeout     = 180
+	readFileMaxLines        = 200
+	writeFileMaxSize        = 1 << 20 // 1 MB
 )
+
+func looksLikePDFRelatedWork(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	hints := []string{
+		"pdf", ".pdf", "pandoc", "wkhtmltopdf", "weasyprint", "reportlab", "pdfkit",
+		"markdown to pdf", "markdown->pdf", "markdown 转 pdf", "markdown转pdf",
+		"生成 pdf", "生成pdf", "转 pdf", "转pdf", "导出 pdf", "导出pdf",
+	}
+	for _, hint := range hints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveBashTimeout(args map[string]interface{}, command string) int {
+	timeout := bashDefaultTimeout
+	explicit := false
+	if t, ok := args["timeout"].(float64); ok && t > 0 {
+		timeout = int(t)
+		explicit = true
+	}
+	if !explicit && looksLikePDFRelatedWork(command) {
+		timeout = bashPDFTimeout
+	}
+	if timeout > bashMaxTimeout {
+		timeout = bashMaxTimeout
+	}
+	return timeout
+}
+
+func resolveCraftToolTimeout(args map[string]interface{}, task string) int {
+	timeout := craftToolDefaultTimeout
+	explicit := false
+	if t, ok := args["timeout"].(float64); ok && t > 0 {
+		timeout = int(t)
+		explicit = true
+	}
+	if !explicit && looksLikePDFRelatedWork(task) {
+		timeout = craftToolPDFTimeout
+	}
+	if timeout > craftToolMaxTimeout {
+		timeout = craftToolMaxTimeout
+	}
+	return timeout
+}
 
 // resolvePath resolves a path, expanding ~ and making relative paths relative
 // to the user's home directory.
@@ -379,6 +547,7 @@ func resolvePath(p string) string {
 	}
 	return filepath.Clean(p)
 }
+
 // toolMemory merges save/list/delete/recall memory operations into a single tool.
 func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	if h.memoryStore == nil {
@@ -696,16 +865,10 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 		h.currentLoopCtx.SetMaxIterations(limit)
 	}
 
-	// Persist to config so the setting survives across conversations.
-	if err := h.app.SetMaclawAgentMaxIterations(limit); err != nil {
-		// Non-fatal: the override still applies to the current loop.
-		_ = err
-	}
-
 	if reason != "" {
-		return fmt.Sprintf("✅ 已将最大轮数调整为 %d（已持久化，原因: %s）", limit, reason)
+		return fmt.Sprintf("✅ 已将当前任务最大轮数调整为 %d（仅本次任务生效，原因: %s）", limit, reason)
 	}
-	return fmt.Sprintf("✅ 已将最大轮数调整为 %d（已持久化）", limit)
+	return fmt.Sprintf("✅ 已将当前任务最大轮数调整为 %d（仅本次任务生效）", limit)
 }
 
 // ---------------------------------------------------------------------------
@@ -1035,7 +1198,11 @@ func (h *IMMessageHandler) toolClawNetPublish(args map[string]interface{}) strin
 }
 
 func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string {
-	if h.app == nil || h.app.auditLog == nil {
+	if h.app == nil {
+		return "审计日志未初始化"
+	}
+	h.app.ensureAuditLog()
+	if h.app.auditLog == nil {
 		return "审计日志未初始化"
 	}
 
@@ -1168,4 +1335,3 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	sb.WriteString(content)
 	return sb.String()
 }
-
