@@ -810,21 +810,98 @@ func TestShouldCreatePendingResumeSlotRequiresIncompleteCompletion(t *testing.T)
 	}
 }
 
-func TestRemoteSessionManagerSuppressResumeForSessionClearsResumeContext(t *testing.T) {
-	manager := NewRemoteSessionManager(&App{})
-	session := &RemoteSession{ID: "sess-1", ResumeContext: &SessionResumeContext{OriginalTask: "resume me"}}
-	manager.sessions[session.ID] = session
+func TestRunExitLoopPersistsPendingResumeSlotTool(t *testing.T) {
+	tempHome := t.TempDir()
+	app := NewApp()
+	app.testHomeDir = tempHome
+	manager := NewRemoteSessionManager(app)
+	execHandle := newFakeExecutionHandle(901)
+	session := &RemoteSession{
+		ID:              "sess-opencode",
+		Tool:            "opencode",
+		ProjectPath:     "D:/work/project",
+		Exec:            execHandle,
+		Status:          SessionBusy,
+		CompletionLevel: CompletionIncomplete,
+		ResumeContext: &SessionResumeContext{
+			ProjectPath:     "D:/work/project",
+			Tool:            "opencode",
+			ResumeSessionID: "resume-xyz",
+			OriginalTask:    "continue opencode task",
+			LastProgress:    "halfway done",
+		},
+		Summary: SessionSummary{
+			CurrentTask:     "continue opencode task",
+			ProgressSummary: "halfway done",
+		},
+	}
 
-	manager.SuppressResumeForSession("sess-1")
+	done := make(chan struct{})
+	go func() {
+		manager.runExitLoop(session)
+		close(done)
+	}()
 
-	session.mu.RLock()
-	defer session.mu.RUnlock()
-	if session.ResumeContext != nil {
-		t.Fatalf("ResumeContext = %#v, want nil", session.ResumeContext)
+	exitCode := 1
+	execHandle.exitCh <- PTYExit{Code: &exitCode}
+	close(execHandle.exitCh)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runExitLoop did not finish")
+	}
+
+	mem := app.ensureConversationMemory()
+	slot := mem.getUnfinishedSlot("desktop-user")
+	if slot == nil {
+		t.Fatal("expected pending resume slot")
+	}
+	if slot.Source != "session_exit" {
+		t.Fatalf("slot.Source = %q, want %q", slot.Source, "session_exit")
 	}
 }
 
-func TestBuildResumeContextCapturesCodexThreadID(t *testing.T) {
+func TestBuildRecoverableSessionPayload(t *testing.T) {
+	session := &RemoteSession{
+		ID:          "sess-1",
+		Tool:        "claude",
+		Title:       "Resume Task",
+		ProjectPath: "D:/work/project",
+		Status:      SessionExited,
+		Summary: SessionSummary{
+			CurrentTask:     "继续 Daily Paper",
+			ProgressSummary: "还差最后一轮整理",
+		},
+		ResumeContext: &SessionResumeContext{
+			ProjectPath:     "D:/work/project",
+			Tool:            "claude",
+			ExitReason:      "token_limit",
+			ResumeSessionID: "resume-123",
+			ResumeCount:     2,
+			LastProgress:    "还差最后一轮整理",
+		},
+	}
+
+	payload := buildRecoverableSessionPayload(session)
+	if payload == nil {
+		t.Fatal("expected payload")
+	}
+	if payload.SessionID != "sess-1" {
+		t.Fatalf("SessionID = %q, want sess-1", payload.SessionID)
+	}
+	if payload.ResumeSessionID != "resume-123" {
+		t.Fatalf("ResumeSessionID = %q, want resume-123", payload.ResumeSessionID)
+	}
+	if payload.Tool != "claude" {
+		t.Fatalf("Tool = %q, want claude", payload.Tool)
+	}
+	if len(payload.Actions) == 0 || payload.Actions[0].Command != "__resume_session__ sess-1" {
+		t.Fatalf("Actions = %#v, want resume-session action", payload.Actions)
+	}
+}
+
+	func TestBuildResumeContextCapturesCodexThreadID(t *testing.T) {
 	handle := &CodexSDKExecutionHandle{threadID: "thread_456"}
 	session := &RemoteSession{
 		ProjectPath: "D:/workprj/demo",

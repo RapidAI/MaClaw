@@ -35,8 +35,6 @@ type unfinishedTaskSlot struct {
 	SlotID           string    `json:"slot_id"`
 	UserID           string    `json:"user_id"`
 	ProjectPath      string    `json:"project_path,omitempty"`
-	SessionID        string    `json:"session_id,omitempty"`
-	Tool             string    `json:"tool,omitempty"`
 	Status           string    `json:"status"`
 	Summary          string    `json:"summary,omitempty"`
 	LastTask         string    `json:"last_task,omitempty"`
@@ -428,6 +426,21 @@ func (cm *conversationMemory) clearConversationButKeepSlot(userID string) {
 	cm.markDirtyAndScheduleFlush()
 }
 
+func (cm *conversationMemory) clearConversationAndDismissSlot(userID string) {
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s := sh.sessions[userID]
+	if s == nil {
+		return
+	}
+	s.entries = nil
+	s.unfinishedSlot = nil
+	s.activeSlotID = ""
+	s.lastAccess = time.Now()
+	cm.markDirtyAndScheduleFlush()
+}
+
 func (cm *conversationMemory) save(userID string, entries []conversationEntry) {
 	copied := make([]conversationEntry, len(entries))
 	copy(copied, entries)
@@ -503,6 +516,7 @@ func (cm *conversationMemory) loadFromDisk() error {
 		}
 		return err
 	}
+	legacyNeedsRewrite := strings.Contains(string(data), "\"session_id\"") || strings.Contains(string(data), "\"tool\"")
 	var snapshot conversationMemorySnapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return err
@@ -519,6 +533,11 @@ func (cm *conversationMemory) loadFromDisk() error {
 			activeSlotID:   session.ActiveSlotID,
 		}
 		sh.mu.Unlock()
+	}
+	if legacyNeedsRewrite {
+		cm.persistStateMu.Lock()
+		cm.dirty = true
+		cm.persistStateMu.Unlock()
 	}
 	return nil
 }

@@ -41,6 +41,23 @@ func TestToolRunSkill_WaitSecondsInStructuredOutput(t *testing.T) {
 	}
 }
 
+func TestToolRunSkill_BuildsRunArgs(t *testing.T) {
+	raw := map[string]interface{}{
+		"name":   "demo-skill",
+		"input":  "report.md",
+		"output": "report.pdf",
+		"args":   map[string]interface{}{"format": "A4", "count": 2},
+	}
+	got := buildRunSkillArgs(raw)
+	argsMap, _ := got["args"].(map[string]interface{})
+	if got["input"] != "report.md" || got["output"] != "report.pdf" {
+		t.Fatalf("buildRunSkillArgs() = %#v, want input/output preserved", got)
+	}
+	if argsMap["format"] != "A4" {
+		t.Fatalf("buildRunSkillArgs args = %#v, want format preserved", argsMap)
+	}
+}
+
 func TestToolRunSkill_ReportsRunAndSessionMeta(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

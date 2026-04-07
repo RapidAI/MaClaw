@@ -450,7 +450,8 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		},
 		workspaceRelease: workspace.Release,
 		configCleanup:    configRestore,
-		LaunchFP:         LaunchFingerprint(spec),
+		LaunchFP:           LaunchFingerprint(spec),
+		InjectResumePrompt: spec.InjectResumePrompt,
 	}
 
 	// Initialize permission handler based on YoloMode setting.
@@ -2196,8 +2197,6 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 				SlotID:           slotID,
 				UserID:           "desktop-user",
 				ProjectPath:      s.ProjectPath,
-				SessionID:        s.ID,
-				Tool:             s.Tool,
 				Status:           "pending_resume",
 				Summary:          firstNonEmptyTraceText(s.Summary.ProgressSummary, s.ResumeContext.LastProgress, s.Summary.LastResult),
 				LastTask:         firstNonEmptyTraceText(s.Summary.CurrentTask, s.ResumeContext.OriginalTask),

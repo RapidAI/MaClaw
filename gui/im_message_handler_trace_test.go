@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1235,35 +1236,52 @@ func TestRunAgentLoop_NoToolStallEntersRecoverPhase(t *testing.T) {
 	}
 }
 
-func TestHandleIMMessage_ResumeSlotUsesExplicitBinding(t *testing.T) {
+func TestHandleIMMessage_ResumeSlotUsesBoundResumeContext(t *testing.T) {
+	h := &IMMessageHandler{memory: newConversationMemory()}
+	defer h.memory.stop()
+
+	h.memory.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+		SlotID:       "slot-old",
+		UserID:       "desktop-user",
+		ProjectPath:  "/project",
+		Status:       "pending_resume",
+		LastTask:     "继续未完成工作",
+		ResumePrompt: "这里是旧任务恢复提示",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	})
+	if !h.memory.bindUnfinishedSlot("desktop-user", "slot-old") {
+		t.Fatal("expected bindUnfinishedSlot to succeed")
+	}
+
+	prompt := h.buildResumeTraceContext("desktop-user", "fallback task")
+	if !strings.Contains(prompt, "显式恢复未完成任务") {
+		t.Fatalf("prompt = %q, want resume header", prompt)
+	}
+	if !strings.Contains(prompt, "继续未完成工作") {
+		t.Fatalf("prompt = %q, want last task", prompt)
+	}
+	if !strings.Contains(prompt, "这里是旧任务恢复提示") {
+		t.Fatalf("prompt = %q, want resume prompt", prompt)
+	}
+}
+
+func TestHandleIMMessage_ResumeSlotBindsContextWithoutStartingSession(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
-	var (
-		mu       sync.Mutex
-		requests []loopTraceRequest
-		callNum  int
-	)
+	projectDir := filepath.Join(tempHome, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir): %v", err)
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req loopTraceRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		mu.Lock()
-		requests = append(requests, req)
-		callNum++
-		currentCall := callNum
-		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
-		switch currentCall {
-		case 1:
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"继续完成旧任务。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
-			_, _ = w.Write([]byte("data: [DONE]\n\n"))
-		default:
-			t.Fatalf("unexpected LLM call %d", currentCall)
-		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"继续处理这个未完成任务。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
 
@@ -1286,18 +1304,31 @@ func TestHandleIMMessage_ResumeSlotUsesExplicitBinding(t *testing.T) {
 		ContextLength: 16000,
 	}}
 	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.CurrentProject = "p1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
-	h.memory.save("desktop-user", []conversationEntry{{Role: "assistant", Content: "旧任务对话历史"}})
+	provider := &fakeProviderAdapter{cmd: CommandSpec{Command: "claude.exe"}}
+	manager := NewRemoteSessionManager(app)
+	manager.providerFactory = func(tool string) (ProviderAdapter, error) {
+		return provider, nil
+	}
+	manager.executionFactory = func(spec LaunchSpec) (ExecutionStrategy, error) {
+		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(203)}, nil
+	}
+	app.remoteSessions = manager
+	app.sessionStarter = NewCodingSessionStarter(app)
+
+	h := NewIMMessageHandler(app, manager)
 	h.memory.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
 		SlotID:       "slot-old",
 		UserID:       "desktop-user",
+		ProjectPath:  projectDir,
 		Status:       "pending_resume",
-		LastTask:     "继续 Daily Paper",
-		Summary:      "还差最后一轮整理",
+		LastTask:     "继续未完成工作",
+		Summary:      "继续未完成工作",
 		ResumePrompt: "这里是旧任务恢复提示",
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
@@ -1310,21 +1341,15 @@ func TestHandleIMMessage_ResumeSlotUsesExplicitBinding(t *testing.T) {
 	if resp.Error != "" {
 		t.Fatalf("resp.Error = %q", resp.Error)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(requests) == 0 {
-		t.Fatal("expected at least one LLM request")
+	if strings.Contains(resp.Text, "已启动未完成任务恢复会话") {
+		t.Fatalf("resp.Text = %q, should not start recovery session", resp.Text)
 	}
-	foundResumeContext := false
-	for _, msg := range requests[0].Messages {
-		content, _ := msg["content"].(string)
-		if strings.Contains(content, "显式恢复未完成任务") && strings.Contains(content, "这里是旧任务恢复提示") {
-			foundResumeContext = true
-			break
-		}
+	if provider.lastSpec.Tool != "" {
+		t.Fatalf("provider last spec = %#v, want zero value because no session should start", provider.lastSpec)
 	}
-	if !foundResumeContext {
-		t.Fatalf("first request messages = %#v, want explicit slot resume context", requests[0].Messages)
+	bound := h.memory.activeUnfinishedSlot("desktop-user")
+	if bound == nil || bound.SlotID != "slot-old" {
+		t.Fatalf("bound slot = %#v, want slot-old", bound)
 	}
 }
 
@@ -1390,8 +1415,19 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 		{Role: "user", Content: "搜索 huggingface daily papers，生成每日论文综述，生成pdf发我"},
 		{Role: "assistant", Content: "(已达到最大推理轮次，请继续发送消息以完成任务)"},
 	})
+	h.memory.upsertUnfinishedSlot(userID, &unfinishedTaskSlot{
+		SlotID:       "slot-stale",
+		UserID:       userID,
+		Status:       "pending_resume",
+		LastTask:     "继续 Daily Paper",
+		Summary:      "还差最后一轮整理",
+		ResumePrompt: "这里是旧任务恢复提示",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	})
+	h.memory.bindUnfinishedSlot(userID, "slot-stale")
 
-	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "现在帮我把桌面上的 AI 编程评测报告放入知识库"})
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "现在帮我把桌面上的 AI 编程评测报告放入知识库", StartNewTask: true})
 	if resp == nil {
 		t.Fatal("expected response")
 	}
@@ -1400,6 +1436,9 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 	}
 	if resp.Text != "知识库文件已处理完成。" {
 		t.Fatalf("resp.Text = %q, want fresh task response", resp.Text)
+	}
+	if slot := h.memory.getUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("unfinished slot = %#v, want nil after StartNewTask", slot)
 	}
 
 	mu.Lock()
@@ -1416,13 +1455,63 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 		if strings.Contains(content, "最近执行证据") {
 			t.Fatalf("unexpected old trace evidence leaked into fresh task request: %#v", firstMessages)
 		}
+		if strings.Contains(content, "这里是旧任务恢复提示") {
+			t.Fatalf("unexpected unfinished slot resume prompt leaked into fresh task request: %#v", firstMessages)
+		}
 	}
 }
 
-func TestFinalizeTraceResult_PersistsTrialReflectSummaryAndRefreshesCounts(t *testing.T) {
+func TestHandleIMMessage_DismissRecoverableSessionSuppressesResumeContext(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := NewApp()
+	app.testHomeDir = tempHome
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.Projects = []ProjectConfig{{Id: "p1", Name: "project", Path: "D:/work/project"}}
+	cfg.CurrentProject = "p1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	manager := NewRemoteSessionManager(app)
+	session := &RemoteSession{
+		ID:          "sess-dismiss",
+		ProjectPath: "D:/work/project",
+		Tool:        "claude",
+		Status:      SessionExited,
+		ResumeContext: &SessionResumeContext{
+			ProjectPath:     "D:/work/project",
+			Tool:            "claude",
+			ResumeSessionID: "resume-123",
+		},
+	}
+	manager.sessions[session.ID] = session
+	h := NewIMMessageHandler(app, manager)
+	defer h.memory.stop()
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "忽略这个恢复会话", DismissRecoverableSessionID: "sess-dismiss"})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	session.mu.RLock()
+	defer session.mu.RUnlock()
+	if session.ResumeContext != nil {
+		t.Fatalf("ResumeContext = %#v, want nil", session.ResumeContext)
+	}
+}
+
+func TestFinalizeTraceResult_PersistsRecoveredTrialReflectSummary(t *testing.T) {
 	h := &IMMessageHandler{traceService: NewAITraceService()}
-	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "finalize summary", "desktop", "u1", "/project")
-	ctx := NewLoopContext("chat-finalize-summary", 3, nil)
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "finalize recovered summary", "desktop", "u1", "/project")
+	ctx := NewLoopContext("chat-finalize-recovered", 2, nil)
 	ctx.RunID = run.RunID
 	ctx.JobID = run.JobID
 	ctx.SetState("completed")
@@ -1532,7 +1621,7 @@ func TestBuildTraceEvidencePrompt_IncludesPersistedTrialReflectSummary(t *testin
 	h.traceService.AppendEvidence(run.RunID, EvidenceRecord{SourceKind: "trial_reflect", Category: "repeat_guard", Summary: "avoid repeating failed actions", ContentSnippet: "bash"})
 
 	h.finalizeTraceResult(ctx, &IMAgentResponse{Text: "done"}, "done", "")
-	prompt := h.buildTraceEvidencePrompt("why did npm test fail before it recovered?")
+	prompt := h.buildTraceEvidencePrompt("desktop-user", "why did npm test fail before it recovered?")
 	if !strings.Contains(prompt, "## 最近执行证据") {
 		t.Fatalf("prompt = %q, want evidence header", prompt)
 	}
@@ -1574,7 +1663,7 @@ func TestBuildTraceEvidencePrompt_SkipsBenignTrialReflectSummary(t *testing.T) {
 	h.traceService.AppendEvent(run.RunID, TraceEvent{Kind: "trial.observed", Title: "Trial outcome", Summary: "bash=succeeded command=npm test"})
 
 	h.finalizeTraceResult(ctx, &IMAgentResponse{Text: "done"}, "done", "")
-	prompt := h.buildTraceEvidencePrompt("npm test success")
+	prompt := h.buildTraceEvidencePrompt("desktop-user", "npm test success")
 	if strings.Contains(prompt, "trial-reflect summary") {
 		t.Fatalf("prompt = %q, did not expect benign trial-reflect summary evidence", prompt)
 	}
@@ -1600,7 +1689,7 @@ func TestBuildTraceEvidencePrompt_SkipsFreshTaskWithoutActiveSlot(t *testing.T) 
 		ProjectPath:    "/project",
 	})
 
-	prompt := h.buildTraceEvidencePrompt("现在帮我整理新的知识库文档")
+	prompt := h.buildTraceEvidencePrompt("desktop-user", "现在帮我整理新的知识库文档")
 	if prompt != "" {
 		t.Fatalf("prompt = %q, want empty for fresh task without active slot", prompt)
 	}
@@ -1633,7 +1722,7 @@ func TestBuildTraceEvidencePrompt_UsesActiveSlot(t *testing.T) {
 		ProjectPath:    "/project",
 	})
 
-	prompt := h.buildTraceEvidencePrompt("继续 Daily Paper")
+	prompt := h.buildTraceEvidencePrompt("desktop-user", "继续 Daily Paper")
 	if !strings.Contains(prompt, "最近执行证据") {
 		t.Fatalf("prompt = %q, want evidence header when active slot exists", prompt)
 	}

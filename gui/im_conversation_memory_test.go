@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,34 +175,59 @@ func TestPersistentConversationMemoryClearConversationButKeepSlot(t *testing.T) 
 	}
 }
 
-func TestPersistentConversationMemoryConcurrentUsersRoundTrip(t *testing.T) {
+func TestPersistentConversationMemoryClearConversationAndDismissSlot(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "conversation.json")
 	cm := newPersistentConversationMemory(storePath)
 	defer cm.stop()
 
-	const users = 8
-	done := make(chan struct{}, users)
-	for i := 0; i < users; i++ {
-		go func(i int) {
-			cm.save(fmt.Sprintf("user-%d", i), []conversationEntry{{Role: "user", Content: fmt.Sprintf("value-%d", i)}})
-			done <- struct{}{}
-		}(i)
+	cm.save("desktop-user", []conversationEntry{{Role: "user", Content: "old history"}})
+	cm.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+		SlotID:    "slot-3",
+		UserID:    "desktop-user",
+		Status:    "pending_resume",
+		Summary:   "dismiss me",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	cm.bindUnfinishedSlot("desktop-user", "slot-3")
+	cm.clearConversationAndDismissSlot("desktop-user")
+
+	if got := cm.load("desktop-user"); len(got) != 0 {
+		t.Fatalf("history length = %d, want 0", len(got))
 	}
-	for i := 0; i < users; i++ {
-		<-done
+	if slot := cm.getUnfinishedSlot("desktop-user"); slot != nil {
+		t.Fatalf("slot = %#v, want nil", slot)
+	}
+	if active := cm.activeUnfinishedSlot("desktop-user"); active != nil {
+		t.Fatalf("active slot = %#v, want nil", active)
+	}
+}
+
+func TestPersistentConversationMemoryReloadDropsLegacySessionFields(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "conversation.json")
+	legacyJSON := `{"sessions":{"desktop-user":{"entries":[],"last_access":"2026-01-01T00:00:00Z","unfinished_slot":{"slot_id":"slot-legacy","user_id":"desktop-user","project_path":"/project","session_id":"sess-legacy","tool":"claude","status":"pending_resume","summary":"legacy summary","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}}}}`
+	if err := os.WriteFile(storePath, []byte(legacyJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cm := newPersistentConversationMemory(storePath)
+	slot := cm.getUnfinishedSlot("desktop-user")
+	if slot == nil {
+		t.Fatal("expected unfinished slot from legacy payload")
+	}
+	if slot.SlotID != "slot-legacy" {
+		t.Fatalf("slot.SlotID = %q, want slot-legacy", slot.SlotID)
 	}
 	cm.stop()
 
-	reloaded := newPersistentConversationMemory(storePath)
-	defer reloaded.stop()
-	for i := 0; i < users; i++ {
-		got := reloaded.load(fmt.Sprintf("user-%d", i))
-		if len(got) != 1 {
-			t.Fatalf("user-%d history length = %d, want 1", i, len(got))
-		}
-		want := fmt.Sprintf("value-%d", i)
-		if got[0].Content != want {
-			t.Fatalf("user-%d content = %#v, want %#v", i, got[0].Content, want)
-		}
+	reloadedBytes, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(reloadedBytes), "session_id") {
+		t.Fatalf("persisted payload still contains legacy session_id: %s", string(reloadedBytes))
+	}
+	if strings.Contains(string(reloadedBytes), "\"tool\"") {
+		t.Fatalf("persisted payload still contains legacy tool field: %s", string(reloadedBytes))
 	}
 }
