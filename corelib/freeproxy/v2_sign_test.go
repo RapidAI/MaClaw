@@ -15,6 +15,7 @@ import (
 
 // TestV2ChatWithSigningVariants tries different signing approaches for v2/chat.
 func TestV2ChatWithSigningVariants(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -113,6 +114,7 @@ func TestV2ChatWithSigningVariants(t *testing.T) {
 // TestV1CreateWithSigning tests if v1/create works with explicit v1 signing.
 // This confirms our MD5 signing implementation is correct.
 func TestV1CreateWithSigning(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 

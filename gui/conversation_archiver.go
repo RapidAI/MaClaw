@@ -15,9 +15,10 @@ import (
 // ConversationArchiver extracts key information from expiring conversations
 // and stores them as long-term memories via MemoryStore.
 type ConversationArchiver struct {
-	memoryStore          *MemoryStore
-	app                  *App
-	knowledgeExtractor   *memory.KnowledgeExtractor
+	memoryStore        *MemoryStore
+	app                *App
+	knowledgeExtractor *memory.KnowledgeExtractor
+	slotScopeResolver  func(userID string) *unfinishedTaskSlot
 }
 
 // NewConversationArchiver creates a ConversationArchiver that uses the given
@@ -31,6 +32,10 @@ func NewConversationArchiver(memoryStore *MemoryStore, app *App) *ConversationAr
 	llmAdapter := &archiverLLMCaller{app: app}
 	ca.knowledgeExtractor = memory.NewKnowledgeExtractor(memoryStore, llmAdapter)
 	return ca
+}
+
+func (a *ConversationArchiver) SetSlotScopeResolver(fn func(userID string) *unfinishedTaskSlot) {
+	a.slotScopeResolver = fn
 }
 
 // Archive analyses the conversation entries for a user and stores a summary
@@ -81,14 +86,26 @@ func (a *ConversationArchiver) Archive(userID string, entries []conversationEntr
 
 	// Store the summary as a MemoryEntry.
 	now := time.Now()
+	tags := []string{
+		"conversation_summary",
+		userID,
+		now.Format("2006-01-02"),
+	}
+	if a.slotScopeResolver != nil {
+		if slot := a.slotScopeResolver(userID); slot != nil {
+			tags = append(tags,
+				"scope:unfinished_slot",
+				"slot:"+slot.SlotID,
+				"project:"+slot.ProjectPath,
+			)
+		} else {
+			tags = append(tags, "scope:main_conversation")
+		}
+	}
 	entry := MemoryEntry{
 		Content:  summary,
 		Category: MemCategoryConversationSummary,
-		Tags: []string{
-			"conversation_summary",
-			userID,
-			now.Format("2006-01-02"),
-		},
+		Tags:     tags,
 	}
 	if err := a.memoryStore.Save(entry); err != nil {
 		return err

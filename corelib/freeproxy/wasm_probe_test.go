@@ -41,6 +41,7 @@ func downloadWasm(t *testing.T) []byte {
 }
 
 func TestWasmProbeExports(t *testing.T) {
+	requireIntegrationTest(t)
 	wasmBytes := downloadWasm(t)
 
 	// --- Part 1: Raw binary parsing for export names ---

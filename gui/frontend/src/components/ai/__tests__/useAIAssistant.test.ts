@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import * as fc from 'fast-check';
+import { main } from '../../../../wailsjs/go/models';
 
 let mockSendResponse: any = { text: 'ok', error: '', fields: null, actions: null, request_id: 'req-default' };
 let mockSendError: Error | null = null;
@@ -19,9 +20,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetAIAssistantInitStatus: vi.fn(async () => 'ready'),
     GetTrialReflectEnabled: vi.fn(async () => false),
     GetAIAssistantTrace: vi.fn(async () => ({ summary: 'trace ok', event_count: 2, evidence_count: 1, events: [], evidence: [] })),
+    LoadConfig: vi.fn(async () => ({ show_ai_trace_entry: false })),
     CancelAIAssistantSession: vi.fn(async () => {}),
     CancelAIAssistantTask: vi.fn(async () => {}),
     StartAIAssistantBackgroundTask: vi.fn(async () => ({ accepted: true, session_id: 'session-test' })),
+    ListRemoteSessions: vi.fn(async () => []),
     FetchNews: vi.fn(async () => []),
     SelectAIAssistantFile: vi.fn(async () => ''),
 }));
@@ -36,7 +39,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { useAIAssistant, buildOutgoingMessage, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFile, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady } from '../../../../wailsjs/go/main/App';
+import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFile, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook() {
     return renderHook(() => useAIAssistant());
@@ -70,7 +73,42 @@ function emitRuntimeEvent(event: string, payload: unknown = '') {
     handler?.(payload);
 }
 
-function assistantMessages(messages: Array<{ role: string; content: string }>) {
+function resetAppMocks() {
+    (SendAIAssistantMessage as any).mockReset();
+    (SendAIAssistantMessage as any).mockImplementation(async (req: string | { text?: string; request_id?: string }) => {
+        if (mockSendError) throw mockSendError;
+        if (mockSendResponse && typeof req === 'object' && req?.request_id && !mockSendResponse.request_id) {
+            return { ...mockSendResponse, request_id: req.request_id };
+        }
+        return mockSendResponse;
+    });
+    (ClearAIAssistantHistory as any).mockReset();
+    (ClearAIAssistantHistory as any).mockImplementation(async () => {});
+    (IsAIAssistantReady as any).mockReset();
+    (IsAIAssistantReady as any).mockImplementation(async () => true);
+    (GetAIAssistantInitStatus as any).mockReset();
+    (GetAIAssistantInitStatus as any).mockImplementation(async () => 'ready');
+    (GetTrialReflectEnabled as any).mockReset();
+    (GetTrialReflectEnabled as any).mockImplementation(async () => false);
+    (GetAIAssistantTrace as any).mockReset();
+    (GetAIAssistantTrace as any).mockImplementation(async () => ({ summary: 'trace ok', event_count: 2, evidence_count: 1, events: [], evidence: [] }));
+    (LoadConfig as any).mockReset();
+    (LoadConfig as any).mockImplementation(async () => new main.AppConfig({ show_ai_trace_entry: false, trial_reflect_enabled: false }));
+    (CancelAIAssistantSession as any).mockReset();
+    (CancelAIAssistantSession as any).mockImplementation(async () => {});
+    (CancelAIAssistantTask as any).mockReset();
+    (CancelAIAssistantTask as any).mockImplementation(async () => {});
+    (StartAIAssistantBackgroundTask as any).mockReset();
+    (StartAIAssistantBackgroundTask as any).mockImplementation(async () => ({ accepted: true, session_id: 'session-test' }));
+    (ListRemoteSessions as any).mockReset();
+    (ListRemoteSessions as any).mockImplementation(async () => []);
+    (FetchNews as any).mockReset();
+    (FetchNews as any).mockImplementation(async () => []);
+    (SelectAIAssistantFile as any).mockReset();
+    (SelectAIAssistantFile as any).mockImplementation(async () => '');
+}
+
+function assistantMessages(messages: Array<{ role: string; content: string; fields?: unknown; actions?: unknown }>) {
     return messages.filter(message => message.role === 'assistant');
 }
 
@@ -89,24 +127,59 @@ describe('useAIAssistant property tests', () => {
         mockSendResponse = { text: 'ok', error: '', fields: null, actions: null, request_id: 'req-default' };
         mockSendError = null;
         runtimeHandlers.clear();
-        (GetTrialReflectEnabled as any).mockResolvedValue(false);
-        (StartAIAssistantBackgroundTask as any).mockResolvedValue({ accepted: true, session_id: 'session-test' });
+        resetAppMocks();
         localStorage.clear();
     });
 
     afterEach(() => {
         localStorage.clear();
         runtimeHandlers.clear();
-        vi.clearAllMocks();
+        resetAppMocks();
+    });
+
+    it('preserves llm_token_usage when AppConfig is reconstructed on the frontend', () => {
+        const cfg = new main.AppConfig({
+            show_ai_trace_entry: false,
+            trial_reflect_enabled: false,
+            llm_token_usage: {
+                'GLM (智谱)': { input_tokens: 12, output_tokens: 34, total_tokens: 46 },
+            },
+        });
+
+        const reconstructed = new main.AppConfig({
+            ...cfg,
+            trial_reflect_enabled: true,
+        });
+
+        expect(reconstructed.llm_token_usage).toEqual({
+            'GLM (智谱)': { input_tokens: 12, output_tokens: 34, total_tokens: 46 },
+        });
     });
 
     it('loads trial-reflect mode from config on mount', async () => {
         (GetTrialReflectEnabled as any).mockResolvedValueOnce(true);
+        (LoadConfig as any).mockResolvedValueOnce(new main.AppConfig({ show_ai_trace_entry: false, trial_reflect_enabled: true }));
 
         const { result } = renderAssistantHook();
 
         await waitFor(() => {
             expect(GetTrialReflectEnabled).toHaveBeenCalledTimes(1);
+            expect(result.current.trialReflectEnabled).toBe(true);
+        });
+    });
+
+    it('updates trial-reflect badge state after config-changed events', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(result.current.trialReflectEnabled).toBe(false);
+        });
+
+        act(() => {
+            emitRuntimeEvent('config-changed', new main.AppConfig({ trial_reflect_enabled: true, show_ai_trace_entry: false }));
+        });
+
+        await waitFor(() => {
             expect(result.current.trialReflectEnabled).toBe(true);
         });
     });
@@ -494,6 +567,382 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.visualBusy).toBe(false);
     });
 
+    it('keeps overall sending active after stream-done while the request is still finishing tool work', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('hello');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-token', requestEvent('hello'));
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(result.current.streaming).toBe(false);
+        expect(result.current.visualBusy).toBe(false);
+
+        await act(async () => {
+            pending.resolve({ text: 'hello', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        expect(result.current.sending).toBe(false);
+    });
+
+    it('keeps sending true after the foreground response returns while an AI session is still active', async () => {
+        mockSendResponse = {
+            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: 'req-default',
+            deferred: true,
+            run_id: 'run-active-session',
+            job_id: 'job-active-session',
+        };
+        (ListRemoteSessions as any)
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-active-ai',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-active-session',
+                    job_id: 'job-active-session',
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-active-ai',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-active-session',
+                    job_id: 'job-active-session',
+                },
+            ]);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('keep watching');
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(result.current.streaming).toBe(false);
+        expect(result.current.visualBusy).toBe(false);
+    });
+
+    it('keeps sending true when the active AI session matches by job id only', async () => {
+        mockSendResponse = {
+            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: 'req-default',
+            deferred: true,
+            job_id: 'job-only-active-session',
+        };
+        (ListRemoteSessions as any)
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-job-only-ai',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    job_id: 'job-only-active-session',
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-job-only-ai',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    job_id: 'job-only-active-session',
+                },
+            ]);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('track by job id');
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(result.current.streaming).toBe(false);
+        expect(result.current.visualBusy).toBe(false);
+    });
+
+    it('keeps the pending AI task lock when refresh events only retain the tracked session id', async () => {
+        mockSendResponse = {
+            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: 'req-default',
+            deferred: true,
+            run_id: 'run-session-id-refresh',
+            job_id: 'job-session-id-refresh',
+        };
+        (ListRemoteSessions as any)
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-refresh-by-id',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-session-id-refresh',
+                    job_id: 'job-session-id-refresh',
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-refresh-by-id',
+                    launch_source: 'ai',
+                    status: 'busy',
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-refresh-by-id',
+                    launch_source: 'ai',
+                    status: 'busy',
+                },
+            ]);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('keep tracking by session id');
+        });
+
+        expect(result.current.sending).toBe(true);
+
+        await act(async () => {
+            emitRuntimeEvent('remote-state-changed');
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(result.current.sending).toBe(true);
+        });
+        expect(result.current.streaming).toBe(false);
+        expect(result.current.visualBusy).toBe(false);
+    });
+
+    it('does not keep sending true for unrelated remote sessions', async () => {
+        mockSendResponse = {
+            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: 'req-default',
+            deferred: true,
+            run_id: 'run-expected-session',
+            job_id: 'job-expected-session',
+        };
+        (ListRemoteSessions as any).mockResolvedValueOnce([
+            {
+                id: 'sess-other-ai',
+                launch_source: 'ai',
+                status: 'busy',
+                run_id: 'run-other-session',
+                job_id: 'job-other-session',
+            },
+            {
+                id: 'sess-terminal-match',
+                launch_source: 'ai',
+                status: 'exited',
+                run_id: 'run-expected-session',
+                job_id: 'job-expected-session',
+            },
+            {
+                id: 'sess-non-ai-match',
+                launch_source: 'manual',
+                status: 'busy',
+                run_id: 'run-expected-session',
+                job_id: 'job-expected-session',
+            },
+        ]);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('finish only when the matching ai task is active');
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(result.current.streaming).toBe(false);
+        expect(result.current.visualBusy).toBe(false);
+    });
+
+    it('clears the pending AI task lock after the tracked remote session exits', async () => {
+        mockSendResponse = {
+            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: 'req-default',
+            deferred: true,
+            run_id: 'run-finished-session',
+            job_id: 'job-finished-session',
+        };
+        (ListRemoteSessions as any)
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-finished-ai',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-finished-session',
+                    job_id: 'job-finished-session',
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-finished-ai',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-finished-session',
+                    job_id: 'job-finished-session',
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-finished-ai',
+                    launch_source: 'ai',
+                    status: 'exited',
+                    run_id: 'run-finished-session',
+                    job_id: 'job-finished-session',
+                },
+            ]);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('wait for exit');
+        });
+
+        expect(result.current.sending).toBe(true);
+
+        await act(async () => {
+            emitRuntimeEvent('remote-state-changed');
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(result.current.sending).toBe(false);
+        });
+    });
+
+    it('cancels the tracked AI task session when only the pending remote task remains', async () => {
+        mockSendResponse = {
+            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            error: '',
+            fields: null,
+            actions: null,
+            request_id: 'req-default',
+            deferred: true,
+            run_id: 'run-cancel-session',
+            job_id: 'job-cancel-session',
+        };
+        (ListRemoteSessions as any)
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-cancel-ai',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-cancel-session',
+                    job_id: 'job-cancel-session',
+                },
+            ])
+            .mockResolvedValueOnce([
+                {
+                    id: 'sess-cancel-ai',
+                    launch_source: 'ai',
+                    status: 'busy',
+                    run_id: 'run-cancel-session',
+                    job_id: 'job-cancel-session',
+                },
+            ]);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('cancel later');
+        });
+
+        await act(async () => {
+            await result.current.cancelSession();
+        });
+
+        expect(CancelAIAssistantTask).toHaveBeenCalledWith('sess-cancel-ai');
+        expect(CancelAIAssistantSession).not.toHaveBeenCalled();
+        expect(result.current.sending).toBe(false);
+    });
+
+    it('finalizes an empty terminal response into a visible fallback with trace details', async () => {
+        const pending = deferred<any>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('make pdf');
+        });
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', requestEvent());
+            emitRuntimeEvent('ai-assistant-stream-done', requestEvent());
+        });
+
+        await act(async () => {
+            pending.resolve({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                trace_summary: 'PDF generation stopped before writing the file',
+                trace_event_count: 4,
+                evidence_count: 2,
+                run_id: 'run-empty-result',
+                job_id: 'job-empty-result',
+            });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toContain('任务已结束，但没有生成可展示的结果。');
+        expect(assistantMessages(result.current.messages)[0].content).toContain('PDF generation stopped before writing the file');
+        expect(assistantMessages(result.current.messages)[0].fields).toBeUndefined();
+        expect(assistantMessages(result.current.messages)[0].actions).toBeUndefined();
+        expect(result.current.sending).toBe(false);
+        expect(result.current.streaming).toBe(false);
+        expect(result.current.visualBusy).toBe(false);
+    });
+
+    it('shows failed empty terminal responses as a failure fallback', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: 'PDF generation failed after tool execution',
+            trace_status: 'failed',
+            run_id: 'run-failed-empty',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('make pdf');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务未完成可交付结果。PDF generation failed after tool execution');
+    });
+
     it('finalizes the active tail message without changing streamed content', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
@@ -645,6 +1094,147 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages).toEqual([]);
     });
 
+    it('normalizes structured unfinished slot payloads into assistant messages', async () => {
+        mockSendResponse = {
+            text: '检测到未完成任务',
+            error: '',
+            actions: null,
+            unfinished_slot: {
+                slot_id: 'slot-1',
+                title: '继续 Daily Paper',
+                summary: '还差最后一轮整理',
+                project_path: 'D:/work/project',
+                status: 'pending_resume',
+                actions: [
+                    { label: '继续上次任务', command: '__resume_unfinished__ slot-1', style: 'default' },
+                    { label: '开始新任务', command: '__start_new_task__', style: 'default' },
+                ],
+            },
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('新的消息');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.unfinishedSlot).toEqual({
+            slotID: 'slot-1',
+            title: '继续 Daily Paper',
+            summary: '还差最后一轮整理',
+            projectPath: 'D:/work/project',
+            status: 'pending_resume',
+            actions: [
+                { label: '继续上次任务', command: '__resume_unfinished__ slot-1', style: 'default' },
+                { label: '开始新任务', command: '__start_new_task__', style: 'default' },
+            ],
+        });
+    });
+
+    it('executeAction routes explicit unfinished slot commands through sendMessage options', async () => {
+        const calls: any[] = [];
+        (SendAIAssistantMessage as any).mockImplementation(async (req: any) => {
+            calls.push(req);
+            return { text: 'ok', error: '', fields: null, actions: null, request_id: req.request_id || 'req' };
+        });
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.executeAction('__resume_unfinished__ slot-99');
+            await result.current.executeAction('__start_new_task__');
+            await result.current.executeAction('__dismiss_unfinished__ slot-99');
+        });
+
+        expect(calls[0]?.resume_slot_id).toBe('slot-99');
+        expect(calls[1]?.start_new_task).toBe(true);
+        expect(calls[2]?.dismiss_slot_id).toBe('slot-99');
+        expect(calls[2]?.start_new_task).toBe(true);
+    });
+
+    it('normalizes confirmation payloads into assistant messages', async () => {
+        mockSendResponse = {
+            text: '请先确认',
+            error: '',
+            fields: null,
+            actions: [
+                { label: '确认并开始', command: '确认，按这个开始', style: 'default' },
+                { label: '取消', command: '取消这个任务', style: 'default' },
+            ],
+            confirmation: {
+                id: 'c1',
+                summary: '我理解你想让我修复登录问题',
+                task_type: 'coding',
+                target_paths: ['D:/work/project'],
+                planned_actions: ['检查登录流程'],
+                risk_flags: ['会修改代码'],
+                revision_hints: ['如目录不对请直接改正'],
+                status: 'pending',
+            },
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('修登录 bug');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('请先确认');
+        expect(assistantMsg?.confirmation).toEqual({
+            id: 'c1',
+            summary: '我理解你想让我修复登录问题',
+            taskType: 'coding',
+            targetPaths: ['D:/work/project'],
+            plannedActions: ['检查登录流程'],
+            riskFlags: ['会修改代码'],
+            revisionHints: ['如目录不对请直接改正'],
+            status: 'pending',
+        });
+        expect(assistantMsg?.actions).toEqual([
+            { label: '确认并开始', command: '确认，按这个开始', style: 'default' },
+            { label: '取消', command: '取消这个任务', style: 'default' },
+        ]);
+    });
+
+    it('supports PascalCase confirmation payload fields', async () => {
+        mockSendResponse = {
+            Text: '请确认再继续',
+            Error: '',
+            Actions: null,
+            Confirmation: {
+                ID: 'c2',
+                Summary: '默认工作目录：D:/fixed/project',
+                TaskType: 'coding',
+                TargetPaths: ['D:/fixed/project'],
+                PlannedActions: ['修改代码'],
+                RiskFlags: ['影响现有逻辑'],
+                RevisionHints: ['补充正确目录'],
+                Status: 'pending',
+            },
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('继续');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('请确认再继续');
+        expect(assistantMsg?.confirmation).toEqual({
+            id: 'c2',
+            summary: '默认工作目录：D:/fixed/project',
+            taskType: 'coding',
+            targetPaths: ['D:/fixed/project'],
+            plannedActions: ['修改代码'],
+            riskFlags: ['影响现有逻辑'],
+            revisionHints: ['补充正确目录'],
+            status: 'pending',
+        });
+    });
+
     it('normalizes action styles from assistant responses', async () => {
         const responseActions = [
             { label: 'Safe', command: 'safe-cmd', style: 'default' },
@@ -684,7 +1274,124 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.draftInputValue).toBe('');
     });
 
-    it('appends trace summary fields onto assistant responses', async () => {
+    it('hides token usage fields by default when detail entry is disabled', async () => {
+        mockSendResponse = {
+            Text: 'done',
+            Error: '',
+            Fields: [
+                { Label: 'Input tokens', Value: '120' },
+                { Label: 'Output tokens', Value: '30' },
+                { Label: 'Total tokens', Value: '150' },
+            ],
+            Actions: null,
+            RequestID: 'req-pascal',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('show token usage');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('done');
+        expect(assistantMsg?.fields).toBeUndefined();
+    });
+
+    it('keeps token usage fields when detail entry is enabled', async () => {
+        (LoadConfig as any).mockResolvedValueOnce({ show_ai_trace_entry: true });
+        mockSendResponse = {
+            Text: 'done',
+            Error: '',
+            Fields: [
+                { Label: 'Input tokens', Value: '120' },
+                { Label: 'Output tokens', Value: '30' },
+                { Label: 'Total tokens', Value: '150' },
+            ],
+            Actions: null,
+            RequestID: 'req-pascal',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(LoadConfig).toHaveBeenCalled();
+        });
+
+        await act(async () => {
+            await result.current.sendMessage('show token usage');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('done');
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'Input tokens', value: '120' },
+            { label: 'Output tokens', value: '30' },
+            { label: 'Total tokens', value: '150' },
+        ]);
+    });
+
+    it('hides token usage fields from normalized assistant response by default', async () => {
+        mockSendResponse = {
+            text: 'done',
+            error: '',
+            fields: [
+                { label: 'Input tokens', value: '120' },
+                { label: 'Output tokens', value: '30' },
+                { label: 'Total tokens', value: '150' },
+            ],
+            actions: null,
+            input_tokens: 120,
+            output_tokens: 30,
+            total_tokens: 150,
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('show token usage');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.fields).toBeUndefined();
+    });
+
+    it('keeps token usage fields from normalized assistant response when detail entry is enabled', async () => {
+        (LoadConfig as any).mockResolvedValueOnce({ show_ai_trace_entry: true });
+        mockSendResponse = {
+            text: 'done',
+            error: '',
+            fields: [
+                { label: 'Input tokens', value: '120' },
+                { label: 'Output tokens', value: '30' },
+                { label: 'Total tokens', value: '150' },
+            ],
+            actions: null,
+            input_tokens: 120,
+            output_tokens: 30,
+            total_tokens: 150,
+        };
+
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(LoadConfig).toHaveBeenCalled();
+            expect(result.current.messages).toEqual([]);
+        });
+
+        await act(async () => {
+            await result.current.sendMessage('show token usage');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'Input tokens', value: '120' },
+            { label: 'Output tokens', value: '30' },
+            { label: 'Total tokens', value: '150' },
+        ]);
+    });
+
+    it('hides trace summary fields by default when trace entry is disabled', async () => {
         mockSendResponse = {
             text: 'done',
             error: '',
@@ -693,6 +1400,9 @@ describe('useAIAssistant property tests', () => {
             trace_summary: 'trial loop stabilized after one retry',
             trace_event_count: 8,
             evidence_count: 3,
+            trial_reflect_summary: 'tools=bash; failures=1; repeat guard avoided duplicate failed actions; recovered after failure',
+            trial_reflect_status: 'recovered_success',
+            trial_reflect_failures: 1,
             run_id: 'run-trace-1',
             job_id: 'job-trace-1',
         };
@@ -706,7 +1416,44 @@ describe('useAIAssistant property tests', () => {
         const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
         expect(assistantMsg?.fields).toEqual([
             { label: 'Existing', value: 'keep me' },
+        ]);
+        expect(assistantMsg?.actions).toBeUndefined();
+    });
+
+    it('shows trace fields and action when trace entry is enabled in config', async () => {
+        (LoadConfig as any).mockResolvedValueOnce({ show_ai_trace_entry: true });
+        mockSendResponse = {
+            text: 'done',
+            error: '',
+            fields: [{ label: 'Existing', value: 'keep me' }],
+            actions: null,
+            trace_summary: 'trial loop stabilized after one retry',
+            trace_event_count: 8,
+            evidence_count: 3,
+            trial_reflect_summary: 'tools=bash; failures=1; repeat guard avoided duplicate failed actions; recovered after failure',
+            trial_reflect_status: 'recovered_success',
+            trial_reflect_failures: 1,
+            run_id: 'run-trace-1',
+            job_id: 'job-trace-1',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(LoadConfig).toHaveBeenCalled();
+        });
+
+        await act(async () => {
+            await result.current.sendMessage('show trace');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'Existing', value: 'keep me' },
             { label: 'Trace', value: 'trial loop stabilized after one retry' },
+            { label: 'Recovery', value: 'Recovered after retry' },
+            { label: 'Failures', value: '1' },
+            { label: 'Trial reflect', value: 'tools=bash; failures=1; repeat guard avoided duplicate failed actions; recovered after failure' },
             { label: 'Trace events', value: '8' },
             { label: 'Evidence', value: '3' },
             { label: 'Run ID', value: 'run-trace-1' },
@@ -724,6 +1471,12 @@ describe('useAIAssistant property tests', () => {
             summary: 'trial loop stabilized after one retry',
             event_count: 8,
             evidence_count: 3,
+            trial_reflect_summary: {
+                failure_count: 1,
+                failure_categories: ['args'],
+                final_outcome: 'recovered_success',
+                strategy_note: 'tools=bash; failures=1; categories=args; repeat guard avoided duplicate failed actions; recovered after failure',
+            },
             events: [{ kind: 'trial.started' }, { kind: 'trial.observed' }],
             evidence: [{ source_kind: 'trial_reflect', category: 'repeat_guard' }],
         });
@@ -738,6 +1491,8 @@ describe('useAIAssistant property tests', () => {
         expect(systemMessage?.kind).toBe('trace');
         expect(systemMessage?.fields).toEqual([
             { label: 'Run ID', value: 'run-trace-1' },
+            { label: 'Recovery', value: 'Recovered after retry' },
+            { label: 'Failures', value: '1' },
             { label: 'Job ID', value: 'job-trace-1' },
             { label: 'Trace events', value: '8' },
             { label: 'Evidence', value: '3' },
@@ -745,6 +1500,10 @@ describe('useAIAssistant property tests', () => {
         ]);
         expect(systemMessage?.content).toContain('Trace details for run-trace-1');
         expect(systemMessage?.content).toContain('Summary: trial loop stabilized after one retry');
+        expect(systemMessage?.content).toContain('Recovery status: Recovered after retry');
+        expect(systemMessage?.content).toContain('Trial-reflect: tools=bash; failures=1; categories=args; repeat guard avoided duplicate failed actions; recovered after failure');
+        expect(systemMessage?.content).toContain('Recovery: recovered_success');
+        expect(systemMessage?.content).toContain('Failure categories: args');
         expect(systemMessage?.content).toContain('Events: 8');
         expect(systemMessage?.content).toContain('Evidence: 3');
         expect(systemMessage?.content).toContain('Event kinds: trial.started, trial.observed');
@@ -862,6 +1621,38 @@ describe('useAIAssistant property tests', () => {
             pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id || '' });
             await pending.promise;
         });
+    });
+
+    it('shows grace-round wrap-up progress without changing busy state', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('make pdf');
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(result.current.streaming).toBe(false);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: requestEvent().request_id, text: '⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…' });
+        });
+
+        expect(result.current.progressMessages[result.current.progressMessages.length - 1]?.content).toBe('⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…');
+        expect(result.current.sending).toBe(true);
+        expect(result.current.streaming).toBe(false);
+        expect(result.current.visualBusy).toBe(false);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, local_file_path: '/tmp/review.pdf' } as any);
+            await pending.promise;
+        });
+
+        expect(result.current.sending).toBe(false);
+        expect(result.current.streaming).toBe(false);
+        expect(result.current.visualBusy).toBe(false);
     });
 
     it('accepts legacy string progress payloads', async () => {

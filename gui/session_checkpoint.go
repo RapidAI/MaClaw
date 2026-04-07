@@ -10,6 +10,8 @@ import (
 // enabling the next session on the same project to resume where it left off.
 type SessionCheckpoint struct {
 	SessionID   string    `json:"session_id"`
+	UserID      string    `json:"user_id,omitempty"`
+	SlotID      string    `json:"slot_id,omitempty"`
 	Tool        string    `json:"tool"`
 	ProjectPath string    `json:"project_path"`
 	Status      string    `json:"status"`
@@ -50,12 +52,16 @@ func (c *SessionCheckpointer) SaveCheckpoint(session *RemoteSession) error {
 	session.mu.RLock()
 	cp := SessionCheckpoint{
 		SessionID:   session.ID,
+		UserID:      "desktop-user",
 		Tool:        session.Tool,
 		ProjectPath: session.ProjectPath,
 		Status:      string(session.Status),
 		Summary:     session.Summary.ProgressSummary,
 		LastTask:    session.Summary.CurrentTask,
 		CreatedAt:   time.Now(),
+	}
+	if session.ResumeContext != nil {
+		cp.LastTask = firstNonEmptyTraceText(cp.LastTask, session.ResumeContext.OriginalTask)
 	}
 
 	// Collect recent event summaries as a progress trail.
@@ -130,6 +136,8 @@ func (c *SessionCheckpointer) SaveCheckpoint(session *RemoteSession) error {
 			cp.ProjectPath,
 			cp.Tool,
 			cp.SessionID,
+			cp.UserID,
+			cp.SlotID,
 		},
 	}
 	return c.memoryStore.Save(entry)
@@ -169,7 +177,13 @@ func (c *SessionCheckpointer) BuildResumePrompt(projectPath string) string {
 	if checkpoint == "" {
 		return ""
 	}
+	return buildCheckpointResumePrompt(checkpoint)
+}
 
+func buildCheckpointResumePrompt(checkpoint string) string {
+	if strings.TrimSpace(checkpoint) == "" {
+		return ""
+	}
 	var sb strings.Builder
 	sb.WriteString("## 上次会话进度\n\n")
 	sb.WriteString("以下是上次在此项目上的工作进度，请在此基础上继续：\n\n")
@@ -177,8 +191,6 @@ func (c *SessionCheckpointer) BuildResumePrompt(projectPath string) string {
 	sb.WriteString("\n请基于以上进度继续工作。如果上次的任务已完成，请告知用户。\n")
 
 	result := sb.String()
-	// Cap at ~2000 tokens (~8000 chars). Use rune-safe truncation to
-	// avoid splitting multi-byte UTF-8 characters.
 	if len(result) > 8000 {
 		runes := []rune(result)
 		if len(runes) > 2000 {
@@ -187,4 +199,17 @@ func (c *SessionCheckpointer) BuildResumePrompt(projectPath string) string {
 		result = string(runes) + "\n...(已截断)"
 	}
 	return result
+}
+
+func (c *SessionCheckpointer) BuildResumePromptForSlot(slot *unfinishedTaskSlot) string {
+	if slot == nil {
+		return ""
+	}
+	if strings.TrimSpace(slot.ResumePrompt) != "" {
+		return slot.ResumePrompt
+	}
+	if strings.TrimSpace(slot.ProjectPath) == "" {
+		return ""
+	}
+	return c.BuildResumePrompt(slot.ProjectPath)
 }

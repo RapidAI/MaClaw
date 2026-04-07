@@ -12,6 +12,7 @@ import (
 // TestProbeQuestionLengthLimit sends increasingly long questions to find
 // the maximum accepted length by the 当贝 API.
 func TestProbeQuestionLengthLimit(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 

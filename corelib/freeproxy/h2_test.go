@@ -19,6 +19,7 @@ import (
 // TestH2WithBrowserSign tests v2/chat over HTTP/2 using Go's net/http with
 // explicit H2 transport. Browsers use HTTP/2 — maybe the server requires it.
 func TestH2WithBrowserSign(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -121,6 +122,7 @@ func TestH2WithBrowserSign(t *testing.T) {
 
 // TestH2Negotiation checks what protocol the server actually negotiates
 func TestH2Negotiation(t *testing.T) {
+	requireIntegrationTest(t)
 	conn, err := tls.DialWithDialer(
 		&net.Dialer{Timeout: 10 * time.Second},
 		"tcp", "ai-api.dangbei.net:443",

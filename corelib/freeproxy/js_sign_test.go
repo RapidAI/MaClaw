@@ -9,6 +9,7 @@ import (
 
 // TestAnalyzeV2Signing analyzes the v2 signing mechanism from the JS bundle.
 func TestAnalyzeV2Signing(t *testing.T) {
+	requireIntegrationTest(t)
 	resp, err := http.Get("https://ai.dangbei.com/_next/static/chunks/pages/_app-3da91045335ded21.js")
 	if err != nil {
 		t.Fatal(err)

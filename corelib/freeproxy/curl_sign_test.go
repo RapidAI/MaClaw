@@ -14,6 +14,7 @@ import (
 // TestCurlWithNodeSign uses Node.js to sign, then curl to send.
 // curl uses Schannel on Windows which has a different TLS fingerprint.
 func TestCurlWithNodeSign(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

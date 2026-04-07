@@ -10,6 +10,7 @@ import (
 // TestFindWasmInitFunction searches for the _.Ay() init function in module 72660
 // to understand what initialization the WASM needs before get_sign works.
 func TestFindWasmInitFunction(t *testing.T) {
+	requireIntegrationTest(t)
 	resp, err := http.Get("https://ai.dangbei.com/_next/static/chunks/pages/_app-3da91045335ded21.js")
 	if err != nil {
 		t.Fatal(err)

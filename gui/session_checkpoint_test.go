@@ -178,6 +178,38 @@ func TestSessionCheckpointer_WithContextBridge(t *testing.T) {
 	}
 }
 
+func TestSessionCheckpointer_BuildResumePromptForSlot(t *testing.T) {
+	tmpDir := t.TempDir()
+	memPath := filepath.Join(tmpDir, "memories.json")
+	ms, err := NewMemoryStore(memPath)
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+	defer ms.Stop()
+
+	cp := NewSessionCheckpointer(ms, nil)
+	session := &RemoteSession{
+		ID:          "sess_test_slot",
+		Tool:        "codex",
+		ProjectPath: "/home/user/webapp",
+		Status:      SessionExited,
+		Summary: SessionSummary{
+			CurrentTask:     "添加用户注册功能",
+			ProgressSummary: "已完成数据库模型，待实现 API",
+		},
+	}
+	_ = cp.SaveCheckpoint(session)
+
+	slot := &unfinishedTaskSlot{ProjectPath: "/home/user/webapp"}
+	prompt := cp.BuildResumePromptForSlot(slot)
+	if prompt == "" {
+		t.Fatal("BuildResumePromptForSlot returned empty string")
+	}
+	if !strings.Contains(prompt, "添加用户注册功能") {
+		t.Fatal("slot resume prompt should contain task info")
+	}
+}
+
 func TestMemoryStore_RecallForProject(t *testing.T) {
 	tmpDir := t.TempDir()
 	memPath := filepath.Join(tmpDir, "memories.json")

@@ -88,6 +88,16 @@ export function ListRemoteHubs(arg1:string,arg2:string):Promise<Array<any>>;
 
 export function ListRemoteSessions():Promise<Array<any>>;
 
+export function StartBrowserSession(arg1:any):Promise<any>;
+
+export function StopBrowserSession(arg1:string,arg2:boolean):Promise<void>;
+
+export function GetBrowserSessionTrace(arg1:string):Promise<any>;
+
+export function GetBrowserSessionSnapshot(arg1:string):Promise<any>;
+
+export function InvokeBrowserTool(arg1:string,arg2:any):Promise<string>;
+
 export function ListRemoteToolMetadata():Promise<Array<any>>;
 
 export function ListSkills(arg1:string):Promise<Array<main.Skill>>;
@@ -214,6 +224,8 @@ export function SaveMaclawLLMConfig(arg1:any):Promise<void>;
 
 export function GetMaclawLLMProviders():Promise<any>;
 
+export function GetMaclawLLMPanelState():Promise<any>;
+
 export function SaveMaclawLLMProviders(arg1:any, arg2:string):Promise<void>;
 
 export function TestMaclawLLM(arg1:any):Promise<string>;
@@ -243,6 +255,8 @@ export function GetLLMTrajectoryLogging():Promise<boolean>;
 export function SetLLMTrajectoryLogging(arg1:boolean):Promise<void>;
 
 export function GetTrialReflectEnabled():Promise<boolean>;
+
+export function GetAIAssistantTrace(arg1:string):Promise<any>;
 
 export function SetTrialReflectEnabled(arg1:boolean):Promise<void>;
 

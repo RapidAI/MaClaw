@@ -12,6 +12,7 @@ import (
 
 // TestSignDebug examines the WASM signing output in detail.
 func TestSignDebug(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -69,6 +70,7 @@ func countDigits(n int64) int {
 
 // TestSignCompareV1V2 compares v1 MD5 signing with WASM v2 signing.
 func TestSignCompareV1V2(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

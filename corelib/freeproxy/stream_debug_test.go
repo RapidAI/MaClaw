@@ -17,6 +17,7 @@ import (
 // TestStreamDebugRawResponse does a raw v2/chat POST and dumps the response
 // headers + first bytes to diagnose why streaming times out.
 func TestStreamDebugRawResponse(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -112,6 +113,7 @@ func TestStreamDebugRawResponse(t *testing.T) {
 
 // TestStreamDebugWithAcceptSSE tries with Accept: text/event-stream header.
 func TestStreamDebugWithAcceptSSE(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -193,6 +195,7 @@ func TestStreamDebugWithAcceptSSE(t *testing.T) {
 // TestStreamDebugFetchStyle tries to mimic browser Fetch API more closely
 // with specific headers that the JS bundle might be sending.
 func TestStreamDebugFetchStyle(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 

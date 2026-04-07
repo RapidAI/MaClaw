@@ -17,6 +17,7 @@ import (
 //
 // This test proves whether the issue is signing or something else.
 func TestWithBrowserSign(t *testing.T) {
+	requireIntegrationTest(t)
 	// === PASTE BROWSER VALUES HERE ===
 	browserSign := ""      // e.g. "A1B2C3D4..."
 	browserNonce := ""     // e.g. "abc123..."
@@ -78,6 +79,7 @@ func TestWithBrowserSign(t *testing.T) {
 // TestInjectSignToPage creates a bookmarklet-style JS snippet that users can
 // run in the browser console to capture the sign values.
 func TestInjectSignToPage(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -141,6 +143,7 @@ console.log('Body for testing: %s');
 // TestCompareGoAndNodeSign runs the same body through both Go WASM and Node.js WASM
 // and compares the nonce format and sign format.
 func TestCompareGoAndNodeSign(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

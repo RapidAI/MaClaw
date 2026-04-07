@@ -48,6 +48,7 @@ type App struct {
 	toolInstallLocks  map[string]bool // Track which tools are currently being installed
 	toolLockMutex     sync.Mutex      // Mutex for toolInstallLocks map
 	remoteSessions    *RemoteSessionManager
+	browserSessions   *BrowserAgentManager
 	powerStateMutex   sync.Mutex
 	powerStateProcess *exec.Cmd
 	screenDimCancel   context.CancelFunc // cancels the screen-dim goroutine
@@ -56,60 +57,70 @@ type App struct {
 	localMCPManager   *LocalMCPManager
 	skillExecutor     *SkillExecutor
 	skillRunner       *SkillRunner
+	sessionStarter    *CodingSessionStarter
 	skillMarketClient *SkillMarketClient
 	gossipClient      *GossipClient
 	autoUploadTrigger *AutoUploadTrigger
 	gossipAutoPublish *AutoPublishTrigger
 	// Maclaw capability evolution components
-	riskAssessor        *RiskAssessor
-	policyEngine        *PolicyEngine
-	auditLog            *AuditLog
-	llmSecurityReview   *LLMSecurityReview
-	mdnsScanner         *MDNSScanner
-	projectScanner      *ProjectScanner
-	toolDefGenerator    *ToolDefinitionGenerator
-	toolRouter          *ToolRouter
-	experienceExtractor *ExperienceExtractor
-	orchestrator        *Orchestrator
-	sharedContext       *SharedContextStore
-	toolSelector        *ToolSelector
-	skillHubClient         *SkillHubClient
-	capabilityGapDetector  *CapabilityGapDetector
-	stopHubTicker          chan struct{} // signals the 24h recommendation refresh goroutine to stop
+	riskAssessor          *RiskAssessor
+	policyEngine          *PolicyEngine
+	auditLog              *AuditLog
+	llmSecurityReview     *LLMSecurityReview
+	mdnsScanner           *MDNSScanner
+	projectScanner        *ProjectScanner
+	toolDefGenerator      *ToolDefinitionGenerator
+	toolRouter            *ToolRouter
+	experienceExtractor   *ExperienceExtractor
+	orchestrator          *Orchestrator
+	sharedContext         *SharedContextStore
+	toolSelector          *ToolSelector
+	skillHubClient        *SkillHubClient
+	capabilityGapDetector *CapabilityGapDetector
+	stopHubTicker         chan struct{} // signals the 24h recommendation refresh goroutine to stop
 	// Smart session components
-	memoryStore          *MemoryStore
-	configManager        *ConfigManager
-	templateManager      *SessionTemplateManager
-	contextResolver      *SessionContextResolver
-	sessionPrecheck      *SessionPrecheck
-	conversationArchiver  *ConversationArchiver
-	sessionCheckpointer  *SessionCheckpointer
-	startupFeedback      *SessionStartupFeedback
-	ioRelay              *SessionIORelay
-	swarmOrchestrator    *swarm.SwarmOrchestrator
-	memoryCompressor     *MemoryCompressor
-	memPipeline          *memory.Pipeline
-	compressorMu         sync.Mutex // guards lazy creation of memoryCompressor
-	scheduledTaskManager *ScheduledTaskManager
-	remoteInfraOnce      sync.Once // guards ensureRemoteInfra initialization
-	remoteInfraReady     atomic.Bool // fast-path check for ensureRemoteInfra
-	warmupDone           atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
-	clawNetClient        *ClawNetClient
-	mcpAutoDiscovery     *MCPAutoDiscovery
-	securityFirewall     *SecurityFirewall
-	securityRiskAnalyzer *SecurityRiskAnalyzer
-	hubSecurityCache     hubSecurityCache
-	contextBridge        *ContextBridge
-	taskOrchestrator2    *TaskOrchestrator2
-	autoTaskPicker       *ClawNetAutoTaskPicker
-	autoPickerOnce       sync.Once
-	qqBotGateway         *qqBotGatewayManager
-	telegramGateway      *telegramGatewayManager
-	weixinGateway        *weixinGatewayManager
-	tokenUsageMu         sync.Mutex // guards AccumulateLLMTokenUsage
-	ssoPolling           *ssoPollingSession // active embedded SSO polling session
-	ssoPollingMu         sync.Mutex         // guards ssoPolling
-	interactionInfraOnce sync.Once  // guards ensureInteractionInfra initialization
+	memoryStore                *MemoryStore
+	configManager              *ConfigManager
+	templateManager            *SessionTemplateManager
+	contextResolver            *SessionContextResolver
+	sessionPrecheck            *SessionPrecheck
+	conversationArchiver       *ConversationArchiver
+	sessionCheckpointer        *SessionCheckpointer
+	startupFeedback            *SessionStartupFeedback
+	ioRelay                    *SessionIORelay
+	aiConversationMemory       *conversationMemory
+	aiConfirmationStore        *aiConfirmationStore
+	swarmOrchestrator          *swarm.SwarmOrchestrator
+	memoryCompressor           *MemoryCompressor
+	memPipeline                *memory.Pipeline
+	compressorMu               sync.Mutex // guards lazy creation of memoryCompressor
+	scheduledTaskManager       *ScheduledTaskManager
+	remoteInfraOnce            sync.Once   // guards ensureRemoteInfra initialization
+	remoteInfraReady           atomic.Bool // fast-path check for ensureRemoteInfra
+	warmupDone                 atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
+	clawNetClient              *ClawNetClient
+	mcpAutoDiscovery           *MCPAutoDiscovery
+	securityFirewall           *SecurityFirewall
+	securityRiskAnalyzer       *SecurityRiskAnalyzer
+	hubSecurityCache           hubSecurityCache
+	contextBridge              *ContextBridge
+	aiTrace                    *AITraceService
+	taskOrchestrator2          *TaskOrchestrator2
+	autoTaskPicker             *ClawNetAutoTaskPicker
+	autoPickerOnce             sync.Once
+	qqBotGateway               *qqBotGatewayManager
+	telegramGateway            *telegramGatewayManager
+	weixinGateway              *weixinGatewayManager
+	configMu                   sync.Mutex
+	configCache                AppConfig
+	configCacheValid           bool
+	tokenUsageMu               sync.Mutex         // guards AccumulateLLMTokenUsage
+	ssoPolling                 *ssoPollingSession // active embedded SSO polling session
+	ssoPollingMu               sync.Mutex         // guards ssoPolling
+	interactionInfraOnce       sync.Once          // guards ensureInteractionInfra initialization
+	interactionInfraDone       atomic.Bool
+	aiAssistantReadyAt         atomic.Int64
+	aiAssistantFirstChatLogged atomic.Bool
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -135,6 +146,24 @@ func NewApp() *App {
 		nodeInstallDone:   make(chan bool, 1), // Buffered channel to signal Node.js installation completion
 		toolInstallLocks:  make(map[string]bool),
 	}
+}
+
+func bytesToMiB(v uint64) uint64 {
+	return v / 1024 / 1024
+}
+
+func (a *App) logMemorySnapshot(stage string) {
+	var stats goruntime.MemStats
+	goruntime.ReadMemStats(&stats)
+	log.Printf("[mem] %s heap=%dMiB sys=%dMiB stack=%dMiB objects=%d goroutines=%d gc=%d",
+		stage,
+		bytesToMiB(stats.HeapAlloc),
+		bytesToMiB(stats.Sys),
+		bytesToMiB(stats.StackInuse),
+		stats.HeapObjects,
+		goruntime.NumGoroutine(),
+		stats.NumGC,
+	)
 }
 
 // ensureRemoteInfra initializes remoteSessions, mcpRegistry, and skillExecutor
@@ -168,11 +197,17 @@ func (a *App) initCoreInfra() {
 	if a.remoteSessions == nil {
 		a.remoteSessions = NewRemoteSessionManager(a)
 	}
+	if a.browserSessions == nil {
+		a.browserSessions = NewBrowserAgentManager(a)
+	}
 	if a.mcpRegistry == nil {
 		a.mcpRegistry = NewMCPRegistry(a)
 	}
 	if a.skillExecutor == nil {
 		a.skillExecutor = NewSkillExecutor(a, a.mcpRegistry, a.remoteSessions)
+	}
+	if a.sessionStarter == nil {
+		a.sessionStarter = NewCodingSessionStarter(a)
 	}
 	if a.riskAssessor == nil {
 		a.riskAssessor = &RiskAssessor{}
@@ -223,166 +258,48 @@ func (a *App) ensureInteractionInfra() {
 	a.ensureRemoteInfra()
 	a.interactionInfraOnce.Do(func() {
 		a.initInteractionInfra()
+		a.interactionInfraDone.Store(true)
 	})
+}
+
+func (a *App) interactionInfraReady() bool {
+	return a.interactionInfraDone.Load()
+}
+
+func (a *App) markAIAssistantReady() {
+	a.warmupDone.Store(true)
+	a.aiAssistantReadyAt.Store(time.Now().UnixNano())
+	a.aiAssistantFirstChatLogged.Store(false)
+}
+
+func (a *App) beginFirstAIAssistantChatTelemetry() (readyAt int64, shouldLog bool) {
+	readyAt = a.aiAssistantReadyAt.Load()
+	shouldLog = readyAt > 0 && a.aiAssistantFirstChatLogged.CompareAndSwap(false, true)
+	return readyAt, shouldLog
 }
 
 func (a *App) initInteractionInfra() {
 	t0 := time.Now()
+	a.logMemorySnapshot("initInteractionInfra:start")
 
 	// --- Critical path: components required for the first AI message ---
-	if a.localMCPManager == nil {
-		a.localMCPManager = NewLocalMCPManager(a.mcpRegistry)
-		if a.toolDefGenerator != nil {
-			a.toolDefGenerator.SetLocalMCPManager(a.localMCPManager)
-		}
-		hasAutoStart := false
-		for _, e := range a.mcpRegistry.ListLocalServers() {
-			if !e.Disabled && e.AutoStart {
-				hasAutoStart = true
-				break
-			}
-		}
-		if hasAutoStart {
-			go a.localMCPManager.SyncFromConfig()
-		}
-	}
-	if a.auditLog == nil {
-		al, err := NewAuditLog(filepath.Join(a.GetDataDir(), "audit"))
-		if err == nil {
-			a.auditLog = al
-		}
-	}
-	// Initialize smart session components — memory store
-	a.ensureMemoryStore()
-	if a.contextResolver == nil {
-		a.contextResolver = NewSessionContextResolver(a)
-	}
-	if a.sessionPrecheck == nil {
-		a.sessionPrecheck = NewSessionPrecheck(a)
-	}
-	if a.conversationArchiver == nil && a.memoryStore != nil {
-		a.conversationArchiver = NewConversationArchiver(a.memoryStore, a)
-	}
-	if a.startupFeedback == nil && a.remoteSessions != nil {
-		a.startupFeedback = NewSessionStartupFeedback(a.remoteSessions)
-	}
 	if a.ioRelay == nil {
 		a.ioRelay = NewSessionIORelay()
 	}
-	// Initialize SecurityFirewall.
-	if a.securityRiskAnalyzer == nil {
-		a.securityRiskAnalyzer = NewSecurityRiskAnalyzer()
-	}
-	if a.securityFirewall == nil && a.policyEngine != nil && a.auditLog != nil {
-		a.securityFirewall = NewSecurityFirewall(a.securityRiskAnalyzer, a.policyEngine, a.auditLog)
-	}
-	// Initialize ContextBridge.
-	if a.contextBridge == nil {
-		a.contextBridge = NewContextBridge()
-	}
-	if a.sessionCheckpointer == nil && a.memoryStore != nil {
-		a.sessionCheckpointer = NewSessionCheckpointer(a.memoryStore, a.contextBridge)
-	}
-	if a.startupFeedback != nil && a.sessionCheckpointer != nil {
-		a.startupFeedback.SetCheckpointer(a.sessionCheckpointer)
-	}
-	if a.orchestrator == nil {
-		a.orchestrator = NewOrchestrator(a, a.remoteSessions, a.sharedContext, a.toolSelector)
-	}
-	if a.taskOrchestrator2 == nil && a.remoteSessions != nil && a.toolSelector != nil {
-		a.taskOrchestrator2 = NewTaskOrchestrator2(a.remoteSessions, a.toolSelector, a.contextBridge)
+	if a.aiTrace == nil {
+		a.aiTrace = NewAITraceService()
 	}
 
 	log.Printf("[initInteractionInfra] critical path done in %v", time.Since(t0))
+	a.logMemorySnapshot("initInteractionInfra:critical-done")
 
-	// --- Deferred path: non-critical components initialized in background ---
-	// These are not needed for the first AI message and can load lazily.
-	go a.initDeferredInteractionInfra()
+	// Non-critical interaction services now initialize on-demand via ensure* helpers.
 }
 
-// initDeferredInteractionInfra initializes non-critical interaction components
-// in the background so they don't block the first AI assistant message.
+// initDeferredInteractionInfra remains as a compatibility no-op. Non-critical
+// interaction components are now created lazily at first use instead of in the
+// background during idle startup/bind flows.
 func (a *App) initDeferredInteractionInfra() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[initDeferredInteractionInfra] panic (non-fatal): %v", r)
-		}
-	}()
-	t0 := time.Now()
-
-	if a.skillMarketClient == nil {
-		a.skillMarketClient = NewSkillMarketClient(a)
-	}
-	if a.gossipClient == nil {
-		a.gossipClient = NewGossipClient(a)
-	}
-	if a.gossipAutoPublish == nil && a.gossipClient != nil {
-		a.gossipAutoPublish = NewAutoPublishTrigger(a.gossipClient, func() bool {
-			if cfg, err := a.LoadConfig(); err == nil {
-				return cfg.GossipAutoPublish
-			}
-			return true
-		})
-		a.gossipAutoPublish.SetLLMConfigFn(func() corelib.MaclawLLMConfig {
-			return a.GetMaclawLLMConfig()
-		})
-		a.gossipAutoPublish.SetGossipAllowedFn(func() bool {
-			return a.isGossipAllowed()
-		})
-	}
-	if a.autoUploadTrigger == nil && a.skillMarketClient != nil {
-		a.autoUploadTrigger = NewAutoUploadTrigger(a.skillMarketClient, func() string {
-			if cfg, err := a.LoadConfig(); err == nil {
-				return strings.TrimSpace(cfg.RemoteEmail)
-			}
-			return ""
-		})
-	}
-	if a.skillRunner == nil && a.skillExecutor != nil {
-		a.skillRunner = NewSkillRunner(a.skillExecutor)
-		a.skillRunner.uploadTrigger = a.autoUploadTrigger
-		a.skillRunner.packageFn = a.packageSkillForMarket
-	}
-	if a.llmSecurityReview == nil {
-		cfg := a.GetMaclawLLMConfig()
-		a.llmSecurityReview = NewLLMSecurityReview(cfg)
-	}
-	if a.experienceExtractor == nil {
-		cfg := a.GetMaclawLLMConfig()
-		a.experienceExtractor = NewExperienceExtractor(a, a.skillExecutor, cfg)
-	}
-	// Periodically clean up stale learned/crafted skills on startup.
-	if a.skillExecutor != nil {
-		go a.skillExecutor.CleanupStaleSkills()
-	}
-	if a.skillHubClient == nil {
-		a.skillHubClient = NewSkillHubClient(a)
-		go a.skillHubClient.RefreshRecommendations(context.Background())
-		a.stopHubTicker = make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(24 * time.Hour)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					_ = a.skillHubClient.RefreshRecommendations(context.Background())
-				case <-a.stopHubTicker:
-					return
-				}
-			}
-		}()
-	}
-	if a.toolRouter != nil && a.skillHubClient != nil {
-		a.toolRouter.SetHubClient(a.skillHubClient)
-	}
-	if a.capabilityGapDetector == nil {
-		cfg := a.GetMaclawLLMConfig()
-		a.capabilityGapDetector = NewCapabilityGapDetector(
-			a, a.skillHubClient, a.skillExecutor, a.riskAssessor, a.auditLog, cfg,
-		)
-	}
-
-	log.Printf("[initDeferredInteractionInfra] deferred path done in %v", time.Since(t0))
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +326,8 @@ func (a *App) ensureMemoryStore() {
 	if a.memoryStore != nil {
 		return
 	}
+	a.ensureAITrace()
+	a.logMemorySnapshot("ensureMemoryStore:start")
 	homeDir := a.GetUserHomeDir()
 	memPath := filepath.Join(homeDir, ".maclaw", "memories.json")
 	ms, err := NewMemoryStore(memPath)
@@ -424,9 +343,8 @@ func (a *App) ensureMemoryStore() {
 	}
 	if ms != nil {
 		a.memoryStore = ms
-		compressor := memory.NewCompressor(ms, nil, nil)
-		a.memPipeline = memory.NewPipeline(ms, compressor, nil, nil, nil)
-		a.memPipeline.Start()
+		comparator := memory.NewCompressor(ms, nil, nil)
+		a.memPipeline = memory.NewPipeline(ms, comparator, nil, nil, nil)
 		// Load embedding model asynchronously so it doesn't block the first
 		// AI assistant message. Vector search will become available once
 		// the model finishes loading in the background. Tool embedding
@@ -436,6 +354,7 @@ func (a *App) ensureMemoryStore() {
 			if err != nil || !cfg.VectorSearchEnabled {
 				return
 			}
+			a.logMemorySnapshot("ensureMemoryStore:vector-search-enable")
 			modelPath := embedding.DefaultModelPath()
 			emb := embedding.NewDefaultEmbedder(modelPath)
 			if embedding.IsNoop(emb) {
@@ -444,7 +363,16 @@ func (a *App) ensureMemoryStore() {
 			a.activateEmbedderAsync(emb)
 			log.Println("[ensureMemoryStore] embedding model loaded in background")
 		}()
+		a.logMemorySnapshot("ensureMemoryStore:ready")
 	}
+}
+
+func (a *App) ensureMemoryPipeline() {
+	a.ensureInteractionInfra()
+	if a.memPipeline == nil {
+		return
+	}
+	a.memPipeline.Start()
 }
 
 func (a *App) ensureScheduledTaskManager() {
@@ -508,12 +436,94 @@ func (a *App) ensureMDNSScanner() {
 	}
 }
 
+func (a *App) ensureSkillMarketClient() {
+	a.ensureInteractionInfra()
+	if a.skillMarketClient != nil {
+		return
+	}
+	a.skillMarketClient = NewSkillMarketClient(a)
+}
+
+func (a *App) ensureAutoUploadTrigger() {
+	a.ensureSkillMarketClient()
+	if a.autoUploadTrigger != nil || a.skillMarketClient == nil {
+		return
+	}
+	a.autoUploadTrigger = NewAutoUploadTrigger(a.skillMarketClient, func() string {
+		if cfg, err := a.LoadConfig(); err == nil {
+			return strings.TrimSpace(cfg.RemoteEmail)
+		}
+		return ""
+	})
+}
+
+func (a *App) ensureSkillRunner() {
+	a.ensureInteractionInfra()
+	if a.skillRunner != nil || a.skillExecutor == nil {
+		return
+	}
+	a.ensureAutoUploadTrigger()
+	a.skillRunner = NewSkillRunner(a.skillExecutor)
+	a.skillRunner.uploadTrigger = a.autoUploadTrigger
+	a.skillRunner.packageFn = a.packageSkillForMarket
+}
+
+func (a *App) ensureLLMSecurityReview() {
+	a.ensureInteractionInfra()
+	if a.llmSecurityReview != nil {
+		return
+	}
+	cfg := a.GetMaclawLLMConfig()
+	a.llmSecurityReview = NewLLMSecurityReview(cfg)
+}
+
+func (a *App) ensureExperienceExtractor() {
+	a.ensureInteractionInfra()
+	if a.experienceExtractor != nil {
+		return
+	}
+	cfg := a.GetMaclawLLMConfig()
+	a.experienceExtractor = NewExperienceExtractor(a, a.skillExecutor, cfg)
+}
+
 func (a *App) ensureSkillHubClient() {
 	a.ensureRemoteInfra()
 	if a.skillHubClient != nil {
 		return
 	}
 	a.ensureInteractionInfra()
+	a.skillHubClient = NewSkillHubClient(a)
+	_ = a.skillHubClient.RefreshRecommendations(context.Background())
+	if a.stopHubTicker == nil {
+		a.stopHubTicker = make(chan struct{})
+		go func(stop <-chan struct{}, client *SkillHubClient) {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					_ = client.RefreshRecommendations(context.Background())
+				case <-stop:
+					return
+				}
+			}
+		}(a.stopHubTicker, a.skillHubClient)
+	}
+	if a.toolRouter != nil {
+		a.toolRouter.SetHubClient(a.skillHubClient)
+	}
+}
+
+func (a *App) ensureCapabilityGapDetector() {
+	a.ensureInteractionInfra()
+	if a.capabilityGapDetector != nil {
+		return
+	}
+	a.ensureSkillHubClient()
+	cfg := a.GetMaclawLLMConfig()
+	a.capabilityGapDetector = NewCapabilityGapDetector(
+		a, a.skillHubClient, a.skillExecutor, a.riskAssessor, a.auditLog, cfg,
+	)
 }
 
 func (a *App) ensureGossipClient() {
@@ -521,62 +531,283 @@ func (a *App) ensureGossipClient() {
 		return
 	}
 	a.ensureInteractionInfra()
+	a.gossipClient = NewGossipClient(a)
+}
+
+func (a *App) ensureGossipAutoPublish() {
+	a.ensureGossipClient()
+	if a.gossipAutoPublish != nil || a.gossipClient == nil {
+		return
+	}
+	a.gossipAutoPublish = NewAutoPublishTrigger(a.gossipClient, func() bool {
+		if cfg, err := a.LoadConfig(); err == nil {
+			return cfg.GossipAutoPublish
+		}
+		return true
+	})
+	a.gossipAutoPublish.SetLLMConfigFn(func() corelib.MaclawLLMConfig {
+		return a.GetMaclawLLMConfig()
+	})
+	a.gossipAutoPublish.SetGossipAllowedFn(func() bool {
+		return a.isGossipAllowed()
+	})
+}
+
+func (a *App) ensureContextBridge() {
+	a.ensureInteractionInfra()
+	if a.contextBridge != nil {
+		return
+	}
+	a.contextBridge = NewContextBridge()
+}
+
+func (a *App) buildTrajectoryRecorderFactory() func() *TrajectoryRecorder {
+	cfg, err := a.LoadConfig()
+	if err != nil || !cfg.LLMTrajectoryLogging {
+		return nil
+	}
+	return func() *TrajectoryRecorder {
+		return NewTrajectoryRecorder()
+	}
+}
+
+func (a *App) ensureAITrace() {
+	if a.aiTrace != nil {
+		return
+	}
+	a.aiTrace = NewAITraceService()
+}
+
+func (a *App) ensureSecurityRiskAnalyzer() {
+	a.ensureInteractionInfra()
+	if a.securityRiskAnalyzer != nil {
+		return
+	}
+	a.securityRiskAnalyzer = NewSecurityRiskAnalyzer()
+}
+
+func (a *App) ensureSecurityFirewall() {
+	a.ensureInteractionInfra()
+	if a.securityFirewall != nil {
+		return
+	}
+	a.ensureSecurityRiskAnalyzer()
+	a.ensureAuditLog()
+	if a.policyEngine != nil && a.securityRiskAnalyzer != nil && a.auditLog != nil {
+		a.securityFirewall = NewSecurityFirewall(a.securityRiskAnalyzer, a.policyEngine, a.auditLog)
+	}
+}
+
+func (a *App) ensureLocalMCPManager() {
+	a.ensureInteractionInfra()
+	if a.localMCPManager != nil {
+		return
+	}
+	a.localMCPManager = NewLocalMCPManager(a.mcpRegistry)
+	if a.toolDefGenerator != nil {
+		a.toolDefGenerator.SetLocalMCPManager(a.localMCPManager)
+	}
+	hasAutoStart := false
+	for _, e := range a.mcpRegistry.ListLocalServers() {
+		if !e.Disabled && e.AutoStart {
+			hasAutoStart = true
+			break
+		}
+	}
+	if hasAutoStart {
+		go a.localMCPManager.SyncFromConfig()
+	}
+}
+
+func (a *App) ensureOrchestrator() {
+	a.ensureInteractionInfra()
+	if a.orchestrator == nil && a.remoteSessions != nil && a.sharedContext != nil && a.toolSelector != nil {
+		a.orchestrator = NewOrchestrator(a, a.remoteSessions, a.sharedContext, a.toolSelector)
+	}
+}
+
+func (a *App) ensureTaskOrchestrator2() {
+	a.ensureInteractionInfra()
+	if a.taskOrchestrator2 == nil && a.remoteSessions != nil && a.toolSelector != nil {
+		a.ensureContextBridge()
+		a.taskOrchestrator2 = NewTaskOrchestrator2(a.remoteSessions, a.toolSelector, a.contextBridge)
+	}
+}
+
+func (a *App) ensureContextResolver() {
+	a.ensureInteractionInfra()
+	if a.contextResolver == nil {
+		a.contextResolver = NewSessionContextResolver(a)
+	}
+}
+
+func (a *App) ensureSessionPrecheck() {
+	a.ensureInteractionInfra()
+	if a.sessionPrecheck == nil {
+		a.sessionPrecheck = NewSessionPrecheck(a)
+	}
+}
+
+func (a *App) ensureConversationArchiver() {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		a.ensureMemoryStore()
+	}
+	a.ensureMemoryPipeline()
+	if a.conversationArchiver == nil && a.memoryStore != nil {
+		a.conversationArchiver = NewConversationArchiver(a.memoryStore, a)
+	}
+	if a.conversationArchiver != nil {
+		a.conversationArchiver.SetSlotScopeResolver(func(userID string) *unfinishedTaskSlot {
+			mem := a.ensureConversationMemory()
+			if mem == nil {
+				return nil
+			}
+			return mem.activeUnfinishedSlot(userID)
+		})
+	}
+}
+
+func (a *App) ensureSessionCheckpointer() {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		a.ensureMemoryStore()
+	}
+	a.ensureContextBridge()
+	if a.sessionCheckpointer == nil && a.memoryStore != nil {
+		a.sessionCheckpointer = NewSessionCheckpointer(a.memoryStore, a.contextBridge)
+	}
+}
+
+func (a *App) ensureStartupFeedback() {
+	a.ensureInteractionInfra()
+	if a.startupFeedback == nil && a.remoteSessions != nil {
+		a.startupFeedback = NewSessionStartupFeedback(a.remoteSessions)
+	}
+	a.ensureSessionCheckpointer()
+	if a.startupFeedback == nil || a.sessionCheckpointer == nil {
+		return
+	}
+	a.startupFeedback.SetCheckpointer(a.sessionCheckpointer)
+	a.startupFeedback.SetUnfinishedSlotResolver(func(projectPath string) *unfinishedTaskSlot {
+		mem := a.ensureConversationMemory()
+		if mem == nil {
+			return nil
+		}
+		slot := mem.activeUnfinishedSlot("desktop-user")
+		if slot == nil {
+			return nil
+		}
+		if strings.TrimSpace(slot.ProjectPath) != strings.TrimSpace(projectPath) {
+			return nil
+		}
+		return slot
+	})
+}
+
+func (a *App) ensureConversationMemory() *conversationMemory {
+	a.ensureRemoteInfra()
+	if a.aiConversationMemory == nil {
+		a.aiConversationMemory = newPersistentConversationMemory(filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
+	}
+	return a.aiConversationMemory
+}
+
+func (a *App) ensureAIConfirmationStore() *aiConfirmationStore {
+	a.ensureRemoteInfra()
+	if a.aiConfirmationStore == nil {
+		a.aiConfirmationStore = newAIConfirmationStore(filepath.Join(a.GetDataDir(), "ai_assistant_confirmation.json"))
+	}
+	return a.aiConfirmationStore
 }
 
 func (a *App) ensureAuditLog() {
 	if a.auditLog != nil {
 		return
 	}
-	a.ensureInteractionInfra()
+	dir := filepath.Join(a.GetDataDir(), "audit")
+	al, err := NewAuditLog(dir)
+	if err == nil {
+		a.auditLog = al
+	}
 }
 
 // createAndWireHubClient creates a new RemoteHubClient, wires all subsystem
 // handlers into it, and connects. This consolidates the repeated hub-client
 // setup code that was duplicated in startup() and LaunchTool().
 func (a *App) createAndWireHubClient() *RemoteHubClient {
+	a.logMemorySnapshot("createAndWireHubClient:start")
 	a.ensureInteractionInfra()
 	hubClient := NewRemoteHubClient(a, a.remoteSessions)
 	a.remoteSessions.SetHubClient(hubClient)
-	if a.capabilityGapDetector != nil {
-		hubClient.imHandler.SetCapabilityGapDetector(a.capabilityGapDetector)
-	}
-	if a.toolDefGenerator != nil {
-		hubClient.imHandler.SetToolDefGenerator(a.toolDefGenerator)
-	}
-	if a.toolRouter != nil {
-		hubClient.imHandler.SetToolRouter(a.toolRouter)
-	}
-	if a.memoryStore != nil {
-		hubClient.imHandler.SetMemoryStore(a.memoryStore)
-	}
-	if a.configManager != nil {
-		hubClient.imHandler.SetConfigManager(a.configManager)
-	}
-	if a.templateManager != nil {
-		hubClient.imHandler.SetTemplateManager(a.templateManager)
-	}
-	if a.scheduledTaskManager != nil {
-		hubClient.imHandler.SetScheduledTaskManager(a.scheduledTaskManager)
-	}
-	if a.contextResolver != nil {
-		hubClient.imHandler.SetContextResolver(a.contextResolver)
-	}
-	if a.sessionPrecheck != nil {
-		hubClient.imHandler.SetSessionPrecheck(a.sessionPrecheck)
-	}
-	if a.startupFeedback != nil {
-		hubClient.imHandler.SetStartupFeedback(a.startupFeedback)
-	}
-	if a.securityFirewall != nil {
-		hubClient.imHandler.SetSecurityFirewall(a.securityFirewall)
-	}
-	// Wire IM file sender so the desktop AI assistant can forward files to
-	// the user's Feishu/WeChat via the Hub WebSocket.
-	hubClient.imHandler.SetIMFileSender(func(b64Data, fileName, mimeType, message string) error {
-		return hubClient.SendIMProactiveFile(b64Data, fileName, mimeType, message)
-	})
-	// Initialize and wire BackgroundLoopManager + SessionMonitor.
-	{
+	hubClient.configureIMHandler = func(handler *IMMessageHandler) {
+		if a.capabilityGapDetector == nil {
+			a.ensureCapabilityGapDetector()
+		}
+		if a.capabilityGapDetector != nil {
+			handler.SetCapabilityGapDetector(a.capabilityGapDetector)
+		}
+		if a.toolDefGenerator != nil {
+			a.ensureLocalMCPManager()
+			handler.SetToolDefGenerator(a.toolDefGenerator)
+		}
+		if a.toolRouter != nil {
+			handler.SetToolRouter(a.toolRouter)
+		}
+		if a.memoryStore == nil {
+			a.ensureMemoryStore()
+		}
+		if a.memoryStore != nil {
+			handler.SetMemoryStore(a.memoryStore)
+		}
+		if a.aiConfirmationStore == nil {
+			a.ensureAIConfirmationStore()
+		}
+		if a.aiConfirmationStore != nil {
+			handler.SetConfirmationStore(a.aiConfirmationStore)
+		}
+		a.ensureAITrace()
+		if a.aiTrace != nil {
+			handler.SetTraceService(a.aiTrace)
+		}
+		handler.SetTrajectoryRecorderFactory(a.buildTrajectoryRecorderFactory())
+		if a.configManager != nil {
+			handler.SetConfigManager(a.configManager)
+		}
+		if a.templateManager != nil {
+			handler.SetTemplateManager(a.templateManager)
+		}
+		if a.scheduledTaskManager != nil {
+			handler.SetScheduledTaskManager(a.scheduledTaskManager)
+		}
+		if a.contextResolver == nil {
+			a.ensureContextResolver()
+		}
+		if a.contextResolver != nil {
+			handler.SetContextResolver(a.contextResolver)
+		}
+		if a.sessionPrecheck == nil {
+			a.ensureSessionPrecheck()
+		}
+		if a.sessionPrecheck != nil {
+			handler.SetSessionPrecheck(a.sessionPrecheck)
+		}
+		a.ensureStartupFeedback()
+		if a.startupFeedback != nil {
+			handler.SetStartupFeedback(a.startupFeedback)
+		}
+		if a.securityFirewall == nil {
+			a.ensureSecurityFirewall()
+		}
+		if a.securityFirewall != nil {
+			handler.SetSecurityFirewall(a.securityFirewall)
+		}
+		// Wire IM file sender so the desktop AI assistant can forward files to
+		// the user's Feishu/WeChat via the Hub WebSocket.
+		handler.SetIMFileSender(func(b64Data, fileName, mimeType, message string) error {
+			return hubClient.SendIMProactiveFile(b64Data, fileName, mimeType, message)
+		})
+		// Initialize and wire BackgroundLoopManager + SessionMonitor.
 		statusC := make(chan StatusEvent, 32)
 		blm := NewBackgroundLoopManager(statusC)
 		// Emit Wails event when background loop state changes.
@@ -585,26 +816,30 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 				runtime.EventsEmit(a.ctx, "background-loops-changed")
 			}
 		}
-		hubClient.imHandler.SetBackgroundLoopManager(blm)
+		handler.SetBackgroundLoopManager(blm)
 		// Register GUI automation tools with async background replay support.
-		registerGUIAutomationTools(hubClient.imHandler.registry, blm, hubClient.imHandler.agentActivity, statusC)
+		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
-		hubClient.imHandler.toolBuilder = NewDynamicToolBuilder(hubClient.imHandler.registry)
-		// If vector search is enabled, wire the embedder into the newly created toolBuilder.
-		if cfg, err := a.LoadConfig(); err == nil && cfg.VectorSearchEnabled {
-			modelPath := embedding.DefaultModelPath()
-			emb := embedding.NewDefaultEmbedder(modelPath)
-			hubClient.imHandler.toolBuilder.SetEmbedder(emb)
+		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
+		// Reuse the already-loaded embedder if vector search is active.
+		// Do not load a second Gemma model here — that duplicates mmap-backed
+		// state and causes a large idle memory jump right after Hub connect.
+		if a.memoryStore != nil {
+			emb := a.memoryStore.Embedder()
+			if emb != nil && !embedding.IsNoop(emb) {
+				handler.toolBuilder.SetEmbedder(emb)
+			}
 		}
 		// Wire the statusC into the chat loop's LoopContext so it can drain
 		// background events. This is done lazily: the chat LoopContext gets
 		// statusC assigned in HandleIMMessageWithProgress before runAgentLoop.
 
 		sm := NewSessionMonitor(a.remoteSessions, statusC, 20*time.Second)
-		hubClient.imHandler.SetSessionMonitor(sm)
-	}
-	if a.conversationArchiver != nil {
-		hubClient.imHandler.memory.archiver = a.conversationArchiver
+		handler.SetSessionMonitor(sm)
+		a.ensureConversationArchiver()
+		if a.conversationArchiver != nil {
+			handler.memory.archiver = a.conversationArchiver
+		}
 	}
 	if a.ioRelay != nil {
 		hubClient.SetIORelay(a.ioRelay)
@@ -612,7 +847,6 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	// Wire the scheduled task executor so that due tasks are sent to the
 	// agent loop via the IM handler, making scheduled tasks actually fire.
 	if a.scheduledTaskManager != nil {
-		handler := hubClient.imHandler
 		a.scheduledTaskManager.SetExecutor(func(task *ScheduledTask) (string, error) {
 			// Show a quiet notification when the task starts executing.
 			if ShowNotification != nil {
@@ -634,7 +868,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			// that must complete in one shot (no user to "continue").
 			actionText := fmt.Sprintf("[自动定时任务 — 请一次性完成，不要等待用户输入]\n%s", task.Action)
 
-			resp := handler.HandleIMMessageWithProgress(IMUserMessage{
+			resp := hubClient.ensureIMHandler().HandleIMMessageWithProgress(IMUserMessage{
 				UserID:        "scheduled_task",
 				Platform:      "scheduler",
 				Text:          actionText,
@@ -699,21 +933,16 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			a.emitEvent("scheduled-tasks-changed")
 		})
 	}
+	// Pre-initialize the IM handler before exposing AI assistant readiness so the
+	// first chat request does not pay handler construction/configuration cost.
+	hubClient.ensureIMHandler()
 	_ = hubClient.Connect()
-
-	// Background warmup: pre-build tool cache and warm up the HTTP connection
-	// pool so the first user message doesn't pay cold-start latency.
-	// Run both in parallel for faster startup.
-	go func() {
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() { defer wg.Done(); hubClient.imHandler.WarmupTools() }()
-		go func() { defer wg.Done(); hubClient.imHandler.WarmupHTTPConn() }()
-		wg.Wait()
-		a.warmupDone.Store(true)
-		a.emitEvent("ai-assistant-init-progress", "ready")
-		log.Println("[startup] warmup complete (tools + HTTP)")
-	}()
+	a.logMemorySnapshot("createAndWireHubClient:connected")
+	a.markAIAssistantReady()
+	a.emitEvent("ai-assistant-init-progress", "ready")
+	// Do not eagerly warm tools or HTTP connections after Hub login/connect.
+	// That extra preload is not required for correctness and causes a large
+	// idle memory jump right after first login.
 
 	// Start QQ Bot gateway if configured (runs on client side).
 	a.ensureQQBotGateway()
@@ -792,29 +1021,13 @@ func (a *App) startup(ctx context.Context) {
 		}
 		// Auto-start free proxy if "免费" provider is selected.
 		go a.ensureFreeProxyIfNeeded()
-		// Background preload embedding model (silent, resumable).
-		go a.backgroundPreloadEmbeddingModel()
-		// Pre-warm interaction infrastructure in background so the first
-		// AI assistant message doesn't block on lazy initialization.
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[startup] pre-warm panic (non-fatal): %v", r)
-				}
-			}()
-			a.emitEvent("ai-assistant-init-progress", "loading")
-			log.Println("[startup] pre-warming interaction infrastructure")
-			a.ensureInteractionInfra()
-			log.Println("[startup] interaction infrastructure ready")
-			// In local mode (no Hub), warmup is done after interaction infra
-			// is ready — there's no separate WarmupTools/WarmupHTTPConn step.
-			if a.hubClient() == nil {
-				a.warmupDone.Store(true)
-				a.emitEvent("ai-assistant-init-progress", "ready")
-			} else {
-				a.emitEvent("ai-assistant-init-progress", "warming")
-			}
-		}()
+		// Do not eagerly preload the embedding model on startup. Loading or
+		// downloading it here causes a large idle RSS spike on first install.
+		// The existing explicit vector-search enable flow will initialize it
+		// on demand when the user actually turns the feature on.
+		// Keep the AI assistant in a lightweight "connecting" state until the
+		// user actually opens or uses it; avoid pre-warming the full interaction
+		// stack during startup because it eagerly loads memory-heavy services.
 		// Auto-start IM gateways that were previously enabled.
 		// If Hub is connected, createAndWireHubClient already started them;
 		// only start here when Hub credentials are absent (pure local mode).
@@ -895,8 +1108,11 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.localMCPManager != nil {
 		a.localMCPManager.StopAll()
 	}
-	if hubClient := a.hubClient(); hubClient != nil && hubClient.imHandler != nil {
-		hubClient.imHandler.memory.stop()
+	if a.aiConversationMemory != nil {
+		a.aiConversationMemory.stop()
+	}
+	if a.aiConfirmationStore != nil {
+		a.aiConfirmationStore.stop()
 	}
 	if a.memPipeline != nil {
 		a.memPipeline.Stop()
@@ -1352,6 +1568,9 @@ func (a *App) buildRemoteLaunchSpec(
 	if err != nil {
 		return LaunchSpec{}, err
 	}
+	if meta.ConfigSelector == nil {
+		return LaunchSpec{}, fmt.Errorf("tool config unavailable for tool: %s", tool)
+	}
 	toolCfg := meta.ConfigSelector(config)
 
 	targetProvider := toolCfg.CurrentModel
@@ -1435,7 +1654,10 @@ func (a *App) startConfigWatcher() {
 				if !ok {
 					return
 				}
-				if event.Op&fsnotify.Write == fsnotify.Write {
+				if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) != 0 {
+					a.configMu.Lock()
+					a.invalidateConfigCacheLocked()
+					a.configMu.Unlock()
 					a.log(a.tr("Config file modified: ") + event.Name)
 					// Reload config and emit event
 					// We use a debounce-like approach or just reload.
@@ -1516,6 +1738,7 @@ func (a *App) GetUserHomeDir() string {
 	home, _ := os.UserHomeDir()
 	return home
 }
+
 // GetDataDir returns ~/.maclaw/data — the persistent data directory that
 // survives uninstalls and is easy to back up / transfer.
 func (a *App) GetDataDir() string {
@@ -2922,22 +3145,64 @@ func (a *App) getConfigPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	newPath := filepath.Join(home, ".maclaw", "config.json")
-	// Migrate from legacy ~/.aicoder_config.json if new path doesn't exist yet
-	if _, err := os.Stat(newPath); os.IsNotExist(err) {
-		oldPath := filepath.Join(home, ".aicoder_config.json")
-		if _, err := os.Stat(oldPath); err == nil {
-			_ = os.MkdirAll(filepath.Dir(newPath), 0755)
-			if data, err := os.ReadFile(oldPath); err == nil {
-				_ = os.WriteFile(newPath, data, 0644)
-			}
-		}
+	return filepath.Join(home, ".maclaw", "config.json"), nil
+}
+
+func (a *App) migrateLegacyConfigLocked(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
 	}
-	return newPath, nil
+
+	home := a.GetUserHomeDir()
+	oldPath := filepath.Join(home, ".aicoder_config.json")
+	data, err := os.ReadFile(oldPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return configfile.AtomicWrite(path, data)
 }
 func (a *App) LoadConfig() (AppConfig, error) {
+	lockStart := time.Now()
+	a.configMu.Lock()
+	lockWait := time.Since(lockStart)
+	if lockWait > 50*time.Millisecond {
+		log.Printf("[config] LoadConfig:lock_wait=%s", lockWait)
+	}
+	defer a.configMu.Unlock()
+	if a.configCacheValid {
+		corelib.SetLogDetailEnabled(a.configCache.LogDetailEnabled)
+		return a.configCache, nil
+	}
+	config, err := a.loadConfigLocked()
+	if err != nil {
+		return AppConfig{}, err
+	}
+	a.configCache = config
+	a.configCacheValid = true
+	return config, nil
+}
+
+func (a *App) invalidateConfigCacheLocked() {
+	a.configCache = AppConfig{}
+	a.configCacheValid = false
+}
+
+func (a *App) loadConfigLocked() (AppConfig, error) {
+	start := time.Now()
+	log.Printf("[config] LoadConfig:start")
+
 	path, err := a.getConfigPath()
 	if err != nil {
+		log.Printf("[config] LoadConfig:get_path_failed after=%s err=%v", time.Since(start), err)
+		return AppConfig{}, err
+	}
+	if err := a.migrateLegacyConfigLocked(path); err != nil {
+		log.Printf("[config] LoadConfig:migrate_failed after=%s err=%v", time.Since(start), err)
 		return AppConfig{}, err
 	}
 	// Helper for default models
@@ -3134,7 +3399,11 @@ func (a *App) LoadConfig() (AppConfig, error) {
 						RemoteMachineToken: "",
 						RemoteHeartbeatSec: 10,
 					}
-					a.SaveConfig(config)
+					if err := a.saveToPath(path, config); err != nil {
+						return AppConfig{}, err
+					}
+					a.configCache = config
+					a.configCacheValid = true
 					// Optional: os.Remove(oldPath)
 					return config, nil
 				}
@@ -3182,28 +3451,28 @@ func (a *App) LoadConfig() (AppConfig, error) {
 					YoloMode: false,
 				},
 			},
-			CurrentProject:     "default",
-			ActiveTool:         "claude",
-			ShowGemini:         true,
-			ShowCodex:          true,
-			ShowOpenCode:       true,
-			ShowCodeBuddy:      true,
-			ShowIFlow:          true,
-			ShowKilo:           true,
-			ShowCursor:         true,
-			PowerOptimization:  true,
-			EnvCheckInterval:   7,    // Default to 7 days
-			UseWindowsTerminal: true, // Default to true, will only work if Windows Terminal is installed
-			RemoteEnabled:      false,
-			RemoteHubURL:       "",
-			RemoteHubCenterURL: defaultRemoteHubCenterURL,
-			RemoteEmail:        "",
-			RemoteSN:           "",
-			RemoteUserID:       "",
-			RemoteMachineID:    "",
-			RemoteMachineToken: "",
-			RemoteHeartbeatSec:  10,
-			ScreenDimTimeoutMin: 3, // Default: dim display after 3 minutes of inactivity
+			CurrentProject:       "default",
+			ActiveTool:           "claude",
+			ShowGemini:           true,
+			ShowCodex:            true,
+			ShowOpenCode:         true,
+			ShowCodeBuddy:        true,
+			ShowIFlow:            true,
+			ShowKilo:             true,
+			ShowCursor:           true,
+			PowerOptimization:    true,
+			EnvCheckInterval:     7,    // Default to 7 days
+			UseWindowsTerminal:   true, // Default to true, will only work if Windows Terminal is installed
+			RemoteEnabled:        false,
+			RemoteHubURL:         "",
+			RemoteHubCenterURL:   defaultRemoteHubCenterURL,
+			RemoteEmail:          "",
+			RemoteSN:             "",
+			RemoteUserID:         "",
+			RemoteMachineID:      "",
+			RemoteMachineToken:   "",
+			RemoteHeartbeatSec:   10,
+			ScreenDimTimeoutMin:  3, // Default: dim display after 3 minutes of inactivity
 			ClawNetEnabled:       false,
 			GossipAutoPublish:    true,
 			YoloModeAllowed:      true,
@@ -3213,7 +3482,11 @@ func (a *App) LoadConfig() (AppConfig, error) {
 			NetworkLevel:         "full",
 			SandboxMode:          "none",
 		}
-		err = a.SaveConfig(defaultConfig)
+		err = a.saveToPath(path, defaultConfig)
+		if err == nil {
+			a.configCache = defaultConfig
+			a.configCacheValid = true
+		}
 		return defaultConfig, err
 	}
 	config := AppConfig{
@@ -3663,6 +3936,10 @@ func (a *App) LoadConfig() (AppConfig, error) {
 	normalizeCurrentModel(&config.IFlow)
 	normalizeCurrentModel(&config.Kilo)
 	normalizeCurrentModel(&config.Cursor)
+	log.Printf("[config] LoadConfig:done total=%s", time.Since(start))
+	a.configCache = config
+	a.configCacheValid = true
+	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	return config, nil
 }
 
@@ -3755,6 +4032,27 @@ func syncAllProviderApiKeys(a *App, oldConfig, newConfig *AppConfig) {
 	}
 }
 func (a *App) SaveConfig(config AppConfig) error {
+	lockStart := time.Now()
+	a.configMu.Lock()
+	lockWait := time.Since(lockStart)
+	if lockWait > 50*time.Millisecond {
+		log.Printf("[config] SaveConfig:lock_wait=%s", lockWait)
+	}
+	start := time.Now()
+	log.Printf("[config] SaveConfig:start")
+
+	path, err := a.getConfigPath()
+	if err != nil {
+		a.configMu.Unlock()
+		log.Printf("[config] SaveConfig:get_path_failed after=%s err=%v", time.Since(start), err)
+		return err
+	}
+	if err := a.migrateLegacyConfigLocked(path); err != nil {
+		a.invalidateConfigCacheLocked()
+		a.configMu.Unlock()
+		log.Printf("[config] SaveConfig:migrate_failed after=%s err=%v", time.Since(start), err)
+		return err
+	}
 	// Sanitize: Ensure Custom models have a name (prevent empty tab button)
 	sanitizeCustomNames := func(models []ModelConfig) {
 		for i := range models {
@@ -3772,44 +4070,57 @@ func (a *App) SaveConfig(config AppConfig) error {
 	sanitizeCustomNames(config.Kilo.Models)
 	// Load old config to compare for sync logic
 	var oldConfig AppConfig
-	path, _ := a.getConfigPath()
 	if data, err := os.ReadFile(path); err == nil {
 		json.Unmarshal(data, &oldConfig)
 	}
 	// Sync all apikeys across all tools before saving
+	syncStart := time.Now()
 	syncAllProviderApiKeys(a, &oldConfig, &config)
+	log.Printf("[config] SaveConfig:sync_api_keys=%s", time.Since(syncStart))
+	writeStart := time.Now()
 	if err := a.saveToPath(path, config); err != nil {
+		a.invalidateConfigCacheLocked()
+		a.configMu.Unlock()
+		log.Printf("[config] SaveConfig:save_to_path_failed after=%s err=%v", time.Since(writeStart), err)
 		return err
 	}
+	log.Printf("[config] SaveConfig:save_to_path=%s", time.Since(writeStart))
+	a.configCache = config
+	a.configCacheValid = true
+	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
+	policyModeChanged := a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode
+	hubClient := (*RemoteHubClient)(nil)
+	if a.remoteSessions != nil {
+		hubClient = a.remoteSessions.hubClient
+	}
+	a.configMu.Unlock()
+
+	stepStart := time.Now()
 	a.refreshWorkstationMode(config)
+	log.Printf("[config] SaveConfig:refresh_workstation_mode=%s", time.Since(stepStart))
+	stepStart = time.Now()
 	a.refreshPowerOptimizationStateFromConfig(config)
-	// Sync security policy mode if changed.
-	if a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode {
+	log.Printf("[config] SaveConfig:refresh_power_optimization=%s", time.Since(stepStart))
+	if policyModeChanged {
+		stepStart = time.Now()
 		a.policyEngine.SetMode(config.SecurityPolicyMode)
+		log.Printf("[config] SaveConfig:set_policy_mode=%s", time.Since(stepStart))
 	}
 	if OnConfigChanged != nil {
-		OnConfigChanged(config)
+		go OnConfigChanged(config)
 	}
-	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil && a.remoteSessions.hubClient.IsConnected() {
-		go a.remoteSessions.hubClient.SyncLaunchProjects()
+	if hubClient != nil {
+		go func(client *RemoteHubClient) {
+			if client.IsConnected() {
+				client.SyncLaunchProjects()
+			}
+		}(hubClient)
 	}
+	log.Printf("[config] SaveConfig:done total=%s", time.Since(start))
 	return nil
 }
 func (a *App) saveToPath(path string, config AppConfig) error {
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	// Atomic write: write to temp file first, then rename to avoid
-	// concurrent LoadConfig reading a half-written file.
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
+	return configfile.AtomicWriteJSON(path, config)
 }
 
 type UpdateResult struct {
@@ -4128,24 +4439,8 @@ func (a *App) CancelDownload(downloadID string) {
 }
 func (a *App) RecoverCC() error {
 	a.emitRecoverLog("Starting recovery process...")
-	home, err := os.UserHomeDir()
-	if err != nil {
-		a.emitRecoverLog(fmt.Sprintf("Error getting home dir: %v", err))
-		return err
-	}
-	// Remove ~/.claude directory
-	claudeDir := filepath.Join(home, ".claude")
-	a.emitRecoverLog(fmt.Sprintf("Checking directory: %s", claudeDir))
-	if _, err := os.Stat(claudeDir); !os.IsNotExist(err) {
-		a.emitRecoverLog("Found .claude directory. Removing...")
-		if err := os.RemoveAll(claudeDir); err != nil {
-			a.emitRecoverLog(fmt.Sprintf("Failed to remove .claude directory: %v", err))
-			return fmt.Errorf("failed to remove .claude directory: %w", err)
-		}
-		a.emitRecoverLog("Successfully removed .claude directory.")
-	} else {
-		a.emitRecoverLog(".claude directory not found, skipping.")
-	}
+	home := a.GetUserHomeDir()
+
 	// Remove ~/.claude.json file
 	claudeJsonPath := filepath.Join(home, ".claude.json")
 	a.emitRecoverLog(fmt.Sprintf("Checking file: %s", claudeJsonPath))
@@ -4159,19 +4454,52 @@ func (a *App) RecoverCC() error {
 	} else {
 		a.emitRecoverLog(".claude.json file not found, skipping.")
 	}
-	// Remove ~/.claude.json.backup file
-	claudeJsonBackupPath := filepath.Join(home, ".claude.json.backup")
-	a.emitRecoverLog(fmt.Sprintf("Checking file: %s", claudeJsonBackupPath))
-	if _, err := os.Stat(claudeJsonBackupPath); !os.IsNotExist(err) {
-		a.emitRecoverLog("Found .claude.json.backup file. Removing...")
-		if err := os.Remove(claudeJsonBackupPath); err != nil && !os.IsNotExist(err) {
-			a.emitRecoverLog(fmt.Sprintf("Failed to remove .claude.json.backup file: %v", err))
-			return fmt.Errorf("failed to remove .claude.json.backup file: %w", err)
-		}
-		a.emitRecoverLog("Successfully removed .claude.json.backup file.")
-	} else {
-		a.emitRecoverLog(".claude.json.backup file not found, skipping.")
+
+	// Remove ~/.claude/settings.json file
+	settingsPath := configfile.ClaudeSettingsPath()
+	if a.testHomeDir != "" {
+		settingsPath = filepath.Join(home, ".claude", "settings.json")
 	}
+	a.emitRecoverLog(fmt.Sprintf("Checking file: %s", settingsPath))
+	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
+		a.emitRecoverLog("Found .claude/settings.json file. Removing...")
+		if err := os.Remove(settingsPath); err != nil && !os.IsNotExist(err) {
+			a.emitRecoverLog(fmt.Sprintf("Failed to remove .claude/settings.json file: %v", err))
+			return fmt.Errorf("failed to remove .claude/settings.json file: %w", err)
+		}
+		a.emitRecoverLog("Successfully removed .claude/settings.json file.")
+	} else {
+		a.emitRecoverLog(".claude/settings.json file not found, skipping.")
+	}
+
+	// Remove ~/.claude/hooks/*.json files
+	hooksDir := filepath.Join(home, ".claude", "hooks")
+	a.emitRecoverLog(fmt.Sprintf("Checking hooks directory: %s", hooksDir))
+	if entries, err := os.ReadDir(hooksDir); err == nil {
+		foundHookConfig := false
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+			foundHookConfig = true
+			hookPath := filepath.Join(hooksDir, entry.Name())
+			a.emitRecoverLog(fmt.Sprintf("Found hook config: %s. Removing...", hookPath))
+			if err := os.Remove(hookPath); err != nil && !os.IsNotExist(err) {
+				a.emitRecoverLog(fmt.Sprintf("Failed to remove hook config %s: %v", hookPath, err))
+				return fmt.Errorf("failed to remove hook config %s: %w", hookPath, err)
+			}
+			a.emitRecoverLog(fmt.Sprintf("Successfully removed hook config: %s", hookPath))
+		}
+		if !foundHookConfig {
+			a.emitRecoverLog("No .json hook config files found, skipping.")
+		}
+	} else if os.IsNotExist(err) {
+		a.emitRecoverLog(".claude/hooks directory not found, skipping.")
+	} else {
+		a.emitRecoverLog(fmt.Sprintf("Failed to read hooks directory: %v", err))
+		return fmt.Errorf("failed to read hooks directory: %w", err)
+	}
+
 	a.emitRecoverLog("Recovery process completed successfully.")
 	return nil
 }
@@ -4743,17 +5071,23 @@ func (a *App) GetSkillsDir(toolName string) string {
 
 	return storageDir
 }
-func (a *App) SelectSkillFile() string {
+func (a *App) selectFile(title string, filters []runtime.FileFilter) string {
 	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "Select Skill Zip File",
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Zip Files", Pattern: "*.zip"},
-		},
+		Title:   title,
+		Filters: filters,
 	})
 	if err != nil {
 		return ""
 	}
 	return selection
+}
+
+func (a *App) SelectSkillFile() string {
+	return a.selectFile("Select Skill Zip File", []runtime.FileFilter{{DisplayName: "Zip Files", Pattern: "*.zip"}})
+}
+
+func (a *App) SelectAIAssistantFile() string {
+	return a.selectFile("Select File for AI Assistant", nil)
 }
 
 // getInstalledSkillDirs returns a list of installed skill directory names for both user and project locations

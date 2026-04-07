@@ -16,6 +16,7 @@ import (
 // curl uses Schannel on Windows (different TLS stack than Go/Node.js).
 // If curl also times out, it's not a TLS fingerprinting issue.
 func TestCurlV2Chat(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -106,6 +107,7 @@ func TestCurlV2Chat(t *testing.T) {
 // TestCurlV2ChatNoSign uses curl to send v2/chat WITHOUT signing but with a valid conversationId.
 // This confirms the "hang" behavior is server-side (not client TLS).
 func TestCurlV2ChatNoSign(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

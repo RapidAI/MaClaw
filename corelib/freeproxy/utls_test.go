@@ -19,6 +19,7 @@ import (
 // TestUTLSChromeSign tests v2/chat using Chrome's TLS fingerprint via utls.
 // If the server does JA3/JA4 fingerprinting, this should bypass it.
 func TestUTLSChromeSign(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

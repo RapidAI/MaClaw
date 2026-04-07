@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
-import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus } from "./useAIAssistant";
+import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus, ChatConfirmation, ChatUnfinishedSlot } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage } from "./useAIAssistant";
 
 interface AIAssistantPanelStateProps {
@@ -18,6 +18,7 @@ interface AIAssistantPanelStateProps {
     trialReflectEnabled?: boolean;
     scrollToTopSeq?: number;
     onboardingIncomplete?: boolean;
+    showTraceEntry?: boolean;
 }
 
 interface AIAssistantPanelActionProps {
@@ -471,18 +472,41 @@ function renderContentWithCodeBlocks(content: string, t: Theme): React.ReactNode
 function renderFields(fields: Array<{ label: string; value: string }>, t: Theme): React.ReactNode {
     return (
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "4px 0" }}>
-            {fields.map((f, i) => (
-                <div key={`field-${i}`} data-testid="field-card" style={{
-                    background: t.fieldBg,
-                    border: `1px solid ${t.fieldBorder}`,
-                    borderRadius: "4px",
-                    padding: "4px 8px",
-                    fontSize: "12px",
-                }}>
-                    <span style={{ color: t.fieldLabel, marginRight: "6px" }}>{f.label}:</span>
-                    <span style={{ color: t.text }}>{f.value}</span>
-                </div>
-            ))}
+            {fields.map((f, i) => {
+                const isRecovery = f.label === "Recovery";
+                const recoveryTone = String(f.value || '').toLowerCase();
+                const recoveryStyle: React.CSSProperties = isRecovery
+                    ? {
+                        display: "inline-flex",
+                        alignItems: "center",
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontWeight: 700,
+                        background: recoveryTone.includes('failed')
+                            ? "rgba(220, 38, 38, 0.12)"
+                            : recoveryTone.includes('partial')
+                                ? "rgba(245, 158, 11, 0.16)"
+                                : "rgba(34, 197, 94, 0.14)",
+                        color: recoveryTone.includes('failed')
+                            ? "#b91c1c"
+                            : recoveryTone.includes('partial')
+                                ? "#b45309"
+                                : "#166534",
+                    }
+                    : { color: t.text };
+                return (
+                    <div key={`field-${i}`} data-testid="field-card" style={{
+                        background: t.fieldBg,
+                        border: `1px solid ${t.fieldBorder}`,
+                        borderRadius: "4px",
+                        padding: "4px 8px",
+                        fontSize: "12px",
+                    }}>
+                        <span style={{ color: t.fieldLabel, marginRight: "6px" }}>{f.label}:</span>
+                        <span data-testid={isRecovery ? 'recovery-badge' : undefined} style={recoveryStyle}>{f.value}</span>
+                    </div>
+                );
+            })}
         </div>
     );
 }
@@ -511,6 +535,111 @@ function renderActions(
                     {a.label}
                 </button>
             ))}
+        </div>
+    );
+}
+
+function renderConfirmationList(testId: string, title: string, items: string[], t: Theme): React.ReactNode {
+    if (items.length === 0) return null;
+    return (
+        <div data-testid={testId} style={{ marginTop: "8px" }}>
+            <div style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "4px" }}>{title}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                {items.map((item, index) => (
+                    <div key={`${testId}-${index}`} style={{ minHeight: "1.4em", color: t.text }}>
+                        <span style={{ color: t.bulletColor }}>•</span>{" "}
+                        {renderInlineMarkdown(item, t)}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function renderConfirmationCard(
+    confirmation: ChatConfirmation,
+    actions: ChatAction[] | undefined,
+    executeAction: (command: string) => void,
+    t: Theme,
+): React.ReactNode {
+    const targetPaths = confirmation.targetPaths || [];
+    const plannedActions = confirmation.plannedActions || [];
+    const riskFlags = confirmation.riskFlags || [];
+    const revisionHints = confirmation.revisionHints || [];
+    const taskType = confirmation.taskType?.trim() || '';
+    const status = confirmation.status?.trim() || '';
+    return (
+        <div
+            data-testid="confirmation-card"
+            style={{
+                marginTop: "8px",
+                padding: "10px 12px",
+                borderRadius: "8px",
+                border: `1px solid ${t.inputBarBorder}`,
+                background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(99,102,241,0.02))",
+            }}
+        >
+            <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
+                {taskType ? `执行前确认 · ${taskType}` : "执行前确认"}
+            </div>
+            {status && (
+                <div data-testid="confirmation-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
+                    状态：{status}
+                </div>
+            )}
+            <div data-testid="confirmation-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
+                {renderContentWithCodeBlocks(confirmation.summary, t)}
+            </div>
+            {renderConfirmationList("confirmation-target-paths", "目标目录", targetPaths, t)}
+            {renderConfirmationList("confirmation-planned-actions", "计划动作", plannedActions, t)}
+            {renderConfirmationList("confirmation-risk-flags", "风险提示", riskFlags, t)}
+            {renderConfirmationList("confirmation-revision-hints", "可补充/修正", revisionHints, t)}
+            {actions && actions.length > 0 && renderActions(actions, executeAction, t)}
+        </div>
+    );
+}
+
+function renderUnfinishedSlotCard(
+    slot: ChatUnfinishedSlot,
+    executeAction: (command: string) => void,
+    t: Theme,
+): React.ReactNode {
+    const actions = slot.actions || [];
+    return (
+        <div
+            data-testid="unfinished-slot-card"
+            style={{
+                marginTop: "8px",
+                padding: "10px 12px",
+                borderRadius: "8px",
+                border: `1px solid ${t.inputBarBorder}`,
+                background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.03))",
+            }}
+        >
+            <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
+                未完成任务
+            </div>
+            {slot.status && (
+                <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
+                    状态：{slot.status}
+                </div>
+            )}
+            {slot.title && (
+                <div data-testid="unfinished-slot-title" style={{ color: t.text, fontWeight: 600, marginBottom: "4px" }}>
+                    {slot.title}
+                </div>
+            )}
+            {slot.summary && (
+                <div data-testid="unfinished-slot-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
+                    {renderContentWithCodeBlocks(slot.summary, t)}
+                </div>
+            )}
+            {slot.projectPath && (
+                <div data-testid="unfinished-slot-project" style={{ color: t.pathColor, marginTop: "6px", wordBreak: "break-all" }}>
+                    📁 {slot.projectPath}
+                </div>
+            )}
+            {actions.length > 0 && renderActions(actions, executeAction, t)}
         </div>
     );
 }
@@ -563,6 +692,8 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                         </div>
                     )}
                     {renderContentWithCodeBlocks(msg.content, t)}
+                    {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t)}
+                    {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t)}
                     {msg.localFilePaths && msg.localFilePaths.length > 0 && (
                         <div style={{ margin: "4px 0" }}>
                             {msg.localFilePaths.map((fp, i) => (
@@ -578,7 +709,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                         </div>
                     )}
                     {msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
-                    {msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t)}
+                    {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t)}
                 </div>
             );
         case "progress":
@@ -647,12 +778,12 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         trialReflectEnabled = false,
         scrollToTopSeq,
         onboardingIncomplete,
+        showTraceEntry = false,
     } = state;
     const {
         browseFile,
         clearSelectedFile,
         sendMessage,
-        sendMessageInBackground,
         clearHistory,
         recordSubmittedPrompt,
         setDraftInputValue,
@@ -688,11 +819,14 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
 
     const title = lang === "en" ? "AI Assistant" : "AI 助手";
     const thinkingText = lang === "en" ? "Thinking..." : "正在思考...";
+    const processingText = lang === "en" ? "Executing tools and finishing task..." : "正在执行工具并完成任务...";
+    const idlePlaceholderText = lang === "en" ? "Type a message..." : "输入消息...";
     const savedFileLabel = lang === "en" ? "Saved file" : "文件已保存";
     const isBusy = sending;
     const inputLocked = isBusy || cancelPending;
     const showThinkingState = streaming;
-    const showBusySpinner = visualBusy ?? streaming;
+    const showProcessingState = isBusy && !streaming;
+    const showBusySpinner = isBusy;
 
     const initStatusLabels: Record<AIAssistantInitStatus, { en: string; zh: string }> = {
         connecting: { en: "Connecting to Hub...", zh: "正在连接 Hub..." },
@@ -705,11 +839,11 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
 
     const placeholderText = !ready
         ? initLabel
-        : showBusySpinner
-            ? (lang === "en" ? "Thinking..." : "正在思考...")
-            : inputLocked
-                ? (lang === "en" ? "Processing..." : "处理中...")
-                : (lang === "en" ? "Type a message..." : "输入消息...");
+        : showThinkingState
+            ? thinkingText
+            : showProcessingState
+                ? processingText
+                : idlePlaceholderText;
     const inputValue = localDraftInputValue;
     const updateInputValue = useCallback((nextValue: string) => {
         setLocalDraftInputValue(nextValue);
@@ -837,21 +971,6 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         userScrolledUpRef.current = false;
         await sendMessage(text);
     }, [inputValue, selectedFilePath, isBusy, recordSubmittedPrompt, sendMessage, updateInputValue]);
-
-    const handleSendBackground = useCallback(async () => {
-        const text = inputValue.trim();
-        if ((!text && !selectedFilePath.trim()) || isBusy || !sendMessageInBackground) return;
-        recordSubmittedPrompt?.(text);
-        setHistoryIndex(-1);
-        setDraftBeforeHistory(null);
-        setHistoryEdits({});
-        updateInputValue("");
-        if (inputRef.current) {
-            inputRef.current.style.height = "auto";
-        }
-        userScrolledUpRef.current = false;
-        await sendMessageInBackground(text);
-    }, [inputValue, selectedFilePath, isBusy, recordSubmittedPrompt, sendMessageInBackground, updateInputValue]);
 
     const applyInputValue = useCallback((nextValue: string) => {
         updateInputValue(nextValue);
@@ -1237,6 +1356,11 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         {thinkingText}
                     </div>
                 )}
+                {showProcessingState && (
+                    <div style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>
+                        {processingText}
+                    </div>
+                )}
                 <div ref={outputEndRef} />
             </div>
 
@@ -1298,7 +1422,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     <textarea
                         ref={inputRef}
                         data-testid="ai-input"
-                        disabled={!ready}
+                        disabled={!ready || inputLocked}
                         readOnly={inputLocked}
                         aria-readonly={inputLocked}
                         style={{
@@ -1309,7 +1433,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             resize: "none", overflow: "auto",
                             minHeight: "36px", maxHeight: "120px",
                             lineHeight: 1.4,
-                            opacity: ready ? 1 : 0.5,
+                            opacity: (!ready || inputLocked) ? 0.5 : 1,
                             cursor: inputLocked ? "default" : "text",
                         }}
                         rows={1}
@@ -1345,10 +1469,6 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             }
                             if (e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
-                                if ((e.ctrlKey || e.metaKey) && sendMessageInBackground) {
-                                    handleSendBackground();
-                                    return;
-                                }
                                 handleSend();
                             }
                         }}
@@ -1422,42 +1542,22 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             </span>
                         </button>
                     ) : (
-                        <>
-                            {sendMessageInBackground && (
-                                <button
-                                    type="button"
-                                    onClick={handleSendBackground}
-                                    disabled={!canSend}
-                                    data-testid="ai-send-background"
-                                    style={{
-                                        ...baseInputBtnStyle,
-                                        color: t.promptColor,
-                                        borderColor: t.promptColor,
-                                        opacity: canSend ? 1 : 0.5,
-                                        marginBottom: "4px",
-                                    }}
-                                    title={lang === "en" ? "Run in background" : "后台运行"}
-                                >
-                                    {lang === "en" ? "BG" : "后台"}
-                                </button>
-                            )}
-                            <button
-                                type="button"
-                                onClick={handleSend}
-                                disabled={!canSend}
-                                style={{
-                                    ...baseInputBtnStyle,
-                                    ...(inline
-                                        ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
-                                        : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
-                                    opacity: canSend ? 1 : 0.5,
-                                    marginBottom: "4px",
-                                }}
-                                title={lang === "en" ? "Send" : "发送"}
-                            >
-                                {isBusy ? "…" : "⏎"}
-                            </button>
-                        </>
+                        <button
+                            type="button"
+                            onClick={handleSend}
+                            disabled={!canSend}
+                            style={{
+                                ...baseInputBtnStyle,
+                                ...(inline
+                                    ? { color: t.sendBtnColor, borderColor: t.sendBtnBorder }
+                                    : { color: t.sendBtnColor, background: t.sendBtnBorder, borderColor: t.sendBtnBorder, borderRadius: "6px" }),
+                                opacity: canSend ? 1 : 0.5,
+                                marginBottom: "4px",
+                            }}
+                            title={lang === "en" ? "Send" : "发送"}
+                        >
+                            {isBusy ? "…" : "⏎"}
+                        </button>
                     )}
                 </div>
             </div>

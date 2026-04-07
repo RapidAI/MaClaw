@@ -16,6 +16,7 @@ import (
 )
 
 func TestWasmSignerInit(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -53,6 +54,7 @@ func TestWasmSignerInit(t *testing.T) {
 
 // TestWasmSignE2E tests the full signing + v2/chat flow with multiple URL variants.
 func TestWasmSignE2E(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -148,6 +150,7 @@ func TestWasmSignE2E(t *testing.T) {
 
 // TestWasmSignRawDebug does a raw HTTP request with WASM signing and verbose connection debug.
 func TestWasmSignRawDebug(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -259,6 +262,7 @@ func TestWasmSignRawDebug(t *testing.T) {
 
 // TestWasmSignTCPDebug does a raw TCP-level request to see exactly what the server sends back.
 func TestWasmSignTCPDebug(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -401,6 +405,7 @@ func min(a, b int) int {
 
 // TestV2ChatWithV1MD5 tests v2/chat with v1 MD5 signing to confirm the endpoint behavior.
 func TestV2ChatWithV1MD5(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -483,6 +488,7 @@ func TestV2ChatWithV1MD5(t *testing.T) {
 // TestFindSignInterceptor downloads the _app JS bundle and searches for the axios/fetch
 // interceptor that adds sign/nonce/timestamp headers.
 func TestFindSignInterceptor(t *testing.T) {
+	requireIntegrationTest(t)
 	resp, err := http.Get("https://ai.dangbei.com/_next/static/chunks/pages/_app-3da91045335ded21.js")
 	if err != nil {
 		t.Fatal(err)
@@ -570,6 +576,7 @@ func containsAny(s string, substrs ...string) bool {
 
 // TestExtractFullInterceptor extracts the complete request interceptor code.
 func TestExtractFullInterceptor(t *testing.T) {
+	requireIntegrationTest(t)
 	resp, err := http.Get("https://ai.dangbei.com/_next/static/chunks/pages/_app-3da91045335ded21.js")
 	if err != nil {
 		t.Fatal(err)
@@ -594,6 +601,7 @@ func TestExtractFullInterceptor(t *testing.T) {
 
 // TestExtractBodyFunction extracts the O(e,t) function that gets the body string for signing.
 func TestExtractBodyFunction(t *testing.T) {
+	requireIntegrationTest(t)
 	resp, err := http.Get("https://ai.dangbei.com/_next/static/chunks/pages/_app-3da91045335ded21.js")
 	if err != nil {
 		t.Fatal(err)
@@ -619,6 +627,7 @@ func TestExtractBodyFunction(t *testing.T) {
 
 // TestV2ChatHTTP1Only tests v2/chat forcing HTTP/1.1 only (no HTTP/2).
 func TestV2ChatHTTP1Only(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -677,6 +686,7 @@ func TestV2ChatHTTP1Only(t *testing.T) {
 
 // TestV2ChatRawTLS does a raw TLS+HTTP/1.1 request to v2/chat to debug the connection.
 func TestV2ChatRawTLS(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -734,6 +744,7 @@ func TestV2ChatRawTLS(t *testing.T) {
 
 // TestV2ChatRawTLSWithSign does a raw TLS request with WASM signing.
 func TestV2ChatRawTLSWithSign(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

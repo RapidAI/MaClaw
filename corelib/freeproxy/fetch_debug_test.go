@@ -9,6 +9,7 @@ import (
 )
 
 func TestFetchDebug(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

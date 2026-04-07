@@ -71,6 +71,97 @@ func TestTrialReflectObserveIteration_ClearsFailureAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestBuildTrialFailureRecoverPrompt(t *testing.T) {
+	prompt := buildTrialFailureRecoverPrompt("bash=failed（error: timeout）", []string{"bash", "craft_tool"})
+	if !contains(prompt, "[Recover 阶段]") {
+		t.Fatalf("expected recover wrapper, got %q", prompt)
+	}
+	if !contains(prompt, "失败观察: bash=failed（error: timeout）") {
+		t.Fatalf("expected failure observation, got %q", prompt)
+	}
+	if !contains(prompt, "避免重复: bash, craft_tool") {
+		t.Fatalf("expected repeated failure list, got %q", prompt)
+	}
+}
+
+func TestBuildNoToolActionPrompt(t *testing.T) {
+	prompt := buildNoToolActionPrompt(true, "hf_daily_papers_report")
+	if !contains(prompt, `run_skill(name="hf_daily_papers_report")`) {
+		t.Fatalf("expected preferred skill action guidance, got %q", prompt)
+	}
+
+	fallbackPrompt := buildNoToolActionPrompt(false, "")
+	if !contains(fallbackPrompt, "请立即选择一个最合适的真实工具开始执行") {
+		t.Fatalf("expected generic action guidance, got %q", fallbackPrompt)
+	}
+}
+
+func TestBuildNoToolStallRecoverPrompt(t *testing.T) {
+	prompt := buildNoToolStallRecoverPrompt(2, true, "hf_daily_papers_report")
+	if !contains(prompt, "连续 2 轮都没有真正调用工具") {
+		t.Fatalf("expected stall count, got %q", prompt)
+	}
+	if !contains(prompt, `run_skill(name="hf_daily_papers_report")`) {
+		t.Fatalf("expected preferred skill guidance, got %q", prompt)
+	}
+
+	fallbackPrompt := buildNoToolStallRecoverPrompt(3, false, "")
+	if !contains(fallbackPrompt, "连续 3 轮都没有真正调用工具") {
+		t.Fatalf("expected fallback stall count, got %q", fallbackPrompt)
+	}
+	if !contains(fallbackPrompt, "请立即选择一个最合适的真实工具开始执行") {
+		t.Fatalf("expected generic execution guidance, got %q", fallbackPrompt)
+	}
+}
+
+func TestLooksLikePDFRelatedWork(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"生成 PDF 综述并发送给我", true},
+		{"use pandoc to convert markdown to pdf", true},
+		{"reportlab script for markdown to pdf", true},
+		{"run npm test", false},
+		{"plain shell command", false},
+	}
+	for _, tc := range cases {
+		if got := looksLikePDFRelatedWork(tc.input); got != tc.want {
+			t.Fatalf("looksLikePDFRelatedWork(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestResolveBashTimeout_PrefersPDFDefaultOnlyWhenNoExplicitTimeout(t *testing.T) {
+	if got := resolveBashTimeout(map[string]interface{}{}, "python render_pdf.py --input review.md"); got != bashPDFTimeout {
+		t.Fatalf("resolveBashTimeout(pdf) = %d, want %d", got, bashPDFTimeout)
+	}
+	if got := resolveBashTimeout(map[string]interface{}{}, "npm test"); got != bashDefaultTimeout {
+		t.Fatalf("resolveBashTimeout(non-pdf) = %d, want %d", got, bashDefaultTimeout)
+	}
+	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(45)}, "python render_pdf.py --input review.md"); got != 45 {
+		t.Fatalf("resolveBashTimeout(explicit) = %d, want 45", got)
+	}
+	if got := resolveBashTimeout(map[string]interface{}{"timeout": float64(999)}, "python render_pdf.py --input review.md"); got != bashMaxTimeout {
+		t.Fatalf("resolveBashTimeout(clamped) = %d, want %d", got, bashMaxTimeout)
+	}
+}
+
+func TestResolveCraftToolTimeout_PrefersPDFDefaultOnlyWhenNoExplicitTimeout(t *testing.T) {
+	if got := resolveCraftToolTimeout(map[string]interface{}{}, "生成 PDF 综述文章并发给我"); got != craftToolPDFTimeout {
+		t.Fatalf("resolveCraftToolTimeout(pdf) = %d, want %d", got, craftToolPDFTimeout)
+	}
+	if got := resolveCraftToolTimeout(map[string]interface{}{}, "抓取网页并保存为文本"); got != craftToolDefaultTimeout {
+		t.Fatalf("resolveCraftToolTimeout(non-pdf) = %d, want %d", got, craftToolDefaultTimeout)
+	}
+	if got := resolveCraftToolTimeout(map[string]interface{}{"timeout": float64(90)}, "生成 PDF 综述文章并发给我"); got != 90 {
+		t.Fatalf("resolveCraftToolTimeout(explicit) = %d, want 90", got)
+	}
+	if got := resolveCraftToolTimeout(map[string]interface{}{"timeout": float64(999)}, "生成 PDF 综述文章并发给我"); got != craftToolMaxTimeout {
+		t.Fatalf("resolveCraftToolTimeout(clamped) = %d, want %d", got, craftToolMaxTimeout)
+	}
+}
+
 func TestToolGeneratePDFValidation_RejectsOversizedContent(t *testing.T) {
 	if err := swarm.ValidatePDFContent(strings.Repeat("a", 181*1024)); err == nil || !strings.Contains(err.Error(), "PDF 内容过长") {
 		t.Fatalf("expected oversized content error, got %v", err)
@@ -242,7 +333,8 @@ func TestToolsCacheTTL_Value(t *testing.T) {
 // auto-recommends a tool when the tool parameter is empty and contextResolver is set.
 func TestToolCreateSession_SmartToolRecommendation(t *testing.T) {
 	handler := &IMMessageHandler{
-		app: &App{},
+		app:          &App{},
+		lastUserText: "请修改代码并创建会话",
 	}
 
 	// Without contextResolver, empty tool should return error.
@@ -266,6 +358,30 @@ func TestToolCreateSession_WithToolProvided(t *testing.T) {
 	// Should attempt to create session (will fail because app is minimal).
 	if result == "缺少 tool 参数" || result == "缺少 tool 参数，且无法自动推荐工具" {
 		t.Errorf("should not report missing tool when tool is provided, got: %s", result)
+	}
+}
+
+func TestToolCreateSession_SSHIntentBlocked(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}, lastUserText: "ssh 到 10.0.0.8 看 nginx 日志"}
+	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
+	if !contains(result, "SSH/服务器操作任务") || !contains(result, "ssh 工具") {
+		t.Fatalf("expected ssh redirect hint, got: %s", result)
+	}
+}
+
+func TestToolCreateSession_NonCodingIntentBlocked(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}, lastUserText: "帮我翻译这篇论文"}
+	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
+	if !contains(result, "不是编程任务") || !contains(result, "read_file / write_file / edit_file") {
+		t.Fatalf("expected non-coding guard hint, got: %s", result)
+	}
+}
+
+func TestToolCreateSession_AmbiguousIntentBlocked(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}, lastUserText: "帮我处理一下线上问题"}
+	result := handler.toolCreateSession(map[string]interface{}{"tool": "claude"})
+	if !contains(result, "不能确定") || !contains(result, "不要创建编程会话") {
+		t.Fatalf("expected ambiguous guard hint, got: %s", result)
 	}
 }
 
@@ -492,14 +608,26 @@ func TestShouldAutoClearIncompleteTaskContext_RequiresExplicitResume(t *testing.
 		{Role: "assistant", Content: "(已达到最大推理轮次，请继续发送消息以完成任务)"},
 	}
 
-	if !shouldAutoClearIncompleteTaskContext("现在最新的还是不能做完任务，会提前中止", entries) {
-		t.Fatal("expected unrelated follow-up message to clear incomplete task context")
+	if !shouldAutoClearIncompleteTaskContext("现在帮我把桌面上的 AI 编程评测报告放入知识库", entries) {
+		t.Fatal("expected fresh task request to clear incomplete task context")
 	}
 	if shouldAutoClearIncompleteTaskContext("继续", entries) {
 		t.Fatal("expected explicit resume message to keep incomplete task context")
 	}
 	if shouldAutoClearIncompleteTaskContext("继续做完上次的 pdf", entries) {
 		t.Fatal("expected explicit resume request to keep incomplete task context")
+	}
+}
+
+func TestLooksLikeFreshTaskRequest(t *testing.T) {
+	if !looksLikeFreshTaskRequest("现在帮我把桌面上的 AI 编程评测报告放入知识库") {
+		t.Fatal("expected fresh task request to be detected")
+	}
+	if looksLikeFreshTaskRequest("继续做完上次的 pdf") {
+		t.Fatal("expected explicit resume request to not be treated as fresh task")
+	}
+	if looksLikeFreshTaskRequest("好的") {
+		t.Fatal("expected short acknowledgement to not be treated as fresh task")
 	}
 }
 
@@ -626,7 +754,7 @@ func TestBuildToolDefinitions_CreateSessionHasProviderParam(t *testing.T) {
 // TestToolCreateSession_NoProviderBehaviorUnchanged verifies that not passing
 // provider keeps the original behavior (tool param required, no provider passed).
 func TestToolCreateSession_NoProviderBehaviorUnchanged(t *testing.T) {
-	handler := &IMMessageHandler{app: &App{}}
+	handler := &IMMessageHandler{app: &App{}, lastUserText: "请修改代码并创建会话"}
 
 	// Without tool param, should return missing tool error.
 	result := handler.toolCreateSession(map[string]interface{}{})
@@ -652,7 +780,7 @@ func TestToolCreateSession_NoProviderBehaviorUnchanged(t *testing.T) {
 // parameter is extracted and resolved via ProviderResolver. When the specified
 // provider doesn't exist, the resolver returns an error before reaching session creation.
 func TestToolCreateSession_WithProviderPassedThrough(t *testing.T) {
-	handler := &IMMessageHandler{app: &App{}}
+	handler := &IMMessageHandler{app: &App{}, lastUserText: "请修改代码并创建会话"}
 
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":     "claude",
@@ -664,8 +792,40 @@ func TestToolCreateSession_WithProviderPassedThrough(t *testing.T) {
 	}
 }
 
+// TestBuildToolDefinitions_CreateSessionHasResumeSessionIDParam verifies that the
+// create_session tool definition includes the resume_session_id parameter.
+func TestBuildToolDefinitions_CreateSessionHasResumeSessionIDParam(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := handler.buildToolDefinitions()
+
+	var createSessionDef map[string]interface{}
+	for _, tool := range tools {
+		name := extractToolName(tool)
+		if name == "create_session" {
+			createSessionDef = tool
+			break
+		}
+	}
+	if createSessionDef == nil {
+		t.Fatal("create_session tool not found in buildToolDefinitions")
+	}
+
+	fn, _ := createSessionDef["function"].(map[string]interface{})
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if _, ok := props["resume_session_id"]; !ok {
+		t.Error("create_session tool definition missing 'resume_session_id' parameter")
+	}
+	required, _ := params["required"].([]string)
+	for _, r := range required {
+		if r == "resume_session_id" {
+			t.Error("resume_session_id should not be in required list")
+		}
+	}
+}
+
 // TestToolCreateSession_ProviderDescriptionInToolDef verifies the create_session
-// description mentions provider selection.
+// description mentions provider selection and resume support.
 func TestToolCreateSession_ProviderDescriptionInToolDef(t *testing.T) {
 	handler := &IMMessageHandler{app: &App{}}
 	tools := handler.buildToolDefinitions()
@@ -678,8 +838,34 @@ func TestToolCreateSession_ProviderDescriptionInToolDef(t *testing.T) {
 			if !contains(desc, "provider") {
 				t.Errorf("create_session description should mention provider, got: %s", desc)
 			}
+			if !contains(desc, "resume_session_id") && !contains(desc, "恢复") {
+				t.Errorf("create_session description should mention resume support, got: %s", desc)
+			}
+			if !contains(desc, "ssh") {
+				t.Errorf("create_session description should redirect ssh/server tasks, got: %s", desc)
+			}
 			return
 		}
+	}
+	t.Fatal("create_session tool not found")
+}
+
+func TestBuildToolDefinitions_CreateSessionDescriptionMentionsSSH(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := handler.buildToolDefinitions()
+	for _, tool := range tools {
+		if extractToolName(tool) != "create_session" {
+			continue
+		}
+		fn, _ := tool["function"].(map[string]interface{})
+		desc, _ := fn["description"].(string)
+		if !contains(desc, "SSH") && !contains(desc, "ssh") {
+			t.Fatalf("expected create_session description to mention ssh redirect, got: %s", desc)
+		}
+		if !contains(desc, "resume_session_id") && !contains(desc, "恢复") {
+			t.Fatalf("expected create_session description to mention resume support, got: %s", desc)
+		}
+		return
 	}
 	t.Fatal("create_session tool not found")
 }
@@ -721,6 +907,28 @@ func TestBuildToolDefinitions_IncludesListProviders(t *testing.T) {
 	if !found {
 		t.Fatal("list_providers tool not found in buildToolDefinitions")
 	}
+}
+
+func TestBuildToolDefinitions_IncludesSSH(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := handler.buildToolDefinitions()
+	for _, tool := range tools {
+		if extractToolName(tool) != "ssh" {
+			continue
+		}
+		fn, _ := tool["function"].(map[string]interface{})
+		desc, _ := fn["description"].(string)
+		if !contains(desc, "服务器") || !contains(desc, "exec_background") {
+			t.Fatalf("unexpected ssh description: %s", desc)
+		}
+		params, _ := fn["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		if _, ok := props["action"]; !ok {
+			t.Fatal("ssh tool missing action parameter")
+		}
+		return
+	}
+	t.Fatal("ssh tool not found in buildToolDefinitions")
 }
 
 // TestExecuteTool_ListProvidersRouting verifies that executeTool routes
@@ -944,9 +1152,7 @@ func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app}
-
-	// No provider specified — should use default (Original).
+	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
 	// Will fail at StartRemoteSessionForProject (remote not enabled), but
 	// should NOT fail at provider resolution.
 	result := handler.toolCreateSession(map[string]interface{}{
@@ -991,8 +1197,7 @@ func TestToolCreateSession_DefaultUnavailableFallbackHint(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app}
-
+	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool": "claude",
 	})
@@ -1045,9 +1250,7 @@ func TestToolCreateSession_UserSpecifiedProviderUsed(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app}
-
-	// Specify DeepSeek explicitly — should use it directly.
+	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":     "claude",
 		"provider": "DeepSeek",
@@ -1118,7 +1321,7 @@ func TestToolCreateSession_ProjectIDResolvesSuccessfully(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app}
+	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":       "claude",
 		"project_id": "proj-1",
@@ -1151,7 +1354,7 @@ func TestToolCreateSession_ProjectIDNotFound(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app}
+	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":       "claude",
 		"project_id": "nonexistent-id",
@@ -1190,7 +1393,7 @@ func TestToolCreateSession_ProjectIDPriorityOverProjectPath(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app}
+	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
 	// Provide both project_id and project_path — project_id should win.
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":         "claude",
@@ -1288,6 +1491,23 @@ func TestBuildToolDefinitions_IncludesProjectManage(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("project_manage tool not found in buildToolDefinitions")
+	}
+}
+
+func TestBuildToolDefinitions_IncludesEditFile(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := handler.buildToolDefinitions()
+
+	var found bool
+	for _, tool := range tools {
+		name := extractToolName(tool)
+		if name == "edit_file" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("edit_file tool not found in buildToolDefinitions")
 	}
 }
 

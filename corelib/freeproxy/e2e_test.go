@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -18,9 +17,8 @@ import (
 // TestDiagnoseCookieDecryption reads the actual cookie DB from the maclaw
 // browser profile and diagnoses decryption issues.
 func TestDiagnoseCookieDecryption(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows-only test")
-	}
+	requireIntegrationTest(t)
+	requireWindows(t)
 
 	profileDir := maclawUserDataDir()
 	t.Logf("Profile dir: %s", profileDir)
@@ -122,6 +120,7 @@ func truncStr(s string, n int) string {
 // TestE2EDangbeiAPI reads the persisted cookie and makes a real API call
 // to 当贝 AI to verify the full chain works.
 func TestE2EDangbeiAPI(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 

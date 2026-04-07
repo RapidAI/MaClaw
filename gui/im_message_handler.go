@@ -57,59 +57,60 @@ type IMUserMessage struct {
 
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
-	Text                                string                  `json:"text"`
-	Fields                              []IMResponseField       `json:"fields,omitempty"`
-	Actions                             []IMResponseAction      `json:"actions,omitempty"`
-	Confirmation                        *IMResponseConfirmation `json:"confirmation,omitempty"`
-	ImageKey                            string                  `json:"image_key,omitempty"`
-	FileData                            string                  `json:"file_data,omitempty"`
-	FileName                            string                  `json:"file_name,omitempty"`
-	FileMimeType                        string                  `json:"file_mime_type,omitempty"`
-	LocalFilePath                       string                  `json:"local_file_path,omitempty"`
-	LocalFilePaths                      []string                `json:"local_file_paths,omitempty"`
-	ThumbnailBase64                     string                  `json:"thumbnail_base64,omitempty"`
-	Error                               string                  `json:"error,omitempty"`
-	Deferred                            bool                    `json:"deferred,omitempty"`
-	JobID                               string                  `json:"job_id,omitempty"`
-	RunID                               string                  `json:"run_id,omitempty"`
-	RequestID                           string                  `json:"request_id,omitempty"`
-	TraceSummary                        string                  `json:"trace_summary,omitempty"`
-	TraceEventCount                     int                     `json:"trace_event_count,omitempty"`
-	EvidenceCount                       int                     `json:"evidence_count,omitempty"`
-	TrialReflectSummary                 string                  `json:"trial_reflect_summary,omitempty"`
-	TrialReflectStatus                  string                  `json:"trial_reflect_status,omitempty"`
-	TrialReflectFailures                int                     `json:"trial_reflect_failures,omitempty"`
-	InputTokens                         int                     `json:"input_tokens,omitempty"`
-	OutputTokens                        int                     `json:"output_tokens,omitempty"`
-	TotalTokens                         int                     `json:"total_tokens,omitempty"`
-	HandlerTailNanos                    int64                   `json:"-"`
-	HandlerBlackholeAfterUsageNanos     int64                   `json:"-"`
-	HandlerBlackholeBeforeReturnNanos   int64                   `json:"-"`
-	HandlerPostStreamUsageNanos         int64                   `json:"-"`
-	HandlerPostStreamResponseNanos      int64                   `json:"-"`
-	HandlerPostStreamToolExecNanos      int64                   `json:"-"`
-	HandlerPostStreamChoiceNanos        int64                   `json:"-"`
-	HandlerPostStreamAssistantMsgNanos  int64                   `json:"-"`
-	HandlerPostStreamHistoryAppendNanos int64                   `json:"-"`
-	HandlerPostStreamNoToolBranchNanos  int64                   `json:"-"`
-	FinalizeTraceNanos                  int64                   `json:"-"`
-	MemorySaveNanos                     int64                   `json:"-"`
-	CapabilityGapNanos                  int64                   `json:"-"`
-	FileMaterializeNanos                int64                   `json:"-"`
-	PreLLMPrepNanos                     int64                   `json:"-"`
-	PreLLMConfigNanos                   int64                   `json:"-"`
-	PreLLMToolsNanos                    int64                   `json:"-"`
-	PreLLMConversationNanos             int64                   `json:"-"`
-	PreLLMIterationPrepNanos            int64                   `json:"-"`
-	FirstTokenWaitNanos                 int64                   `json:"-"`
-	LLMRequestBuildNanos                int64                   `json:"-"`
-	LLMHTTPDoNanos                      int64                   `json:"-"`
-	LLMFirstSSEWaitNanos                int64                   `json:"-"`
-	LLMRetryWaitNanos                   int64                   `json:"-"`
-	LLMStreamMaxTokenGapNanos           int64                   `json:"-"`
-	LLMRetryCount                       int                     `json:"-"`
-	LLMIdleTimeoutCount                 int                     `json:"-"`
-	LLMIdleTimeoutAfterToken            bool                    `json:"-"`
+	Text                                string                    `json:"text"`
+	Fields                              []IMResponseField         `json:"fields,omitempty"`
+	Actions                             []IMResponseAction        `json:"actions,omitempty"`
+	Confirmation                        *IMResponseConfirmation   `json:"confirmation,omitempty"`
+	UnfinishedSlot                      *IMResponseUnfinishedSlot `json:"unfinished_slot,omitempty"`
+	ImageKey                            string                    `json:"image_key,omitempty"`
+	FileData                            string                    `json:"file_data,omitempty"`
+	FileName                            string                    `json:"file_name,omitempty"`
+	FileMimeType                        string                    `json:"file_mime_type,omitempty"`
+	LocalFilePath                       string                    `json:"local_file_path,omitempty"`
+	LocalFilePaths                      []string                  `json:"local_file_paths,omitempty"`
+	ThumbnailBase64                     string                    `json:"thumbnail_base64,omitempty"`
+	Error                               string                    `json:"error,omitempty"`
+	Deferred                            bool                      `json:"deferred,omitempty"`
+	JobID                               string                    `json:"job_id,omitempty"`
+	RunID                               string                    `json:"run_id,omitempty"`
+	RequestID                           string                    `json:"request_id,omitempty"`
+	TraceSummary                        string                    `json:"trace_summary,omitempty"`
+	TraceEventCount                     int                       `json:"trace_event_count,omitempty"`
+	EvidenceCount                       int                       `json:"evidence_count,omitempty"`
+	TrialReflectSummary                 string                    `json:"trial_reflect_summary,omitempty"`
+	TrialReflectStatus                  string                    `json:"trial_reflect_status,omitempty"`
+	TrialReflectFailures                int                       `json:"trial_reflect_failures,omitempty"`
+	InputTokens                         int                       `json:"input_tokens,omitempty"`
+	OutputTokens                        int                       `json:"output_tokens,omitempty"`
+	TotalTokens                         int                       `json:"total_tokens,omitempty"`
+	HandlerTailNanos                    int64                     `json:"-"`
+	HandlerBlackholeAfterUsageNanos     int64                     `json:"-"`
+	HandlerBlackholeBeforeReturnNanos   int64                     `json:"-"`
+	HandlerPostStreamUsageNanos         int64                     `json:"-"`
+	HandlerPostStreamResponseNanos      int64                     `json:"-"`
+	HandlerPostStreamToolExecNanos      int64                     `json:"-"`
+	HandlerPostStreamChoiceNanos        int64                     `json:"-"`
+	HandlerPostStreamAssistantMsgNanos  int64                     `json:"-"`
+	HandlerPostStreamHistoryAppendNanos int64                     `json:"-"`
+	HandlerPostStreamNoToolBranchNanos  int64                     `json:"-"`
+	FinalizeTraceNanos                  int64                     `json:"-"`
+	MemorySaveNanos                     int64                     `json:"-"`
+	CapabilityGapNanos                  int64                     `json:"-"`
+	FileMaterializeNanos                int64                     `json:"-"`
+	PreLLMPrepNanos                     int64                     `json:"-"`
+	PreLLMConfigNanos                   int64                     `json:"-"`
+	PreLLMToolsNanos                    int64                     `json:"-"`
+	PreLLMConversationNanos             int64                     `json:"-"`
+	PreLLMIterationPrepNanos            int64                     `json:"-"`
+	FirstTokenWaitNanos                 int64                     `json:"-"`
+	LLMRequestBuildNanos                int64                     `json:"-"`
+	LLMHTTPDoNanos                      int64                     `json:"-"`
+	LLMFirstSSEWaitNanos                int64                     `json:"-"`
+	LLMRetryWaitNanos                   int64                     `json:"-"`
+	LLMStreamMaxTokenGapNanos           int64                     `json:"-"`
+	LLMRetryCount                       int                       `json:"-"`
+	LLMIdleTimeoutCount                 int                       `json:"-"`
+	LLMIdleTimeoutAfterToken            bool                      `json:"-"`
 }
 
 const stalledNoToolRecoverThreshold = 2
@@ -876,6 +877,29 @@ type IMResponseConfirmation struct {
 	RiskFlags      []string `json:"risk_flags,omitempty"`
 	RevisionHints  []string `json:"revision_hints,omitempty"`
 	Status         string   `json:"status,omitempty"`
+}
+
+type IMResponseUnfinishedSlot struct {
+	SlotID      string             `json:"slot_id,omitempty"`
+	Title       string             `json:"title,omitempty"`
+	Summary     string             `json:"summary,omitempty"`
+	ProjectPath string             `json:"project_path,omitempty"`
+	Status      string             `json:"status,omitempty"`
+	Actions     []IMResponseAction `json:"actions,omitempty"`
+}
+
+func buildUnfinishedSlotPayload(slot *unfinishedTaskSlot) *IMResponseUnfinishedSlot {
+	if slot == nil {
+		return nil
+	}
+	return &IMResponseUnfinishedSlot{
+		SlotID:      slot.SlotID,
+		Title:       strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary)),
+		Summary:     strings.TrimSpace(slot.Summary),
+		ProjectPath: strings.TrimSpace(slot.ProjectPath),
+		Status:      strings.TrimSpace(slot.Status),
+		Actions:     buildResumeSlotActions(slot),
+	}
 }
 
 func tokenUsageResponseFields(input, output int) []IMResponseField {
@@ -2337,10 +2361,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 	if unfinishedSlot != nil && !msg.IsBackground && !isSlotActionCommand(trimmed) && !decision.StartNewTask && decision.ResumeSlotID == "" {
 		if hint := buildUnfinishedSlotHint(unfinishedSlot); hint != "" {
-			responseActions := buildResumeSlotActions(unfinishedSlot)
-			resp := &IMAgentResponse{Text: hint}
-			if len(responseActions) > 0 {
-				resp.Actions = responseActions
+			resp := &IMAgentResponse{
+				Text:           hint,
+				UnfinishedSlot: buildUnfinishedSlotPayload(unfinishedSlot),
+			}
+			if resp.UnfinishedSlot != nil && len(resp.UnfinishedSlot.Actions) > 0 {
+				resp.Actions = resp.UnfinishedSlot.Actions
 			}
 			return resp
 		}

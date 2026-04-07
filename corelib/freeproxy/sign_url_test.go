@@ -12,6 +12,7 @@ import (
 
 // TestSignWithDifferentURLs tries signing with different URL formats to find the correct one.
 func TestSignWithDifferentURLs(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

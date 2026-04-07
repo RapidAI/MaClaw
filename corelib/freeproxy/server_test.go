@@ -2,35 +2,17 @@ package freeproxy
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"testing"
-	"time"
 )
 
 // TestServerHealthAndModels starts the proxy server and verifies /health and /v1/models.
 func TestServerHealthAndModels(t *testing.T) {
-	dir := t.TempDir()
-	srv := NewServer(":0", dir) // :0 = random available port
-
-	ctx, cancel := context.WithCancel(context.Background())
+	srv, cancel := startTestServer(t)
 	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Start(ctx) }()
-
-	// Wait for server to start
-	time.Sleep(300 * time.Millisecond)
-
-	// Check if server failed to start
-	select {
-	case err := <-errCh:
-		t.Fatalf("server exited early: %v", err)
-	default:
-	}
 
 	addr := srv.listener.Addr().String()
 	base := "http://" + addr
@@ -78,28 +60,13 @@ func TestServerHealthAndModels(t *testing.T) {
 			t.Errorf("first model id = %q, want %q", id, "free-proxy")
 		}
 	}
-
-	cancel()
 }
 
 // TestServerCompletionNoAuth verifies that /v1/chat/completions returns 401
 // when no cookie is set (not logged in).
 func TestServerCompletionNoAuth(t *testing.T) {
-	dir := t.TempDir()
-	srv := NewServer(":0", dir)
-
-	ctx, cancel := context.WithCancel(context.Background())
+	srv, cancel := startTestServer(t)
 	defer cancel()
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Start(ctx) }()
-	time.Sleep(300 * time.Millisecond)
-
-	select {
-	case err := <-errCh:
-		t.Fatalf("server exited early: %v", err)
-	default:
-	}
 
 	addr := srv.listener.Addr().String()
 	base := "http://" + addr
@@ -128,20 +95,12 @@ func TestServerCompletionNoAuth(t *testing.T) {
 	if errResp.Error.Message == "" {
 		t.Error("expected error message in response")
 	}
-
-	cancel()
 }
 
 // TestServerCompletionMethodNotAllowed verifies GET is rejected.
 func TestServerCompletionMethodNotAllowed(t *testing.T) {
-	dir := t.TempDir()
-	srv := NewServer(":0", dir)
-
-	ctx, cancel := context.WithCancel(context.Background())
+	srv, cancel := startTestServer(t)
 	defer cancel()
-
-	go srv.Start(ctx)
-	time.Sleep(300 * time.Millisecond)
 
 	addr := srv.listener.Addr().String()
 	resp, err := http.Get(fmt.Sprintf("http://%s/v1/chat/completions", addr))
@@ -153,6 +112,4 @@ func TestServerCompletionMethodNotAllowed(t *testing.T) {
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", resp.StatusCode)
 	}
-
-	cancel()
 }

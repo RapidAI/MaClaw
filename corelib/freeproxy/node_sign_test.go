@@ -13,6 +13,7 @@ import (
 // TestNodeJSSign uses Node.js to sign and send a v2/chat request.
 // This verifies whether the WASM signing itself is correct when run natively.
 func TestNodeJSSign(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

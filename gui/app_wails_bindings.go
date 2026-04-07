@@ -599,8 +599,11 @@ func (a *App) GetAIAssistantTrace(runID string) (*AIAssistantTraceView, error) {
 }
 
 type AIAssistantSendRequest struct {
-	Text      string `json:"text"`
-	RequestID string `json:"request_id,omitempty"`
+	Text          string `json:"text"`
+	RequestID     string `json:"request_id,omitempty"`
+	ResumeSlotID  string `json:"resume_slot_id,omitempty"`
+	StartNewTask  bool   `json:"start_new_task,omitempty"`
+	DismissSlotID string `json:"dismiss_slot_id,omitempty"`
 }
 
 type AIAssistantBackgroundTaskRequest struct {
@@ -637,11 +640,32 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	var capabilityGapElapsed time.Duration
 	var fileMaterializeElapsed time.Duration
 	var preLLMPrepElapsed time.Duration
+	var preLLMConfigElapsed time.Duration
+	var preLLMToolsElapsed time.Duration
+	var preLLMConversationElapsed time.Duration
+	var preLLMIterationPrepElapsed time.Duration
 	var firstTokenWaitElapsed time.Duration
+	var llmRequestBuildElapsed time.Duration
+	var llmHTTPDoElapsed time.Duration
+	var llmFirstSSEWaitElapsed time.Duration
+	var llmRetryWaitElapsed time.Duration
+	var llmStreamMaxTokenGapElapsed time.Duration
+	var llmRetryCount int
+	var llmIdleTimeoutCount int
+	var llmIdleTimeoutAfterToken bool
 	var firstTokenElapsed time.Duration
 	var streamVisibleElapsed time.Duration
 	var streamTailElapsed time.Duration
 	var handlerTailElapsed time.Duration
+	var handlerBlackholeAfterUsageElapsed time.Duration
+	var handlerBlackholeBeforeReturnElapsed time.Duration
+	var handlerPostStreamUsageElapsed time.Duration
+	var handlerPostStreamResponseElapsed time.Duration
+	var handlerPostStreamToolExecElapsed time.Duration
+	var handlerPostStreamChoiceElapsed time.Duration
+	var handlerPostStreamAssistantMsgElapsed time.Duration
+	var handlerPostStreamHistoryAppendElapsed time.Duration
+	var handlerPostStreamNoToolBranchElapsed time.Duration
 	var firstTokenAt time.Time
 	var streamDoneAt time.Time
 	defer func() {
@@ -656,7 +680,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		if postResponseElapsed < 0 {
 			postResponseElapsed = 0
 		}
-		log.Printf("[AI assistant] first desktop chat after ready: since_ready=%v total=%v ensure_interaction_infra=%v ensure_im_handler=%v agent_loop=%v first_token=%v pre_llm_prep=%v first_token_wait=%v stream_visible=%v stream_tail=%v handler_tail=%v memory_save=%v capability_gap=%v file_materialize=%v finalize_trace=%v trace_enrich=%v gossip_setup=%v post_response=%v interaction_infra_ready=%v warmup_done=%v", readyElapsed, time.Since(sendStartedAt), ensureInteractionInfraElapsed, ensureIMHandlerElapsed, agentLoopElapsed, firstTokenElapsed, preLLMPrepElapsed, firstTokenWaitElapsed, streamVisibleElapsed, streamTailElapsed, handlerTailElapsed, memorySaveElapsed, capabilityGapElapsed, fileMaterializeElapsed, finalizeTraceElapsed, traceEnrichElapsed, gossipSetupElapsed, postResponseElapsed, a.interactionInfraReady(), a.warmupDone.Load())
+		log.Printf("[AI assistant] first desktop chat after ready: since_ready=%v total=%v ensure_interaction_infra=%v ensure_im_handler=%v agent_loop=%v first_token=%v pre_llm_prep=%v pre_llm_config=%v pre_llm_tools=%v pre_llm_conversation=%v pre_llm_iteration_prep=%v first_token_wait=%v llm_request_build=%v llm_http_do=%v llm_first_sse_wait=%v llm_retry_wait=%v llm_stream_max_token_gap=%v llm_retry_count=%d llm_idle_timeout_count=%d llm_idle_timeout_after_token=%v stream_visible=%v stream_tail=%v handler_tail=%v handler_blackhole_after_usage=%v handler_blackhole_before_return=%v handler_post_stream_usage=%v handler_post_stream_response=%v handler_post_stream_tool_exec=%v handler_post_stream_choice=%v handler_post_stream_assistant_msg=%v handler_post_stream_history_append=%v handler_post_stream_no_tool_branch=%v memory_save=%v capability_gap=%v file_materialize=%v finalize_trace=%v trace_enrich=%v gossip_setup=%v post_response=%v interaction_infra_ready=%v warmup_done=%v", readyElapsed, time.Since(sendStartedAt), ensureInteractionInfraElapsed, ensureIMHandlerElapsed, agentLoopElapsed, firstTokenElapsed, preLLMPrepElapsed, preLLMConfigElapsed, preLLMToolsElapsed, preLLMConversationElapsed, preLLMIterationPrepElapsed, firstTokenWaitElapsed, llmRequestBuildElapsed, llmHTTPDoElapsed, llmFirstSSEWaitElapsed, llmRetryWaitElapsed, llmStreamMaxTokenGapElapsed, llmRetryCount, llmIdleTimeoutCount, llmIdleTimeoutAfterToken, streamVisibleElapsed, streamTailElapsed, handlerTailElapsed, handlerBlackholeAfterUsageElapsed, handlerBlackholeBeforeReturnElapsed, handlerPostStreamUsageElapsed, handlerPostStreamResponseElapsed, handlerPostStreamToolExecElapsed, handlerPostStreamChoiceElapsed, handlerPostStreamAssistantMsgElapsed, handlerPostStreamHistoryAppendElapsed, handlerPostStreamNoToolBranchElapsed, memorySaveElapsed, capabilityGapElapsed, fileMaterializeElapsed, finalizeTraceElapsed, traceEnrichElapsed, gossipSetupElapsed, postResponseElapsed, a.interactionInfraReady(), a.warmupDone.Load())
 	}()
 
 	t0 := time.Now()
@@ -674,9 +698,12 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		return nil, fmt.Errorf("message text is required")
 	}
 	msg := IMUserMessage{
-		UserID:   "desktop-user",
-		Platform: "desktop",
-		Text:     text,
+		UserID:        "desktop-user",
+		Platform:      "desktop",
+		Text:          text,
+		ResumeSlotID:  strings.TrimSpace(req.ResumeSlotID),
+		StartNewTask:  req.StartNewTask,
+		DismissSlotID: strings.TrimSpace(req.DismissSlotID),
 	}
 	requestID := strings.TrimSpace(req.RequestID)
 	if requestID == "" {
@@ -750,8 +777,71 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	if resp != nil && resp.PreLLMPrepNanos > 0 {
 		preLLMPrepElapsed = time.Duration(resp.PreLLMPrepNanos)
 	}
+	if resp != nil && resp.PreLLMConfigNanos > 0 {
+		preLLMConfigElapsed = time.Duration(resp.PreLLMConfigNanos)
+	}
+	if resp != nil && resp.PreLLMToolsNanos > 0 {
+		preLLMToolsElapsed = time.Duration(resp.PreLLMToolsNanos)
+	}
+	if resp != nil && resp.PreLLMConversationNanos > 0 {
+		preLLMConversationElapsed = time.Duration(resp.PreLLMConversationNanos)
+	}
+	if resp != nil && resp.PreLLMIterationPrepNanos > 0 {
+		preLLMIterationPrepElapsed = time.Duration(resp.PreLLMIterationPrepNanos)
+	}
 	if resp != nil && resp.FirstTokenWaitNanos > 0 {
 		firstTokenWaitElapsed = time.Duration(resp.FirstTokenWaitNanos)
+	}
+	if resp != nil && resp.LLMRequestBuildNanos > 0 {
+		llmRequestBuildElapsed = time.Duration(resp.LLMRequestBuildNanos)
+	}
+	if resp != nil && resp.LLMHTTPDoNanos > 0 {
+		llmHTTPDoElapsed = time.Duration(resp.LLMHTTPDoNanos)
+	}
+	if resp != nil && resp.LLMFirstSSEWaitNanos > 0 {
+		llmFirstSSEWaitElapsed = time.Duration(resp.LLMFirstSSEWaitNanos)
+	}
+	if resp != nil && resp.LLMRetryWaitNanos > 0 {
+		llmRetryWaitElapsed = time.Duration(resp.LLMRetryWaitNanos)
+	}
+	if resp != nil && resp.LLMStreamMaxTokenGapNanos > 0 {
+		llmStreamMaxTokenGapElapsed = time.Duration(resp.LLMStreamMaxTokenGapNanos)
+	}
+	if resp != nil && resp.LLMRetryCount > 0 {
+		llmRetryCount = resp.LLMRetryCount
+	}
+	if resp != nil && resp.LLMIdleTimeoutCount > 0 {
+		llmIdleTimeoutCount = resp.LLMIdleTimeoutCount
+	}
+	if resp != nil && resp.LLMIdleTimeoutAfterToken {
+		llmIdleTimeoutAfterToken = true
+	}
+	if resp != nil && resp.HandlerPostStreamUsageNanos > 0 {
+		handlerPostStreamUsageElapsed = time.Duration(resp.HandlerPostStreamUsageNanos)
+	}
+	if resp != nil && resp.HandlerPostStreamResponseNanos > 0 {
+		handlerPostStreamResponseElapsed = time.Duration(resp.HandlerPostStreamResponseNanos)
+	}
+	if resp != nil && resp.HandlerPostStreamToolExecNanos > 0 {
+		handlerPostStreamToolExecElapsed = time.Duration(resp.HandlerPostStreamToolExecNanos)
+	}
+	if resp != nil && resp.HandlerPostStreamChoiceNanos > 0 {
+		handlerPostStreamChoiceElapsed = time.Duration(resp.HandlerPostStreamChoiceNanos)
+	}
+	if resp != nil && resp.HandlerPostStreamAssistantMsgNanos > 0 {
+		handlerPostStreamAssistantMsgElapsed = time.Duration(resp.HandlerPostStreamAssistantMsgNanos)
+	}
+	if resp != nil && resp.HandlerPostStreamHistoryAppendNanos > 0 {
+		handlerPostStreamHistoryAppendElapsed = time.Duration(resp.HandlerPostStreamHistoryAppendNanos)
+	}
+	if resp != nil && resp.HandlerPostStreamNoToolBranchNanos > 0 {
+		handlerPostStreamNoToolBranchElapsed = time.Duration(resp.HandlerPostStreamNoToolBranchNanos)
+	}
+	if resp != nil && resp.HandlerBlackholeAfterUsageNanos > 0 {
+		handlerBlackholeAfterUsageElapsed = time.Duration(resp.HandlerBlackholeAfterUsageNanos)
+	}
+	if resp != nil && resp.HandlerBlackholeBeforeReturnNanos > 0 {
+		handlerBlackholeBeforeReturnElapsed = time.Duration(resp.HandlerBlackholeBeforeReturnNanos)
 	}
 	if resp != nil && resp.FinalizeTraceNanos > 0 {
 		finalizeTraceElapsed = time.Duration(resp.FinalizeTraceNanos)

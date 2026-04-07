@@ -17,6 +17,7 @@ import (
 // TestV2DiagVariants tests v2/chat with browser-sim signing and various header combinations
 // to find what exactly causes the timeout.
 func TestV2DiagVariants(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -249,6 +250,7 @@ func nodeSign(t *testing.T, body, url string) nodeSignResult {
 // TestV2NetHTTPWithBrowserSimSign uses net/http (not raw transport) with browser-sim signing.
 // This tests whether the issue is raw transport or signing.
 func TestV2NetHTTPWithBrowserSimSign(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

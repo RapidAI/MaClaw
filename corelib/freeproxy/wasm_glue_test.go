@@ -11,6 +11,7 @@ import (
 // TestExtractWasmGlue downloads the JS bundle and extracts the wasm-bindgen glue
 // code for get_sign to understand the exact calling convention.
 func TestExtractWasmGlue(t *testing.T) {
+	requireIntegrationTest(t)
 	// The _app bundle contains the WASM glue code in module 72660
 	resp, err := http.Get("https://ai.dangbei.com/_next/static/chunks/pages/_app-3da91045335ded21.js")
 	if err != nil {

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFile, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFile, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions } from "../../../wailsjs/go/main/App";
+import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 export interface CancelAIAssistantResult {
@@ -26,18 +27,62 @@ export interface AIAssistantBackgroundLaunchResult {
 
 interface AIAssistantSendResult {
     text?: string;
+    Text?: string;
     error?: string;
+    Error?: string;
+    deferred?: boolean;
+    Deferred?: boolean;
     fields?: any;
+    Fields?: any;
     actions?: any;
+    Actions?: any;
+    confirmation?: AIAssistantResponseConfirmation;
+    Confirmation?: AIAssistantResponseConfirmation;
     local_file_path?: string;
+    LocalFilePath?: string;
     local_file_paths?: string[];
+    LocalFilePaths?: string[];
     thumbnail_base64?: string;
+    ThumbnailBase64?: string;
     request_id?: string;
+    RequestID?: string;
     trace_summary?: string;
+    TraceSummary?: string;
     trace_event_count?: number;
+    TraceEventCount?: number;
     evidence_count?: number;
+    EvidenceCount?: number;
+    trial_reflect_summary?: string;
+    TrialReflectSummary?: string;
+    trial_reflect_status?: string;
+    TrialReflectStatus?: string;
+    trial_reflect_failures?: number;
+    TrialReflectFailures?: number;
+    job_id?: string;
+    JobID?: string;
+    run_id?: string;
+    RunID?: string;
+}
+
+interface SendMessageOptions {
+    resumeSlotID?: string;
+    startNewTask?: boolean;
+    dismissSlotID?: string;
+}
+
+interface AIAssistantRemoteSessionView {
+    id?: string;
+    launch_source?: string;
     job_id?: string;
     run_id?: string;
+    status?: string;
+}
+
+interface AIAssistantPendingTask {
+    requestId: string;
+    sessionID?: string;
+    jobID?: string;
+    runID?: string;
 }
 
 interface AIAssistantStreamEvent {
@@ -64,6 +109,26 @@ export interface ChatAction {
     style: ChatActionStyle;
 }
 
+export interface ChatConfirmation {
+    id: string;
+    summary: string;
+    taskType?: string;
+    targetPaths?: string[];
+    plannedActions?: string[];
+    riskFlags?: string[];
+    revisionHints?: string[];
+    status?: string;
+}
+
+export interface ChatUnfinishedSlot {
+    slotID?: string;
+    title?: string;
+    summary?: string;
+    projectPath?: string;
+    status?: string;
+    actions?: ChatAction[];
+}
+
 interface AIAssistantTraceView {
     job_id?: string;
     run_id?: string;
@@ -71,8 +136,55 @@ interface AIAssistantTraceView {
     summary?: string;
     event_count?: number;
     evidence_count?: number;
+    trial_reflect_summary?: {
+        attempt_count?: number;
+        attempted_tools?: string[];
+        failure_count?: number;
+        failure_categories?: string[];
+        recovered?: boolean;
+        final_outcome?: string;
+        strategy_note?: string;
+    };
     events?: Array<{ kind?: string; summary?: string }>;
     evidence?: Array<{ source_kind?: string; category?: string; summary?: string }>;
+}
+
+interface AIAssistantResponseConfirmation {
+    id?: string;
+    ID?: string;
+    summary?: string;
+    Summary?: string;
+    task_type?: string;
+    TaskType?: string;
+    target_paths?: string[];
+    TargetPaths?: string[];
+    planned_actions?: string[];
+    PlannedActions?: string[];
+    risk_flags?: string[];
+    RiskFlags?: string[];
+    revision_hints?: string[];
+    RevisionHints?: string[];
+    status?: string;
+    Status?: string;
+}
+
+interface AIAssistantResponseUnfinishedSlot {
+    slot_id?: string;
+    SlotID?: string;
+    title?: string;
+    Title?: string;
+    summary?: string;
+    Summary?: string;
+    project_path?: string;
+    ProjectPath?: string;
+    status?: string;
+    Status?: string;
+    actions?: ChatAction[];
+    Actions?: ChatAction[];
+}
+
+interface AIAssistantPreferences {
+    showTraceEntry: boolean;
 }
 
 export interface ChatMessage {
@@ -83,6 +195,8 @@ export interface ChatMessage {
     news?: NewsCardData;
     fields?: Array<{ label: string; value: string }>;
     actions?: ChatAction[];
+    confirmation?: ChatConfirmation;
+    unfinishedSlot?: ChatUnfinishedSlot;
     localFilePath?: string;
     localFilePaths?: string[];
     thumbnailBase64?: string;
@@ -371,15 +485,28 @@ function serializeNewsMessages(newsMessages: ChatMessage[]): string {
     })));
 }
 
-function normalizeTraceFields(response: any): Array<{ label: string; value: string }> {
+function normalizeTraceFields(response: any, showTraceEntry: boolean): Array<{ label: string; value: string }> {
+    if (!showTraceEntry) return [];
     const fields: Array<{ label: string; value: string }> = [];
     const traceSummary = typeof response?.trace_summary === 'string' ? response.trace_summary.trim() : '';
+    const trialReflectSummary = typeof response?.trial_reflect_summary === 'string' ? response.trial_reflect_summary.trim() : '';
+    const trialReflectStatus = typeof response?.trial_reflect_status === 'string' ? response.trial_reflect_status.trim() : '';
+    const trialReflectFailures = typeof response?.trial_reflect_failures === 'number' ? response.trial_reflect_failures : 0;
     const traceEventCount = typeof response?.trace_event_count === 'number' ? response.trace_event_count : 0;
     const evidenceCount = typeof response?.evidence_count === 'number' ? response.evidence_count : 0;
     const runID = typeof response?.run_id === 'string' ? response.run_id.trim() : '';
     const jobID = typeof response?.job_id === 'string' ? response.job_id.trim() : '';
     if (traceSummary) {
         fields.push({ label: 'Trace', value: traceSummary });
+    }
+    if (trialReflectStatus) {
+        fields.push({ label: 'Recovery', value: formatRecoveryStatus(trialReflectStatus) });
+    }
+    if (trialReflectFailures > 0) {
+        fields.push({ label: 'Failures', value: String(trialReflectFailures) });
+    }
+    if (trialReflectSummary) {
+        fields.push({ label: 'Trial reflect', value: trialReflectSummary });
     }
     if (traceEventCount > 0) {
         fields.push({ label: 'Trace events', value: String(traceEventCount) });
@@ -394,6 +521,115 @@ function normalizeTraceFields(response: any): Array<{ label: string; value: stri
         fields.push({ label: 'Job ID', value: jobID });
     }
     return fields;
+}
+
+function isTokenFieldLabel(label: string): boolean {
+    const normalized = label.trim().toLowerCase();
+    return normalized === 'input tokens'
+        || normalized === 'output tokens'
+        || normalized === 'total tokens';
+}
+
+function normalizeResponseFields(fields: any, showDetailEntry = false): Array<{ label: string; value: string }> | undefined {
+    if (!Array.isArray(fields) || fields.length === 0) return undefined;
+    const normalized = fields
+        .filter(field => field && typeof field === 'object')
+        .map(field => ({
+            label: typeof field.label === 'string' ? field.label : (typeof field.Label === 'string' ? field.Label : ''),
+            value: typeof field.value === 'string' ? field.value : (typeof field.Value === 'string' ? field.Value : ''),
+        }))
+        .filter(field => field.label && field.value)
+        .filter(field => showDetailEntry || !isTokenFieldLabel(field.label));
+    return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeStringArray(values: unknown): string[] | undefined {
+    if (!Array.isArray(values)) return undefined;
+    const normalized = values
+        .filter((value): value is string => typeof value === 'string')
+        .map(value => value.trim())
+        .filter(Boolean);
+    return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeConfirmation(raw: AIAssistantResponseConfirmation | null | undefined): ChatConfirmation | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const id = typeof raw.id === 'string' ? raw.id.trim() : (typeof raw.ID === 'string' ? raw.ID.trim() : '');
+    const summary = typeof raw.summary === 'string' ? raw.summary.trim() : (typeof raw.Summary === 'string' ? raw.Summary.trim() : '');
+    if (!summary) return undefined;
+    const taskType = typeof raw.task_type === 'string' ? raw.task_type.trim() : (typeof raw.TaskType === 'string' ? raw.TaskType.trim() : '');
+    const status = typeof raw.status === 'string' ? raw.status.trim() : (typeof raw.Status === 'string' ? raw.Status.trim() : '');
+    return {
+        id,
+        summary,
+        taskType: taskType || undefined,
+        targetPaths: normalizeStringArray(raw.target_paths ?? raw.TargetPaths),
+        plannedActions: normalizeStringArray(raw.planned_actions ?? raw.PlannedActions),
+        riskFlags: normalizeStringArray(raw.risk_flags ?? raw.RiskFlags),
+        revisionHints: normalizeStringArray(raw.revision_hints ?? raw.RevisionHints),
+        status: status || undefined,
+    };
+}
+
+function normalizeUnfinishedSlot(raw: AIAssistantResponseUnfinishedSlot | null | undefined): ChatUnfinishedSlot | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const slotID = typeof raw.slot_id === 'string' ? raw.slot_id.trim() : (typeof raw.SlotID === 'string' ? raw.SlotID.trim() : '');
+    const title = typeof raw.title === 'string' ? raw.title.trim() : (typeof raw.Title === 'string' ? raw.Title.trim() : '');
+    const summary = typeof raw.summary === 'string' ? raw.summary.trim() : (typeof raw.Summary === 'string' ? raw.Summary.trim() : '');
+    const projectPath = typeof raw.project_path === 'string' ? raw.project_path.trim() : (typeof raw.ProjectPath === 'string' ? raw.ProjectPath.trim() : '');
+    const status = typeof raw.status === 'string' ? raw.status.trim() : (typeof raw.Status === 'string' ? raw.Status.trim() : '');
+    const actions = normalizeActions(raw.actions ?? raw.Actions);
+    if (!slotID && !title && !summary) return undefined;
+    return {
+        slotID: slotID || undefined,
+        title: title || undefined,
+        summary: summary || undefined,
+        projectPath: projectPath || undefined,
+        status: status || undefined,
+        actions,
+    };
+}
+
+function normalizeSendResponse(response: AIAssistantSendResult | null | undefined, showDetailEntry = false): AIAssistantSendResult {
+    const raw = response || {};
+    return {
+        ...raw,
+        text: typeof raw.text === 'string' ? raw.text : (typeof raw.Text === 'string' ? raw.Text : ''),
+        error: typeof raw.error === 'string' ? raw.error : (typeof raw.Error === 'string' ? raw.Error : ''),
+        fields: normalizeResponseFields(raw.fields ?? raw.Fields, showDetailEntry),
+        actions: raw.actions ?? raw.Actions,
+        confirmation: normalizeConfirmation(raw.confirmation ?? raw.Confirmation),
+        unfinished_slot: normalizeUnfinishedSlot((raw as any).unfinished_slot ?? (raw as any).UnfinishedSlot),
+        local_file_path: typeof raw.local_file_path === 'string' ? raw.local_file_path : (typeof raw.LocalFilePath === 'string' ? raw.LocalFilePath : ''),
+        local_file_paths: Array.isArray(raw.local_file_paths) ? raw.local_file_paths : (Array.isArray(raw.LocalFilePaths) ? raw.LocalFilePaths : undefined),
+        thumbnail_base64: typeof raw.thumbnail_base64 === 'string' ? raw.thumbnail_base64 : (typeof raw.ThumbnailBase64 === 'string' ? raw.ThumbnailBase64 : ''),
+        request_id: typeof raw.request_id === 'string' ? raw.request_id : (typeof raw.RequestID === 'string' ? raw.RequestID : ''),
+        trace_summary: typeof raw.trace_summary === 'string' ? raw.trace_summary : (typeof raw.TraceSummary === 'string' ? raw.TraceSummary : ''),
+        trace_event_count: typeof raw.trace_event_count === 'number' ? raw.trace_event_count : (typeof raw.TraceEventCount === 'number' ? raw.TraceEventCount : undefined),
+        evidence_count: typeof raw.evidence_count === 'number' ? raw.evidence_count : (typeof raw.EvidenceCount === 'number' ? raw.EvidenceCount : undefined),
+        deferred: typeof raw.deferred === 'boolean' ? raw.deferred : (typeof raw.Deferred === 'boolean' ? raw.Deferred : false),
+        trial_reflect_summary: typeof raw.trial_reflect_summary === 'string' ? raw.trial_reflect_summary : (typeof raw.TrialReflectSummary === 'string' ? raw.TrialReflectSummary : ''),
+        trial_reflect_status: typeof raw.trial_reflect_status === 'string' ? raw.trial_reflect_status : (typeof raw.TrialReflectStatus === 'string' ? raw.TrialReflectStatus : ''),
+        trial_reflect_failures: typeof raw.trial_reflect_failures === 'number' ? raw.trial_reflect_failures : (typeof raw.TrialReflectFailures === 'number' ? raw.TrialReflectFailures : undefined),
+        job_id: typeof raw.job_id === 'string' ? raw.job_id : (typeof raw.JobID === 'string' ? raw.JobID : ''),
+        run_id: typeof raw.run_id === 'string' ? raw.run_id : (typeof raw.RunID === 'string' ? raw.RunID : ''),
+    };
+}
+
+function formatRecoveryStatus(status: string): string {
+    const normalized = status.trim().toLowerCase();
+    switch (normalized) {
+        case 'recovered_success':
+            return 'Recovered after retry';
+        case 'partial_success':
+            return 'Partial success';
+        case 'success':
+            return 'Success';
+        case 'failed':
+            return 'Failed';
+        default:
+            return status.trim();
+    }
 }
 
 function mergeResponseFields(responseFields: any, traceFields: Array<{ label: string; value: string }>): Array<{ label: string; value: string }> | undefined {
@@ -412,6 +648,13 @@ function buildTraceDetailFields(view: AIAssistantTraceView, runID: string): Arra
     ];
     const jobID = typeof view.job_id === 'string' ? view.job_id.trim() : '';
     const status = typeof view.status === 'string' ? view.status.trim() : '';
+    const trialReflect = view.trial_reflect_summary;
+    if (trialReflect?.final_outcome) {
+        fields.push({ label: 'Recovery', value: formatRecoveryStatus(trialReflect.final_outcome) });
+    }
+    if (typeof trialReflect?.failure_count === 'number' && trialReflect.failure_count > 0) {
+        fields.push({ label: 'Failures', value: String(trialReflect.failure_count) });
+    }
     if (jobID) {
         fields.push({ label: 'Job ID', value: jobID });
     }
@@ -431,6 +674,19 @@ function buildTraceDetailMessage(view: AIAssistantTraceView, runID: string): str
     const lines: string[] = [`Trace details for ${runID}`];
     if (typeof view.summary === 'string' && view.summary.trim()) {
         lines.push(`Summary: ${view.summary.trim()}`);
+    }
+    const trialReflect = view.trial_reflect_summary;
+    if (typeof trialReflect?.final_outcome === 'string' && trialReflect.final_outcome.trim()) {
+        lines.push(`Recovery status: ${formatRecoveryStatus(trialReflect.final_outcome)}`);
+    }
+    if (typeof trialReflect?.strategy_note === 'string' && trialReflect.strategy_note.trim()) {
+        lines.push(`Trial-reflect: ${trialReflect.strategy_note.trim()}`);
+    }
+    if (typeof trialReflect?.final_outcome === 'string' && trialReflect.final_outcome.trim()) {
+        lines.push(`Recovery: ${trialReflect.final_outcome.trim()}`);
+    }
+    if (Array.isArray(trialReflect?.failure_categories) && trialReflect.failure_categories.length > 0) {
+        lines.push(`Failure categories: ${trialReflect.failure_categories.join(', ')}`);
     }
     if (typeof view.event_count === 'number' && view.event_count > 0) {
         lines.push(`Events: ${view.event_count}`);
@@ -460,22 +716,37 @@ function buildTraceDetailMessage(view: AIAssistantTraceView, runID: string): str
     return lines.join('\n');
 }
 
-function buildTraceDetailAction(response: any): ChatAction[] | undefined {
+function buildTraceDetailAction(response: any, showTraceEntry: boolean): ChatAction[] | undefined {
+    if (!showTraceEntry) return undefined;
     const runID = typeof response?.run_id === 'string' ? response.run_id.trim() : '';
     if (!runID) return undefined;
     return [{ label: 'View trace', command: buildTraceDetailCommand(runID), style: 'default' }];
 }
 
-function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, response: any): ChatMessage[] {
+function buildEmptyTerminalFallback(response: any): string {
+    const traceSummary = typeof response?.trace_summary === 'string' ? response.trace_summary.trim() : '';
+    const trialReflectSummary = typeof response?.trial_reflect_summary === 'string' ? response.trial_reflect_summary.trim() : '';
+    const traceStatus = typeof response?.trace_status === 'string' ? response.trace_status.trim().toLowerCase() : '';
+    const fallback = traceSummary || trialReflectSummary;
+    if (traceStatus === 'failed' || traceStatus === 'timeout' || traceStatus === 'cancelled' || traceStatus === 'stopped') {
+        return fallback ? `任务未完成可交付结果。${fallback}` : '任务未完成可交付结果。可查看 Trace 了解失败位置。';
+    }
+    return fallback ? `任务已结束，但没有生成可展示的结果。${fallback}` : '任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。';
+}
+
+function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, response: any, preferences: AIAssistantPreferences): ChatMessage[] {
     const finalizeMessage = (message: ChatMessage): ChatMessage | null => {
-        const nextContent = message.content || response.text || '';
-        const nextFields = mergeResponseFields(response.fields, normalizeTraceFields(response));
+        let nextContent = message.content || response.text || '';
+        const nextFields = mergeResponseFields(response.fields, normalizeTraceFields(response, preferences.showTraceEntry));
         const responseActions = normalizeActions(response.actions) || [];
-        const traceActions = buildTraceDetailAction(response) || [];
+        const traceActions = buildTraceDetailAction(response, preferences.showTraceEntry) || [];
         const nextActions = [...responseActions, ...traceActions];
         const nextLocalFilePath = response.local_file_path;
         const nextLocalFilePaths = response.local_file_paths;
         const nextThumbnailBase64 = response.thumbnail_base64;
+        if (!nextContent && !nextThumbnailBase64 && !nextLocalFilePaths?.length && !nextLocalFilePath) {
+            nextContent = buildEmptyTerminalFallback(response);
+        }
         if (!nextContent && !nextFields?.length && !nextActions?.length && !nextThumbnailBase64 && !nextLocalFilePaths?.length && !nextLocalFilePath) {
             return null;
         }
@@ -484,6 +755,8 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
             content: nextContent,
             fields: nextFields,
             actions: nextActions.length > 0 ? nextActions : undefined,
+            confirmation: response.confirmation,
+            unfinishedSlot: (response as any).unfinished_slot,
             localFilePath: nextLocalFilePath,
             localFilePaths: nextLocalFilePaths,
             thumbnailBase64: nextThumbnailBase64,
@@ -517,12 +790,12 @@ function removeRoundMessage(messages: ChatMessage[], assistantMessageId: string 
         ?? updateMessageById(messages, assistantMessageId, () => null);
 }
 
-function resolveSendResult(messages: ChatMessage[], assistantMessageId: string, response: any, errorText?: string): ChatMessage[] {
+function resolveSendResult(messages: ChatMessage[], assistantMessageId: string, response: any, preferences: AIAssistantPreferences, errorText?: string): ChatMessage[] {
     return errorText
         ? replaceRoundWithError(messages, assistantMessageId, errorText)
         : response?.error
             ? replaceRoundWithError(messages, assistantMessageId, response.error)
-            : finalizeRoundMessage(messages, assistantMessageId, response);
+            : finalizeRoundMessage(messages, assistantMessageId, response, preferences);
 }
 
 function normalizeActionStyle(style: unknown): ChatActionStyle {
@@ -599,6 +872,79 @@ function resolveBackgroundJobID(result: StartAIAssistantBackgroundTaskResult | n
 
 function resolveBackgroundRunID(result: StartAIAssistantBackgroundTaskResult | null | undefined): string {
     return String(result?.run_id || result?.runID || "").trim();
+}
+
+function normalizeSessionID(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeStatusKey(value: unknown): string {
+    return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function normalizeLaunchSource(value: unknown): string {
+    return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function isTerminalRemoteStatus(status: unknown): boolean {
+    const key = normalizeStatusKey(status);
+    return key === 'stopped'
+        || key === 'finished'
+        || key === 'failed'
+        || key === 'killed'
+        || key === 'exited'
+        || key === 'closed'
+        || key === 'done'
+        || key === 'error'
+        || key === 'completed'
+        || key === 'terminated';
+}
+
+function matchesPendingTaskSession(session: AIAssistantRemoteSessionView, pendingTask: AIAssistantPendingTask | null): boolean {
+    if (!pendingTask) return false;
+    const sessionID = normalizeSessionID(session?.id);
+    const jobID = normalizeSessionID(session?.job_id);
+    const runID = normalizeSessionID(session?.run_id);
+    if (pendingTask.sessionID && sessionID === pendingTask.sessionID) return true;
+    if (pendingTask.jobID && jobID === pendingTask.jobID) return true;
+    if (pendingTask.runID && runID === pendingTask.runID) return true;
+    return false;
+}
+
+async function resolvePendingAITask(requestId: string, response: AIAssistantSendResult | null | undefined): Promise<AIAssistantPendingTask | null> {
+    const runID = normalizeSessionID(response?.run_id);
+    const jobID = normalizeSessionID(response?.job_id);
+    if (!response?.deferred && !runID && !jobID) {
+        return null;
+    }
+    try {
+        const sessions = await ListRemoteSessions() as AIAssistantRemoteSessionView[];
+        for (const session of Array.isArray(sessions) ? sessions : []) {
+            if (normalizeLaunchSource(session?.launch_source) !== 'ai') continue;
+            if (isTerminalRemoteStatus(session?.status)) continue;
+            const sessionRunID = normalizeSessionID(session?.run_id);
+            const sessionJobID = normalizeSessionID(session?.job_id);
+            if (runID && sessionRunID && sessionRunID === runID) {
+                return {
+                    requestId,
+                    sessionID: normalizeSessionID(session?.id) || undefined,
+                    jobID: sessionJobID || jobID || undefined,
+                    runID: sessionRunID || runID || undefined,
+                };
+            }
+            if (jobID && sessionJobID && sessionJobID === jobID) {
+                return {
+                    requestId,
+                    sessionID: normalizeSessionID(session?.id) || undefined,
+                    jobID: sessionJobID || jobID || undefined,
+                    runID: sessionRunID || runID || undefined,
+                };
+            }
+        }
+    } catch {
+        return null;
+    }
+    return null;
 }
 
 function buildBackgroundLaunchNotice(result: AIAssistantBackgroundLaunchResult): string {
@@ -703,10 +1049,13 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const [progressMessages, setProgressMessages] = useState<ChatMessage[]>([]);
     const [selectedFilePath, setSelectedFilePath] = useState("");
     const [trialReflectEnabled, setTrialReflectEnabled] = useState(false);
+    const [preferences, setPreferences] = useState<AIAssistantPreferences>({ showTraceEntry: false });
     const [initStatus, setInitStatus] = useState<AIAssistantInitStatus>("connecting");
     const [scrollToTopSeq, setScrollToTopSeq] = useState(0);
     const [activeRound, setActiveRound] = useState<ActiveRound>(IDLE_ROUND);
+    const [pendingTask, setPendingTask] = useState<AIAssistantPendingTask | null>(null);
     const activeRoundRef = useRef<ActiveRound>(IDLE_ROUND);
+    const pendingTaskRef = useRef<AIAssistantPendingTask | null>(null);
     const initStatusRef = useRef<AIAssistantInitStatus>("connecting");
     const selectedFilePathRef = useRef("");
     const latestNewsPayloadRef = useRef<string>("[]");
@@ -718,6 +1067,17 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         refreshSessionsOnlyRef.current = options?.refreshSessionsOnly;
     }, [options?.refreshSessionsOnly]);
 
+    const setPendingTaskState = useCallback((nextTask: AIAssistantPendingTask | null) => {
+        pendingTaskRef.current = nextTask;
+        setPendingTask(current => {
+            const same = current?.requestId === nextTask?.requestId
+                && current?.sessionID === nextTask?.sessionID
+                && current?.jobID === nextTask?.jobID
+                && current?.runID === nextTask?.runID;
+            return same ? current : nextTask;
+        });
+    }, []);
+
     useEffect(() => {
         let cancelled = false;
         GetTrialReflectEnabled()
@@ -727,12 +1087,32 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             .catch(() => {
                 if (!cancelled) setTrialReflectEnabled(false);
             });
+        LoadConfig()
+            .then(config => {
+                if (!cancelled) {
+                    const appConfig = new main.AppConfig(config || {});
+                    setPreferences({ showTraceEntry: !!appConfig?.show_ai_trace_entry });
+                    setTrialReflectEnabled(!!appConfig?.trial_reflect_enabled);
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setPreferences({ showTraceEntry: false });
+                }
+            });
+        const cleanup = subscribeEvent("config-changed", (cfg?: unknown) => {
+            if (cancelled) return;
+            const appConfig = new main.AppConfig(cfg || {});
+            setPreferences({ showTraceEntry: !!appConfig?.show_ai_trace_entry });
+            setTrialReflectEnabled(!!appConfig?.trial_reflect_enabled);
+        });
         return () => {
             cancelled = true;
+            cleanup();
         };
     }, []);
 
-    const sending = activeRound.phase !== 'idle';
+    const sending = activeRound.phase !== 'idle' || !!pendingTask;
     const streaming = activeRound.phase === 'streaming';
     const visualBusy = streaming;
     const ready = initStatus === 'ready';
@@ -951,6 +1331,43 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     }, [doFetchNews]);
 
     useEffect(() => {
+        const refreshPendingTask = async () => {
+            const currentTask = pendingTaskRef.current;
+            if (!currentTask) return;
+            try {
+                const sessions = await ListRemoteSessions() as AIAssistantRemoteSessionView[];
+                const stillActive = (Array.isArray(sessions) ? sessions : []).some(session => {
+                    if (normalizeLaunchSource(session?.launch_source) !== 'ai') return false;
+                    if (isTerminalRemoteStatus(session?.status)) return false;
+                    return matchesPendingTaskSession(session, currentTask);
+                });
+                if (!stillActive && pendingTaskRef.current?.requestId === currentTask.requestId) {
+                    setPendingTaskState(null);
+                }
+            } catch {
+            }
+        };
+
+        void refreshPendingTask();
+        if (!pendingTask) return;
+
+        const handleRemoteStateChanged = () => {
+            void refreshPendingTask();
+        };
+        const offRemoteStateChanged = subscribeEvent('remote-state-changed', handleRemoteStateChanged);
+        const offRemoteSessionChanged = subscribeEvent('remote-session-changed', handleRemoteStateChanged);
+        const timer = setInterval(() => {
+            void refreshPendingTask();
+        }, 2000);
+
+        return () => {
+            clearInterval(timer);
+            offRemoteStateChanged();
+            offRemoteSessionChanged();
+        };
+    }, [pendingTask, setPendingTaskState]);
+
+    useEffect(() => {
         const tokenHandler = (payload: unknown) => {
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
@@ -987,7 +1404,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
     }, [ensureRoundPlaceholder, transitionRound]);
 
-    const sendMessage = useCallback(async (text: string) => {
+    const sendMessage = useCallback(async (text: string, options?: SendMessageOptions) => {
         const outgoingText = buildOutgoingMessage(text, selectedFilePathRef.current);
         if (outgoingText.trim() === "" || activeRoundRef.current.phase !== 'idle') return;
 
@@ -1016,8 +1433,16 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         setMessages(prev => [...prev, userMsg, placeholderMsg]);
 
         try {
-            const response = await SendAIAssistantMessage({ text: outgoingText, request_id: requestId }) as AIAssistantSendResult;
+            const rawResponse = await SendAIAssistantMessage({
+                text: outgoingText,
+                request_id: requestId,
+                resume_slot_id: options?.resumeSlotID,
+                start_new_task: options?.startNewTask,
+                dismiss_slot_id: options?.dismissSlotID,
+            }) as AIAssistantSendResult;
+            const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(response);
+            const effectiveRequestId = responseRequestId || requestId;
             if (responseRequestId && responseRequestId !== requestId) {
                 setRoundState({
                     generation,
@@ -1027,13 +1452,19 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 });
             }
             setSelectedFile("");
-            setMessages(prev => resolveSendResult(prev, assistantMessageId, response));
+            setMessages(prev => resolveSendResult(prev, assistantMessageId, response, preferences));
+            if (response.deferred) {
+                setPendingTaskState(await resolvePendingAITask(effectiveRequestId, response) ?? { requestId: effectiveRequestId, jobID: response.job_id || undefined, runID: response.run_id || undefined });
+            } else {
+                setPendingTaskState(null);
+            }
         } catch (err: any) {
-            setMessages(prev => resolveSendResult(prev, assistantMessageId, null, err?.message || String(err)));
+            setMessages(prev => resolveSendResult(prev, assistantMessageId, null, preferences, err?.message || String(err)));
+            setPendingTaskState(null);
         } finally {
             finalizeRound(generation);
         }
-    }, [finalizeRound, setRoundState, setSelectedFile]);
+    }, [finalizeRound, preferences, setRoundState, setSelectedFile]);
 
     const sendMessageInBackground = useCallback(async (text: string) => {
         const outgoingText = buildOutgoingMessage(text, selectedFilePathRef.current);
@@ -1082,6 +1513,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
     const clearHistory = useCallback(async () => {
         resetActiveRound();
+        setPendingTaskState(null);
         setSelectedFile("");
         if (persistTimerRef.current) {
             clearTimeout(persistTimerRef.current);
@@ -1127,6 +1559,17 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             }
             return;
         }
+        const resumeMatch = command.match(/^__resume_unfinished__\s+(\S+)$/);
+        if (resumeMatch) {
+            return sendMessage('继续上次未完成任务', { resumeSlotID: resumeMatch[1]?.trim() || '' });
+        }
+        if (command === '__start_new_task__') {
+            return sendMessage('开始一个新任务', { startNewTask: true });
+        }
+        const dismissMatch = command.match(/^__dismiss_unfinished__\s+(\S+)$/);
+        if (dismissMatch) {
+            return sendMessage('放弃上次未完成任务', { dismissSlotID: dismissMatch[1]?.trim() || '', startNewTask: true });
+        }
         return sendMessage(command);
     }, [sendMessage]);
 
@@ -1152,15 +1595,21 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
     const cancelSession = useCallback(async (): Promise<CancelAIAssistantResult> => {
         const canceledRound = activeRoundRef.current;
+        const pendingTaskAtCancel = pendingTaskRef.current;
         const nextGeneration = canceledRound.generation + 1;
-        if (!canceledRound.assistantMessageId && isRoundIdle(canceledRound)) {
+        if (!canceledRound.assistantMessageId && isRoundIdle(canceledRound) && !pendingTaskAtCancel) {
             return { canceledText: "" };
         }
         if (canceledRound.assistantMessageId) {
             setMessages(prev => removeRoundMessage(prev, canceledRound.assistantMessageId));
         }
         resetActiveRound(nextGeneration);
+        setPendingTaskState(null);
         try {
+            if (pendingTaskAtCancel?.sessionID) {
+                await CancelAIAssistantTask(pendingTaskAtCancel.sessionID);
+                return { canceledText: "" };
+            }
             if (!canceledRound.assistantMessageId) {
                 const lastSessionMessage = [...latestMessagesRef.current]
                     .reverse()
@@ -1178,7 +1627,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } catch {
             return { canceledText: "" };
         }
-    }, [resetActiveRound]);
+    }, [resetActiveRound, setPendingTaskState]);
 
     return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePath, trialReflectEnabled, browseFile, clearSelectedFile, sendMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession };
 }

@@ -13,6 +13,7 @@ import (
 // TestNodeHTTPSSend tests browser-sim signing + Node.js native https send.
 // This eliminates Go's TLS/HTTP stack entirely.
 func TestNodeHTTPSSend(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

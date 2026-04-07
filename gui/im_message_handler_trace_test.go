@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type loopTraceRequest struct {
@@ -474,7 +476,7 @@ func TestDeriveLLMTokenUsage_FallsBackPerMissingSide(t *testing.T) {
 			Message: llmMessage{Content: "这是模型返回的分析结果"},
 		}},
 		Usage: &llmUsage{
-			PromptTokens: 18,
+			PromptTokens:     18,
 			CompletionTokens: 0,
 		},
 	}
@@ -484,6 +486,460 @@ func TestDeriveLLMTokenUsage_FallsBackPerMissingSide(t *testing.T) {
 	}
 	if output2 <= 0 {
 		t.Fatalf("output2 = %d, want > 0", output2)
+	}
+}
+
+func TestRunAgentLoop_OrientSkillPreferenceInjectsRunSkillGuidance(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"我会优先使用现有技能完成这个任务。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.NLSkills = []NLSkillEntry{{
+		Name:        "hf_daily_papers_report",
+		Description: "把 HuggingFace Daily Papers 整理成报告并生成文件",
+		Triggers:    []string{"daily papers", "综述", "报告", "pdf"},
+		Steps:       []NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
+		Status:      "active",
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		Source:      "manual",
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	loopCtx := NewLoopContext("chat-skill-prefer", 2, server.Client())
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "生成huggingface daily papers的综述，包括方法原理、关键创新、评论等。", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) == 0 {
+		t.Fatal("expected at least one LLM request")
+	}
+	foundSkillGuidance := false
+	for _, msg := range requests[0].Messages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role == "system" && strings.Contains(content, "run_skill") && strings.Contains(content, "hf_daily_papers_report") {
+			foundSkillGuidance = true
+			break
+		}
+	}
+	if !foundSkillGuidance {
+		t.Fatalf("first request messages = %#v, want injected run_skill guidance", requests[0].Messages)
+	}
+}
+
+func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"我会先用现有 Skill 试一下。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-run-skill\",\"type\":\"function\",\"function\":{\"name\":\"run_skill\",\"arguments\":\"{\\\"name\\\":\\\"hf_daily_papers_report\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 3:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"这个 Skill 失败了，我改用别的工具继续完成。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.NLSkills = []NLSkillEntry{{
+		Name:        "hf_daily_papers_report",
+		Description: "把 HuggingFace Daily Papers 整理成报告并生成文件",
+		Triggers:    []string{"daily papers", "综述", "报告", "pdf"},
+		Steps:       []NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
+		Status:      "active",
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		Source:      "manual",
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	h.SetToolRegistry(NewToolRegistry())
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "run_skill",
+		Description: "run local skill",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			return "Skill 执行失败: skill execution stopped at step 1: command failed"
+		},
+	}); err != nil {
+		t.Fatalf("Register run_skill tool: %v", err)
+	}
+
+	loopCtx := NewLoopContext("chat-skill-fallback", 4, server.Client())
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "skill fallback", "desktop", "u1", "/project")
+	loopCtx.RunID = run.RunID
+	loopCtx.JobID = run.JobID
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "生成huggingface daily papers的综述，包括方法原理、关键创新、评论等。", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) < 3 {
+		t.Fatalf("LLM request count = %d, want at least 3", len(requests))
+	}
+	thirdMessages := requests[2].Messages
+	foundRecoverPrompt := false
+	for _, msg := range thirdMessages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role == "system" && strings.Contains(content, "[Recover 阶段]") && strings.Contains(content, "hf_daily_papers_report") {
+			foundRecoverPrompt = true
+			break
+		}
+	}
+	if !foundRecoverPrompt {
+		t.Fatalf("third request messages = %#v, want recover guidance", thirdMessages)
+	}
+	view, ok := h.traceService.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	foundRecoverEvent := false
+	for _, evt := range view.Events {
+		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "skill_failed") {
+			foundRecoverEvent = true
+			break
+		}
+	}
+	if !foundRecoverEvent {
+		t.Fatalf("events = %#v, want recover trace event", view.Events)
+	}
+}
+
+func TestRunAgentLoop_DriftEntersRecoverPhase(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1, 2, 3:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-web\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\\\"hugging face daily papers\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 4:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"recover after drift\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	h.SetDriftDetector(NewDriftDetector(8, 0.8))
+	h.SetToolRegistry(NewToolRegistry())
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "web_search",
+		Description: "test web search",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			return "results for hugging face daily papers"
+		},
+	}); err != nil {
+		t.Fatalf("Register web_search tool: %v", err)
+	}
+
+	loopCtx := NewLoopContext("chat-drift-recover", 5, server.Client())
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "drift recover", "desktop", "u1", "/project")
+	loopCtx.RunID = run.RunID
+	loopCtx.JobID = run.JobID
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "搜索 hugging face daily papers 并整理结果", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.Text != "recover after drift" {
+		t.Fatalf("resp.Text = %q, want recover after drift", resp.Text)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) < 4 {
+		t.Fatalf("LLM request count = %d, want at least 4", len(requests))
+	}
+	fourthMessages := requests[3].Messages
+	foundRecoverPrompt := false
+	for _, msg := range fourthMessages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role == "system" && strings.Contains(content, "[Recover 阶段]") && strings.Contains(content, "漂移") {
+			foundRecoverPrompt = true
+			break
+		}
+	}
+	if !foundRecoverPrompt {
+		t.Fatalf("fourth request messages = %#v, want drift recover guidance", fourthMessages)
+	}
+	view, ok := h.traceService.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	foundRecoverEvent := false
+	for _, evt := range view.Events {
+		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "drift_detected") {
+			foundRecoverEvent = true
+			break
+		}
+	}
+	if !foundRecoverEvent {
+		t.Fatalf("events = %#v, want recover trace event", view.Events)
+	}
+}
+
+func TestRunAgentLoop_TrialFailureEntersRecoverPhase(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-bash\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"npm test\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"我将按调整后的方案继续。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.TrialReflectEnabled = true
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	h.SetToolRegistry(NewToolRegistry())
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "bash",
+		Description: "test bash",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			return "error: npm test failed"
+		},
+	}); err != nil {
+		t.Fatalf("Register bash tool: %v", err)
+	}
+
+	loopCtx := NewLoopContext("chat-trial-recover", 3, server.Client())
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "trial recover", "desktop", "u1", "/project")
+	loopCtx.RunID = run.RunID
+	loopCtx.JobID = run.JobID
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "执行测试并修复失败", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) < 2 {
+		t.Fatalf("LLM request count = %d, want at least 2", len(requests))
+	}
+	secondMessages := requests[1].Messages
+	foundRecoverPrompt := false
+	for _, msg := range secondMessages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role == "system" && strings.Contains(content, "[Recover 阶段]") && strings.Contains(content, "失败观察") && strings.Contains(content, "bash=failed") {
+			foundRecoverPrompt = true
+			break
+		}
+	}
+	if !foundRecoverPrompt {
+		t.Fatalf("second request messages = %#v, want trial recover guidance", secondMessages)
+	}
+	view, ok := h.traceService.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	foundRecoverEvent := false
+	for _, evt := range view.Events {
+		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "trial_failed") {
+			foundRecoverEvent = true
+			break
+		}
+	}
+	if !foundRecoverEvent {
+		t.Fatalf("events = %#v, want trial recover trace event", view.Events)
 	}
 }
 
@@ -584,6 +1040,385 @@ func TestRunAgentLoop_StreamDoneFiresForToolOnlyAndBonusRounds(t *testing.T) {
 	}
 }
 
+func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"send_file\",\"arguments\":\"{\\\"path\\\":\\\"report.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.MaclawDebugToolCalls = false
+	cfg.MaclawAgentMaxIterations = 2
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.SetToolRegistry(NewToolRegistry())
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "send_file",
+		Description: "test file sender",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			if onProgress != nil {
+				onProgress("internal debug-only progress")
+			}
+			return "[file_base64|report.pdf|application/pdf]JVBERi0xLjQKfake"
+		},
+	}); err != nil {
+		t.Fatalf("Register send_file tool: %v", err)
+	}
+
+	var progress []string
+	loopCtx := NewLoopContext("chat-nondebug-progress", 2, server.Client())
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "发送文件", nil, func(msg string) {
+		progress = append(progress, msg)
+	}, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.LocalFilePath == "" {
+		t.Fatalf("expected LocalFilePath, got %+v", resp)
+	}
+	if len(progress) == 0 {
+		t.Fatal("expected visible progress messages")
+	}
+	foundBaseStage := false
+	for _, msg := range progress {
+		if strings.Contains(msg, "📤 正在整理并发送生成的文件...") {
+			foundBaseStage = true
+		}
+		if strings.Contains(msg, "internal debug-only progress") {
+			t.Fatalf("unexpected verbose internal tool progress in user-facing mode: %q", msg)
+		}
+	}
+	if !foundBaseStage {
+		t.Fatalf("progress = %#v, want visible base tool stage progress", progress)
+	}
+}
+
+func TestRunAgentLoop_NoToolStallEntersRecoverPhase(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"我先想想怎么做。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"我再整理一下步骤。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 3:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"现在开始实际执行。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	loopCtx := NewLoopContext("chat-no-tool-stall", 4, server.Client())
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "stall recover", "desktop", "u1", "/project")
+	loopCtx.RunID = run.RunID
+	loopCtx.JobID = run.JobID
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "帮我整理结果并完成交付", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.Text != "现在开始实际执行。" {
+		t.Fatalf("resp.Text = %q, want final third response", resp.Text)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) < 3 {
+		t.Fatalf("LLM request count = %d, want at least 3", len(requests))
+	}
+	thirdMessages := requests[2].Messages
+	foundRecoverPrompt := false
+	for _, msg := range thirdMessages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role == "system" && strings.Contains(content, "[Recover 阶段]") && strings.Contains(content, "连续 2 轮都没有真正调用工具") {
+			foundRecoverPrompt = true
+			break
+		}
+	}
+	if !foundRecoverPrompt {
+		t.Fatalf("third request messages = %#v, want no-tool stall recover guidance", thirdMessages)
+	}
+	view, ok := h.traceService.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	foundRecoverEvent := false
+	for _, evt := range view.Events {
+		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "no_tool_stall") {
+			foundRecoverEvent = true
+			break
+		}
+	}
+	if !foundRecoverEvent {
+		t.Fatalf("events = %#v, want no-tool stall recover trace event", view.Events)
+	}
+}
+
+func TestHandleIMMessage_ResumeSlotUsesExplicitBinding(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"继续完成旧任务。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.memory.save("desktop-user", []conversationEntry{{Role: "assistant", Content: "旧任务对话历史"}})
+	h.memory.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+		SlotID:       "slot-old",
+		UserID:       "desktop-user",
+		Status:       "pending_resume",
+		LastTask:     "继续 Daily Paper",
+		Summary:      "还差最后一轮整理",
+		ResumePrompt: "这里是旧任务恢复提示",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "继续这个未完成任务", ResumeSlotID: "slot-old"})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) == 0 {
+		t.Fatal("expected at least one LLM request")
+	}
+	foundResumeContext := false
+	for _, msg := range requests[0].Messages {
+		content, _ := msg["content"].(string)
+		if strings.Contains(content, "显式恢复未完成任务") && strings.Contains(content, "这里是旧任务恢复提示") {
+			foundResumeContext = true
+			break
+		}
+	}
+	if !foundResumeContext {
+		t.Fatalf("first request messages = %#v, want explicit slot resume context", requests[0].Messages)
+	}
+}
+
+func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1, 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"知识库文件已处理完成。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	userID := "desktop-user"
+	h.memory.save(userID, []conversationEntry{
+		{Role: "user", Content: "搜索 huggingface daily papers，生成每日论文综述，生成pdf发我"},
+		{Role: "assistant", Content: "(已达到最大推理轮次，请继续发送消息以完成任务)"},
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "现在帮我把桌面上的 AI 编程评测报告放入知识库"})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.Text != "知识库文件已处理完成。" {
+		t.Fatalf("resp.Text = %q, want fresh task response", resp.Text)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) == 0 {
+		t.Fatal("expected at least one LLM request")
+	}
+	firstMessages := requests[0].Messages
+	for _, msg := range firstMessages {
+		content, _ := msg["content"].(string)
+		if strings.Contains(content, "Daily Paper") || strings.Contains(content, "daily papers") {
+			t.Fatalf("unexpected old incomplete task context leaked into new task request: %#v", firstMessages)
+		}
+		if strings.Contains(content, "最近执行证据") {
+			t.Fatalf("unexpected old trace evidence leaked into fresh task request: %#v", firstMessages)
+		}
+	}
+}
+
 func TestFinalizeTraceResult_PersistsTrialReflectSummaryAndRefreshesCounts(t *testing.T) {
 	h := &IMMessageHandler{traceService: NewAITraceService()}
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "finalize summary", "desktop", "u1", "/project")
@@ -675,6 +1510,16 @@ func TestBuildTraceEvidencePrompt_IncludesPersistedTrialReflectSummary(t *testin
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
+	h.memory.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+		SlotID:      "slot-trace-recall",
+		UserID:      "desktop-user",
+		Status:      "pending_resume",
+		LastTask:    "排查 npm test 为什么先失败后恢复",
+		ProjectPath: "/project",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	})
+	h.memory.bindUnfinishedSlot("desktop-user", "slot-trace-recall")
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "trace recall", "desktop", "u1", "/project")
 	ctx := NewLoopContext("chat-trace-recall", 3, nil)
 	ctx.RunID = run.RunID
@@ -735,6 +1580,62 @@ func TestBuildTraceEvidencePrompt_SkipsBenignTrialReflectSummary(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Trial outcome") && prompt != "" {
 		t.Fatalf("prompt = %q, want only normal evidence lines or empty", prompt)
+	}
+}
+
+func TestBuildTraceEvidencePrompt_SkipsFreshTaskWithoutActiveSlot(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "trace recall", "desktop", "u1", "/project")
+	h.traceService.AppendEvidence(run.RunID, EvidenceRecord{
+		SourceKind:     "trial_reflect_summary",
+		Category:       "decision",
+		Summary:        "trial-reflect summary",
+		ContentSnippet: "recovered after failure",
+		ProjectPath:    "/project",
+	})
+
+	prompt := h.buildTraceEvidencePrompt("现在帮我整理新的知识库文档")
+	if prompt != "" {
+		t.Fatalf("prompt = %q, want empty for fresh task without active slot", prompt)
+	}
+}
+
+func TestBuildTraceEvidencePrompt_UsesActiveSlot(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	h.memory.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+		SlotID:      "slot-trace",
+		UserID:      "desktop-user",
+		Status:      "pending_resume",
+		LastTask:    "继续 Daily Paper",
+		ProjectPath: "/project",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	})
+	h.memory.bindUnfinishedSlot("desktop-user", "slot-trace")
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "trace recall", "desktop", "u1", "/project")
+	h.traceService.AppendEvidence(run.RunID, EvidenceRecord{
+		SourceKind:     "trial_reflect_summary",
+		Category:       "decision",
+		Summary:        "trial-reflect summary",
+		ContentSnippet: "recovered after failure",
+		ProjectPath:    "/project",
+	})
+
+	prompt := h.buildTraceEvidencePrompt("继续 Daily Paper")
+	if !strings.Contains(prompt, "最近执行证据") {
+		t.Fatalf("prompt = %q, want evidence header when active slot exists", prompt)
 	}
 }
 
@@ -872,14 +1773,193 @@ func TestRunAgentLoop_PromiseOnlyPDFReplyTriggersAnotherRound(t *testing.T) {
 		t.Fatal("expected trace view")
 	}
 	foundNudge := false
+	foundRecover := false
 	for _, evt := range view.Events {
 		if evt.Kind == "delivery.nudged" {
 			foundNudge = true
-			break
+		}
+		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "deliverable_pending") {
+			foundRecover = true
 		}
 	}
 	if !foundNudge {
 		t.Fatalf("events = %#v, want delivery.nudged event", view.Events)
+	}
+	if !foundRecover {
+		t.Fatalf("events = %#v, want deliverable recover event", view.Events)
+	}
+}
+
+func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var callNum int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch callNum {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"好的，我马上继续生成综述 PDF 并发给你。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-craft\",\"type\":\"function\",\"function\":{\"name\":\"craft_tool\",\"arguments\":\"{\\\"task\\\":\\\"生成 PDF 综述文章并发给我\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 3:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-bash\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"python render_pdf.py --input review.md --output review.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 4:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"send_file\",\"arguments\":\"{\\\"path\\\":\\\"review.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", callNum)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawDebugToolCalls = false
+	cfg.MaclawAgentMaxIterations = 6
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "craft_tool",
+		Description: "test craft tool",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			if onProgress != nil {
+				onProgress("internal craft progress")
+			}
+			return "📝 脚本语言: python\n📁 脚本路径: /tmp/review.py\n\n[error] timeout after 180s\n\n⚠️ 执行出错: timeout after 180s\n脚本已保存，你可以手动修改后重新执行。"
+		},
+	}); err != nil {
+		t.Fatalf("Register craft_tool: %v", err)
+	}
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "bash",
+		Description: "test bash",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			if onProgress != nil {
+				onProgress("internal bash progress")
+			}
+			return "review.pdf generated"
+		},
+	}); err != nil {
+		t.Fatalf("Register bash: %v", err)
+	}
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "send_file",
+		Description: "test file sender",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			if onProgress != nil {
+				onProgress("internal send_file progress")
+			}
+			return "[file_base64|review.pdf|application/pdf]JVBERi0xLjQKfake"
+		},
+	}); err != nil {
+		t.Fatalf("Register send_file: %v", err)
+	}
+
+	job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "生成 pdf 发我", "desktop", "desktop-user", "/project")
+	loopCtx := NewLoopContext("chat-pdf-fallback", 6, server.Client())
+	loopCtx.JobID = job.JobID
+	loopCtx.RunID = run.RunID
+
+	var progress []string
+	resp := h.runAgentLoop(loopCtx, "desktop-user", "system", nil, "生成 pdf 发我", nil, func(msg string) {
+		progress = append(progress, msg)
+	}, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.LocalFilePath == "" {
+		t.Fatalf("LocalFilePath empty, resp=%+v", resp)
+	}
+	if callNum != 4 {
+		t.Fatalf("LLM call count = %d, want 4", callNum)
+	}
+	wantProgress := []string{
+		"🛠️ 正在生成并执行脚本，准备继续完成交付...",
+		"🖥️ 正在执行命令处理文件，请稍候...",
+		"📤 正在整理并发送生成的文件...",
+	}
+	for _, want := range wantProgress {
+		found := false
+		for _, msg := range progress {
+			if strings.Contains(msg, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("progress = %#v, want %q", progress, want)
+		}
+	}
+	for _, msg := range progress {
+		if strings.Contains(msg, "internal craft progress") || strings.Contains(msg, "internal bash progress") || strings.Contains(msg, "internal send_file progress") {
+			t.Fatalf("unexpected verbose internal tool progress in user-facing mode: %q", msg)
+		}
+		if strings.Contains(msg, "脚本路径:") || strings.Contains(msg, "[stderr]") {
+			t.Fatalf("unexpected raw tool output leaked to user-facing progress: %q", msg)
+		}
+	}
+	view, ok := h.traceService.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	foundNudge := false
+	foundRecover := false
+	for _, evt := range view.Events {
+		if evt.Kind == "delivery.nudged" {
+			foundNudge = true
+		}
+		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "deliverable_pending") {
+			foundRecover = true
+		}
+	}
+	if !foundNudge {
+		t.Fatalf("events = %#v, want delivery.nudged event", view.Events)
+	}
+	if !foundRecover {
+		t.Fatalf("events = %#v, want deliverable recover event", view.Events)
 	}
 }
 
@@ -1159,5 +2239,108 @@ func TestRunAgentLoop_LongChainUsesGraceRoundsToFinishFileDelivery(t *testing.T)
 	}
 	if !strings.Contains(resp.TraceSummary, "文件 review.pdf 已准备好") {
 		t.Fatalf("TraceSummary = %q, want readable file delivery summary", resp.TraceSummary)
+	}
+}
+
+func TestRunAgentLoop_MarkdownWorkflowUsesWriteThenEditInTrace(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	targetPath := tempHome + "/review.md"
+
+	var callNum int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch callNum {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-write\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"~/review.md\\\",\\\"content\\\":\\\"# Daily Review\\\\nFirst draft\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-edit\",\"type\":\"function\",\"function\":{\"name\":\"edit_file\",\"arguments\":\"{\\\"path\\\":\\\"~/review.md\\\",\\\"old_string\\\":\\\"First draft\\\",\\\"new_string\\\":\\\"Final draft\\\",\\\"replace_all\\\":false}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 3:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"markdown ready\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", callNum)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawAgentMaxIterations = 4
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "整理 markdown 文档", "desktop", "desktop-user", tempHome)
+	loopCtx := NewLoopContext("chat-markdown-trace", 4, server.Client())
+	loopCtx.JobID = job.JobID
+	loopCtx.RunID = run.RunID
+
+	resp := h.runAgentLoop(loopCtx, "desktop-user", "system", nil, "把内容整理成 markdown 文件，并按意见继续修改", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.Text != "markdown ready" {
+		t.Fatalf("resp.Text = %q, want markdown ready", resp.Text)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", targetPath, err)
+	}
+	if string(data) != "# Daily Review\nFinal draft" {
+		t.Fatalf("file content = %q, want %q", string(data), "# Daily Review\nFinal draft")
+	}
+	view, ok := h.traceService.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	var sawWrite, sawEdit, sawCraft bool
+	for _, evt := range view.Events {
+		if evt.Kind != "tool.executed" {
+			continue
+		}
+		switch evt.Title {
+		case "write_file":
+			sawWrite = true
+		case "edit_file":
+			sawEdit = true
+		case "craft_tool":
+			sawCraft = true
+		}
+	}
+	if !sawWrite || !sawEdit {
+		t.Fatalf("events = %#v, want write_file and edit_file tool.executed events", view.Events)
+	}
+	if sawCraft {
+		t.Fatalf("events = %#v, did not expect craft_tool for markdown workflow", view.Events)
 	}
 }

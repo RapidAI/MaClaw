@@ -13,6 +13,7 @@ import (
 // TestV1AgentChatRawTransport tests v1/agentChat with v1 MD5 signing via raw transport.
 // This verifies that raw transport itself works correctly.
 func TestV1AgentChatRawTransport(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -97,6 +98,7 @@ func TestV1AgentChatRawTransport(t *testing.T) {
 // TestV2ChatWithV1SignRawTransport tests v2/chat with v1 MD5 signing via raw transport.
 // If v2/chat accepts v1 signing, we don't need WASM at all.
 func TestV2ChatWithV1SignRawTransport(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

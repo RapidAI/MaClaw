@@ -11,6 +11,7 @@ import (
 
 // TestAnalyzeJSBundle downloads the _app JS bundle and searches for chat API patterns.
 func TestAnalyzeJSBundle(t *testing.T) {
+	requireIntegrationTest(t)
 	urls := []string{
 		"https://ai.dangbei.com/_next/static/chunks/pages/_app-3da91045335ded21.js",
 		"https://ai.dangbei.com/_next/static/chunks/6527.9f92f59eeb60fcbc.js",
@@ -67,6 +68,7 @@ func TestAnalyzeJSBundle(t *testing.T) {
 
 // TestAnalyzeAllChunks searches ALL JS chunks for the chat API endpoint.
 func TestAnalyzeAllChunks(t *testing.T) {
+	requireIntegrationTest(t)
 	chunks := []string{
 		"4062-35991c397ba9845f.js",
 		"6603-a3cd13bd6e4e6652.js",

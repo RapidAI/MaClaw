@@ -174,6 +174,26 @@ export function ListRemoteSessions() {
   return window['go']['main']['App']['ListRemoteSessions']();
 }
 
+export function StartBrowserSession(arg1) {
+  return window['go']['main']['App']['StartBrowserSession'](arg1);
+}
+
+export function StopBrowserSession(arg1, arg2) {
+  return window['go']['main']['App']['StopBrowserSession'](arg1, arg2);
+}
+
+export function GetBrowserSessionTrace(arg1) {
+  return window['go']['main']['App']['GetBrowserSessionTrace'](arg1);
+}
+
+export function GetBrowserSessionSnapshot(arg1) {
+  return window['go']['main']['App']['GetBrowserSessionSnapshot'](arg1);
+}
+
+export function InvokeBrowserTool(arg1, arg2) {
+  return window['go']['main']['App']['InvokeBrowserTool'](arg1, arg2);
+}
+
 export function ListRemoteToolMetadata() {
   return window['go']['main']['App']['ListRemoteToolMetadata']();
 }
@@ -422,6 +442,10 @@ export function GetMaclawLLMProviders() {
   return window['go']['main']['App']['GetMaclawLLMProviders']();
 }
 
+export function GetMaclawLLMPanelState() {
+  return window['go']['main']['App']['GetMaclawLLMPanelState']();
+}
+
 export function SaveMaclawLLMProviders(arg1, arg2) {
   return window['go']['main']['App']['SaveMaclawLLMProviders'](arg1, arg2);
 }
@@ -484,6 +508,10 @@ export function SetLLMTrajectoryLogging(arg1) {
 
 export function GetTrialReflectEnabled() {
   return window['go']['main']['App']['GetTrialReflectEnabled']();
+}
+
+export function GetAIAssistantTrace(arg1) {
+  return window['go']['main']['App']['GetAIAssistantTrace'](arg1);
 }
 
 export function SetTrialReflectEnabled(arg1) {

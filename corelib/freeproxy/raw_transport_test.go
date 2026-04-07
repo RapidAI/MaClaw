@@ -13,6 +13,7 @@ import (
 // TestRawTransportUnsigned tests raw HTTP transport to v2/chat WITHOUT signing.
 // Uses different body variants to find which field causes the server to hang.
 func TestRawTransportUnsigned(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -66,6 +67,7 @@ func TestRawTransportUnsigned(t *testing.T) {
 
 // TestRawTransportSigned tests raw HTTP transport to v2/chat WITH WASM signing.
 func TestRawTransportSigned(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -159,6 +161,7 @@ func TestRawTransportSigned(t *testing.T) {
 
 // TestRawTransportE2E tests the full flow: create session, sign, stream via raw transport.
 func TestRawTransportE2E(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

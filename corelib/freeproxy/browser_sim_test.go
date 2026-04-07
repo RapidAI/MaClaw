@@ -16,6 +16,7 @@ import (
 // This isolates signing from transport — if this works, the signing is correct and we just need
 // to port the browser simulation to Go's wasm_host.go.
 func TestBrowserSimSignAndRawSend(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

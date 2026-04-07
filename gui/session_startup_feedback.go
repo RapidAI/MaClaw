@@ -8,8 +8,9 @@ import (
 // SessionStartupFeedback monitors session startup progress and pushes
 // status updates to the caller via a ProgressCallback.
 type SessionStartupFeedback struct {
-	manager      *RemoteSessionManager
-	checkpointer *SessionCheckpointer
+	manager           *RemoteSessionManager
+	checkpointer      *SessionCheckpointer
+	unfinishedSlotFor func(projectPath string) *unfinishedTaskSlot
 }
 
 // NewSessionStartupFeedback creates a new SessionStartupFeedback instance.
@@ -20,6 +21,10 @@ func NewSessionStartupFeedback(manager *RemoteSessionManager) *SessionStartupFee
 // SetCheckpointer attaches a SessionCheckpointer for resume context injection.
 func (f *SessionStartupFeedback) SetCheckpointer(cp *SessionCheckpointer) {
 	f.checkpointer = cp
+}
+
+func (f *SessionStartupFeedback) SetUnfinishedSlotResolver(fn func(projectPath string) *unfinishedTaskSlot) {
+	f.unfinishedSlotFor = fn
 }
 
 // WatchStartup monitors the startup of a session in a background goroutine.
@@ -62,15 +67,17 @@ func (f *SessionStartupFeedback) watchLoop(sessionID string, callback ProgressCa
 			if status == SessionRunning {
 				callback(fmt.Sprintf("✅ 会话已就绪 (ID: %s, 工具: %s)", session.ID, session.Tool))
 
-				// Inject resume context from previous session checkpoint.
-				if f.checkpointer != nil && f.manager != nil {
+				// Inject resume context only when an unfinished slot is explicitly active.
+				if f.checkpointer != nil && f.manager != nil && f.unfinishedSlotFor != nil {
 					session.mu.RLock()
 					projectPath := session.ProjectPath
 					session.mu.RUnlock()
 
-					if resumePrompt := f.checkpointer.BuildResumePrompt(projectPath); resumePrompt != "" {
-						if err := f.manager.WriteInput(sessionID, resumePrompt); err == nil {
-							callback("📋 已加载上次会话进度，已自动注入上下文")
+					if slot := f.unfinishedSlotFor(projectPath); slot != nil {
+						if resumePrompt := f.checkpointer.BuildResumePromptForSlot(slot); resumePrompt != "" {
+							if err := f.manager.WriteInput(sessionID, resumePrompt); err == nil {
+								callback("📋 已加载显式选择的未完成任务进度，已自动注入上下文")
+							}
 						}
 					}
 				}

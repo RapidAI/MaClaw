@@ -178,8 +178,37 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
-    it('shows background launch control when available', () => {
+    it('disables the textarea while a foreground request is still sending even after streaming stops', () => {
         const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, ready: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(true);
+        expect(input.readOnly).toBe(true);
+    });
+
+    it('shows thinking placeholder while the assistant is actively streaming', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: true, ready: true, visualBusy: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Thinking...');
+    });
+
+    it('shows processing placeholder and visible busy hint after streaming stops but the request is still active', () => {
+        const { getByTestId, getByText } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, ready: true, visualBusy: false },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Executing tools and finishing task...');
+        expect(getByText('Executing tools and finishing task...')).toBeTruthy();
+    });
+
+    it('hides background launch control even if a background handler exists', () => {
+        const { queryByTestId } = renderPanel({
             state: { messages: [], sending: false, streaming: false, ready: true },
             actions: {
                 sendMessage: async () => {},
@@ -190,51 +219,7 @@ describe('AIAssistantPanel property tests', () => {
             },
         });
 
-        expect(getByTestId('ai-send-background').getAttribute('title')).toBe('Run in background');
-    });
-
-    it('ctrl+enter sends to background when available', async () => {
-        const sendMessage = vi.fn<() => Promise<void>>().mockResolvedValue();
-        const sendMessageInBackground = vi.fn<() => Promise<void>>().mockResolvedValue();
-        const { getByTestId } = renderPanel({
-            state: { messages: [], sending: false, streaming: false, ready: true },
-            actions: {
-                sendMessage,
-                sendMessageInBackground,
-                clearHistory: async () => {},
-                executeAction: async () => {},
-                refreshNews: () => {},
-            },
-        });
-
-        fireEvent.change(getByTestId('ai-input'), { target: { value: 'background via shortcut' } });
-        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter', ctrlKey: true });
-
-        await waitFor(() => {
-            expect(sendMessageInBackground).toHaveBeenCalledWith('background via shortcut');
-        });
-        expect(sendMessage).not.toHaveBeenCalled();
-    });
-
-    it('clicking background launch control triggers background send', async () => {
-        const sendMessageInBackground = vi.fn<() => Promise<void>>().mockResolvedValue();
-        const { getByTestId } = renderPanel({
-            state: { messages: [], sending: false, streaming: false, ready: true },
-            actions: {
-                sendMessage: async () => {},
-                sendMessageInBackground,
-                clearHistory: async () => {},
-                executeAction: async () => {},
-                refreshNews: () => {},
-            },
-        });
-
-        fireEvent.change(getByTestId('ai-input'), { target: { value: 'long task' } });
-        fireEvent.click(getByTestId('ai-send-background'));
-
-        await waitFor(() => {
-            expect(sendMessageInBackground).toHaveBeenCalledWith('long task');
-        });
+        expect(queryByTestId('ai-send-background')).toBeNull();
     });
 
     it('renders background launch identifiers inside a visible system message', () => {
@@ -281,6 +266,134 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.textContent).not.toContain('run_id:');
     });
 
+    it('renders structured unfinished slot cards and actions', async () => {
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '检测到一个未完成任务。',
+                unfinishedSlot: {
+                    slotID: 'slot-1',
+                    title: '继续 Daily Paper',
+                    summary: '还差最后一轮整理',
+                    projectPath: 'D:/work/project',
+                    status: 'pending_resume',
+                    actions: [
+                        { label: '继续上次任务', command: '__resume_unfinished__ slot-1', style: 'default' },
+                        { label: '开始新任务', command: '__start_new_task__', style: 'default' },
+                    ],
+                },
+            }),
+        ];
+
+        const { getByTestId, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-card')).toBeTruthy();
+        expect(getByTestId('unfinished-slot-title').textContent).toContain('继续 Daily Paper');
+        expect(getByTestId('unfinished-slot-summary').textContent).toContain('还差最后一轮整理');
+        expect(getByTestId('unfinished-slot-project').textContent).toContain('D:/work/project');
+        expect(getByText('继续上次任务')).toBeTruthy();
+        expect(getByText('开始新任务')).toBeTruthy();
+    });
+
+    it('unfinished slot card buttons reuse executeAction', async () => {
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '检测到一个未完成任务。',
+                unfinishedSlot: {
+                    slotID: 'slot-2',
+                    title: '继续旧任务',
+                    actions: [
+                        { label: '继续上次任务', command: '__resume_unfinished__ slot-2', style: 'default' },
+                    ],
+                },
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        fireEvent.click(getByText('继续上次任务'));
+
+        await waitFor(() => {
+            expect(executeAction).toHaveBeenCalledWith('__resume_unfinished__ slot-2');
+        });
+    });
+
+    it('renders confirmation cards with summary, lists, and actions', () => {
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '请先确认后再执行。',
+                confirmation: {
+                    id: 'c1',
+                    summary: '我理解你想修复登录问题\n默认工作目录：D:/work/project',
+                    taskType: 'coding',
+                    targetPaths: ['D:/work/project'],
+                    plannedActions: ['检查登录流程', '修改相关代码'],
+                    riskFlags: ['会直接改代码'],
+                    revisionHints: ['如目录不对请直接修正'],
+                    status: 'pending',
+                },
+                actions: [
+                    { label: '确认并开始', command: '确认，按这个开始', style: 'default' },
+                    { label: '取消', command: '取消这个任务', style: 'danger' },
+                ],
+            }),
+        ];
+
+        const { getByTestId, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('confirmation-card')).toBeTruthy();
+        expect(getByTestId('confirmation-summary').textContent).toContain('我理解你想修复登录问题');
+        expect(getByTestId('confirmation-target-paths').textContent).toContain('D:/work/project');
+        expect(getByTestId('confirmation-planned-actions').textContent).toContain('检查登录流程');
+        expect(getByTestId('confirmation-risk-flags').textContent).toContain('会直接改代码');
+        expect(getByTestId('confirmation-revision-hints').textContent).toContain('如目录不对请直接修正');
+        expect(getByTestId('confirmation-status').textContent).toContain('pending');
+        expect(getByText('确认并开始')).toBeTruthy();
+        expect(getByText('取消')).toBeTruthy();
+    });
+
+    it('confirmation card buttons reuse executeAction', async () => {
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '请确认。',
+                confirmation: {
+                    id: 'c2',
+                    summary: '确认目录和任务后再执行',
+                },
+                actions: [
+                    { label: '确认并开始', command: '确认，按这个开始', style: 'default' },
+                ],
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        fireEvent.click(getByText('确认并开始'));
+
+        await waitFor(() => {
+            expect(executeAction).toHaveBeenCalledWith('确认，按这个开始');
+        });
+    });
+
     it('renders trace summary and counts as assistant field cards', () => {
         const messages: ChatMessage[] = [
             makeMsg({
@@ -288,6 +401,8 @@ describe('AIAssistantPanel property tests', () => {
                 content: 'done',
                 fields: [
                     { label: 'Trace', value: 'trial loop stabilized after one retry' },
+                    { label: 'Recovery', value: 'Recovered after retry' },
+                    { label: 'Failures', value: '1' },
                     { label: 'Trace events', value: '8' },
                     { label: 'Evidence', value: '3' },
                     { label: 'Run ID', value: 'run-trace-1' },
@@ -298,17 +413,20 @@ describe('AIAssistantPanel property tests', () => {
         ];
 
         const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
-        const { container, getByText } = renderPanel({
+        const { container, getByText, getByTestId } = renderPanel({
             state: { messages, sending: false, streaming: false, ready: true },
             actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
         });
 
         const fieldCards = Array.from(container.querySelectorAll('[data-testid="field-card"]')).map(el => el.textContent || '');
         expect(fieldCards).toContain('Trace:trial loop stabilized after one retry');
+        expect(fieldCards).toContain('Recovery:Recovered after retry');
+        expect(fieldCards).toContain('Failures:1');
         expect(fieldCards).toContain('Trace events:8');
         expect(fieldCards).toContain('Evidence:3');
         expect(fieldCards).toContain('Run ID:run-trace-1');
         expect(fieldCards).toContain('Job ID:job-trace-1');
+        expect(getByTestId('recovery-badge').textContent).toBe('Recovered after retry');
         expect(getByText('View trace')).toBeTruthy();
     });
 
@@ -324,6 +442,8 @@ describe('AIAssistantPanel property tests', () => {
                 ].join('\n'),
                 fields: [
                     { label: 'Run ID', value: 'run-trace-1' },
+                    { label: 'Recovery', value: 'Recovered after retry' },
+                    { label: 'Failures', value: '1' },
                     { label: 'Job ID', value: 'job-trace-1' },
                     { label: 'Trace events', value: '8' },
                     { label: 'Evidence', value: '3' },
@@ -332,43 +452,65 @@ describe('AIAssistantPanel property tests', () => {
             }),
         ];
 
-        const { container, getByText } = renderPanel({
+        const { container, getByText, getAllByTestId } = renderPanel({
             state: { messages, sending: false, streaming: false, ready: true },
         });
 
         const fieldCards = Array.from(container.querySelectorAll('[data-testid="field-card"]')).map(el => el.textContent || '');
         expect(fieldCards).toContain('Run ID:run-trace-1');
+        expect(fieldCards).toContain('Recovery:Recovered after retry');
+        expect(fieldCards).toContain('Failures:1');
         expect(fieldCards).toContain('Job ID:job-trace-1');
         expect(fieldCards).toContain('Trace events:8');
         expect(fieldCards).toContain('Evidence:3');
         expect(fieldCards).toContain('Status:completed');
+        expect(getAllByTestId('recovery-badge')[0].textContent).toBe('Recovered after retry');
         expect(getByText('Trace details for run-trace-1')).toBeTruthy();
         expect(getByText('Summary: trial loop stabilized after one retry')).toBeTruthy();
     });
 
-    it('ctrl+enter background send records prompt into history', async () => {
-        const sendMessageInBackground = vi.fn<() => Promise<void>>().mockResolvedValue();
-        const recordSubmittedPrompt = vi.fn();
-        const { getByTestId } = renderPanel({
-            state: { messages: [], submittedPrompts: [], sending: false, streaming: false, ready: true },
-            actions: {
-                sendMessage: async () => {},
-                sendMessageInBackground,
-                recordSubmittedPrompt,
-                clearHistory: async () => {},
-                executeAction: async () => {},
-                refreshNews: () => {},
+    it('renders progress messages for grace-round wrap-up status when messages exist', () => {
+        const { getByText } = renderPanel({
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'make pdf' })],
+                progressMessages: [makeMsg({ role: 'progress', content: '⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…' })],
+                sending: true,
+                streaming: false,
+                ready: true,
             },
         });
 
-        const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        fireEvent.change(input, { target: { value: 'background via shortcut' } });
-        fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+        expect(getByText('⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…')).toBeTruthy();
+    });
 
-        await waitFor(() => {
-            expect(recordSubmittedPrompt).toHaveBeenCalledWith('background via shortcut');
-            expect(sendMessageInBackground).toHaveBeenCalledWith('background via shortcut');
+    it('renders a terminal fallback message with trace action and fields', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '任务未完成可交付结果。PDF generation failed after tool execution',
+                fields: [
+                    { label: 'Trace', value: 'PDF generation failed after tool execution' },
+                    { label: 'Trace events', value: '4' },
+                    { label: 'Evidence', value: '2' },
+                    { label: 'Run ID', value: 'run-empty-result' },
+                ],
+                actions: [{ label: 'View trace', command: '__view_trace__ run-empty-result', style: 'default' }],
+            }),
+        ];
+
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const { container, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
         });
+
+        expect(getByText('任务未完成可交付结果。PDF generation failed after tool execution')).toBeTruthy();
+        const fieldCards = Array.from(container.querySelectorAll('[data-testid="field-card"]')).map(el => el.textContent || '');
+        expect(fieldCards).toContain('Trace:PDF generation failed after tool execution');
+        expect(fieldCards).toContain('Trace events:4');
+        expect(fieldCards).toContain('Evidence:2');
+        expect(fieldCards).toContain('Run ID:run-empty-result');
+        expect(getByText('View trace')).toBeTruthy();
     });
 
     it('normal send records each manual prompt once so consecutive duplicates can be deduplicated upstream', async () => {
@@ -510,18 +652,18 @@ describe('AIAssistantPanel property tests', () => {
             actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
         });
 
-        expect(getByTestId('ai-cancel-progress').textContent).toContain('■');
+        expect(getByTestId('ai-cancel-progress').textContent).not.toContain('■');
         expect(queryByTitle('Send')).toBeNull();
     });
 
-    it('keeps the textarea read-only while the request is still in flight', () => {
+    it('keeps the textarea disabled while the request is still in flight', () => {
         const { getByTestId } = renderPanel({
             state: { messages: [], sending: true, streaming: false, visualBusy: false, ready: true },
             actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.disabled).toBe(false);
+        expect(input.disabled).toBe(true);
         expect(input.readOnly).toBe(true);
         expect(input.getAttribute('aria-readonly')).toBe('true');
     });

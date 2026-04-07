@@ -79,10 +79,199 @@ func NewRemoteSessionManager(app *App) *RemoteSessionManager {
 		if m.hubClient != nil {
 			_ = m.hubClient.SendSessionSummary(snap)
 		}
+		m.updateTraceFromSummary(s, snap)
 		m.app.emitRemoteStateChanged()
 	}
 
 	return m
+}
+
+func (m *RemoteSessionManager) traceService() *AITraceService {
+	if m == nil || m.app == nil {
+		return nil
+	}
+	m.app.ensureAITrace()
+	return m.app.aiTrace
+}
+
+func (m *RemoteSessionManager) attachTraceToSession(session *RemoteSession) {
+	if session == nil || session.RunID != "" {
+		return
+	}
+	traceSvc := m.traceService()
+	if traceSvc == nil {
+		return
+	}
+	title := session.Title
+	if title == "" {
+		title = remoteToolDisplayName(session.Tool)
+	}
+	job, run := traceSvc.StartJobRun(
+		TraceJobKindRemoteSession,
+		title,
+		string(normalizeRemoteLaunchSource(session.LaunchSource)),
+		"",
+		session.ProjectPath,
+	)
+	session.JobID = job.JobID
+	session.RunID = run.RunID
+	traceSvc.SetRunSessionID(run.RunID, session.ID)
+	m.updateTraceFromSummary(session, session.Summary)
+	for _, evt := range session.Events {
+		m.recordImportantEventTrace(session, evt)
+	}
+	if session.Status == SessionError {
+		m.recordOutputEvidence(session, "error", session.Summary.LastResult, session.Preview.PreviewLines)
+	}
+}
+
+func (m *RemoteSessionManager) updateTraceFromSummary(session *RemoteSession, summary SessionSummary) {
+	if session == nil || session.RunID == "" {
+		return
+	}
+	traceSvc := m.traceService()
+	if traceSvc == nil {
+		return
+	}
+	status := traceStatusFromSessionStatus(SessionStatus(summary.Status))
+	summaryText := summary.ProgressSummary
+	if summaryText == "" {
+		summaryText = summary.CurrentTask
+	}
+	errText := ""
+	if strings.EqualFold(summary.Severity, "error") || SessionStatus(summary.Status) == SessionError {
+		errText = summary.LastResult
+	}
+	traceSvc.UpdateRun(session.RunID, status, summaryText, errText)
+}
+
+func (m *RemoteSessionManager) recordImportantEventTrace(session *RemoteSession, evt ImportantEvent) {
+	if session == nil || session.RunID == "" {
+		return
+	}
+	traceSvc := m.traceService()
+	if traceSvc == nil {
+		return
+	}
+	if m.app != nil && session.ProjectPath != "" {
+		m.app.ensureContextBridge()
+		if m.app.contextBridge != nil {
+			m.app.contextBridge.ExtractFromEvents(session.ProjectPath, []ImportantEvent{evt})
+		}
+	}
+	traceSvc.AppendEvent(session.RunID, TraceEvent{
+		Kind:        evt.Type,
+		Severity:    evt.Severity,
+		Title:       firstNonEmptyTraceText(evt.Title, evt.Type),
+		Summary:     evt.Summary,
+		RelatedFile: evt.RelatedFile,
+		Command:     evt.Command,
+		CreatedAt:   evt.CreatedAt,
+		ProjectPath: session.ProjectPath,
+	})
+	traceSvc.AppendEvidence(session.RunID, EvidenceRecord{
+		SourceKind:     "remote_event",
+		Category:       traceCategoryForImportantEvent(evt),
+		Summary:        firstNonEmptyTraceText(evt.Summary, evt.Title, evt.Type),
+		ContentSnippet: evt.Summary,
+		RelatedFile:    evt.RelatedFile,
+		Command:        evt.Command,
+		CreatedAt:      evt.CreatedAt,
+		ProjectPath:    session.ProjectPath,
+	})
+}
+
+func (m *RemoteSessionManager) recordOutputEvidence(session *RemoteSession, category, summary string, lines []string) {
+	if session == nil || session.RunID == "" {
+		return
+	}
+	snippet := traceSnippetFromLines(lines, 4)
+	if snippet == "" {
+		return
+	}
+	traceSvc := m.traceService()
+	if traceSvc == nil {
+		return
+	}
+	if summary == "" {
+		summary = "Remote output snippet"
+	}
+	traceSvc.AppendEvidence(session.RunID, EvidenceRecord{
+		SourceKind:     "remote_output",
+		Category:       category,
+		Summary:        summary,
+		ContentSnippet: snippet,
+		CreatedAt:      traceNowMillis(),
+		ProjectPath:    session.ProjectPath,
+	})
+}
+
+func (m *RemoteSessionManager) syncTraceFromOutputResult(session *RemoteSession, result OutputResult) {
+	if session == nil || session.RunID == "" {
+		return
+	}
+	if result.Summary != nil {
+		m.updateTraceFromSummary(session, *result.Summary)
+	}
+	for _, evt := range result.Events {
+		m.recordImportantEventTrace(session, evt)
+	}
+	if result.PreviewDelta == nil {
+		return
+	}
+	if len(result.Events) > 0 {
+		m.recordOutputEvidence(session, "event", firstNonEmptyTraceText(result.SummaryText(), "Remote event output"), result.PreviewDelta.AppendLines)
+		return
+	}
+	if result.Summary != nil && strings.EqualFold(result.Summary.Severity, "error") {
+		m.recordOutputEvidence(session, "error", firstNonEmptyTraceText(result.Summary.LastResult, result.Summary.ProgressSummary, "Remote error output"), result.PreviewDelta.AppendLines)
+	}
+}
+
+func traceCategoryForImportantEvent(evt ImportantEvent) string {
+	typeLower := strings.ToLower(evt.Type)
+	severityLower := strings.ToLower(evt.Severity)
+	switch {
+	case severityLower == "error" || strings.Contains(typeLower, "error") || strings.Contains(typeLower, "fail"):
+		return "error"
+	case strings.Contains(typeLower, "file") || evt.RelatedFile != "":
+		return "file"
+	case strings.Contains(typeLower, "command") || evt.Command != "":
+		return "command"
+	case strings.Contains(typeLower, "result") || strings.Contains(typeLower, "close") || strings.Contains(typeLower, "complete"):
+		return "result"
+	default:
+		return "event"
+	}
+}
+
+func traceSnippetFromLines(lines []string, limit int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	meaningful := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			meaningful = append(meaningful, trimmed)
+		}
+	}
+	if len(meaningful) == 0 {
+		return ""
+	}
+	if limit > 0 && len(meaningful) > limit {
+		meaningful = meaningful[len(meaningful)-limit:]
+	}
+	return truncateTraceText(strings.Join(meaningful, "\n"), 600)
+}
+
+func firstNonEmptyTraceText(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (m *RemoteSessionManager) SetHubClient(client *RemoteHubClient) {
@@ -295,6 +484,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 
 	workspace = nil
 
+	m.attachTraceToSession(session)
 	m.storeSession(session)
 
 	if m.hubClient != nil {
@@ -375,6 +565,7 @@ func (m *RemoteSessionManager) newFailedSession(
 		},
 	}
 	session.Events = []ImportantEvent{buildSessionFailedEvent(session, createErr)}
+	m.attachTraceToSession(session)
 	return session
 }
 
@@ -385,6 +576,169 @@ func (m *RemoteSessionManager) storeSession(session *RemoteSession) {
 
 	m.app.refreshPowerOptimizationState()
 	m.app.emitRemoteStateChanged()
+}
+
+func (m *RemoteSessionManager) CreateAIBackgroundSession(title, projectPath string, loopCtx *LoopContext) *RemoteSession {
+	now := time.Now()
+	sessionID := fmt.Sprintf("ai_bg_%d", now.UnixNano())
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedTitle == "" {
+		trimmedTitle = "AI background task"
+	}
+	trimmedProjectPath := strings.TrimSpace(projectPath)
+	session := &RemoteSession{
+		ID:           sessionID,
+		Tool:         "ai-assistant",
+		Title:        trimmedTitle,
+		LaunchSource: RemoteLaunchSourceAI,
+		ProjectPath:  trimmedProjectPath,
+		ModelID:      "maclaw-ai-assistant",
+		Status:       SessionBusy,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		AgentLoop:    loopCtx,
+		Summary: SessionSummary{
+			SessionID:       sessionID,
+			Tool:            "ai-assistant",
+			Title:           trimmedTitle,
+			Source:          string(RemoteLaunchSourceAI),
+			Status:          string(SessionBusy),
+			Severity:        "info",
+			CurrentTask:     trimmedTitle,
+			ProgressSummary: "后台 AI 任务已创建",
+			UpdatedAt:       now.Unix(),
+		},
+		Preview: SessionPreview{
+			SessionID:    sessionID,
+			OutputSeq:    1,
+			PreviewLines: []string{"[AI background task created]", trimmedTitle},
+			UpdatedAt:    now.Unix(),
+		},
+	}
+	if loopCtx != nil {
+		loopCtx.SessionID = sessionID
+		if loopCtx.JobID != "" {
+			session.JobID = loopCtx.JobID
+		}
+		if loopCtx.RunID != "" {
+			session.RunID = loopCtx.RunID
+		}
+	}
+	m.attachTraceToSession(session)
+	m.storeSession(session)
+	return session
+}
+
+func (m *RemoteSessionManager) AppendBackgroundAIOutput(sessionID string, lines ...string) {
+	s, ok := m.Get(sessionID)
+	if !ok || len(lines) == 0 {
+		return
+	}
+	appendLines := make([]string, 0, len(lines))
+	now := time.Now()
+	var outputSeq int64
+	var updatedAt int64
+	var snap *SessionSummary
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, "\r\n")
+		if trimmed == "" {
+			continue
+		}
+		appendLines = append(appendLines, trimmed)
+	}
+	if len(appendLines) == 0 {
+		return
+	}
+	s.mu.Lock()
+	appendRawOutputLines(s, appendLines)
+	s.Preview.PreviewLines = append(s.Preview.PreviewLines, appendLines...)
+	if len(s.Preview.PreviewLines) > 500 {
+		s.Preview.PreviewLines = s.Preview.PreviewLines[len(s.Preview.PreviewLines)-500:]
+	}
+	s.Preview.OutputSeq++
+	s.Preview.UpdatedAt = now.Unix()
+	s.UpdatedAt = now
+	s.Summary.UpdatedAt = now.Unix()
+	outputSeq = s.Preview.OutputSeq
+	updatedAt = s.Preview.UpdatedAt
+	snapVal := s.Summary
+	snap = &snapVal
+	s.mu.Unlock()
+	if m.hubClient != nil {
+		_ = m.hubClient.SendPreviewDelta(SessionPreviewDelta{
+			SessionID:   sessionID,
+			OutputSeq:   outputSeq,
+			AppendLines: append([]string(nil), appendLines...),
+			UpdatedAt:   updatedAt,
+		})
+		if snap != nil {
+			_ = m.hubClient.SendSessionSummary(*snap)
+		}
+	}
+	m.recordOutputEvidence(s, "progress", firstNonEmptyTraceText(appendLines[len(appendLines)-1], s.Title), appendLines)
+	m.app.emitRemoteStateChanged()
+}
+
+func (m *RemoteSessionManager) UpdateBackgroundAISummary(sessionID string, mutate func(*RemoteSession)) {
+	s, ok := m.Get(sessionID)
+	if !ok || mutate == nil {
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	mutate(s)
+	s.UpdatedAt = now
+	s.Summary.UpdatedAt = now.Unix()
+	snap := s.Summary
+	s.mu.Unlock()
+	if m.hubClient != nil {
+		_ = m.hubClient.SendSessionSummary(snap)
+	}
+	m.updateTraceFromSummary(s, snap)
+	m.app.refreshPowerOptimizationState()
+	m.app.emitRemoteStateChanged()
+}
+
+func (m *RemoteSessionManager) AddBackgroundAIEvent(sessionID string, evt ImportantEvent) {
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return
+	}
+	if evt.EventID == "" {
+		evt.EventID = fmt.Sprintf("evt_%d", time.Now().UnixNano())
+	}
+	evt.SessionID = sessionID
+	if evt.CreatedAt == 0 {
+		evt.CreatedAt = time.Now().UnixMilli()
+	}
+	s.mu.Lock()
+	s.Events = append([]ImportantEvent{evt}, s.Events...)
+	if len(s.Events) > maxRecentImportantEvents {
+		s.Events = s.Events[:maxRecentImportantEvents]
+	}
+	s.UpdatedAt = time.Now()
+	s.Summary.UpdatedAt = s.UpdatedAt.Unix()
+	s.mu.Unlock()
+	if m.hubClient != nil {
+		_ = m.hubClient.SendImportantEvent(evt)
+	}
+	m.recordImportantEventTrace(s, evt)
+	m.app.emitRemoteStateChanged()
+}
+
+func (m *RemoteSessionManager) cancelAgentLoopSession(sessionID string) error {
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	s.mu.RLock()
+	loopCtx := s.AgentLoop
+	s.mu.RUnlock()
+	if loopCtx == nil {
+		return fmt.Errorf("session execution not available: %s", sessionID)
+	}
+	loopCtx.Cancel()
+	return nil
 }
 
 func (m *RemoteSessionManager) syncFailedSession(session *RemoteSession) {
@@ -657,7 +1011,7 @@ func (m *RemoteSessionManager) Interrupt(sessionID string) error {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 	if s.Exec == nil {
-		return fmt.Errorf("session execution not available: %s", sessionID)
+		return m.cancelAgentLoopSession(sessionID)
 	}
 	return s.Exec.Interrupt()
 }
@@ -668,7 +1022,7 @@ func (m *RemoteSessionManager) Kill(sessionID string) error {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 	if s.Exec == nil {
-		return fmt.Errorf("session execution not available: %s", sessionID)
+		return m.cancelAgentLoopSession(sessionID)
 	}
 	return s.Exec.Kill()
 }
@@ -736,6 +1090,7 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 		}
 		s.mu.Unlock()
 
+		m.syncTraceFromOutputResult(s, result)
 		syncOutputResult(m.hubClient, result)
 
 		m.app.refreshPowerOptimizationState()
@@ -803,6 +1158,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 		if m.hubClient != nil {
 			_ = m.hubClient.SendSessionSummary(snap)
 		}
+		m.updateTraceFromSummary(s, snap)
 		m.app.emitRemoteStateChanged()
 	}
 
@@ -947,6 +1303,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 					s.mu.Lock()
 					applyOutputResult(s, result)
 					s.mu.Unlock()
+					m.syncTraceFromOutputResult(s, result)
 					syncOutputResult(m.hubClient, result)
 				}
 
@@ -963,6 +1320,8 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 					s.Summary.UpdatedAt = time.Now().Unix()
 					snap := s.Summary
 					s.mu.Unlock()
+					m.updateTraceFromSummary(s, snap)
+					m.recordOutputEvidence(s, "error", firstNonEmptyTraceText(snap.CurrentTask, snap.SuggestedAction), []string{snap.CurrentTask})
 					if m.hubClient != nil {
 						_ = m.hubClient.SendSessionSummary(snap)
 					}
@@ -1023,6 +1382,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			applyOutputResult(s, result)
 			s.mu.Unlock()
 
+			m.syncTraceFromOutputResult(s, result)
 			syncOutputResult(m.hubClient, result)
 
 			m.app.refreshPowerOptimizationState()
@@ -1045,6 +1405,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				s.mu.Lock()
 				applyOutputResult(s, pResult)
 				s.mu.Unlock()
+				m.syncTraceFromOutputResult(s, pResult)
 				syncOutputResult(m.hubClient, pResult)
 			}
 
@@ -1277,12 +1638,12 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				if m.hubClient != nil {
 					_ = m.hubClient.SendSessionSummary(snap)
 				}
+				m.updateTraceFromSummary(s, snap)
 				m.app.emitRemoteStateChanged()
 			}
 		}
 	}
 }
-
 
 // runCodexSDKOutputLoop handles output for Codex SDK-mode sessions.
 // Codex exec --json emits complete JSONL lines (not streaming fragments),
@@ -1323,6 +1684,7 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 			if m.hubClient != nil {
 				_ = m.hubClient.SendSessionSummary(snap)
 			}
+			m.updateTraceFromSummary(s, snap)
 		}
 
 		// Track whether we got any real (non-diagnostic) output from codex.
@@ -1342,6 +1704,7 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 		applyOutputResult(s, result)
 		s.mu.Unlock()
 
+		m.syncTraceFromOutputResult(s, result)
 		syncOutputResult(m.hubClient, result)
 
 		m.app.refreshPowerOptimizationState()
@@ -1358,6 +1721,8 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 		s.Summary.UpdatedAt = time.Now().Unix()
 		snap := s.Summary
 		s.mu.Unlock()
+		m.updateTraceFromSummary(s, snap)
+		m.recordOutputEvidence(s, "error", firstNonEmptyTraceText(snap.CurrentTask, snap.SuggestedAction), []string{snap.CurrentTask})
 		if m.hubClient != nil {
 			_ = m.hubClient.SendSessionSummary(snap)
 		}
@@ -1368,7 +1733,6 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 	// closes.  The exit loop (runExitLoop) handles the final status transition,
 	// so we don't set SessionWaitingInput here.
 }
-
 
 // runGeminiACPOutputLoop handles output for Gemini ACP sessions.
 // Gemini ACP emits pre-formatted text on Output() (no ANSI), so the
@@ -1412,6 +1776,7 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 			if m.hubClient != nil {
 				_ = m.hubClient.SendSessionSummary(snap)
 			}
+			m.updateTraceFromSummary(s, snap)
 		}
 
 		// Detect state transitions from ACP markers.
@@ -1428,6 +1793,7 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 			if m.hubClient != nil {
 				_ = m.hubClient.SendSessionSummary(snap)
 			}
+			m.updateTraceFromSummary(s, snap)
 			m.stallDetector.StartMonitoring(s.ID, s.Exec, s.Tool)
 		} else if strings.HasPrefix(trimmedText, "[gemini-acp] turn complete:") {
 			// Prompt completed — session is waiting for next input
@@ -1447,6 +1813,7 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 			if m.hubClient != nil {
 				_ = m.hubClient.SendSessionSummary(snap)
 			}
+			m.updateTraceFromSummary(s, snap)
 			m.stallDetector.StopMonitoring(s.ID)
 		} else if strings.HasPrefix(trimmedText, "[gemini-acp] prompt error:") {
 			// Prompt failed — session is waiting for next input
@@ -1462,6 +1829,7 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 			if m.hubClient != nil {
 				_ = m.hubClient.SendSessionSummary(snap)
 			}
+			m.updateTraceFromSummary(s, snap)
 		} else if strings.HasPrefix(trimmedText, "[gemini-acp] session error:") {
 			// Session-level error from Gemini
 			s.mu.Lock()
@@ -1473,6 +1841,7 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 			if m.hubClient != nil {
 				_ = m.hubClient.SendSessionSummary(snap)
 			}
+			m.updateTraceFromSummary(s, snap)
 		}
 
 		// Append to raw output lines — filter nudge echoes first.
@@ -1502,13 +1871,13 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 		applyOutputResult(s, result)
 		s.mu.Unlock()
 
+		m.syncTraceFromOutputResult(s, result)
 		syncOutputResult(m.hubClient, result)
 
 		m.app.refreshPowerOptimizationState()
 		m.app.emitRemoteStateChanged()
 	}
 }
-
 
 // filterNudgeEchoLines removes lines that are echoes of stall-detector nudge
 // messages. Returns the filtered text; may return "" if all lines were echoes.
@@ -1723,12 +2092,32 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	s.Events = appendRecentEvents(s.Events, closedEvent, maxRecentImportantEvents)
 	summarySnap := s.Summary
 	exitStatus := s.Status
+	traceRunID := s.RunID
+	traceLastResult := s.Summary.LastResult
+	traceTailLines := append([]string(nil), s.RawOutputLines...)
 	var exitCodeVal *int
 	if s.ExitCode != nil {
 		cp := *s.ExitCode
 		exitCodeVal = &cp
 	}
 	s.mu.Unlock()
+
+	m.updateTraceFromSummary(s, summarySnap)
+	m.recordImportantEventTrace(s, closedEvent)
+	if traceRunID != "" {
+		traceSvc := m.traceService()
+		if exit.Err != nil || exitStatus == SessionError {
+			if traceSvc != nil {
+				traceSvc.UpdateRun(traceRunID, TraceRunStatusFailed, summarySnap.ProgressSummary, traceLastResult)
+			}
+			m.recordOutputEvidence(s, "error", firstNonEmptyTraceText(traceLastResult, summarySnap.ProgressSummary, "Remote session failed"), traceTailLines)
+		} else {
+			if traceSvc != nil {
+				traceSvc.UpdateRun(traceRunID, TraceRunStatusExited, firstNonEmptyTraceText(summarySnap.ProgressSummary, summarySnap.LastResult), "")
+			}
+			m.recordOutputEvidence(s, "result", firstNonEmptyTraceText(summarySnap.LastResult, summarySnap.ProgressSummary, "Remote session exited"), traceTailLines)
+		}
+	}
 
 	if m.hubClient != nil {
 		_ = m.hubClient.SendSessionSummary(summarySnap)
@@ -1742,17 +2131,46 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	// exit with code 1, so treat exit code ≤ 1 as success for them.
 	exitOK := exitStatus == SessionExited && exitCodeVal != nil &&
 		(*exitCodeVal == 0 || (s.isStructuredSession() && *exitCodeVal == 1))
-	if exitOK && m.app.experienceExtractor != nil {
-		go func() {
-			_ = m.app.experienceExtractor.Extract(s)
-		}()
+	if exitOK {
+		m.app.ensureExperienceExtractor()
+		if m.app.experienceExtractor != nil {
+			go func() {
+				_ = m.app.experienceExtractor.Extract(s)
+			}()
+		}
 	}
 	// Save session checkpoint to memory store so the next session on the
 	// same project can resume where this one left off.
+	m.app.ensureSessionCheckpointer()
 	if m.app.sessionCheckpointer != nil {
 		go func() {
 			_ = m.app.sessionCheckpointer.SaveCheckpoint(s)
 		}()
+	}
+	if s.ResumeContext != nil && m.app != nil {
+		mem := m.app.ensureConversationMemory()
+		if mem != nil {
+			slotID := fmt.Sprintf("unfinished-%s", s.ID)
+			resumePrompt := ""
+			if m.app.sessionCheckpointer != nil {
+				resumePrompt = m.app.sessionCheckpointer.BuildResumePrompt(s.ProjectPath)
+			}
+			mem.upsertUnfinishedSlot("desktop-user", &unfinishedTaskSlot{
+				SlotID:           slotID,
+				UserID:           "desktop-user",
+				ProjectPath:      s.ProjectPath,
+				SessionID:        s.ID,
+				Tool:             s.Tool,
+				Status:           "pending_resume",
+				Summary:          firstNonEmptyTraceText(s.Summary.ProgressSummary, s.ResumeContext.LastProgress, s.Summary.LastResult),
+				LastTask:         firstNonEmptyTraceText(s.Summary.CurrentTask, s.ResumeContext.OriginalTask),
+				ResumePrompt:     resumePrompt,
+				Source:           "session_exit",
+				EvidenceScopeKey: firstNonEmptyTraceText(s.RunID, s.ProjectPath, s.ID),
+				CreatedAt:        time.Now(),
+				UpdatedAt:        time.Now(),
+			})
+		}
 	}
 	if s.workspaceRelease != nil {
 		s.workspaceRelease()

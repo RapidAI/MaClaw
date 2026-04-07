@@ -10,6 +10,7 @@ import (
 // TestSignTrace runs get_sign with full debug to trace the crypto path.
 // The key question: are random bytes correctly written back to WASM memory?
 func TestSignTrace(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

@@ -14,6 +14,7 @@ import (
 // Analysis of the JS bundle shows the browser NEVER sends a "version" header.
 // The "version" key only exists in the internal Map, not in HTTP headers.
 func TestNoVersionHeader(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -88,6 +89,7 @@ func TestNoVersionHeader(t *testing.T) {
 
 // TestNoVersionHeaderUTLS same but with Chrome TLS fingerprint
 func TestNoVersionHeaderUTLS(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(home, ".maclaw", "freeproxy")
 

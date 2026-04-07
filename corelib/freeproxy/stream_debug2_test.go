@@ -17,6 +17,7 @@ import (
 // TestStreamDebugForceHTTP1 forces HTTP/1.1 (no HTTP/2) to test if the
 // server has issues with Go's HTTP/2 implementation.
 func TestStreamDebugForceHTTP1(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 

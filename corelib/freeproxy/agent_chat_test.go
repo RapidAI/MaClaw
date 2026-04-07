@@ -14,6 +14,7 @@ import (
 
 // TestAgentChatV1 tests the /agentApi/v1/agentChat endpoint which uses v1 signing.
 func TestAgentChatV1(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -106,6 +107,7 @@ func TestAgentChatV1(t *testing.T) {
 
 // TestV2ChatWithV1Signing tests if v2/chat works with v1 MD5 signing.
 func TestV2ChatWithV1Signing(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 

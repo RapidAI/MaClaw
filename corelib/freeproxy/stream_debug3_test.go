@@ -13,6 +13,7 @@ import (
 // TestStreamDebugViaCurl uses curl.exe directly to bypass Go's HTTP stack entirely.
 // This tells us if the issue is Go-specific or server-side.
 func TestStreamDebugViaCurl(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 
@@ -74,6 +75,7 @@ func TestStreamDebugViaCurl(t *testing.T) {
 
 // TestStreamDebugNonStream tries stream=false to see if the server responds at all.
 func TestStreamDebugNonStream(t *testing.T) {
+	requireIntegrationTest(t)
 	home, _ := os.UserHomeDir()
 	configDir := filepath.Join(home, ".maclaw", "freeproxy")
 

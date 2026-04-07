@@ -153,6 +153,7 @@ export namespace main {
 	    maclaw_role_description: string;
 	    maclaw_llm_protocol: string;
 	    maclaw_llm_context_length: number;
+	    maclaw_llm_timeout_sec: number;
 	    maclaw_llm_providers: any[];
 	    maclaw_llm_current_provider: string;
 	    maclaw_agent_max_iterations: number;
@@ -164,6 +165,8 @@ export namespace main {
 	    clawnet_enabled: boolean;
 	    skill_hub_urls: any[];
 	    maclaw_debug_tool_calls: boolean;
+	    show_ai_trace_entry: boolean;
+	    log_detail_enabled: boolean;
 	    clawnet_auto_picker_enabled: boolean;
 	    clawnet_auto_picker_poll_min: number;
 	    clawnet_auto_picker_min_reward: number;
@@ -188,6 +191,9 @@ export namespace main {
 	    ui_mode: string;
 	    skill_purchase_mode: string;
 	    gossip_auto_publish: boolean;
+	    llm_trajectory_logging: boolean;
+	    trial_reflect_enabled: boolean;
+	    llm_token_usage: Record<string, any>;
 	    onboarding_done: boolean;
 	    vector_search_enabled: boolean;
 	
@@ -259,6 +265,7 @@ export namespace main {
 	        this.maclaw_role_description = source["maclaw_role_description"];
 	        this.maclaw_llm_protocol = source["maclaw_llm_protocol"];
 	        this.maclaw_llm_context_length = source["maclaw_llm_context_length"];
+	        this.maclaw_llm_timeout_sec = source["maclaw_llm_timeout_sec"];
 	        this.maclaw_llm_providers = source["maclaw_llm_providers"];
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
 	        this.maclaw_agent_max_iterations = source["maclaw_agent_max_iterations"];
@@ -280,6 +287,8 @@ export namespace main {
 	        this.file_outbound_enabled = source["file_outbound_enabled"];
 	        this.image_outbound_enabled = source["image_outbound_enabled"];
 	        this.maclaw_debug_tool_calls = source["maclaw_debug_tool_calls"];
+	        this.show_ai_trace_entry = source["show_ai_trace_entry"];
+	        this.log_detail_enabled = source["log_detail_enabled"];
 	        this.qqbot_enabled = source["qqbot_enabled"];
 	        this.qqbot_app_id = source["qqbot_app_id"];
 	        this.qqbot_app_secret = source["qqbot_app_secret"];
@@ -294,6 +303,9 @@ export namespace main {
 	        this.ui_mode = source["ui_mode"];
 	        this.skill_purchase_mode = source["skill_purchase_mode"];
 	        this.gossip_auto_publish = source["gossip_auto_publish"];
+	        this.llm_trajectory_logging = source["llm_trajectory_logging"];
+	        this.trial_reflect_enabled = source["trial_reflect_enabled"];
+	        this.llm_token_usage = source["llm_token_usage"];
 	        this.onboarding_done = source["onboarding_done"];
 	        this.vector_search_enabled = source["vector_search_enabled"];
 	    }
