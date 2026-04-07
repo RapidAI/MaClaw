@@ -26,10 +26,28 @@ func (a *App) initClawNet() *ClawNetClient {
 	return a.clawNetClient
 }
 
+func (a *App) clawNetStartAllowed() error {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	if !cfg.ClawNetEnabled {
+		return fmt.Errorf("clawnet is disabled in settings")
+	}
+	return nil
+}
+
+func (a *App) clawNetEnabled() bool {
+	return a.clawNetStartAllowed() == nil
+}
+
 // ---------- Wails-exposed methods ----------
 
 // ClawNetEnsureDaemon starts the ClawNet daemon if not running.
 func (a *App) ClawNetEnsureDaemon() map[string]interface{} {
+	if err := a.clawNetStartAllowed(); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
 	c := a.initClawNet()
 	if err := c.EnsureDaemon(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -262,6 +280,9 @@ func (a *App) ClawNetInstallBinary() map[string]interface{} {
 // ClawNetEnsureDaemonWithDownload starts the daemon, auto-downloading if needed.
 // Emits "clawnet-install-progress" events during download.
 func (a *App) ClawNetEnsureDaemonWithDownload() map[string]interface{} {
+	if err := a.clawNetStartAllowed(); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
 	c := a.initClawNet()
 	emitter := func(stage string, pct int, msg string) {
 		a.emitEvent("clawnet-install-progress", map[string]interface{}{
@@ -292,6 +313,12 @@ func (a *App) ClawNetManualUpdate() map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 
+	a.log("ClawNet: update applied")
+	if !a.clawNetEnabled() {
+		a.log("ClawNet: daemon restart skipped after update because clawnet_enabled=false")
+		return map[string]interface{}{"ok": true, "updated": true, "restarted": false}
+	}
+
 	a.log("ClawNet: update applied, restarting daemon...")
 
 	// Stop the current daemon.
@@ -312,7 +339,7 @@ func (a *App) ClawNetManualUpdate() map[string]interface{} {
 
 	c.StartAutoUpdate(func(msg string) { a.log(msg) })
 	a.log("ClawNet: manual update completed, daemon restarted")
-	return map[string]interface{}{"ok": true, "updated": true}
+	return map[string]interface{}{"ok": true, "updated": true, "restarted": true}
 }
 
 // ClawNetGetBinaryPath returns the resolved clawnet binary path (for diagnostics).
@@ -697,7 +724,7 @@ func (a *App) ClawNetExportIdentity() map[string]interface{} {
 }
 
 // ClawNetImportIdentity restores identity.key from a user-chosen file via open dialog.
-// Stops daemon before importing, restarts after successful import.
+// Stops daemon before importing, and only restarts if ClawNet is enabled.
 func (a *App) ClawNetImportIdentity() map[string]interface{} {
 	src, err := wailsrt.OpenFileDialog(a.ctx, wailsrt.OpenDialogOptions{
 		Title: "Import ClawNet Identity Key",
@@ -753,8 +780,12 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 	}
 	a.log(fmt.Sprintf("ClawNet: identity key imported from %s", src))
 
-	// Restart daemon with new identity
+	// Restart daemon with new identity only when the main switch allows it.
 	restarted := false
+	if !a.clawNetEnabled() {
+		a.log("ClawNet: daemon restart skipped after identity import because clawnet_enabled=false")
+		return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
+	}
 	c := a.initClawNet()
 	if err := c.EnsureDaemon(); err != nil {
 		a.log(fmt.Sprintf("ClawNet: daemon restart after import failed: %v", err))
@@ -849,7 +880,7 @@ func (a *App) ClawNetOnlineBackupKey(password string) map[string]interface{} {
 }
 
 // ClawNetOnlineRestoreKey downloads and decrypts the identity key from the Hub.
-// Stops daemon before replacing key, restarts after successful restore.
+// Stops daemon before replacing key, and only restarts if ClawNet is enabled.
 func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 	config, err := a.LoadConfig()
 	if err != nil {
@@ -927,8 +958,12 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 	}
 	a.log(fmt.Sprintf("ClawNet: identity key restored from Hub for %s", email))
 
-	// Restart daemon with new identity
+	// Restart daemon with restored identity only when the main switch allows it.
 	restarted := false
+	if !a.clawNetEnabled() {
+		a.log("ClawNet: daemon restart skipped after online restore because clawnet_enabled=false")
+		return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
+	}
 	c := a.initClawNet()
 	if err := c.EnsureDaemon(); err != nil {
 		a.log(fmt.Sprintf("ClawNet: daemon restart after online restore failed: %v", err))
@@ -1206,6 +1241,19 @@ func (a *App) ClawNetAutoPickerConfigure(enabled bool, pollMinutes int, minRewar
 	if a.autoTaskPicker == nil {
 		return map[string]interface{}{"ok": false, "error": "auto-task-picker not initialized"}
 	}
+	if enabled && !a.clawNetEnabled() {
+		a.autoTaskPicker.Configure(false, pollMinutes, minReward, tags)
+		a.autoTaskPicker.Stop()
+		if cfg, err := a.LoadConfig(); err == nil {
+			cfg.ClawNetAutoPickerEnabled = false
+			if pollMinutes > 0 {
+				cfg.ClawNetAutoPickerPollMin = pollMinutes
+			}
+			cfg.ClawNetAutoPickerMinReward = minReward
+			_ = a.SaveConfig(cfg)
+		}
+		return map[string]interface{}{"ok": false, "error": "clawnet is disabled in settings"}
+	}
 	a.autoTaskPicker.Configure(enabled, pollMinutes, minReward, tags)
 
 	if enabled {
@@ -1253,7 +1301,6 @@ func (a *App) ClawNetManualPickTask(taskID string) map[string]interface{} {
 	return a.autoTaskPicker.PickAndExecuteTask(taskID)
 }
 
-
 // ensureAutoTaskPicker lazily creates and wires the auto-task-picker.
 // Thread-safe via sync.Once — safe to call from multiple goroutines.
 func (a *App) ensureAutoTaskPicker() {
@@ -1278,7 +1325,8 @@ func (a *App) ensureAutoTaskPicker() {
 			// Prepend a hint so the agent knows this is an autonomous ClawNet task.
 			actionText := fmt.Sprintf("[虾网自动接单任务 — 请一次性完成，不要等待用户输入]\n任务: %s\n\n%s", taskTitle, taskDescription)
 
-			resp := hubClient.imHandler.HandleIMMessageWithProgress(IMUserMessage{
+			handler := hubClient.ensureIMHandler()
+			resp := handler.HandleIMMessageWithProgress(IMUserMessage{
 				UserID:        "clawnet_auto_task",
 				Platform:      "clawnet",
 				Text:          actionText,
@@ -1319,7 +1367,7 @@ func (a *App) ensureAutoTaskPicker() {
 		a.autoTaskPicker = picker
 
 		// Restore saved auto-picker state from config so it survives restarts.
-		if cfg.ClawNetAutoPickerEnabled {
+		if cfg.ClawNetAutoPickerEnabled && cfg.ClawNetEnabled {
 			pollMin := cfg.ClawNetAutoPickerPollMin
 			if pollMin <= 0 {
 				pollMin = 5
