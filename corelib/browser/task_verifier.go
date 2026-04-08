@@ -48,6 +48,12 @@ func (v *TaskVerifier) checkOne(sess *Session, c CriterionSpec) CriterionResult 
 		return v.checkURLMatches(sess, c)
 	case "ocr_contains":
 		return v.checkOCRContains(sess, c)
+	case "frame_url_contains":
+		return v.checkFrameURLContains(sess, c)
+	case "network_request":
+		return v.checkNetworkRequest(sess, c)
+	case "console_no_error":
+		return v.checkConsoleNoError(sess, c)
 	default:
 		return CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("unknown criterion type: %s", c.Type)}
 	}
@@ -128,6 +134,37 @@ func (v *TaskVerifier) checkOCRContains(sess *Session, c CriterionSpec) Criterio
 		Error:  fmt.Sprintf("OCR text does not contain %q", c.Pattern)}
 }
 
+func (v *TaskVerifier) checkFrameURLContains(sess *Session, c CriterionSpec) CriterionResult {
+	frames := sess.FrameSnapshots()
+	frameIDFilter := strings.TrimSpace(c.FrameID)
+	for _, frame := range frames {
+		if frameIDFilter != "" && frame.FrameID != frameIDFilter {
+			continue
+		}
+		if strings.Contains(frame.URL, c.Pattern) {
+			return CriterionResult{Criterion: c, Passed: true, Actual: frame.URL}
+		}
+	}
+	return CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("frame URL does not contain %q", c.Pattern)}
+}
+
+func (v *TaskVerifier) checkNetworkRequest(sess *Session, c CriterionSpec) CriterionResult {
+	if strings.TrimSpace(c.Pattern) == "" {
+		return CriterionResult{Criterion: c, Passed: false, Error: "missing network pattern"}
+	}
+	if strings.Contains(strings.Join(sess.lastNetworkLines(), " | "), c.Pattern) {
+		return CriterionResult{Criterion: c, Passed: true, Actual: c.Pattern}
+	}
+	return CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("network requests do not contain %q", c.Pattern)}
+}
+
+func (v *TaskVerifier) checkConsoleNoError(sess *Session, c CriterionSpec) CriterionResult {
+	if len(sess.lastErrorLines()) > 0 {
+		return CriterionResult{Criterion: c, Passed: false, Actual: truncate(strings.Join(sess.lastErrorLines(), " | "), 200), Error: "console error present"}
+	}
+	return CriterionResult{Criterion: c, Passed: true, Actual: "no_error"}
+}
+
 // WaitForStable waits until the page has no new network activity for 1 second.
 // Uses a simple heuristic: poll document.readyState + check for pending XHR.
 func (v *TaskVerifier) WaitForStable(timeout time.Duration) error {
@@ -136,10 +173,19 @@ func (v *TaskVerifier) WaitForStable(timeout time.Duration) error {
 		return err
 	}
 	deadline := time.Now().Add(timeout)
+	stableSince := time.Time{}
 	for time.Now().Before(deadline) {
 		result, err := sess.Eval(`document.readyState`)
-		if err == nil && result == "complete" {
-			return nil
+		ready := err == nil && result == "complete"
+		networkQuiet := len(sess.lastNetworkLines()) <= 1
+		if ready && networkQuiet {
+			if stableSince.IsZero() {
+				stableSince = time.Now()
+			} else if time.Since(stableSince) >= time.Second {
+				return nil
+			}
+		} else {
+			stableSince = time.Time{}
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

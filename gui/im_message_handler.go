@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,75 +43,79 @@ type MessageAttachment struct {
 
 // IMUserMessage is the payload of an "im.user_message" from Hub.
 type IMUserMessage struct {
-	UserID             string              `json:"user_id"`
-	Platform           string              `json:"platform"`
-	Text               string              `json:"text"`
-	Lang               string              `json:"lang,omitempty"`                 // User language ("zh", "en"); empty defaults to "zh"
-	Attachments        []MessageAttachment `json:"attachments,omitempty"`          // File/image attachments from user
-	MinIterations      int                 `json:"min_iterations,omitempty"`       // floor for agent loop iterations (used by scheduled tasks)
-	IsBackground       bool                `json:"is_background,omitempty"`        // true for scheduled tasks / auto-picked tasks (uses separate HTTP client)
-	BackgroundSlotKind string              `json:"background_slot_kind,omitempty"` // "coding", "scheduled", "auto" — determines concurrency slot (default: "scheduled")
-	ResumeSlotID       string              `json:"resume_slot_id,omitempty"`
-	StartNewTask       bool                `json:"start_new_task,omitempty"`
-	DismissSlotID      string              `json:"dismiss_slot_id,omitempty"`
+	UserID                      string              `json:"user_id"`
+	Platform                    string              `json:"platform"`
+	Text                        string              `json:"text"`
+	Lang                        string              `json:"lang,omitempty"`                 // User language ("zh", "en"); empty defaults to "zh"
+	Attachments                 []MessageAttachment `json:"attachments,omitempty"`          // File/image attachments from user
+	MinIterations               int                 `json:"min_iterations,omitempty"`       // floor for agent loop iterations (used by scheduled tasks)
+	IsBackground                bool                `json:"is_background,omitempty"`        // true for scheduled tasks / auto-picked tasks (uses separate HTTP client)
+	BackgroundSlotKind          string              `json:"background_slot_kind,omitempty"` // "coding", "scheduled", "auto" — determines concurrency slot (default: "scheduled")
+	ResumeSlotID                string              `json:"resume_slot_id,omitempty"`
+	StartNewTask                bool                `json:"start_new_task,omitempty"`
+	DismissSlotID               string              `json:"dismiss_slot_id,omitempty"`
+	ResumeRecoverableSessionID  string              `json:"resume_session_id,omitempty"`
+	DismissRecoverableSessionID string              `json:"dismiss_recoverable_session_id,omitempty"`
 }
 
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
-	Text                                string                    `json:"text"`
-	Fields                              []IMResponseField         `json:"fields,omitempty"`
-	Actions                             []IMResponseAction        `json:"actions,omitempty"`
-	Confirmation                        *IMResponseConfirmation   `json:"confirmation,omitempty"`
-	UnfinishedSlot                      *IMResponseUnfinishedSlot `json:"unfinished_slot,omitempty"`
-	ImageKey                            string                    `json:"image_key,omitempty"`
-	FileData                            string                    `json:"file_data,omitempty"`
-	FileName                            string                    `json:"file_name,omitempty"`
-	FileMimeType                        string                    `json:"file_mime_type,omitempty"`
-	LocalFilePath                       string                    `json:"local_file_path,omitempty"`
-	LocalFilePaths                      []string                  `json:"local_file_paths,omitempty"`
-	ThumbnailBase64                     string                    `json:"thumbnail_base64,omitempty"`
-	Error                               string                    `json:"error,omitempty"`
-	Deferred                            bool                      `json:"deferred,omitempty"`
-	JobID                               string                    `json:"job_id,omitempty"`
-	RunID                               string                    `json:"run_id,omitempty"`
-	RequestID                           string                    `json:"request_id,omitempty"`
-	TraceSummary                        string                    `json:"trace_summary,omitempty"`
-	TraceEventCount                     int                       `json:"trace_event_count,omitempty"`
-	EvidenceCount                       int                       `json:"evidence_count,omitempty"`
-	TrialReflectSummary                 string                    `json:"trial_reflect_summary,omitempty"`
-	TrialReflectStatus                  string                    `json:"trial_reflect_status,omitempty"`
-	TrialReflectFailures                int                       `json:"trial_reflect_failures,omitempty"`
-	InputTokens                         int                       `json:"input_tokens,omitempty"`
-	OutputTokens                        int                       `json:"output_tokens,omitempty"`
-	TotalTokens                         int                       `json:"total_tokens,omitempty"`
-	HandlerTailNanos                    int64                     `json:"-"`
-	HandlerBlackholeAfterUsageNanos     int64                     `json:"-"`
-	HandlerBlackholeBeforeReturnNanos   int64                     `json:"-"`
-	HandlerPostStreamUsageNanos         int64                     `json:"-"`
-	HandlerPostStreamResponseNanos      int64                     `json:"-"`
-	HandlerPostStreamToolExecNanos      int64                     `json:"-"`
-	HandlerPostStreamChoiceNanos        int64                     `json:"-"`
-	HandlerPostStreamAssistantMsgNanos  int64                     `json:"-"`
-	HandlerPostStreamHistoryAppendNanos int64                     `json:"-"`
-	HandlerPostStreamNoToolBranchNanos  int64                     `json:"-"`
-	FinalizeTraceNanos                  int64                     `json:"-"`
-	MemorySaveNanos                     int64                     `json:"-"`
-	CapabilityGapNanos                  int64                     `json:"-"`
-	FileMaterializeNanos                int64                     `json:"-"`
-	PreLLMPrepNanos                     int64                     `json:"-"`
-	PreLLMConfigNanos                   int64                     `json:"-"`
-	PreLLMToolsNanos                    int64                     `json:"-"`
-	PreLLMConversationNanos             int64                     `json:"-"`
-	PreLLMIterationPrepNanos            int64                     `json:"-"`
-	FirstTokenWaitNanos                 int64                     `json:"-"`
-	LLMRequestBuildNanos                int64                     `json:"-"`
-	LLMHTTPDoNanos                      int64                     `json:"-"`
-	LLMFirstSSEWaitNanos                int64                     `json:"-"`
-	LLMRetryWaitNanos                   int64                     `json:"-"`
-	LLMStreamMaxTokenGapNanos           int64                     `json:"-"`
-	LLMRetryCount                       int                       `json:"-"`
-	LLMIdleTimeoutCount                 int                       `json:"-"`
-	LLMIdleTimeoutAfterToken            bool                      `json:"-"`
+	Text                                string                        `json:"text"`
+	Fields                              []IMResponseField             `json:"fields,omitempty"`
+	Actions                             []IMResponseAction            `json:"actions,omitempty"`
+	Confirmation                        *IMResponseConfirmation       `json:"confirmation,omitempty"`
+	UnfinishedTask                      *IMResponseUnfinishedTask     `json:"unfinished_task,omitempty"`
+	UnfinishedSlot                      *IMResponseUnfinishedTask     `json:"unfinished_slot,omitempty"`
+	RecoverableSession                  *IMResponseRecoverableSession `json:"recoverable_session,omitempty"`
+	ImageKey                            string                        `json:"image_key,omitempty"`
+	FileData                            string                        `json:"file_data,omitempty"`
+	FileName                            string                        `json:"file_name,omitempty"`
+	FileMimeType                        string                        `json:"file_mime_type,omitempty"`
+	LocalFilePath                       string                        `json:"local_file_path,omitempty"`
+	LocalFilePaths                      []string                      `json:"local_file_paths,omitempty"`
+	ThumbnailBase64                     string                        `json:"thumbnail_base64,omitempty"`
+	Error                               string                        `json:"error,omitempty"`
+	Deferred                            bool                          `json:"deferred,omitempty"`
+	JobID                               string                        `json:"job_id,omitempty"`
+	RunID                               string                        `json:"run_id,omitempty"`
+	RequestID                           string                        `json:"request_id,omitempty"`
+	TraceSummary                        string                        `json:"trace_summary,omitempty"`
+	TraceEventCount                     int                           `json:"trace_event_count,omitempty"`
+	EvidenceCount                       int                           `json:"evidence_count,omitempty"`
+	TrialReflectSummary                 string                        `json:"trial_reflect_summary,omitempty"`
+	TrialReflectStatus                  string                        `json:"trial_reflect_status,omitempty"`
+	TrialReflectFailures                int                           `json:"trial_reflect_failures,omitempty"`
+	InputTokens                         int                           `json:"input_tokens,omitempty"`
+	OutputTokens                        int                           `json:"output_tokens,omitempty"`
+	TotalTokens                         int                           `json:"total_tokens,omitempty"`
+	HandlerTailNanos                    int64                         `json:"-"`
+	HandlerBlackholeAfterUsageNanos     int64                         `json:"-"`
+	HandlerBlackholeBeforeReturnNanos   int64                         `json:"-"`
+	HandlerPostStreamUsageNanos         int64                         `json:"-"`
+	HandlerPostStreamResponseNanos      int64                         `json:"-"`
+	HandlerPostStreamToolExecNanos      int64                         `json:"-"`
+	HandlerPostStreamChoiceNanos        int64                         `json:"-"`
+	HandlerPostStreamAssistantMsgNanos  int64                         `json:"-"`
+	HandlerPostStreamHistoryAppendNanos int64                         `json:"-"`
+	HandlerPostStreamNoToolBranchNanos  int64                         `json:"-"`
+	FinalizeTraceNanos                  int64                         `json:"-"`
+	MemorySaveNanos                     int64                         `json:"-"`
+	CapabilityGapNanos                  int64                         `json:"-"`
+	FileMaterializeNanos                int64                         `json:"-"`
+	PreLLMPrepNanos                     int64                         `json:"-"`
+	PreLLMConfigNanos                   int64                         `json:"-"`
+	PreLLMToolsNanos                    int64                         `json:"-"`
+	PreLLMConversationNanos             int64                         `json:"-"`
+	PreLLMIterationPrepNanos            int64                         `json:"-"`
+	FirstTokenWaitNanos                 int64                         `json:"-"`
+	LLMRequestBuildNanos                int64                         `json:"-"`
+	LLMHTTPDoNanos                      int64                         `json:"-"`
+	LLMFirstSSEWaitNanos                int64                         `json:"-"`
+	LLMRetryWaitNanos                   int64                         `json:"-"`
+	LLMStreamMaxTokenGapNanos           int64                         `json:"-"`
+	LLMRetryCount                       int                           `json:"-"`
+	LLMIdleTimeoutCount                 int                           `json:"-"`
+	LLMIdleTimeoutAfterToken            bool                          `json:"-"`
 }
 
 const stalledNoToolRecoverThreshold = 2
@@ -131,6 +136,7 @@ type agentLoopPhase struct {
 	ForceSkillPreference bool
 	PreferredSkillName   string
 	PreferredSkillReason string
+	PreferredSkillRunID  string
 	SkillAttempted       bool
 	SkillFailed          bool
 	RecoverReason        string
@@ -207,7 +213,7 @@ func shouldBypassSkillPreference(toolCalls []llmToolCall) bool {
 	for _, tc := range toolCalls {
 		name := strings.TrimSpace(tc.Function.Name)
 		switch name {
-		case "run_skill", "list_skills", "search_skill_hub", "install_skill_hub", "search_and_install_skill":
+		case "run_skill", "get_skill_run", "list_skills", "search_skill_hub", "install_skill_hub", "search_and_install_skill":
 			return true
 		}
 	}
@@ -247,12 +253,47 @@ func enterRecoverPhase(phase *agentLoopPhase, reason, prompt string) {
 	phase.RecoverPrompt = prompt
 }
 
-func buildSkillRecoverPrompt(skillName string) string {
+func buildSkillProgressGuidance(skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
-	if skillName == "" {
-		return "[Recover 阶段]\n本地 Skill 已尝试且失败，当前进入 Recover 阶段。不要重复同一个失败 Skill。请基于已知失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n[/Recover 阶段]"
+	runID = strings.TrimSpace(runID)
+	if runID != "" {
+		return fmt.Sprintf("若已拿到 run_id，请优先调用 get_skill_run(run_id=\"%s\") 继续观察状态；仅在明确失败后再切换到其他真实工具。", runID)
 	}
-	return fmt.Sprintf("[Recover 阶段]\n本地 Skill「%s」已尝试且失败，当前进入 Recover 阶段。不要再次调用同一个 Skill。请基于失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n[/Recover 阶段]", skillName)
+	if skillName != "" {
+		return fmt.Sprintf("若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；否则先调用 run_skill(name=\"%s\") 开始执行。", skillName)
+	}
+	return "若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态。"
+}
+
+func extractSkillRunID(toolCalls []llmToolCall, toolResults []string) string {
+	if len(toolCalls) == 0 || len(toolCalls) != len(toolResults) {
+		return ""
+	}
+	for i := len(toolCalls) - 1; i >= 0; i-- {
+		if strings.TrimSpace(toolCalls[i].Function.Name) != "run_skill" {
+			continue
+		}
+		result := strings.TrimSpace(toolResults[i])
+		if result == "" {
+			continue
+		}
+		if matches := regexp.MustCompile(`run_id[:=]\s*([A-Za-z0-9._-]+)`).FindStringSubmatch(result); len(matches) == 2 {
+			return strings.TrimSpace(matches[1])
+		}
+		if matches := regexp.MustCompile(`（run_id=([A-Za-z0-9._-]+)）`).FindStringSubmatch(result); len(matches) == 2 {
+			return strings.TrimSpace(matches[1])
+		}
+	}
+	return ""
+}
+
+func buildSkillRecoverPrompt(skillName, runID string) string {
+	skillName = strings.TrimSpace(skillName)
+	guidance := buildSkillProgressGuidance(skillName, runID)
+	if skillName == "" {
+		return "[Recover 阶段]\n本地 Skill 已尝试且失败，当前进入 Recover 阶段。不要重复同一个失败 Skill。请基于已知失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n" + guidance + "\n[/Recover 阶段]"
+	}
+	return fmt.Sprintf("[Recover 阶段]\n本地 Skill「%s」已尝试且失败，当前进入 Recover 阶段。不要再次调用同一个 Skill。请基于失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n%s\n[/Recover 阶段]", skillName, guidance)
 }
 
 func buildDriftRecoverPrompt(drift DriftResult) string {
@@ -263,10 +304,14 @@ func buildDriftRecoverPrompt(drift DriftResult) string {
 	return "[Recover 阶段]\n检测到执行路径出现漂移或循环，当前进入 Recover 阶段。请先暂停重复操作，回到原始目标，基于已知结果改用不同路径继续完成任务。\n" + detail + "\n[/Recover 阶段]"
 }
 
-func buildDeliverableRecoverPrompt(skillName string, preferSkill bool) string {
+func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID string) string {
 	skillName = strings.TrimSpace(skillName)
+	runID = strings.TrimSpace(runID)
+	if runID != "" {
+		return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上。" + buildSkillProgressGuidance(skillName, runID) + " 若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
+	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，优先直接调用 run_skill(name=\"%s\") 完成交付；若该 Skill 明确失败，再切换到其他真实工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]", skillName)
+		return fmt.Sprintf("[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，优先直接调用 run_skill(name=\"%s\") 完成交付；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 明确失败，再切换到其他真实工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]", skillName)
 	}
 	return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，请立即调用真实工具完成交付；若目标是文档，优先选择当前可用的文档/文件交付工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
 }
@@ -288,18 +333,26 @@ func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []strin
 	return b.String()
 }
 
-func buildNoToolActionPrompt(preferSkill bool, skillName string) string {
+func buildNoToolActionPrompt(preferSkill bool, skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
+	runID = strings.TrimSpace(runID)
+	if runID != "" {
+		return "[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。" + buildSkillProgressGuidance(skillName, runID) + "\n[/执行要求]"
+	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。优先立即调用 run_skill(name=\"%s\") 开始执行；若该 Skill 不适用或失败，再切换到其他真实工具。\n[/执行要求]", skillName)
+		return fmt.Sprintf("[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。优先立即调用 run_skill(name=\"%s\") 开始执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具。\n[/执行要求]", skillName)
 	}
 	return "[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成、编辑或发送相关工具。\n[/执行要求]"
 }
 
-func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName string) string {
+func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
+	runID = strings.TrimSpace(runID)
+	if runID != "" {
+		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。%s\n[/Recover 阶段]", consecutive, buildSkillProgressGuidance(skillName, runID))
+	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。优先立即调用 run_skill(name=\"%s\") 启动实际执行；若该 Skill 不适用或失败，再切换到其他真实工具完成任务。\n[/Recover 阶段]", consecutive, skillName)
+		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。优先立即调用 run_skill(name=\"%s\") 启动实际执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具完成任务。\n[/Recover 阶段]", consecutive, skillName)
 	}
 	return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成或发送相关工具。\n[/Recover 阶段]", consecutive)
 }
@@ -325,6 +378,8 @@ func userFacingToolProgressText(toolName string) string {
 		return "🛠️ 正在生成并执行脚本，准备继续完成交付..."
 	case "bash":
 		return "🖥️ 正在执行命令处理文件，请稍候..."
+	case "run_skill":
+		return "🚀 正在启动 Skill 并等待状态快照..."
 	case "send_file":
 		return "📤 正在整理并发送生成的文件..."
 	case "generate_pdf":
@@ -336,7 +391,7 @@ func userFacingToolProgressText(toolName string) string {
 
 func shouldExposeToolInternalProgress(toolName string) bool {
 	switch toolName {
-	case "craft_tool", "bash":
+	case "craft_tool", "bash", "run_skill":
 		return true
 	default:
 		return false
@@ -361,6 +416,14 @@ func filterUserFacingToolProgress(toolName, msg string) string {
 		case "bash":
 			if strings.HasPrefix(trimmed, "⏳ ") {
 				return trimmed
+			}
+			return ""
+		case "run_skill":
+			allowedPrefixes := []string{"🚀 ", "⏳ ", "✅ ", "❌ "}
+			for _, prefix := range allowedPrefixes {
+				if strings.HasPrefix(trimmed, prefix) {
+					return trimmed
+				}
 			}
 			return ""
 		}
@@ -454,16 +517,20 @@ func shouldAutoClearIncompleteTaskContext(newMessage string, entries []conversat
 }
 
 type explicitTaskSlotDecision struct {
-	ResumeSlotID  string
-	StartNewTask  bool
-	DismissSlotID string
+	ResumeSlotID                string
+	StartNewTask                bool
+	DismissSlotID               string
+	ResumeRecoverableSessionID  string
+	DismissRecoverableSessionID string
 }
 
 func resolveExplicitTaskSlotDecision(msg IMUserMessage, slot *unfinishedTaskSlot) explicitTaskSlotDecision {
 	decision := explicitTaskSlotDecision{
-		ResumeSlotID:  strings.TrimSpace(msg.ResumeSlotID),
-		StartNewTask:  msg.StartNewTask,
-		DismissSlotID: strings.TrimSpace(msg.DismissSlotID),
+		ResumeSlotID:                strings.TrimSpace(msg.ResumeSlotID),
+		StartNewTask:                msg.StartNewTask,
+		DismissSlotID:               strings.TrimSpace(msg.DismissSlotID),
+		ResumeRecoverableSessionID:  strings.TrimSpace(msg.ResumeRecoverableSessionID),
+		DismissRecoverableSessionID: strings.TrimSpace(msg.DismissRecoverableSessionID),
 	}
 	if decision.ResumeSlotID != "" && (slot == nil || slot.SlotID != decision.ResumeSlotID) {
 		decision.ResumeSlotID = ""
@@ -557,6 +624,97 @@ func isConfirmationCancel(text string) bool {
 		}
 	}
 	return false
+}
+
+func isShortChitChatMessage(text string) bool {
+	return normalizeShortChitChatToken(text) != ""
+}
+
+var shortChitChatEdgePunctuationPattern = regexp.MustCompile(`^[\s"'“”‘’` + "`" + `()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+|[\s"'“”‘’` + "`" + `()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+$`)
+var shortChitChatChineseIdlePattern = regexp.MustCompile(`^(没事|没事了|没有)(啊|呀|啦|呢|吧|哦|喔|哈|哇|嘛|的)?$`)
+var shortChitChatChineseThanksPattern = regexp.MustCompile(`^(谢谢)(啊|呀|啦|呢|吧|哦|喔|哈)?$`)
+var shortChitChatChineseGreetingPattern = regexp.MustCompile(`^(你好|你好呀|你好啊|嗨|哈喽)(啊|呀|啦|呢|吧|哦|喔|哈)?$`)
+
+func normalizeShortChitChatToken(text string) string {
+	cleaned := strings.ToLower(strings.TrimSpace(text))
+	if cleaned == "" {
+		return ""
+	}
+	for {
+		next := strings.TrimSpace(shortChitChatEdgePunctuationPattern.ReplaceAllString(cleaned, ""))
+		if next == cleaned {
+			break
+		}
+		cleaned = next
+	}
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	if cleaned == "" {
+		return ""
+	}
+	switch {
+	case shortChitChatChineseIdlePattern.MatchString(cleaned):
+		return "没事"
+	case shortChitChatChineseThanksPattern.MatchString(cleaned):
+		return "谢谢"
+	case shortChitChatChineseGreetingPattern.MatchString(cleaned):
+		return "你好"
+	}
+	shortPhrases := map[string]struct{}{
+		"hi":        {},
+		"hello":     {},
+		"hey":       {},
+		"你好":        {},
+		"没事":        {},
+		"nothing":   {},
+		"none":      {},
+		"ok":        {},
+		"okay":      {},
+		"thanks":    {},
+		"thank you": {},
+		"谢谢":        {},
+	}
+	if _, ok := shortPhrases[cleaned]; ok {
+		return cleaned
+	}
+	return ""
+}
+
+func buildShortChitChatResponse(text, lang string) string {
+	normalized := normalizeShortChitChatToken(text)
+	if normalized == "" {
+		normalized = strings.ToLower(strings.TrimSpace(text))
+	}
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if lang == "" {
+		switch normalized {
+		case "hi", "hello", "hey", "nothing", "none", "ok", "okay", "thanks", "thank you":
+			lang = "en"
+		default:
+			lang = "zh"
+		}
+	}
+	if lang == "en" {
+		switch normalized {
+		case "thanks", "thank you":
+			return "You're welcome. I'm here if you want to continue."
+		case "nothing", "none":
+			return "No problem. I'm here if you need anything."
+		case "ok", "okay":
+			return "Okay. I'm here if you need anything."
+		default:
+			return "Hi! I'm here if you need anything."
+		}
+	}
+	switch normalized {
+	case "谢谢":
+		return "不客气。我在这，有需要随时说。"
+	case "没事", "nothing", "none":
+		return "好，没问题。我在这，有需要随时叫我。"
+	case "ok", "okay":
+		return "好的，我在这。有需要随时说。"
+	default:
+		return "你好，我在这。有需要随时说。"
+	}
 }
 
 func shouldRequireExecutionConfirmation(msg IMUserMessage, pending *pendingConfirmation) bool {
@@ -726,6 +884,51 @@ func looksLikeNoToolStallReply(text string) bool {
 	return false
 }
 
+func hasFutureDeliveryPromise(text string) bool {
+	trimmed := strings.TrimSpace(stripThinkingTags(text))
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	futureDeliveryHints := []string{
+		"马上发你", "稍后发送", "接下来发送", "继续发送", "继续发你", "继续生成", "继续整理",
+		"will send", "send it to you shortly", "send you shortly", "about to send", "going to send",
+	}
+	for _, hint := range futureDeliveryHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeCompletedOrSummaryDeliverableReply(text string) bool {
+	trimmed := strings.TrimSpace(stripThinkingTags(text))
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	completedHints := []string{
+		"已完成", "已经完成", "完成了", "已整理", "已经整理", "整理好了", "已为你", "已经为你",
+		"结果如下", "总结如下", "以下是", "结论如下", "报告如下", "文档如下", "文字版如下", "这里是",
+		"completed", "done", "here is", "here's", "results below", "summary below", "below is",
+	}
+	hasCompletedHint := false
+	for _, hint := range completedHints {
+		if strings.Contains(lower, hint) {
+			hasCompletedHint = true
+			break
+		}
+	}
+	if !hasCompletedHint {
+		return false
+	}
+	if hasFutureDeliveryPromise(trimmed) {
+		return false
+	}
+	return true
+}
+
 func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	trimmed := strings.TrimSpace(stripThinkingTags(text))
 	if trimmed == "" {
@@ -760,11 +963,19 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	if !hasPromiseHint {
 		return false
 	}
+	if looksLikeCompletedOrSummaryDeliverableReply(trimmed) {
+		return false
+	}
+	futureDeliveryPromise := hasFutureDeliveryPromise(trimmed)
 	completionHints := []string{
 		"已生成", "已保存", "文件已保存", "将发送给用户", "已准备好，将发送给用户", "失败原因", "无法生成", "localfile", "[file_base64|",
+		"已完成", "已经完成", "结果如下", "总结如下", "以下是", "here is", "here's", "results below", "summary below",
 	}
 	for _, hint := range completionHints {
 		if strings.Contains(lower, hint) {
+			if futureDeliveryPromise {
+				break
+			}
 			return false
 		}
 	}
@@ -834,8 +1045,99 @@ func ensureTraceAction(resp *IMAgentResponse) {
 	})
 }
 
-func buildEmptyResultFallback(status TraceRunStatus, traceSummary string) string {
+func selectVisibleEmptyResultSummary(traceSummary string) string {
 	summary := strings.TrimSpace(traceSummary)
+	if !isVisibleEmptyResultSummary(summary) {
+		return ""
+	}
+	return summary
+}
+
+func isVisibleEmptyResultSummary(summary string) bool {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return false
+	}
+	lower := strings.ToLower(summary)
+	normalizedEcho := normalizeShortChitChatToken(regexp.MustCompile(`^(summary|result|trace summary|结果|摘要)\s*[:：-]?\s*`).ReplaceAllString(lower, ""))
+	if normalizedEcho != "" {
+		return false
+	}
+	promptLikeMarkers := []string{
+		"当前工作目录",
+		"primary working directory",
+		"current working directory",
+		"project directory",
+		"default directory",
+		"continue the conversation",
+		"resume directly",
+		"user:",
+		"assistant:",
+		"task:",
+		"任务：",
+		"请帮我",
+		"帮我",
+		"请实现",
+		"请修复",
+		"请重建",
+		"you are",
+	}
+	for _, marker := range promptLikeMarkers {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	executionSignals := []string{
+		"failed",
+		"failure",
+		"error",
+		"stopped",
+		"timeout",
+		"cancel",
+		"killed",
+		"retry",
+		"recovered",
+		"generated",
+		"created",
+		"saved",
+		"wrote",
+		"written",
+		"exported",
+		"uploaded",
+		"downloaded",
+		"prepared",
+		"delivered",
+		"found",
+		"produced",
+		"执行",
+		"失败",
+		"错误",
+		"超时",
+		"取消",
+		"停止",
+		"重试",
+		"恢复",
+		"生成",
+		"创建",
+		"保存",
+		"写入",
+		"导出",
+		"上传",
+		"下载",
+		"准备",
+		"找到",
+		"文件",
+	}
+	for _, signal := range executionSignals {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildEmptyResultFallback(status TraceRunStatus, traceSummary string) string {
+	summary := selectVisibleEmptyResultSummary(traceSummary)
 	switch status {
 	case TraceRunStatusFailed, TraceRunStatusTimeout, TraceRunStatusCancelled, TraceRunStatusStopped:
 		if summary != "" {
@@ -879,7 +1181,7 @@ type IMResponseConfirmation struct {
 	Status         string   `json:"status,omitempty"`
 }
 
-type IMResponseUnfinishedSlot struct {
+type IMResponseUnfinishedTask struct {
 	SlotID      string             `json:"slot_id,omitempty"`
 	Title       string             `json:"title,omitempty"`
 	Summary     string             `json:"summary,omitempty"`
@@ -888,11 +1190,61 @@ type IMResponseUnfinishedSlot struct {
 	Actions     []IMResponseAction `json:"actions,omitempty"`
 }
 
-func buildUnfinishedSlotPayload(slot *unfinishedTaskSlot) *IMResponseUnfinishedSlot {
+type IMResponseRecoverableSession struct {
+	SessionID       string             `json:"session_id,omitempty"`
+	Tool            string             `json:"tool,omitempty"`
+	Title           string             `json:"title,omitempty"`
+	Summary         string             `json:"summary,omitempty"`
+	ProjectPath     string             `json:"project_path,omitempty"`
+	Status          string             `json:"status,omitempty"`
+	ExitReason      string             `json:"exit_reason,omitempty"`
+	ResumeSessionID string             `json:"resume_session_id,omitempty"`
+	ResumeCount     int                `json:"resume_count,omitempty"`
+	LastProgress    string             `json:"last_progress,omitempty"`
+	Actions         []IMResponseAction `json:"actions,omitempty"`
+}
+
+func buildRecoverableSessionActions(sessionID string) []IMResponseAction {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+	return []IMResponseAction{
+		{Label: "恢复会话", Command: "__resume_session__ " + sessionID, Style: "default"},
+		{Label: "忽略此会话", Command: "__dismiss_recoverable_session__ " + sessionID, Style: "danger"},
+	}
+}
+
+func buildRecoverableSessionPayload(session *RemoteSession) *IMResponseRecoverableSession {
+	if session == nil {
+		return nil
+	}
+	session.mu.RLock()
+	defer session.mu.RUnlock()
+	if session.ResumeContext == nil {
+		return nil
+	}
+	rc := session.ResumeContext
+	return &IMResponseRecoverableSession{
+		SessionID:       strings.TrimSpace(session.ID),
+		Tool:            strings.TrimSpace(session.Tool),
+		Title:           strings.TrimSpace(firstNonEmptyTraceText(session.Title, session.Summary.CurrentTask, rc.OriginalTask)),
+		Summary:         strings.TrimSpace(firstNonEmptyTraceText(session.Summary.ProgressSummary, rc.LastProgress, session.Summary.LastResult, rc.LastOutput)),
+		ProjectPath:     strings.TrimSpace(firstNonEmptyTraceText(session.ProjectPath, rc.ProjectPath)),
+		Status:          strings.TrimSpace(string(session.Status)),
+		ExitReason:      strings.TrimSpace(rc.ExitReason),
+		ResumeSessionID: strings.TrimSpace(rc.ResumeSessionID),
+		ResumeCount:     rc.ResumeCount,
+		LastProgress:    strings.TrimSpace(rc.LastProgress),
+		Actions:         buildRecoverableSessionActions(session.ID),
+	}
+}
+
+func buildUnfinishedTaskPayload(slot *unfinishedTaskSlot) *IMResponseUnfinishedTask {
 	if slot == nil {
 		return nil
 	}
-	return &IMResponseUnfinishedSlot{
+	return &IMResponseUnfinishedTask{
 		SlotID:      slot.SlotID,
 		Title:       strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary)),
 		Summary:     strings.TrimSpace(slot.Summary),
@@ -1871,7 +2223,34 @@ func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentRe
 		resp.Text = buildEmptyResultFallback(status, resp.TraceSummary)
 		ensureTraceAction(resp)
 	}
+	if browserRootCause := extractBrowserRootCause(firstNonEmptyTraceText(resp.Error, resp.Text)); browserRootCause != "" {
+		resp.Fields = append(resp.Fields, IMResponseField{Label: "Browser", Value: browserRootCause})
+	}
 	return resp
+}
+
+func extractBrowserRootCause(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "浏览器") && !strings.Contains(lower, "cdp") && !strings.Contains(lower, "debug") {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		filtered = append(filtered, line)
+		if len(filtered) >= 4 {
+			break
+		}
+	}
+	return strings.Join(filtered, "\n")
 }
 
 func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []conversationEntry, resp *IMAgentResponse) {
@@ -1938,15 +2317,11 @@ func (h *IMMessageHandler) traceProjectPath() string {
 	return strings.TrimSpace(projectPath)
 }
 
-func (h *IMMessageHandler) buildTraceEvidencePrompt(userMessage string) string {
+func (h *IMMessageHandler) buildTraceEvidencePrompt(userID, userMessage string) string {
 	if h.traceService == nil {
 		return ""
 	}
-	if activeSlot := h.memory.activeUnfinishedSlot("desktop-user"); activeSlot == nil {
-		trimmed := strings.TrimSpace(userMessage)
-		if looksLikeFreshTaskRequest(trimmed) && !shouldResumeIncompleteTask(trimmed) {
-			return ""
-		}
+	if h.memory.activeUnfinishedSlot(userID) == nil {
 		return ""
 	}
 	projectPath := h.traceProjectPath()
@@ -1977,6 +2352,13 @@ func (h *IMMessageHandler) buildTraceEvidencePrompt(userMessage string) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func (h *IMMessageHandler) buildResumeTraceContext(userID, fallbackTask string) string {
+	if activeSlot := h.memory.activeUnfinishedSlot(userID); activeSlot != nil {
+		return buildUnfinishedSlotResumeContext(activeSlot) + h.buildTraceEvidencePrompt(userID, activeSlot.LastTask)
+	}
+	return h.buildTraceEvidencePrompt(userID, fallbackTask)
 }
 
 func traceCategoryForToolResult(toolName, result string) string {
@@ -2178,6 +2560,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 		return resp
 	}
+	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) {
+		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang)}
+	}
 	if trimmed == "/exit" || trimmed == "/quit" {
 		return h.handleExitCommand(msg.UserID)
 	}
@@ -2214,12 +2599,6 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return &IMAgentResponse{Text: cancelMsg}
 	}
 
-	if !h.app.isMaclawLLMConfigured() {
-		return &IMAgentResponse{
-			Error: "MaClaw LLM 未配置，无法处理请求。请在 MaClaw 客户端的设置中配置 LLM。",
-		}
-	}
-
 	// Select HTTP client: background tasks use a separate connection pool
 	// so they never block interactive chat requests.
 	httpClient := h.client
@@ -2233,23 +2612,72 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	EntriesBeforeClear := h.memory.load(msg.UserID)
 	unfinishedSlot := h.memory.getUnfinishedSlot(msg.UserID)
 	decision := resolveExplicitTaskSlotDecision(msg, unfinishedSlot)
+	freshTask := false
+	if h.app != nil && h.app.sessionStarter == nil {
+		h.app.ensureInteractionInfra()
+	}
 	if decision.DismissSlotID != "" {
 		h.memory.dismissUnfinishedSlot(msg.UserID, decision.DismissSlotID)
 		unfinishedSlot = nil
 		decision.ResumeSlotID = ""
+		freshTask = true
+	}
+	if decision.DismissRecoverableSessionID != "" && h.manager != nil {
+		h.manager.SuppressResumeForSession(decision.DismissRecoverableSessionID)
+		decision.ResumeRecoverableSessionID = ""
+		freshTask = true
+		return &IMAgentResponse{Text: "已忽略该恢复会话。"}
+	}
+	if decision.ResumeRecoverableSessionID != "" && h.manager != nil {
+		session, ok := h.manager.Get(decision.ResumeRecoverableSessionID)
+		if ok && session != nil {
+			var resumeSessionID, projectPath, tool string
+			session.mu.RLock()
+			if session.ResumeContext != nil {
+				resumeSessionID = strings.TrimSpace(session.ResumeContext.ResumeSessionID)
+				projectPath = strings.TrimSpace(firstNonEmptyTraceText(session.ProjectPath, session.ResumeContext.ProjectPath))
+				tool = strings.TrimSpace(firstNonEmptyTraceText(session.Tool, session.ResumeContext.Tool))
+			}
+			session.mu.RUnlock()
+			if resumeSessionID != "" && h.app != nil {
+				_, err := h.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
+					Tool:               tool,
+					ProjectPath:        projectPath,
+					LaunchSource:       RemoteLaunchSourceAI,
+					ResumeSessionID:    resumeSessionID,
+					InjectResumePrompt: false,
+				})
+				if err != nil {
+					return &IMAgentResponse{Error: fmt.Sprintf("恢复会话失败: %v", err)}
+				}
+				h.manager.SuppressResumeForSession(decision.ResumeRecoverableSessionID)
+				return &IMAgentResponse{Text: "已启动恢复会话。请到远程会话列表继续查看执行状态。"}
+			}
+		}
+		return &IMAgentResponse{Error: "当前没有可恢复的会话，或该会话不支持恢复。"}
+	}
+
+	if !h.app.isMaclawLLMConfigured() {
+		return &IMAgentResponse{
+			Error: "MaClaw LLM 未配置，无法处理请求。请在 MaClaw 客户端的设置中配置 LLM。",
+		}
 	}
 	if decision.StartNewTask {
-		h.memory.clearConversationButKeepSlot(msg.UserID)
+		h.memory.clearConversationAndDismissSlot(msg.UserID)
 		EntriesBeforeClear = nil
+		unfinishedSlot = nil
+		freshTask = true
 	} else if decision.ResumeSlotID != "" {
 		if h.memory.bindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
 			unfinishedSlot = h.memory.activeUnfinishedSlot(msg.UserID)
 		}
 	} else {
 		if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, EntriesBeforeClear) {
-			h.memory.clearConversationButKeepSlot(msg.UserID)
+			h.memory.clearConversationAndDismissSlot(msg.UserID)
 			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
 			EntriesBeforeClear = nil
+			unfinishedSlot = nil
+			freshTask = true
 		}
 	}
 
@@ -2308,9 +2736,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 		if activeSlot := h.memory.activeUnfinishedSlot(msg.UserID); activeSlot != nil {
 			systemPrompt += buildUnfinishedSlotResumeContext(activeSlot)
-			systemPrompt += h.buildTraceEvidencePrompt(activeSlot.LastTask)
+			systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, activeSlot.LastTask)
 		} else {
-			systemPrompt += h.buildTraceEvidencePrompt(msg.Text)
+			systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, msg.Text)
 		}
 
 		result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, nil, nil, nil, msg.MinIterations, msg.Platform)
@@ -2359,14 +2787,26 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 		return buildConfirmationResponse(item)
 	}
-	if unfinishedSlot != nil && !msg.IsBackground && !isSlotActionCommand(trimmed) && !decision.StartNewTask && decision.ResumeSlotID == "" {
+	if unfinishedSlot != nil && !msg.IsBackground && !freshTask && !isSlotActionCommand(trimmed) && !decision.StartNewTask && decision.ResumeSlotID == "" {
 		if hint := buildUnfinishedSlotHint(unfinishedSlot); hint != "" {
-			resp := &IMAgentResponse{
-				Text:           hint,
-				UnfinishedSlot: buildUnfinishedSlotPayload(unfinishedSlot),
+			unfinishedTask := buildUnfinishedTaskPayload(unfinishedSlot)
+			recoverableSession := (*IMResponseRecoverableSession)(nil)
+			if h.manager != nil {
+				for _, session := range h.manager.List() {
+					if strings.TrimSpace(session.ProjectPath) != strings.TrimSpace(unfinishedSlot.ProjectPath) {
+						continue
+					}
+					recoverableSession = buildRecoverableSessionPayload(session)
+					if recoverableSession != nil {
+						break
+					}
+				}
 			}
-			if resp.UnfinishedSlot != nil && len(resp.UnfinishedSlot.Actions) > 0 {
-				resp.Actions = resp.UnfinishedSlot.Actions
+			resp := &IMAgentResponse{
+				Text:               hint,
+				UnfinishedTask:     unfinishedTask,
+				UnfinishedSlot:     unfinishedTask,
+				RecoverableSession: recoverableSession,
 			}
 			return resp
 		}
@@ -2380,12 +2820,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	} else {
 		systemPrompt = h.buildSystemPrompt()
 	}
-	if activeSlot := h.memory.activeUnfinishedSlot(msg.UserID); activeSlot != nil {
-		systemPrompt += buildUnfinishedSlotResumeContext(activeSlot)
-		systemPrompt += h.buildTraceEvidencePrompt(activeSlot.LastTask)
-	} else {
-		systemPrompt += h.buildTraceEvidencePrompt(msg.Text)
-	}
+	systemPrompt += h.buildResumeTraceContext(msg.UserID, msg.Text)
 
 	// Create a LoopContext for this chat loop.
 	loopCtx := providedLoopCtx
@@ -3234,7 +3669,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if phase.Stage == agentStageOrient && phase.ForceSkillPreference {
 			convergePrompt := ""
 			if phase.PreferredSkillName != "" {
-				convergePrompt = fmt.Sprintf("[Skill 优先要求]\n检测到本地已有可复用 Skill「%s」。本轮优先调用 run_skill(name=\"%s\") 完成任务，不要先使用 craft_tool 或 bash 自建脚本。若该 Skill 失败，再基于失败原因切换到其他工具路径。", phase.PreferredSkillName, phase.PreferredSkillName)
+				guidance := buildSkillProgressGuidance(phase.PreferredSkillName, phase.PreferredSkillRunID)
+				convergePrompt = fmt.Sprintf("[Skill 优先要求]\n检测到本地已有可复用 Skill「%s」。本轮优先调用 run_skill(name=\"%s\") 完成任务，不要先使用 craft_tool 或 bash 自建脚本。%s 若该 Skill 失败，再基于失败原因切换到其他工具路径。", phase.PreferredSkillName, phase.PreferredSkillName, guidance)
 				if phase.PreferredSkillReason != "" {
 					convergePrompt += fmt.Sprintf("\n匹配依据: %s", truncateTraceText(phase.PreferredSkillReason, 160))
 				}
@@ -3454,11 +3890,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			phase.Stage = agentStageConverge
 			phase.ConsecutiveNoTool++
 			noToolStall := looksLikeNoToolStallReply(msgContent)
-			if phase.ConsecutiveNoTool == 1 && (noToolStall || (phase.ForceSkillPreference && phase.PreferredSkillName != "" && !phase.SkillAttempted)) {
+			hasPendingSkillRun := strings.TrimSpace(phase.PreferredSkillRunID) != ""
+			if phase.ConsecutiveNoTool == 1 && (noToolStall || hasPendingSkillRun || (phase.ForceSkillPreference && phase.PreferredSkillName != "" && !phase.SkillAttempted)) {
 				systemMessagesStart := len(conversation)
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": buildNoToolActionPrompt(phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillName),
+					"content": buildNoToolActionPrompt(phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillName, phase.PreferredSkillRunID),
 				})
 				recordSystemMessages(systemMessagesStart, conversation)
 				if phase.ForceSkillPreference && phase.PreferredSkillName != "" {
@@ -3467,11 +3904,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				continue
 			}
 			if noToolStall && phase.ConsecutiveNoTool >= stalledNoToolRecoverThreshold {
-				enterRecoverPhase(&phase, "no_tool_stall", buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillName))
+				enterRecoverPhase(&phase, "no_tool_stall", buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillName, phase.PreferredSkillRunID))
 				continue
 			}
 			if shouldForceAnotherRoundForDeliverable(msgContent, len(choice.Message.ToolCalls), 0) {
-				enterRecoverPhase(&phase, "deliverable_pending", buildDeliverableRecoverPrompt(phase.PreferredSkillName, phase.ForceSkillPreference && phase.PreferredSkillName != ""))
+				enterRecoverPhase(&phase, "deliverable_pending", buildDeliverableRecoverPrompt(phase.PreferredSkillName, phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillRunID))
 				if shouldBypassSkillPreference(choice.Message.ToolCalls) {
 					phase.ForceSkillPreference = false
 				}
@@ -3699,9 +4136,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if skillToolAttempted {
 			phase.SkillAttempted = true
 			phase.ForceSkillPreference = false
+			if runID := extractSkillRunID(choice.Message.ToolCalls, toolResults); strings.TrimSpace(runID) != "" {
+				phase.PreferredSkillRunID = strings.TrimSpace(runID)
+			}
 			if didSkillToolFail(choice.Message.ToolCalls, toolResults) {
 				phase.SkillFailed = true
-				enterRecoverPhase(&phase, "skill_failed", buildSkillRecoverPrompt(phase.PreferredSkillName))
+				enterRecoverPhase(&phase, "skill_failed", buildSkillRecoverPrompt(phase.PreferredSkillName, phase.PreferredSkillRunID))
 			}
 		}
 		if trialState.enabled {

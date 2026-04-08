@@ -145,11 +145,66 @@ func TestCodingSessionStarterLinksTraceRuns(t *testing.T) {
 	}
 }
 
+func TestCodingSessionStarterAppliesCodexResumeSessionID(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEnabled = true
+	cfg.Codex = ToolConfig{
+		CurrentModel: "Original",
+		Models:       []ModelConfig{{ModelName: "Original", ModelId: "gpt-5.2-codex", IsBuiltin: true}},
+	}
+	cfg.Projects = []ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
+	cfg.CurrentProject = "proj-1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	provider := &fakeProviderAdapter{cmd: CommandSpec{Command: "codex.exe"}}
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.remoteSessions.providerFactory = func(tool string) (ProviderAdapter, error) {
+		return provider, nil
+	}
+	app.remoteSessions.executionFactory = func(spec LaunchSpec) (ExecutionStrategy, error) {
+		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(302)}, nil
+	}
+
+	starter := NewCodingSessionStarter(app)
+	result, err := starter.Start(CodingSessionStartRequest{
+		Tool:            "codex",
+		ProjectID:       "proj-1",
+		ResumeSessionID: "thread-resume-1",
+	})
+	if err != nil {
+		t.Fatalf("starter.Start() error = %v", err)
+	}
+	if !result.ResumeApplied {
+		t.Fatal("expected ResumeApplied to be true")
+	}
+	if result.ResumeSource != "explicit" {
+		t.Fatalf("ResumeSource = %q, want %q", result.ResumeSource, "explicit")
+	}
+	if provider.lastSpec.ResumeSessionID != "thread-resume-1" {
+		t.Fatalf("ResumeSessionID = %q, want %q", provider.lastSpec.ResumeSessionID, "thread-resume-1")
+	}
+	if result.View.Tool != "codex" {
+		t.Fatalf("View.Tool = %q, want %q", result.View.Tool, "codex")
+	}
+}
+
 func TestWriteAutoResumeHintPrefersResumeSessionID(t *testing.T) {
 	var b strings.Builder
 	writeAutoResumeHint(&b, &SessionResumeContext{
-		Tool:            "claude",
+		Tool:            "codex",
 		ProjectPath:     "/tmp/project",
+		ResumeSessionID: "thread-789",
 		ClaudeSessionID: "claude-session-123",
 		ResumeCount:     1,
 	}, "编程工具因 token 耗尽正常退出，但任务可能未完成。")
@@ -157,7 +212,10 @@ func TestWriteAutoResumeHintPrefersResumeSessionID(t *testing.T) {
 	if !contains(out, "resume_session_id") {
 		t.Fatalf("expected resume_session_id hint, got: %s", out)
 	}
-	if !contains(out, "claude-session-123") {
-		t.Fatalf("expected Claude session id in hint, got: %s", out)
+	if !contains(out, "thread-789") {
+		t.Fatalf("expected ResumeSessionID in hint, got: %s", out)
+	}
+	if contains(out, "claude-session-123") {
+		t.Fatalf("expected ClaudeSessionID fallback to be skipped when ResumeSessionID exists, got: %s", out)
 	}
 }

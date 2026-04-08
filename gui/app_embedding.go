@@ -137,10 +137,10 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 		if a.toolRouter != nil {
 			a.toolRouter.SetEmbedder(noop)
 		}
-		if a.remoteSessions != nil && a.remoteSessions.hubClient != nil &&
-			a.remoteSessions.hubClient.imHandler != nil &&
-			a.remoteSessions.hubClient.imHandler.toolBuilder != nil {
-			a.remoteSessions.hubClient.imHandler.toolBuilder.SetEmbedder(noop)
+		if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
+			if handler := a.remoteSessions.hubClient.imHandler; handler != nil && handler.toolBuilder != nil {
+				handler.toolBuilder.SetEmbedder(noop)
+			}
 		}
 	}
 	return nil
@@ -337,6 +337,7 @@ func (a *App) emitDownloadProgress(pct int, downloaded, total int64, errMsg stri
 // Supports resume: if a previous .tmp file exists, the download continues from
 // where it left off (HTTP Range).
 func (a *App) backgroundPreloadEmbeddingModel() {
+	a.logMemorySnapshot("embeddingPreload:start")
 	// Wait for core infrastructure to be ready instead of a fixed sleep.
 	// Poll remoteInfraReady with a short interval; give up after 30s.
 	for i := 0; i < 60; i++ {
@@ -402,6 +403,7 @@ func (a *App) backgroundPreloadEmbeddingModel() {
 // cache) happens in a background goroutine. This ensures the AI assistant
 // remains responsive while the vector index is being built.
 func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
+	a.logMemorySnapshot("verifyAndEnableEmbedding:start")
 	// Ensure infrastructure is ready before enabling.
 	a.ensureRemoteInfra()
 
@@ -439,6 +441,7 @@ func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
 	// background so the AI assistant is not blocked. The router will use
 	// pure BM25 scoring until this goroutine finishes.
 	go a.activateEmbedderAsync(emb)
+	a.logMemorySnapshot("verifyAndEnableEmbedding:scheduled")
 
 	return true
 }
@@ -454,6 +457,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		}
 	}()
 
+	a.logMemorySnapshot("activateEmbedderAsync:start")
 	t0 := time.Now()
 
 	// Wire embedder into memory store (triggers backfillEmbeddings in background).
@@ -467,10 +471,10 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	}
 
 	// Wire embedder into tool builder.
-	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil &&
-		a.remoteSessions.hubClient.imHandler != nil &&
-		a.remoteSessions.hubClient.imHandler.toolBuilder != nil {
-		a.remoteSessions.hubClient.imHandler.toolBuilder.SetEmbedder(emb)
+	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
+		if handler := a.remoteSessions.hubClient.imHandler; handler != nil && handler.toolBuilder != nil {
+			handler.toolBuilder.SetEmbedder(emb)
+		}
 	}
 
 	// Pre-warm tool embedding cache by running a dummy route. This triggers
@@ -484,5 +488,6 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		handler.WarmupTools()
 	}
 
+	a.logMemorySnapshot("activateEmbedderAsync:done")
 	fmt.Printf("[embedding] async activation complete in %v\n", time.Since(t0))
 }

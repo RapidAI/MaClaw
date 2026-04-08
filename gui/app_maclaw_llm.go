@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,22 +14,38 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // MaclawLLMProvider, MaclawLLMConfig — see corelib_aliases.go
 
 const codegenProviderName = "CodeGen"
 
+func normalizeLLMTimeoutSec(timeoutSec int) int {
+	if timeoutSec > 0 {
+		return timeoutSec
+	}
+	return corelib.DefaultLLMTimeoutSec
+}
+
+func normalizeMaclawLLMProvider(provider MaclawLLMProvider) MaclawLLMProvider {
+	provider.URL = strings.TrimRight(strings.TrimSpace(provider.URL), "/")
+	provider.Key = strings.TrimSpace(provider.Key)
+	provider.Model = strings.TrimSpace(provider.Model)
+	provider.TimeoutSec = normalizeLLMTimeoutSec(provider.TimeoutSec)
+	return provider
+}
+
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []MaclawLLMProvider {
 	return []MaclawLLMProvider{
-		{Name: "免费", URL: "http://localhost:18099/v1", Model: "free-proxy", ContextLength: 10000, AuthType: "none"},
-		{Name: "OpenAI", URL: "https://api.openai.com/v1", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 128000},
-		{Name: "智谱", URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000},
-		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000},
-		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 128000, AgentType: "claude-code/2.0.0"},
-		{Name: "Custom1", URL: "", Model: "", IsCustom: true},
-		{Name: "Custom2", URL: "", Model: "", IsCustom: true},
+		{Name: "免费", URL: "http://localhost:18099/v1", Model: "free-proxy", ContextLength: 10000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "none"},
+		{Name: "OpenAI", URL: "https://api.openai.com/v1", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "智谱", URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0"},
+		{Name: "Custom1", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "Custom2", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 	}
 }
 
@@ -58,16 +73,23 @@ func (a *App) GetMaclawLLMProviders() struct {
 			if cfg.MaclawLLMContextLength > 0 {
 				providers[0].ContextLength = cfg.MaclawLLMContextLength
 			}
+			if cfg.MaclawLLMTimeoutSec > 0 {
+				providers[0].TimeoutSec = cfg.MaclawLLMTimeoutSec
+			}
 		}
 	}
 	// Backfill context_length for known providers that predate this field.
 	// Also sync URL for non-custom preset providers (e.g. port change).
 	defaults := defaultMaclawLLMProviders()
 	defaultCtx := make(map[string]int, len(defaults))
+	defaultTimeout := make(map[string]int, len(defaults))
 	defaultURL := make(map[string]string, len(defaults))
 	for _, d := range defaults {
 		if d.ContextLength > 0 {
 			defaultCtx[d.Name] = d.ContextLength
+		}
+		if d.TimeoutSec > 0 {
+			defaultTimeout[d.Name] = d.TimeoutSec
 		}
 		if !d.IsCustom {
 			defaultURL[d.Name] = d.URL
@@ -79,6 +101,16 @@ func (a *App) GetMaclawLLMProviders() struct {
 				providers[i].ContextLength = cl
 			}
 		}
+		if providers[i].TimeoutSec <= 0 {
+			if providers[i].Name == cfg.MaclawLLMCurrentProvider && cfg.MaclawLLMTimeoutSec > 0 {
+				providers[i].TimeoutSec = cfg.MaclawLLMTimeoutSec
+			} else if ts, ok := defaultTimeout[providers[i].Name]; ok {
+				providers[i].TimeoutSec = ts
+			} else {
+				providers[i].TimeoutSec = corelib.DefaultLLMTimeoutSec
+			}
+		}
+		providers[i] = normalizeMaclawLLMProvider(providers[i])
 		if providers[i].Name == codegenProviderName && providers[i].AuthType == "sso" {
 			providers[i].Protocol = "openai"
 			providers[i].URL = strings.TrimRight(strings.TrimSpace(providers[i].URL), "/")
@@ -135,20 +167,74 @@ func (a *App) GetMaclawLLMProviders() struct {
 	}{Providers: providers, Current: current}
 }
 
-// SaveMaclawLLMProviders persists the provider list and current selection.
-func (a *App) SaveMaclawLLMProviders(providers []MaclawLLMProvider, current string) error {
+// GetMaclawLLMPanelState returns the settings needed by the desktop LLM panel
+// in a single config read to avoid timeout/race issues from multiple parallel
+// Wails calls contending on configMu.
+func (a *App) GetMaclawLLMPanelState() struct {
+	Providers           []MaclawLLMProvider `json:"providers"`
+	Current             string              `json:"current"`
+	MaxIterations       int                 `json:"max_iterations"`
+	TrajectoryLogging   bool                `json:"trajectory_logging"`
+	TrialReflectEnabled bool                `json:"trial_reflect_enabled"`
+} {
 	cfg, err := a.LoadConfig()
 	if err != nil {
+		defaults := defaultMaclawLLMProviders()
+		return struct {
+			Providers           []MaclawLLMProvider `json:"providers"`
+			Current             string              `json:"current"`
+			MaxIterations       int                 `json:"max_iterations"`
+			TrajectoryLogging   bool                `json:"trajectory_logging"`
+			TrialReflectEnabled bool                `json:"trial_reflect_enabled"`
+		}{
+			Providers:           defaults,
+			Current:             defaults[0].Name,
+			MaxIterations:       maxAgentIterationsCap,
+			TrajectoryLogging:   false,
+			TrialReflectEnabled: false,
+		}
+	}
+	providerState := a.GetMaclawLLMProviders()
+	maxIter := cfg.MaclawAgentMaxIterations
+	if maxIter <= 0 {
+		maxIter = maxAgentIterationsCap
+	}
+	return struct {
+		Providers           []MaclawLLMProvider `json:"providers"`
+		Current             string              `json:"current"`
+		MaxIterations       int                 `json:"max_iterations"`
+		TrajectoryLogging   bool                `json:"trajectory_logging"`
+		TrialReflectEnabled bool                `json:"trial_reflect_enabled"`
+	}{
+		Providers:           providerState.Providers,
+		Current:             providerState.Current,
+		MaxIterations:       maxIter,
+		TrajectoryLogging:   cfg.LLMTrajectoryLogging,
+		TrialReflectEnabled: cfg.TrialReflectEnabled,
+	}
+}
+
+// SaveMaclawLLMProviders persists the provider list and current selection.
+func (a *App) SaveMaclawLLMProviders(providers []MaclawLLMProvider, current string) error {
+	start := time.Now()
+	log.Printf("[LLM] SaveMaclawLLMProviders:start current=%s providers=%d", current, len(providers))
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		log.Printf("[LLM] SaveMaclawLLMProviders:load_config_failed after=%s err=%v", time.Since(start), err)
 		return fmt.Errorf("load config: %w", err)
 	}
-	cfg.MaclawLLMProviders = providers
-	cfg.MaclawLLMCurrentProvider = current
-	// Sync legacy fields from the current provider for backward compatibility
+	log.Printf("[LLM] SaveMaclawLLMProviders:load_config=%s", time.Since(start))
 	cfg.MaclawLLMUrl = ""
 	cfg.MaclawLLMKey = ""
 	cfg.MaclawLLMModel = ""
 	cfg.MaclawLLMProtocol = ""
 	cfg.MaclawLLMContextLength = 0
+	cfg.MaclawLLMTimeoutSec = 0
+	for i := range providers {
+		providers[i] = normalizeMaclawLLMProvider(providers[i])
+	}
+	cfg.MaclawLLMProviders = providers
+	cfg.MaclawLLMCurrentProvider = current
 	for _, p := range providers {
 		if p.Name == current {
 			cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(p.URL), "/")
@@ -156,11 +242,18 @@ func (a *App) SaveMaclawLLMProviders(providers []MaclawLLMProvider, current stri
 			cfg.MaclawLLMModel = strings.TrimSpace(p.Model)
 			cfg.MaclawLLMProtocol = p.Protocol
 			cfg.MaclawLLMContextLength = p.ContextLength
+			cfg.MaclawLLMTimeoutSec = p.TimeoutSec
 			break
 		}
 	}
+	persistStart := time.Now()
 	if err := a.SaveConfig(cfg); err != nil {
+		log.Printf("[LLM] SaveMaclawLLMProviders:save_config_failed after=%s err=%v", time.Since(persistStart), err)
 		return err
+	}
+	log.Printf("[LLM] SaveMaclawLLMProviders:save_config=%s", time.Since(persistStart))
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", current)
 	}
 	// Auto-start or stop the free proxy based on the selected provider.
 	if current == freeProviderName {
@@ -175,7 +268,8 @@ func (a *App) SaveMaclawLLMProviders(providers []MaclawLLMProvider, current stri
 	// Immediately notify Hub of the LLM configuration change via heartbeat
 	// so the Hub-side llm_configured flag is updated without waiting for the
 	// next periodic heartbeat cycle.
-	a.notifyHubLLMConfigChanged()
+	go a.notifyHubLLMConfigChanged()
+	log.Printf("[LLM] SaveMaclawLLMProviders:done total=%s", time.Since(start))
 	return nil
 }
 
@@ -207,6 +301,7 @@ func (a *App) GetMaclawLLMConfig() MaclawLLMConfig {
 				Model:          p.Model,
 				Protocol:       p.Protocol,
 				ContextLength:  p.ContextLength,
+				TimeoutSec:     normalizeLLMTimeoutSec(p.TimeoutSec),
 				SupportsVision: p.SupportsVision,
 				AgentType:      p.AgentType,
 			}
@@ -215,13 +310,11 @@ func (a *App) GetMaclawLLMConfig() MaclawLLMConfig {
 	return MaclawLLMConfig{}
 }
 
-// isMaclawLLMConfigured returns true if the MaClaw LLM URL and model are set.
+// isMaclawLLMConfigured returns true if the current MaClaw LLM selection
+// resolves to a usable URL and model.
 func (a *App) isMaclawLLMConfigured() bool {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(cfg.MaclawLLMUrl) != "" && strings.TrimSpace(cfg.MaclawLLMModel) != ""
+	cfg := a.GetMaclawLLMConfig()
+	return strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != ""
 }
 
 // isProMode returns true if the UI is in "pro" mode (full coding tools).
@@ -246,6 +339,7 @@ func (a *App) SaveMaclawLLMConfig(llm MaclawLLMConfig) error {
 	cfg.MaclawLLMModel = strings.TrimSpace(llm.Model)
 	cfg.MaclawLLMProtocol = llm.Protocol
 	cfg.MaclawLLMContextLength = llm.ContextLength
+	cfg.MaclawLLMTimeoutSec = normalizeLLMTimeoutSec(llm.TimeoutSec)
 	if err := a.SaveConfig(cfg); err != nil {
 		return err
 	}
@@ -347,191 +441,60 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
 		return "", err
 	}
 
-	// Probe vision support and persist the result.
-	vision := probeVisionSupport(url, key, model, protocol, llm.UserAgent())
-	a.saveVisionProbeResult(vision)
-	log.Printf("[LLM] vision probe for %s: supports_vision=%v", model, vision)
+	log.Printf("[LLM] TestMaclawLLM text_test_ok model=%s protocol=%s", model, protocol)
+	go func(url, key, model, protocol, userAgent string) {
+		vision := probeVisionSupport(url, key, model, protocol, userAgent)
+		a.saveVisionProbeResult(vision)
+		log.Printf("[LLM] vision probe for %s: supports_vision=%v", model, vision)
+	}(url, key, model, protocol, llm.UserAgent())
 
-	suffix := "（不支持图片）"
-	if vision {
-		suffix = "（支持图片）"
-	}
+	suffix := "（图片能力检测中）"
 	return textResult + "\n" + suffix, nil
 }
 
 // testOpenAILLM tests an OpenAI-compatible endpoint.
 func (a *App) testOpenAILLM(url, key, model, userAgent string) (string, error) {
-	// Build OpenAI-compatible chat completion request.
-	reqBody := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]string{
-			{"role": "user", "content": "hello"},
-		},
-		"max_tokens": 100,
-		"stream":     false,
-	}
-	data, _ := json.Marshal(reqBody)
-
-	endpoint := url + "/chat/completions"
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-
+	cfg := corelib.MaclawLLMConfig{URL: url, Key: key, Model: model, AgentType: userAgent}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024)) // cap at 64KB
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
+	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, messages, client, 30*time.Second)
+	if err != nil {
+		msg := err.Error()
+		msg = strings.TrimPrefix(msg, "HTTP 500: ")
+		msg = strings.TrimPrefix(msg, "llm error: ")
+		msg = strings.TrimPrefix(msg, "parse response: ")
 		if len(msg) > 512 {
 			msg = msg[:512] + "..."
 		}
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		return "", fmt.Errorf("%s", msg)
 	}
-
-	// Some gateways (e.g. newapi) return SSE even when stream=false.
-	// Detect and handle both formats.
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
-		return "", fmt.Errorf("empty response body")
-	}
-
-	var jsonBody []byte
-	if trimmed[0] == '{' {
-		// Normal JSON response.
-		jsonBody = body
-	} else if bytes.HasPrefix(trimmed, []byte("data: ")) {
-		// SSE format — collect content from chunks.
-		var content strings.Builder
-		for _, line := range strings.Split(string(body), "\n") {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			payload := strings.TrimPrefix(line, "data: ")
-			if payload == "[DONE]" {
-				break
-			}
-			var chunk struct {
-				Choices []struct {
-					Delta struct {
-						Content string `json:"content"`
-					} `json:"delta"`
-					Message struct {
-						Content string `json:"content"`
-					} `json:"message"`
-				} `json:"choices"`
-			}
-			if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-				continue
-			}
-			for _, c := range chunk.Choices {
-				if c.Delta.Content != "" {
-					content.WriteString(c.Delta.Content)
-				}
-				if c.Message.Content != "" {
-					content.WriteString(c.Message.Content)
-				}
-			}
-		}
-		if content.Len() > 0 {
-			return stripFunctionCalls(stripThinkTags(content.String())), nil
-		}
-		return "", fmt.Errorf("SSE response contained no content (model may not exist on this gateway)")
-	} else {
-		preview := string(trimmed)
-		if len(preview) > 256 {
-			preview = preview[:256] + "..."
-		}
-		return "", fmt.Errorf("unexpected response format: %s", preview)
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(jsonBody, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
+	if resp == nil || resp.Content == "" {
 		return "", fmt.Errorf("no response from model")
 	}
-	text := result.Choices[0].Message.Content
-	if text == "" {
-		text = result.Choices[0].Message.ReasoningContent
-	}
-	return stripFunctionCalls(stripThinkTags(text)), nil
+	return stripFunctionCalls(stripThinkTags(resp.Content)), nil
 }
 
 // testAnthropicLLM tests an Anthropic Messages API endpoint.
 func (a *App) testAnthropicLLM(url, key, model, userAgent string) (string, error) {
-	reqBody := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]interface{}{
-			{"role": "user", "content": "hello"},
-		},
-		"max_tokens": 100,
-	}
-	data, _ := json.Marshal(reqBody)
-
-	// If the URL already ends with /v1, append /messages directly;
-	// otherwise append /v1/messages (standard Anthropic base URL).
-	endpoint := corelib.AnthropicMessagesEndpoint(url)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, key)
-
+	cfg := corelib.MaclawLLMConfig{URL: url, Key: key, Model: model, Protocol: "anthropic", AgentType: userAgent}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
+	resp, err := doSimpleAnthropicRequest(context.Background(), cfg, messages, client, 30*time.Second)
+	if err != nil {
+		msg := err.Error()
+		msg = strings.TrimPrefix(msg, "HTTP 500: ")
+		msg = strings.TrimPrefix(msg, "parse response: ")
 		if len(msg) > 512 {
 			msg = msg[:512] + "..."
 		}
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
+		return "", fmt.Errorf("%s", msg)
 	}
-
-	// Anthropic Messages API response format
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+	if resp == nil || resp.Content == "" {
+		return "", fmt.Errorf("no response from model")
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
-	}
-	for _, block := range result.Content {
-		if block.Type == "text" && block.Text != "" {
-			return stripFunctionCalls(stripThinkTags(block.Text)), nil
-		}
-	}
-	return "", fmt.Errorf("no text response from model")
+	return stripFunctionCalls(stripThinkTags(resp.Content)), nil
 }
 
 // probeVisionSupport sends a tiny 1x1 red PNG as an image_url message to the
@@ -548,63 +511,27 @@ func probeVisionSupport(baseURL, key, model, protocol, userAgent string) bool {
 }
 
 func probeVisionOpenAI(baseURL, key, model, imgB64, userAgent string) bool {
-	reqBody := map[string]interface{}{
-		"model": model,
-		"messages": []interface{}{
-			map[string]interface{}{
-				"role": "user",
-				"content": []interface{}{
-					map[string]interface{}{"type": "text", "text": "What color is this image? Reply in one word."},
-					map[string]interface{}{
-						"type": "image_url",
-						"image_url": map[string]interface{}{
-							"url": "data:image/png;base64," + imgB64,
-						},
+	cfg := corelib.MaclawLLMConfig{URL: baseURL, Key: key, Model: model, AgentType: userAgent}
+	messages := []interface{}{
+		map[string]interface{}{
+			"role": "user",
+			"content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "What color is this image? Reply in one word."},
+				map[string]interface{}{
+					"type": "image_url",
+					"image_url": map[string]interface{}{
+						"url": "data:image/png;base64," + imgB64,
 					},
 				},
 			},
 		},
-		"max_tokens": 20,
-		"stream":     false,
-	}
-	data, _ := json.Marshal(reqBody)
-	endpoint := baseURL + "/chat/completions"
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return false
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
+	resp, err := doSimpleOpenAIRequest(context.Background(), cfg, messages, client, 15*time.Second)
+	if err != nil || resp == nil {
 		return false
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-	// Verify the response actually contains a valid completion with content,
-	// not just a 200 with an error payload.
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error interface{} `json:"error"`
-	}
-	if json.Unmarshal(body, &result) != nil {
-		return false
-	}
-	if result.Error != nil {
-		return false
-	}
-	return len(result.Choices) > 0 && result.Choices[0].Message.Content != "" && looksLikeVisionResponse(result.Choices[0].Message.Content)
+	return resp.Content != "" && looksLikeVisionResponse(resp.Content)
 }
 
 // looksLikeVisionResponse checks whether the model's reply indicates it actually
@@ -617,67 +544,29 @@ func looksLikeVisionResponse(content string) bool {
 }
 
 func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
-	reqBody := map[string]interface{}{
-		"model": model,
-		"messages": []interface{}{
-			map[string]interface{}{
-				"role": "user",
-				"content": []interface{}{
-					map[string]interface{}{"type": "text", "text": "What color is this image? Reply in one word."},
-					map[string]interface{}{
-						"type": "image",
-						"source": map[string]interface{}{
-							"type":       "base64",
-							"media_type": "image/png",
-							"data":       imgB64,
-						},
+	cfg := corelib.MaclawLLMConfig{URL: baseURL, Key: key, Model: model, Protocol: "anthropic", AgentType: userAgent}
+	messages := []interface{}{
+		map[string]interface{}{
+			"role": "user",
+			"content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "What color is this image? Reply in one word."},
+				map[string]interface{}{
+					"type": "image",
+					"source": map[string]interface{}{
+						"type":       "base64",
+						"media_type": "image/png",
+						"data":       imgB64,
 					},
 				},
 			},
 		},
-		"max_tokens": 20,
 	}
-	data, _ := json.Marshal(reqBody)
-	endpoint := corelib.AnthropicMessagesEndpoint(baseURL)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return false
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	corelib.SetAnthropicAuthHeaders(req, key)
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
+	resp, err := doSimpleAnthropicRequest(context.Background(), cfg, messages, client, 15*time.Second)
+	if err != nil || resp == nil {
 		return false
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-	// Verify the response actually contains valid text content,
-	// not just a 200 with an error payload (some gateways do this).
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		Error interface{} `json:"error"`
-	}
-	if json.Unmarshal(body, &result) != nil {
-		return false
-	}
-	if result.Error != nil {
-		return false
-	}
-	for _, block := range result.Content {
-		if block.Type == "text" && block.Text != "" && looksLikeVisionResponse(block.Text) {
-			return true
-		}
-	}
-	return false
+	return resp.Content != "" && looksLikeVisionResponse(resp.Content)
 }
 
 // saveVisionProbeResult persists the vision probe result into the matching
@@ -862,6 +751,25 @@ func (a *App) SetLLMTrajectoryLogging(enabled bool) error {
 	return a.SaveConfig(cfg)
 }
 
+// GetTrialReflectEnabled returns whether the assistant should use trial-and-reflect mode.
+func (a *App) GetTrialReflectEnabled() bool {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return false
+	}
+	return cfg.TrialReflectEnabled
+}
+
+// SetTrialReflectEnabled enables or disables the assistant's trial-and-reflect mode.
+func (a *App) SetTrialReflectEnabled(enabled bool) error {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.TrialReflectEnabled = enabled
+	return a.SaveConfig(cfg)
+}
+
 // ---------------------------------------------------------------------------
 // LLM Token Usage Statistics
 // ---------------------------------------------------------------------------
@@ -892,6 +800,10 @@ func (a *App) AccumulateLLMTokenUsage(providerName string, inputTokens, outputTo
 	stat.TotalTokens = stat.InputTokens + stat.OutputTokens
 	if err := a.SaveConfig(cfg); err != nil {
 		log.Printf("[LLM] AccumulateLLMTokenUsage: save config: %v", err)
+		return
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", providerName)
 	}
 }
 
@@ -955,15 +867,15 @@ func shouldSkipCodeGenSSO(brandID string) bool {
 }
 
 // ensureCodeGenToken 检查 CodeGen SSO token 是否有效。
-// 1. 非 qianxin 品牌直接返回 nil
-// 2. 查找 AuthType=="sso" 的 CodeGen provider
-// 3. TokenExpiresAt > 0 且未过期 → 返回 nil
-// 4. TokenExpiresAt > 0 且即将过期 → 尝试 RefreshCodeGenToken
-//    a. 刷新成功 → 更新 provider + WriteAllToolConfigs + 持久化
-//    b. 刷新失败 → 返回 "认证已过期" 错误
-// 5. TokenExpiresAt == 0 → ValidateCodeGenToken(API 调用验证)
-//    a. 有效 → 返回 nil
-//    b. 无效 → 返回 "认证已失效" 错误
+//  1. 非 qianxin 品牌直接返回 nil
+//  2. 查找 AuthType=="sso" 的 CodeGen provider
+//  3. TokenExpiresAt > 0 且未过期 → 返回 nil
+//  4. TokenExpiresAt > 0 且即将过期 → 尝试 RefreshCodeGenToken
+//     a. 刷新成功 → 更新 provider + WriteAllToolConfigs + 持久化
+//     b. 刷新失败 → 返回 "认证已过期" 错误
+//  5. TokenExpiresAt == 0 → ValidateCodeGenToken(API 调用验证)
+//     a. 有效 → 返回 nil
+//     b. 无效 → 返回 "认证已失效" 错误
 func (a *App) ensureCodeGenToken() error {
 	// 1. 品牌检查：非 qianxin 直接返回
 	if shouldSkipCodeGenSSO(brand.Current().ID) {
@@ -1135,9 +1047,9 @@ func upsertCodeGenProvider(providers []MaclawLLMProvider, result oauth.CodeGenSS
 		URL:           result.BaseURL,
 		Key:           result.AccessToken,
 		Model:         result.ModelID,
-		Protocol:      "openai",          // AI 助手通过 OpenAI 协议接入 CodeGen
-		AgentType:     "openclaw",        // MaClaw Agent 默认协议
-		AuthType:      "sso",             // 标识认证来源，区别于手动 API Key
+		Protocol:      "openai",   // AI 助手通过 OpenAI 协议接入 CodeGen
+		AgentType:     "openclaw", // MaClaw Agent 默认协议
+		AuthType:      "sso",      // 标识认证来源，区别于手动 API Key
 		ContextLength: result.ContextLength,
 	}
 	// 遍历查找并覆盖已有 CodeGen 条目
@@ -1295,7 +1207,9 @@ func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 	// 解析 OpenAI 兼容格式：{"data": [{"id": "...", ...}, ...]}
 	// 同时兼容 Anthropic 格式：{"models": [{"id": "...", "display_name": "..."}]}
 	var result struct {
-		Data   []struct{ ID string `json:"id"` }             `json:"data"`
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
 		Models []struct {
 			ID          string `json:"id"`
 			DisplayName string `json:"display_name"`
@@ -1569,4 +1483,3 @@ func truncateCodeGenStr(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
-

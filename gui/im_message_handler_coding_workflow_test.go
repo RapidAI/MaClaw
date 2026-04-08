@@ -186,13 +186,22 @@ func TestCodingWorkflowProperty3_CodingVsNonCodingDistinction(t *testing.T) {
 			return false
 		}
 
+		// Must explicitly list SSH/server task concept and conservative routing.
+		hasSSH := strings.Contains(prompt, "SSH/服务器操作任务")
+		hasNoCreateSessionOnUnclear := strings.Contains(prompt, "如果不能确定是编程任务，不要调用 create_session")
+		if !hasSSH || !hasNoCreateSessionOnUnclear {
+			t.Logf("prompt missing ssh routing guidance (ssh=%v unclear_guard=%v)", hasSSH, hasNoCreateSessionOnUnclear)
+			return false
+		}
+
 		// Must explicitly list non-coding examples: file operations
 		hasBash := strings.Contains(prompt, "bash")
 		hasReadFile := strings.Contains(prompt, "read_file")
 		hasWriteFile := strings.Contains(prompt, "write_file")
-		if !hasBash || !hasReadFile || !hasWriteFile {
-			t.Logf("prompt missing file operation examples (bash=%v, read_file=%v, write_file=%v)",
-				hasBash, hasReadFile, hasWriteFile)
+		hasEditFile := strings.Contains(prompt, "edit_file")
+		if !hasBash || !hasReadFile || !hasWriteFile || !hasEditFile {
+			t.Logf("prompt missing file operation examples (bash=%v, read_file=%v, write_file=%v, edit_file=%v)",
+				hasBash, hasReadFile, hasWriteFile, hasEditFile)
 			return false
 		}
 

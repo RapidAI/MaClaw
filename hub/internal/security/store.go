@@ -222,6 +222,30 @@ func (s *SecurityStore) CountGroupMembers(ctx context.Context, groupID string) (
 	return count, err
 }
 
+// CountGroupMembersMap returns member counts for all groups in one query.
+func (s *SecurityStore) CountGroupMembersMap(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT group_id, COUNT(*) FROM security_group_members GROUP BY group_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var groupID string
+		var count int
+		if err := rows.Scan(&groupID, &count); err != nil {
+			return nil, err
+		}
+		counts[groupID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
 // ListAllAssignedEmails returns all emails that have a record in security_group_members.
 func (s *SecurityStore) ListAllAssignedEmails(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT email FROM security_group_members`)

@@ -193,9 +193,16 @@ Typical usage: Read source code, config files, logs`,
 
 	"write_file": `Parameters:
 - path (string, required): Destination file path
-- content (string, required): Content to write
+- content (string, required): Content to write, may be empty to clear/create an empty file
 - mode (string, optional): Write mode (overwrite/append), default overwrite
-Typical usage: Create or update source files, configs, scripts`,
+Typical usage: Create files, overwrite configs, append markdown or logs`,
+
+	"edit_file": `Parameters:
+- path (string, required): Existing file path to edit
+- old_string (string, required): Existing text to find
+- new_string (string, required): Replacement text, may be empty to delete the matched text
+- replace_all (bool, optional): Replace all matches, default false
+Typical usage: Update a specific snippet in a source file or document`,
 
 	"list_directory": `Parameters:
 - path (string, required): Directory path to list
@@ -242,20 +249,68 @@ Typical usage: Start a new coding session with a specific tool and project`,
 - arguments (object, optional): Tool arguments as key-value pairs
 Typical usage: Invoke external tools via MCP protocol`,
 
+	"browser_session_start": `Parameters:
+- addr (string, optional): CDP address for browser session discovery or launch
+- start_url (string, optional): Initial URL to open in the session
+- reuse_existing (bool, optional): Reuse an existing browser agent session, default true
+- allowed_domains (array, optional): Allowlist of navigable domains
+- blocked_domains (array, optional): Denylist of blocked domains
+Typical usage: Start or reuse a long-lived browser agent session with policy controls`,
+
+	"browser_observe": `Parameters:
+- session_id (string, required): Browser agent session ID
+- include_screenshot (bool, optional): Include screenshot in observation, default true
+Typical usage: Capture a snapshot with refs, screenshot, console, and network summaries`,
+
+	"browser_navigate": `Parameters:
+- session_id (string, required): Browser agent session ID
+- url (string, required): URL to navigate to inside the session
+Typical usage: Open a webpage in the browser session and auto-observe after navigation`,
+
+	"browser_click": `Parameters:
+- session_id (string, required): Browser agent session ID
+- snapshot_id (string, optional): Snapshot ID for ref resolution
+- ref (string, optional): Stable ref from browser_observe such as @e1
+- selector (string, optional): CSS selector fallback
+Typical usage: Click a page element via stable refs with selector fallback`,
+
+	"browser_type": `Parameters:
+- session_id (string, required): Browser agent session ID
+- snapshot_id (string, optional): Snapshot ID for ref resolution
+- ref (string, optional): Stable ref from browser_observe such as @e1
+- selector (string, optional): CSS selector fallback
+- text (string, required): Text to input
+Typical usage: Fill an input in the browser session via stable refs or selector fallback`,
+
+	"browser_wait": `Parameters:
+- session_id (string, required): Browser agent session ID
+- snapshot_id (string, optional): Snapshot ID for ref resolution
+- ref (string, optional): Stable ref to wait for
+- selector (string, optional): CSS selector to wait for
+- duration_ms (int, optional): Milliseconds to wait when no target is provided
+Typical usage: Wait for a page, ref, or selector to become ready in the browser session`,
+
+	"browser_refresh": `Parameters:
+- session_id (string, required): Browser agent session ID
+Typical usage: Refresh the current page in the browser session and auto-observe`,
+
+	"browser_back": `Parameters:
+- session_id (string, required): Browser agent session ID
+Typical usage: Go back in browser history inside the browser session and auto-observe`,
+
+	"browser_extract": `Parameters:
+- session_id (string, required): Browser agent session ID
+- snapshot_id (string, optional): Snapshot ID for ref resolution
+- ref (string, optional): Stable ref from browser_observe
+- selector (string, optional): CSS selector fallback
+- query (string, optional): What content to extract
+- format (string, optional): Output format, default text
+Typical usage: Extract page or element text from the browser session using refs, selectors, or whole-page summary`,
+
 	"browser_connect": `Parameters:
 - url (string, optional): CDP endpoint URL to connect to
 - launch (bool, optional): Launch a new browser instance, default false
 Typical usage: Connect to Chrome via CDP for browser automation`,
-
-	"browser_navigate": `Parameters:
-- url (string, required): URL to navigate to
-- wait_until (string, optional): Wait condition (load/domcontentloaded/networkidle)
-Typical usage: Open a webpage in the connected browser`,
-
-	"browser_click": `Parameters:
-- selector (string, required): CSS selector of the element to click
-- button (string, optional): Mouse button (left/right/middle), default left
-Typical usage: Click buttons, links, or interactive elements on a webpage`,
 
 	"list_skills": `Parameters:
 - filter (string, optional): Filter skills by name or tag
@@ -337,6 +392,15 @@ var BuiltinEnrichments = map[string][]string{
 		"修改文件",
 		"save text to disk",
 		"update file contents",
+		"append text to file",
+		"追加写入文件",
+	},
+	"edit_file": {
+		"edit an existing file",
+		"replace text in file",
+		"局部编辑文件内容",
+		"update a snippet in a file",
+		"find and replace in file",
 	},
 	"list_directory": {
 		"list files in a directory",
@@ -415,26 +479,75 @@ var BuiltinEnrichments = map[string][]string{
 		"generate a script for this task",
 		"build a quick tool",
 	},
+	"browser_session_start": {
+		"start a browser agent session",
+		"reuse an existing browser session",
+		"启动浏览器会话",
+		"open a browser session with allowed domains",
+		"create a long lived browser automation session",
+	},
+	"browser_observe": {
+		"observe the current browser page",
+		"capture browser snapshot and refs",
+		"观察浏览器页面",
+		"take a browser snapshot with screenshot",
+		"inspect page refs console and network",
+	},
+	"browser_navigate": {
+		"navigate to a URL in the browser session",
+		"open a webpage in browser session",
+		"浏览器打开网页",
+		"go to this website in current browser session",
+		"visit a URL and observe the page",
+	},
+	"browser_click": {
+		"click an element on the page",
+		"click a button in the browser session",
+		"点击网页元素",
+		"press this ref on the page",
+		"interact with a web element via ref",
+	},
+	"browser_type": {
+		"type text into a browser field",
+		"fill an input in browser session",
+		"在浏览器输入内容",
+		"enter text into page element by ref",
+		"type into a web form",
+	},
+	"browser_wait": {
+		"wait for browser page to load",
+		"wait for selector in browser session",
+		"等待浏览器页面稳定",
+		"pause until a page element appears",
+		"wait for a ref to become available",
+	},
+	"browser_refresh": {
+		"refresh the current browser page",
+		"reload browser session page",
+		"刷新浏览器页面",
+		"reload this website",
+		"refresh and observe current page",
+	},
+	"browser_back": {
+		"go back in browser history",
+		"navigate back in browser session",
+		"浏览器后退",
+		"return to previous page",
+		"back to last webpage",
+	},
+	"browser_extract": {
+		"extract text from the webpage",
+		"get content from browser page",
+		"提取网页内容",
+		"read text from page element by ref",
+		"extract page summary or selected content",
+	},
 	"browser_connect": {
 		"connect to a browser",
 		"attach to Chrome for automation",
 		"连接浏览器",
 		"start browser automation",
 		"open browser CDP connection",
-	},
-	"browser_navigate": {
-		"navigate to a URL in the browser",
-		"open a webpage in browser",
-		"浏览器打开网页",
-		"go to this website",
-		"visit a URL",
-	},
-	"browser_click": {
-		"click an element on the page",
-		"click a button in the browser",
-		"点击网页元素",
-		"press this button on the page",
-		"interact with a web element",
 	},
 	"parallel_execute": {
 		"run multiple tasks in parallel",

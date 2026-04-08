@@ -1,14 +1,15 @@
 package main
 
 import (
-	"embed"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/wailsapp/wails/v2"
@@ -20,11 +21,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-//go:embed all:frontend/dist
-var assets embed.FS
-
 func main() {
 	// --- Log to file: ~/.maclaw/logs/maclaw.log ---
+	corelib.SyncLogDetailEnabledFromDefaultConfig()
 	initLogFile()
 
 	// Migrate ~/.maclaw/skills → ~/.maclaw/data/skills (one-time).
@@ -174,9 +173,36 @@ func initLogFile() {
 		return
 	}
 	// Write to both file and stderr so console still works during development.
-	mw := io.MultiWriter(f, os.Stderr)
+	mw := &detailAwareLogWriter{file: f, stderr: os.Stderr}
 	log.SetOutput(mw)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Printf("[maclaw] === started at %s ===", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(os.Stderr, "[maclaw] logging to %s\n", logPath)
+}
+
+type detailAwareLogWriter struct {
+	file   io.Writer
+	stderr io.Writer
+}
+
+func (w *detailAwareLogWriter) Write(p []byte) (int, error) {
+	if corelib.IsLogDetailEnabled() || isImportantLogLine(string(p)) {
+		_, err := io.MultiWriter(w.file, w.stderr).Write(p)
+		if err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	}
+	return len(p), nil
+}
+
+func isImportantLogLine(line string) bool {
+	lower := strings.ToLower(line)
+	keywords := []string{"error", "err=", "failed", "fatal", "panic", "warn", "warning"}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }

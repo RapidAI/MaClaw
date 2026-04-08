@@ -18,19 +18,50 @@ type TaskSpec struct {
 	StepTimeout     time.Duration   `json:"step_timeout"` // default 30s
 }
 
+// StepTargetSpec identifies the intended browsing context for a step.
+type StepTargetSpec struct {
+	TabID   string `json:"tab_id,omitempty"`
+	FrameID string `json:"frame_id,omitempty"`
+}
+
+// LocatorSpec provides a structured fallback locator.
+type LocatorSpec struct {
+	Selector string `json:"selector,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Ref      string `json:"ref,omitempty"`
+}
+
+// StepTrace captures a structured execution record for one step.
+type StepTrace struct {
+	StepIndex   int       `json:"step_index"`
+	Action      string    `json:"action"`
+	TabID       string    `json:"tab_id,omitempty"`
+	FrameID     string    `json:"frame_id,omitempty"`
+	Summary     string    `json:"summary,omitempty"`
+	RetryReason string    `json:"retry_reason,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	EndedAt     time.Time `json:"ended_at,omitempty"`
+}
+
 // StepSpec defines a single browser operation step.
 type StepSpec struct {
-	Action  string            `json:"action"`            // navigate, click, type, wait, eval, scroll, select
-	Params  map[string]string `json:"params"`            // action-specific: url, selector, text, expression, value, delta_y
-	Verify  *CriterionSpec    `json:"verify,omitempty"`  // optional per-step verification
-	Timeout time.Duration     `json:"timeout,omitempty"` // overrides TaskSpec.StepTimeout
+	Action    string            `json:"action"`            // navigate, click, type, wait, eval, scroll, select
+	Params    map[string]string `json:"params"`            // action-specific: url, selector, text, expression, value, delta_y
+	Verify    *CriterionSpec    `json:"verify,omitempty"`  // optional per-step verification
+	Timeout   time.Duration     `json:"timeout,omitempty"` // overrides TaskSpec.StepTimeout
+	Target    *StepTargetSpec   `json:"target,omitempty"`
+	Fallbacks []LocatorSpec     `json:"fallbacks,omitempty"`
 }
 
 // CriterionSpec defines a success criterion for verification.
 type CriterionSpec struct {
-	Type     string `json:"type"`              // dom_exists, dom_text, url_contains, url_matches, ocr_contains
+	Type     string `json:"type"`               // dom_exists, dom_text, url_contains, url_matches, ocr_contains, ax_exists, ax_name, ax_role, frame_url_contains, network_request, console_no_error
 	Selector string `json:"selector,omitempty"` // CSS selector (for dom_*)
-	Pattern  string `json:"pattern"`           // match pattern (text/regex/URL)
+	Pattern  string `json:"pattern"`            // match pattern (text/regex/URL)
+	TabID    string `json:"tab_id,omitempty"`
+	FrameID  string `json:"frame_id,omitempty"`
 }
 
 // ── Task State ──
@@ -55,6 +86,7 @@ type TaskState struct {
 	RetryCount  int          `json:"retry_count"`
 	LastError   string       `json:"last_error,omitempty"`
 	Checkpoints []Checkpoint `json:"checkpoints,omitempty"`
+	StepTraces  []StepTrace  `json:"step_traces,omitempty"`
 	StartedAt   time.Time    `json:"started_at"`
 }
 
@@ -63,6 +95,8 @@ type Checkpoint struct {
 	StepIndex     int       `json:"step_index"`
 	URL           string    `json:"url"`
 	Title         string    `json:"title"`
+	TabID         string    `json:"tab_id,omitempty"`
+	FrameID       string    `json:"frame_id,omitempty"`
 	ScreenshotB64 string    `json:"screenshot_b64,omitempty"`
 	Timestamp     time.Time `json:"timestamp"`
 }
@@ -94,6 +128,11 @@ const (
 	FailurePageChanged                           // URL changed unexpectedly
 	FailureUnknownState                          // cannot determine page state
 	FailureVerificationFailed                    // post-step verification failed
+	FailureWrongTab                              // target tab not active or mismatched
+	FailureWrongFrame                            // target frame not active or mismatched
+	FailurePopupNotCaptured                      // expected popup/tab did not appear
+	FailureConsoleError                          // JS console reported an error
+	FailureNetworkBlocked                        // request blocked or failed
 )
 
 // String returns a human-readable label.
@@ -109,6 +148,16 @@ func (f FailureType) String() string {
 		return "unknown_state"
 	case FailureVerificationFailed:
 		return "verification_failed"
+	case FailureWrongTab:
+		return "wrong_tab"
+	case FailureWrongFrame:
+		return "wrong_frame"
+	case FailurePopupNotCaptured:
+		return "popup_not_captured"
+	case FailureConsoleError:
+		return "console_error"
+	case FailureNetworkBlocked:
+		return "network_blocked"
 	default:
 		return "unknown"
 	}
@@ -120,18 +169,22 @@ type RetryDecision struct {
 	AdjustedStep *StepSpec     `json:"adjusted_step,omitempty"` // nil = retry original
 	WaitBefore   time.Duration `json:"wait_before"`
 	Reason       string        `json:"reason"`
-	NeedsLLM     bool          `json:"needs_llm"`              // LLM should decide next action
-	LLMContext   string        `json:"llm_context,omitempty"`  // context for LLM
+	NeedsLLM     bool          `json:"needs_llm"`             // LLM should decide next action
+	LLMContext   string        `json:"llm_context,omitempty"` // context for LLM
 }
 
 // ── Page Snapshot (used by retry strategy) ──
 
 // PageSnapshot captures the current browser page state for analysis.
 type PageSnapshot struct {
-	URL       string      `json:"url"`
-	Title     string      `json:"title"`
-	OCRText   []OCRResult `json:"ocr_text,omitempty"`
-	DOMSnippet string     `json:"dom_snippet,omitempty"` // truncated HTML
+	URL           string      `json:"url"`
+	Title         string      `json:"title"`
+	TabID         string      `json:"tab_id,omitempty"`
+	FrameID       string      `json:"frame_id,omitempty"`
+	OCRText       []OCRResult `json:"ocr_text,omitempty"`
+	DOMSnippet    string      `json:"dom_snippet,omitempty"` // truncated HTML
+	NetworkEvents []string    `json:"network_events,omitempty"`
+	ConsoleEvents []string    `json:"console_events,omitempty"`
 }
 
 // ── OCR ──

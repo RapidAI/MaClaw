@@ -28,6 +28,7 @@ func makeBuiltinDefs() []map[string]interface{} {
 		toolDef("bash", "执行shell命令", nil, nil),
 		toolDef("read_file", "读取文件", nil, nil),
 		toolDef("write_file", "写入文件", nil, nil),
+		toolDef("edit_file", "编辑文件", nil, nil),
 		toolDef("list_directory", "列出目录", nil, nil),
 		toolDef("send_file", "发送文件", nil, nil),
 		toolDef("open", "打开文件或网址", nil, nil),
@@ -39,10 +40,24 @@ func makeBuiltinDefs() []map[string]interface{} {
 		toolDef("web_search", "搜索网页", nil, nil),
 		toolDef("web_fetch", "获取网页内容", nil, nil),
 		toolDef("set_nickname", "设置昵称", nil, nil),
-		toolDef("browser_connect", "连接浏览器", nil, nil),
+		toolDef("browser_session_start", "启动浏览器会话", nil, nil),
+		toolDef("browser_observe", "观察浏览器页面", nil, nil),
 		toolDef("browser_navigate", "浏览器跳转", nil, nil),
 		toolDef("browser_click", "浏览器点击", nil, nil),
 		toolDef("discover_tool", "发现工具", nil, nil),
+	}
+}
+
+func TestMakeBuiltinDefsIncludesBrowserSessionCoreTools(t *testing.T) {
+	builtins := makeBuiltinDefs()
+	names := make(map[string]bool, len(builtins))
+	for _, def := range builtins {
+		names[extractToolName(def)] = true
+	}
+	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate", "browser_click"} {
+		if !names[name] {
+			t.Fatalf("expected builtin def %q", name)
+		}
 	}
 }
 

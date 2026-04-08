@@ -313,14 +313,24 @@ func markdownToHTML(md string) string {
 			sb.WriteString("<hr/>")
 			continue
 		}
-		if strings.HasPrefix(trimmed, "## ") {
+		if strings.HasPrefix(trimmed, "##### ") {
 			if listType != "" { closeList() }
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:13pt; color:#1a1a2e"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "## "))))
+			sb.WriteString(fmt.Sprintf(`<p style="font-size:8.5pt; color:#4b5563"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "##### "))))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#### ") {
+			if listType != "" { closeList() }
+			sb.WriteString(fmt.Sprintf(`<p style="font-size:9.5pt; color:#374151"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "#### "))))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "### ") {
 			if listType != "" { closeList() }
 			sb.WriteString(fmt.Sprintf(`<p style="font-size:11pt; color:#2c3e50"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "### "))))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			if listType != "" { closeList() }
+			sb.WriteString(fmt.Sprintf(`<p style="font-size:13pt; color:#1a1a2e"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "## "))))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "# ") {

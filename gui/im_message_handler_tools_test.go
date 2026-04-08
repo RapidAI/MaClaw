@@ -85,32 +85,71 @@ func TestBuildTrialFailureRecoverPrompt(t *testing.T) {
 }
 
 func TestBuildNoToolActionPrompt(t *testing.T) {
-	prompt := buildNoToolActionPrompt(true, "hf_daily_papers_report")
+	prompt := buildNoToolActionPrompt(true, "hf_daily_papers_report", "")
 	if !contains(prompt, `run_skill(name="hf_daily_papers_report")`) {
 		t.Fatalf("expected preferred skill action guidance, got %q", prompt)
 	}
+	if !contains(prompt, `get_skill_run(run_id=...)`) {
+		t.Fatalf("expected get_skill_run guidance, got %q", prompt)
+	}
 
-	fallbackPrompt := buildNoToolActionPrompt(false, "")
+	runningPrompt := buildNoToolActionPrompt(true, "hf_daily_papers_report", "run-456")
+	if !contains(runningPrompt, `get_skill_run(run_id="run-456")`) {
+		t.Fatalf("expected concrete run_id guidance, got %q", runningPrompt)
+	}
+	if contains(runningPrompt, `run_skill(name="hf_daily_papers_report")`) {
+		t.Fatalf("expected running prompt to avoid restarting skill, got %q", runningPrompt)
+	}
+
+	fallbackPrompt := buildNoToolActionPrompt(false, "", "")
 	if !contains(fallbackPrompt, "请立即选择一个最合适的真实工具开始执行") {
 		t.Fatalf("expected generic action guidance, got %q", fallbackPrompt)
 	}
 }
 
 func TestBuildNoToolStallRecoverPrompt(t *testing.T) {
-	prompt := buildNoToolStallRecoverPrompt(2, true, "hf_daily_papers_report")
+	prompt := buildNoToolStallRecoverPrompt(2, true, "hf_daily_papers_report", "")
 	if !contains(prompt, "连续 2 轮都没有真正调用工具") {
 		t.Fatalf("expected stall count, got %q", prompt)
 	}
 	if !contains(prompt, `run_skill(name="hf_daily_papers_report")`) {
 		t.Fatalf("expected preferred skill guidance, got %q", prompt)
 	}
+	if !contains(prompt, `get_skill_run(run_id=...)`) {
+		t.Fatalf("expected get_skill_run guidance, got %q", prompt)
+	}
 
-	fallbackPrompt := buildNoToolStallRecoverPrompt(3, false, "")
+	runningPrompt := buildNoToolStallRecoverPrompt(2, true, "hf_daily_papers_report", "run-456")
+	if !contains(runningPrompt, `get_skill_run(run_id="run-456")`) {
+		t.Fatalf("expected concrete run_id guidance, got %q", runningPrompt)
+	}
+	if contains(runningPrompt, `run_skill(name="hf_daily_papers_report")`) {
+		t.Fatalf("expected running prompt to avoid restarting skill, got %q", runningPrompt)
+	}
+
+	fallbackPrompt := buildNoToolStallRecoverPrompt(3, false, "", "")
 	if !contains(fallbackPrompt, "连续 3 轮都没有真正调用工具") {
 		t.Fatalf("expected fallback stall count, got %q", fallbackPrompt)
 	}
 	if !contains(fallbackPrompt, "请立即选择一个最合适的真实工具开始执行") {
 		t.Fatalf("expected generic execution guidance, got %q", fallbackPrompt)
+	}
+}
+
+func TestBuildSkillRecoverPrompt_PrefersConcreteRunID(t *testing.T) {
+	prompt := buildSkillRecoverPrompt("hf_daily_papers_report", "run-123")
+	if !contains(prompt, `get_skill_run(run_id="run-123")`) {
+		t.Fatalf("expected concrete run_id guidance, got %q", prompt)
+	}
+}
+
+func TestBuildDeliverableRecoverPrompt_PrefersConcreteRunID(t *testing.T) {
+	prompt := buildDeliverableRecoverPrompt("hf_daily_papers_report", true, "run-789")
+	if !contains(prompt, `get_skill_run(run_id="run-789")`) {
+		t.Fatalf("expected concrete run_id guidance, got %q", prompt)
+	}
+	if contains(prompt, `run_skill(name="hf_daily_papers_report")`) {
+		t.Fatalf("expected deliverable prompt to avoid restarting skill, got %q", prompt)
 	}
 }
 

@@ -35,6 +35,7 @@ type unfinishedTaskSlot struct {
 	SlotID           string    `json:"slot_id"`
 	UserID           string    `json:"user_id"`
 	ProjectPath      string    `json:"project_path,omitempty"`
+	Tool             string    `json:"tool,omitempty"`
 	Status           string    `json:"status"`
 	Summary          string    `json:"summary,omitempty"`
 	LastTask         string    `json:"last_task,omitempty"`

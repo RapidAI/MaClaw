@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -40,18 +43,28 @@ type EmailPollLoginRequest struct {
 
 func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Service, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		var req EnrollStartRequest
+		decodeStart := time.Now()
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
+		log.Printf("[onboarding] EnrollStartHandler decode_request=%s", time.Since(decodeStart))
 
 		if req.Email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
 			return
 		}
 
+		enrollStart := time.Now()
 		resp, err := identity.StartEnrollment(r.Context(), req.Email, req.MachineName, req.Platform, req.ClientID, req.InvitationCode)
+		log.Printf("[onboarding] EnrollStartHandler start_enrollment=%s email=%s status=%s err=%v", time.Since(enrollStart), req.Email, func() string {
+			if resp == nil {
+				return ""
+			}
+			return resp.Status
+		}(), err)
 		if err != nil {
 			switch {
 			case errors.Is(err, auth.ErrInvitationExpired):
@@ -78,23 +91,6 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 			return
 		}
 
-		if resp != nil && resp.MachineID != "" {
-			heartbeat := req.HeartbeatIntervalSec
-			if heartbeat < 5 || heartbeat > 3600 {
-				heartbeat = 10
-			}
-			_ = identity.UpdateMachineMetadata(r.Context(), resp.MachineID, auth.MachineMetadata{
-				Name:                 req.MachineName,
-				Platform:             req.Platform,
-				Hostname:             req.Hostname,
-				Arch:                 req.Arch,
-				AppVersion:           req.AppVersion,
-				HeartbeatIntervalSec: heartbeat,
-			})
-		}
-
-		// Build response map, only including non-empty fields to match
-		// the original EnrollmentResult omitempty behavior.
 		respMap := map[string]any{
 			"status": resp.Status,
 			"brand":  brand.Current().DisplayName,
@@ -121,39 +117,96 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 			respMap["expires_at"] = resp.ExpiresAt
 		}
 
-		// Look up VIP status from the invitation code used during enrollment.
+		var enrichMu sync.Mutex
+		var enrichWG sync.WaitGroup
+
 		if resp != nil && resp.Status == "approved" && invSvc != nil && req.Email != "" {
-			if ic, err := invSvc.GetCodeByEmail(r.Context(), req.Email); err == nil && ic != nil {
-				respMap["vip_flag"] = ic.VIP
-			}
-		}
-
-		// Inject org_structure data into enrollment response.
-		// When org_structure_enabled is true, include the group tree for department selection.
-		// When false, just include the flag so the client knows to skip department selection.
-		if securitySvc != nil {
-			if settings, err := securitySvc.GetSettings(r.Context()); err == nil {
-				respMap["org_structure_enabled"] = settings.OrgStructureEnabled
-				if settings.OrgStructureEnabled {
-					if tree, err := securitySvc.GetGroupTree(r.Context()); err == nil && tree != nil {
-						respMap["org_group_tree"] = tree
-					}
-					if settings.DefaultGroupID != "" {
-						respMap["default_group_id"] = settings.DefaultGroupID
-					}
+			enrichWG.Add(1)
+			go func() {
+				defer enrichWG.Done()
+				vipLookupStart := time.Now()
+				if ic, err := invSvc.GetCodeByEmail(r.Context(), req.Email); err == nil && ic != nil {
+					enrichMu.Lock()
+					respMap["vip_flag"] = ic.VIP
+					enrichMu.Unlock()
 				}
-			}
+				log.Printf("[onboarding] EnrollStartHandler vip_lookup=%s", time.Since(vipLookupStart))
+			}()
 		}
 
-		// Assign newly approved user to the appropriate security group.
-		// Uses org_structure_enabled, user's selected group_id, and default_group_id.
-		if resp != nil && resp.Status == "approved" && securitySvc != nil && req.Email != "" {
-			if err := securitySvc.AssignNewUser(r.Context(), req.Email, req.GroupID); err != nil {
-				log.Printf("[enroll] security group assignment failed for %s: %v", req.Email, err)
-			}
+		if securitySvc != nil {
+			enrichWG.Add(1)
+			go func() {
+				defer enrichWG.Done()
+				securityReadStart := time.Now()
+				settingsStart := time.Now()
+				if settings, err := securitySvc.GetSettings(r.Context()); err == nil {
+					log.Printf("[onboarding] EnrollStartHandler security_get_settings=%s", time.Since(settingsStart))
+					enrichMu.Lock()
+					respMap["org_structure_enabled"] = settings.OrgStructureEnabled
+					enrichMu.Unlock()
+					if settings.OrgStructureEnabled && settings.DefaultGroupID != "" {
+						enrichMu.Lock()
+						respMap["default_group_id"] = settings.DefaultGroupID
+						enrichMu.Unlock()
+					}
+				} else {
+					log.Printf("[onboarding] EnrollStartHandler security_get_settings=%s err=%v", time.Since(settingsStart), err)
+				}
+				log.Printf("[onboarding] EnrollStartHandler security_enrichment=%s", time.Since(securityReadStart))
+			}()
 		}
+
+		enrichWG.Wait()
 
 		writeJSON(w, http.StatusOK, respMap)
+		log.Printf("[onboarding] EnrollStartHandler respond=%s total=%s", time.Since(start), time.Since(start))
+
+		if resp == nil || resp.Status != "approved" {
+			return
+		}
+
+		go func(req EnrollStartRequest, resp *auth.EnrollmentResult) {
+			bgStart := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if resp.MachineID != "" {
+				metadataStart := time.Now()
+				heartbeat := req.HeartbeatIntervalSec
+				if heartbeat < 5 || heartbeat > 3600 {
+					heartbeat = 10
+				}
+				if err := identity.UpdateMachineMetadata(ctx, resp.MachineID, auth.MachineMetadata{
+					Name:                 req.MachineName,
+					Platform:             req.Platform,
+					Hostname:             req.Hostname,
+					Arch:                 req.Arch,
+					AppVersion:           req.AppVersion,
+					HeartbeatIntervalSec: heartbeat,
+				}); err != nil {
+					log.Printf("[enroll] update machine metadata failed for %s: %v", resp.MachineID, err)
+				}
+				log.Printf("[onboarding] EnrollStartHandler background_metadata=%s", time.Since(metadataStart))
+			}
+
+			if securitySvc != nil && req.Email != "" {
+				assignStart := time.Now()
+				if err := securitySvc.AssignNewUser(ctx, req.Email, req.GroupID); err != nil {
+					log.Printf("[enroll] security group assignment failed for %s: %v", req.Email, err)
+				}
+				log.Printf("[onboarding] EnrollStartHandler background_assign_user=%s", time.Since(assignStart))
+			}
+
+			if invSvc != nil && req.Email != "" {
+				vipLookupStart := time.Now()
+				if _, err := invSvc.GetCodeByEmail(ctx, req.Email); err != nil {
+					log.Printf("[enroll] vip lookup skipped for %s: %v", req.Email, err)
+				}
+				log.Printf("[onboarding] EnrollStartHandler background_vip_lookup=%s", time.Since(vipLookupStart))
+			}
+			log.Printf("[onboarding] EnrollStartHandler background_total=%s", time.Since(bgStart))
+		}(req, resp)
 	}
 }
 

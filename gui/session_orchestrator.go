@@ -8,12 +8,13 @@ import (
 // CodingSessionStartRequest describes the normalized inputs for creating a
 // remote coding session from IM tools, skills, or other internal callers.
 type CodingSessionStartRequest struct {
-	Tool            string
-	ProjectID       string
-	ProjectPath     string
-	Provider        string
-	ResumeSessionID string
-	LaunchSource    RemoteLaunchSource
+	Tool               string
+	ProjectID          string
+	ProjectPath        string
+	Provider           string
+	ResumeSessionID    string
+	InjectResumePrompt bool
+	LaunchSource       RemoteLaunchSource
 
 	ParentRunID string
 	UserTask    string
@@ -105,12 +106,13 @@ func (s *CodingSessionStarter) Start(req CodingSessionStartRequest) (CodingSessi
 	}
 
 	view, err := s.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-		Tool:            toolName,
-		ProjectID:       projectID,
-		ProjectPath:     resolvedProjectPath,
-		Provider:        resolvedProvider,
-		LaunchSource:    launchSource,
-		ResumeSessionID: resumeSessionID,
+		Tool:               toolName,
+		ProjectID:          projectID,
+		ProjectPath:        resolvedProjectPath,
+		Provider:           resolvedProvider,
+		LaunchSource:       launchSource,
+		ResumeSessionID:    resumeSessionID,
+		InjectResumePrompt: req.InjectResumePrompt,
 	})
 	if err != nil {
 		return CodingSessionStartResult{}, err

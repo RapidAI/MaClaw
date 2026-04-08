@@ -1,4 +1,4 @@
-﻿package browser
+package browser
 
 import (
 	"encoding/json"
@@ -14,6 +14,255 @@ func RegisterTools(registry *tool.Registry) {
 
 	tools := []tool.RegisteredTool{
 		{
+			Name:        "browser_session_start",
+			Description: "启动或复用一个长期浏览器 agent 会话，返回 session_id。支持 allowed_domains / blocked_domains / start_url / reuse_existing。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "session", "agent", "浏览器", "会话", "网页"},
+			Priority:    6,
+			InputSchema: map[string]interface{}{
+				"addr":                          map[string]interface{}{"type": "string", "description": "可选 CDP 地址，默认自动发现或启动"},
+				"start_url":                     map[string]interface{}{"type": "string", "description": "可选初始 URL"},
+				"reuse_existing":                map[string]interface{}{"type": "boolean", "description": "是否优先复用已有 browser session，默认 true"},
+				"allowed_domains":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "允许访问的域名列表"},
+				"blocked_domains":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "禁止访问的域名列表"},
+				"allow_cross_origin_navigation": map[string]interface{}{"type": "boolean", "description": "是否允许跨域导航"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				policy := policyFromArgs(args)
+				reuseExisting := boolArg(args, "reuse_existing", true)
+				agentSession, err := StartAgentSession(strArg(args, "addr", addr), policy, reuseExisting)
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				if startURL := strings.TrimSpace(strArg(args, "start_url", "")); startURL != "" {
+					if _, err := agentSession.Navigate(startURL); err != nil {
+						return marshalBrowserResult(false, err.Error(), map[string]interface{}{"session_id": agentSession.ID})
+					}
+				}
+				state := agentSession.State()
+				return marshalBrowserResult(true, fmt.Sprintf("已启动浏览器会话 %s", agentSession.ID), map[string]interface{}{
+					"session_id":  state.ID,
+					"target_id":   state.TargetID,
+					"url":         state.CurrentURL,
+					"title":       state.CurrentTitle,
+					"ready_state": state.ReadyState,
+				})
+			},
+		},
+		{
+			Name:        "browser_session_stop",
+			Description: "关闭指定 browser agent 会话，可选 close_browser=true 一并关闭托管浏览器。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "session", "stop", "浏览器", "关闭"},
+			Priority:    5,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id":    map[string]interface{}{"type": "string", "description": "browser session id"},
+				"close_browser": map[string]interface{}{"type": "boolean", "description": "是否关闭托管浏览器"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				sessionID := strArg(args, "session_id", "")
+				if err := StopAgentSession(sessionID, boolArg(args, "close_browser", false)); err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, fmt.Sprintf("已关闭浏览器会话 %s", sessionID), map[string]interface{}{"session_id": sessionID})
+			},
+		},
+		{
+			Name:        "browser_observe",
+			Description: "观察当前页面，生成 snapshot、stable refs、截图和 console/network 摘要。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "observe", "snapshot", "浏览器", "观察", "网页"},
+			Priority:    6,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id":         map[string]interface{}{"type": "string", "description": "browser session id"},
+				"include_screenshot": map[string]interface{}{"type": "boolean", "description": "是否包含截图，默认 true"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				obs, err := agentSession.Observe(boolArg(args, "include_screenshot", true))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, obs.Display, obs.Data)
+			},
+		},
+		{
+			Name:        "browser_navigate",
+			Description: "在 browser session 内导航到指定 URL，成功后自动 observe。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "navigate", "session", "浏览器", "导航"},
+			Priority:    6,
+			Required:    []string{"session_id", "url"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+				"url":        map[string]interface{}{"type": "string", "description": "要访问的 URL"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				result, err := agentSession.Navigate(strArg(args, "url", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, result.Display, result.Data)
+			},
+		},
+		{
+			Name:        "browser_click",
+			Description: "在 browser session 内点击元素，优先使用 ref，支持 selector 兜底。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "click", "session", "浏览器", "点击"},
+			Priority:    6,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id":  map[string]interface{}{"type": "string", "description": "browser session id"},
+				"snapshot_id": map[string]interface{}{"type": "string", "description": "可选 snapshot id"},
+				"ref":         map[string]interface{}{"type": "string", "description": "观察返回的 ref，例如 @e1"},
+				"selector":    map[string]interface{}{"type": "string", "description": "可选 CSS selector"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				result, err := agentSession.Click(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, result.Display, result.Data)
+			},
+		},
+		{
+			Name:        "browser_type",
+			Description: "在 browser session 内输入文本，优先使用 ref，支持 selector 兜底。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "type", "input", "session", "浏览器", "输入"},
+			Priority:    6,
+			Required:    []string{"session_id", "text"},
+			InputSchema: map[string]interface{}{
+				"session_id":  map[string]interface{}{"type": "string", "description": "browser session id"},
+				"snapshot_id": map[string]interface{}{"type": "string", "description": "可选 snapshot id"},
+				"ref":         map[string]interface{}{"type": "string", "description": "观察返回的 ref，例如 @e1"},
+				"selector":    map[string]interface{}{"type": "string", "description": "可选 CSS selector"},
+				"text":        map[string]interface{}{"type": "string", "description": "输入文本"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				result, err := agentSession.Type(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), strArg(args, "text", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, result.Display, result.Data)
+			},
+		},
+		{
+			Name:        "browser_wait",
+			Description: "等待页面稳定，支持 duration_ms 或等待指定 ref/selector 出现。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "wait", "session", "浏览器", "等待"},
+			Priority:    5,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id":  map[string]interface{}{"type": "string", "description": "browser session id"},
+				"snapshot_id": map[string]interface{}{"type": "string", "description": "可选 snapshot id"},
+				"ref":         map[string]interface{}{"type": "string", "description": "可选 ref"},
+				"selector":    map[string]interface{}{"type": "string", "description": "可选 selector"},
+				"duration_ms": map[string]interface{}{"type": "integer", "description": "等待毫秒数，默认 1000"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				result, err := agentSession.Wait(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), intArg(args, "duration_ms", 1000))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, result.Display, result.Data)
+			},
+		},
+		{
+			Name:        "browser_refresh",
+			Description: "刷新当前 browser session 页面，并自动 observe。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "refresh", "session", "浏览器", "刷新"},
+			Priority:    5,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				result, err := agentSession.Refresh()
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, result.Display, result.Data)
+			},
+		},
+		{
+			Name:        "browser_back",
+			Description: "在 browser session 内后退到上一页，并自动 observe。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "back", "session", "浏览器", "后退"},
+			Priority:    5,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				result, err := agentSession.Back()
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, result.Display, result.Data)
+			},
+		},
+		{
+			Name:        "browser_extract",
+			Description: "从当前页面或 snapshot 中提取文本，支持按 ref/selector 或整页摘要提取。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "extract", "text", "session", "浏览器", "提取"},
+			Priority:    5,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id":  map[string]interface{}{"type": "string", "description": "browser session id"},
+				"snapshot_id": map[string]interface{}{"type": "string", "description": "可选 snapshot id"},
+				"ref":         map[string]interface{}{"type": "string", "description": "可选 ref"},
+				"selector":    map[string]interface{}{"type": "string", "description": "可选 selector"},
+				"query":       map[string]interface{}{"type": "string", "description": "提取目标说明"},
+				"format":      map[string]interface{}{"type": "string", "description": "返回格式，默认 text"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				result, err := agentSession.Extract(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), strArg(args, "query", ""), strArg(args, "format", "text"))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, result.Display, result.Data)
+			},
+		},
+		{
 			Name:        "browser_connect",
 			Description: "连接到浏览器（自动发现或启动）。优先连接已有调试端口；如果没有，会自动用用户的 Chrome/Edge 默认 profile 启动（保留登录态）。可选参数 addr 手动指定 CDP 地址。",
 			Category:    tool.CategoryBuiltin,
@@ -26,7 +275,7 @@ func RegisterTools(registry *tool.Registry) {
 				a := strArg(args, "addr", addr)
 				sess, err := GetSession(a)
 				if err != nil {
-					return fmt.Sprintf("连接失败: %s\n\n注意: 浏览器连接已自动尝试发现和启动，无需手动重试其他方案。如仍失败，请让用户手动关闭所有浏览器窗口后再试一次。", err)
+					return fmt.Sprintf("浏览器连接失败。\n\n根因:\n%s\n\n建议:\n- 优先检查 127.0.0.1:9222 是否被其他程序占用\n- 若浏览器已在运行，请确认它暴露了有效 CDP /json 端点", err)
 				}
 				pages, _ := sess.ListPages()
 				var info []string
@@ -40,79 +289,6 @@ func RegisterTools(registry *tool.Registry) {
 					}
 				}
 				return fmt.Sprintf("已连接到浏览器\n当前页面:\n%s", strings.Join(info, "\n"))
-			},
-		},
-		{
-			Name:        "browser_navigate",
-			Description: "在浏览器中导航到指定 URL，等待页面加载完成。",
-			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "navigate", "浏览器", "导航", "打开", "网页", "访问"},
-			Priority:    5,
-			Required:    []string{"url"},
-			InputSchema: map[string]interface{}{
-				"url": map[string]interface{}{"type": "string", "description": "要导航到的 URL"},
-			},
-			Handler: func(args map[string]interface{}) string {
-				sess, err := GetSession(addr)
-				if err != nil {
-					return sessionError(err)
-				}
-				url := strArg(args, "url", "")
-				if url == "" {
-					return "缺少 url 参数"
-				}
-				_, err = sess.Navigate(url)
-				if err != nil {
-					return fmt.Sprintf("导航失败: %s", err)
-				}
-				title, _ := sess.Eval("document.title")
-				return fmt.Sprintf("已导航到: %s\n页面标题: %s", url, title)
-			},
-		},
-		{
-			Name:        "browser_click",
-			Description: "点击页面上匹配 CSS 选择器的元素。",
-			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "click", "浏览器", "点击", "网页", "操作"},
-			Priority:    5,
-			Required:    []string{"selector"},
-			InputSchema: map[string]interface{}{
-				"selector": map[string]interface{}{"type": "string", "description": "CSS 选择器"},
-			},
-			Handler: func(args map[string]interface{}) string {
-				sess, err := GetSession(addr)
-				if err != nil {
-					return sessionError(err)
-				}
-				sel := strArg(args, "selector", "")
-				if err := sess.Click(sel); err != nil {
-					return fmt.Sprintf("点击失败: %s", err)
-				}
-				return fmt.Sprintf("已点击: %s", sel)
-			},
-		},
-		{
-			Name:        "browser_type",
-			Description: "在匹配 CSS 选择器的输入框中输入文本。会先清空输入框再输入。",
-			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "input", "type", "浏览器", "输入", "填写", "网页"},
-			Priority:    5,
-			Required:    []string{"selector", "text"},
-			InputSchema: map[string]interface{}{
-				"selector": map[string]interface{}{"type": "string", "description": "CSS 选择器"},
-				"text":     map[string]interface{}{"type": "string", "description": "要输入的文本"},
-			},
-			Handler: func(args map[string]interface{}) string {
-				sess, err := GetSession(addr)
-				if err != nil {
-					return sessionError(err)
-				}
-				sel := strArg(args, "selector", "")
-				text := strArg(args, "text", "")
-				if err := sess.Type(sel, text); err != nil {
-					return fmt.Sprintf("输入失败: %s", err)
-				}
-				return fmt.Sprintf("已在 %s 中输入 %d 个字符", sel, len([]rune(text)))
 			},
 		},
 		{
@@ -134,7 +310,6 @@ func RegisterTools(registry *tool.Registry) {
 				if err != nil {
 					return fmt.Sprintf("截图失败: %s", err)
 				}
-				// Return as a structured response so callers can extract the image.
 				result, _ := json.Marshal(map[string]interface{}{
 					"type":   "image",
 					"format": "png",
@@ -206,30 +381,6 @@ func RegisterTools(registry *tool.Registry) {
 					return fmt.Sprintf("执行失败: %s", err)
 				}
 				return result
-			},
-		},
-		{
-			Name:        "browser_wait",
-			Description: "等待匹配 CSS 选择器的元素出现在页面上。",
-			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "wait", "浏览器", "等待", "网页"},
-			Priority:    4,
-			Required:    []string{"selector"},
-			InputSchema: map[string]interface{}{
-				"selector": map[string]interface{}{"type": "string", "description": "CSS 选择器"},
-				"timeout":  map[string]interface{}{"type": "integer", "description": "超时秒数（默认 10）"},
-			},
-			Handler: func(args map[string]interface{}) string {
-				sess, err := GetSession(addr)
-				if err != nil {
-					return sessionError(err)
-				}
-				sel := strArg(args, "selector", "")
-				timeout := intArg(args, "timeout", 10)
-				if err := sess.WaitForSelector(sel, timeout); err != nil {
-					return err.Error()
-				}
-				return fmt.Sprintf("元素已出现: %s", sel)
 			},
 		},
 		{
@@ -397,25 +548,6 @@ func RegisterTools(registry *tool.Registry) {
 			},
 		},
 		{
-			Name:        "browser_back",
-			Description: "浏览器后退（history.back），等待页面加载完成。",
-			Category:    tool.CategoryBuiltin,
-			Tags:        []string{"browser", "web", "navigate", "back", "浏览器", "后退", "网页"},
-			Priority:    3,
-			InputSchema: map[string]interface{}{},
-			Handler: func(args map[string]interface{}) string {
-				sess, err := GetSession(addr)
-				if err != nil {
-					return sessionError(err)
-				}
-				if err := sess.Back(); err != nil {
-					return fmt.Sprintf("后退失败: %s", err)
-				}
-				title, _ := sess.Eval("document.title")
-				return fmt.Sprintf("已后退，当前页面: %s", title)
-			},
-		},
-		{
 			Name:        "browser_info",
 			Description: "获取当前页面的标题、URL 和加载状态（一次调用返回所有信息）。",
 			Category:    tool.CategoryBuiltin,
@@ -444,12 +576,36 @@ func RegisterTools(registry *tool.Registry) {
 	}
 }
 
+func marshalBrowserResult(ok bool, display string, data map[string]interface{}) string {
+	payload := map[string]interface{}{
+		"ok":      ok,
+		"display": display,
+	}
+	if data != nil {
+		payload["data"] = data
+	}
+	encoded, _ := json.Marshal(payload)
+	return string(encoded)
+}
+
+func policyFromArgs(args map[string]interface{}) BrowserPolicy {
+	return BrowserPolicy{
+		AllowedDomains:             stringSliceArg(args, "allowed_domains"),
+		BlockedDomains:             stringSliceArg(args, "blocked_domains"),
+		AllowCrossOriginNavigation: boolArg(args, "allow_cross_origin_navigation", true),
+		AllowPopup:                 boolArg(args, "allow_popup", false),
+		AllowDownload:              boolArg(args, "allow_download", false),
+		AllowUpload:                boolArg(args, "allow_upload", false),
+		ContentBoundary:            boolArg(args, "content_boundary", true),
+	}
+}
+
 // ── arg helpers ──
 
-// sessionError returns a concise error for browser session failures,
-// directing the AI to call browser_connect instead of inventing workarounds.
+// sessionError returns a concise error for legacy CDP browser tool failures,
+// directing the AI to reconnect via browser_connect instead of inventing workarounds.
 func sessionError(err error) string {
-	return fmt.Sprintf("浏览器未连接: %s。请先调用 browser_connect。", err)
+	return fmt.Sprintf("浏览器连接失败。\n\n根因:\n%s\n\n建议:\n- 可先调用 browser_connect 查看更完整的启动诊断\n- 若你在使用 browser session 工作流，请先调用 browser_session_start", err)
 }
 
 func strArg(args map[string]interface{}, key, fallback string) string {
@@ -471,4 +627,41 @@ func intArg(args map[string]interface{}, key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func boolArg(args map[string]interface{}, key string, fallback bool) bool {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return fallback
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return fallback
+}
+
+func stringSliceArg(args map[string]interface{}, key string) []string {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return nil
+	}
+	items, ok := value.([]interface{})
+	if !ok {
+		if direct, ok := value.([]string); ok {
+			return append([]string(nil), direct...)
+		}
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }

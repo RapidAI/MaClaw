@@ -22,6 +22,27 @@ func makeAllTools(dynamicCount int) []map[string]interface{} {
 	return builtins
 }
 
+func TestFilterToolsForSkillPreference_RemovesFallbackHeavyTools(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("run_skill", "run local skill", nil, nil),
+		toolDef("craft_tool", "craft script", nil, nil),
+		toolDef("bash", "run bash", nil, nil),
+		toolDef("create_session", "create coding session", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+	}
+	filtered := filterToolsForSkillPreference(tools)
+	resultNames := make(map[string]bool)
+	for _, tool := range filtered {
+		resultNames[extractToolName(tool)] = true
+	}
+	if resultNames["craft_tool"] || resultNames["bash"] || resultNames["create_session"] {
+		t.Fatalf("filtered tools should remove craft/bash/create_session, got %#v", resultNames)
+	}
+	if !resultNames["run_skill"] || !resultNames["send_file"] {
+		t.Fatalf("filtered tools should keep run_skill and send_file, got %#v", resultNames)
+	}
+}
+
 func TestToolRouter_BelowBudget(t *testing.T) {
 	// Use a subset of builtins (fewer than maxToolBudget) to test below-budget path.
 	allTools := makeBuiltinDefs()[:20]
@@ -185,6 +206,22 @@ func TestToolRouter_PDFWorkflowKeepsDocumentDeliveryTools(t *testing.T) {
 	}
 	if resultNames["generate_pdf"] {
 		t.Fatalf("generate_pdf should not be routed, got %#v", resultNames)
+	}
+}
+
+func TestToolRouter_MarkdownWorkflowKeepsFileEditingTools(t *testing.T) {
+	allTools := makeAllTools(20)
+	router := NewToolRouter(nil)
+	result := router.Route("把搜索结果整理成 markdown 文档并保存到本地文件，后续按我的意见继续修改", allTools)
+
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	for _, name := range []string{"read_file", "write_file", "edit_file"} {
+		if !resultNames[name] {
+			t.Fatalf("expected %s to be routed for markdown workflow, got %#v", name, resultNames)
+		}
 	}
 }
 

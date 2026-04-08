@@ -74,6 +74,8 @@ type LoopContext struct {
 
 	HTTPClient *http.Client // chat or task client
 	SessionID  string       // associated remote session (if any)
+	JobID      string       // associated trace job
+	RunID      string       // associated trace run
 	Platform   string       // originating IM platform ("desktop", "weixin_local", etc.)
 	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
 	StartedAt  time.Time    // when this loop was spawned

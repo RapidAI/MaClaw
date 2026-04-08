@@ -165,8 +165,20 @@ func (m *telegramGatewayManager) ensureLocalHandler() *IMMessageHandler {
 
 	a := m.app
 	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		a.ensureMemoryStore()
+	}
+	if a.contextResolver == nil {
+		a.ensureContextResolver()
+	}
+	if a.sessionPrecheck == nil {
+		a.ensureSessionPrecheck()
+	}
 
 	h := NewIMMessageHandler(a, a.remoteSessions)
+	if a.capabilityGapDetector == nil {
+		a.ensureCapabilityGapDetector()
+	}
 	if a.capabilityGapDetector != nil {
 		h.SetCapabilityGapDetector(a.capabilityGapDetector)
 	}
@@ -179,6 +191,7 @@ func (m *telegramGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	if a.memoryStore != nil {
 		h.SetMemoryStore(a.memoryStore)
 	}
+	h.SetTrajectoryRecorderFactory(a.buildTrajectoryRecorderFactory())
 	if a.configManager != nil {
 		h.SetConfigManager(a.configManager)
 	}
@@ -194,12 +207,17 @@ func (m *telegramGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	if a.sessionPrecheck != nil {
 		h.SetSessionPrecheck(a.sessionPrecheck)
 	}
+	a.ensureStartupFeedback()
 	if a.startupFeedback != nil {
 		h.SetStartupFeedback(a.startupFeedback)
+	}
+	if a.securityFirewall == nil {
+		a.ensureSecurityFirewall()
 	}
 	if a.securityFirewall != nil {
 		h.SetSecurityFirewall(a.securityFirewall)
 	}
+	a.ensureConversationArchiver()
 	if a.conversationArchiver != nil {
 		h.memory.archiver = a.conversationArchiver
 	}

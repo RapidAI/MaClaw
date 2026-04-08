@@ -254,6 +254,70 @@ func TestServiceGetGroupTree(t *testing.T) {
 	}
 }
 
+func TestServiceGetGroupTree_UsesCachedSnapshotUntilInvalidated(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	root, _ := svc.store.GetRootGroup(ctx)
+	child, err := svc.CreateGroup(ctx, "Cached", root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := svc.GetGroupTree(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil {
+		t.Fatal("expected initial tree")
+	}
+
+	if err := svc.store.CreateGroup(ctx, &SecurityGroup{
+		ID:        "direct-child",
+		Name:      "DirectlyInserted",
+		ParentID:  root.ID,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cached, err := svc.GetGroupTree(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsGroupByName(cached, "DirectlyInserted") {
+		t.Fatal("expected cached tree to hide direct store mutation before invalidation")
+	}
+
+	if err := svc.AssignUser(ctx, "cache@test.com", child.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed, err := svc.GetGroupTree(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsGroupByName(refreshed, "DirectlyInserted") {
+		t.Fatal("expected invalidation to refresh cached tree")
+	}
+}
+
+func containsGroupByName(node *GroupTreeNode, name string) bool {
+	if node == nil {
+		return false
+	}
+	if node.Name == name {
+		return true
+	}
+	for _, child := range node.Children {
+		if containsGroupByName(child, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // --- AssignUser / RemoveUser tests ---
 
 func TestServiceAssignUser_SingleGroupInvariant(t *testing.T) {
@@ -520,6 +584,75 @@ func TestServiceUpdateSettings_NoAuditWhenUnchanged(t *testing.T) {
 	// Only 1 log from the first change
 	if len(logs) != 1 {
 		t.Fatalf("expected 1 audit log (no change), got %d", len(logs))
+	}
+}
+
+func TestServiceGetSettings_UsesCachedSnapshotUntilInvalidated(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	first, err := svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil {
+		t.Fatal("expected initial settings")
+	}
+
+	payload, err := json.Marshal(&SecuritySettings{CentralizedSecurityEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.system.Set(ctx, settingsKey, string(payload)); err != nil {
+		t.Fatal(err)
+	}
+
+	cached, err := svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.CentralizedSecurityEnabled {
+		t.Fatal("expected cached settings to hide direct store mutation before invalidation")
+	}
+
+	if err := svc.UpdateSettings(ctx, &SecuritySettings{CentralizedSecurityEnabled: true}, "admin-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed, err := svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !refreshed.CentralizedSecurityEnabled {
+		t.Fatal("expected settings cache to refresh after update")
+	}
+}
+
+func TestServiceSetDefaultGroup_RefreshesCachedSettings(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	root, _ := svc.store.GetRootGroup(ctx)
+	child, _ := svc.CreateGroup(ctx, "Default", root.ID)
+
+	initial, err := svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.DefaultGroupID != "" {
+		t.Fatalf("expected empty default group, got %q", initial.DefaultGroupID)
+	}
+
+	if err := svc.SetDefaultGroup(ctx, child.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DefaultGroupID != child.ID {
+		t.Fatalf("expected default_group_id=%q, got %q", child.ID, updated.DefaultGroupID)
 	}
 }
 

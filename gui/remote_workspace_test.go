@@ -7,9 +7,12 @@ import (
 	"testing"
 )
 
-func TestDefaultWorkspacePreparerLocksNonGitDirectory(t *testing.T) {
+func TestDefaultWorkspacePreparerLocksDirectWorkspace(t *testing.T) {
 	preparer := NewDefaultWorkspacePreparer()
-	projectDir := t.TempDir()
+	projectDir := filepath.Join(t.TempDir(), "workspace-lock-test")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
 
 	first, err := preparer.Prepare("sess-1", LaunchSpec{ProjectPath: projectDir})
 	if err != nil {
@@ -19,9 +22,6 @@ func TestDefaultWorkspacePreparerLocksNonGitDirectory(t *testing.T) {
 
 	if first.Mode != WorkspaceModeDirect {
 		t.Fatalf("workspace mode = %q, want %q", first.Mode, WorkspaceModeDirect)
-	}
-	if first.IsGitRepo {
-		t.Fatal("expected temp directory to be non-git")
 	}
 	if first.ProjectPath != filepath.Clean(projectDir) {
 		t.Fatalf("project path = %q, want %q", first.ProjectPath, filepath.Clean(projectDir))

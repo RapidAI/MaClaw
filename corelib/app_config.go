@@ -64,6 +64,7 @@ type AppConfig struct {
 	MaclawLLMModel           string              `json:"maclaw_llm_model"`
 	MaclawLLMProtocol        string              `json:"maclaw_llm_protocol,omitempty"`
 	MaclawLLMContextLength   int                 `json:"maclaw_llm_context_length,omitempty"`
+	MaclawLLMTimeoutSec      int                 `json:"maclaw_llm_timeout_sec,omitempty"`
 	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
 	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
 	MaclawAgentMaxIterations int                 `json:"maclaw_agent_max_iterations,omitempty"`
@@ -95,6 +96,8 @@ type AppConfig struct {
 	FileOutboundEnabled  bool   `json:"file_outbound_enabled"`           // default true
 	ImageOutboundEnabled bool   `json:"image_outbound_enabled"`          // default true
 	MaclawDebugToolCalls bool   `json:"maclaw_debug_tool_calls,omitempty"`
+	ShowAITraceEntry    bool   `json:"show_ai_trace_entry,omitempty"`
+	LogDetailEnabled    bool   `json:"log_detail_enabled,omitempty"`
 	// IM — per-user QQ Bot (client-side gateway)
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`
@@ -122,6 +125,8 @@ type AppConfig struct {
 	GossipAutoPublish bool `json:"gossip_auto_publish"`
 	// LLM Trajectory Logging — 记录所有 LLM 交互用于模型训练
 	LLMTrajectoryLogging bool `json:"llm_trajectory_logging,omitempty"`
+	// Trial-and-Reflect — 启用试错并反思工作模式
+	TrialReflectEnabled bool `json:"trial_reflect_enabled,omitempty"`
 	// LLM Token Usage — 按服务商累计 token 用量统计
 	LLMTokenUsage map[string]*TokenUsageStat `json:"llm_token_usage,omitempty"`
 	// Onboarding — 是否已完成引导流程

@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress ProgressCallback) string {
@@ -23,13 +25,7 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress Prog
 		return "缺少 command 参数"
 	}
 
-	timeout := bashDefaultTimeout
-	if t, ok := args["timeout"].(float64); ok && t > 0 {
-		timeout = int(t)
-		if timeout > bashMaxTimeout {
-			timeout = bashMaxTimeout
-		}
-	}
+	timeout := resolveBashTimeout(args, command)
 
 	workDir := resolvePath(stringVal(args, "working_dir"))
 
@@ -120,12 +116,24 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress Prog
 	return b.String()
 }
 
+func resolveFileToolPath(path string) (string, error) {
+	return coretool.ResolveFileToolPath(path, func() string {
+		if wd, err := os.Getwd(); err == nil {
+			return wd
+		}
+		return ""
+	})
+}
+
 func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 	p, _ := args["path"].(string)
 	if p == "" {
 		return "缺少 path 参数"
 	}
-	absPath := resolvePath(p)
+	absPath, err := resolveFileToolPath(p)
+	if err != nil {
+		return err.Error()
+	}
 
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -155,37 +163,64 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 
 func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 	p, _ := args["path"].(string)
-	content, _ := args["content"].(string)
-	if p == "" || content == "" {
+	content, ok := args["content"].(string)
+	if p == "" || !ok {
 		return "缺少 path 或 content 参数"
 	}
 	if len(content) > writeFileMaxSize {
 		return fmt.Sprintf("内容过大（%d 字节），最大允许 %d 字节", len(content), writeFileMaxSize)
 	}
+	mode := stringVal(args, "mode")
 
-	absPath := resolvePath(p)
-
-	// 自动创建父目录
-	dir := filepath.Dir(absPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Sprintf("创建目录失败: %s", err.Error())
+	absPath, err := resolveFileToolPath(p)
+	if err != nil {
+		return err.Error()
 	}
-
-	if err := os.WriteFile(absPath, []byte(content), 0644); err != nil {
+	size, err := coretool.WriteTextFile(absPath, content, mode)
+	if err != nil {
+		if strings.Contains(err.Error(), "不支持的 mode") {
+			return err.Error()
+		}
 		return fmt.Sprintf("写入失败: %s", err.Error())
 	}
-
-	// 验证写入
-	info, err := os.Stat(absPath)
-	if err != nil {
-		return fmt.Sprintf("写入后验证失败: %s", err.Error())
+	resolvedMode, _ := coretool.NormalizeWriteMode(mode)
+	if resolvedMode == "append" {
+		return fmt.Sprintf("已追加到 %s（当前 %d 字节）", absPath, size)
 	}
-	return fmt.Sprintf("已写入 %s（%d 字节）", absPath, info.Size())
+	if content == "" {
+		return fmt.Sprintf("已清空 %s（%d 字节）", absPath, size)
+	}
+	return fmt.Sprintf("已写入 %s（%d 字节）", absPath, size)
+}
+
+func (h *IMMessageHandler) toolEditFile(args map[string]interface{}) string {
+	p, _ := args["path"].(string)
+	oldString, okOld := args["old_string"].(string)
+	newString, okNew := args["new_string"].(string)
+	if p == "" || !okOld || !okNew {
+		return "缺少 path、old_string 或 new_string 参数"
+	}
+	absPath, err := resolveFileToolPath(p)
+	if err != nil {
+		return err.Error()
+	}
+	replaceAll, _ := args["replace_all"].(bool)
+	res, err := coretool.EditTextFile(absPath, oldString, newString, replaceAll)
+	if err != nil {
+		if strings.Contains(err.Error(), "未找到要替换的内容") || strings.Contains(err.Error(), "缺少 old_string 参数") {
+			return err.Error()
+		}
+		return fmt.Sprintf("编辑失败: %s", err.Error())
+	}
+	return fmt.Sprintf("已编辑 %s（替换 %d 处，当前 %d 字节）", res.Path, res.Count, res.Size)
 }
 
 func (h *IMMessageHandler) toolListDirectory(args map[string]interface{}) string {
 	p, _ := args["path"].(string)
-	absPath := resolvePath(p)
+	absPath, err := resolveFileToolPath(p)
+	if err != nil {
+		return err.Error()
+	}
 
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -228,7 +263,10 @@ func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
 	if p == "" {
 		return "缺少 path 参数"
 	}
-	absPath := resolvePath(p)
+	absPath, err := resolveFileToolPath(p)
+	if err != nil {
+		return err.Error()
+	}
 
 	info, err := os.Stat(absPath)
 	if err != nil {

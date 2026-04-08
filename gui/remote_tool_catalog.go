@@ -55,6 +55,18 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		ConfigSelector:  func(cfg AppConfig) ToolConfig { return cfg.Claude },
 		ProviderFactory: func(app *App) ProviderAdapter { return NewClaudeAdapter(app) },
 	},
+	"gemini": {
+		Name:            "gemini",
+		DisplayName:     "Gemini",
+		BinaryName:      "gemini",
+		DefaultTitle:    "Gemini Session",
+		SupportsProxy:   true,
+		SupportsRemote:  true,
+		ReadinessHint:   "Checks Gemini CLI installation, API key, and ACP protocol readiness.",
+		SmokeHint:       "Runs registration, launch, real session start, and Hub visibility verification for Gemini (ACP mode).",
+		ConfigSelector:  func(cfg AppConfig) ToolConfig { return cfg.Gemini },
+		ProviderFactory: func(app *App) ProviderAdapter { return NewGeminiAdapter(app) },
+	},
 	"codex": {
 		Name:             "codex",
 		DisplayName:      "Codex",
@@ -81,6 +93,32 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		SmokeHint:             "Runs registration, PTY, launch, real session start, and Hub visibility verification for OpenCode.",
 		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.Opencode },
 		ProviderFactory:       func(app *App) ProviderAdapter { return NewOpencodeAdapter(app) },
+	},
+	"cursor": {
+		Name:            "cursor",
+		DisplayName:     "Cursor Agent",
+		BinaryName:      "cursor-agent",
+		DefaultTitle:    "Cursor Session",
+		SupportsProxy:   true,
+		SupportsRemote:  true,
+		ReadinessHint:   "Checks Cursor Agent CLI installation, SDK stream-json readiness, and remote capability.",
+		SmokeHint:       "Runs registration, launch, real session start, and Hub visibility verification for Cursor Agent (SDK mode).",
+		ConfigSelector:  func(cfg AppConfig) ToolConfig { return cfg.Cursor },
+		ProviderFactory: func(app *App) ProviderAdapter { return NewCursorAdapter(app) },
+	},
+	"codebuddy": {
+		Name:                  "codebuddy",
+		DisplayName:           "CodeBuddy",
+		BinaryName:            "codebuddy",
+		DefaultTitle:          "CodeBuddy Session",
+		UsesOpenAICompat:      true,
+		RequiresSessionConfig: true,
+		SupportsProxy:         true,
+		SupportsRemote:        true,
+		ReadinessHint:         "Checks CodeBuddy CLI installation, SDK stream-json readiness, and remote capability.",
+		SmokeHint:             "Runs registration, launch, real session start, and Hub visibility verification for CodeBuddy (SDK mode).",
+		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.CodeBuddy },
+		ProviderFactory:       func(app *App) ProviderAdapter { return NewCodeBuddyAdapter(app) },
 	},
 	"iflow": {
 		Name:                  "iflow",
@@ -110,44 +148,18 @@ var remoteToolCatalog = map[string]RemoteToolMetadata{
 		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.Kilo },
 		ProviderFactory:       func(app *App) ProviderAdapter { return NewKiloAdapter(app) },
 	},
-
-	"gemini": {
-		Name:           "gemini",
-		DisplayName:    "Gemini",
-		BinaryName:     "gemini",
-		DefaultTitle:   "Gemini Session",
-		SupportsProxy:  true,
-		SupportsRemote: true,
-		ReadinessHint:  "Checks Gemini CLI installation, API key, and ACP protocol readiness.",
-		SmokeHint:      "Runs registration, launch, real session start, and Hub visibility verification for Gemini (ACP mode).",
-		ConfigSelector: func(cfg AppConfig) ToolConfig { return cfg.Gemini },
-		ProviderFactory: func(app *App) ProviderAdapter { return NewGeminiAdapter(app) },
-	},
-	"cursor": {
-		Name:           "cursor",
-		DisplayName:    "Cursor Agent",
-		BinaryName:     "cursor-agent",
-		DefaultTitle:   "Cursor Session",
-		SupportsProxy:  true,
-		SupportsRemote: true,
-		ReadinessHint:  "Checks Cursor Agent CLI installation, SDK stream-json readiness, and remote capability.",
-		SmokeHint:      "Runs registration, launch, real session start, and Hub visibility verification for Cursor Agent (SDK mode).",
-		ConfigSelector: func(cfg AppConfig) ToolConfig { return cfg.Cursor },
-		ProviderFactory: func(app *App) ProviderAdapter { return NewCursorAdapter(app) },
-	},
-	"codebuddy": {
-		Name:                  "codebuddy",
-		DisplayName:           "CodeBuddy",
-		BinaryName:            "codebuddy",
-		DefaultTitle:          "CodeBuddy Session",
-		UsesOpenAICompat:      true,
-		RequiresSessionConfig: true,
-		SupportsProxy:         true,
-		SupportsRemote:        true,
-		ReadinessHint:         "Checks CodeBuddy CLI installation, SDK stream-json readiness, and remote capability.",
-		SmokeHint:             "Runs registration, launch, real session start, and Hub visibility verification for CodeBuddy (SDK mode).",
-		ConfigSelector:        func(cfg AppConfig) ToolConfig { return cfg.CodeBuddy },
-		ProviderFactory:       func(app *App) ProviderAdapter { return NewCodeBuddyAdapter(app) },
+	"browser": {
+		Name:                  "browser",
+		DisplayName:           "Browser Agent",
+		BinaryName:            "browser-agent",
+		DefaultTitle:          "Browser Session",
+		RequiresSessionConfig: false,
+		SupportsProxy:         false,
+		SupportsRemote:        false,
+		ReadinessHint:         "Starts a local browser agent session with CDP discovery, snapshots, refs, preview, and trace.",
+		SmokeHint:             "Launches a browser session and verifies snapshot/preview generation locally.",
+		ConfigSelector:        func(cfg AppConfig) ToolConfig { return ToolConfig{} },
+		ProviderFactory:       func(app *App) ProviderAdapter { return nil },
 	},
 }
 
@@ -165,7 +177,6 @@ func lookupRemoteToolMetadata(toolName string) (RemoteToolMetadata, bool) {
 	if ok {
 		return meta, true
 	}
-	// Check OEM extra tools from brand config
 	for _, et := range brand.Current().ExtraTools {
 		if et.Name == tool {
 			return RemoteToolMetadata{
@@ -207,7 +218,6 @@ func remoteToolDisplayName(toolName string) string {
 	if len(name) == 0 {
 		return name
 	}
-	// strings.Title is deprecated; capitalize first rune manually.
 	r := []rune(name)
 	r[0] = unicode.ToUpper(r[0])
 	return string(r)
@@ -218,6 +228,9 @@ func remoteToolConfig(cfg AppConfig, toolName string) (ToolConfig, error) {
 	if err != nil {
 		return ToolConfig{}, err
 	}
+	if meta.ConfigSelector == nil {
+		return ToolConfig{}, fmt.Errorf("tool config unavailable for tool: %s", normalizeRemoteToolName(toolName))
+	}
 	return meta.ConfigSelector(cfg), nil
 }
 
@@ -226,10 +239,12 @@ func (a *App) remoteProviderAdapter(toolName string) (ProviderAdapter, error) {
 	if err != nil {
 		return nil, err
 	}
+	if meta.ProviderFactory == nil {
+		return nil, fmt.Errorf("provider adapter unavailable for tool: %s", toolName)
+	}
 	return meta.ProviderFactory(a), nil
 }
 
-// remoteToolSupported returns true if the tool supports remote mode.
 func remoteToolSupported(toolName string) bool {
 	meta, ok := lookupRemoteToolMetadata(toolName)
 	if !ok {
@@ -256,8 +271,9 @@ func remoteToolVisible(cfg AppConfig, toolName string) bool {
 		return cfg.ShowCursor && runtime.GOOS != "windows"
 	case "codebuddy":
 		return cfg.ShowCodeBuddy
+	case "browser":
+		return true
 	default:
-		// OEM extra tools are always visible when present in brand config
 		for _, et := range brand.Current().ExtraTools {
 			if et.Name == normalizeRemoteToolName(toolName) {
 				return true
@@ -268,8 +284,7 @@ func remoteToolVisible(cfg AppConfig, toolName string) bool {
 }
 
 func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
-	order := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo"}
-	// Append OEM extra tools to the order
+	order := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo", "browser"}
 	for _, et := range brand.Current().ExtraTools {
 		order = append(order, et.Name)
 	}
@@ -295,6 +310,12 @@ func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
 		status := toolManager.GetToolStatus(name)
 		visible := remoteToolVisible(cfg, name)
 		canStart := visible && status.Installed && strings.TrimSpace(status.Path) != ""
+		if name == "browser" {
+			visible = true
+			status.Installed = true
+			status.Path = "builtin"
+			canStart = true
+		}
 		reason := ""
 		if !visible {
 			reason = "hidden in settings"
@@ -322,9 +343,6 @@ func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
 	return out
 }
 
-// isValidProvider returns true when the ModelConfig represents a usable
-// provider: either the built-in "Original" mode (which uses the tool's
-// own authentication) or a third-party provider with a configured API key.
 func isValidProvider(m ModelConfig) bool {
 	if m.IsBuiltin || m.HasSubscription {
 		return true
@@ -332,7 +350,6 @@ func isValidProvider(m ModelConfig) bool {
 	return strings.TrimSpace(m.ApiKey) != ""
 }
 
-// validProviders returns only the usable providers from a ToolConfig.
 func validProviders(tc ToolConfig) []ModelConfig {
 	var out []ModelConfig
 	for _, m := range tc.Models {

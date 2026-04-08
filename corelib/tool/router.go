@@ -42,14 +42,14 @@ var CoreToolNames = map[string]bool{
 	"list_sessions": true, "create_session": true,
 	"send_and_observe": true, "get_session_output": true, "get_session_events": true,
 	"control_session": true,
-	"bash": true, "read_file": true, "write_file": true, "list_directory": true,
+	"bash": true, "read_file": true, "write_file": true, "edit_file": true, "list_directory": true,
 	"call_mcp_tool": true, "list_skills": true, "run_skill": true,
 	"screenshot": true, "send_file": true,
 	"open": true, "craft_tool": true,
 	"memory": true,
 	"web_search": true, "web_fetch": true,
 	"set_nickname": true,
-	"browser_connect": true, "browser_navigate": true, "browser_click": true,
+	"browser_session_start": true, "browser_observe": true, "browser_navigate": true,
 	"discover_tool": true,
 }
 
@@ -101,6 +101,7 @@ var BuiltinToolNames = map[string]bool{
 	"search_skill_hub": true, "install_skill_hub": true,
 	"parallel_execute": true, "recommend_tool": true, "craft_tool": true,
 	"open": true,
+	"edit_file": true,
 	"create_template": true, "list_templates": true, "launch_template": true,
 	"get_config": true, "update_config": true, "batch_update_config": true,
 	"list_config_schema": true, "export_config": true, "import_config": true,
@@ -111,14 +112,15 @@ var BuiltinToolNames = map[string]bool{
 	"switch_llm_provider": true,
 	"manage_config": true,
 	"query_audit_log": true,
-	// Browser automation tools (CDP).
-	"browser_connect": true, "browser_navigate": true, "browser_click": true,
-	"browser_type": true, "browser_screenshot": true, "browser_get_text": true,
-	"browser_get_html": true, "browser_eval": true, "browser_wait": true,
-	"browser_scroll": true, "browser_select": true, "browser_list_pages": true,
-	"browser_switch_page": true, "browser_close": true,
-	"browser_click_at": true, "browser_set_files": true,
-	"browser_back": true, "browser_info": true,
+	// Browser automation tools (browser agent session + legacy CDP helpers).
+	"browser_session_start": true, "browser_session_stop": true, "browser_observe": true,
+	"browser_navigate": true, "browser_click": true, "browser_type": true,
+	"browser_wait": true, "browser_back": true, "browser_refresh": true, "browser_extract": true,
+	"browser_connect": true, "browser_screenshot": true, "browser_get_text": true,
+	"browser_get_html": true, "browser_eval": true, "browser_scroll": true,
+	"browser_select": true, "browser_list_pages": true, "browser_switch_page": true,
+	"browser_close": true, "browser_click_at": true, "browser_set_files": true,
+	"browser_info": true,
 }
 
 func init() {

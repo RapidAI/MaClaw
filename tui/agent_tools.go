@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -774,7 +775,7 @@ func toolExtractDesc(def map[string]interface{}) string {
 
 func isOriginalBuiltin(name string) bool {
 	builtins := map[string]bool{
-		"bash": true, "read_file": true, "write_file": true, "list_directory": true,
+		"bash": true, "read_file": true, "write_file": true, "edit_file": true, "list_directory": true,
 		"list_sessions": true, "send_input": true, "create_session": true,
 		"get_session_output": true, "get_session_events": true,
 		"interrupt_session": true, "kill_session": true, "send_and_observe": true,
@@ -887,6 +888,7 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 	if skillName == "" {
 		return "错误: 缺少 skill_name"
 	}
+	vars := normalizeRunSkillVars(args)
 	store := commands.NewFileConfigStore(commands.ResolveDataDir())
 	cfg, err := store.LoadConfig()
 	if err != nil {
@@ -919,7 +921,7 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		stepStart := time.Now()
 		sb.WriteString(fmt.Sprintf("\n── 步骤 %d/%d: %s ──\n", i+1, len(skill.Steps), step.Action))
 
-		output, execErr := runSkillStep(step, skill.SkillDir)
+		output, execErr := runSkillStep(step, skill.SkillDir, vars)
 		elapsed := time.Since(stepStart).Truncate(time.Millisecond)
 
 		if execErr != nil {
@@ -963,18 +965,65 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 	return sb.String()
 }
 
+func normalizeRunSkillVars(args map[string]interface{}) map[string]string {
+	vars := map[string]string{}
+	if rawArgs, ok := args["args"].(map[string]interface{}); ok {
+		for key, value := range rawArgs {
+			if str, ok := value.(string); ok {
+				vars[key] = str
+			}
+		}
+	}
+	if _, ok := vars["input"]; !ok {
+		if input := stringArg(args, "input"); input != "" {
+			vars["input"] = input
+		}
+	}
+	if _, ok := vars["output"]; !ok {
+		if output := stringArg(args, "output"); output != "" {
+			vars["output"] = output
+		}
+	}
+	return vars
+}
+
 // runSkillStep 执行单个 skill 步骤，支持流式输出收集。
-func runSkillStep(step corelib.NLSkillStep, skillDir string) (string, error) {
+func runSkillStep(step corelib.NLSkillStep, skillDir string, vars map[string]string) (string, error) {
 	switch step.Action {
 	case "bash":
 		command, _ := step.Params["command"].(string)
 		if command == "" {
 			return "", fmt.Errorf("missing command parameter")
 		}
+		command = substituteSkillVariables(command, vars)
 		return runSkillBashStreaming(command, step.Params, skillDir)
 	default:
 		return "", fmt.Errorf("unsupported action: %s", step.Action)
 	}
+}
+
+func substituteSkillVariables(command string, vars map[string]string) string {
+	keys := make([]string, 0, len(vars))
+	for key := range vars {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		value := quoteSkillInputForShell(vars[key])
+		command = strings.ReplaceAll(command, "{{"+key+"}}", value)
+		command = strings.ReplaceAll(command, "${"+key+"}", value)
+	}
+	return command
+}
+
+func quoteSkillInputForShell(input string) string {
+	if input == "" {
+		return "''"
+	}
+	if runtime.GOOS == "windows" {
+		return "'" + strings.ReplaceAll(input, "'", "''") + "'"
+	}
+	return "'" + strings.ReplaceAll(input, "'", `'"'"'`) + "'"
 }
 
 // runSkillBashStreaming 执行 bash 命令，使用流式输出收集而非等待完成。

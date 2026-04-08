@@ -91,6 +91,7 @@ require (
 )
 
 replace github.com/energye/systray v1.0.2 => ./gui/internal/systray
+
 replace github.com/VantageDataChat/GoPDF2 => ../GoPDF2
 
 // replace github.com/wailsapp/wails/v2 v2.11.0 => C:\Users\yong\go\pkg\mod

@@ -19,6 +19,7 @@ var nonCodingKeywords = []string{
 	"搜索论文", "搜论文", "找论文", "查论文", "下载论文",
 	"翻译", "全文翻译", "翻译成中文", "翻译成英文",
 	"生成pdf", "生成 pdf", "导出pdf", "导出 pdf",
+	"ppt", "pptx", "宣传ppt", "宣传 ppt", "演示文稿", "演示稿", "幻灯片", "presentation", "slides",
 	"查天气", "天气预报", "今天天气",
 	"查快递", "快递单号", "物流查询",
 	"搜索新闻", "查新闻", "最新新闻",
@@ -35,7 +36,7 @@ var nonCodingKeywords = []string{
 // If any of these appear, the guard does NOT block session creation.
 // All entries MUST be lowercase (matched against lowercased user text).
 var codingKeywords = []string{
-	"写代码", "改代码", "修改代码", "编程", "开发", "修bug", "修 bug", "修复bug", "修复 bug",
+	"写代码", "改代码", "修改代码", "编程", "开发", "修bug", "修 bug", "修复bug", "修复 bug", "bug",
 	"重构", "refactor", "实现", "添加功能", "新增功能",
 	"写脚本", "写一个脚本", "写个脚本",
 	"写函数", "写方法", "写接口", "写api", "写 api",
@@ -209,13 +210,14 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		parentRunID = h.currentLoopCtx.RunID
 	}
 	startResult, err := starter.Start(CodingSessionStartRequest{
-		Tool:            tool,
-		ProjectID:       projectID,
-		ProjectPath:     projectPath,
-		Provider:        provider,
-		ResumeSessionID: resumeSessionID,
-		LaunchSource:    RemoteLaunchSourceAI,
-		ParentRunID:     parentRunID,
+		Tool:               tool,
+		ProjectID:          projectID,
+		ProjectPath:        projectPath,
+		Provider:           provider,
+		ResumeSessionID:    resumeSessionID,
+		InjectResumePrompt: false,
+		LaunchSource:       RemoteLaunchSourceAI,
+		ParentRunID:        parentRunID,
 	})
 	if err != nil {
 		errMsg := fmt.Sprintf("❌ 创建会话失败: %s", err.Error())
@@ -362,9 +364,13 @@ func writeAutoResumeHint(b *strings.Builder, rc *SessionResumeContext, reason st
 	}
 	b.WriteString(fmt.Sprintf("\n🔄 %s", reason))
 	b.WriteString(fmt.Sprintf("\n📌 自动续接指令（第 %d 次续接）：", rc.ResumeCount+1))
-	if strings.TrimSpace(rc.ClaudeSessionID) != "" {
+	resumeSessionID := strings.TrimSpace(rc.ResumeSessionID)
+	if resumeSessionID == "" {
+		resumeSessionID = strings.TrimSpace(rc.ClaudeSessionID)
+	}
+	if resumeSessionID != "" {
 		b.WriteString("\n1. 立即调用 create_session 创建新会话（使用相同的 tool 和 project_path，并传入 resume_session_id）")
-		b.WriteString(fmt.Sprintf("\n   例如：create_session(tool=%q, project_path=%q, resume_session_id=%q)", rc.Tool, rc.ProjectPath, rc.ClaudeSessionID))
+		b.WriteString(fmt.Sprintf("\n   例如：create_session(tool=%q, project_path=%q, resume_session_id=%q)", rc.Tool, rc.ProjectPath, resumeSessionID))
 	} else {
 		b.WriteString("\n1. 立即调用 create_session 创建新会话（使用相同的 tool 和 project_path）")
 	}

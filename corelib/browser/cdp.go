@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,27 @@ type CDPClient struct {
 type CDPEvent struct {
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
+}
+
+// TargetDomainEvent is a lightweight structured Target.* event.
+type TargetDomainEvent struct {
+	TargetInfo *TargetInfo `json:"target_info,omitempty"`
+	TargetID   string      `json:"target_id,omitempty"`
+	Type       string      `json:"type,omitempty"`
+}
+
+// NetworkDomainEvent is a lightweight structured Network.* event.
+type NetworkDomainEvent struct {
+	RequestID string `json:"request_id,omitempty"`
+	Method    string `json:"method,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Status    int    `json:"status,omitempty"`
+}
+
+// ConsoleDomainEvent is a lightweight structured Runtime console event.
+type ConsoleDomainEvent struct {
+	Type string   `json:"type,omitempty"`
+	Text []string `json:"text,omitempty"`
 }
 
 // cdpError holds a CDP protocol error.
@@ -63,11 +85,26 @@ func DiscoverTargets(cdpHTTP string) ([]TargetInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read targets: %w", err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("discover targets: unexpected HTTP %s body=%q", resp.Status, truncateCDPBody(body, 220))
+	}
 	var targets []TargetInfo
 	if err := json.Unmarshal(body, &targets); err != nil {
-		return nil, fmt.Errorf("parse targets: %w", err)
+		return nil, fmt.Errorf("parse targets: %w body=%q", err, truncateCDPBody(body, 220))
 	}
 	return targets, nil
+}
+
+func truncateCDPBody(body []byte, limit int) string {
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return ""
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit] + "…"
 }
 
 // TargetInfo describes a browser target (page, worker, etc.).
@@ -215,6 +252,61 @@ func (c *CDPClient) Close() error {
 	return c.closeErr
 }
 
+func parseTargetDomainEvent(method string, params json.RawMessage) *TargetDomainEvent {
+	if params == nil {
+		return nil
+	}
+	var payload struct {
+		TargetInfo *TargetInfo `json:"targetInfo,omitempty"`
+		TargetID   string      `json:"targetId,omitempty"`
+		Type       string      `json:"type,omitempty"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return nil
+	}
+	return &TargetDomainEvent{TargetInfo: payload.TargetInfo, TargetID: payload.TargetID, Type: payload.Type}
+}
+
+func parseNetworkDomainEvent(method string, params json.RawMessage) *NetworkDomainEvent {
+	if params == nil {
+		return nil
+	}
+	var payload struct {
+		RequestID string `json:"requestId,omitempty"`
+		Request   struct {
+			Method string `json:"method,omitempty"`
+			URL    string `json:"url,omitempty"`
+		} `json:"request,omitempty"`
+		Response struct {
+			Status int `json:"status,omitempty"`
+		} `json:"response,omitempty"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return nil
+	}
+	return &NetworkDomainEvent{RequestID: payload.RequestID, Method: payload.Request.Method, URL: payload.Request.URL, Status: payload.Response.Status}
+}
+
+func parseConsoleDomainEvent(method string, params json.RawMessage) *ConsoleDomainEvent {
+	if params == nil {
+		return nil
+	}
+	var payload struct {
+		Type string `json:"type,omitempty"`
+		Args []struct {
+			Value interface{} `json:"value,omitempty"`
+		} `json:"args,omitempty"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return nil
+	}
+	out := &ConsoleDomainEvent{Type: payload.Type, Text: []string{}}
+	for _, arg := range payload.Args {
+		out.Text = append(out.Text, fmt.Sprint(arg.Value))
+	}
+	return out
+}
+
 func (c *CDPClient) readLoop() {
 	defer func() {
 		select {
@@ -252,6 +344,9 @@ func (c *CDPClient) readLoop() {
 			}
 		} else if msg.Method != "" {
 			// Event.
+			_ = parseTargetDomainEvent(msg.Method, msg.Params)
+			_ = parseNetworkDomainEvent(msg.Method, msg.Params)
+			_ = parseConsoleDomainEvent(msg.Method, msg.Params)
 			select {
 			case c.events <- CDPEvent{Method: msg.Method, Params: msg.Params}:
 			default:

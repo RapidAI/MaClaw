@@ -35,20 +35,9 @@ func ParseToolCalls(content string) []ToolCall {
 		if len(m) < 2 {
 			continue
 		}
-		raw := strings.TrimSpace(m[1])
-		var parsed struct {
-			Name      string                 `json:"name"`
-			Arguments map[string]interface{} `json:"arguments"`
+		if call, ok := parseToolCallPayload(strings.TrimSpace(m[1]), i); ok {
+			calls = append(calls, call)
 		}
-		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-			continue
-		}
-		argsBytes, _ := json.Marshal(parsed.Arguments)
-		calls = append(calls, ToolCall{
-			ID:       generateToolCallID(i),
-			Type:     "function",
-			Function: ToolFunction{Name: parsed.Name, Arguments: string(argsBytes)},
-		})
 	}
 	return calls
 }
@@ -80,23 +69,9 @@ func ParseXMLToolCalls(content string) []ToolCall {
 		if len(m) < 2 {
 			continue
 		}
-		raw := strings.TrimSpace(m[1])
-		var parsed struct {
-			Name      string                 `json:"name"`
-			Arguments map[string]interface{} `json:"arguments"`
+		if call, ok := parseToolCallPayload(strings.TrimSpace(m[1]), i); ok {
+			calls = append(calls, call)
 		}
-		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-			continue
-		}
-		if parsed.Name == "" {
-			continue
-		}
-		argsBytes, _ := json.Marshal(parsed.Arguments)
-		calls = append(calls, ToolCall{
-			ID:       generateToolCallID(i),
-			Type:     "function",
-			Function: ToolFunction{Name: parsed.Name, Arguments: string(argsBytes)},
-		})
 	}
 	return calls
 }
@@ -109,6 +84,31 @@ func RemoveXMLToolCallBlocks(content string) string {
 // HasXMLToolCalls checks whether content contains XML tool call blocks.
 func HasXMLToolCalls(content string) bool {
 	return strings.Contains(content, "<tool_call>")
+}
+
+func parseToolCallPayload(raw string, index int) (ToolCall, bool) {
+	var parsed struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return ToolCall{}, false
+	}
+	if strings.TrimSpace(parsed.Name) == "" {
+		return ToolCall{}, false
+	}
+	args := strings.TrimSpace(string(parsed.Arguments))
+	if args == "" {
+		args = "{}"
+	}
+	return ToolCall{
+		ID:   generateToolCallID(index),
+		Type: "function",
+		Function: ToolFunction{
+			Name:      parsed.Name,
+			Arguments: args,
+		},
+	}, true
 }
 
 func generateToolCallID(_ int) string {

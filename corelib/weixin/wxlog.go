@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,7 +27,17 @@ type WxLog struct {
 var (
 	globalWxLog     *WxLog
 	globalWxLogOnce sync.Once
+	logDetailEnabled atomic.Bool
 )
+
+func init() {
+	logDetailEnabled.Store(false)
+}
+
+// SetLogDetailEnabled updates the detailed WeChat log gate.
+func SetLogDetailEnabled(enabled bool) {
+	logDetailEnabled.Store(enabled)
+}
 
 // GetWxLog returns the singleton WxLog instance, creating the log file on
 // first call. Safe to call from any goroutine.
@@ -61,6 +72,9 @@ func GetWxLog() *WxLog {
 
 // Log writes a structured line: timestamp | stage | direction | uid | message
 func (w *WxLog) Log(stage, direction, uid, format string, args ...any) {
+	if !logDetailEnabled.Load() {
+		return
+	}
 	if w == nil || w.file == nil {
 		return
 	}

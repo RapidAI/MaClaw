@@ -22,6 +22,29 @@ type HubSkillUpdateInfo struct {
 	HubURL         string `json:"hub_url"`
 }
 
+func isVisibleAIAssistantProgressText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	blockedMarkers := []string{
+		"先搜索一下", "先查", "我先", "让我先", "来啦", "伯伯", "正在执行工具", "thinking", "thought", "search first",
+	}
+	for _, marker := range blockedMarkers {
+		if strings.Contains(lower, strings.ToLower(marker)) {
+			return false
+		}
+	}
+	visiblePrefixes := []string{"⏳", "⌛", "正在", "已接近", "Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving"}
+	for _, prefix := range visiblePrefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // BackupSkills exports all NL Skills to a zip file (Wails binding).
 func (a *App) BackupSkills(outputPath string) error {
 	a.ensureRemoteInfra()
@@ -599,11 +622,13 @@ func (a *App) GetAIAssistantTrace(runID string) (*AIAssistantTraceView, error) {
 }
 
 type AIAssistantSendRequest struct {
-	Text          string `json:"text"`
-	RequestID     string `json:"request_id,omitempty"`
-	ResumeSlotID  string `json:"resume_slot_id,omitempty"`
-	StartNewTask  bool   `json:"start_new_task,omitempty"`
-	DismissSlotID string `json:"dismiss_slot_id,omitempty"`
+	Text                        string `json:"text"`
+	RequestID                   string `json:"request_id,omitempty"`
+	ResumeSlotID                string `json:"resume_slot_id,omitempty"`
+	StartNewTask                bool   `json:"start_new_task,omitempty"`
+	DismissSlotID               string `json:"dismiss_slot_id,omitempty"`
+	ResumeSessionID             string `json:"resume_session_id,omitempty"`
+	DismissRecoverableSessionID string `json:"dismiss_recoverable_session_id,omitempty"`
 }
 
 type AIAssistantBackgroundTaskRequest struct {
@@ -698,12 +723,14 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		return nil, fmt.Errorf("message text is required")
 	}
 	msg := IMUserMessage{
-		UserID:        "desktop-user",
-		Platform:      "desktop",
-		Text:          text,
-		ResumeSlotID:  strings.TrimSpace(req.ResumeSlotID),
-		StartNewTask:  req.StartNewTask,
-		DismissSlotID: strings.TrimSpace(req.DismissSlotID),
+		UserID:                      "desktop-user",
+		Platform:                    "desktop",
+		Text:                        text,
+		ResumeSlotID:                strings.TrimSpace(req.ResumeSlotID),
+		StartNewTask:                req.StartNewTask,
+		DismissSlotID:               strings.TrimSpace(req.DismissSlotID),
+		ResumeRecoverableSessionID:  strings.TrimSpace(req.ResumeSessionID),
+		DismissRecoverableSessionID: strings.TrimSpace(req.DismissRecoverableSessionID),
 	}
 	requestID := strings.TrimSpace(req.RequestID)
 	if requestID == "" {
@@ -719,6 +746,9 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	}
 	onProgress := func(progressText string) {
 		if progressText == imHeartbeatMsg {
+			return
+		}
+		if !isVisibleAIAssistantProgressText(progressText) {
 			return
 		}
 		emitEvent("ai-assistant-progress", progressText)

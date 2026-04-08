@@ -17,6 +17,26 @@ export interface ImportantEventView {
     created_at?: number;
 }
 
+export interface PendingQuestionOption {
+    label?: string;
+    description?: string;
+}
+
+export interface PendingQuestionView {
+    tool_use_id?: string;
+    tool_name?: string;
+    header?: string;
+    question?: string;
+    hint?: string;
+    options?: PendingQuestionOption[];
+}
+
+export interface BrowserSessionRefView {
+    ref?: string;
+    selector?: string;
+    name?: string;
+}
+
 export interface RemoteSessionSummaryView {
     session_id?: string;
     machine_id?: string;
@@ -33,6 +53,7 @@ export interface RemoteSessionSummaryView {
     important_files?: string[];
     last_command?: string;
     updated_at?: number;
+    pending_question?: PendingQuestionView;
 }
 
 export interface SessionPreviewView {
@@ -63,6 +84,8 @@ export interface RemoteSessionView {
     execution_mode?: string;
     status?: string;
     pid?: number;
+    current_url?: string;
+    latest_refs?: BrowserSessionRefView[];
     summary?: RemoteSessionSummaryView;
     preview?: SessionPreviewView;
     events?: ImportantEventView[];

@@ -38,6 +38,8 @@ interface AIAssistantSendResult {
     Actions?: any;
     confirmation?: AIAssistantResponseConfirmation;
     Confirmation?: AIAssistantResponseConfirmation;
+    unfinished_slot?: AIAssistantResponseUnfinishedSlot;
+    UnfinishedSlot?: AIAssistantResponseUnfinishedSlot;
     local_file_path?: string;
     LocalFilePath?: string;
     local_file_paths?: string[];
@@ -245,6 +247,22 @@ function appendProgressText(messages: ChatMessage[], progressText: string): Chat
     }];
     if (next.length <= MAX_LIVE_PROGRESS_MESSAGES) return next;
     return next.slice(-MAX_LIVE_PROGRESS_MESSAGES);
+}
+
+function normalizeLocalFilePaths(localFilePath: unknown, localFilePaths: unknown): string[] | undefined {
+    const normalized = new Set<string>();
+    if (typeof localFilePath === 'string' && localFilePath.trim()) {
+        normalized.add(localFilePath.trim());
+    }
+    if (Array.isArray(localFilePaths)) {
+        for (const entry of localFilePaths) {
+            if (typeof entry !== 'string') continue;
+            const trimmed = entry.trim();
+            if (!trimmed) continue;
+            normalized.add(trimmed);
+        }
+    }
+    return normalized.size > 0 ? Array.from(normalized) : undefined;
 }
 
 export function isImageFilePath(filePath: string): boolean {
@@ -723,11 +741,126 @@ function buildTraceDetailAction(response: any, showTraceEntry: boolean): ChatAct
     return [{ label: 'View trace', command: buildTraceDetailCommand(runID), style: 'default' }];
 }
 
+const shortChitChatEdgePunctuationPattern = /^[\s"'“”‘’`()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+|[\s"'“”‘’`()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+$/g;
+const shortChitChatChineseIdlePattern = /^(没事|没事了|没有)(啊|呀|啦|呢|吧|哦|喔|哈|哇|嘛|的)?$/;
+const shortChitChatChineseThanksPattern = /^(谢谢)(啊|呀|啦|呢|吧|哦|喔|哈)?$/;
+const shortChitChatChineseGreetingPattern = /^(你好|你好呀|你好啊|嗨|哈喽)(啊|呀|啦|呢|吧|哦|喔|哈)?$/;
+
+function normalizeShortChitChatToken(text: string): string {
+    let cleaned = text.trim().toLowerCase();
+    if (!cleaned) return '';
+    while (true) {
+        const next = cleaned.replace(shortChitChatEdgePunctuationPattern, '').trim();
+        if (next === cleaned) break;
+        cleaned = next;
+    }
+    cleaned = cleaned.split(/\s+/).filter(Boolean).join(' ');
+    if (!cleaned) return '';
+    if (shortChitChatChineseIdlePattern.test(cleaned)) return '没事';
+    if (shortChitChatChineseThanksPattern.test(cleaned)) return '谢谢';
+    if (shortChitChatChineseGreetingPattern.test(cleaned)) return '你好';
+    return new Set([
+        '没事',
+        'nothing',
+        'none',
+        'hi',
+        'hello',
+        'ok',
+        'okay',
+        'thanks',
+        'thank you',
+        '谢谢',
+    ]).has(cleaned) ? cleaned : '';
+}
+
+function selectVisibleEmptyResultSummary(response: any): string {
+    const candidates = [response?.trace_summary, response?.trial_reflect_summary]
+        .filter((value): value is string => typeof value === 'string')
+        .map(value => value.trim())
+        .filter(Boolean);
+    return candidates.find(isVisibleEmptyResultSummary) || '';
+}
+
+function isVisibleEmptyResultSummary(summary: string): boolean {
+    const trimmed = summary.trim();
+    if (!trimmed) return false;
+
+    const normalized = trimmed.toLowerCase();
+    const normalizedEcho = normalizeShortChitChatToken(normalized.replace(/^(summary|result|trace summary|结果|摘要)\s*[:：-]?\s*/i, '').trim());
+    if (normalizedEcho) {
+        return false;
+    }
+
+    const promptLikeMarkers = [
+        '当前工作目录',
+        'primary working directory',
+        'current working directory',
+        'project directory',
+        'default directory',
+        'continue the conversation',
+        'resume directly',
+        'user:',
+        'assistant:',
+        'task:',
+        '任务：',
+        '请帮我',
+        '帮我',
+        '请实现',
+        '请修复',
+        '请重建',
+        'you are',
+    ];
+    if (promptLikeMarkers.some(marker => normalized.includes(marker))) {
+        return false;
+    }
+
+    const executionSignals = [
+        'failed',
+        'failure',
+        'error',
+        'stopped',
+        'timeout',
+        'cancel',
+        'killed',
+        'retry',
+        'recovered',
+        'generated',
+        'created',
+        'saved',
+        'wrote',
+        'written',
+        'exported',
+        'uploaded',
+        'downloaded',
+        'prepared',
+        'delivered',
+        'found',
+        'produced',
+        '执行',
+        '失败',
+        '错误',
+        '超时',
+        '取消',
+        '停止',
+        '重试',
+        '恢复',
+        '生成',
+        '创建',
+        '保存',
+        '写入',
+        '导出',
+        '上传',
+        '下载',
+        '准备',
+        '找到',
+        '文件',
+    ];
+    return executionSignals.some(signal => normalized.includes(signal));
+}
+
 function buildEmptyTerminalFallback(response: any): string {
-    const traceSummary = typeof response?.trace_summary === 'string' ? response.trace_summary.trim() : '';
-    const trialReflectSummary = typeof response?.trial_reflect_summary === 'string' ? response.trial_reflect_summary.trim() : '';
     const traceStatus = typeof response?.trace_status === 'string' ? response.trace_status.trim().toLowerCase() : '';
-    const fallback = traceSummary || trialReflectSummary;
+    const fallback = selectVisibleEmptyResultSummary(response);
     if (traceStatus === 'failed' || traceStatus === 'timeout' || traceStatus === 'cancelled' || traceStatus === 'stopped') {
         return fallback ? `任务未完成可交付结果。${fallback}` : '任务未完成可交付结果。可查看 Trace 了解失败位置。';
     }
@@ -741,13 +874,13 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
         const responseActions = normalizeActions(response.actions) || [];
         const traceActions = buildTraceDetailAction(response, preferences.showTraceEntry) || [];
         const nextActions = [...responseActions, ...traceActions];
-        const nextLocalFilePath = response.local_file_path;
-        const nextLocalFilePaths = response.local_file_paths;
+        const nextLocalFilePath = typeof response.local_file_path === 'string' ? response.local_file_path.trim() : '';
+        const nextLocalFilePaths = normalizeLocalFilePaths(nextLocalFilePath, response.local_file_paths);
         const nextThumbnailBase64 = response.thumbnail_base64;
-        if (!nextContent && !nextThumbnailBase64 && !nextLocalFilePaths?.length && !nextLocalFilePath) {
+        if (!nextContent && !nextThumbnailBase64 && !nextLocalFilePaths?.length) {
             nextContent = buildEmptyTerminalFallback(response);
         }
-        if (!nextContent && !nextFields?.length && !nextActions?.length && !nextThumbnailBase64 && !nextLocalFilePaths?.length && !nextLocalFilePath) {
+        if (!nextContent && !nextFields?.length && !nextActions?.length && !nextThumbnailBase64 && !nextLocalFilePaths?.length) {
             return null;
         }
         return {
@@ -757,7 +890,7 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
             actions: nextActions.length > 0 ? nextActions : undefined,
             confirmation: response.confirmation,
             unfinishedSlot: (response as any).unfinished_slot,
-            localFilePath: nextLocalFilePath,
+            localFilePath: nextLocalFilePath || undefined,
             localFilePaths: nextLocalFilePaths,
             thumbnailBase64: nextThumbnailBase64,
         };
@@ -847,6 +980,11 @@ function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
 function matchesActiveRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
     if (!round.requestId || round.generation === 0) return false;
     return !event.request_id || event.request_id === round.requestId;
+}
+
+function matchesActiveProgressRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
+    if (!round.requestId || round.generation === 0 || round.phase === 'idle') return false;
+    return !!event.request_id && event.request_id === round.requestId;
 }
 
 function subscribeEvent(eventName: string, handler: (...args: any[]) => void): () => void {
@@ -1578,7 +1716,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const event = normalizeStreamEvent(payload);
             const progressText = event.text || (typeof payload === 'string' ? payload : '');
             if (!progressText) return;
-            if (event.request_id && activeRoundRef.current.requestId && !matchesActiveRequest(activeRoundRef.current, event)) {
+            if (!matchesActiveProgressRequest(activeRoundRef.current, event)) {
                 return;
             }
             if (progressTailRef.current === progressText) {

@@ -17,6 +17,7 @@ type llmResponse = llm.Response
 type llmChoice = llm.Choice
 type llmMessage = llm.Message
 type llmToolCall = llm.ToolCall
+type ChatCompletionMessageToolCall = llm.ToolCall
 
 // doLLMRequest sends a chat completion request to the configured LLM.
 // Supports both OpenAI-compatible and Anthropic Messages API protocols.

@@ -8,10 +8,22 @@ import (
 )
 
 func TestMarkdownToHTML_Headings(t *testing.T) {
-	md := "# 大标题\n## 二级标题\n### 三级标题"
+	md := "# 大标题\n## 二级标题\n### 三级标题\n#### 四级标题\n##### 五级标题"
 	html := markdownToHTML(md)
 	if !strings.Contains(html, "<b>大标题</b>") {
 		t.Error("should contain h1 text")
+	}
+	if !strings.Contains(html, "<b>二级标题</b>") {
+		t.Error("should contain h2 text")
+	}
+	if !strings.Contains(html, "<b>三级标题</b>") {
+		t.Error("should contain h3 text")
+	}
+	if !strings.Contains(html, "<b>四级标题</b>") {
+		t.Error("should contain h4 text")
+	}
+	if !strings.Contains(html, "<b>五级标题</b>") {
+		t.Error("should contain h5 text")
 	}
 	if !strings.Contains(html, "15pt") {
 		t.Error("h1 should use 15pt font")
@@ -21,6 +33,60 @@ func TestMarkdownToHTML_Headings(t *testing.T) {
 	}
 	if !strings.Contains(html, "11pt") {
 		t.Error("h3 should use 11pt font")
+	}
+	if !strings.Contains(html, "9.5pt") {
+		t.Error("h4 should use 9.5pt font")
+	}
+	if !strings.Contains(html, "8.5pt") {
+		t.Error("h5 should use 8.5pt font")
+	}
+}
+
+func TestStripDuplicateLeadingHeading_RemovesMatchingH1(t *testing.T) {
+	spec := Spec{
+		Title:       "Hugging Face Daily Papers 综述与评论",
+		ProjectName: "Hugging Face Daily Papers 综述与评论",
+		Content:     "# Hugging Face Daily Papers 综述与评论\n\n日期：2025 年 4 月 3 日\n\n## 小节",
+	}
+	got := stripDuplicateLeadingHeading(spec)
+	if strings.Contains(got, "# Hugging Face Daily Papers 综述与评论") {
+		t.Fatalf("expected duplicate leading H1 to be removed, got %q", got)
+	}
+	if !strings.Contains(got, "日期：2025 年 4 月 3 日") {
+		t.Fatalf("expected body content to remain, got %q", got)
+	}
+	if !strings.Contains(got, "## 小节") {
+		t.Fatalf("expected following headings to remain, got %q", got)
+	}
+}
+
+func TestStripDuplicateLeadingHeading_KeepsDifferentH1(t *testing.T) {
+	spec := Spec{
+		ProjectName: "Hugging Face Daily Papers 综述与评论",
+		Content:     "# 今日重点论文\n\n正文",
+	}
+	got := stripDuplicateLeadingHeading(spec)
+	if got != spec.Content {
+		t.Fatalf("expected non-matching H1 to stay unchanged, got %q", got)
+	}
+}
+
+func TestStripDuplicateLeadingHeading_IgnoresNonLeadingH1(t *testing.T) {
+	spec := Spec{
+		ProjectName: "Hugging Face Daily Papers 综述与评论",
+		Content:     "> 摘要\n\n# Hugging Face Daily Papers 综述与评论\n\n正文",
+	}
+	got := stripDuplicateLeadingHeading(spec)
+	if got != spec.Content {
+		t.Fatalf("expected H1 after other content to stay unchanged, got %q", got)
+	}
+}
+func TestNormalizeHeadingText(t *testing.T) {
+	if got := normalizeHeadingText("  标题   ### "); got != "标题" {
+		t.Fatalf("normalizeHeadingText returned %q", got)
+	}
+	if got := normalizeHeadingText("A   B"); got != "A B" {
+		t.Fatalf("normalizeHeadingText collapsed spaces incorrectly: %q", got)
 	}
 }
 

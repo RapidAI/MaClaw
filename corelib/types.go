@@ -12,6 +12,10 @@ const RequiredNodeVersion = "24.13.0"
 // context_length is configured on the LLM provider.
 const DefaultContextTokens = 128_000
 
+// DefaultLLMTimeoutSec is the fallback response-header timeout in seconds
+// when no explicit timeout_sec is configured on the LLM provider.
+const DefaultLLMTimeoutSec = 360
+
 // ModelConfig 描述一个 LLM 模型的配置。
 type ModelConfig struct {
 	ModelName       string `json:"model_name"`
@@ -142,6 +146,7 @@ type MaclawLLMProvider struct {
 	Model          string `json:"model"`
 	Protocol       string `json:"protocol,omitempty"`
 	ContextLength  int    `json:"context_length,omitempty"`
+	TimeoutSec     int    `json:"timeout_sec,omitempty"`
 	IsCustom       bool   `json:"is_custom,omitempty"`
 	SupportsVision bool   `json:"supports_vision"`
 	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
@@ -166,6 +171,7 @@ type MaclawLLMConfig struct {
 	Model          string `json:"model"`
 	Protocol       string `json:"protocol,omitempty"`
 	ContextLength  int    `json:"context_length,omitempty"`
+	TimeoutSec     int    `json:"timeout_sec,omitempty"`
 	SupportsVision bool   `json:"supports_vision"`
 	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 }
@@ -178,6 +184,15 @@ func (c MaclawLLMConfig) UserAgent() string {
 		return c.AgentType
 	}
 	return "openclaw"
+}
+
+// EffectiveTimeoutSec returns the configured response-header timeout in seconds,
+// falling back to DefaultLLMTimeoutSec when unset or invalid.
+func (c MaclawLLMConfig) EffectiveTimeoutSec() int {
+	if c.TimeoutSec > 0 {
+		return c.TimeoutSec
+	}
+	return DefaultLLMTimeoutSec
 }
 
 // AnthropicMessagesEndpoint returns the Anthropic Messages API endpoint

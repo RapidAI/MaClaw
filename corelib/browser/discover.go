@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,15 +23,74 @@ var (
 	managedBrowserProc *os.Process
 )
 
+type devToolsActivePortInfo struct {
+	Port   int
+	WSPath string
+	Source string
+}
+
+type browserLaunchDiagnostic struct {
+	BrowserName  string
+	BrowserPath  string
+	UserDataDir  string
+	Port         int
+	PortOccupied bool
+	TCPReachable bool
+	Managed      bool
+	PortError    string
+	JSONError    string
+	StderrTail   string
+	Stage        string
+}
+
+func (d browserLaunchDiagnostic) Summary() string {
+	parts := make([]string, 0, 8)
+	if d.BrowserName != "" {
+		parts = append(parts, "browser="+d.BrowserName)
+	}
+	if d.BrowserPath != "" {
+		parts = append(parts, "path="+d.BrowserPath)
+	}
+	if d.UserDataDir != "" {
+		parts = append(parts, "user_data_dir="+d.UserDataDir)
+	}
+	if d.Port > 0 {
+		parts = append(parts, fmt.Sprintf("port=%d", d.Port))
+	}
+	if d.Stage != "" {
+		parts = append(parts, "stage="+d.Stage)
+	}
+	if d.PortOccupied {
+		parts = append(parts, "port_occupied=true")
+	}
+	if d.TCPReachable {
+		parts = append(parts, "tcp_connect=ok")
+	}
+	if d.Managed {
+		parts = append(parts, "managed_browser=true")
+	}
+	if d.PortError != "" {
+		parts = append(parts, "port_error="+d.PortError)
+	}
+	if d.JSONError != "" {
+		parts = append(parts, "json_error="+d.JSONError)
+	}
+	if d.StderrTail != "" {
+		parts = append(parts, "stderr="+d.StderrTail)
+	}
+	return strings.Join(parts, "; ")
+}
+
 // DiscoverCDPAddr tries to auto-discover a Chrome/Edge CDP endpoint.
 // Priority: 1) DevToolsActivePort file  2) common ports (9222, 9229, 9333)
 // Returns an HTTP address like "http://127.0.0.1:9222" or error.
 func DiscoverCDPAddr() (string, error) {
 	// 1. Try DevToolsActivePort file (works with chrome://inspect remote debugging).
-	if port, _ := readDevToolsActivePort(); port > 0 {
-		if probePort(port) {
-			return fmt.Sprintf("http://127.0.0.1:%d", port), nil
+	if info, ok := readDevToolsActivePort(); ok {
+		if probePort(info.Port) {
+			return fmt.Sprintf("http://127.0.0.1:%d", info.Port), nil
 		}
+		return "", fmt.Errorf("已找到 DevToolsActivePort 但端口不可达: source=%s port=%d", info.Source, info.Port)
 	}
 
 	// 2. Scan common debug ports.
@@ -69,8 +130,9 @@ func DiscoverOrLaunch() (string, error) {
 		// Verify the port is actually serving CDP (not just TCP-open).
 		if _, err2 := DiscoverTargets(addr); err2 == nil {
 			return addr, nil
+		} else {
+			log.Printf("[browser] 端口可达但 CDP 无响应: %v", err2)
 		}
-		log.Printf("[browser] 端口可达但 CDP 无响应，将重新启动浏览器")
 	}
 
 	// Detect browser.
@@ -81,20 +143,18 @@ func DiscoverOrLaunch() (string, error) {
 
 	// Use an isolated debug profile to avoid conflicts with the user's browser.
 	debugDir := debugProfileDir()
+	addr := fmt.Sprintf("http://127.0.0.1:%d", debugPort)
 
-	// Step 1: If port 9222 is occupied but not serving CDP, or if a previous
-	// debug instance is stuck, kill it. We try to only kill our managed
-	// process first; falling back to killBrowserByName only as last resort.
+	// Step 1: If port 9222 is occupied but not serving CDP, only clean up our own managed
+	// instance. Avoid killing user browsers or unrelated processes holding the port.
 	if probePort(debugPort) {
-		addr := fmt.Sprintf("http://127.0.0.1:%d", debugPort)
 		if _, err := DiscoverTargets(addr); err != nil {
-			log.Printf("[browser] 端口 %d 被占用但非 CDP，尝试清理...", debugPort)
-			if !killManagedBrowser() {
-				// No managed process — something else holds the port.
-				// As a last resort, kill browser processes.
-				killBrowserByName(bi.name)
+			log.Printf("[browser] 端口 %d 被占用但非 CDP: %v", debugPort, err)
+			if killManagedBrowser() {
+				waitForPortRelease(debugPort, 8*time.Second)
+			} else {
+				return "", fmt.Errorf("调试端口 %d 已被占用，但不是有效 CDP 端点；未自动结束未知进程以避免误杀。详情: %w", debugPort, err)
 			}
-			waitForPortRelease(debugPort, 8*time.Second)
 		}
 	}
 
@@ -105,23 +165,22 @@ func DiscoverOrLaunch() (string, error) {
 	os.Remove(filepath.Join(debugDir, "DevToolsActivePort"))
 
 	// Step 2: Launch with isolated profile + fixed port.
-	addr, err := launchDebugBrowser(bi, debugDir, debugPort)
+	launchedAddr, err := launchDebugBrowser(bi, debugDir, debugPort)
 	if err != nil {
-		// Retry once: force-kill our managed process and try again.
-		log.Printf("[browser] 首次启动失败 (%v)，强制清理后重试...", err)
+		// Retry once: force-kill only our managed process and try again.
+		log.Printf("[browser] 首次启动失败 (%v)，清理托管浏览器后重试...", err)
 		killManagedBrowser()
-		killBrowserByName(bi.name) // fallback: ensure nothing holds the port
 		waitForPortRelease(debugPort, 10*time.Second)
 		for _, lockName := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile"} {
 			os.Remove(filepath.Join(debugDir, lockName))
 		}
-		addr, err = launchDebugBrowser(bi, debugDir, debugPort)
+		launchedAddr, err = launchDebugBrowser(bi, debugDir, debugPort)
 		if err != nil {
 			return "", fmt.Errorf("浏览器两次启动均失败: %w", err)
 		}
 	}
 
-	return addr, nil
+	return launchedAddr, nil
 }
 
 // launchDebugBrowser starts Chrome/Edge with the given user-data-dir and
@@ -135,11 +194,12 @@ func launchDebugBrowser(bi *browserInfo, userDataDir string, port int) (string, 
 		"--user-data-dir=" + userDataDir,
 	}
 	cmd := exec.Command(bi.path, args...)
+	var stderr bytes.Buffer
 	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stderr = &stderr
 	log.Printf("[browser] 启动命令: %s %v", bi.path, args)
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("启动浏览器失败: %w", err)
+		return "", fmt.Errorf("启动浏览器失败: %w (browser=%s path=%s user_data_dir=%s port=%d)", err, bi.name, bi.path, userDataDir, port)
 	}
 
 	// Track the process for cleanup.
@@ -156,10 +216,21 @@ func launchDebugBrowser(bi *browserInfo, userDataDir string, port int) (string, 
 		managedBrowserMu.Unlock()
 	}()
 
+	diag := browserLaunchDiagnostic{
+		BrowserName: bi.name,
+		BrowserPath: bi.path,
+		UserDataDir: userDataDir,
+		Port:        port,
+		Managed:     true,
+		Stage:       "launch",
+	}
+
 	// Check if the process exits immediately (profile conflict or bad args).
 	select {
 	case <-procExited:
-		return "", fmt.Errorf("浏览器进程立即退出，可能存在 profile 冲突")
+		diag.Stage = "exited_early"
+		diag.StderrTail = summarizeStderr(stderr.String())
+		return "", fmt.Errorf("浏览器进程立即退出。%s", diag.Summary())
 	case <-time.After(2 * time.Second):
 		// Good — process is alive.
 	}
@@ -170,17 +241,36 @@ func launchDebugBrowser(bi *browserInfo, userDataDir string, port int) (string, 
 	for time.Now().Before(deadline) {
 		select {
 		case <-procExited:
-			return "", fmt.Errorf("浏览器进程在等待 CDP 端口期间退出")
+			diag.Stage = "exited_waiting_cdp"
+			diag.StderrTail = summarizeStderr(stderr.String())
+			return "", fmt.Errorf("浏览器进程在等待 CDP 端口期间退出。%s", diag.Summary())
 		default:
+		}
+		diag.PortOccupied = probePort(port)
+		diag.TCPReachable = diag.PortOccupied
+		if !diag.PortOccupied {
+			diag.Stage = "waiting_port"
+			time.Sleep(500 * time.Millisecond)
+			continue
 		}
 		if _, err := DiscoverTargets(addr); err == nil {
 			log.Printf("[browser] 已启动 %s，调试端口: %d (独立 profile)", bi.name, port)
 			return addr, nil
+		} else {
+			diag.Stage = "waiting_json"
+			diag.JSONError = truncateText(err.Error(), 240)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	return "", fmt.Errorf("浏览器已启动但端口 %d 未响应 CDP", port)
+	diag.StderrTail = summarizeStderr(stderr.String())
+	if !diag.PortOccupied {
+		return "", fmt.Errorf("浏览器已启动但端口 %d 未监听。%s", port, diag.Summary())
+	}
+	if diag.JSONError != "" {
+		return "", fmt.Errorf("浏览器已启动但 /json 未返回有效 CDP。%s", diag.Summary())
+	}
+	return "", fmt.Errorf("浏览器已启动但端口 %d 未响应 CDP。%s", port, diag.Summary())
 }
 
 // waitForPortRelease waits until the given TCP port is no longer listening.
@@ -417,8 +507,40 @@ func killBrowserByName(browserName string) {
 }
 
 // readDevToolsActivePort reads the DevToolsActivePort file from known Chrome profile locations.
-// Returns (port, wsPath) where wsPath may be empty.
-func readDevToolsActivePort() (int, string) {
+// Returns info when a valid DevToolsActivePort file is found.
+func readDevToolsActivePort() (*devToolsActivePortInfo, bool) {
+	candidates := devToolsActivePortCandidates()
+
+	// Also check our isolated debug profile directory.
+	debugDir := debugProfileDir()
+	candidates = append(candidates, filepath.Join(debugDir, "DevToolsActivePort"))
+
+	seen := make(map[string]struct{}, len(candidates))
+	for _, p := range candidates {
+		p = filepath.Clean(p)
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+		port, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+		if err != nil || port <= 0 || port > 65535 {
+			continue
+		}
+		wsPath := ""
+		if len(lines) > 1 {
+			wsPath = strings.TrimSpace(lines[1])
+		}
+		return &devToolsActivePortInfo{Port: port, WSPath: wsPath, Source: p}, true
+	}
+	return nil, false
+}
+
+func devToolsActivePortCandidates() []string {
 	var candidates []string
 
 	switch runtime.GOOS {
@@ -444,35 +566,57 @@ func readDevToolsActivePort() (int, string) {
 	case "windows":
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData != "" {
-			candidates = append(candidates,
-				filepath.Join(localAppData, "Google", "Chrome", "User Data", "DevToolsActivePort"),
-				filepath.Join(localAppData, "Chromium", "User Data", "DevToolsActivePort"),
-				filepath.Join(localAppData, "Microsoft", "Edge", "User Data", "DevToolsActivePort"),
-			)
+			for _, userDataDir := range []string{
+				filepath.Join(localAppData, "Google", "Chrome", "User Data"),
+				filepath.Join(localAppData, "Chromium", "User Data"),
+				filepath.Join(localAppData, "Microsoft", "Edge", "User Data"),
+			} {
+				candidates = append(candidates, windowsProfileDevToolsCandidates(userDataDir)...)
+			}
 		}
 	}
+	return candidates
+}
 
-	// Also check our isolated debug profile directory.
-	debugDir := debugProfileDir()
-	candidates = append(candidates, filepath.Join(debugDir, "DevToolsActivePort"))
-
-	for _, p := range candidates {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
-		port, err := strconv.Atoi(strings.TrimSpace(lines[0]))
-		if err != nil || port <= 0 || port > 65535 {
-			continue
-		}
-		wsPath := ""
-		if len(lines) > 1 {
-			wsPath = strings.TrimSpace(lines[1])
-		}
-		return port, wsPath
+func windowsProfileDevToolsCandidates(userDataDir string) []string {
+	if strings.TrimSpace(userDataDir) == "" {
+		return nil
 	}
-	return 0, ""
+	candidates := []string{filepath.Join(userDataDir, "DevToolsActivePort")}
+	entries, err := os.ReadDir(userDataDir)
+	if err != nil {
+		return candidates
+	}
+	profileDirs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if name == "Default" || strings.HasPrefix(name, "Profile ") {
+			profileDirs = append(profileDirs, name)
+		}
+	}
+	sort.Strings(profileDirs)
+	for _, name := range profileDirs {
+		candidates = append(candidates, filepath.Join(userDataDir, name, "DevToolsActivePort"))
+	}
+	return candidates
+}
+
+func summarizeStderr(text string) string {
+	return truncateText(strings.Join(strings.Fields(strings.TrimSpace(text)), " "), 240)
+}
+
+func truncateText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit] + "…"
 }
 
 // probePort checks if a TCP port is listening on localhost (2s timeout).

@@ -943,6 +943,186 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].content).toBe('任务未完成可交付结果。PDF generation failed after tool execution');
     });
 
+    it('suppresses conversational echo summaries with punctuation for short chit-chat replies', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: '结果：没事。',
+            run_id: 'run-empty-conversation-zh-punct',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('没事。');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+    });
+
+    it('suppresses english conversational echo summaries with punctuation for short chit-chat replies', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: 'summary: nothing...',
+            run_id: 'run-empty-conversation-en-punct',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('nothing...');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+    });
+
+    it('suppresses ok-style conversational echo summaries', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: 'summary: okay.',
+            run_id: 'run-empty-conversation-ok',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('okay.');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+    });
+
+    it('keeps direct short chit-chat replies visible instead of applying empty fallback', async () => {
+        mockSendResponse = {
+            text: '好，没问题。我在这，有需要随时叫我。',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: '',
+            run_id: 'run-direct-chitchat',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('没事。');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('好，没问题。我在这，有需要随时叫我。');
+    });
+
+    it('keeps direct english short chit-chat replies visible instead of applying empty fallback', async () => {
+        mockSendResponse = {
+            text: 'No problem. I\'m here if you need anything.',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: '',
+            run_id: 'run-direct-chitchat-en',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('nothing...');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('No problem. I\'m here if you need anything.');
+    });
+
+    it('suppresses prompt-like empty terminal summaries to avoid repeating user input', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: '请帮我生成一个 PDF，并保存在当前工作目录',
+            run_id: 'run-empty-prompt-like',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('make pdf');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+    });
+
+    it('suppresses conversational echo summaries for short chit-chat replies', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: '没事',
+            run_id: 'run-empty-conversation-zh',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('没事');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+    });
+
+    it('suppresses conversational echo summaries for short english chit-chat replies', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: 'nothing',
+            run_id: 'run-empty-conversation-en',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('nothing');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。');
+    });
+
+    it('keeps execution-like empty terminal summaries visible', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            trace_summary: '文件 review.pdf 已准备好，但未返回正文摘要',
+            run_id: 'run-empty-execution-like',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('make pdf');
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。文件 review.pdf 已准备好，但未返回正文摘要');
+    });
+
     it('finalizes the active tail message without changing streamed content', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
@@ -1655,58 +1835,126 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.visualBusy).toBe(false);
     });
 
-    it('accepts legacy string progress payloads', async () => {
+    it('ignores late progress after the round has finalized', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; trace_summary?: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
         const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('make pdf');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, trace_summary: 'PDF generation stopped before writing the file' });
+            await pending.promise;
+        });
+
+        expect(result.current.progressMessages).toHaveLength(0);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '正在执行工具，请稍候...' });
+        });
+
+        expect(result.current.progressMessages).toHaveLength(0);
+    });
+
+    it('ignores progress without the active request id', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('make pdf');
+        });
 
         await act(async () => {
             emitRuntimeEvent('ai-assistant-progress', 'legacy progress');
+            emitRuntimeEvent('ai-assistant-progress', { request_id: 'other-request', text: 'wrong progress' });
+        });
+
+        expect(result.current.progressMessages).toHaveLength(0);
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'right progress' });
         });
 
         expect(result.current.progressMessages).toHaveLength(1);
-        expect(result.current.progressMessages[0].content).toBe('legacy progress');
+        expect(result.current.progressMessages[0].content).toBe('right progress');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });
+            await pending.promise;
+        });
     });
 
-    it('Property 9: progress events appear as progress messages', async () => {
-        await fc.assert(
-            fc.asyncProperty(
-                fc.string({ minLength: 1, maxLength: 80 }),
-                async (progressText) => {
-                    const { result, unmount } = renderAssistantHook();
+    it('keeps single local_file_path responses visible without fallback text', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            local_file_path: '/tmp/review.pdf',
+        };
 
-                    await act(async () => {
-                        emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: progressText });
-                    });
-
-                    const progressMsgs = result.current.progressMessages;
-                    expect(progressMsgs.length).toBeGreaterThanOrEqual(1);
-                    expect(progressMsgs.find(m => m.content === progressText)).toBeDefined();
-
-                    unmount();
-                },
-            ),
-            { numRuns: 100 },
-        );
-    });
-
-    it('deduplicates consecutive identical progress events', async () => {
         const { result } = renderAssistantHook();
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
-            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
-            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
+            await result.current.sendMessage('make pdf');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('');
+        expect(assistantMsg?.localFilePath).toBe('/tmp/review.pdf');
+        expect(assistantMsg?.localFilePaths).toEqual(['/tmp/review.pdf']);
+    });
+
+    it('deduplicates consecutive identical progress events', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('track progress');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'same progress' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'same progress' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'same progress' });
         });
 
         expect(result.current.progressMessages).toHaveLength(1);
         expect(result.current.progressMessages[0].content).toBe('same progress');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });
+            await pending.promise;
+        });
     });
 
     it('clearHistory resets progress dedupe state', async () => {
+        const first = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
+        const second = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(() => first.promise)
+            .mockImplementationOnce(() => second.promise);
+
         const { result } = renderAssistantHook();
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
-            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
+            void result.current.sendMessage('track progress');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'same progress' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'same progress' });
         });
         expect(result.current.progressMessages).toHaveLength(1);
 
@@ -1716,10 +1964,25 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.progressMessages).toEqual([]);
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-progress', { request_id: 'req-progress', text: 'same progress' });
+            void result.current.sendMessage('track progress again');
+        });
+
+        const nextReq = requestEvent(1);
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: nextReq.request_id, text: 'same progress' });
         });
         expect(result.current.progressMessages).toHaveLength(1);
         expect(result.current.progressMessages[0].content).toBe('same progress');
+
+        await act(async () => {
+            second.resolve({ text: '', error: '', fields: null, actions: null, request_id: nextReq.request_id, local_file_path: '/tmp/review-2.pdf' });
+            await second.promise;
+        });
+
+        await act(async () => {
+            first.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });
+            await first.promise;
+        });
     });
 
     it('Property 10: assistant reply is populated after progress messages', async () => {

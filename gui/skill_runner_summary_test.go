@@ -31,6 +31,24 @@ func TestSummarizeSkillRun_PopulatesCurrentAndLastStep(t *testing.T) {
 	}
 }
 
+func TestSummarizeSkillRun_MarksInstructionOnlyCraftTool(t *testing.T) {
+	status := &SkillRunStatus{
+		RunID:  "run-craft",
+		Skill:  "pptx-generator",
+		Status: "success",
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "craft_tool",
+			Status: "success",
+			Output: "📝 脚本语言: python\n📁 脚本路径: C:/tmp/tool.py\n\n✅ 脚本执行成功",
+		}},
+	}
+	summarizeSkillRun(status)
+	if !status.Summary.NeedsArtifactVerification {
+		t.Fatalf("expected summary to require artifact verification, got %#v", status.Summary)
+	}
+}
+
 func TestSummarizeSkillRun_PopulatesErrorSnippet(t *testing.T) {
 	status := &SkillRunStatus{
 		RunID:  "run-2",

@@ -133,10 +133,385 @@ func TestBugCondition_RequestBody_MissingStreamFalse(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Preservation tests — these MUST PASS on the current (unfixed) code.
-// They establish baseline behavior that must be preserved after the fix.
-// ---------------------------------------------------------------------------
+func TestBuildOpenAIChatRequestData_MergesSystemAndAddsExtrasForMiniMax(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7"}
+	messages := []interface{}{
+		map[string]interface{}{"role": "system", "content": "system prompt"},
+		map[string]interface{}{"role": "user", "content": "hi"},
+		map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+			"tool_calls": []interface{}{map[string]interface{}{
+				"id":   "call_1",
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      "search",
+					"arguments": "{",
+				},
+			}},
+		},
+	}
+
+	endpoint, body, err := BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{
+		Stream: true,
+		Tools: []map[string]interface{}{{
+			"type": "function",
+			"function": map[string]interface{}{"name": "search"},
+		}},
+		ExtraBody: map[string]interface{}{
+			"temperature": 0.7,
+			"stream_options": map[string]interface{}{
+				"include_usage": true,
+			},
+			"stream": false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	if got, want := endpoint, "https://api.minimaxi.com/v1/chat/completions"; got != want {
+		t.Fatalf("endpoint = %q, want %q", got, want)
+	}
+
+	var req struct {
+		Model         string                   `json:"model"`
+		Stream        bool                     `json:"stream"`
+		Messages      []map[string]interface{} `json:"messages"`
+		Tools         []map[string]interface{} `json:"tools"`
+		Temperature   float64                  `json:"temperature"`
+		StreamOptions map[string]interface{}   `json:"stream_options"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if req.Model != "MiniMax-M2.7" {
+		t.Fatalf("model = %q, want MiniMax-M2.7", req.Model)
+	}
+	if !req.Stream {
+		t.Fatalf("stream = %v, want true", req.Stream)
+	}
+	if len(req.Tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(req.Tools))
+	}
+	if req.Temperature != 0.7 {
+		t.Fatalf("temperature = %v, want 0.7", req.Temperature)
+	}
+	if req.StreamOptions["include_usage"] != true {
+		t.Fatalf("stream_options.include_usage = %#v, want true", req.StreamOptions["include_usage"])
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages len = %d, want 2 after system merge", len(req.Messages))
+	}
+	if got := req.Messages[0]["content"]; got != "system prompt\n\nhi" {
+		t.Fatalf("merged content = %#v, want %q", got, "system prompt\n\nhi")
+	}
+	assistantCalls, _ := req.Messages[1]["tool_calls"].([]interface{})
+	assistantCall, _ := assistantCalls[0].(map[string]interface{})
+	fn, _ := assistantCall["function"].(map[string]interface{})
+	if got := fn["arguments"]; got != "{}" {
+		t.Fatalf("arguments = %#v, want %q", got, "{}")
+	}
+}
+
+func TestParseNonStreamOpenAIResponseBody_NormalizesContentPartsAndPreservesToolCalls(t *testing.T) {
+	body := []byte(`{
+		"choices": [{
+			"message": {
+				"role": "assistant",
+				"content": [
+					{"type": "text", "content": "hello"},
+					{"type": "output_text", "text": "world"}
+				],
+				"reasoning_content": "reason",
+				"tool_calls": [{
+					"id": "call_1",
+					"type": "function",
+					"function": {"name": "search", "arguments": "{\"q\":\"go\"}"}
+				}]
+			},
+			"finish_reason": "tool_calls"
+		}]
+	}`)
+
+	resp, err := ParseNonStreamOpenAIResponseBody(body)
+	if err != nil {
+		t.Fatalf("ParseNonStreamOpenAIResponseBody returned error: %v", err)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices len = %d, want 1", len(resp.Choices))
+	}
+	msg := resp.Choices[0].Message
+	if got := msg.Content; got != "hello\nworld" {
+		t.Fatalf("content = %q, want %q", got, "hello\nworld")
+	}
+	if got := msg.ReasoningContent; got != "reason" {
+		t.Fatalf("reasoning_content = %q, want %q", got, "reason")
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("tool_calls len = %d, want 1", len(msg.ToolCalls))
+	}
+	if got := msg.ToolCalls[0].Function.Name; got != "search" {
+		t.Fatalf("tool name = %q, want %q", got, "search")
+	}
+	if got := msg.ToolCalls[0].Function.Arguments; got != `{"q":"go"}` {
+		t.Fatalf("tool arguments = %q, want %q", got, `{"q":"go"}`)
+	}
+	if _, ok := msg.RawContent.([]interface{}); !ok {
+		t.Fatalf("raw content type = %T, want []interface{}", msg.RawContent)
+	}
+}
+
+	func TestNewOpenAIChatRequest_SetsHeaders(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{
+		URL:       "https://example.com/v1",
+		Model:     "test-model",
+		Key:       "secret-key",
+		AgentType: "claude-code/2.0.0",
+	}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+
+	req, _, endpoint, err := NewOpenAIChatRequest(context.Background(), cfg, messages, OpenAIChatRequestOptions{Stream: false})
+	if err != nil {
+		t.Fatalf("NewOpenAIChatRequest returned error: %v", err)
+	}
+	if got, want := endpoint, "https://example.com/v1/chat/completions"; got != want {
+		t.Fatalf("endpoint = %q, want %q", got, want)
+	}
+	if got, want := req.Method, http.MethodPost; got != want {
+		t.Fatalf("method = %q, want %q", got, want)
+	}
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer secret-key" {
+		t.Fatalf("Authorization = %q, want bearer header", got)
+	}
+}
+
+func TestMiniMax_RequestBody_SanitizesInvalidReplayedToolArguments(t *testing.T) {
+	var capturedBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{
+		URL:   srv.URL + "/proxy/minimaxi.com",
+		Model: "MiniMax-M2.7",
+	}
+	messages := []interface{}{
+		map[string]interface{}{"role": "system", "content": "system prompt"},
+		map[string]interface{}{"role": "user", "content": "hi"},
+		map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+			"tool_calls": []ToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{Name: "search", Arguments: "{"},
+			}},
+		},
+	}
+
+	_, err := DoOpenAIRequest(context.Background(), cfg, messages, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("DoOpenAIRequest returned error: %v", err)
+	}
+
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("failed to parse captured request body: %v", err)
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("expected 2 messages after system merge, got %d", len(req.Messages))
+	}
+	if got := req.Messages[0]["content"]; got != "system prompt\n\nhi" {
+		t.Fatalf("merged user content = %#v, want %q", got, "system prompt\n\nhi")
+	}
+	assistantCalls, ok := req.Messages[1]["tool_calls"].([]interface{})
+	if !ok || len(assistantCalls) != 1 {
+		t.Fatalf("assistant tool_calls = %#v, want 1 entry", req.Messages[1]["tool_calls"])
+	}
+	assistantCall, _ := assistantCalls[0].(map[string]interface{})
+	fn, _ := assistantCall["function"].(map[string]interface{})
+	if got := fn["arguments"]; got != "{}" {
+		t.Fatalf("arguments = %#v, want %q", got, "{}")
+	}
+}
+
+func TestMiniMax_RequestBody_PreservesValidReplayedToolArguments(t *testing.T) {
+	var capturedBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL + "/minimaxi.com", Model: "MiniMax-M2.7"}
+	messages := []interface{}{
+		map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+			"tool_calls": []interface{}{map[string]interface{}{
+				"id":   "call_1",
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      "search",
+					"arguments": `{"q":"golang"}`,
+				},
+			}},
+		},
+	}
+
+	_, err := DoOpenAIRequest(context.Background(), cfg, messages, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("DoOpenAIRequest returned error: %v", err)
+	}
+
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("failed to parse captured request body: %v", err)
+	}
+	assistantCalls, _ := req.Messages[0]["tool_calls"].([]interface{})
+	assistantCall, _ := assistantCalls[0].(map[string]interface{})
+	fn, _ := assistantCall["function"].(map[string]interface{})
+	if got := fn["arguments"]; got != `{"q":"golang"}` {
+		t.Fatalf("arguments = %#v, want valid JSON preserved", got)
+	}
+}
+
+func TestNonMiniMax_RequestBody_LeavesInvalidReplayedToolArgumentsUntouched(t *testing.T) {
+	var capturedBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	messages := []interface{}{
+		map[string]interface{}{
+			"role":    "assistant",
+			"content": "",
+			"tool_calls": []interface{}{map[string]interface{}{
+				"id":   "call_1",
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      "search",
+					"arguments": "{",
+				},
+			}},
+		},
+	}
+
+	_, err := DoOpenAIRequest(context.Background(), cfg, messages, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("DoOpenAIRequest returned error: %v", err)
+	}
+
+	var req struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("failed to parse captured request body: %v", err)
+	}
+	assistantCalls, _ := req.Messages[0]["tool_calls"].([]interface{})
+	assistantCall, _ := assistantCalls[0].(map[string]interface{})
+	fn, _ := assistantCall["function"].(map[string]interface{})
+	if got := fn["arguments"]; got != "{" {
+		t.Fatalf("arguments = %#v, want invalid payload unchanged for non-MiniMax", got)
+	}
+}
+
+func TestParseSSEToResponse_RejectsOversizedToolArguments(t *testing.T) {
+	oversized := strings.Repeat("a", maxToolArgumentsBytes+1)
+	body := []byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"generate_pdf\",\"arguments\":\"" + oversized + "\"}}]}}]}\n")
+
+	_, err := ParseSSEToResponse(body)
+	if err == nil || !strings.Contains(err.Error(), "tool arguments too large") {
+		t.Fatalf("expected oversized tool arguments error, got %v", err)
+	}
+}
+
+func TestBuildOpenAIChatRequestData_PassesThroughCommonChatOptions(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://example.com/v1", Model: "gpt-test"}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+
+	_, body, err := BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{
+		Stream: false,
+		ToolChoice: map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{"name": "search"},
+		},
+		ResponseFormat: map[string]interface{}{
+			"type": "json_schema",
+		},
+		PassThrough: map[string]interface{}{
+			"temperature":         0.2,
+			"top_p":               0.9,
+			"max_tokens":          123,
+			"max_completion_tokens": 321,
+			"presence_penalty":    0.1,
+			"frequency_penalty":   0.3,
+			"stop":                []interface{}{"END"},
+			"parallel_tool_calls": true,
+			"user":                "u-1",
+			"seed":                float64(7),
+			"n":                   float64(2),
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	for _, key := range []string{"temperature", "top_p", "max_tokens", "max_completion_tokens", "presence_penalty", "frequency_penalty", "stop", "parallel_tool_calls", "user", "seed", "n", "tool_choice", "response_format"} {
+		if _, ok := req[key]; !ok {
+			t.Fatalf("expected key %q in request body", key)
+		}
+	}
+}
+
+func TestParseNonStreamOpenAIResponseBody_ContentParts(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"image_url","image_url":{"url":"https://example.com/x.png"}},{"type":"text","text":"world"}]},"finish_reason":"stop"}]}`)
+
+	resp, err := ParseNonStreamOpenAIResponseBody(body)
+	if err != nil {
+		t.Fatalf("ParseNonStreamOpenAIResponseBody returned error: %v", err)
+	}
+	if len(resp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	msg := resp.Choices[0].Message
+	if got := msg.Content; got != "hello\nworld" {
+		t.Fatalf("content = %q, want %q", got, "hello\nworld")
+	}
+	parts, ok := msg.RawContent.([]interface{})
+	if !ok || len(parts) != 3 {
+		t.Fatalf("raw content = %#v, want original 3-part content array", msg.RawContent)
+	}
+}
+
 
 // TestPreservation_StandardJSONResponse verifies that DoOpenAIRequest correctly
 // parses a standard JSON response with content and finish_reason.

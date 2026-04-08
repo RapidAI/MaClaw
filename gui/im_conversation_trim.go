@@ -415,6 +415,9 @@ func truncateToolResultForTool(toolName, s string) string {
 	if toolName == "web_fetch" {
 		limit = webFetchMaxToolResult
 	}
+	if strings.HasPrefix(toolName, "browser") {
+		limit = max(limit, 4096)
+	}
 	if len(s) <= limit {
 		return s
 	}

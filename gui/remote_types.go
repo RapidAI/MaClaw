@@ -58,11 +58,12 @@ type LaunchSpec struct {
 	Title        string
 	LaunchSource RemoteLaunchSource
 
-	YoloMode  bool
-	AdminMode bool
-	PythonEnv string
-	UseProxy  bool
-	TeamMode  bool
+	YoloMode           bool
+	AdminMode          bool
+	PythonEnv          string
+	UseProxy           bool
+	TeamMode           bool
+	InjectResumePrompt bool
 
 	// ResumeSessionID, if non-empty, tells the provider adapter to resume
 	// a previous Claude Code session (via --resume <id>) instead of starting
@@ -83,25 +84,43 @@ type CommandSpec struct {
 }
 
 type SessionSummary struct {
-	SessionID       string   `json:"session_id"`
-	MachineID       string   `json:"machine_id"`
-	Tool            string   `json:"tool"`
-	Title           string   `json:"title"`
-	Source          string   `json:"source,omitempty"`
-	Status          string   `json:"status"`
-	Severity        string   `json:"severity"`
-	WaitingForUser  bool     `json:"waiting_for_user"`
-	Thinking        bool     `json:"thinking"`
-	ThinkingSince   int64    `json:"thinking_since,omitempty"`
-	CurrentTask     string   `json:"current_task"`
-	ProgressSummary string   `json:"progress_summary"`
-	StepProgress    string   `json:"step_progress,omitempty"`
-	StepCount       int      `json:"step_count,omitempty"`
-	LastResult      string   `json:"last_result"`
-	SuggestedAction string   `json:"suggested_action"`
-	ImportantFiles  []string `json:"important_files"`
-	LastCommand     string   `json:"last_command"`
-	UpdatedAt       int64    `json:"updated_at"`
+	SessionID       string               `json:"session_id"`
+	MachineID       string               `json:"machine_id"`
+	Tool            string               `json:"tool"`
+	Title           string               `json:"title"`
+	Source          string               `json:"source,omitempty"`
+	Status          string               `json:"status"`
+	Severity        string               `json:"severity"`
+	WaitingForUser  bool                 `json:"waiting_for_user"`
+	Thinking        bool                 `json:"thinking"`
+	ThinkingSince   int64                `json:"thinking_since,omitempty"`
+	CurrentTask     string               `json:"current_task"`
+	ProgressSummary string               `json:"progress_summary"`
+	StepProgress    string               `json:"step_progress,omitempty"`
+	StepCount       int                  `json:"step_count,omitempty"`
+	LastResult      string               `json:"last_result"`
+	SuggestedAction string               `json:"suggested_action"`
+	ImportantFiles  []string             `json:"important_files"`
+	LastCommand     string               `json:"last_command"`
+	PendingQuestion *PendingQuestionView `json:"pending_question,omitempty"`
+	UpdatedAt       int64                `json:"updated_at"`
+}
+
+// PendingQuestionView contains sanitized AskUserQuestion data for the UI.
+type PendingQuestionView struct {
+	ToolUseID string                    `json:"tool_use_id,omitempty"`
+	ToolName  string                    `json:"tool_name,omitempty"`
+	Header    string                    `json:"header,omitempty"`
+	Question  string                    `json:"question,omitempty"`
+	Hint      string                    `json:"hint,omitempty"`
+	Multi     bool                      `json:"multi,omitempty"`
+	Options   []PendingQuestionOption   `json:"options,omitempty"`
+}
+
+type PendingQuestionOption struct {
+	Label       string `json:"label,omitempty"`
+	Description string `json:"description,omitempty"`
+	Preview     string `json:"preview,omitempty"`
 }
 
 type SessionPreview struct {
@@ -184,6 +203,8 @@ type RemoteSession struct {
 	WorkspaceMode  WorkspaceMode
 	WorkspaceIsGit bool
 	ModelID        string
+	JobID          string
+	RunID          string
 
 	Status    SessionStatus
 	PID       int
@@ -218,6 +239,11 @@ type RemoteSession struct {
 	Exec     ExecutionHandle
 	Provider ProviderAdapter
 
+	// AgentLoop tracks a background AI-assistant task that is surfaced via the
+	// remote session list. These sessions do not have an ExecutionHandle, so
+	// interruption/cancellation is routed through the loop context instead.
+	AgentLoop *LoopContext
+
 	// Permissions manages tool-use permission requests for this session.
 	// Initialized based on the session's YoloMode setting.
 	Permissions *PermissionHandler
@@ -230,6 +256,11 @@ type RemoteSession struct {
 	// mid-task, enabling the Agent to create a new session and continue
 	// where the previous one left off.
 	ResumeContext *SessionResumeContext
+
+	// InjectResumePrompt marks sessions that were explicitly launched to
+	// continue an unfinished-slot task, allowing startup feedback to inject
+	// the checkpoint prompt only for those sessions.
+	InjectResumePrompt bool
 
 	// PendingUserQuestion tracks a pending AskUserQuestion tool_use block.
 	// When Claude Code uses AskUserQuestion, it waits for a tool_result
@@ -245,6 +276,8 @@ type RemoteSession struct {
 type PendingToolUse struct {
 	ToolUseID string
 	ToolName  string
+	Question  *PendingQuestionView
+	RawInput  map[string]interface{}
 }
 
 // SessionResumeContext captures the state of a session that exited mid-task,
@@ -259,10 +292,13 @@ type SessionResumeContext struct {
 	Tool            string   `json:"tool"`              // tool name (claude, gemini, etc.)
 	ExitReason      string   `json:"exit_reason"`       // "token_limit", "api_error", "unknown"
 
-	// ClaudeSessionID is the session ID reported by Claude Code's SDK
-	// protocol (system/init message). When available, the auto-resume
-	// logic can use `claude -p --resume <id>` to continue the exact
-	// conversation instead of starting fresh, preserving full context.
+	// ResumeSessionID is the provider-native session/thread id that can be
+	// passed back via create_session(..., resume_session_id=...) to continue
+	// the exact structured conversation history when the provider supports it.
+	ResumeSessionID string `json:"resume_session_id,omitempty"`
+
+	// ClaudeSessionID is kept for backward compatibility with older saved
+	// resume contexts and tests. New code should prefer ResumeSessionID.
 	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 }
 
@@ -286,6 +322,30 @@ type OutputResult struct {
 	Summary      *SessionSummary
 	PreviewDelta *SessionPreviewDelta
 	Events       []ImportantEvent
+}
+
+func (r OutputResult) SummaryText() string {
+	if r.Summary != nil {
+		if r.Summary.LastResult != "" {
+			return r.Summary.LastResult
+		}
+		if r.Summary.ProgressSummary != "" {
+			return r.Summary.ProgressSummary
+		}
+		if r.Summary.CurrentTask != "" {
+			return r.Summary.CurrentTask
+		}
+	}
+	if len(r.Events) > 0 {
+		last := r.Events[len(r.Events)-1]
+		if last.Summary != "" {
+			return last.Summary
+		}
+		if last.Title != "" {
+			return last.Title
+		}
+	}
+	return ""
 }
 
 // SessionOutputImage is an image extracted from SDK output, tagged with

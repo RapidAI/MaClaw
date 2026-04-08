@@ -548,11 +548,10 @@ func (a *App) installToolsInBackground() {
 	}
 
 	if !npmReady || npmExec == "" {
-		a.log(a.tr("ERROR: npm not found after %d attempts. Cannot install AI tools.", maxRetries))
-		return
+		a.log(a.tr("WARNING: npm not found after %d attempts. Background checks will continue, but npm-based tools may not install or update.", maxRetries))
+	} else {
+		a.log(a.tr("npm verified successfully: %s", npmExec))
 	}
-
-	a.log(a.tr("npm verified successfully: %s", npmExec))
 
 	tm := NewToolManager(a)
 	tools := []string{"kilo", "claude", "gemini", "codex", "opencode", "codebuddy", "iflow"}
@@ -588,36 +587,28 @@ func (a *App) installToolsInBackground() {
 			}
 
 			a.log(a.tr("Background: %s found in private directory at %s (version: %s).", tool, status.Path, status.Version))
-
-			// Check for updates (skip for non-npm tools like claude and cursor)
-			pkgName := tm.GetPackageName(tool)
-			if pkgName == "" {
-				a.log(a.tr("Background: %s uses native installer, skipping automatic update check.", tool))
-			} else {
-				a.log(a.tr("Background: Checking for %s updates...", tool))
-				latest, err := a.getLatestNpmVersion(npmExec, pkgName)
-				if err == nil && latest != "" {
-					needsUpdate := a.compareVersions(status.Version, latest) < 0
-					if needsUpdate {
-						a.log(a.tr("Background: New version available for %s: %s (current: %s). Updating...", tool, latest, status.Version))
-						a.emitEvent("tool-updating", tool)
-						if err := tm.UpdateTool(tool); err != nil {
-							errStr := err.Error()
-							if strings.Contains(errStr, "ripgrep") && strings.Contains(errStr, "403") {
-								a.log(a.tr("Background: Warning: %s update completed with ripgrep download issue.", tool))
-							} else if strings.Contains(errStr, "EPERM") || strings.Contains(errStr, "EBUSY") {
-								a.log(a.tr("Background: Warning: %s update failed due to file lock.", tool))
-							} else {
-								a.log(a.tr("Background: ERROR: Failed to update %s: %v", tool, err))
-							}
-						} else {
-							a.log(a.tr("Background: %s updated successfully to %s.", tool, latest))
-							a.emitEvent("tool-updated", tool)
-						}
+			a.log(a.tr("Background: Checking for %s updates...", tool))
+			needsUpdate, latest, err := tm.NeedsUpdate(tool, status.Version)
+			if err != nil {
+				a.log(a.tr("Background: Warning: failed to check updates for %s: %v", tool, err))
+			} else if needsUpdate {
+				a.log(a.tr("Background: New version available for %s: %s (current: %s). Updating...", tool, latest, status.Version))
+				a.emitEvent("tool-updating", tool)
+				if err := tm.UpdateTool(tool); err != nil {
+					errStr := err.Error()
+					if strings.Contains(errStr, "ripgrep") && strings.Contains(errStr, "403") {
+						a.log(a.tr("Background: Warning: %s update completed with ripgrep download issue.", tool))
+					} else if strings.Contains(errStr, "EPERM") || strings.Contains(errStr, "EBUSY") {
+						a.log(a.tr("Background: Warning: %s update failed due to file lock.", tool))
 					} else {
-						a.log(a.tr("Background: %s is already up to date (version: %s).", tool, status.Version))
+						a.log(a.tr("Background: ERROR: Failed to update %s: %v", tool, err))
 					}
+				} else {
+					a.log(a.tr("Background: %s updated successfully to %s.", tool, latest))
+					a.emitEvent("tool-updated", tool)
 				}
+			} else {
+				a.log(a.tr("Background: %s is already up to date (version: %s).", tool, status.Version))
 			}
 		}
 
@@ -659,6 +650,21 @@ func (a *App) InstallToolOnDemand(toolName string) error {
 	status := tm.GetToolStatus(toolName)
 
 	if status.Installed {
+		needsUpdate, _, err := tm.NeedsUpdate(toolName, status.Version)
+		if err != nil {
+			a.log(a.tr("On-demand installation: Warning: failed to check updates for %s: %v", toolName, err))
+			return nil
+		}
+		if !needsUpdate {
+			return nil
+		}
+		a.log(a.tr("On-demand installation: Updating %s...", toolName))
+		if err := tm.UpdateTool(toolName); err != nil {
+			a.log(a.tr("On-demand installation: ERROR: Failed to update %s: %v", toolName, err))
+			return err
+		}
+		a.log(a.tr("On-demand installation: %s updated successfully.", toolName))
+		a.emitEvent("tool-updated", toolName)
 		return nil
 	}
 

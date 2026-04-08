@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -226,6 +228,59 @@ func TestTopicDetector_TimeDecay(t *testing.T) {
 	got := d.detect("Python 的列表推导式怎么写，给我几个例子", "user1", mem)
 	if got != TopicSame {
 		t.Errorf("time decay without embedder: got %v, want TopicSame (conservative)", got)
+	}
+}
+
+func TestTopicDetector_ConfirmWithLLM_New(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"new"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	d := newTopicSwitchDetector(func() (*http.Client, MaclawLLMConfig) {
+		return srv.Client(), MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	})
+	d.llmTimeout = 2 * time.Second
+
+	if got := d.confirmWithLLM("old topic", "new question"); got != TopicNew {
+		t.Fatalf("confirmWithLLM() = %v, want %v", got, TopicNew)
+	}
+}
+
+func TestTopicDetector_ConfirmWithLLM_SameOnHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gateway failed", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	d := newTopicSwitchDetector(func() (*http.Client, MaclawLLMConfig) {
+		return srv.Client(), MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	})
+	d.llmTimeout = 2 * time.Second
+
+	if got := d.confirmWithLLM("old topic", "new question"); got != TopicSame {
+		t.Fatalf("confirmWithLLM() = %v, want %v", got, TopicSame)
+	}
+}
+
+func TestTopicDetector_ConfirmWithLLM_SSEFallback(t *testing.T) {
+	sseBody := "data: {\"choices\":[{\"delta\":{\"content\":\"new\"}}]}\ndata: [DONE]\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	d := newTopicSwitchDetector(func() (*http.Client, MaclawLLMConfig) {
+		return srv.Client(), MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	})
+	d.llmTimeout = 2 * time.Second
+
+	if got := d.confirmWithLLM("old topic", "new question"); got != TopicNew {
+		t.Fatalf("confirmWithLLM() = %v, want %v", got, TopicNew)
 	}
 }
 

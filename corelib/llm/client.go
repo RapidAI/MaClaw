@@ -18,6 +18,208 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+const maxToolArgumentsBytes = 180 * 1024
+
+// OpenAIChatRequestOptions controls how an OpenAI-compatible chat/completions
+// request is built.
+type OpenAIChatRequestOptions struct {
+	Stream        bool
+	Tools         []map[string]interface{}
+	ExtraBody     map[string]interface{}
+	PassThrough   map[string]interface{}
+	ToolChoice    interface{}
+	ResponseFormat interface{}
+}
+
+var openAIChatPassThroughKeys = []string{
+	"temperature",
+	"top_p",
+	"max_tokens",
+	"max_completion_tokens",
+	"presence_penalty",
+	"frequency_penalty",
+	"stop",
+	"parallel_tool_calls",
+	"user",
+	"seed",
+	"n",
+	"logprobs",
+	"top_logprobs",
+	"stream_options",
+	"metadata",
+	"store",
+}
+
+func buildOpenAIChatRequestBody(
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	opts OpenAIChatRequestOptions,
+) map[string]interface{} {
+	// Provider-specific message adaptation
+	if corelib.NeedsSystemMerge(cfg) {
+		messages = corelib.MergeSystemIntoUser(messages)
+	}
+	messages = normalizeMiniMaxToolCallMessages(cfg, messages)
+
+	reqBody := map[string]interface{}{
+		"model":    cfg.Model,
+		"messages": messages,
+		"stream":   opts.Stream,
+	}
+	if len(opts.Tools) > 0 {
+		reqBody["tools"] = opts.Tools
+	}
+	if opts.ToolChoice != nil {
+		reqBody["tool_choice"] = opts.ToolChoice
+	}
+	if opts.ResponseFormat != nil {
+		reqBody["response_format"] = opts.ResponseFormat
+	}
+	for _, k := range openAIChatPassThroughKeys {
+		if opts.PassThrough != nil {
+			if v, ok := opts.PassThrough[k]; ok {
+				reqBody[k] = v
+			}
+		}
+	}
+	for k, v := range opts.ExtraBody {
+		switch k {
+		case "model", "messages", "stream", "tools", "tool_choice", "response_format":
+			continue
+		default:
+			reqBody[k] = v
+		}
+	}
+	return reqBody
+}
+
+func BuildOpenAIChatRequestData(
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	opts OpenAIChatRequestOptions,
+) (endpoint string, body []byte, err error) {
+	endpoint = strings.TrimRight(cfg.URL, "/") + "/chat/completions"
+	body, err = json.Marshal(buildOpenAIChatRequestBody(cfg, messages, opts))
+	return endpoint, body, err
+}
+
+func NewOpenAIChatRequest(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	opts OpenAIChatRequestOptions,
+) (*http.Request, []byte, string, error) {
+	endpoint, data, err := BuildOpenAIChatRequestData(cfg, messages, opts)
+	if err != nil {
+		return nil, nil, endpoint, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, endpoint, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", cfg.UserAgent())
+	if cfg.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	}
+	return req, data, endpoint, nil
+}
+
+
+func normalizeMiniMaxToolCallMessages(cfg corelib.MaclawLLMConfig, messages []interface{}) []interface{} {
+	if !strings.Contains(cfg.URL, "minimaxi.com") {
+		return messages
+	}
+
+	normalized := make([]interface{}, 0, len(messages))
+	for _, m := range messages {
+		mm, ok := m.(map[string]interface{})
+		if !ok {
+			normalized = append(normalized, m)
+			continue
+		}
+		role, _ := mm["role"].(string)
+		if role != "assistant" {
+			normalized = append(normalized, m)
+			continue
+		}
+		patchedToolCalls, changed := normalizeMiniMaxToolCalls(mm["tool_calls"])
+		if !changed {
+			normalized = append(normalized, m)
+			continue
+		}
+
+		patched := make(map[string]interface{}, len(mm))
+		for k, v := range mm {
+			patched[k] = v
+		}
+		patched["tool_calls"] = patchedToolCalls
+		normalized = append(normalized, patched)
+	}
+	return normalized
+}
+
+func normalizeMiniMaxToolCalls(raw interface{}) (interface{}, bool) {
+	switch toolCalls := raw.(type) {
+	case []ToolCall:
+		if len(toolCalls) == 0 {
+			return raw, false
+		}
+		patchedCalls := make([]ToolCall, len(toolCalls))
+		copy(patchedCalls, toolCalls)
+		changed := false
+		for i := range patchedCalls {
+			args := strings.TrimSpace(patchedCalls[i].Function.Arguments)
+			if args == "" || !json.Valid([]byte(args)) {
+				patchedCalls[i].Function.Arguments = "{}"
+				changed = true
+			}
+		}
+		if !changed {
+			return raw, false
+		}
+		return patchedCalls, true
+	case []interface{}:
+		if len(toolCalls) == 0 {
+			return raw, false
+		}
+		patchedCalls := make([]interface{}, 0, len(toolCalls))
+		changed := false
+		for _, call := range toolCalls {
+			callMap, ok := call.(map[string]interface{})
+			if !ok {
+				patchedCalls = append(patchedCalls, call)
+				continue
+			}
+			fn, _ := callMap["function"].(map[string]interface{})
+			args, _ := fn["arguments"].(string)
+			trimmed := strings.TrimSpace(args)
+			if trimmed != "" && json.Valid([]byte(trimmed)) {
+				patchedCalls = append(patchedCalls, call)
+				continue
+			}
+			patchedCall := make(map[string]interface{}, len(callMap))
+			for k, v := range callMap {
+				patchedCall[k] = v
+			}
+			patchedFn := make(map[string]interface{}, len(fn))
+			for k, v := range fn {
+				patchedFn[k] = v
+			}
+			patchedFn["arguments"] = "{}"
+			patchedCall["function"] = patchedFn
+			patchedCalls = append(patchedCalls, patchedCall)
+			changed = true
+		}
+		if !changed {
+			return raw, false
+		}
+		return patchedCalls, true
+	default:
+		return raw, false
+	}
+}
+
 // DoOpenAIRequest sends a non-streaming OpenAI-compatible chat completion
 // request. It handles provider quirks (e.g. MiniMax system-role merge)
 // in one place so callers don't need to worry about them.
@@ -31,33 +233,14 @@ func DoOpenAIRequest(
 	tools []map[string]interface{},
 	client *http.Client,
 ) (*Response, error) {
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
-	log.Printf("[LLM] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
-
-	// Provider-specific message adaptation
-	if corelib.NeedsSystemMerge(cfg) {
-		messages = corelib.MergeSystemIntoUser(messages)
-	}
-
-	reqBody := map[string]interface{}{
-		"model":    cfg.Model,
-		"messages": messages,
-		"stream":   false,
-	}
-	if len(tools) > 0 {
-		reqBody["tools"] = tools
-	}
-
-	data, _ := json.Marshal(reqBody)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	req, _, endpoint, err := NewOpenAIChatRequest(ctx, cfg, messages, OpenAIChatRequestOptions{
+		Stream: false,
+		Tools:  tools,
+	})
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	if cfg.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Key)
-	}
+	log.Printf("[LLM] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -74,22 +257,11 @@ func DoOpenAIRequest(
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 
-	// Detect SSE format: some gateways return streaming SSE even for non-stream requests.
-	trimmed := bytes.TrimLeft(body, " \t\r\n")
-	if bytes.HasPrefix(trimmed, []byte("data:")) || strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return ParseSSEToResponse(body)
+	result, err := ParseNonStreamOpenAIResponseBody(body)
+	if err != nil {
+		return nil, err
 	}
-
-	var result Response
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-	// Strip <think>, function_call, and XML tool_call blocks from content,
-	// consistent with the streaming path.
-	for i := range result.Choices {
-		result.Choices[i].Message.Content = StripAllExtra(result.Choices[i].Message.Content)
-	}
-	return &result, nil
+	return result, nil
 }
 
 // sseChunk represents a single SSE chunk from an OpenAI-compatible streaming response.
@@ -179,12 +351,20 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 			if tc.Function.Name != "" {
 				acc.Name = tc.Function.Name
 			}
-			acc.ArgsBuf.WriteString(tc.Function.Arguments)
+			if tc.Function.Arguments != "" {
+				acc.ArgsBuf.WriteString(tc.Function.Arguments)
+				if acc.ArgsBuf.Len() > maxToolArgumentsBytes {
+					return nil, fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", acc.Name, acc.ArgsBuf.Len(), maxToolArgumentsBytes)
+				}
+			}
 		}
 
 		if chunk.Usage != nil {
 			usage = chunk.Usage
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("SSE stream read error: %w", err)
 	}
 
 	msg := Message{

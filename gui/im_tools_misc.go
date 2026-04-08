@@ -252,7 +252,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 
 	if autoRun {
 		b.WriteString(fmt.Sprintf("\n正在立即执行 Skill「%s」...\n", entry.Name))
-		runID, err := h.app.RunNLSkillAsync(entry.Name)
+		runID, err := h.app.RunNLSkillAsync(entry.Name, nil)
 		if err != nil {
 			b.WriteString(fmt.Sprintf("执行启动失败: %s", err.Error()))
 		} else {
@@ -283,6 +283,17 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	}
 	b.WriteString(fmt.Sprintf("- skill: %s\n", status.Skill))
 	b.WriteString(fmt.Sprintf("- status: %s\n", status.Status))
+	if status.Summary.CurrentStep != "" {
+		b.WriteString(fmt.Sprintf("- current_step: %s (%s)\n", status.Summary.CurrentStep, firstNonEmptySkillRunStatus(status.Summary.CurrentStepStatus, "running")))
+	}
+	if status.Summary.LastCompletedStep != "" {
+		b.WriteString(fmt.Sprintf("- last_completed_step: %s\n", status.Summary.LastCompletedStep))
+	}
+	if status.Summary.NeedsArtifactVerification {
+		b.WriteString("## 结果说明\n")
+		b.WriteString("- 这是一个仅提供 SKILL.md 指导的 skill；当前结果只表示脚本已生成并执行。\n")
+		b.WriteString("- 宿主尚未自动验证目标产物是否生成；如果目标是 PPT，请继续检查 .pptx 输出文件。\n")
+	}
 	if len(status.Steps) > 0 {
 		b.WriteString(fmt.Sprintf("- steps: %d\n", len(status.Steps)))
 		lastStep := status.Steps[len(status.Steps)-1]
@@ -307,9 +318,36 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 		}
 	}
 	b.WriteString("## 下一步\n")
-	b.WriteString("- 使用 GetNLSkillRunStatus(run_id) 继续观察执行进度。\n")
+	b.WriteString("- 使用 get_skill_run(run_id) 继续观察执行进度。\n")
 	if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
 		b.WriteString("- 若需要继续驱动会话，可结合 session_id 使用 get_session_output / send_and_observe。\n")
+	}
+}
+
+func firstNonEmptySkillRunStatus(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func emitSkillRunProgress(onProgress ProgressCallback, status *SkillRunStatus) {
+	if onProgress == nil || status == nil {
+		return
+	}
+	switch {
+	case status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "":
+		onProgress("🚀 Skill 已绑定会话，可继续观察输出...")
+	case status.Status == "success":
+		onProgress("✅ Skill 已执行完成，正在整理结果...")
+	case status.Status == "failed":
+		onProgress("❌ Skill 执行失败，正在整理错误摘要...")
+	case status.Summary.CurrentStep != "":
+		onProgress(fmt.Sprintf("⏳ Skill 正在执行步骤：%s", status.Summary.CurrentStep))
+	default:
+		onProgress("⏳ Skill 正在运行，等待状态快照...")
 	}
 }
 
@@ -361,7 +399,7 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 	}
 }
 
-func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}) string {
+func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress ProgressCallback) string {
 	h.app.ensureSkillRunner()
 	runner := h.app.skillRunner
 	if runner == nil {
@@ -371,19 +409,64 @@ func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}) string {
 	if name == "" {
 		return "缺少 name 参数"
 	}
+	if onProgress != nil {
+		onProgress(fmt.Sprintf("🚀 正在启动 Skill「%s」...", name))
+	}
 	waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
-	runID, err := runner.StartRun(name)
+	runID, err := runner.StartRun(name, buildRunSkillArgs(args))
 	if err != nil {
 		return fmt.Sprintf("Skill 启动失败: %s", err.Error())
+	}
+	if onProgress != nil {
+		onProgress("⏳ Skill 已启动，正在等待状态快照...")
 	}
 	status, err := waitForSkillRunnerSnapshot(runner, runID, waitDuration)
 	if err != nil {
 		return fmt.Sprintf("Skill 已启动，但读取状态失败: %s（run_id=%s）", err.Error(), runID)
 	}
+	emitSkillRunProgress(onProgress, status)
 	var b strings.Builder
 	b.WriteString("✅ Skill 已启动\n")
 	appendSkillRunSummary(&b, status, runID)
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
+	h.app.ensureSkillRunner()
+	runner := h.app.skillRunner
+	if runner == nil {
+		return "Skill Runner 未初始化"
+	}
+	runID, _ := args["run_id"].(string)
+	if strings.TrimSpace(runID) == "" {
+		return "缺少 run_id 参数"
+	}
+	waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
+	status, err := waitForSkillRunnerSnapshot(runner, runID, waitDuration)
+	if err != nil {
+		return fmt.Sprintf("读取 Skill 状态失败: %s（run_id=%s）", err.Error(), runID)
+	}
+	var b strings.Builder
+	b.WriteString("🔎 Skill 状态查询结果\n")
+	appendSkillRunSummary(&b, status, runID)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func buildRunSkillArgs(args map[string]interface{}) map[string]interface{} {
+	runArgs := map[string]interface{}{}
+	if raw, ok := args["args"].(map[string]interface{}); ok && len(raw) > 0 {
+		runArgs["args"] = raw
+	}
+	if input, ok := args["input"].(string); ok && input != "" {
+		runArgs["input"] = input
+	}
+	if output, ok := args["output"].(string); ok && output != "" {
+		runArgs["output"] = output
+	}
+	if len(runArgs) == 0 {
+		return nil
+	}
+	return runArgs
 }
 
 // stringVal extracts a string value from a map, returning "" if the key is

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"time"
 )
 
@@ -11,7 +12,12 @@ import (
 // user idle time and dims the display after the configured inactivity period.
 // The display wakes automatically on any user input.
 func (a *App) updateScreenDimTimer(powerEnabled bool, timeoutMin int) {
+	lockStart := time.Now()
 	a.powerStateMutex.Lock()
+	lockWait := time.Since(lockStart)
+	if lockWait > 50*time.Millisecond {
+		log.Printf("[power] updateScreenDimTimer:lock_wait=%s enabled=%t timeout_min=%d", lockWait, powerEnabled, timeoutMin)
+	}
 	defer a.powerStateMutex.Unlock()
 
 	// Stop any existing dim timer.

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,6 +24,44 @@ type TokenCallback = llm.TokenCallback
 type tokenStreamFilter struct {
 	writeFn func(string)
 	flushFn func()
+}
+
+var guiFuncCallBlock = regexp.MustCompile(`(?s)<\|FunctionCallBegin\|>.*?<\|FunctionCallEnd\|>\s*`)
+
+const (
+	guiThinkOpen     = "<think>"
+	guiThinkClose    = "</think>"
+	guiFuncCallOpen  = "<|FunctionCallBegin|>"
+	guiFuncCallClose = "<|FunctionCallEnd|>"
+	guiToolCallOpen  = "<tool_call>"
+	guiToolCallClose = "</tool_call>"
+	guiSSEIdleTimeout = 90 * time.Second
+	guiMaxToolArgumentsBytes = 180 * 1024
+)
+
+func partialSuffixLen(s, tag string) int {
+	for i := 1; i < len(tag); i++ {
+		if strings.HasSuffix(s, tag[:i]) {
+			return i
+		}
+	}
+	return 0
+}
+
+func consumeTagOpen(s, openTag string) (prefix string, remainder string, found bool) {
+	idx := strings.Index(s, openTag)
+	if idx < 0 {
+		return "", s, false
+	}
+	return s[:idx], s[idx+len(openTag):], true
+}
+
+func consumeTagClose(s, closeTag string) (remainder string, found bool) {
+	idx := strings.Index(s, closeTag)
+	if idx < 0 {
+		return s, false
+	}
+	return s[idx+len(closeTag):], true
 }
 
 func (f tokenStreamFilter) Callback() TokenCallback {
@@ -41,6 +80,176 @@ func (f tokenStreamFilter) Flush() {
 	}
 }
 
+type flushableThinkFilter struct {
+	downstream TokenCallback
+	inside     bool
+	trimNext   bool
+	pending    strings.Builder
+	emitted    bool
+}
+
+func newFlushableThinkFilter(downstream TokenCallback) *flushableThinkFilter {
+	return &flushableThinkFilter{downstream: downstream}
+}
+
+func (f *flushableThinkFilter) Write(delta string) {
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *flushableThinkFilter) Flush() {
+	f.drain(true)
+}
+
+func (f *flushableThinkFilter) drain(force bool) {
+	for {
+		s := f.pending.String()
+		if s == "" {
+			return
+		}
+
+		if (f.trimNext || !f.emitted) && !f.inside {
+			trimmed := strings.TrimLeft(s, " \t\r\n")
+			if trimmed == "" {
+				f.pending.Reset()
+				return
+			}
+			if trimmed != s {
+				f.pending.Reset()
+				f.pending.WriteString(trimmed)
+				f.trimNext = false
+				continue
+			}
+			f.trimNext = false
+		}
+
+		if !f.inside {
+			if prefix, remainder, found := consumeTagOpen(s, guiThinkOpen); found {
+				if prefix != "" {
+					f.downstream(prefix)
+					f.emitted = true
+				}
+				f.inside = true
+				f.pending.Reset()
+				f.pending.WriteString(remainder)
+				continue
+			}
+
+			if partialLen := partialSuffixLen(s, guiThinkOpen); partialLen > 0 {
+				if force {
+					f.downstream(s)
+					f.emitted = true
+					f.pending.Reset()
+					return
+				}
+				if len(s) > partialLen {
+					f.downstream(s[:len(s)-partialLen])
+					f.emitted = true
+					f.pending.Reset()
+					f.pending.WriteString(guiThinkOpen[:partialLen])
+				}
+				return
+			}
+
+			f.downstream(s)
+			f.emitted = true
+			f.pending.Reset()
+			return
+		}
+
+		if remainder, found := consumeTagClose(s, guiThinkClose); found {
+			f.inside = false
+			f.trimNext = true
+			f.pending.Reset()
+			f.pending.WriteString(remainder)
+			continue
+		}
+
+		if force {
+			f.pending.Reset()
+			return
+		}
+		if partialSuffixLen(s, guiThinkClose) == 0 {
+			f.pending.Reset()
+		}
+		return
+	}
+}
+
+type flushableTagFilter struct {
+	downstream TokenCallback
+	openTag    string
+	closeTag   string
+	inside     bool
+	pending    strings.Builder
+}
+
+func newFlushableTagFilter(downstream TokenCallback, open, close string) *flushableTagFilter {
+	return &flushableTagFilter{downstream: downstream, openTag: open, closeTag: close}
+}
+
+func (f *flushableTagFilter) Write(delta string) {
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *flushableTagFilter) Flush() {
+	f.drain(true)
+}
+
+func (f *flushableTagFilter) drain(force bool) {
+	for {
+		s := f.pending.String()
+		if s == "" {
+			return
+		}
+
+		if !f.inside {
+			if prefix, remainder, found := consumeTagOpen(s, f.openTag); found {
+				if prefix != "" {
+					f.downstream(prefix)
+				}
+				f.inside = true
+				f.pending.Reset()
+				f.pending.WriteString(remainder)
+				continue
+			}
+			if partialLen := partialSuffixLen(s, f.openTag); partialLen > 0 {
+				if force {
+					f.downstream(s)
+					f.pending.Reset()
+					return
+				}
+				if len(s) > partialLen {
+					f.downstream(s[:len(s)-partialLen])
+					f.pending.Reset()
+					f.pending.WriteString(f.openTag[:partialLen])
+				}
+				return
+			}
+			f.downstream(s)
+			f.pending.Reset()
+			return
+		}
+
+		if remainder, found := consumeTagClose(s, f.closeTag); found {
+			f.inside = false
+			f.pending.Reset()
+			f.pending.WriteString(remainder)
+			continue
+		}
+
+		if force {
+			f.pending.Reset()
+			return
+		}
+		if partialSuffixLen(s, f.closeTag) == 0 {
+			f.pending.Reset()
+		}
+		return
+	}
+}
+
 // NewRoundCallback is called when a new agent loop iteration starts LLM generation.
 type NewRoundCallback func()
 
@@ -54,7 +263,7 @@ func stripThinkTags(s string) string {
 }
 
 func stripFunctionCalls(s string) string {
-	return llm.StripFunctionCalls(s)
+	return strings.TrimSpace(guiFuncCallBlock.ReplaceAllString(s, ""))
 }
 
 func stripXMLToolCalls(s string) string {
@@ -66,22 +275,53 @@ func stripXMLToolCalls(s string) string {
 // ---------------------------------------------------------------------------
 
 func newThinkFilter(downstream TokenCallback) tokenStreamFilter {
-	f := llm.NewThinkFilter(downstream)
-	return tokenStreamFilter{writeFn: f, flushFn: func() {}}
+	f := newFlushableThinkFilter(downstream)
+	return tokenStreamFilter{writeFn: f.Write, flushFn: f.Flush}
 }
 
 func newFuncCallFilter(downstream TokenCallback) tokenStreamFilter {
-	f := llm.NewTagFilter(downstream, "<|FunctionCallBegin|>", "<|FunctionCallEnd|>")
-	return tokenStreamFilter{writeFn: f, flushFn: func() {}}
+	f := newFlushableTagFilter(downstream, guiFuncCallOpen, guiFuncCallClose)
+	return tokenStreamFilter{writeFn: f.Write, flushFn: f.Flush}
 }
 
 func newToolCallFilter(downstream TokenCallback) tokenStreamFilter {
-	f := llm.NewTagFilter(downstream, "<tool_call>", "</tool_call>")
-	return tokenStreamFilter{writeFn: f, flushFn: func() {}}
+	f := newFlushableTagFilter(downstream, guiToolCallOpen, guiToolCallClose)
+	return tokenStreamFilter{writeFn: f.Write, flushFn: f.Flush}
 }
 
-// ---------------------------------------------------------------------------
-// doLLMRequestStream sends a streaming LLM request.
+type llmStreamMetrics struct {
+	RequestBuildNanos     int64
+	HTTPDoNanos           int64
+	FirstSSEWaitNanos     int64
+	FirstTokenAt          time.Time
+	IdleTimeoutCount      int
+	IdleTimeoutAfterToken bool
+	MaxTokenGapNanos      int64
+}
+
+func withFirstTokenMetrics(onToken TokenCallback, metrics *llmStreamMetrics) TokenCallback {
+	if onToken == nil {
+		onToken = func(string) {}
+	}
+	var lastTokenAt time.Time
+	return func(delta string) {
+		now := time.Now()
+		if metrics != nil && delta != "" {
+			if metrics.FirstTokenAt.IsZero() {
+				metrics.FirstTokenAt = now
+			}
+			if !lastTokenAt.IsZero() {
+				gap := now.Sub(lastTokenAt).Nanoseconds()
+				if gap > metrics.MaxTokenGapNanos {
+					metrics.MaxTokenGapNanos = gap
+				}
+			}
+			lastTokenAt = now
+		}
+		onToken(delta)
+	}
+}
+
 // The ctx parameter carries cancellation from the LoopContext so that
 // in-flight HTTP requests are aborted promptly when the user cancels.
 func (h *IMMessageHandler) doLLMRequestStream(
@@ -91,6 +331,7 @@ func (h *IMMessageHandler) doLLMRequestStream(
 	tools []map[string]interface{},
 	httpClient *http.Client,
 	onToken TokenCallback,
+	metrics *llmStreamMetrics,
 ) (*llmResponse, error) {
 	// Always use the streaming path even when onToken is nil (e.g. WeChat IM
 	// standalone mode). The non-streaming DoOpenAIRequest path uses io.ReadAll
@@ -101,9 +342,9 @@ func (h *IMMessageHandler) doLLMRequestStream(
 		onToken = func(string) {}
 	}
 	if cfg.Protocol == "anthropic" {
-		return h.doAnthropicLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, onToken)
+		return h.doAnthropicLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, withFirstTokenMetrics(onToken, metrics), metrics)
 	}
-	return h.doOpenAILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, onToken)
+	return h.doOpenAILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, withFirstTokenMetrics(onToken, metrics), metrics)
 }
 
 // ---------------------------------------------------------------------------
@@ -141,38 +382,31 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	tools []map[string]interface{},
 	httpClient *http.Client,
 	onToken TokenCallback,
+	metrics *llmStreamMetrics,
 ) (*llmResponse, error) {
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
-	log.Printf("[LLM Stream] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
-
-	if needsSystemMerge(cfg) {
-		messages = mergeSystemIntoUser(messages)
-	}
-
-	reqBody := map[string]interface{}{
-		"model":    cfg.Model,
-		"messages": messages,
-		"stream":   true,
-		"stream_options": map[string]interface{}{
-			"include_usage": true,
+	requestBuildStartedAt := time.Now()
+	req, _, endpoint, err := llm.NewOpenAIChatRequest(reqCtx, cfg, messages, llm.OpenAIChatRequestOptions{
+		Stream: true,
+		Tools:  tools,
+		ExtraBody: map[string]interface{}{
+			"stream_options": map[string]interface{}{
+				"include_usage": true,
+			},
 		},
-	}
-	if len(tools) > 0 {
-		reqBody["tools"] = tools
-	}
-
-	data, _ := json.Marshal(reqBody)
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(data))
+	})
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	if cfg.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	if metrics != nil {
+		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
 	}
+	log.Printf("[LLM Stream] POST %s model=%s protocol=%s", endpoint, cfg.Model, cfg.Protocol)
 
+	httpDoStartedAt := time.Now()
 	resp, err := httpClient.Do(req)
+	if metrics != nil {
+		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
@@ -202,7 +436,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	}
 
 	if !isSSE {
-		return parseNonStreamOpenAIResponse(resp, data)
+		return parseNonStreamOpenAIResponse(resp)
 	}
 
 	tcf := newToolCallFilter(onToken)
@@ -223,11 +457,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	scanner := bufio.NewScanner(bodyReader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
 
-	// SSE idle watchdog: if no data line arrives within 120s, close the
-	// response body so scanner.Scan() unblocks. This prevents indefinite
+	// SSE idle watchdog: if no data line arrives within guiSSEIdleTimeout,
+	// close the response body so scanner.Scan() unblocks. This prevents indefinite
 	// hangs when the API establishes an SSE connection but stops sending data.
-	const sseIdleTimeout = 30 * time.Second
-	idleTimer := time.NewTimer(sseIdleTimeout)
+	idleTimer := time.NewTimer(guiSSEIdleTimeout)
 	defer idleTimer.Stop()
 	sseTimedOut := false
 	watchdogDone := make(chan struct{})
@@ -235,7 +468,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		select {
 		case <-idleTimer.C:
 			sseTimedOut = true
-			log.Printf("[LLM Stream] SSE idle timeout (%v) — aborting stalled request", sseIdleTimeout)
+			if metrics != nil {
+				metrics.IdleTimeoutAfterToken = !metrics.FirstTokenAt.IsZero()
+			}
+			log.Printf("[LLM Stream] SSE idle timeout (%v) — aborting stalled request", guiSSEIdleTimeout)
 			resp.Body.Close() // unblocks scanner.Scan()
 		case <-watchdogDone:
 		case <-reqCtx.Done():
@@ -243,11 +479,15 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	}()
 	defer close(watchdogDone)
 
+	firstSSEWaitStartedAt := time.Now()
 	for scanner.Scan() {
-		idleTimer.Reset(sseIdleTimeout)
+		idleTimer.Reset(guiSSEIdleTimeout)
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
 			continue
+		}
+		if metrics != nil && metrics.FirstSSEWaitNanos == 0 {
+			metrics.FirstSSEWaitNanos = time.Since(firstSSEWaitStartedAt).Nanoseconds()
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
@@ -284,7 +524,16 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 			if tc.ID != "" { acc.id = tc.ID }
 			if tc.Type != "" { acc.typ = tc.Type }
 			if tc.Function.Name != "" { acc.name.WriteString(tc.Function.Name) }
-			if tc.Function.Arguments != "" { acc.args.WriteString(tc.Function.Arguments) }
+			if tc.Function.Arguments != "" {
+				acc.args.WriteString(tc.Function.Arguments)
+				if acc.args.Len() > guiMaxToolArgumentsBytes {
+					toolName := acc.name.String()
+					if toolName == "" {
+						toolName = fmt.Sprintf("tool_call_%d", tc.Index)
+					}
+					return nil, fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, acc.args.Len(), guiMaxToolArgumentsBytes)
+				}
+			}
 		}
 		if choice.FinishReason != nil {
 			finishReason = *choice.FinishReason
@@ -293,8 +542,16 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 
 	// If the watchdog fired and we got no content, return a retryable error
 	// so the agent loop's retry logic can re-attempt the request.
+	if err := scanner.Err(); err != nil {
+		if len(toolAccums) == 0 && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 {
+			return nil, fmt.Errorf("SSE stream read error: %w", err)
+		}
+	}
 	if sseTimedOut && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolAccums) == 0 {
-		return nil, fmt.Errorf("SSE stream idle timeout (%v): no data received from %s", sseIdleTimeout, endpoint)
+		if metrics != nil {
+			metrics.IdleTimeoutCount++
+		}
+		return nil, fmt.Errorf("SSE stream idle timeout (%v): no data received from %s", guiSSEIdleTimeout, endpoint)
 	}
 
 	tf.Flush()
@@ -346,7 +603,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	}, nil
 }
 
-func parseNonStreamOpenAIResponse(resp *http.Response, requestBody []byte) (*llmResponse, error) {
+func parseNonStreamOpenAIResponse(resp *http.Response) (*llmResponse, error) {
 	return llm.ParseNonStreamOpenAIResponse(resp)
 }
 
@@ -361,7 +618,9 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	tools []map[string]interface{},
 	httpClient *http.Client,
 	onToken TokenCallback,
+	metrics *llmStreamMetrics,
 ) (*llmResponse, error) {
+	requestBuildStartedAt := time.Now()
 	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
 
 	converted := convertToAnthropicMessages(messages)
@@ -386,12 +645,19 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	if err != nil {
 		return nil, err
 	}
+	if metrics != nil {
+		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	req.Header.Set("anthropic-version", "2023-06-01")
 	corelib.SetAnthropicAuthHeaders(req, cfg.Key)
 
+	httpDoStartedAt := time.Now()
 	resp, err := httpClient.Do(req)
+	if metrics != nil {
+		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -422,8 +688,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
 
 	// SSE idle watchdog (same as OpenAI path).
-	const anthIdleTimeout = 30 * time.Second
-	anthIdleTimer := time.NewTimer(anthIdleTimeout)
+	anthIdleTimer := time.NewTimer(guiSSEIdleTimeout)
 	defer anthIdleTimer.Stop()
 	anthTimedOut := false
 	anthWatchdogDone := make(chan struct{})
@@ -431,7 +696,10 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 		select {
 		case <-anthIdleTimer.C:
 			anthTimedOut = true
-			log.Printf("[LLM Stream] Anthropic SSE idle timeout (%v) — aborting stalled request", anthIdleTimeout)
+			if metrics != nil {
+				metrics.IdleTimeoutAfterToken = !metrics.FirstTokenAt.IsZero()
+			}
+			log.Printf("[LLM Stream] Anthropic SSE idle timeout (%v) — aborting stalled request", guiSSEIdleTimeout)
 			resp.Body.Close()
 		case <-anthWatchdogDone:
 		case <-reqCtx.Done():
@@ -439,11 +707,15 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	}()
 	defer close(anthWatchdogDone)
 
+	firstSSEWaitStartedAt := time.Now()
 	for scanner.Scan() {
-		anthIdleTimer.Reset(anthIdleTimeout)
+		anthIdleTimer.Reset(guiSSEIdleTimeout)
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
 			continue
+		}
+		if metrics != nil && metrics.FirstSSEWaitNanos == 0 {
+			metrics.FirstSSEWaitNanos = time.Since(firstSSEWaitStartedAt).Nanoseconds()
 		}
 		payload := strings.TrimPrefix(line, "data:")
 		payload = strings.TrimPrefix(payload, " ")
@@ -503,6 +775,13 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 			}
 			if evt.Delta.Type == "input_json_delta" && evt.Delta.PartialJSON != "" {
 				acc.toolArgs.WriteString(evt.Delta.PartialJSON)
+				if acc.toolArgs.Len() > guiMaxToolArgumentsBytes {
+					toolName := acc.toolName
+					if toolName == "" {
+						toolName = fmt.Sprintf("tool_use_%d", evt.Index)
+					}
+					return nil, fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, acc.toolArgs.Len(), guiMaxToolArgumentsBytes)
+				}
 			}
 
 		case "message_delta":
@@ -540,7 +819,10 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	}
 	// If the watchdog fired and we got no content, return a retryable error.
 	if anthTimedOut && len(blocks) == 0 {
-		return nil, fmt.Errorf("SSE stream idle timeout (%v): no data received from %s", anthIdleTimeout, endpoint)
+		if metrics != nil {
+			metrics.IdleTimeoutCount++
+		}
+		return nil, fmt.Errorf("SSE stream idle timeout (%v): no data received from %s", guiSSEIdleTimeout, endpoint)
 	}
 	tf.Flush()
 	fcf.Flush()

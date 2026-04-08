@@ -20,6 +20,11 @@ type Session struct {
 	mu     sync.Mutex
 	client *CDPClient
 	addr   string // e.g. "http://127.0.0.1:9222"
+
+	activeTabID   string
+	activeFrameID string
+	recentNetwork []string
+	recentErrors  []string
 }
 
 var (
@@ -120,8 +125,28 @@ func connectToAddr(addr string) (*Session, error) {
 		client.Close()
 		return nil, fmt.Errorf("CDP Runtime.enable 失败: %w", err)
 	}
+	if _, err := client.Send("Network.enable", nil, 5*time.Second); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("CDP Network.enable 失败: %w", err)
+	}
+	if _, err := client.Send("Log.enable", nil, 5*time.Second); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("CDP Log.enable 失败: %w", err)
+	}
 
-	return &Session{client: client, addr: addr}, nil
+	return &Session{client: client, addr: addr, activeTabID: activeTargetIDFromTargets(targets), activeFrameID: "main"}, nil
+}
+
+func activeTargetIDFromTargets(targets []TargetInfo) string {
+	for _, t := range targets {
+		if t.Type == "page" && t.WebSocketDebugURL != "" {
+			return t.ID
+		}
+	}
+	if len(targets) > 0 {
+		return targets[0].ID
+	}
+	return ""
 }
 
 // CloseSession disconnects the global session.
@@ -348,11 +373,11 @@ func (s *Session) Scroll(deltaX, deltaY int) error {
 	defer s.mu.Unlock()
 
 	_, err := s.client.Send("Input.dispatchMouseEvent", map[string]interface{}{
-		"type":       "mouseWheel",
-		"x":          100,
-		"y":          100,
-		"deltaX":     deltaX,
-		"deltaY":     deltaY,
+		"type":   "mouseWheel",
+		"x":      100,
+		"y":      100,
+		"deltaX": deltaX,
+		"deltaY": deltaY,
 	}, DefaultCmdTimeout)
 	return err
 }
@@ -527,6 +552,39 @@ func (s *Session) Info() (*PageInfo, error) {
 	return &info, nil
 }
 
+// TabSnapshot returns the active tab snapshot when available.
+func (s *Session) TabSnapshot() *BrowserTabSnapshot {
+	if s == nil {
+		return nil
+	}
+	pages, err := s.ListPages()
+	if err != nil {
+		return nil
+	}
+	for _, page := range pages {
+		if page.ID == s.activeTabID || (s.activeTabID == "" && page.Type == "page") {
+			return &BrowserTabSnapshot{TabID: page.ID, URL: page.URL, Title: page.Title, Type: page.Type, Active: true}
+		}
+	}
+	return nil
+}
+
+// FrameSnapshots returns the current lightweight frame tree snapshot.
+func (s *Session) FrameSnapshots() []BrowserFrameSnapshot {
+	if s == nil {
+		return nil
+	}
+	info, err := s.Info()
+	if err != nil || info == nil {
+		return nil
+	}
+	frameID := s.activeFrameID
+	if frameID == "" {
+		frameID = "main"
+	}
+	return []BrowserFrameSnapshot{{FrameID: frameID, URL: info.URL, Name: info.Title}}
+}
+
 // SwitchPage switches to a different page target by its target ID.
 func (s *Session) SwitchPage(targetID string) error {
 	targets, err := DiscoverTargets(s.addr)
@@ -561,12 +619,32 @@ func (s *Session) SwitchPage(targetID string) error {
 	s.mu.Lock()
 	old := s.client
 	s.client = client
+	s.activeTabID = targetID
+	s.activeFrameID = "main"
 	s.mu.Unlock()
 
 	if old != nil {
 		old.Close()
 	}
 	return nil
+}
+
+func (s *Session) lastNetworkLines() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.recentNetwork...)
+}
+
+func (s *Session) lastErrorLines() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.recentErrors...)
 }
 
 // ── internal helpers ──
@@ -645,4 +723,3 @@ func (s *Session) waitForLoad(timeout time.Duration) {
 		time.Sleep(300 * time.Millisecond)
 	}
 }
-

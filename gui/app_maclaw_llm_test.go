@@ -2,15 +2,80 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"pgregory.net/rapid"
 )
+
+func TestTestOpenAILLM_UsesReasoningFallbackAndStripsTags(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"<think>hidden</think> <|FunctionCallBegin|>{}<|FunctionCallEnd|> final answer"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{}
+	got, err := app.testOpenAILLM(srv.URL, "", "test-model", "test-agent")
+	if err != nil {
+		t.Fatalf("testOpenAILLM returned error: %v", err)
+	}
+	if got != "final answer" {
+		t.Fatalf("testOpenAILLM = %q, want %q", got, "final answer")
+	}
+}
+
+func TestProbeVisionOpenAI_UsesReasoningFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"red"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	if !probeVisionOpenAI(srv.URL, "", "test-model", "abc", "test-agent") {
+		t.Fatal("probeVisionOpenAI() = false, want true")
+	}
+}
+
+func TestTestAnthropicLLM_StripsThinkAndFunctionTags(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"<think>hidden</think> <|FunctionCallBegin|>{}<|FunctionCallEnd|> final anthropic answer"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{}
+	got, err := app.testAnthropicLLM(srv.URL, "", "test-model", "test-agent")
+	if err != nil {
+		t.Fatalf("testAnthropicLLM returned error: %v", err)
+	}
+	if got != "final anthropic answer" {
+		t.Fatalf("testAnthropicLLM = %q, want %q", got, "final anthropic answer")
+	}
+}
+
+func TestProbeVisionAnthropic_ReturnsTrueForRedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"red"}]}`))
+	}))
+	defer srv.Close()
+
+	if !probeVisionAnthropic(srv.URL, "", "test-model", "abc", "test-agent") {
+		t.Fatal("probeVisionAnthropic() = false, want true")
+	}
+}
 
 func TestResolveProvidersPreservesCodeGenSSORuntimeConfig(t *testing.T) {
 	saved := []MaclawLLMProvider{
@@ -268,8 +333,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if first.AuthType != "none" {
 		t.Errorf("免费 AuthType = %q, want %q", first.AuthType, "none")
 	}
-	if first.ContextLength != 10000 {
-		t.Errorf("免费 ContextLength = %d, want %d", first.ContextLength, 10000)
+	if first.TimeoutSec != 360 {
+		t.Errorf("免费 TimeoutSec = %d, want %d", first.TimeoutSec, 360)
 	}
 
 	openAI := providers[1]
@@ -287,6 +352,9 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	}
 	if openAI.ContextLength != 128000 {
 		t.Errorf("OpenAI ContextLength = %d, want %d", openAI.ContextLength, 128000)
+	}
+	if openAI.TimeoutSec != 360 {
+		t.Errorf("OpenAI TimeoutSec = %d, want %d", openAI.TimeoutSec, 360)
 	}
 
 
@@ -308,6 +376,212 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	}
 	if !providers[n-1].IsCustom {
 		t.Errorf("providers[%d] (%s) IsCustom = false, want true", n-1, providers[n-1].Name)
+	}
+}
+
+func TestGetMaclawLLMProviders_BackfillsLegacyTimeoutIntoCurrentProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := AppConfig{
+		MaclawLLMUrl:             "https://example.com/v1",
+		MaclawLLMKey:             "sk-test",
+		MaclawLLMModel:           "glm-5.1",
+		MaclawLLMProtocol:        "anthropic",
+		MaclawLLMContextLength:   64000,
+		MaclawLLMTimeoutSec:      480,
+		MaclawLLMCurrentProvider: "免费",
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	if data.Current != "免费" {
+		t.Fatalf("Current = %q, want %q", data.Current, "免费")
+	}
+	if len(data.Providers) == 0 {
+		t.Fatal("expected providers")
+	}
+	got := data.Providers[0]
+	if got.TimeoutSec != 480 {
+		t.Fatalf("TimeoutSec = %d, want %d", got.TimeoutSec, 480)
+	}
+	if got.ContextLength != 64000 {
+		t.Fatalf("ContextLength = %d, want %d", got.ContextLength, 64000)
+	}
+}
+
+func TestGetMaclawLLMProviders_BackfillsMissingTimeoutToDefault(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := AppConfig{
+		MaclawLLMProviders: []MaclawLLMProvider{{
+			Name:     "Custom1",
+			URL:      "https://example.com/v1",
+			Key:      "sk-test",
+			Model:    "glm-5.1",
+			Protocol: "anthropic",
+			IsCustom: true,
+		}},
+		MaclawLLMCurrentProvider: "Custom1",
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	if len(data.Providers) == 0 {
+		t.Fatal("expected providers")
+	}
+	if got := data.Providers[0].TimeoutSec; got != 360 {
+		t.Fatalf("TimeoutSec = %d, want %d", got, 360)
+	}
+}
+
+func TestSaveMaclawLLMProviders_SyncsLegacyTimeout(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	providers := []MaclawLLMProvider{{
+		Name:       "Custom1",
+		URL:        "https://example.com/v1",
+		Key:        "sk-test",
+		Model:      "glm-5.1",
+		Protocol:   "anthropic",
+		IsCustom:   true,
+		TimeoutSec: 0,
+	}}
+	if err := app.SaveMaclawLLMProviders(providers, "Custom1"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if saved.MaclawLLMTimeoutSec != 360 {
+		t.Fatalf("MaclawLLMTimeoutSec = %d, want %d", saved.MaclawLLMTimeoutSec, 360)
+	}
+	if len(saved.MaclawLLMProviders) == 0 {
+		t.Fatal("expected saved providers")
+	}
+	if got := saved.MaclawLLMProviders[0].TimeoutSec; got != 360 {
+		t.Fatalf("provider TimeoutSec = %d, want %d", got, 360)
+	}
+}
+
+func TestGetMaclawLLMConfig_ReturnsTimeout(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := AppConfig{
+		MaclawLLMProviders: []MaclawLLMProvider{{
+			Name:       "Custom1",
+			URL:        "https://example.com/v1",
+			Key:        "sk-test",
+			Model:      "glm-5.1",
+			Protocol:   "anthropic",
+			IsCustom:   true,
+			TimeoutSec: 420,
+		}},
+		MaclawLLMCurrentProvider: "Custom1",
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	got := app.GetMaclawLLMConfig()
+	if got.TimeoutSec != 420 {
+		t.Fatalf("TimeoutSec = %d, want %d", got.TimeoutSec, 420)
+	}
+}
+
+func TestNewIMMessageHandler_UsesConfiguredTimeout(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := AppConfig{
+		MaclawLLMProviders: []MaclawLLMProvider{{
+			Name:       "Custom1",
+			URL:        "https://example.com/v1",
+			Key:        "sk-test",
+			Model:      "glm-5.1",
+			Protocol:   "anthropic",
+			IsCustom:   true,
+			TimeoutSec: 510,
+		}},
+		MaclawLLMCurrentProvider: "Custom1",
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	chatTransport, ok := h.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("chat transport type = %T, want *http.Transport", h.client.Transport)
+	}
+	taskTransport, ok := h.taskClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("task transport type = %T, want *http.Transport", h.taskClient.Transport)
+	}
+	want := 510 * time.Second
+	if chatTransport.ResponseHeaderTimeout != want {
+		t.Fatalf("chat ResponseHeaderTimeout = %v, want %v", chatTransport.ResponseHeaderTimeout, want)
+	}
+	if taskTransport.ResponseHeaderTimeout != want {
+		t.Fatalf("task ResponseHeaderTimeout = %v, want %v", taskTransport.ResponseHeaderTimeout, want)
+	}
+}
+
+func TestMaclawAgentMaxIterations_NormalizesBounds(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "negative becomes default", in: -1, want: maxAgentIterationsCap},
+		{name: "zero becomes default", in: 0, want: maxAgentIterationsCap},
+		{name: "below min clamps", in: 1, want: minAgentIterations},
+		{name: "just below min clamps", in: minAgentIterations - 1, want: minAgentIterations},
+		{name: "min stays", in: minAgentIterations, want: minAgentIterations},
+		{name: "middle stays", in: 200, want: 200},
+		{name: "above max clamps", in: maxAgentIterationsCap + 1, want: maxAgentIterationsCap},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := app.SetMaclawAgentMaxIterations(tc.in); err != nil {
+				t.Fatalf("SetMaclawAgentMaxIterations(%d) error = %v", tc.in, err)
+			}
+			if got := app.GetMaclawAgentMaxIterations(); got != tc.want {
+				t.Fatalf("GetMaclawAgentMaxIterations() = %d, want %d", got, tc.want)
+			}
+			saved, err := app.LoadConfig()
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			if got := saved.MaclawAgentMaxIterations; got != tc.want {
+				t.Fatalf("saved MaclawAgentMaxIterations = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

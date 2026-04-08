@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -10,7 +11,7 @@ func TestToolRunSkill_MissingName(t *testing.T) {
 	app := &App{}
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
 	h := &IMMessageHandler{app: app}
-	if got := h.toolRunSkill(map[string]interface{}{}); got != "缺少 name 参数" {
+	if got := h.toolRunSkill(map[string]interface{}{}, nil); got != "缺少 name 参数" {
 		t.Fatalf("expected missing name error, got %s", got)
 	}
 }
@@ -19,7 +20,7 @@ func TestToolRunSkill_StartFailure(t *testing.T) {
 	app := &App{}
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
 	h := &IMMessageHandler{app: app}
-	got := h.toolRunSkill(map[string]interface{}{"name": "missing-skill"})
+	got := h.toolRunSkill(map[string]interface{}{"name": "missing-skill"}, nil)
 	if !strings.Contains(got, "Skill 启动失败") {
 		t.Fatalf("expected start failure message, got %s", got)
 	}
@@ -35,7 +36,7 @@ func TestToolRunSkill_WaitSecondsInStructuredOutput(t *testing.T) {
 	app := &App{}
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
 	h := &IMMessageHandler{app: app}
-	got := h.toolRunSkill(map[string]interface{}{"name": "missing-skill", "wait_seconds": float64(99)})
+	got := h.toolRunSkill(map[string]interface{}{"name": "missing-skill", "wait_seconds": float64(99)}, nil)
 	if !strings.Contains(got, "Skill 启动失败") {
 		t.Fatalf("expected start failure message even with wait_seconds, got %s", got)
 	}
@@ -55,6 +56,30 @@ func TestToolRunSkill_BuildsRunArgs(t *testing.T) {
 	}
 	if argsMap["format"] != "A4" {
 		t.Fatalf("buildRunSkillArgs args = %#v, want format preserved", argsMap)
+	}
+}
+
+func TestToolRunSkill_RejectsSkillWithoutExecutableSteps(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []NLSkillEntry{{Name: "doc-only", Status: "active", Steps: nil}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	h := &IMMessageHandler{app: app}
+
+	got := h.toolRunSkill(map[string]interface{}{"name": "doc-only"}, nil)
+	if !strings.Contains(got, "Skill 启动失败") || !strings.Contains(got, "has no executable steps") {
+		t.Fatalf("expected no executable steps failure, got %s", got)
 	}
 }
 
@@ -105,7 +130,7 @@ func TestToolRunSkill_ReportsRunAndSessionMeta(t *testing.T) {
 	app.sessionStarter = NewCodingSessionStarter(app)
 
 	h := &IMMessageHandler{app: app}
-	got := h.toolRunSkill(map[string]interface{}{"name": "demo-skill"})
+	got := h.toolRunSkill(map[string]interface{}{"name": "demo-skill"}, nil)
 	if !strings.Contains(got, "✅ Skill 已启动") {
 		t.Fatalf("expected started message, got %s", got)
 	}
@@ -120,5 +145,81 @@ func TestToolRunSkill_ReportsRunAndSessionMeta(t *testing.T) {
 	}
 	if !strings.Contains(got, "## 下一步") {
 		t.Fatalf("expected next-step section, got %s", got)
+	}
+	if !strings.Contains(got, "get_skill_run(run_id)") {
+		t.Fatalf("expected get_skill_run next step, got %s", got)
+	}
+}
+
+func TestToolRunSkill_EmitsProgressStages(t *testing.T) {
+	app := &App{}
+	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
+	h := &IMMessageHandler{app: app}
+	var progress []string
+	got := h.toolRunSkill(map[string]interface{}{"name": "missing-skill"}, func(msg string) {
+		progress = append(progress, msg)
+	})
+	if !strings.Contains(got, "Skill 启动失败") {
+		t.Fatalf("expected start failure message, got %s", got)
+	}
+	if len(progress) == 0 || !strings.Contains(progress[0], "🚀 正在启动 Skill") {
+		t.Fatalf("progress = %#v, want startup progress", progress)
+	}
+}
+
+func TestToolGetSkillRun_MissingRunID(t *testing.T) {
+	app := &App{}
+	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
+	h := &IMMessageHandler{app: app}
+	if got := h.toolGetSkillRun(map[string]interface{}{}); got != "缺少 run_id 参数" {
+		t.Fatalf("expected missing run_id error, got %s", got)
+	}
+}
+
+func TestToolGetSkillRun_UnknownRunID(t *testing.T) {
+	app := &App{}
+	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
+	h := &IMMessageHandler{app: app}
+	got := h.toolGetSkillRun(map[string]interface{}{"run_id": "run-missing"})
+	if !strings.Contains(got, "读取 Skill 状态失败") || !strings.Contains(got, `run "run-missing" not found`) {
+		t.Fatalf("expected missing run status error, got %s", got)
+	}
+}
+
+func TestToolGetSkillRun_ReturnsStatusSummary(t *testing.T) {
+	app := &App{}
+	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app, mu: sync.RWMutex{}})
+	h := &IMMessageHandler{app: app}
+	app.skillRunner.runs["run-123"] = &skillRun{status: SkillRunStatus{
+		RunID:  "run-123",
+		Skill:  "demo-skill",
+		Status: "running",
+		Steps:  []StepResult{{Index: 0, Action: "create_session", Status: "running"}},
+	}}
+	got := h.toolGetSkillRun(map[string]interface{}{"run_id": "run-123", "wait_seconds": float64(0.01)})
+	if !strings.Contains(got, "🔎 Skill 状态查询结果") {
+		t.Fatalf("expected status title, got %s", got)
+	}
+	if !strings.Contains(got, "- skill: demo-skill") || !strings.Contains(got, "- status: running") {
+		t.Fatalf("expected structured skill status, got %s", got)
+	}
+}
+
+func TestAppendSkillRunSummary_ExplainsInstructionOnlySkill(t *testing.T) {
+	var b strings.Builder
+	appendSkillRunSummary(&b, &SkillRunStatus{
+		Skill:  "pptx-generator",
+		Status: "success",
+		Summary: SkillRunSummary{
+			NeedsArtifactVerification: true,
+		},
+		Steps: []StepResult{{Action: "craft_tool", Status: "success"}},
+	}, "run-123")
+	got := b.String()
+	if !strings.Contains(got, "## 结果说明") {
+		t.Fatalf("expected explanation section, got %s", got)
+	}
+	if !strings.Contains(got, "尚未自动验证目标产物是否生成") {
+		t.Fatalf("expected artifact verification warning, got %s", got)
 	}
 }

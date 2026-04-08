@@ -54,6 +54,7 @@ func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 		Model:         cfg.MaclawLLMModel,
 		Protocol:      cfg.MaclawLLMProtocol,
 		ContextLength: cfg.MaclawLLMContextLength,
+		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
 	}
 	// Resolve AgentType and SupportsVision from the current provider (not stored as flat fields).
 	for _, p := range cfg.MaclawLLMProviders {
@@ -125,6 +126,7 @@ func ensureTUIoAuthToken() error {
 				cfg.MaclawLLMModel = up.Model
 				cfg.MaclawLLMProtocol = up.Protocol
 				cfg.MaclawLLMContextLength = up.ContextLength
+				cfg.MaclawLLMTimeoutSec = up.TimeoutSec
 				return store.SaveConfig(cfg)
 			})
 			if err != nil {

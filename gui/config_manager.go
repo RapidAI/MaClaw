@@ -242,6 +242,7 @@ func (m *ConfigManager) formatGeneralConfig(cfg AppConfig) string {
 	b.WriteString(fmt.Sprintf("check_update_on_startup: %v\n", cfg.CheckUpdateOnStartup))
 	b.WriteString(fmt.Sprintf("hide_startup_popup: %v\n", cfg.HideStartupPopup))
 	b.WriteString(fmt.Sprintf("hide_maclaw_llm_popup: %v\n", cfg.HideMaclawLLMPopup))
+	b.WriteString(fmt.Sprintf("log_detail_enabled: %v\n", cfg.LogDetailEnabled))
 	return b.String()
 }
 
@@ -744,6 +745,10 @@ func (m *ConfigManager) applyGeneralChange(cfg *AppConfig, key, value string) (s
 		old := fmt.Sprintf("%v", cfg.HideMaclawLLMPopup)
 		cfg.HideMaclawLLMPopup = strings.EqualFold(value, "true")
 		return old, nil
+	case "log_detail_enabled":
+		old := fmt.Sprintf("%v", cfg.LogDetailEnabled)
+		cfg.LogDetailEnabled = strings.EqualFold(value, "true")
+		return old, nil
 	case "maclaw_debug_tool_calls":
 		old := fmt.Sprintf("%v", cfg.MaclawDebugToolCalls)
 		cfg.MaclawDebugToolCalls = strings.EqualFold(value, "true")
@@ -871,6 +876,7 @@ func (m *ConfigManager) initSchema() {
 				{Key: "check_update_on_startup", Description: "启动时检查更新", Type: "bool", Default: "true"},
 				{Key: "hide_startup_popup", Description: "隐藏启动弹窗", Type: "bool", Default: "false"},
 				{Key: "hide_maclaw_llm_popup", Description: "隐藏MaClaw LLM未配置提示弹窗", Type: "bool", Default: "false"},
+				{Key: "log_detail_enabled", Description: "是否启用详细日志", Type: "bool", Default: "false"},
 				{Key: "maclaw_debug_tool_calls", Description: "MaClaw Debug 开关：开启后显示工具调用过程", Type: "bool", Default: "false"},
 			},
 		},

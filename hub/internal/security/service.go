@@ -12,6 +12,8 @@ import (
 )
 
 const settingsKey = "security_settings"
+const groupTreeCacheTTL = 10 * time.Second
+const settingsCacheTTL = 10 * time.Second
 
 // SecurityService provides business logic for security group management,
 // policy computation, and system settings.
@@ -21,6 +23,14 @@ type SecurityService struct {
 	audit  store.AdminAuditRepository
 	users  store.UserRepository // optional; used to discover bound users not yet in any security group
 	cache  sync.Map             // userEmail -> *EffectivePolicy
+
+	groupTreeMu          sync.RWMutex
+	groupTreeCached      *GroupTreeNode
+	groupTreeCachedUntil time.Time
+
+	settingsMu          sync.RWMutex
+	settingsCached      *SecuritySettings
+	settingsCachedUntil time.Time
 }
 
 // NewSecurityService creates a new SecurityService.
@@ -73,12 +83,17 @@ func (s *SecurityService) CreateGroup(ctx context.Context, name, parentID string
 	if err := s.store.CreateGroup(ctx, group); err != nil {
 		return nil, fmt.Errorf("create group: %w", err)
 	}
+	s.invalidateGroupTreeCache()
 	return group, nil
 }
 
 // RenameGroup renames an existing group.
 func (s *SecurityService) RenameGroup(ctx context.Context, id, name string) error {
-	return s.store.UpdateGroupName(ctx, id, name)
+	if err := s.store.UpdateGroupName(ctx, id, name); err != nil {
+		return err
+	}
+	s.invalidateGroupTreeCache()
+	return nil
 }
 
 // DeleteGroup deletes a group and all its descendants, moving their users to Root_Group.
@@ -115,6 +130,7 @@ func (s *SecurityService) DeleteGroup(ctx context.Context, id string) error {
 			return fmt.Errorf("delete group %s: %w", gid, err)
 		}
 	}
+	s.invalidateGroupTreeCache()
 	return nil
 }
 
@@ -139,26 +155,39 @@ func collectDescendants(groups []*SecurityGroup, parentID string) []string {
 
 // GetGroupTree builds the complete tree structure starting from the root group.
 func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, error) {
+	now := time.Now()
+	s.groupTreeMu.RLock()
+	if s.groupTreeCached != nil && now.Before(s.groupTreeCachedUntil) {
+		cached := cloneGroupTreeNode(s.groupTreeCached)
+		s.groupTreeMu.RUnlock()
+		return cached, nil
+	}
+	s.groupTreeMu.RUnlock()
+
 	groups, err := s.store.ListGroups(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list groups: %w", err)
 	}
 	if len(groups) == 0 {
+		s.groupTreeMu.Lock()
+		s.groupTreeCached = nil
+		s.groupTreeCachedUntil = now.Add(groupTreeCacheTTL)
+		s.groupTreeMu.Unlock()
 		return nil, nil
 	}
 
 	// Build node map and count members
+	counts, err := s.store.CountGroupMembersMap(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("count group members: %w", err)
+	}
 	nodeMap := make(map[string]*GroupTreeNode, len(groups))
 	for _, g := range groups {
-		count, err := s.store.CountGroupMembers(ctx, g.ID)
-		if err != nil {
-			return nil, fmt.Errorf("count members for %s: %w", g.ID, err)
-		}
 		nodeMap[g.ID] = &GroupTreeNode{
 			ID:          g.ID,
 			Name:        g.Name,
 			ParentID:    g.ParentID,
-			MemberCount: count,
+			MemberCount: counts[g.ID],
 			Children:    []*GroupTreeNode{},
 		}
 	}
@@ -181,7 +210,54 @@ func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, err
 		root.MemberCount += extra
 	}
 
-	return root, nil
+	cloned := cloneGroupTreeNode(root)
+	s.groupTreeMu.Lock()
+	s.groupTreeCached = cloneGroupTreeNode(root)
+	s.groupTreeCachedUntil = time.Now().Add(groupTreeCacheTTL)
+	s.groupTreeMu.Unlock()
+	return cloned, nil
+}
+
+func cloneGroupTreeNode(node *GroupTreeNode) *GroupTreeNode {
+	if node == nil {
+		return nil
+	}
+	cloned := &GroupTreeNode{
+		ID:          node.ID,
+		Name:        node.Name,
+		ParentID:    node.ParentID,
+		MemberCount: node.MemberCount,
+		Children:    make([]*GroupTreeNode, 0, len(node.Children)),
+	}
+	for _, child := range node.Children {
+		cloned.Children = append(cloned.Children, cloneGroupTreeNode(child))
+	}
+	return cloned
+}
+
+func (s *SecurityService) invalidateGroupTreeCache() {
+	s.groupTreeMu.Lock()
+	defer s.groupTreeMu.Unlock()
+	s.groupTreeCached = nil
+	s.groupTreeCachedUntil = time.Time{}
+}
+
+func (s *SecurityService) cacheSettings(settings *SecuritySettings) {
+	if settings == nil {
+		settings = &SecuritySettings{}
+	}
+	cached := *settings
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	s.settingsCached = &cached
+	s.settingsCachedUntil = time.Now().Add(settingsCacheTTL)
+}
+
+func (s *SecurityService) invalidateSettingsCache() {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	s.settingsCached = nil
+	s.settingsCachedUntil = time.Time{}
 }
 
 // --- User Assignment ---
@@ -189,7 +265,11 @@ func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, err
 // AssignUser assigns a user to a group. The UPSERT in the store handles
 // the single-group invariant (automatically removes from old group).
 func (s *SecurityService) AssignUser(ctx context.Context, email, groupID string) error {
-	return s.store.AssignUser(ctx, email, groupID)
+	if err := s.store.AssignUser(ctx, email, groupID); err != nil {
+		return err
+	}
+	s.invalidateGroupTreeCache()
+	return nil
 }
 
 // ListGroupMembers returns the member emails for a given group.
@@ -284,7 +364,11 @@ func (s *SecurityService) GetGroupChildren(ctx context.Context, parentID string)
 
 // RemoveUser removes a user from their assigned group.
 func (s *SecurityService) RemoveUser(ctx context.Context, groupID, email string) error {
-	return s.store.RemoveUser(ctx, email)
+	if err := s.store.RemoveUser(ctx, email); err != nil {
+		return err
+	}
+	s.invalidateGroupTreeCache()
+	return nil
 }
 
 // --- Policy Management ---
@@ -530,18 +614,27 @@ func policyToMap(p EffectivePolicy) map[string]interface{} {
 
 // GetSettings reads the security settings from the system settings store.
 func (s *SecurityService) GetSettings(ctx context.Context) (*SecuritySettings, error) {
-	raw, err := s.system.Get(ctx, settingsKey)
-	if err != nil {
-		// If not found, return defaults
-		return &SecuritySettings{}, nil
+	now := time.Now()
+	s.settingsMu.RLock()
+	if s.settingsCached != nil && now.Before(s.settingsCachedUntil) {
+		cached := *s.settingsCached
+		s.settingsMu.RUnlock()
+		return &cached, nil
 	}
-	if raw == "" {
-		return &SecuritySettings{}, nil
+	s.settingsMu.RUnlock()
+
+	raw, err := s.system.Get(ctx, settingsKey)
+	if err != nil || raw == "" {
+		settings := &SecuritySettings{}
+		s.cacheSettings(settings)
+		return settings, nil
 	}
 	var settings SecuritySettings
 	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
 		return nil, fmt.Errorf("unmarshal security settings: %w", err)
 	}
+	settingsCopy := settings
+	s.cacheSettings(&settingsCopy)
 	return &settings, nil
 }
 
@@ -560,6 +653,7 @@ func (s *SecurityService) UpdateSettings(ctx context.Context, settings *Security
 	if err := s.system.Set(ctx, settingsKey, string(data)); err != nil {
 		return fmt.Errorf("save security settings: %w", err)
 	}
+	s.cacheSettings(settings)
 
 	// Audit log for centralized_security_enabled change
 	if old.CentralizedSecurityEnabled != settings.CentralizedSecurityEnabled {
@@ -585,6 +679,7 @@ func (s *SecurityService) UpdateSettings(ctx context.Context, settings *Security
 		})
 	}
 
+	s.invalidateGroupTreeCache()
 	return nil
 }
 
@@ -609,7 +704,12 @@ func (s *SecurityService) SetDefaultGroup(ctx context.Context, groupID string) e
 	if err != nil {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
-	return s.system.Set(ctx, settingsKey, string(data))
+	if err := s.system.Set(ctx, settingsKey, string(data)); err != nil {
+		return err
+	}
+	s.cacheSettings(settings)
+	s.invalidateGroupTreeCache()
+	return nil
 }
 
 // --- Root Group Helper ---

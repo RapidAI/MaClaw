@@ -1862,6 +1862,99 @@ func TestBuildTraceEvidencePrompt_UsesActiveSlot(t *testing.T) {
 	}
 }
 
+func TestHandleIMMessage_ShortChitChatReturnsDirectReply(t *testing.T) {
+	h := NewIMMessageHandler(&App{}, &RemoteSessionManager{app: &App{}, sessions: map[string]*RemoteSession{}})
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "没事", Lang: "zh"})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Text != "好，没问题。我在这，有需要随时叫我。" {
+		t.Fatalf("resp.Text = %q", resp.Text)
+	}
+}
+
+func TestHandleIMMessage_EnglishShortChitChatReturnsDirectReply(t *testing.T) {
+	h := NewIMMessageHandler(&App{}, &RemoteSessionManager{app: &App{}, sessions: map[string]*RemoteSession{}})
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "nothing", Lang: "en"})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Text != "No problem. I'm here if you need anything." {
+		t.Fatalf("resp.Text = %q", resp.Text)
+	}
+}
+
+func TestHandleIMMessageWithProgressAndStream_ShortChitChatWithPunctuationReturnsDirectReply(t *testing.T) {
+	h := NewIMMessageHandler(&App{}, &RemoteSessionManager{app: &App{}, sessions: map[string]*RemoteSession{}})
+	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "没事。", Lang: "zh"}, nil, nil, nil, nil)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Text != "好，没问题。我在这，有需要随时叫我。" {
+		t.Fatalf("resp.Text = %q", resp.Text)
+	}
+	if resp.TraceSummary != "" {
+		t.Fatalf("TraceSummary = %q, want empty", resp.TraceSummary)
+	}
+}
+
+func TestHandleIMMessageWithProgressAndStream_EnglishShortChitChatWithPunctuationReturnsDirectReply(t *testing.T) {
+	h := NewIMMessageHandler(&App{}, &RemoteSessionManager{app: &App{}, sessions: map[string]*RemoteSession{}})
+	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "nothing...", Lang: "en"}, nil, nil, nil, nil)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Text != "No problem. I'm here if you need anything." {
+		t.Fatalf("resp.Text = %q", resp.Text)
+	}
+}
+
+func TestHandleIMMessageWithProgressAndStream_OkShortChitChatWithPunctuationReturnsDirectReply(t *testing.T) {
+	h := NewIMMessageHandler(&App{}, &RemoteSessionManager{app: &App{}, sessions: map[string]*RemoteSession{}})
+	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "okay.", Lang: "en"}, nil, nil, nil, nil)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Text != "Okay. I'm here if you need anything." {
+		t.Fatalf("resp.Text = %q", resp.Text)
+	}
+}
+
+func TestBuildEmptyResultFallback_SuppressesConversationalEchoSummaryWithPunctuation(t *testing.T) {
+	got := buildEmptyResultFallback(TraceRunStatusCompleted, "结果：没事。")
+	if got != "任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。" {
+		t.Fatalf("buildEmptyResultFallback() = %q", got)
+	}
+}
+
+func TestBuildEmptyResultFallback_SuppressesPromptLikeSummary(t *testing.T) {
+	got := buildEmptyResultFallback(TraceRunStatusCompleted, "请帮我生成一个 PDF，并保存在当前工作目录")
+	if got != "任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。" {
+		t.Fatalf("buildEmptyResultFallback() = %q", got)
+	}
+}
+
+func TestBuildEmptyResultFallback_SuppressesConversationalEchoSummary(t *testing.T) {
+	got := buildEmptyResultFallback(TraceRunStatusCompleted, "没事")
+	if got != "任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。" {
+		t.Fatalf("buildEmptyResultFallback() = %q", got)
+	}
+}
+
+func TestBuildEmptyResultFallback_SuppressesEnglishConversationalEchoSummary(t *testing.T) {
+	got := buildEmptyResultFallback(TraceRunStatusCompleted, "nothing")
+	if got != "任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。" {
+		t.Fatalf("buildEmptyResultFallback() = %q", got)
+	}
+}
+
+func TestBuildEmptyResultFallback_PreservesExecutionSummary(t *testing.T) {
+	got := buildEmptyResultFallback(TraceRunStatusCompleted, "文件 review.pdf 已准备好，但未返回正文摘要")
+	if got != "任务已结束，但没有生成可展示的结果。文件 review.pdf 已准备好，但未返回正文摘要" {
+		t.Fatalf("buildEmptyResultFallback() = %q", got)
+	}
+}
+
 func TestFinalizeTraceResult_AddsVisibleFallbackForEmptyFailedRun(t *testing.T) {
 	h := &IMMessageHandler{traceService: NewAITraceService()}
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "empty failed run", "desktop", "u1", "/project")

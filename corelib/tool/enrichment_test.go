@@ -135,6 +135,13 @@ func TestBuiltinEnrichments_Coverage(t *testing.T) {
 			t.Logf("WARN: core tool %q has no builtin enrichment", name)
 		}
 	}
+	if _, ok := BuiltinBodies["edit_file"]; !ok {
+		t.Fatal("expected edit_file builtin body")
+	}
+	queries, ok := BuiltinEnrichments["edit_file"]
+	if !ok || len(queries) == 0 {
+		t.Fatal("expected edit_file builtin enrichments")
+	}
 }
 
 // Ensure the file on disk is valid JSON after save.
@@ -154,6 +161,28 @@ func TestEnrichmentStore_SaveFormat(t *testing.T) {
 	// Should be valid JSON array.
 	if data[0] != '[' {
 		t.Errorf("expected JSON array, got: %c", data[0])
+	}
+}
+
+func TestBrowserSessionBuiltinMetadataExists(t *testing.T) {
+	for _, name := range []string{
+		"browser_session_start",
+		"browser_observe",
+		"browser_navigate",
+		"browser_click",
+		"browser_type",
+		"browser_wait",
+		"browser_refresh",
+		"browser_back",
+		"browser_extract",
+	} {
+		if _, ok := BuiltinBodies[name]; !ok {
+			t.Fatalf("expected builtin body for %q", name)
+		}
+		queries, ok := BuiltinEnrichments[name]
+		if !ok || len(queries) == 0 {
+			t.Fatalf("expected builtin enrichments for %q", name)
+		}
 	}
 }
 

@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -14,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/viterin/vek/vek32"
 )
 
@@ -300,54 +298,39 @@ func (d *topicSwitchDetector) confirmWithLLM(contextText, newMessage string) Top
 		},
 	}
 
-	reqBody := map[string]interface{}{
-		"model":      cfg.Model,
-		"messages":   messages,
-		"max_tokens": 10,
-	}
-	data, _ := json.Marshal(reqBody)
-
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
-
-	ctx, cancel := context.WithTimeout(context.Background(), d.llmTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return TopicSame
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Key)
-	}
-
 	client := httpClient
 	if client == nil {
 		client = &http.Client{Timeout: d.llmTimeout}
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), d.llmTimeout)
+	defer cancel()
+
+	req, _, _, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
+		Stream: false,
+		ExtraBody: map[string]interface{}{
+			"max_tokens": 10,
+		},
+	})
+	if err != nil {
+		return TopicSame
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return TopicSame
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode != http.StatusOK {
+	parsed, err := llm.ParseNonStreamOpenAIResponse(resp)
+	if err != nil || len(parsed.Choices) == 0 {
 		return TopicSame
 	}
 
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
+	answer := strings.TrimSpace(strings.ToLower(parsed.Choices[0].Message.Content))
+	if answer == "" {
+		answer = strings.TrimSpace(strings.ToLower(parsed.Choices[0].Message.ReasoningContent))
 	}
-	if err := json.Unmarshal(body, &result); err != nil || len(result.Choices) == 0 {
-		return TopicSame
-	}
-
-	answer := strings.TrimSpace(strings.ToLower(result.Choices[0].Message.Content))
 	if strings.Contains(answer, "new") {
 		return TopicNew
 	}

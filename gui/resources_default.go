@@ -1,4 +1,4 @@
-//go:build !oem_qianxin
+//go:build !oem_qianxin && !windows
 
 package main
 

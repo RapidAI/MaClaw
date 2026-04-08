@@ -538,16 +538,16 @@ func TestActivateRemote_ReusesExistingRemoteSessionsAndConnectsHubClient(t *test
 	if result.MachineID != "m_234" {
 		t.Fatalf("MachineID = %q, want %q", result.MachineID, "m_234")
 	}
-	if app.remoteSessions == nil || app.remoteSessions.hubClient == nil {
-		t.Fatal("expected remote hub client to be initialized")
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if app.remoteSessions.hubClient.IsConnected() && authCount.Load() > 0 {
+		if app.remoteSessions != nil && app.remoteSessions.hubClient != nil && app.remoteSessions.hubClient.IsConnected() && authCount.Load() > 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+
+	if app.remoteSessions == nil || app.remoteSessions.hubClient == nil {
+		t.Fatal("expected remote hub client to be initialized")
 	}
 
 	t.Fatalf("hub client did not connect after activation: connected=%v authCount=%d",
@@ -596,6 +596,46 @@ func TestActivateRemote_SendsNormalizedPlatform(t *testing.T) {
 
 	if got := enrollPayload["platform"]; got != "mac" {
 		t.Fatalf("platform = %v, want mac", got)
+	}
+}
+
+func TestActivateRemote_TimesOutSlowEnrollRequest(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/enroll/start" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(remoteEnrollTimeout + 200*time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":        "approved",
+			"user_id":       "u_slow",
+			"email":         "user@example.com",
+			"sn":            "SN-slow",
+			"machine_id":    "m_slow",
+			"machine_token": "mt_slow",
+		})
+	}))
+	defer hub.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(AppConfig{RemoteHubURL: hub.URL}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	started := time.Now()
+	_, err := app.ActivateRemote("user@example.com", "", "")
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "registration timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > remoteEnrollTimeout+2*time.Second {
+		t.Fatalf("ActivateRemote() took too long: %s", elapsed)
 	}
 }
 

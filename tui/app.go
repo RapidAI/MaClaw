@@ -657,8 +657,8 @@ func tuiRoleTitle() string {
 }
 
 // tuiSystemGreeting returns the TUI system prompt greeting based on ui_mode.
-func tuiSystemGreeting() string {
-	return fmt.Sprintf("你是 MaClaw %s，运行在 TUI 终端中。请用简洁的中文回答用户问题。", tuiRoleTitle())
+func tuiSystemGreeting(memoryStore *memory.Store) string {
+	return buildTUIIdentityPrompt(memoryStore, tuiRoleTitle(), false)
 }
 
 // checkPythonEnvCmd 返回一个异步检测并安装 Python 环境的 tea.Cmd。
@@ -683,12 +683,7 @@ func (a *TUIApp) sendChatMessage(text string) tea.Cmd {
 	a.syncChatHistoryToMemoryShot(true)
 
 	// Build system greeting with memory-based identity override.
-	greeting := tuiSystemGreeting()
-	if a.memoryStore != nil {
-		if si := a.memoryStore.SelfIdentitySummary(600); si != "" {
-			greeting = fmt.Sprintf("你的自我认知（来自记忆）：%s\n你运行在 TUI 终端中。请用简洁的中文回答用户问题。", si)
-		}
-	}
+	greeting := tuiSystemGreeting(a.memoryStore)
 
 	// 构建消息列表（含系统提示 + 历史）
 	var msgs []interface{}

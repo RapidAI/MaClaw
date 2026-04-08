@@ -25,6 +25,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
 
@@ -362,10 +363,17 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 		toolDef("read_file", "读取文件内容", map[string]interface{}{
 			"path": map[string]interface{}{"type": "string", "description": "文件路径"},
 		}, []string{"path"}),
-		toolDef("write_file", "写入文件", map[string]interface{}{
+		toolDef("write_file", "写入文件（支持覆盖或追加，允许空内容）", map[string]interface{}{
 			"path":    map[string]interface{}{"type": "string", "description": "文件路径"},
-			"content": map[string]interface{}{"type": "string", "description": "文件内容"},
+			"content": map[string]interface{}{"type": "string", "description": "文件内容，可为空字符串"},
+			"mode":    map[string]interface{}{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
 		}, []string{"path", "content"}),
+		toolDef("edit_file", "编辑已有文件内容（按文本替换，支持替换首处或全部匹配）", map[string]interface{}{
+			"path":        map[string]interface{}{"type": "string", "description": "文件路径"},
+			"old_string":  map[string]interface{}{"type": "string", "description": "要查找的原始文本"},
+			"new_string":  map[string]interface{}{"type": "string", "description": "替换后的文本，可为空字符串"},
+			"replace_all": map[string]interface{}{"type": "boolean", "description": "是否替换全部匹配，默认 false"},
+		}, []string{"path", "old_string", "new_string"}),
 		toolDef("list_directory", "列出目录内容", map[string]interface{}{
 			"path": map[string]interface{}{"type": "string", "description": "目录路径"},
 		}, []string{"path"}),
@@ -471,7 +479,9 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 		}, []string{"skill_name"}),
 		toolDef("run_skill", "执行本地技能", map[string]interface{}{
 			"skill_name": map[string]interface{}{"type": "string", "description": "技能名称"},
-			"input":      map[string]interface{}{"type": "string", "description": "输入参数"},
+			"args":       map[string]interface{}{"type": "object", "description": "通用参数映射，供 skill 内 {{key}} / ${key} 占位符替换使用"},
+			"input":      map[string]interface{}{"type": "string", "description": "兼容旧调用的输入参数"},
+			"output":     map[string]interface{}{"type": "string", "description": "兼容旧调用的输出参数"},
 		}, []string{"skill_name"}),
 		// --- ClawNet ---
 		toolDef("clawnet_search", "搜索 ClawNet 知识", map[string]interface{}{
@@ -586,6 +596,8 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 		return h.toolReadFile(args)
 	case "write_file":
 		return h.toolWriteFile(args)
+	case "edit_file":
+		return h.toolEditFile(args)
 	case "list_directory":
 		return h.toolListDir(args)
 	case "list_sessions":
@@ -720,13 +732,25 @@ func (h *TUIAgentHandler) toolBash(args map[string]interface{}) string {
 	return result
 }
 
+func resolveTUIFilePath(path string) (string, error) {
+	return coretool.ResolveFileToolPath(path, func() string {
+		if wd, err := os.Getwd(); err == nil {
+			return wd
+		}
+		return ""
+	})
+}
+
 func (h *TUIAgentHandler) toolReadFile(args map[string]interface{}) string {
 	path := stringArg(args, "path")
 	if path == "" {
 		return "错误: 缺少 path 参数"
 	}
-	path = resolvePath(path)
-	data, err := os.ReadFile(path)
+	resolvedPath, err := resolveTUIFilePath(path)
+	if err != nil {
+		return fmt.Sprintf("读取失败: %v", err)
+	}
+	data, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		return fmt.Sprintf("读取失败: %v", err)
 	}
@@ -739,15 +763,44 @@ func (h *TUIAgentHandler) toolWriteFile(args map[string]interface{}) string {
 	if path == "" {
 		return "错误: 缺少 path 参数"
 	}
-	path = resolvePath(path)
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Sprintf("创建目录失败: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	resolvedPath, err := resolveTUIFilePath(path)
+	if err != nil {
 		return fmt.Sprintf("写入失败: %v", err)
 	}
-	return fmt.Sprintf("已写入 %s (%d 字节)", path, len(content))
+	size, err := coretool.WriteTextFile(resolvedPath, content, stringArg(args, "mode"))
+	if err != nil {
+		return fmt.Sprintf("写入失败: %v", err)
+	}
+	mode, _ := coretool.NormalizeWriteMode(stringArg(args, "mode"))
+	if mode == "append" {
+		return fmt.Sprintf("已追加到 %s (%d 字节)", resolvedPath, size)
+	}
+	if content == "" {
+		return fmt.Sprintf("已清空 %s (%d 字节)", resolvedPath, size)
+	}
+	return fmt.Sprintf("已写入 %s (%d 字节)", resolvedPath, size)
+}
+
+func (h *TUIAgentHandler) toolEditFile(args map[string]interface{}) string {
+	path := stringArg(args, "path")
+	oldString := stringArg(args, "old_string")
+	newString := stringArg(args, "new_string")
+	if path == "" {
+		return "错误: 缺少 path 参数"
+	}
+	resolvedPath, err := resolveTUIFilePath(path)
+	if err != nil {
+		return fmt.Sprintf("编辑失败: %v", err)
+	}
+	replaceAll := false
+	if v, ok := args["replace_all"].(bool); ok {
+		replaceAll = v
+	}
+	res, err := coretool.EditTextFile(resolvedPath, oldString, newString, replaceAll)
+	if err != nil {
+		return fmt.Sprintf("编辑失败: %v", err)
+	}
+	return fmt.Sprintf("已编辑 %s (%d 处, %d 字节)", res.Path, res.Count, res.Size)
 }
 
 func (h *TUIAgentHandler) toolListDir(args map[string]interface{}) string {
@@ -755,8 +808,11 @@ func (h *TUIAgentHandler) toolListDir(args map[string]interface{}) string {
 	if path == "" {
 		path = "."
 	}
-	path = resolvePath(path)
-	entries, err := os.ReadDir(path)
+	resolvedPath, err := resolveTUIFilePath(path)
+	if err != nil {
+		return fmt.Sprintf("读取目录失败: %v", err)
+	}
+	entries, err := os.ReadDir(resolvedPath)
 	if err != nil {
 		return fmt.Sprintf("读取目录失败: %v", err)
 	}

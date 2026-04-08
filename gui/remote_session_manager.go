@@ -2197,6 +2197,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 				SlotID:           slotID,
 				UserID:           "desktop-user",
 				ProjectPath:      s.ProjectPath,
+				Tool:             firstNonEmptyTraceText(strings.TrimSpace(s.Tool), strings.TrimSpace(s.ResumeContext.Tool), "claude"),
 				Status:           "pending_resume",
 				Summary:          firstNonEmptyTraceText(s.Summary.ProgressSummary, s.ResumeContext.LastProgress, s.Summary.LastResult),
 				LastTask:         firstNonEmptyTraceText(s.Summary.CurrentTask, s.ResumeContext.OriginalTask),

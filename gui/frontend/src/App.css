@@ -84,7 +84,8 @@ body {
 }
 
 .sidebar {
-    width: 210px;
+    width: 300px;
+    min-width: 300px;
     background: var(--surface-color);
     border-right: 1px solid var(--border-color);
     display: flex;

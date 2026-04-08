@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
@@ -46,6 +47,7 @@ func newWeixinGatewayManager(app *App) *weixinGatewayManager {
 
 // SyncFromConfig reads the current AppConfig and starts or stops the gateway.
 func (m *weixinGatewayManager) SyncFromConfig() {
+	m.app.logMemorySnapshot("weixinGateway:sync-start")
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		return
@@ -343,9 +345,21 @@ func (m *weixinGatewayManager) ensureLocalHandler() *IMMessageHandler {
 
 	a := m.app
 	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		a.ensureMemoryStore()
+	}
+	if a.contextResolver == nil {
+		a.ensureContextResolver()
+	}
+	if a.sessionPrecheck == nil {
+		a.ensureSessionPrecheck()
+	}
 
 	h := NewIMMessageHandler(a, a.remoteSessions)
 	// Wire the same subsystems that createAndWireHubClient does.
+	if a.capabilityGapDetector == nil {
+		a.ensureCapabilityGapDetector()
+	}
 	if a.capabilityGapDetector != nil {
 		h.SetCapabilityGapDetector(a.capabilityGapDetector)
 	}
@@ -357,7 +371,12 @@ func (m *weixinGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	}
 	if a.memoryStore != nil {
 		h.SetMemoryStore(a.memoryStore)
+		emb := a.memoryStore.Embedder()
+		if emb != nil && !embedding.IsNoop(emb) {
+			h.toolBuilder.SetEmbedder(emb)
+		}
 	}
+	h.SetTrajectoryRecorderFactory(a.buildTrajectoryRecorderFactory())
 	if a.configManager != nil {
 		h.SetConfigManager(a.configManager)
 	}
@@ -373,12 +392,17 @@ func (m *weixinGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	if a.sessionPrecheck != nil {
 		h.SetSessionPrecheck(a.sessionPrecheck)
 	}
+	a.ensureStartupFeedback()
 	if a.startupFeedback != nil {
 		h.SetStartupFeedback(a.startupFeedback)
+	}
+	if a.securityFirewall == nil {
+		a.ensureSecurityFirewall()
 	}
 	if a.securityFirewall != nil {
 		h.SetSecurityFirewall(a.securityFirewall)
 	}
+	a.ensureConversationArchiver()
 	if a.conversationArchiver != nil {
 		h.memory.archiver = a.conversationArchiver
 	}
@@ -710,7 +734,6 @@ func (m *weixinGatewayManager) saveMediaToTemp(msg weixin.IncomingMessage) (stri
 	return saveMediaToTempDir("wx", "wx_", msg.FromUserID, msg.MediaType, msg.MediaData, msg.MediaName)
 }
 
-
 // sendDiag sends a diagnostic message to the WeChat user for remote debugging.
 func (m *weixinGatewayManager) sendDiag(toUserID, contextToken, text string) {
 	m.mu.Lock()
@@ -725,8 +748,6 @@ func (m *weixinGatewayManager) sendDiag(toUserID, contextToken, text string) {
 		ContextToken: contextToken,
 	})
 }
-
-
 
 // truncateForLog truncates a string for log output.
 func truncateForLog(s string, maxRunes int) string {
@@ -847,6 +868,7 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 // ensureWeixinGateway lazily creates the gateway manager and syncs from config.
 // If WeChat is not enabled in config, skips entirely to avoid unnecessary work.
 func (a *App) ensureWeixinGateway() {
+	a.logMemorySnapshot("ensureWeixinGateway:start")
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return
@@ -861,6 +883,7 @@ func (a *App) ensureWeixinGateway() {
 		a.weixinGateway = newWeixinGatewayManager(a)
 	}
 	a.weixinGateway.SyncFromConfig()
+	a.logMemorySnapshot("ensureWeixinGateway:done")
 }
 
 func (a *App) GetWeixinStatus() string {

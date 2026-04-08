@@ -5,9 +5,15 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 func (h *IMMessageHandler) buildSystemPrompt() string {
+	return h.buildSystemPromptBase(false)
+}
+
+func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool) string {
 	var b strings.Builder
 
 	// Use configurable role name and description from settings.
@@ -18,6 +24,7 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 	roleTitle := "AI个人助手"
 	isProMode := false
 	currentNickname := ""
+	trialReflectEnabled := false
 	if cfg, err := h.app.LoadConfig(); err == nil {
 		if cfg.MaclawRoleName != "" {
 			roleName = cfg.MaclawRoleName
@@ -30,6 +37,7 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 			roleTitle = "AI编程助手"
 		}
 		currentNickname = strings.TrimSpace(cfg.RemoteNickname)
+		trialReflectEnabled = isProMode && cfg.TrialReflectEnabled
 	}
 
 	// Override identity from memory self_identity if present.
@@ -64,8 +72,14 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 ## ⚠️ 编程任务工作流（极其重要）
 
 ### 第一步：识别任务类型
-- 编程任务（Coding_Task）：需要调用 create_session 启动远程编程工具的需求（写代码、重构、修 bug、添加功能等）
-- 非编程任务：简单问答、文件操作（bash/read_file/write_file）、配置管理、截屏等 → 直接执行，不需要确认
+- 编程任务（Coding_Task）：明确需要修改项目代码、修 bug、重构、实现功能等 → 调用 create_session 启动远程编程工具
+- SSH/服务器操作任务：登录服务器、执行远程命令、看日志、重启服务、上传/下载服务器文件等 → 使用 ssh 工具
+- 其他非编程任务：简单问答、文件操作（bash/read_file/write_file/edit_file）、配置管理、截屏等 → 直接执行，不需要确认
+
+⚠️ 以下规则必须同时遵守：
+- 如果不能确定是编程任务，不要调用 create_session
+- 如果不能确定是否需要 SSH，也不要自动建立 SSH 会话，先澄清是“改代码”还是“登录服务器处理”
+- 用户提到服务器、SSH、远程主机、线上机器时，优先考虑 ssh，不要默认打开编程工具
 
 ⚠️ 以下类型的任务绝对不要调用 create_session，必须用现有工具直接完成：
 - 信息检索类：搜索论文、查资料、查天气、查新闻、查快递
@@ -75,7 +89,7 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 - 通信类：发邮件、发消息
 - 日常助手类：设提醒、查日程、播放音乐
 
-这些任务应该用 bash（执行命令）、craft_tool（生成脚本）、read_file/write_file（读写文件）、send_file（发送文件）、open（打开文件/网址）等工具直接完成。
+这些任务应该优先用 read_file/write_file/edit_file（读写/编辑文件）、bash（执行命令）、craft_tool（生成脚本）、send_file（发送文件）、open（打开文件/网址）等工具直接完成。
 只有真正需要启动 IDE/编程工具来修改项目代码的任务才是编程任务。
 
 ### 第二步：检查跳过信号（Skip_Signal）
@@ -215,7 +229,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - 向会话发送指令优先用 send_and_observe（自动等待输出），避免分别调用 send_input + get_session_output
 - 中断或终止会话用 control_session（action: interrupt/kill）
 - 配置管理用 manage_config（action: get/update/batch_update/list_schema/export/import）
-- 简单文件/命令操作直接用 bash/read_file/write_file/list_directory，不要绕道创建会话
+- 简单文件/命令操作直接用 bash/read_file/write_file/edit_file/list_directory，不要绕道创建会话
 - 截屏直接调用 screenshot（仅在用户明确要求或需要确认操作结果时使用，最小间隔 30 秒），无需活跃会话也能截取本机桌面
 - ⚠️ 截屏规则：仅在用户明确要求截屏、或用户通过 IM 远程监督需要确认操作结果时才调用 screenshot。不要在用户没有要求时主动截屏。连续截屏最小间隔 30 秒。
 - 用 send_file 通过 IM 通道直接发送文件给用户（支持图片、文档等任意文件类型）。在桌面端默认只保存到本地；如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
@@ -234,7 +248,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 
 你仍然可以使用以下工具帮助用户：
 - bash：执行 shell 命令
-- read_file / write_file / list_directory：文件操作
+- read_file / write_file / edit_file / list_directory：文件操作
 - craft_tool：生成并执行脚本
 - web_search / web_fetch：网络搜索
 - memory：长期记忆管理
@@ -244,11 +258,22 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 
 ## 工具使用要点
 - 配置管理用 manage_config（action: get/update/batch_update/list_schema/export/import）
-- 简单文件/命令操作直接用 bash/read_file/write_file/list_directory
+- 简单文件/命令操作直接用 bash/read_file/write_file/edit_file/list_directory
 - 截屏直接调用 screenshot
 - 用 send_file 通过 IM 通道直接发送文件给用户。如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
 
+`)
+	}
+	if trialReflectEnabled {
+		b.WriteString(`
+## 试错并反思模式
+- 先提出当前最有可能成立的假设，再决定下一步动作。
+- 每一轮只做一个有区分度的尝试，避免同时改很多变量。
+- 执行后必须根据工具结果判断：成功、失败、还是证据不足。
+- 如果失败，先总结失败原因，再调整下一轮策略；不要机械重复同样的失败动作。
+- 如果成功，简要总结这轮什么做法有效，便于后续延续。
+- 如果最近一轮已经证明某种做法无效，下一轮优先换方法、换参数或补充证据。
 `)
 	}
 	b.WriteString("## 当前设备状态\n")
@@ -406,7 +431,7 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
 
 	// Inject lightweight memory section: user_fact summary + tool hint.
-	h.appendMemorySection(&b, false)
+	h.appendMemorySection(&b, includeMemoryGuide)
 
 	return b.String()
 }
@@ -415,22 +440,13 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 // memory section (user_fact summary + dynamic recall hint). The isFirstTurn
 // flag controls whether the full memory management guide is included.
 func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFirstTurn bool) string {
-	// Build the base prompt without memory (strip the default non-first-turn section).
-	base := h.buildSystemPrompt()
-
+	base := h.buildSystemPromptBase(isFirstTurn)
 	if !isFirstTurn {
 		return base
 	}
-	// First turn: strip the default memory section and re-append with guide.
-	if idx := strings.Index(base, "\n## 用户记忆\n"); idx >= 0 {
-		base = base[:idx]
-	}
 	var b strings.Builder
 	b.WriteString(base)
-	// Inject nickname reporting instruction AFTER stripping the memory
-	// section so it doesn't get truncated.
 	b.WriteString(h.buildNicknameInstruction())
-	h.appendMemorySection(&b, true)
 	return b.String()
 }
 
@@ -473,16 +489,14 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 
 	summary := h.memoryStore.UserFactSummary(400)
 
-	b.WriteString("\n## 用户记忆\n")
+	b.WriteString("\n" + corememory.PromptSectionUserMemory + "\n")
 	if summary != "" {
 		b.WriteString(fmt.Sprintf("用户信息: %s\n", summary))
 	}
-	b.WriteString("其他记忆（偏好、项目知识、指令等）可通过 memory(action: recall, query: \"检索关键词\") 按需召回。\n")
+	b.WriteString("其他记忆（偏好、项目知识、指令等）可通过 " + corememory.PromptActionRecallColon + ", query: \"检索关键词\") 按需召回。\n")
 
 	if isFirstTurn {
-		b.WriteString("\n## 记忆管理指引\n")
-		b.WriteString("识别到有价值的信息时，主动调用 memory(action: save) 保存：\n")
-		b.WriteString("- 用户信息 → user_fact | 偏好 → preference | 项目知识 → project_knowledge | 指令 → instruction\n")
+		b.WriteString("\n" + corememory.BuildIMMemoryGuidePrompt() + "\n")
 	}
 }
 

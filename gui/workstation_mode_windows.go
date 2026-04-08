@@ -3,7 +3,9 @@
 package main
 
 import (
+	"log"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -20,7 +22,12 @@ const wsRegKey = "DisableLockWorkstation"
 // We avoid SendInput-based anti-lock because injecting mouse events resets the
 // OS idle timer, which would prevent the display from dimming.
 func (a *App) setWorkstationMode(enabled bool, screenDimMin int) {
+	lockStart := time.Now()
 	a.powerStateMutex.Lock()
+	lockWait := time.Since(lockStart)
+	if lockWait > 50*time.Millisecond {
+		log.Printf("[power] setWorkstationMode:lock_wait=%s enabled=%t", lockWait, enabled)
+	}
 	defer a.powerStateMutex.Unlock()
 
 	if a.workstationCancel != nil {

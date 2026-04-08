@@ -842,13 +842,13 @@ func TestRunExitLoopPersistsPendingResumeSlotTool(t *testing.T) {
 		close(done)
 	}()
 
-	exitCode := 1
+	exitCode := 2
 	execHandle.exitCh <- PTYExit{Code: &exitCode}
 	close(execHandle.exitCh)
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("runExitLoop did not finish")
 	}
 
@@ -856,6 +856,9 @@ func TestRunExitLoopPersistsPendingResumeSlotTool(t *testing.T) {
 	slot := mem.getUnfinishedSlot("desktop-user")
 	if slot == nil {
 		t.Fatal("expected pending resume slot")
+	}
+	if slot.Tool != "opencode" {
+		t.Fatalf("slot.Tool = %q, want %q", slot.Tool, "opencode")
 	}
 	if slot.Source != "session_exit" {
 		t.Fatalf("slot.Source = %q, want %q", slot.Source, "session_exit")

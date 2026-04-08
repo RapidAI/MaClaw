@@ -212,3 +212,24 @@ func TestSendAIAssistantMessage_RejectsOversizedToolArguments_Anthropic(t *testi
 		t.Fatalf("expected oversized tool args error, got %+v", resp)
 	}
 }
+
+func TestIsVisibleAIAssistantProgressText(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "visible zh status", text: "正在生成 PDF，请稍候", want: true},
+		{name: "visible emoji status", text: "⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…", want: true},
+		{name: "hide internal tool narration", text: "正在执行工具，请稍候...", want: false},
+		{name: "hide internal chatter", text: "来啦伯伯！先搜索一下~", want: false},
+		{name: "hide blank", text: "   ", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isVisibleAIAssistantProgressText(tc.text); got != tc.want {
+				t.Fatalf("isVisibleAIAssistantProgressText(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}

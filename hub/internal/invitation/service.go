@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -20,6 +21,7 @@ const (
 	maxCount    = 50
 
 	settingsKeyInvitationCodeRequired = "invitation_code_required"
+	vipLookupCacheTTL                 = 10 * time.Second
 )
 
 var (
@@ -32,10 +34,18 @@ var (
 type Service struct {
 	repo     store.InvitationCodeRepository
 	settings store.SystemSettingsRepository
+
+	vipLookupMu    sync.RWMutex
+	vipLookupCache map[string]vipLookupCacheEntry
+}
+
+type vipLookupCacheEntry struct {
+	code      *store.InvitationCode
+	expiresAt time.Time
 }
 
 func NewService(repo store.InvitationCodeRepository, settings store.SystemSettingsRepository) *Service {
-	return &Service{repo: repo, settings: settings}
+	return &Service{repo: repo, settings: settings, vipLookupCache: make(map[string]vipLookupCacheEntry)}
 }
 
 // GenerateCodes generates count invitation codes (1-50) and stores them.
@@ -156,7 +166,47 @@ func (s *Service) DeleteCodeByEmail(ctx context.Context, email string) (int64, e
 
 // GetCodeByEmail returns the invitation code bound to the given email.
 func (s *Service) GetCodeByEmail(ctx context.Context, email string) (*store.InvitationCode, error) {
-	return s.repo.GetByEmail(ctx, email)
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return nil, nil
+	}
+
+	now := time.Now()
+	s.vipLookupMu.RLock()
+	if entry, ok := s.vipLookupCache[email]; ok && now.Before(entry.expiresAt) {
+		cached := cloneInvitationCode(entry.code)
+		s.vipLookupMu.RUnlock()
+		return cached, nil
+	}
+	s.vipLookupMu.RUnlock()
+
+	item, err := s.repo.GetByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	s.cacheVIPLookup(email, item)
+	return cloneInvitationCode(item), nil
+}
+
+func (s *Service) cacheVIPLookup(email string, item *store.InvitationCode) {
+	s.vipLookupMu.Lock()
+	defer s.vipLookupMu.Unlock()
+	s.vipLookupCache[email] = vipLookupCacheEntry{
+		code:      cloneInvitationCode(item),
+		expiresAt: time.Now().Add(vipLookupCacheTTL),
+	}
+}
+
+func cloneInvitationCode(item *store.InvitationCode) *store.InvitationCode {
+	if item == nil {
+		return nil
+	}
+	cloned := *item
+	if item.UsedAt != nil {
+		usedAt := *item.UsedAt
+		cloned.UsedAt = &usedAt
+	}
+	return &cloned
 }
 
 // CheckExpiry checks whether the invitation code associated with the given email has expired.

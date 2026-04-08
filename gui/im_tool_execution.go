@@ -27,7 +27,7 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 
 	// --- SecurityFirewall check (Phase 2 upgrade) ---
 	if h.firewall != nil {
-		ctx := &SecurityCallContext{SessionID: "local"}
+		ctx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}
 		allowed, reason := h.firewall.Check(name, args, ctx)
 		if !allowed {
 			return reason
@@ -47,6 +47,18 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 	}
 
 	return fmt.Sprintf("未知工具: %s", name)
+}
+
+func localSessionIDFromToolArgs(args map[string]interface{}) string {
+	if args == nil {
+		return "local"
+	}
+	for _, key := range []string{"session_id", "browser_session_id"} {
+		if value, ok := args[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return "local"
 }
 
 func (h *IMMessageHandler) toolListSessions() string {

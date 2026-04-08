@@ -16,8 +16,9 @@ import (
 // on stdout.  User prompts are passed as trailing arguments to `codex exec`.
 //
 // Unlike Claude's bidirectional stream-json protocol, Codex exec is
-// unidirectional: the initial prompt is given on the command line, and
-// follow-up messages use `codex exec resume --last`.
+// effectively one-shot for structured interactions: continuation happens by
+// launching a new `codex exec resume <thread-id> ...` process rather than by
+// sending a tool_result back over stdin to the current process.
 type CodexSDKExecutionStrategy struct{}
 
 func NewCodexSDKExecutionStrategy() *CodexSDKExecutionStrategy {
@@ -127,10 +128,6 @@ func (h *CodexSDKExecutionHandle) PID() int {
 	return h.pid
 }
 
-// Write sends a follow-up message to Codex.  Since `codex exec` is a
-// one-shot command, follow-up messages spawn a new `codex exec resume --last`
-// process.  For the initial prompt, the message is written to stdin which
-// Codex reads as the task prompt.
 func (h *CodexSDKExecutionHandle) Write(data []byte) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -143,11 +140,16 @@ func (h *CodexSDKExecutionHandle) Write(data []byte) error {
 		return nil
 	}
 
-	// Write the prompt text to stdin followed by a newline.
-	// For `codex exec`, stdin is read as the task prompt when no
-	// trailing argument is provided, or can be used for piped input.
 	_, err := h.stdin.Write(append([]byte(text), '\n'))
 	return err
+}
+
+func (h *CodexSDKExecutionHandle) WriteAskUserQuestionAnswer(pending *PendingToolUse, text string) error {
+	threadID := strings.TrimSpace(h.ThreadID())
+	if threadID != "" {
+		return fmt.Errorf("codex AskUserQuestion answers require starting a new resumed session (resume_session_id=%s)", threadID)
+	}
+	return fmt.Errorf("codex AskUserQuestion answers require starting a new resumed session")
 }
 
 func (h *CodexSDKExecutionHandle) Interrupt() error {

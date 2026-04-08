@@ -33,19 +33,7 @@ if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 REM -- Increment build number and set version (single PowerShell call) --
 echo [Step 2/9] Updating version number...
 %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command ^
-  "if (Test-Path 'build_number') { $n = [int](Get-Content 'build_number') + 1 } else { $n = 1 };" ^
-  "Set-Content -Path 'build_number' -Value $n -NoNewline;" ^
-  "$cfg = Get-Content '%~dp0wails.json' -Raw | ConvertFrom-Json;" ^
-  "$parts = $cfg.info.productVersion.Split('.');" ^
-  "$parts[3] = [string]$n;" ^
-  "$ver = $parts -join '.';" ^
-  "@{" ^
-  "  VERSION = $ver;" ^
-  "  BUILD_NUM = [string]$n;" ^
-  "  PRODUCT_NAME = $cfg.info.productName;" ^
-  "  COMPANY_NAME = $cfg.info.companyName;" ^
-  "  COPYRIGHT = $cfg.info.copyright" ^
-  "}.GetEnumerator() | ForEach-Object { Set-Content -Path ('%~dp0temp_' + $_.Key + '.txt') -Value $_.Value -NoNewline }"
+  "$root = '%~dp0'; if (Test-Path ($root + 'build_number')) { $n = [int](Get-Content ($root + 'build_number')) + 1 } else { $n = 1 }; Set-Content -Path ($root + 'build_number') -Value $n -NoNewline; $cfg = Get-Content ($root + 'wails.json') -Raw | ConvertFrom-Json; $parts = $cfg.info.productVersion.Split('.'); $parts[3] = [string]$n; $ver = $parts -join '.'; Set-Content -Path ($root + 'temp_VERSION.txt') -Value $ver -NoNewline; Set-Content -Path ($root + 'temp_BUILD_NUM.txt') -Value ([string]$n) -NoNewline; Set-Content -Path ($root + 'temp_PRODUCT_NAME.txt') -Value $cfg.info.productName -NoNewline; Set-Content -Path ($root + 'temp_COMPANY_NAME.txt') -Value $cfg.info.companyName -NoNewline; Set-Content -Path ($root + 'temp_COPYRIGHT.txt') -Value $cfg.info.copyright -NoNewline"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to update version info.
     goto :error
@@ -106,8 +94,9 @@ if !errorlevel! neq 0 (
 REM -- Build Go Binaries --
 echo [Step 6/9] Compiling GUI binaries...
 set "GOOS=windows"
-set "CGO_ENABLED=0"
 set "GOARCH=amd64"
+set "CGO_ENABLED=1"
+set "CC=gcc"
 "%GOVERSIONINFO_PATH%" -64 -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_amd64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate amd64 resources.
@@ -120,6 +109,8 @@ if !errorlevel! neq 0 (
 )
 del "%~dp0gui\resource_windows_amd64.syso"
 set "GOARCH=arm64"
+set "CGO_ENABLED=0"
+set "CC="
 "%GOVERSIONINFO_PATH%" -64 -arm -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_arm64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate arm64 resources.

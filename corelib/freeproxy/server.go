@@ -99,15 +99,22 @@ func (s *Server) Stop() {
 // ── OpenAI-compatible request/response types ──
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
-	Tools    []interface{} `json:"tools,omitempty"`
+	Model          string                   `json:"model"`
+	Messages       []map[string]interface{} `json:"messages"`
+	Stream         bool                     `json:"stream"`
+	Tools          []interface{}            `json:"tools,omitempty"`
+	ToolChoice     interface{}              `json:"tool_choice,omitempty"`
+	ResponseFormat interface{}              `json:"response_format,omitempty"`
+	Temperature    *float64                 `json:"temperature,omitempty"`
+	TopP           *float64                 `json:"top_p,omitempty"`
+	MaxTokens      *int                     `json:"max_tokens,omitempty"`
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string      `json:"role"`
+	Content    interface{} `json:"content"`
+	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID string      `json:"tool_call_id,omitempty"`
 }
 
 type chatResponse struct {
@@ -122,15 +129,161 @@ type chatResponse struct {
 type chatChoice struct {
 	Index        int         `json:"index"`
 	Message      chatMessage `json:"message,omitempty"`
-	Delta        chatMessage `json:"delta,omitempty"`
+	Delta        interface{} `json:"delta,omitempty"`
 	FinishReason *string     `json:"finish_reason"`
-	ToolCalls    []ToolCall  `json:"tool_calls,omitempty"`
+}
+
+type streamToolCallDelta struct {
+	Index    int          `json:"index"`
+	ID       string       `json:"id,omitempty"`
+	Type     string       `json:"type,omitempty"`
+	Function ToolFunction `json:"function"`
+}
+
+type streamChatDelta struct {
+	Role      string                `json:"role,omitempty"`
+	Content   interface{}           `json:"content,omitempty"`
+	ToolCalls []streamToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 type chatUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+func normalizeChatContentForPrompt(v interface{}) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case []interface{}:
+		parts := make([]string, 0, len(x))
+		for _, item := range x {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			typ, _ := m["type"].(string)
+			if typ == "text" || typ == "input_text" || typ == "output_text" {
+				if text, _ := m["text"].(string); text != "" {
+					parts = append(parts, text)
+					continue
+				}
+				if text, _ := m["content"].(string); text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(b)
+	}
+}
+
+func formatAssistantToolCallsForPrompt(toolCalls []ToolCall) string {
+	if len(toolCalls) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(toolCalls))
+	for i, tc := range toolCalls {
+		id := strings.TrimSpace(tc.ID)
+		if id == "" {
+			id = fmt.Sprintf("call_%d", i+1)
+		}
+		name := strings.TrimSpace(tc.Function.Name)
+		if name == "" {
+			name = "unknown"
+		}
+		args := strings.TrimSpace(tc.Function.Arguments)
+		if args == "" {
+			args = "{}"
+		}
+		parts = append(parts, fmt.Sprintf("Tool call:\n- tool_call_id: %s\n- function.name: %s\n- function.arguments: %s", id, name, args))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func formatToolResultForPrompt(msg map[string]interface{}) string {
+	toolCallID, _ := msg["tool_call_id"].(string)
+	if strings.TrimSpace(toolCallID) == "" {
+		toolCallID = "unknown"
+	}
+	content := normalizeChatContentForPrompt(msg["content"])
+	if strings.TrimSpace(content) == "" {
+		content = "null"
+	}
+	return fmt.Sprintf("Tool result:\n- tool_call_id: %s\n- content: %s", toolCallID, content)
+}
+
+func toStreamToolCallDeltas(toolCalls []ToolCall) []streamToolCallDelta {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	deltas := make([]streamToolCallDelta, 0, len(toolCalls))
+	for i, tc := range toolCalls {
+		deltas = append(deltas, streamToolCallDelta{
+			Index:    i,
+			ID:       tc.ID,
+			Type:     tc.Type,
+			Function: tc.Function,
+		})
+	}
+	return deltas
+}
+
+func normalizeMessagesForPrompt(messages []map[string]interface{}) []chatMessage {
+	out := make([]chatMessage, 0, len(messages))
+	for _, m := range messages {
+		role, _ := m["role"].(string)
+		role = strings.ToLower(strings.TrimSpace(role))
+		cm := chatMessage{Role: role, Content: normalizeChatContentForPrompt(m["content"])}
+		if rawCalls, ok := m["tool_calls"].([]interface{}); ok {
+			for _, item := range rawCalls {
+				b, _ := json.Marshal(item)
+				var tc ToolCall
+				if json.Unmarshal(b, &tc) == nil {
+					cm.ToolCalls = append(cm.ToolCalls, tc)
+				}
+			}
+		}
+		if id, _ := m["tool_call_id"].(string); id != "" {
+			cm.ToolCallID = id
+		}
+		out = append(out, cm)
+	}
+	return out
+}
+
+func extractToolCalls(content string) []ToolCall {
+	if HasToolCalls(content) {
+		if toolCalls := ParseToolCalls(content); len(toolCalls) > 0 {
+			return toolCalls
+		}
+	}
+	if HasXMLToolCalls(content) {
+		if toolCalls := ParseXMLToolCalls(content); len(toolCalls) > 0 {
+			return toolCalls
+		}
+	}
+	return nil
+}
+
+func removeToolCallBlocks(content string) string {
+	cleaned := content
+	if HasToolCalls(cleaned) {
+		cleaned = RemoveToolCallBlocks(cleaned)
+	}
+	if HasXMLToolCalls(cleaned) {
+		cleaned = RemoveXMLToolCallBlocks(cleaned)
+	}
+	cleaned = reCompactBlank.ReplaceAllString(cleaned, "\n\n")
+	return strings.TrimSpace(cleaned)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -155,7 +308,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -169,6 +322,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+	normalizedMessages := normalizeMessagesForPrompt(req.Messages)
 
 	// Combine messages into a single prompt
 	var prompt strings.Builder
@@ -182,20 +336,35 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for _, m := range req.Messages {
+	for _, m := range normalizedMessages {
 		switch m.Role {
 		case "system":
-			compact := compactSystemPrompt(m.Content)
+			compact := compactSystemPrompt(normalizeChatContentForPrompt(m.Content))
 			if compact != "" {
-				if len(compact) != len(m.Content) {
-					log.Printf("[freeproxy] system prompt compacted: %d -> %d chars", len(m.Content), len(compact))
+				if len(compact) != len(normalizeChatContentForPrompt(m.Content)) {
+					log.Printf("[freeproxy] system prompt compacted: %d -> %d chars", len(normalizeChatContentForPrompt(m.Content)), len(compact))
 				}
 				prompt.WriteString("[System] " + compact + "\n\n")
 			}
 		case "user":
-			prompt.WriteString(m.Content + "\n")
+			prompt.WriteString(normalizeChatContentForPrompt(m.Content) + "\n")
 		case "assistant":
-			prompt.WriteString("[Previous assistant response] " + m.Content + "\n\n")
+			combined := normalizeChatContentForPrompt(m.Content)
+			if toolText := formatAssistantToolCallsForPrompt(m.ToolCalls); toolText != "" {
+				if combined != "" {
+					combined += "\n\n"
+				}
+				combined += toolText
+			}
+			if combined != "" {
+				prompt.WriteString("[Previous assistant response] " + combined + "\n\n")
+			}
+		case "tool", "function":
+			toolMsg := map[string]interface{}{
+				"tool_call_id": m.ToolCallID,
+				"content":      m.Content,
+			}
+			prompt.WriteString(formatToolResultForPrompt(toolMsg) + "\n\n")
 		}
 	}
 
@@ -253,14 +422,13 @@ func (s *Server) handleNonStream(ctx context.Context, w http.ResponseWriter, cr 
 	choice := chatChoice{Index: 0, FinishReason: &stop}
 
 	// Check for tool calls in the response
-	if hasTools && HasToolCalls(fullText) {
-		toolCalls := ParseToolCalls(fullText)
+	if hasTools {
+		toolCalls := extractToolCalls(fullText)
 		if len(toolCalls) > 0 {
-			cleanText := RemoveToolCallBlocks(fullText)
+			cleanText := removeToolCallBlocks(fullText)
 			toolStop := "tool_calls"
 			choice.FinishReason = &toolStop
-			choice.Message = chatMessage{Role: "assistant", Content: cleanText}
-			choice.ToolCalls = toolCalls
+			choice.Message = chatMessage{Role: "assistant", Content: cleanText, ToolCalls: toolCalls}
 		} else {
 			choice.Message = chatMessage{Role: "assistant", Content: fullText}
 		}
@@ -305,13 +473,13 @@ func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, cr Com
 
 	id := fmt.Sprintf("fp-%d", time.Now().UnixMilli())
 
-	sendChunk := func(content string, finish bool) {
+		sendChunk := func(content string, finish bool) {
 		chunk := chatResponse{
 			ID:      id,
 			Object:  "chat.completion.chunk",
 			Created: time.Now().Unix(),
 			Model:   model,
-			Choices: []chatChoice{{Index: 0, Delta: chatMessage{Role: "assistant", Content: content}}},
+			Choices: []chatChoice{{Index: 0, Delta: streamChatDelta{Role: "assistant", Content: content}}},
 		}
 		if finish {
 			stop := "stop"
@@ -357,40 +525,37 @@ func (s *Server) handleStreamWithTools(ctx context.Context, w http.ResponseWrite
 
 	id := fmt.Sprintf("fp-%d", time.Now().UnixMilli())
 
-	if HasToolCalls(fullText) {
-		toolCalls := ParseToolCalls(fullText)
-		if len(toolCalls) > 0 {
-			cleanText := RemoveToolCallBlocks(fullText)
-			// Emit text content if any
-			if cleanText != "" {
-				chunk := chatResponse{
-					ID: id, Object: "chat.completion.chunk", Created: time.Now().Unix(), Model: model,
-					Choices: []chatChoice{{Index: 0, Delta: chatMessage{Role: "assistant", Content: cleanText}}},
-				}
-				data, _ := json.Marshal(chunk)
-				fmt.Fprintf(w, "data: %s\n\n", data)
-				flusher.Flush()
-			}
-			// Emit tool calls chunk
-			toolStop := "tool_calls"
+	if toolCalls := extractToolCalls(fullText); len(toolCalls) > 0 {
+		cleanText := removeToolCallBlocks(fullText)
+		// Emit text content if any
+		if cleanText != "" {
 			chunk := chatResponse{
 				ID: id, Object: "chat.completion.chunk", Created: time.Now().Unix(), Model: model,
-				Choices: []chatChoice{{Index: 0, Delta: chatMessage{}, FinishReason: &toolStop, ToolCalls: toolCalls}},
+				Choices: []chatChoice{{Index: 0, Delta: streamChatDelta{Role: "assistant", Content: cleanText}}},
 			}
 			data, _ := json.Marshal(chunk)
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			flusher.Flush()
-			return
 		}
+		// Emit tool calls chunk
+		toolStop := "tool_calls"
+		chunk := chatResponse{
+			ID: id, Object: "chat.completion.chunk", Created: time.Now().Unix(), Model: model,
+			Choices: []chatChoice{{Index: 0, Delta: streamChatDelta{ToolCalls: toStreamToolCallDeltas(toolCalls)}, FinishReason: &toolStop}},
+		}
+		data, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
 	}
 
 	// No tool calls — emit as normal text stream
 	stop := "stop"
 	chunk := chatResponse{
 		ID: id, Object: "chat.completion.chunk", Created: time.Now().Unix(), Model: model,
-		Choices: []chatChoice{{Index: 0, Delta: chatMessage{Role: "assistant", Content: fullText}}},
+		Choices: []chatChoice{{Index: 0, Delta: streamChatDelta{Role: "assistant", Content: fullText}}},
 	}
 	data, _ := json.Marshal(chunk)
 	fmt.Fprintf(w, "data: %s\n\n", data)

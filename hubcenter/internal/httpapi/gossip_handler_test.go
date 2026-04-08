@@ -51,7 +51,7 @@ func newGossipTestEnv(t *testing.T) *gossipTestEnv {
 	cachePath := filepath.Join(t.TempDir(), "gossip_snapshot.json.gz")
 	gossipCache := NewGossipCache(st.Gossip, cachePath)
 
-	handler := NewRouter(adminSvc, hubSvc, entrySvc, nil, nil, st.Gossip, gossipCache, nil, st.System)
+	handler := NewRouter(adminSvc, hubSvc, entrySvc, nil, nil, st.Gossip, gossipCache, nil, st.System, st.News)
 
 	env := &gossipTestEnv{handler: handler, cache: gossipCache}
 

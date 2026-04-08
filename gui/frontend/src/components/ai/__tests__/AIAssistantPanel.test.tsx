@@ -4,6 +4,10 @@ import * as fc from 'fast-check';
 import { AIAssistantPanel } from '../AIAssistantPanel';
 import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } from '../useAIAssistant';
 
+const { openFileOrShowInFolderMock } = vi.hoisted(() => ({
+    openFileOrShowInFolderMock: vi.fn(),
+}));
+
 const scrollIntoViewMock = vi.fn();
 const scrollToMock = vi.fn();
 
@@ -21,6 +25,10 @@ Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
 vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOn: vi.fn(),
     EventsOff: vi.fn(),
+}));
+
+vi.mock('../../../../wailsjs/go/main/App', () => ({
+    OpenFileOrShowInFolder: openFileOrShowInFolderMock,
 }));
 
 function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }): ChatMessage {
@@ -97,6 +105,98 @@ describe('AIAssistantPanel property tests', () => {
         cleanup();
         scrollIntoViewMock.mockClear();
         scrollToMock.mockClear();
+        openFileOrShowInFolderMock.mockReset();
+    });
+
+    it('keeps inline root as a flex item with clipped overflow', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        const root = getByTestId('ai-panel-root');
+        expect(root.style.flex).toBe('1 1 0%');
+        expect(root.style.minWidth).toBe('0px');
+        expect(root.style.minHeight).toBe('0px');
+        expect(root.style.boxSizing).toBe('border-box');
+        expect(root.style.overflow).toBe('hidden');
+    });
+
+    it('keeps the title bar and input area boxed inside the inline panel', () => {
+        const { getByTestId, getByText } = renderPanel({
+            window: { inline: true },
+            actions: {
+                sendMessage: async () => {},
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+                onOpenTutorial: () => {},
+            },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        const titleBar = getByTestId('ai-title-bar');
+        expect(titleBar.style.minWidth).toBe('0px');
+        expect(titleBar.style.boxSizing).toBe('border-box');
+
+        const toolsGroup = getByTestId('ai-titlebar-tools-group');
+        expect(toolsGroup.style.minWidth).toBe('0px');
+
+        const windowGroup = getByTestId('ai-titlebar-window-group');
+        expect(windowGroup.style.flexShrink).toBe('0');
+        expect(windowGroup.style.boxSizing).toBe('border-box');
+
+        const inputBar = getByTestId('ai-input-bar');
+        expect(inputBar.style.minWidth).toBe('0px');
+        expect(inputBar.style.boxSizing).toBe('border-box');
+    });
+
+    it('keeps the inline panel body as the only scroll container wrapper', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: {
+                messages: [
+                    makeMsg({ role: 'user', content: 'Earlier question' }),
+                    makeMsg({ role: 'assistant', content: 'Latest answer' }),
+                ],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        const body = getByTestId('ai-panel-body');
+        expect(body.style.flex).toBe('1 1 0%');
+        expect(body.style.minHeight).toBe('0px');
+        expect(body.style.overflow).toBe('hidden');
+
+        const output = getByTestId('ai-output-container');
+        expect(output.style.flex).toBe('1 1 0%');
+        expect(output.style.minHeight).toBe('0px');
+        expect(output.style.overflowY).toBe('auto');
+        expect(output.style.overflowX).toBe('hidden');
+
+        const inputBar = getByTestId('ai-input-bar');
+        expect(inputBar.style.flexShrink).toBe('0');
+    });
+
+    it('shows tutorial action before refresh in the title bar tools group', () => {
+        const { getByTestId } = renderPanel({
+            actions: {
+                sendMessage: async () => {},
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+                onOpenTutorial: () => {},
+            },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        const toolsGroup = getByTestId('ai-titlebar-tools-group');
+        const buttons = Array.from(toolsGroup.querySelectorAll('button'));
+        expect(buttons).toHaveLength(3);
+        expect(buttons[0]?.getAttribute('title')).toBe('Tutorial');
+        expect(buttons[1]?.getAttribute('title')).toBe('Refresh news');
     });
 
     it('shows trial-reflect badge when mode is enabled', () => {
@@ -327,6 +427,31 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
+    it('unfinished slot project path opens through the shared file handler', async () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '存在未完成任务。',
+                unfinishedSlot: {
+                    slotID: 'slot-path',
+                    summary: '上次停在这里',
+                    projectPath: 'D:/work/project',
+                },
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        fireEvent.click(getByText('📁 D:/work/project'));
+
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('D:/work/project');
+        });
+    });
+
     it('renders confirmation cards with summary, lists, and actions', () => {
         const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
         const messages: ChatMessage[] = [
@@ -511,6 +636,82 @@ describe('AIAssistantPanel property tests', () => {
         expect(fieldCards).toContain('Evidence:2');
         expect(fieldCards).toContain('Run ID:run-empty-result');
         expect(getByText('View trace')).toBeTruthy();
+    });
+
+    it('renders a saved file link when only localFilePath is present', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: '/tmp/review.pdf',
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByText('📄 Saved file: 📁 /tmp/review.pdf')).toBeTruthy();
+    });
+
+    it('opens saved file paths directly when clicked', async () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: 'C:\\Users\\demo\\report.pdf',
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByText('📄 Saved file: 📁 C:\\Users\\demo\\report.pdf'));
+
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('C:\\Users\\demo\\report.pdf');
+        });
+    });
+
+    it('opens inline detected file paths when clicked', async () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '文件在 C:\\Users\\demo\\report.pdf，请打开。',
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByText('📂 C:\\Users\\demo\\report.pdf'));
+
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('C:\\Users\\demo\\report.pdf');
+        });
+    });
+
+    it('opens screenshot thumbnails via the same file handler when clicked', async () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: 'C:\\Users\\demo\\capture.png',
+                thumbnailBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9kAAAAASUVORK5CYII=',
+            }),
+        ];
+
+        const { getByAltText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByAltText('screenshot'));
+
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('C:\\Users\\demo\\capture.png');
+        });
     });
 
     it('normal send records each manual prompt once so consecutive duplicates can be deduplicated upstream', async () => {

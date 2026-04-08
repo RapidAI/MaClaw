@@ -95,7 +95,11 @@ func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 			return true // skip invalid overrides
 		}
 
-		app := &App{}
+		tmpHome := t.TempDir()
+		app := &App{testHomeDir: tmpHome}
+		if err := app.SetMaclawAgentMaxIterations(200); err != nil {
+			t.Fatalf("SetMaclawAgentMaxIterations(200) error = %v", err)
+		}
 		mgr := &RemoteSessionManager{
 			app:      app,
 			sessions: map[string]*RemoteSession{},
@@ -133,6 +137,10 @@ func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 		}
 		if ctx.MaxIterations() != expected {
 			t.Logf("ctx.MaxIterations()=%d, expected=%d", ctx.MaxIterations(), expected)
+			return false
+		}
+		if got := app.GetMaclawAgentMaxIterations(); got != 200 {
+			t.Logf("persisted max iterations = %d, want 200", got)
 			return false
 		}
 

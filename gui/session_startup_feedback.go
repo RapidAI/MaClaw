@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,8 @@ func (f *SessionStartupFeedback) SetCheckpointer(cp *SessionCheckpointer) {
 	f.checkpointer = cp
 }
 
+// SetUnfinishedSlotResolver resolves the explicitly selected unfinished slot
+// for a running session's project.
 func (f *SessionStartupFeedback) SetUnfinishedSlotResolver(fn func(projectPath string) *unfinishedTaskSlot) {
 	f.unfinishedSlotFor = fn
 }
@@ -34,6 +37,21 @@ func (f *SessionStartupFeedback) SetUnfinishedSlotResolver(fn func(projectPath s
 // After 60 seconds without reaching "running", a timeout warning is sent.
 func (f *SessionStartupFeedback) WatchStartup(sessionID string, callback ProgressCallback) {
 	go f.watchLoop(sessionID, callback)
+}
+
+func (f *SessionStartupFeedback) shouldInjectResumePrompt(session *RemoteSession) bool {
+	if f == nil || session == nil {
+		return false
+	}
+	session.mu.RLock()
+	defer session.mu.RUnlock()
+	if !session.InjectResumePrompt {
+		return false
+	}
+	if strings.TrimSpace(session.ProjectPath) == "" {
+		return false
+	}
+	return true
 }
 
 func (f *SessionStartupFeedback) watchLoop(sessionID string, callback ProgressCallback) {
@@ -67,8 +85,9 @@ func (f *SessionStartupFeedback) watchLoop(sessionID string, callback ProgressCa
 			if status == SessionRunning {
 				callback(fmt.Sprintf("✅ 会话已就绪 (ID: %s, 工具: %s)", session.ID, session.Tool))
 
-				// Inject resume context only when an unfinished slot is explicitly active.
-				if f.checkpointer != nil && f.manager != nil && f.unfinishedSlotFor != nil {
+				// Inject resume context only for sessions explicitly launched to continue
+				// an unfinished slot. Plain same-project fresh launches must not inherit it.
+				if f.checkpointer != nil && f.manager != nil && f.unfinishedSlotFor != nil && f.shouldInjectResumePrompt(session) {
 					session.mu.RLock()
 					projectPath := session.ProjectPath
 					session.mu.RUnlock()

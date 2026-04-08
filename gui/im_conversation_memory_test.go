@@ -120,6 +120,7 @@ func TestPersistentConversationMemoryPersistsUnfinishedSlotAndBinding(t *testing
 		SlotID:       "slot-1",
 		UserID:       "desktop-user",
 		ProjectPath:  "/project",
+		Tool:         "claude",
 		Status:       "pending_resume",
 		Summary:      "unfinished summary",
 		CreatedAt:    time.Now(),
@@ -139,6 +140,9 @@ func TestPersistentConversationMemoryPersistsUnfinishedSlotAndBinding(t *testing
 	}
 	if slot.SlotID != "slot-1" {
 		t.Fatalf("slot.SlotID = %q, want slot-1", slot.SlotID)
+	}
+	if slot.Tool != "claude" {
+		t.Fatalf("slot.Tool = %q, want claude", slot.Tool)
 	}
 	active := reloaded.activeUnfinishedSlot("desktop-user")
 	if active == nil || active.SlotID != "slot-1" {
@@ -227,7 +231,7 @@ func TestPersistentConversationMemoryReloadDropsLegacySessionFields(t *testing.T
 	if strings.Contains(string(reloadedBytes), "session_id") {
 		t.Fatalf("persisted payload still contains legacy session_id: %s", string(reloadedBytes))
 	}
-	if strings.Contains(string(reloadedBytes), "\"tool\"") {
-		t.Fatalf("persisted payload still contains legacy tool field: %s", string(reloadedBytes))
+	if !strings.Contains(string(reloadedBytes), "\"tool\":\"claude\"") {
+		t.Fatalf("persisted payload should preserve canonical tool field: %s", string(reloadedBytes))
 	}
 }

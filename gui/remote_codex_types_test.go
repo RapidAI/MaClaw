@@ -2,8 +2,31 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func TestCodexWriteAskUserQuestionAnswerRequiresResumeSession(t *testing.T) {
+	h := &CodexSDKExecutionHandle{threadID: "thread_999"}
+	err := h.WriteAskUserQuestionAnswer(&PendingToolUse{ToolUseID: "toolu_1"}, "OAuth")
+	if err == nil {
+		t.Fatal("expected resume-session error")
+	}
+	if !strings.Contains(err.Error(), "resume_session_id=thread_999") {
+		t.Fatalf("error = %q, want resume session hint", err)
+	}
+}
+
+func TestCodexWriteAskUserQuestionAnswerRequiresResumeSessionWithoutThreadID(t *testing.T) {
+	h := &CodexSDKExecutionHandle{}
+	err := h.WriteAskUserQuestionAnswer(&PendingToolUse{ToolUseID: "toolu_1"}, "OAuth")
+	if err == nil {
+		t.Fatal("expected resume-session error")
+	}
+	if !strings.Contains(err.Error(), "starting a new resumed session") {
+		t.Fatalf("error = %q, want resumed-session guidance", err)
+	}
+}
 
 func TestCodexEventUnmarshalThreadStarted(t *testing.T) {
 	raw := `{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}`

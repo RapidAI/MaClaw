@@ -111,8 +111,8 @@ func (m *MoonshineModel) decoderStep(cache *kvCache, b *decoderBufs, step, curTo
 		valuePart := b.fc1Out[:intermediate]
 		gatePart := b.fc1Out[intermediate:ffDim2x]
 		tensor.SiLU(gatePart)
-		tensor.ElemMul(valuePart, gatePart, valuePart)
-		tensor.MatMul(b.downOut, valuePart, l.ffDownW, 1, dim, intermediate)
+		tensor.ElemMul(gatePart, gatePart, valuePart)
+		tensor.MatMul(b.downOut, gatePart, l.ffDownW, 1, dim, intermediate)
 		if l.ffDownB != nil { tensor.Add(b.downOut, b.downOut, l.ffDownB) }
 		tensor.Add(x, b.residual, b.downOut)
 	}

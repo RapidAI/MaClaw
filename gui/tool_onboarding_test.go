@@ -8,7 +8,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func testTempHomeWithRetryCleanup(t *testing.T) string {
+	t.Helper()
+	tmpHome, err := os.MkdirTemp("", "claude-onboarding-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 5; i++ {
+			if err := os.RemoveAll(tmpHome); err == nil || os.IsNotExist(err) {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+	return tmpHome
+}
 
 func TestEnsureGeminiOnboardingCreatesSettings(t *testing.T) {
 	tmpHome := t.TempDir()
@@ -674,7 +692,7 @@ func TestEnsureClaudeOnboardingWithApiKey(t *testing.T) {
 }
 
 func TestEnsureClaudeOnboardingWithoutApiKey(t *testing.T) {
-	tmpHome := t.TempDir()
+	tmpHome := testTempHomeWithRetryCleanup(t)
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { ShowItemInFolder } from "../../../wailsjs/go/main/App";
+import { OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus, ChatConfirmation, ChatUnfinishedSlot } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage } from "./useAIAssistant";
@@ -203,7 +203,9 @@ const maximizedInlineStyle: React.CSSProperties = {
     flexDirection: "column",
     width: "100vw",
     height: "100vh",
+    minWidth: 0,
     minHeight: 0,
+    boxSizing: "border-box",
     background: lightTheme.bg,
     textAlign: "left",
     boxShadow: "0 0 40px rgba(0,0,0,0.12)",
@@ -635,8 +637,15 @@ function renderUnfinishedSlotCard(
                 </div>
             )}
             {slot.projectPath && (
-                <div data-testid="unfinished-slot-project" style={{ color: t.pathColor, marginTop: "6px", wordBreak: "break-all" }}>
-                    📁 {slot.projectPath}
+                <div data-testid="unfinished-slot-project" style={{ marginTop: "6px", wordBreak: "break-all" }}>
+                    <a
+                        href="#"
+                        onClick={(event) => openFileInFolder(event, slot.projectPath as string)}
+                        style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }}
+                        title={slot.projectPath}
+                    >
+                        📁 {slot.projectPath}
+                    </a>
                 </div>
             )}
             {actions.length > 0 && renderActions(actions, executeAction, t)}
@@ -646,12 +655,15 @@ function renderUnfinishedSlotCard(
 
 function openFileInFolder(event: React.MouseEvent, filePath: string) {
     event.preventDefault();
-    ShowItemInFolder(filePath);
+    void OpenFileOrShowInFolder(filePath);
 }
 
 /* ── Render a single ChatMessage ── */
 
 function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string): React.ReactNode {
+    const visibleFilePaths = msg.localFilePaths && msg.localFilePaths.length > 0
+        ? msg.localFilePaths
+        : (msg.localFilePath ? [msg.localFilePath] : []);
     switch (msg.role) {
         case "user":
             return (
@@ -671,7 +683,7 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     color: t.text,
                 }}>
                     {/* Streaming: show blinking cursor only on the last assistant message */}
-                    {isLastAssistant && !msg.content && !msg.fields && !msg.thumbnailBase64 && !msg.localFilePaths?.length && (
+                    {isLastAssistant && !msg.content && !msg.fields && !msg.thumbnailBase64 && visibleFilePaths.length === 0 && (
                         <span style={{ opacity: 0.5, animation: "blink 1s step-end infinite" }}>▍</span>
                     )}
                     {msg.thumbnailBase64 && msg.localFilePath && (
@@ -694,9 +706,9 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                     {renderContentWithCodeBlocks(msg.content, t)}
                     {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t)}
                     {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t)}
-                    {msg.localFilePaths && msg.localFilePaths.length > 0 && (
+                    {visibleFilePaths.length > 0 && (
                         <div style={{ margin: "4px 0" }}>
-                            {msg.localFilePaths.map((fp, i) => (
+                            {visibleFilePaths.map((fp, i) => (
                                 <div key={i} style={{ padding: "2px 0" }}>
                                     <a href="#"
                                        onClick={(event) => openFileInFolder(event, fp)}
@@ -1076,7 +1088,20 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const containerStyle: React.CSSProperties = inline
         ? (maximized
             ? maximizedInlineStyle
-            : { display: "flex", flexDirection: "column", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" })
+            : {
+                display: "flex",
+                flex: "1 1 0%",
+                flexDirection: "column",
+                background: t.bg,
+                textAlign: "left",
+                width: "100%",
+                height: "100%",
+                minWidth: 0,
+                minHeight: 0,
+                boxSizing: "border-box",
+                position: "relative",
+                overflow: "hidden",
+            })
         : overlayStyle;
 
     return (
@@ -1094,13 +1119,20 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 data-testid="ai-title-bar"
                 onDoubleClick={() => { if (inline) onToggleMaximize?.(); }}
                 style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "0 12px 0 10px", height: "38px",
-                background: t.titleBarBg, borderBottom: `1px solid ${t.titleBarBorder}`,
-                flexShrink: 0, gap: "8px",
-                ...(inline && !maximized ? { '--wails-draggable': 'drag' } as any : {}),
-            }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0, flex: 1 }}>
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    minWidth: 0,
+                    boxSizing: "border-box",
+                    padding: "0 12px 0 10px",
+                    height: "38px",
+                    background: t.titleBarBg,
+                    borderBottom: `1px solid ${t.titleBarBorder}`,
+                    flexShrink: 0,
+                    gap: "8px",
+                    ...(inline && !maximized ? { '--wails-draggable': 'drag' } as any : {}),
+                }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0, flex: 1, overflow: "hidden" }}>
                     {!inline && (
                         <div style={{ display: "flex", gap: "5px", flexShrink: 0 }}>
                             <span
@@ -1131,8 +1163,16 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         </span>
                     )}
                 </div>
-                <div style={{ display: "flex", alignItems: "center", flexShrink: 0, paddingRight: inline ? 0 : 2, ...(inline ? { '--wails-draggable': 'no-drag', position: 'relative', zIndex: 1000 } as any : {}) }}>
-                    <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "4px", alignItems: "center", paddingTop: 1 }}>
+                <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    flexShrink: 0,
+                    minWidth: 0,
+                    boxSizing: "border-box",
+                    paddingRight: inline ? 0 : 2,
+                    ...(inline ? { '--wails-draggable': 'no-drag', position: 'relative', zIndex: 1000 } as any : {}),
+                }}>
+                    <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "4px", alignItems: "center", flexShrink: 0, minWidth: 0, paddingTop: 1 }}>
                     {onOpenTutorial && (
                     <button
                         className="ai-titlebar-tool"
@@ -1187,7 +1227,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         </span>
                     </button>
                     </div>
-                    <div data-testid="ai-titlebar-window-group" style={{ display: "flex", gap: "2px", alignItems: "center", marginLeft: inline ? "16px" : "12px", paddingLeft: inline ? "14px" : "12px", paddingTop: 1, borderLeft: `1px solid ${t.titleBarBorder}` }}>
+                    <div data-testid="ai-titlebar-window-group" style={{ display: "flex", gap: "2px", alignItems: "center", flexShrink: 0, minWidth: 0, boxSizing: "border-box", marginLeft: inline ? "16px" : "12px", paddingLeft: inline ? "14px" : "12px", paddingTop: 1, borderLeft: `1px solid ${t.titleBarBorder}` }}>
                     {inline && onHideWindow && (
                     <button
                         className="ai-window-control"
@@ -1248,16 +1288,36 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 </div>
             </div>
 
+            <div data-testid="ai-panel-body" style={{
+                display: "flex",
+                flex: "1 1 0%",
+                flexDirection: "column",
+                minWidth: 0,
+                minHeight: 0,
+                overflow: "hidden",
+                background: t.bg,
+            }}>
             {/* ── Chat area ── */}
             <div
                 ref={outputContainerRef}
+                data-testid="ai-output-container"
                 style={{
-                    flex: 1, minHeight: 0, maxHeight: "none",
-                    padding: "8px 10px", fontSize: "12px", lineHeight: 1.5,
-                    overflowY: "auto", overflowX: "hidden", textAlign: "left",
-                    color: t.text, background: t.bg,
+                    flex: "1 1 0%",
+                    minWidth: 0,
+                    minHeight: 0,
+                    boxSizing: "border-box",
+                    maxHeight: "none",
+                    padding: "8px 10px",
+                    fontSize: "12px",
+                    lineHeight: 1.5,
+                    overflowY: "auto",
+                    overflowX: "hidden",
+                    textAlign: "left",
+                    color: t.text,
+                    background: t.bg,
                     fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace",
-                    whiteSpace: "pre-wrap", wordBreak: "break-all",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-all",
                 }}
                 onScroll={handleScroll}
             >
@@ -1365,10 +1425,16 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
             </div>
 
             {/* ── Input bar ── */}
-            <div style={{
-                display: "flex", flexDirection: "column", gap: "6px",
-                padding: "8px 12px", paddingBottom: "max(8px, env(safe-area-inset-bottom))",
-                background: t.inputBarBg, borderTop: inline ? `1px solid ${t.inputBarBorder}` : "none",
+            <div data-testid="ai-input-bar" style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "6px",
+                minWidth: 0,
+                boxSizing: "border-box",
+                padding: "6px 12px",
+                paddingBottom: "max(6px, env(safe-area-inset-bottom))",
+                background: t.inputBarBg,
+                borderTop: inline ? `1px solid ${t.inputBarBorder}` : "none",
                 flexShrink: 0,
                 ...(inline ? {} : { margin: "0 10px 10px 10px", borderRadius: "8px", border: `1.5px solid ${t.inputBarBorder}` }),
             }}>
@@ -1412,7 +1478,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     </div>
                 )}
                 <div style={{
-                    display: "flex", alignItems: "flex-end", gap: "8px",
+                    display: "flex", alignItems: "flex-end", gap: "8px", minWidth: 0,
                 }}>
                     <span style={{
                         color: t.promptColor, fontFamily: "Consolas, monospace",
@@ -1561,6 +1627,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     )}
                 </div>
             </div>
+        </div>
         </div>
     );
 }

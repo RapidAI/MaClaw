@@ -37,27 +37,33 @@ type ProviderView struct {
 }
 
 type RemoteSessionView struct {
-	ID             string           `json:"id"`
-	Tool           string           `json:"tool"`
-	Title          string           `json:"title"`
-	LaunchSource   string           `json:"launch_source,omitempty"`
-	ProjectPath    string           `json:"project_path"`
-	WorkspacePath  string           `json:"workspace_path"`
-	WorkspaceRoot  string           `json:"workspace_root"`
-	WorkspaceMode  WorkspaceMode    `json:"workspace_mode"`
-	WorkspaceIsGit bool             `json:"workspace_is_git"`
-	ModelID        string           `json:"model_id"`
-	ExecutionMode  string           `json:"execution_mode"`
-	Status         SessionStatus    `json:"status"`
-	Thinking       bool             `json:"thinking"`
-	ThinkingSince  int64            `json:"thinking_since,omitempty"`
-	PID            int              `json:"pid"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
-	Summary        SessionSummary   `json:"summary"`
-	Preview        SessionPreview   `json:"preview"`
-	Events         []ImportantEvent `json:"events"`
-	RawOutputLines []string         `json:"raw_output_lines"`
+	ID             string               `json:"id"`
+	Tool           string               `json:"tool"`
+	Title          string               `json:"title"`
+	LaunchSource   string               `json:"launch_source,omitempty"`
+	ProjectPath    string               `json:"project_path"`
+	WorkspacePath  string               `json:"workspace_path"`
+	WorkspaceRoot  string               `json:"workspace_root"`
+	WorkspaceMode  WorkspaceMode        `json:"workspace_mode"`
+	WorkspaceIsGit bool                 `json:"workspace_is_git"`
+	ModelID        string               `json:"model_id"`
+	JobID          string               `json:"job_id,omitempty"`
+	RunID          string               `json:"run_id,omitempty"`
+	CurrentURL     string               `json:"current_url,omitempty"`
+	CurrentTitle   string               `json:"current_title,omitempty"`
+	ReadyState     string               `json:"ready_state,omitempty"`
+	LastSnapshotID string               `json:"last_snapshot_id,omitempty"`
+	ExecutionMode  string               `json:"execution_mode"`
+	Status         SessionStatus        `json:"status"`
+	Thinking       bool                 `json:"thinking"`
+	ThinkingSince  int64                `json:"thinking_since,omitempty"`
+	PID            int                  `json:"pid"`
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
+	Summary        SessionSummary       `json:"summary"`
+	Preview        SessionPreview       `json:"preview"`
+	Events         []ImportantEvent     `json:"events"`
+	RawOutputLines []string             `json:"raw_output_lines"`
 	OutputImages   []SessionOutputImage `json:"output_images,omitempty"`
 }
 
@@ -65,10 +71,16 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 	s.mu.RLock()
 	summary := s.Summary
 	preview := s.Preview
+	pendingQuestion := clonePendingQuestionView(s.Summary.PendingQuestion)
+	if pendingQuestion != nil {
+		summary.PendingQuestion = pendingQuestion
+	}
 	events := append([]ImportantEvent(nil), s.Events...)
 	rawLines := append([]string(nil), s.RawOutputLines...)
 	outputImages := append([]SessionOutputImage(nil), s.OutputImages...)
 	status := s.Status
+	jobID := s.JobID
+	runID := s.RunID
 	pid := s.PID
 	updatedAt := s.UpdatedAt
 	createdAt := s.CreatedAt
@@ -110,6 +122,8 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 		WorkspaceMode:  s.WorkspaceMode,
 		WorkspaceIsGit: s.WorkspaceIsGit,
 		ModelID:        s.ModelID,
+		JobID:          jobID,
+		RunID:          runID,
 		ExecutionMode:  execMode,
 		Status:         status,
 		Thinking:       thinking,
@@ -146,6 +160,36 @@ func sanitizeSessionSummary(summary *SessionSummary) {
 	for i := range summary.ImportantFiles {
 		summary.ImportantFiles[i] = sanitizeRemoteText(summary.ImportantFiles[i])
 	}
+	if summary.PendingQuestion != nil {
+		sanitizePendingQuestionView(summary.PendingQuestion)
+	}
+}
+
+func sanitizePendingQuestionView(question *PendingQuestionView) {
+	if question == nil {
+		return
+	}
+	question.ToolUseID = sanitizeRemoteText(question.ToolUseID)
+	question.ToolName = sanitizeRemoteText(question.ToolName)
+	question.Header = sanitizeRemoteText(question.Header)
+	question.Question = sanitizeRemoteText(question.Question)
+	question.Hint = sanitizeRemoteText(question.Hint)
+	for i := range question.Options {
+		question.Options[i].Label = sanitizeRemoteText(question.Options[i].Label)
+		question.Options[i].Description = sanitizeRemoteText(question.Options[i].Description)
+		question.Options[i].Preview = sanitizeRemoteText(question.Options[i].Preview)
+	}
+}
+
+func clonePendingQuestionView(question *PendingQuestionView) *PendingQuestionView {
+	if question == nil {
+		return nil
+	}
+	clone := *question
+	if len(question.Options) > 0 {
+		clone.Options = append([]PendingQuestionOption(nil), question.Options...)
+	}
+	return &clone
 }
 
 func sanitizeSessionPreview(preview *SessionPreview) {
@@ -387,19 +431,45 @@ func (a *App) RunRemoteToolSmoke(toolName, projectDir string, useProxy bool) (Re
 }
 
 func (a *App) ListRemoteSessions() []RemoteSessionView {
-	if a.remoteSessions == nil {
-		return []RemoteSessionView{}
-	}
-
-	sessions := a.remoteSessions.List()
-	out := make([]RemoteSessionView, 0, len(sessions))
-	for _, s := range sessions {
-		if s == nil {
-			continue
+	out := make([]RemoteSessionView, 0)
+	if a.remoteSessions != nil {
+		sessions := a.remoteSessions.List()
+		for _, s := range sessions {
+			if s == nil {
+				continue
+			}
+			view := toRemoteSessionView(s)
+			a.log(fmt.Sprintf("[remote-list] session %s: status=%s, preview_lines=%d, raw_lines=%d", view.ID, view.Status, len(view.Preview.PreviewLines), len(view.RawOutputLines)))
+			out = append(out, view)
 		}
-		view := toRemoteSessionView(s)
-		a.log(fmt.Sprintf("[remote-list] session %s: status=%s, preview_lines=%d, raw_lines=%d", view.ID, view.Status, len(view.Preview.PreviewLines), len(view.RawOutputLines)))
-		out = append(out, view)
+	}
+	if a.browserSessions != nil {
+		for _, sess := range a.browserSessions.List() {
+			out = append(out, RemoteSessionView{
+				ID:             sess.ID,
+				Tool:           sess.Tool,
+				Title:          sess.Title,
+				LaunchSource:   "browser",
+				ProjectPath:    sess.CurrentURL,
+				WorkspacePath:  sess.CurrentURL,
+				WorkspaceRoot:  sess.CurrentURL,
+				ModelID:        "browser-agent",
+				RunID:          sess.RunID,
+				CurrentURL:     sess.CurrentURL,
+				CurrentTitle:   sess.CurrentTitle,
+				ReadyState:     sess.ReadyState,
+				LastSnapshotID: sess.LastSnapshotID,
+				ExecutionMode:  "browser-agent",
+				Status:         sess.Status,
+				CreatedAt:      sess.CreatedAt,
+				UpdatedAt:      sess.UpdatedAt,
+				Summary:        sess.Summary,
+				Preview:        sess.Preview,
+				Events:         sess.Events,
+				RawOutputLines: sess.RawOutputLines,
+				OutputImages:   sess.OutputImages,
+			})
+		}
 	}
 	return out
 }
@@ -610,6 +680,103 @@ func (a *App) CaptureRemoteWindowScreenshot(sessionID, windowTitle string) error
 		return ErrRemoteSessionsUnavailable
 	}
 	return a.remoteSessions.CaptureWindowScreenshot(sessionID, windowTitle)
+}
+
+func (a *App) GetBrowserSessionTrace(runID string) (*AIAssistantTraceView, error) {
+	if a.browserSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	if a.browserSessions == nil {
+		return nil, fmt.Errorf("browser session manager not initialized")
+	}
+	return a.browserSessions.Trace(runID)
+}
+
+func (a *App) StartBrowserSession(args map[string]interface{}) (RemoteSessionView, error) {
+	if a.browserSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	if a.browserSessions == nil {
+		return RemoteSessionView{}, fmt.Errorf("browser session manager not initialized")
+	}
+	view, err := a.browserSessions.Start(args)
+	if err != nil {
+		return RemoteSessionView{}, err
+	}
+	return RemoteSessionView{
+		ID:             view.ID,
+		Tool:           view.Tool,
+		Title:          view.Title,
+		LaunchSource:   "browser",
+		ProjectPath:    view.CurrentURL,
+		WorkspacePath:  view.CurrentURL,
+		WorkspaceRoot:  view.CurrentURL,
+		ModelID:        "browser-agent",
+		RunID:          view.RunID,
+		ExecutionMode:  "browser-agent",
+		Status:         view.Status,
+		CreatedAt:      view.CreatedAt,
+		UpdatedAt:      view.UpdatedAt,
+		Summary:        view.Summary,
+		Preview:        view.Preview,
+		Events:         view.Events,
+		RawOutputLines: view.RawOutputLines,
+		OutputImages:   view.OutputImages,
+	}, nil
+}
+
+func (a *App) StopBrowserSession(sessionID string, closeBrowser bool) error {
+	if a.browserSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	if a.browserSessions == nil {
+		return fmt.Errorf("browser session manager not initialized")
+	}
+	return a.browserSessions.Stop(sessionID, closeBrowser)
+}
+
+func (a *App) GetBrowserSessionSnapshot(sessionID string) (map[string]interface{}, error) {
+	if a.browserSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	if a.browserSessions == nil {
+		return nil, fmt.Errorf("browser session manager not initialized")
+	}
+	view, ok := a.browserSessions.Get(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("browser session not found: %s", sessionID)
+	}
+	return map[string]interface{}{
+		"session_id":              view.ID,
+		"run_id":                  view.RunID,
+		"current_url":             view.CurrentURL,
+		"current_title":           view.CurrentTitle,
+		"ready_state":             view.ReadyState,
+		"last_snapshot_id":        view.LastSnapshotID,
+		"latest_refs":             view.LatestRefs,
+		"browser_tabs":            view.BrowserTabs,
+		"browser_frames":          view.BrowserFrames,
+		"browser_active_tab_id":   view.ActiveTabID,
+		"browser_active_frame_id": view.ActiveFrameID,
+		"preview_lines":           view.Preview.PreviewLines,
+		"raw_output_lines":        view.RawOutputLines,
+		"events":                  view.Events,
+		"output_images":           view.OutputImages,
+		"summary":                 view.Summary,
+	}, nil
+}
+
+func (a *App) InvokeBrowserTool(toolName string, args map[string]interface{}) (string, error) {
+	if a.remoteSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	handler := NewIMMessageHandler(a, a.remoteSessions)
+	handler.SetTraceService(a.aiTrace)
+	payload, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	return handler.executeTool(toolName, string(payload), nil), nil
 }
 
 func (a *App) KillRemoteSession(sessionID string) error {

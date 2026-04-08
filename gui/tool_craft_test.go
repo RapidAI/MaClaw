@@ -183,3 +183,65 @@ func TestCraftedToolsDir(t *testing.T) {
 		t.Errorf("unexpected crafted tools dir: %s", dir)
 	}
 }
+
+func TestNormalizeCraftToolArgs(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      map[string]interface{}
+		wantTask  string
+		wantError bool
+	}{
+		{name: "prefer task", args: map[string]interface{}{"task": "run report", "instructions": "ignored"}, wantTask: "run report"},
+		{name: "fallback to instructions", args: map[string]interface{}{"instructions": "legacy task"}, wantTask: "legacy task"},
+		{name: "trim task", args: map[string]interface{}{"task": "  trimmed task  "}, wantTask: "trimmed task"},
+		{name: "missing task", args: map[string]interface{}{}, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized, err := normalizeCraftToolArgs(tt.args)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeCraftToolArgs() error = %v", err)
+			}
+			if got := normalized["task"]; got != tt.wantTask {
+				t.Fatalf("normalized task = %v, want %q", got, tt.wantTask)
+			}
+		})
+	}
+}
+
+func TestRegisterCraftedSkillEntry(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	scriptPath := filepath.Join(tempHome, "demo.sh")
+	if err := os.WriteFile(scriptPath, []byte("echo hi"), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	result := registerCraftedSkillEntry(app, "collect logs", "", scriptPath, "bash")
+	if !strings.Contains(result, "已注册为 Skill") {
+		t.Fatalf("unexpected register result: %s", result)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	if len(skills) == 0 {
+		t.Fatal("expected crafted skill to be registered")
+	}
+	last := skills[len(skills)-1]
+	if last.Source != "crafted" {
+		t.Fatalf("expected crafted source, got %q", last.Source)
+	}
+	if len(last.Steps) != 1 || last.Steps[0].Action != "bash" {
+		t.Fatalf("unexpected crafted steps: %#v", last.Steps)
+	}
+}

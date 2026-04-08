@@ -192,13 +192,26 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"skill_id", "hub_url"},
 		func(args map[string]interface{}) string { return h.toolInstallSkillHub(args) })
 
-	reg("run_skill", "执行指定的 Skill",
+	regP("run_skill", "执行指定的 Skill",
 		ToolCategoryBuiltin, []string{"skill", "run", "execute"},
 		map[string]interface{}{
 			"name":         map[string]string{"type": "string", "description": "Skill 名称"},
+			"args":         map[string]string{"type": "object", "description": "可选：供 skill 内 {{key}} / ${key} 占位符替换使用的参数映射"},
+			"input":        map[string]string{"type": "string", "description": "可选：兼容旧调用的输入参数"},
+			"output":       map[string]string{"type": "string", "description": "可选：兼容旧调用的输出参数"},
 			"wait_seconds": map[string]string{"type": "number", "description": "可选：启动后等待状态快照的秒数（默认 2，最大 30）。时间越长，初始返回越可能包含会话信息。"},
 		}, []string{"name"},
-		func(args map[string]interface{}) string { return h.toolRunSkill(args) })
+		func(args map[string]interface{}, onProgress ProgressCallback) string {
+			return h.toolRunSkill(args, onProgress)
+		})
+
+	reg("get_skill_run", "查询指定 Skill 运行的当前状态。适合在 run_skill 返回 run_id 后继续观察进度；若结果含 session_id，可继续使用会话工具观察输出。",
+		ToolCategoryBuiltin, []string{"skill", "run", "status"},
+		map[string]interface{}{
+			"run_id":       map[string]string{"type": "string", "description": "run_skill 返回的运行 ID"},
+			"wait_seconds": map[string]string{"type": "number", "description": "可选：查询前等待状态快照的秒数（默认 2，最大 30）。时间越长，返回越可能包含会话信息或终态。"},
+		}, []string{"run_id"},
+		func(args map[string]interface{}) string { return h.toolGetSkillRun(args) })
 
 	// --- Orchestration tools ---
 	reg("parallel_execute", "并行执行多个编程任务，每个任务在独立会话中运行（最多5个）",

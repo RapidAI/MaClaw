@@ -62,7 +62,9 @@ type RemoteHubClient struct {
 	lastSummary map[string]string // sessionID → JSON of last sent summary
 
 	// IM message handler for Agent Passthrough.
-	imHandler *IMMessageHandler
+	imHandlerMu       sync.Mutex
+	imHandler         *IMMessageHandler
+	configureIMHandler func(*IMMessageHandler)
 
 	// IO relay for multi-device session roaming cleanup on disconnect.
 	ioRelay *SessionIORelay
@@ -94,8 +96,24 @@ func NewRemoteHubClient(app *App, manager *RemoteSessionManager) *RemoteHubClien
 		previewPending: make(map[string]*pendingPreviewDelta),
 		previewStopCh:  make(chan struct{}),
 		lastSummary:    make(map[string]string),
-		imHandler:      NewIMMessageHandler(app, manager),
 	}
+}
+
+func (c *RemoteHubClient) ensureIMHandler() *IMMessageHandler {
+	if c.imHandler != nil {
+		return c.imHandler
+	}
+	c.imHandlerMu.Lock()
+	defer c.imHandlerMu.Unlock()
+	if c.imHandler != nil {
+		return c.imHandler
+	}
+	h := NewIMMessageHandler(c.app, c.manager)
+	c.imHandler = h
+	if c.configureIMHandler != nil {
+		c.configureIMHandler(h)
+	}
+	return h
 }
 
 func defaultHubDial(urlStr string) (*websocket.Conn, error) {
@@ -113,7 +131,10 @@ func (c *RemoteHubClient) loadConfig() error {
 	if err != nil {
 		return err
 	}
+	return c.applyConfig(cfg)
+}
 
+func (c *RemoteHubClient) applyConfig(cfg AppConfig) error {
 	c.hubURL = strings.TrimRight(cfg.RemoteHubURL, "/")
 	c.machineID = cfg.RemoteMachineID
 	c.machineToken = cfg.RemoteMachineToken
@@ -128,10 +149,12 @@ func (c *RemoteHubClient) loadConfig() error {
 }
 
 func (c *RemoteHubClient) Connect() error {
+	start := time.Now()
 	c.mu.Lock()
 	if err := c.connectLocked(); err != nil {
 		c.lastError = err.Error()
 		c.mu.Unlock()
+		log.Printf("[onboarding] RemoteHubClient.Connect failed total=%s err=%v", time.Since(start), err)
 		return err
 	}
 
@@ -150,6 +173,7 @@ func (c *RemoteHubClient) Connect() error {
 	// Re-send IM gateway claims for any already-connected gateways that are
 	// in hub mode. This covers both initial connect and reconnect scenarios.
 	go c.syncIMGatewayClaims()
+	log.Printf("[onboarding] RemoteHubClient.Connect total=%s", time.Since(start))
 
 	return nil
 }
@@ -185,17 +209,22 @@ func (c *RemoteHubClient) syncIMGatewayClaims() {
 var errHubAuthFailed = fmt.Errorf("hub authentication failed")
 
 func (c *RemoteHubClient) connectLocked() error {
+	start := time.Now()
+	loadCfgStart := time.Now()
 	if err := c.loadConfig(); err != nil {
 		c.lastError = err.Error()
 		return err
 	}
+	log.Printf("[onboarding] RemoteHubClient.connectLocked load_config=%s", time.Since(loadCfgStart))
 
 	wsURL := c.toWebSocketURL(c.hubURL) + "/ws"
+	dialStart := time.Now()
 	conn, err := c.dial(wsURL)
 	if err != nil {
 		c.lastError = err.Error()
 		return err
 	}
+	log.Printf("[onboarding] RemoteHubClient.connectLocked dial_ws=%s url=%s", time.Since(dialStart), wsURL)
 
 	c.conn = conn
 	c.connected = true
@@ -214,6 +243,7 @@ func (c *RemoteHubClient) connectLocked() error {
 	c.lastSummary = make(map[string]string)
 	c.summaryMu.Unlock()
 
+	authSendStart := time.Now()
 	if err := c.sendMachineAuthLocked(); err != nil {
 		_ = c.conn.Close()
 		c.conn = nil
@@ -221,10 +251,12 @@ func (c *RemoteHubClient) connectLocked() error {
 		c.lastError = err.Error()
 		return err
 	}
+	log.Printf("[onboarding] RemoteHubClient.connectLocked send_auth=%s", time.Since(authSendStart))
 
 	// Read auth response synchronously so we can detect credential rejection
 	// before proceeding with the hello handshake.
 	var authResp inboundHubEnvelope
+	authReadStart := time.Now()
 	_ = c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if err := c.conn.ReadJSON(&authResp); err != nil {
 		_ = c.conn.Close()
@@ -233,6 +265,7 @@ func (c *RemoteHubClient) connectLocked() error {
 		c.lastError = "failed to read auth response"
 		return fmt.Errorf("read auth response: %w", err)
 	}
+	log.Printf("[onboarding] RemoteHubClient.connectLocked read_auth=%s auth_type=%s", time.Since(authReadStart), authResp.Type)
 	_ = c.conn.SetReadDeadline(time.Now().Add(hubPongWait)) // initial deadline; refreshed by pong handler
 
 	if authResp.Type == "error" {
@@ -243,6 +276,7 @@ func (c *RemoteHubClient) connectLocked() error {
 		return errHubAuthFailed
 	}
 
+	helloStart := time.Now()
 	if err := c.sendMachineHelloLocked(); err != nil {
 		_ = c.conn.Close()
 		c.conn = nil
@@ -250,6 +284,7 @@ func (c *RemoteHubClient) connectLocked() error {
 		c.lastError = err.Error()
 		return err
 	}
+	log.Printf("[onboarding] RemoteHubClient.connectLocked send_hello=%s total=%s", time.Since(helloStart), time.Since(start))
 	return nil
 }
 
@@ -277,6 +312,7 @@ func (c *RemoteHubClient) sendMachineAuthLocked() error {
 
 func (c *RemoteHubClient) sendMachineHelloLocked() error {
 	cfg, _ := c.app.LoadConfig()
+	_ = c.applyConfig(cfg)
 	profile := c.app.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
 	tools := listRemoteToolMetadataForApp(c.app)
 	toolNames := make([]string, 0, len(tools))
@@ -545,7 +581,6 @@ func (c *RemoteHubClient) SendSessionImage(img ImageTransferMessage) error {
 	return c.conn.WriteJSON(msg)
 }
 
-
 func (c *RemoteHubClient) SyncSessions() {
 	if c.manager == nil {
 		return
@@ -704,6 +739,7 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 	// Collect session metadata before acquiring the connection lock to
 	// avoid holding c.mu while iterating sessions (manager has its own lock).
 	sessions := c.collectSessionMetadata()
+	cfg, _ := c.app.LoadConfig()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -712,7 +748,6 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 	}
 
 	activeSessions := len(sessions)
-	cfg, _ := c.app.LoadConfig()
 	profile := c.app.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, activeSessions)
 
 	msg := HubEnvelope{
@@ -948,7 +983,12 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 				c.app.log(fmt.Sprintf("[im-progress] send error for request=%s: %s", requestID, err.Error()))
 			}
 		}
-		resp := c.imHandler.HandleIMMessageWithProgress(payload, onProgress)
+		handler := c.ensureIMHandler()
+		if handler == nil {
+			c.setLastError("im handler not initialized")
+			return
+		}
+		resp := handler.HandleIMMessageWithProgress(payload, onProgress)
 		// Downsize large screenshots before sending over WebSocket to Hub.
 		// Multi-monitor captures can be several MB; Hub WebSocket may timeout.
 		if resp != nil && len(resp.ImageKey) > 500_000 {
@@ -1093,7 +1133,6 @@ func (c *RemoteHubClient) handleNicknameAssigned(msg inboundHubEnvelope) {
 	cfg.RemoteNickname = nickname
 	_ = c.app.SaveConfig(cfg)
 }
-
 
 // sendIMAgentResponse sends the Agent's reply back to Hub.
 func (c *RemoteHubClient) sendIMAgentResponse(requestID string, resp *IMAgentResponse) error {
@@ -1251,7 +1290,6 @@ func (c *RemoteHubClient) SendIMGatewayUnclaim(platform string) error {
 		Payload:   map[string]string{"platform": platform},
 	})
 }
-
 
 // SendIMGatewayMessage sends im.gateway_message to Hub, forwarding an incoming
 // IM message from a client-side gateway (QQ Bot, Telegram) for processing

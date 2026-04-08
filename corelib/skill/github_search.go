@@ -335,27 +335,19 @@ func (gs *GitHubSearcher) parseSkillYAML(data []byte, c GitHubSkillCandidate) (*
 }
 
 func (gs *GitHubSearcher) parseSkillMarkdown(data []byte, c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
-	skillMD := strings.TrimSpace(string(data))
-	if skillMD == "" {
-		return nil, fmt.Errorf("empty SKILL.md document")
-	}
-	name := firstMarkdownHeading(skillMD)
-	if name == "" {
-		name = inferSkillName(c)
-	}
-	description := strings.TrimSpace(c.Description)
-	if description == "" {
-		description = firstMarkdownParagraph(skillMD)
+	parsed, err := parseSkillMarkdownDocument(string(data), inferSkillName(c), strings.TrimSpace(c.Description))
+	if err != nil {
+		return nil, err
 	}
 	return &corelib.NLSkillEntry{
-		Name:        name,
-		Description: description,
-		Triggers:    inferSkillTriggers(name, c),
+		Name:        parsed.name,
+		Description: parsed.description,
+		Triggers:    inferSkillTriggers(parsed.name, c),
 		Steps: []corelib.NLSkillStep{
 			{
 				Action: "craft_tool",
 				Params: map[string]interface{}{
-					"instructions": skillMD,
+					"instructions": parsed.markdown,
 				},
 			},
 		},
@@ -401,44 +393,6 @@ func inferSkillTriggers(name string, c GitHubSkillCandidate) []string {
 		}
 	}
 	return triggers
-}
-
-var triggerCleanupRe = regexp.MustCompile(`[^a-z0-9._-]+`)
-
-func normalizeTrigger(v string) string {
-	v = strings.ToLower(strings.TrimSpace(v))
-	if v == "" {
-		return ""
-	}
-	v = strings.ReplaceAll(v, " ", "-")
-	v = triggerCleanupRe.ReplaceAllString(v, "-")
-	v = strings.Trim(v, "-._")
-	return v
-}
-
-func firstMarkdownHeading(content string) string {
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "#") {
-			continue
-		}
-		heading := strings.TrimSpace(strings.TrimLeft(line, "#"))
-		if heading != "" {
-			return heading
-		}
-	}
-	return ""
-}
-
-func firstMarkdownParagraph(content string) string {
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		return line
-	}
-	return ""
 }
 
 // ── raw YAML helpers (mirrors hubcenter/internal/skill/remote_import.go) ──

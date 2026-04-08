@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -78,6 +79,7 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 		Status:     TaskStatusRunning,
 		TotalSteps: len(spec.Steps),
 		StartedAt:  time.Now(),
+		StepTraces: []StepTrace{},
 	}
 	s.tasks[spec.ID] = &taskEntry{state: state, cancel: cancel, pauseC: make(chan struct{}, 1), resumeC: make(chan struct{}, 1)}
 	s.mu.Unlock()
@@ -95,15 +97,29 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 		}
 
 		state.CurrentStep = i + 1
+		stepTrace := StepTrace{StepIndex: i, Action: step.Action, StartedAt: time.Now()}
+		if step.Target != nil {
+			stepTrace.TabID = step.Target.TabID
+			stepTrace.FrameID = step.Target.FrameID
+		}
+		state.StepTraces = append(state.StepTraces, stepTrace)
 		s.emitProgress(spec.ID, fmt.Sprintf("step %d/%d: %s", i+1, len(spec.Steps), step.Action), i+1, len(spec.Steps))
 
 		err := s.executeStepWithRetry(ctx, spec, step, i, state)
 		if err != nil {
 			state.Status = TaskStatusFailed
 			state.LastError = err.Error()
+			if len(state.StepTraces) > 0 {
+				state.StepTraces[len(state.StepTraces)-1].Summary = err.Error()
+				state.StepTraces[len(state.StepTraces)-1].EndedAt = time.Now()
+			}
 			s.log("browser task %s failed at step %d: %v", spec.ID, i+1, err)
 			s.emitProgress(spec.ID, fmt.Sprintf("failed at step %d: %v", i+1, err), i+1, len(spec.Steps))
 			return state, err
+		}
+		if len(state.StepTraces) > 0 {
+			state.StepTraces[len(state.StepTraces)-1].Summary = "ok"
+			state.StepTraces[len(state.StepTraces)-1].EndedAt = time.Now()
 		}
 
 		// Take checkpoint after each step
@@ -257,6 +273,10 @@ func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec T
 		}
 
 		if err == nil {
+			if len(state.StepTraces) > 0 {
+				state.StepTraces[len(state.StepTraces)-1].Summary = "ok"
+				state.StepTraces[len(state.StepTraces)-1].EndedAt = time.Now()
+			}
 			return nil // success
 		}
 
@@ -392,10 +412,16 @@ func (s *BrowserTaskSupervisor) takeCheckpoint(state *TaskState, stepIdx int) {
 	cp := Checkpoint{
 		StepIndex: stepIdx,
 		Timestamp: time.Now(),
+		TabID:     sess.activeTabID,
+		FrameID:   sess.activeFrameID,
 	}
 	if info != nil {
 		cp.URL = info.URL
 		cp.Title = info.Title
+	}
+	if len(state.StepTraces) > 0 {
+		state.StepTraces[len(state.StepTraces)-1].TabID = cp.TabID
+		state.StepTraces[len(state.StepTraces)-1].FrameID = cp.FrameID
 	}
 	// Only keep the last screenshot to save memory
 	imgB64, err := sess.Screenshot(false)
@@ -426,6 +452,11 @@ func (s *BrowserTaskSupervisor) capturePageSnapshot() *PageSnapshot {
 		ps.URL = info.URL
 		ps.Title = info.Title
 	}
+	ps.DOMSnippet = strings.Join(sess.lastNetworkLines(), "\n")
+	ps.TabID = sess.activeTabID
+	ps.FrameID = sess.activeFrameID
+	ps.NetworkEvents = sess.lastNetworkLines()
+	ps.ConsoleEvents = sess.lastErrorLines()
 	// Try to get a DOM snippet
 	html, err := sess.GetHTML("")
 	if err == nil && len(html) > 500 {

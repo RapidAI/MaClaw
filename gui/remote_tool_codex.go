@@ -66,7 +66,11 @@ func (a *CodexAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	// Use `codex exec` sub-command for non-interactive structured output.
 	// --json streams JSONL events to stdout (thread.started, item.*, turn.*).
 	// --full-auto allows file edits and command execution without prompts.
-	args := []string{"exec", "--json"}
+	args := []string{"exec"}
+	if spec.ResumeSessionID != "" {
+		args = append(args, "resume")
+	}
+	args = append(args, "--json")
 
 	if spec.YoloMode {
 		args = append(args, "--full-auto")
@@ -74,6 +78,10 @@ func (a *CodexAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 
 	if !isOriginal && spec.ModelID != "" {
 		args = append(args, "--model", spec.ModelID)
+	}
+
+	if spec.ResumeSessionID != "" {
+		args = append(args, spec.ResumeSessionID, "-")
 	}
 
 	return CommandSpec{

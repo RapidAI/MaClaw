@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,45 @@ func TestIsValidProvider(t *testing.T) {
 				t.Errorf("isValidProvider(%+v) = %v, want %v", tt.m, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRemoteToolConfigReturnsErrorWhenConfigSelectorMissing(t *testing.T) {
+	const toolName = "broken-config-selector"
+	original, existed := remoteToolCatalog[toolName]
+	remoteToolCatalog[toolName] = RemoteToolMetadata{
+		Name:        toolName,
+		DisplayName: "Broken Tool",
+		BinaryName:  toolName,
+	}
+	defer func() {
+		if existed {
+			remoteToolCatalog[toolName] = original
+		} else {
+			delete(remoteToolCatalog, toolName)
+		}
+	}()
+
+	_, err := remoteToolConfig(AppConfig{}, toolName)
+	if err == nil {
+		t.Fatal("expected error when ConfigSelector is missing")
+	}
+	if !strings.Contains(err.Error(), "tool config unavailable") {
+		t.Fatalf("error = %q, want tool config unavailable", err)
+	}
+}
+
+func TestRemoteToolConfigReturnsBuiltinConfig(t *testing.T) {
+	cfg := AppConfig{
+		Claude: ToolConfig{CurrentModel: "DeepSeek"},
+	}
+
+	got, err := remoteToolConfig(cfg, "claude")
+	if err != nil {
+		t.Fatalf("remoteToolConfig() error = %v", err)
+	}
+	if got.CurrentModel != "DeepSeek" {
+		t.Fatalf("CurrentModel = %q, want %q", got.CurrentModel, "DeepSeek")
 	}
 }
 

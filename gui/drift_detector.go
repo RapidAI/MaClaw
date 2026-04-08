@@ -98,6 +98,36 @@ func (d *DriftDetector) DetectDrift() DriftResult {
 	return DriftResult{}
 }
 
+// PreviewDrift analyzes the recent window without mutating detector state.
+// It reports whether the next DetectDrift call would classify the current
+// sequence as a loop and whether that next classification would require
+// human help.
+func (d *DriftDetector) PreviewDrift() DriftResult {
+	if d == nil || len(d.records) < loopPatternMinRepeat {
+		return DriftResult{}
+	}
+
+	window := d.records
+	lastIdx := len(window) - 1
+	lastRec := window[lastIdx]
+	consecutiveCount := 1
+	for i := lastIdx - 1; i >= 0; i-- {
+		if window[i].ToolName == lastRec.ToolName && window[i].ArgsHash == lastRec.ArgsHash {
+			consecutiveCount++
+		} else {
+			break
+		}
+	}
+	if consecutiveCount < loopPatternMinRepeat {
+		return DriftResult{}
+	}
+	return DriftResult{
+		Drifted:       true,
+		Pattern:       "loop",
+		NeedHumanHelp: d.replanCount+1 >= 2,
+	}
+}
+
 // ResetWindow 重规划后重置检测窗口。
 func (d *DriftDetector) ResetWindow() {
 	d.records = nil

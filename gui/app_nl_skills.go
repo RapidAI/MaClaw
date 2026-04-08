@@ -624,12 +624,13 @@ func (e *SkillExecutor) executeStep(step NLSkillStep, skillDescription string) (
 			return "", fmt.Errorf("session starter not initialized")
 		}
 		startResult, err := starter.Start(CodingSessionStartRequest{
-			Tool:            tool,
-			ProjectID:       projectID,
-			ProjectPath:     projectPath,
-			Provider:        provider,
-			ResumeSessionID: resumeSessionID,
-			LaunchSource:    RemoteLaunchSourceAI,
+			Tool:               tool,
+			ProjectID:          projectID,
+			ProjectPath:        projectPath,
+			Provider:           provider,
+			ResumeSessionID:    resumeSessionID,
+			InjectResumePrompt: false,
+			LaunchSource:       RemoteLaunchSourceAI,
 		})
 		if err != nil {
 			return "", err
@@ -1402,12 +1403,12 @@ func (a *App) CleanupStaleNLSkills() []string {
 // ── Skill Runner Wails 绑定 ─────────────────────────────────────────────
 
 // RunNLSkillAsync 异步启动 skill 执行，返回 runID（Wails binding）。
-func (a *App) RunNLSkillAsync(skillName string) (string, error) {
+func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) (string, error) {
 	a.ensureSkillRunner()
 	if a.skillRunner == nil {
 		return "", fmt.Errorf("skill runner not initialized")
 	}
-	return a.skillRunner.StartRun(skillName)
+	return a.skillRunner.StartRun(skillName, runArgs)
 }
 
 // GetNLSkillRunStatus 获取 skill 执行状态（Wails binding）。

@@ -116,6 +116,101 @@ func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {
 	assertContainsType(t, gotTypes, "session.preview_delta")
 }
 
+func TestRemoteHubClientConnectAndSyncToolsWithMissingConfigSelector(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	const toolName = "browser"
+	original, existed := remoteToolCatalog[toolName]
+	brokenMeta := original
+	brokenMeta.ConfigSelector = nil
+	remoteToolCatalog[toolName] = brokenMeta
+	defer func() {
+		if existed {
+			remoteToolCatalog[toolName] = original
+		} else {
+			delete(remoteToolCatalog, toolName)
+		}
+	}()
+
+	messageCh := make(chan map[string]any, 16)
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws" {
+			http.NotFound(w, r)
+			return
+		}
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		for {
+			var msg map[string]any
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			messageCh <- msg
+
+			msgType, _ := msg["type"].(string)
+			switch msgType {
+			case "auth.machine":
+				_ = conn.WriteJSON(map[string]any{
+					"type":    "auth.ok",
+					"payload": map[string]any{"role": "machine"},
+				})
+			case "machine.hello", "machine.tools":
+				_ = conn.WriteJSON(map[string]any{
+					"type":    "ack",
+					"payload": map[string]any{"ok": true},
+				})
+			}
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-tools-1",
+		RemoteMachineToken: "token-tools-1",
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	client := NewRemoteHubClient(app, NewRemoteSessionManager(app))
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer func() { _ = client.Disconnect() }()
+
+	gotMessages := collectMessages(t, messageCh, 4, 5*time.Second)
+	gotTypes := messageTypes(gotMessages)
+	assertContainsType(t, gotTypes, "auth.machine")
+	assertContainsType(t, gotTypes, "machine.hello")
+	assertContainsType(t, gotTypes, "machine.tools")
+
+	toolsMsg := findMessageByType(t, gotMessages, "machine.tools")
+	payload, _ := toolsMsg["payload"].(map[string]any)
+	tools, _ := payload["tools"].([]any)
+	broken := findToolPayload(t, tools, toolName)
+	if providers, ok := broken["providers"]; ok && providers != nil {
+		t.Fatalf("expected broken tool payload to omit providers after config error, got %v", broken)
+	}
+	if displayName, _ := broken["display_name"].(string); displayName != original.DisplayName {
+		t.Fatalf("display_name = %q, want %q", displayName, original.DisplayName)
+	}
+	current, _ := broken["current_provider"].(string)
+	if current != "" {
+		t.Fatalf("current_provider = %q, want empty", current)
+	}
+}
+
 func TestRemoteHubClientReadLoopStoresHubError(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -448,17 +543,29 @@ func TestRemoteHubClientReconnectsAndResyncsSessions(t *testing.T) {
 }
 
 func collectMessageTypes(t *testing.T, messageCh <-chan map[string]any, count int, timeout time.Duration) []string {
+	return messageTypes(collectMessages(t, messageCh, count, timeout))
+}
+
+func collectMessages(t *testing.T, messageCh <-chan map[string]any, count int, timeout time.Duration) []map[string]any {
 	t.Helper()
-	got := make([]string, 0, count)
+	got := make([]map[string]any, 0, count)
 	deadline := time.After(timeout)
 	for len(got) < count {
 		select {
 		case msg := <-messageCh:
-			msgType, _ := msg["type"].(string)
-			got = append(got, msgType)
+			got = append(got, msg)
 		case <-deadline:
-			t.Fatalf("timed out waiting for %d websocket messages, got %v", count, got)
+			t.Fatalf("timed out waiting for %d websocket messages, got %v", count, messageTypes(got))
 		}
+	}
+	return got
+}
+
+func messageTypes(messages []map[string]any) []string {
+	got := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		msgType, _ := msg["type"].(string)
+		got = append(got, msgType)
 	}
 	return got
 }
@@ -471,6 +578,33 @@ func assertContainsType(t *testing.T, got []string, want string) {
 		}
 	}
 	t.Fatalf("message types %v do not contain %q", got, want)
+}
+
+func findMessageByType(t *testing.T, messages []map[string]any, want string) map[string]any {
+	t.Helper()
+	for _, msg := range messages {
+		if msgType, _ := msg["type"].(string); msgType == want {
+			return msg
+		}
+	}
+	t.Fatalf("messages %v do not contain type %q", messageTypes(messages), want)
+	return nil
+}
+
+func findToolPayload(t *testing.T, tools []any, want string) map[string]any {
+	t.Helper()
+	for _, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := tool["name"].(string)
+		if name == want {
+			return tool
+		}
+	}
+	t.Fatalf("tool payloads %v do not contain %q", tools, want)
+	return nil
 }
 
 func decodeInboundPayload(t *testing.T, raw json.RawMessage) map[string]any {

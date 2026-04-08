@@ -140,6 +140,9 @@ func TestGenerateMobilePWAShell_CreatesAndroidAndIOSProjects(t *testing.T) {
 	if result.IOS == nil {
 		t.Fatal("iOS result is nil")
 	}
+	if result.IOS.XcodeProjectPath == "" {
+		t.Fatal("iOS XcodeProjectPath is empty")
+	}
 
 	sharedBootstrapPath := filepath.Join(result.RootDir, defaultMobileSharedDir, "bootstrap.html")
 	sharedBootstrap, err := os.ReadFile(sharedBootstrapPath)
@@ -159,7 +162,7 @@ func TestGenerateMobilePWAShell_CreatesAndroidAndIOSProjects(t *testing.T) {
 		t.Fatalf("dist README is missing expected mobile deliverable entries")
 	}
 
-	pbxprojPath := filepath.Join(result.IOS.ProjectDir, "RapidAIHubShell.xcodeproj", "project.pbxproj")
+	pbxprojPath := filepath.Join(result.IOS.XcodeProjectPath, "project.pbxproj")
 	pbxproj, err := os.ReadFile(pbxprojPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", pbxprojPath, err)
@@ -168,7 +171,8 @@ func TestGenerateMobilePWAShell_CreatesAndroidAndIOSProjects(t *testing.T) {
 		t.Fatalf("project.pbxproj does not look like an iOS app project")
 	}
 
-	iosBootstrapPath := filepath.Join(result.IOS.ProjectDir, "RapidAIHubShell", "Resources", "bootstrap.html")
+	iosAppDir := filepath.Dir(result.IOS.InfoPlistPath)
+	iosBootstrapPath := filepath.Join(iosAppDir, "Resources", "bootstrap.html")
 	iosBootstrap, err := os.ReadFile(iosBootstrapPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", iosBootstrapPath, err)

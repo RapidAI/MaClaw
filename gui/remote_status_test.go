@@ -57,11 +57,18 @@ func TestGetRemoteClaudeReadinessDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 }
 
-func TestGetRemoteConnectionStatusReturnsLoadConfigError(t *testing.T) {
-	app := &App{testHomeDir: filepath.Join(t.TempDir(), "missing-parent", "missing-home")}
+func TestGetRemoteConnectionStatusBootstrapsDefaultConfig(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
 	status := app.GetRemoteConnectionStatus()
-	if status.LastError == "" {
-		t.Fatal("GetRemoteConnectionStatus() LastError is empty, want load config failure")
+	if status.LastError != "" {
+		t.Fatalf("GetRemoteConnectionStatus() LastError = %q, want empty", status.LastError)
+	}
+	if status.HubURL != "" {
+		t.Fatalf("GetRemoteConnectionStatus() HubURL = %q, want empty", status.HubURL)
 	}
 }
 
@@ -312,6 +319,38 @@ func TestGetRemoteToolLaunchProbeDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 }
 
+func TestListRemoteSessionsIncludesAIAgentLoopSession(t *testing.T) {
+	app := &App{}
+	now := time.Now()
+	app.remoteSessions = NewRemoteSessionManager(app)
+	loopCtx := NewLoopContext("ai-bg", 4, nil)
+	app.remoteSessions.sessions["ai-bg-1"] = &RemoteSession{
+		ID:           "ai-bg-1",
+		Tool:         "ai-assistant",
+		Title:        "Background task",
+		LaunchSource: RemoteLaunchSourceAI,
+		ProjectPath:  `D:\workprj\demo`,
+		ModelID:      "maclaw-ai-assistant",
+		Status:       SessionBusy,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		AgentLoop:    loopCtx,
+		Summary:      SessionSummary{SessionID: "ai-bg-1", Source: string(RemoteLaunchSourceAI), Status: string(SessionBusy)},
+		Preview:      SessionPreview{SessionID: "ai-bg-1"},
+	}
+
+	sessions := app.ListRemoteSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("session count = %d, want 1", len(sessions))
+	}
+	if sessions[0].LaunchSource != string(RemoteLaunchSourceAI) {
+		t.Fatalf("launch source = %q, want %q", sessions[0].LaunchSource, RemoteLaunchSourceAI)
+	}
+	if sessions[0].Status != SessionBusy {
+		t.Fatalf("status = %q, want %q", sessions[0].Status, SessionBusy)
+	}
+}
+
 func TestListRemoteSessionsIncludesWorkspaceFields(t *testing.T) {
 	app := &App{}
 	now := time.Now()
@@ -353,6 +392,47 @@ func TestListRemoteSessionsIncludesWorkspaceFields(t *testing.T) {
 	}
 	if sessions[0].Events[1].Count != 3 || !sessions[0].Events[1].Grouped {
 		t.Fatalf("grouped event = %#v, want count=3 grouped=true", sessions[0].Events[1])
+	}
+}
+
+func TestListRemoteSessionsIncludesBrowserSessions(t *testing.T) {
+	app := &App{}
+	app.ensureAITrace()
+	app.browserSessions = NewBrowserAgentManager(app)
+	app.browserSessions.mapViews["browser-1"] = &BrowserSessionView{
+		ID:             "browser-1",
+		Tool:           "browser",
+		Title:          "Example",
+		Status:         SessionRunning,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+		RunID:          "run-browser-1",
+		CurrentURL:     "https://example.com",
+		CurrentTitle:   "Example Domain",
+		ReadyState:     "complete",
+		LastSnapshotID: "snap-1",
+		Summary:        SessionSummary{SessionID: "browser-1", Tool: "browser", Status: string(SessionRunning), ProgressSummary: "Browser session active"},
+		Preview:        SessionPreview{SessionID: "browser-1", PreviewLines: []string{"Example Domain", "https://example.com"}},
+		Events:         []ImportantEvent{{Type: "browser.observe", Summary: "Observed page", CreatedAt: time.Now().UnixMilli()}},
+		RawOutputLines: []string{"Observed page", "https://example.com"},
+		OutputImages:   []SessionOutputImage{{ImageID: "snap-1", MediaType: "image/png", Data: "abc", AfterLineIdx: 1}},
+	}
+
+	sessions := app.ListRemoteSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("session count = %d, want 1", len(sessions))
+	}
+	if sessions[0].LaunchSource != "browser" {
+		t.Fatalf("launch source = %q, want browser", sessions[0].LaunchSource)
+	}
+	if sessions[0].RunID != "run-browser-1" {
+		t.Fatalf("run id = %q", sessions[0].RunID)
+	}
+	if sessions[0].CurrentURL != "https://example.com" {
+		t.Fatalf("current url = %q", sessions[0].CurrentURL)
+	}
+	if sessions[0].LastSnapshotID != "snap-1" {
+		t.Fatalf("last snapshot id = %q", sessions[0].LastSnapshotID)
 	}
 }
 
@@ -774,6 +854,84 @@ func TestToRemoteSessionViewSanitizesPreviewAndEvents(t *testing.T) {
 	}
 	if strings.ContainsRune(view.Events[0].Title, '\x00') {
 		t.Fatalf("event title contains NUL after sanitize: %q", view.Events[0].Title)
+	}
+}
+
+func TestToRemoteSessionViewIncludesPendingQuestion(t *testing.T) {
+	session := &RemoteSession{
+		ID:          "sess_pending",
+		Tool:        "claude",
+		Title:       "Pending question",
+		ProjectPath: `D:\\workprj\\demo`,
+		Status:      SessionWaitingInput,
+		Summary: SessionSummary{
+			SessionID:      "sess_pending",
+			Status:         string(SessionWaitingInput),
+			WaitingForUser: true,
+			PendingQuestion: &PendingQuestionView{
+				ToolUseID: "call_q1",
+				ToolName:  "AskUserQuestion",
+				Question:  "Choose a template",
+				Options: []PendingQuestionOption{{Label: "Python"}, {Label: "TypeScript"}},
+			},
+		},
+	}
+
+	view := toRemoteSessionView(session)
+	if view.Summary.PendingQuestion == nil {
+		t.Fatal("expected pending question to be included in view")
+	}
+	if got := view.Summary.PendingQuestion.Question; got != "Choose a template" {
+		t.Fatalf("pending question = %q, want %q", got, "Choose a template")
+	}
+	if len(view.Summary.PendingQuestion.Options) != 2 {
+		t.Fatalf("pending question options = %d, want 2", len(view.Summary.PendingQuestion.Options))
+	}
+}
+
+func TestBuildRemoteLaunchSpecReturnsErrorWhenConfigSelectorMissing(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	projectDir := filepath.Join(tempHome, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+
+	const toolName = "broken-launch-spec"
+	original, existed := remoteToolCatalog[toolName]
+	remoteToolCatalog[toolName] = RemoteToolMetadata{
+		Name:             toolName,
+		DisplayName:      "Broken Launch Tool",
+		BinaryName:       toolName,
+		DefaultTitle:     "Broken Launch Tool Session",
+		SupportsRemote:   true,
+		SupportsProxy:    true,
+		ConfigSelector:   nil,
+		ProviderFactory:  nil,
+	}
+	defer func() {
+		if existed {
+			remoteToolCatalog[toolName] = original
+		} else {
+			delete(remoteToolCatalog, toolName)
+		}
+	}()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	_, err = app.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, false, "")
+	if err == nil {
+		t.Fatal("expected error when ConfigSelector is missing")
+	}
+	if !strings.Contains(err.Error(), "tool config unavailable for tool") {
+		t.Fatalf("error = %q, want tool config unavailable", err.Error())
 	}
 }
 

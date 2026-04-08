@@ -2,10 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
+	"net"
+	"net/http"
 	"strings"
+	"time"
 )
 
 type RemoteActivationResult struct {
@@ -64,6 +70,8 @@ type hubCenterResolveHub struct {
 	Status         string `json:"status"`
 }
 
+const remoteEnrollTimeout = 25 * time.Second
+
 func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
 	if hubURL == "" {
@@ -119,16 +127,20 @@ func (a *App) autoRegisterOnStartup(cfg AppConfig) {
 }
 
 func (a *App) ActivateRemote(email string, invitationCode string, mobile string) (RemoteActivationResult, error) {
+	start := time.Now()
+	cfgLoadStart := time.Now()
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteActivationResult{}, err
 	}
+	log.Printf("[onboarding] ActivateRemote load_config=%s", time.Since(cfgLoadStart))
 
 	email = strings.TrimSpace(email)
 	if email == "" {
 		return RemoteActivationResult{}, fmt.Errorf("email is required")
 	}
 
+	hubResolveStart := time.Now()
 	hubURL := strings.TrimSpace(cfg.RemoteHubURL)
 	if hubURL == "" {
 		hubURL, err = a.resolveRemoteHubURL(cfg, email)
@@ -137,6 +149,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		}
 		cfg.RemoteHubURL = hubURL
 	}
+	log.Printf("[onboarding] ActivateRemote resolve_hub=%s reused=%t", time.Since(hubResolveStart), strings.TrimSpace(cfg.RemoteHubURL) != "")
 
 	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
 	body := map[string]any{
@@ -156,28 +169,50 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	}
 
 	// Generate a stable client_id on first run so re-enrollment reuses the same machine record
+	clientIDStart := time.Now()
 	if cfg.RemoteClientID == "" {
 		cfg.RemoteClientID = generateClientID()
 		if err := a.SaveConfig(cfg); err != nil {
 			return RemoteActivationResult{}, err
 		}
 	}
+	log.Printf("[onboarding] ActivateRemote ensure_client_id=%s created=%t", time.Since(clientIDStart), cfg.RemoteClientID != "")
 	body["client_id"] = cfg.RemoteClientID
+	marshalStart := time.Now()
 	data, err := json.Marshal(body)
 	if err != nil {
 		return RemoteActivationResult{}, err
 	}
+	log.Printf("[onboarding] ActivateRemote marshal_request=%s", time.Since(marshalStart))
 
-	resp, err := hubHTTPClient.Post(strings.TrimRight(hubURL, "/")+"/api/enroll/start", "application/json", bytes.NewReader(data))
+	enrollStart := time.Now()
+	enrollURL := strings.TrimRight(hubURL, "/") + "/api/enroll/start"
+	ctx, cancel := context.WithTimeout(context.Background(), remoteEnrollTimeout)
+	defer cancel()
+	log.Printf("[onboarding] ActivateRemote enroll_request:start timeout=%s url=%s", remoteEnrollTimeout, enrollURL)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, enrollURL, bytes.NewReader(data))
 	if err != nil {
 		return RemoteActivationResult{}, err
 	}
+	request.Header.Set("Content-Type", "application/json")
+	resp, err := hubHTTPClient.Do(request)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || isHTTPTimeoutError(err) {
+			log.Printf("[onboarding] ActivateRemote enroll_request:timeout after=%s url=%s err=%v", time.Since(enrollStart), enrollURL, err)
+			return RemoteActivationResult{}, fmt.Errorf("registration timed out after %s", remoteEnrollTimeout)
+		}
+		log.Printf("[onboarding] ActivateRemote enroll_request:failed after=%s url=%s err=%v", time.Since(enrollStart), enrollURL, err)
+		return RemoteActivationResult{}, err
+	}
+	log.Printf("[onboarding] ActivateRemote enroll_http=%s status=%d", time.Since(enrollStart), resp.StatusCode)
 	defer resp.Body.Close()
 
+	decodeStart := time.Now()
 	var result RemoteActivationResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return RemoteActivationResult{}, err
 	}
+	log.Printf("[onboarding] ActivateRemote decode_response=%s status=%d enrollment_status=%s", time.Since(decodeStart), resp.StatusCode, result.Status)
 	if resp.StatusCode >= 300 {
 		if result.Code != "" {
 			if result.ExpiresAt != "" {
@@ -191,29 +226,59 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		return RemoteActivationResult{}, fmt.Errorf("remote registration failed: %s", resp.Status)
 	}
 
+	persistStart := time.Now()
 	cfg.RemoteEmail = result.Email
 	cfg.RemoteSN = result.SN
 	cfg.RemoteUserID = result.UserID
 	cfg.RemoteMachineID = result.MachineID
 	cfg.RemoteMachineToken = result.MachineToken
 	cfg.RemoteHubURL = hubURL
+	log.Printf("[onboarding] ActivateRemote save_config:start machine_id=%s email=%s", result.MachineID, result.Email)
 	if err := a.SaveConfig(cfg); err != nil {
+		log.Printf("[onboarding] ActivateRemote save_config:failed after=%s err=%v", time.Since(persistStart), err)
 		return RemoteActivationResult{}, err
 	}
+	log.Printf("[onboarding] ActivateRemote save_config=%s", time.Since(persistStart))
 
+	infraStart := time.Now()
 	if a.remoteSessions == nil {
 		a.ensureRemoteInfra()
 	}
+	a.logMemorySnapshot("remoteActivation:before-connect")
+	logAfterConnect := func() {
+		a.logMemorySnapshot("remoteActivation:after-connect")
+	}
 	hubClient := a.remoteSessions.hubClient
 	if hubClient == nil {
-		a.createAndWireHubClient()
-	} else if !hubClient.IsConnected() {
-		_ = hubClient.Connect()
+		hubClient = a.createAndWireHubClient()
+	}
+	log.Printf("[onboarding] ActivateRemote ensure_remote_infra=%s hub_client_ready=%t", time.Since(infraStart), hubClient != nil)
+	if hubClient != nil && !hubClient.IsConnected() {
+		go func(client *RemoteHubClient, launchedAt time.Time) {
+			_ = client.Connect()
+			a.emitRemoteStateChanged()
+			logAfterConnect()
+			log.Printf("[onboarding] ActivateRemote background_connect_total=%s", time.Since(launchedAt))
+		}(hubClient, time.Now())
+	} else {
+		logAfterConnect()
 	}
 
 	a.emitRemoteStateChanged()
+	log.Printf("[onboarding] ActivateRemote total=%s", time.Since(start))
 
 	return result, nil
+}
+
+func isHTTPTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func normalizedRemotePlatform() string {

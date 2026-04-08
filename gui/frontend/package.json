@@ -1,0 +1,31 @@
+{
+  "name": "frontend",
+  "version": "3.5.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest --run"
+  },
+  "dependencies": {
+    "qrcode.react": "^4.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^8.0.7",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^3.0.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^18.0.17",
+    "@types/react-dom": "^18.0.6",
+    "@vitejs/plugin-react": "^4.7.0",
+    "fast-check": "^4.6.0",
+    "jsdom": "^29.0.0",
+    "typescript": "~5.7",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.0"
+  }
+}

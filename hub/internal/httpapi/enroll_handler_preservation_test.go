@@ -7,10 +7,13 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
@@ -22,7 +25,7 @@ import (
 
 // newPreservationTestIdentity creates a real IdentityService backed by an
 // in-memory SQLite DB for preservation testing.
-func newPreservationTestIdentity(t *testing.T) (*auth.IdentityService, *store.Store) {
+func newPreservationTestIdentity(t *testing.T) (*auth.IdentityService, *store.Store, *sqlite.Provider) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "preservation-test.db")
 	provider, err := sqlite.NewProvider(sqlite.Config{
@@ -52,7 +55,7 @@ func newPreservationTestIdentity(t *testing.T) (*auth.IdentityService, *store.St
 		nil,    // no mailer
 		"http://127.0.0.1:9399",
 	)
-	return identity, st
+	return identity, st, provider
 }
 
 // stubInvitationValidator implements auth.InvitationCodeValidator for testing
@@ -75,6 +78,88 @@ func (s *stubInvitationValidator) ValidateAndConsume(_ context.Context, code str
 
 func (s *stubInvitationValidator) CheckExpiry(_ context.Context, email string) (bool, *time.Time, error) {
 	return false, nil, nil
+}
+
+type countingInvitationRepo struct {
+	mu        sync.Mutex
+	item      *store.InvitationCode
+	getByEmailCalls int
+}
+
+func (r *countingInvitationRepo) Create(_ context.Context, item *store.InvitationCode) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.item = item
+	return nil
+}
+
+func (r *countingInvitationRepo) GetByID(_ context.Context, id string) (*store.InvitationCode, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.item != nil && r.item.ID == id {
+		copied := *r.item
+		return &copied, nil
+	}
+	return nil, nil
+}
+
+func (r *countingInvitationRepo) GetByCode(_ context.Context, code string) (*store.InvitationCode, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.item != nil && r.item.Code == code {
+		copied := *r.item
+		return &copied, nil
+	}
+	return nil, nil
+}
+
+func (r *countingInvitationRepo) GetByEmail(_ context.Context, email string) (*store.InvitationCode, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.getByEmailCalls++
+	if r.item != nil && r.item.UsedByEmail == email {
+		copied := *r.item
+		return &copied, nil
+	}
+	return nil, nil
+}
+
+func (r *countingInvitationRepo) List(_ context.Context, status string, search string) ([]*store.InvitationCode, error) {
+	return nil, nil
+}
+
+func (r *countingInvitationRepo) ListPaged(_ context.Context, status string, search string, offset, limit int) ([]*store.InvitationCode, int, error) {
+	return nil, 0, nil
+}
+
+func (r *countingInvitationRepo) MarkUsed(_ context.Context, id string, email string, usedAt time.Time) error {
+	return nil
+}
+
+func (r *countingInvitationRepo) Unbind(_ context.Context, id string) error {
+	return nil
+}
+
+func (r *countingInvitationRepo) DeleteByID(_ context.Context, id string) error {
+	return nil
+}
+
+func (r *countingInvitationRepo) DeleteByEmail(_ context.Context, email string) (int64, error) {
+	return 0, nil
+}
+
+func (r *countingInvitationRepo) ListUnused(_ context.Context, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
+	return nil, nil
+}
+
+func (r *countingInvitationRepo) MarkExported(_ context.Context, ids []string) error {
+	return nil
+}
+
+func (r *countingInvitationRepo) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.getByEmailCalls
 }
 
 // TestEnrollStartHandler_Preservation_TableDriven verifies that the
@@ -151,7 +236,7 @@ func TestEnrollStartHandler_Preservation_TableDriven(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			identity, st := newPreservationTestIdentity(t)
+			identity, st, _ := newPreservationTestIdentity(t)
 
 			// If this test case needs a custom invitation validator, rebuild identity.
 			if tc.invValidator != nil {
@@ -237,7 +322,7 @@ func TestEnrollStartHandler_Preservation_TableDriven(t *testing.T) {
 // TestEnrollStartHandler_Preservation_SuccessResponseFields verifies that a
 // successful enrollment (no feishu) returns all expected fields.
 func TestEnrollStartHandler_Preservation_SuccessResponseFields(t *testing.T) {
-	identity, _ := newPreservationTestIdentity(t)
+	identity, _, _ := newPreservationTestIdentity(t)
 	handler := EnrollStartHandler(identity, nil, nil)
 
 	body := `{"email":"fields-test@example.com","machine_name":"my-mac","platform":"darwin","client_id":"cid-001"}`
@@ -268,6 +353,83 @@ func TestEnrollStartHandler_Preservation_SuccessResponseFields(t *testing.T) {
 	}
 	if result["email"] != "fields-test@example.com" {
 		t.Errorf("email: got %q, want %q", result["email"], "fields-test@example.com")
+	}
+}
+
+func TestEnrollStartHandler_Preservation_VIPLookupUsesCache(t *testing.T) {
+	identity, _, _ := newPreservationTestIdentity(t)
+	repo := &countingInvitationRepo{
+		item: &store.InvitationCode{
+			ID:          "ic-1",
+			Code:        "VIP-CODE",
+			Status:      "used",
+			UsedByEmail: "vip-cache@example.com",
+			VIP:         true,
+			CreatedAt:   time.Now(),
+		},
+	}
+	invSvc := invitation.NewService(repo, nil)
+	handler := EnrollStartHandler(identity, invSvc, nil)
+
+	body := `{"email":"vip-cache@example.com","machine_name":"my-mac","platform":"darwin","client_id":"cid-vip"}`
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/enroll/start", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HTTP status: got %d, want 200; body=%s", rr.Code, rr.Body.String())
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		vipFlag, ok := result["vip_flag"].(bool)
+		if !ok || !vipFlag {
+			t.Fatalf("expected vip_flag=true, got %v; body=%s", result["vip_flag"], rr.Body.String())
+		}
+	}
+
+	if got := repo.callCount(); got != 1 {
+		t.Fatalf("expected cached VIP lookup to hit repo once, got %d", got)
+	}
+}
+
+func TestEnrollStartHandler_Preservation_OrgMetadataWithoutTree(t *testing.T) {
+	identity, st, provider := newPreservationTestIdentity(t)
+	ctx := context.Background()
+	if err := st.System.Set(ctx, "security_settings", `{"org_structure_enabled":true,"default_group_id":"group-default"}`); err != nil {
+		t.Fatalf("failed to set security settings: %v", err)
+	}
+
+	securityStore := security.NewSecurityStore(provider.Write)
+	handler := EnrollStartHandler(identity, nil, security.NewSecurityService(securityStore, st.System, nil))
+	body := `{"email":"org-meta@example.com","machine_name":"my-mac","platform":"darwin","client_id":"cid-org"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/enroll/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("HTTP status: got %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if enabled, ok := result["org_structure_enabled"].(bool); !ok || !enabled {
+		t.Fatalf("expected org_structure_enabled=true, got %v", result["org_structure_enabled"])
+	}
+	if got := result["default_group_id"]; got != "group-default" {
+		t.Fatalf("expected default_group_id=group-default, got %v", got)
+	}
+	if _, exists := result["org_group_tree"]; exists {
+		t.Fatalf("expected org_group_tree to be absent, body=%s", rr.Body.String())
 	}
 }
 

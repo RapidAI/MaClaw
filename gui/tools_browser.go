@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -30,7 +31,7 @@ func (a *replayActivityAdapter) ClearReplay() {
 // registerBrowserTools registers browser automation tools (CDP-based) into the gui ToolRegistry.
 // The tool definitions live in corelib/browser/tools.go (single source of truth).
 // This function bridges them into the gui-local ToolRegistry.
-func registerBrowserTools(registry *ToolRegistry) {
+func registerBrowserTools(registry *ToolRegistry, app *App) {
 	// Register into a temporary corelib registry.
 	coreReg := tool.NewRegistry()
 	browser.RegisterTools(coreReg)
@@ -83,7 +84,12 @@ func registerBrowserTools(registry *ToolRegistry) {
 		if ct.Handler != nil {
 			h := ct.Handler
 			gt.Handler = func(args map[string]interface{}) string {
-				return h(args)
+				result := h(args)
+				if app != nil && app.browserSessions != nil && strings.HasPrefix(ct.Name, "browser_session_") {
+					app.browserSessions.syncFromCore()
+					app.emitRemoteStateChanged()
+				}
+				return result
 			}
 		}
 		registry.Register(gt)

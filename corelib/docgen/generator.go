@@ -101,6 +101,8 @@ func (g *Generator) Generate(spec Spec) ([]byte, error) {
 		return nil, fmt.Errorf("未找到可用的中文字体，无法生成 PDF")
 	}
 
+	spec.Content = stripDuplicateLeadingHeading(spec)
+
 	layout, err := resolvePDFPageLayout(spec.PaperSize)
 	if err != nil {
 		return nil, err
@@ -210,6 +212,56 @@ func buildTitleHTML(spec Spec) string {
 	}
 	sb.WriteString("</center>")
 	return sb.String()
+}
+
+func stripDuplicateLeadingHeading(spec Spec) string {
+	content := strings.TrimLeft(spec.Content, "\ufeff")
+	leading := spec.Content[:len(spec.Content)-len(content)]
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 {
+		return spec.Content
+	}
+	idx := 0
+	for idx < len(lines) && strings.TrimSpace(lines[idx]) == "" {
+		idx++
+	}
+	if idx >= len(lines) {
+		return spec.Content
+	}
+	line := strings.TrimSpace(lines[idx])
+	if !strings.HasPrefix(line, "# ") {
+		return spec.Content
+	}
+	heading := normalizeHeadingText(strings.TrimPrefix(line, "# "))
+	target := normalizeHeadingText(firstNonEmpty(spec.ProjectName, spec.Title))
+	if heading == "" || target == "" || heading != target {
+		return spec.Content
+	}
+	trimmedLines := append([]string{}, lines[:idx]...)
+	trimmedLines = append(trimmedLines, lines[idx+1:]...)
+	for len(trimmedLines) > 0 && strings.TrimSpace(trimmedLines[0]) == "" {
+		trimmedLines = trimmedLines[1:]
+	}
+	return leading + strings.Join(trimmedLines, "\n")
+}
+
+func normalizeHeadingText(text string) string {
+	trimmed := strings.TrimSpace(text)
+	trimmed = strings.TrimRight(trimmed, "#")
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(trimmed), " ")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func addFooter(pdf *gopdf.GoPdf, layout pdfPageLayout, spec Spec) {

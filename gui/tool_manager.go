@@ -17,6 +17,12 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
+var (
+	claudeReleasesBase    = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+	cursorInstallScriptURL = "https://cursor.com/install"
+	httpGet               = http.Get
+)
+
 type ToolStatus struct {
 	Name      string `json:"name"`
 	Installed bool   `json:"installed"`
@@ -53,6 +59,114 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 	}
 
 	return status
+}
+
+func (tm *ToolManager) claudeVersionEndpoint(target string) string {
+	return fmt.Sprintf("%s/%s", claudeReleasesBase, target)
+}
+
+func (tm *ToolManager) fetchRemoteVersion(url string) (string, error) {
+	resp, err := httpGet(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("http %s", resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	version := strings.TrimSpace(string(body))
+	if version == "" || len(version) > 64 || strings.Contains(version, "<") {
+		return "", fmt.Errorf("invalid version response: %q", version)
+	}
+	return version, nil
+}
+
+func (tm *ToolManager) fetchLatestClaudeVersion(target string) (string, error) {
+	if target == "" {
+		target = "latest"
+	}
+	version, err := tm.fetchRemoteVersion(tm.claudeVersionEndpoint(target))
+	if err != nil {
+		return "", fmt.Errorf("failed to get %s version: %w", target, err)
+	}
+	return version, nil
+}
+
+func (tm *ToolManager) fetchLatestCursorVersion() (string, error) {
+	resp, err := httpGet(cursorInstallScriptURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch cursor install script: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("cursor install script returned HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read cursor install script: %w", err)
+	}
+	version := parseCursorVersionFromInstallScript(string(body))
+	if version == "" {
+		return "", fmt.Errorf("failed to detect cursor agent version from install script")
+	}
+	return version, nil
+}
+
+func parseCursorVersionFromInstallScript(script string) string {
+	for _, line := range strings.Split(script, "\n") {
+		if !strings.Contains(line, "downloads.cursor.com/lab/") {
+			continue
+		}
+		parts := strings.Split(line, "downloads.cursor.com/lab/")
+		if len(parts) < 2 {
+			continue
+		}
+		rest := parts[1]
+		if idx := strings.Index(rest, "/"); idx > 0 {
+			return strings.TrimSpace(rest[:idx])
+		}
+	}
+	return ""
+}
+
+func (tm *ToolManager) GetLatestVersion(name string) (string, error) {
+	switch remote.NormalizeRemoteToolName(name) {
+	case "claude":
+		return tm.fetchLatestClaudeVersion("latest")
+	case "cursor":
+		if runtime.GOOS == "windows" {
+			return "", fmt.Errorf("automatic update checks are not supported for cursor on windows")
+		}
+		return tm.fetchLatestCursorVersion()
+	default:
+		packageName := tm.GetPackageName(name)
+		if packageName == "" {
+			return "", fmt.Errorf("automatic update checks are not supported for tool %s", name)
+		}
+		npmPath := tm.getNpmPath()
+		if npmPath == "" {
+			return "", fmt.Errorf("npm not found")
+		}
+		return tm.app.getLatestNpmVersion(npmPath, packageName)
+	}
+}
+
+func (tm *ToolManager) NeedsUpdate(name, currentVersion string) (bool, string, error) {
+	latest, err := tm.GetLatestVersion(name)
+	if err != nil {
+		return false, "", err
+	}
+	if strings.TrimSpace(latest) == "" {
+		return false, "", fmt.Errorf("empty latest version for tool %s", name)
+	}
+	if strings.TrimSpace(currentVersion) == "" {
+		return true, latest, nil
+	}
+	return compareVersions(currentVersion, latest) < 0, latest, nil
 }
 
 
@@ -409,9 +523,7 @@ type ClaudeManifest struct {
 
 // installClaudeNative installs Claude Code using the native binary installer
 func (tm *ToolManager) installClaudeNative(target string) error {
-	const gcsBucket = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
-
-	home, _ := os.UserHomeDir()
+	home := tm.app.GetUserHomeDir()
 	installDir := filepath.Join(home, ".maclaw", "data", "tools")
 	downloadDir := filepath.Join(home, ".claude", "downloads")
 
@@ -449,23 +561,10 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 	// Get version
 	var version string
 	if target == "latest" || target == "stable" {
-		resp, err := http.Get(fmt.Sprintf("%s/%s", gcsBucket, target))
+		var err error
+		version, err = tm.fetchLatestClaudeVersion(target)
 		if err != nil {
-			return fmt.Errorf("failed to get %s version: %w", target, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("failed to get %s version: HTTP %s", target, resp.Status)
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read version: %w", err)
-		}
-		version = strings.TrimSpace(string(body))
-		if version == "" || len(version) > 30 || strings.Contains(version, "<") {
-			return fmt.Errorf("invalid version response from server: %q", version)
+			return err
 		}
 	} else {
 		version = target
@@ -474,7 +573,7 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 	tm.app.log(tm.app.tr("Installing Claude Code version: %s", version))
 
 	// Get manifest
-	manifestURL := fmt.Sprintf("%s/%s/manifest.json", gcsBucket, version)
+	manifestURL := fmt.Sprintf("%s/%s/manifest.json", claudeReleasesBase, version)
 	resp, err := http.Get(manifestURL)
 	if err != nil {
 		return fmt.Errorf("failed to get manifest: %w", err)
@@ -508,7 +607,7 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 		binaryName = "claude"
 	}
 
-	downloadURL := fmt.Sprintf("%s/%s/%s/%s", gcsBucket, version, platform, binaryName)
+	downloadURL := fmt.Sprintf("%s/%s/%s/%s", claudeReleasesBase, version, platform, binaryName)
 	downloadPath := filepath.Join(downloadDir, fmt.Sprintf("claude-%s-%s%s", version, platform, filepath.Ext(binaryName)))
 
 	tm.app.log(tm.app.tr("Downloading from: %s", downloadURL))
@@ -633,7 +732,7 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 // Cursor Agent is distributed as a tar.gz package from downloads.cursor.com.
 // On Windows it is not officially supported natively, so we skip gracefully.
 func (tm *ToolManager) installCursorAgent() error {
-	home, _ := os.UserHomeDir()
+	home := tm.app.GetUserHomeDir()
 	installDir := filepath.Join(home, ".maclaw", "data", "tools", "bin")
 
 	if err := os.MkdirAll(installDir, 0755); err != nil {
@@ -659,40 +758,10 @@ func (tm *ToolManager) installCursorAgent() error {
 		return fmt.Errorf("unsupported architecture for cursor agent: %s", runtime.GOARCH)
 	}
 
-	// Step 1: Fetch the install script to extract the latest version tag
 	tm.app.log(tm.app.tr("Fetching Cursor Agent install metadata..."))
-	resp, err := http.Get("https://cursor.com/install")
+	version, err := tm.fetchLatestCursorVersion()
 	if err != nil {
-		return fmt.Errorf("failed to fetch cursor install script: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("cursor install script returned HTTP %d", resp.StatusCode)
-	}
-	scriptBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read cursor install script: %w", err)
-	}
-	script := string(scriptBytes)
-
-	// Extract version from the install script (e.g. "2026.03.11-6dfa30c")
-	version := ""
-	for _, line := range strings.Split(script, "\n") {
-		// Look for the DOWNLOAD_URL line which contains the version
-		if strings.Contains(line, "downloads.cursor.com/lab/") {
-			// e.g. DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.03.11-6dfa30c/${OS}/${ARCH}/..."
-			parts := strings.Split(line, "downloads.cursor.com/lab/")
-			if len(parts) >= 2 {
-				rest := parts[1]
-				// version ends at the next /
-				if idx := strings.Index(rest, "/"); idx > 0 {
-					version = rest[:idx]
-				}
-			}
-		}
-	}
-	if version == "" {
-		return fmt.Errorf("failed to detect cursor agent version from install script")
+		return err
 	}
 
 	tm.app.log(tm.app.tr("Cursor Agent version: %s", version))

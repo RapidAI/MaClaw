@@ -6,93 +6,26 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // ImportAgentSkill reads an Anthropic Agent Skills directory (containing
 // SKILL.md and optional scripts/) and converts it to an NLSkillEntry.
 func ImportAgentSkill(skillDir string) (*NLSkillEntry, error) {
-	mdPath := filepath.Join(skillDir, "SKILL.md")
-	data, err := os.ReadFile(mdPath)
+	entry, err := cskill.ImportMarkdownSkillDir(skillDir, cskill.MarkdownSkillOptions{
+		NameFallback: filepath.Base(skillDir),
+		Source:       "agent_skill",
+		SkillDir:     skillDir,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("无法读取 SKILL.md: %v", err)
+		return nil, err
 	}
-
-	frontmatter, body := parseFrontmatter(string(data))
-
-	name := frontmatter["name"]
-	if name == "" {
-		name = filepath.Base(skillDir)
+	entry.Source = "agent_skill"
+	if entry.CreatedAt == "" {
+		entry.CreatedAt = time.Now().Format(time.RFC3339)
 	}
-	description := frontmatter["description"]
-	if description == "" {
-		// Use first non-empty line of body as description.
-		for _, line := range strings.Split(body, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "#") {
-				description = line
-				break
-			}
-		}
-	}
-
-	compatibility := frontmatter["compatibility"]
-
-	// Collect scripts as bash steps.
-	var steps []NLSkillStep
-	scriptsDir := filepath.Join(skillDir, "scripts")
-	if entries, err := os.ReadDir(scriptsDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			scriptPath := filepath.Join(scriptsDir, e.Name())
-			scriptData, err := os.ReadFile(scriptPath)
-			if err != nil {
-				continue
-			}
-			steps = append(steps, NLSkillStep{
-				Action: "bash",
-				Params: map[string]interface{}{
-					"command": string(scriptData),
-				},
-				OnError: "stop",
-			})
-		}
-	}
-
-	// If no scripts, store the markdown body as a description-only skill.
-	if len(steps) == 0 && strings.TrimSpace(body) != "" {
-		// Create a single "instruction" step that an LLM can interpret.
-		steps = append(steps, NLSkillStep{
-			Action: "bash",
-			Params: map[string]interface{}{
-				"command": "echo 'This is an instruction-only skill. See description.'",
-			},
-			OnError: "continue",
-		})
-		// Append full instructions to description.
-		if len(body) > 5000 {
-			body = body[:5000]
-		}
-		description = description + "\n\n" + strings.TrimSpace(body)
-	}
-
-	// Extract triggers from name and description keywords.
-	triggers := []string{name}
-	if compatibility != "" {
-		triggers = append(triggers, "agent-skill")
-	}
-
-	return &NLSkillEntry{
-		Name:          name,
-		Description:   description,
-		Triggers:      triggers,
-		Steps:         steps,
-		Status:        "active",
-		CreatedAt:     time.Now().Format(time.RFC3339),
-		Source:        "agent_skill",
-		SourceProject: compatibility, // preserve compatibility info from SKILL.md
-	}, nil
+	return entry, nil
 }
 
 // ExportAgentSkill converts an NLSkillEntry to Anthropic Agent Skills format,
@@ -166,43 +99,7 @@ func ExportAgentSkill(entry NLSkillEntry, outputDir string) error {
 // parseFrontmatter splits a SKILL.md into YAML frontmatter key-value pairs
 // and the remaining markdown body. Handles both \n and \r\n line endings.
 func parseFrontmatter(content string) (map[string]string, string) {
-	fm := make(map[string]string)
-
-	// Normalize line endings.
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.TrimSpace(content)
-	if !strings.HasPrefix(content, "---") {
-		return fm, content
-	}
-
-	// Find closing ---
-	rest := content[3:]
-	idx := strings.Index(rest, "\n---")
-	if idx < 0 {
-		return fm, content
-	}
-
-	fmBlock := rest[:idx]
-	body := strings.TrimSpace(rest[idx+4:])
-
-	// Parse simple YAML key: value pairs.
-	for _, line := range strings.Split(fmBlock, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		colonIdx := strings.Index(line, ":")
-		if colonIdx < 0 {
-			continue
-		}
-		key := strings.TrimSpace(line[:colonIdx])
-		val := strings.TrimSpace(line[colonIdx+1:])
-		// Strip surrounding quotes.
-		val = strings.Trim(val, `"'`)
-		fm[key] = val
-	}
-
-	return fm, body
+	return cskill.ParseMarkdownFrontmatter(content)
 }
 
 // sanitizeAgentSkillName converts a skill name to the Agent Skills naming

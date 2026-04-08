@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -77,18 +78,24 @@ func TestSpecForDocType(t *testing.T) {
 			wantBrand:    "MaClaw Swarm",
 		},
 		{
-			name:        "default uses project name",
-			docType:     DocType(""),
-			projectName: "通用标题",
-			wantTitle:   "通用标题",
-			wantBrand:   "",
+			name:         "default uses project name",
+			docType:      DocType(""),
+			projectName:  "通用标题",
+			wantTitle:    "通用标题",
+			wantSubtitle: "",
+			wantPrefix:   "",
+			wantFooter:   "",
+			wantBrand:    "",
 		},
 		{
-			name:        "default falls back to document",
-			docType:     DocType("unknown"),
-			projectName: "   ",
-			wantTitle:   "文档",
-			wantBrand:   "",
+			name:         "default falls back to document",
+			docType:      DocType("unknown"),
+			projectName:  "   ",
+			wantTitle:    "文档",
+			wantSubtitle: "",
+			wantPrefix:   "",
+			wantFooter:   "",
+			wantBrand:    "",
 		},
 	}
 
@@ -139,6 +146,29 @@ func TestDocTypeFromString(t *testing.T) {
 		if got := docTypeFromString(tt.input); got != tt.want {
 			t.Fatalf("docTypeFromString(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestGenerateToFileWithOptions_DefaultDocTypeUsesGenericCover(t *testing.T) {
+	gen := NewSwarmDocGenerator()
+	if !gen.HasFont() {
+		t.Skip("跳过：系统未找到中文字体")
+	}
+
+	outputPath := t.TempDir() + "/generic.pdf"
+	absPath, err := GenerateToFileWithOptions("# 标题\n\n正文", "通用标题", "", outputPath, GeneratePDFOptions{PaperSize: "a4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absPath == "" {
+		t.Fatal("expected output path")
+	}
+	if !strings.HasSuffix(absPath, ".pdf") {
+		t.Fatalf("expected pdf output, got %q", absPath)
+	}
+	base := filepath.Base(absPath)
+	if strings.Contains(base, "设计文档") || strings.Contains(base, "需求文档") || strings.Contains(base, "任务计划") {
+		t.Fatalf("default doc_type should use generic filename, got %q", base)
 	}
 }
 
@@ -228,5 +258,33 @@ func TestSwarmDocGenerator_GenerateSpecDoc_LongContent_Integration(t *testing.T)
 	}
 	if len(pageSizes) > 30 {
 		t.Fatalf("expected denser pagination, got %d pages", len(pageSizes))
+	}
+}
+
+func TestValidatePDFContent_RejectsOversizedContent(t *testing.T) {
+	content := strings.Repeat("a", maxPDFContentBytes+1)
+	if err := ValidatePDFContent(content); err == nil || !strings.Contains(err.Error(), "PDF 内容过长") {
+		t.Fatalf("expected oversized content error, got %v", err)
+	}
+}
+
+func TestValidatePDFContent_RejectsOversizedParagraph(t *testing.T) {
+	content := strings.Repeat("段", maxPDFParagraphBytes+1)
+	if err := ValidatePDFContent(content); err == nil || !strings.Contains(err.Error(), "过长段落") {
+		t.Fatalf("expected oversized paragraph error, got %v", err)
+	}
+}
+
+func TestValidatePDFContent_RejectsFilePayloadMarker(t *testing.T) {
+	content := "# 报告\n\n[file_base64|report.pdf|application/pdf]AAAA"
+	if err := ValidatePDFContent(content); err == nil || !strings.Contains(err.Error(), "文件载荷") {
+		t.Fatalf("expected file payload error, got %v", err)
+	}
+}
+
+func TestValidatePDFContent_RejectsSuspiciousBase64Run(t *testing.T) {
+	content := "# 报告\n\n" + strings.Repeat("A", maxSuspiciousBase64RunLen)
+	if err := ValidatePDFContent(content); err == nil || !strings.Contains(err.Error(), "base64") {
+		t.Fatalf("expected base64 error, got %v", err)
 	}
 }
