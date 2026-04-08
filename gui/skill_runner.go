@@ -527,13 +527,27 @@ func (r *SkillRunner) templateVarsForRun(runID string) map[string]string {
 	return vars
 }
 
-func (r *SkillRunner) resolveStepSessionID(runID string, step NLSkillStep) string {
-	sessionID, _ := step.Params["session_id"].(string)
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID != "" {
-		return sessionID
+func resolveSkillStepSessionID(step NLSkillStep, fallback string, manager *RemoteSessionManager) string {
+	explicitSessionID, _ := step.Params["session_id"].(string)
+	explicitSessionID = strings.TrimSpace(explicitSessionID)
+	fallback = strings.TrimSpace(fallback)
+	if explicitSessionID == "" {
+		return fallback
 	}
-	return r.latestRunSessionID(runID)
+	if manager == nil || fallback == "" || explicitSessionID == fallback {
+		return explicitSessionID
+	}
+	if _, ok := manager.Get(explicitSessionID); ok {
+		return explicitSessionID
+	}
+	if _, ok := manager.Get(fallback); ok {
+		return fallback
+	}
+	return explicitSessionID
+}
+
+func (r *SkillRunner) resolveStepSessionID(runID string, step NLSkillStep) string {
+	return resolveSkillStepSessionID(step, r.latestRunSessionID(runID), r.executor.manager)
 }
 
 // ── 异步执行核心 ────────────────────────────────────────────────────────

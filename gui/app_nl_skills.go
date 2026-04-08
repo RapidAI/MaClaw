@@ -500,14 +500,13 @@ func (e *SkillExecutor) executeSkillSteps(skill *NLSkillEntry) (string, error) {
 	lastSessionID := ""
 	for i, step := range skill.Steps {
 		stepCopy := step
-		if lastSessionID != "" {
-			if _, ok := stepCopy.Params["session_id"]; !ok {
-				if stepCopy.Action == "send_input" || stepCopy.Action == "send_and_observe" {
-					if stepCopy.Params == nil {
-						stepCopy.Params = map[string]interface{}{}
-					}
-					stepCopy.Params["session_id"] = lastSessionID
+		if stepCopy.Action == "send_input" || stepCopy.Action == "send_and_observe" {
+			resolvedSessionID := resolveSkillStepSessionID(stepCopy, lastSessionID, e.manager)
+			if resolvedSessionID != "" {
+				if stepCopy.Params == nil {
+					stepCopy.Params = map[string]interface{}{}
 				}
+				stepCopy.Params["session_id"] = resolvedSessionID
 			}
 		}
 		result, err := e.executeStep(stepCopy, skill.Description)

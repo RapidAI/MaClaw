@@ -92,6 +92,47 @@ func TestSkillRunnerExecuteStepWithContext_SendAndObserveUsesImplicitSessionID(t
 	}
 }
 
+func TestSkillRunnerExecuteStepWithContext_SendAndObserveFallsBackFromUnknownExplicitSessionID(t *testing.T) {
+	session := &RemoteSession{
+		ID:        "sess-observe-fallback-1",
+		Tool:      "claude-code",
+		Title:     "observe-session-fallback",
+		Status:    SessionWaitingInput,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Exec:      newFakeExecutionHandle(503),
+		RawOutputLines: []string{
+			"done",
+		},
+		Summary: SessionSummary{WaitingForUser: true},
+	}
+	app := &App{}
+	mgr := &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{"sess-observe-fallback-1": session}}
+	runner := NewSkillRunner(&SkillExecutor{app: app, manager: mgr})
+	runner.runs["run-fallback"] = &skillRun{status: SkillRunStatus{
+		RunID:  "run-fallback",
+		Skill:  "demo",
+		Status: "running",
+		Session: &SkillRunSessionMeta{
+			SessionID: "sess-observe-fallback-1",
+		},
+	}}
+
+	result, err := runner.executeStepWithContext(context.Background(), "run-fallback", NLSkillStep{
+		Action: "send_and_observe",
+		Params: map[string]interface{}{
+			"session_id": "skill-runner",
+			"text":       "continue",
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("executeStepWithContext(send_and_observe fallback) error = %v", err)
+	}
+	if !strings.Contains(result, "会话 sess-observe-fallback-1 状态") {
+		t.Fatalf("expected fallback session reuse, got %s", result)
+	}
+}
+
 func TestSkillExecutorExecute_ImplicitSessionReuse(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

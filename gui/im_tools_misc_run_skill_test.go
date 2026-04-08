@@ -205,6 +205,91 @@ func TestToolGetSkillRun_ReturnsStatusSummary(t *testing.T) {
 	}
 }
 
+func TestToolGetSkillRun_ReportsSessionFallbackFromUnknownExplicitSessionID(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEnabled = true
+	cfg.Projects = []ProjectConfig{{Id: "proj-1", Name: "Demo", Path: tempHome}}
+	cfg.CurrentProject = "proj-1"
+	cfg.Claude = ToolConfig{
+		CurrentModel: "Original",
+		Models:       []ModelConfig{{ModelName: "Original", ModelId: "claude-sonnet", IsBuiltin: true}},
+	}
+	cfg.NLSkills = []NLSkillEntry{{
+		Name:        "demo-skill",
+		Description: "demo",
+		Status:      "active",
+		Steps: []NLSkillStep{
+			{
+				Action: "create_session",
+				Params: map[string]interface{}{
+					"tool":       "claude",
+					"project_id": "proj-1",
+					"task":       "修复代码中的 bug",
+				},
+			},
+			{
+				Action: "send_and_observe",
+				Params: map[string]interface{}{
+					"session_id":      "skill-runner",
+					"text":            "继续执行",
+					"timeout_seconds": float64(0.01),
+				},
+			},
+		},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	provider := &fakeProviderAdapter{cmd: CommandSpec{Command: "claude.exe"}}
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.remoteSessions.providerFactory = func(tool string) (ProviderAdapter, error) {
+		return provider, nil
+	}
+	app.remoteSessions.executionFactory = func(spec LaunchSpec) (ExecutionStrategy, error) {
+		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(305)}, nil
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, app.remoteSessions)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	app.sessionStarter = NewCodingSessionStarter(app)
+
+	h := &IMMessageHandler{app: app}
+	started := h.toolRunSkill(map[string]interface{}{"name": "demo-skill", "wait_seconds": float64(0.01)}, nil)
+	if !strings.Contains(started, "- run_id:") {
+		t.Fatalf("expected run_id in start output, got %s", started)
+	}
+	runID := ""
+	for _, line := range strings.Split(started, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- run_id:") {
+			runID = strings.TrimSpace(strings.TrimPrefix(line, "- run_id:"))
+			break
+		}
+	}
+	if runID == "" {
+		t.Fatalf("failed to parse run_id from %s", started)
+	}
+
+	status := h.toolGetSkillRun(map[string]interface{}{"run_id": runID, "wait_seconds": float64(0.01)})
+	if !strings.Contains(status, "🔎 Skill 状态查询结果") {
+		t.Fatalf("expected status title, got %s", status)
+	}
+	if strings.Contains(status, "会话 skill-runner 不存在") {
+		t.Fatalf("expected fallback session reuse, got %s", status)
+	}
+	if !strings.Contains(status, "session_id:") {
+		t.Fatalf("expected session metadata in status, got %s", status)
+	}
+}
+
 func TestAppendSkillRunSummary_ExplainsInstructionOnlySkill(t *testing.T) {
 	var b strings.Builder
 	appendSkillRunSummary(&b, &SkillRunStatus{
