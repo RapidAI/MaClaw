@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -106,6 +107,7 @@ func TestProperty_ArchiveRoundTrip(t *testing.T) {
 
 	rapid.Check(t, func(rt *rapid.T) {
 		archivePath := filepath.Join(dir, rapid.StringMatching(`[a-z]{8}`).Draw(rt, "fname")+".json")
+		_ = os.Remove(archivePath)
 
 		archive, err := NewArchiveStore(archivePath)
 		if err != nil {
