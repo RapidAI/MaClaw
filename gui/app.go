@@ -5048,6 +5048,7 @@ func (a *App) ShowItemInFolder(path string) error {
 	case "windows":
 		path = filepath.FromSlash(path)
 		cmd = exec.Command("explorer", "/select,", path)
+		hideCommandWindow(cmd)
 	case "linux":
 		cmd = exec.Command("xdg-open", filepath.Dir(path))
 	default:
@@ -5055,6 +5056,43 @@ func (a *App) ShowItemInFolder(path string) error {
 	}
 	// Use Start instead of Run to avoid waiting for the process and ignoring exit codes (like 1 on Windows)
 	return cmd.Start()
+}
+
+func (a *App) OpenFileOrShowInFolder(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("empty path")
+	}
+	path = filepath.Clean(path)
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+
+	switch goruntime.GOOS {
+	case "windows":
+		openCmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", filepath.FromSlash(path))
+		hideCommandWindow(openCmd)
+		if err := openCmd.Start(); err == nil {
+			go openCmd.Wait()
+			return nil
+		}
+		return a.ShowItemInFolder(path)
+	case "darwin":
+		openCmd := exec.Command("open", path)
+		if err := openCmd.Start(); err == nil {
+			go openCmd.Wait()
+			return nil
+		}
+		return a.ShowItemInFolder(path)
+	case "linux":
+		openCmd := exec.Command("xdg-open", path)
+		if err := openCmd.Start(); err == nil {
+			go openCmd.Wait()
+			return nil
+		}
+		return a.ShowItemInFolder(path)
+	default:
+		return fmt.Errorf("unsupported platform")
+	}
 }
 func (a *App) GetSkillsDir(toolName string) string {
 	baseDir := filepath.Join(a.GetDataDir(), "skills")
