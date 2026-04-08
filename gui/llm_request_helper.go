@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // dumpLLMContext saves the request body to a temp file when an HTTP 500 error
@@ -49,62 +50,33 @@ func doSimpleLLMRequest(ctx context.Context, cfg MaclawLLMConfig, messages []int
 }
 
 func doSimpleOpenAIRequest(ctx context.Context, cfg MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*llmSimpleResponse, error) {
-	endpoint := strings.TrimRight(cfg.URL, "/") + "/chat/completions"
-	if needsSystemMerge(cfg) {
-		messages = mergeSystemIntoUser(messages)
-	}
-	reqBody := map[string]interface{}{
-		"model":    cfg.Model,
-		"messages": messages,
-		"stream":   false,
-	}
-	data, _ := json.Marshal(reqBody)
-
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	parsed, err := llm.DoOpenAIRequest(ctx, cfg, messages, nil, client)
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", cfg.UserAgent())
-	if cfg.Key != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Key)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if resp.StatusCode != http.StatusOK {
-		msg := string(body)
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
+		msg := err.Error()
+		if strings.HasPrefix(msg, "HTTP 500:") {
+			if len(msg) > 512 {
+				msg = msg[:512] + "..."
+			}
+			endpoint, data, buildErr := llm.BuildOpenAIChatRequestData(cfg, messages, llm.OpenAIChatRequestOptions{
+				Stream: false,
+			})
+			if buildErr != nil {
+				return nil, err
+			}
+			_ = endpoint
+			return nil, dumpLLMContext(http.StatusInternalServerError, msg, data, "")
 		}
-		return nil, dumpLLMContext(resp.StatusCode, msg, data, "")
+		return nil, err
 	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
+	if len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("no response from model")
 	}
-	text := result.Choices[0].Message.Content
+	text := parsed.Choices[0].Message.Content
 	if text == "" {
-		text = result.Choices[0].Message.ReasoningContent
+		text = parsed.Choices[0].Message.ReasoningContent
 	}
 	return &llmSimpleResponse{Content: stripThinkingTags(text)}, nil
 }

@@ -20,8 +20,8 @@ func MigrateSkillsDir() {}
 
 // SkillScanRoots returns all directories that should be scanned for
 // file-based skills, in priority order (first wins on name conflict):
-//   1. ~/.maclaw/data/skills  (canonical location)
-//   2. ~/.agents/skills
+//  1. ~/.maclaw/data/skills  (canonical location)
+//  2. ~/.agents/skills
 func SkillScanRoots() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -84,7 +84,7 @@ func ScanAllSkillDirsWithExternal(externalDirs []string) []corelib.NLSkillEntry 
 }
 
 // ValidateExternalSkillDir checks whether a directory is a valid skill
-// directory (contains at least one subdirectory with skill.md, skill.yaml,
+// directory (contains at least one subdirectory with SKILL.md, skill.yaml,
 // or skill.yml). Returns the count of valid skill subdirectories and an error
 // if the directory is not usable.
 func ValidateExternalSkillDir(dir string) (int, error) {
@@ -107,8 +107,8 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 		}
 		subDir := filepath.Join(dir, entry.Name())
 		// Check for skill.yaml/yml (parseable by ScanSkillDir) first,
-		// then fall back to skill.md as a valid marker.
-		for _, name := range []string{"skill.yaml", "skill.yml", "skill.md"} {
+		// then fall back to markdown skill documents as valid markers.
+		for _, name := range []string{"skill.yaml", "skill.yml", "SKILL.md", "skill.md"} {
 			if _, err := os.Stat(filepath.Join(subDir, name)); err == nil {
 				count++
 				break
@@ -116,7 +116,7 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 		}
 	}
 	if count == 0 {
-		return 0, fmt.Errorf("no valid skill subdirectories found (need skill.md or skill.yaml)")
+		return 0, fmt.Errorf("no valid skill subdirectories found (need SKILL.md or skill.yaml)")
 	}
 	return count, nil
 }
@@ -162,7 +162,7 @@ type uploadStatusFile struct {
 	SubmissionID string `json:"submission_id"`
 }
 
-// ScanSkillDir scans a single directory for skill.yaml / skill.yml files
+// ScanSkillDir scans a single directory for skill.yaml / skill.yml / SKILL.md files
 // in immediate subdirectories and returns parsed NLSkillEntry list.
 // Permission errors and symlink issues are logged and skipped gracefully.
 func ScanSkillDir(root string) []corelib.NLSkillEntry {
@@ -185,63 +185,102 @@ func ScanSkillDir(root string) []corelib.NLSkillEntry {
 		if !info.IsDir() {
 			continue
 		}
-		yamlPath := filepath.Join(root, entry.Name(), "skill.yaml")
+		skillDir := filepath.Join(root, entry.Name())
+		var (
+			parsed     *corelib.NLSkillEntry
+			defPath    string
+			parseErr   error
+			hubSkillID string
+		)
+
+		yamlPath := filepath.Join(skillDir, "skill.yaml")
 		data, err := os.ReadFile(yamlPath)
 		if err != nil {
-			yamlPath = filepath.Join(root, entry.Name(), "skill.yml")
+			yamlPath = filepath.Join(skillDir, "skill.yml")
 			data, err = os.ReadFile(yamlPath)
-			if err != nil {
+		}
+		if err == nil {
+			var sf SkillYAMLFile
+			if err := yaml.Unmarshal(data, &sf); err != nil {
+				log.Printf("[skill-scanner] skip %s/%s: YAML parse error: %v", root, entry.Name(), err)
 				continue
+			}
+			name := strings.TrimSpace(sf.Name)
+			if name == "" {
+				name = entry.Name()
+			}
+			status := sf.Status
+			if status == "" {
+				status = "active"
+			}
+			steps := make([]corelib.NLSkillStep, 0, len(sf.Steps))
+			for _, s := range sf.Steps {
+				steps = append(steps, corelib.NLSkillStep{
+					Action:  s.Action,
+					Params:  s.Params,
+					OnError: s.OnError,
+				})
+			}
+			if len(steps) == 0 {
+				parsed, parseErr = ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
+					NameFallback: name,
+					Source:       "file",
+					SkillDir:     skillDir,
+				})
+				if parseErr == nil {
+					mdPath, mdErr := skillMarkdownPath(skillDir)
+					if mdErr == nil {
+						defPath = mdPath
+					}
+				}
+			}
+			if parsed == nil {
+				parsed = &corelib.NLSkillEntry{
+					Name:        name,
+					Description: sf.Description,
+					Triggers:    sf.Triggers,
+					Steps:       steps,
+					Status:      status,
+					Source:      "file",
+					Platforms:   sf.Platforms,
+					RequiresGUI: sf.RequiresGUI,
+					SkillDir:    skillDir,
+					CreatedAt:   fileModTime(yamlPath),
+				}
+				defPath = yamlPath
+			}
+		} else {
+			parsed, parseErr = ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
+				NameFallback: entry.Name(),
+				Source:       "file",
+				SkillDir:     skillDir,
+			})
+			if parseErr != nil {
+				continue
+			}
+			mdPath, mdErr := skillMarkdownPath(skillDir)
+			if mdErr == nil {
+				defPath = mdPath
 			}
 		}
 
-		var sf SkillYAMLFile
-		if err := yaml.Unmarshal(data, &sf); err != nil {
-			log.Printf("[skill-scanner] skip %s/%s: YAML parse error: %v", root, entry.Name(), err)
-			continue
-		}
-
-		name := strings.TrimSpace(sf.Name)
-		if name == "" {
-			name = entry.Name()
-		}
-		status := sf.Status
-		if status == "" {
-			status = "active"
-		}
-
-		steps := make([]corelib.NLSkillStep, 0, len(sf.Steps))
-		for _, s := range sf.Steps {
-			steps = append(steps, corelib.NLSkillStep{
-				Action:  s.Action,
-				Params:  s.Params,
-				OnError: s.OnError,
-			})
-		}
-
-		skillDir := filepath.Join(root, entry.Name())
-
-		var hubSkillID string
 		if statusData, err := os.ReadFile(filepath.Join(skillDir, "upload_status.json")); err == nil {
 			var us uploadStatusFile
 			if json.Unmarshal(statusData, &us) == nil && us.SubmissionID != "" {
 				hubSkillID = us.SubmissionID
 			}
 		}
-
-		result = append(result, corelib.NLSkillEntry{
-			Name:        name,
-			Description: sf.Description,
-			Triggers:    sf.Triggers,
-			Steps:       steps,
-			Status:      status,
-			Source:      "file",
-			Platforms:   sf.Platforms,
-			RequiresGUI: sf.RequiresGUI,
-			SkillDir:    skillDir,
-			HubSkillID:  hubSkillID,
-			CreatedAt:   fileModTime(yamlPath),
-		})
+		parsed.HubSkillID = hubSkillID
+		if parsed.SkillDir == "" {
+			parsed.SkillDir = skillDir
+		}
+		if parsed.Source == "" {
+			parsed.Source = "file"
+		}
+		if defPath != "" {
+			parsed.CreatedAt = fileModTime(defPath)
+		}
+		result = append(result, *parsed)
 	}
 	return result
 }

@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -32,14 +34,15 @@ type SkillRunSessionMeta struct {
 // SkillRunSummary provides a compact, user-facing summary of the most
 // important state for a skill run.
 type SkillRunSummary struct {
-	CurrentStepIndex       int    `json:"current_step_index,omitempty"`
-	CurrentStep            string `json:"current_step,omitempty"`
-	CurrentStepStatus      string `json:"current_step_status,omitempty"`
-	LastCompletedStep      string `json:"last_completed_step,omitempty"`
-	LastCompletedStepIndex int    `json:"last_completed_step_index,omitempty"`
-	LastOutputSnippet      string `json:"last_output_snippet,omitempty"`
-	LastErrorSnippet       string `json:"last_error_snippet,omitempty"`
-	HasSessionBinding      bool   `json:"has_session_binding,omitempty"`
+	CurrentStepIndex          int    `json:"current_step_index,omitempty"`
+	CurrentStep               string `json:"current_step,omitempty"`
+	CurrentStepStatus         string `json:"current_step_status,omitempty"`
+	LastCompletedStep         string `json:"last_completed_step,omitempty"`
+	LastCompletedStepIndex    int    `json:"last_completed_step_index,omitempty"`
+	LastOutputSnippet         string `json:"last_output_snippet,omitempty"`
+	LastErrorSnippet          string `json:"last_error_snippet,omitempty"`
+	HasSessionBinding         bool   `json:"has_session_binding,omitempty"`
+	NeedsArtifactVerification bool   `json:"needs_artifact_verification,omitempty"`
 }
 
 // SkillRunStatus 表示一次 skill 执行的状态。
@@ -77,8 +80,9 @@ type SkillRunner struct {
 }
 
 type skillRun struct {
-	status SkillRunStatus
-	cancel context.CancelFunc
+	status       SkillRunStatus
+	cancel       context.CancelFunc
+	templateVars map[string]string
 }
 
 // NewSkillRunner 创建 SkillRunner。
@@ -90,7 +94,7 @@ func NewSkillRunner(executor *SkillExecutor) *SkillRunner {
 }
 
 // StartRun 异步启动 skill 执行，返回 runID 供前端轮询。
-func (r *SkillRunner) StartRun(skillName string) (string, error) {
+func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{}) (string, error) {
 	// 查找 skill
 	r.executor.mu.RLock()
 	var target *NLSkillEntry
@@ -116,6 +120,11 @@ func (r *SkillRunner) StartRun(skillName string) (string, error) {
 	if err := checkFileReferences(target); err != nil {
 		return "", err
 	}
+	if len(target.Steps) == 0 {
+		return "", fmt.Errorf("skill %q has no executable steps", skillName)
+	}
+
+	templateVars := normalizeSkillRunVars(runArgs)
 
 	// 生成 runID
 	r.mu.Lock()
@@ -131,7 +140,8 @@ func (r *SkillRunner) StartRun(skillName string) (string, error) {
 			StartedAt: time.Now().Format(time.RFC3339),
 			Steps:     make([]StepResult, len(target.Steps)),
 		},
-		cancel: cancel,
+		cancel:       cancel,
+		templateVars: templateVars,
 	}
 	for i, step := range target.Steps {
 		run.status.Steps[i] = StepResult{
@@ -270,6 +280,9 @@ func summarizeSkillRun(status *SkillRunStatus) {
 	if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
 		status.Summary.HasSessionBinding = true
 	}
+	if isInstructionOnlySkillStatus(status) {
+		status.Summary.NeedsArtifactVerification = true
+	}
 	for i, step := range status.Steps {
 		switch step.Status {
 		case "running":
@@ -317,6 +330,116 @@ func summarizeSkillRun(status *SkillRunStatus) {
 	}
 }
 
+func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
+	vars := map[string]string{}
+	if rawArgs, ok := runArgs["args"].(map[string]interface{}); ok {
+		for key, value := range rawArgs {
+			if str, ok := value.(string); ok {
+				vars[key] = str
+			}
+		}
+	}
+	if _, ok := vars["input"]; !ok {
+		if input, _ := runArgs["input"].(string); input != "" {
+			vars["input"] = input
+		}
+	}
+	if _, ok := vars["output"]; !ok {
+		if output, _ := runArgs["output"].(string); output != "" {
+			vars["output"] = output
+		}
+	}
+	if len(vars) == 0 {
+		return nil
+	}
+	return vars
+}
+
+func resolveSkillStep(step NLSkillStep, vars map[string]string, skillDir string) NLSkillStep {
+	resolved := step
+	if params, ok := resolveSkillValue(step.Params, vars).(map[string]interface{}); ok {
+		resolved.Params = params
+	} else if step.Params != nil {
+		resolved.Params = map[string]interface{}{}
+	}
+	if resolved.Action == "craft_tool" && len(vars) != 0 {
+		if resolved.Params == nil {
+			resolved.Params = map[string]interface{}{}
+		}
+		for _, key := range []string{"input", "output", "topic"} {
+			if strings.TrimSpace(stringVal(resolved.Params, key)) != "" {
+				continue
+			}
+			if value := strings.TrimSpace(vars[key]); value != "" {
+				resolved.Params[key] = value
+			}
+		}
+	}
+	if workDir, _ := resolved.Params["working_dir"].(string); workDir != "" && !filepath.IsAbs(workDir) && skillDir != "" {
+		resolved.Params["working_dir"] = filepath.Clean(filepath.Join(skillDir, workDir))
+	}
+	return resolved
+}
+
+func resolveSkillValue(value interface{}, vars map[string]string) interface{} {
+	switch typed := value.(type) {
+	case string:
+		return substituteSkillVariables(typed, vars)
+	case map[string]interface{}:
+		resolved := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			resolved[key] = resolveSkillValue(item, vars)
+		}
+		return resolved
+	case []interface{}:
+		resolved := make([]interface{}, len(typed))
+		for i, item := range typed {
+			resolved[i] = resolveSkillValue(item, vars)
+		}
+		return resolved
+	default:
+		return value
+	}
+}
+
+func substituteSkillVariables(command string, vars map[string]string) string {
+	if command == "" {
+		return command
+	}
+	if len(vars) != 0 {
+		keys := make([]string, 0, len(vars))
+		for key := range vars {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			value := quoteSkillInputForShell(vars[key])
+			command = strings.ReplaceAll(command, "{{"+key+"}}", value)
+			command = strings.ReplaceAll(command, "${"+key+"}", value)
+		}
+	}
+	return stripUnresolvedSkillPlaceholders(command)
+}
+
+var unresolvedSkillPlaceholderPattern = regexp.MustCompile(`\{\{[^{}]+\}\}|\$\{[^{}]+\}`)
+
+func stripUnresolvedSkillPlaceholders(text string) string {
+	if text == "" {
+		return text
+	}
+	return unresolvedSkillPlaceholderPattern.ReplaceAllString(text, "")
+}
+
+func quoteSkillInputForShell(input string) string {
+	if input == "" {
+		return "''"
+	}
+	if runtime.GOOS == "windows" {
+		return "'" + strings.ReplaceAll(input, "'", "''") + "'"
+	}
+	return "'" + strings.ReplaceAll(input, "'", `'"'"'`) + "'"
+}
+
 func truncateSkillRunSnippet(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -328,6 +451,58 @@ func truncateSkillRunSnippet(text string) string {
 	return text
 }
 
+func isInstructionOnlySkillEntry(skill *NLSkillEntry) bool {
+	if skill == nil || len(skill.Steps) != 1 {
+		return false
+	}
+	step := skill.Steps[0]
+	if step.Action != "craft_tool" {
+		return false
+	}
+	params := step.Params
+	if len(params) == 0 {
+		return false
+	}
+	instructions, _ := params["instructions"].(string)
+	if strings.TrimSpace(instructions) == "" {
+		return false
+	}
+	if strings.TrimSpace(stringVal(params, "task")) != "" {
+		return false
+	}
+	if strings.TrimSpace(stringVal(params, "output_path")) != "" {
+		return false
+	}
+	if raw, ok := params["expected_artifacts"]; ok {
+		switch typed := raw.(type) {
+		case []string:
+			if len(typed) > 0 {
+				return false
+			}
+		case []interface{}:
+			if len(typed) > 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isInstructionOnlySkillStatus(status *SkillRunStatus) bool {
+	if status == nil || len(status.Steps) != 1 {
+		return false
+	}
+	step := status.Steps[0]
+	if step.Action != "craft_tool" {
+		return false
+	}
+	output := step.Output
+	if output == "" {
+		output = status.Summary.LastOutputSnippet
+	}
+	return strings.Contains(output, "📝 脚本语言:") && strings.Contains(output, "📁 脚本路径:")
+}
+
 func (r *SkillRunner) latestRunSessionID(runID string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -336,6 +511,20 @@ func (r *SkillRunner) latestRunSessionID(runID string) string {
 		return ""
 	}
 	return strings.TrimSpace(run.status.Session.SessionID)
+}
+
+func (r *SkillRunner) templateVarsForRun(runID string) map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	run, ok := r.runs[runID]
+	if !ok || len(run.templateVars) == 0 {
+		return nil
+	}
+	vars := make(map[string]string, len(run.templateVars))
+	for key, value := range run.templateVars {
+		vars[key] = value
+	}
+	return vars
 }
 
 func (r *SkillRunner) resolveStepSessionID(runID string, step NLSkillStep) string {
@@ -381,7 +570,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 		run.status.Steps[i].Status = "running"
 		r.mu.Unlock()
 
-		result, err := r.executeStepWithContext(ctx, run.status.RunID, step, skill.SkillDir)
+		resolvedStep := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir)
+		result, err := r.executeStepWithContext(ctx, run.status.RunID, resolvedStep, skill.SkillDir)
 
 		r.mu.Lock()
 		if err != nil {
@@ -550,13 +740,14 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 			return "", fmt.Errorf("session starter not initialized")
 		}
 		startResult, err := starter.Start(CodingSessionStartRequest{
-			Tool:            tool,
-			ProjectID:       projectID,
-			ProjectPath:     projectPath,
-			Provider:        provider,
-			ResumeSessionID: resumeSessionID,
-			LaunchSource:    RemoteLaunchSourceAI,
-			ParentRunID:     runID,
+			Tool:               tool,
+			ProjectID:          projectID,
+			ProjectPath:        projectPath,
+			Provider:           provider,
+			ResumeSessionID:    resumeSessionID,
+			InjectResumePrompt: false,
+			LaunchSource:       RemoteLaunchSourceAI,
+			ParentRunID:        runID,
 		})
 		if err != nil {
 			return "", err
@@ -769,7 +960,7 @@ func checkFileReferences(skill *NLSkillEntry) error {
 			continue
 		}
 		command, _ := step.Params["command"].(string)
-		if command == "" {
+		if command == "" || strings.Contains(command, "{{") || strings.Contains(command, "${") {
 			continue
 		}
 

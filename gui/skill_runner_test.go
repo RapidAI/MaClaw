@@ -2,9 +2,38 @@ package main
 
 import (
 	"context"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestSkillRunnerStartRun_RejectsSkillWithoutExecutableSteps(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []NLSkillEntry{{
+		Name:   "doc-only",
+		Status: "active",
+		Steps:  nil,
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err = runner.StartRun("doc-only", nil)
+	if err == nil || !strings.Contains(err.Error(), "has no executable steps") {
+		t.Fatalf("expected no executable steps error, got %v", err)
+	}
+}
 
 func TestSkillRunnerExecuteStepWithContext_CraftToolAcceptsLegacyInstructions(t *testing.T) {
 	runner := NewSkillRunner(&SkillExecutor{app: &App{}})
@@ -27,5 +56,142 @@ func TestSkillRunnerExecuteStepWithContext_CraftToolMissingTask(t *testing.T) {
 	}, "")
 	if err == nil || !strings.Contains(err.Error(), "missing task parameter") {
 		t.Fatalf("expected missing task error, got: %v", err)
+	}
+}
+
+func TestIsInstructionOnlySkillEntry(t *testing.T) {
+	if !isInstructionOnlySkillEntry(&NLSkillEntry{Steps: []NLSkillStep{{
+		Action: "craft_tool",
+		Params: map[string]interface{}{"instructions": "# PPTX Generator\n\nGenerate slides."},
+	}}}) {
+		t.Fatal("expected craft_tool with instructions to require artifact verification")
+	}
+	if isInstructionOnlySkillEntry(&NLSkillEntry{Steps: []NLSkillStep{{
+		Action: "craft_tool",
+		Params: map[string]interface{}{"task": "generate slides"},
+	}}}) {
+		t.Fatal("expected structured craft_tool task not to be treated as instruction-only")
+	}
+}
+
+func TestIsInstructionOnlySkillStatus(t *testing.T) {
+	status := &SkillRunStatus{Steps: []StepResult{{
+		Action: "craft_tool",
+		Status: "success",
+		Output: "📝 脚本语言: python\n📁 脚本路径: /tmp/tool.py\n\n✅ 脚本执行成功",
+	}}}
+	if !isInstructionOnlySkillStatus(status) {
+		t.Fatal("expected craft_tool output with script metadata to require artifact verification")
+	}
+}
+
+func TestNormalizeSkillRunVars_ArgsOverrideLegacy(t *testing.T) {
+	got := normalizeSkillRunVars(map[string]interface{}{
+		"args":   map[string]interface{}{"input": "new-in", "output": "new-out"},
+		"input":  "old-in",
+		"output": "old-out",
+	})
+	if got["input"] != "new-in" || got["output"] != "new-out" {
+		t.Fatalf("normalizeSkillRunVars() = %#v, want args values to win", got)
+	}
+}
+
+func TestNormalizeSkillRunVars_IgnoresNonStringArgs(t *testing.T) {
+	got := normalizeSkillRunVars(map[string]interface{}{
+		"args": map[string]interface{}{"count": 3, "enabled": true, "format": "pdf"},
+	})
+	if len(got) != 1 || got["format"] != "pdf" {
+		t.Fatalf("normalizeSkillRunVars() = %#v, want only string args preserved", got)
+	}
+}
+
+func TestResolveSkillStep_ReplacesNestedPlaceholders(t *testing.T) {
+	skillDir := filepath.Join("base", "skill")
+	resolved := resolveSkillStep(NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command":     "printf '%s %s' {{input}} ${output}",
+			"working_dir": "nested",
+			"arguments": map[string]interface{}{
+				"path": "{{input}}",
+			},
+			"items": []interface{}{"${output}", 7},
+		},
+	}, map[string]string{"input": "report.md", "output": "out.pdf"}, skillDir)
+
+	command, _ := resolved.Params["command"].(string)
+	if !strings.Contains(command, "report.md") || !strings.Contains(command, "out.pdf") {
+		t.Fatalf("command = %q, want placeholders replaced", command)
+	}
+	workDir, _ := resolved.Params["working_dir"].(string)
+	wantDir := filepath.Clean(filepath.Join(skillDir, "nested"))
+	if workDir != wantDir {
+		t.Fatalf("working_dir = %q, want %q", workDir, wantDir)
+	}
+	args, _ := resolved.Params["arguments"].(map[string]interface{})
+	if path, _ := args["path"].(string); !strings.Contains(path, "report.md") {
+		t.Fatalf("nested argument path = %q, want replaced input", path)
+	}
+	items, _ := resolved.Params["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("items len = %d, want 2", len(items))
+	}
+	if item0, _ := items[0].(string); !strings.Contains(item0, "out.pdf") {
+		t.Fatalf("items[0] = %q, want replaced output", item0)
+	}
+}
+
+func TestResolveSkillStep_CraftToolInheritsRunArgs(t *testing.T) {
+	resolved := resolveSkillStep(NLSkillStep{
+		Action: "craft_tool",
+		Params: map[string]interface{}{
+			"instructions": "Generate slides.",
+		},
+	}, map[string]string{
+		"output": "out/live_test_deck.pptx",
+		"topic":  "Quarterly product review",
+	}, "")
+	if got, _ := resolved.Params["output"].(string); got != "out/live_test_deck.pptx" {
+		t.Fatalf("output = %q, want propagated run arg", got)
+	}
+	if got, _ := resolved.Params["topic"].(string); got != "Quarterly product review" {
+		t.Fatalf("topic = %q, want propagated run arg", got)
+	}
+}
+
+func TestResolveSkillStep_StripsMissingOptionalPlaceholder(t *testing.T) {
+	resolved := resolveSkillStep(NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "node ./tool.mjs {{input}} {{output}}",
+		},
+	}, map[string]string{"input": "report.md"}, "")
+	command, _ := resolved.Params["command"].(string)
+	if strings.Contains(command, "{{output}}") || strings.Contains(command, "${output}") {
+		t.Fatalf("command = %q, want unresolved output placeholder stripped", command)
+	}
+	if !strings.Contains(command, "report.md") {
+		t.Fatalf("command = %q, want input retained", command)
+	}
+}
+
+func TestSubstituteSkillVariables_LeavesUnknownPlaceholderUntouched(t *testing.T) {
+	got := substituteSkillVariables("echo {{missing}}", map[string]string{"input": "ignored"})
+	if got != "echo " {
+		t.Fatalf("substituteSkillVariables() = %q, want unresolved placeholder removed", got)
+	}
+}
+
+func TestQuoteSkillInputForShell_EscapesQuotes(t *testing.T) {
+	input := "a'b"
+	got := quoteSkillInputForShell(input)
+	if runtime.GOOS == "windows" {
+		if got != "'a''b'" {
+			t.Fatalf("quoteSkillInputForShell() = %q, want %q", got, "'a''b'")
+		}
+		return
+	}
+	if got != `'a'"'"'b'` {
+		t.Fatalf("quoteSkillInputForShell() = %q, want %q", got, `'a'"'"'b'`)
 	}
 }

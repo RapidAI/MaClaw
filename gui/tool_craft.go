@@ -30,34 +30,62 @@ func craftedToolsDir() string {
 //   - skill_name: name for the Skill (optional, auto-generated from task)
 //   - timeout: execution timeout in seconds (optional, default 60, max 300)
 func (h *IMMessageHandler) toolCraftTool(args map[string]interface{}, onProgress ProgressCallback) string {
-	task := stringVal(args, "task")
+	output, _ := executeCraftToolCore(h.app, h.client, args, onProgress)
+	return output
+}
+
+func normalizeCraftToolArgs(args map[string]interface{}) (map[string]interface{}, error) {
+	normalized := make(map[string]interface{}, len(args)+1)
+	for k, v := range args {
+		normalized[k] = v
+	}
+	task := strings.TrimSpace(stringVal(normalized, "task"))
 	if task == "" {
-		return "缺少 task 参数：请描述你需要完成的任务"
+		task = strings.TrimSpace(stringVal(normalized, "instructions"))
+	}
+	if task == "" {
+		return nil, fmt.Errorf("missing task parameter")
+	}
+	if output := strings.TrimSpace(stringVal(normalized, "output")); output != "" {
+		task = strings.TrimSpace(task + "\n\n必须把最终生成文件写到这个精确路径：" + output + "\n不要写到其他默认目录。")
+	}
+	normalized["task"] = task
+	return normalized, nil
+}
+
+func executeCraftToolCore(app *App, client *http.Client, args map[string]interface{}, onProgress ProgressCallback) (string, error) {
+	normalizedArgs, err := normalizeCraftToolArgs(args)
+	if err != nil {
+		return "", err
+	}
+	if app == nil {
+		return "", fmt.Errorf("app not initialized")
+	}
+	cfg := app.GetMaclawLLMConfig()
+	requestTimeout := time.Duration(cfg.EffectiveTimeoutSec()) * time.Second
+	if requestTimeout <= 0 {
+		requestTimeout = 60 * time.Second
+	}
+	if client == nil {
+		client = &http.Client{Timeout: requestTimeout}
 	}
 
-	language := stringVal(args, "language")
+	task := stringVal(normalizedArgs, "task")
+	language := stringVal(normalizedArgs, "language")
 	if language == "" {
 		language = detectScriptLanguage(task)
 	}
 
 	saveAsSkill := true
-	if v, ok := args["save_as_skill"].(bool); ok {
+	if v, ok := normalizedArgs["save_as_skill"].(bool); ok {
 		saveAsSkill = v
 	}
-	// Also handle string "false"
-	if v, ok := args["save_as_skill"].(string); ok && strings.ToLower(v) == "false" {
+	if v, ok := normalizedArgs["save_as_skill"].(string); ok && strings.ToLower(v) == "false" {
 		saveAsSkill = false
 	}
 
-	skillName := stringVal(args, "skill_name")
-
-	timeout := 60
-	if t, ok := args["timeout"].(float64); ok && t > 0 {
-		timeout = int(t)
-		if timeout > 300 {
-			timeout = 300
-		}
-	}
+	skillName := stringVal(normalizedArgs, "skill_name")
+	timeout := resolveCraftToolTimeout(normalizedArgs, task)
 
 	sendProgress := func(text string) {
 		if onProgress != nil {
@@ -65,25 +93,21 @@ func (h *IMMessageHandler) toolCraftTool(args map[string]interface{}, onProgress
 		}
 	}
 
-	// Step 1: Generate the script via LLM.
 	sendProgress("🧠 正在分析任务并生成脚本...")
-	cfg := h.app.GetMaclawLLMConfig()
-	script, err := generateScript(cfg, task, language, h.client)
+	script, err := generateScript(cfg, task, language, client)
 	if err != nil {
-		return fmt.Sprintf("脚本生成失败: %s", err.Error())
+		return fmt.Sprintf("脚本生成失败: %s", err.Error()), err
 	}
 	if strings.TrimSpace(script) == "" {
-		return "LLM 未能生成有效脚本"
+		return "LLM 未能生成有效脚本", fmt.Errorf("LLM 未能生成有效脚本")
 	}
 
-	// Step 2: Save script to disk.
 	sendProgress("💾 正在保存脚本...")
 	scriptPath, err := saveScript(script, language, task)
 	if err != nil {
-		return fmt.Sprintf("脚本保存失败: %s", err.Error())
+		return fmt.Sprintf("脚本保存失败: %s", err.Error()), err
 	}
 
-	// Step 3: Execute the script.
 	sendProgress(fmt.Sprintf("🚀 正在执行脚本 (%s, 超时 %ds)...", language, timeout))
 	output, execErr := executeScript(scriptPath, language, timeout)
 
@@ -101,24 +125,26 @@ func (h *IMMessageHandler) toolCraftTool(args map[string]interface{}, onProgress
 	if execErr != nil {
 		result.WriteString(fmt.Sprintf("\n⚠️ 执行出错: %s\n", execErr.Error()))
 		result.WriteString("脚本已保存，你可以手动修改后重新执行。")
-		return result.String()
+		return result.String(), execErr
 	}
 
 	result.WriteString("\n✅ 脚本执行成功")
-
-	// Step 4: Optionally register as a Skill.
-	if saveAsSkill && h.app.skillExecutor != nil {
+	if saveAsSkill && app.skillExecutor != nil {
 		sendProgress("📦 正在注册为 Skill...")
-		regResult := h.registerCraftedSkill(task, skillName, scriptPath, language)
+		regResult := registerCraftedSkillEntry(app, task, skillName, scriptPath, language)
 		result.WriteString("\n")
 		result.WriteString(regResult)
 	}
 
-	return result.String()
+	return result.String(), nil
 }
 
 // registerCraftedSkill registers a crafted script as a reusable NLSkillEntry.
 func (h *IMMessageHandler) registerCraftedSkill(task, skillName, scriptPath, language string) string {
+	return registerCraftedSkillEntry(h.app, task, skillName, scriptPath, language)
+}
+
+func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language string) string {
 	if skillName == "" {
 		// Auto-generate a short name from the task.
 		skillName = generateSkillName(task)
@@ -145,11 +171,11 @@ func (h *IMMessageHandler) registerCraftedSkill(task, skillName, scriptPath, lan
 		Source:    "crafted",
 	}
 
-	if err := h.app.skillExecutor.Register(entry); err != nil {
+	if err := app.skillExecutor.Register(entry); err != nil {
 		// If name conflicts, try with a suffix.
 		if strings.Contains(err.Error(), "already exists") {
 			entry.Name = skillName + "_" + time.Now().Format("0102_1504")
-			if err2 := h.app.skillExecutor.Register(entry); err2 != nil {
+			if err2 := app.skillExecutor.Register(entry); err2 != nil {
 				return fmt.Sprintf("⚠️ Skill 注册失败: %s", err2.Error())
 			}
 			return fmt.Sprintf("📦 已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name)
@@ -161,22 +187,15 @@ func (h *IMMessageHandler) registerCraftedSkill(task, skillName, scriptPath, lan
 
 // generateScript calls the LLM to produce a script for the given task.
 func generateScript(cfg MaclawLLMConfig, task, language string, client *http.Client) (string, error) {
-	sysPrompt := fmt.Sprintf(`你是一个脚本生成专家。用户会描述一个任务，你需要生成一个 %s 脚本来完成它。
-
-规则：
-- 只输出脚本代码，不要任何解释、markdown 标记或代码块标记
-- 脚本必须是完整可执行的
-- 包含必要的错误处理
-- 如果需要安装依赖，在脚本开头用注释说明，或在脚本中自动安装
-- 输出结果到 stdout，错误到 stderr
-- 脚本应该是幂等的（多次执行结果一致）`, language)
+	sysPrompt := fmt.Sprintf("只输出可执行的%s脚本源码，不要解释，不要 markdown 代码块。", language)
 
 	messages := []interface{}{
 		map[string]string{"role": "system", "content": sysPrompt},
-		map[string]string{"role": "user", "content": fmt.Sprintf("请生成一个 %s 脚本来完成以下任务：\n\n%s", language, task)},
+		map[string]string{"role": "user", "content": task},
 	}
 
-	result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 60*time.Second)
+	requestTimeout := time.Duration(cfg.EffectiveTimeoutSec()) * time.Second
+	result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, requestTimeout)
 	if err != nil {
 		return "", err
 	}
