@@ -634,6 +634,7 @@ func (a *App) UnregisterLocalMCPServer(serverID string) error {
 // SyncLocalMCPServers triggers the local MCP manager to re-read config
 // and start/stop processes accordingly (Wails binding).
 func (a *App) SyncLocalMCPServers() error {
+	a.ensureLocalMCPManager()
 	if a.localMCPManager == nil {
 		return fmt.Errorf("local MCP manager not initialized")
 	}
@@ -643,7 +644,9 @@ func (a *App) SyncLocalMCPServers() error {
 
 // SetLocalMCPAutoStart sets the AutoStart flag for a local MCP server and
 // triggers a sync. When enabled=true the server starts immediately and will
-// auto-start on future app launches. When enabled=false the server is stopped.
+// auto-start on future app launches. When enabled=false the server stays
+// governed by Disabled for the current run, but will not auto-start on the
+// next app launch.
 func (a *App) SetLocalMCPAutoStart(serverID string, enabled bool) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
@@ -652,6 +655,7 @@ func (a *App) SetLocalMCPAutoStart(serverID string, enabled bool) error {
 		return err
 	}
 	// Sync immediately so the server starts/stops now.
+	a.ensureLocalMCPManager()
 	if a.localMCPManager != nil {
 		a.localMCPManager.SyncFromConfig()
 	}

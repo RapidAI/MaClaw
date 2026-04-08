@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLocalMCPManagerSyncFromConfigStartsEnabledServersWithoutAutoStart(t *testing.T) {
@@ -66,6 +67,88 @@ func TestLocalMCPManagerSyncFromConfigStartsEnabledServersWithoutAutoStart(t *te
 	if len(toolSets[0].Tools) != 1 || toolSets[0].Tools[0].Name != "ping" {
 		t.Fatalf("unexpected tools discovered: %#v", toolSets[0].Tools)
 	}
+}
+
+func TestEnsureLocalMCPManagerAutoStartsServersMarkedAutoStart(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("autostart-server", false, true)}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.ensureLocalMCPManager()
+	t.Cleanup(func() {
+		if app.localMCPManager != nil {
+			app.localMCPManager.StopAll()
+		}
+	})
+
+	waitForLocalMCPRunning(t, app.localMCPManager, "autostart-server", true)
+}
+
+func TestEnsureLocalMCPManagerDoesNotAutoStartWithoutAutoStartFlag(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("manual-only-server", false, false)}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.ensureLocalMCPManager()
+	t.Cleanup(func() {
+		if app.localMCPManager != nil {
+			app.localMCPManager.StopAll()
+		}
+	})
+
+	waitForLocalMCPRunning(t, app.localMCPManager, "manual-only-server", false)
+}
+
+func newHelperLocalMCPServerEntry(id string, disabled bool, autoStart bool) LocalMCPServerEntry {
+	return LocalMCPServerEntry{
+		ID:        id,
+		Name:      id,
+		Command:   os.Args[0],
+		Args:      []string{"-test.run=TestLocalMCPHelperProcess", "--", "helper-mcp"},
+		Env:       map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
+		Disabled:  disabled,
+		AutoStart: autoStart,
+	}
+}
+
+func waitForLocalMCPRunning(t *testing.T, manager *LocalMCPManager, serverID string, want bool) {
+	t.Helper()
+	if manager == nil {
+		t.Fatalf("local MCP manager was not initialized")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if manager.IsRunning(serverID) == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	got := manager.IsRunning(serverID)
+	t.Fatalf("local MCP server %s running = %v, want %v", serverID, got, want)
 }
 
 func TestLocalMCPHelperProcess(t *testing.T) {

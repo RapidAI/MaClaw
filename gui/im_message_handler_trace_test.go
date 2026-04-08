@@ -606,6 +606,10 @@ func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"这个 Skill 失败了，我改用别的工具继续完成。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 4:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"我会根据失败原因切换其他工具。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
 			t.Fatalf("unexpected LLM call %d", currentCall)
 		}
@@ -651,7 +655,7 @@ func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
 		Status:      RegToolAvailable,
 		Source:      "test",
 		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
-			return "Skill 执行失败: skill execution stopped at step 1: command failed"
+			return "Skill 执行失败: skill execution stopped at step 1: command failed（run_id=run-2024）"
 		},
 	}); err != nil {
 		t.Fatalf("Register run_skill tool: %v", err)
@@ -671,12 +675,12 @@ func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(requests) < 3 {
-		t.Fatalf("LLM request count = %d, want at least 3", len(requests))
+	if len(requests) < 4 {
+		t.Fatalf("LLM request count = %d, want at least 4", len(requests))
 	}
-	thirdMessages := requests[2].Messages
+	fourthMessages := requests[3].Messages
 	foundRecoverPrompt := false
-	for _, msg := range thirdMessages {
+	for _, msg := range fourthMessages {
 		role, _ := msg["role"].(string)
 		content, _ := msg["content"].(string)
 		if role == "system" && strings.Contains(content, "[Recover 阶段]") && strings.Contains(content, "hf_daily_papers_report") {
@@ -685,7 +689,19 @@ func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
 		}
 	}
 	if !foundRecoverPrompt {
-		t.Fatalf("third request messages = %#v, want recover guidance", thirdMessages)
+		t.Fatalf("fourth request messages = %#v, want recover guidance", fourthMessages)
+	}
+	foundConcreteRunID := false
+	for _, msg := range fourthMessages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role == "system" && strings.Contains(content, `get_skill_run(run_id="run-2024")`) {
+			foundConcreteRunID = true
+			break
+		}
+	}
+	if !foundConcreteRunID {
+		t.Fatalf("fourth request messages = %#v, want concrete run_id guidance", fourthMessages)
 	}
 	view, ok := h.traceService.GetTrace(run.RunID)
 	if !ok {
@@ -703,7 +719,125 @@ func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
 	}
 }
 
-func TestRunAgentLoop_DriftEntersRecoverPhase(t *testing.T) {
+func TestRunAgentLoop_RunningSkillUsesConcreteRunIDGuidanceOnNextRound(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"我先启动这个 Skill。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-run-skill\",\"type\":\"function\",\"function\":{\"name\":\"run_skill\",\"arguments\":\"{\\\"name\\\":\\\"hf_daily_papers_report\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 3:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"我先等一下状态。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 4:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"继续观察 skill 状态。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.NLSkills = []NLSkillEntry{{
+		Name:        "hf_daily_papers_report",
+		Description: "把 HuggingFace Daily Papers 整理成报告并生成文件",
+		Triggers:    []string{"daily papers", "综述", "报告", "pdf"},
+		Steps:       []NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo skill"}}},
+		Status:      "active",
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		Source:      "manual",
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	h.SetToolRegistry(NewToolRegistry())
+	if err := h.registry.Register(RegisteredTool{
+		Name:        "run_skill",
+		Description: "run local skill",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		Source:      "test",
+		HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
+			return "✅ Skill 已启动\n## 运行信息\n- run_id: run-555\n- skill: hf_daily_papers_report\n- status: running\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。"
+		},
+	}); err != nil {
+		t.Fatalf("Register run_skill tool: %v", err)
+	}
+
+	loopCtx := NewLoopContext("chat-skill-running-guidance", 4, server.Client())
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "生成huggingface daily papers的综述，包括方法原理、关键创新、评论等。", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) < 4 {
+		t.Fatalf("LLM request count = %d, want at least 4", len(requests))
+	}
+	fourthMessages := requests[3].Messages
+	foundConcreteRunID := false
+	for _, msg := range fourthMessages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role == "system" && strings.Contains(content, `get_skill_run(run_id="run-555")`) {
+			foundConcreteRunID = true
+			break
+		}
+	}
+	if !foundConcreteRunID {
+		t.Fatalf("fourth request messages = %#v, want concrete running run_id guidance", fourthMessages)
+	}
+}
+
+func TestRunAgentLoop_DriftDetectionEntersRecoverPhase(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -1779,6 +1913,103 @@ func TestFinalizeTraceResult_PreservesVisibleFileOnlyResult(t *testing.T) {
 	}
 	if len(resp.Actions) != 0 {
 		t.Fatalf("Actions = %#v, want none", resp.Actions)
+	}
+}
+
+func TestLooksLikePromiseOnlyDeliverableReply(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "promise only chinese", text: "好的，我马上整理一份报告并发给你。", want: true},
+		{name: "completed summary chinese", text: "已完成，以下是总结：本周趋势聚焦多模态与小模型。", want: false},
+		{name: "completed summary english", text: "Here is the summary of the report.", want: false},
+		{name: "results below english", text: "Completed. Results below: multimodal agents and compact models.", want: false},
+		{name: "organized for user chinese", text: "我已经为你整理好了，结果如下：重点是 Agent 与多模态。", want: false},
+		{name: "summary first then continue generate", text: "我会先给你总结，再继续生成 PDF 文件。", want: true},
+		{name: "completed but still promises send", text: "报告已生成，马上发你。", want: true},
+		{name: "english future send promise", text: "I will prepare the document and send you the PDF shortly.", want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := looksLikePromiseOnlyDeliverableReply(tc.text); got != tc.want {
+				t.Fatalf("looksLikePromiseOnlyDeliverableReply(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunAgentLoop_CompletedSummaryReplyDoesNotTriggerDeliverableRecover(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var callNum int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch callNum {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"已完成，以下是总结：2025 年 AI 趋势集中在多模态、Agent 与小型化部署。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", callNum)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "生成 pdf 发我"})
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if !strings.Contains(resp.Text, "已完成，以下是总结") {
+		t.Fatalf("resp.Text = %q, want completed summary text", resp.Text)
+	}
+	if callNum != 1 {
+		t.Fatalf("expected no extra round after completed summary, callNum=%d", callNum)
+	}
+	view, ok := h.traceService.GetTrace(resp.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	for _, evt := range view.Events {
+		if evt.Kind == "delivery.nudged" {
+			t.Fatalf("events = %#v, did not expect delivery.nudged", view.Events)
+		}
+		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "deliverable_pending") {
+			t.Fatalf("events = %#v, did not expect deliverable_pending recover", view.Events)
+		}
 	}
 }
 
