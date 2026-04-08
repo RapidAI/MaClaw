@@ -13,7 +13,7 @@ type Props = {
 
 export function RemoteStatusCards({ cards }: Props) {
     return (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '10px', marginBottom: '14px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
             {cards.map((item) => (
                 <div key={item.label} style={remoteCardStyle}>
                     <div style={remoteMetaLabelStyle}>{item.label}</div>
