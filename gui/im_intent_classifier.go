@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 type taskIntent string
@@ -17,9 +23,12 @@ const (
 )
 
 type taskIntentResult struct {
-	Intent   taskIntent
-	Matched  string
-	Evidence []string
+	Intent     taskIntent
+	Matched    string
+	Evidence   []string
+	Reason     string
+	Confidence float64
+	Source     string
 }
 
 var sshKeywords = []string{
@@ -37,6 +46,13 @@ var ambiguousKeywords = []string{
 }
 
 var ipv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+
+type llmIntentClassification struct {
+	Intent     string   `json:"intent"`
+	Confidence float64  `json:"confidence"`
+	Reason     string   `json:"reason"`
+	Evidence   []string `json:"evidence"`
+}
 
 func classifyTaskIntent(text string) taskIntentResult {
 	msg := strings.ToLower(strings.TrimSpace(text))
@@ -60,29 +76,309 @@ func classifyTaskIntent(text string) taskIntentResult {
 	switch {
 	case hasNonCoding && hasCoding && !hasSSH:
 		if hasOnlyWeakCodingEvidence(codingHits) {
-			return taskIntentResult{Intent: intentNonCoding, Matched: nonCodingHits[0], Evidence: combineEvidence(nonCodingHits, codingHits)}
+			return taskIntentResult{Intent: intentNonCoding, Matched: nonCodingHits[0], Evidence: combineEvidence(nonCodingHits, codingHits), Source: "rules"}
 		}
-		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(nonCodingHits, codingHits), Evidence: combineEvidence(nonCodingHits, codingHits)}
+		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(nonCodingHits, codingHits), Evidence: combineEvidence(nonCodingHits, codingHits), Source: "rules"}
 	case hasCoding && !hasSSH && !hasAmbiguous:
-		return taskIntentResult{Intent: intentCoding, Matched: codingHits[0], Evidence: codingHits}
+		return taskIntentResult{Intent: intentCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
 	case hasSSH && !hasCoding && !hasNonCoding:
-		return taskIntentResult{Intent: intentSSH, Matched: sshHits[0], Evidence: sshHits}
+		return taskIntentResult{Intent: intentSSH, Matched: sshHits[0], Evidence: sshHits, Source: "rules"}
 	case hasNonCoding && !hasCoding && !hasSSH:
-		return taskIntentResult{Intent: intentNonCoding, Matched: nonCodingHits[0], Evidence: nonCodingHits}
+		return taskIntentResult{Intent: intentNonCoding, Matched: nonCodingHits[0], Evidence: nonCodingHits, Source: "rules"}
 	case hasSSH && hasCoding:
-		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(ambiguousHits, sshHits, codingHits), Evidence: combineEvidence(sshHits, codingHits, ambiguousHits)}
+		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(ambiguousHits, sshHits, codingHits), Evidence: combineEvidence(sshHits, codingHits, ambiguousHits), Source: "rules"}
 	case hasAmbiguous:
-		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(ambiguousHits, sshHits, codingHits, nonCodingHits), Evidence: combineEvidence(ambiguousHits, sshHits, codingHits, nonCodingHits)}
+		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(ambiguousHits, sshHits, codingHits, nonCodingHits), Evidence: combineEvidence(ambiguousHits, sshHits, codingHits, nonCodingHits), Source: "rules"}
 	case hasSSH:
-		return taskIntentResult{Intent: intentSSH, Matched: sshHits[0], Evidence: sshHits}
+		return taskIntentResult{Intent: intentSSH, Matched: sshHits[0], Evidence: sshHits, Source: "rules"}
 	case hasNonCoding:
-		return taskIntentResult{Intent: intentNonCoding, Matched: nonCodingHits[0], Evidence: nonCodingHits}
+		return taskIntentResult{Intent: intentNonCoding, Matched: nonCodingHits[0], Evidence: nonCodingHits, Source: "rules"}
 	case hasCoding:
-		return taskIntentResult{Intent: intentCoding, Matched: codingHits[0], Evidence: codingHits}
+		return taskIntentResult{Intent: intentCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
 	default:
-		return taskIntentResult{Intent: intentAmbiguous}
+		return taskIntentResult{Intent: intentAmbiguous, Source: "rules"}
 	}
 }
+
+func shouldRequireExecutionConfirmationForIntent(msg IMUserMessage, pending *pendingConfirmation, intent taskIntentResult) bool {
+	if msg.IsBackground || pending != nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(msg.Text)
+	if trimmed == "" || !looksLikeFreshTaskRequest(trimmed) {
+		return false
+	}
+	return intent.Intent == intentCoding || intent.Intent == intentSSH || intent.Intent == intentAmbiguous
+}
+
+func (h *IMMessageHandler) classifyTaskIntentForExecution(text string, attachments []MessageAttachment, httpClient *http.Client) taskIntentResult {
+	fallback := classifyTaskIntent(text)
+	if h == nil || h.app == nil || httpClient == nil {
+		return fallback
+	}
+	cfg := h.app.GetMaclawLLMConfig()
+	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return fallback
+	}
+	llmResult, err := h.classifyTaskIntentWithLLM(cfg, text, attachments, httpClient)
+	if err != nil {
+		return fallback
+	}
+	if llmResult.Confidence < 0.6 {
+		if fallback.Intent != intentAmbiguous && fallback.Intent != intentUnknown {
+			return fallback
+		}
+		llmResult.Intent = intentAmbiguous
+		if strings.TrimSpace(llmResult.Reason) == "" {
+			llmResult.Reason = "模型置信度不足，保守降级为 ambiguous"
+		}
+		return llmResult
+	}
+	return llmResult
+}
+
+func (h *IMMessageHandler) classifyTaskIntentWithLLM(cfg MaclawLLMConfig, text string, attachments []MessageAttachment, httpClient *http.Client) (taskIntentResult, error) {
+	messages := buildIntentClassifierMessages(text, attachments)
+	parsed, err := h.requestIntentClassification(cfg, messages, httpClient)
+	if err != nil {
+		return taskIntentResult{}, err
+	}
+	return normalizeIntentClassification(parsed)
+}
+
+func buildIntentClassifierMessages(text string, attachments []MessageAttachment) []interface{} {
+	payload := map[string]interface{}{
+		"text":             strings.TrimSpace(text),
+		"has_attachments":  len(attachments) > 0,
+		"attachment_types": summarizeAttachmentTypes(attachments),
+		"attachment_names": summarizeAttachmentNames(attachments),
+	}
+	payloadJSON, _ := json.Marshal(payload)
+	return []interface{}{
+		map[string]interface{}{"role": "system", "content": intentClassifierSystemPrompt},
+		map[string]interface{}{"role": "user", "content": string(payloadJSON)},
+	}
+}
+
+func summarizeAttachmentTypes(attachments []MessageAttachment) []string {
+	if len(attachments) == 0 {
+		return nil
+	}
+	types := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		kind := strings.TrimSpace(strings.ToLower(attachment.Type))
+		if kind == "" && strings.TrimSpace(attachment.MimeType) != "" {
+			kind = strings.TrimSpace(strings.ToLower(strings.SplitN(attachment.MimeType, "/", 2)[0]))
+		}
+		if kind == "" {
+			kind = "file"
+		}
+		types = appendIfMissing(types, kind)
+	}
+	return types
+}
+
+func summarizeAttachmentNames(attachments []MessageAttachment) []string {
+	if len(attachments) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		name := strings.TrimSpace(attachment.FileName)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+		if len(names) >= 4 {
+			break
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+func (h *IMMessageHandler) requestIntentClassification(cfg MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+	if strings.EqualFold(strings.TrimSpace(cfg.Protocol), "anthropic") {
+		return h.requestIntentClassificationAnthropic(cfg, messages, httpClient)
+	}
+	return h.requestIntentClassificationOpenAI(cfg, messages, httpClient)
+}
+
+func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	responseFormat := map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name": "task_intent_classification",
+			"schema": intentClassifierJSONSchema,
+		},
+	}
+	req, body, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
+		Stream:         false,
+		ResponseFormat: responseFormat,
+	})
+	if err != nil {
+		return llmIntentClassification{}, err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return llmIntentClassification{}, fmt.Errorf("[%s] %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return llmIntentClassification{}, dumpLLMContext(resp.StatusCode, "intent classify request failed", body, h.app.GetTempDir())
+	}
+	parsedResp, err := llm.ParseNonStreamOpenAIResponse(resp)
+	if err != nil {
+		return llmIntentClassification{}, err
+	}
+	return decodeIntentClassificationContent(firstLLMResponseText(parsedResp))
+}
+
+func (h *IMMessageHandler) requestIntentClassificationAnthropic(cfg MaclawLLMConfig, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+	resp, err := h.doAnthropicLLMRequest(cfg, messages, nil, httpClient)
+	if err != nil {
+		return llmIntentClassification{}, err
+	}
+	return decodeIntentClassificationContent(firstLLMResponseText(resp))
+}
+
+func firstLLMResponseText(resp *llm.Response) string {
+	if resp == nil || len(resp.Choices) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(resp.Choices[0].Message.Content)
+}
+
+func decodeIntentClassificationContent(content string) (llmIntentClassification, error) {
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return llmIntentClassification{}, fmt.Errorf("empty intent classification response")
+	}
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}")
+	if start >= 0 && end > start {
+		content = content[start : end+1]
+	}
+	var parsed llmIntentClassification
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return llmIntentClassification{}, err
+	}
+	return parsed, nil
+}
+
+func normalizeIntentClassification(parsed llmIntentClassification) (taskIntentResult, error) {
+	intent := normalizeTaskIntent(parsed.Intent)
+	if intent == intentUnknown {
+		return taskIntentResult{}, fmt.Errorf("unknown intent %q", parsed.Intent)
+	}
+	evidence := normalizeIntentEvidence(parsed.Evidence)
+	matched := ""
+	if len(evidence) > 0 {
+		matched = evidence[0]
+	}
+	reason := strings.TrimSpace(parsed.Reason)
+	if matched == "" && reason != "" {
+		matched = reason
+	}
+	confidence := parsed.Confidence
+	if confidence < 0 {
+		confidence = 0
+	}
+	if confidence > 1 {
+		confidence = 1
+	}
+	return taskIntentResult{
+		Intent:     intent,
+		Matched:    matched,
+		Evidence:   evidence,
+		Reason:     reason,
+		Confidence: confidence,
+		Source:     "llm",
+	}, nil
+}
+
+func normalizeTaskIntent(raw string) taskIntent {
+	switch taskIntent(strings.TrimSpace(strings.ToLower(raw))) {
+	case intentCoding:
+		return intentCoding
+	case intentSSH:
+		return intentSSH
+	case intentNonCoding:
+		return intentNonCoding
+	case intentAmbiguous:
+		return intentAmbiguous
+	default:
+		return intentUnknown
+	}
+}
+
+func normalizeIntentEvidence(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		normalized = appendIfMissing(normalized, trimmed)
+		if len(normalized) >= 4 {
+			break
+		}
+	}
+	return normalized
+}
+
+var intentClassifierJSONSchema = map[string]interface{}{
+	"type":                 "object",
+	"additionalProperties": false,
+	"properties": map[string]interface{}{
+		"intent": map[string]interface{}{
+			"type": "string",
+			"enum": []string{"coding", "ssh", "non_coding", "ambiguous"},
+		},
+		"confidence": map[string]interface{}{
+			"type":    "number",
+			"minimum": 0,
+			"maximum": 1,
+		},
+		"reason": map[string]interface{}{"type": "string"},
+		"evidence": map[string]interface{}{
+			"type":     "array",
+			"maxItems": 4,
+			"items": map[string]interface{}{
+				"type": "string",
+			},
+		},
+	},
+	"required": []string{"intent", "confidence", "reason", "evidence"},
+}
+
+const intentClassifierSystemPrompt = `你是一个任务执行方式分类器，只负责判断当前请求应该归类到哪种执行路径。
+
+分类目标：
+- coding：明确需要修改代码、写代码、调试、修复 bug、实现功能、处理项目源码
+- ssh：明确需要登录服务器、查看线上日志、远程执行命令、重启服务、操作远端主机
+- non_coding：不需要编程会话或 ssh，典型如资料整理、翻译、总结、知识库录入、PPT/PDF/报告、截图理解与分析
+- ambiguous：信息不足，或同时像 coding 与 ssh，无法安全决定执行路径
+
+规则：
+- 这是执行方式分类，不是主题分类。
+- 如果请求是在让助手理解、分析、总结截图或附件内容，而不是要求修改代码或登录服务器，优先判为 non_coding。
+- 只有在明确提到改代码、修 bug、实现功能、修改项目时，才判为 coding。
+- 只有在明确提到服务器、ssh、日志、部署环境、远程命令时，才判为 ssh。
+- 信息不足时保守输出 ambiguous。
+- 只输出 JSON，不要输出任何额外解释。
+`
 
 func hasOnlyWeakCodingEvidence(hits []string) bool {
 	if len(hits) == 0 {

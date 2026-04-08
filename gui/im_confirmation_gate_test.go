@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -79,6 +82,105 @@ func TestHandleIMMessageWithProgressAndStream_PresentationTaskSkipsCodingConfirm
 	}
 	if got := classifyTaskIntent("生成宣传PPT"); got.Intent != intentNonCoding {
 		t.Fatalf("expected presentation task to classify as non-coding, got %+v", got)
+	}
+}
+
+func TestHandleIMMessageWithProgressAndStream_ScreenshotTaskUsesLLMAndSkipsConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"non_coding\",\"confidence\":0.96,\"reason\":\"用户在让助手理解截图并整理宣传材料，不涉及代码或服务器\",\"evidence\":[\"截图分析\",\"宣传PPT\"]}"}}]}`)
+	}))
+	defer server.Close()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.UIMode = "pro"
+	cfg.Projects = []ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
+	cfg.CurrentProject = "p1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
+		UserID:   "u1",
+		Platform: "desktop",
+		Text:     "搜索驱动开发网马勇的资料，使用skill生成精美的宣传ppt",
+		Attachments: []MessageAttachment{
+			{Type: "image", FileName: "screen.png", MimeType: "image/png"},
+		},
+	}, nil, nil, nil, nil)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Confirmation != nil {
+		t.Fatalf("expected screenshot task to skip confirmation, got %+v", resp.Confirmation)
+	}
+	if got := h.confirmationStore.get("u1"); got != nil {
+		t.Fatalf("expected no pending confirmation, got %+v", got)
+	}
+}
+
+func TestHandleIMMessageWithProgressAndStream_FallbackToRulesOnLLMFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.UIMode = "pro"
+	cfg.Projects = []ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
+	cfg.CurrentProject = "p1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
+		UserID:   "u1",
+		Platform: "desktop",
+		Text:     "帮我修复这个项目里的登录 bug 并修改代码",
+	}, nil, nil, nil, nil)
+	if resp == nil || resp.Confirmation == nil {
+		t.Fatalf("expected fallback confirmation, got %+v", resp)
+	}
+	if resp.Confirmation.TaskType != "coding" {
+		t.Fatalf("expected fallback to coding confirmation, got %+v", resp.Confirmation)
 	}
 }
 

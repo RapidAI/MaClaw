@@ -607,15 +607,17 @@ func (a *App) ensureLocalMCPManager() {
 	if a.toolDefGenerator != nil {
 		a.toolDefGenerator.SetLocalMCPManager(a.localMCPManager)
 	}
-	hasAutoStart := false
-	for _, e := range a.mcpRegistry.ListLocalServers() {
-		if !e.Disabled && e.AutoStart {
-			hasAutoStart = true
-			break
+}
+
+func (a *App) autoStartLocalMCPServers(entries []LocalMCPServerEntry) {
+	for _, server := range entries {
+		if !server.Disabled && server.AutoStart {
+			a.ensureLocalMCPManager()
+			if a.localMCPManager != nil {
+				go a.localMCPManager.SyncFromConfig()
+			}
+			return
 		}
-	}
-	if hasAutoStart {
-		go a.localMCPManager.SyncFromConfig()
 	}
 }
 
@@ -1019,6 +1021,8 @@ func (a *App) startup(ctx context.Context) {
 			mc := a.getOrCreateCompressor()
 			mc.Start()
 		}
+		// Auto-start local MCP servers that are enabled for app launch.
+		a.autoStartLocalMCPServers(config.LocalMCPServers)
 		// Auto-start free proxy if "免费" provider is selected.
 		go a.ensureFreeProxyIfNeeded()
 		// Do not eagerly preload the embedding model on startup. Loading or

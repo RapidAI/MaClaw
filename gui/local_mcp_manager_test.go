@@ -69,7 +69,7 @@ func TestLocalMCPManagerSyncFromConfigStartsEnabledServersWithoutAutoStart(t *te
 	}
 }
 
-func TestEnsureLocalMCPManagerAutoStartsServersMarkedAutoStart(t *testing.T) {
+func TestAutoStartLocalMCPServersStartsServersMarkedAutoStart(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -85,7 +85,7 @@ func TestEnsureLocalMCPManagerAutoStartsServersMarkedAutoStart(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	app.ensureLocalMCPManager()
+	app.autoStartLocalMCPServers(cfg.LocalMCPServers)
 	t.Cleanup(func() {
 		if app.localMCPManager != nil {
 			app.localMCPManager.StopAll()
@@ -95,7 +95,7 @@ func TestEnsureLocalMCPManagerAutoStartsServersMarkedAutoStart(t *testing.T) {
 	waitForLocalMCPRunning(t, app.localMCPManager, "autostart-server", true)
 }
 
-func TestEnsureLocalMCPManagerDoesNotAutoStartWithoutAutoStartFlag(t *testing.T) {
+func TestAutoStartLocalMCPServersDoesNotStartWithoutAutoStartFlag(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -111,14 +111,46 @@ func TestEnsureLocalMCPManagerDoesNotAutoStartWithoutAutoStartFlag(t *testing.T)
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	app.ensureLocalMCPManager()
+	app.autoStartLocalMCPServers(cfg.LocalMCPServers)
 	t.Cleanup(func() {
 		if app.localMCPManager != nil {
 			app.localMCPManager.StopAll()
 		}
 	})
 
+	if app.localMCPManager == nil {
+		return
+	}
 	waitForLocalMCPRunning(t, app.localMCPManager, "manual-only-server", false)
+}
+
+func TestAutoStartLocalMCPServersDoesNotStartDisabledServer(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("disabled-autostart-server", true, true)}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.autoStartLocalMCPServers(cfg.LocalMCPServers)
+	t.Cleanup(func() {
+		if app.localMCPManager != nil {
+			app.localMCPManager.StopAll()
+		}
+	})
+
+	if app.localMCPManager == nil {
+		return
+	}
+	waitForLocalMCPRunning(t, app.localMCPManager, "disabled-autostart-server", false)
 }
 
 func newHelperLocalMCPServerEntry(id string, disabled bool, autoStart bool) LocalMCPServerEntry {

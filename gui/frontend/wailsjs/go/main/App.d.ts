@@ -205,6 +205,8 @@ export function UnregisterLocalMCPServer(arg1:string):Promise<void>;
 
 export function SyncLocalMCPServers():Promise<void>;
 
+export function SetLocalMCPAutoStart(arg1:string,arg2:boolean):Promise<void>;
+
 export function GetLocalMCPServerStatuses():Promise<Array<any>>;
 
 // MaClaw LLM configuration bindings

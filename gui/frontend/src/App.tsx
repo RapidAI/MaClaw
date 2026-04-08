@@ -639,6 +639,13 @@ const translations: any = {
         "mcpAddEnvVar": "+ Add Env Var",
         "mcpSubmitting": "Submitting...",
         "mcpSave": "Save",
+        "mcpAutoStartOn": "Auto-start On",
+        "mcpAutoStartOff": "Auto-start Off",
+        "mcpAutoStartStatus": "Startup",
+        "mcpAutoStartEnabled": "Auto-start enabled",
+        "mcpAutoStartDisabled": "Auto-start disabled",
+        "mcpAutoStartDisabledHint": "Enable this server before changing auto-start",
+        "mcpAutoStartCheckbox": "Start automatically when the app launches",
         "mcpServersRegistered": "registered MCP server(s)",
         "mcpRegisterServer": "+ Register MCP Server",
         "mcpNoRemoteServers": "No registered MCP Servers",
@@ -1076,6 +1083,13 @@ const translations: any = {
         "mcpAddEnvVar": "+ 添加环境变量",
         "mcpSubmitting": "提交中...",
         "mcpSave": "保存",
+        "mcpAutoStartOn": "开机自启开",
+        "mcpAutoStartOff": "开机自启关",
+        "mcpAutoStartStatus": "启动时",
+        "mcpAutoStartEnabled": "启动时自动启动",
+        "mcpAutoStartDisabled": "启动时不自动启动",
+        "mcpAutoStartDisabledHint": "请先启用该服务，再设置自动启动",
+        "mcpAutoStartCheckbox": "程序启动时自动启动该服务",
         "mcpServersRegistered": "个已注册 MCP Server",
         "mcpRegisterServer": "+ 注册 MCP Server",
         "mcpNoRemoteServers": "暂无已注册的 MCP Server",
@@ -1507,6 +1521,13 @@ const translations: any = {
         "mcpAddEnvVar": "+ 新增環境變數",
         "mcpSubmitting": "提交中...",
         "mcpSave": "儲存",
+        "mcpAutoStartOn": "開機自啟開",
+        "mcpAutoStartOff": "開機自啟關",
+        "mcpAutoStartStatus": "啟動時",
+        "mcpAutoStartEnabled": "啟動時自動啟動",
+        "mcpAutoStartDisabled": "啟動時不自動啟動",
+        "mcpAutoStartDisabledHint": "請先啟用該服務，再設定自動啟動",
+        "mcpAutoStartCheckbox": "程式啟動時自動啟動該服務",
         "mcpServersRegistered": "個已註冊 MCP Server",
         "mcpRegisterServer": "+ 註冊 MCP Server",
         "mcpNoRemoteServers": "暫無已註冊的 MCP Server",
@@ -3434,7 +3455,7 @@ ${instruction}`;
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: isLiteMode ? '60px' : '180px' } as any}>
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: isLiteMode ? '60px' : '156px' } as any}>
                 {/* Left Navigation Strip */}
                 <div style={{
                     width: '60px',
@@ -3607,10 +3628,10 @@ ${instruction}`;
                 </div>
 
                 {/* Right Tool List */}
-                <div style={{ flex: 1, padding: '10px', overflowY: 'auto', backgroundColor: '#fafbff', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column' }}>
-                    <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '0 auto 8px', flexShrink: 0, display: isLiteMode ? 'none' : undefined }}></div>
-                    <div style={{ flex: 1, display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                    <div className="tool-grid" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '6px' }}>
+                <div style={{ flex: 1, padding: '5px 4px 4px', overflowY: 'auto', backgroundColor: '#fafbff', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', minHeight: 0 }}>
+                    <div style={{ width: '72%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '0 auto 4px', flexShrink: 0, display: isLiteMode ? 'none' : undefined }}></div>
+                    <div style={{ flex: 1, minHeight: 0, display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                    <div className="tool-grid" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2px' }}>
                         <div className={`sidebar-item ${navTab === 'claude' ? 'active' : ''}`} onClick={() => switchTool('claude')}>
                             <span className="sidebar-icon">
                                 <img src={claudecodeIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Claude" />
@@ -3670,73 +3691,52 @@ ${instruction}`;
                     </div>
 
                     {/* Status dashboard */}
-                    <div style={{ flexShrink: 0, padding: '0 10px 4px', marginTop: '8px' }}>
-                        <div style={{ width: '86%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '7px auto' }}></div>
-                        <div style={{ display: 'grid', gap: '10px' }}>
-                            <div style={{ padding: '10px 10px 9px', borderRadius: '12px', background: 'linear-gradient(180deg, rgba(255,255,255,0.92), rgba(247,248,255,0.88))', border: '1px solid rgba(212, 212, 247, 0.78)', boxShadow: '0 4px 14px rgba(99, 102, 241, 0.08)' }}>
-                                <div style={{ marginBottom: '8px', fontWeight: 700, color: '#5f5f5f', fontSize: '0.7rem', letterSpacing: '0.01em' }}>
-                                    {lang === 'zh-Hans' ? '系统状态' : lang === 'zh-Hant' ? '系統狀態' : 'Status'}
-                                </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '6px' }}>
-                                    {[
-                                        { label: 'LLM', on: maclawLLMOnline },
-                                        { label: lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet', on: clawNetRunning },
-                                        { label: lang === 'zh-Hans' ? '移动端' : lang === 'zh-Hant' ? '行動端' : 'Mobile', on: !!remoteActivationStatus?.activated },
-                                        { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected', link: 'im' },
-                                    ].map(({ label, on, link }) => (
-                                        <div
-                                            key={label}
-                                            style={{
-                                                display: 'grid',
-                                                gridTemplateColumns: 'auto minmax(0, 1fr) auto',
-                                                alignItems: 'center',
-                                                gap: '8px',
-                                                minWidth: 0,
-                                                padding: '7px 8px',
-                                                borderRadius: '9px',
-                                                background: on ? 'rgba(240, 253, 244, 0.85)' : 'rgba(255,255,255,0.82)',
-                                                border: on ? '1px solid rgba(134, 239, 172, 0.95)' : '1px solid rgba(212, 212, 247, 0.55)',
-                                                boxShadow: on ? '0 1px 2px rgba(34, 197, 94, 0.08)' : '0 1px 2px rgba(99, 102, 241, 0.05)',
-                                                cursor: link ? 'pointer' : undefined,
-                                            }}
-                                            onClick={link ? () => { setNavTab('settings'); setSettingsTab(link as any); } : undefined}
-                                            title={link && !on ? (lang?.startsWith('zh') ? '点击配置' : 'Click to configure') : undefined}
-                                        >
-                                            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: on ? '#22c55e' : '#cbd5e1', display: 'inline-block', boxShadow: on ? '0 0 0 3px rgba(34, 197, 94, 0.16)' : 'none' }}></span>
-                                            <span style={{ minWidth: 0, color: '#374151', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.62rem' }}>{label}</span>
-                                            <span style={{ color: on ? '#166534' : '#6b7280', background: on ? 'rgba(187, 247, 208, 0.95)' : 'rgba(229, 231, 235, 0.95)', border: on ? '1px solid rgba(134, 239, 172, 0.95)' : '1px solid rgba(209, 213, 219, 0.95)', fontSize: '0.56rem', whiteSpace: 'nowrap', fontWeight: 800, padding: '2px 7px', borderRadius: '999px', justifySelf: 'end' }}>
-                                                {on ? (lang?.startsWith('zh') ? '在线' : 'Online') : (lang?.startsWith('zh') ? '离线' : 'Offline')}
-                                            </span>
-                                        </div>
-                                    ))}
-                                </div>
+                    <div style={{ flexShrink: 0, padding: '0 1px 0', marginTop: '0' }}>
+                        <div style={{ width: '48%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(225, 228, 232, 0.75), transparent)', margin: '1px auto 2px' }}></div>
+                        <div style={{ width: '76px', margin: '0 auto', padding: '2px 2px', borderRadius: '5px', background: 'rgba(255,255,255,0.78)', border: '1px solid rgba(225, 228, 232, 0.72)', minWidth: 0, boxShadow: 'none' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '2px', marginBottom: '2px' }}>
+                                {[
+                                    { label: 'LLM', on: maclawLLMOnline },
+                                    { label: lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'Net', on: clawNetRunning },
+                                    { label: lang === 'zh-Hans' ? '移动' : lang === 'zh-Hant' ? '移動' : 'Mob', on: !!remoteActivationStatus?.activated },
+                                    { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected', link: 'im' },
+                                ].map(({ label, on, link }) => (
+                                    <div
+                                        key={label}
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            gap: '2px',
+                                            minWidth: 0,
+                                            padding: '2px 0',
+                                            borderRadius: '4px',
+                                            background: on ? 'rgba(247, 248, 250, 0.92)' : 'rgba(247, 248, 250, 0.7)',
+                                            border: '1px solid rgba(225, 228, 232, 0.72)',
+                                            cursor: link ? 'pointer' : undefined,
+                                        }}
+                                        onClick={link ? () => { setNavTab('settings'); setSettingsTab(link as any); } : undefined}
+                                        title={link && !on ? (lang?.startsWith('zh') ? '点击配置' : 'Click to configure') : undefined}
+                                    >
+                                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: on ? '#b14df0' : 'rgba(139, 149, 165, 0.65)', boxShadow: on ? '0 0 4px rgba(177, 77, 240, 0.35)' : 'none', display: 'inline-block' }}></span>
+                                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.42rem', color: on ? 'var(--text-color)' : 'var(--text-secondary)', fontWeight: 600 }}>{label}</span>
+                                    </div>
+                                ))}
                             </div>
-                            <div style={{ padding: '10px 10px 10px', borderRadius: '12px', background: 'linear-gradient(180deg, rgba(255,255,255,0.94), rgba(247,248,255,0.9))', border: '1px solid rgba(212, 212, 247, 0.82)', minWidth: 0, boxShadow: '0 4px 14px rgba(99, 102, 241, 0.08)' }}>
-                                <div style={{ color: '#6b7280', fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.01em', marginBottom: '5px' }}>
-                                    {lang === 'zh-Hans' ? 'Token 用量' : lang === 'zh-Hant' ? 'Token 用量' : 'Token Usage'}
-                                </div>
-                                <div style={{ color: '#374151', fontWeight: 800, fontSize: '0.66rem', marginBottom: '10px', lineHeight: 1.35, wordBreak: 'break-word' }} title={sidebarCurrentProviderTokenUsage.provider || (lang === 'zh-Hans' ? '当前服务商' : lang === 'zh-Hant' ? '當前服務商' : 'Current Provider')}>
-                                    {sidebarCurrentProviderTokenUsage.provider || (lang === 'zh-Hans' ? '当前服务商' : lang === 'zh-Hant' ? '當前服務商' : 'Current Provider')}
-                                </div>
-                                <div style={{ display: 'grid', gap: '7px' }}>
-                                    {[
-                                        { label: lang === 'zh-Hans' ? '输入' : lang === 'zh-Hant' ? '輸入' : 'In', value: sidebarCurrentProviderTokenUsage.input, color: '#2563eb' },
-                                        { label: lang === 'zh-Hans' ? '输出' : lang === 'zh-Hant' ? '輸出' : 'Out', value: sidebarCurrentProviderTokenUsage.output, color: '#7c3aed' },
-                                        { label: lang === 'zh-Hans' ? '总计' : lang === 'zh-Hant' ? '總計' : 'Total', value: sidebarCurrentProviderTokenUsage.total, color: '#111827', bold: true },
-                                    ].map(({ label, value, color, bold }) => (
-                                        <div key={label} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: '12px', minWidth: 0, padding: '4px 0' }}>
-                                            <div style={{ fontSize: '0.6rem', color: '#6b7280', whiteSpace: 'nowrap', fontWeight: 700 }}>{label}</div>
-                                            <div style={{ color, fontWeight: bold ? 800 : 700, fontSize: bold ? '0.78rem' : '0.7rem', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', justifySelf: 'end', letterSpacing: '0.01em' }} title={value.toLocaleString()}>
-                                                {value.toLocaleString()}
-                                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2px' }}>
+                                {[
+                                    { label: lang === 'zh-Hans' ? '入' : lang === 'zh-Hant' ? '入' : 'In', value: sidebarCurrentProviderTokenUsage.input, tone: 'muted' },
+                                    { label: lang === 'zh-Hans' ? '出' : lang === 'zh-Hant' ? '出' : 'Out', value: sidebarCurrentProviderTokenUsage.output, tone: 'muted' },
+                                    { label: lang === 'zh-Hans' ? '总' : lang === 'zh-Hant' ? '總' : 'All', value: sidebarCurrentProviderTokenUsage.total, tone: 'primary', bold: true },
+                                ].map(({ label, value, tone, bold }) => (
+                                    <div key={label} style={{ minWidth: 0, borderRadius: '4px', background: 'rgba(247, 248, 250, 0.74)', border: '1px solid rgba(225, 228, 232, 0.72)', padding: '3px 3px', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: '4px' }}>
+                                        <div style={{ fontSize: '0.42rem', color: 'var(--text-secondary)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>{label}</div>
+                                        <div style={{ color: tone === 'primary' ? 'var(--text-color)' : 'var(--text-secondary)', fontWeight: bold ? 700 : 600, fontSize: bold ? '0.5rem' : '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }} title={value.toLocaleString()}>
+                                            {value.toLocaleString()}
                                         </div>
-                                    ))}
-                                </div>
+                                    </div>
+                                ))}
                             </div>
-                        </div>
-                        <div style={{ width: '86%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '8px auto 7px' }}></div>
-                        <div style={{ textAlign: 'center', fontSize: '0.54rem', color: '#bbb', paddingBottom: '4px', fontFamily: "'Segoe UI', 'SF Pro Text', -apple-system, sans-serif" }}>
-                            V{APP_VERSION}
                         </div>
                     </div>
                 </div>

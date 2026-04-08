@@ -12,6 +12,7 @@ import {
     UpdateLocalMCPServer,
     UnregisterLocalMCPServer,
     SyncLocalMCPServers,
+    SetLocalMCPAutoStart,
     GetLocalMCPServerStatuses,
 } from "../../../wailsjs/go/main/App";
 
@@ -41,6 +42,7 @@ interface LocalMCPServer {
     args: string[];
     env: Record<string, string>;
     disabled: boolean;
+    auto_start?: boolean;
     created_at: string;
 }
 
@@ -70,6 +72,7 @@ const emptyLocalServer: LocalMCPServer = {
     args: [],
     env: {},
     disabled: false,
+    auto_start: false,
     created_at: "",
 };
 
@@ -172,7 +175,11 @@ function LocalMCPPanel({ translate }: Props) {
         syncTimerRef.current = setTimeout(() => { fetchStatuses(); }, 1500);
     }, [loadData, fetchStatuses]);
 
-    useEffect(() => { loadData(); }, [loadData]);
+    useEffect(() => {
+        loadData();
+        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = setTimeout(() => { fetchStatuses(); }, 1500);
+    }, [loadData, fetchStatuses]);
 
     useEffect(() => {
         return () => {
@@ -255,6 +262,20 @@ function LocalMCPPanel({ translate }: Props) {
         }
     };
 
+    const handleToggleAutoStart = async (server: LocalMCPServer) => {
+        setBusy(true);
+        try {
+            await SetLocalMCPAutoStart(server.id, !server.auto_start);
+            await loadData();
+            if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+            syncTimerRef.current = setTimeout(() => { fetchStatuses(); }, 1500);
+        } catch (err) {
+            setError(String(err));
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const handleJsonImport = async () => {
         setJsonError("");
         let parsed: any;
@@ -278,6 +299,7 @@ function LocalMCPPanel({ translate }: Props) {
                     args: Array.isArray(cfg.args) ? cfg.args : [],
                     env: typeof cfg.env === "object" && cfg.env ? cfg.env : {},
                     disabled: cfg.disabled === true,
+                    auto_start: cfg.auto_start === true,
                 };
                 await RegisterLocalMCPServer(entry);
             }
@@ -335,10 +357,14 @@ function LocalMCPPanel({ translate }: Props) {
                                     />
                                     <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#1a202c" }}>{s.name}</span>
                                     {s.disabled && <span style={{ fontSize: "0.66rem", color: "#8b95a5" }}>({translate("mcpDisabled")})</span>}
+                                    {s.auto_start && !s.disabled && <span style={{ fontSize: "0.66rem", color: "#2563eb" }}>({translate("mcpAutoStartOn")})</span>}
                                 </div>
                                 <div style={{ display: "flex", gap: "4px" }}>
                                     <button className="btn-secondary" style={smallBtnStyle} onClick={() => handleToggleDisabled(s)} disabled={busy}>
                                         {s.disabled ? translate("mcpEnable") : translate("mcpDisable")}
+                                    </button>
+                                    <button className="btn-secondary" style={smallBtnStyle} onClick={() => handleToggleAutoStart(s)} disabled={busy || s.disabled} title={s.disabled ? translate("mcpAutoStartDisabledHint") : undefined}>
+                                        {s.auto_start ? translate("mcpAutoStartOff") : translate("mcpAutoStartOn")}
                                     </button>
                                     <button className="btn-secondary" style={smallBtnStyle} onClick={() => openEditForm(s)} disabled={busy}>{translate("mcpEdit")}</button>
                                     <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={() => setDeleteTarget(s)} disabled={busy}>{translate("mcpDelete")}</button>
@@ -352,6 +378,9 @@ function LocalMCPPanel({ translate }: Props) {
                                     {translate("mcpEnvVars")}: {Object.keys(s.env).join(", ")}
                                 </div>
                             )}
+                            <div style={{ fontSize: "0.68rem", color: "#8b95a5", marginTop: "2px" }}>
+                                {translate("mcpAutoStartStatus")}: {s.auto_start ? translate("mcpAutoStartEnabled") : translate("mcpAutoStartDisabled")}
+                            </div>
                         </div>
                     ))}
                 </div>
@@ -400,7 +429,8 @@ function LocalMCPPanel({ translate }: Props) {
 {`{"mcpServers": {"server-name": {
   "command": "npx",
   "args": ["-y", "@scope/package"],
-  "env": {"KEY": "value"}
+  "env": {"KEY": "value"},
+  "auto_start": true
 }}}`}
                             </pre>
                             <textarea
@@ -492,6 +522,14 @@ function LocalMCPPanel({ translate }: Props) {
                                     {translate("mcpAddEnvVar")}
                                 </button>
                             </div>
+                            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.76rem", color: "#374151" }}>
+                                <input
+                                    type="checkbox"
+                                    checked={!!formData.auto_start}
+                                    onChange={(e) => setFormData({ ...formData, auto_start: e.target.checked })}
+                                />
+                                <span>{translate("mcpAutoStartCheckbox")}</span>
+                            </label>
                             {formError && (
                                 <div style={{ fontSize: "0.76rem", color: "#c53030", background: "#fff5f5", padding: "4px 8px", borderRadius: "4px" }}>
                                     {formError}

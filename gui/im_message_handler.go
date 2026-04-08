@@ -718,15 +718,7 @@ func buildShortChitChatResponse(text, lang string) string {
 }
 
 func shouldRequireExecutionConfirmation(msg IMUserMessage, pending *pendingConfirmation) bool {
-	if msg.IsBackground || pending != nil {
-		return false
-	}
-	trimmed := strings.TrimSpace(msg.Text)
-	if trimmed == "" || !looksLikeFreshTaskRequest(trimmed) {
-		return false
-	}
-	intent := classifyTaskIntent(trimmed)
-	return intent.Intent == intentCoding || intent.Intent == intentSSH || intent.Intent == intentAmbiguous
+	return shouldRequireExecutionConfirmationForIntent(msg, pending, classifyTaskIntent(strings.TrimSpace(msg.Text)))
 }
 
 func confirmationTaskLabel(intent taskIntent) string {
@@ -791,8 +783,13 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 	if projectPath != "" {
 		summary += fmt.Sprintf("\n默认工作目录：%s", projectPath)
 	}
-	if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "未命中特征词" {
-		summary += fmt.Sprintf("\n识别到的任务类型：%s（依据：%s）", confirmationTaskLabel(result.Intent), ev)
+	if label := strings.TrimSpace(confirmationTaskLabel(result.Intent)); label != "" {
+		summary += fmt.Sprintf("\n识别到的任务类型：%s", label)
+	}
+	if reason := strings.TrimSpace(result.Reason); reason != "" {
+		summary += fmt.Sprintf("（原因：%s）", reason)
+	} else if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "未命中特征词" {
+		summary += fmt.Sprintf("（依据：%s）", ev)
 	}
 	return &pendingConfirmation{
 		ID:              fmt.Sprintf("confirm-%d", now.UnixNano()),
@@ -2780,12 +2777,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 	if shouldRequireExecutionConfirmation(msg, pending) {
-		intent := classifyTaskIntent(trimmed)
-		item := buildPendingConfirmation(h.app, msg.UserID, trimmed, intent)
-		if h.confirmationStore != nil {
-			h.confirmationStore.set(item)
+		intent := h.classifyTaskIntentForExecution(trimmed, msg.Attachments, httpClient)
+		if shouldRequireExecutionConfirmationForIntent(msg, pending, intent) {
+			item := buildPendingConfirmation(h.app, msg.UserID, trimmed, intent)
+			if h.confirmationStore != nil {
+				h.confirmationStore.set(item)
+			}
+			return buildConfirmationResponse(item)
 		}
-		return buildConfirmationResponse(item)
 	}
 	if unfinishedSlot != nil && !msg.IsBackground && !freshTask && !isSlotActionCommand(trimmed) && !decision.StartNewTask && decision.ResumeSlotID == "" {
 		if hint := buildUnfinishedSlotHint(unfinishedSlot); hint != "" {

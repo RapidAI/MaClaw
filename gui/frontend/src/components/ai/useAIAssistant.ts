@@ -227,6 +227,18 @@ const MAX_PERSISTED_PROMPTS = 100;
 const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
 const MAX_LIVE_PROGRESS_MESSAGES = 100;
+const HIDDEN_PROGRESS_PATTERNS = [
+    /^[🚀⏳✅❌]\s*Skill\b/,
+    /^[🖥️⏳]\s*正在执行命令处理文件，请稍候(?:\.\.\.)?$/,
+    /^[⏳]\s*命令仍在执行中（已\s*\d+s）:/,
+    /^[🛠️🧠💾🚀📦⏳]\s*正在生成并执行脚本，准备继续完成交付(?:\.\.\.)?$/,
+];
+
+function shouldHideProgressText(progressText: string): boolean {
+    const trimmed = progressText.trim();
+    if (!trimmed) return true;
+    return HIDDEN_PROGRESS_PATTERNS.some(pattern => pattern.test(trimmed));
+}
 
 function removeMessageAtIndex(messages: ChatMessage[], index: number): ChatMessage[] {
     if (index < 0 || index >= messages.length) return messages;
@@ -1717,6 +1729,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const progressText = event.text || (typeof payload === 'string' ? payload : '');
             if (!progressText) return;
             if (!matchesActiveProgressRequest(activeRoundRef.current, event)) {
+                return;
+            }
+            if (shouldHideProgressText(progressText)) {
                 return;
             }
             if (progressTailRef.current === progressText) {

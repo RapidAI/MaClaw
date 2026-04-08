@@ -10,6 +10,9 @@ func TestClassifyTaskIntent_Coding(t *testing.T) {
 	if result.Intent != intentCoding {
 		t.Fatalf("expected coding intent, got %q with evidence %#v", result.Intent, result.Evidence)
 	}
+	if result.Source != "rules" {
+		t.Fatalf("expected rules source, got %q", result.Source)
+	}
 }
 
 func TestClassifyTaskIntent_SSH(t *testing.T) {
@@ -76,5 +79,55 @@ func TestClassifyTaskIntent_PresentationCodingTasksDoNotBecomeNonCoding(t *testi
 		if !strings.Contains(formatIntentEvidence(result), "ppt") {
 			t.Fatalf("expected evidence to mention ppt for %q, got %q", text, formatIntentEvidence(result))
 		}
+	}
+}
+
+func TestNormalizeIntentClassification(t *testing.T) {
+	result, err := normalizeIntentClassification(llmIntentClassification{
+		Intent:     "non_coding",
+		Confidence: 0.92,
+		Reason:     "用户是在整理资料并生成宣传 PPT，不涉及代码或服务器",
+		Evidence:   []string{"整理资料", "宣传PPT"},
+	})
+	if err != nil {
+		t.Fatalf("normalizeIntentClassification: %v", err)
+	}
+	if result.Intent != intentNonCoding {
+		t.Fatalf("expected non_coding intent, got %q", result.Intent)
+	}
+	if result.Source != "llm" {
+		t.Fatalf("expected llm source, got %q", result.Source)
+	}
+	if result.Confidence != 0.92 {
+		t.Fatalf("unexpected confidence: %v", result.Confidence)
+	}
+	if result.Reason == "" {
+		t.Fatal("expected reason to be preserved")
+	}
+}
+
+func TestDecodeIntentClassificationContent_StripsCodeFence(t *testing.T) {
+	parsed, err := decodeIntentClassificationContent("```json\n{\"intent\":\"coding\",\"confidence\":0.8,\"reason\":\"明确要修改代码\",\"evidence\":[\"修改代码\"]}\n```")
+	if err != nil {
+		t.Fatalf("decodeIntentClassificationContent: %v", err)
+	}
+	if parsed.Intent != "coding" {
+		t.Fatalf("expected coding intent, got %q", parsed.Intent)
+	}
+}
+
+func TestSummarizeAttachmentTypesAndNames(t *testing.T) {
+	attachments := []MessageAttachment{
+		{Type: "image", FileName: "shot.png"},
+		{MimeType: "application/pdf", FileName: "brief.pdf"},
+		{Type: "image", FileName: "shot2.png"},
+	}
+	types := summarizeAttachmentTypes(attachments)
+	if len(types) != 2 || types[0] != "image" || types[1] != "application" {
+		t.Fatalf("unexpected attachment types: %#v", types)
+	}
+	names := summarizeAttachmentNames(attachments)
+	if len(names) != 3 || names[0] != "shot.png" {
+		t.Fatalf("unexpected attachment names: %#v", names)
 	}
 }

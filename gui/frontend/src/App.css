@@ -85,7 +85,7 @@ body {
 
 .sidebar {
     width: 300px;
-    min-width: 300px;
+    min-width: 0;
     background: var(--surface-color);
     border-right: 1px solid var(--border-color);
     display: flex;
@@ -1037,8 +1037,9 @@ body {
     align-items: center;
     justify-content: center;
     text-align: center;
-    padding: 2px 2px;
-    gap: 1px;
+    padding: 1px 1px;
+    gap: 0;
+    min-height: 34px;
     border-left: none;
     border-radius: var(--radius-sm);
 }
@@ -1054,16 +1055,16 @@ body {
 }
 
 .tool-grid .sidebar-item .sidebar-icon img {
-    width: 1.26em !important;
-    height: 1.26em !important;
+    width: 1.14em !important;
+    height: 1.14em !important;
 }
 
 .tool-grid .sidebar-item span:last-child {
-    font-size: 0.6rem;
-    line-height: 1;
+    font-size: 0.54rem;
+    line-height: 0.92;
     word-break: break-word;
     font-family: 'Segoe UI', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
-    letter-spacing: 0.01em;
+    letter-spacing: 0;
 }
 
 /* Modal Helpers */

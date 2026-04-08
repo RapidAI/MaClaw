@@ -405,6 +405,10 @@ export function SyncLocalMCPServers() {
   return window['go']['main']['App']['SyncLocalMCPServers']();
 }
 
+export function SetLocalMCPAutoStart(arg1, arg2) {
+  return window['go']['main']['App']['SetLocalMCPAutoStart'](arg1, arg2);
+}
+
 export function GetLocalMCPServerStatuses() {
   return window['go']['main']['App']['GetLocalMCPServerStatuses']();
 }
