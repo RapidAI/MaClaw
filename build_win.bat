@@ -33,7 +33,7 @@ if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 REM -- Increment build number and set version (single PowerShell call) --
 echo [Step 2/9] Updating version number...
 %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command ^
-  "$root = '%~dp0'; if (Test-Path ($root + 'build_number')) { $n = [int](Get-Content ($root + 'build_number')) + 1 } else { $n = 1 }; Set-Content -Path ($root + 'build_number') -Value $n -NoNewline; $cfg = Get-Content ($root + 'wails.json') -Raw | ConvertFrom-Json; $parts = $cfg.info.productVersion.Split('.'); $parts[3] = [string]$n; $ver = $parts -join '.'; Set-Content -Path ($root + 'temp_VERSION.txt') -Value $ver -NoNewline; Set-Content -Path ($root + 'temp_BUILD_NUM.txt') -Value ([string]$n) -NoNewline; Set-Content -Path ($root + 'temp_PRODUCT_NAME.txt') -Value $cfg.info.productName -NoNewline; Set-Content -Path ($root + 'temp_COMPANY_NAME.txt') -Value $cfg.info.companyName -NoNewline; Set-Content -Path ($root + 'temp_COPYRIGHT.txt') -Value $cfg.info.copyright -NoNewline"
+  "$root = '%~dp0'; if (Test-Path ($root + 'build_number')) { $n = [int](Get-Content ($root + 'build_number')) + 1 } else { $n = 1 }; Set-Content -Path ($root + 'build_number') -Value $n -NoNewline; $cfg = Get-Content ($root + 'wails.json') -Raw | ConvertFrom-Json; $parts = $cfg.info.productVersion.Split('.'); $parts[3] = [string]$n; $ver = $parts -join '.'; Set-Content -Path ($root + 'temp_VERSION.txt') -Value $ver -NoNewline; Set-Content -Path ($root + 'temp_BUILD_NUM.txt') -Value ([string]$n) -NoNewline; Set-Content -Path ($root + 'temp_PRODUCT_NAME.txt') -Value '%APP_NAME%' -NoNewline; Set-Content -Path ($root + 'temp_COMPANY_NAME.txt') -Value $cfg.info.companyName -NoNewline; Set-Content -Path ($root + 'temp_COPYRIGHT.txt') -Value $cfg.info.copyright -NoNewline"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to update version info.
     goto :error
@@ -44,6 +44,9 @@ set /p PRODUCT_NAME=<"%~dp0temp_PRODUCT_NAME.txt"
 set /p COMPANY_NAME=<"%~dp0temp_COMPANY_NAME.txt"
 set /p COPYRIGHT_TEXT=<"%~dp0temp_COPYRIGHT.txt"
 del /q "%~dp0temp_BUILD_NUM.txt" "%~dp0temp_VERSION.txt" "%~dp0temp_PRODUCT_NAME.txt" "%~dp0temp_COMPANY_NAME.txt" "%~dp0temp_COPYRIGHT.txt" 2>nul
+setlocal DisableDelayedExpansion
+powershell -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PROJECTNAME ''%APP_NAME%''','!define PRODUCT_EXECUTABLE ''%APP_NAME%.exe''','!define INFO_PRODUCTNAME ''%PRODUCT_NAME%''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define ARG_WAILS_AMD64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_amd64.exe''','!define ARG_WAILS_ARM64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\build_params.nsh.tmp', $content, $utf8NoBom)"
+endlocal
 echo [INFO] Building Version: %VERSION%
 
 REM -- Sync version with frontend --
@@ -167,11 +170,12 @@ REM -- Create NSIS Installer --
 echo [Step 9/9] Creating NSIS installer...
 if not exist "%NSIS_PATH%" goto nsis_missing
 
-"%NSIS_PATH%" /DINFO_PROJECTNAME="%APP_NAME%" /DPRODUCT_EXECUTABLE="%APP_NAME%.exe" /DINFO_PRODUCTNAME="%PRODUCT_NAME%" /DINFO_COMPANYNAME="%COMPANY_NAME%" /DINFO_COPYRIGHT="%COPYRIGHT_TEXT%" /DINFO_PRODUCTVERSION="%VERSION%" /DARG_WAILS_AMD64_BINARY="%OUTPUT_DIR%\%APP_NAME%_amd64.exe" /DARG_WAILS_ARM64_BINARY="%OUTPUT_DIR%\%APP_NAME%_arm64.exe" "%~dp0build\windows\installer\multiarch.nsi"
+"%NSIS_PATH%" "%~dp0build\windows\installer\multiarch.nsi"
 if !errorlevel! neq 0 (
     echo [ERROR] NSIS installer creation failed.
     goto :error
 )
+del /q "%~dp0build\windows\installer\build_params.nsh.tmp" 2>nul
 
 if exist "%OUTPUT_DIR%\%APP_NAME%-Setup.exe" (
     echo [SUCCESS] Windows installer created at: %OUTPUT_DIR%\%APP_NAME%-Setup.exe

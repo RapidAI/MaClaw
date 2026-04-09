@@ -6,6 +6,85 @@ import (
 	"testing"
 )
 
+func TestSkillExecutorExecuteStep_CallMCPToolResolvesName(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("enabled-no-autostart", false, false)}
+	cfg.LocalMCPServers[0].Name = "brave-search"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.mcpRegistry = NewMCPRegistry(app)
+	app.localMCPManager = NewLocalMCPManager(app.mcpRegistry)
+	defer app.localMCPManager.StopAll()
+	app.localMCPManager.SyncFromConfig()
+
+	executor := NewSkillExecutor(app, app.mcpRegistry, nil)
+	result, err := executor.executeStep(NLSkillStep{
+		Action: "call_mcp_tool",
+		Params: map[string]interface{}{
+			"server_id": "brave-search",
+			"tool_name": "ping",
+			"arguments": map[string]interface{}{},
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("executeStep() error = %v", err)
+	}
+	if strings.TrimSpace(result) != "{}" {
+		t.Fatalf("unexpected result: %s", result)
+	}
+}
+
+func TestSkillExecutorExecuteStep_CallMCPToolRejectsAmbiguousName(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []LocalMCPServerEntry{
+		newHelperLocalMCPServerEntry("server-a", false, false),
+		newHelperLocalMCPServerEntry("server-b", false, false),
+	}
+	cfg.LocalMCPServers[0].Name = "brave-search"
+	cfg.LocalMCPServers[1].Name = "brave-search"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.mcpRegistry = NewMCPRegistry(app)
+	app.localMCPManager = NewLocalMCPManager(app.mcpRegistry)
+	defer app.localMCPManager.StopAll()
+	app.localMCPManager.SyncFromConfig()
+
+	executor := NewSkillExecutor(app, app.mcpRegistry, nil)
+	_, err = executor.executeStep(NLSkillStep{
+		Action: "call_mcp_tool",
+		Params: map[string]interface{}{
+			"server_id": "brave-search",
+			"tool_name": "ping",
+			"arguments": map[string]interface{}{},
+		},
+	}, "")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguous name error, got: %v", err)
+	}
+}
+
 func TestSkillCreateSessionGuard_BlocksSSHIntent(t *testing.T) {
 	hint := skillCreateSessionGuard("", NLSkillStep{
 		Action: "create_session",

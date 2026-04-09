@@ -84,9 +84,9 @@ func ScanAllSkillDirsWithExternal(externalDirs []string) []corelib.NLSkillEntry 
 }
 
 // ValidateExternalSkillDir checks whether a directory is a valid skill
-// directory (contains at least one subdirectory with SKILL.md, skill.yaml,
-// or skill.yml). Returns the count of valid skill subdirectories and an error
-// if the directory is not usable.
+// directory (contains at least one subdirectory with skill.yaml or skill.md).
+// Returns the count of valid skill subdirectories and an error if the
+// directory is not usable.
 func ValidateExternalSkillDir(dir string) (int, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -106,9 +106,7 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 			continue
 		}
 		subDir := filepath.Join(dir, entry.Name())
-		// Check for skill.yaml/yml (parseable by ScanSkillDir) first,
-		// then fall back to markdown skill documents as valid markers.
-		for _, name := range []string{"skill.yaml", "skill.yml", "SKILL.md", "skill.md"} {
+		for _, name := range []string{"skill.yaml", "skill.md"} {
 			if _, err := os.Stat(filepath.Join(subDir, name)); err == nil {
 				count++
 				break
@@ -116,7 +114,7 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 		}
 	}
 	if count == 0 {
-		return 0, fmt.Errorf("no valid skill subdirectories found (need SKILL.md or skill.yaml)")
+		return 0, fmt.Errorf("no valid skill subdirectories found (need skill.yaml or skill.md)")
 	}
 	return count, nil
 }
@@ -148,6 +146,7 @@ type SkillYAMLFile struct {
 	Status      string          `yaml:"status"`
 	Platforms   []string        `yaml:"platforms"`
 	RequiresGUI bool            `yaml:"requires_gui"`
+	Extra       map[string]any  `yaml:"-"`
 }
 
 // SkillYAMLStep is a single step in a YAML skill definition.
@@ -157,12 +156,143 @@ type SkillYAMLStep struct {
 	OnError string                 `yaml:"on_error"`
 }
 
+func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("YAML parse error: %w", err)
+	}
+	var sf SkillYAMLFile
+	if err := yaml.Unmarshal(data, &sf); err != nil {
+		return nil, fmt.Errorf("YAML parse error: %w", err)
+	}
+	knownKeys := map[string]bool{
+		"name": true, "description": true, "triggers": true, "steps": true,
+		"status": true, "platforms": true, "requires_gui": true,
+	}
+	extra := make(map[string]any)
+	for k, v := range raw {
+		if !knownKeys[k] {
+			extra[k] = v
+		}
+	}
+	if len(extra) > 0 {
+		sf.Extra = extra
+	}
+	return &sf, nil
+}
+
+func FormatSkillYAMLFile(sf *SkillYAMLFile) ([]byte, error) {
+	data, err := yaml.Marshal(sf)
+	if err != nil {
+		return nil, fmt.Errorf("YAML format error: %w", err)
+	}
+	if len(sf.Extra) == 0 {
+		return data, nil
+	}
+	var known map[string]any
+	if err := yaml.Unmarshal(data, &known); err != nil {
+		return nil, fmt.Errorf("YAML format error: %w", err)
+	}
+	if known == nil {
+		known = make(map[string]any)
+	}
+	for k, v := range sf.Extra {
+		known[k] = v
+	}
+	merged, err := yaml.Marshal(known)
+	if err != nil {
+		return nil, fmt.Errorf("YAML format error: %w", err)
+	}
+	return merged, nil
+}
+
+func skillYAMLPath(skillDir string) (string, error) {
+	path := filepath.Join(skillDir, "skill.yaml")
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, string, error) {
+	yamlPath, yamlErr := skillYAMLPath(skillDir)
+	if yamlErr == nil {
+		data, err := os.ReadFile(yamlPath)
+		if err != nil {
+			return nil, "", err
+		}
+		parsedYAML, err := ParseSkillYAMLFile(data)
+		if err != nil {
+			return nil, "", err
+		}
+		sf := *parsedYAML
+		name := strings.TrimSpace(sf.Name)
+		if name == "" {
+			name = fallbackName
+		}
+		status := sf.Status
+		if status == "" {
+			status = "active"
+		}
+		steps := make([]corelib.NLSkillStep, 0, len(sf.Steps))
+		for _, s := range sf.Steps {
+			steps = append(steps, corelib.NLSkillStep{
+				Action:  s.Action,
+				Params:  s.Params,
+				OnError: s.OnError,
+			})
+		}
+		if len(steps) == 0 {
+			parsed, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
+				NameFallback:        name,
+				DescriptionFallback: sf.Description,
+				Triggers:            sf.Triggers,
+				Source:              "file",
+				SkillDir:            skillDir,
+				Platforms:           sf.Platforms,
+				RequiresGUI:         &sf.RequiresGUI,
+			})
+			if err == nil {
+				if mdPath, mdErr := skillMarkdownPath(skillDir); mdErr == nil {
+					return parsed, mdPath, nil
+				}
+				return parsed, yamlPath, nil
+			}
+		}
+		return &corelib.NLSkillEntry{
+			Name:        name,
+			Description: sf.Description,
+			Triggers:    sf.Triggers,
+			Steps:       steps,
+			Status:      status,
+			Source:      "file",
+			Platforms:   sf.Platforms,
+			RequiresGUI: sf.RequiresGUI,
+			SkillDir:    skillDir,
+			CreatedAt:   fileModTime(yamlPath),
+		}, yamlPath, nil
+	}
+
+	parsed, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
+		NameFallback: fallbackName,
+		Source:       "file",
+		SkillDir:     skillDir,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if mdPath, mdErr := skillMarkdownPath(skillDir); mdErr == nil {
+		return parsed, mdPath, nil
+	}
+	return parsed, "", nil
+}
+
 // uploadStatusFile mirrors the GUI-side upload_status.json format.
 type uploadStatusFile struct {
 	SubmissionID string `json:"submission_id"`
 }
 
-// ScanSkillDir scans a single directory for skill.yaml / skill.yml / SKILL.md files
+// ScanSkillDir scans a single directory for skill.yaml / skill.md files
 // in immediate subdirectories and returns parsed NLSkillEntry list.
 // Permission errors and symlink issues are logged and skipped gracefully.
 func ScanSkillDir(root string) []corelib.NLSkillEntry {
@@ -176,7 +306,6 @@ func ScanSkillDir(root string) []corelib.NLSkillEntry {
 
 	var result []corelib.NLSkillEntry
 	for _, entry := range entries {
-		// Resolve symlinks: DirEntry.IsDir() returns false for symlinks to dirs.
 		info, err := os.Stat(filepath.Join(root, entry.Name()))
 		if err != nil {
 			log.Printf("[skill-scanner] skip %s/%s: %v", root, entry.Name(), err)
@@ -186,84 +315,12 @@ func ScanSkillDir(root string) []corelib.NLSkillEntry {
 			continue
 		}
 		skillDir := filepath.Join(root, entry.Name())
-		var (
-			parsed     *corelib.NLSkillEntry
-			defPath    string
-			parseErr   error
-			hubSkillID string
-		)
-
-		yamlPath := filepath.Join(skillDir, "skill.yaml")
-		data, err := os.ReadFile(yamlPath)
+		parsed, defPath, err := loadSkillFromDir(skillDir, entry.Name())
 		if err != nil {
-			yamlPath = filepath.Join(skillDir, "skill.yml")
-			data, err = os.ReadFile(yamlPath)
-		}
-		if err == nil {
-			var sf SkillYAMLFile
-			if err := yaml.Unmarshal(data, &sf); err != nil {
-				log.Printf("[skill-scanner] skip %s/%s: YAML parse error: %v", root, entry.Name(), err)
-				continue
-			}
-			name := strings.TrimSpace(sf.Name)
-			if name == "" {
-				name = entry.Name()
-			}
-			status := sf.Status
-			if status == "" {
-				status = "active"
-			}
-			steps := make([]corelib.NLSkillStep, 0, len(sf.Steps))
-			for _, s := range sf.Steps {
-				steps = append(steps, corelib.NLSkillStep{
-					Action:  s.Action,
-					Params:  s.Params,
-					OnError: s.OnError,
-				})
-			}
-			if len(steps) == 0 {
-				parsed, parseErr = ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
-					NameFallback: name,
-					Source:       "file",
-					SkillDir:     skillDir,
-				})
-				if parseErr == nil {
-					mdPath, mdErr := skillMarkdownPath(skillDir)
-					if mdErr == nil {
-						defPath = mdPath
-					}
-				}
-			}
-			if parsed == nil {
-				parsed = &corelib.NLSkillEntry{
-					Name:        name,
-					Description: sf.Description,
-					Triggers:    sf.Triggers,
-					Steps:       steps,
-					Status:      status,
-					Source:      "file",
-					Platforms:   sf.Platforms,
-					RequiresGUI: sf.RequiresGUI,
-					SkillDir:    skillDir,
-					CreatedAt:   fileModTime(yamlPath),
-				}
-				defPath = yamlPath
-			}
-		} else {
-			parsed, parseErr = ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
-				NameFallback: entry.Name(),
-				Source:       "file",
-				SkillDir:     skillDir,
-			})
-			if parseErr != nil {
-				continue
-			}
-			mdPath, mdErr := skillMarkdownPath(skillDir)
-			if mdErr == nil {
-				defPath = mdPath
-			}
+			continue
 		}
 
+		var hubSkillID string
 		if statusData, err := os.ReadFile(filepath.Join(skillDir, "upload_status.json")); err == nil {
 			var us uploadStatusFile
 			if json.Unmarshal(statusData, &us) == nil && us.SubmissionID != "" {
@@ -286,9 +343,9 @@ func ScanSkillDir(root string) []corelib.NLSkillEntry {
 }
 
 func fileModTime(path string) string {
-	info, err := os.Stat(path)
+	fi, err := os.Stat(path)
 	if err != nil {
 		return time.Now().Format(time.RFC3339)
 	}
-	return info.ModTime().Format(time.RFC3339)
+	return fi.ModTime().Format(time.RFC3339)
 }

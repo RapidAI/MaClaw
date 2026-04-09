@@ -17,8 +17,6 @@ import {
     GetFreeProxyModels,
     GetFreeProxyModel,
     SetFreeProxyModel,
-    GetLLMTrajectoryLogging,
-    SetLLMTrajectoryLogging,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
 import { UsageDisplay } from "./UsageDisplay";
@@ -43,10 +41,11 @@ const NONE_PROVIDER = "__none__";
 const LLM_CONFIG_LOAD_TIMEOUT_MS = 5000;
 
 /** Known OpenAI-compatible providers for quick-fill in custom provider config. */
-const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number }[] = [
+const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number; protocol?: string; agent_type?: string }[] = [
     { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-5.4", context_length: 128000 },
     { name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat", context_length: 128000 },
-    { name: "GLM (智谱)", url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.7", context_length: 180000 },
+    { name: "智谱龙虾", url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5-turbo", context_length: 180000 },
+    { name: "智谱编程", url: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.1", context_length: 180000, protocol: "anthropic", agent_type: "claude-code/2.0.0" },
     { name: "Kimi (月之暗面)", url: "https://api.kimi.com/coding/v1", model: "kimi-k2-thinking", context_length: 128000 },
     { name: "Doubao (豆包)", url: "https://ark.cn-beijing.volces.com/api/coding", model: "doubao-seed-code-preview-latest", context_length: 128000 },
     { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
@@ -122,7 +121,6 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [authChecking, setAuthChecking] = useState(false);
     const [freeModels, setFreeModels] = useState<{id: string; name: string}[]>([]);
     const [freeSelectedModel, setFreeSelectedModel] = useState("");
-    const [trajectoryLogging, setTrajectoryLogging] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const loadSeqRef = useRef(0);
 
@@ -160,10 +158,9 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setLoadError(null);
         console.info("[LLMConfigPanel] load start");
         try {
-            const [providersResult, iterResult, trajectoryResult] = await Promise.allSettled([
+            const [providersResult, iterResult] = await Promise.allSettled([
                 withTimeout(GetMaclawLLMProviders(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawLLMProviders"),
                 withTimeout(GetMaclawAgentMaxIterations(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawAgentMaxIterations"),
-                withTimeout(GetLLMTrajectoryLogging(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetLLMTrajectoryLogging"),
             ]);
             if (loadSeq !== loadSeqRef.current) return;
 
@@ -194,15 +191,6 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 failed = true;
                 setMaxIter(0);
                 console.warn("[LLMConfigPanel] max iterations load failed", iterResult.reason);
-            }
-
-            if (trajectoryResult.status === "fulfilled") {
-                setTrajectoryLogging(!!trajectoryResult.value);
-                console.info("[LLMConfigPanel] trajectory logging loaded");
-            } else {
-                failed = true;
-                setTrajectoryLogging(false);
-                console.warn("[LLMConfigPanel] trajectory logging load failed", trajectoryResult.reason);
             }
 
             if (failed) {
@@ -322,7 +310,15 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         if (!ep || dlgSelectedIdx === null) return;
         setDlgProviders(prev => {
             const copy = [...prev];
-            copy[dlgSelectedIdx] = { ...copy[dlgSelectedIdx], name: ep.name, url: ep.url, model: ep.model, protocol: "openai", context_length: ep.context_length || 128000 };
+            copy[dlgSelectedIdx] = {
+                ...copy[dlgSelectedIdx],
+                name: ep.name,
+                url: ep.url,
+                model: ep.model,
+                protocol: ep.protocol || "openai",
+                agent_type: ep.agent_type || copy[dlgSelectedIdx].agent_type,
+                context_length: ep.context_length || 128000,
+            };
             return copy;
         });
         setDlgDirty(true);
@@ -385,17 +381,15 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         }
 
         try {
-            // Save first so the agent_type and other settings take effect immediately
-            const saveName = sp.name;
-            await SaveMaclawLLMProviders(dlgProviders, saveName);
-            setDlgDirty(false);
-            setProviders(dlgProviders.map(p => ({ ...p })));
-            setCurrentName(saveName);
-
             // If already tested successfully, just save without re-testing.
             // This allows the user to toggle supports_vision after a test
             // without the probe overwriting their manual choice.
             if (dlgTested) {
+                const saveName = sp.name;
+                await SaveMaclawLLMProviders(dlgProviders, saveName);
+                setDlgDirty(false);
+                setProviders(dlgProviders.map(p => ({ ...p })));
+                setCurrentName(saveName);
                 onStatusChange?.(true, true);
                 setDlgTestResult({ ok: true, msg: t("已保存", "Saved") });
                 setTimeout(() => setDlgOpen(false), 800);
@@ -403,20 +397,38 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 return;
             }
 
-            const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
+            const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
+            const saveName = sp.name;
+            const nextProviders = dlgProviders.map((provider, index) => index === dlgSelectedIdx
+                ? { ...provider, supports_vision: testResult.supports_vision }
+                : { ...provider });
+            await SaveMaclawLLMProviders(nextProviders, saveName);
 
-            // Refresh providers to pick up auto-detected supports_vision from backend
+            // Refresh providers to pick up persisted supports_vision from backend
             try {
                 const freshData = await GetMaclawLLMProviders();
                 if (freshData?.providers) {
                     const fresh = freshData.providers.map((p: LLMProvider) => ({ ...p }));
                     setDlgProviders(fresh);
                     setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
+                } else {
+                    setDlgProviders(nextProviders);
+                    setProviders(nextProviders.map((p: LLMProvider) => ({ ...p })));
                 }
-            } catch { /* non-fatal */ }
+            } catch {
+                setDlgProviders(nextProviders);
+                setProviders(nextProviders.map((p: LLMProvider) => ({ ...p })));
+            }
+            setDlgDirty(false);
+            setCurrentName(saveName);
 
             setDlgTested(true);
-            setDlgTestResult({ ok: true, msg: reply });
+            setDlgTestResult({
+                ok: true,
+                msg: `${testResult.message}\n${testResult.supports_vision
+                    ? t("图片理解：支持", "Vision support: enabled")
+                    : t("图片理解：不支持", "Vision support: disabled")}`,
+            });
             onStatusChange?.(true, true);
             // Don't auto-close: let user review the vision probe result and
             // manually override supports_vision if needed before closing.
@@ -499,30 +511,6 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 </div>
             </div>
 
-            {/* Trajectory Logging Toggle */}
-            <div style={{
-                marginBottom: 16, padding: "12px 16px", borderRadius: 6,
-                border: `1px solid ${colors.border}`, background: colors.surface,
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-            }}>
-                <div>
-                    <label style={{ ...labelStyle, marginBottom: 2 }}>
-                        {t("记录 LLM 交互", "Log LLM Trajectories")}
-                    </label>
-                    <div style={{ fontSize: "0.68rem", color: "#888", lineHeight: 1.4 }}>
-                        {t("保存所有 LLM 对话到 ~/.maclaw/trajectories（用于模型训练）",
-                           "Save all LLM conversations to ~/.maclaw/trajectories (for model training)")}
-                    </div>
-                </div>
-                <input type="checkbox" checked={trajectoryLogging}
-                    onChange={e => {
-                        const v = e.target.checked;
-                        setTrajectoryLogging(v);
-                        SetLLMTrajectoryLogging(v).catch(() => {});
-                    }}
-                    style={{ width: 18, height: 18, accentColor: "#6366f1", cursor: "pointer", flexShrink: 0 }} />
-            </div>
-
             {isNone && (
                 <div style={{
                     padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
@@ -562,7 +550,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                 {dlgProviders.map((p, i) => {
                                     const active = dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = { "免费": "白嫖党", "OpenAI": "富家小子", "智谱": "聪明伶俐", "MiniMax": "憨厚老实" };
+                                    const badge: Record<string, string> = { "免费": "白嫖党", "OpenAI": "富家小子", "智谱龙虾": "聪明伶俐", "智谱编程": "写码飞快", "MiniMax": "憨厚老实" };
                                     const tag = badge[p.name];
                                     return (
                                         <button key={i} onClick={() => dlgSelectProvider(i)} style={{
@@ -690,7 +678,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                         {(dlgProvider.agent_type || "openclaw") === "claude-code/2.0.0"
                                             ? t("Kimi 等需要 Claude Coding Plan 身份的服务商", "For providers requiring Claude Coding Plan identity (e.g. Kimi)")
-                                            : t("智谱等大多数服务商使用 OpenClaw 身份", "Most providers use OpenClaw identity (e.g. Zhipu)")}
+                                            : t("智谱龙虾等大多数服务商使用 OpenClaw 身份", "Most providers use OpenClaw identity (e.g. Zhipu Lobster)")}
                                     </p>
                                 </div>
 
@@ -1032,7 +1020,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         <label style={labelStyle}>{t("API 密钥", "API Key")} <span style={{ color: "#ef4444" }}>*</span></label>
                                         <input style={inputStyle} type="password" value={dlgProvider.key}
                                             onChange={e => dlgUpdateField("key", e.target.value)}
-                                            placeholder={(dlgProvider.protocol || "openai") === "anthropic" ? "sk-ant-..." : "sk-..."}
+                                            placeholder={((dlgProvider.name === "智谱龙虾" || dlgProvider.name === "智谱编程") || (dlgProvider.protocol || "openai") === "anthropic") ? "xxxxxxxx.yyyyyyyy" : "sk-..."}
                                             autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
                                     </div>
                                 )}
@@ -1047,7 +1035,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         placeholder="128000" />
                                     <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                         {t(
-                                            "模型支持的最大上下文长度。智谱 GLM 为 180000，留空默认 128000。",
+                                            "模型支持的最大上下文长度。智谱龙虾/智谱编程 GLM 为 180000，留空默认 128000。",
                                             "Max context window of the model. GLM supports 180000. Defaults to 128000 if empty."
                                         )}
                                     </p>
@@ -1069,8 +1057,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         </p>
                                         <p style={{ fontSize: "0.64rem", color: colors.textMuted, margin: "2px 0 0 0", lineHeight: 1.4 }}>
                                             {t(
-                                                "保存时自动检测，如检测不准可手动切换",
-                                                "Auto-detected on save; toggle manually if detection is wrong"
+                                                "首次测试并保存时会自动检测图片能力；如结果不准，可手动修改后保存",
+                                                "Vision support is auto-detected during the initial test-and-save. If inaccurate, you can adjust it manually and save again."
                                             )}
                                         </p>
                                     </div>
@@ -1108,7 +1096,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 background: (dlgDirty || dlgTested) ? "#6366f1" : colors.bg, color: (dlgDirty || dlgTested) ? "#fff" : colors.textMuted,
                                 border: "none", borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
                             }}>
-                                {dlgSaving ? t("测试并保存中...", "Testing & Saving...") : dlgTested ? t("保存", "Save") : t("测试并保存", "Test & Save")}
+                                {dlgSaving ? t("检测并保存中...", "Testing & Saving...") : dlgTested ? t("保存修改", "Save Changes") : t("检测并保存", "Test & Save")}
                             </button>
                         </div>
 

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +18,11 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+)
+
+const (
+	simpleLLMMaxAttempts    = 5
+	simpleLLMInitialBackoff = 200 * time.Millisecond
 )
 
 // thinkTagPattern matches <think>...</think> blocks produced by reasoning
@@ -35,10 +42,53 @@ type LLMSimpleResponse struct {
 	Content string
 }
 
+type llmHTTPError struct {
+	statusCode int
+	message    string
+}
+
+func (e *llmHTTPError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.statusCode, e.message)
+}
+
+func (e *llmHTTPError) StatusCode() int {
+	return e.statusCode
+}
+
+func newLLMHTTPError(statusCode int, message string) error {
+	return &llmHTTPError{statusCode: statusCode, message: message}
+}
+
+func shouldRetrySimpleLLMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr *llmHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.statusCode == http.StatusRequestTimeout || httpErr.statusCode == http.StatusTooManyRequests || httpErr.statusCode >= http.StatusInternalServerError
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
+func waitSimpleLLMBackoff(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 // dumpLLMContext saves the request body to a temp file on HTTP 500.
 func dumpLLMContext(statusCode int, respMsg string, requestBody []byte) error {
 	if statusCode != http.StatusInternalServerError {
-		return fmt.Errorf("HTTP %d: %s", statusCode, respMsg)
+		return newLLMHTTPError(statusCode, respMsg)
 	}
 	ctxLen := len(requestBody)
 
@@ -68,16 +118,48 @@ func dumpLLMContext(statusCode int, respMsg string, requestBody []byte) error {
 // DoSimpleLLMRequest sends a simple chat completion request (no tool calling)
 // supporting both OpenAI and Anthropic protocols.
 func DoSimpleLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*LLMSimpleResponse, error) {
-	if cfg.Protocol == "anthropic" {
-		return doSimpleAnthropicRequest(cfg, messages, client, timeout)
-	}
-	return doSimpleOpenAIRequest(cfg, messages, client, timeout)
-}
-
-func doSimpleOpenAIRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*LLMSimpleResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	startedAt := time.Now()
+	var lastErr error
+	backoff := simpleLLMInitialBackoff
+	for attempt := 1; attempt <= simpleLLMMaxAttempts; attempt++ {
+		var (
+			resp *LLMSimpleResponse
+			err  error
+		)
+		if cfg.Protocol == "anthropic" {
+			resp, err = doSimpleAnthropicRequest(ctx, cfg, messages, client)
+		} else {
+			resp, err = doSimpleOpenAIRequest(ctx, cfg, messages, client)
+		}
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("[LLM Simple] succeeded on attempt %d/%d for model=%s protocol=%s after %s", attempt, simpleLLMMaxAttempts, cfg.Model, cfg.Protocol, time.Since(startedAt).Round(time.Millisecond))
+			}
+			return resp, nil
+		}
+		lastErr = err
+		if !shouldRetrySimpleLLMError(err) || attempt == simpleLLMMaxAttempts {
+			break
+		}
+		elapsed := time.Since(startedAt).Round(time.Millisecond)
+		log.Printf("[LLM Simple] attempt %d/%d failed for model=%s protocol=%s after %s: %v; retrying in %s", attempt, simpleLLMMaxAttempts, cfg.Model, cfg.Protocol, elapsed, err, backoff)
+		if err := waitSimpleLLMBackoff(ctx, backoff); err != nil {
+			lastErr = err
+			log.Printf("[LLM Simple] stop retrying for model=%s protocol=%s after %s: %v", cfg.Model, cfg.Protocol, time.Since(startedAt).Round(time.Millisecond), err)
+			break
+		}
+		backoff *= 2
+	}
+	if shouldRetrySimpleLLMError(lastErr) {
+		return nil, fmt.Errorf("simple LLM request failed after %d attempts: %w", simpleLLMMaxAttempts, lastErr)
+	}
+	return nil, lastErr
+}
+
+func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (*LLMSimpleResponse, error) {
 	req, data, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
 		Stream: true,
 	})
@@ -122,7 +204,7 @@ func doSimpleOpenAIRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, 
 	return &LLMSimpleResponse{Content: StripThinkingTags(text)}, nil
 }
 
-func doSimpleAnthropicRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*LLMSimpleResponse, error) {
+func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (*LLMSimpleResponse, error) {
 	endpoint := corelib.AnthropicMessagesEndpoint(cfg.URL)
 
 	var systemText string
@@ -152,9 +234,6 @@ func doSimpleAnthropicRequest(cfg corelib.MaclawLLMConfig, messages []interface{
 		reqBody["system"] = systemText
 	}
 	data, _ := json.Marshal(reqBody)
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {

@@ -43,19 +43,22 @@ type SkillRunSummary struct {
 	LastErrorSnippet          string `json:"last_error_snippet,omitempty"`
 	HasSessionBinding         bool   `json:"has_session_binding,omitempty"`
 	NeedsArtifactVerification bool   `json:"needs_artifact_verification,omitempty"`
+	ArtifactPath              string `json:"artifact_path,omitempty"`
+	ArtifactStatus            string `json:"artifact_status,omitempty"`
 }
 
 // SkillRunStatus 表示一次 skill 执行的状态。
 type SkillRunStatus struct {
-	RunID     string               `json:"run_id"`
-	Skill     string               `json:"skill"`
-	Status    string               `json:"status"` // "running", "success", "failed", "cancelled"
-	Steps     []StepResult         `json:"steps"`
-	Session   *SkillRunSessionMeta `json:"session,omitempty"`
-	Summary   SkillRunSummary      `json:"summary,omitempty"`
-	StartedAt string               `json:"started_at"`
-	EndedAt   string               `json:"ended_at,omitempty"`
-	Error     string               `json:"error,omitempty"`
+	RunID          string               `json:"run_id"`
+	Skill          string               `json:"skill"`
+	Status         string               `json:"status"` // "running", "success", "failed", "cancelled"
+	Steps          []StepResult         `json:"steps"`
+	Session        *SkillRunSessionMeta `json:"session,omitempty"`
+	Summary        SkillRunSummary      `json:"summary,omitempty"`
+	ExpectedOutput string               `json:"expected_output,omitempty"`
+	StartedAt      string               `json:"started_at"`
+	EndedAt        string               `json:"ended_at,omitempty"`
+	Error          string               `json:"error,omitempty"`
 }
 
 // StepResult 记录单步执行结果。
@@ -134,11 +137,12 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &skillRun{
 		status: SkillRunStatus{
-			RunID:     runID,
-			Skill:     skillName,
-			Status:    "running",
-			StartedAt: time.Now().Format(time.RFC3339),
-			Steps:     make([]StepResult, len(target.Steps)),
+			RunID:          runID,
+			Skill:          skillName,
+			Status:         "running",
+			ExpectedOutput: strings.TrimSpace(templateVars["output"]),
+			StartedAt:      time.Now().Format(time.RFC3339),
+			Steps:          make([]StepResult, len(target.Steps)),
 		},
 		cancel:       cancel,
 		templateVars: templateVars,
@@ -280,8 +284,25 @@ func summarizeSkillRun(status *SkillRunStatus) {
 	if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
 		status.Summary.HasSessionBinding = true
 	}
+	artifactPath := strings.TrimSpace(status.ExpectedOutput)
+	if artifactPath == "" {
+		artifactPath = detectArtifactPathFromStatus(status)
+	}
+	if artifactPath != "" {
+		status.Summary.ArtifactPath = artifactPath
+		if status.Status == "running" {
+			status.Summary.ArtifactStatus = "pending"
+		} else if artifactExists(artifactPath) {
+			status.Summary.ArtifactStatus = "verified"
+		} else {
+			status.Summary.ArtifactStatus = "missing"
+		}
+	}
+	if craftVerificationPassedStatus(status) {
+		status.Summary.ArtifactStatus = "verified"
+	}
 	if isInstructionOnlySkillStatus(status) {
-		status.Summary.NeedsArtifactVerification = true
+		status.Summary.NeedsArtifactVerification = status.Summary.ArtifactStatus != "verified"
 	}
 	for i, step := range status.Steps {
 		switch step.Status {
@@ -328,6 +349,68 @@ func summarizeSkillRun(status *SkillRunStatus) {
 			status.Summary.LastErrorSnippet = truncateSkillRunSnippet(snippet)
 		}
 	}
+}
+
+func detectArtifactPathFromStatus(status *SkillRunStatus) string {
+	if status == nil {
+		return ""
+	}
+	for i := len(status.Steps) - 1; i >= 0; i-- {
+		path := detectArtifactPathFromText(status.Steps[i].Output)
+		if path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func detectArtifactPathFromText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "📁 脚本路径:") {
+			continue
+		}
+		if candidate := extractArtifactPathCandidate(line); candidate != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func extractArtifactPathCandidate(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.Trim(trimmed, "`\"'“””)。；，")
+	if strings.HasSuffix(strings.ToLower(trimmed), ".pdf") && filepath.IsAbs(trimmed) {
+		return trimmed
+	}
+	for _, field := range strings.Fields(trimmed) {
+		candidate := strings.Trim(field, "`\"'“””)。；，")
+		if strings.HasSuffix(strings.ToLower(candidate), ".pdf") && filepath.IsAbs(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func artifactExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Size() > 0
 }
 
 func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
@@ -500,7 +583,22 @@ func isInstructionOnlySkillStatus(status *SkillRunStatus) bool {
 	if output == "" {
 		output = status.Summary.LastOutputSnippet
 	}
+	if strings.Contains(output, "verification: passed") {
+		return true
+	}
 	return strings.Contains(output, "📝 脚本语言:") && strings.Contains(output, "📁 脚本路径:")
+}
+
+func craftVerificationPassedStatus(status *SkillRunStatus) bool {
+	if status == nil {
+		return false
+	}
+	for _, step := range status.Steps {
+		if strings.Contains(step.Output, "verification: passed") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *SkillRunner) latestRunSessionID(runID string) string {
@@ -815,19 +913,26 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		}), nil
 
 	case "call_mcp_tool":
-		serverID, _ := step.Params["server_id"].(string)
+		serverRef, _ := step.Params["server_id"].(string)
 		toolName, _ := step.Params["tool_name"].(string)
 		args, _ := step.Params["arguments"].(map[string]interface{})
-		if serverID == "" || toolName == "" {
+		if serverRef == "" || toolName == "" {
 			return "", fmt.Errorf("missing server_id or tool_name parameter")
 		}
-		if mgr := r.executor.app.localMCPManager; mgr != nil && mgr.IsRunning(serverID) {
-			return mgr.CallTool(serverID, toolName, args)
+		resolvedID, isLocal, err := r.executor.app.resolveMCPServerRef(serverRef)
+		if err != nil {
+			return "", err
+		}
+		if isLocal {
+			if r.executor.app.localMCPManager == nil {
+				return "", fmt.Errorf("local MCP manager not initialized")
+			}
+			return r.executor.app.localMCPManager.CallTool(resolvedID, toolName, args)
 		}
 		if r.executor.mcpRegistry == nil {
 			return "", fmt.Errorf("MCP registry not initialized")
 		}
-		return r.executor.mcpRegistry.CallTool(serverID, toolName, args)
+		return r.executor.mcpRegistry.CallTool(resolvedID, toolName, args)
 
 	case "bash":
 		command, _ := step.Params["command"].(string)

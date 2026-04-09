@@ -34,6 +34,8 @@ type NLSkillStep = corelib.NLSkillStep
 type NLSkillEntry = corelib.NLSkillEntry
 type MaclawLLMProvider = corelib.MaclawLLMProvider
 type MaclawLLMConfig = corelib.MaclawLLMConfig
+type MaclawLLMTestResult = corelib.MaclawLLMTestResult
+type WebSearchProvider = corelib.WebSearchProvider
 type SkillHubEntry = corelib.SkillHubEntry
 type Skill = corelib.Skill
 type TokenUsageStat = corelib.TokenUsageStat
@@ -313,8 +315,6 @@ func countTestTotal(output string) int {
 func extractFailingSummary(output string) string {
 	return swarm.ExtractFailingSummary(output)
 }
-
-
 
 // ── remote function aliases ─────────────────────────────────────────────────
 

@@ -759,9 +759,12 @@ func (h *TUIAgentHandler) toolReadFile(args map[string]interface{}) string {
 
 func (h *TUIAgentHandler) toolWriteFile(args map[string]interface{}) string {
 	path := stringArg(args, "path")
-	content := stringArg(args, "content")
+	content, ok := args["content"].(string)
 	if path == "" {
 		return "错误: 缺少 path 参数"
+	}
+	if !ok {
+		return "错误: 缺少 content 参数"
 	}
 	resolvedPath, err := resolveTUIFilePath(path)
 	if err != nil {

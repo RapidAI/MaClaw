@@ -156,6 +156,8 @@ export namespace main {
 	    maclaw_llm_timeout_sec: number;
 	    maclaw_llm_providers: any[];
 	    maclaw_llm_current_provider: string;
+	    web_search_providers: any[];
+	    web_search_current_provider: string;
 	    maclaw_agent_max_iterations: number;
 	    mcp_servers: any[];
 	    local_mcp_servers: any[];
@@ -268,6 +270,8 @@ export namespace main {
 	        this.maclaw_llm_timeout_sec = source["maclaw_llm_timeout_sec"];
 	        this.maclaw_llm_providers = source["maclaw_llm_providers"];
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
+	        this.web_search_providers = source["web_search_providers"];
+	        this.web_search_current_provider = source["web_search_current_provider"];
 	        this.maclaw_agent_max_iterations = source["maclaw_agent_max_iterations"];
 	        this.mcp_servers = source["mcp_servers"];
 	        this.local_mcp_servers = source["local_mcp_servers"];
@@ -328,8 +332,22 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
+
+	export class MaclawLLMTestResult {
+	    message: string;
+	    supports_vision: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new MaclawLLMTestResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.message = source["message"];
+	        this.supports_vision = source["supports_vision"];
+	    }
+	}
+
 	export class PythonEnvironment {
 	    name: string;
 	    path: string;

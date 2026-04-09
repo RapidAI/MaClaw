@@ -4,15 +4,74 @@ import {
     ResetLLMTokenUsage,
     GetMaclawLLMProviders,
 } from "../../../wailsjs/go/main/App";
+import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 
 interface TokenUsageStat {
-    input_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    InputTokens?: number;
+    OutputTokens?: number;
+    TotalTokens?: number;
 }
 
+const providerAliases: Record<string, string[]> = {
+    "智谱龙虾": ["智谱", "GLM(智谱)", "GLM (智谱)"],
+    "智谱": ["智谱龙虾", "GLM(智谱)", "GLM (智谱)"],
+    "GLM(智谱)": ["智谱", "智谱龙虾", "GLM (智谱)"],
+    "GLM (智谱)": ["智谱", "智谱龙虾", "GLM(智谱)"],
+};
+
 type Props = { lang: string };
+
+type ProviderState = {
+    providers?: Array<{ name?: string; Name?: string }>;
+    Providers?: Array<{ name?: string; Name?: string }>;
+    current?: string;
+    Current?: string;
+} | null;
+
+const emptyUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+
+const normalizeProviderState = (data?: ProviderState) => {
+    const providers = (data?.providers ?? data?.Providers ?? [])
+        .map((provider) => provider?.name ?? provider?.Name ?? "")
+        .filter(Boolean);
+    const current = data?.current ?? data?.Current ?? "";
+    return { providers, current };
+};
+
+const normalizeUsage = (stat?: TokenUsageStat | null) => {
+    if (!stat) return emptyUsage;
+    const input = stat.input_tokens ?? stat.InputTokens ?? 0;
+    const output = stat.output_tokens ?? stat.OutputTokens ?? 0;
+    const total = stat.total_tokens ?? stat.TotalTokens ?? (input + output);
+    return { input_tokens: input, output_tokens: output, total_tokens: total };
+};
+
+const getUsageForProvider = (usageMap: Record<string, TokenUsageStat>, provider: string) => {
+    if (!provider) return emptyUsage;
+    const direct = usageMap[provider];
+    if (direct) return normalizeUsage(direct);
+    for (const alias of providerAliases[provider] || []) {
+        const stat = usageMap[alias];
+        if (stat) return normalizeUsage(stat);
+    }
+    return emptyUsage;
+};
+
+const hasUsage = (usageMap: Record<string, TokenUsageStat>, provider: string) => {
+    return getUsageForProvider(usageMap, provider).total_tokens > 0;
+};
+
+const getPreferredProvider = (providerNames: string[], currentProviderName: string, usageMap: Record<string, TokenUsageStat>) => {
+    const providerWithUsage = providerNames.find((provider) => hasUsage(usageMap, provider));
+    if (currentProviderName && providerNames.includes(currentProviderName) && (hasUsage(usageMap, currentProviderName) || !providerWithUsage)) {
+        return currentProviderName;
+    }
+    return providerWithUsage || currentProviderName || providerNames[0] || "";
+};
 
 export function TokenUsagePanel({ lang }: Props) {
     const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
@@ -20,31 +79,65 @@ export function TokenUsagePanel({ lang }: Props) {
     const [providers, setProviders] = useState<string[]>([]);
     const [currentProvider, setCurrentProvider] = useState("");
     const [selectedProvider, setSelectedProvider] = useState("");
-    const [usage, setUsage] = useState<TokenUsageStat | null>(null);
+    const [usage, setUsage] = useState<typeof emptyUsage | null>(null);
     const [allUsage, setAllUsage] = useState<Record<string, TokenUsageStat>>({});
     const [loading, setLoading] = useState(false);
 
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            const data = await GetMaclawLLMProviders();
-            if (data?.providers) {
-                setProviders(data.providers.map((p: any) => p.name));
-                setCurrentProvider(data.current || "");
-                setSelectedProvider(prev => prev || data.current || "");
-            }
-            const all = await GetAllLLMTokenUsage();
-            setAllUsage(all || {});
-        } catch { /* ignore */ }
-        setLoading(false);
+            const [providerState, usageMap] = await Promise.all([
+                GetMaclawLLMProviders() as Promise<ProviderState>,
+                GetAllLLMTokenUsage() as Promise<Record<string, TokenUsageStat> | null>,
+            ]);
+            const normalizedProviderState = normalizeProviderState(providerState);
+            const normalizedUsageMap = usageMap || {};
+            const nextProviders = normalizedProviderState.providers;
+            const nextCurrent = normalizedProviderState.current || "";
+            setProviders(nextProviders);
+            setCurrentProvider(nextCurrent);
+            setSelectedProvider((prev) => {
+                const preferredProvider = getPreferredProvider(
+                    nextProviders,
+                    nextCurrent || prev,
+                    normalizedUsageMap,
+                );
+                if (prev && nextProviders.includes(prev) && (hasUsage(normalizedUsageMap, prev) || !preferredProvider)) {
+                    return prev;
+                }
+                return preferredProvider;
+            });
+            setAllUsage(normalizedUsageMap);
+        } catch {
+            setProviders([]);
+            setCurrentProvider("");
+            setSelectedProvider("");
+            setAllUsage({});
+        } finally {
+            setLoading(false);
+        }
     }, []);
 
-    useEffect(() => { loadData(); }, []);
+    useEffect(() => {
+        void loadData();
+    }, [loadData]);
 
     useEffect(() => {
-        if (!selectedProvider) return;
-        const stat = allUsage[selectedProvider];
-        setUsage(stat || { input_tokens: 0, output_tokens: 0, total_tokens: 0 });
+        const onTokenUsageChanged = () => {
+            void loadData();
+        };
+        EventsOn("llm-token-usage-changed", onTokenUsageChanged);
+        return () => {
+            EventsOff("llm-token-usage-changed");
+        };
+    }, [loadData]);
+
+    useEffect(() => {
+        if (!selectedProvider) {
+            setUsage(emptyUsage);
+            return;
+        }
+        setUsage(getUsageForProvider(allUsage, selectedProvider));
     }, [selectedProvider, allUsage]);
 
     const handleReset = async (provider: string) => {
@@ -76,7 +169,7 @@ export function TokenUsagePanel({ lang }: Props) {
                     {t("Token 用量统计", "Token Usage Stats")}
                 </span>
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <button onClick={() => loadData()} disabled={loading} style={{
+                    <button onClick={() => void loadData()} disabled={loading} style={{
                         fontSize: "0.7rem", padding: "2px 8px", borderRadius: 4,
                         background: colors.bg, color: colors.textSecondary,
                         border: `1px solid ${colors.border}`, cursor: loading ? "default" : "pointer",
@@ -86,7 +179,6 @@ export function TokenUsagePanel({ lang }: Props) {
                 </div>
             </div>
 
-            {/* Provider selector */}
             <div style={{ marginBottom: 8 }}>
                 <select
                     value={selectedProvider}
@@ -105,7 +197,6 @@ export function TokenUsagePanel({ lang }: Props) {
                 </select>
             </div>
 
-            {/* Stats display */}
             {usage && (
                 <div>
                     <div style={statRowStyle}>
@@ -128,7 +219,6 @@ export function TokenUsagePanel({ lang }: Props) {
                 </div>
             )}
 
-            {/* Reset buttons */}
             <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
                 <button onClick={() => handleReset(selectedProvider)} style={{
                     fontSize: "0.7rem", padding: "3px 10px", borderRadius: 4,

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -32,6 +34,7 @@ func TestSummarizeSkillRun_PopulatesCurrentAndLastStep(t *testing.T) {
 }
 
 func TestSummarizeSkillRun_MarksInstructionOnlyCraftTool(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "demo.pdf")
 	status := &SkillRunStatus{
 		RunID:  "run-craft",
 		Skill:  "pptx-generator",
@@ -40,12 +43,63 @@ func TestSummarizeSkillRun_MarksInstructionOnlyCraftTool(t *testing.T) {
 			Index:  0,
 			Action: "craft_tool",
 			Status: "success",
-			Output: "📝 脚本语言: python\n📁 脚本路径: C:/tmp/tool.py\n\n✅ 脚本执行成功",
+			Output: "📝 脚本语言: python\n📁 脚本路径: C:/tmp/tool.py\n" + outputPath + "\n\n✅ 脚本执行成功",
 		}},
 	}
 	summarizeSkillRun(status)
 	if !status.Summary.NeedsArtifactVerification {
 		t.Fatalf("expected summary to require artifact verification, got %#v", status.Summary)
+	}
+	if status.Summary.ArtifactPath != outputPath {
+		t.Fatalf("ArtifactPath = %q, want %q", status.Summary.ArtifactPath, outputPath)
+	}
+	if status.Summary.ArtifactStatus != "missing" {
+		t.Fatalf("ArtifactStatus = %q, want missing", status.Summary.ArtifactStatus)
+	}
+}
+
+func TestSummarizeSkillRun_VerificationPassedSkipsArtifactVerification(t *testing.T) {
+	status := &SkillRunStatus{
+		RunID:  "run-craft-ok",
+		Skill:  "pptx-generator",
+		Status: "success",
+		Steps: []StepResult{{
+			Index:  0,
+			Action: "craft_tool",
+			Status: "success",
+			Output: "📝 脚本语言: python\n📁 脚本路径: C:/tmp/tool.py\nattempts: 1\nverification: passed\nartifact: C:/tmp/done.pdf\n\n✅ 脚本执行成功",
+		}},
+	}
+	summarizeSkillRun(status)
+	if status.Summary.ArtifactStatus != "verified" {
+		t.Fatalf("ArtifactStatus = %q, want verified", status.Summary.ArtifactStatus)
+	}
+	if status.Summary.NeedsArtifactVerification {
+		t.Fatalf("expected verification passed to clear follow-up verification, got %#v", status.Summary)
+	}
+}
+
+func TestSummarizeSkillRun_VerifiesExpectedOutputArtifact(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "done.pdf")
+	if err := os.WriteFile(outputPath, []byte("pdf"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	status := &SkillRunStatus{
+		RunID:          "run-artifact",
+		Skill:          "xh-md-to-pdf",
+		Status:         "success",
+		ExpectedOutput: outputPath,
+		Steps:          []StepResult{{Index: 0, Action: "craft_tool", Status: "success", Output: "✅ 脚本执行成功"}},
+	}
+	summarizeSkillRun(status)
+	if status.Summary.ArtifactPath != outputPath {
+		t.Fatalf("ArtifactPath = %q, want %q", status.Summary.ArtifactPath, outputPath)
+	}
+	if status.Summary.ArtifactStatus != "verified" {
+		t.Fatalf("ArtifactStatus = %q, want verified", status.Summary.ArtifactStatus)
+	}
+	if status.Summary.NeedsArtifactVerification {
+		t.Fatalf("expected no pending verification, got %#v", status.Summary)
 	}
 }
 

@@ -34,6 +34,8 @@ interface NLSkillDefinition {
     status: string;
     created_at: string;
     source?: string;
+    source_project?: string;
+    execution_class?: string;
     hub_skill_id?: string;
     hub_version?: string;
     trust_level?: string;
@@ -604,6 +606,36 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     };
 
+    const getExecutionClassLabel = (executionClass?: string) => {
+        switch (executionClass) {
+            case "agent_markdown_skill":
+                return localizeText("Agent Skill", "代理 Skill", "代理 Skill");
+            case "native_skill":
+                return localizeText("Native Skill", "原生 Skill", "原生 Skill");
+            default:
+                return "";
+        }
+    };
+
+    const getExecutionClassTitle = (skill: NLSkillDefinition) => {
+        switch (skill.execution_class) {
+            case "agent_markdown_skill":
+                return localizeText(
+                    "Imported markdown-style skill executed through the agent skill pipeline.",
+                    "导入的 Markdown 类 Skill，通过 agent skill 流程执行。",
+                    "導入的 Markdown 類 Skill，透過 agent skill 流程執行。",
+                );
+            case "native_skill":
+                return localizeText(
+                    "Regular skill executed directly by the native skill runner.",
+                    "常规 Skill，直接由原生 skill runner 执行。",
+                    "常規 Skill，直接由原生 skill runner 執行。",
+                );
+            default:
+                return skill.source_project || "";
+        }
+    };
+
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {/* Tab switcher — sticky so it stays visible while content scrolls */}
@@ -672,12 +704,19 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 {diagLoading ? localizeText("Diagnosing...", "诊断中...", "診斷中...") : localizeText("🔍 Diagnose", "🔍 诊断", "🔍 診斷")}
                             </button>
                             <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleImportZip} disabled={busy || importing}>
-                                {importing ? localizeText("Importing...", "导入中...", "匯入中...") : localizeText("📦 Upload Skill Pack", "📦 上传 Skill 包", "📦 上傳 Skill 包")}
+                                {importing ? localizeText("Importing...", "导入中...", "匯入中...") : localizeText("📦 Import Skill Pack", "📦 导入 Skill 包", "📦 匯入 Skill 包")}
                             </button>
                             <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
                                 + {localizeText("New Skill", "新建 Skill", "新建 Skill")}
                             </button>
                         </div>
+                    </div>
+                    <div style={{ fontSize: "0.74rem", color: "#6b7280" }}>
+                        {localizeText(
+                            "OpenClaw skill zips usually contain SKILL.md or skill.md; skill.yaml / skill.yml and skill.json are also supported.",
+                            "标准 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml 和 skill.json。",
+                            "標準 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml 和 skill.json。",
+                        )}
                     </div>
 
                     {/* Diagnose results */}
@@ -723,6 +762,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     <tr style={{ background: "#f4f5f7" }}>
                                         <th style={thStyle}>{localizeText("Name", "名称", "名稱")}</th>
                                         <th style={thStyle}>{localizeText("Description", "描述", "描述")}</th>
+                                        <th style={{ ...thStyle, width: "120px" }}>{localizeText("Type", "类型", "類型")}</th>
                                         <th style={thStyle}>{localizeText("Triggers", "触发短语", "觸發短語")}</th>
                                         <th style={thStyle}>{localizeText("Usage", "使用统计", "使用統計")}</th>
                                         <th style={thStyle}>{localizeText("Status", "状态", "狀態")}</th>
@@ -735,6 +775,15 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <td style={tdStyle}>{s.name}</td>
                                             <td style={tdStyle}>
                                                 <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
+                                            </td>
+                                            <td style={tdStyle}>
+                                                {s.execution_class ? (
+                                                    <span style={executionClassBadgeStyle} title={getExecutionClassTitle(s)}>
+                                                        {getExecutionClassLabel(s.execution_class)}
+                                                    </span>
+                                                ) : (
+                                                    <span style={{ fontSize: "0.72rem", color: "#b0b8c4" }}>—</span>
+                                                )}
                                             </td>
                                             <td style={tdStyle}>
                                                 <div style={{ display: "flex", flexWrap: "wrap", gap: "3px" }}>
@@ -1471,6 +1520,18 @@ const hubCardStyle: React.CSSProperties = {
 const sourceTextStyle: React.CSSProperties = {
     fontSize: "0.72rem",
     color: "#5a6577",
+    whiteSpace: "nowrap",
+};
+
+const executionClassBadgeStyle: React.CSSProperties = {
+    display: "inline-block",
+    padding: "1px 8px",
+    borderRadius: "999px",
+    fontSize: "0.68rem",
+    fontWeight: 600,
+    color: "#374151",
+    background: "#f3f4f6",
+    border: "1px solid #d1d5db",
     whiteSpace: "nowrap",
 };
 

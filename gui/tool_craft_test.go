@@ -177,6 +177,51 @@ func TestBuildRunCommand(t *testing.T) {
 	}
 }
 
+func TestBuildCraftUserPrompt_AddsArtifactRepairHints(t *testing.T) {
+	prompt := buildCraftUserPrompt(
+		craftToolRequest{Task: "generate report"},
+		craftAttemptResult{
+			Attempts:            1,
+			VerificationStatus:  craftVerificationArtifactMissing,
+			ArtifactPath:        "/tmp/out.pdf",
+			VerificationMessage: "脚本未报告产物路径，且预期产物不存在：/tmp/out.pdf",
+			Script:              "print('hi')",
+			Output:              "done",
+		},
+	)
+	for _, want := range []string{
+		"修复要求：",
+		"这次必须把最终产物写到这个精确路径：/tmp/out.pdf",
+		"成功后必须输出一行：artifact: /tmp/out.pdf",
+		"不要只打印成功信息，必须确保该路径上的文件真实存在。",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
+func TestBuildCraftSystemPrompt_AddsArtifactRepairGuards(t *testing.T) {
+	prompt := buildCraftSystemPrompt(
+		craftToolRequest{RuntimeLanguage: "python"},
+		craftRuntimeAvailability{Python: "/usr/bin/python"},
+		craftAttemptResult{
+			Attempts:           1,
+			VerificationStatus: craftVerificationArtifactMissing,
+			ArtifactPath:       "/tmp/out.pdf",
+		},
+	)
+	for _, want := range []string{
+		"这是修复轮次，请基于上次失败原因修复，不要重复同样错误。",
+		"这是一次产物定向修复：不要只打印 artifact 行或成功提示，必须真正创建该文件，并保证该路径能被文件系统检测到。",
+		"若脚本成功，必须在 stdout 输出精确一行：artifact: /tmp/out.pdf",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
 func TestCraftedToolsDir(t *testing.T) {
 	dir := craftedToolsDir()
 	if !strings.Contains(dir, ".maclaw") || !strings.Contains(dir, "crafted_tools") {
@@ -186,14 +231,18 @@ func TestCraftedToolsDir(t *testing.T) {
 
 func TestNormalizeCraftToolArgs(t *testing.T) {
 	tests := []struct {
-		name      string
-		args      map[string]interface{}
-		wantTask  string
-		wantError bool
+		name            string
+		args            map[string]interface{}
+		wantTask        string
+		wantArtifacts   []string
+		wantInstruction bool
+		wantError       bool
 	}{
 		{name: "prefer task", args: map[string]interface{}{"task": "run report", "instructions": "ignored"}, wantTask: "run report"},
-		{name: "fallback to instructions", args: map[string]interface{}{"instructions": "legacy task"}, wantTask: "legacy task"},
+		{name: "fallback to instructions", args: map[string]interface{}{"instructions": "legacy task"}, wantTask: "legacy task", wantInstruction: true},
 		{name: "trim task", args: map[string]interface{}{"task": "  trimmed task  "}, wantTask: "trimmed task"},
+		{name: "merge output into expected artifacts", args: map[string]interface{}{"task": "generate pdf", "output": "/tmp/demo.pdf"}, wantTask: "generate pdf\n\n必须把最终生成文件写到这个精确路径：/tmp/demo.pdf\n不要写到其他默认目录。", wantArtifacts: []string{"/tmp/demo.pdf"}},
+		{name: "keep expected artifacts", args: map[string]interface{}{"task": "generate report", "expected_artifacts": []interface{}{"/tmp/a.txt", "/tmp/b.txt"}}, wantTask: "generate report", wantArtifacts: []string{"/tmp/a.txt", "/tmp/b.txt"}},
 		{name: "missing task", args: map[string]interface{}{}, wantError: true},
 	}
 	for _, tt := range tests {
@@ -211,7 +260,182 @@ func TestNormalizeCraftToolArgs(t *testing.T) {
 			if got := normalized["task"]; got != tt.wantTask {
 				t.Fatalf("normalized task = %v, want %q", got, tt.wantTask)
 			}
+			artifacts := normalizeCraftArtifactList(normalized["expected_artifacts"])
+			if strings.Join(artifacts, "|") != strings.Join(tt.wantArtifacts, "|") {
+				t.Fatalf("expected_artifacts = %#v, want %#v", artifacts, tt.wantArtifacts)
+			}
 		})
+	}
+}
+
+func TestVerifyCraftExecution(t *testing.T) {
+	artifact := filepath.Join(t.TempDir(), "done.pdf")
+	if err := os.WriteFile(artifact, []byte("pdf"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	request := craftToolRequest{ExpectedArtifacts: []string{artifact}, VerificationMode: "artifact_required"}
+	attempt := craftAttemptResult{Output: "artifact: " + artifact}
+	verified := verifyCraftExecution(request, attempt)
+	if verified.VerificationStatus != craftVerificationPassed {
+		t.Fatalf("VerificationStatus = %q, want %q", verified.VerificationStatus, craftVerificationPassed)
+	}
+	if !strings.Contains(verified.VerificationMessage, "3 bytes") {
+		t.Fatalf("expected verification message to include file size, got %q", verified.VerificationMessage)
+	}
+
+	missing := verifyCraftExecution(craftToolRequest{ExpectedArtifacts: []string{filepath.Join(t.TempDir(), "missing.pdf")}, VerificationMode: "artifact_required"}, craftAttemptResult{})
+	if missing.VerificationStatus != craftVerificationArtifactMissing {
+		t.Fatalf("missing VerificationStatus = %q, want %q", missing.VerificationStatus, craftVerificationArtifactMissing)
+	}
+	if !strings.Contains(missing.VerificationMessage, "未报告产物路径") {
+		t.Fatalf("expected missing artifact message to mention unreported artifact path, got %q", missing.VerificationMessage)
+	}
+
+	reportedMissingPath := filepath.Join(t.TempDir(), "reported-missing.pdf")
+	reportedMissing := verifyCraftExecution(craftToolRequest{VerificationMode: "artifact_required"}, craftAttemptResult{Output: "artifact: " + reportedMissingPath})
+	if reportedMissing.VerificationStatus != craftVerificationArtifactMissing {
+		t.Fatalf("reported missing VerificationStatus = %q, want %q", reportedMissing.VerificationStatus, craftVerificationArtifactMissing)
+	}
+	if !strings.Contains(reportedMissing.VerificationMessage, "报告了产物路径，但文件不存在") {
+		t.Fatalf("expected reported missing message, got %q", reportedMissing.VerificationMessage)
+	}
+
+	emptyFile := filepath.Join(t.TempDir(), "empty.pdf")
+	if err := os.WriteFile(emptyFile, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(empty) error = %v", err)
+	}
+	emptyResult := verifyCraftExecution(craftToolRequest{ExpectedArtifacts: []string{emptyFile}, VerificationMode: "artifact_required"}, craftAttemptResult{})
+	if emptyResult.VerificationStatus != craftVerificationArtifactMissing {
+		t.Fatalf("empty file VerificationStatus = %q, want %q", emptyResult.VerificationStatus, craftVerificationArtifactMissing)
+	}
+	if !strings.Contains(emptyResult.VerificationMessage, "空文件") {
+		t.Fatalf("expected empty file message, got %q", emptyResult.VerificationMessage)
+	}
+
+	dirPath := filepath.Join(t.TempDir(), "outdir")
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	dirResult := verifyCraftExecution(craftToolRequest{ExpectedArtifacts: []string{dirPath}, VerificationMode: "artifact_required"}, craftAttemptResult{})
+	if dirResult.VerificationStatus != craftVerificationArtifactMissing {
+		t.Fatalf("directory VerificationStatus = %q, want %q", dirResult.VerificationStatus, craftVerificationArtifactMissing)
+	}
+	if !strings.Contains(dirResult.VerificationMessage, "目录不是文件") {
+		t.Fatalf("expected directory message, got %q", dirResult.VerificationMessage)
+	}
+
+	reportedDirPath := filepath.Join(t.TempDir(), "reported-dir")
+	if err := os.MkdirAll(reportedDirPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll(reported-dir) error = %v", err)
+	}
+	reportedDirResult := verifyCraftExecution(craftToolRequest{VerificationMode: "artifact_required"}, craftAttemptResult{Output: "artifact: " + reportedDirPath})
+	if reportedDirResult.VerificationStatus != craftVerificationArtifactMissing {
+		t.Fatalf("reported directory VerificationStatus = %q, want %q", reportedDirResult.VerificationStatus, craftVerificationArtifactMissing)
+	}
+	if !strings.Contains(reportedDirResult.VerificationMessage, "该路径是目录不是文件") {
+		t.Fatalf("expected reported directory message, got %q", reportedDirResult.VerificationMessage)
+	}
+}
+
+func TestShouldAutoRegisterCraftRequest(t *testing.T) {
+	if !shouldAutoRegisterCraftRequest(craftToolRequest{SaveAsSkill: true, RegisterPolicy: craftRegisterPolicyAuto}) {
+		t.Fatal("expected auto register for reusable request")
+	}
+	if shouldAutoRegisterCraftRequest(craftToolRequest{SaveAsSkill: true, RegisterPolicy: craftRegisterPolicyAuto, ExpectedArtifacts: []string{"/tmp/out.pdf"}}) {
+		t.Fatal("expected output-bound request to skip auto register")
+	}
+	if shouldAutoRegisterCraftRequest(craftToolRequest{SaveAsSkill: true, RegisterPolicy: craftRegisterPolicyManual}) {
+		t.Fatal("expected manual policy to skip auto register")
+	}
+}
+
+func TestShouldRetryCraftAttempt(t *testing.T) {
+	tests := []struct {
+		name      string
+		request   craftToolRequest
+		attempt   craftAttemptResult
+		current   int
+		max       int
+		wantRetry bool
+	}{
+		{name: "stop at max attempts", attempt: craftAttemptResult{VerificationMessage: "syntax error"}, current: 2, max: 2, wantRetry: false},
+		{name: "stop on runtime missing", attempt: craftAttemptResult{VerificationStatus: craftVerificationRuntimeMissing}, current: 1, max: 2, wantRetry: false},
+		{name: "retry artifact missing with reported path", attempt: craftAttemptResult{VerificationStatus: craftVerificationArtifactMissing, ArtifactPath: "/tmp/out.pdf", VerificationMessage: "脚本报告了产物路径，但文件不存在：/tmp/out.pdf"}, current: 1, max: 2, wantRetry: true},
+		{name: "stop artifact missing without reported path", attempt: craftAttemptResult{VerificationStatus: craftVerificationArtifactMissing, ArtifactPath: "/tmp/out.pdf", VerificationMessage: "脚本未报告产物路径，且预期产物不存在：/tmp/out.pdf"}, current: 1, max: 2, wantRetry: false},
+		{name: "stop artifact missing without artifact path", attempt: craftAttemptResult{VerificationStatus: craftVerificationArtifactMissing, VerificationMessage: "脚本已运行，但既未报告产物路径，也未检测到预期产物。"}, current: 1, max: 2, wantRetry: false},
+		{name: "stop on auth failure", attempt: craftAttemptResult{VerificationMessage: "authentication required for api access"}, current: 1, max: 2, wantRetry: false},
+		{name: "stop on network environment failure", attempt: craftAttemptResult{VerificationMessage: "dial tcp: lookup api.example.com: no such host"}, current: 1, max: 2, wantRetry: false},
+		{name: "stop on interactive flow", attempt: craftAttemptResult{VerificationMessage: "manual login required before export"}, current: 1, max: 2, wantRetry: false},
+		{name: "stop on codebase scale mismatch", attempt: craftAttemptResult{VerificationMessage: "this requires create_session for a repository-wide refactor"}, current: 1, max: 2, wantRetry: false},
+		{name: "stop on invalid working dir", request: craftToolRequest{WorkingDir: "/tmp/missing"}, attempt: craftAttemptResult{VerificationMessage: "working directory error: no such file or directory"}, current: 1, max: 2, wantRetry: false},
+		{name: "retry syntax error", attempt: craftAttemptResult{VerificationStatus: craftVerificationOutputSuspicious, VerificationMessage: "syntaxerror near line 2"}, current: 1, max: 2, wantRetry: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRetryCraftAttempt(tt.request, tt.attempt, tt.current, tt.max); got != tt.wantRetry {
+				t.Fatalf("shouldRetryCraftAttempt() = %v, want %v", got, tt.wantRetry)
+			}
+		})
+	}
+}
+
+func TestClassifyCraftFailure(t *testing.T) {
+	tests := []struct {
+		name         string
+		request      craftToolRequest
+		attempt      craftAttemptResult
+		wantCategory string
+		wantAdvice   string
+	}{
+		{name: "artifact missing with reported path", attempt: craftAttemptResult{VerificationStatus: craftVerificationArtifactMissing, ArtifactPath: "/tmp/out.pdf", VerificationMessage: "脚本报告了产物路径，但文件不存在：/tmp/out.pdf"}, wantCategory: craftFailureCategoryArtifact, wantAdvice: "磁盘上找不到该文件"},
+		{name: "artifact missing without reported path", attempt: craftAttemptResult{VerificationStatus: craftVerificationArtifactMissing, ArtifactPath: "/tmp/out.pdf", VerificationMessage: "脚本未报告产物路径，且预期产物不存在：/tmp/out.pdf"}, wantCategory: craftFailureCategoryArtifact, wantAdvice: "没有明确回报产物路径"},
+		{name: "artifact missing generic", attempt: craftAttemptResult{VerificationStatus: craftVerificationArtifactMissing, ArtifactPath: "/tmp/out.pdf"}, wantCategory: craftFailureCategoryArtifact, wantAdvice: "写到指定路径"},
+		{name: "runtime missing", attempt: craftAttemptResult{VerificationStatus: craftVerificationRuntimeMissing}, wantCategory: craftFailureCategoryEnvironment, wantAdvice: "缺少可用脚本运行时"},
+		{name: "permission issue", attempt: craftAttemptResult{VerificationMessage: "permission denied while writing file"}, wantCategory: craftFailureCategoryPermission, wantAdvice: "权限或认证问题"},
+		{name: "environment issue", attempt: craftAttemptResult{VerificationMessage: "dial tcp: lookup api.example.com: no such host"}, wantCategory: craftFailureCategoryEnvironment, wantAdvice: "运行环境或外部依赖问题"},
+		{name: "capability issue", attempt: craftAttemptResult{VerificationMessage: "this requires create_session for a repository-wide refactor"}, wantCategory: craftFailureCategoryCapability, wantAdvice: "超出单脚本自动化边界"},
+		{name: "script issue", attempt: craftAttemptResult{VerificationMessage: "Traceback: syntaxerror"}, wantCategory: craftFailureCategoryScript, wantAdvice: "脚本本身的可修复错误"},
+		{name: "artifact required fallback", request: craftToolRequest{VerificationMode: "artifact_required"}, attempt: craftAttemptResult{VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: "unknown failure"}, wantCategory: craftFailureCategoryArtifact, wantAdvice: "要求生成可验证产物"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			category, advice := classifyCraftFailure(tt.request, tt.attempt)
+			if category != tt.wantCategory {
+				t.Fatalf("category = %q, want %q", category, tt.wantCategory)
+			}
+			if !strings.Contains(advice, tt.wantAdvice) {
+				t.Fatalf("advice = %q, want to contain %q", advice, tt.wantAdvice)
+			}
+		})
+	}
+}
+
+func TestBuildCraftFailureResultIncludesCategoryAndAdvice(t *testing.T) {
+	result := buildCraftFailureResult(craftToolRequest{}, craftAttemptResult{
+		Language:            "python",
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: "permission denied while writing file",
+		ScriptPath:          "/tmp/tool.py",
+		Attempts:            1,
+	})
+	if !strings.Contains(result, "failure_category: permission") {
+		t.Fatalf("expected permission category in result, got %s", result)
+	}
+	if !strings.Contains(result, "权限或认证问题") {
+		t.Fatalf("expected advice in result, got %s", result)
+	}
+
+	artifactResult := buildCraftFailureResult(craftToolRequest{}, craftAttemptResult{
+		Language:            "python",
+		VerificationStatus:  craftVerificationArtifactMissing,
+		VerificationMessage: "脚本未报告产物路径，且预期产物不存在：/tmp/out.pdf",
+		ArtifactPath:        "/tmp/out.pdf",
+	})
+	if !strings.Contains(artifactResult, "failure_category: artifact") {
+		t.Fatalf("expected artifact category in result, got %s", artifactResult)
+	}
+	if !strings.Contains(artifactResult, "expected_artifact: /tmp/out.pdf") {
+		t.Fatalf("expected structured expected_artifact in result, got %s", artifactResult)
 	}
 }
 

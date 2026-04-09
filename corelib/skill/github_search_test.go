@@ -36,7 +36,7 @@ func TestParseSkillMarkdownCreatesCraftToolSkill(t *testing.T) {
 	candidate := GitHubSkillCandidate{
 		RepoFullName:   "octo/skills",
 		RepoURL:        "https://github.com/octo/skills",
-		FilePath:       "browser/SKILL.md",
+		FilePath:       "browser/skill.md",
 		DefinitionType: githubDefinitionSkillMD,
 		Description:    "Browser automation skill",
 	}
@@ -55,6 +55,12 @@ func TestParseSkillMarkdownCreatesCraftToolSkill(t *testing.T) {
 	}
 	if got := skill.Steps[0].Params["instructions"]; got != "# Browser Skill\n\nAutomate browser steps." {
 		t.Fatalf("unexpected instructions: %#v", got)
+	}
+	if got := skill.Steps[0].Params["verification_mode"]; got != "artifact_required" {
+		t.Fatalf("verification_mode = %#v, want %q", got, "artifact_required")
+	}
+	if got := skill.Steps[0].Params["register_policy"]; got != "manual" {
+		t.Fatalf("register_policy = %#v, want %q", got, "manual")
 	}
 }
 
@@ -80,9 +86,8 @@ func TestParseCandidateDataUsesYAMLParser(t *testing.T) {
 
 func TestDefinitionTypeForPath(t *testing.T) {
 	cases := map[string]string{
-		"foo/SKILL.md":   githubDefinitionSkillMD,
+		"foo/skill.md":   githubDefinitionSkillMD,
 		"foo/skill.yaml": githubDefinitionYAML,
-		"foo/skill.yml":  githubDefinitionYAML,
 		"foo/README.md":  "",
 	}
 	for input, want := range cases {
@@ -96,15 +101,14 @@ func TestSearchGitHubReturnsCombinedCandidates(t *testing.T) {
 	gs := NewGitHubSearcher("")
 	calls := map[string]int{}
 	responses := map[string][]byte{
-		"SKILL.md": mustJSON(t, ghCodeSearchResponse{Items: []ghCodeSearchItem{{
-			Path:       "browser/SKILL.md",
+		"skill.md": mustJSON(t, ghCodeSearchResponse{Items: []ghCodeSearchItem{{
+			Path:       "browser/skill.md",
 			Repository: ghSearchRepo{FullName: "octo/skills", HTMLURL: "https://github.com/octo/skills", Description: "Browser skill", Stars: 12, DefaultBranch: "main"},
 		}}}),
 		"skill.yaml": mustJSON(t, ghCodeSearchResponse{Items: []ghCodeSearchItem{{
 			Path:       "browser/skill.yaml",
 			Repository: ghSearchRepo{FullName: "octo/skills", HTMLURL: "https://github.com/octo/skills", Description: "Browser skill", Stars: 12, DefaultBranch: "main"},
 		}}}),
-		"skill.yml": mustJSON(t, ghCodeSearchResponse{}),
 	}
 	gs.client = fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		q := req.URL.Query().Get("q")
@@ -123,7 +127,7 @@ func TestSearchGitHubReturnsCombinedCandidates(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
-	if calls["SKILL.md"] != 1 || calls["skill.yaml"] != 1 || calls["skill.yml"] != 1 {
+	if calls["skill.md"] != 1 || calls["skill.yaml"] != 1 {
 		t.Fatalf("unexpected calls: %+v", calls)
 	}
 	if results[0].DefinitionType != githubDefinitionSkillMD {
@@ -142,10 +146,10 @@ func TestImportFromRepoURLLoadsSkillMarkdownFromTree(t *testing.T) {
 			if req.URL.Path != "/repos/octo/skills/git/trees/main" {
 				return newHTTPResponse(404, []byte("not found"), nil), nil
 			}
-			body := mustJSON(t, ghTreeResponse{Tree: []ghTreeEntry{{Path: "browser/SKILL.md", Type: "blob"}}})
+			body := mustJSON(t, ghTreeResponse{Tree: []ghTreeEntry{{Path: "browser/skill.md", Type: "blob"}}})
 			return newHTTPResponse(200, body, nil), nil
 		case "raw.githubusercontent.com":
-			if req.URL.Path != "/octo/skills/main/browser/SKILL.md" {
+			if req.URL.Path != "/octo/skills/main/browser/skill.md" {
 				return newHTTPResponse(404, []byte("not found"), nil), nil
 			}
 			return newHTTPResponse(200, []byte("# Browser Skill\n\nAutomate browser tasks."), map[string]string{"Content-Type": "text/markdown"}), nil
@@ -175,12 +179,12 @@ func TestImportFromRepoURLRespectsSubPathForSkillMarkdown(t *testing.T) {
 		switch req.URL.Host {
 		case "api.github.com":
 			body := mustJSON(t, ghTreeResponse{Tree: []ghTreeEntry{
-				{Path: "browser/SKILL.md", Type: "blob"},
-				{Path: "other/SKILL.md", Type: "blob"},
+				{Path: "browser/skill.md", Type: "blob"},
+				{Path: "other/skill.md", Type: "blob"},
 			}})
 			return newHTTPResponse(200, body, nil), nil
 		case "raw.githubusercontent.com":
-			if req.URL.Path != "/octo/skills/main/browser/SKILL.md" {
+			if req.URL.Path != "/octo/skills/main/browser/skill.md" {
 				return newHTTPResponse(500, []byte("unexpected raw path"), nil), nil
 			}
 			return newHTTPResponse(200, []byte("# Browser Skill\n\nScoped skill."), map[string]string{"Content-Type": "text/markdown"}), nil

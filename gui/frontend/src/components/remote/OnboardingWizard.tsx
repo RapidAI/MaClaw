@@ -26,8 +26,10 @@ import {
     GetFreeProxyModels,
     GetFreeProxyModel,
     SetFreeProxyModel,
+    GetRemoteConnectionStatus,
 } from "../../../wailsjs/go/main/App";
 import { PROVIDER_LOGOS } from "./providerLogos";
+import { HubRegisterButtonContent, HubStatusBadge } from "./HubConnectionStatus";
 
 interface LLMProvider {
     name: string;
@@ -107,6 +109,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     // regBusy/regDone 在两种流程中均使用：普通品牌=手动注册，tigerclaw=SSO后自动注册
     const [regBusy, setRegBusy] = useState(false);
     const [regDone, setRegDone] = useState(false);
+    const [hubConnecting, setHubConnecting] = useState(false);
 
     // ── 内嵌扫码状态（TigerClaw 品牌）──
     const [qrCodeURL, setQrCodeURL] = useState("");
@@ -195,6 +198,31 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
             if (s === "connected" || s === "confirmed") setWxDone(true);
         }).catch(() => {});
     }, []);
+
+    useEffect(() => {
+        if (!regDone || !hubConnecting) return;
+        let cancelled = false;
+        const poll = async () => {
+            try {
+                const status = await GetRemoteConnectionStatus();
+                if (!cancelled && status?.connected) {
+                    setHubConnecting(false);
+                    setRegResult({
+                        ok: true,
+                        msg: t("注册成功，Hub 已连接，可直接继续下一步", "Registration successful. Hub connected — you can continue."),
+                    });
+                }
+            } catch {
+                // Ignore transient polling errors.
+            }
+        };
+        poll();
+        const id = setInterval(poll, 1500);
+        return () => {
+            cancelled = true;
+            clearInterval(id);
+        };
+    }, [regDone, hubConnecting, t]);
 
     // Stop WeChat polling when leaving the WeChat step or unmounting
     const wxStep = isTigerclaw ? 3 : 4;
@@ -329,20 +357,27 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                 setLlmDone(true);
                 onLLMConfigured();
             } else {
-                // Save first to set current provider, then test (which also probes vision
-                // and persists supports_vision into the current provider entry).
-                await SaveMaclawLLMProviders(providers, sp.name);
-                const reply = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
+                const testResult = await TestMaclawLLM({ url: sp.url, key: sp.key, model: sp.model, protocol: sp.protocol || "openai", agent_type: sp.agent_type || "openclaw" });
+                const nextProviders = providers.map((provider, index) => index === selectedIdx
+                    ? { ...provider, supports_vision: testResult.supports_vision }
+                    : { ...provider });
+                await SaveMaclawLLMProviders(nextProviders, sp.name);
 
-                // Refresh providers to pick up auto-detected supports_vision from backend
                 try {
                     const freshData = await GetMaclawLLMProviders();
                     if (freshData?.providers) {
                         setProviders(freshData.providers.map((p: LLMProvider) => ({ ...p })));
+                    } else {
+                        setProviders(nextProviders);
                     }
-                } catch { /* non-fatal */ }
+                } catch {
+                    setProviders(nextProviders);
+                }
 
-                setLlmResult({ ok: true, msg: reply });
+                const visionMsg = testResult.supports_vision
+                    ? t("图片理解：支持", "Vision support: enabled")
+                    : t("图片理解：不支持", "Vision support: disabled");
+                setLlmResult({ ok: true, msg: `${testResult.message}\n${visionMsg}` });
                 setLlmDone(true);
                 onLLMConfigured();
             }
@@ -466,7 +501,11 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
         try {
             const result = await ActivateRemote(regEmail.trim(), invCode.trim(), "");
             if (result?.vip_flag) setVipFlag(true);
-            setRegResult({ ok: true, msg: t("注册成功", "Registration successful") });
+            setHubConnecting(true);
+            setRegResult({
+                ok: true,
+                msg: t("注册成功，正在后台连接 Hub，可直接继续下一步", "Registration successful. Connecting to Hub in the background — you can continue."),
+            });
             setRegDone(true);
             onRegistered();
         } catch (e) {
@@ -659,6 +698,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                 {/* ── Step content ── */}
                 <div style={{ padding: "10px 18px 0", flex: 1, overflowY: "auto" }}>
 
+                    <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+
                     {/* ═══ Step 1 ═══
                         TigerClaw 品牌：企业 SSO 认证 + 自动注册 Hub（合并原 Step1+Step2）
                         普通品牌：邮件注册
@@ -848,11 +889,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                             )}
                             <button onClick={handleRegisterClick} disabled={regBusy || regDone} style={{
                                 width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
-                                background: regBusy ? "#a5b4fc" : regDone ? "#86efac" : "#6366f1",
+                                background: regBusy ? "#a5b4fc" : regDone ? (hubConnecting ? "#60a5fa" : "#86efac") : "#6366f1",
                                 color: "#fff", border: "none", borderRadius: 6,
                                 cursor: regBusy || regDone ? "default" : "pointer",
+                                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                             }}>
-                                {regBusy ? t("注册中...", "Registering...") : regDone ? t("✅ 已注册", "✅ Registered") : t("注册", "Register")}
+                                <HubRegisterButtonContent regBusy={regBusy} regDone={regDone} hubConnecting={hubConnecting} t={t} />
                             </button>
                             {regResult && (
                                 <div style={{
@@ -863,6 +905,11 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     color: regResult.ok ? "#22c55e" : "#ef4444",
                                 }}>
                                     {regResult.ok ? `✅ ${regResult.msg}` : `❌ ${regResult.msg}`}
+                                    {regResult.ok && (
+                                        <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, fontSize: "0.68rem", color: hubConnecting ? "#2563eb" : "#16a34a" }}>
+                                            <HubStatusBadge connecting={hubConnecting} t={t} />
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -1033,7 +1080,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                                         <p style={{ fontSize: "0.68rem", color: "#94a3b8", margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                                             {(selectedProvider.agent_type || "openclaw") === "claude-code/2.0.0"
                                                                 ? t("Kimi 等需要编程套餐身份的服务商", "For providers requiring Claude Coding Plan identity (e.g. Kimi)")
-                                                                : t("智谱等大多数服务商使用 OpenClaw 身份", "Most providers use OpenClaw identity (e.g. Zhipu)")}
+                                                                : t("智谱龙虾等大多数服务商使用 OpenClaw 身份", "Most providers use OpenClaw identity (e.g. Zhipu Lobster)")}
                                                         </p>
                                                     </div>
                                                     <div style={{ marginBottom: 10 }}>
@@ -1065,7 +1112,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                                 <label style={labelStyle}>API Key <span style={{ color: "#ef4444" }}>*</span></label>
                                                 <input style={inputStyle} type="password" value={selectedProvider.key}
                                                     onChange={e => updateField("key", e.target.value)}
-                                                    placeholder={selectedProvider.is_custom ? "sk-..." : (selectedProvider.name === "智谱" ? "xxxxxxxx.yyyyyyyy" : "sk-...")}
+                                                    placeholder={selectedProvider.is_custom ? "sk-..." : ((selectedProvider.name === "智谱龙虾" || selectedProvider.name === "智谱编程") ? "xxxxxxxx.yyyyyyyy" : "sk-...")}
                                                     autoComplete="off" />
                                             </div>
                                             <button onClick={handleLLMSave} disabled={llmSaving} style={{

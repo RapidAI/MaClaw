@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -163,6 +164,38 @@ func (m *LocalMCPManager) IsRunning(serverID string) bool {
 	defer m.mu.RUnlock()
 	client, ok := m.clients[serverID]
 	return ok && client.IsRunning()
+}
+
+// ResolveServerID resolves a local MCP server reference by exact ID first, then exact name.
+func (m *LocalMCPManager) ResolveServerID(serverRef string) (string, error) {
+	serverRef = strings.TrimSpace(serverRef)
+	if serverRef == "" {
+		return "", fmt.Errorf("local MCP server reference is required")
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if client, ok := m.clients[serverRef]; ok && client.IsRunning() {
+		return serverRef, nil
+	}
+
+	matches := make([]string, 0, 1)
+	for id, client := range m.clients {
+		if !client.IsRunning() {
+			continue
+		}
+		if strings.TrimSpace(client.entry.Name) == serverRef {
+			matches = append(matches, id)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("local MCP server name %q is ambiguous; please use server id", serverRef)
+	}
+	return "", fmt.Errorf("local MCP server %q not running", serverRef)
 }
 
 // LocalMCPToolSet groups tools from a single local MCP server.

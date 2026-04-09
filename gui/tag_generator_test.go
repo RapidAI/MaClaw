@@ -132,6 +132,7 @@ func TestTagGenerator_WriteBackOnlyMissing(t *testing.T) {
 	dir := createTestSkillDir(t, `
 name: my-tool
 description: existing desc
+custom_field: keep-me
 `, map[string]string{
 		"main.sh": "echo hello\n",
 	})
@@ -156,6 +157,9 @@ description: existing desc
 	}
 	if result["description"] != "existing desc" {
 		t.Errorf("description=%v, want existing desc", result["description"])
+	}
+	if result["custom_field"] != "keep-me" {
+		t.Errorf("custom_field=%v, want keep-me", result["custom_field"])
 	}
 }
 

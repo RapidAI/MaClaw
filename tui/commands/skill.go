@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/skill"
-	"gopkg.in/yaml.v3"
 )
 
 // RunSkill 执行 skill 子命令。
@@ -136,9 +135,14 @@ func skillAdd(args []string) error {
 		info.Triggers = strings.Split(*triggers, ",")
 	}
 
-	data, err := yaml.Marshal(info)
+	data, err := skill.FormatSkillYAMLFile(&skill.SkillYAMLFile{
+		Name:        info.Name,
+		Description: info.Description,
+		Triggers:    info.Triggers,
+		Status:      info.Status,
+	})
 	if err != nil {
-		return fmt.Errorf("marshal skill yaml: %w", err)
+		return fmt.Errorf("format skill.yaml: %w", err)
 	}
 	yamlPath := filepath.Join(skillDir, "skill.yaml")
 	if err := os.WriteFile(yamlPath, data, 0o644); err != nil {

@@ -1,0 +1,83 @@
+/** @vitest-environment jsdom */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+
+const BrowserOpenURLMock = vi.fn();
+
+vi.mock('../../../wailsjs/runtime', () => ({
+    BrowserOpenURL: (...args: unknown[]) => BrowserOpenURLMock(...args),
+}));
+
+import { AboutPanel } from '../AboutPanel';
+
+const baseProps = {
+    currentIcon: '/logo.png',
+    brandInfo: null,
+    appVersion: '1.2.3',
+    buildNumber: '10001',
+    thanksContent: '',
+    t: (key: string) => ({
+        aboutProductName: 'MaClaw Phoenix',
+        slogan: 'Master your code, seize the machine.',
+        version: 'Version',
+        buildLabel: 'Build',
+        author: 'Author',
+        businessCooperation: 'Business: WeChat znsoft',
+        quickActionsTitle: 'Quick Actions',
+        quickActionsDesc: 'Open official resources, check updates, or report issues.',
+        officialWebsite: 'Official Website',
+        onlineUpdate: 'Online Update',
+        installLog: 'View Log',
+        bugReport: 'Problem Feedback',
+        codeRepository: 'Code Repository',
+        thanks: 'Thanks',
+    }[key] ?? key),
+    onOpenWebsite: vi.fn(),
+    onCheckUpdate: vi.fn(),
+    onShowInstallLog: vi.fn(),
+    onOpenBugReport: vi.fn(),
+    onOpenGithub: vi.fn(),
+};
+
+describe('AboutPanel', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        cleanup();
+    });
+
+    it('renders thanks content at the bottom when provided', () => {
+        render(
+            <AboutPanel
+                {...baseProps}
+                thanksContent={'感谢所有贡献者\n\n- Alice\n- Bob'}
+            />,
+        );
+
+        expect(screen.getByText('Thanks')).toBeTruthy();
+        expect(screen.getByText('感谢所有贡献者')).toBeTruthy();
+        expect(screen.getByText('Alice')).toBeTruthy();
+        expect(screen.getByText('Bob')).toBeTruthy();
+    });
+
+    it('opens markdown links through BrowserOpenURL', () => {
+        render(
+            <AboutPanel
+                {...baseProps}
+                thanksContent={'[thanks link](https://github.com/rapidaicoder/msg/blob/main/thanks.md)'}
+            />,
+        );
+
+        fireEvent.click(screen.getByText('thanks link'));
+
+        expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://github.com/rapidaicoder/msg/blob/main/thanks.md');
+    });
+
+    it('hides thanks section when content is empty', () => {
+        render(<AboutPanel {...baseProps} thanksContent="   " />);
+
+        expect(screen.queryByText('Thanks')).toBeNull();
+    });
+});

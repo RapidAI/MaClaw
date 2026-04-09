@@ -92,9 +92,10 @@ interface SidebarTokenUsageStat {
 }
 
 const sidebarProviderAliases: Record<string, string[]> = {
-    "智谱": ["GLM(智谱)", "GLM (智谱)"],
-    "GLM(智谱)": ["智谱", "GLM (智谱)"],
-    "GLM (智谱)": ["智谱", "GLM(智谱)"],
+    "智谱龙虾": ["智谱", "GLM(智谱)", "GLM (智谱)"],
+    "智谱": ["智谱龙虾", "GLM(智谱)", "GLM (智谱)"],
+    "GLM(智谱)": ["智谱", "智谱龙虾", "GLM (智谱)"],
+    "GLM (智谱)": ["智谱", "智谱龙虾", "GLM(智谱)"],
 };
 
 const PROJECT_PAGE_SIZE = 5;
@@ -114,7 +115,8 @@ const knownProviderEndpoints: ProviderEndpoint[] = [
     // OpenAI Protocol (Codex)
     { name: "OpenAI Official", url: "https://api.openai.com/v1", protocol: "openai", region: "global", description: "Official OpenAI API" },
     { name: "xAI (Grok)", url: "https://api.x.ai/v1", protocol: "openai", region: "global", description: "xAI Grok API" },
-    { name: "GLM", url: "https://open.bigmodel.cn/api/paas/v4", protocol: "openai", region: "china" },
+    { name: "智谱龙虾", url: "https://open.bigmodel.cn/api/paas/v4", protocol: "openai", region: "china" },
+    { name: "智谱编程", url: "https://open.bigmodel.cn/api/anthropic", protocol: "anthropic", region: "china" },
     { name: "Kimi", url: "https://api.kimi.com/coding/v1", protocol: "openai", region: "china" },
     { name: "Doubao", url: "https://ark.cn-beijing.volces.com/api/coding", protocol: "openai", region: "china" },
     { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/v3", protocol: "openai", region: "china", description: "Tencent Cloud OpenAI-compatible endpoint" },
@@ -130,7 +132,9 @@ const knownProviderEndpoints: ProviderEndpoint[] = [
 
 // Recommended model IDs per provider (used for model name suggestions)
 const recommendedModels: { [provider: string]: { id: string; note?: string }[] } = {
-    "GLM": [{ id: "glm-4.7" }],
+    "GLM": [{ id: "glm-5-turbo" }, { id: "glm-5.1" }, { id: "glm-4.7" }],
+    "智谱龙虾": [{ id: "glm-5-turbo" }, { id: "glm-5.1" }, { id: "glm-4.7" }],
+    "智谱编程": [{ id: "glm-5.1" }, { id: "glm-4.7" }],
     "Kimi": [{ id: "kimi-k2-thinking" }, { id: "kimi-for-coding" }],
     "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
     "MiniMax": [{ id: "MiniMax-M2.1" }],
@@ -1667,12 +1671,19 @@ function App() {
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
+    const [aiThemeMode, setAIThemeMode] = useState<'light' | 'dark'>(() => {
+        if (typeof window === 'undefined') return 'light';
+        try {
+            return window.localStorage.getItem('ai_assistant_theme_mode') === 'dark' ? 'dark' : 'light';
+        } catch {
+            return 'light';
+        }
+    });
     const navTabRef = useRef(navTab);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
     const [tutorialContent, setTutorialContent] = useState<string>("");
-    const [thanksContent, setThanksContent] = useState<string>(""); // New state for thanks content
-    const [showThanksModal, setShowThanksModal] = useState<boolean>(false); // New state for thanks modal
+    const [thanksContent, setThanksContent] = useState<string>("");
     const [refreshStatus, setRefreshStatus] = useState<string>("");
     const [lastUpdateTime, setLastUpdateTime] = useState<string>("");
     const [refreshKey, setRefreshKey] = useState<number>(0);
@@ -1857,16 +1868,6 @@ function App() {
         }, duration);
     };
 
-    const handleShowThanks = async () => {
-        try {
-            const content = await ReadThanks();
-            setThanksContent(content);
-            setShowThanksModal(true);
-        } catch (err) {
-            console.error("Failed to read thanks content:", err);
-            showToastMessage(t("refreshFailed") + err, 5000);
-        }
-    };
 
     const handleDeleteSkill = async (name: string) => {
         if (name === "Claude Official Documentation Skill Package" || name === "超能力技能包") {
@@ -2154,6 +2155,7 @@ function App() {
                 }
 
                 ReadBBS().then(content => setBbsContent(content)).catch(err => console.error(err));
+                ReadThanks().then(content => setThanksContent(content)).catch(err => console.error(err));
 
                 const toolCfg = (cfg as any)[lastActiveTool];
                 if (toolCfg && toolCfg.models) {
@@ -3503,7 +3505,7 @@ ${instruction}`;
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: isLiteMode ? '60px' : '156px' } as any}>
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: isLiteMode ? '60px' : '156px' } as any} data-ai-theme={aiThemeMode}>
                 {/* Left Navigation Strip */}
                 <div style={{
                     width: '60px',
@@ -3512,7 +3514,9 @@ ${instruction}`;
                     flexDirection: 'column',
                     alignItems: 'center',
                     padding: '6px 0',
-                    background: 'linear-gradient(180deg, #fff8f6 0%, #fafbff 68px, #fafbff 100%)',
+                    background: aiThemeMode === 'dark'
+                        ? 'linear-gradient(180deg, #111827 0%, #0f172a 68px, #0b1220 100%)'
+                        : 'linear-gradient(180deg, #fff8f6 0%, #fafbff 68px, #fafbff 100%)',
                     flexShrink: 0
                 }}>
                     <div className="sidebar-header" style={{ padding: '10px 0 14px 0', justifyContent: 'center', width: '100%' }}>
@@ -3520,9 +3524,9 @@ ${instruction}`;
                     </div>
 
                     <div
-                        className={`sidebar-item ${navTab === 'remote' ? 'active' : ''}`}
+                        className={`sidebar-item left-nav-item ${navTab === 'remote' ? 'active' : ''}`}
                         onClick={() => switchTool('remote')}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>📡</span>
@@ -3530,18 +3534,18 @@ ${instruction}`;
                     </div>
 
                     <div
-                        className={`sidebar-item ${navTab === 'skills' ? 'active' : ''}`}
+                        className={`sidebar-item left-nav-item ${navTab === 'skills' ? 'active' : ''}`}
                         onClick={() => { switchTool('skills'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
                         title={t("skills")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🧩</span>
                         <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("skills")}</span>
                     </div>
                     <div
-                        className={`sidebar-item ${navTab === 'mcp' ? 'active' : ''}`}
+                        className={`sidebar-item left-nav-item ${navTab === 'mcp' ? 'active' : ''}`}
                         onClick={() => { switchTool('mcp'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
                         title="MCP"
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🔌</span>
@@ -3549,7 +3553,7 @@ ${instruction}`;
                     </div>
 
                     <div
-                        className={`sidebar-item ${navTab === 'ai' ? 'active' : ''}`}
+                        className={`sidebar-item left-nav-item left-nav-item--ai ${navTab === 'ai' ? 'active' : ''}`}
                         onClick={() => { switchTool('ai'); }}
                         style={{
                             flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px',
@@ -3610,7 +3614,7 @@ ${instruction}`;
                             <span style={{
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 width: '100%', height: '100%',
-                                borderRadius: '50%', background: '#f8f9fc',
+                                borderRadius: '50%', background: aiThemeMode === 'dark' ? '#0f172a' : '#f8f9fc',
                                 fontSize: '1.3rem', lineHeight: 1
                             }}>🦞</span>
                         </span>
@@ -3623,9 +3627,9 @@ ${instruction}`;
 
                     {gossipAllowed && (
                         <div
-                            className={`sidebar-item ${navTab === 'gossip' ? 'active' : ''}`}
+                            className={`sidebar-item left-nav-item ${navTab === 'gossip' ? 'active' : ''}`}
                             onClick={() => { switchTool('gossip'); }}
-                            style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'gossip' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                            style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'gossip' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
                             title={t("gossip")}
                         >
                             <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🗣️</span>
@@ -3634,9 +3638,9 @@ ${instruction}`;
                     )}
 
                     <div
-                        className={`sidebar-item ${navTab === 'clawnet' ? 'active' : ''}`}
+                        className={`sidebar-item left-nav-item ${navTab === 'clawnet' ? 'active' : ''}`}
                         onClick={() => { switchTool('clawnet'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}
                     >
                         <img src={clawnetIcon} alt="ClawNet" style={{ width: '22px', height: '22px', margin: 0 }} />
@@ -3644,9 +3648,9 @@ ${instruction}`;
                     </div>
 
                     <div
-                        className={`sidebar-item ${navTab === 'settings' ? 'active' : ''}`}
+                        className={`sidebar-item left-nav-item ${navTab === 'settings' ? 'active' : ''}`}
                         onClick={() => { switchTool('settings'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
                         title={t("settings")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>⚙️</span>
@@ -3654,9 +3658,9 @@ ${instruction}`;
                     </div>
 
                     <div
-                        className={`sidebar-item ${navTab === 'about' ? 'active' : ''}`}
+                        className={`sidebar-item left-nav-item ${navTab === 'about' ? 'active' : ''}`}
                         onClick={() => switchTool('about')}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
                         title={t("about")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>ℹ️</span>
@@ -3665,8 +3669,8 @@ ${instruction}`;
                 </div>
 
                 {/* Right Tool List */}
-                <div style={{ flex: 1, padding: '5px 4px 4px', overflowY: 'auto', backgroundColor: '#fafbff', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', minHeight: 0 }}>
-                    <div style={{ width: '72%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '0 auto 4px', flexShrink: 0, display: isLiteMode ? 'none' : undefined }}></div>
+                <div style={{ flex: 1, padding: '5px 4px 4px', overflowY: 'auto', backgroundColor: aiThemeMode === 'dark' ? '#0f172a' : '#fafbff', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', minHeight: 0 }}>
+                    <div style={{ width: '72%', height: '1px', background: aiThemeMode === 'dark' ? 'linear-gradient(90deg, transparent, #475569, transparent)' : 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '0 auto 4px', flexShrink: 0, display: isLiteMode ? 'none' : undefined }}></div>
                     <div style={{ flex: 1, minHeight: 0, display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                     <div className="tool-grid" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2px' }}>
                         <div className={`sidebar-item ${navTab === 'claude' ? 'active' : ''}`} onClick={() => switchTool('claude')}>
@@ -3729,8 +3733,8 @@ ${instruction}`;
 
                     {/* Status dashboard */}
                     <div style={{ flexShrink: 0, padding: '0 1px 0', marginTop: '0' }}>
-                        <div style={{ width: '48%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(225, 228, 232, 0.75), transparent)', margin: '1px auto 2px' }}></div>
-                        <div style={{ width: '76px', margin: '0 auto', padding: '2px 2px', borderRadius: '5px', background: 'rgba(255,255,255,0.78)', border: '1px solid rgba(225, 228, 232, 0.72)', minWidth: 0, boxShadow: 'none' }}>
+                        <div style={{ width: '48%', height: '1px', background: aiThemeMode === 'dark' ? 'linear-gradient(90deg, transparent, rgba(71, 85, 105, 0.9), transparent)' : 'linear-gradient(90deg, transparent, rgba(225, 228, 232, 0.75), transparent)', margin: '1px auto 2px' }}></div>
+                        <div style={{ width: '76px', margin: '0 auto', padding: '2px 2px', borderRadius: '5px', background: aiThemeMode === 'dark' ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255,255,255,0.78)', border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.85)' : '1px solid rgba(225, 228, 232, 0.72)', minWidth: 0, boxShadow: aiThemeMode === 'dark' ? '0 6px 14px rgba(2, 6, 23, 0.28)' : 'none' }}>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '2px', marginBottom: '2px' }}>
                                 {[
                                     { label: 'LLM', on: maclawLLMOnline },
@@ -3748,17 +3752,29 @@ ${instruction}`;
                                             minWidth: 0,
                                             padding: '2px 0',
                                             borderRadius: '4px',
-                                            background: on ? 'rgba(247, 248, 250, 0.92)' : 'rgba(247, 248, 250, 0.7)',
-                                            border: '1px solid rgba(225, 228, 232, 0.72)',
+                                            background: aiThemeMode === 'dark'
+                                                ? (on ? 'rgba(30, 41, 59, 0.96)' : 'rgba(15, 23, 42, 0.88)')
+                                                : (on ? 'rgba(247, 248, 250, 0.92)' : 'rgba(247, 248, 250, 0.7)'),
+                                            border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.72)' : '1px solid rgba(225, 228, 232, 0.72)',
                                             cursor: link ? 'pointer' : undefined,
                                         }}
                                         onClick={link ? () => { setNavTab('settings'); setSettingsTab(link as any); } : undefined}
                                         title={link && !on ? (lang?.startsWith('zh') ? '点击配置' : 'Click to configure') : undefined}
                                     >
-                                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: on ? '#b14df0' : 'rgba(139, 149, 165, 0.65)', boxShadow: on ? '0 0 4px rgba(177, 77, 240, 0.35)' : 'none', display: 'inline-block' }}></span>
-                                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.42rem', color: on ? 'var(--text-color)' : 'var(--text-secondary)', fontWeight: 600 }}>{label}</span>
+                                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: on ? '#b14df0' : (aiThemeMode === 'dark' ? 'rgba(148, 163, 184, 0.72)' : 'rgba(139, 149, 165, 0.65)'), boxShadow: on ? '0 0 4px rgba(177, 77, 240, 0.35)' : 'none', display: 'inline-block' }}></span>
+                                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.42rem', color: on ? (aiThemeMode === 'dark' ? '#f8fafc' : 'var(--text-color)') : (aiThemeMode === 'dark' ? '#94a3b8' : 'var(--text-secondary)'), fontWeight: 600 }}>{label}</span>
                                     </div>
                                 ))}
+                            </div>
+                            <div style={{ marginBottom: '2px', minWidth: 0, borderRadius: '4px', background: aiThemeMode === 'dark' ? 'rgba(17, 24, 39, 0.96)' : 'rgba(247, 248, 250, 0.74)', border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.72)' : '1px solid rgba(225, 228, 232, 0.72)', padding: '3px 4px', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: '4px' }}>
+                                <div style={{ fontSize: '0.42rem', color: aiThemeMode === 'dark' ? '#94a3b8' : 'var(--text-secondary)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>
+                                    {lang === 'zh-Hans' ? '服务商' : lang === 'zh-Hant' ? '服務商' : 'Provider'}
+                                </div>
+                                <div
+                                    style={{ color: aiThemeMode === 'dark' ? '#f8fafc' : 'var(--text-color)', fontWeight: 700, fontSize: '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                                >
+                                    {sidebarCurrentProviderTokenUsage.provider || (lang === 'zh-Hans' ? '未选择' : lang === 'zh-Hant' ? '未選擇' : 'Not selected')}
+                                </div>
                             </div>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2px' }}>
                                 {[
@@ -3766,9 +3782,9 @@ ${instruction}`;
                                     { label: lang === 'zh-Hans' ? '出' : lang === 'zh-Hant' ? '出' : 'Out', value: sidebarCurrentProviderTokenUsage.output, tone: 'muted' },
                                     { label: lang === 'zh-Hans' ? '总' : lang === 'zh-Hant' ? '總' : 'All', value: sidebarCurrentProviderTokenUsage.total, tone: 'primary', bold: true },
                                 ].map(({ label, value, tone, bold }) => (
-                                    <div key={label} style={{ minWidth: 0, borderRadius: '4px', background: 'rgba(247, 248, 250, 0.74)', border: '1px solid rgba(225, 228, 232, 0.72)', padding: '3px 3px', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: '4px' }}>
-                                        <div style={{ fontSize: '0.42rem', color: 'var(--text-secondary)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>{label}</div>
-                                        <div style={{ color: tone === 'primary' ? 'var(--text-color)' : 'var(--text-secondary)', fontWeight: bold ? 700 : 600, fontSize: bold ? '0.5rem' : '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }} title={value.toLocaleString()}>
+                                    <div key={label} style={{ minWidth: 0, borderRadius: '4px', background: aiThemeMode === 'dark' ? 'rgba(17, 24, 39, 0.96)' : 'rgba(247, 248, 250, 0.74)', border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.72)' : '1px solid rgba(225, 228, 232, 0.72)', padding: '3px 3px', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: '4px' }}>
+                                        <div style={{ fontSize: '0.42rem', color: aiThemeMode === 'dark' ? '#94a3b8' : 'var(--text-secondary)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>{label}</div>
+                                        <div style={{ color: tone === 'primary' ? (aiThemeMode === 'dark' ? '#f8fafc' : 'var(--text-color)') : (aiThemeMode === 'dark' ? '#cbd5e1' : 'var(--text-secondary)'), fontWeight: bold ? 700 : 600, fontSize: bold ? '0.5rem' : '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }} title={value.toLocaleString()}>
                                             {value.toLocaleString()}
                                         </div>
                                     </div>
@@ -3779,13 +3795,14 @@ ${instruction}`;
                 </div>
             </div>
 
-            <div className="main-container">
+            <div className="main-container" data-ai-theme={aiThemeMode}>
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
                     <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>
                         <AIAssistantPanel
                         onClose={() => { switchTool('settings'); }}
                         lang={lang}
+                        onThemeModeChange={setAIThemeMode}
                         state={{
                             messages: aiAssistant.messages,
                             progressMessages: aiAssistant.progressMessages,
@@ -4057,7 +4074,8 @@ ${instruction}`;
                                 }}>
                                     {[
                                         { name: 'ChatFire', url: 'https://api.chatfire.cn/register?aff=jira', isRelay: true, hasSubscription: false },
-                                        { name: '智谱', url: 'https://bigmodel.cn/glm-coding', isRelay: false, hasSubscription: true },
+                                        { name: '智谱龙虾', url: 'https://bigmodel.cn/glm-coding', isRelay: false, hasSubscription: true },
+                                        { name: '智谱编程', url: 'https://bigmodel.cn/glm-coding', isRelay: false, hasSubscription: true },
                                         { name: '月之暗面', url: 'https://www.kimi.com/membership/pricing?from=upgrade_plan&track_id=1d2446f5-f45f-4ae5-961e-c0afe936a115', isRelay: false, hasSubscription: true },
                                         { name: '豆包', url: 'https://www.volcengine.com/activity/codingplan', isRelay: false, hasSubscription: true },
                                         { name: '腾讯云', url: 'https://cloud.tencent.com/act/pro/codingplan', isRelay: false, hasSubscription: true },
@@ -5279,25 +5297,6 @@ ${instruction}`;
                                 </div>
                             </div>
 
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem' }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={config?.log_detail_enabled || false}
-                                        onChange={(e) => {
-                                            if (!config) return;
-                                            const c = new main.AppConfig({ ...config, log_detail_enabled: e.target.checked });
-                                            setConfig(c);
-                                            SaveConfig(c);
-                                        }}
-                                    />
-                                    <span>{lang === 'zh-Hans' ? '日志详情' : lang === 'zh-Hant' ? '日誌詳情' : 'Detailed logs'}</span>
-                                </label>
-                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
-                                    {lang === 'zh-Hans' ? '关闭时仅保留错误日志' : lang === 'zh-Hant' ? '關閉時僅保留錯誤日誌' : 'When off, only error logs are kept'}
-                                </span>
-                            </div>
-
                             <div className="settings-panel" style={{ display: settingsTab === 'ui' ? 'block' : 'none' }}>
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0', marginBottom: '16px' }}>
                                     <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '界面缩放' : lang === 'zh-Hant' ? '介面縮放' : 'UI Zoom'}</h4>
@@ -5568,6 +5567,7 @@ ${instruction}`;
                             brandInfo={brandInfo}
                             appVersion={appVersion}
                             buildNumber={buildNumber}
+                            thanksContent={thanksContent}
                             t={t}
                             onOpenWebsite={() => BrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
                             onCheckUpdate={() => {
@@ -7076,39 +7076,6 @@ ${instruction}`;
                 />
             )}
 
-            {/* Thanks Modal */}
-            {showThanksModal && (
-                <div className="modal-overlay">
-                    <div className="modal-content elegant-scrollbar" style={{ maxWidth: '600px', maxHeight: '80vh', overflowY: 'auto' }}>
-                        <h3 style={{ marginTop: 0, marginBottom: '15px', color: '#6366f1' }}>{t("thanks")}</h3>
-                        <div className="markdown-content" style={{
-                            backgroundColor: '#fff',
-                            padding: '10px',
-                            borderRadius: '4px',
-                            border: '1px solid var(--border-color)',
-                            fontFamily: 'inherit',
-                            fontSize: '0.8rem',
-                            lineHeight: '1.6',
-                            color: '#374151',
-                            textAlign: 'left',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word'
-                        }}>
-                            <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                // @ts-ignore
-                                rehypePlugins={[rehypeRaw]}
-                                components={{ a: MarkdownLink }}
-                            >
-                                {thanksContent}
-                            </ReactMarkdown>
-                        </div>
-                        <button onClick={() => setShowThanksModal(false)} className="btn-secondary" style={{ marginTop: '20px' }}>
-                            {t("close")}
-                        </button>
-                    </div>
-                </div>
-            )}
 
             {/* Confirm Dialog */}
             {confirmDialog.show && (

@@ -47,7 +47,7 @@ type MCPRegistry struct {
 }
 
 type mcpHealthState struct {
-	Status    string    // "healthy", "slow", "unavailable", "unknown"
+	Status    string // "healthy", "slow", "unavailable", "unknown"
 	FailCount int
 	LastCheck time.Time
 }
@@ -183,6 +183,38 @@ func (r *MCPRegistry) findServer(serverID string) (*MCPServerEntry, error) {
 		}
 	}
 	return nil, fmt.Errorf("MCP server %q not found", serverID)
+}
+
+// ResolveServerID resolves an MCP server reference by exact ID first, then exact name.
+func (r *MCPRegistry) ResolveServerID(serverRef string) (string, error) {
+	serverRef = strings.TrimSpace(serverRef)
+	if serverRef == "" {
+		return "", fmt.Errorf("MCP server reference is required")
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	servers := r.loadServers()
+	for _, s := range servers {
+		if s.ID == serverRef {
+			return s.ID, nil
+		}
+	}
+
+	matches := make([]string, 0, 1)
+	for _, s := range servers {
+		if strings.TrimSpace(s.Name) == serverRef {
+			matches = append(matches, s.ID)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("MCP server name %q is ambiguous; please use server id", serverRef)
+	}
+	return "", fmt.Errorf("MCP server %q not found", serverRef)
 }
 
 // setAuthHeader sets the appropriate auth header on the request.
@@ -666,6 +698,30 @@ func (a *App) SetLocalMCPAutoStart(serverID string, enabled bool) error {
 type LocalMCPServerStatus struct {
 	ID      string `json:"id"`
 	Running bool   `json:"running"`
+}
+
+func (a *App) resolveMCPServerRef(serverRef string) (resolvedID string, isLocal bool, err error) {
+	serverRef = strings.TrimSpace(serverRef)
+	if serverRef == "" {
+		return "", false, fmt.Errorf("missing server_id parameter")
+	}
+
+	if a.localMCPManager != nil {
+		if id, localErr := a.localMCPManager.ResolveServerID(serverRef); localErr == nil {
+			return id, true, nil
+		} else if strings.Contains(localErr.Error(), "ambiguous") {
+			return "", false, localErr
+		}
+	}
+
+	if a.mcpRegistry == nil {
+		return "", false, fmt.Errorf("MCP registry not initialized")
+	}
+	id, err := a.mcpRegistry.ResolveServerID(serverRef)
+	if err != nil {
+		return "", false, err
+	}
+	return id, false, nil
 }
 
 // GetLocalMCPServerStatuses returns the running status of all configured

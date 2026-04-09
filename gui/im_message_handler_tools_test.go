@@ -14,6 +14,39 @@ import (
 // Tests for IMMessageHandler dynamic tool integration (Task 6.3)
 // ---------------------------------------------------------------------------
 
+func TestIMToolWriteFile_AllowsEmptyContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWD) }()
+
+	h := &IMMessageHandler{}
+	got := h.toolWriteFile(map[string]interface{}{"path": "empty.txt", "content": ""})
+	if !strings.Contains(got, "已清空") {
+		t.Fatalf("toolWriteFile() = %q, want clear message", got)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, "empty.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "" {
+		t.Fatalf("file content = %q, want empty", string(data))
+	}
+}
+
+func TestIMToolWriteFile_RejectsMissingContentField(t *testing.T) {
+	h := &IMMessageHandler{}
+	got := h.toolWriteFile(map[string]interface{}{"path": "empty.txt"})
+	if got != "缺少 content 参数" {
+		t.Fatalf("toolWriteFile() = %q, want missing content error", got)
+	}
+}
+
 func TestTrialReflectObserveIteration_BuildsReflectionNote(t *testing.T) {
 	state := newTrialReflectState(true)
 	toolCalls := []llmToolCall{
@@ -71,16 +104,93 @@ func TestTrialReflectObserveIteration_ClearsFailureAfterSuccess(t *testing.T) {
 	}
 }
 
-func TestBuildTrialFailureRecoverPrompt(t *testing.T) {
-	prompt := buildTrialFailureRecoverPrompt("bash=failed（error: timeout）", []string{"bash", "craft_tool"})
-	if !contains(prompt, "[Recover 阶段]") {
-		t.Fatalf("expected recover wrapper, got %q", prompt)
+func TestTrialReflectObserveIteration_ListSkillsEmptyRegistryIsSucceeded(t *testing.T) {
+	state := newTrialReflectState(true)
+	toolCalls := []llmToolCall{{
+		Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{
+			Name:      "list_skills",
+			Arguments: `{}`,
+		},
+	}}
+	toolResults := []string{"本地没有已注册的 Skill。\n\n提示：可以使用 search_skill_hub 工具在 SkillHub 上搜索更多 Skill。\n"}
+
+	outcome, observation, repeatedFailures := state.observeIteration(toolCalls, toolResults)
+	if outcome != "succeeded" {
+		t.Fatalf("expected succeeded outcome, got %q", outcome)
 	}
-	if !contains(prompt, "失败观察: bash=failed（error: timeout）") {
-		t.Fatalf("expected failure observation, got %q", prompt)
+	if !contains(observation, "list_skills=succeeded") {
+		t.Fatalf("expected succeeded observation, got %q", observation)
 	}
-	if !contains(prompt, "避免重复: bash, craft_tool") {
-		t.Fatalf("expected repeated failure list, got %q", prompt)
+	if len(repeatedFailures) != 0 {
+		t.Fatalf("expected no repeated failures, got %#v", repeatedFailures)
+	}
+}
+
+func TestClassifyToolOutcome_RunSkillAndStatusSnapshots(t *testing.T) {
+	cases := []struct {
+		name     string
+		toolName string
+		result   string
+		want     string
+	}{
+		{
+			name:     "run skill running is uncertain",
+			toolName: "run_skill",
+			result:   "✅ Skill 已启动\n## 运行信息\n- run_id: run-1\n- status: running\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。",
+			want:     "uncertain",
+		},
+		{
+			name:     "get skill run success is succeeded",
+			toolName: "get_skill_run",
+			result:   "🔎 Skill 状态查询结果\n## 运行信息\n- run_id: run-1\n- status: success",
+			want:     "succeeded",
+		},
+		{
+			name:     "get skill run failed is failed",
+			toolName: "get_skill_run",
+			result:   "🔎 Skill 状态查询结果\n## 运行信息\n- run_id: run-1\n- status: failed",
+			want:     "failed",
+		},
+		{
+			name:     "search and install not found is uncertain",
+			toolName: "search_and_install_skill",
+			result:   "在 SkillMarket、ClawHub 和 GitHub 上均未找到与 \"生成PPT\" 匹配的 Skill",
+			want:     "uncertain",
+		},
+	}
+	for _, tc := range cases {
+		if got := classifyToolOutcome(tc.toolName, tc.result); got != tc.want {
+			t.Fatalf("%s: classifyToolOutcome(%q) = %q, want %q", tc.name, tc.toolName, got, tc.want)
+		}
+	}
+}
+
+func TestDidSkillToolFail_IgnoresListSkillsBusinessEmptyState(t *testing.T) {
+	toolCalls := []llmToolCall{{
+		Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{
+			Name:      "list_skills",
+			Arguments: `{}`,
+		},
+	}}
+	toolResults := []string{"本地没有已注册的 Skill。\n\n提示：可以使用 search_skill_hub 工具在 SkillHub 上搜索更多 Skill。\n"}
+	if didSkillToolFail(toolCalls, toolResults) {
+		t.Fatal("expected list_skills empty state to not count as skill failure")
+	}
+}
+
+func TestBuildRemoteSkillSearchPrompt(t *testing.T) {
+	prompt := buildRemoteSkillSearchPrompt()
+	if !contains(prompt, "search_and_install_skill") {
+		t.Fatalf("expected search_and_install_skill guidance, got %q", prompt)
+	}
+	if !contains(prompt, "不要继续解释、承诺或直接 craft_tool") {
+		t.Fatalf("expected craft_tool restriction, got %q", prompt)
 	}
 }
 

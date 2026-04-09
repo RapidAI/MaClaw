@@ -69,6 +69,69 @@ func TestLocalMCPManagerSyncFromConfigStartsEnabledServersWithoutAutoStart(t *te
 	}
 }
 
+func TestLocalMCPManagerResolveServerIDByName(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("enabled-no-autostart", false, false)}
+	cfg.LocalMCPServers[0].Name = "brave-search"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	registry := NewMCPRegistry(app)
+	manager := NewLocalMCPManager(registry)
+	defer manager.StopAll()
+	manager.SyncFromConfig()
+
+	resolved, err := manager.ResolveServerID("brave-search")
+	if err != nil {
+		t.Fatalf("ResolveServerID() error = %v", err)
+	}
+	if resolved != "enabled-no-autostart" {
+		t.Fatalf("ResolveServerID() = %q, want %q", resolved, "enabled-no-autostart")
+	}
+}
+
+func TestLocalMCPManagerResolveServerIDAmbiguousName(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []LocalMCPServerEntry{
+		newHelperLocalMCPServerEntry("server-a", false, false),
+		newHelperLocalMCPServerEntry("server-b", false, false),
+	}
+	cfg.LocalMCPServers[0].Name = "brave-search"
+	cfg.LocalMCPServers[1].Name = "brave-search"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	registry := NewMCPRegistry(app)
+	manager := NewLocalMCPManager(registry)
+	defer manager.StopAll()
+	manager.SyncFromConfig()
+
+	_, err = manager.ResolveServerID("brave-search")
+	if err == nil || err.Error() != "local MCP server name \"brave-search\" is ambiguous; please use server id" {
+		t.Fatalf("ResolveServerID() error = %v", err)
+	}
+}
+
 func TestAutoStartLocalMCPServersStartsServersMarkedAutoStart(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

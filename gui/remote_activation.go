@@ -240,31 +240,40 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	}
 	log.Printf("[onboarding] ActivateRemote save_config=%s", time.Since(persistStart))
 
-	infraStart := time.Now()
-	if a.remoteSessions == nil {
-		a.ensureRemoteInfra()
-	}
-	a.logMemorySnapshot("remoteActivation:before-connect")
-	logAfterConnect := func() {
-		a.logMemorySnapshot("remoteActivation:after-connect")
-	}
-	hubClient := a.remoteSessions.hubClient
-	if hubClient == nil {
-		hubClient = a.createAndWireHubClient()
-	}
-	log.Printf("[onboarding] ActivateRemote ensure_remote_infra=%s hub_client_ready=%t", time.Since(infraStart), hubClient != nil)
-	if hubClient != nil && !hubClient.IsConnected() {
-		go func(client *RemoteHubClient, launchedAt time.Time) {
-			_ = client.Connect()
-			a.emitRemoteStateChanged()
-			logAfterConnect()
-			log.Printf("[onboarding] ActivateRemote background_connect_total=%s", time.Since(launchedAt))
-		}(hubClient, time.Now())
-	} else {
-		logAfterConnect()
-	}
-
 	a.emitRemoteStateChanged()
+	go func(launchedAt time.Time) {
+		infraStart := time.Now()
+		if a.remoteSessions == nil {
+			a.ensureRemoteInfra()
+		}
+		a.logMemorySnapshot("remoteActivation:before-connect")
+		logAfterConnect := func() {
+			a.logMemorySnapshot("remoteActivation:after-connect")
+		}
+		hubClient := (*RemoteHubClient)(nil)
+		if a.remoteSessions != nil {
+			hubClient = a.remoteSessions.hubClient
+		}
+		if hubClient == nil && a.remoteSessions != nil {
+			hubClient = NewRemoteHubClient(a, a.remoteSessions)
+			a.remoteSessions.SetHubClient(hubClient)
+		}
+		if hubClient == nil {
+			hubClient = a.createAndWireHubClient()
+		}
+		log.Printf("[onboarding] ActivateRemote ensure_remote_infra=%s hub_client_ready=%t", time.Since(infraStart), hubClient != nil)
+		if hubClient != nil && !hubClient.IsConnected() {
+			if err := hubClient.Connect(); err != nil {
+				log.Printf("[onboarding] ActivateRemote background_connect_failed total=%s err=%v", time.Since(launchedAt), err)
+			} else {
+				a.emitRemoteStateChanged()
+				logAfterConnect()
+				log.Printf("[onboarding] ActivateRemote background_connect_total=%s", time.Since(launchedAt))
+			}
+		} else {
+			logAfterConnect()
+		}
+	}(time.Now())
 	log.Printf("[onboarding] ActivateRemote total=%s", time.Since(start))
 
 	return result, nil

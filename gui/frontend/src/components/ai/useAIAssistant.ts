@@ -32,6 +32,8 @@ interface AIAssistantSendResult {
     Error?: string;
     deferred?: boolean;
     Deferred?: boolean;
+    confirmed_resume?: boolean;
+    ConfirmedResume?: boolean;
     fields?: any;
     Fields?: any;
     actions?: any;
@@ -48,6 +50,8 @@ interface AIAssistantSendResult {
     ThumbnailBase64?: string;
     request_id?: string;
     RequestID?: string;
+    trace_status?: string;
+    TraceStatus?: string;
     trace_summary?: string;
     TraceSummary?: string;
     trace_event_count?: number;
@@ -202,6 +206,7 @@ export interface ChatMessage {
     localFilePath?: string;
     localFilePaths?: string[];
     thumbnailBase64?: string;
+    requestId?: string;
     timestamp: number;
 }
 
@@ -423,13 +428,14 @@ function isAssistantPlaceholder(msg: ChatMessage): boolean {
     return msg.role === 'assistant' && msg.content === '' && !msg.fields?.length && !msg.thumbnailBase64 && !msg.localFilePaths?.length && !msg.localFilePath;
 }
 
-function appendAssistantPlaceholder(messages: ChatMessage[], assistantMessageId: string): ChatMessage[] {
+function appendAssistantPlaceholder(messages: ChatMessage[], assistantMessageId: string, requestId = ''): ChatMessage[] {
     const index = messages.findIndex(msg => msg.id === assistantMessageId);
     if (index >= 0) return messages;
     return [...messages, {
         id: assistantMessageId,
         role: 'assistant',
         content: '',
+        requestId: requestId || undefined,
         timestamp: Date.now(),
     }];
 }
@@ -459,6 +465,56 @@ function updateMessageById(messages: ChatMessage[], messageId: string | null, up
     }
     const next = [...messages];
     next[index] = updated;
+    return next;
+}
+
+function updateMessageByRequestId(messages: ChatMessage[], requestId: string | null, updater: (message: ChatMessage) => ChatMessage | null): ChatMessage[] {
+    const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
+    if (!normalizedRequestId) return messages;
+    const index = findLastIndex(messages, msg => msg.role === 'assistant' && msg.requestId === normalizedRequestId);
+    if (index < 0) return messages;
+    const updated = updater(messages[index]);
+    if (updated === messages[index]) return messages;
+    if (updated === null) {
+        return removeMessageAtIndex(messages, index);
+    }
+    const next = [...messages];
+    next[index] = updated;
+    return next;
+}
+
+function hasRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null): boolean {
+    if (assistantMessageId && findLastIndex(messages, msg => msg.id === assistantMessageId) >= 0) {
+        return true;
+    }
+    const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
+    return !!normalizedRequestId && findLastIndex(messages, msg => msg.role === 'assistant' && msg.requestId === normalizedRequestId) >= 0;
+}
+
+function updateRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, updater: (message: ChatMessage) => ChatMessage | null): ChatMessage[] {
+    const updatedTail = updateTailMessage(messages, assistantMessageId, updater);
+    if (updatedTail) return updatedTail;
+    const updatedById = updateMessageById(messages, assistantMessageId, updater);
+    if (updatedById !== messages) return updatedById;
+    return updateMessageByRequestId(messages, requestId, updater);
+}
+
+function markLatestConfirmationAsRunning(messages: ChatMessage[]): ChatMessage[] {
+    const index = findLastIndex(messages, message => message.role === 'assistant' && !!message.confirmation);
+    if (index < 0) return messages;
+    const target = messages[index];
+    const confirmation = target.confirmation;
+    if (!confirmation) return messages;
+    const nextStatus = 'running';
+    if (confirmation.status === nextStatus) return messages;
+    const next = [...messages];
+    next[index] = {
+        ...target,
+        confirmation: {
+            ...confirmation,
+            status: nextStatus,
+        },
+    };
     return next;
 }
 
@@ -634,10 +690,12 @@ function normalizeSendResponse(response: AIAssistantSendResult | null | undefine
         local_file_paths: Array.isArray(raw.local_file_paths) ? raw.local_file_paths : (Array.isArray(raw.LocalFilePaths) ? raw.LocalFilePaths : undefined),
         thumbnail_base64: typeof raw.thumbnail_base64 === 'string' ? raw.thumbnail_base64 : (typeof raw.ThumbnailBase64 === 'string' ? raw.ThumbnailBase64 : ''),
         request_id: typeof raw.request_id === 'string' ? raw.request_id : (typeof raw.RequestID === 'string' ? raw.RequestID : ''),
+        trace_status: typeof raw.trace_status === 'string' ? raw.trace_status : (typeof raw.TraceStatus === 'string' ? raw.TraceStatus : ''),
         trace_summary: typeof raw.trace_summary === 'string' ? raw.trace_summary : (typeof raw.TraceSummary === 'string' ? raw.TraceSummary : ''),
         trace_event_count: typeof raw.trace_event_count === 'number' ? raw.trace_event_count : (typeof raw.TraceEventCount === 'number' ? raw.TraceEventCount : undefined),
         evidence_count: typeof raw.evidence_count === 'number' ? raw.evidence_count : (typeof raw.EvidenceCount === 'number' ? raw.EvidenceCount : undefined),
         deferred: typeof raw.deferred === 'boolean' ? raw.deferred : (typeof raw.Deferred === 'boolean' ? raw.Deferred : false),
+        confirmed_resume: typeof raw.confirmed_resume === 'boolean' ? raw.confirmed_resume : (typeof raw.ConfirmedResume === 'boolean' ? raw.ConfirmedResume : false),
         trial_reflect_summary: typeof raw.trial_reflect_summary === 'string' ? raw.trial_reflect_summary : (typeof raw.TrialReflectSummary === 'string' ? raw.TrialReflectSummary : ''),
         trial_reflect_status: typeof raw.trial_reflect_status === 'string' ? raw.trial_reflect_status : (typeof raw.TrialReflectStatus === 'string' ? raw.TrialReflectStatus : ''),
         trial_reflect_failures: typeof raw.trial_reflect_failures === 'number' ? raw.trial_reflect_failures : (typeof raw.TrialReflectFailures === 'number' ? raw.TrialReflectFailures : undefined),
@@ -879,9 +937,39 @@ function buildEmptyTerminalFallback(response: any): string {
     return fallback ? `任务已结束，但没有生成可展示的结果。${fallback}` : '任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。';
 }
 
-function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, response: any, preferences: AIAssistantPreferences): ChatMessage[] {
+function isFailedTerminalTraceStatus(status: unknown): boolean {
+    const normalized = typeof status === 'string' ? status.trim().toLowerCase() : '';
+    return normalized === 'failed' || normalized === 'timeout' || normalized === 'cancelled' || normalized === 'stopped';
+}
+
+function hasVisibleTerminalPayload(response: any): boolean {
+    const text = typeof response?.text === 'string' ? response.text.trim() : '';
+    const localFilePath = typeof response?.local_file_path === 'string' ? response.local_file_path.trim() : '';
+    const localFilePaths = normalizeLocalFilePaths(localFilePath, response?.local_file_paths);
+    const thumbnailBase64 = typeof response?.thumbnail_base64 === 'string' ? response.thumbnail_base64.trim() : '';
+    return !!text || !!thumbnailBase64 || !!localFilePaths?.length;
+}
+
+function resolveFinalRoundContent(message: ChatMessage, response: any): string {
+    const finalText = typeof response?.text === 'string' ? response.text : '';
+    if (finalText) {
+        return finalText;
+    }
+    if (hasVisibleTerminalPayload(response)) {
+        return message.content;
+    }
+    if (isFailedTerminalTraceStatus(response?.trace_status)) {
+        return buildEmptyTerminalFallback(response);
+    }
+    if (message.content) {
+        return message.content;
+    }
+    return buildEmptyTerminalFallback(response);
+}
+
+function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences): ChatMessage[] {
     const finalizeMessage = (message: ChatMessage): ChatMessage | null => {
-        let nextContent = message.content || response.text || '';
+        const nextContent = resolveFinalRoundContent(message, response);
         const nextFields = mergeResponseFields(response.fields, normalizeTraceFields(response, preferences.showTraceEntry));
         const responseActions = normalizeActions(response.actions) || [];
         const traceActions = buildTraceDetailAction(response, preferences.showTraceEntry) || [];
@@ -889,9 +977,6 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
         const nextLocalFilePath = typeof response.local_file_path === 'string' ? response.local_file_path.trim() : '';
         const nextLocalFilePaths = normalizeLocalFilePaths(nextLocalFilePath, response.local_file_paths);
         const nextThumbnailBase64 = response.thumbnail_base64;
-        if (!nextContent && !nextThumbnailBase64 && !nextLocalFilePaths?.length) {
-            nextContent = buildEmptyTerminalFallback(response);
-        }
         if (!nextContent && !nextFields?.length && !nextActions?.length && !nextThumbnailBase64 && !nextLocalFilePaths?.length) {
             return null;
         }
@@ -907,12 +992,11 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
             thumbnailBase64: nextThumbnailBase64,
         };
     };
-    return updateTailMessage(messages, assistantMessageId, finalizeMessage)
-        ?? updateMessageById(messages, assistantMessageId, finalizeMessage);
+    return updateRoundMessage(messages, assistantMessageId, requestId, finalizeMessage);
 }
 
-function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: string | null, errorText: string): ChatMessage[] {
-    if (!assistantMessageId) {
+function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, errorText: string): ChatMessage[] {
+    if (!assistantMessageId && !requestId) {
         return [...messages, {
             id: nextId(),
             role: 'error',
@@ -921,26 +1005,32 @@ function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: stri
         }];
     }
     const replaceWithError = (message: ChatMessage): ChatMessage => ({
-        id: message.id,
+        ...message,
         role: 'error',
         content: errorText,
         timestamp: Date.now(),
     });
-    return updateTailMessage(messages, assistantMessageId, replaceWithError)
-        ?? updateMessageById(messages, assistantMessageId, replaceWithError);
+        const nextMessages = updateRoundMessage(messages, assistantMessageId, requestId, replaceWithError);
+        return hasRoundMessage(messages, assistantMessageId, requestId)
+            ? nextMessages
+            : [...messages, {
+                id: nextId(),
+                role: 'error',
+                content: errorText,
+                timestamp: Date.now(),
+            }];
 }
 
-function removeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null): ChatMessage[] {
-    return updateTailMessage(messages, assistantMessageId, () => null)
-        ?? updateMessageById(messages, assistantMessageId, () => null);
+function removeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null): ChatMessage[] {
+    return updateRoundMessage(messages, assistantMessageId, requestId, () => null);
 }
 
-function resolveSendResult(messages: ChatMessage[], assistantMessageId: string, response: any, preferences: AIAssistantPreferences, errorText?: string): ChatMessage[] {
+function resolveSendResult(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences, errorText?: string): ChatMessage[] {
     return errorText
-        ? replaceRoundWithError(messages, assistantMessageId, errorText)
+        ? replaceRoundWithError(messages, assistantMessageId, requestId, errorText)
         : response?.error
-            ? replaceRoundWithError(messages, assistantMessageId, response.error)
-            : finalizeRoundMessage(messages, assistantMessageId, response, preferences);
+            ? replaceRoundWithError(messages, assistantMessageId, requestId, response.error)
+            : finalizeRoundMessage(messages, assistantMessageId, requestId, response, preferences);
 }
 
 function normalizeActionStyle(style: unknown): ChatActionStyle {
@@ -992,6 +1082,16 @@ function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
 function matchesActiveRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
     if (!round.requestId || round.generation === 0) return false;
     return !event.request_id || event.request_id === round.requestId;
+}
+
+function isConfirmationApprovalCommand(text: string): boolean {
+    const lower = text.trim().toLowerCase();
+    if (!lower) return false;
+    const phrases = [
+        '确认', '确认了', '可以', '可以开始', '开始吧', '继续', '继续吧', '没问题', '好的开始', '就这样', '按这个来',
+        'ok', 'okay', 'confirmed', 'confirm', 'go ahead', 'looks good', 'start', 'continue',
+    ];
+    return phrases.some(phrase => lower === phrase || lower.includes(phrase));
 }
 
 function matchesActiveProgressRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
@@ -1384,7 +1484,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 requestId: current.requestId,
             });
         }
-        setMessages(prev => appendAssistantPlaceholder(prev, assistantMessageId));
+        setMessages(prev => appendAssistantPlaceholder(prev, assistantMessageId, current.requestId));
         return assistantMessageId;
     }, [setRoundState]);
 
@@ -1571,8 +1671,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             id: assistantMessageId,
             role: 'assistant',
             content: '',
+            requestId,
             timestamp: Date.now(),
         };
+        const approvalMessage = isConfirmationApprovalCommand(text);
 
         setRoundState({
             generation,
@@ -1580,7 +1682,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             assistantMessageId,
             requestId,
         });
-        setMessages(prev => [...prev, userMsg, placeholderMsg]);
+        setMessages(prev => {
+            const nextMessages = approvalMessage ? markLatestConfirmationAsRunning(prev) : prev;
+            return [...nextMessages, userMsg, placeholderMsg];
+        });
 
         try {
             const rawResponse = await SendAIAssistantMessage({
@@ -1593,6 +1698,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(response);
             const effectiveRequestId = responseRequestId || requestId;
+            if (activeRoundRef.current.generation !== generation && activeRoundRef.current.requestId !== effectiveRequestId) {
+                return;
+            }
             if (responseRequestId && responseRequestId !== requestId) {
                 setRoundState({
                     generation,
@@ -1602,14 +1710,14 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 });
             }
             setSelectedFile("");
-            setMessages(prev => resolveSendResult(prev, assistantMessageId, response, preferences));
+            setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
             if (response.deferred) {
                 setPendingTaskState(await resolvePendingAITask(effectiveRequestId, response) ?? { requestId: effectiveRequestId, jobID: response.job_id || undefined, runID: response.run_id || undefined });
             } else {
                 setPendingTaskState(null);
             }
         } catch (err: any) {
-            setMessages(prev => resolveSendResult(prev, assistantMessageId, null, preferences, err?.message || String(err)));
+            setMessages(prev => resolveSendResult(prev, assistantMessageId, requestId, null, preferences, err?.message || String(err)));
             setPendingTaskState(null);
         } finally {
             finalizeRound(generation);
@@ -1754,7 +1862,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             return { canceledText: "" };
         }
         if (canceledRound.assistantMessageId) {
-            setMessages(prev => removeRoundMessage(prev, canceledRound.assistantMessageId));
+            setMessages(prev => removeRoundMessage(prev, canceledRound.assistantMessageId, canceledRound.requestId));
         }
         resetActiveRound(nextGeneration);
         setPendingTaskState(null);

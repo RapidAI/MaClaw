@@ -49,7 +49,10 @@ interface AIAssistantPanelProps {
     state: AIAssistantPanelStateProps;
     actions: AIAssistantPanelActionProps;
     window?: AIAssistantPanelWindowProps;
+    onThemeModeChange?: (mode: 'light' | 'dark') => void;
 }
+
+const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
 
 /* ── Theme definitions ── */
 
@@ -182,6 +185,49 @@ const lightTheme: Theme = {
     sendBtnBorder: "#6366f1",
 };
 
+const darkTheme: Theme = {
+    bg: "#0b1220",
+    titleBarBg: "#111827",
+    titleBarBorder: "#334155",
+    titleText: "#e5e7eb",
+    text: "#e5e7eb",
+    textMuted: "#94a3b8",
+    inputBarBg: "#0f172a",
+    inputBarBorder: "#475569",
+    inputText: "#f8fafc",
+    codeBg: "#172033",
+    codeText: "#fda4af",
+    codeBlockBg: "#111827",
+    codeBlockBorder: "#334155",
+    codeBlockLang: "#94a3b8",
+    borderLeft: "#334155",
+    responseBorderLeft: "#818cf8",
+    headingColor: "#a5b4fc",
+    linkColor: "#a5b4fc",
+    pathColor: "#34d399",
+    promptColor: "#a5b4fc",
+    userColor: "#a5b4fc",
+    divider: "#334155",
+    fieldBg: "#162033",
+    fieldBorder: "#475569",
+    fieldLabel: "#94a3b8",
+    errorText: "#fca5a5",
+    errorBg: "rgba(239, 68, 68, 0.16)",
+    errorBorder: "#f87171",
+    emptyHint: "#94a3b8",
+    boldColor: "#ffffff",
+    italicColor: "#d1d5db",
+    bulletColor: "#94a3b8",
+    quoteBorder: "#818cf8",
+    quoteText: "#d1d5db",
+    btnColor: "#a5b4fc",
+    btnBorder: "#818cf8",
+    actionBtnColor: "#cbd5e1",
+    closeBtnColor: "#d1d5db",
+    sendBtnColor: "#111827",
+    sendBtnBorder: "#a5b4fc",
+};
+
 /* ── Style constants ── */
 
 const overlayStyle: React.CSSProperties = {
@@ -290,13 +336,19 @@ const AI_PANEL_STATIC_STYLE_TEXT = `
     }
 `;
 
-function getTitleBarToolButtonStyle(t: Theme, variant: "default" | "danger" = "default"): React.CSSProperties {
+function getTitleBarToolButtonStyle(t: Theme, variant: "default" | "danger" | "active" = "default"): React.CSSProperties {
     const isDanger = variant === "danger";
+    const isActive = variant === "active";
     return {
         ...baseActionBtnStyle,
-        color: isDanger ? "#b91c1c" : t.actionBtnColor,
-        background: isDanger ? "rgba(220, 38, 38, 0.04)" : "transparent",
-        ['--ai-titlebar-tool-hover-bg' as any]: isDanger ? "rgba(220, 38, 38, 0.12)" : "rgba(148, 163, 184, 0.12)",
+        color: isDanger ? "#b91c1c" : (isActive ? t.text : t.actionBtnColor),
+        background: isDanger
+            ? "rgba(220, 38, 38, 0.04)"
+            : (isActive ? t.divider : "transparent"),
+        boxShadow: isActive ? `inset 0 0 0 1px ${t.fieldBorder}` : "none",
+        ['--ai-titlebar-tool-hover-bg' as any]: isDanger
+            ? "rgba(220, 38, 38, 0.12)"
+            : (isActive ? t.divider : "rgba(148, 163, 184, 0.12)"),
     };
 }
 
@@ -677,10 +729,13 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
         case "assistant":
             return (
                 <div key={msg.id} style={{
-                    padding: "4px 0 4px 8px",
+                    padding: "6px 10px",
                     borderLeft: `2px solid ${t.responseBorderLeft}`,
-                    margin: "2px 0",
+                    margin: "4px 0",
                     color: t.text,
+                    background: t.fieldBg,
+                    borderRadius: "8px",
+                    boxShadow: `inset 0 0 0 1px ${t.fieldBorder}`,
                 }}>
                     {/* Streaming: show blinking cursor only on the last assistant message */}
                     {isLastAssistant && !msg.content && !msg.fields && !msg.thumbnailBase64 && visibleFilePaths.length === 0 && (
@@ -735,8 +790,9 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                 <div key={msg.id} style={{
                     padding: "8px 12px",
                     margin: "4px 0",
-                    borderRadius: "6px",
-                    background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(139,92,246,0.06))",
+                    borderRadius: "8px",
+                    background: t.codeBlockBg,
+                    boxShadow: `inset 0 0 0 1px ${t.codeBlockBorder}`,
                     borderLeft: `3px solid ${t.promptColor}`,
                     color: t.text,
                     fontSize: "12px",
@@ -775,7 +831,7 @@ if (typeof document !== "undefined" && !document.getElementById(AI_PANEL_STATIC_
 
 /* ── Main component ── */
 
-export function AIAssistantPanel({ onClose, lang, state, actions, window: panelWindow }: AIAssistantPanelProps) {
+export function AIAssistantPanel({ onClose, lang, state, actions, window: panelWindow, onThemeModeChange }: AIAssistantPanelProps) {
     const {
         messages,
         progressMessages = [],
@@ -817,6 +873,14 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const [draftBeforeHistory, setDraftBeforeHistory] = useState<string | null>(null);
     const [historyEdits, setHistoryEdits] = useState<Record<number, string>>({});
     const [cancelPending, setCancelPending] = useState(false);
+    const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => {
+        if (typeof window === 'undefined') return 'light';
+        try {
+            return window.localStorage.getItem(AI_THEME_MODE_STORAGE_KEY) === 'dark' ? 'dark' : 'light';
+        } catch {
+            return 'light';
+        }
+    });
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const outputEndRef = useRef<HTMLDivElement | null>(null);
@@ -826,7 +890,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const prevReadyRef = useRef(ready);
 
-    const t = inline ? lightTheme : overlayTheme;
+    const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
 
     const title = lang === "en" ? "AI Assistant" : "AI 助手";
@@ -887,6 +951,15 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     useEffect(() => {
         setLocalDraftInputValue(draftInputValue);
     }, [draftInputValue]);
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem(AI_THEME_MODE_STORAGE_KEY, themeMode);
+        } catch {
+            // ignore storage failures and keep in-memory theme mode
+        }
+        onThemeModeChange?.(themeMode);
+    }, [themeMode, onThemeModeChange]);
 
     // Reset scroll flag when component mounts (panel opened/re-shown)
     useEffect(() => {
@@ -1172,7 +1245,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     paddingRight: inline ? 0 : 2,
                     ...(inline ? { '--wails-draggable': 'no-drag', position: 'relative', zIndex: 1000 } as any : {}),
                 }}>
-                    <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "4px", alignItems: "center", flexShrink: 0, minWidth: 0, paddingTop: 1 }}>
+                    <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "6px", alignItems: "center", flexShrink: 0, minWidth: 0, paddingTop: 1 }}>
                     {onOpenTutorial && (
                     <button
                         className="ai-titlebar-tool"
@@ -1192,6 +1265,57 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         </span>
                     </button>
                     )}
+                    <div
+                        data-testid="ai-theme-toggle-group"
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '2px',
+                            padding: '2px',
+                            borderRadius: '8px',
+                            background: t.codeBlockBg,
+                            border: `1px solid ${t.codeBlockBorder}`,
+                        }}
+                    >
+                        <button
+                            className="ai-titlebar-tool"
+                            data-testid="ai-theme-toggle-light"
+                            {...(inline ? {
+                                onMouseDown: (e: React.MouseEvent<HTMLButtonElement>) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setThemeMode('light');
+                                },
+                            } : {
+                                onClick: () => setThemeMode('light'),
+                            })}
+                            aria-label={lang === 'en' ? 'Switch to normal mode' : '切换到普通模式'}
+                            aria-pressed={themeMode === 'light'}
+                            style={{ ...getTitleBarToolButtonStyle(t, themeMode === 'light' ? 'active' : 'default'), width: 'auto', minWidth: '56px', padding: '0 10px', fontSize: '11px', fontWeight: 600 }}
+                            title={lang === 'en' ? 'Switch to normal mode' : '切换到普通模式'}
+                        >
+                            {lang === 'en' ? 'Normal' : '普通'}
+                        </button>
+                        <button
+                            className="ai-titlebar-tool"
+                            data-testid="ai-theme-toggle-dark"
+                            {...(inline ? {
+                                onMouseDown: (e: React.MouseEvent<HTMLButtonElement>) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setThemeMode('dark');
+                                },
+                            } : {
+                                onClick: () => setThemeMode('dark'),
+                            })}
+                            aria-label={lang === 'en' ? 'Switch to dark mode' : '切换到暗黑模式'}
+                            aria-pressed={themeMode === 'dark'}
+                            style={{ ...getTitleBarToolButtonStyle(t, themeMode === 'dark' ? 'active' : 'default'), width: 'auto', minWidth: '56px', padding: '0 10px', fontSize: '11px', fontWeight: 600 }}
+                            title={lang === 'en' ? 'Switch to dark mode' : '切换到暗黑模式'}
+                        >
+                            {lang === 'en' ? 'Dark' : '暗黑'}
+                        </button>
+                    </div>
                     <button
                         className="ai-titlebar-tool"
                         {...(inline ? { onMouseDown: refreshNews } : { onClick: refreshNews })}

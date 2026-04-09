@@ -60,31 +60,39 @@ func (h *IMMessageHandler) toolListMCPTools() string {
 }
 
 func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
-	serverID, _ := args["server_id"].(string)
+	serverRef, _ := args["server_id"].(string)
 	toolName, _ := args["tool_name"].(string)
-	if serverID == "" || toolName == "" {
-		return "缺少 server_id 或 tool_name 参数"
+	if serverRef == "" || toolName == "" {
+		return "缺少 server_id 或 tool_name 参数；server_id 支持 MCP Server 的 ID 或 Name"
 	}
 	toolArgs, _ := args["arguments"].(map[string]interface{})
 
 	if h.app.localMCPManager == nil {
 		h.app.ensureLocalMCPManager()
 	}
-	// Try local MCP manager first (stdio-based servers)
-	if mgr := h.app.localMCPManager; mgr != nil && mgr.IsRunning(serverID) {
-		result, err := mgr.CallTool(serverID, toolName, toolArgs)
+
+	resolvedID, isLocal, err := h.app.resolveMCPServerRef(serverRef)
+	if err != nil {
+		return fmt.Sprintf("MCP 调用失败: %s。可先用 list_mcp_tools 查看 Name (ID)", err.Error())
+	}
+
+	if isLocal {
+		mgr := h.app.localMCPManager
+		if mgr == nil {
+			return "本地 MCP Manager 未初始化"
+		}
+		result, err := mgr.CallTool(resolvedID, toolName, toolArgs)
 		if err != nil {
 			return fmt.Sprintf("本地 MCP 调用失败: %s", err.Error())
 		}
 		return result
 	}
 
-	// Fall back to remote MCP registry (HTTP-based servers)
 	registry := h.app.mcpRegistry
 	if registry == nil {
 		return "MCP Registry 未初始化"
 	}
-	result, err := registry.CallTool(serverID, toolName, toolArgs)
+	result, err := registry.CallTool(resolvedID, toolName, toolArgs)
 	if err != nil {
 		return fmt.Sprintf("MCP 调用失败: %s", err.Error())
 	}
@@ -292,7 +300,28 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	if status.Summary.NeedsArtifactVerification {
 		b.WriteString("## 结果说明\n")
 		b.WriteString("- 这是一个仅提供 SKILL.md 指导的 skill；当前结果只表示脚本已生成并执行。\n")
-		b.WriteString("- 宿主尚未自动验证目标产物是否生成；如果目标是 PPT，请继续检查 .pptx 输出文件。\n")
+		if status.Summary.ArtifactPath != "" {
+			b.WriteString(fmt.Sprintf("- 目标产物: %s\n", status.Summary.ArtifactPath))
+			switch status.Summary.ArtifactStatus {
+			case "verified":
+				b.WriteString("- 产物已自动验证存在。\n")
+			case "missing":
+				b.WriteString("- 目标产物尚未生成到该路径；当前不能算成功交付。\n")
+			default:
+				b.WriteString("- 宿主尚未完成产物验证，请继续观察。\n")
+			}
+		} else {
+			b.WriteString("- 宿主尚未定位目标产物路径；如果目标是 PPT/PDF，请继续检查输出文件。\n")
+		}
+	}
+	if status.Summary.ArtifactPath != "" {
+		b.WriteString(fmt.Sprintf("- artifact_path: %s\n", status.Summary.ArtifactPath))
+	}
+	if status.Summary.ArtifactStatus != "" {
+		b.WriteString(fmt.Sprintf("- artifact_status: %s\n", status.Summary.ArtifactStatus))
+	}
+	if status.Summary.LastErrorSnippet != "" {
+		b.WriteString(fmt.Sprintf("- last_error: %s\n", status.Summary.LastErrorSnippet))
 	}
 	if len(status.Steps) > 0 {
 		b.WriteString(fmt.Sprintf("- steps: %d\n", len(status.Steps)))
@@ -384,6 +413,9 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 				return status, nil
 			}
 			if status.Status != "running" {
+				return status, nil
+			}
+			if status.Summary.ArtifactStatus == "verified" || status.Summary.ArtifactStatus == "missing" {
 				return status, nil
 			}
 			for _, step := range status.Steps {
@@ -1349,7 +1381,16 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 		maxResults = int(n)
 	}
 
-	results, err := websearch.Search(query, maxResults)
+	searchCfg := h.app.GetWebSearchProviders()
+	provider := WebSearchProvider{Type: searchCfg.Current}
+	for _, p := range searchCfg.Providers {
+		if strings.EqualFold(strings.TrimSpace(p.Type), strings.TrimSpace(searchCfg.Current)) {
+			provider = p
+			break
+		}
+	}
+
+	results, err := websearch.SearchWithProvider(query, maxResults, provider)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %s", err.Error())
 	}

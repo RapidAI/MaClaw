@@ -43,6 +43,35 @@ func TestFilterToolsForSkillPreference_RemovesFallbackHeavyTools(t *testing.T) {
 	}
 }
 
+func TestFilterToolsForRemoteSkillSearch_RestrictsToSkillSearchPath(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("run_skill", "run local skill", nil, nil),
+		toolDef("get_skill_run", "check run status", nil, nil),
+		toolDef("list_skills", "list skills", nil, nil),
+		toolDef("search_and_install_skill", "search skillmarket", nil, nil),
+		toolDef("search_skill_hub", "search hub", nil, nil),
+		toolDef("install_skill_hub", "install hub skill", nil, nil),
+		toolDef("craft_tool", "craft script", nil, nil),
+		toolDef("bash", "run bash", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+	}
+	filtered := filterToolsForRemoteSkillSearch(tools)
+	resultNames := make(map[string]bool)
+	for _, tool := range filtered {
+		resultNames[extractToolName(tool)] = true
+	}
+	for _, name := range []string{"run_skill", "get_skill_run", "list_skills", "search_and_install_skill", "search_skill_hub", "install_skill_hub"} {
+		if !resultNames[name] {
+			t.Fatalf("expected %s to be kept, got %#v", name, resultNames)
+		}
+	}
+	for _, name := range []string{"craft_tool", "bash", "send_file"} {
+		if resultNames[name] {
+			t.Fatalf("expected %s to be removed, got %#v", name, resultNames)
+		}
+	}
+}
+
 func TestToolRouter_BelowBudget(t *testing.T) {
 	// Use a subset of builtins (fewer than maxToolBudget) to test below-budget path.
 	allTools := makeBuiltinDefs()[:20]

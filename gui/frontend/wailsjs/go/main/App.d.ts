@@ -218,7 +218,11 @@ export function GetMaclawLLMProviders():Promise<any>;
 
 export function SaveMaclawLLMProviders(arg1:any, arg2:string):Promise<void>;
 
-export function TestMaclawLLM(arg1:any):Promise<string>;
+export function GetWebSearchProviders():Promise<any>;
+
+export function SaveWebSearchProviders(arg1:any, arg2:string):Promise<void>;
+
+export function TestMaclawLLM(arg1:any):Promise<main.MaclawLLMTestResult>;
 
 export function StartOpenAIOAuth():Promise<string>;
 
@@ -496,6 +500,19 @@ export function SetQQBotLocalMode(arg1:boolean):Promise<void>;
 export function GetTelegramLocalMode():Promise<boolean>;
 
 export function SetTelegramLocalMode(arg1:boolean):Promise<void>;
+
+// Lansenger gateway bindings
+export function GetLansengerStatus():Promise<string>;
+
+export function InstallLansengerPlugin():Promise<Record<string, string>>;
+
+export function LoginLansenger():Promise<Record<string, string>>;
+
+export function RestartLansenger():Promise<Record<string, string>>;
+
+export function GetLansengerLocalMode():Promise<boolean>;
+
+export function SetLansengerLocalMode(arg1:boolean):Promise<void>;
 
 // Gossip bindings
 export function GossipSnapshot(arg1:string):Promise<any>;

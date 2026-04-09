@@ -17,7 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// skillMDFrontMatter 表示 SKILL.md 的 YAML front-matter 结构。
+// skillMDFrontMatter 表示 skill.md 的 YAML front-matter 结构。
 type skillMDFrontMatter struct {
 	Name        string   `yaml:"name"`
 	License     string   `yaml:"license"`
@@ -122,18 +122,18 @@ func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL
 		return nil, fmt.Errorf("parse tree: %w", err)
 	}
 
-	// 收集已有 skill.yaml 的目录，避免 SKILL.md 重复导入
+	// 收集已有 skill.yaml 的目录，避免 skill.md 重复导入
 	yamlDirs := make(map[string]bool)
 
 	result := &ImportResult{}
 
-	// 第一轮：扫描 skill.yaml / skill.yml（优先）
+	// 第一轮：扫描 skill.yaml（优先）
 	for _, entry := range tree.Tree {
 		if entry.Type != "blob" {
 			continue
 		}
 		base := path.Base(entry.Path)
-		if base != "skill.yaml" && base != "skill.yml" {
+		if base != "skill.yaml" {
 			continue
 		}
 		if subPath != "" && !strings.HasPrefix(entry.Path, subPath) {
@@ -162,13 +162,13 @@ func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL
 		result.Skills = append(result.Skills, *sk)
 	}
 
-	// 第二轮：扫描 SKILL.md（仅在同目录无 skill.yaml 时）
+	// 第二轮：扫描 skill.md（仅在同目录无 skill.yaml 时）
 	for _, entry := range tree.Tree {
 		if entry.Type != "blob" {
 			continue
 		}
 		base := path.Base(entry.Path)
-		if !strings.EqualFold(base, "SKILL.md") {
+		if base != "skill.md" {
 			continue
 		}
 		if subPath != "" && !strings.HasPrefix(entry.Path, subPath) {
@@ -194,18 +194,18 @@ func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL
 		}
 
 		ri.collectFiles(sk, &tree, skillDir, owner, repo, branch)
-		// SKILL.md 格式没有 skill.yaml，自动生成一个供客户端 scanner 识别
+		// skill.md 格式没有 skill.yaml，自动生成一个供客户端 scanner 识别
 		generatedYAML := ri.generateSkillYAML(sk)
 		sk.Files["skill.yaml"] = base64.StdEncoding.EncodeToString(generatedYAML)
-		// 保留 SKILL.md 正文内容，供本地使用
+		// 保留 skill.md 正文内容，供本地使用
 		if sk.AgentSkillMD != "" {
-			sk.Files["SKILL.md"] = base64.StdEncoding.EncodeToString(mdData)
+			sk.Files["skill.md"] = base64.StdEncoding.EncodeToString(mdData)
 		}
 		result.Skills = append(result.Skills, *sk)
 	}
 
 	if len(result.Skills) == 0 && len(result.Errors) == 0 {
-		return nil, fmt.Errorf("no skill.yaml or SKILL.md found in repo %s/%s (branch: %s, subpath: %q)", owner, repo, branch, subPath)
+		return nil, fmt.Errorf("no skill.yaml or skill.md found in repo %s/%s (branch: %s, subpath: %q)", owner, repo, branch, subPath)
 	}
 	return result, nil
 }
@@ -217,7 +217,7 @@ func (ri *RemoteImporter) collectFiles(sk *HubSkillFull, tree *ghTreeResponse, s
 	if skillDir == "." {
 		dirPrefix = ""
 	}
-	skipFiles := map[string]bool{"skill.yaml": true, "skill.yml": true}
+	skipFiles := map[string]bool{"skill.yaml": true}
 	for _, f := range tree.Tree {
 		if f.Type != "blob" {
 			continue
@@ -234,8 +234,8 @@ func (ri *RemoteImporter) collectFiles(sk *HubSkillFull, tree *ghTreeResponse, s
 		if relPath == "" || skipFiles[relPath] {
 			continue
 		}
-		// 跳过根级别的 SKILL.md（定义文件本身），但保留子目录中的同名文件
-		if strings.EqualFold(relPath, "SKILL.md") {
+		// 跳过根级别的 skill.md（定义文件本身），但保留子目录中的同名文件
+		if relPath == "skill.md" {
 			continue
 		}
 		fileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, f.Path)
@@ -249,7 +249,7 @@ func (ri *RemoteImporter) collectFiles(sk *HubSkillFull, tree *ghTreeResponse, s
 	}
 }
 
-// parseSkillMD 解析 SKILL.md（带 YAML front-matter 的 Markdown）为标准 HubSkillFull。
+// parseSkillMD 解析 skill.md（带 YAML front-matter 的 Markdown）为标准 HubSkillFull。
 func (ri *RemoteImporter) parseSkillMD(data []byte, sourceURL, skillDir string) (*HubSkillFull, error) {
 	content := string(data)
 
@@ -464,7 +464,7 @@ func parseSteps(m map[string]interface{}) []HubSkillStep {
 
 // ── HTTP 和 ID 生成 ────────────────────────────────────────────────────
 
-// generateSkillYAML 为 SKILL.md 格式的 skill 生成一个最小的 skill.yaml，
+// generateSkillYAML 为 skill.md 格式的 skill 生成一个最小的 skill.yaml，
 // 使客户端 scanner 能够识别该 skill 目录。
 func (ri *RemoteImporter) generateSkillYAML(sk *HubSkillFull) []byte {
 	m := map[string]interface{}{
@@ -472,13 +472,25 @@ func (ri *RemoteImporter) generateSkillYAML(sk *HubSkillFull) []byte {
 		"description": sk.Description,
 	}
 	if len(sk.HubSkillMeta.Tags) > 0 {
-		m["triggers"] = sk.HubSkillMeta.Tags
+		m["tags"] = sk.HubSkillMeta.Tags
+	}
+	if len(sk.Triggers) > 0 {
+		m["triggers"] = sk.Triggers
 	}
 	if sk.Version != "" {
 		m["version"] = sk.Version
 	}
 	if len(sk.HubSkillMeta.Platforms) > 0 {
 		m["platforms"] = sk.HubSkillMeta.Platforms
+	}
+	if len(sk.HubSkillMeta.Permissions) > 0 {
+		m["permissions"] = sk.HubSkillMeta.Permissions
+	}
+	if len(sk.HubSkillMeta.RequiredEnv) > 0 {
+		m["required_env"] = sk.HubSkillMeta.RequiredEnv
+	}
+	if sk.HubSkillMeta.RequiresGUI {
+		m["requires_gui"] = true
 	}
 	data, _ := yaml.Marshal(m)
 	return data

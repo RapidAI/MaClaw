@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // GeneratedMetadata 自动生成的元数据。
@@ -26,34 +26,61 @@ func NewTagGenerator() *TagGenerator {
 	return &TagGenerator{}
 }
 
+func readSkillYAMLFile(skillDir string) (*skill.SkillYAMLFile, string, error) {
+	yamlPath, err := skillYAMLFilePath(skillDir)
+	if err != nil {
+		return nil, "", err
+	}
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s: %w", filepath.Base(yamlPath), err)
+	}
+	parsed, err := skill.ParseSkillYAMLFile(data)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse %s: %w", filepath.Base(yamlPath), err)
+	}
+	return parsed, yamlPath, nil
+}
+
+func skillYAMLFilePath(skillDir string) (string, error) {
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		path := filepath.Join(skillDir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
 // GenerateTags 分析 Skill 目录，生成/补全元数据。
 // 保留已有非空字段，仅补全缺失字段。
 func (g *TagGenerator) GenerateTags(skillDir string) (*GeneratedMetadata, error) {
-	yamlPath := filepath.Join(skillDir, "skill.yaml")
-	data, err := os.ReadFile(yamlPath)
+	existing, _, err := readSkillYAMLFile(skillDir)
 	if err != nil {
-		return nil, fmt.Errorf("read skill.yaml: %w", err)
-	}
-
-	var existing map[string]interface{}
-	if err := yaml.Unmarshal(data, &existing); err != nil {
-		return nil, fmt.Errorf("parse skill.yaml: %w", err)
+		return nil, err
 	}
 
 	result := &GeneratedMetadata{}
 
 	// 保留已有字段
-	if name, ok := existing["name"].(string); ok && name != "" {
-		result.Name = name
+	if existing.Name != "" {
+		result.Name = existing.Name
 	}
-	if desc, ok := existing["description"].(string); ok && desc != "" {
-		result.Description = desc
+	if existing.Description != "" {
+		result.Description = existing.Description
 	}
-	if tags, ok := existing["tags"].([]interface{}); ok && len(tags) > 0 {
-		for _, t := range tags {
-			if s, ok := t.(string); ok {
-				result.Tags = append(result.Tags, s)
+	if len(existing.Extra) > 0 {
+		if tags, ok := existing.Extra["tags"].([]any); ok && len(tags) > 0 {
+			for _, t := range tags {
+				if s, ok := t.(string); ok {
+					result.Tags = append(result.Tags, s)
+				}
 			}
+		}
+		if price, ok := existing.Extra["price"].(int); ok && price > 0 {
+			result.Price = price
+		} else if priceNum, ok := existing.Extra["price"].(float64); ok && priceNum > 0 {
+			result.Price = int(priceNum)
 		}
 	}
 
@@ -63,9 +90,7 @@ func (g *TagGenerator) GenerateTags(skillDir string) (*GeneratedMetadata, error)
 	}
 
 	// 推断 price（简单启发式）
-	if price, ok := existing["price"].(int); ok && price > 0 {
-		result.Price = price
-	} else {
+	if result.Price == 0 {
 		result.Price = g.inferPrice(skillDir)
 	}
 
@@ -107,14 +132,14 @@ func (g *TagGenerator) inferTags(skillDir string) []string {
 func (g *TagGenerator) scanContentTags(content string, tagSet map[string]bool) {
 	lower := strings.ToLower(content)
 	patterns := map[string][]string{
-		"web-scraping":  {"requests.get", "beautifulsoup", "scrapy", "selenium"},
-		"data-analysis": {"pandas", "numpy", "matplotlib", "seaborn"},
+		"web-scraping":   {"requests.get", "beautifulsoup", "scrapy", "selenium"},
+		"data-analysis":  {"pandas", "numpy", "matplotlib", "seaborn"},
 		"file-management": {"shutil", "os.path", "pathlib", "glob"},
-		"automation":    {"subprocess", "os.system", "schedule"},
-		"api":           {"flask", "fastapi", "django", "http.server"},
-		"database":      {"sqlite3", "sqlalchemy", "pymongo"},
-		"ai-ml":         {"torch", "tensorflow", "sklearn", "openai"},
-		"network":       {"socket", "paramiko", "ftplib", "smtplib"},
+		"automation":     {"subprocess", "os.system", "schedule"},
+		"api":            {"flask", "fastapi", "django", "http.server"},
+		"database":       {"sqlite3", "sqlalchemy", "pymongo"},
+		"ai-ml":          {"torch", "tensorflow", "sklearn", "openai"},
+		"network":        {"socket", "paramiko", "ftplib", "smtplib"},
 	}
 	for tag, keywords := range patterns {
 		for _, kw := range keywords {
@@ -158,29 +183,23 @@ func (g *TagGenerator) inferPrice(skillDir string) int {
 
 // WriteBackToYAML 将生成的元数据写回 skill.yaml（仅补全缺失字段）。
 func (g *TagGenerator) WriteBackToYAML(skillDir string, meta *GeneratedMetadata) error {
-	yamlPath := filepath.Join(skillDir, "skill.yaml")
-	data, err := os.ReadFile(yamlPath)
+	existing, yamlPath, err := readSkillYAMLFile(skillDir)
 	if err != nil {
 		return err
 	}
-
-	var existing map[string]interface{}
-	if err := yaml.Unmarshal(data, &existing); err != nil {
-		return err
-	}
-	if existing == nil {
-		existing = make(map[string]interface{})
+	if existing.Extra == nil {
+		existing.Extra = make(map[string]any)
 	}
 
 	// 仅补全缺失字段
-	if _, ok := existing["tags"]; !ok && len(meta.Tags) > 0 {
-		existing["tags"] = meta.Tags
+	if _, ok := existing.Extra["tags"]; !ok && len(meta.Tags) > 0 {
+		existing.Extra["tags"] = meta.Tags
 	}
-	if _, ok := existing["price"]; !ok && meta.Price > 0 {
-		existing["price"] = meta.Price
+	if _, ok := existing.Extra["price"]; !ok && meta.Price > 0 {
+		existing.Extra["price"] = meta.Price
 	}
 
-	out, err := yaml.Marshal(existing)
+	out, err := skill.FormatSkillYAMLFile(existing)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,9 @@
-import { remoteCardStyle, remoteMutedCardStyle, remoteMetaLabelStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
+import ReactMarkdown from 'react-markdown';
+import type { MouseEvent } from 'react';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import { BrowserOpenURL } from '../../wailsjs/runtime';
+import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
 
 type BrandInfo = {
     id: string;
@@ -17,6 +22,7 @@ type AboutPanelProps = {
     brandInfo: BrandInfo | null;
     appVersion: string;
     buildNumber: string;
+    thanksContent: string;
     t: (key: string) => string;
     onOpenWebsite: () => void;
     onCheckUpdate: () => void;
@@ -25,11 +31,23 @@ type AboutPanelProps = {
     onOpenGithub: () => void;
 };
 
+const MarkdownLink = ({ node, ...props }: any) => (
+    <a
+        {...props}
+        onClick={(e: MouseEvent<HTMLAnchorElement>) => {
+            e.preventDefault();
+            if (props.href) BrowserOpenURL(props.href);
+        }}
+        style={{ cursor: 'pointer', color: '#6366f1', textDecoration: 'underline' }}
+    />
+);
+
 export function AboutPanel({
     currentIcon,
     brandInfo,
     appVersion,
     buildNumber,
+    thanksContent,
     t,
     onOpenWebsite,
     onCheckUpdate,
@@ -85,6 +103,26 @@ export function AboutPanel({
                         )}
                     </div>
                 </section>
+
+                {thanksContent.trim() && (
+                    <section className="about-actions-card about-thanks-card" style={remoteCardStyle}>
+                        <div className="about-actions-card__header about-thanks-header">
+                            <div>
+                                <div style={remoteSectionTitleStyle} className="about-thanks-title">{t("thanks")}</div>
+                            </div>
+                        </div>
+                        <div className="about-thanks-content markdown-content">
+                            <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                // @ts-ignore
+                                rehypePlugins={[rehypeRaw]}
+                                components={{ a: MarkdownLink }}
+                            >
+                                {thanksContent}
+                            </ReactMarkdown>
+                        </div>
+                    </section>
+                )}
             </div>
         </div>
     );

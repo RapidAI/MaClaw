@@ -160,10 +160,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		nil, nil,
 		func(args map[string]interface{}) string { return h.toolListMCPTools() })
 
-	reg("call_mcp_tool", "调用指定 MCP Server 上的工具",
+	reg("call_mcp_tool", "调用指定 MCP Server 上的工具（server_id 支持 ID 或 Name，重名时请传 ID）",
 		ToolCategoryBuiltin, []string{"mcp", "call", "execute"},
 		map[string]interface{}{
-			"server_id": map[string]string{"type": "string", "description": "MCP Server ID"},
+			"server_id": map[string]string{"type": "string", "description": "MCP Server ID 或 Name"},
 			"tool_name": map[string]string{"type": "string", "description": "工具名称"},
 			"arguments": map[string]string{"type": "object", "description": "工具参数（JSON 对象）"},
 		}, []string{"server_id", "tool_name"},
@@ -247,14 +247,19 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolDiscoverTool(args) })
 
 	// --- Craft tool (needs progress callback) ---
-	regP("craft_tool", "当现有工具都无法完成任务时，自动研究问题并生成脚本来解决。会用 LLM 生成代码、执行、并注册为可复用的 Skill。适用于数据处理、API 调用、文件转换、系统管理等需要编程才能完成的任务。",
+	regP("craft_tool", "当现有工具、Skill 或会话式编程都不合适时，生成并执行单脚本来完成一次性自动化任务。更适合本机数据处理、API 调用、文件转换和小型系统自动化；不适合复杂代码库改造或长链路编程任务。",
 		ToolCategoryBuiltin, []string{"craft", "script", "generate", "code"},
 		map[string]interface{}{
-			"task":          map[string]string{"type": "string", "description": "需要完成的任务描述（越详细越好）"},
-			"language":      map[string]string{"type": "string", "description": "脚本语言: python/bash/powershell/node（可选，自动检测）"},
-			"save_as_skill": map[string]string{"type": "boolean", "description": "执行成功后是否注册为 Skill 供下次复用（默认 true）"},
-			"skill_name":    map[string]string{"type": "string", "description": "Skill 名称（可选，自动生成）"},
-			"timeout":       map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
+			"task":               map[string]string{"type": "string", "description": "需要完成的任务描述（越详细越好）"},
+			"language":           map[string]string{"type": "string", "description": "脚本语言: python/bash/powershell/node（可选，优先按运行时自动选择）"},
+			"working_dir":        map[string]string{"type": "string", "description": "脚本执行工作目录（可选）"},
+			"expected_artifacts": map[string]string{"type": "array", "description": "期望生成的文件路径列表（可选，用于验收）"},
+			"verification_mode":  map[string]string{"type": "string", "description": "验收模式（可选，如 artifact_required）"},
+			"register_policy":    map[string]string{"type": "string", "description": "注册策略（可选，auto/manual）"},
+			"max_attempts":       map[string]string{"type": "integer", "description": "最大自动修复尝试次数（默认 2，最大 3）"},
+			"save_as_skill":      map[string]string{"type": "boolean", "description": "执行成功后是否尝试注册为 Skill（默认 true，但一次性任务会更保守）"},
+			"skill_name":         map[string]string{"type": "string", "description": "Skill 名称（可选，自动生成）"},
+			"timeout":            map[string]string{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
 		}, []string{"task"},
 		func(args map[string]interface{}, onProgress ProgressCallback) string {
 			return h.toolCraftTool(args, onProgress)

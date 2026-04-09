@@ -2,6 +2,8 @@ package main
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	pathpkg "path/filepath"
 	"strings"
 	"testing"
@@ -43,6 +45,39 @@ func assertPromptContainsNone(t *testing.T, text string, parts []string) {
 		if strings.Contains(text, part) {
 			t.Errorf("unexpectedly contained %q", part)
 		}
+	}
+}
+
+func TestTUIWriteFile_AllowsEmptyContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWD) }()
+
+	h := &TUIAgentHandler{}
+	got := h.toolWriteFile(map[string]interface{}{"path": "empty.txt", "content": ""})
+	if !strings.Contains(got, "已清空") {
+		t.Fatalf("toolWriteFile() = %q, want clear message", got)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, "empty.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "" {
+		t.Fatalf("file content = %q, want empty", string(data))
+	}
+}
+
+func TestTUIWriteFile_RejectsMissingContentField(t *testing.T) {
+	h := &TUIAgentHandler{}
+	got := h.toolWriteFile(map[string]interface{}{"path": "empty.txt"})
+	if got != "错误: 缺少 content 参数" {
+		t.Fatalf("toolWriteFile() = %q, want missing content error", got)
 	}
 }
 

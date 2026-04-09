@@ -27,7 +27,7 @@ type GitHubSkillCandidate struct {
 	RepoURL        string `json:"repo_url"`
 	Description    string `json:"description"`
 	Stars          int    `json:"stars"`
-	FilePath       string `json:"file_path"` // path to SKILL.md / skill.yaml / skill.yml in repo
+	FilePath       string `json:"file_path"` // path to skill.md / skill.yaml in repo
 	RawURL         string `json:"raw_url"`   // direct download URL
 	Branch         string `json:"branch"`
 	DefinitionType string `json:"definition_type,omitempty"`
@@ -89,9 +89,8 @@ func (gs *GitHubSearcher) SearchGitHub(query string) ([]GitHubSkillCandidate, er
 	}
 
 	targets := []githubSearchTarget{
-		{filename: "SKILL.md", definitionType: githubDefinitionSkillMD},
+		{filename: "skill.md", definitionType: githubDefinitionSkillMD},
 		{filename: "skill.yaml", definitionType: githubDefinitionYAML},
-		{filename: "skill.yml", definitionType: githubDefinitionYAML},
 	}
 	var candidates []GitHubSkillCandidate
 	seen := make(map[string]bool)
@@ -271,9 +270,9 @@ func (gs *GitHubSearcher) scanRepoTree(owner, repo, branch, subPath, sourceURL s
 
 func definitionTypeForPath(filePath, fallback string) string {
 	switch path.Base(filePath) {
-	case "skill.yaml", "skill.yml":
+	case "skill.yaml":
 		return githubDefinitionYAML
-	case "SKILL.md":
+	case "skill.md":
 		return githubDefinitionSkillMD
 	default:
 		return fallback
@@ -347,7 +346,9 @@ func (gs *GitHubSearcher) parseSkillMarkdown(data []byte, c GitHubSkillCandidate
 			{
 				Action: "craft_tool",
 				Params: map[string]interface{}{
-					"instructions": parsed.markdown,
+					"instructions":      parsed.markdown,
+					"verification_mode": "artifact_required",
+					"register_policy":   "manual",
 				},
 			},
 		},

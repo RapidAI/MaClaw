@@ -209,7 +209,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	full.Files = make(map[string]string)
 	allowedExts := map[string]bool{
 		".sh": true, ".py": true, ".js": true, ".yaml": true,
-		".yml": true, ".json": true, ".txt": true, ".md": true,
+		".txt": true, ".md": true,
 	}
 	_ = filepath.Walk(pkgRoot, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil || info.IsDir() {
@@ -217,7 +217,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 		}
 		rel, _ := filepath.Rel(pkgRoot, path)
 		rel = filepath.ToSlash(rel) // 统一为正斜杠
-		if rel == "skill.yaml" || rel == "skill.yml" {
+		if rel == "skill.yaml" {
 			return nil // 元数据已解析
 		}
 		ext := strings.ToLower(filepath.Ext(rel))

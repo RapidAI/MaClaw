@@ -91,7 +91,7 @@ type MCPServerEntry struct {
 	ID          string          `json:"id"`
 	Name        string          `json:"name"`
 	EndpointURL string          `json:"endpoint_url"`
-	AuthType    string          `json:"auth_type"`   // "none", "api_key", "bearer"
+	AuthType    string          `json:"auth_type"` // "none", "api_key", "bearer"
 	AuthSecret  string          `json:"auth_secret"`
 	CreatedAt   string          `json:"created_at"`
 	Source      MCPServerSource `json:"source"`
@@ -124,7 +124,7 @@ type NLSkillEntry struct {
 	Steps         []NLSkillStep `json:"steps"`
 	Status        string        `json:"status"` // "active", "disabled"
 	CreatedAt     string        `json:"created_at"`
-	Source        string        `json:"source"`         // "manual" | "learned" | "hub" | "crafted" | "file" | "zip_import"
+	Source        string        `json:"source"` // "manual" | "learned" | "hub" | "crafted" | "file" | "zip_import"
 	SourceProject string        `json:"source_project"`
 	HubSkillID    string        `json:"hub_skill_id,omitempty"`
 	HubVersion    string        `json:"hub_version,omitempty"`
@@ -174,6 +174,19 @@ type MaclawLLMConfig struct {
 	TimeoutSec     int    `json:"timeout_sec,omitempty"`
 	SupportsVision bool   `json:"supports_vision"`
 	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
+}
+
+type MaclawLLMTestResult struct {
+	Message        string `json:"message"`
+	SupportsVision bool   `json:"supports_vision"`
+}
+
+// WebSearchProvider 描述一个网页搜索 provider 配置。
+type WebSearchProvider struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Key     string `json:"key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
 }
 
 // UserAgent returns the User-Agent header value for LLM API requests.
@@ -288,7 +301,6 @@ func MergeSystemIntoUser(messages []interface{}) []interface{} {
 	return rest
 }
 
-
 // EffectiveContextTokens returns the usable context window in tokens.
 // It uses the configured ContextLength, falling back to DefaultContextTokens.
 // A safety margin of 20% is reserved for the model's output.
@@ -318,7 +330,7 @@ type SkillHubEntry struct {
 type Skill struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Type        string `json:"type"`      // "address" or "zip"
+	Type        string `json:"type"` // "address" or "zip"
 	Value       string `json:"value"`
 	Installed   bool   `json:"installed"`
 }

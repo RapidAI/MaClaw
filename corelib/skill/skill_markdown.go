@@ -19,14 +19,8 @@ type MarkdownSkillOptions struct {
 	TrustLevel          string
 	SkillDir            string
 	Triggers            []string
-}
-
-type parsedSkillMarkdown struct {
-	markdown      string
-	body          string
-	name          string
-	description   string
-	compatibility string
+	Platforms           []string
+	RequiresGUI         *bool
 }
 
 func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLSkillEntry, error) {
@@ -42,7 +36,9 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		triggers = append(triggers, "agent-skill")
 	}
 	params := map[string]interface{}{
-		"instructions": parsed.markdown,
+		"instructions":      parsed.markdown,
+		"verification_mode": "artifact_required",
+		"register_policy":   "manual",
 	}
 	if skillDir := strings.TrimSpace(opts.SkillDir); skillDir != "" {
 		params["working_dir"] = skillDir
@@ -55,6 +51,11 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 	if source == "" {
 		source = "file"
 	}
+	platforms := append([]string(nil), opts.Platforms...)
+	requiresGUI := false
+	if opts.RequiresGUI != nil {
+		requiresGUI = *opts.RequiresGUI
+	}
 	return &corelib.NLSkillEntry{
 		Name:          parsed.name,
 		Description:   parsed.description,
@@ -66,6 +67,8 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		SourceProject: sourceProject,
 		TrustLevel:    strings.TrimSpace(opts.TrustLevel),
 		SkillDir:      strings.TrimSpace(opts.SkillDir),
+		Platforms:     platforms,
+		RequiresGUI:   requiresGUI,
 	}, nil
 }
 
@@ -89,6 +92,11 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	if parsed.compatibility != "" && !containsString(triggers, "agent-skill") {
 		triggers = append(triggers, "agent-skill")
 	}
+	platforms := append([]string(nil), opts.Platforms...)
+	requiresGUI := false
+	if opts.RequiresGUI != nil {
+		requiresGUI = *opts.RequiresGUI
+	}
 	steps := make([]corelib.NLSkillStep, 0)
 	scriptsDir := filepath.Join(skillDir, "scripts")
 	if entries, err := os.ReadDir(scriptsDir); err == nil {
@@ -97,11 +105,11 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 				continue
 			}
 			scriptPath := filepath.Join(scriptsDir, e.Name())
-			scriptData, err := os.ReadFile(scriptPath)
-			if err != nil {
+			command, ok := scriptExecutionCommandFromMarkdown(scriptPath, parsed.markdown, skillDir)
+			if !ok {
 				continue
 			}
-			params := map[string]interface{}{"command": string(scriptData)}
+			params := map[string]interface{}{"command": command}
 			if strings.TrimSpace(skillDir) != "" {
 				params["working_dir"] = skillDir
 			}
@@ -117,6 +125,8 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 			TrustLevel:          opts.TrustLevel,
 			SkillDir:            firstNonEmpty(strings.TrimSpace(opts.SkillDir), skillDir),
 			Triggers:            triggers,
+			Platforms:           platforms,
+			RequiresGUI:         &requiresGUI,
 		})
 		if err != nil {
 			return nil, err
@@ -139,24 +149,119 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		SourceProject: firstNonEmpty(strings.TrimSpace(opts.SourceProject), parsed.compatibility),
 		TrustLevel:    strings.TrimSpace(opts.TrustLevel),
 		SkillDir:      firstNonEmpty(strings.TrimSpace(opts.SkillDir), skillDir),
+		Platforms:     platforms,
+		RequiresGUI:   requiresGUI,
 	}
 	return entry, nil
 }
 
-func skillMarkdownPath(skillDir string) (string, error) {
-	for _, name := range []string{"SKILL.md", "skill.md"} {
-		path := filepath.Join(skillDir, name)
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
+func scriptExecutionCommandFromMarkdown(scriptPath, markdown, skillDir string) (string, bool) {
+	if command, ok := commandFromSkillMarkdown(scriptPath, markdown, skillDir); ok {
+		return command, true
+	}
+	return scriptExecutionCommand(scriptPath)
+}
+
+func commandFromSkillMarkdown(scriptPath, markdown, skillDir string) (string, bool) {
+	if strings.TrimSpace(markdown) == "" {
+		return "", false
+	}
+	slashPath := filepath.ToSlash(scriptPath)
+	slashSkillDir := filepath.ToSlash(strings.TrimRight(skillDir, `/\\`))
+	baseDirMarker := "{baseDir}"
+	for _, rawLine := range strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
+			continue
+		}
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			continue
+		}
+		normalized := strings.ReplaceAll(line, `\"`, `"`)
+		normalized = strings.ReplaceAll(normalized, `"{baseDir}/`, `"`+slashSkillDir+`/`)
+		normalized = strings.ReplaceAll(normalized, `{baseDir}/`, slashSkillDir+`/`)
+		normalized = strings.ReplaceAll(normalized, baseDirMarker, slashSkillDir)
+		if !strings.Contains(normalized, filepath.ToSlash(filepath.Base(scriptPath))) {
+			continue
+		}
+		if strings.Contains(normalized, slashPath) || strings.Contains(normalized, filepath.ToSlash(filepath.Join(slashSkillDir, "scripts", filepath.Base(scriptPath)))) {
+			return normalizeImportedScriptCommand(normalized), true
 		}
 	}
-	return "", fmt.Errorf("无法读取 SKILL.md: file not found")
+	return "", false
+}
+
+func normalizeImportedScriptCommand(command string) string {
+	replacer := strings.NewReplacer(
+		`"/绝对路径/输入.md"`, "{{input}}",
+		`"/绝对路径/输出.pdf"`, "{{output}}",
+		`"/path/in.md"`, "{{input}}",
+		`"/path/out.pdf"`, "{{output}}",
+		`'/绝对路径/输入.md'`, "{{input}}",
+		`'/绝对路径/输出.pdf'`, "{{output}}",
+		`'/path/in.md'`, "{{input}}",
+		`'/path/out.pdf'`, "{{output}}",
+	)
+	return replacer.Replace(command)
+}
+
+func scriptExecutionCommand(scriptPath string) (string, bool) {
+	quoted := quoteScriptPath(scriptPath)
+	name := strings.ToLower(filepath.Base(scriptPath))
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".mjs", ".cjs", ".js":
+		return "node " + quoted, true
+	case ".ps1":
+		return "& " + quoted, true
+	case ".cmd", ".bat":
+		return "& " + quoted, true
+	case ".sh":
+		return "bash " + quoted, true
+	case ".py":
+		return "python " + quoted, true
+	case "":
+		if strings.EqualFold(name, "node") {
+			return "node " + quoted, true
+		}
+		return "& " + quoted, true
+	default:
+		return "", false
+	}
+}
+
+func quoteScriptPath(path string) string {
+	return "\"" + strings.ReplaceAll(path, "\"", `\"`) + "\""
+}
+
+func skillMarkdownPath(skillDir string) (string, error) {
+	entries, err := os.ReadDir(skillDir)
+	if err != nil {
+		return "", fmt.Errorf("无法读取 skill.md: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if entry.Name() == "skill.md" {
+			return filepath.Join(skillDir, "skill.md"), nil
+		}
+	}
+	return "", fmt.Errorf("无法读取 skill.md: file not found")
+}
+
+type parsedSkillMarkdown struct {
+	markdown      string
+	body          string
+	name          string
+	description   string
+	compatibility string
 }
 
 func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback string) (*parsedSkillMarkdown, error) {
 	skillMD := strings.TrimSpace(content)
 	if skillMD == "" {
-		return nil, fmt.Errorf("empty SKILL.md document")
+		return nil, fmt.Errorf("empty skill.md document")
 	}
 	frontmatter, body := ParseMarkdownFrontmatter(skillMD)
 	name := strings.TrimSpace(frontmatter["name"])

@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act, cleanup } from '@testing-library/react';
 import type { Mock } from 'vitest';
 
 const ActivateRemoteMock = vi.fn();
 const GetRemoteActivationStatusMock = vi.fn();
+const GetRemoteConnectionStatusMock = vi.fn();
 const GetMaclawLLMProvidersMock = vi.fn();
+const SaveMaclawLLMProvidersMock = vi.fn();
+const TestMaclawLLMMock = vi.fn();
 const ProbeRemoteHubMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
 const StartCodeGenSSOMock = vi.fn();
@@ -29,8 +32,8 @@ const SetFreeProxyModelMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
-    SaveMaclawLLMProviders: vi.fn(),
-            TestMaclawLLM: vi.fn(),
+    SaveMaclawLLMProviders: (...args: unknown[]) => SaveMaclawLLMProvidersMock(...args),
+    TestMaclawLLM: (...args: unknown[]) => TestMaclawLLMMock(...args),
     ActivateRemote: (...args: unknown[]) => ActivateRemoteMock(...args),
     ProbeRemoteHub: (...args: unknown[]) => ProbeRemoteHubMock(...args),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
@@ -41,6 +44,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     FetchCodeGenModels: (...args: unknown[]) => FetchCodeGenModelsMock(...args),
     SaveCodeGenModelChoice: (...args: unknown[]) => SaveCodeGenModelChoiceMock(...args),
     GetRemoteActivationStatus: (...args: unknown[]) => GetRemoteActivationStatusMock(...args),
+    GetRemoteConnectionStatus: (...args: unknown[]) => GetRemoteConnectionStatusMock(...args),
     GetWeixinStatus: (...args: unknown[]) => GetWeixinStatusMock(...args),
     StartWeixinQRLogin: (...args: unknown[]) => StartWeixinQRLoginMock(...args),
     PollWeixinQRStatus: (...args: unknown[]) => PollWeixinQRStatusMock(...args),
@@ -83,8 +87,11 @@ describe('OnboardingWizard registration', () => {
             onSaveField: vi.fn(),
         };
         GetMaclawLLMProvidersMock.mockResolvedValue({ providers: [] });
+        SaveMaclawLLMProvidersMock.mockResolvedValue(undefined);
+        TestMaclawLLMMock.mockResolvedValue({ message: 'ok', supports_vision: false });
         ProbeRemoteHubMock.mockResolvedValue({ invitation_code_required: false });
         GetWeixinStatusMock.mockResolvedValue('');
+        GetRemoteConnectionStatusMock.mockResolvedValue({ connected: false });
         CancelCodeGenSSOPollingMock.mockResolvedValue(undefined);
         DetectBrowserMock.mockResolvedValue({ found: 'false' });
         GetFreeProxyModelsMock.mockResolvedValue([]);
@@ -95,9 +102,10 @@ describe('OnboardingWizard registration', () => {
 
     afterEach(() => {
         vi.useRealTimers();
+        cleanup();
     });
 
-    it('marks registration done after activation status refresh succeeds', async () => {
+    it('marks registration done after activation succeeds', async () => {
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
         GetRemoteActivationStatusMock.mockResolvedValue({ activated: true });
 
@@ -110,9 +118,11 @@ describe('OnboardingWizard registration', () => {
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
         });
+        expect(screen.getByText(/Connecting to Hub in the background/)).toBeTruthy();
+        expect(screen.getByText('Hub connecting')).toBeTruthy();
         expect(baseProps.onSaveField).toHaveBeenCalledWith({ remote_email: 'user@example.com' });
         expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
-        expect(GetRemoteActivationStatusMock).toHaveBeenCalledTimes(1);
+        expect(GetRemoteActivationStatusMock).not.toHaveBeenCalled();
     });
 
     it('accepts backend success when returned machine credentials exist', async () => {
@@ -149,7 +159,7 @@ describe('OnboardingWizard registration', () => {
             expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
         });
         expect(screen.getByText(/Registration successful/)).toBeTruthy();
-        expect(screen.getByRole('button', { name: '✅ Registered' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '✅ Registered · Hub connecting...' })).toBeTruthy();
 
         await act(async () => {
             releaseParentRefresh?.();
@@ -160,9 +170,12 @@ describe('OnboardingWizard registration', () => {
         });
     });
 
-    it('clears busy state and shows timeout when activation never resolves', async () => {
-        vi.useFakeTimers();
-        ActivateRemoteMock.mockImplementation(() => new Promise(() => {}));
+    it('does not block success UI on slow backend hub connect', async () => {
+        let resolveActivation: ((value: { vip_flag: boolean }) => void) | null = null;
+        ActivateRemoteMock.mockImplementation(() => new Promise((resolve) => {
+            resolveActivation = resolve;
+        }));
+        GetRemoteConnectionStatusMock.mockResolvedValue({ connected: false });
 
         render(<OnboardingWizard {...baseProps} />);
 
@@ -173,11 +186,148 @@ describe('OnboardingWizard registration', () => {
         expect(screen.getByRole('button', { name: 'Registering...' })).toBeTruthy();
 
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(35_000);
+            resolveActivation?.({ vip_flag: true });
         });
 
-        expect(screen.getByText(/Registration timed out\. Please retry\./)).toBeTruthy();
+        await waitFor(() => {
+            expect(screen.getByText(/Registration successful/)).toBeTruthy();
+        });
+        expect(screen.getByRole('button', { name: '✅ Registered · Hub connecting...' })).toBeTruthy();
+        expect(screen.getByText('Hub connecting')).toBeTruthy();
+    });
+
+    it('switches button state after hub connection succeeds', async () => {
+        vi.useFakeTimers();
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        GetRemoteConnectionStatusMock
+            .mockResolvedValueOnce({ connected: false })
+            .mockResolvedValueOnce({ connected: true });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        expect(screen.getByRole('button', { name: '✅ Registered · Hub connecting...' })).toBeTruthy();
+        expect(screen.getByText(/Connecting to Hub in the background/)).toBeTruthy();
+        expect(screen.getByText('Hub connecting')).toBeTruthy();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1600);
+        });
+
+        expect(screen.getByRole('button', { name: '✅ Registered' })).toBeTruthy();
+        expect(screen.getByText(/Hub connected — you can continue/)).toBeTruthy();
+        expect(screen.getByText('Hub connected')).toBeTruthy();
+    });
+
+    it('shows backend registration error and clears busy state', async () => {
+        ActivateRemoteMock.mockRejectedValue(new Error('boom'));
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/boom/)).toBeTruthy();
+        });
         expect(screen.getByRole('button', { name: 'Register' })).toBeTruthy();
         expect(baseProps.onRegistered).not.toHaveBeenCalled();
+    });
+
+    it('tests first, then saves providers with final supports_vision in step 3', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+            ],
+        });
+        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: true });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/Registration successful/)).toBeTruthy();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        fireEvent.click(screen.getByText(/Pro/));
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Custom1' }));
+        fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('gpt-4o'), { target: { value: 'gpt-test' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => {
+            expect(TestMaclawLLMMock).toHaveBeenCalledWith({
+                url: 'https://api.example.com/v1',
+                key: 'secret',
+                model: 'gpt-test',
+                protocol: 'openai',
+                agent_type: 'openclaw',
+            });
+        });
+
+        await waitFor(() => {
+            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'Custom1', supports_vision: true, url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test' })],
+                'Custom1',
+            );
+        });
+
+        expect(TestMaclawLLMMock.mock.invocationCallOrder[0]).toBeLessThan(SaveMaclawLLMProvidersMock.mock.invocationCallOrder[0]);
+        expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
+        expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not save when llm detection fails in step 3', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+            ],
+        });
+        TestMaclawLLMMock.mockRejectedValue(new Error('boom'));
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(screen.getByText(/Registration successful/)).toBeTruthy();
+        });
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        fireEvent.click(screen.getByText(/Pro/));
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Custom1' }));
+        fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('gpt-4o'), { target: { value: 'gpt-test' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => {
+            expect(TestMaclawLLMMock).toHaveBeenCalled();
+        });
+
+        expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
+        expect(await screen.findByText(/boom/)).toBeTruthy();
+        expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
     });
 });

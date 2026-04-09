@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -199,7 +200,7 @@ func TestHandleIMMessageWithProgressAndStream_ApproveConfirmationResumesOriginal
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
-	h.confirmationStore.set(&pendingConfirmation{
+	pending := &pendingConfirmation{
 		ID:           "c1",
 		UserID:       "u1",
 		OriginalText: "帮我修复 bug",
@@ -209,7 +210,8 @@ func TestHandleIMMessageWithProgressAndStream_ApproveConfirmationResumesOriginal
 		Status:       "pending",
 		CreatedAt:    testNow(),
 		UpdatedAt:    testNow(),
-	})
+	}
+	h.confirmationStore.set(pending)
 
 	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
 		UserID:   "u1",
@@ -219,8 +221,18 @@ func TestHandleIMMessageWithProgressAndStream_ApproveConfirmationResumesOriginal
 	if resp == nil {
 		t.Fatal("expected response")
 	}
+	approvedText := confirmationApprovedText(pending)
+	if !strings.Contains(approvedText, "[执行上下文]") {
+		t.Fatalf("expected approved text to carry execution context, got %q", approvedText)
+	}
+	if !strings.Contains(approvedText, "用户已确认当前方案，请直接开始执行，不要再次请求确认") {
+		t.Fatalf("expected approved text to include confirmation directive, got %q", approvedText)
+	}
 	if resp.Error == "" {
 		t.Fatalf("expected execution to continue into llm/config path, got %+v", resp)
+	}
+	if !resp.ConfirmedResume {
+		t.Fatalf("expected confirmed resume marker, got %+v", resp)
 	}
 	if resp.Confirmation != nil {
 		t.Fatalf("expected confirmation to be cleared after approval, got %+v", resp.Confirmation)

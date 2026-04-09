@@ -5125,7 +5125,7 @@ func (a *App) selectFile(title string, filters []runtime.FileFilter) string {
 }
 
 func (a *App) SelectSkillFile() string {
-	return a.selectFile("Select Skill Zip File", []runtime.FileFilter{{DisplayName: "Zip Files", Pattern: "*.zip"}})
+	return a.selectFile("Select Skill Zip File (.zip, usually with skill.md)", []runtime.FileFilter{{DisplayName: "Skill Zip Files (*.zip)", Pattern: "*.zip"}})
 }
 
 func (a *App) SelectAIAssistantFile() string {
@@ -5293,37 +5293,75 @@ func (a *App) validateSkillZip(path string) error {
 		return fmt.Errorf("invalid zip file: %v", err)
 	}
 	defer r.Close()
-	rootDirs := make(map[string]bool)
-	hasSkillMd := make(map[string]bool)
+
+	type zipSkillLayout struct {
+		hasMarkdown  bool
+		hasLegacyMD  bool
+		hasLegacyMeta bool
+	}
+
+	layouts := make(map[string]*zipSkillLayout)
+	rootFileCount := 0
+	validRootMarkdown := false
+	rootHasLegacyMD := false
+	rootHasLegacyMeta := false
 	for _, f := range r.File {
-		// Normalize separators
-		name := strings.ToValidUTF8(f.Name, "") // Ensure valid UTF8
+		name := strings.ToValidUTF8(f.Name, "")
 		name = filepath.ToSlash(name)
 		parts := strings.Split(name, "/")
-		// Ignore Mac/System junk
 		if len(parts) > 0 && (strings.HasPrefix(parts[0], "__MACOSX") || strings.HasPrefix(parts[0], ".")) {
 			continue
 		}
 		if len(parts) == 1 {
 			if f.FileInfo().IsDir() {
-				rootDirs[parts[0]] = true
-			} else {
-				return fmt.Errorf("skill package root must only contain directories. Found file: %s", parts[0])
+				continue
 			}
-		} else {
-			// It's inside a directory
-			rootDirs[parts[0]] = true
-			if len(parts) == 2 && strings.EqualFold(parts[1], "SKILL.md") {
-				hasSkillMd[parts[0]] = true
+			rootFileCount++
+			switch parts[0] {
+			case "skill.md":
+				validRootMarkdown = true
+			case "SKILL.md":
+				rootHasLegacyMD = true
+			case "_meta.json":
+				rootHasLegacyMeta = true
+			}
+			continue
+		}
+		dir := parts[0]
+		layout := layouts[dir]
+		if layout == nil {
+			layout = &zipSkillLayout{}
+			layouts[dir] = layout
+		}
+		if len(parts) == 2 {
+			switch parts[1] {
+			case "skill.md":
+				layout.hasMarkdown = true
+			case "SKILL.md":
+				layout.hasLegacyMD = true
+			case "_meta.json":
+				layout.hasLegacyMeta = true
 			}
 		}
 	}
-	if len(rootDirs) == 0 {
+	if validRootMarkdown {
+		return nil
+	}
+	if rootHasLegacyMD || rootHasLegacyMeta {
+		return fmt.Errorf("检测到旧格式技能包（SKILL.md/_meta.json）；请升级为 skill.yaml 或 skill.md")
+	}
+	if len(layouts) == 0 {
+		if rootFileCount > 0 {
+			return fmt.Errorf("skill package root must contain skill.md")
+		}
 		return fmt.Errorf("skill package is empty or contains no valid directories")
 	}
-	for dir := range rootDirs {
-		if !hasSkillMd[dir] {
-			return fmt.Errorf("directory '%s' is missing SKILL.md", dir)
+	for dir, layout := range layouts {
+		if layout.hasLegacyMD || layout.hasLegacyMeta {
+			return fmt.Errorf("directory '%s' uses legacy skill format (SKILL.md/_meta.json); please migrate to skill.yaml or skill.md", dir)
+		}
+		if !layout.hasMarkdown {
+			return fmt.Errorf("directory '%s' is missing skill.md", dir)
 		}
 	}
 	return nil

@@ -77,6 +77,54 @@ func TestProbeVisionAnthropic_ReturnsTrueForRedResponse(t *testing.T) {
 	}
 }
 
+func TestTestMaclawLLM_ReturnsSupportsVisionTrue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"red"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{}
+	got, err := app.TestMaclawLLM(MaclawLLMConfig{URL: srv.URL, Model: "test-model", Protocol: "openai", AgentType: "test-agent"})
+	if err != nil {
+		t.Fatalf("TestMaclawLLM returned error: %v", err)
+	}
+	if got.Message != "red" {
+		t.Fatalf("TestMaclawLLM message = %q, want %q", got.Message, "red")
+	}
+	if !got.SupportsVision {
+		t.Fatal("TestMaclawLLM supports_vision = false, want true")
+	}
+}
+
+func TestTestMaclawLLM_ReturnsSupportsVisionFalseWhenProbeFails(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if hits == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"blue"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{}
+	got, err := app.TestMaclawLLM(MaclawLLMConfig{URL: srv.URL, Model: "test-model", Protocol: "openai", AgentType: "test-agent"})
+	if err != nil {
+		t.Fatalf("TestMaclawLLM returned error: %v", err)
+	}
+	if got.Message != "hello" {
+		t.Fatalf("TestMaclawLLM message = %q, want %q", got.Message, "hello")
+	}
+	if got.SupportsVision {
+		t.Fatal("TestMaclawLLM supports_vision = true, want false")
+	}
+}
+
 func TestResolveProvidersPreservesCodeGenSSORuntimeConfig(t *testing.T) {
 	saved := []MaclawLLMProvider{
 		{
@@ -357,15 +405,43 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("OpenAI TimeoutSec = %d, want %d", openAI.TimeoutSec, 360)
 	}
 
+	zhipuLobster := providers[2]
+	if zhipuLobster.Name != "智谱龙虾" {
+		t.Errorf("providers[2].Name = %q, want %q", zhipuLobster.Name, "智谱龙虾")
+	}
+	if zhipuLobster.URL != "https://open.bigmodel.cn/api/paas/v4" {
+		t.Errorf("智谱龙虾 URL = %q, want %q", zhipuLobster.URL, "https://open.bigmodel.cn/api/paas/v4")
+	}
+	if zhipuLobster.Model != "glm-5-turbo" {
+		t.Errorf("智谱龙虾 Model = %q, want %q", zhipuLobster.Model, "glm-5-turbo")
+	}
 
-	expectedNames := []string{"免费", "OpenAI", "智谱", "MiniMax", "Kimi", "Custom1", "Custom2"}
+	zhipuCoding := providers[3]
+	if zhipuCoding.Name != "智谱编程" {
+		t.Errorf("providers[3].Name = %q, want %q", zhipuCoding.Name, "智谱编程")
+	}
+	if zhipuCoding.URL != "https://open.bigmodel.cn/api/anthropic" {
+		t.Errorf("智谱编程 URL = %q, want %q", zhipuCoding.URL, "https://open.bigmodel.cn/api/anthropic")
+	}
+	if zhipuCoding.Model != "glm-5.1" {
+		t.Errorf("智谱编程 Model = %q, want %q", zhipuCoding.Model, "glm-5.1")
+	}
+	if zhipuCoding.Protocol != "anthropic" {
+		t.Errorf("智谱编程 Protocol = %q, want %q", zhipuCoding.Protocol, "anthropic")
+	}
+	if zhipuCoding.AgentType != "claude-code/2.0.0" {
+		t.Errorf("智谱编程 AgentType = %q, want %q", zhipuCoding.AgentType, "claude-code/2.0.0")
+	}
+
+
+	expectedNames := []string{"免费", "OpenAI", "智谱龙虾", "智谱编程", "MiniMax", "Kimi", "Custom1", "Custom2"}
 	for i, want := range expectedNames {
 		if providers[i].Name != want {
 			t.Errorf("providers[%d].Name = %q, want %q", i, providers[i].Name, want)
 		}
 	}
 
-	if got := providers[4].AgentType; got != "claude-code/2.0.0" {
+	if got := providers[5].AgentType; got != "claude-code/2.0.0" {
 		t.Errorf("Kimi AgentType = %q, want %q", got, "claude-code/2.0.0")
 	}
 

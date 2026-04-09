@@ -20,6 +20,9 @@ import (
 // MaclawLLMProvider, MaclawLLMConfig — see corelib_aliases.go
 
 const codegenProviderName = "CodeGen"
+const legacyZhipuProviderName = "智谱"
+const zhipuLobsterProviderName = "智谱龙虾"
+const zhipuCodingProviderName = "智谱编程"
 
 func normalizeLLMTimeoutSec(timeoutSec int) int {
 	if timeoutSec > 0 {
@@ -41,7 +44,8 @@ func defaultMaclawLLMProviders() []MaclawLLMProvider {
 	return []MaclawLLMProvider{
 		{Name: "免费", URL: "http://localhost:18099/v1", Model: "free-proxy", ContextLength: 10000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "none"},
 		{Name: "OpenAI", URL: "https://api.openai.com/v1", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
-		{Name: "智谱", URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: zhipuLobsterProviderName, URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0"},
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -96,6 +100,15 @@ func (a *App) GetMaclawLLMProviders() struct {
 		}
 	}
 	for i := range providers {
+		if providers[i].Name == legacyZhipuProviderName {
+			providers[i].Name = zhipuLobsterProviderName
+			if strings.TrimSpace(providers[i].URL) == "" || providers[i].URL == "https://open.bigmodel.cn/api/paas/v4" {
+				providers[i].URL = "https://open.bigmodel.cn/api/paas/v4"
+			}
+			if strings.TrimSpace(providers[i].Model) == "" || providers[i].Model == "glm-5-turbo" {
+				providers[i].Model = "glm-5-turbo"
+			}
+		}
 		if providers[i].ContextLength == 0 {
 			if cl, ok := defaultCtx[providers[i].Name]; ok {
 				providers[i].ContextLength = cl
@@ -158,6 +171,9 @@ func (a *App) GetMaclawLLMProviders() struct {
 		providers = updated
 	}
 	current := cfg.MaclawLLMCurrentProvider
+	if current == legacyZhipuProviderName {
+		current = zhipuLobsterProviderName
+	}
 	if current == "" {
 		current = providers[0].Name
 	}
@@ -411,22 +427,21 @@ func (a *App) ensureOAuthToken() error {
 
 // TestMaclawLLM sends a "hello" message to the configured LLM endpoint
 // using the OpenAI-compatible or Anthropic Messages API and returns the response.
-// After a successful text test, it also probes vision support and persists the
-// result into the provider's SupportsVision field.
-func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
+// After a successful text test, it also probes vision support synchronously.
+func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (MaclawLLMTestResult, error) {
 	log.Printf("[LLM] TestMaclawLLM: agent_type=%q user_agent=%q", llm.AgentType, llm.UserAgent())
 	if err := a.ensureOAuthToken(); err != nil {
-		return "", fmt.Errorf("OAuth token refresh failed: %w", err)
+		return MaclawLLMTestResult{}, fmt.Errorf("OAuth token refresh failed: %w", err)
 	}
 
 	url := strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 	if url == "" {
-		return "", fmt.Errorf("LLM URL is not configured")
+		return MaclawLLMTestResult{}, fmt.Errorf("LLM URL is not configured")
 	}
 	key := strings.TrimSpace(llm.Key)
 	model := strings.TrimSpace(llm.Model)
 	if model == "" {
-		return "", fmt.Errorf("model name is not configured")
+		return MaclawLLMTestResult{}, fmt.Errorf("model name is not configured")
 	}
 
 	protocol := strings.TrimSpace(llm.Protocol)
@@ -438,18 +453,17 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (string, error) {
 		textResult, err = a.testOpenAILLM(url, key, model, llm.UserAgent())
 	}
 	if err != nil {
-		return "", err
+		return MaclawLLMTestResult{}, err
 	}
 
 	log.Printf("[LLM] TestMaclawLLM text_test_ok model=%s protocol=%s", model, protocol)
-	go func(url, key, model, protocol, userAgent string) {
-		vision := probeVisionSupport(url, key, model, protocol, userAgent)
-		a.saveVisionProbeResult(vision)
-		log.Printf("[LLM] vision probe for %s: supports_vision=%v", model, vision)
-	}(url, key, model, protocol, llm.UserAgent())
+	vision := probeVisionSupport(url, key, model, protocol, llm.UserAgent())
+	log.Printf("[LLM] vision probe for %s: supports_vision=%v", model, vision)
 
-	suffix := "（图片能力检测中）"
-	return textResult + "\n" + suffix, nil
+	return MaclawLLMTestResult{
+		Message:        textResult,
+		SupportsVision: vision,
+	}, nil
 }
 
 // testOpenAILLM tests an OpenAI-compatible endpoint.

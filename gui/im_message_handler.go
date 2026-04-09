@@ -76,9 +76,11 @@ type IMAgentResponse struct {
 	ThumbnailBase64                     string                        `json:"thumbnail_base64,omitempty"`
 	Error                               string                        `json:"error,omitempty"`
 	Deferred                            bool                          `json:"deferred,omitempty"`
+	ConfirmedResume                     bool                          `json:"confirmed_resume,omitempty"`
 	JobID                               string                        `json:"job_id,omitempty"`
 	RunID                               string                        `json:"run_id,omitempty"`
 	RequestID                           string                        `json:"request_id,omitempty"`
+	TraceStatus                         string                        `json:"trace_status,omitempty"`
 	TraceSummary                        string                        `json:"trace_summary,omitempty"`
 	TraceEventCount                     int                           `json:"trace_event_count,omitempty"`
 	EvidenceCount                       int                           `json:"evidence_count,omitempty"`
@@ -122,6 +124,8 @@ const stalledNoToolRecoverThreshold = 2
 
 type agentLoopStage string
 
+type skillPreferenceMode string
+
 const (
 	agentStageOrient   agentLoopStage = "orient"
 	agentStageExecute  agentLoopStage = "execute"
@@ -130,17 +134,28 @@ const (
 	agentStageFinalize agentLoopStage = "finalize"
 )
 
+const (
+	skillPreferenceNone            skillPreferenceMode = "none"
+	skillPreferenceLocalOnly       skillPreferenceMode = "local_only"
+	skillPreferenceRemoteRequired  skillPreferenceMode = "remote_required"
+	skillPreferenceFallbackAllowed skillPreferenceMode = "fallback_allowed"
+)
+
 type agentLoopPhase struct {
-	Stage                agentLoopStage
-	ConsecutiveNoTool    int
-	ForceSkillPreference bool
-	PreferredSkillName   string
-	PreferredSkillReason string
-	PreferredSkillRunID  string
-	SkillAttempted       bool
-	SkillFailed          bool
-	RecoverReason        string
-	RecoverPrompt        string
+	Stage                   agentLoopStage
+	ConsecutiveNoTool       int
+	DeliverableRecoverCount int
+	ForceSkillPreference    bool
+	SkillMode               skillPreferenceMode
+	PreferredSkillName      string
+	PreferredSkillReason    string
+	PreferredSkillRunID     string
+	SkillAttempted          bool
+	SkillFailed             bool
+	RemoteSearchAttempted   bool
+	RemoteSearchExhausted   bool
+	RecoverReason           string
+	RecoverPrompt           string
 }
 
 func shouldPreferSkillForTask(text string) bool {
@@ -153,7 +168,7 @@ func shouldPreferSkillForTask(text string) bool {
 		return false
 	}
 	hints := []string{
-		"pdf", "报告", "文档", "综述", "总结", "markdown", "导出", "转换",
+		"pdf", "报告", "文档", "综述", "markdown", "导出", "转换",
 		"生成文件", "发送文件", "daily papers", "paper", "report",
 	}
 	for _, hint := range hints {
@@ -220,6 +235,28 @@ func shouldBypassSkillPreference(toolCalls []llmToolCall) bool {
 	return false
 }
 
+func isSkillSearchToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "search_and_install_skill", "search_skill_hub", "install_skill_hub":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSkillProgressToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "run_skill", "get_skill_run", "list_skills":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldRestrictToSkillSearch(phase agentLoopPhase) bool {
+	return phase.ForceSkillPreference && phase.SkillMode == skillPreferenceRemoteRequired && !phase.RemoteSearchExhausted
+}
+
 func filterToolsForSkillPreference(toolDefs []map[string]interface{}) []map[string]interface{} {
 	if len(toolDefs) == 0 {
 		return toolDefs
@@ -236,6 +273,23 @@ func filterToolsForSkillPreference(toolDefs []map[string]interface{}) []map[stri
 	}
 	if len(filtered) == 0 {
 		return toolDefs
+	}
+	return filtered
+}
+
+func filterToolsForRemoteSkillSearch(toolDefs []map[string]interface{}) []map[string]interface{} {
+	if len(toolDefs) == 0 {
+		return toolDefs
+	}
+	filtered := make([]map[string]interface{}, 0, len(toolDefs))
+	for _, def := range toolDefs {
+		name := extractToolName(def)
+		if isSkillSearchToolName(name) || isSkillProgressToolName(name) {
+			filtered = append(filtered, def)
+		}
+	}
+	if len(filtered) == 0 {
+		return filterToolsForSkillPreference(toolDefs)
 	}
 	return filtered
 }
@@ -316,6 +370,10 @@ func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID str
 	return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，请立即调用真实工具完成交付；若目标是文档，优先选择当前可用的文档/文件交付工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
 }
 
+func buildEmptyResultRecoverPrompt() string {
+	return "[Recover 阶段]\n检测到上一轮没有返回任何可展示结果，当前进入 Recover 阶段。不要空结束，也不要只重复解释。请立即二选一：1) 直接给出可展示结果；2) 明确说明失败原因和当前状态。若还需要继续执行，必须立即调用真实工具。\n[/Recover 阶段]"
+}
+
 func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []string) string {
 	var b strings.Builder
 	b.WriteString("[Recover 阶段]\n上一轮真实工具执行已出现失败，当前进入 Recover 阶段。请先根据失败结果调整计划，不要原样重复已经失败的尝试。")
@@ -331,6 +389,10 @@ func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []strin
 	}
 	b.WriteString("\n下一步：优先改用不同路径或修正参数后继续完成任务；若仍无法完成，直接说明失败原因和当前状态。\n[/Recover 阶段]")
 	return b.String()
+}
+
+func buildRemoteSkillSearchPrompt() string {
+	return "[执行要求]\n当前任务属于 Skill 优先路径，但本地未命中合适 Skill。不要继续解释、承诺或直接 craft_tool；请立即先调用 search_and_install_skill（或其他 skill 搜索/安装工具）查找并安装可复用 Skill。只有在确认远程 Skill 路径无解后，才切换到 craft_tool 或 bash。\n[/执行要求]"
 }
 
 func buildNoToolActionPrompt(preferSkill bool, skillName, runID string) string {
@@ -362,11 +424,11 @@ func didSkillToolFail(toolCalls []llmToolCall, toolResults []string) bool {
 		return false
 	}
 	for i, tc := range toolCalls {
-		if strings.TrimSpace(tc.Function.Name) != "run_skill" {
-			continue
-		}
-		if classifyTrialOutcome(toolResults[i]) == "failed" {
-			return true
+		switch strings.TrimSpace(tc.Function.Name) {
+		case "run_skill", "get_skill_run", "search_and_install_skill":
+			if classifyToolOutcome(strings.TrimSpace(tc.Function.Name), toolResults[i]) == "failed" {
+				return true
+			}
 		}
 	}
 	return false
@@ -860,7 +922,11 @@ func confirmationApprovedText(item *pendingConfirmation) string {
 	if item == nil {
 		return ""
 	}
-	return strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
+	base := strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
+	if base == "" {
+		return ""
+	}
+	return strings.TrimSpace(base + "\n\n[执行上下文]\n用户已确认当前方案，请直接开始执行，不要再次请求确认。\n如果暂时还没有最终交付，请先说明正在执行的动作或下一步。")
 }
 
 func looksLikeNoToolStallReply(text string) bool {
@@ -944,11 +1010,16 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 		}
 	}
 	if !hasDeliverableIntent {
+		if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+			hasDeliverableIntent = true
+		}
+	}
+	if !hasDeliverableIntent {
 		return false
 	}
 	promiseHints := []string{
-		"我来", "我会", "马上", "立刻", "直接", "继续", "执行", "生成", "发送", "整理",
-		"i will", "i'll", "let me", "going to", "about to", "right away", "prepare", "generate", "send",
+		"我来", "我会", "马上", "立刻", "直接", "继续", "执行", "生成", "发送", "整理", "添加", "补充", "写",
+		"i will", "i'll", "let me", "going to", "about to", "right away", "prepare", "generate", "send", "continue", "append",
 	}
 	hasPromiseHint := false
 	for _, hint := range promiseHints {
@@ -963,6 +1034,12 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	if looksLikeCompletedOrSummaryDeliverableReply(trimmed) {
 		return false
 	}
+	failureHints := []string{"失败", "无法", "出错", "报错", "error", "failed", "unable", "cannot"}
+	for _, hint := range failureHints {
+		if strings.Contains(lower, hint) {
+			return false
+		}
+	}
 	futureDeliveryPromise := hasFutureDeliveryPromise(trimmed)
 	completionHints := []string{
 		"已生成", "已保存", "文件已保存", "将发送给用户", "已准备好，将发送给用户", "失败原因", "无法生成", "localfile", "[file_base64|",
@@ -976,7 +1053,47 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 			return false
 		}
 	}
+	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+		return true
+	}
 	return true
+}
+
+func shouldRecoverForPendingSkillRunNoToolReply(text string, runID string) bool {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return false
+	}
+	trimmed := strings.TrimSpace(stripThinkingTags(text))
+	if trimmed == "" {
+		return true
+	}
+	if looksLikeCompletedOrSummaryDeliverableReply(trimmed) {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	failureHints := []string{"失败", "无法", "出错", "报错", "error", "failed", "unable", "cannot"}
+	for _, hint := range failureHints {
+		if strings.Contains(lower, hint) {
+			return false
+		}
+	}
+	if looksLikePromiseOnlyDeliverableReply(trimmed) || looksLikeNoToolStallReply(trimmed) {
+		return true
+	}
+	pendingRunContinuationHints := []string{
+		"继续添加", "继续补充", "继续整理", "继续写", "继续生成",
+		"append more", "continue writing", "continue generating",
+	}
+	for _, hint := range pendingRunContinuationHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+		return true
+	}
+	return false
 }
 
 func looksLikePromiseOnlyPDFReply(text string) bool {
@@ -1151,6 +1268,27 @@ func buildEmptyResultFallback(status TraceRunStatus, traceSummary string) string
 			return fmt.Sprintf("任务已停止，但没有返回可显示的结果。%s", summary)
 		}
 		return "任务已停止，但没有返回可显示的结果。可查看 Trace 了解详情。"
+	}
+}
+
+func buildConfirmedResumeEmptyResultFallback(status TraceRunStatus, traceSummary string) string {
+	summary := selectVisibleEmptyResultSummary(traceSummary)
+	switch status {
+	case TraceRunStatusFailed, TraceRunStatusTimeout, TraceRunStatusCancelled, TraceRunStatusStopped:
+		if summary != "" {
+			return fmt.Sprintf("任务已确认并开始执行，但未完成可交付结果。%s", summary)
+		}
+		return "任务已确认并开始执行，但未完成可交付结果。可查看 Trace 了解失败位置。"
+	case TraceRunStatusCompleted, TraceRunStatusExited:
+		if summary != "" {
+			return fmt.Sprintf("已确认并开始执行任务。当前暂无可展示结果。%s", summary)
+		}
+		return "已确认并开始执行任务。当前暂无可展示结果，可查看 Trace 了解进展。"
+	default:
+		if summary != "" {
+			return fmt.Sprintf("任务已确认并开始执行，但暂未返回可显示结果。%s", summary)
+		}
+		return "任务已确认并开始执行，但暂未返回可显示结果。可查看 Trace 了解进展。"
 	}
 }
 
@@ -1885,7 +2023,9 @@ func downloadClawHubSkill(ctx context.Context, slug string) (*NLSkillEntry, erro
 			{
 				Action: "craft_tool",
 				Params: map[string]interface{}{
-					"instructions": skillMD,
+					"instructions":      skillMD,
+					"verification_mode": "artifact_required",
+					"register_policy":   "manual",
 				},
 			},
 		},
@@ -1949,25 +2089,16 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*NLSkillEntry, err
 	}
 
 	// Extract all bundled files to ~/.maclaw/data/skills/<name>/.
+	installSkillDir := ""
 	if len(full.Files) > 0 && full.Name != "" {
 		extractSkillFiles(full.Name, full.Files)
+		if skillsRoot, err := cskill.PrimarySkillsDir(); err == nil {
+			installSkillDir = filepath.Join(skillsRoot, full.Name)
+		}
 	}
 
-	// File-based skill: extract SKILL.md content and wrap as craft_tool.
-	if len(steps) == 0 && len(full.Files) > 0 {
-		if b64, ok := full.Files["SKILL.md"]; ok {
-			decoded, err := base64.StdEncoding.DecodeString(b64)
-			if err == nil && len(decoded) > 0 {
-				steps = []NLSkillStep{
-					{
-						Action: "craft_tool",
-						Params: map[string]interface{}{
-							"instructions": string(decoded),
-						},
-					},
-				}
-			}
-		}
+	if len(steps) == 0 {
+		steps = craftToolStepsFromBundledSkillFiles(full.Files, installSkillDir)
 	}
 
 	if len(steps) == 0 {
@@ -2205,6 +2336,7 @@ func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentRe
 	h.traceService.UpdateRun(ctx.RunID, status, summary, errText)
 	resp.JobID = ctx.JobID
 	resp.RunID = ctx.RunID
+	resp.TraceStatus = string(status)
 	resp.TraceSummary = h.traceService.TraceSummary(ctx.RunID)
 	if view, ok := h.traceService.GetTrace(ctx.RunID); ok && view.TrialReflectSummary != nil {
 		resp.TrialReflectSummary = view.TrialReflectSummary.StrategyNote
@@ -2217,7 +2349,11 @@ func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentRe
 	}
 	resp.TraceEventCount, resp.EvidenceCount = h.traceService.TraceCounts(ctx.RunID)
 	if !hasVisibleIMResult(resp) {
-		resp.Text = buildEmptyResultFallback(status, resp.TraceSummary)
+		if resp.ConfirmedResume {
+			resp.Text = buildConfirmedResumeEmptyResultFallback(status, resp.TraceSummary)
+		} else {
+			resp.Text = buildEmptyResultFallback(status, resp.TraceSummary)
+		}
 		ensureTraceAction(resp)
 	}
 	if browserRootCause := extractBrowserRootCause(firstNonEmptyTraceText(resp.Error, resp.Text)); browserRootCause != "" {
@@ -2758,6 +2894,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	pending := (*pendingConfirmation)(nil)
+	confirmedResume := false
 	if h.confirmationStore != nil {
 		pending = h.confirmationStore.get(msg.UserID)
 	}
@@ -2770,6 +2907,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			h.confirmationStore.clear(msg.UserID)
 			msg.Text = confirmationApprovedText(pending)
 			trimmed = strings.TrimSpace(msg.Text)
+			confirmedResume = true
 		case !msg.IsBackground:
 			updated := applyConfirmationRevision(pending, trimmed)
 			h.confirmationStore.set(updated)
@@ -2851,6 +2989,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	resp := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, onToken, onNewRound, onStreamDone, msg.MinIterations, msg.Platform)
 	if resp == nil {
 		resp = &IMAgentResponse{}
+	}
+	if confirmedResume {
+		resp.ConfirmedResume = true
 	}
 	finalizeStartedAt := time.Now()
 	resp = h.finalizeTraceResult(loopCtx, resp, firstNonEmptyTraceText(resp.Text, resp.TraceSummary), resp.Error)
@@ -3074,6 +3215,57 @@ func classifyTrialOutcome(result string) string {
 	return "uncertain"
 }
 
+func classifySkillRunOutcome(result string) string {
+	lower := strings.ToLower(strings.TrimSpace(result))
+	if lower == "" {
+		return "uncertain"
+	}
+	if strings.Contains(lower, "status: failed") || strings.Contains(lower, "status: cancelled") || strings.Contains(lower, "status: canceled") {
+		return "failed"
+	}
+	if strings.Contains(lower, "status: success") {
+		return "succeeded"
+	}
+	if strings.Contains(lower, "status: running") || strings.Contains(lower, "run_id:") || strings.Contains(lower, "session_id:") {
+		return "uncertain"
+	}
+	return classifyTrialOutcome(result)
+}
+
+func classifyToolOutcome(toolName, result string) string {
+	name := strings.TrimSpace(toolName)
+	trimmed := strings.TrimSpace(result)
+	lower := strings.ToLower(trimmed)
+	if trimmed == "" {
+		return "uncertain"
+	}
+	switch name {
+	case "list_skills":
+		if strings.Contains(trimmed, "=== 本地已注册 Skill ===") ||
+			strings.Contains(trimmed, "本地没有已注册的 Skill") ||
+			strings.Contains(trimmed, "推荐 Skill") ||
+			strings.Contains(trimmed, "search_skill_hub") {
+			return "succeeded"
+		}
+		return classifyTrialOutcome(result)
+	case "run_skill", "get_skill_run":
+		return classifySkillRunOutcome(result)
+	case "search_and_install_skill":
+		if strings.Contains(trimmed, "✅") || strings.Contains(trimmed, "已自动安装并执行 Skill") {
+			return "succeeded"
+		}
+		if strings.Contains(trimmed, "均未找到") || strings.Contains(trimmed, "未找到") {
+			return "uncertain"
+		}
+		if strings.Contains(lower, "搜索 skillmarket 失败") || strings.Contains(lower, "导入失败") || strings.Contains(lower, "下载失败") || strings.Contains(lower, "执行失败") || strings.Contains(lower, "已拒绝自动安装") {
+			return "failed"
+		}
+		return classifyTrialOutcome(result)
+	default:
+		return classifyTrialOutcome(result)
+	}
+}
+
 func trialActionSignature(name, args string) string {
 	hash := sha256.Sum256([]byte(strings.TrimSpace(args)))
 	return fmt.Sprintf("%s#%x", strings.TrimSpace(name), hash[:4])
@@ -3113,7 +3305,7 @@ func (s *trialReflectState) observeIteration(toolCalls []llmToolCall, toolResult
 	for i, tc := range toolCalls {
 		name := strings.TrimSpace(tc.Function.Name)
 		toolNames = append(toolNames, name)
-		outcome := classifyTrialOutcome(toolResults[i])
+		outcome := classifyToolOutcome(name, toolResults[i])
 		summary := truncateTraceText(strings.TrimSpace(toolResults[i]), 120)
 		if summary == "" {
 			summary = "无明确输出"
@@ -3362,10 +3554,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	if ctx.MaxIterations() <= 0 {
 		ctx.SetMaxIterations(maxIter)
 	}
-	phase := agentLoopPhase{Stage: agentStageOrient}
+	phase := agentLoopPhase{Stage: agentStageOrient, SkillMode: skillPreferenceNone}
 	if shouldPreferSkillForTask(userText) {
+		phase.ForceSkillPreference = true
+		phase.SkillMode = skillPreferenceRemoteRequired
 		if skillName, skillReason := matchPreferredLocalSkill(h.app.skillExecutor, userText); skillName != "" {
-			phase.ForceSkillPreference = true
+			phase.SkillMode = skillPreferenceLocalOnly
 			phase.PreferredSkillName = skillName
 			phase.PreferredSkillReason = skillReason
 		}
@@ -3376,7 +3570,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	baseTools := h.routeTools(userText, allTools)
 	tools := baseTools
 	if phase.ForceSkillPreference {
-		tools = filterToolsForSkillPreference(baseTools)
+		if shouldRestrictToSkillSearch(phase) {
+			tools = filterToolsForRemoteSkillSearch(baseTools)
+		} else {
+			tools = filterToolsForSkillPreference(baseTools)
+		}
 	}
 	toolsTokenBudget := estimateToolsTokens(tools)
 	preLLMToolsElapsed = time.Since(toolsStartedAt)
@@ -3651,8 +3849,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				"content": phase.RecoverPrompt,
 			})
 			if phase.RecoverReason == "skill_failed" {
-				phase.SkillFailed = false
 				phase.ForceSkillPreference = false
+				phase.SkillMode = skillPreferenceFallbackAllowed
+				phase.RemoteSearchExhausted = true
 				tools = baseTools
 				toolsTokenBudget = estimateToolsTokens(tools)
 			}
@@ -3667,7 +3866,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		recordSystemMessages(systemMessagesStart, conversation)
 		if phase.Stage == agentStageOrient && phase.ForceSkillPreference {
 			convergePrompt := ""
-			if phase.PreferredSkillName != "" {
+			if shouldRestrictToSkillSearch(phase) {
+				convergePrompt = "[Skill 优先要求]\n当前任务属于 Skill 优先路径，但本地未命中合适 Skill。本轮必须先调用 search_and_install_skill（或其他 skill 搜索/安装工具）查找可复用 Skill；在确认远程 Skill 路径无解之前，不要直接使用 craft_tool 或 bash。\n[/Skill 优先要求]"
+			} else if phase.PreferredSkillName != "" {
 				guidance := buildSkillProgressGuidance(phase.PreferredSkillName, phase.PreferredSkillRunID)
 				convergePrompt = fmt.Sprintf("[Skill 优先要求]\n检测到本地已有可复用 Skill「%s」。本轮优先调用 run_skill(name=\"%s\") 完成任务，不要先使用 craft_tool 或 bash 自建脚本。%s 若该 Skill 失败，再基于失败原因切换到其他工具路径。", phase.PreferredSkillName, phase.PreferredSkillName, guidance)
 				if phase.PreferredSkillReason != "" {
@@ -3888,32 +4089,63 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if len(choice.Message.ToolCalls) == 0 {
 			phase.Stage = agentStageConverge
 			phase.ConsecutiveNoTool++
-			noToolStall := looksLikeNoToolStallReply(msgContent)
+			trimmedVisibleContent := strings.TrimSpace(stripThinkingTags(msgContent))
+			emptyVisibleResult := trimmedVisibleContent == ""
+			promiseOnlyDeliverable := shouldForceAnotherRoundForDeliverable(msgContent, len(choice.Message.ToolCalls), 0)
+			noToolStall := looksLikeNoToolStallReply(msgContent) || emptyVisibleResult || promiseOnlyDeliverable
 			hasPendingSkillRun := strings.TrimSpace(phase.PreferredSkillRunID) != ""
-			if phase.ConsecutiveNoTool == 1 && (noToolStall || hasPendingSkillRun || (phase.ForceSkillPreference && phase.PreferredSkillName != "" && !phase.SkillAttempted)) {
-				systemMessagesStart := len(conversation)
-				conversation = append(conversation, map[string]string{
-					"role":    "system",
-					"content": buildNoToolActionPrompt(phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillName, phase.PreferredSkillRunID),
-				})
-				recordSystemMessages(systemMessagesStart, conversation)
-				if phase.ForceSkillPreference && phase.PreferredSkillName != "" {
-					phase.SkillAttempted = true
+			preferSkill := phase.ForceSkillPreference && phase.PreferredSkillName != ""
+			effectiveNoToolRecoverThreshold := stalledNoToolRecoverThreshold
+			if hasPendingSkillRun || phase.SkillFailed || phase.Stage == agentStageRecover {
+				effectiveNoToolRecoverThreshold = 1
+			}
+			pendingSkillRunNoToolRecover := shouldRecoverForPendingSkillRunNoToolReply(msgContent, phase.PreferredSkillRunID)
+			noToolPrompt := buildNoToolActionPrompt(preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID)
+			if shouldRestrictToSkillSearch(phase) {
+				noToolPrompt = buildRemoteSkillSearchPrompt()
+			}
+			if pendingSkillRunNoToolRecover {
+				enterRecoverPhase(&phase, "pending_skill_run_no_tool", buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+				continue
+			}
+			if emptyVisibleResult && phase.SkillFailed {
+				enterRecoverPhase(&phase, "no_tool_stall", buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+				continue
+			}
+			if emptyVisibleResult {
+				enterRecoverPhase(&phase, "empty_final_response", buildEmptyResultRecoverPrompt())
+				continue
+			}
+			if promiseOnlyDeliverable {
+				phase.DeliverableRecoverCount++
+				if phase.DeliverableRecoverCount >= effectiveNoToolRecoverThreshold {
+					enterRecoverPhase(&phase, "no_tool_stall", buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+					continue
 				}
-				continue
-			}
-			if noToolStall && phase.ConsecutiveNoTool >= stalledNoToolRecoverThreshold {
-				enterRecoverPhase(&phase, "no_tool_stall", buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillName, phase.PreferredSkillRunID))
-				continue
-			}
-			if shouldForceAnotherRoundForDeliverable(msgContent, len(choice.Message.ToolCalls), 0) {
-				enterRecoverPhase(&phase, "deliverable_pending", buildDeliverableRecoverPrompt(phase.PreferredSkillName, phase.ForceSkillPreference && phase.PreferredSkillName != "", phase.PreferredSkillRunID))
+				enterRecoverPhase(&phase, "deliverable_pending", buildDeliverableRecoverPrompt(phase.PreferredSkillName, preferSkill, phase.PreferredSkillRunID))
 				if shouldBypassSkillPreference(choice.Message.ToolCalls) {
 					phase.ForceSkillPreference = false
 				}
 				if h.traceService != nil && ctx.RunID != "" {
 					h.appendTraceEvent(ctx, "delivery.nudged", "warn", "Forced deliverable follow-up", truncateTraceText(msgContent, 220), "", "")
 				}
+				continue
+			}
+			phase.DeliverableRecoverCount = 0
+			if phase.ConsecutiveNoTool == 1 && (looksLikeNoToolStallReply(msgContent) || hasPendingSkillRun || (phase.ForceSkillPreference && !phase.SkillAttempted)) {
+				systemMessagesStart := len(conversation)
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": noToolPrompt,
+				})
+				recordSystemMessages(systemMessagesStart, conversation)
+				if phase.ForceSkillPreference {
+					phase.SkillAttempted = true
+				}
+				continue
+			}
+			if noToolStall && (phase.ConsecutiveNoTool >= effectiveNoToolRecoverThreshold || phase.DeliverableRecoverCount >= effectiveNoToolRecoverThreshold || (phase.SkillFailed && phase.ConsecutiveNoTool >= 1)) {
+				enterRecoverPhase(&phase, "no_tool_stall", buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
 				continue
 			}
 			// Check for capability gap before returning.
@@ -4134,13 +4366,28 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		skillToolAttempted := shouldBypassSkillPreference(choice.Message.ToolCalls)
 		if skillToolAttempted {
 			phase.SkillAttempted = true
-			phase.ForceSkillPreference = false
 			if runID := extractSkillRunID(choice.Message.ToolCalls, toolResults); strings.TrimSpace(runID) != "" {
 				phase.PreferredSkillRunID = strings.TrimSpace(runID)
 			}
+			if phase.SkillMode == skillPreferenceRemoteRequired {
+				phase.RemoteSearchAttempted = true
+			}
+			hasSearchTool := false
+			for _, tc := range choice.Message.ToolCalls {
+				if isSkillSearchToolName(tc.Function.Name) {
+					hasSearchTool = true
+					break
+				}
+			}
 			if didSkillToolFail(choice.Message.ToolCalls, toolResults) {
 				phase.SkillFailed = true
+				phase.RemoteSearchExhausted = true
+				phase.ForceSkillPreference = false
+				phase.SkillMode = skillPreferenceFallbackAllowed
 				enterRecoverPhase(&phase, "skill_failed", buildSkillRecoverPrompt(phase.PreferredSkillName, phase.PreferredSkillRunID))
+			} else if shouldRestrictToSkillSearch(phase) && hasSearchTool {
+				phase.ForceSkillPreference = false
+				phase.SkillMode = skillPreferenceFallbackAllowed
 			}
 		}
 		if trialState.enabled {

@@ -221,6 +221,16 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 	}
 
 	status := "active"
+	installSkillDir := ""
+	if full.Name != "" {
+		if skillsRoot, err := skill.PrimarySkillsDir(); err == nil {
+			installSkillDir = filepath.Join(skillsRoot, full.Name)
+		}
+	}
+	if len(steps) == 0 {
+		steps = craftToolStepsFromBundledSkillFiles(full.Files, installSkillDir)
+	}
+
 
 	// Extract bundled files to ~/.maclaw/data/skills/<name>/
 	if len(full.Files) > 0 {
@@ -250,6 +260,33 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 		HubVersion:    full.Version,
 		TrustLevel:    full.TrustLevel,
 	}, nil
+}
+
+func craftToolStepsFromBundledSkillFiles(files map[string]string, skillDir string) []NLSkillStep {
+	if len(files) == 0 {
+		return nil
+	}
+	for _, key := range []string{"SKILL.md", "skill.md"} {
+		b64, ok := files[key]
+		if !ok {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil || len(decoded) == 0 {
+			continue
+		}
+		params := map[string]interface{}{
+			"instructions": string(decoded),
+		}
+		if strings.TrimSpace(skillDir) != "" {
+			params["working_dir"] = skillDir
+		}
+		return []NLSkillStep{{
+			Action: "craft_tool",
+			Params: params,
+		}}
+	}
+	return nil
 }
 
 // extractFiles writes bundled files (base64-encoded) to ~/.maclaw/data/skills/<name>/.

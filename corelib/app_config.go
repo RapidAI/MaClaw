@@ -1,6 +1,10 @@
 package corelib
 
 // AppConfig 是 MaClaw 的完整应用配置。
+import (
+	"strings"
+)
+
 type AppConfig struct {
 	Claude               ToolConfig      `json:"claude"`
 	Gemini               ToolConfig      `json:"gemini"`
@@ -33,16 +37,16 @@ type AppConfig struct {
 	EnvCheckInterval int    `json:"env_check_interval"`
 	LastEnvCheckTime string `json:"last_env_check_time"`
 	// Proxy settings (global default)
-	DefaultProxyEnabled        bool   `json:"default_proxy_enabled"`
-	DefaultProxyProtocol       string `json:"default_proxy_protocol,omitempty"` // "http", "https", "socks5"
-	DefaultProxyHost           string `json:"default_proxy_host"`
-	DefaultProxyPort           string `json:"default_proxy_port"`
-	DefaultProxyUsername       string `json:"default_proxy_username"`
-	DefaultProxyPassword       string `json:"default_proxy_password"`
-	DefaultProxyBypass         string `json:"default_proxy_bypass,omitempty"`          // semicolon-separated bypass list
-	DefaultProxyScopeMaclaw    bool   `json:"default_proxy_scope_maclaw,omitempty"`    // MacClaw LLM
-	DefaultProxyScopeCodingTools bool `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
-	DefaultProxyScopeAgent     bool   `json:"default_proxy_scope_agent,omitempty"`     // web_search / web_fetch
+	DefaultProxyEnabled          bool   `json:"default_proxy_enabled"`
+	DefaultProxyProtocol         string `json:"default_proxy_protocol,omitempty"` // "http", "https", "socks5"
+	DefaultProxyHost             string `json:"default_proxy_host"`
+	DefaultProxyPort             string `json:"default_proxy_port"`
+	DefaultProxyUsername         string `json:"default_proxy_username"`
+	DefaultProxyPassword         string `json:"default_proxy_password"`
+	DefaultProxyBypass           string `json:"default_proxy_bypass,omitempty"`             // semicolon-separated bypass list
+	DefaultProxyScopeMaclaw      bool   `json:"default_proxy_scope_maclaw,omitempty"`       // MacClaw LLM
+	DefaultProxyScopeCodingTools bool   `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
+	DefaultProxyScopeAgent       bool   `json:"default_proxy_scope_agent,omitempty"`        // web_search / web_fetch
 	// Terminal settings (Windows only)
 	UseWindowsTerminal bool   `json:"use_windows_terminal"`
 	RemoteEnabled      bool   `json:"remote_enabled"`
@@ -67,6 +71,8 @@ type AppConfig struct {
 	MaclawLLMTimeoutSec      int                 `json:"maclaw_llm_timeout_sec,omitempty"`
 	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
 	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
+	WebSearchProviders       []WebSearchProvider `json:"web_search_providers,omitempty"`
+	WebSearchCurrentProvider string              `json:"web_search_current_provider,omitempty"`
 	MaclawAgentMaxIterations int                 `json:"maclaw_agent_max_iterations,omitempty"`
 	FreeProxyModel           string              `json:"free_proxy_model,omitempty"` // selected model for 当贝 free proxy
 	// MaClaw Role configuration
@@ -83,21 +89,21 @@ type AppConfig struct {
 	MemoryAutoCompress bool `json:"memory_auto_compress,omitempty"`
 	MemoryMaxBackups   int  `json:"memory_max_backups,omitempty"` // 0 means use default (20)
 	// ClawNet
-	ClawNetEnabled            bool    `json:"clawnet_enabled"`
-	ClawNetAutoPickerEnabled  bool    `json:"clawnet_auto_picker_enabled,omitempty"`
-	ClawNetAutoPickerPollMin  int     `json:"clawnet_auto_picker_poll_min,omitempty"`
+	ClawNetEnabled             bool    `json:"clawnet_enabled"`
+	ClawNetAutoPickerEnabled   bool    `json:"clawnet_auto_picker_enabled,omitempty"`
+	ClawNetAutoPickerPollMin   int     `json:"clawnet_auto_picker_poll_min,omitempty"`
 	ClawNetAutoPickerMinReward float64 `json:"clawnet_auto_picker_min_reward,omitempty"`
 	// Security
 	SecurityPolicyMode   string `json:"security_policy_mode,omitempty"`
-	SandboxMode          string `json:"sandbox_mode,omitempty"`          // "none" (default), "os", "docker"
-	NetworkLevel         string `json:"network_level,omitempty"`         // "none", "intranet", "full" (default)
-	YoloModeAllowed      bool   `json:"yolo_mode_allowed"`              // default true
-	GossipEnabled        bool   `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
-	FileOutboundEnabled  bool   `json:"file_outbound_enabled"`           // default true
-	ImageOutboundEnabled bool   `json:"image_outbound_enabled"`          // default true
+	SandboxMode          string `json:"sandbox_mode,omitempty"`  // "none" (default), "os", "docker"
+	NetworkLevel         string `json:"network_level,omitempty"` // "none", "intranet", "full" (default)
+	YoloModeAllowed      bool   `json:"yolo_mode_allowed"`       // default true
+	GossipEnabled        bool   `json:"gossip_enabled"`          // default true (local preference, overridden by Hub)
+	FileOutboundEnabled  bool   `json:"file_outbound_enabled"`   // default true
+	ImageOutboundEnabled bool   `json:"image_outbound_enabled"`  // default true
 	MaclawDebugToolCalls bool   `json:"maclaw_debug_tool_calls,omitempty"`
-	ShowAITraceEntry    bool   `json:"show_ai_trace_entry,omitempty"`
-	LogDetailEnabled    bool   `json:"log_detail_enabled,omitempty"`
+	ShowAITraceEntry     bool   `json:"show_ai_trace_entry,omitempty"`
+	LogDetailEnabled     bool   `json:"log_detail_enabled,omitempty"`
 	// IM — per-user QQ Bot (client-side gateway)
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`
@@ -112,9 +118,13 @@ type AppConfig struct {
 	WeixinCDNURL    string `json:"weixin_cdn_url,omitempty"`
 	WeixinAccountID string `json:"weixin_account_id,omitempty"`
 	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (单机), false = remote/Hub (多机)
+	// IM — OpenClaw Lansenger channel plugin
+	LansengerEnabled    bool   `json:"lansenger_enabled,omitempty"`
+	LansengerPluginSpec string `json:"lansenger_plugin_spec,omitempty"`
 	// IM — local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
 	QQBotLocalMode    *bool `json:"qqbot_local_mode,omitempty"`    // nil = auto-detect, true = local, false = hub
 	TelegramLocalMode *bool `json:"telegram_local_mode,omitempty"` // nil = auto-detect, true = local, false = hub
+	LansengerLocalMode *bool `json:"lansenger_local_mode,omitempty"` // nil = auto-detect, true = local, false = hub
 	// Extra tool configs for OEM brands (keyed by ExtraToolDef.ConfigKey)
 	ExtraToolConfigs map[string]ToolConfig `json:"extra_tool_configs,omitempty"`
 	// UI mode: "pro" (full coding tools) or "lite" (default, simplified, no coding tools)
@@ -145,7 +155,7 @@ type AppConfig struct {
 type SSHHostEntry struct {
 	Label      string `json:"label"`                 // 用户可读标签，如 "prod-web-01"
 	Host       string `json:"host"`                  // IP 或域名
-	Port       int    `json:"port,omitempty"`         // 默认 22
+	Port       int    `json:"port,omitempty"`        // 默认 22
 	User       string `json:"user"`                  // 登录用户名
 	AuthMethod string `json:"auth_method,omitempty"` // key/password/agent
 	KeyPath    string `json:"key_path,omitempty"`    // 私钥路径
@@ -201,4 +211,33 @@ func (c *AppConfig) IsTelegramLocalMode() bool {
 // SetTelegramLocal sets the TelegramLocalMode pointer field.
 func (c *AppConfig) SetTelegramLocal(v bool) {
 	c.TelegramLocalMode = &v
+}
+
+// DefaultLansengerPluginSpec returns the default OpenClaw plugin spec for Lansenger.
+func DefaultLansengerPluginSpec() string {
+	return "@lansenger/openclaw-channel-lansenger@latest"
+}
+
+// EffectiveLansengerPluginSpec returns the configured plugin spec or the default value.
+func (c *AppConfig) EffectiveLansengerPluginSpec() string {
+	if strings.TrimSpace(c.LansengerPluginSpec) == "" {
+		return DefaultLansengerPluginSpec()
+	}
+	return strings.TrimSpace(c.LansengerPluginSpec)
+}
+
+// IsLansengerLocalMode returns the effective Lansenger local mode setting.
+func (c *AppConfig) IsLansengerLocalMode() bool {
+	if c.LansengerLocalMode == nil {
+		if c.RemoteMachineID != "" {
+			return false
+		}
+		return true
+	}
+	return *c.LansengerLocalMode
+}
+
+// SetLansengerLocal sets the LansengerLocalMode pointer field.
+func (c *AppConfig) SetLansengerLocal(v bool) {
+	c.LansengerLocalMode = &v
 }

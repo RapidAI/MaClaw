@@ -13,7 +13,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"gopkg.in/yaml.v3"
 )
 
 // ComplexityResult holds the complexity analysis result for a TrajectorySession.
@@ -389,10 +388,10 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 		return nil, fmt.Errorf("quality gate: create skill dir: %w", err)
 	}
 
-	// 3. Marshal the draft to YAML and write skill.yaml.
-	data, err := yaml.Marshal(draft)
+	// 3. Format the draft and write skill.yaml.
+	data, err := skill.FormatSkillYAMLFile(draft)
 	if err != nil {
-		return nil, fmt.Errorf("quality gate: marshal yaml: %w", err)
+		return nil, fmt.Errorf("quality gate: format skill.yaml: %w", err)
 	}
 	yamlPath := filepath.Join(skillDir, "skill.yaml")
 	if err := os.WriteFile(yamlPath, data, 0o644); err != nil {

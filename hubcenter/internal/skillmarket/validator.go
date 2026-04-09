@@ -33,42 +33,18 @@ type ValidationResult struct {
 }
 
 // ValidatePackage 验证解压后的 Skill 包目录。
-// 检查 skill.yaml 存在性、YAML 语法、元数据必填字段、脚本语法。
+// 检查 skill.yaml 元数据、元数据必填字段、脚本语法。
 func ValidatePackage(sandboxDir string) (*ValidationResult, error) {
 	result := &ValidationResult{Valid: true}
 
-	// 1. 解析包根目录：支持 skill.yaml 在根目录或唯一子目录中
 	pkgRoot := resolvePackageRoot(sandboxDir)
 	result.PackageRoot = pkgRoot
 
-	yamlPath := filepath.Join(pkgRoot, "skill.yaml")
-	if _, err := os.Stat(yamlPath); os.IsNotExist(err) {
-		result.Valid = false
-		result.Errors = append(result.Errors, ValidationError{
-			File:    "skill.yaml",
-			Message: "skill.yaml not found in package root",
-		})
-		return result, nil
-	}
-
-	// 2. 验证 YAML 语法并解析元数据
-	yamlErrs := ValidateYAML(yamlPath)
-	if len(yamlErrs) > 0 {
-		result.Valid = false
-		result.Errors = append(result.Errors, yamlErrs...)
-		return result, nil
-	}
-
-	// 3. 解析元数据并检查必填字段
-	data, err := os.ReadFile(yamlPath)
-	if err != nil {
-		return nil, fmt.Errorf("read skill.yaml: %w", err)
-	}
-	meta, err := ParseSkillYAML(data)
+	meta, metaSource, err := parsePackageMetadata(pkgRoot)
 	if err != nil {
 		result.Valid = false
 		result.Errors = append(result.Errors, ValidationError{
-			File:    "skill.yaml",
+			File:    metaSource,
 			Message: err.Error(),
 		})
 		return result, nil
@@ -79,13 +55,12 @@ func ValidatePackage(sandboxDir string) (*ValidationResult, error) {
 		result.Valid = false
 		for _, msg := range metaErrs {
 			result.Errors = append(result.Errors, ValidationError{
-				File:    "skill.yaml",
+				File:    metaSource,
 				Message: msg,
 			})
 		}
 	}
 
-	// 4. 扫描并验证脚本文件
 	err = filepath.Walk(pkgRoot, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil || info.IsDir() {
 			return walkErr
@@ -117,6 +92,32 @@ func ValidatePackage(sandboxDir string) (*ValidationResult, error) {
 	}
 
 	return result, nil
+}
+
+func parsePackageMetadata(pkgRoot string) (*SkillMetadata, string, error) {
+	yamlPath := filepath.Join(pkgRoot, "skill.yaml")
+	if _, err := os.Stat(yamlPath); err != nil {
+		if _, legacyErr := os.Stat(filepath.Join(pkgRoot, "SKILL.md")); legacyErr == nil {
+			return nil, "SKILL.md", fmt.Errorf("legacy skill package is no longer supported; please migrate to skill.yaml or skill.md")
+		}
+		if _, legacyErr := os.Stat(filepath.Join(pkgRoot, "_meta.json")); legacyErr == nil {
+			return nil, "_meta.json", fmt.Errorf("legacy skill package is no longer supported; please migrate to skill.yaml or skill.md")
+		}
+		return nil, "skill.yaml", fmt.Errorf("skill.yaml not found in package root")
+	}
+	yamlErrs := ValidateYAML(yamlPath)
+	if len(yamlErrs) > 0 {
+		return nil, "skill.yaml", fmt.Errorf("%s", yamlErrs[0].Message)
+	}
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return nil, "skill.yaml", fmt.Errorf("read skill.yaml: %w", err)
+	}
+	meta, err := ParseSkillYAML(data)
+	if err != nil {
+		return nil, "skill.yaml", err
+	}
+	return meta, "skill.yaml", nil
 }
 
 // ValidateYAML 验证 YAML 文件语法。
@@ -200,12 +201,12 @@ func findPython() string {
 }
 
 // resolvePackageRoot 解析实际的包根目录。
-// 如果 sandboxDir 根目录直接包含 skill.yaml，返回 sandboxDir。
-// 否则，如果根目录只有一个有效子目录且该子目录包含 skill.yaml，返回该子目录。
+// 如果 sandboxDir 根目录直接包含 skill.yaml / skill.md，返回 sandboxDir。
+// 否则，如果根目录只有一个有效子目录且该子目录包含上述任一定义文件，返回该子目录。
 // 跳过 __MACOSX 等打包工具产生的垃圾目录。
 // 其他情况返回 sandboxDir（后续校验会报错）。
 func resolvePackageRoot(sandboxDir string) string {
-	if _, err := os.Stat(filepath.Join(sandboxDir, "skill.yaml")); err == nil {
+	if hasPackageDefinition(sandboxDir) {
 		return sandboxDir
 	}
 	entries, err := os.ReadDir(sandboxDir)
@@ -217,12 +218,11 @@ func resolvePackageRoot(sandboxDir string) string {
 		if !e.IsDir() {
 			continue
 		}
-		// 跳过 macOS 打包垃圾目录
 		if e.Name() == "__MACOSX" {
 			continue
 		}
 		if soleDir != "" {
-			return sandboxDir // 多个有效子目录，无法判断
+			return sandboxDir
 		}
 		soleDir = e.Name()
 	}
@@ -230,8 +230,24 @@ func resolvePackageRoot(sandboxDir string) string {
 		return sandboxDir
 	}
 	candidate := filepath.Join(sandboxDir, soleDir)
-	if _, err := os.Stat(filepath.Join(candidate, "skill.yaml")); err == nil {
+	if hasPackageDefinition(candidate) {
 		return candidate
 	}
 	return sandboxDir
+}
+
+func hasPackageDefinition(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if entry.Name() == "skill.yaml" || entry.Name() == "skill.md" {
+			return true
+		}
+	}
+	return false
 }

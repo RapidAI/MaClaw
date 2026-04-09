@@ -430,6 +430,14 @@ export function SaveMaclawLLMProviders(arg1, arg2) {
   return window['go']['main']['App']['SaveMaclawLLMProviders'](arg1, arg2);
 }
 
+export function GetWebSearchProviders() {
+  return window['go']['main']['App']['GetWebSearchProviders']();
+}
+
+export function SaveWebSearchProviders(arg1, arg2) {
+  return window['go']['main']['App']['SaveWebSearchProviders'](arg1, arg2);
+}
+
 export function TestMaclawLLM(arg1) {
   return window['go']['main']['App']['TestMaclawLLM'](arg1);
 }
@@ -1101,6 +1109,31 @@ export function GetTelegramLocalMode() {
 
 export function SetTelegramLocalMode(arg1) {
   return window['go']['main']['App']['SetTelegramLocalMode'](arg1);
+}
+
+// Lansenger gateway bindings
+export function GetLansengerStatus() {
+  return window['go']['main']['App']['GetLansengerStatus']();
+}
+
+export function InstallLansengerPlugin() {
+  return window['go']['main']['App']['InstallLansengerPlugin']();
+}
+
+export function LoginLansenger() {
+  return window['go']['main']['App']['LoginLansenger']();
+}
+
+export function RestartLansenger() {
+  return window['go']['main']['App']['RestartLansenger']();
+}
+
+export function GetLansengerLocalMode() {
+  return window['go']['main']['App']['GetLansengerLocalMode']();
+}
+
+export function SetLansengerLocalMode(arg1) {
+  return window['go']['main']['App']['SetLansengerLocalMode'](arg1);
 }
 
 // Gossip bindings

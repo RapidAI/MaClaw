@@ -108,7 +108,7 @@ function resetAppMocks() {
     (SelectAIAssistantFile as any).mockImplementation(async () => '');
 }
 
-function assistantMessages(messages: Array<{ role: string; content: string; fields?: unknown; actions?: unknown }>) {
+function assistantMessages(messages: Array<{ role: string; content: string; fields?: unknown; actions?: unknown; confirmation?: { status?: string } }>) {
     return messages.filter(message => message.role === 'assistant');
 }
 
@@ -142,7 +142,7 @@ describe('useAIAssistant property tests', () => {
             show_ai_trace_entry: false,
             trial_reflect_enabled: false,
             llm_token_usage: {
-                'GLM (智谱)': { input_tokens: 12, output_tokens: 34, total_tokens: 46 },
+                '智谱龙虾': { input_tokens: 12, output_tokens: 34, total_tokens: 46 },
             },
         });
 
@@ -152,7 +152,7 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(reconstructed.llm_token_usage).toEqual({
-            'GLM (智谱)': { input_tokens: 12, output_tokens: 34, total_tokens: 46 },
+            '智谱龙虾': { input_tokens: 12, output_tokens: 34, total_tokens: 46 },
         });
     });
 
@@ -1123,7 +1123,7 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].content).toBe('任务已结束，但没有生成可展示的结果。文件 review.pdf 已准备好，但未返回正文摘要');
     });
 
-    it('finalizes the active tail message without changing streamed content', async () => {
+    it('finalizes the active tail message without changing streamed content when no terminal status is reported', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
 
@@ -1146,6 +1146,72 @@ describe('useAIAssistant property tests', () => {
 
         expect(assistantMessages(result.current.messages)).toHaveLength(1);
         expect(assistantMessages(result.current.messages)[0].content).toBe('streamed');
+    });
+
+    it('replaces streamed partial content with failed terminal fallback', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; trace_status: string; trace_summary: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('tail finalize');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', req);
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, text: 'streamed' });
+            emitRuntimeEvent('ai-assistant-stream-done', req);
+        });
+
+        await act(async () => {
+            pending.resolve({
+                text: '',
+                error: '',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+                trace_status: 'failed',
+                trace_summary: 'LLM stream failed after partial output',
+            });
+            await pending.promise;
+        });
+
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe('任务未完成可交付结果。LLM stream failed after partial output');
+    });
+
+    it('replaces streamed partial content with response.error instead of appending a second message', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('tail finalize error');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', req);
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, text: 'streamed' });
+        });
+
+        await act(async () => {
+            pending.resolve({
+                text: '',
+                error: 'LLM 调用失败: status=529',
+                fields: null,
+                actions: null,
+                request_id: req.request_id || '',
+            });
+            await pending.promise;
+        });
+
+        expect(result.current.messages.filter(message => message.role === 'assistant' || message.role === 'error')).toHaveLength(1);
+        expect(result.current.messages.find(message => message.role === 'error')?.content).toBe('LLM 调用失败: status=529');
+        expect(messageContents(result.current.messages)).not.toContain('streamed');
     });
 
     it('keeps streamed tokens on the active tail message across many updates', async () => {
@@ -1415,6 +1481,54 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
+    it('marks the latest confirmation as running before approval request resolves', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
+        mockSendResponse = {
+            text: '请先确认',
+            error: '',
+            fields: null,
+            actions: [
+                { label: '确认并开始', command: '确认，按这个开始', style: 'default' },
+            ],
+            confirmation: {
+                id: 'c1',
+                summary: '我理解你想让我修复登录问题',
+                task_type: 'coding',
+                target_paths: ['D:/work/project'],
+                planned_actions: ['检查登录流程'],
+                risk_flags: ['会修改代码'],
+                revision_hints: ['如目录不对请直接改正'],
+                status: 'pending',
+            },
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('修登录 bug');
+        });
+
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        await act(async () => {
+            void result.current.executeAction('确认，按这个开始');
+        });
+
+        const assistantMsgs = assistantMessages(result.current.messages);
+        expect(assistantMsgs).toHaveLength(2);
+        expect(assistantMsgs[0].confirmation?.status).toBe('running');
+        expect(assistantMsgs[1].content).toBe('');
+
+        await act(async () => {
+            pending.resolve({ text: '已开始处理', error: '', fields: null, actions: null });
+            await pending.promise;
+        });
+
+        const finalAssistantMsgs = assistantMessages(result.current.messages);
+        expect(finalAssistantMsgs[0].confirmation?.status).toBe('running');
+        expect(finalAssistantMsgs[1].content).toBe('已开始处理');
+    });
+
     it('normalizes action styles from assistant responses', async () => {
         const responseActions = [
             { label: 'Safe', command: 'safe-cmd', style: 'default' },
@@ -1496,6 +1610,7 @@ describe('useAIAssistant property tests', () => {
 
         await waitFor(() => {
             expect(LoadConfig).toHaveBeenCalled();
+            expect(result.current.messages).toEqual([]);
         });
 
         await act(async () => {
@@ -1803,6 +1918,49 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
+    it('keeps stale final responses from replacing a newer round when the original placeholder was removed', async () => {
+        const first = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        const second = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any)
+            .mockImplementationOnce(() => first.promise)
+            .mockImplementationOnce(() => second.promise);
+        (CancelAIAssistantSession as any).mockResolvedValueOnce('retry first request');
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('first request');
+        });
+
+        const firstReq = requestEvent(0);
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-new-round', firstReq);
+            emitRuntimeEvent('ai-assistant-token', { request_id: firstReq.request_id, text: 'first partial' });
+        });
+
+        await act(async () => {
+            await result.current.cancelSession();
+        });
+
+        await act(async () => {
+            void result.current.sendMessage('second request');
+        });
+
+        const secondReq = requestEvent(1);
+        await act(async () => {
+            second.resolve({ text: 'fresh reply', error: '', fields: null, actions: null, request_id: secondReq.request_id || '' });
+            await second.promise;
+        });
+
+        await act(async () => {
+            first.resolve({ text: '', error: 'stale error', fields: null, actions: null, request_id: firstReq.request_id || '' });
+            await first.promise;
+        });
+
+        expect(messageContents(result.current.messages)).toContain('fresh reply');
+        expect(messageContents(result.current.messages)).not.toContain('stale error');
+    });
+
     it('shows grace-round wrap-up progress without changing busy state', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
@@ -2010,10 +2168,13 @@ describe('useAIAssistant property tests', () => {
                     const progressMsgs = result.current.progressMessages;
 
                     expect(assistantMsg).toBeDefined();
-                    expect(progressMsgs.length).toBeGreaterThan(0);
+                    if (progressTexts.some(text => text.trim().length > 0)) {
+                        expect(progressMsgs.length).toBeGreaterThan(0);
+                    }
                     expect(assistantMsg!.content).toBe('done');
 
                     for (const pt of progressTexts) {
+                        if (pt.trim().length === 0) continue;
                         expect(progressMsgs.find(m => m.content === pt)).toBeDefined();
                     }
 

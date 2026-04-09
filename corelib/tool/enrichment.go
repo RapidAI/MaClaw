@@ -244,8 +244,8 @@ Typical usage: Send instructions to coding agent and wait for results`,
 Typical usage: Start a new coding session with a specific tool and project`,
 
 	"call_mcp_tool": `Parameters:
-- server (string, required): MCP server name
-- tool (string, required): Tool name on the server
+- server_id (string, required): MCP server id or name; if names are duplicated, use the id
+- tool_name (string, required): Tool name on the server
 - arguments (object, optional): Tool arguments as key-value pairs
 Typical usage: Invoke external tools via MCP protocol`,
 
@@ -322,9 +322,17 @@ Typical usage: List installed NL skills, browse skill library`,
 Typical usage: Execute an NL skill by name with optional input`,
 
 	"craft_tool": `Parameters:
-- description (string, required): What the tool should do
-- language (string, optional): Script language (bash/python), default bash
-Typical usage: Generate a one-off automation script for a specific task`,
+- task (string, required): One-shot automation task description
+- language (string, optional): Preferred script language if a runtime is available
+- working_dir (string, optional): Working directory for script execution
+- expected_artifacts (array, optional): Expected output file paths used for verification
+- verification_mode (string, optional): Verification mode such as artifact_required
+- register_policy (string, optional): Skill registration policy (auto/manual)
+- max_attempts (int, optional): Max bounded repair attempts, default 2, max 3
+- save_as_skill (bool, optional): Whether to try registering as a reusable skill after success
+- skill_name (string, optional): Optional skill name when saving
+- timeout (int, optional): Execution timeout in seconds
+Typical usage: Generate and execute a single local script for data processing, API calls, file conversion, or small automation; supports artifact verification and bounded self-repair; avoid for large codebase refactors or long-lived coding tasks`,
 
 	"parallel_execute": `Parameters:
 - tasks (array, required): List of task descriptions to execute in parallel
@@ -473,11 +481,11 @@ var BuiltinEnrichments = map[string][]string{
 		"use a saved automation",
 	},
 	"craft_tool": {
-		"create a custom tool script",
-		"write a one-off automation",
-		"制作自定义工具",
-		"generate a script for this task",
-		"build a quick tool",
+		"create a custom local automation script",
+		"write a one-off script for data processing or file conversion",
+		"制作一次性自动化工具",
+		"generate and run a script for this task",
+		"build a quick local automation without opening a coding session",
 	},
 	"browser_session_start": {
 		"start a browser agent session",

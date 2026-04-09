@@ -8,6 +8,45 @@ import (
 	"testing"
 )
 
+func TestSkillRunnerExecuteStepWithContext_CallMCPToolResolvesName(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.LocalMCPServers = []LocalMCPServerEntry{newHelperLocalMCPServerEntry("enabled-no-autostart", false, false)}
+	cfg.LocalMCPServers[0].Name = "brave-search"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.mcpRegistry = NewMCPRegistry(app)
+	app.localMCPManager = NewLocalMCPManager(app.mcpRegistry)
+	defer app.localMCPManager.StopAll()
+	app.localMCPManager.SyncFromConfig()
+
+	runner := NewSkillRunner(&SkillExecutor{app: app, mcpRegistry: app.mcpRegistry})
+	result, err := runner.executeStepWithContext(context.Background(), "run-test", NLSkillStep{
+		Action: "call_mcp_tool",
+		Params: map[string]interface{}{
+			"server_id": "brave-search",
+			"tool_name": "ping",
+			"arguments": map[string]interface{}{},
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("executeStepWithContext() error = %v", err)
+	}
+	if strings.TrimSpace(result) != "{}" {
+		t.Fatalf("unexpected result: %s", result)
+	}
+}
+
 func TestSkillRunnerStartRun_RejectsSkillWithoutExecutableSteps(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

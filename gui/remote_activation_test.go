@@ -480,7 +480,7 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	}
 }
 
-func TestActivateRemote_ReusesExistingRemoteSessionsAndConnectsHubClient(t *testing.T) {
+func TestActivateRemote_ReturnsBeforeBackgroundHubConnect(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -505,6 +505,7 @@ func TestActivateRemote_ReusesExistingRemoteSessionsAndConnectsHubClient(t *test
 				return
 			}
 			defer conn.Close()
+			time.Sleep(800 * time.Millisecond)
 
 			for {
 				var msg map[string]any
@@ -531,13 +532,18 @@ func TestActivateRemote_ReusesExistingRemoteSessionsAndConnectsHubClient(t *test
 	}
 
 	app.remoteSessions = NewRemoteSessionManager(app)
+	start := time.Now()
 	result, err := app.ActivateRemote("user@example.com", "", "")
 	if err != nil {
 		t.Fatalf("ActivateRemote() error = %v", err)
 	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("ActivateRemote() returned too slowly: %s", elapsed)
+	}
 	if result.MachineID != "m_234" {
 		t.Fatalf("MachineID = %q, want %q", result.MachineID, "m_234")
 	}
+
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if app.remoteSessions != nil && app.remoteSessions.hubClient != nil && app.remoteSessions.hubClient.IsConnected() && authCount.Load() > 0 {

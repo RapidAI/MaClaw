@@ -164,8 +164,11 @@ func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 	p, _ := args["path"].(string)
 	content, ok := args["content"].(string)
-	if p == "" || !ok {
-		return "缺少 path 或 content 参数"
+	if p == "" {
+		return "缺少 path 参数"
+	}
+	if !ok {
+		return "缺少 content 参数"
 	}
 	if len(content) > writeFileMaxSize {
 		return fmt.Sprintf("内容过大（%d 字节），最大允许 %d 字节", len(content), writeFileMaxSize)
