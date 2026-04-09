@@ -236,6 +236,10 @@ if [ -f "build/appicon.png" ]; then
             echo "    No .icns fallback found; app bundle will use PNG icon."
         fi
     fi
+    if [ -f "build/AppIcon.icns" ]; then
+        cp "build/AppIcon.icns" "build/iconfile.icns"
+        echo "    Synced build/iconfile.icns"
+    fi
     rm -rf "$ICONSET_DIR"
     echo "    Generated build/AppIcon.icns"
 fi

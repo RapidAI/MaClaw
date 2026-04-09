@@ -412,6 +412,7 @@ jobs:
             cp "$ICONSET/icon_1024x1024.png" "$ICONSET/icon_512x512@2x.png"
             rm -f "$ICONSET/icon_64x64.png" "$ICONSET/icon_1024x1024.png"
             iconutil -c icns "$ICONSET" -o build/AppIcon.icns
+            cp build/AppIcon.icns build/iconfile.icns
             rm -rf "$ICONSET"
           fi
 

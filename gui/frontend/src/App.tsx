@@ -1,7 +1,7 @@
 ﻿import { useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
-import { buildNumber } from './version';
-import appIcon from './assets/images/appicon.png';
+import { appVersion, buildNumber } from './version';
+import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import claudecodeIcon from './assets/images/claudecode.png';
 import codebuddyIcon from './assets/images/Codebuddy.png';
@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, InstallLansengerPlugin, LoginLansenger, RestartLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -33,10 +33,12 @@ import { ASRConfigPanel } from './components/remote/ASRConfigPanel';
 import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
+import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
 import { ClawNetPanel } from './components/remote/ClawNetPanel';
 import { ClawNetTabContainer } from './components/remote/ClawNetTabContainer';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
+import { AboutPanel } from './components/AboutPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { GossipPanel } from './components/gossip/GossipPanel';
 import { useDialog } from './components/CustomDialog';
@@ -158,7 +160,6 @@ const recommendedModels: { [provider: string]: { id: string; note?: string }[] }
         { id: "glm-4.7" },
     ],
 };
-const APP_VERSION = "5.4.0.9900"
 
 // Tool name constants to avoid repeated string arrays
 const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'cursor', 'iflow', 'kilo'] as const;
@@ -283,6 +284,12 @@ const translations: any = {
         "cannotRemoveLastCustom": "Cannot remove the last custom provider",
         "version": "Version",
         "author": "Author",
+        "aboutSectionTag": "ABOUT",
+        "aboutProductName": "MaClaw Phoenix",
+        "buildLabel": "Build",
+        "quickActionsTitle": "Quick Actions",
+        "quickActionsDesc": "Open official resources, check updates, or report issues.",
+        "codeRepository": "Code Repository",
         "checkingUpdate": "Checking for updates...",
         "downloading": "Downloading...",
         "downloadCancelled": "Download cancelled",
@@ -749,6 +756,12 @@ const translations: any = {
         "cannotRemoveLastCustom": "不能删除最后一个自定义服务商",
         "version": "版本",
         "author": "作者",
+        "aboutSectionTag": "关于",
+        "aboutProductName": "码卡龙·浴火 MaClaw",
+        "buildLabel": "构建",
+        "quickActionsTitle": "快捷操作",
+        "quickActionsDesc": "打开官网资源、检查更新或反馈问题。",
+        "codeRepository": "代码仓库",
         "checkingUpdate": "正在检查更新...",
         "downloading": "正在下载...",
         "downloadCancelled": "下载已取消",
@@ -1191,6 +1204,12 @@ const translations: any = {
         "cannotRemoveLastCustom": "不能刪除最後一個自定義服務商",
         "version": "版本",
         "author": "作者",
+        "aboutSectionTag": "關於",
+        "aboutProductName": "碼卡龍·浴火 MaClaw",
+        "buildLabel": "構建",
+        "quickActionsTitle": "快捷操作",
+        "quickActionsDesc": "打開官網資源、檢查更新或反饋問題。",
+        "codeRepository": "代碼倉庫",
         "checkingUpdate": "正在檢查更新...",
         "downloading": "正在下載...",
         "downloadCancelled": "下載已取消",
@@ -1661,14 +1680,18 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
-    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin'>('qq');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'search' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
+    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
     const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');
     const [telegramLocalMode, setTelegramLocalModeState] = useState<boolean>(true);
     const [weixinStatus, setWeixinStatus] = useState<string>('disconnected');
     const [weixinLocalMode, setWeixinLocalModeState] = useState<boolean>(true);
+    const [lansengerStatus, setLansengerStatus] = useState<string>('disabled');
+    const [lansengerLocalMode, setLansengerLocalModeState] = useState<boolean>(true);
+    const [lansengerBusy, setLansengerBusy] = useState<boolean>(false);
+    const [lansengerMessage, setLansengerMessage] = useState<string>('');
     const [weixinQRCode, setWeixinQRCode] = useState<string>('');
     const [weixinQRLoading, setWeixinQRLoading] = useState<boolean>(false);
     const [weixinQRWaiting, setWeixinQRWaiting] = useState<boolean>(false);
@@ -2210,6 +2233,26 @@ function App() {
         });
         GetWeixinStatus().then(setWeixinStatus).catch(() => {});
         GetWeixinLocalMode().then(setWeixinLocalModeState).catch(() => {});
+
+        // Lansenger status listener
+        EventsOn("lansenger-status-changed", (payload: any) => {
+            if (typeof payload === 'string') {
+                setLansengerStatus(payload);
+                return;
+            }
+            if (payload?.Status) {
+                setLansengerStatus(payload.Status);
+            } else if (payload?.status) {
+                setLansengerStatus(payload.status);
+            }
+            if (payload?.Output) {
+                setLansengerMessage(payload.Output);
+            } else if (payload?.output) {
+                setLansengerMessage(payload.output);
+            }
+        });
+        GetLansengerStatus().then(setLansengerStatus).catch(() => {});
+        GetLansengerLocalMode().then(setLansengerLocalModeState).catch(() => {});
 
         // Listen for background tool installation events
         EventsOn("tool-checking", (toolName: string) => {
@@ -3226,7 +3269,7 @@ function App() {
                     : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
 
             const body = `Product: ${brandInfo?.displayName || 'MaClaw'}
-Version: ${APP_VERSION}
+Version: ${appVersion}
 
 System Information:
 OS: ${sysInfo.os}
@@ -3393,6 +3436,11 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '配置 MaClaw 代理使用的 LLM' : lang === 'zh-Hant' ? '配置 MaClaw 代理使用的 LLM' : 'Configure LLM for MaClaw agent',
         },
         {
+            id: 'search' as const,
+            label: lang === 'zh-Hans' ? '搜索引擎' : lang === 'zh-Hant' ? '搜尋引擎' : 'Search Engine',
+            desc: lang === 'zh-Hans' ? '配置网页搜索 provider 与 API Key' : lang === 'zh-Hant' ? '配置網頁搜尋 provider 與 API Key' : 'Configure web search providers and API keys',
+        },
+        {
             id: 'role' as const,
             label: lang === 'zh-Hans' ? 'MaClaw 角色' : lang === 'zh-Hant' ? 'MaClaw 角色' : 'MaClaw Role',
             desc: lang === 'zh-Hans' ? '自定义 MaClaw Agent 的名字与角色描述' : lang === 'zh-Hant' ? '自訂 MaClaw Agent 的名字與角色描述' : 'Customize MaClaw Agent name and role description',
@@ -3464,23 +3512,12 @@ ${instruction}`;
                     flexDirection: 'column',
                     alignItems: 'center',
                     padding: '6px 0',
-                    backgroundColor: '#fafbff',
+                    background: 'linear-gradient(180deg, #fff8f6 0%, #fafbff 68px, #fafbff 100%)',
                     flexShrink: 0
                 }}>
-                    <div className="sidebar-header" style={{ padding: '0 0 6px 0', justifyContent: 'center', width: '100%' }}>
-                        <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '28px', height: '28px' }} />
+                    <div className="sidebar-header" style={{ padding: '10px 0 14px 0', justifyContent: 'center', width: '100%' }}>
+                        <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '44px', height: '44px', filter: 'drop-shadow(0 3px 10px rgba(217, 75, 61, 0.18))' }} />
                     </div>
-                    <div style={{
-                        fontSize: '0.7rem',
-                        fontWeight: 'bold',
-                        textAlign: 'center',
-                        marginBottom: '2px',
-                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                        WebkitBackgroundClip: 'text',
-                        WebkitTextFillColor: 'transparent',
-                        display: 'inline-block',
-                        width: '100%'
-                    }}>{brandSidebarName}</div>
 
                     <div
                         className={`sidebar-item ${navTab === 'remote' ? 'active' : ''}`}
@@ -4456,6 +4493,10 @@ ${instruction}`;
                                 <LLMConfigPanel lang={lang} codexModels={config?.codex?.models} onStatusChange={(online, configured) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }} />
                             </div>
 
+                            <div className="settings-panel" style={{ display: settingsTab === 'search' ? 'block' : 'none' }}>
+                                <WebSearchConfigPanel lang={lang} />
+                            </div>
+
                             <div className="settings-panel" style={{ display: settingsTab === 'role' ? 'block' : 'none' }}>
                                 <MaclawRolePanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
@@ -4489,6 +4530,7 @@ ${instruction}`;
                                         { key: 'qq' as const, label: lang === 'zh-Hans' ? 'QQ 机器人' : lang === 'zh-Hant' ? 'QQ 機器人' : 'QQ Bot' },
                                         { key: 'telegram' as const, label: 'Telegram Bot' },
                                         { key: 'weixin' as const, label: lang === 'zh-Hans' ? '微信' : lang === 'zh-Hant' ? '微信' : 'WeChat' },
+                                        { key: 'lansenger' as const, label: lang === 'zh-Hans' ? '蓝信' : lang === 'zh-Hant' ? '藍信' : 'Lansenger' },
                                     ]).map((t) => (
                                         <button
                                             key={t.key}
@@ -4960,6 +5002,198 @@ ${instruction}`;
                                     )}
                                 </div>
                                 )}
+
+                                {/* Lansenger tab */}
+                                {imSubTab === 'lansenger' && (
+                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
+                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
+                                        {lang === 'zh-Hans'
+                                            ? '通过 OpenClaw 安装蓝信渠道插件，并接入蓝信与 MaClaw Agent 对话。'
+                                            : lang === 'zh-Hant'
+                                            ? '透過 OpenClaw 安裝藍信通道外掛，並接入藍信與 MaClaw Agent 對話。'
+                                            : 'Install the Lansenger channel plugin via OpenClaw and connect Lansenger to MaClaw Agent.'}
+                                    </p>
+
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={(config as any)?.lansenger_enabled || false}
+                                                onChange={(e) => {
+                                                    if (!config) return;
+                                                    const next = new main.AppConfig({ ...config, lansenger_enabled: e.target.checked } as any);
+                                                    setConfig(next);
+                                                    SaveConfig(next);
+                                                }}
+                                            />
+                                            {lang === 'zh-Hans' ? '启用蓝信' : lang === 'zh-Hant' ? '啟用藍信' : 'Enable Lansenger'}
+                                        </label>
+                                        <span style={{
+                                            fontSize: '0.7rem',
+                                            padding: '2px 8px',
+                                            borderRadius: '10px',
+                                            background: ['ready', 'installed'].includes(lansengerStatus) ? '#dcfce7' : lansengerStatus === 'disabled' ? '#e5e7eb' : lansengerStatus === 'error' ? '#fee2e2' : '#fef9c3',
+                                            color: ['ready', 'installed'].includes(lansengerStatus) ? '#166534' : lansengerStatus === 'disabled' ? '#4b5563' : lansengerStatus === 'error' ? '#991b1b' : '#854d0e',
+                                        }}>
+                                            {{ ready: '● 已就绪', installed: '● 已安装', disabled: '○ 未启用', missing_openclaw: '◌ 缺少 OpenClaw', error: '✕ 错误' }[lansengerStatus] || `◌ ${lansengerStatus}`}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #6366f1', background: 'transparent', color: '#6366f1', cursor: lansengerBusy ? 'not-allowed' : 'pointer' }}
+                                            disabled={lansengerBusy}
+                                            onClick={async () => {
+                                                setLansengerBusy(true);
+                                                setLansengerMessage('');
+                                                try {
+                                                    const res = await InstallLansengerPlugin();
+                                                    if (res?.output) setLansengerMessage(res.output);
+                                                    if (res?.error) {
+                                                        setLansengerStatus('error');
+                                                        setLansengerMessage(res.error);
+                                                        alert(res.error);
+                                                    } else {
+                                                        const s = await GetLansengerStatus().catch(() => res?.status || 'installed');
+                                                        setLansengerStatus(s || res?.status || 'installed');
+                                                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
+                                                    }
+                                                } catch (e: any) {
+                                                    const msg = e?.message || String(e);
+                                                    setLansengerStatus('error');
+                                                    setLansengerMessage(msg);
+                                                    alert(msg);
+                                                } finally {
+                                                    setLansengerBusy(false);
+                                                }
+                                            }}
+                                        >
+                                            {lansengerBusy ? (lang === 'zh-Hans' ? '处理中...' : 'Running...') : (lang === 'zh-Hans' ? '安装插件' : lang === 'zh-Hant' ? '安裝外掛' : 'Install Plugin')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#555', cursor: lansengerBusy ? 'not-allowed' : 'pointer' }}
+                                            disabled={lansengerBusy || !(config as any)?.lansenger_enabled}
+                                            onClick={async () => {
+                                                setLansengerBusy(true);
+                                                setLansengerMessage('');
+                                                try {
+                                                    const res = await LoginLansenger();
+                                                    if (res?.output) setLansengerMessage(res.output);
+                                                    if (res?.error) {
+                                                        setLansengerStatus('error');
+                                                        setLansengerMessage(res.error);
+                                                        alert(res.error);
+                                                    } else {
+                                                        const s = await GetLansengerStatus().catch(() => res?.status || 'ready');
+                                                        setLansengerStatus(s || res?.status || 'ready');
+                                                    }
+                                                } catch (e: any) {
+                                                    const msg = e?.message || String(e);
+                                                    setLansengerStatus('error');
+                                                    setLansengerMessage(msg);
+                                                    alert(msg);
+                                                } finally {
+                                                    setLansengerBusy(false);
+                                                }
+                                            }}
+                                        >
+                                            {lang === 'zh-Hans' ? '登录蓝信' : lang === 'zh-Hant' ? '登入藍信' : 'Login'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#555', cursor: lansengerBusy ? 'not-allowed' : 'pointer' }}
+                                            disabled={lansengerBusy || !(config as any)?.lansenger_enabled}
+                                            onClick={async () => {
+                                                setLansengerBusy(true);
+                                                setLansengerMessage('');
+                                                try {
+                                                    const res = await RestartLansenger();
+                                                    if (res?.output) setLansengerMessage(res.output);
+                                                    if (res?.error) {
+                                                        setLansengerStatus('error');
+                                                        setLansengerMessage(res.error);
+                                                        alert(res.error);
+                                                    } else {
+                                                        const s = await GetLansengerStatus().catch(() => res?.status || 'ready');
+                                                        setLansengerStatus(s || res?.status || 'ready');
+                                                    }
+                                                } catch (e: any) {
+                                                    const msg = e?.message || String(e);
+                                                    setLansengerStatus('error');
+                                                    setLansengerMessage(msg);
+                                                    alert(msg);
+                                                } finally {
+                                                    setLansengerBusy(false);
+                                                }
+                                            }}
+                                        >
+                                            {lang === 'zh-Hans' ? '重启网关' : lang === 'zh-Hant' ? '重啟網關' : 'Restart Gateway'}
+                                        </button>
+                                    </div>
+
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
+                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
+                                        </span>
+                                        {[
+                                            { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🖥 单机' : '🖥 Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本地 LLM 直连' : 'Direct local LLM' },
+                                            { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🌐 多机' : '🌐 Remote', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '通过 Hub 转发' : 'Via Hub' },
+                                        ].map((opt) => (
+                                            <button
+                                                key={String(opt.value)}
+                                                type="button"
+                                                aria-label={opt.desc}
+                                                title={opt.desc}
+                                                style={{
+                                                    padding: '4px 14px',
+                                                    borderRadius: '14px',
+                                                    border: lansengerLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
+                                                    background: lansengerLocalMode === opt.value ? '#eef2ff' : 'transparent',
+                                                    color: lansengerLocalMode === opt.value ? '#6366f1' : '#555',
+                                                    fontWeight: lansengerLocalMode === opt.value ? 600 : 400,
+                                                    fontSize: '0.75rem',
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.15s',
+                                                }}
+                                                onClick={() => {
+                                                    const prev = lansengerLocalMode;
+                                                    setLansengerLocalModeState(opt.value);
+                                                    SetLansengerLocalMode(opt.value).then(() => {
+                                                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
+                                                    }).catch((err: any) => {
+                                                        setLansengerLocalModeState(prev);
+                                                        alert(err?.message || err || '切换失败');
+                                                    });
+                                                }}
+                                            >
+                                                {opt.label}
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    <div style={{ maxWidth: '680px', display: 'grid', gap: '10px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '84px' }}>Plugin Spec</label>
+                                            <input
+                                                type="text"
+                                                value={(config as any)?.lansenger_plugin_spec || '@lansenger/openclaw-channel-lansenger@latest'}
+                                                onChange={(e) => {
+                                                    if (!config) return;
+                                                    const next = new main.AppConfig({ ...config, lansenger_plugin_spec: e.target.value } as any);
+                                                    setConfig(next);
+                                                    SaveConfig(next);
+                                                }}
+                                                placeholder="@lansenger/openclaw-channel-lansenger@latest"
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                            />
+                                        </div>
+                                        <div style={{ fontSize: '0.72rem', color: '#6b7280', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '6px', padding: '10px 12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                            {lansengerMessage || (lang === 'zh-Hans'
+                                                ? '安装会执行：openclaw plugins install @lansenger/openclaw-channel-lansenger@latest'
+                                                : 'Installer will run: openclaw plugins install @lansenger/openclaw-channel-lansenger@latest')}
+                                        </div>
+                                    </div>
+                                </div>
+                                )}
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'security' ? 'block' : 'none' }}>
@@ -5329,85 +5563,37 @@ ${instruction}`;
                     )}
 
                     {navTab === 'about' && (
-                        <div style={{
-                            padding: '20px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: 'center',
-                            textAlign: 'center',
-                            height: '100%',
-                            justifyContent: 'center',
-                            boxSizing: 'border-box'
-                        }}>
-                            <img src={currentIcon} alt="Logo" style={{ width: '64px', height: '64px', marginBottom: '15px' }} />
-                            <h2 style={{
-                                margin: '0 0 4px 0',
-                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                display: 'inline-block',
-                                fontWeight: 'bold'
-                            }}>{brandDisplayTitle}</h2>
-                            <div style={{
-                                fontSize: '1rem',
-                                fontWeight: 'bold',
-                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                marginBottom: '4px',
-                                display: 'inline-block'
-                            }}>
-                                {brandInfo?.slogan || t("slogan")}
-                            </div>
-                            <div style={{ fontSize: '1rem', color: '#374151', marginBottom: '5px' }}>{t("version")} {APP_VERSION}</div>
-                            <div style={{ fontSize: '0.9rem', color: '#9ca3af', marginBottom: '5px' }}>{brandInfo?.businessContact || t("businessCooperation")}</div>
-                            <div style={{ fontSize: '0.9rem', color: '#6b7280', marginBottom: '20px' }}>{t("author")}: {brandInfo?.author || 'Dr. Daniel'}</div>
-
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
-                                <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}>{t("officialWebsite")}</button>
-                                    <button
-                                        className="btn-link"
-                                        style={{ fontSize: '0.75rem', padding: '2px 6px' }}
-                                        onClick={() => {
-                                            setStatus(t("checkingUpdate"));
-                                            CheckUpdate(APP_VERSION).then(res => {
-                                                console.log("CheckUpdate result:", res);
-                                                setUpdateResult(res);
-                                                setIsStartupUpdateCheck(false);
-                                                setShowUpdateModal(true);
-                                                setStatus("");
-                                            }).catch(err => {
-                                                console.error("CheckUpdate error:", err);
-                                                setStatus("检查更新失败: " + err);
-                                                // 显示一个错误结果
-                                                setUpdateResult({
-                                                    has_update: false,
-                                                    latest_version: "获取失败",
-                                                    release_url: ""
-                                                });
-                                                setIsStartupUpdateCheck(false);
-                                                setShowUpdateModal(true);
-                                            });
-                                        }}
-                                    >
-                                        {t("onlineUpdate")}
-                                    </button>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => setShowInstallLog(true)}>{t("installLog")}</button>
-                                    {brandInfo?.githubURL ? (
-                                        <>
-                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL(brandInfo.githubURL + "/issues/new")}>{t("bugReport")}</button>
-                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL(brandInfo.githubURL)}>GitHub</button>
-                                        </>
-                                    ) : brandInfo?.id !== 'qianxin' ? (
-                                        <>
-                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}>{t("bugReport")}</button>
-                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/rapidai/maclaw")}>GitHub</button>
-                                        </>
-                                    ) : null}
-                                </div>
-                            </div>
-                        </div>
+                        <AboutPanel
+                            currentIcon={currentIcon}
+                            brandInfo={brandInfo}
+                            appVersion={appVersion}
+                            buildNumber={buildNumber}
+                            t={t}
+                            onOpenWebsite={() => BrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
+                            onCheckUpdate={() => {
+                                setStatus(t("checkingUpdate"));
+                                CheckUpdate(appVersion).then(res => {
+                                    console.log("CheckUpdate result:", res);
+                                    setUpdateResult(res);
+                                    setIsStartupUpdateCheck(false);
+                                    setShowUpdateModal(true);
+                                    setStatus("");
+                                }).catch(err => {
+                                    console.error("CheckUpdate error:", err);
+                                    setStatus("检查更新失败: " + err);
+                                    setUpdateResult({
+                                        has_update: false,
+                                        latest_version: "获取失败",
+                                        release_url: ""
+                                    });
+                                    setIsStartupUpdateCheck(false);
+                                    setShowUpdateModal(true);
+                                });
+                            }}
+                            onShowInstallLog={() => setShowInstallLog(true)}
+                            onOpenBugReport={() => BrowserOpenURL(brandInfo?.githubURL ? brandInfo.githubURL + "/issues/new" : "https://github.com/rapidai/maclaw/issues/new")}
+                            onOpenGithub={() => BrowserOpenURL(brandInfo?.githubURL || "https://github.com/rapidai/maclaw")}
+                        />
                     )}
                 </div>
 
@@ -6211,7 +6397,7 @@ ${instruction}`;
                             <>
                                 <div style={{ backgroundColor: '#eef2ff', padding: '12px', borderRadius: '6px', marginBottom: '15px', border: '1px solid #e0e7ff' }}>
                                     <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{APP_VERSION}</div>
+                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{appVersion}</div>
                                     <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("latestVersion")}</div>
                                     <div style={{ fontSize: '1rem', fontWeight: '600', color: '#059669' }}>{updateResult.latest_version}</div>
                                 </div>
@@ -6266,7 +6452,7 @@ ${instruction}`;
                         ) : (
                             <div style={{ backgroundColor: '#eef2ff', padding: '12px', borderRadius: '6px', border: '1px solid #e0e7ff' }}>
                                 <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                                <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{APP_VERSION}</div>
+                                <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{appVersion}</div>
                                 <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("latestVersion")}</div>
                                 <div style={{ fontSize: '1rem', fontWeight: '600', color: '#059669', marginBottom: '12px' }}>{updateResult.latest_version}</div>
                                 <p style={{ margin: '0', fontSize: '0.9rem', color: '#059669', fontWeight: '500' }}>✓ {t("isLatestVersion")}</p>
