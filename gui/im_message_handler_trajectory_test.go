@@ -156,3 +156,105 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsConversationAndTools(t *testing.T)
 		t.Fatalf("final assistant content = %#v, want \"done\"", session.Entries[5].Content)
 	}
 }
+
+func TestRunAgentLoop_TrajectoryLoggingRecordsEmptyFinalRecoverFlow(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var mu sync.Mutex
+	callNum := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req trajectoryTestRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":1,\"total_tokens\":9}}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"recovered summary\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.LLMTrajectoryLogging = true
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.MaclawAgentMaxIterations = 4
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.SetTrajectoryRecorderFactory(app.buildTrajectoryRecorderFactory())
+	loopCtx := NewLoopContext("chat-empty-trajectory", 4, server.Client())
+	resp := h.runAgentLoop(loopCtx, "u1", "system prompt", nil, "run trajectory", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("runAgentLoop error = %q", resp.Error)
+	}
+	if resp.Text != "recovered summary" {
+		t.Fatalf("resp.Text = %q, want recovered summary", resp.Text)
+	}
+
+	trajDir := filepath.Join(tempHome, ".maclaw", "trajectories")
+	entries, err := os.ReadDir(trajDir)
+	if err != nil {
+		t.Fatalf("ReadDir trajectories: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("trajectory file count = %d, want 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(trajDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("ReadFile trajectory: %v", err)
+	}
+	var session TrajectorySession
+	if err := json.Unmarshal(data, &session); err != nil {
+		t.Fatalf("unmarshal trajectory: %v", err)
+	}
+	roles := make([]string, 0, len(session.Entries))
+	for _, entry := range session.Entries {
+		roles = append(roles, entry.Role)
+	}
+	wantRoles := []string{"system", "user", "assistant", "system", "assistant"}
+	if strings.Join(roles, ",") != strings.Join(wantRoles, ",") {
+		t.Fatalf("roles = %v, want %v", roles, wantRoles)
+	}
+	if content, ok := session.Entries[2].Content.(string); !ok || content != "" {
+		t.Fatalf("first assistant content = %#v, want empty string", session.Entries[2].Content)
+	}
+	if content, ok := session.Entries[3].Content.(string); !ok || !strings.Contains(content, "没有返回任何可展示结果") {
+		t.Fatalf("recover system content = %#v, want empty-result recover guidance", session.Entries[3].Content)
+	}
+	if content, ok := session.Entries[4].Content.(string); !ok || content != "recovered summary" {
+		t.Fatalf("final assistant content = %#v, want recovered summary", session.Entries[4].Content)
+	}
+}

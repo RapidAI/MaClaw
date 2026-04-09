@@ -1969,6 +1969,9 @@ func TestFinalizeTraceResult_AddsVisibleFallbackForEmptyFailedRun(t *testing.T) 
 	if resp.Text == "" {
 		t.Fatal("expected fallback text for empty failed run")
 	}
+	if resp.TraceStatus != string(TraceRunStatusFailed) {
+		t.Fatalf("TraceStatus = %q, want %q", resp.TraceStatus, string(TraceRunStatusFailed))
+	}
 	if !strings.Contains(resp.Text, "任务未完成可交付结果") {
 		t.Fatalf("resp.Text = %q, want failed fallback prefix", resp.Text)
 	}
@@ -1988,6 +1991,27 @@ func TestFinalizeTraceResult_AddsVisibleFallbackForEmptyFailedRun(t *testing.T) 
 		t.Fatalf("EvidenceCount = %d, want 0", resp.EvidenceCount)
 	}
 }
+
+func TestFinalizeTraceResult_UsesConfirmedResumeFallbackForEmptyCompletedRun(t *testing.T) {
+	h := &IMMessageHandler{traceService: NewAITraceService()}
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "confirmed empty run", "desktop", "u1", "/project")
+	ctx := NewLoopContext("chat-confirmed-empty", 2, nil)
+	ctx.RunID = run.RunID
+	ctx.JobID = run.JobID
+	ctx.SetState("completed")
+
+	resp := h.finalizeTraceResult(ctx, &IMAgentResponse{ConfirmedResume: true}, "", "")
+	if resp.TraceStatus != string(TraceRunStatusCompleted) {
+		t.Fatalf("TraceStatus = %q, want %q", resp.TraceStatus, string(TraceRunStatusCompleted))
+	}
+	if resp.Text != "已确认并开始执行任务。当前暂无可展示结果，可查看 Trace 了解进展。" {
+		t.Fatalf("resp.Text = %q", resp.Text)
+	}
+	if len(resp.Actions) != 1 || resp.Actions[0].Command != "__view_trace__ "+run.RunID {
+		t.Fatalf("Actions = %#v, want trace action", resp.Actions)
+	}
+}
+
 
 func TestFinalizeTraceResult_PreservesVisibleFileOnlyResult(t *testing.T) {
 	h := &IMMessageHandler{traceService: NewAITraceService()}
@@ -2200,6 +2224,291 @@ func TestRunAgentLoop_PromiseOnlyPDFReplyTriggersAnotherRound(t *testing.T) {
 	}
 	if !foundRecover {
 		t.Fatalf("events = %#v, want deliverable recover event", view.Events)
+	}
+}
+
+func TestRunAgentLoop_EmptyAssistantReplyTriggersRecoverPhase(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":1,\"total_tokens\":9}}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"已恢复，以下是可展示结果。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.MaclawAgentMaxIterations = 4
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	loopCtx := NewLoopContext("chat-empty-final", 4, server.Client())
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "empty final recover", "desktop", "u1", "/project")
+	loopCtx.RunID = run.RunID
+	loopCtx.JobID = run.JobID
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "帮我整理结果并完成交付", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.Text != "已恢复，以下是可展示结果。" {
+		t.Fatalf("resp.Text = %q, want recovered text", resp.Text)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) < 2 {
+		t.Fatalf("LLM request count = %d, want at least 2", len(requests))
+	}
+	secondMessages := requests[1].Messages
+	foundRecoverPrompt := false
+	for _, msg := range secondMessages {
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+		if role == "system" && strings.Contains(content, "[Recover 阶段]") && strings.Contains(content, "没有返回任何可展示结果") {
+			foundRecoverPrompt = true
+			break
+		}
+	}
+	if !foundRecoverPrompt {
+		t.Fatalf("second request messages = %#v, want empty-result recover guidance", secondMessages)
+	}
+	view, ok := h.traceService.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	foundRecoverEvent := false
+	for _, evt := range view.Events {
+		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "empty_final_response") {
+			foundRecoverEvent = true
+			break
+		}
+	}
+	if !foundRecoverEvent {
+		t.Fatalf("events = %#v, want empty_final_response recover trace event", view.Events)
+	}
+}
+
+func TestRunAgentLoop_ReasoningFallbackDoesNotTriggerEmptyRecover(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"这是 reasoning fallback 的结果\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.MaclawAgentMaxIterations = 3
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	loopCtx := NewLoopContext("chat-reasoning-fallback", 3, server.Client())
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "reasoning fallback", "desktop", "u1", "/project")
+	loopCtx.RunID = run.RunID
+	loopCtx.JobID = run.JobID
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "给我总结结果", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.Text != "这是 reasoning fallback 的结果" {
+		t.Fatalf("resp.Text = %q, want reasoning fallback text", resp.Text)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 1 {
+		t.Fatalf("LLM request count = %d, want 1", len(requests))
+	}
+	view, ok := h.traceService.GetTrace(run.RunID)
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	for _, evt := range view.Events {
+		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "empty_final_response") {
+			t.Fatalf("events = %#v, did not expect empty_final_response recover", view.Events)
+		}
+	}
+}
+
+func TestRunAgentLoop_RepeatedEmptyAssistantRepliesReenterRecover(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var (
+		mu       sync.Mutex
+		requests []loopTraceRequest
+		callNum  int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req loopTraceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		callNum++
+		currentCall := callNum
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch currentCall {
+		case 1, 2:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":1,\"total_tokens\":9}}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		case 3:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"已恢复，补充了最终结果。\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected LLM call %d", currentCall)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.UIMode = "pro"
+	cfg.MaclawLLMProviders = []MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.MaclawAgentMaxIterations = minAgentIterations
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	h.traceService = NewAITraceService()
+	loopCtx := NewLoopContext("chat-empty-fallback", minAgentIterations, server.Client())
+	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "empty final repeated recover", "desktop", "u1", "/project")
+	loopCtx.RunID = run.RunID
+	loopCtx.JobID = run.JobID
+	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "帮我整理结果并完成交付", nil, nil, nil, nil, nil, 0, "desktop")
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Error != "" {
+		t.Fatalf("resp.Error = %q", resp.Error)
+	}
+	if resp.Text != "已恢复，补充了最终结果。" {
+		t.Fatalf("resp.Text = %q, want recovered text", resp.Text)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("LLM request count = %d, want 3", len(requests))
+	}
+	for _, idx := range []int{1, 2} {
+		foundRecoverPrompt := false
+		for _, msg := range requests[idx].Messages {
+			role, _ := msg["role"].(string)
+			content, _ := msg["content"].(string)
+			if role == "system" && strings.Contains(content, "没有返回任何可展示结果") {
+				foundRecoverPrompt = true
+				break
+			}
+		}
+		if !foundRecoverPrompt {
+			t.Fatalf("request[%d] messages = %#v, want empty-result recover guidance", idx, requests[idx].Messages)
+		}
 	}
 }
 

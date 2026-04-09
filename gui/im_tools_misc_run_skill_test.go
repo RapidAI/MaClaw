@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -262,7 +264,7 @@ func TestToolGetSkillRun_ReportsSessionFallbackFromUnknownExplicitSessionID(t *t
 	app.sessionStarter = NewCodingSessionStarter(app)
 
 	h := &IMMessageHandler{app: app}
-	started := h.toolRunSkill(map[string]interface{}{"name": "demo-skill", "wait_seconds": float64(0.01)}, nil)
+	started := h.toolRunSkill(map[string]interface{}{"name": "demo-skill", "wait_seconds": float64(1)}, nil)
 	if !strings.Contains(started, "- run_id:") {
 		t.Fatalf("expected run_id in start output, got %s", started)
 	}
@@ -278,7 +280,7 @@ func TestToolGetSkillRun_ReportsSessionFallbackFromUnknownExplicitSessionID(t *t
 		t.Fatalf("failed to parse run_id from %s", started)
 	}
 
-	status := h.toolGetSkillRun(map[string]interface{}{"run_id": runID, "wait_seconds": float64(0.01)})
+	status := h.toolGetSkillRun(map[string]interface{}{"run_id": runID, "wait_seconds": float64(1)})
 	if !strings.Contains(status, "🔎 Skill 状态查询结果") {
 		t.Fatalf("expected status title, got %s", status)
 	}
@@ -297,6 +299,8 @@ func TestAppendSkillRunSummary_ExplainsInstructionOnlySkill(t *testing.T) {
 		Status: "success",
 		Summary: SkillRunSummary{
 			NeedsArtifactVerification: true,
+			ArtifactPath:              `C:\tmp\deck.pptx`,
+			ArtifactStatus:            "missing",
 		},
 		Steps: []StepResult{{Action: "craft_tool", Status: "success"}},
 	}, "run-123")
@@ -304,7 +308,84 @@ func TestAppendSkillRunSummary_ExplainsInstructionOnlySkill(t *testing.T) {
 	if !strings.Contains(got, "## 结果说明") {
 		t.Fatalf("expected explanation section, got %s", got)
 	}
-	if !strings.Contains(got, "尚未自动验证目标产物是否生成") {
-		t.Fatalf("expected artifact verification warning, got %s", got)
+	if !strings.Contains(got, "目标产物: C:\\tmp\\deck.pptx") {
+		t.Fatalf("expected artifact path, got %s", got)
+	}
+	if !strings.Contains(got, "当前不能算成功交付") {
+		t.Fatalf("expected delivery warning, got %s", got)
+	}
+	if !strings.Contains(got, "artifact_status: missing") {
+		t.Fatalf("expected artifact status line, got %s", got)
+	}
+}
+
+func TestToolRunSkill_RealXhMdToPdfVerifiesArtifact(t *testing.T) {
+	homeDir := os.Getenv("USERPROFILE")
+	if strings.TrimSpace(homeDir) == "" {
+		homeDir = os.Getenv("HOME")
+	}
+	if strings.TrimSpace(homeDir) == "" {
+		t.Skip("home directory not available")
+	}
+	skillDir := filepath.Join(homeDir, ".maclaw", "data", "skills", "xh-md-to-pdf")
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Skipf("xh-md-to-pdf skill not installed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "scripts", "xh-md-to-pdf.mjs")); err != nil {
+		t.Skipf("xh-md-to-pdf script missing: %v", err)
+	}
+	app := &App{testHomeDir: homeDir}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	h := &IMMessageHandler{app: app}
+
+	workDir := t.TempDir()
+	inputPath := filepath.Join(workDir, "sample.md")
+	outputPath := filepath.Join(workDir, "sample.pdf")
+	if err := os.WriteFile(inputPath, []byte("# Demo\n\n- one\n- two\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(input) error = %v", err)
+	}
+
+	started := h.toolRunSkill(map[string]interface{}{
+		"name":         "xh-md-to-pdf",
+		"input":        inputPath,
+		"output":       outputPath,
+		"wait_seconds": float64(20),
+	}, nil)
+	if !strings.Contains(started, "- run_id:") {
+		t.Fatalf("expected run_id in start output, got %s", started)
+	}
+	if !strings.Contains(started, "artifact_path: "+outputPath) {
+		t.Fatalf("expected artifact path in start output, got %s", started)
+	}
+
+	runID := ""
+	for _, line := range strings.Split(started, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- run_id:") {
+			runID = strings.TrimSpace(strings.TrimPrefix(line, "- run_id:"))
+			break
+		}
+	}
+	if runID == "" {
+		t.Fatalf("failed to parse run_id from %s", started)
+	}
+
+	status := h.toolGetSkillRun(map[string]interface{}{"run_id": runID, "wait_seconds": float64(20)})
+	if !strings.Contains(status, "artifact_path: "+outputPath) {
+		t.Fatalf("expected artifact path in status, got %s", status)
+	}
+	if !strings.Contains(status, "artifact_status: verified") {
+		status = h.toolGetSkillRun(map[string]interface{}{"run_id": runID, "wait_seconds": float64(20)})
+	}
+	runnerStatus, err := app.skillRunner.GetRunStatus(runID)
+	if err != nil {
+		t.Fatalf("GetRunStatus() error = %v", err)
+	}
+	if !strings.Contains(status, "artifact_status: verified") {
+		t.Fatalf("expected verified artifact status, got %s\nraw_step_output=%q\nraw_step_error=%q", status, runnerStatus.Steps[0].Output, runnerStatus.Steps[0].Error)
+	}
+	if _, err := os.Stat(outputPath); err != nil {
+		t.Fatalf("expected output pdf to exist: %v", err)
 	}
 }
