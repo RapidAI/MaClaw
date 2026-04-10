@@ -12,18 +12,18 @@ import { recentTasks as mockRecentTasks } from './mock/tasks';
 import type { CenterHealthStatus, DiWorkerSettings, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, TaskAttachment, UpstreamProvider } from './types';
 
 const pageMeta: Record<DiWorkerTab, { title: string; subtitle: string }> = {
-  home: { title: '工作台', subtitle: '从常用任务、同事和最近记录中快速开始。' },
-  colleagues: { title: '协作同事', subtitle: '查看当前可接手任务的数字化同事与分工。' },
-  'new-task': { title: '新建任务', subtitle: '编辑任务内容、补充材料并提交处理。' },
-  history: { title: '任务记录', subtitle: '查看最近结果，继续处理或重新发起。' },
+  home: { title: '新建任务', subtitle: '输入任务内容，快速开始处理。' },
+  colleagues: { title: '同事', subtitle: '按分类浏览同事，召唤他们为你服务。' },
+  'new-task': { title: '任务编辑', subtitle: '编辑任务内容、补充材料并提交处理。' },
+  history: { title: '工具', subtitle: '赋予 DiWorker 更强大的能力。' },
   settings: { title: '配置中心', subtitle: '管理角色信息、中心连接和上游服务调度。' },
 };
 
 const statusCopy: Record<DiWorkerTab, { focus: string }> = {
-  home: { focus: '首页工作台' },
-  colleagues: { focus: '协作同事' },
+  home: { focus: '新建任务' },
+  colleagues: { focus: '同事' },
   'new-task': { focus: '任务编辑' },
-  history: { focus: '任务记录' },
+  history: { focus: '工具' },
   settings: { focus: '中心与路由配置' },
 };
 
@@ -621,32 +621,34 @@ export default function App() {
 
   return (
     <div className="dw-shell">
-      <SideNav activeTab={activeTab} roleName={currentRole.name} roleDescription={currentRole.description} onChange={setActiveTab} />
+      <SideNav activeTab={activeTab} roleName={currentRole.name} roleDescription={currentRole.description} recentTasks={historyTasks} onChange={setActiveTab} />
       <main className="dw-main">
         <div className="dw-main-shell">
-          <header className="dw-topbar">
-            <div className="dw-topbar-main card">
-              <div className="dw-topbar-row">
-                <div className="dw-topbar-window dw-topbar-window-compact">
-                  <span className="dw-window-dot is-red" aria-hidden="true" />
-                  <span className="dw-window-dot is-yellow" aria-hidden="true" />
-                  <span className="dw-window-dot is-green" aria-hidden="true" />
-                  <span className="dw-topbar-window-label">DiWorker</span>
-                </div>
-                <div className="dw-topbar-heading-copy dw-topbar-heading-copy-compact">
-                  <h1>{meta.title}</h1>
-                  <span className="dw-toolbar-meta">{status.focus}</span>
-                  {settings.center.enabled ? <span className="dw-toolbar-meta is-online">中心路由已启用</span> : null}
-                  {hasWailsBridge() ? <span className="dw-toolbar-meta is-online">本地链路已连接</span> : <span className="dw-toolbar-meta">等待 Wails 绑定</span>}
-                </div>
-                <div className="dw-top-actions">
-                  <button type="button" className="secondary" aria-label="切换同事" onClick={handleSwitchColleague}>同事</button>
-                  <button type="button" className="primary" aria-label="开始新任务" onClick={handleOpenNewTask}>新任务</button>
+          {activeTab !== 'home' && (
+            <header className="dw-topbar">
+              <div className="dw-topbar-main card">
+                <div className="dw-topbar-row">
+                  <div className="dw-topbar-window dw-topbar-window-compact">
+                    <span className="dw-window-dot is-red" aria-hidden="true" />
+                    <span className="dw-window-dot is-yellow" aria-hidden="true" />
+                    <span className="dw-window-dot is-green" aria-hidden="true" />
+                    <span className="dw-topbar-window-label">DiWorker</span>
+                  </div>
+                  <div className="dw-topbar-heading-copy dw-topbar-heading-copy-compact">
+                    <h1>{meta.title}</h1>
+                    <span className="dw-toolbar-meta">{status.focus}</span>
+                    {settings.center.enabled ? <span className="dw-toolbar-meta is-online">中心路由已启用</span> : null}
+                    {hasWailsBridge() ? <span className="dw-toolbar-meta is-online">本地链路已连接</span> : <span className="dw-toolbar-meta">等待 Wails 绑定</span>}
+                  </div>
+                  <div className="dw-top-actions">
+                    <button type="button" className="secondary" aria-label="切换同事" onClick={handleSwitchColleague}>同事</button>
+                    <button type="button" className="primary" aria-label="开始新任务" onClick={handleOpenNewTask}>新任务</button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </header>
-          <section className="dw-content">{page}</section>
+            </header>
+          )}
+          <section className="dw-content" style={activeTab === 'home' ? { padding: 0, background: '#f9fafb' } : undefined}>{page}</section>
         </div>
       </main>
     </div>

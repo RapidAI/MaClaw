@@ -80,7 +80,12 @@ func generateID() string {
 
 // Save stores a memory entry. If an entry with identical content already
 // exists, it updates that entry instead of creating a duplicate.
+// Content is scanned for prompt injection patterns before saving.
 func (s *Store) Save(entry Entry) error {
+	if err := ScanForInjection(entry.Content); err != nil {
+		return fmt.Errorf("memory_store: rejected: %w", err)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -129,9 +134,13 @@ func (s *Store) Save(entry Entry) error {
 }
 
 // Update modifies an existing entry identified by ID.
+// Content is scanned for prompt injection patterns before updating.
 func (s *Store) Update(id string, content string, category Category, tags []string) error {
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("memory_store: content must not be empty")
+	}
+	if err := ScanForInjection(content); err != nil {
+		return fmt.Errorf("memory_store: rejected: %w", err)
 	}
 
 	s.mu.Lock()
@@ -1018,6 +1027,14 @@ func (s *Store) ActiveCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.entries)
+}
+
+// CapacityInfo returns the current active entry count and the maximum
+// allowed entries. Used by prompt builders to display capacity to the LLM.
+func (s *Store) CapacityInfo() (active int, maxItems int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.entries), s.maxItems
 }
 
 func (s *Store) evictLRU() {

@@ -212,9 +212,14 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	if err := imAdapter.RegisterPlugin(weixinPlugin); err != nil {
 		log.Printf("[bootstrap] failed to register weixin plugin: %v", err)
 	}
+	lansengerPlugin := im.NewRemoteGatewayPlugin("lansenger", deviceService, st.Users, st.System)
+	if err := imAdapter.RegisterPlugin(lansengerPlugin); err != nil {
+		log.Printf("[bootstrap] failed to register lansenger plugin: %v", err)
+	}
 	gateway.RegisterIMGatewayPlugin(qqRemotePlugin)
 	gateway.RegisterIMGatewayPlugin(telegramPlugin)
 	gateway.RegisterIMGatewayPlugin(weixinPlugin)
+	gateway.RegisterIMGatewayPlugin(lansengerPlugin)
 
 	// 8b. QQBot Plugin — connects to QQ Bot via WebSocket gateway (Hub-native)
 	qqbotPlugin := qqbot.New(func() qqbot.Config {

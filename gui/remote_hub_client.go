@@ -191,6 +191,12 @@ func (c *RemoteHubClient) syncIMGatewayClaims() {
 			log.Printf("[hub-client] re-sent weixin gateway claim on connect")
 		}
 	}
+	// Lansenger
+	if !cfg.IsLansengerLocalMode() && c.app.lansengerGateway != nil && c.app.lansengerGateway.Status() == "connected" {
+		if err := c.SendIMGatewayClaim("lansenger"); err == nil {
+			log.Printf("[hub-client] re-sent lansenger gateway claim on connect")
+		}
+	}
 	// Telegram
 	if !cfg.IsTelegramLocalMode() && c.app.telegramGateway != nil && c.app.telegramGateway.Status() == "connected" {
 		if err := c.SendIMGatewayClaim("telegram"); err == nil {
@@ -1090,6 +1096,21 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			MimeType:     reply.MimeType,
 			ContextToken: reply.ContextToken,
 			Extra:        reply.Extra,
+		})
+	case "lansenger":
+		if c.app.lansengerGateway == nil {
+			c.app.log("[hub-client] im.gateway_reply: lansengerGateway is nil, ignoring")
+			return
+		}
+		c.app.lansengerGateway.HandleGatewayReply(GatewayReplyPayload{
+			ReplyType:   reply.ReplyType,
+			PlatformUID: reply.PlatformUID,
+			Text:        reply.Text,
+			ImageData:   reply.ImageData,
+			Caption:     reply.Caption,
+			FileData:    reply.FileData,
+			FileName:    reply.FileName,
+			MimeType:    reply.MimeType,
 		})
 	}
 }

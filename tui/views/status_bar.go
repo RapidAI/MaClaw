@@ -3,6 +3,7 @@ package views
 import (
 	"fmt"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -11,14 +12,21 @@ import (
 type StatusBarModel struct {
 	hubStatus string // connected, disconnected, connecting
 	message   string // 最近的日志/事件消息
+	lang      string
 }
 
 // NewStatusBarModel 创建状态栏。
-func NewStatusBarModel() StatusBarModel {
+func NewStatusBarModel(lang string) StatusBarModel {
+	lang = i18n.NormalizeLang(lang)
 	return StatusBarModel{
 		hubStatus: "disconnected",
-		message:   "就绪",
+		message:   i18n.T(i18n.MsgTUIReady, lang),
+		lang:      lang,
 	}
+}
+
+func (m *StatusBarModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
 }
 
 // SetHubStatus 更新 Hub 连接状态。
@@ -48,18 +56,21 @@ func (m StatusBarModel) View(width int) string {
 
 	hubIcon := "○"
 	hubColor := lipgloss.Color("196") // red
+	hubLabel := i18n.T(i18n.MsgTUIStatusDisconnectedHub, m.lang)
 	switch m.hubStatus {
 	case "connected":
 		hubIcon = "●"
 		hubColor = lipgloss.Color("82") // green
+		hubLabel = i18n.T(i18n.MsgTUIStatusConnectedHub, m.lang)
 	case "connecting":
 		hubIcon = "◌"
 		hubColor = lipgloss.Color("226") // yellow
+		hubLabel = i18n.T(i18n.MsgTUIStatusConnectingHub, m.lang)
 	}
 
 	hubStyle := lipgloss.NewStyle().Foreground(hubColor)
-	hub := hubStyle.Render(hubIcon) + " Hub"
+	hub := hubStyle.Render(hubIcon) + " " + hubLabel
 
-	bar := fmt.Sprintf(" %s │ %s │ Tab:切换 q:退出", hub, m.message)
+	bar := fmt.Sprintf(" %s │ %s │ %s", hub, m.message, i18n.T(i18n.MsgTUIStatusBarHelp, m.lang))
 	return style.Render(bar)
 }

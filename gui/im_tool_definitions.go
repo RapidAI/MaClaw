@@ -269,11 +269,11 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 	// ---------- ClawNet tools (dynamic — only when daemon is running) ----------
 	if h.app != nil && h.app.clawNetClient != nil && h.app.clawNetClient.IsRunning() {
 		defs = append(defs,
-			toolDef("clawnet_search", "在虾网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
+			toolDef("clawnet_search", "在智网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
 				map[string]interface{}{
 					"query": map[string]string{"type": "string", "description": "搜索关键词"},
 				}, []string{"query"}),
-			toolDef("clawnet_publish", "向虾网（ClawNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
+			toolDef("clawnet_publish", "向智网（ClawNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
 				map[string]interface{}{
 					"title": map[string]string{"type": "string", "description": "知识标题"},
 					"body":  map[string]string{"type": "string", "description": "知识内容（Markdown 格式）"},

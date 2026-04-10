@@ -2227,7 +2227,7 @@ func (h *IMMessageHandler) syncClawNetTools() {
 	if running && !hasSearch {
 		h.registry.Register(RegisteredTool{
 			Name:        "clawnet_search",
-			Description: "在虾网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
+			Description: "在智网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
 			Category:    ToolCategoryBuiltin,
 			Tags:        []string{"clawnet", "search", "knowledge", "p2p"},
 			Status:      RegToolAvailable,
@@ -2240,7 +2240,7 @@ func (h *IMMessageHandler) syncClawNetTools() {
 		})
 		h.registry.Register(RegisteredTool{
 			Name:        "clawnet_publish",
-			Description: "向虾网（ClawNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
+			Description: "向智网（ClawNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
 			Category:    ToolCategoryBuiltin,
 			Tags:        []string{"clawnet", "publish", "knowledge", "p2p"},
 			Status:      RegToolAvailable,

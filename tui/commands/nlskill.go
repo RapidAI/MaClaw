@@ -286,6 +286,11 @@ func nlskillExecute(args []string) error {
 	}
 	_ = store.SaveConfig(cfg)
 
+	// Attempt self-repair for skills with low success rate.
+	if !success && skill.LastError != "" {
+		maybeRepairSkillTUI(skill, cfg, store)
+	}
+
 	if *jsonOut {
 		return PrintJSON(map[string]interface{}{
 			"skill":   name,

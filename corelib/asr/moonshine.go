@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/gguf"
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 // HParams holds Moonshine model hyperparameters from GGUF metadata.
@@ -35,25 +36,25 @@ type HParams struct {
 }
 
 type encoderLayer struct {
-	attnQW, attnKW, attnVW, attnOutW []float32 // [dim, dim]
-	attnNormW                         []float32 // [dim]
-	ffUpW                             []float32 // [dim, ffDim]
-	ffUpB                             []float32 // [ffDim]
-	ffDownW                           []float32 // [ffDim, dim]
-	ffDownB                           []float32 // [dim]
-	ffNormW                           []float32 // [dim]
+	attnQW, attnKW, attnVW, attnOutW *tensor.Q8Tensor // [dim, dim] quantized
+	attnNormW                         []float32        // [dim] — keep f32
+	ffUpW                             *tensor.Q8Tensor // [ffDim, dim]
+	ffUpB                             []float32        // [ffDim]
+	ffDownW                           *tensor.Q8Tensor // [dim, ffDim]
+	ffDownB                           []float32        // [dim]
+	ffNormW                           []float32        // [dim]
 }
 
 type decoderLayer struct {
-	selfQW, selfKW, selfVW, selfOutW []float32
-	selfNormW                         []float32
-	crossQW, crossKW, crossVW, crossOutW []float32
-	crossNormW                            []float32
-	ffUpW  []float32 // [dim, 2*intermediate]
-	ffUpB  []float32
-	ffDownW []float32 // [intermediate, dim]
-	ffDownB []float32
-	ffNormW []float32
+	selfQW, selfKW, selfVW, selfOutW         *tensor.Q8Tensor
+	selfNormW                                 []float32
+	crossQW, crossKW, crossVW, crossOutW     *tensor.Q8Tensor
+	crossNormW                                []float32
+	ffUpW                                     *tensor.Q8Tensor // [2*intermediate, dim]
+	ffUpB                                     []float32
+	ffDownW                                   *tensor.Q8Tensor // [dim, intermediate]
+	ffDownB                                   []float32
+	ffNormW                                   []float32
 }
 
 type weights struct {
@@ -65,15 +66,16 @@ type weights struct {
 	encFinalNormW        []float32
 	decLayers            []decoderLayer
 	decFinalNormW        []float32
-	tokenEmb             []float32 // [vocabSize, dim]
-	lmHeadW              []float32 // may be nil (weight tying)
+	tokenEmb             []float32        // [vocabSize, dim] — keep f32 for embedding lookup
+	lmHeadW              *tensor.Q8Tensor // [vocabSize, dim] quantized; nil = weight tying
+	lmHeadF32            []float32        // fallback when weight-tied (points to tokenEmb)
 }
 
 // MoonshineModel is a pure Go Moonshine ASR model.
 type MoonshineModel struct {
 	hp    HParams
 	w     weights
-	vocab map[int]string
+	vocab []string // indexed by token ID (contiguous)
 	mu    sync.Mutex
 }
 
@@ -123,8 +125,18 @@ func (m *MoonshineModel) loadWeights(gf *gguf.File) error {
 		d, _ := get(name)
 		return d
 	}
+	// getQ8 loads a weight matrix and quantizes it to Q8_0.
+	// rows and cols describe the matrix shape [rows, cols].
+	getQ8 := func(name string, rows, cols int) *tensor.Q8Tensor {
+		d, err := get(name)
+		if err != nil || len(d) == 0 {
+			return nil
+		}
+		return tensor.QuantizeToQ8(d, rows, cols)
+	}
 
 	w := &m.w
+	dim := m.hp.EncoderDim
 	var err error
 	w.conv1W, err = get("encoder.conv1.weight")
 	if err != nil {
@@ -142,36 +154,55 @@ func (m *MoonshineModel) loadWeights(gf *gguf.File) error {
 	for i := range w.encLayers {
 		p := fmt.Sprintf("encoder.layers.%d.", i)
 		l := &w.encLayers[i]
-		l.attnQW, _ = get(p + "self_attn.q_proj.weight")
-		l.attnKW, _ = get(p + "self_attn.k_proj.weight")
-		l.attnVW, _ = get(p + "self_attn.v_proj.weight")
-		l.attnOutW, _ = get(p + "self_attn.o_proj.weight")
+		l.attnQW = getQ8(p+"self_attn.q_proj.weight", dim, dim)
+		l.attnKW = getQ8(p+"self_attn.k_proj.weight", dim, dim)
+		l.attnVW = getQ8(p+"self_attn.v_proj.weight", dim, dim)
+		l.attnOutW = getQ8(p+"self_attn.o_proj.weight", dim, dim)
 		l.attnNormW, _ = get(p + "input_layernorm.weight")
-		l.ffUpW, _ = get(p + "mlp.fc1.weight")
+		// Determine FFN dimensions from the weight size
+		ffUpF32, _ := get(p + "mlp.fc1.weight")
+		if len(ffUpF32) == 0 {
+			continue // skip layer if weights missing
+		}
+		ffDim := len(ffUpF32) / dim
+		l.ffUpW = tensor.QuantizeToQ8(ffUpF32, ffDim, dim)
 		l.ffUpB = tryGet(p + "mlp.fc1.bias")
-		l.ffDownW, _ = get(p + "mlp.fc2.weight")
+		ffDownF32, _ := get(p + "mlp.fc2.weight")
+		if len(ffDownF32) > 0 {
+			l.ffDownW = tensor.QuantizeToQ8(ffDownF32, dim, ffDim)
+		}
 		l.ffDownB = tryGet(p + "mlp.fc2.bias")
 		l.ffNormW, _ = get(p + "post_attention_layernorm.weight")
 	}
 	w.encFinalNormW, _ = get("encoder.layer_norm.weight")
 
+	ddim := m.hp.DecoderDim
 	w.decLayers = make([]decoderLayer, m.hp.DecoderDepth)
 	for i := range w.decLayers {
 		p := fmt.Sprintf("decoder.layers.%d.", i)
 		l := &w.decLayers[i]
-		l.selfQW, _ = get(p + "self_attn.q_proj.weight")
-		l.selfKW, _ = get(p + "self_attn.k_proj.weight")
-		l.selfVW, _ = get(p + "self_attn.v_proj.weight")
-		l.selfOutW, _ = get(p + "self_attn.o_proj.weight")
+		l.selfQW = getQ8(p+"self_attn.q_proj.weight", ddim, ddim)
+		l.selfKW = getQ8(p+"self_attn.k_proj.weight", ddim, ddim)
+		l.selfVW = getQ8(p+"self_attn.v_proj.weight", ddim, ddim)
+		l.selfOutW = getQ8(p+"self_attn.o_proj.weight", ddim, ddim)
 		l.selfNormW, _ = get(p + "input_layernorm.weight")
-		l.crossQW, _ = get(p + "encoder_attn.q_proj.weight")
-		l.crossKW, _ = get(p + "encoder_attn.k_proj.weight")
-		l.crossVW, _ = get(p + "encoder_attn.v_proj.weight")
-		l.crossOutW, _ = get(p + "encoder_attn.o_proj.weight")
+		l.crossQW = getQ8(p+"encoder_attn.q_proj.weight", ddim, ddim)
+		l.crossKW = getQ8(p+"encoder_attn.k_proj.weight", ddim, ddim)
+		l.crossVW = getQ8(p+"encoder_attn.v_proj.weight", ddim, ddim)
+		l.crossOutW = getQ8(p+"encoder_attn.o_proj.weight", ddim, ddim)
 		l.crossNormW, _ = get(p + "post_attention_layernorm.weight")
-		l.ffUpW, _ = get(p + "mlp.fc1.weight")
+		ffUpF32, _ := get(p + "mlp.fc1.weight")
+		if len(ffUpF32) == 0 {
+			continue
+		}
+		ffDim2x := len(ffUpF32) / ddim
+		l.ffUpW = tensor.QuantizeToQ8(ffUpF32, ffDim2x, ddim)
 		l.ffUpB = tryGet(p + "mlp.fc1.bias")
-		l.ffDownW, _ = get(p + "mlp.fc2.weight")
+		ffDownF32, _ := get(p + "mlp.fc2.weight")
+		intermediate := ffDim2x / 2
+		if len(ffDownF32) > 0 {
+			l.ffDownW = tensor.QuantizeToQ8(ffDownF32, ddim, intermediate)
+		}
 		l.ffDownB = tryGet(p + "mlp.fc2.bias")
 		l.ffNormW, _ = get(p + "final_layernorm.weight")
 	}
@@ -183,7 +214,12 @@ func (m *MoonshineModel) loadWeights(gf *gguf.File) error {
 	if err != nil {
 		return fmt.Errorf("asr: token embedding: %w", err)
 	}
-	w.lmHeadW = tryGet("lm_head.weight")
+	lmHeadF32 := tryGet("lm_head.weight")
+	if lmHeadF32 != nil {
+		w.lmHeadW = tensor.QuantizeToQ8(lmHeadF32, m.hp.VocabSize, ddim)
+	} else {
+		w.lmHeadF32 = w.tokenEmb // weight tying — keep f32
+	}
 	return nil
 }
 
@@ -192,10 +228,8 @@ func (m *MoonshineModel) loadVocab(gf *gguf.File) {
 	if tokens == nil {
 		tokens = gguf.GetMetaStrArr(gf.Meta, "tokenizer.tokens")
 	}
-	m.vocab = make(map[int]string, len(tokens))
-	for i, t := range tokens {
-		m.vocab[i] = t
-	}
+	m.vocab = make([]string, len(tokens))
+	copy(m.vocab, tokens)
 }
 
 // Transcribe takes 16kHz mono float32 PCM (normalized to [-1,1]) and returns text.
@@ -339,6 +373,3 @@ func resampleFloat32(in []float32, srcRate, dstRate int) []float32 {
 	}
 	return out
 }
-
-
-

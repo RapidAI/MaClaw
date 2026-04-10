@@ -845,6 +845,14 @@ func (r *machineRepo) DeleteOffline(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
+func (r *machineRepo) DeleteOfflineByUserID(ctx context.Context, userID string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE user_id = ? AND status != 'online'`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *viewerTokenRepo) Create(ctx context.Context, token *store.ViewerToken) error {
 	var revokedAt any
 	if token.RevokedAt != nil {

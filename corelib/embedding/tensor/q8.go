@@ -201,3 +201,69 @@ func float16to32(h uint16) float32 {
 		return math.Float32frombits(sign | 0x7f800000 | mant<<13)
 	}
 }
+
+// QuantizeToQ8 quantizes a float32 weight matrix [rows, cols] to Q8_0 format.
+// cols must be a multiple of 32. Returns a Q8Tensor suitable for MatMulQ8.
+// This enables runtime quantization of F32 weights for reduced memory and
+// bandwidth during inference.
+func QuantizeToQ8(data []float32, rows, cols int) *Q8Tensor {
+	nBlocks := cols / q8BlockSize
+	totalBytes := rows * nBlocks * q8BlockBytes
+	raw := make([]byte, totalBytes)
+
+	for r := 0; r < rows; r++ {
+		rowData := data[r*cols : (r+1)*cols]
+		rowOff := r * nBlocks * q8BlockBytes
+		for b := 0; b < nBlocks; b++ {
+			blockData := rowData[b*q8BlockSize : (b+1)*q8BlockSize]
+			// Find absmax for scale
+			var amax float32
+			for _, v := range blockData {
+				av := float32(math.Abs(float64(v)))
+				if av > amax {
+					amax = av
+				}
+			}
+			scale := amax / 127.0
+			off := rowOff + b*q8BlockBytes
+			// Store scale as float16
+			binary.LittleEndian.PutUint16(raw[off:], float32to16(scale))
+			// Quantize values
+			if scale > 0 {
+				invScale := 127.0 / amax
+				for i := 0; i < q8BlockSize; i++ {
+					q := int(math.Round(float64(blockData[i] * invScale)))
+					if q > 127 {
+						q = 127
+					} else if q < -128 {
+						q = -128
+					}
+					raw[off+2+i] = byte(int8(q))
+				}
+			} else {
+				// All zeros
+				for i := 0; i < q8BlockSize; i++ {
+					raw[off+2+i] = 0
+				}
+			}
+		}
+	}
+	return &Q8Tensor{Data: raw, Rows: rows, Cols: cols}
+}
+
+// float32to16 converts float32 to IEEE 754 half-precision.
+func float32to16(f float32) uint16 {
+	bits := math.Float32bits(f)
+	sign := uint16((bits >> 16) & 0x8000)
+	exp := int((bits>>23)&0xff) - 127
+	mant := bits & 0x7fffff
+
+	switch {
+	case exp > 15:
+		return sign | 0x7c00 // infinity
+	case exp < -14:
+		return sign // zero (flush subnormals)
+	default:
+		return sign | uint16(exp+15)<<10 | uint16(mant>>13)
+	}
+}

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/RapidAI/CodeClaw/corelib/clawnet"
+	"github.com/RapidAI/CodeClaw/corelib/agentnet"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"golang.org/x/sync/errgroup"
@@ -25,8 +25,8 @@ type Kernel struct {
 	ToolRegistry *tool.Registry
 	ToolRouter   *tool.Router
 	Scheduler    *scheduler.Manager
-	ClawNet      *clawnet.Client
-	AutoPicker   *clawnet.AutoTaskPicker
+	AgentNet     *agentnet.Client
+	AutoPicker   *agentnet.AutoTaskPicker
 
 	// 内部状态
 	initialized  bool
@@ -87,9 +87,9 @@ func NewKernel(opts KernelOptions) (*Kernel, error) {
 		k.Scheduler = sched
 	}
 
-	// 5. ClawNet 客户端 & 自动任务拾取
-	k.ClawNet = clawnet.NewClient()
-	k.AutoPicker = clawnet.NewAutoTaskPicker(k.ClawNet, opts.HubURL)
+	// 5. 智网 (AgentNet) 客户端 & 自动任务拾取
+	k.AgentNet = agentnet.NewClient()
+	k.AutoPicker = agentnet.NewAutoTaskPicker(k.AgentNet, opts.HubURL)
 
 	k.initialized = true
 	k.logger.Info("kernel initialized")
@@ -117,18 +117,18 @@ func (k *Kernel) Run(ctx context.Context) error {
 		})
 	}
 
-	// ClawNet 自动任务拾取
-	if k.opts.ClawNetEnabled {
+	// 智网 (AgentNet) 自动任务拾取
+	if k.opts.AgentNetEnabled {
 		g.Go(func() error {
-			if err := k.ClawNet.EnsureDaemon(); err != nil {
-				k.logger.Warn("clawnet daemon start failed (non-fatal): %v", err)
+			if err := k.AgentNet.EnsureDaemon(); err != nil {
+				k.logger.Warn("agentnet daemon start failed (non-fatal): %v", err)
 				return nil
 			}
-			k.ClawNet.StartAutoUpdate(func(msg string) { k.logger.Info(msg) })
+			k.AgentNet.StartAutoUpdate(func(msg string) { k.logger.Info(msg) })
 			k.AutoPicker.Start()
 			<-gctx.Done()
 			k.AutoPicker.Stop()
-			k.ClawNet.StopAutoUpdate()
+			k.AgentNet.StopAutoUpdate()
 			return nil
 		})
 	}
@@ -156,8 +156,8 @@ func (k *Kernel) Shutdown(ctx context.Context) error {
 		if k.AutoPicker != nil {
 			k.AutoPicker.Stop()
 		}
-		if k.ClawNet != nil {
-			k.ClawNet.StopDaemon()
+		if k.AgentNet != nil {
+			k.AgentNet.StopDaemon()
 		}
 		if k.Scheduler != nil {
 			k.Scheduler.Stop()

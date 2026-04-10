@@ -5,6 +5,20 @@ import (
 	"strings"
 )
 
+// hexVal returns the numeric value of a hex digit, or -1 if invalid.
+func hexVal(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	case c >= 'A' && c <= 'F':
+		return int(c-'A') + 10
+	default:
+		return -1
+	}
+}
+
 // detokenize converts token IDs to text.
 // Handles SentencePiece ▁ replacement, byte tokens <0xNN>, and CJK space removal.
 func (m *MoonshineModel) detokenize(tokens []int) string {
@@ -13,17 +27,18 @@ func (m *MoonshineModel) detokenize(tokens []int) string {
 		if tid == m.hp.BOSID || tid == m.hp.EOSID {
 			continue
 		}
-		tok, ok := m.vocab[tid]
-		if !ok {
+		if tid < 0 || tid >= len(m.vocab) {
 			sb.WriteString(fmt.Sprintf("<%d>", tid))
 			continue
 		}
+		tok := m.vocab[tid]
 
 		// Decode byte tokens like <0xNN>
-		if len(tok) >= 6 && tok[0] == '<' && tok[1] == '0' && tok[2] == 'x' {
-			var byteVal uint
-			if _, err := fmt.Sscanf(tok, "<0x%x>", &byteVal); err == nil && byteVal <= 0xFF {
-				sb.WriteByte(byte(byteVal))
+		if len(tok) == 6 && tok[0] == '<' && tok[1] == '0' && tok[2] == 'x' && tok[5] == '>' {
+			hi := hexVal(tok[3])
+			lo := hexVal(tok[4])
+			if hi >= 0 && lo >= 0 {
+				sb.WriteByte(byte(hi<<4 | lo))
 				continue
 			}
 		}
@@ -45,7 +60,7 @@ func (m *MoonshineModel) detokenize(tokens []int) string {
 // removeCJKSpaces removes spaces adjacent to CJK characters.
 func removeCJKSpaces(s string) string {
 	runes := []rune(s)
-	var out []rune
+	out := make([]rune, 0, len(runes))
 	for i, r := range runes {
 		if r == ' ' {
 			prevCJK := i > 0 && isCJK(runes[i-1])

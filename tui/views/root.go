@@ -1,9 +1,9 @@
-// Package views 包含 TUI 的所有视图组件。
 package views
 
 import (
 	"fmt"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -15,30 +15,28 @@ const (
 	TabSchedule
 	TabMemory
 	TabAudit
-	TabClawNet
+	TabAgentNet
 	TabConfig
 	TabChat
 	TabCount
 )
-
-// TabNames 各 Tab 的显示名称。
-var TabNames = [TabCount]string{"会话", "工具", "定时", "记忆", "审计", "ClawNet", "配置", "助手"}
 
 // RootModel 是 TUI 的根 Model，管理 Tab 切换和子视图。
 type RootModel struct {
 	width  int
 	height int
 	tab    int
+	lang   string
 
 	// 子视图
 	Sessions      SessionListModel
-	SessionDetail *SessionDetailModel  // nil = 不显示详情
-	SessionCreate *SessionCreateModel  // nil = 不显示创建表单
+	SessionDetail *SessionDetailModel // nil = 不显示详情
+	SessionCreate *SessionCreateModel // nil = 不显示创建表单
 	Tools         ToolStatusModel
 	Schedule      ScheduleModel
 	Memory        MemoryModel
 	Audit         AuditModel
-	ClawNet       ClawNetModel
+	AgentNet      AgentNetModel
 	Config        ConfigModel
 	Chat          ChatModel
 	StatusBar     StatusBarModel
@@ -46,20 +44,46 @@ type RootModel struct {
 }
 
 // NewRootModel 创建根 Model。
-func NewRootModel() RootModel {
+func NewRootModel(lang string) RootModel {
+	lang = i18n.NormalizeLang(lang)
 	return RootModel{
 		tab:       TabSessions,
-		Sessions:  NewSessionListModel(),
-		Tools:     NewToolStatusModel(),
-		Schedule:  NewScheduleModel(),
-		Memory:    NewMemoryModel(),
-		Audit:     NewAuditModel(),
-		ClawNet:   NewClawNetModel(),
-		Config:    NewConfigModel(),
-		Chat:      NewChatModel(),
-		StatusBar: NewStatusBarModel(),
-		Help:      NewHelpModel(),
+		lang:      lang,
+		Sessions:  NewSessionListModel(lang),
+		Tools:     NewToolStatusModel(lang),
+		Schedule:  NewScheduleModel(lang),
+		Memory:    NewMemoryModel(lang),
+		Audit:     NewAuditModel(lang),
+		AgentNet:  NewAgentNetModel(lang),
+		Config:    NewConfigModel(lang),
+		Chat:      NewChatModel(lang),
+		StatusBar: NewStatusBarModel(lang),
+		Help:      NewHelpModel(lang),
 	}
+}
+
+func (m *RootModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
+	m.Sessions.SetLang(m.lang)
+	m.Tools.SetLang(m.lang)
+	m.Schedule.SetLang(m.lang)
+	m.Memory.SetLang(m.lang)
+	m.Audit.SetLang(m.lang)
+	m.AgentNet.SetLang(m.lang)
+	m.Config.SetLang(m.lang)
+	m.Chat.SetLang(m.lang)
+	m.Help.SetLang(m.lang)
+	m.StatusBar.SetLang(m.lang)
+	if m.SessionDetail != nil {
+		m.SessionDetail.SetLang(m.lang)
+	}
+	if m.SessionCreate != nil {
+		m.SessionCreate.SetLang(m.lang)
+	}
+}
+
+func (m RootModel) Lang() string {
+	return m.lang
 }
 
 // Init 实现 tea.Model。
@@ -84,35 +108,29 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 			m.SessionCreate = &c
 		}
 	case SessionOpenMsg:
-		detail := NewSessionDetailModel(msg.ID, msg.Tool, msg.Title)
+		detail := NewSessionDetailModel(msg.ID, msg.Tool, msg.Title, m.lang)
 		m.SessionDetail = &detail
 		return m, nil
 	case SessionCreateMsg:
-		// 收集可用工具名称
 		var toolNames []string
 		for _, t := range m.Tools.tools {
 			if t.Available {
 				toolNames = append(toolNames, t.Name)
 			}
 		}
-		if len(toolNames) == 0 {
-			toolNames = []string{"(无可用工具)"}
-		}
-		create := NewSessionCreateModel(toolNames)
+		create := NewSessionCreateModel(toolNames, m.lang)
 		m.SessionCreate = &create
 		return m, nil
 	case SessionCreateSubmitMsg:
 		m.SessionCreate = nil
-		m.StatusBar.SetMessage(fmt.Sprintf("创建会话: tool=%s project=%s", msg.Tool, msg.Project))
+		m.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUISessionCreated, m.lang, msg.Tool, msg.Project))
 		return m, nil
 	case tea.KeyMsg:
-		// 帮助面板优先
 		if m.Help.IsVisible() {
 			var cmd tea.Cmd
 			m.Help, cmd = m.Help.Update(msg)
 			return m, cmd
 		}
-		// 创建会话表单
 		if m.SessionCreate != nil {
 			if msg.String() == "esc" {
 				m.SessionCreate = nil
@@ -124,7 +142,6 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 			m.SessionCreate = &c
 			return m, cmd
 		}
-		// 会话详情模式下，Esc 返回列表
 		if m.SessionDetail != nil {
 			if msg.String() == "esc" {
 				m.SessionDetail = nil
@@ -136,7 +153,6 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 			m.SessionDetail = &d
 			return m, cmd
 		}
-		// 编辑模式下不处理 Tab 切换
 		if m.tab == TabConfig && m.Config.IsEditing() {
 			break
 		}
@@ -159,7 +175,6 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 		}
 	}
 
-	// 委托给当前活跃的子视图
 	var cmd tea.Cmd
 	switch m.tab {
 	case TabSessions:
@@ -172,15 +187,14 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 		m.Memory, cmd = m.Memory.Update(msg)
 	case TabAudit:
 		m.Audit, cmd = m.Audit.Update(msg)
-	case TabClawNet:
-		m.ClawNet, cmd = m.ClawNet.Update(msg)
+	case TabAgentNet:
+		m.AgentNet, cmd = m.AgentNet.Update(msg)
 	case TabConfig:
 		m.Config, cmd = m.Config.Update(msg)
 	case TabChat:
 		m.Chat, cmd = m.Chat.Update(msg)
 	}
 
-	// 状态栏始终更新
 	var sbCmd tea.Cmd
 	m.StatusBar, sbCmd = m.StatusBar.Update(msg)
 
@@ -190,21 +204,17 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 // View 渲染完整 TUI 界面。
 func (m RootModel) View() string {
 	if m.width == 0 {
-		return "正在初始化...\n"
+		return i18n.T(i18n.MsgTUIInitializing, m.lang) + "\n"
 	}
 
-	// Tab 栏
 	tabBar := m.renderTabs()
 
-	// 内容区
-	contentHeight := m.height - 4 // tab栏 + 状态栏 + 边距
+	contentHeight := m.height - 4
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
 
 	content := ""
-
-	// Overlay 优先级: Help > SessionCreate > SessionDetail > 正常 Tab
 	if m.Help.IsVisible() {
 		content = m.Help.View()
 	} else if m.SessionCreate != nil {
@@ -223,8 +233,8 @@ func (m RootModel) View() string {
 			content = m.Memory.View()
 		case TabAudit:
 			content = m.Audit.View()
-		case TabClawNet:
-			content = m.ClawNet.View()
+		case TabAgentNet:
+			content = m.AgentNet.View()
 		case TabConfig:
 			content = m.Config.View()
 		case TabChat:
@@ -237,9 +247,7 @@ func (m RootModel) View() string {
 		Height(contentHeight)
 	content = contentStyle.Render(content)
 
-	// 状态栏
 	statusBar := m.StatusBar.View(m.width)
-
 	return fmt.Sprintf("%s\n%s\n%s", tabBar, content, statusBar)
 }
 
@@ -256,8 +264,19 @@ func (m RootModel) renderTabs() string {
 		Background(lipgloss.Color("236")).
 		Padding(0, 2)
 
+	tabNames := [TabCount]string{
+		i18n.T(i18n.MsgTUITabSessions, m.lang),
+		i18n.T(i18n.MsgTUITabTools, m.lang),
+		i18n.T(i18n.MsgTUITabSchedule, m.lang),
+		i18n.T(i18n.MsgTUITabMemory, m.lang),
+		i18n.T(i18n.MsgTUITabAudit, m.lang),
+		i18n.T(i18n.MsgTUITabAgentNet, m.lang),
+		i18n.T(i18n.MsgTUITabConfig, m.lang),
+		i18n.T(i18n.MsgTUITabChat, m.lang),
+	}
+
 	tabs := ""
-	for i, name := range TabNames {
+	for i, name := range tabNames {
 		if i == m.tab {
 			tabs += activeStyle.Render(name)
 		} else {

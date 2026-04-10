@@ -215,6 +215,7 @@ type MachineRepository interface {
 	DeleteByUserID(ctx context.Context, userID string) (int64, error)
 	ForceDeleteByUserID(ctx context.Context, userID string) (int64, error)
 	DeleteOffline(ctx context.Context) (int64, error)
+	DeleteOfflineByUserID(ctx context.Context, userID string) (int64, error)
 	UpdateMetadata(ctx context.Context, machineID string, metadata MachineMetadata) error
 	UpdateStatus(ctx context.Context, machineID string, status string) error
 	UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error

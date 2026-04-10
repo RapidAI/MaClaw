@@ -787,7 +787,7 @@ func isOriginalBuiltin(name string) bool {
 		"delete_scheduled_task": true, "update_scheduled_task": true,
 		"memory": true, "list_mcp_tools": true, "call_mcp_tool": true,
 		"list_skills": true, "search_skill_hub": true, "install_skill_hub": true,
-		"run_skill": true, "clawnet_search": true, "clawnet_publish": true,
+		"run_skill": true, "agentnet_search": true, "agentnet_publish": true,
 		"query_audit_log": true, "send_file": true, "parallel_execute": true,
 		"switch_llm_provider": true, "set_max_iterations": true,
 		"recommend_tool": true, "screenshot": true,
@@ -1151,17 +1151,17 @@ func appendTruncated(sb *strings.Builder, text string, maxLen int) {
 	}
 }
 
-// ===================== ClawNet =====================
+// ===================== AgentNet =====================
 
-func (h *TUIAgentHandler) toolClawnetSearch(args map[string]interface{}) string {
-	if h.clawnetClient == nil {
-		return "ClawNet 客户端未初始化"
+func (h *TUIAgentHandler) toolAgentNetSearch(args map[string]interface{}) string {
+	if h.AgentNetClient == nil {
+		return "AgentNet 客户端未初始化"
 	}
 	query := stringArg(args, "query")
 	if query == "" {
 		return "错误: 缺少 query"
 	}
-	entries, err := h.clawnetClient.SearchKnowledge(query)
+	entries, err := h.AgentNetClient.SearchKnowledge(query)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %v", err)
 	}
@@ -1175,16 +1175,16 @@ func (h *TUIAgentHandler) toolClawnetSearch(args map[string]interface{}) string 
 	return sb.String()
 }
 
-func (h *TUIAgentHandler) toolClawnetPublish(args map[string]interface{}) string {
-	if h.clawnetClient == nil {
-		return "ClawNet 客户端未初始化"
+func (h *TUIAgentHandler) toolAgentNetPublish(args map[string]interface{}) string {
+	if h.AgentNetClient == nil {
+		return "AgentNet 客户端未初始化"
 	}
 	title := stringArg(args, "title")
 	body := stringArg(args, "body")
 	if title == "" || body == "" {
 		return "错误: 缺少 title 或 body"
 	}
-	entry, err := h.clawnetClient.PublishKnowledge(title, body)
+	entry, err := h.AgentNetClient.PublishKnowledge(title, body)
 	if err != nil {
 		return fmt.Sprintf("发布失败: %v", err)
 	}

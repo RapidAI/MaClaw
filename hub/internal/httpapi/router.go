@@ -1,4 +1,4 @@
-package httpapi
+﻿package httpapi
 
 import (
 	"net/http"
@@ -198,7 +198,7 @@ func NewRouter(
 	if feishuPlugin != nil {
 		mux.HandleFunc("GET /api/feishu/tempfile/{token}", feishuPlugin.ServeTempFile)
 	}
-	// Public binding page API (no auth required) — allow cross-origin for iframe embedding
+	// Public binding page API (no auth required) 鈥?allow cross-origin for iframe embedding
 	bindCORS := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -222,6 +222,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/auth/email-poll", EmailPollLoginHandler(identity))
 	mux.HandleFunc("POST /api/entry/probe", EntryProbeHandler(entrySvc))
 	mux.HandleFunc("GET /api/machines", ListMachinesHandler(identity, deviceSvc))
+	mux.HandleFunc("POST /api/machines/clear-offline", ClearOfflineMachinesForViewerHandler(identity, deviceSvc))
 	mux.HandleFunc("GET /api/sessions", ListSessionsHandler(identity, sessionSvc))
 	mux.HandleFunc("GET /api/session", GetSessionHandler(identity, sessionSvc))
 	mux.HandleFunc("POST /api/session/start", SessionStartHandler(identity, deviceSvc))
@@ -238,22 +239,22 @@ func NewRouter(
 	// Webhook session endpoint (Bearer token auth handled internally)
 	mux.HandleFunc("POST /api/webhook/session", WebhookCreateSessionHandler(deviceSvc, sessionSvc))
 
-	// ClawNet identity key online backup/restore (no auth — protected by user password)
-	mux.HandleFunc("POST /api/clawnet/key/backup", ClawNetKeyBackupHandler())
-	mux.HandleFunc("POST /api/clawnet/key/restore", ClawNetKeyRestoreHandler())
+	// AgentNet identity key online backup/restore (no auth 鈥?protected by user password)
+	mux.HandleFunc("POST /api/AgentNet/key/backup", AgentNetKeyBackupHandler())
+	mux.HandleFunc("POST /api/AgentNet/key/restore", AgentNetKeyRestoreHandler())
 
-	// ClawNet task bulletin board — Hub-relayed P2P task discovery
-	mux.HandleFunc("POST /api/clawnet/tasks/publish", ClawNetTaskPublishHandler())
-	mux.HandleFunc("GET /api/clawnet/tasks/browse", ClawNetTaskBrowseHandler())
+	// AgentNet task bulletin board 鈥?Hub-relayed P2P task discovery
+	mux.HandleFunc("POST /api/AgentNet/tasks/publish", AgentNetTaskPublishHandler())
+	mux.HandleFunc("GET /api/AgentNet/tasks/browse", AgentNetTaskBrowseHandler())
 
-	// ── User-facing voiceprint self-enrollment ──────────────
+	// 鈹€鈹€ User-facing voiceprint self-enrollment 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 	if voiceprintSvc != nil {
 		mux.HandleFunc("POST /api/chat/voiceprint/enroll", UserVoiceprintEnrollHandler(identity, voiceprintSvc))
 		mux.HandleFunc("GET /api/chat/voiceprint/list", UserVoiceprintListHandler(identity, voiceprintSvc))
 		mux.HandleFunc("DELETE /api/chat/voiceprint", UserVoiceprintDeleteHandler(identity, voiceprintSvc))
 	}
 
-	// ── Chat Module ─────────────────────────────────────────
+	// 鈹€鈹€ Chat Module 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 	if chatChannelSvc != nil {
 		mux.HandleFunc("POST /api/chat/channels", ChatCreateChannelHandler(identity, chatChannelSvc))
 		mux.HandleFunc("GET /api/chat/channels", ChatListChannelsHandler(identity, chatChannelSvc))
@@ -272,7 +273,7 @@ func NewRouter(
 		mux.HandleFunc("/api/chat/ws", ChatWSHandler(identity, chatNotifier))
 	}
 
-	// Model file download (embedding models etc.) — public, no auth
+	// Model file download (embedding models etc.) 鈥?public, no auth
 	mux.HandleFunc("GET /api/v1/models/{filename}", ModelDownloadHandler("./data"))
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)

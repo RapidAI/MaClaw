@@ -4,18 +4,19 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 // ScheduleItem 定时任务列表项。
 type ScheduleItem struct {
-	ID       string
-	Name     string
-	Status   string // active, paused
-	Time     string // "HH:MM" or "每N小时" etc.
-	Runs     int
-	Action   string
+	ID     string
+	Name   string
+	Status string // active, paused
+	Time   string // "HH:MM" or "每N小时" etc.
+	Runs   int
+	Action string
 }
 
 // ScheduleModel 定时任务视图。
@@ -23,11 +24,16 @@ type ScheduleModel struct {
 	tasks   []ScheduleItem
 	cursor  int
 	loading bool
+	lang    string
 }
 
 // NewScheduleModel 创建定时任务视图。
-func NewScheduleModel() ScheduleModel {
-	return ScheduleModel{loading: true}
+func NewScheduleModel(lang string) ScheduleModel {
+	return ScheduleModel{loading: true, lang: i18n.NormalizeLang(lang)}
+}
+
+func (m *ScheduleModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
 }
 
 // SetTasks 更新任务列表。
@@ -84,10 +90,10 @@ func (m ScheduleModel) Update(msg tea.Msg) (ScheduleModel, tea.Cmd) {
 // View 渲染定时任务列表。
 func (m ScheduleModel) View() string {
 	if m.loading {
-		return "  正在加载定时任务..."
+		return "  " + i18n.T(i18n.MsgTUIScheduleLoading, m.lang)
 	}
 	if len(m.tasks) == 0 {
-		return "  暂无定时任务\n\n  使用 CLI 创建: maclaw-tui schedule create --name <name> --action <text>"
+		return "  " + strings.ReplaceAll(i18n.T(i18n.MsgTUIScheduleEmpty, m.lang), "\n", "\n  ")
 	}
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
@@ -96,7 +102,13 @@ func (m ScheduleModel) View() string {
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	var b strings.Builder
-	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-18s %-8s %-6s %-5s %s", "NAME", "STATUS", "TIME", "RUNS", "ACTION")))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-18s %-8s %-6s %-5s %s",
+		i18n.T(i18n.MsgTUIScheduleHeaderName, m.lang),
+		i18n.T(i18n.MsgTUIScheduleHeaderStatus, m.lang),
+		i18n.T(i18n.MsgTUIScheduleHeaderTime, m.lang),
+		i18n.T(i18n.MsgTUIScheduleHeaderRuns, m.lang),
+		i18n.T(i18n.MsgTUIScheduleHeaderAction, m.lang),
+	)))
 	b.WriteString("\n  " + strings.Repeat("─", 65) + "\n")
 
 	for i, t := range m.tasks {
@@ -118,6 +130,6 @@ func (m ScheduleModel) View() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n  ↑↓:选择  p:暂停/恢复  d:删除")
+	b.WriteString("\n  " + i18n.T(i18n.MsgTUIScheduleFooter, m.lang))
 	return b.String()
 }

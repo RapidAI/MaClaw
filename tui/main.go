@@ -64,8 +64,8 @@ func main() {
 		runLocalCommand("audit", os.Args[2:])
 	case "policy":
 		runLocalCommand("policy", os.Args[2:])
-	case "clawnet":
-		if err := commands.RunClawNet(os.Args[2:]); err != nil {
+	case "agentnet", "clawnet":
+		if err := commands.RunAgentNet(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(exitCodeForError(err))
 		}
@@ -171,7 +171,7 @@ Commands:
   schedule      定时任务管理（list/create/delete/pause/resume/trigger）
   audit         审计日志查询（list）
   policy        安全策略查看（list）
-  clawnet       ClawNet P2P 网络
+  agentnet      AgentNet P2P 网络
                   status/peers/tasks/credits/knowledge/dm/swarm/prediction
                   topic/overlay/resume/diagnostics/nutshell
                   identity (has-identity/export-identity/import-identity/backup-key/restore-key)
@@ -216,7 +216,7 @@ func buildKernelOptions(logger corelib.Logger, emitter corelib.EventEmitter) cor
 		MachineID:      os.Getenv("MACLAW_MACHINE_ID"),
 		Logger:         logger,
 		EventEmitter:   emitter,
-		ClawNetEnabled: os.Getenv("MACLAW_CLAWNET") == "1",
+		AgentNetEnabled: os.Getenv("MACLAW_AGENTNET") == "1",
 	}
 }
 

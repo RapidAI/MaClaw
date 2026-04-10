@@ -23,6 +23,7 @@ type MachineRepository interface {
 	DeleteByUserID(ctx context.Context, userID string) (int64, error)
 	ForceDeleteByUserID(ctx context.Context, userID string) (int64, error)
 	DeleteOffline(ctx context.Context) (int64, error)
+	DeleteOfflineByUserID(ctx context.Context, userID string) (int64, error)
 	UpdateMetadata(ctx context.Context, machineID string, metadata store.MachineMetadata) error
 	UpdateStatus(ctx context.Context, machineID string, status string) error
 	UpdateHeartbeat(ctx context.Context, machineID string, at time.Time) error
@@ -680,6 +681,13 @@ func (s *Service) ClearOfflineMachines(ctx context.Context) (int64, error) {
 		return 0, errors.New("no repository configured")
 	}
 	return s.repo.DeleteOffline(ctx)
+}
+
+func (s *Service) ClearOfflineMachinesByUser(ctx context.Context, userID string) (int64, error) {
+	if s.repo == nil {
+		return 0, errors.New("no repository configured")
+	}
+	return s.repo.DeleteOfflineByUserID(ctx, userID)
 }
 
 func (s *Service) DeleteMachinesByUser(ctx context.Context, userID string) (int64, error) {

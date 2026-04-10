@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -30,11 +31,16 @@ type MemoryModel struct {
 	entries []MemoryItem
 	cursor  int
 	loading bool
+	lang    string
 }
 
 // NewMemoryModel 创建记忆视图。
-func NewMemoryModel() MemoryModel {
-	return MemoryModel{loading: true}
+func NewMemoryModel(lang string) MemoryModel {
+	return MemoryModel{loading: true, lang: i18n.NormalizeLang(lang)}
+}
+
+func (m *MemoryModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
 }
 
 // SetEntries 更新记忆列表。
@@ -79,10 +85,10 @@ func (m MemoryModel) Update(msg tea.Msg) (MemoryModel, tea.Cmd) {
 // View 渲染记忆列表。
 func (m MemoryModel) View() string {
 	if m.loading {
-		return "  正在加载记忆..."
+		return "  " + i18n.T(i18n.MsgTUIMemoryLoading, m.lang)
 	}
 	if len(m.entries) == 0 {
-		return "  暂无记忆\n\n  使用 CLI 保存: maclaw-tui memory save --content <text>"
+		return "  " + strings.ReplaceAll(i18n.T(i18n.MsgTUIMemoryEmpty, m.lang), "\n", "\n  ")
 	}
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
@@ -91,7 +97,12 @@ func (m MemoryModel) View() string {
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 
 	var b strings.Builder
-	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-22s %-16s %-6s %s", "ID", "CATEGORY", "ACCESS", "CONTENT")))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-22s %-16s %-6s %s",
+		i18n.T(i18n.MsgTUISessionHeaderID, m.lang),
+		i18n.T(i18n.MsgTUIMemoryHeaderCategory, m.lang),
+		i18n.T(i18n.MsgTUIMemoryHeaderAccess, m.lang),
+		i18n.T(i18n.MsgTUIMemoryHeaderContent, m.lang),
+	)))
 	b.WriteString("\n  " + strings.Repeat("─", 70) + "\n")
 
 	for i, e := range m.entries {
@@ -109,6 +120,6 @@ func (m MemoryModel) View() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n  ↑↓:选择  d:删除  c:压缩  b:备份列表")
+	b.WriteString("\n  " + i18n.T(i18n.MsgTUIMemoryFooter, m.lang))
 	return b.String()
 }

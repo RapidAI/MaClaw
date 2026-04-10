@@ -48,6 +48,26 @@ func TestImportMarkdownSkillDir_CreatesCraftToolWhenNoScripts(t *testing.T) {
 	}
 }
 
+func TestImportMarkdownSkillDir_AcceptsUppercaseSkillMarkdown(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "rapidocr")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "---\nname: RapidOCR\ndescription: OCR\n---\n\n# RapidOCR\n\nUse OCR."
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if entry.Name != "RapidOCR" {
+		t.Fatalf("Name = %q, want %q", entry.Name, "RapidOCR")
+	}
+}
+
 func TestImportMarkdownSkillDir_UsesScriptsAsBashSteps(t *testing.T) {
 	root := t.TempDir()
 	skillDir := filepath.Join(root, "browser-skill")
@@ -113,6 +133,25 @@ func TestScanSkillDir_RecognizesMarkdownSkillDirectory(t *testing.T) {
 	}
 	if len(skills[0].Steps) != 1 || skills[0].Steps[0].Action != "craft_tool" {
 		t.Fatalf("unexpected steps: %+v", skills[0].Steps)
+	}
+}
+
+func TestScanSkillDir_RecognizesUppercaseMarkdownSkillDirectory(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "rapidocr")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# RapidOCR\n\nUse OCR."), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	skills := ScanSkillDir(root)
+	if len(skills) != 1 {
+		t.Fatalf("ScanSkillDir() returned %d skills, want 1", len(skills))
+	}
+	if skills[0].Name != "RapidOCR" {
+		t.Fatalf("Name = %q, want %q", skills[0].Name, "RapidOCR")
 	}
 }
 

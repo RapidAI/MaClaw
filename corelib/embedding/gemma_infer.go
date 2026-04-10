@@ -32,7 +32,7 @@ func (g *GemmaEmbedder) Embed(text string) ([]float32, error) {
 }
 
 // EmbedConcurrent returns the embedding vector for a single text string.
-// Unlike Embed, it allocates a private scratch buffer so multiple goroutines
+// Unlike Embed, it uses a pooled scratch buffer so multiple goroutines
 // can run inference in parallel without contending on the shared mutex.
 // Weights (mmap-backed, read-only) and tokenizer are safe to share.
 func (g *GemmaEmbedder) EmbedConcurrent(text string) ([]float32, error) {
@@ -44,8 +44,9 @@ func (g *GemmaEmbedder) EmbedConcurrent(text string) ([]float32, error) {
 		tokens = tokens[:g.hp.MaxSeqLen]
 	}
 
-	s := newGemmaScratch(g.hp, len(tokens))
+	s := g.getScratchFromPool(len(tokens))
 	emb, err := g.forwardWithScratch(tokens, s)
+	g.putScratchToPool(s)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +162,47 @@ func newGemmaScratch(hp GemmaHParams, seq int) *gemmaScratch {
 		ropeCos: ropeCos,
 		ropeSin: ropeSin,
 		seqCap:  seq,
+		ropeSeq: seq,
 	}
+}
+
+// getScratchFromPool retrieves a scratch buffer from the pool, or allocates
+// a new one if the pooled buffer is too small for the given sequence length.
+func (g *GemmaEmbedder) getScratchFromPool(seq int) *gemmaScratch {
+	if v := g.scratchPool.Get(); v != nil {
+		s := v.(*gemmaScratch)
+		if s.seqCap >= seq {
+			// Recompute RoPE tables only if seq changed (tables are position-dependent)
+			g.recomputeRoPE(s, seq)
+			return s
+		}
+		// Too small — discard and allocate fresh
+	}
+	return newGemmaScratch(g.hp, seq)
+}
+
+// putScratchToPool returns a scratch buffer to the pool for reuse.
+func (g *GemmaEmbedder) putScratchToPool(s *gemmaScratch) {
+	g.scratchPool.Put(s)
+}
+
+// recomputeRoPE updates the pre-computed RoPE cos/sin tables for a new seq length.
+// Skips recomputation if the tables already cover the requested seq length.
+func (g *GemmaEmbedder) recomputeRoPE(s *gemmaScratch, seq int) {
+	if s.ropeSeq >= seq {
+		return // tables already valid for this seq length
+	}
+	headDim := g.hp.HeadDim
+	halfDim := headDim / 2
+	for pos := 0; pos < seq; pos++ {
+		for i := 0; i < halfDim; i++ {
+			freq := 1.0 / float32(math.Pow(float64(g.hp.RopeTheta), float64(2*i)/float64(headDim)))
+			angle := float32(pos) * freq
+			s.ropeCos[pos*halfDim+i] = float32(math.Cos(float64(angle)))
+			s.ropeSin[pos*halfDim+i] = float32(math.Sin(float64(angle)))
+		}
+	}
+	s.ropeSeq = seq
 }
 
 // ensureScratch returns scratch buffers large enough for the given seq length.
@@ -291,12 +332,10 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 		tensor.RMSNorm(x[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], g.weights.outputNorm, hp.RMSNormEps)
 	}
 
-	// Mean pooling
+	// Mean pooling — use SIMD-accelerated addition
 	out := make([]float32, dim)
 	for s := 0; s < seq; s++ {
-		for d := 0; d < dim; d++ {
-			out[d] += x[s*dim+d]
-		}
+		tensor.Add(out, out, x[s*dim:(s+1)*dim])
 	}
 	tensor.Scale(out, 1.0/float32(seq))
 	return out, nil

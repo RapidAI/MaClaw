@@ -17,8 +17,9 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/clawnet"
+	"github.com/RapidAI/CodeClaw/corelib/agentnet"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -49,7 +50,7 @@ type TUIAgentHandler struct {
 	configMgr        *config.Manager
 	memoryStore      *memory.Store
 	schedulerMgr     *scheduler.Manager
-	clawnetClient    *clawnet.Client
+	AgentNetClient   *agentnet.Client
 	auditLog         *security.AuditLog
 	sshMgr           *remote.SSHSessionManager
 	bgTaskMgr        *remote.SSHBackgroundTaskManager
@@ -115,8 +116,8 @@ func WithMemoryStore(ms *memory.Store) AgentHandlerOption {
 func WithSchedulerMgr(sm *scheduler.Manager) AgentHandlerOption {
 	return func(h *TUIAgentHandler) { h.schedulerMgr = sm }
 }
-func WithClawnetClient(cc *clawnet.Client) AgentHandlerOption {
-	return func(h *TUIAgentHandler) { h.clawnetClient = cc }
+func WithAgentNetClient(cc *agentnet.Client) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.AgentNetClient = cc }
 }
 func WithAuditLog(al *security.AuditLog) AgentHandlerOption {
 	return func(h *TUIAgentHandler) { h.auditLog = al }
@@ -151,10 +152,10 @@ type AgentResponse struct {
 func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]string) AgentResponse {
 	cfg, err := commands.LoadLLMConfig()
 	if err != nil {
-		return AgentResponse{Error: fmt.Sprintf("加载 LLM 配置失败: %v", err)}
+		return AgentResponse{Error: i18n.Tf(i18n.MsgTUIAgentLoadConfigFailed, i18n.NormalizeLang(""), err)}
 	}
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		return AgentResponse{Error: "LLM 未配置，请先设置 maclaw_llm_url 和 maclaw_llm_model"}
+		return AgentResponse{Error: i18n.T(i18n.MsgTUILLMNotConfiguredHint, i18n.NormalizeLang(""))}
 	}
 
 	systemPrompt := h.buildSystemPromptWithHistory(userText, history)
@@ -181,10 +182,10 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 			resp, err = h.doLLMRequestWithTools(cfg, conversation, tools)
 		}
 		if err != nil {
-			return AgentResponse{Error: fmt.Sprintf("LLM 调用失败: %v", err)}
+			return AgentResponse{Error: i18n.Tf(i18n.MsgTUIAgentLLMCallFailed, i18n.NormalizeLang(""), err)}
 		}
 		if len(resp.Choices) == 0 {
-			return AgentResponse{Error: "LLM 未返回有效回复"}
+			return AgentResponse{Error: i18n.T(i18n.MsgTUIAgentNoValidReply, i18n.NormalizeLang(""))}
 		}
 
 		choice := resp.Choices[0]
@@ -215,7 +216,7 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 				maxLen = 20000
 			}
 			if len(result) > maxLen {
-				result = result[:maxLen] + "\n...(已截断)"
+				result = result[:maxLen] + i18n.T(i18n.MsgTUIAgentTruncated, i18n.NormalizeLang(""))
 			}
 			conversation = append(conversation, map[string]interface{}{
 				"role":         "tool",
@@ -225,7 +226,7 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 		}
 	}
 
-	return AgentResponse{Text: "(已达到最大推理轮次)"}
+	return AgentResponse{Text: i18n.T(i18n.MsgTUIAgentMaxRoundsReached, i18n.NormalizeLang(""))}
 }
 
 func (h *TUIAgentHandler) buildSystemPrompt() string {
@@ -483,11 +484,11 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"input":      map[string]interface{}{"type": "string", "description": "兼容旧调用的输入参数"},
 			"output":     map[string]interface{}{"type": "string", "description": "兼容旧调用的输出参数"},
 		}, []string{"skill_name"}),
-		// --- ClawNet ---
-		toolDef("clawnet_search", "搜索 ClawNet 知识", map[string]interface{}{
+		// --- AgentNet ---
+		toolDef("agentnet_search", "搜索 AgentNet 知识", map[string]interface{}{
 			"query": map[string]interface{}{"type": "string", "description": "搜索关键词"},
 		}, []string{"query"}),
-		toolDef("clawnet_publish", "发布知识到 ClawNet", map[string]interface{}{
+		toolDef("agentnet_publish", "发布知识到 AgentNet", map[string]interface{}{
 			"title": map[string]interface{}{"type": "string", "description": "标题"},
 			"body":  map[string]interface{}{"type": "string", "description": "内容"},
 		}, []string{"title", "body"}),
@@ -665,11 +666,11 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 		return h.toolInstallSkillHub(args)
 	case "run_skill":
 		return h.toolRunSkill(args)
-	// --- ClawNet ---
-	case "clawnet_search":
-		return h.toolClawnetSearch(args)
-	case "clawnet_publish":
-		return h.toolClawnetPublish(args)
+	// --- AgentNet ---
+	case "agentnet_search":
+		return h.toolAgentNetSearch(args)
+	case "agentnet_publish":
+		return h.toolAgentNetPublish(args)
 	// --- 审计 ---
 	case "query_audit_log":
 		return h.toolQueryAuditLog(args)

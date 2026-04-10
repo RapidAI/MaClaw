@@ -504,11 +504,9 @@ export function SetTelegramLocalMode(arg1:boolean):Promise<void>;
 // Lansenger gateway bindings
 export function GetLansengerStatus():Promise<string>;
 
-export function InstallLansengerPlugin():Promise<Record<string, string>>;
+export function RestartLansenger():Promise<string>;
 
-export function LoginLansenger():Promise<Record<string, string>>;
-
-export function RestartLansenger():Promise<Record<string, string>>;
+export function StopLansenger():Promise<void>;
 
 export function GetLansengerLocalMode():Promise<boolean>;
 

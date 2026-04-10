@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { main } from "../../../wailsjs/go/models";
 import { GetHubSecurityPolicy, IsHubSecurityReadOnly } from "../../../wailsjs/go/main/App";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
+import { colors } from "./styles";
 
 type SecurityPolicyMode = "relaxed" | "standard" | "strict";
 
@@ -76,7 +77,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
     return (
         <div style={{ padding: "2px 0" }}>
             {readOnly && (
-                <div style={{ padding: "8px 12px", marginBottom: "12px", background: "#fff3cd", borderRadius: "8px", border: "1px solid #ffc107", fontSize: "0.78rem", color: "#856404" }}>
+                <div style={{ padding: "8px 12px", marginBottom: "12px", background: colors.warningBg, borderRadius: "8px", border: `1px solid ${colors.warning}`, fontSize: "0.78rem", color: colors.warning }}>
                     🔒 {t("当前由 Hub 集中管控，以下设置为只读", "Managed by Hub centralized security — settings are read-only")}
                 </div>
             )}
@@ -103,16 +104,16 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                         </button>
                     ))}
                 </div>
-                <div style={{ fontSize: "0.75rem", color: "#888", marginTop: "4px" }}>
+                <div style={{ fontSize: "0.75rem", color: colors.textMuted, marginTop: "4px" }}>
                     {currentMode ? (isEn ? currentMode.descEn : currentMode.descZh) : ""}
                 </div>
             </div>
 
             {/* Risk level reference table */}
-            <div style={{ marginBottom: "14px", padding: "10px 12px", background: "#f8f9fa", borderRadius: "8px", border: "1px solid #e9ecef" }}>
-                <table style={{ width: "100%", fontSize: "0.75rem", borderCollapse: "collapse", color: "#555" }}>
+            <div style={{ marginBottom: "14px", padding: "10px 12px", background: colors.bg, borderRadius: "8px", border: `1px solid ${colors.border}` }}>
+                <table style={{ width: "100%", fontSize: "0.75rem", borderCollapse: "collapse", color: colors.textSecondary }}>
                     <thead>
-                        <tr style={{ borderBottom: "1px solid #dee2e6" }}>
+                        <tr style={{ borderBottom: `1px solid ${colors.border}` }}>
                             <th style={{ textAlign: "left", padding: "4px 6px", fontWeight: 600 }}>{t("风险等级", "Risk Level")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("宽松", "Relaxed")}</th>
                             <th style={{ textAlign: "center", padding: "4px 6px", fontWeight: 600 }}>{t("标准", "Standard")}</th>
@@ -126,7 +127,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                             { level: "high", zh: "高", relaxed: "✅", standard: "⚠️", strict: "⚠️" },
                             { level: "critical", zh: "危险", relaxed: "⚠️", standard: "⚠️", strict: "⛔" },
                         ].map((row) => (
-                            <tr key={row.level} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                            <tr key={row.level} style={{ borderBottom: `1px solid ${colors.borderLight}` }}>
                                 <td style={{ padding: "3px 6px" }}>{isEn ? row.level : row.zh}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{row.relaxed}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{row.standard}</td>
@@ -135,7 +136,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                         ))}
                     </tbody>
                 </table>
-                <div style={{ fontSize: "0.7rem", color: "#999", marginTop: "4px" }}>
+                <div style={{ fontSize: "0.7rem", color: colors.textMuted, marginTop: "4px" }}>
                     ✅ {t("放行", "Allow")}　📝 {t("记录", "Audit")}　⚠️ {t("需确认", "Confirm")}　⛔ {t("拒绝", "Deny")}
                 </div>
             </div>
@@ -169,7 +170,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
             <PolicyToggle label={t("图片外发", "Image Outbound")} desc={t("允许通过 IM 通道发送图片", "Allow sending images via IM channels")} value={imageOut} disabled={readOnly} onChange={(v) => saveRemoteConfigField({ image_outbound_enabled: v } as any)} />
 
             {/* Audit log info */}
-            <div style={{ marginTop: "14px", fontSize: "0.78rem", color: "#666", lineHeight: 1.7 }}>
+            <div style={{ marginTop: "14px", fontSize: "0.78rem", color: colors.textSecondary, lineHeight: 1.7 }}>
                 <div style={{ fontWeight: 600, marginBottom: "4px" }}>
                     📋 {t("审计日志", "Audit Log")}
                 </div>
@@ -192,13 +193,13 @@ function PolicySelect({ label, desc, value, options, labels, disabled, onChange 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
                     <label className="form-label" style={{ fontSize: "0.82rem", marginBottom: 0 }}>{label}</label>
-                    <div style={{ fontSize: "0.72rem", color: "#999" }}>{desc}</div>
+                    <div style={{ fontSize: "0.72rem", color: colors.textMuted }}>{desc}</div>
                 </div>
                 <select
                     value={value}
                     disabled={disabled}
                     onChange={(e) => onChange(e.target.value)}
-                    style={{ width: "140px", height: "32px", fontSize: "0.8rem", borderRadius: "6px", border: "1px solid #ddd", padding: "0 8px" }}
+                    style={{ width: "140px", height: "32px", fontSize: "0.8rem", borderRadius: "6px", border: `1px solid ${colors.border}`, padding: "0 8px", background: colors.surface, color: colors.text }}
                 >
                     {options.map((opt, i) => (
                         <option key={opt} value={opt}>{labels[i]}</option>
@@ -217,7 +218,7 @@ function PolicyToggle({ label, desc, value, disabled, onChange }: {
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
                     <label className="form-label" style={{ fontSize: "0.82rem", marginBottom: 0 }}>{label}</label>
-                    <div style={{ fontSize: "0.72rem", color: "#999" }}>{desc}</div>
+                    <div style={{ fontSize: "0.72rem", color: colors.textMuted }}>{desc}</div>
                 </div>
                 <button
                     className={value ? "btn-primary" : "btn-secondary"}

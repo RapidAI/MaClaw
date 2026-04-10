@@ -60,26 +60,30 @@ func WriteTextFile(path, content, mode string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return 0, err
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return 0, fmt.Errorf("创建目录失败 %s: %w", dir, err)
 	}
+
 	if m == "append" {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("打开文件失败 %s: %w", path, err)
 		}
 		defer f.Close()
 		if _, err := f.WriteString(content); err != nil {
-			return 0, err
+			return 0, fmt.Errorf("写入内容失败: %w", err)
 		}
 	} else {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			return 0, err
+			return 0, fmt.Errorf("写入文件失败 %s: %w", path, err)
 		}
 	}
+
 	info, err := os.Stat(path)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("写入验证失败 %s: %w", path, err)
 	}
 	return info.Size(), nil
 }
@@ -94,9 +98,10 @@ func EditTextFile(path, oldString, newString string, replaceAll bool) (*EditText
 	if oldString == "" {
 		return nil, fmt.Errorf("缺少 old_string 参数")
 	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取文件失败 %s: %w", path, err)
 	}
 	text := string(data)
 	count := strings.Count(text, oldString)
@@ -112,11 +117,13 @@ func EditTextFile(path, oldString, newString string, replaceAll bool) (*EditText
 		updated = strings.Replace(text, oldString, newString, 1)
 	}
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("写入文件失败 %s: %w", path, err)
 	}
+
+	// Verify write succeeded.
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("写入验证失败 %s: %w", path, err)
 	}
 	return &EditTextFileResult{Count: applied, Size: info.Size(), Path: path}, nil
 }

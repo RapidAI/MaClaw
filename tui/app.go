@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,9 +12,10 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/clawnet"
+	"github.com/RapidAI/CodeClaw/corelib/agentnet"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/memoryshot"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
@@ -49,7 +51,7 @@ type TUIApp struct {
 	memoryStore    *memory.Store
 	memPipeline    *memory.Pipeline
 	schedulerMgr   *scheduler.Manager
-	clawnetClient  *clawnet.Client
+	AgentNetClient  *agentnet.Client
 	memShotMgr     *memoryshot.Manager
 
 	// AI 助手聊天
@@ -160,10 +162,20 @@ func (a *TUIApp) shutdown() {
 
 // NewTUIApp 创建 TUI 应用实例。
 func NewTUIApp() *TUIApp {
+	lang := defaultTUILang()
 	return &TUIApp{
-		root:           views.NewRootModel(),
+		root:           views.NewRootModel(lang),
 		gossipDetector: NewTUIGossipDetector(),
 	}
+}
+
+// defaultTUILang 从配置读取 TUI 语言，失败时回退默认语言。
+func defaultTUILang() string {
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	if cfg, err := store.LoadConfig(); err == nil {
+		return i18n.NormalizeLang(cfg.Language)
+	}
+	return i18n.NormalizeLang("")
 }
 
 // Init 实现 tea.Model 接口。
@@ -290,8 +302,8 @@ func (a *TUIApp) initKernel() tea.Msg {
 	}
 	a.schedulerMgr = schedMgr
 
-	// --- 新增：ClawNet Client ---
-	a.clawnetClient = clawnet.NewClient()
+	// --- 新增：AgentNet Client ---
+	a.AgentNetClient = agentnet.NewClient()
 
 	// --- 新增：Selector ---
 	a.selector = tool.NewSelector()
@@ -353,13 +365,13 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case kernelStartedMsg:
 		if msg.err != nil {
 			a.err = msg.err
-			a.root.StatusBar.SetMessage(fmt.Sprintf("内核初始化失败: %v", msg.err))
+			a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUIKernelInitFailed, a.root.Lang(), msg.err))
 		} else {
-			a.root.StatusBar.SetMessage("就绪")
+			a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUIReady, a.root.Lang()))
 			a.root.StatusBar.SetHubStatus("disconnected")
 			a.root.Sessions.SetSessions(nil) // 清除 loading 状态
 			a.root.Audit.SetEntries(nil)
-			a.root.ClawNet.SetPeers(nil)
+			a.root.AgentNet.SetPeers(nil)
 
 			// 从配置文件加载当前值到配置视图
 			a.syncConfigView()
@@ -382,11 +394,11 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pythonEnvMsg:
 		if msg.status.Error != "" {
-			a.root.StatusBar.SetMessage(fmt.Sprintf("⚠ Python 环境异常: %s", msg.status.Error))
+			a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUIPythonEnvError, a.root.Lang(), msg.status.Error))
 		} else if msg.status.Available && msg.status.VenvReady {
-			a.root.StatusBar.SetMessage(fmt.Sprintf("🐍 Python %s 就绪 (venv: %s)", msg.status.Version, msg.status.VenvPath))
+			a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUIPythonEnvReady, a.root.Lang(), msg.status.Version, msg.status.VenvPath))
 		} else if msg.status.Available {
-			a.root.StatusBar.SetMessage(fmt.Sprintf("🐍 Python %s 可用", msg.status.Version))
+			a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUIPythonAvailable, a.root.Lang(), msg.status.Version))
 		}
 
 	case kernelEventMsg:
@@ -397,15 +409,15 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		displayVal := msg.Value
 		if a.configMgr != nil {
 			if _, err := a.configMgr.UpdateConfig(msg.Section, msg.Key, msg.Value); err != nil {
-				a.root.StatusBar.SetMessage(fmt.Sprintf("保存失败: %s: %v", msg.Key, err))
+				a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUIConfigSaveFailed, a.root.Lang(), msg.Key, err))
 			} else {
 				if isSensitiveConfigKey(msg.Key) {
 					displayVal = "********"
 				}
-				a.root.StatusBar.SetMessage(fmt.Sprintf("已保存: %s = %s", msg.Key, displayVal))
+				a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUIConfigSaved, a.root.Lang(), msg.Key, displayVal))
 			}
 		} else {
-			a.root.StatusBar.SetMessage(fmt.Sprintf("已保存: %s = %s", msg.Key, displayVal))
+			a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUIConfigSaved, a.root.Lang(), msg.Key, displayVal))
 		}
 		// Re-sync QQ Bot gateway on config change
 		if a.qqBotMgr != nil && msg.Section == "qqbot" {
@@ -417,10 +429,10 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case views.MemoryCompressMsg:
-		a.root.StatusBar.SetMessage("记忆压缩中... 请使用 CLI: maclaw-tui memory compress")
+		a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUIMemoryCompressHint, a.root.Lang()))
 
 	case views.MemoryBackupListMsg:
-		a.root.StatusBar.SetMessage("备份列表请使用 CLI: maclaw-tui memory backup list")
+		a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUIMemoryBackupListHint, a.root.Lang()))
 
 	case views.ToolRefreshMsg:
 		detected := commands.DetectTools()
@@ -433,10 +445,10 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		a.root.Tools.SetTools(toolInfos)
-		a.root.StatusBar.SetMessage("工具状态已刷新")
+		a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUIToolStatusRefreshed, a.root.Lang()))
 
 	case views.ChatSendMsg:
-		a.root.StatusBar.SetMessage("AI 思考中...")
+		a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUIAIThinking, a.root.Lang()))
 		if msg.AgentMode {
 			return a, a.sendAgentMessage(msg.Text)
 		}
@@ -451,10 +463,10 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.gossipDetector != nil {
 			a.gossipDetector.ClearBuffer()
 		}
-		a.root.StatusBar.SetMessage("聊天历史已清除")
+		a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUIChatHistoryCleared, a.root.Lang()))
 
 	case configChangedMsg:
-		a.root.StatusBar.SetMessage("配置文件已变更，正在重新加载...")
+		a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUIConfigReloading, a.root.Lang()))
 		// 刷新配置视图
 		a.syncConfigView()
 		// Re-sync gateways
@@ -478,13 +490,13 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toolFinishedMsg:
 		if msg.err != nil {
-			a.root.StatusBar.SetMessage(fmt.Sprintf("工具 %s 退出: %v", msg.name, msg.err))
+			a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUIToolExitedWithError, a.root.Lang(), msg.name, msg.err))
 		} else {
-			a.root.StatusBar.SetMessage(fmt.Sprintf("工具 %s 已退出", msg.name))
+			a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUIToolExited, a.root.Lang(), msg.name))
 		}
 
 	case sessionMonitorMsg:
-		a.root.StatusBar.SetMessage(fmt.Sprintf("🔔 [%s] %s", msg.eventType, msg.message))
+		a.root.StatusBar.SetMessage(i18n.Tf(i18n.MsgTUISessionMonitorEvent, a.root.Lang(), msg.eventType, msg.message))
 
 	case sessionUpdateMsg:
 		// 将会话输出同步到 SessionDetail 视图
@@ -514,10 +526,10 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View 实现 tea.Model 接口，渲染 UI。
 func (a *TUIApp) View() string {
 	if !a.ready {
-		return "正在初始化 MaClaw TUI...\n"
+		return i18n.T(i18n.MsgTUIInitializing, a.root.Lang()) + " MaClaw TUI...\n"
 	}
 	if a.err != nil {
-		return fmt.Sprintf("错误: %v\n\n按 q 退出\n", a.err)
+		return i18n.Tf(i18n.MsgTUIErrorExit, a.root.Lang(), a.err)
 	}
 	return a.root.View()
 }
@@ -574,7 +586,7 @@ func loadLLMConfig() (corelib.MaclawLLMConfig, error) {
 		return llm, err
 	}
 	if strings.TrimSpace(llm.URL) == "" || strings.TrimSpace(llm.Model) == "" {
-		return llm, fmt.Errorf("LLM 未配置，请在配置 Tab 或 GUI 中设置 maclaw_llm_url 和 maclaw_llm_model")
+		return llm, errors.New(i18n.T(i18n.MsgTUILLMNotConfiguredHint, i18n.NormalizeLang("")))
 	}
 	return llm, nil
 }
@@ -587,6 +599,7 @@ func (a *TUIApp) syncConfigView() {
 		return
 	}
 	a.root.Config.LoadFromAppConfig(cfg)
+	a.root.SetLang(cfg.Language)
 }
 
 // isSensitiveConfigKey 判断配置 key 是否为敏感字段。
@@ -626,7 +639,7 @@ func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 			WithConfigMgr(a.configMgr),
 			WithMemoryStore(a.memoryStore),
 			WithSchedulerMgr(a.schedulerMgr),
-			WithClawnetClient(a.clawnetClient),
+			WithAgentNetClient(a.AgentNetClient),
 			WithAuditLog(a.auditLog),
 		)
 		resp := handler.RunAgentLoop(text, conversation)

@@ -1,4 +1,4 @@
-﻿import { useEffect, useState, useRef, useMemo } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
 import { appVersion, buildNumber } from './version';
 import appIcon from './assets/images/maclaw2.png';
@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, InstallLansengerPlugin, LoginLansenger, RestartLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -34,8 +34,8 @@ import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
 import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
-import { ClawNetPanel } from './components/remote/ClawNetPanel';
-import { ClawNetTabContainer } from './components/remote/ClawNetTabContainer';
+import { ClawNetPanel } from './components/remote/AgentNetPanel';
+import { ClawNetTabContainer } from './components/remote/AgentNetTabContainer';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
 import { AboutPanel } from './components/AboutPanel';
@@ -1701,8 +1701,6 @@ function App() {
     const [weixinLocalMode, setWeixinLocalModeState] = useState<boolean>(true);
     const [lansengerStatus, setLansengerStatus] = useState<string>('disabled');
     const [lansengerLocalMode, setLansengerLocalModeState] = useState<boolean>(true);
-    const [lansengerBusy, setLansengerBusy] = useState<boolean>(false);
-    const [lansengerMessage, setLansengerMessage] = useState<string>('');
     const [weixinQRCode, setWeixinQRCode] = useState<string>('');
     const [weixinQRLoading, setWeixinQRLoading] = useState<boolean>(false);
     const [weixinQRWaiting, setWeixinQRWaiting] = useState<boolean>(false);
@@ -2247,11 +2245,6 @@ function App() {
             } else if (payload?.status) {
                 setLansengerStatus(payload.status);
             }
-            if (payload?.Output) {
-                setLansengerMessage(payload.Output);
-            } else if (payload?.output) {
-                setLansengerMessage(payload.output);
-            }
         });
         GetLansengerStatus().then(setLansengerStatus).catch(() => {});
         GetLansengerLocalMode().then(setLansengerLocalModeState).catch(() => {});
@@ -2334,11 +2327,11 @@ function App() {
     // When the settings tab is active, ClawNetPanel also polls — but the
     // lightweight ClawNetIsRunning() call is idempotent, so the overlap is
     // harmless and keeps the globe indicator responsive on tab switches.
-    // NOTE: Only poll when clawnet_enabled — if disabled, report as not running.
+    // NOTE: Only poll when agentnet_enabled — if disabled, report as not running.
     const clawNetAutoStarted = useRef(false);
     const clawNetPrevUp = useRef(false);
-    const clawNetEnabledRef = useRef(!!config?.clawnet_enabled);
-    useEffect(() => { clawNetEnabledRef.current = !!config?.clawnet_enabled; }, [config?.clawnet_enabled]);
+    const clawNetEnabledRef = useRef(!!config?.agentnet_enabled);
+    useEffect(() => { clawNetEnabledRef.current = !!config?.agentnet_enabled; }, [config?.agentnet_enabled]);
     useEffect(() => {
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
         const clearRetry = () => {
@@ -2390,7 +2383,7 @@ function App() {
         // Skip when config hasn't loaded yet — don't kill a daemon before
         // we know the user's preference.
         if (!config) return;
-        if (!config.clawnet_enabled) {
+        if (!config.agentnet_enabled) {
             // Disabled — stop residual daemon if it's still running.
             ClawNetIsRunning().then(up => {
                 if (up) {
@@ -2412,7 +2405,7 @@ function App() {
                 setClawNetRunning(true);
             }
         }).catch(() => {});
-    }, [config?.clawnet_enabled]);
+    }, [config?.agentnet_enabled]);
 
     // Poll MaClaw LLM status every 60 seconds.
     // Also re-ping immediately when the user navigates to/from the LLM settings
@@ -3464,7 +3457,7 @@ ${instruction}`;
         },
         {
             id: 'clawnet' as const,
-            label: lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet',
+            label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'ClawNet',
             desc: lang === 'zh-Hans' ? 'ClawNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'ClawNet P2P 去中心化 Agent 網路' : 'ClawNet decentralized P2P agent network',
         },
         {
@@ -3571,13 +3564,13 @@ ${instruction}`;
                                 if (llmOk && netOk) return lang?.startsWith('zh') ? '全部在线' : 'All online';
                                 const parts: string[] = [];
                                 parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                                parts.push(netOk ? (lang?.startsWith('zh') ? '虾网 ✓' : 'ClawNet ✓') : (lang?.startsWith('zh') ? '虾网 ✗' : 'ClawNet ✗'));
+                                parts.push(netOk ? (lang?.startsWith('zh') ? '智网 ✓' : 'ClawNet ✓') : (lang?.startsWith('zh') ? '智网 ✗' : 'ClawNet ✗'));
                                 return parts.join('  ');
                             }
                             if (llmOk && netOk && mobileOk) return lang?.startsWith('zh') ? '全部在线' : 'All online';
                             const parts: string[] = [];
                             parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                            parts.push(netOk ? (lang?.startsWith('zh') ? '虾网 ✓' : 'ClawNet ✓') : (lang?.startsWith('zh') ? '虾网 ✗' : 'ClawNet ✗'));
+                            parts.push(netOk ? (lang?.startsWith('zh') ? '智网 ✓' : 'ClawNet ✓') : (lang?.startsWith('zh') ? '智网 ✗' : 'ClawNet ✗'));
                             parts.push(mobileOk ? (lang?.startsWith('zh') ? '移动端 ✓' : 'Mobile ✓') : (lang?.startsWith('zh') ? '移动端 ✗' : 'Mobile ✗'));
                             return parts.join('  ');
                         })()} style={{
@@ -3641,10 +3634,10 @@ ${instruction}`;
                         className={`sidebar-item left-nav-item ${navTab === 'clawnet' ? 'active' : ''}`}
                         onClick={() => { switchTool('clawnet'); }}
                         style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
-                        title={lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}
+                        title={lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'ClawNet'}
                     >
                         <img src={clawnetIcon} alt="ClawNet" style={{ width: '22px', height: '22px', margin: 0 }} />
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet'}</span>
+                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'ClawNet'}</span>
                     </div>
 
                     <div
@@ -3738,7 +3731,7 @@ ${instruction}`;
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '2px', marginBottom: '2px' }}>
                                 {[
                                     { label: 'LLM', on: maclawLLMOnline },
-                                    { label: lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'Net', on: clawNetRunning },
+                                    { label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'Net', on: clawNetRunning },
                                     { label: lang === 'zh-Hans' ? '移动' : lang === 'zh-Hant' ? '移動' : 'Mob', on: !!remoteActivationStatus?.activated },
                                     { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected', link: 'im' },
                                 ].map(({ label, on, link }) => (
@@ -3842,8 +3835,8 @@ ${instruction}`;
                     </div>
                 ) : (
                 <><div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                        <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--text-color)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
+                    <div className="top-header__bar" style={{ width: '100%' }}>
+                        <h2 className="top-header__title" style={{ '--wails-draggable': 'drag', flex: 1 } as any}>
                             <span>
                                 {navTab === 'claude' ? 'Claude Code' :
                                         navTab === 'gemini' ? 'Gemini CLI' :
@@ -3861,7 +3854,7 @@ ${instruction}`;
                                                                                 navTab === 'api-store' ? t("apiStore") :
                                                                                     navTab === 'mcp' ? 'MCP' :
                                                                                         navTab === 'settings' ? t("globalSettings") :
-                                                                                            navTab === 'clawnet' ? (lang === 'zh-Hans' ? '虾网' : lang === 'zh-Hant' ? '蝦網' : 'ClawNet') : t("about")}
+                                                                                            navTab === 'clawnet' ? (lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'ClawNet') : t("about")}
                             </span>
                             {navTab === 'projects' && (
                                 <>
@@ -3956,14 +3949,17 @@ ${instruction}`;
                                 </>
                             )}
                         </h2>
-                        <div style={{ display: 'flex', gap: '10px', '--wails-draggable': 'no-drag', marginRight: '5px', pointerEvents: 'auto', position: 'relative', zIndex: 10000 } as any}>
+                        <div className="window-controls" style={{ '--wails-draggable': 'no-drag', pointerEvents: 'auto', position: 'relative', zIndex: 10000 } as any}>
                             <button
                                 onMouseDown={handleWindowHide}
-                                className="btn-hide"
+                                className="btn-window-minimize"
+                                title={t("hide")}
+                                aria-label={t("hide")}
                                 style={{ '--wails-draggable': 'no-drag', pointerEvents: 'auto', cursor: 'pointer', position: 'relative', zIndex: 10001 } as any}
                             >
-                                {t("hide")}
+                                <span aria-hidden="true" className="btn-window-minimize__icon" />
                             </button>
+                            <span className="btn-window-close-placeholder" aria-hidden="true" />
                         </div>
                     </div>
                 </div>
@@ -5026,10 +5022,10 @@ ${instruction}`;
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
-                                            ? '通过 OpenClaw 安装蓝信渠道插件，并接入蓝信与 MaClaw Agent 对话。'
+                                            ? '配置蓝信机器人凭证，通过 WebSocket 长连接接入蓝信与 MaClaw Agent 对话。'
                                             : lang === 'zh-Hant'
-                                            ? '透過 OpenClaw 安裝藍信通道外掛，並接入藍信與 MaClaw Agent 對話。'
-                                            : 'Install the Lansenger channel plugin via OpenClaw and connect Lansenger to MaClaw Agent.'}
+                                            ? '配置藍信機器人憑證，透過 WebSocket 長連接接入藍信與 MaClaw Agent 對話。'
+                                            : 'Configure Lansenger bot credentials to connect via WebSocket and chat with MaClaw Agent.'}
                                     </p>
 
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
@@ -5050,101 +5046,25 @@ ${instruction}`;
                                             fontSize: '0.7rem',
                                             padding: '2px 8px',
                                             borderRadius: '10px',
-                                            background: ['ready', 'installed'].includes(lansengerStatus) ? '#dcfce7' : lansengerStatus === 'disabled' ? '#e5e7eb' : lansengerStatus === 'error' ? '#fee2e2' : '#fef9c3',
-                                            color: ['ready', 'installed'].includes(lansengerStatus) ? '#166534' : lansengerStatus === 'disabled' ? '#4b5563' : lansengerStatus === 'error' ? '#991b1b' : '#854d0e',
+                                            background: lansengerStatus === 'connected' ? '#dcfce7' : lansengerStatus === 'disconnected' || lansengerStatus === 'disabled' ? '#e5e7eb' : lansengerStatus === 'error' ? '#fee2e2' : '#fef9c3',
+                                            color: lansengerStatus === 'connected' ? '#166534' : lansengerStatus === 'disconnected' || lansengerStatus === 'disabled' ? '#4b5563' : lansengerStatus === 'error' ? '#991b1b' : '#854d0e',
                                         }}>
-                                            {{ ready: '● 已就绪', installed: '● 已安装', disabled: '○ 未启用', missing_openclaw: '◌ 缺少 OpenClaw', error: '✕ 错误' }[lansengerStatus] || `◌ ${lansengerStatus}`}
+                                            {{ connected: '● 已连接', connecting: '◌ 连接中...', reconnecting: '◌ 重连中...', disconnected: '○ 未连接', disabled: '○ 未启用', error: '✕ 错误' }[lansengerStatus] || `◌ ${lansengerStatus}`}
                                         </span>
                                         <button
                                             type="button"
-                                            style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #6366f1', background: 'transparent', color: '#6366f1', cursor: lansengerBusy ? 'not-allowed' : 'pointer' }}
-                                            disabled={lansengerBusy}
+                                            style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#555', cursor: 'pointer' }}
+                                            disabled={!(config as any)?.lansenger_enabled}
                                             onClick={async () => {
-                                                setLansengerBusy(true);
-                                                setLansengerMessage('');
                                                 try {
-                                                    const res = await InstallLansengerPlugin();
-                                                    if (res?.output) setLansengerMessage(res.output);
-                                                    if (res?.error) {
-                                                        setLansengerStatus('error');
-                                                        setLansengerMessage(res.error);
-                                                        alert(res.error);
-                                                    } else {
-                                                        const s = await GetLansengerStatus().catch(() => res?.status || 'installed');
-                                                        setLansengerStatus(s || res?.status || 'installed');
-                                                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
-                                                    }
+                                                    const s = await RestartLansenger();
+                                                    setLansengerStatus(typeof s === 'string' ? s : 'disconnected');
                                                 } catch (e: any) {
-                                                    const msg = e?.message || String(e);
-                                                    setLansengerStatus('error');
-                                                    setLansengerMessage(msg);
-                                                    alert(msg);
-                                                } finally {
-                                                    setLansengerBusy(false);
+                                                    alert(e?.message || String(e));
                                                 }
                                             }}
                                         >
-                                            {lansengerBusy ? (lang === 'zh-Hans' ? '处理中...' : 'Running...') : (lang === 'zh-Hans' ? '安装插件' : lang === 'zh-Hant' ? '安裝外掛' : 'Install Plugin')}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#555', cursor: lansengerBusy ? 'not-allowed' : 'pointer' }}
-                                            disabled={lansengerBusy || !(config as any)?.lansenger_enabled}
-                                            onClick={async () => {
-                                                setLansengerBusy(true);
-                                                setLansengerMessage('');
-                                                try {
-                                                    const res = await LoginLansenger();
-                                                    if (res?.output) setLansengerMessage(res.output);
-                                                    if (res?.error) {
-                                                        setLansengerStatus('error');
-                                                        setLansengerMessage(res.error);
-                                                        alert(res.error);
-                                                    } else {
-                                                        const s = await GetLansengerStatus().catch(() => res?.status || 'ready');
-                                                        setLansengerStatus(s || res?.status || 'ready');
-                                                    }
-                                                } catch (e: any) {
-                                                    const msg = e?.message || String(e);
-                                                    setLansengerStatus('error');
-                                                    setLansengerMessage(msg);
-                                                    alert(msg);
-                                                } finally {
-                                                    setLansengerBusy(false);
-                                                }
-                                            }}
-                                        >
-                                            {lang === 'zh-Hans' ? '登录蓝信' : lang === 'zh-Hant' ? '登入藍信' : 'Login'}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#555', cursor: lansengerBusy ? 'not-allowed' : 'pointer' }}
-                                            disabled={lansengerBusy || !(config as any)?.lansenger_enabled}
-                                            onClick={async () => {
-                                                setLansengerBusy(true);
-                                                setLansengerMessage('');
-                                                try {
-                                                    const res = await RestartLansenger();
-                                                    if (res?.output) setLansengerMessage(res.output);
-                                                    if (res?.error) {
-                                                        setLansengerStatus('error');
-                                                        setLansengerMessage(res.error);
-                                                        alert(res.error);
-                                                    } else {
-                                                        const s = await GetLansengerStatus().catch(() => res?.status || 'ready');
-                                                        setLansengerStatus(s || res?.status || 'ready');
-                                                    }
-                                                } catch (e: any) {
-                                                    const msg = e?.message || String(e);
-                                                    setLansengerStatus('error');
-                                                    setLansengerMessage(msg);
-                                                    alert(msg);
-                                                } finally {
-                                                    setLansengerBusy(false);
-                                                }
-                                            }}
-                                        >
-                                            {lang === 'zh-Hans' ? '重启网关' : lang === 'zh-Hant' ? '重啟網關' : 'Restart Gateway'}
+                                            {lang === 'zh-Hans' ? '重新连接' : lang === 'zh-Hant' ? '重新連接' : 'Reconnect'}
                                         </button>
                                     </div>
 
@@ -5190,24 +5110,54 @@ ${instruction}`;
 
                                     <div style={{ maxWidth: '680px', display: 'grid', gap: '10px' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '84px' }}>Plugin Spec</label>
+                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '84px' }}>App ID</label>
                                             <input
                                                 type="text"
-                                                value={(config as any)?.lansenger_plugin_spec || '@lansenger/openclaw-channel-lansenger@latest'}
+                                                value={(config as any)?.lansenger_app_id || ''}
                                                 onChange={(e) => {
                                                     if (!config) return;
-                                                    const next = new main.AppConfig({ ...config, lansenger_plugin_spec: e.target.value } as any);
+                                                    const next = new main.AppConfig({ ...config, lansenger_app_id: e.target.value } as any);
                                                     setConfig(next);
                                                     SaveConfig(next);
                                                 }}
-                                                placeholder="@lansenger/openclaw-channel-lansenger@latest"
+                                                placeholder="2285568-16138496"
                                                 style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
                                             />
                                         </div>
-                                        <div style={{ fontSize: '0.72rem', color: '#6b7280', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '6px', padding: '10px 12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                                            {lansengerMessage || (lang === 'zh-Hans'
-                                                ? '安装会执行：openclaw plugins install @lansenger/openclaw-channel-lansenger@latest'
-                                                : 'Installer will run: openclaw plugins install @lansenger/openclaw-channel-lansenger@latest')}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '84px' }}>App Secret</label>
+                                            <input
+                                                type="password"
+                                                value={(config as any)?.lansenger_app_secret || ''}
+                                                onChange={(e) => {
+                                                    if (!config) return;
+                                                    const next = new main.AppConfig({ ...config, lansenger_app_secret: e.target.value } as any);
+                                                    setConfig(next);
+                                                    SaveConfig(next);
+                                                }}
+                                                placeholder="FC0CADED7561247CAA2D2C4E5DEF17B8"
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                            />
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '84px' }}>Token</label>
+                                            <input
+                                                type="text"
+                                                value={(config as any)?.lansenger_token || ''}
+                                                onChange={(e) => {
+                                                    if (!config) return;
+                                                    const next = new main.AppConfig({ ...config, lansenger_token: e.target.value } as any);
+                                                    setConfig(next);
+                                                    SaveConfig(next);
+                                                }}
+                                                placeholder="AppID:AppSecret:https://apigw.lx.qianxin.com"
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                            />
+                                        </div>
+                                        <div style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: '2px' }}>
+                                            {lang === 'zh-Hans'
+                                                ? 'Token 格式：AppID:AppSecret:API网关地址。在蓝信PC客户端 → 个人机器人 → 创建机器人后获取。'
+                                                : 'Token format: AppID:AppSecret:ApiGatewayURL. Get from Lansenger PC client → Personal Bot → Create Bot.'}
                                         </div>
                                     </div>
                                 </div>
@@ -5220,7 +5170,7 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'system' ? 'block' : 'none' }}>
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
                                         {lang === 'zh-Hans' ? '系统设置' : lang === 'zh-Hant' ? '系統設置' : 'System Settings'}
                                     </h4>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
@@ -5266,11 +5216,11 @@ ${instruction}`;
                                                 }}
                                                 style={{ width: '16px', height: '16px' }}
                                             />
-                                            <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>
+                                            <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
                                                 {lang === 'zh-Hans' ? '工作站模式' : lang === 'zh-Hant' ? '工作站模式' : 'Workstation Mode'}
                                             </span>
                                         </label>
-                                        <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '4px', marginLeft: '24px' }}>
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '4px', marginLeft: '24px', textAlign: 'left' }}>
                                             {lang === 'zh-Hans'
                                                 ? '开启后不休眠、不锁屏，但允许黑屏。方便截屏测试和调试。'
                                                 : lang === 'zh-Hant'
@@ -5281,18 +5231,18 @@ ${instruction}`;
                                 </div>
 
                                 {/* Diagnostics info block */}
-                                <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid #e5e7eb', paddingTop: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+                                <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
                                         {lang === 'zh-Hans' ? '诊断信息' : lang === 'zh-Hant' ? '診斷資訊' : 'Diagnostics'}
                                     </h4>
-                                    <div style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: '#6b7280', lineHeight: 1.8, background: '#f9fafb', borderRadius: '6px', padding: '10px 12px', wordBreak: 'break-all' }}>
-                                        <div>Machine ID: {config?.remote_machine_id || '(未激活)'}</div>
-                                        <div>User ID: {config?.remote_user_id || '(未激活)'}</div>
-                                        <div>Client ID: {config?.remote_client_id || '(未生成)'}</div>
-                                        <div>SN: {config?.remote_sn || '(未激活)'}</div>
-                                        <div>Hub URL: {config?.remote_hub_url || '(未设置)'}</div>
-                                        <div>Email: {config?.remote_email || '(未设置)'}</div>
-                                        <div>WeChat Mode: {(config as any)?.weixin_local_mode === false ? '多机 (Hub)' : '单机 (Local)'}</div>
+                                    <div style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--theme-text-secondary)', lineHeight: 1.8, background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '10px 12px', wordBreak: 'break-all', textAlign: 'left' }}>
+                                        <div style={{ textAlign: 'left' }}>Machine ID: {config?.remote_machine_id || '(未激活)'}</div>
+                                        <div style={{ textAlign: 'left' }}>User ID: {config?.remote_user_id || '(未激活)'}</div>
+                                        <div style={{ textAlign: 'left' }}>Client ID: {config?.remote_client_id || '(未生成)'}</div>
+                                        <div style={{ textAlign: 'left' }}>SN: {config?.remote_sn || '(未激活)'}</div>
+                                        <div style={{ textAlign: 'left' }}>Hub URL: {config?.remote_hub_url || '(未设置)'}</div>
+                                        <div style={{ textAlign: 'left' }}>Email: {config?.remote_email || '(未设置)'}</div>
+                                        <div style={{ textAlign: 'left' }}>WeChat Mode: {(config as any)?.weixin_local_mode === false ? '多机 (Hub)' : '单机 (Local)'}</div>
                                     </div>
                                 </div>
                             </div>
@@ -5599,7 +5549,7 @@ ${instruction}`;
 
                 {/* Global Action Bar (Footer) */}
                 {config && isToolTab(navTab) && (
-                    <div className="global-action-bar" style={{ '--wails-draggable': 'no-drag' } as any}>
+                    <div className="global-action-bar" style={{ '--wails-draggable': 'no-drag' } as any} data-ai-theme={aiThemeMode}>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', width: '100%', padding: '2px 0', '--wails-draggable': 'no-drag' } as any}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '20px', justifyContent: 'flex-start' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -6092,7 +6042,7 @@ ${instruction}`;
                                     : !remoteActivationStatus?.activated
                                         ? (lang?.startsWith('zh') ? '移动端未注册' : 'Mobile not registered')
                                         : !clawNetRunning
-                                            ? (lang?.startsWith('zh') ? '虾网未连接' : 'ClawNet not connected')
+                                            ? (lang?.startsWith('zh') ? '智网未连接' : 'ClawNet not connected')
                                             : (lang?.startsWith('zh') ? 'IM 未连接' : 'IM not connected')}
                             </span>
                                 );

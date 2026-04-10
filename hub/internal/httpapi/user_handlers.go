@@ -105,6 +105,22 @@ func ListMachinesHandler(identity *auth.IdentityService, devices *device.Service
 	}
 }
 
+func ClearOfflineMachinesForViewerHandler(identity *auth.IdentityService, devices *device.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		count, err := devices.ClearOfflineMachinesByUser(r.Context(), principal.UserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CLEAR_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"cleared": count})
+	}
+}
+
 func ListSessionsHandler(identity *auth.IdentityService, sessionSvc *session.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, err := authenticateViewerRequest(r, identity)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -21,11 +22,16 @@ type ToolStatusModel struct {
 	tools   []ToolInfo
 	cursor  int
 	loading bool
+	lang    string
 }
 
 // NewToolStatusModel 创建工具状态视图。
-func NewToolStatusModel() ToolStatusModel {
-	return ToolStatusModel{loading: true}
+func NewToolStatusModel(lang string) ToolStatusModel {
+	return ToolStatusModel{loading: true, lang: i18n.NormalizeLang(lang)}
+}
+
+func (m *ToolStatusModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
 }
 
 // SetTools 更新工具列表。
@@ -63,10 +69,10 @@ func (m ToolStatusModel) Update(msg tea.Msg) (ToolStatusModel, tea.Cmd) {
 // View 渲染工具状态列表。
 func (m ToolStatusModel) View() string {
 	if m.loading {
-		return "  正在检测工具状态..."
+		return "  " + i18n.T(i18n.MsgTUIToolDetecting, m.lang)
 	}
 	if len(m.tools) == 0 {
-		return "  未检测到任何工具"
+		return "  " + i18n.T(i18n.MsgTUIToolNone, m.lang)
 	}
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
@@ -78,14 +84,19 @@ func (m ToolStatusModel) View() string {
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
 	var b strings.Builder
-	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-15s %-8s %-12s %s", "工具", "状态", "版本", "路径")))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-15s %-8s %-12s %s",
+		i18n.T(i18n.MsgTUIToolHeaderName, m.lang),
+		i18n.T(i18n.MsgTUIToolHeaderStatus, m.lang),
+		i18n.T(i18n.MsgTUIToolHeaderVersion, m.lang),
+		i18n.T(i18n.MsgTUIToolHeaderPath, m.lang),
+	)))
 	b.WriteString("\n")
 	b.WriteString("  " + strings.Repeat("─", 60) + "\n")
 
 	for i, t := range m.tools {
-		status := errStyle.Render("✗ 未安装")
+		status := errStyle.Render(i18n.T(i18n.MsgTUIToolNotInstalled, m.lang))
 		if t.Available {
-			status = okStyle.Render("✓ 就绪 ")
+			status = okStyle.Render(i18n.T(i18n.MsgTUIToolReady, m.lang))
 		}
 		line := fmt.Sprintf("  %-15s %s %-12s %s", t.Name, status, t.Version, t.Path)
 		if i == m.cursor {
@@ -96,6 +107,6 @@ func (m ToolStatusModel) View() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n  ↑↓:选择  r:刷新  Enter:启动")
+	b.WriteString("\n  " + i18n.T(i18n.MsgTUIToolFooter, m.lang))
 	return b.String()
 }

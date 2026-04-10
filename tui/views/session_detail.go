@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -18,16 +19,22 @@ type SessionDetailModel struct {
 	maxLines  int
 	scroll    int // 滚动偏移
 	height    int
+	lang      string
 }
 
 // NewSessionDetailModel 创建会话详情视图。
-func NewSessionDetailModel(id, tool, title string) SessionDetailModel {
+func NewSessionDetailModel(id, tool, title, lang string) SessionDetailModel {
 	return SessionDetailModel{
 		sessionID: id,
 		tool:      tool,
 		title:     title,
 		maxLines:  1000,
+		lang:      i18n.NormalizeLang(lang),
 	}
+}
+
+func (m *SessionDetailModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
 }
 
 // AppendOutput 追加输出行。
@@ -55,7 +62,7 @@ func (m SessionDetailModel) Init() tea.Cmd { return nil }
 func (m SessionDetailModel) Update(msg tea.Msg) (SessionDetailModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.height = msg.Height - 6 // 留出 header + footer
+		m.height = msg.Height - 6
 		if m.height < 1 {
 			m.height = 1
 		}
@@ -73,13 +80,13 @@ func (m SessionDetailModel) Update(msg tea.Msg) (SessionDetailModel, tea.Cmd) {
 			if m.scroll < maxScroll {
 				m.scroll++
 			}
-		case "G": // 跳到底部
+		case "G":
 			maxScroll := len(m.lines) - m.height
 			if maxScroll < 0 {
 				maxScroll = 0
 			}
 			m.scroll = maxScroll
-		case "g": // 跳到顶部
+		case "g":
 			m.scroll = 0
 		}
 	}
@@ -92,13 +99,12 @@ func (m SessionDetailModel) View() string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	var b strings.Builder
-	b.WriteString(headerStyle.Render(fmt.Sprintf("  会话: %s  [%s]  %s", m.sessionID, m.tool, statusIcon(m.status))))
+	b.WriteString(headerStyle.Render(i18n.Tf(i18n.MsgTUISessionTitle, m.lang, m.sessionID, m.tool, statusIcon(m.status, m.lang))))
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render(fmt.Sprintf("  %s", m.title)))
 	b.WriteString("\n")
 	b.WriteString("  " + strings.Repeat("─", 60) + "\n")
 
-	// 输出区域
 	viewHeight := m.height
 	if viewHeight <= 0 {
 		viewHeight = 10
@@ -117,11 +123,18 @@ func (m SessionDetailModel) View() string {
 		b.WriteString("  " + line + "\n")
 	}
 
-	// 填充空行
 	for i := end - start; i < viewHeight; i++ {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  行 %d/%d  ↑↓:滚动  g/G:首/尾  Esc:返回", m.scroll+1, len(m.lines))))
+	total := len(m.lines)
+	current := 0
+	if total > 0 {
+		current = m.scroll + 1
+		if current > total {
+			current = total
+		}
+	}
+	b.WriteString(dimStyle.Render("  " + i18n.Tf(i18n.MsgTUILinesStatus, m.lang, current, total)))
 	return b.String()
 }

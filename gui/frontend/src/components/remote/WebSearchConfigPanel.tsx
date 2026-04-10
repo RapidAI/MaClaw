@@ -110,8 +110,8 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                 }}
                                 style={{
                                     textAlign: "left",
-                                    border: active ? "1px solid #6366f1" : `1px solid ${colors.border}`,
-                                    background: active ? "#eef2ff" : colors.surface,
+                                    border: active ? `1px solid ${colors.primary}` : `1px solid ${colors.border}`,
+                                    background: active ? colors.primaryLight : colors.surface,
                                     color: colors.text,
                                     borderRadius: 6,
                                     padding: "10px 12px",

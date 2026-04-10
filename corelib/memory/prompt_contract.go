@@ -21,6 +21,10 @@ func BuildIMMemoryGuidePrompt() string {
 		PromptSectionMemoryGuide,
 		"识别到有价值的信息时，主动调用 " + PromptActionSaveColon + " 保存：",
 		"- " + PromptSaveCategorySummary,
+		"",
+		"更新已有记忆时，使用 memory(action: replace, old_text: \"已有内容的唯一子串\", content: \"新内容\")。",
+		"删除过时记忆时，使用 memory(action: delete, old_text: \"已有内容的唯一子串\")。",
+		"无需记住完整内容或 ID，只需提供能唯一定位的片段。",
 	}, "\n")
 }
 

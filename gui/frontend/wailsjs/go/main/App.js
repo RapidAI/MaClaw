@@ -1116,16 +1116,12 @@ export function GetLansengerStatus() {
   return window['go']['main']['App']['GetLansengerStatus']();
 }
 
-export function InstallLansengerPlugin() {
-  return window['go']['main']['App']['InstallLansengerPlugin']();
-}
-
-export function LoginLansenger() {
-  return window['go']['main']['App']['LoginLansenger']();
-}
-
 export function RestartLansenger() {
   return window['go']['main']['App']['RestartLansenger']();
+}
+
+export function StopLansenger() {
+  return window['go']['main']['App']['StopLansenger']();
 }
 
 export function GetLansengerLocalMode() {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { useDialog } from "../CustomDialog";
 import {
     ListNLSkills,
     CreateNLSkill,
@@ -152,6 +153,7 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
 }
 
 export function SkillsManagementPanel({ localizeText }: Props) {
+    const { showConfirm } = useDialog();
     const [activeTab, setActiveTab] = useState<"local" | "hub" | "learned" | "extdirs">("local");
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
     const [loading, setLoading] = useState(false);
@@ -182,8 +184,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [formError, setFormError] = useState("");
 
     // Delete confirmation
-    const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
     const [importing, setImporting] = useState(false);
+
+    // Learned skill detail state
+    const [detailSkill, setDetailSkill] = useState<NLSkillDefinition | null>(null);
 
     // Toast message state (replaces system alert)
     const [toastMsg, setToastMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -205,7 +209,6 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [extDirInput, setExtDirInput] = useState("");
     const [extDirAdding, setExtDirAdding] = useState(false);
     const [extDirError, setExtDirError] = useState("");
-    const [extDirRemoveTarget, setExtDirRemoveTarget] = useState<string | null>(null);
     const [extDirRemoving, setExtDirRemoving] = useState(false);
 
     const loadData = useCallback(async () => {
@@ -311,6 +314,28 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             setExtDirAdding(false);
         }
     }, [extDirInput, loadExtDirs, loadData]);
+
+    const handleRemoveExtDir = useCallback(async (path: string) => {
+        const confirmed = await showConfirm(
+            localizeText(
+                "Remove external skill directory? Skills from this directory will no longer be scanned.",
+                "确定要移除此外部技能目录吗？该目录下的技能将不再被扫描。",
+                "確定要移除此外部技能目錄嗎？該目錄下的技能將不再被掃描。",
+            ) + `\n\n${path}`,
+            localizeText("Confirm Remove", "确认移除", "確認移除"),
+        );
+        if (!confirmed) return;
+        setExtDirRemoving(true);
+        try {
+            await RemoveExternalSkillDir(path);
+            await loadExtDirs();
+            await loadData();
+        } catch (err) {
+            setExtDirError(localizeHubError(String(err)));
+        } finally {
+            setExtDirRemoving(false);
+        }
+    }, [loadData, loadExtDirs, localizeText, localizeHubError, showConfirm]);
 
     const handleInstall = useCallback(async (skill: MixedSkillSearchResult) => {
         setInstallingSkills((prev) => new Set(prev).add(skill.id));
@@ -519,10 +544,40 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     };
 
     const handleDelete = async (name: string) => {
+        const confirmed = await showConfirm(
+            localizeText(
+                `Are you sure you want to delete Skill "${name}"? This cannot be undone.`,
+                `确定要删除 Skill「${name}」吗？此操作不可撤销。`,
+                `確定要刪除 Skill「${name}」嗎？此操作不可撤銷。`,
+            ),
+            localizeText("Confirm Delete", "确认删除", "確認刪除"),
+        );
+        if (!confirmed) return;
         setBusy(true);
         try {
             await DeleteNLSkill(name);
-            setDeleteTarget(null);
+            await loadData();
+        } catch (err) {
+            setError(localizeHubError(String(err)));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleLearnedDelete = async (name: string) => {
+        const confirmed = await showConfirm(
+            localizeText(
+                `Are you sure you want to delete Skill "${name}"? This cannot be undone.`,
+                `确定要删除 Skill「${name}」吗？此操作不可撤销。`,
+                `確定要刪除 Skill「${name}」嗎？此操作不可撤銷。`,
+            ),
+            localizeText("Confirm Delete", "确认删除", "確認刪除"),
+        );
+        if (!confirmed) return;
+        setBusy(true);
+        try {
+            await DeleteNLSkill(name);
+            setDetailSkill((prev) => (prev?.name === name ? null : prev));
             await loadData();
         } catch (err) {
             setError(localizeHubError(String(err)));
@@ -634,6 +689,23 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             default:
                 return skill.source_project || "";
         }
+    };
+
+    const formatStepText = (steps: NLSkillStep[]) => {
+        if (!steps || steps.length === 0) {
+            return localizeText("No steps", "无步骤", "無步驟");
+        }
+        return steps
+            .map((step, index) => {
+                const lines = [`${index + 1}. action: ${step.action || "-"}`];
+                const params = step.params && Object.keys(step.params).length > 0
+                    ? JSON.stringify(step.params, null, 2)
+                    : null;
+                if (params) lines.push(`   params: ${params.replace(/\n/g, "\n   ")}`);
+                if (step.on_error) lines.push(`   on_error: ${step.on_error}`);
+                return lines.join("\n");
+            })
+            .join("\n\n");
     };
 
     return (
@@ -809,7 +881,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <td style={tdStyle}>
                                                 <div style={{ display: "flex", gap: "4px" }}>
                                                     <button className="btn-secondary" style={smallBtnStyle} onClick={() => openEditForm(s)} disabled={busy}>{localizeText("Edit", "编辑", "編輯")}</button>
-                                                    <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={() => setDeleteTarget(s.name)} disabled={busy}>{localizeText("Delete", "删除", "刪除")}</button>
+                                                    <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={() => handleDelete(s.name)} disabled={busy}>{localizeText("Delete", "删除", "刪除")}</button>
                                                 </div>
                                             </td>
                                         </tr>
@@ -1057,7 +1129,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                         <th style={{ ...thStyle, width: "40px", textAlign: "center" }}>{localizeText("Source", "来源", "來源")}</th>
                                         <th style={thStyle}>{localizeText("Usage", "使用统计", "使用統計")}</th>
                                         <th style={thStyle}>{localizeText("Status", "状态", "狀態")}</th>
-                                        <th style={{ ...thStyle, width: "100px" }}>{localizeText("Actions", "操作", "操作")}</th>
+                                        <th style={{ ...thStyle, width: "220px" }}>{localizeText("Actions", "操作", "操作")}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1094,11 +1166,27 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 </span>
                                             </td>
                                             <td style={tdStyle}>
-                                                <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                                <div style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap" }}>
+                                                    <button
+                                                        className="btn-secondary"
+                                                        style={smallBtnStyle}
+                                                        onClick={() => setDetailSkill(s)}
+                                                        disabled={busy}
+                                                    >
+                                                        {localizeText("View", "查看", "查看")}
+                                                    </button>
+                                                    <button
+                                                        className="btn-secondary btn-danger"
+                                                        style={smallBtnStyle}
+                                                        onClick={() => handleLearnedDelete(s.name)}
+                                                        disabled={busy}
+                                                    >
+                                                        {busy ? localizeText("Deleting...", "删除中...", "刪除中...") : localizeText("Delete", "删除", "刪除")}
+                                                    </button>
                                                     <button
                                                         className="btn-secondary"
                                                         style={uploadBtnStyle}
-                                                        disabled={uploadingSkill === s.name}
+                                                        disabled={uploadingSkill === s.name || busy}
                                                         onClick={async () => {
                                                             setUploadingSkill(s.name);
                                                             try {
@@ -1239,7 +1327,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 <button
                                                     className="btn-secondary btn-danger"
                                                     style={smallBtnStyle}
-                                                    onClick={() => setExtDirRemoveTarget(d.path)}
+                                                    onClick={() => handleRemoveExtDir(d.path)}
                                                     disabled={extDirRemoving}
                                                 >
                                                     {localizeText("Remove", "移除", "移除")}
@@ -1264,48 +1352,6 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 </>
             )}
 
-            {/* Remove external dir confirmation dialog */}
-            {extDirRemoveTarget && (
-                <div className="modal-backdrop" onClick={() => setExtDirRemoveTarget(null)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "340px" }}>
-                        <div className="modal-header">
-                            <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{localizeText("Confirm Remove", "确认移除", "確認移除")}</h3>
-                            <button className="btn-close" onClick={() => setExtDirRemoveTarget(null)}>×</button>
-                        </div>
-                        <div className="modal-body">
-                            <p style={{ fontSize: "0.8rem", color: "#5a6577", margin: 0 }}>
-                                {localizeText(
-                                    `Remove external skill directory? Skills from this directory will no longer be scanned.`,
-                                    `确定要移除此外部技能目录吗？该目录下的技能将不再被扫描。`,
-                                    `確定要移除此外部技能目錄嗎？該目錄下的技能將不再被掃描。`
-                                )}
-                            </p>
-                            <p style={{ fontSize: "0.74rem", color: "#8b95a5", margin: "6px 0 0", fontFamily: "monospace", wordBreak: "break-all" }}>
-                                {extDirRemoveTarget}
-                            </p>
-                        </div>
-                        <div className="modal-footer">
-                            <button className="btn-secondary" onClick={() => setExtDirRemoveTarget(null)} disabled={extDirRemoving}>{localizeText("Cancel", "取消", "取消")}</button>
-                            <button className="btn-secondary btn-danger" disabled={extDirRemoving} onClick={async () => {
-                                setExtDirRemoving(true);
-                                try {
-                                    await RemoveExternalSkillDir(extDirRemoveTarget);
-                                    setExtDirRemoveTarget(null);
-                                    await loadExtDirs();
-                                    await loadData();
-                                } catch (err) {
-                                    setExtDirError(localizeHubError(String(err)));
-                                } finally {
-                                    setExtDirRemoving(false);
-                                }
-                            }}>
-                                {extDirRemoving ? localizeText("Removing...", "移除中...", "移除中...") : localizeText("Remove", "移除", "移除")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             {/* Upload result toast dialog */}
             {toastMsg && (
                 <div className="modal-backdrop" onClick={() => setToastMsg(null)}>
@@ -1326,24 +1372,47 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 </div>
             )}
 
-            {/* Delete confirmation dialog */}
-            {deleteTarget && (
-                <div className="modal-backdrop" onClick={() => setDeleteTarget(null)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "280px" }}>
+            {detailSkill && (
+                <div className="modal-backdrop" onClick={() => setDetailSkill(null)}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "560px", maxWidth: "92vw", textAlign: "left" }}>
                         <div className="modal-header">
-                            <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{localizeText("Confirm Delete", "确认删除", "確認刪除")}</h3>
-                            <button className="btn-close" onClick={() => setDeleteTarget(null)}>×</button>
+                            <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{localizeText("Skill Details", "技能详情", "技能詳情")}</h3>
+                            <button className="btn-close" onClick={() => setDetailSkill(null)}>×</button>
                         </div>
-                        <div className="modal-body">
-                            <p style={{ fontSize: "0.8rem", color: "#5a6577", margin: 0 }}>
-                                {localizeText(`Are you sure you want to delete Skill "${deleteTarget}"? This cannot be undone.`, `确定要删除 Skill「${deleteTarget}」吗？此操作不可撤销。`, `確定要刪除 Skill「${deleteTarget}」嗎？此操作不可撤銷。`)}
-                            </p>
+                        <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "70vh", overflowY: "auto" }}>
+                            <div style={detailGridStyle}>
+                                <div><strong>{localizeText("Name", "名称", "名稱")}</strong><div>{detailSkill.name}</div></div>
+                                <div><strong>{localizeText("Source", "来源", "來源")}</strong><div>{detailSkill.source || "—"}</div></div>
+                                <div><strong>{localizeText("Status", "状态", "狀態")}</strong><div>{detailSkill.status === "active" ? localizeText("Active", "启用", "啟用") : detailSkill.status || "—"}</div></div>
+                                <div><strong>{localizeText("Execution", "执行类型", "執行類型")}</strong><div>{getExecutionClassLabel(detailSkill.execution_class) || "—"}</div></div>
+                                <div><strong>{localizeText("Created", "创建时间", "建立時間")}</strong><div>{detailSkill.created_at ? new Date(detailSkill.created_at).toLocaleString() : "—"}</div></div>
+                                <div><strong>{localizeText("Usage", "使用统计", "使用統計")}</strong><div>{(detailSkill.usage_count ?? 0) > 0 ? `${detailSkill.usage_count}${localizeText("x", "次", "次")} / ${Math.round((detailSkill.success_rate ?? 0) * 100)}%` : localizeText("Unused", "未使用", "未使用")}</div></div>
+                            </div>
+                            <div>
+                                <strong>{localizeText("Description", "描述", "描述")}</strong>
+                                <div style={detailTextBlockStyle}>{detailSkill.description || "—"}</div>
+                            </div>
+                            <div>
+                                <strong>{localizeText("Triggers", "触发短语", "觸發短語")}</strong>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "4px" }}>
+                                    {(detailSkill.triggers || []).length > 0
+                                        ? detailSkill.triggers.map((trigger, index) => <span key={index} style={tagStyle}>{trigger}</span>)
+                                        : <span style={{ fontSize: "0.74rem", color: "#8b95a5" }}>—</span>}
+                                </div>
+                            </div>
+                            <div>
+                                <strong>{localizeText("Steps", "操作步骤", "操作步驟")}</strong>
+                                <pre style={detailPreStyle}>{formatStepText(detailSkill.steps || [])}</pre>
+                            </div>
+                            <div style={detailGridStyle}>
+                                <div><strong>{localizeText("Source Project", "来源项目", "來源項目")}</strong><div>{detailSkill.source_project || "—"}</div></div>
+                                <div><strong>{localizeText("Hub Skill ID", "市场技能ID", "市場技能ID")}</strong><div>{detailSkill.hub_skill_id || "—"}</div></div>
+                                <div><strong>{localizeText("Last Used", "最近使用", "最近使用")}</strong><div>{detailSkill.last_used_at ? new Date(detailSkill.last_used_at).toLocaleString() : "—"}</div></div>
+                                <div><strong>{localizeText("Last Error", "最近错误", "最近錯誤")}</strong><div>{detailSkill.last_error || "—"}</div></div>
+                            </div>
                         </div>
                         <div className="modal-footer">
-                            <button className="btn-secondary" onClick={() => setDeleteTarget(null)} disabled={busy}>{localizeText("Cancel", "取消", "取消")}</button>
-                            <button className="btn-secondary btn-danger" onClick={() => handleDelete(deleteTarget)} disabled={busy}>
-                                {busy ? localizeText("Deleting...", "删除中...", "刪除中...") : localizeText("Delete", "删除", "刪除")}
-                            </button>
+                            <button className="btn-secondary" onClick={() => setDetailSkill(null)}>{localizeText("Close", "关闭", "關閉")}</button>
                         </div>
                     </div>
                 </div>
@@ -1490,6 +1559,38 @@ const disabledBadge: React.CSSProperties = {
 const smallBtnStyle: React.CSSProperties = {
     fontSize: "0.72rem",
     padding: "2px 8px",
+};
+
+const detailGridStyle: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: "10px 14px",
+    fontSize: "0.76rem",
+    color: "#1a202c",
+};
+
+const detailTextBlockStyle: React.CSSProperties = {
+    marginTop: "4px",
+    fontSize: "0.76rem",
+    color: "#1a202c",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    lineHeight: 1.5,
+};
+
+const detailPreStyle: React.CSSProperties = {
+    marginTop: "4px",
+    marginBottom: 0,
+    padding: "8px 10px",
+    borderRadius: "6px",
+    background: "#f8fafc",
+    border: "1px solid #e2e8f0",
+    fontSize: "0.74rem",
+    lineHeight: 1.5,
+    color: "#1f2937",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    overflowX: "auto",
 };
 
 const tabBtnStyle: React.CSSProperties = {

@@ -1254,7 +1254,7 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 
 func (h *IMMessageHandler) toolClawNetSearch(args map[string]interface{}) string {
 	if h.app.clawNetClient == nil || !h.app.clawNetClient.IsRunning() {
-		return "虾网未连接，请先在设置中启用 ClawNet"
+		return "智网未连接，请先在设置中启用 ClawNet"
 	}
 	query := stringVal(args, "query")
 	if query == "" {
@@ -1268,7 +1268,7 @@ func (h *IMMessageHandler) toolClawNetSearch(args map[string]interface{}) string
 		return fmt.Sprintf("未找到与「%s」相关的知识条目", query)
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("🔍 虾网知识搜索「%s」— 找到 %d 条:\n\n", query, len(entries)))
+	b.WriteString(fmt.Sprintf("🔍 智网知识搜索「%s」— 找到 %d 条:\n\n", query, len(entries)))
 	for i, e := range entries {
 		if i >= 10 {
 			b.WriteString(fmt.Sprintf("... 还有 %d 条结果\n", len(entries)-10))
@@ -1295,7 +1295,7 @@ func (h *IMMessageHandler) toolClawNetSearch(args map[string]interface{}) string
 
 func (h *IMMessageHandler) toolClawNetPublish(args map[string]interface{}) string {
 	if h.app.clawNetClient == nil || !h.app.clawNetClient.IsRunning() {
-		return "虾网未连接，请先在设置中启用 ClawNet"
+		return "智网未连接，请先在设置中启用 ClawNet"
 	}
 	title := stringVal(args, "title")
 	body := stringVal(args, "body")
@@ -1309,7 +1309,7 @@ func (h *IMMessageHandler) toolClawNetPublish(args map[string]interface{}) strin
 	if err != nil {
 		return fmt.Sprintf("发布失败: %s", err.Error())
 	}
-	return fmt.Sprintf("✅ 知识已发布到虾网\nID: %s\n标题: %s", entry.ID, entry.Title)
+	return fmt.Sprintf("✅ 知识已发布到智网\nID: %s\n标题: %s", entry.ID, entry.Title)
 }
 
 func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string {

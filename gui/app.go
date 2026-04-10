@@ -111,6 +111,7 @@ type App struct {
 	qqBotGateway               *qqBotGatewayManager
 	telegramGateway            *telegramGatewayManager
 	weixinGateway              *weixinGatewayManager
+	lansengerGateway           *lansengerGatewayManager
 	configMu                   sync.Mutex
 	configCache                AppConfig
 	configCacheValid           bool
@@ -955,6 +956,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	// Start WeChat gateway if configured (runs on client side).
 	a.ensureWeixinGateway()
 
+	// Start Lansenger gateway if configured (runs on client side).
+	a.ensureLansengerGateway()
+
 	return hubClient
 }
 
@@ -1040,6 +1044,7 @@ func (a *App) startup(ctx context.Context) {
 				a.ensureQQBotGateway()
 				a.ensureTelegramGateway()
 				a.ensureWeixinGateway()
+				a.ensureLansengerGateway()
 			}()
 		}
 		// CodeGen SSO token validation on startup (qianxin brand only).
@@ -1057,7 +1062,7 @@ func (a *App) startup(ctx context.Context) {
 		// before shutdown could stop it, the daemon lingers. Clean it up now.
 		// Use a temporary client to avoid leaving a.clawNetClient initialized
 		// (which would cause shutdown() to redundantly call StopDaemon).
-		if !config.ClawNetEnabled {
+		if !config.AgentNetEnabled {
 			go func() {
 				tmp := NewClawNetClient()
 				if tmp.IsRunning() {
@@ -1153,6 +1158,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.weixinGateway != nil {
 		a.weixinGateway.Stop()
+	}
+	if a.lansengerGateway != nil {
+		a.lansengerGateway.Stop()
 	}
 	a.platformShutdown()
 }
@@ -1688,6 +1696,10 @@ func (a *App) startConfigWatcher() {
 						// Re-sync WeChat gateway on config change
 						if a.weixinGateway != nil {
 							a.weixinGateway.SyncFromConfig()
+						}
+						// Re-sync Lansenger gateway on config change
+						if a.lansengerGateway != nil {
+							a.lansengerGateway.SyncFromConfig()
 						}
 					}
 				}
@@ -3477,7 +3489,7 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 			RemoteMachineToken:   "",
 			RemoteHeartbeatSec:   10,
 			ScreenDimTimeoutMin:  3, // Default: dim display after 3 minutes of inactivity
-			ClawNetEnabled:       false,
+			AgentNetEnabled:      false,
 			GossipAutoPublish:    true,
 			YoloModeAllowed:      true,
 			GossipEnabled:        true,
@@ -3526,9 +3538,11 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 	if _, ok := rawConfig["power_optimization"]; ok {
 		hasPowerOptimization = true
 	}
-	hasClawNetEnabled := false
-	if _, ok := rawConfig["clawnet_enabled"]; ok {
-		hasClawNetEnabled = true
+	hasAgentNetEnabled := false
+	if _, ok := rawConfig["agentnet_enabled"]; ok {
+		hasAgentNetEnabled = true
+	} else if _, ok := rawConfig["clawnet_enabled"]; ok {
+		hasAgentNetEnabled = true
 	}
 	hasGossipAutoPublish := false
 	if _, ok := rawConfig["gossip_auto_publish"]; ok {
@@ -3566,8 +3580,8 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 	if !hasPowerOptimization {
 		config.PowerOptimization = true
 	}
-	if !hasClawNetEnabled {
-		config.ClawNetEnabled = false
+	if !hasAgentNetEnabled {
+		config.AgentNetEnabled = false
 	}
 	if !hasGossipAutoPublish {
 		config.GossipAutoPublish = true

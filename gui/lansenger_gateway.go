@@ -1,123 +1,501 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
-	"os/exec"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/lansenger"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
-const (
-	lansengerChannelID = "lansenger"
-)
+// lansengerGatewayManager manages the client-side Lansenger gateway.
+// Supports two modes:
+//   - Local / 单机 mode (default): routes messages directly to the
+//     local MaClaw LLM agent loop, bypassing Hub entirely.
+//   - Hub / 多机 mode (LansengerLocalMode=false): forwards messages to Hub
+//     via im.gateway_message, receives replies via im.gateway_reply.
+type lansengerGatewayManager struct {
+	app       *App
+	mu        sync.Mutex
+	gateway   *lansenger.Gateway
+	status    string
+	lastToken string
 
-type lansengerStatusPayload struct {
-	Status string `json:"status"`
-	Output string `json:"output,omitempty"`
+	localHandler *IMMessageHandler
 }
 
-func defaultLansengerPluginSpec() string {
-	return corelib.DefaultLansengerPluginSpec()
+func newLansengerGatewayManager(app *App) *lansengerGatewayManager {
+	return &lansengerGatewayManager{
+		app:    app,
+		status: "disconnected",
+	}
+}
+
+// SyncFromConfig reads the current AppConfig and starts or stops the gateway.
+func (m *lansengerGatewayManager) SyncFromConfig() {
+	cfg, err := m.app.LoadConfig()
+	if err != nil {
+		return
+	}
+
+	token := strings.TrimSpace(cfg.LansengerToken)
+
+	m.mu.Lock()
+	if !cfg.LansengerEnabled || token == "" {
+		gw := m.gateway
+		if gw != nil {
+			m.gateway = nil
+			m.status = "disconnected"
+			m.mu.Unlock()
+			_ = gw.Stop()
+		} else {
+			m.mu.Unlock()
+		}
+		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
+			_ = hubClient.SendIMGatewayUnclaim("lansenger")
+		}
+		if gw != nil {
+			m.emitStatusEvent()
+		}
+		return
+	}
+
+	if m.gateway != nil && m.lastToken == token {
+		m.mu.Unlock()
+		return
+	}
+
+	oldGw := m.gateway
+	m.mu.Unlock()
+
+	if oldGw != nil {
+		_ = oldGw.Stop()
+	}
+
+	gwCfg, err := lansenger.ParseToken(token)
+	if err != nil {
+		log.Printf("[lansenger-mgr] invalid token: %v", err)
+		m.mu.Lock()
+		m.status = "error"
+		m.mu.Unlock()
+		m.emitStatusEvent()
+		return
+	}
+
+	gw := lansenger.NewGateway(gwCfg, m.onIncomingMessage)
+	gw.SetStatusCallback(m.onStatusChange)
+
+	m.mu.Lock()
+	m.gateway = gw
+	m.lastToken = token
+	m.mu.Unlock()
+
+	if err := gw.Start(context.Background()); err != nil {
+		log.Printf("[lansenger-mgr] start failed: %v", err)
+		m.mu.Lock()
+		m.status = "error"
+		m.mu.Unlock()
+		m.emitStatusEvent()
+		return
+	}
+}
+
+// Stop shuts down the gateway.
+func (m *lansengerGatewayManager) Stop() {
+	m.mu.Lock()
+	gw := m.gateway
+	m.gateway = nil
+	m.status = "disconnected"
+	m.lastToken = ""
+	lh := m.localHandler
+	m.localHandler = nil
+	m.mu.Unlock()
+	if lh != nil {
+		lh.memory.stop()
+	}
+	if gw != nil {
+		_ = gw.Stop()
+	}
+}
+
+// Status returns the current connection status.
+func (m *lansengerGatewayManager) Status() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.status
+}
+
+func (m *lansengerGatewayManager) onStatusChange(status string) {
+	m.mu.Lock()
+	m.status = status
+	m.mu.Unlock()
+	m.emitStatusEvent()
+
+	if status == "connected" {
+		if cfg, err := m.app.LoadConfig(); err == nil && cfg.IsLansengerLocalMode() {
+			return
+		}
+		hubClient := m.app.hubClient()
+		if hubClient != nil && hubClient.IsConnected() {
+			hubClient.SendIMGatewayClaim("lansenger")
+		}
+	}
+}
+
+func (m *lansengerGatewayManager) emitStatusEvent() {
+	m.app.emitEvent("lansenger-status-changed", m.Status())
+}
+
+func (m *lansengerGatewayManager) resetLocalHandler() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.localHandler != nil {
+		m.localHandler.memory.stop()
+		m.localHandler = nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Message routing
+// ---------------------------------------------------------------------------
+
+func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessage) {
+	cfg, err := m.app.LoadConfig()
+	if err != nil {
+		log.Printf("[lansenger-mgr] LoadConfig error: %v", err)
+		return
+	}
+
+	isLocal := cfg.IsLansengerLocalMode()
+	hubClient := m.app.hubClient()
+	hubNil := hubClient == nil
+	hubConn := !hubNil && hubClient.IsConnected()
+
+	log.Printf("[lansenger-mgr] incoming: user=%s local=%v hub_nil=%v hub_conn=%v text_len=%d",
+		msg.FromUserID, isLocal, hubNil, hubConn, len(msg.Text))
+
+	if isLocal {
+		m.handleLocalMessage(msg)
+		return
+	}
+
+	if hubNil || !hubConn {
+		log.Printf("[lansenger-mgr] Hub unavailable, falling back to local")
+		m.notifyHubUnavailable(msg)
+		m.handleLocalMessage(msg)
+		return
+	}
+
+	m.forwardToHub(msg)
+}
+
+func (m *lansengerGatewayManager) notifyHubUnavailable(msg lansenger.IncomingMessage) {
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return
+	}
+	_ = gw.SendText(context.Background(), lansenger.OutgoingText{
+		ToUserID: msg.FromUserID,
+		Text:     "⚠️ 当前为多机模式，但 Hub 未连接。消息已回退到本地处理。",
+	})
+}
+
+func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
+	hubClient := m.app.hubClient()
+	if hubClient == nil || !hubClient.IsConnected() {
+		m.notifyHubUnavailable(msg)
+		m.handleLocalMessage(msg)
+		return
+	}
+
+	payload := map[string]any{
+		"platform_uid": msg.FromUserID,
+		"text":         msg.Text,
+		"message_type": "text",
+	}
+
+	if err := hubClient.SendIMGatewayMessage("lansenger", payload); err != nil {
+		log.Printf("[lansenger-mgr] forwardToHub error: %v, falling back to local", err)
+		m.handleLocalMessage(msg)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Local mode — direct LLM agent loop
+// ---------------------------------------------------------------------------
+
+func (m *lansengerGatewayManager) ensureLocalHandler() *IMMessageHandler {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.localHandler != nil {
+		return m.localHandler
+	}
+
+	a := m.app
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		a.ensureMemoryStore()
+	}
+	if a.contextResolver == nil {
+		a.ensureContextResolver()
+	}
+	if a.sessionPrecheck == nil {
+		a.ensureSessionPrecheck()
+	}
+
+	h := NewIMMessageHandler(a, a.remoteSessions)
+	if a.capabilityGapDetector == nil {
+		a.ensureCapabilityGapDetector()
+	}
+	if a.capabilityGapDetector != nil {
+		h.SetCapabilityGapDetector(a.capabilityGapDetector)
+	}
+	if a.toolDefGenerator != nil {
+		h.SetToolDefGenerator(a.toolDefGenerator)
+	}
+	if a.toolRouter != nil {
+		h.SetToolRouter(a.toolRouter)
+	}
+	if a.memoryStore != nil {
+		h.SetMemoryStore(a.memoryStore)
+	}
+	h.SetTrajectoryRecorderFactory(a.buildTrajectoryRecorderFactory())
+	if a.configManager != nil {
+		h.SetConfigManager(a.configManager)
+	}
+	if a.templateManager != nil {
+		h.SetTemplateManager(a.templateManager)
+	}
+	if a.scheduledTaskManager != nil {
+		h.SetScheduledTaskManager(a.scheduledTaskManager)
+	}
+	if a.contextResolver != nil {
+		h.SetContextResolver(a.contextResolver)
+	}
+	if a.sessionPrecheck != nil {
+		h.SetSessionPrecheck(a.sessionPrecheck)
+	}
+	a.ensureStartupFeedback()
+	if a.startupFeedback != nil {
+		h.SetStartupFeedback(a.startupFeedback)
+	}
+	if a.securityFirewall == nil {
+		a.ensureSecurityFirewall()
+	}
+	if a.securityFirewall != nil {
+		h.SetSecurityFirewall(a.securityFirewall)
+	}
+	a.ensureConversationArchiver()
+	if a.conversationArchiver != nil {
+		h.memory.archiver = a.conversationArchiver
+	}
+
+	m.localHandler = h
+	log.Printf("[lansenger-mgr] local IMMessageHandler created")
+	return h
+}
+
+func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessage) {
+	if !m.app.isMaclawLLMConfigured() {
+		m.mu.Lock()
+		gw := m.gateway
+		m.mu.Unlock()
+		if gw != nil {
+			_ = gw.SendText(context.Background(), lansenger.OutgoingText{
+				ToUserID: msg.FromUserID,
+				Text:     i18n.T(i18n.MsgLLMNotConfigured, "zh"),
+			})
+		}
+		return
+	}
+
+	handler := m.ensureLocalHandler()
+
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return
+	}
+
+	text := msg.Text
+	if text == "" {
+		return
+	}
+
+	var lastProgress time.Time
+	var lastProgressText string
+	onProgress := func(progressText string) {
+		if progressText == "" || progressText == imHeartbeatMsg {
+			return
+		}
+		now := time.Now()
+		if now.Sub(lastProgress) < 5*time.Second {
+			return
+		}
+		stripped := textutil.StripMarkdown(progressText)
+		if stripped == lastProgressText {
+			return
+		}
+		lastProgress = now
+		lastProgressText = stripped
+		_ = gw.SendText(context.Background(), lansenger.OutgoingText{
+			ToUserID: msg.FromUserID,
+			Text:     i18n.T(i18n.MsgProgressPrefix, "zh") + stripped,
+		})
+	}
+
+	resp := handler.HandleIMMessageWithProgress(IMUserMessage{
+		UserID:   msg.FromUserID,
+		Platform: "lansenger_local",
+		Text:     text,
+		Lang:     "zh",
+	}, onProgress)
+
+	if resp == nil || resp.Deferred {
+		return
+	}
+
+	m.sendAgentResponse(gw, msg.FromUserID, resp)
+}
+
+func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUserID string, resp *IMAgentResponse) {
+	ctx := context.Background()
+
+	if resp.Text != "" {
+		text := textutil.StripMarkdown(resp.Text)
+		if err := gw.SendText(ctx, lansenger.OutgoingText{
+			ToUserID: toUserID,
+			Text:     text,
+		}); err != nil {
+			log.Printf("[lansenger-mgr] SendText error: %v", err)
+		}
+	}
+
+	if resp.Error != "" && resp.Text == "" {
+		_ = gw.SendText(ctx, lansenger.OutgoingText{
+			ToUserID: toUserID,
+			Text:     "❌ " + textutil.StripMarkdown(resp.Error),
+		})
+	}
+
+	if resp.ImageKey != "" {
+		imgData, err := base64.StdEncoding.DecodeString(resp.ImageKey)
+		if err == nil && len(imgData) > 0 {
+			_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
+				ToUserID:  toUserID,
+				FileData:  imgData,
+				MediaType: "image",
+			})
+		}
+	}
+
+	if resp.FileData != "" {
+		fileBytes, err := base64.StdEncoding.DecodeString(resp.FileData)
+		if err == nil && len(fileBytes) > 0 {
+			_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
+				ToUserID:  toUserID,
+				FileData:  fileBytes,
+				FileName:  resp.FileName,
+				MediaType: "file",
+			})
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hub reply handling
+// ---------------------------------------------------------------------------
+
+// HandleGatewayReply dispatches a reply from Hub to the Lansenger API.
+func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		log.Printf("[lansenger-mgr] HandleGatewayReply: gateway is nil, dropping")
+		return
+	}
+
+	ctx := context.Background()
+	switch reply.ReplyType {
+	case "text":
+		_ = gw.SendText(ctx, lansenger.OutgoingText{
+			ToUserID: reply.PlatformUID,
+			Text:     textutil.StripMarkdown(reply.Text),
+		})
+	case "image":
+		data, err := base64.StdEncoding.DecodeString(reply.ImageData)
+		if err != nil {
+			return
+		}
+		_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
+			ToUserID:  reply.PlatformUID,
+			FileData:  data,
+			MediaType: "image",
+		})
+	case "file":
+		data, err := base64.StdEncoding.DecodeString(reply.FileData)
+		if err != nil {
+			return
+		}
+		_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
+			ToUserID:  reply.PlatformUID,
+			FileData:  data,
+			FileName:  reply.FileName,
+			MediaType: "file",
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// App integration — Wails bindings
+// ---------------------------------------------------------------------------
+
+func (a *App) ensureLansengerGateway() {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return
+	}
+	if !cfg.LansengerEnabled || strings.TrimSpace(cfg.LansengerToken) == "" {
+		if a.lansengerGateway != nil {
+			a.lansengerGateway.SyncFromConfig()
+		}
+		return
+	}
+	if a.lansengerGateway == nil {
+		a.lansengerGateway = newLansengerGatewayManager(a)
+	}
+	a.lansengerGateway.SyncFromConfig()
 }
 
 func (a *App) GetLansengerStatus() string {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return "error"
+	if a.lansengerGateway == nil {
+		return "disconnected"
 	}
-	if !cfg.LansengerEnabled {
-		return "disabled"
-	}
-	return a.probeLansengerStatus(cfg)
+	return a.lansengerGateway.Status()
 }
 
-func (a *App) InstallLansengerPlugin() map[string]string {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return map[string]string{"error": "无法加载配置: " + err.Error()}
+func (a *App) RestartLansenger() string {
+	a.ensureLansengerGateway()
+	if a.lansengerGateway == nil {
+		return "disconnected"
 	}
-	pluginSpec := cfg.EffectiveLansengerPluginSpec()
-	if pluginSpec == "" {
-		pluginSpec = defaultLansengerPluginSpec()
-	}
-	result, err := a.runLansengerCommand(90*time.Second, false, "openclaw", "plugins", "install", pluginSpec)
-	if err != nil {
-		combined := result
-		if strings.Contains(strings.ToLower(combined), "already exists") || strings.Contains(strings.ToLower(combined), "already installed") {
-			updateOut, updateErr := a.runLansengerCommand(90*time.Second, false, "openclaw", "plugins", "update", lansengerChannelID)
-			if updateErr != nil {
-				return map[string]string{
-					"status": "error",
-					"error":  buildLansengerError("插件已存在，但更新失败", updateOut, updateErr),
-				}
-			}
-			cfg.LansengerEnabled = true
-			if strings.TrimSpace(cfg.LansengerPluginSpec) == "" {
-				cfg.LansengerPluginSpec = pluginSpec
-			}
-			if cfg.LansengerLocalMode == nil {
-				cfg.SetLansengerLocal(true)
-			}
-			if saveErr := a.SaveConfig(cfg); saveErr != nil {
-				return map[string]string{"status": "error", "error": "插件更新成功，但保存配置失败: " + saveErr.Error()}
-			}
-			a.emitEvent("lansenger-status-changed", lansengerStatusPayload{Status: a.probeLansengerStatus(cfg), Output: updateOut})
-			return map[string]string{"status": "updated", "output": updateOut}
-		}
-		return map[string]string{
-			"status": "error",
-			"error":  buildLansengerError("插件安装失败", combined, err),
-		}
-	}
-	cfg.LansengerEnabled = true
-	cfg.LansengerPluginSpec = pluginSpec
-	if cfg.LansengerLocalMode == nil {
-		cfg.SetLansengerLocal(true)
-	}
-	if err := a.SaveConfig(cfg); err != nil {
-		return map[string]string{"status": "error", "error": "插件安装成功，但保存配置失败: " + err.Error()}
-	}
-	status := a.probeLansengerStatus(cfg)
-	a.emitEvent("lansenger-status-changed", lansengerStatusPayload{Status: status, Output: result})
-	return map[string]string{"status": "installed", "output": result}
+	return a.lansengerGateway.Status()
 }
 
-func (a *App) LoginLansenger() map[string]string {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return map[string]string{"error": "无法加载配置: " + err.Error()}
+func (a *App) StopLansenger() {
+	if a.lansengerGateway != nil {
+		a.lansengerGateway.Stop()
 	}
-	if !cfg.LansengerEnabled {
-		return map[string]string{"error": "请先安装蓝信插件"}
-	}
-	output, err := a.runLansengerCommand(8*time.Minute, true, "openclaw", "channels", "login", "--channel", lansengerChannelID)
-	if err != nil {
-		return map[string]string{"status": "error", "error": buildLansengerError("蓝信登录失败", output, err)}
-	}
-	status := a.probeLansengerStatus(cfg)
-	a.emitEvent("lansenger-status-changed", lansengerStatusPayload{Status: status, Output: output})
-	return map[string]string{"status": status, "output": output}
-}
-
-func (a *App) RestartLansenger() map[string]string {
-	cfg, err := a.LoadConfig()
-	if err != nil {
-		return map[string]string{"error": "无法加载配置: " + err.Error()}
-	}
-	if !cfg.LansengerEnabled {
-		return map[string]string{"error": "请先安装蓝信插件"}
-	}
-	output, err := a.runLansengerCommand(45*time.Second, false, "openclaw", "gateway", "restart")
-	if err != nil {
-		return map[string]string{"status": "error", "error": buildLansengerError("重启 OpenClaw Gateway 失败", output, err)}
-	}
-	status := a.probeLansengerStatus(cfg)
-	a.emitEvent("lansenger-status-changed", lansengerStatusPayload{Status: status, Output: output})
-	return map[string]string{"status": status, "output": output}
 }
 
 func (a *App) GetLansengerLocalMode() bool {
@@ -137,68 +515,19 @@ func (a *App) SetLansengerLocalMode(enabled bool) error {
 		return fmt.Errorf("请先注册到 Hub（设置 Hub 地址并完成注册），再开启多机模式")
 	}
 	cfg.SetLansengerLocal(enabled)
-	return a.SaveConfig(cfg)
-}
-
-func (a *App) probeLansengerStatus(cfg AppConfig) string {
-	if !cfg.LansengerEnabled {
-		return "disabled"
+	if err := a.SaveConfig(cfg); err != nil {
+		return err
 	}
-	output, err := a.runLansengerCommand(20*time.Second, false, "openclaw", "channels", "login", "--channel", lansengerChannelID, "--help")
-	if err != nil {
-		text := strings.ToLower(output + "\n" + err.Error())
-		switch {
-		case strings.Contains(text, "not found"), strings.Contains(text, "无法将"):
-			return "missing_openclaw"
-		case strings.Contains(text, "unknown command"), strings.Contains(text, "unknown flag"):
-			return "installed"
-		default:
-			return "ready"
+
+	if a.lansengerGateway != nil {
+		a.lansengerGateway.resetLocalHandler()
+	}
+
+	if !enabled {
+		hubClient := a.hubClient()
+		if hubClient != nil && hubClient.IsConnected() {
+			hubClient.SendIMGatewayClaim("lansenger")
 		}
 	}
-	if strings.TrimSpace(output) != "" {
-		return "ready"
-	}
-	return "installed"
-}
-
-func buildLansengerError(prefix, output string, err error) string {
-	parts := []string{prefix}
-	if err != nil {
-		parts = append(parts, err.Error())
-	}
-	trimmed := strings.TrimSpace(output)
-	if trimmed != "" {
-		parts = append(parts, trimmed)
-	}
-	return strings.Join(parts, "\n")
-}
-
-func (a *App) runLansengerCommand(timeout time.Duration, interactive bool, name string, args ...string) (string, error) {
-	ctx := context.Background()
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-	}
-	cmd := exec.CommandContext(ctx, name, args...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	if interactive {
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		cmd.Stdin = nil
-	} else {
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-	}
-	err := cmd.Run()
-	combined := strings.TrimSpace(strings.TrimSpace(stdout.String()) + "\n" + strings.TrimSpace(stderr.String()))
-	if ctx.Err() == context.DeadlineExceeded {
-		if combined == "" {
-			combined = "command timed out"
-		}
-		return combined, fmt.Errorf("command timed out")
-	}
-	return strings.TrimSpace(combined), err
+	return nil
 }

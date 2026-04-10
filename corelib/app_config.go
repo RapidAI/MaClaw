@@ -2,6 +2,7 @@ package corelib
 
 // AppConfig 是 MaClaw 的完整应用配置。
 import (
+	"encoding/json"
 	"strings"
 )
 
@@ -88,11 +89,11 @@ type AppConfig struct {
 	// Memory
 	MemoryAutoCompress bool `json:"memory_auto_compress,omitempty"`
 	MemoryMaxBackups   int  `json:"memory_max_backups,omitempty"` // 0 means use default (20)
-	// ClawNet
-	ClawNetEnabled             bool    `json:"clawnet_enabled"`
-	ClawNetAutoPickerEnabled   bool    `json:"clawnet_auto_picker_enabled,omitempty"`
-	ClawNetAutoPickerPollMin   int     `json:"clawnet_auto_picker_poll_min,omitempty"`
-	ClawNetAutoPickerMinReward float64 `json:"clawnet_auto_picker_min_reward,omitempty"`
+	// AgentNet
+	AgentNetEnabled             bool    `json:"agentnet_enabled"`
+	AgentNetAutoPickerEnabled   bool    `json:"agentnet_auto_picker_enabled,omitempty"`
+	AgentNetAutoPickerPollMin   int     `json:"agentnet_auto_picker_poll_min,omitempty"`
+	AgentNetAutoPickerMinReward float64 `json:"agentnet_auto_picker_min_reward,omitempty"`
 	// Security
 	SecurityPolicyMode   string `json:"security_policy_mode,omitempty"`
 	SandboxMode          string `json:"sandbox_mode,omitempty"`  // "none" (default), "os", "docker"
@@ -118,9 +119,11 @@ type AppConfig struct {
 	WeixinCDNURL    string `json:"weixin_cdn_url,omitempty"`
 	WeixinAccountID string `json:"weixin_account_id,omitempty"`
 	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (单机), false = remote/Hub (多机)
-	// IM — OpenClaw Lansenger channel plugin
-	LansengerEnabled    bool   `json:"lansenger_enabled,omitempty"`
-	LansengerPluginSpec string `json:"lansenger_plugin_spec,omitempty"`
+	// IM — Lansenger (蓝信) client-side gateway
+	LansengerEnabled   bool   `json:"lansenger_enabled,omitempty"`
+	LansengerAppID     string `json:"lansenger_app_id,omitempty"`
+	LansengerAppSecret string `json:"lansenger_app_secret,omitempty"`
+	LansengerToken     string `json:"lansenger_token,omitempty"` // composite "AppID:AppSecret:ApiGatewayURL"
 	// IM — local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
 	QQBotLocalMode    *bool `json:"qqbot_local_mode,omitempty"`    // nil = auto-detect, true = local, false = hub
 	TelegramLocalMode *bool `json:"telegram_local_mode,omitempty"` // nil = auto-detect, true = local, false = hub
@@ -149,6 +152,65 @@ type AppConfig struct {
 	UIZoomFactor float64 `json:"ui_zoom_factor,omitempty"`
 	// SSH — 预配置的远程主机列表
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
+	// AuxiliaryLLM — lightweight LLM for background tasks (compression,
+	// skill repair, session search summarization). When configured, used
+	// in preference to the main LLM to reduce cost and latency.
+	AuxiliaryLLM AuxiliaryLLMConfig `json:"auxiliary_llm,omitempty"`
+}
+
+func (c AppConfig) MarshalJSON() ([]byte, error) {
+	type appConfigAlias AppConfig
+	return json.Marshal(appConfigAlias(c))
+}
+
+func (c *AppConfig) UnmarshalJSON(data []byte) error {
+	type appConfigAlias AppConfig
+	type rawAppConfig struct {
+		appConfigAlias
+		AgentNetEnabled             *bool    `json:"agentnet_enabled"`
+		AgentNetAutoPickerEnabled   *bool    `json:"agentnet_auto_picker_enabled,omitempty"`
+		AgentNetAutoPickerPollMin   *int     `json:"agentnet_auto_picker_poll_min,omitempty"`
+		AgentNetAutoPickerMinReward *float64 `json:"agentnet_auto_picker_min_reward,omitempty"`
+		LegacyClawNetEnabled             *bool    `json:"clawnet_enabled"`
+		LegacyClawNetAutoPickerEnabled   *bool    `json:"clawnet_auto_picker_enabled,omitempty"`
+		LegacyClawNetAutoPickerPollMin   *int     `json:"clawnet_auto_picker_poll_min,omitempty"`
+		LegacyClawNetAutoPickerMinReward *float64 `json:"clawnet_auto_picker_min_reward,omitempty"`
+	}
+
+	var raw rawAppConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*c = AppConfig(raw.appConfigAlias)
+	if raw.AgentNetEnabled == nil && raw.LegacyClawNetEnabled != nil {
+		c.AgentNetEnabled = *raw.LegacyClawNetEnabled
+	}
+	if raw.AgentNetAutoPickerEnabled == nil && raw.LegacyClawNetAutoPickerEnabled != nil {
+		c.AgentNetAutoPickerEnabled = *raw.LegacyClawNetAutoPickerEnabled
+	}
+	if raw.AgentNetAutoPickerPollMin == nil && raw.LegacyClawNetAutoPickerPollMin != nil {
+		c.AgentNetAutoPickerPollMin = *raw.LegacyClawNetAutoPickerPollMin
+	}
+	if raw.AgentNetAutoPickerMinReward == nil && raw.LegacyClawNetAutoPickerMinReward != nil {
+		c.AgentNetAutoPickerMinReward = *raw.LegacyClawNetAutoPickerMinReward
+	}
+	return nil
+}
+
+// AuxiliaryLLMConfig holds the configuration for a lightweight LLM used for
+// background tasks: memory compression, skill repair, session search
+// summarization, etc. Mirrors llm.AuxiliaryConfig but lives in corelib to
+// avoid circular imports.
+type AuxiliaryLLMConfig struct {
+	URL      string `json:"url"`
+	Key      string `json:"key"`
+	Model    string `json:"model"`
+	Protocol string `json:"protocol,omitempty"` // "openai" (default) or "anthropic"
+}
+
+// IsConfigured returns true if the auxiliary LLM has a URL and key set.
+func (c AuxiliaryLLMConfig) IsConfigured() bool {
+	return c.URL != "" && c.Key != ""
 }
 
 // SSHHostEntry 描述一个预配置的 SSH 远程主机。
@@ -213,17 +275,18 @@ func (c *AppConfig) SetTelegramLocal(v bool) {
 	c.TelegramLocalMode = &v
 }
 
-// DefaultLansengerPluginSpec returns the default OpenClaw plugin spec for Lansenger.
-func DefaultLansengerPluginSpec() string {
-	return "@lansenger/openclaw-channel-lansenger@latest"
-}
-
-// EffectiveLansengerPluginSpec returns the configured plugin spec or the default value.
-func (c *AppConfig) EffectiveLansengerPluginSpec() string {
-	if strings.TrimSpace(c.LansengerPluginSpec) == "" {
-		return DefaultLansengerPluginSpec()
+// LansengerApiGatewayURL extracts the API gateway URL from the composite token.
+// Returns empty string if token is not configured or invalid.
+func (c *AppConfig) LansengerApiGatewayURL() string {
+	token := strings.TrimSpace(c.LansengerToken)
+	if token == "" {
+		return ""
 	}
-	return strings.TrimSpace(c.LansengerPluginSpec)
+	parts := strings.SplitN(token, ":", 3)
+	if len(parts) < 3 {
+		return ""
+	}
+	return parts[2]
 }
 
 // IsLansengerLocalMode returns the effective Lansenger local mode setting.

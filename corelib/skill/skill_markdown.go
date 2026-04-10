@@ -239,12 +239,14 @@ func skillMarkdownPath(skillDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("无法读取 skill.md: %v", err)
 	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if entry.Name() == "skill.md" {
-			return filepath.Join(skillDir, "skill.md"), nil
+	for _, candidate := range []string{"skill.md", "SKILL.md"} {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			if entry.Name() == candidate {
+				return filepath.Join(skillDir, candidate), nil
+			}
 		}
 	}
 	return "", fmt.Errorf("无法读取 skill.md: file not found")

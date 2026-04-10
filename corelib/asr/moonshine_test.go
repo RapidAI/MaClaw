@@ -196,8 +196,8 @@ func TestDecoderSwiGLUAliasPath(t *testing.T) {
 
 	want := []float32{1.4621172, -0}
 	for i, got := range valuePart {
-		if diff := got - want[i]; diff < -1e-6 || diff > 1e-6 {
-			t.Fatalf("valuePart[%d] = %v, want %v", i, got, want[i])
+		if diff := got - want[i]; diff < -0.03 || diff > 0.03 {
+			t.Fatalf("valuePart[%d] = %v, want ~%v (fastExp tolerance)", i, got, want[i])
 		}
 	}
 }

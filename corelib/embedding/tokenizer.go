@@ -1,15 +1,16 @@
 package embedding
 
 import (
+	"container/heap"
 	"sort"
 	"strings"
 )
 
 // Tokenizer implements a minimal SentencePiece BPE tokenizer loaded from GGUF vocab.
 type Tokenizer struct {
-	vocab    []string          // id -> token string
-	tokenMap map[string]int    // token string -> id
-	scores   []float32         // token scores (for BPE merge priority)
+	vocab    []string       // id -> token string
+	tokenMap map[string]int // token string -> id
+	scores   []float32      // token scores (for BPE merge priority)
 	bosID    int
 	eosID    int
 }
@@ -29,53 +30,150 @@ func NewTokenizer(tokens []string, scores []float32) *Tokenizer {
 	return t
 }
 
-// Encode tokenizes text into token IDs using BPE.
+// ---------------------------------------------------------------------------
+// Heap-based BPE merge (O(n log n) instead of O(n²))
+// ---------------------------------------------------------------------------
+
+// bpeNode is a doubly-linked list node representing a symbol in the BPE sequence.
+type bpeNode struct {
+	text string
+	prev *bpeNode
+	next *bpeNode
+	dead bool
+}
+
+// bpeMerge is a candidate merge of two adjacent nodes.
+type bpeMerge struct {
+	left  *bpeNode
+	score float32
+	idx   int // heap index, managed by container/heap
+}
+
+type mergeHeap []*bpeMerge
+
+func (h mergeHeap) Len() int            { return len(h) }
+func (h mergeHeap) Less(i, j int) bool   { return h[i].score > h[j].score } // max-heap
+func (h mergeHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].idx = i
+	h[j].idx = j
+}
+func (h *mergeHeap) Push(x interface{}) {
+	m := x.(*bpeMerge)
+	m.idx = len(*h)
+	*h = append(*h, m)
+}
+func (h *mergeHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	m := old[n-1]
+	old[n-1] = nil
+	*h = old[:n-1]
+	m.idx = -1
+	return m
+}
+
+// Encode tokenizes text into token IDs using BPE with a heap-based merge.
 // Prepends BOS token. Gemma uses "▁" (U+2581) as the space marker.
 func (t *Tokenizer) Encode(text string) []int {
 	// Gemma SentencePiece: prepend space, replace spaces with ▁
 	text = " " + text
 	text = strings.ReplaceAll(text, " ", "▁")
 
-	// Initialize: each UTF-8 character is a symbol
-	symbols := make([]bpeSymbol, 0, len(text))
+	// Build doubly-linked list of single-character symbols
+	var head *bpeNode
+	var prev *bpeNode
 	for _, r := range text {
-		symbols = append(symbols, bpeSymbol{text: string(r)})
+		n := &bpeNode{text: string(r)}
+		if prev != nil {
+			prev.next = n
+			n.prev = prev
+		} else {
+			head = n
+		}
+		prev = n
 	}
 
-	// Iteratively merge the highest-scoring adjacent pair
-	for {
-		if len(symbols) < 2 {
-			break
+	// Short-circuit: 0 or 1 symbols — nothing to merge
+	if head == nil || head.next == nil {
+		return t.symbolsToIDs(head)
+	}
+
+	// Build initial heap of merge candidates
+	var h mergeHeap
+	for n := head; n.next != nil; n = n.next {
+		if m := t.tryMerge(n); m != nil {
+			h = append(h, m)
 		}
-		bestScore := float32(-1e30)
-		bestIdx := -1
-		for i := 0; i < len(symbols)-1; i++ {
-			merged := symbols[i].text + symbols[i+1].text
-			if id, ok := t.tokenMap[merged]; ok {
-				score := t.scores[id]
-				if score > bestScore {
-					bestScore = score
-					bestIdx = i
-				}
+	}
+	heap.Init(&h)
+
+	// Iteratively apply the highest-scoring merge
+	for h.Len() > 0 {
+		best := heap.Pop(&h).(*bpeMerge)
+		left := best.left
+		// Validate: left must still be alive and have a live right neighbor,
+		// and the concatenation must still match what we scored.
+		if left.dead || left.next == nil || left.next.dead {
+			continue
+		}
+		right := left.next
+		merged := left.text + right.text
+		if id, ok := t.tokenMap[merged]; !ok || t.scores[id] != best.score {
+			continue
+		}
+
+		// Perform merge: absorb right into left
+		left.text = merged
+		right.dead = true
+		left.next = right.next
+		if right.next != nil {
+			right.next.prev = left
+		}
+
+		// Re-evaluate new merge candidates with updated neighbors
+		if left.prev != nil {
+			if m := t.tryMerge(left.prev); m != nil {
+				heap.Push(&h, m)
 			}
 		}
-		if bestIdx < 0 {
-			break
+		if left.next != nil {
+			if m := t.tryMerge(left); m != nil {
+				heap.Push(&h, m)
+			}
 		}
-		// Merge symbols[bestIdx] and symbols[bestIdx+1]
-		symbols[bestIdx].text += symbols[bestIdx+1].text
-		symbols = append(symbols[:bestIdx+1], symbols[bestIdx+2:]...)
 	}
 
-	// Convert symbols to token IDs
-	ids := make([]int, 0, len(symbols)+1)
+	return t.symbolsToIDs(head)
+}
+
+// tryMerge checks if merging n with n.next is a valid BPE pair.
+func (t *Tokenizer) tryMerge(n *bpeNode) *bpeMerge {
+	if n.next == nil {
+		return nil
+	}
+	merged := n.text + n.next.text
+	if id, ok := t.tokenMap[merged]; ok {
+		return &bpeMerge{left: n, score: t.scores[id]}
+	}
+	return nil
+}
+
+// symbolsToIDs converts the linked list of symbols to token IDs.
+func (t *Tokenizer) symbolsToIDs(head *bpeNode) []int {
+	// Count nodes for capacity hint
+	count := 0
+	for n := head; n != nil; n = n.next {
+		count++
+	}
+	ids := make([]int, 0, count+1)
 	ids = append(ids, t.bosID)
-	for _, sym := range symbols {
-		if id, ok := t.tokenMap[sym.text]; ok {
+	for n := head; n != nil; n = n.next {
+		if id, ok := t.tokenMap[n.text]; ok {
 			ids = append(ids, id)
 		} else {
 			// Fallback: encode as individual bytes using byte tokens
-			for _, b := range []byte(sym.text) {
+			for _, b := range []byte(n.text) {
 				byteToken := byteTokenStr(b)
 				if id, ok := t.tokenMap[byteToken]; ok {
 					ids = append(ids, id)
@@ -84,10 +182,6 @@ func (t *Tokenizer) Encode(text string) []int {
 		}
 	}
 	return ids
-}
-
-type bpeSymbol struct {
-	text string
 }
 
 // byteTokenStr returns the SentencePiece byte fallback token for a byte value.

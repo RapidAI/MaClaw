@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -40,26 +41,33 @@ type ChatModel struct {
 	scroll    int
 	height    int
 	width     int
+	lang      string
 }
 
 // NewChatModel 创建聊天视图。
-func NewChatModel() ChatModel {
+func NewChatModel(lang string) ChatModel {
+	lang = i18n.NormalizeLang(lang)
 	ti := textinput.New()
-	ti.Placeholder = "输入消息... (Enter 发送)"
+	ti.Placeholder = i18n.T(i18n.MsgTUIChatInputPlaceholder, lang)
 	ti.CharLimit = 2000
 	ti.Width = 60
 	return ChatModel{
 		input:     ti,
-		agentMode: true, // 默认开启 Agent 模式
+		agentMode: true,
+		lang:      lang,
 		messages: []ChatMessage{
-			{Role: "system", Content: "AI 助手就绪 [Agent 模式]。支持工具调用（bash/文件操作/会话管理）。"},
+			{Role: "system", Content: i18n.T(i18n.MsgTUIChatSystemReady, lang)},
 		},
 	}
 }
 
+func (m *ChatModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
+	m.input.Placeholder = i18n.T(i18n.MsgTUIChatInputPlaceholder, m.lang)
+}
+
 // SetMessages 设置聊天消息列表（用于从 memoryshot 恢复）。
 func (m *ChatModel) SetMessages(msgs []ChatMessage) {
-	// 保留系统消息，追加恢复的消息
 	if len(m.messages) > 0 && m.messages[0].Role == "system" {
 		m.messages = append([]ChatMessage{m.messages[0]}, msgs...)
 	} else {
@@ -96,7 +104,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	case ChatResponseMsg:
 		m.waiting = false
 		if msg.Error != "" {
-			m.messages = append(m.messages, ChatMessage{Role: "system", Content: "错误: " + msg.Error})
+			m.messages = append(m.messages, ChatMessage{Role: "system", Content: i18n.Tf(i18n.MsgTUIChatError, m.lang, msg.Error)})
 		} else {
 			m.messages = append(m.messages, ChatMessage{Role: "assistant", Content: msg.Text})
 		}
@@ -144,23 +152,19 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 				m.scroll = 0
 			}
 		case "c":
-			// 清除聊天历史
 			if !m.input.Focused() && !m.waiting {
-				m.messages = []ChatMessage{
-					{Role: "system", Content: "聊天历史已清除。"},
-				}
+				m.messages = []ChatMessage{{Role: "system", Content: i18n.T(i18n.MsgTUIChatClearedMessage, m.lang)}}
 				m.scroll = 0
 				return m, func() tea.Msg { return ChatClearMsg{} }
 			}
 		case "a":
-			// 切换 Agent 模式
 			if !m.input.Focused() && !m.waiting {
 				m.agentMode = !m.agentMode
-				mode := "简单问答"
+				mode := i18n.T(i18n.MsgTUIChatModeSimple, m.lang)
 				if m.agentMode {
-					mode = "Agent（工具调用）"
+					mode = i18n.T(i18n.MsgTUIChatModeAgent, m.lang)
 				}
-				m.messages = append(m.messages, ChatMessage{Role: "system", Content: fmt.Sprintf("已切换到 %s 模式", mode)})
+				m.messages = append(m.messages, ChatMessage{Role: "system", Content: i18n.Tf(i18n.MsgTUIChatModeSwitched, m.lang, mode)})
 				m.scrollToBottom()
 			}
 		}
@@ -196,9 +200,9 @@ func (m *ChatModel) scrollToBottom() {
 
 // renderLines 将所有消息渲染为行列表。
 func (m ChatModel) renderLines() []string {
-	userStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117")) // 蓝色
-	assistStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("156")) // 绿色
-	sysStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))   // 灰色
+	userStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
+	assistStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("156"))
+	sysStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	maxWidth := m.width - 6
 	if maxWidth < 20 {
@@ -211,28 +215,27 @@ func (m ChatModel) renderLines() []string {
 		var style lipgloss.Style
 		switch msg.Role {
 		case "user":
-			prefix = "你: "
+			prefix = i18n.T(i18n.MsgTUIChatUserPrefix, m.lang)
 			style = userStyle
 		case "assistant":
-			prefix = "AI: "
+			prefix = i18n.T(i18n.MsgTUIChatAssistantPrefix, m.lang)
 			style = assistStyle
 		default:
 			prefix = "  "
 			style = sysStyle
 		}
-		// 按行拆分内容
 		contentLines := strings.Split(msg.Content, "\n")
 		for i, cl := range contentLines {
 			if i == 0 {
-				lines = append(lines, style.Render(prefix+wrapLine(cl, maxWidth-len([]rune(prefix)))+""))
+				lines = append(lines, style.Render(prefix+wrapLine(cl, maxWidth-len([]rune(prefix)))))
 			} else {
 				pad := strings.Repeat(" ", len([]rune(prefix)))
-				lines = append(lines, style.Render(pad+wrapLine(cl, maxWidth-len([]rune(prefix)))+""))
+				lines = append(lines, style.Render(pad+wrapLine(cl, maxWidth-len([]rune(prefix)))))
 			}
 		}
 	}
 	if m.waiting {
-		lines = append(lines, sysStyle.Render("  ⏳ 思考中..."))
+		lines = append(lines, sysStyle.Render(i18n.T(i18n.MsgTUIChatWaiting, m.lang)))
 	}
 	return lines
 }
@@ -254,10 +257,8 @@ func (m ChatModel) View() string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	var b strings.Builder
-
-	// 消息区域
 	lines := m.renderLines()
-	viewHeight := m.height - 3 // 留出输入框和提示行
+	viewHeight := m.height - 3
 	if viewHeight < 1 {
 		viewHeight = 1
 	}
@@ -274,31 +275,26 @@ func (m ChatModel) View() string {
 	for _, line := range lines[start:end] {
 		b.WriteString("  " + line + "\n")
 	}
-	// 填充空行
 	for i := end - start; i < viewHeight; i++ {
 		b.WriteString("\n")
 	}
 
-	// 分隔线
 	w := m.width - 4
 	if w < 20 {
 		w = 60
 	}
 	b.WriteString("  " + strings.Repeat("─", w) + "\n")
-
-	// 输入框
 	b.WriteString("  " + m.input.View() + "\n")
 
-	// 提示
-	hint := "i:输入  Enter:发送  Esc:退出输入  c:清除  a:切换模式  ↑↓:滚动"
+	hint := i18n.T(i18n.MsgTUIChatHint, m.lang)
 	if m.waiting {
-		hint = "等待响应中..."
+		hint = i18n.T(i18n.MsgTUIChatAwaitingResponse, m.lang)
 	}
-	modeLabel := "问答"
+	modeLabel := i18n.T(i18n.MsgTUIChatModeLabelSimple, m.lang)
 	if m.agentMode {
-		modeLabel = "Agent"
+		modeLabel = i18n.T(i18n.MsgTUIChatModeLabelAgent, m.lang)
 	}
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  %s  [%s]  消息:%d", hint, modeLabel, len(m.messages)-1)))
+	b.WriteString(dimStyle.Render(fmt.Sprintf("  %s  [%s]  %s", hint, modeLabel, i18n.Tf(i18n.MsgTUIChatMessageCount, m.lang, len(m.messages)-1))))
 
 	return b.String()
 }

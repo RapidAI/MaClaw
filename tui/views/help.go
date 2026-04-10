@@ -1,37 +1,43 @@
-package views
+﻿package views
 
 import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// HelpModel 帮助面板（overlay）。
+// HelpModel is the help overlay panel.
 type HelpModel struct {
 	visible bool
+	lang    string
 }
 
-// NewHelpModel 创建帮助面板。
-func NewHelpModel() HelpModel {
-	return HelpModel{}
+// NewHelpModel creates a new help panel.
+func NewHelpModel(lang string) HelpModel {
+	return HelpModel{lang: i18n.NormalizeLang(lang)}
 }
 
-// Toggle 切换显示/隐藏。
+func (m *HelpModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
+}
+
+// Toggle switches show/hide.
 func (m *HelpModel) Toggle() {
 	m.visible = !m.visible
 }
 
-// IsVisible 返回是否可见。
+// IsVisible returns whether the panel is visible.
 func (m HelpModel) IsVisible() bool {
 	return m.visible
 }
 
-// Init 实现 tea.Model。
+// Init implements tea.Model.
 func (m HelpModel) Init() tea.Cmd { return nil }
 
-// Update 处理键盘事件。
+// Update handles keyboard events.
 func (m HelpModel) Update(msg tea.Msg) (HelpModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -42,7 +48,7 @@ func (m HelpModel) Update(msg tea.Msg) (HelpModel, tea.Cmd) {
 	return m, nil
 }
 
-// View 渲染帮助面板。
+// View renders the help panel.
 func (m HelpModel) View() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229"))
 	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
@@ -51,57 +57,57 @@ func (m HelpModel) View() string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("  ╭─ 快捷键帮助 ─╮"))
+	b.WriteString(titleStyle.Render(i18n.T(i18n.MsgTUIHelpTitle, m.lang)))
 	b.WriteString("\n\n")
 
 	sections := []struct {
 		name string
 		keys []struct{ key, desc string }
 	}{
-		{"全局", []struct{ key, desc string }{
-			{"Tab / →", "下一个标签页"},
-			{"Shift+Tab / ←", "上一个标签页"},
-			{"q", "退出"},
-			{"Ctrl+C", "强制退出"},
-			{"?", "显示/关闭帮助"},
+		{i18n.T(i18n.MsgTUIHelpSectionGlobal, m.lang), []struct{ key, desc string }{
+			{"Tab / ->", i18n.T(i18n.MsgTUIHelpDescNextTab, m.lang)},
+			{"Shift+Tab / <-", i18n.T(i18n.MsgTUIHelpDescPreviousTab, m.lang)},
+			{"q", i18n.T(i18n.MsgTUIHelpDescQuit, m.lang)},
+			{"Ctrl+C", i18n.T(i18n.MsgTUIHelpDescForceQuit, m.lang)},
+			{"?", i18n.T(i18n.MsgTUIHelpDescShowCloseHelp, m.lang)},
 		}},
-		{"列表通用", []struct{ key, desc string }{
-			{"↑ / k", "上移"},
-			{"↓ / j", "下移"},
-			{"g", "跳到顶部"},
-			{"G", "跳到底部"},
-			{"r", "刷新"},
+		{i18n.T(i18n.MsgTUIHelpSectionListNavigation, m.lang), []struct{ key, desc string }{
+			{"Up / k", i18n.T(i18n.MsgTUIHelpDescMoveUp, m.lang)},
+			{"Down / j", i18n.T(i18n.MsgTUIHelpDescMoveDown, m.lang)},
+			{"g", i18n.T(i18n.MsgTUIHelpDescJumpTop, m.lang)},
+			{"G", i18n.T(i18n.MsgTUIHelpDescJumpBottom, m.lang)},
+			{"r", i18n.T(i18n.MsgTUIHelpDescRefresh, m.lang)},
 		}},
-		{"会话", []struct{ key, desc string }{
-			{"Enter", "查看详情"},
-			{"n / c", "新建会话"},
-			{"d / x", "终止会话"},
+		{i18n.T(i18n.MsgTUIHelpSectionSessions, m.lang), []struct{ key, desc string }{
+			{"Enter", i18n.T(i18n.MsgTUIHelpDescViewDetails, m.lang)},
+			{"n / c", i18n.T(i18n.MsgTUIHelpDescNewSession, m.lang)},
+			{"d / x", i18n.T(i18n.MsgTUIHelpDescTerminateSession, m.lang)},
 		}},
-		{"定时任务", []struct{ key, desc string }{
-			{"p", "暂停/恢复"},
-			{"d", "删除"},
+		{i18n.T(i18n.MsgTUIHelpSectionScheduledTasks, m.lang), []struct{ key, desc string }{
+			{"p", i18n.T(i18n.MsgTUIHelpDescPauseResume, m.lang)},
+			{"d", i18n.T(i18n.MsgTUIHelpDescDelete, m.lang)},
 		}},
-		{"记忆", []struct{ key, desc string }{
-			{"d", "删除"},
+		{i18n.T(i18n.MsgTUIHelpSectionMemory, m.lang), []struct{ key, desc string }{
+			{"d", i18n.T(i18n.MsgTUIHelpDescDelete, m.lang)},
 		}},
-		{"配置", []struct{ key, desc string }{
-			{"Enter", "编辑"},
-			{"Esc", "取消编辑"},
+		{i18n.T(i18n.MsgTUIHelpSectionConfig, m.lang), []struct{ key, desc string }{
+			{"Enter", i18n.T(i18n.MsgTUIHelpDescEdit, m.lang)},
+			{"Esc", i18n.T(i18n.MsgTUIHelpDescCancelEdit, m.lang)},
 		}},
-		{"ClawNet", []struct{ key, desc string }{
-			{"1/2/3", "切换子标签"},
+		{i18n.T(i18n.MsgTUIHelpSectionAgentNet, m.lang), []struct{ key, desc string }{
+			{"1/2/3", i18n.T(i18n.MsgTUIHelpDescSwitchSubTab, m.lang)},
 		}},
-		{"会话详情", []struct{ key, desc string }{
-			{"↑↓", "滚动"},
-			{"g/G", "首/尾"},
-			{"Esc", "返回列表"},
+		{i18n.T(i18n.MsgTUIHelpSectionSessionDetail, m.lang), []struct{ key, desc string }{
+			{"Up/Down", i18n.T(i18n.MsgTUIHelpDescScroll, m.lang)},
+			{"g/G", i18n.T(i18n.MsgTUIHelpDescTopBottom, m.lang)},
+			{"Esc", i18n.T(i18n.MsgTUIHelpDescBackToList, m.lang)},
 		}},
-		{"AI 助手", []struct{ key, desc string }{
-			{"i", "开始输入"},
-			{"Enter", "发送消息"},
-			{"Esc", "退出输入"},
-			{"c", "清除历史"},
-			{"↑↓", "滚动消息"},
+		{i18n.T(i18n.MsgTUIHelpSectionAIAssistant, m.lang), []struct{ key, desc string }{
+			{"i", i18n.T(i18n.MsgTUIHelpDescStartInput, m.lang)},
+			{"Enter", i18n.T(i18n.MsgTUIHelpDescSendMessage, m.lang)},
+			{"Esc", i18n.T(i18n.MsgTUIHelpDescExitInput, m.lang)},
+			{"c", i18n.T(i18n.MsgTUIHelpDescClearHistory, m.lang)},
+			{"Up/Down", i18n.T(i18n.MsgTUIHelpDescScrollMessages, m.lang)},
 		}},
 	}
 
@@ -117,6 +123,6 @@ func (m HelpModel) View() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(dimStyle.Render("  按 ? 或 Esc 关闭"))
+	b.WriteString(dimStyle.Render("  " + i18n.T(i18n.MsgTUIHelpClose, m.lang)))
 	return b.String()
 }

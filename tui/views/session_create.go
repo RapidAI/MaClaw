@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,26 +18,37 @@ type SessionCreateSubmitMsg struct {
 
 // SessionCreateModel 创建会话的表单视图（overlay）。
 type SessionCreateModel struct {
-	tools       []string // 可用工具列表
-	toolCursor  int
+	tools        []string // 可用工具列表
+	toolCursor   int
 	projectInput textinput.Model
-	focusField  int // 0=tool, 1=project
-	width       int
+	focusField   int // 0=tool, 1=project
+	width        int
+	lang         string
 }
 
 // NewSessionCreateModel 创建会话创建表单。
-func NewSessionCreateModel(tools []string) SessionCreateModel {
+func NewSessionCreateModel(tools []string, lang string) SessionCreateModel {
+	lang = i18n.NormalizeLang(lang)
 	ti := textinput.New()
-	ti.Placeholder = "项目路径（可选）"
+	ti.Placeholder = i18n.T(i18n.MsgTUISessionCreateProjectPlaceholder, lang)
 	ti.CharLimit = 256
 	ti.Width = 40
 
 	if len(tools) == 0 {
-		tools = []string{"(无可用工具)"}
+		tools = []string{i18n.T(i18n.MsgTUISessionCreateNoTools, lang)}
 	}
 	return SessionCreateModel{
 		tools:        tools,
 		projectInput: ti,
+		lang:         lang,
+	}
+}
+
+func (m *SessionCreateModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
+	m.projectInput.Placeholder = i18n.T(i18n.MsgTUISessionCreateProjectPlaceholder, m.lang)
+	if len(m.tools) == 1 && (m.tools[0] == i18n.T(i18n.MsgTUISessionCreateNoTools, "zh") || m.tools[0] == i18n.T(i18n.MsgTUISessionCreateNoTools, "en")) {
+		m.tools[0] = i18n.T(i18n.MsgTUISessionCreateNoTools, m.lang)
 	}
 }
 
@@ -60,12 +72,10 @@ func (m SessionCreateModel) Update(msg tea.Msg) (SessionCreateModel, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if m.focusField == 0 {
-				// 从工具选择跳到项目路径
 				m.focusField = 1
 				m.projectInput.Focus()
 				return m, textinput.Blink
 			}
-			// 提交
 			tool := ""
 			if m.toolCursor < len(m.tools) {
 				tool = m.tools[m.toolCursor]
@@ -85,7 +95,6 @@ func (m SessionCreateModel) Update(msg tea.Msg) (SessionCreateModel, tea.Cmd) {
 		}
 	}
 
-	// 项目路径输入框
 	if m.focusField == 1 {
 		var cmd tea.Cmd
 		m.projectInput, cmd = m.projectInput.Update(msg)
@@ -104,13 +113,12 @@ func (m SessionCreateModel) View() string {
 	focusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("  ╭─ 新建会话 ─╮"))
+	b.WriteString(titleStyle.Render("  " + i18n.T(i18n.MsgTUISessionCreateTitle, m.lang)))
 	b.WriteString("\n\n")
 
-	// 工具选择
-	toolLabel := labelStyle.Render("  工具选择:")
+	toolLabel := labelStyle.Render("  " + i18n.T(i18n.MsgTUISessionCreateTool, m.lang))
 	if m.focusField == 0 {
-		toolLabel = focusStyle.Render("▸ 工具选择:")
+		toolLabel = focusStyle.Render("▸ " + i18n.T(i18n.MsgTUISessionCreateTool, m.lang))
 	}
 	b.WriteString(toolLabel + "\n")
 
@@ -133,21 +141,20 @@ func (m SessionCreateModel) View() string {
 		b.WriteString("\n")
 	}
 	if len(m.tools) > maxShow {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("    ... 共 %d 个工具", len(m.tools))))
+		b.WriteString(dimStyle.Render("    " + i18n.Tf(i18n.MsgTUISessionCreateToolCount, m.lang, len(m.tools))))
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
 
-	// 项目路径
-	projLabel := labelStyle.Render("  项目路径:")
+	projLabel := labelStyle.Render("  " + i18n.T(i18n.MsgTUISessionCreateProject, m.lang))
 	if m.focusField == 1 {
-		projLabel = focusStyle.Render("▸ 项目路径:")
+		projLabel = focusStyle.Render("▸ " + i18n.T(i18n.MsgTUISessionCreateProject, m.lang))
 	}
 	b.WriteString(projLabel + "\n")
 	b.WriteString("    " + m.projectInput.View() + "\n")
 
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  Tab:切换字段  ↑↓:选工具  Enter:确认/下一步  Esc:取消"))
+	b.WriteString(dimStyle.Render("  " + i18n.T(i18n.MsgTUISessionCreateFooter, m.lang)))
 	return b.String()
 }

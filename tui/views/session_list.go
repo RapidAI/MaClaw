@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -26,8 +27,8 @@ type SessionKillMsg struct {
 
 // SessionOpenMsg 请求打开会话详情。
 type SessionOpenMsg struct {
-	ID   string
-	Tool string
+	ID    string
+	Tool  string
 	Title string
 }
 
@@ -36,11 +37,16 @@ type SessionListModel struct {
 	sessions []SessionItem
 	cursor   int
 	loading  bool
+	lang     string
 }
 
 // NewSessionListModel 创建会话列表视图。
-func NewSessionListModel() SessionListModel {
-	return SessionListModel{loading: true}
+func NewSessionListModel(lang string) SessionListModel {
+	return SessionListModel{loading: true, lang: i18n.NormalizeLang(lang)}
+}
+
+func (m *SessionListModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
 }
 
 // SetSessions 更新会话列表数据。
@@ -93,10 +99,10 @@ func (m SessionListModel) Update(msg tea.Msg) (SessionListModel, tea.Cmd) {
 // View 渲染会话列表。
 func (m SessionListModel) View() string {
 	if m.loading {
-		return "  正在加载会话列表..."
+		return "  " + i18n.T(i18n.MsgTUISessionLoading, m.lang)
 	}
 	if len(m.sessions) == 0 {
-		return "  暂无活跃会话\n\n  按 Enter 创建新会话"
+		return "  " + strings.ReplaceAll(i18n.T(i18n.MsgTUISessionEmpty, m.lang), "\n", "\n  ")
 	}
 
 	headerStyle := lipgloss.NewStyle().
@@ -111,13 +117,18 @@ func (m SessionListModel) View() string {
 		Foreground(lipgloss.Color("252"))
 
 	var b strings.Builder
-	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-16s %-10s %-10s %s", "ID", "工具", "状态", "标题")))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-16s %-10s %-10s %s",
+		i18n.T(i18n.MsgTUISessionHeaderID, m.lang),
+		i18n.T(i18n.MsgTUISessionHeaderTool, m.lang),
+		i18n.T(i18n.MsgTUISessionHeaderStatus, m.lang),
+		i18n.T(i18n.MsgTUISessionHeaderTitle, m.lang),
+	)))
 	b.WriteString("\n")
 	b.WriteString("  " + strings.Repeat("─", 60) + "\n")
 
 	for i, s := range m.sessions {
 		line := fmt.Sprintf("  %-16s %-10s %-10s %s",
-			truncate(s.ID, 16), s.Tool, statusIcon(s.Status), truncate(s.Title, 30))
+			truncate(s.ID, 16), s.Tool, statusIcon(s.Status, m.lang), truncate(s.Title, 30))
 		if i == m.cursor {
 			b.WriteString(selectedStyle.Render(line))
 		} else {
@@ -126,18 +137,18 @@ func (m SessionListModel) View() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n  ↑↓:选择  Enter:详情  n:新建  d:终止")
+	b.WriteString("\n  " + i18n.T(i18n.MsgTUISessionFooter, m.lang))
 	return b.String()
 }
 
-func statusIcon(status string) string {
+func statusIcon(status string, lang string) string {
 	switch status {
 	case "running":
-		return "● 运行中"
+		return i18n.T(i18n.MsgTUIStatusRunning, lang)
 	case "stopped":
-		return "○ 已停止"
+		return i18n.T(i18n.MsgTUIStatusStopped, lang)
 	case "error":
-		return "✗ 错误"
+		return i18n.T(i18n.MsgTUIStatusError, lang)
 	default:
 		return "? " + status
 	}

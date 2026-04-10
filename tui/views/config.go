@@ -1,16 +1,17 @@
-package views
+﻿package views
 
 import (
 	"fmt"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// isSensitiveKey 判断配置项是否为敏感字段。
+// isSensitiveKey checks whether a config key is sensitive.
 func isSensitiveKey(key string) bool {
 	switch key {
 	case "token", "api_key", "secret", "password":
@@ -20,7 +21,7 @@ func isSensitiveKey(key string) bool {
 		strings.Contains(key, "password") || strings.Contains(key, "_key")
 }
 
-// ConfigEntry 配置项。
+// ConfigEntry represents a configuration entry.
 type ConfigEntry struct {
 	Key     string
 	Value   string
@@ -28,58 +29,66 @@ type ConfigEntry struct {
 	Section string
 }
 
-// ConfigSaveMsg 配置保存消息，由外层（app.go）处理持久化。
+// ConfigSaveMsg is a config save message, persisted by the outer layer (app.go).
 type ConfigSaveMsg struct {
 	Section string
 	Key     string
 	Value   string
 }
 
-// ConfigModel 配置管理视图。
+// ConfigModel is the configuration management view.
 type ConfigModel struct {
 	entries []ConfigEntry
 	cursor  int
 	editing bool
 	input   textinput.Model
+	lang    string
 }
 
-// IsEditing 返回是否处于编辑模式（供外层屏蔽全局快捷键）。
+// IsEditing returns whether the view is in editing mode (for outer layer to mask global hotkeys).
 func (m ConfigModel) IsEditing() bool {
 	return m.editing
 }
 
-// NewConfigModel 创建配置视图。
-func NewConfigModel() ConfigModel {
+// NewConfigModel creates a new config view.
+func NewConfigModel(lang string) ConfigModel {
+	lang = i18n.NormalizeLang(lang)
 	ti := textinput.New()
 	ti.CharLimit = 256
 	ti.Width = 40
 
 	return ConfigModel{
 		entries: []ConfigEntry{
-			{Key: "hub_url", Value: "", Desc: "Hub 服务器地址", Section: "general"},
-			{Key: "token", Value: "", Desc: "认证令牌", Section: "general"},
-			{Key: "data_dir", Value: "", Desc: "数据目录", Section: "general"},
-			{Key: "max_iterations", Value: "300", Desc: "Agent 最大迭代次数（30-300）", Section: "general"},
-			{Key: "clawnet_enabled", Value: "false", Desc: "启用 ClawNet", Section: "general"},
-			// LLM 配置
-			{Key: "maclaw_llm_url", Value: "", Desc: "LLM API 地址", Section: "maclaw_llm"},
+			{Key: "hub_url", Value: "", Desc: "Hub server URL", Section: "general"},
+			{Key: "token", Value: "", Desc: "auth token", Section: "general"},
+			{Key: "data_dir", Value: "", Desc: "data directory", Section: "general"},
+			{Key: "max_iterations", Value: "300", Desc: "Agent max iterations (30-300)", Section: "general"},
+			{Key: "agentnet_enabled", Value: "false", Desc: "enable AgentNet", Section: "general"},
+			// LLM config
+			{Key: "maclaw_llm_url", Value: "", Desc: "LLM API URL", Section: "maclaw_llm"},
 			{Key: "maclaw_llm_key", Value: "", Desc: "LLM API Key", Section: "maclaw_llm"},
-			{Key: "maclaw_llm_model", Value: "", Desc: "LLM 模型名称", Section: "maclaw_llm"},
-			{Key: "maclaw_llm_protocol", Value: "openai", Desc: "LLM 协议 (openai/anthropic)", Section: "maclaw_llm"},
-			{Key: "maclaw_llm_context_length", Value: "", Desc: "上下文长度 (tokens)", Section: "maclaw_llm"},
-			// IM 配置
-			{Key: "qqbot_enabled", Value: "false", Desc: "启用 QQ 机器人", Section: "qqbot"},
+			{Key: "maclaw_llm_model", Value: "", Desc: "LLM model name", Section: "maclaw_llm"},
+			{Key: "maclaw_llm_protocol", Value: "openai", Desc: "LLM protocol (openai/anthropic)", Section: "maclaw_llm"},
+			{Key: "maclaw_llm_context_length", Value: "", Desc: "context length (tokens)", Section: "maclaw_llm"},
+			// IM config
+			{Key: "qqbot_enabled", Value: "false", Desc: "enable QQ bot", Section: "qqbot"},
 			{Key: "qqbot_app_id", Value: "", Desc: "QQ Bot AppID", Section: "qqbot"},
 			{Key: "qqbot_app_secret", Value: "", Desc: "QQ Bot AppSecret", Section: "qqbot"},
-			{Key: "telegram_bot_enabled", Value: "false", Desc: "启用 Telegram 机器人", Section: "telegram"},
+			{Key: "telegram_bot_enabled", Value: "false", Desc: "enable Telegram bot", Section: "telegram"},
 			{Key: "telegram_bot_token", Value: "", Desc: "Telegram Bot Token", Section: "telegram"},
-			{Key: "skill_purchase_mode", Value: "auto", Desc: "Skill获取策略 (auto/free_only)", Section: "skillmarket"},
+			{Key: "skill_purchase_mode", Value: "auto", Desc: "Skill purchase mode (auto/free_only)", Section: "skillmarket"},
 		},
 		input: ti,
+		lang:  lang,
 	}
 }
 
-// SetEntries 更新配置项。
+// SetEntries updates config entries.
+func (m *ConfigModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
+}
+
+// SetEntries updates config entries.
 func (m *ConfigModel) SetEntries(entries []ConfigEntry) {
 	m.entries = entries
 	if m.cursor >= len(entries) {
@@ -87,14 +96,14 @@ func (m *ConfigModel) SetEntries(entries []ConfigEntry) {
 	}
 }
 
-// LoadFromAppConfig 从 AppConfig 同步配置值到视图。
+// LoadFromAppConfig syncs config values from AppConfig to the view.
 func (m *ConfigModel) LoadFromAppConfig(cfg corelib.AppConfig) {
 	valMap := map[string]string{
 		"hub_url":                  cfg.RemoteHubURL,
 		"token":                    cfg.RemoteMachineToken,
-		"data_dir":                 "", // 运行时确定，不从配置读
+		"data_dir":                 "", // determined at runtime, not from config
 		"max_iterations":           fmt.Sprintf("%d", cfg.MaclawAgentMaxIterations),
-		"clawnet_enabled":          fmt.Sprintf("%v", cfg.ClawNetEnabled),
+		"agentnet_enabled":           fmt.Sprintf("%v", cfg.AgentNetEnabled),
 		"maclaw_llm_url":           cfg.MaclawLLMUrl,
 		"maclaw_llm_key":           cfg.MaclawLLMKey,
 		"maclaw_llm_model":         cfg.MaclawLLMModel,
@@ -109,7 +118,7 @@ func (m *ConfigModel) LoadFromAppConfig(cfg corelib.AppConfig) {
 	}
 	for i, e := range m.entries {
 		if v, ok := valMap[e.Key]; ok {
-			// 清理零值显示
+			// clear zero-value display
 			if v == "0" && (e.Key == "max_iterations" || e.Key == "maclaw_llm_context_length") {
 				v = ""
 			}
@@ -118,10 +127,10 @@ func (m *ConfigModel) LoadFromAppConfig(cfg corelib.AppConfig) {
 	}
 }
 
-// Init 实现 tea.Model。
+// Init implements tea.Model.
 func (m ConfigModel) Init() tea.Cmd { return nil }
 
-// Update 处理键盘事件。
+// Update handles keyboard events.
 func (m ConfigModel) Update(msg tea.Msg) (ConfigModel, tea.Cmd) {
 	if m.editing {
 		return m.updateEditing(msg)
@@ -129,7 +138,7 @@ func (m ConfigModel) Update(msg tea.Msg) (ConfigModel, tea.Cmd) {
 	return m.updateNormal(msg)
 }
 
-// updateNormal 非编辑模式下的按键处理。
+// updateNormal handles keys in non-editing mode.
 func (m ConfigModel) updateNormal(msg tea.Msg) (ConfigModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -155,7 +164,7 @@ func (m ConfigModel) updateNormal(msg tea.Msg) (ConfigModel, tea.Cmd) {
 	return m, nil
 }
 
-// updateEditing 编辑模式下的按键处理。
+// updateEditing handles keys in editing mode.
 func (m ConfigModel) updateEditing(msg tea.Msg) (ConfigModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -175,13 +184,13 @@ func (m ConfigModel) updateEditing(msg tea.Msg) (ConfigModel, tea.Cmd) {
 			return m, nil
 		}
 	}
-	// 委托给 textinput 处理其他按键
+	// delegate to textinput for other keys
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
-// View 渲染配置视图。
+// View renders the config view.
 func (m ConfigModel) View() string {
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
 	selectedStyle := lipgloss.NewStyle().
@@ -192,13 +201,13 @@ func (m ConfigModel) View() string {
 	editStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 
 	var b strings.Builder
-	b.WriteString(headerStyle.Render("  配置管理"))
+	b.WriteString(headerStyle.Render("  " + i18n.T(i18n.MsgTUIConfigTitle, m.lang)))
 	b.WriteString("\n")
-	b.WriteString("  " + strings.Repeat("─", 60) + "\n")
+	b.WriteString("  " + strings.Repeat("-", 60) + "\n")
 
 	for i, e := range m.entries {
 		if m.editing && i == m.cursor {
-			// 编辑行：显示 textinput
+			// editing row: show textinput
 			line := fmt.Sprintf("  %-20s = ", e.Key)
 			b.WriteString(editStyle.Render(line))
 			b.WriteString(m.input.View())
@@ -206,7 +215,7 @@ func (m ConfigModel) View() string {
 		} else {
 			val := e.Value
 			if val == "" {
-				val = dimStyle.Render("(未设置)")
+				val = dimStyle.Render(i18n.T(i18n.MsgTUIConfigNotSet, m.lang))
 			} else if isSensitiveKey(e.Key) {
 				val = "********"
 			}
@@ -221,9 +230,9 @@ func (m ConfigModel) View() string {
 	}
 
 	if m.editing {
-		b.WriteString("\n  Enter:确认  Esc:取消")
+		b.WriteString("\n  " + i18n.T(i18n.MsgTUIConfigFooterEditing, m.lang))
 	} else {
-		b.WriteString("\n  ↑↓:选择  Enter:编辑  r:刷新")
+		b.WriteString("\n  " + i18n.T(i18n.MsgTUIConfigFooterNormal, m.lang))
 	}
 	return b.String()
 }

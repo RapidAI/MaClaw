@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -11,11 +12,11 @@ import (
 
 // AuditItem 审计日志列表项。
 type AuditItem struct {
-	Time     string // "2006-01-02 15:04"
-	Tool     string
-	Risk     string // low, medium, high, critical
-	Policy   string // allow, deny, ask, audit
-	Result   string
+	Time   string // "2006-01-02 15:04"
+	Tool   string
+	Risk   string // low, medium, high, critical
+	Policy string // allow, deny, ask, audit
+	Result string
 }
 
 // AuditRefreshMsg 请求刷新审计日志（带过滤条件）。
@@ -26,22 +27,29 @@ type AuditRefreshMsg struct {
 
 // AuditModel 审计日志视图。
 type AuditModel struct {
-	entries    []AuditItem
-	filtered  []AuditItem
-	cursor    int
-	loading   bool
-	filtering bool
+	entries     []AuditItem
+	filtered    []AuditItem
+	cursor      int
+	loading     bool
+	filtering   bool
 	filterInput textinput.Model
 	filterText  string
+	lang        string
 }
 
 // NewAuditModel 创建审计日志视图。
-func NewAuditModel() AuditModel {
+func NewAuditModel(lang string) AuditModel {
+	lang = i18n.NormalizeLang(lang)
 	ti := textinput.New()
-	ti.Placeholder = "输入工具名或风险等级过滤..."
+	ti.Placeholder = i18n.T(i18n.MsgTUIAuditFilterPlaceholder, lang)
 	ti.CharLimit = 64
 	ti.Width = 40
-	return AuditModel{loading: true, filterInput: ti}
+	return AuditModel{loading: true, filterInput: ti, lang: lang}
+}
+
+func (m *AuditModel) SetLang(lang string) {
+	m.lang = i18n.NormalizeLang(lang)
+	m.filterInput.Placeholder = i18n.T(i18n.MsgTUIAuditFilterPlaceholder, m.lang)
 }
 
 // SetEntries 更新审计日志列表。
@@ -151,10 +159,10 @@ func riskColor(risk string) lipgloss.Color {
 // View 渲染审计日志列表。
 func (m AuditModel) View() string {
 	if m.loading {
-		return "  正在加载审计日志..."
+		return "  " + i18n.T(i18n.MsgTUIAuditLoading, m.lang)
 	}
 	if len(m.entries) == 0 {
-		return "  暂无审计日志\n\n  使用 CLI 查询: maclaw-tui audit list"
+		return "  " + strings.ReplaceAll(i18n.T(i18n.MsgTUIAuditEmpty, m.lang), "\n", "\n  ")
 	}
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
@@ -166,17 +174,22 @@ func (m AuditModel) View() string {
 
 	var b strings.Builder
 
-	// 过滤栏
 	if m.filtering {
-		b.WriteString(filterStyle.Render("  过滤: "))
+		b.WriteString(filterStyle.Render("  " + i18n.T(i18n.MsgTUIAuditFilterLabel, m.lang)))
 		b.WriteString(m.filterInput.View())
 		b.WriteString("\n")
 	} else if m.filterText != "" {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  过滤: %s (/:修改  Esc:清除)", m.filterText)))
+		b.WriteString(dimStyle.Render("  " + i18n.Tf(i18n.MsgTUIAuditFilterSummary, m.lang, m.filterText)))
 		b.WriteString("\n")
 	}
 
-	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-18s %-18s %-10s %-8s %s", "TIME", "TOOL", "RISK", "POLICY", "RESULT")))
+	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-18s %-18s %-10s %-8s %s",
+		i18n.T(i18n.MsgTUIAuditHeaderTime, m.lang),
+		i18n.T(i18n.MsgTUIAuditHeaderTool, m.lang),
+		i18n.T(i18n.MsgTUIAuditHeaderRisk, m.lang),
+		i18n.T(i18n.MsgTUIAuditHeaderPolicy, m.lang),
+		i18n.T(i18n.MsgTUIAuditHeaderResult, m.lang),
+	)))
 	b.WriteString("\n  " + strings.Repeat("─", 72) + "\n")
 
 	for i, e := range m.filtered {
@@ -193,6 +206,6 @@ func (m AuditModel) View() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(fmt.Sprintf("\n  共 %d/%d 条  ↑↓:选择  g/G:首/尾  /:过滤  r:刷新", len(m.filtered), len(m.entries)))
+	b.WriteString("\n  " + i18n.Tf(i18n.MsgTUIAuditFooter, m.lang, len(m.filtered), len(m.entries)))
 	return b.String()
 }

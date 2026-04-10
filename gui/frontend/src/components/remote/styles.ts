@@ -1,24 +1,26 @@
 import type { CSSProperties } from "react";
 
-/* ── Semantic color tokens – professional muted palette ── */
+/* ── Semantic color tokens – resolved from CSS variables so light/dark can share the same components ── */
 export const colors = {
-    primary: "#4f5d75",
-    primaryDark: "#2d3748",
-    primaryLight: "#a0aec0",
-    accentBg: "#f7f8fa",
-    bg: "#f4f5f7",
-    surface: "#ffffff",
-    text: "#1a202c",
-    textSecondary: "#5a6577",
-    textMuted: "#8b95a5",
-    border: "#e1e4e8",
-    borderLight: "rgba(148, 163, 184, 0.14)",
-    success: "#2f855a",
-    successBg: "#f0fdf4",
-    warning: "#b7791f",
-    warningBg: "#fffbeb",
-    danger: "#c53030",
-    dangerBg: "#fff5f5",
+    primary: "var(--theme-primary)",
+    primaryDark: "var(--theme-primary-strong)",
+    primaryLight: "var(--theme-primary-soft)",
+    accentBg: "var(--theme-surface-muted)",
+    bg: "var(--theme-page-bg)",
+    surface: "var(--theme-surface)",
+    text: "var(--theme-text-primary)",
+    textSecondary: "var(--theme-text-secondary)",
+    textMuted: "var(--theme-text-muted)",
+    border: "var(--theme-border)",
+    borderLight: "var(--theme-border-subtle)",
+    success: "var(--theme-success)",
+    successBg: "var(--theme-success-bg)",
+    warning: "var(--theme-warning)",
+    warningBg: "var(--theme-warning-bg)",
+    danger: "var(--theme-danger)",
+    dangerBg: "var(--theme-danger-bg)",
+    link: "var(--theme-link-color)",
+    infoBg: "var(--theme-info-bg)",
 } as const;
 
 export const radius = {

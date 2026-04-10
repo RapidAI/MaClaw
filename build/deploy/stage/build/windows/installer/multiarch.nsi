@@ -1,5 +1,7 @@
 ﻿Unicode true
 
+!include /NONFATAL "build_params.nsh.tmp"
+
 !ifndef INFO_PROJECTNAME
 !define INFO_PROJECTNAME "MaClaw"
 !endif

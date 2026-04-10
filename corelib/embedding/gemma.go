@@ -69,13 +69,14 @@ type gemmaWeights struct {
 
 // GemmaEmbedder is a pure Go Gemma2 text embedding model.
 type GemmaEmbedder struct {
-	hp        GemmaHParams
-	weights   gemmaWeights
-	tokenizer *Tokenizer
-	dim       int // output dim (MRL truncation)
-	mu        sync.Mutex
-	mmap      *gguf.MmapFile // kept alive for the mmap backing
-	scratch   *gemmaScratch  // reusable inference buffers (lazily initialized)
+	hp          GemmaHParams
+	weights     gemmaWeights
+	tokenizer   *Tokenizer
+	dim         int // output dim (MRL truncation)
+	mu          sync.Mutex
+	mmap        *gguf.MmapFile // kept alive for the mmap backing
+	scratch     *gemmaScratch  // reusable inference buffers (lazily initialized)
+	scratchPool sync.Pool      // pool of *gemmaScratch for EmbedConcurrent
 }
 
 // gemmaScratch holds reusable scratch buffers for forward pass.
@@ -93,9 +94,10 @@ type gemmaScratch struct {
 	rowBuf  []float32
 	scores  []float32
 	// Pre-computed RoPE cos/sin tables: [seq][halfDim] for the current sequence length.
-	ropeCos []float32
-	ropeSin []float32
-	seqCap  int // max seq length these buffers were allocated for
+	ropeCos  []float32
+	ropeSin  []float32
+	seqCap   int // max seq length these buffers were allocated for
+	ropeSeq  int // seq length the RoPE tables were last computed for
 }
 
 // NewGemmaEmbedder loads a Gemma2 embedding model from a GGUF file.

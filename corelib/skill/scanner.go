@@ -84,7 +84,7 @@ func ScanAllSkillDirsWithExternal(externalDirs []string) []corelib.NLSkillEntry 
 }
 
 // ValidateExternalSkillDir checks whether a directory is a valid skill
-// directory (contains at least one subdirectory with skill.yaml or skill.md).
+// directory (contains at least one subdirectory with skill.yaml, skill.md, or SKILL.md).
 // Returns the count of valid skill subdirectories and an error if the
 // directory is not usable.
 func ValidateExternalSkillDir(dir string) (int, error) {
@@ -106,7 +106,7 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 			continue
 		}
 		subDir := filepath.Join(dir, entry.Name())
-		for _, name := range []string{"skill.yaml", "skill.md"} {
+		for _, name := range []string{"skill.yaml", "skill.md", "SKILL.md"} {
 			if _, err := os.Stat(filepath.Join(subDir, name)); err == nil {
 				count++
 				break
@@ -114,7 +114,7 @@ func ValidateExternalSkillDir(dir string) (int, error) {
 		}
 	}
 	if count == 0 {
-		return 0, fmt.Errorf("no valid skill subdirectories found (need skill.yaml or skill.md)")
+		return 0, fmt.Errorf("no valid skill subdirectories found (need skill.yaml, skill.md, or SKILL.md)")
 	}
 	return count, nil
 }

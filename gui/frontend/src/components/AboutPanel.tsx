@@ -34,11 +34,11 @@ type AboutPanelProps = {
 const MarkdownLink = ({ node, ...props }: any) => (
     <a
         {...props}
+        className="themed-markdown-link"
         onClick={(e: MouseEvent<HTMLAnchorElement>) => {
             e.preventDefault();
             if (props.href) BrowserOpenURL(props.href);
         }}
-        style={{ cursor: 'pointer', color: '#6366f1', textDecoration: 'underline' }}
     />
 );
 

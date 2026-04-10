@@ -1,4 +1,4 @@
-export namespace main {
+﻿export namespace main {
 	
 	export class ProjectConfig {
 	    id: string;
@@ -164,14 +164,14 @@ export namespace main {
 	    nl_skills: any[];
 	    memory_auto_compress: boolean;
 	    memory_max_backups: number;
-	    clawnet_enabled: boolean;
+	    agentnet_enabled: boolean;
 	    skill_hub_urls: any[];
 	    maclaw_debug_tool_calls: boolean;
 	    show_ai_trace_entry: boolean;
 	    log_detail_enabled: boolean;
-	    clawnet_auto_picker_enabled: boolean;
-	    clawnet_auto_picker_poll_min: number;
-	    clawnet_auto_picker_min_reward: number;
+	    AgentNet_auto_picker_enabled: boolean;
+	    AgentNet_auto_picker_poll_min: number;
+	    AgentNet_auto_picker_min_reward: number;
 	    security_policy_mode: string;
 	    sandbox_mode: string;
 	    network_level: string;
@@ -278,10 +278,10 @@ export namespace main {
 	        this.nl_skills = source["nl_skills"];
 	        this.memory_auto_compress = source["memory_auto_compress"];
 	        this.memory_max_backups = source["memory_max_backups"];
-	        this.clawnet_enabled = source["clawnet_enabled"];
-	        this.clawnet_auto_picker_enabled = source["clawnet_auto_picker_enabled"];
-	        this.clawnet_auto_picker_poll_min = source["clawnet_auto_picker_poll_min"];
-	        this.clawnet_auto_picker_min_reward = source["clawnet_auto_picker_min_reward"];
+	        this.agentnet_enabled = source["agentnet_enabled"];
+	        this.AgentNet_auto_picker_enabled = source["AgentNet_auto_picker_enabled"];
+	        this.AgentNet_auto_picker_poll_min = source["AgentNet_auto_picker_poll_min"];
+	        this.AgentNet_auto_picker_min_reward = source["AgentNet_auto_picker_min_reward"];
 	        this.skill_hub_urls = source["skill_hub_urls"];
 	        this.security_policy_mode = source["security_policy_mode"];
 	        this.sandbox_mode = source["sandbox_mode"];
