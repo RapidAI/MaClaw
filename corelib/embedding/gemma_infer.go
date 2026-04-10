@@ -130,6 +130,20 @@ func newGemmaScratch(hp GemmaHParams, seq int) *gemmaScratch {
 	kvDim := hp.KVDim
 	ffDim := hp.FFDim
 	headDim := hp.HeadDim
+	halfDim := headDim / 2
+
+	// Pre-compute RoPE cos/sin tables for all positions
+	ropeCos := make([]float32, seq*halfDim)
+	ropeSin := make([]float32, seq*halfDim)
+	for pos := 0; pos < seq; pos++ {
+		for i := 0; i < halfDim; i++ {
+			freq := 1.0 / float32(math.Pow(float64(hp.RopeTheta), float64(2*i)/float64(headDim)))
+			angle := float32(pos) * freq
+			ropeCos[pos*halfDim+i] = float32(math.Cos(float64(angle)))
+			ropeSin[pos*halfDim+i] = float32(math.Sin(float64(angle)))
+		}
+	}
+
 	return &gemmaScratch{
 		normed:  make([]float32, seq*dim),
 		q:       make([]float32, seq*dim),
@@ -144,6 +158,8 @@ func newGemmaScratch(hp GemmaHParams, seq int) *gemmaScratch {
 		kNormed: make([]float32, headDim),
 		rowBuf:  make([]float32, dim),
 		scores:  make([]float32, seq),
+		ropeCos: ropeCos,
+		ropeSin: ropeSin,
 		seqCap:  seq,
 	}
 }
@@ -161,15 +177,15 @@ func (g *GemmaEmbedder) ensureScratch(seq int) *gemmaScratch {
 
 // forward runs the Gemma2 transformer using the shared scratch (mutex-protected path).
 func (g *GemmaEmbedder) forward(tokenIDs []int) ([]float32, error) {
-	s := g.ensureScratch(len(tokenIDs))
-	return g.forwardWithScratch(tokenIDs, s)
+	sc := g.ensureScratch(len(tokenIDs))
+	return g.forwardWithScratch(tokenIDs, sc)
 }
 
 // forwardWithScratch runs the Gemma2 transformer with an externally provided
 // scratch buffer. This is the core inference function — safe to call from
 // multiple goroutines as long as each has its own scratch and weights are
 // read-only (mmap-backed Q8 tensors).
-func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, s *gemmaScratch) ([]float32, error) {
+func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]float32, error) {
 	hp := g.hp
 	seq := len(tokenIDs)
 	dim := hp.Dim
@@ -186,23 +202,24 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, s *gemmaScratch) ([]f
 		if id < 0 || id >= hp.VocabSize {
 			return nil, fmt.Errorf("gemma: token id %d out of range [0,%d)", id, hp.VocabSize)
 		}
-		g.weights.tokenEmb.DequantRow(id, s.rowBuf)
+		g.weights.tokenEmb.DequantRow(id, sc.rowBuf)
 		dst := x[si*dim : (si+1)*dim]
-		copy(dst, s.rowBuf)
+		copy(dst, sc.rowBuf)
 		tensor.Scale(dst, embScale)
 	}
 
-	normed := s.normed[:seq*dim]
-	q := s.q[:seq*dim]
-	k := s.k[:seq*kvDim]
-	v := s.v[:seq*kvDim]
-	attnOut := s.attnOut[:seq*dim]
-	projOut := s.projOut[:seq*dim]
-	ffGate := s.ffGate[:seq*ffDim]
-	ffUp := s.ffUp[:seq*ffDim]
-	ffDown := s.ffDown[:seq*dim]
-	qNormed := s.qNormed
-	kNormed := s.kNormed
+	normed := sc.normed[:seq*dim]
+	q := sc.q[:seq*dim]
+	k := sc.k[:seq*kvDim]
+	v := sc.v[:seq*kvDim]
+	attnOut := sc.attnOut[:seq*dim]
+	projOut := sc.projOut[:seq*dim]
+	ffGate := sc.ffGate[:seq*ffDim]
+	ffUp := sc.ffUp[:seq*ffDim]
+	ffDown := sc.ffDown[:seq*dim]
+	qNormed := sc.qNormed
+	kNormed := sc.kNormed
+	halfDim := headDim / 2
 
 	for l := 0; l < hp.NLayers; l++ {
 		layer := &g.weights.layers[l]
@@ -218,7 +235,7 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, s *gemmaScratch) ([]f
 		tensor.MatMulQ8(k, normed, &layer.attnKWeight, seq, kvDim, dim)
 		tensor.MatMulQ8(v, normed, &layer.attnVWeight, seq, kvDim, dim)
 
-		// QK-norm + RoPE per position
+		// QK-norm + RoPE per position (using pre-computed cos/sin tables)
 		for s := 0; s < seq; s++ {
 			for h := 0; h < nHeads; h++ {
 				off := s*dim + h*headDim
@@ -230,12 +247,14 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, s *gemmaScratch) ([]f
 				tensor.RMSNorm(kNormed, k[off:off+headDim], layer.attnKNormW, hp.RMSNormEps)
 				copy(k[off:off+headDim], kNormed)
 			}
-			tensor.RoPE(q[s*dim:(s+1)*dim], nHeads, headDim, s, hp.RopeTheta)
-			tensor.RoPE(k[s*kvDim:(s+1)*kvDim], nKVHeads, headDim, s, hp.RopeTheta)
+			cosTab := sc.ropeCos[s*halfDim : (s+1)*halfDim]
+			sinTab := sc.ropeSin[s*halfDim : (s+1)*halfDim]
+			tensor.RoPEPrecomputed(q[s*dim:(s+1)*dim], nHeads, headDim, cosTab, sinTab)
+			tensor.RoPEPrecomputed(k[s*kvDim:(s+1)*kvDim], nKVHeads, headDim, cosTab, sinTab)
 		}
 
 		// GQA attention
-		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim, s.scores[:seq])
+		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim, sc.scores[:seq])
 
 		// Output projection — Q8 MatMul
 		tensor.MatMulQ8(projOut, attnOut, &layer.attnOutWeight, seq, dim, dim)
@@ -254,8 +273,8 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, s *gemmaScratch) ([]f
 		// Gate + Up — Q8 MatMul
 		tensor.MatMulQ8(ffGate, normed, &layer.ffGateWeight, seq, ffDim, dim)
 		tensor.MatMulQ8(ffUp, normed, &layer.ffUpWeight, seq, ffDim, dim)
-		tensor.SiLU(ffGate)
-		tensor.ElemMul(ffGate, ffGate, ffUp)
+		// Fused SiLU(gate) * up — saves one full pass over ffDim*seq elements
+		tensor.SiLUMul(ffGate, ffUp)
 
 		// Down projection — Q8 MatMul
 		tensor.MatMulQ8(ffDown, ffGate, &layer.ffDownWeight, seq, dim, ffDim)
@@ -283,7 +302,7 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, s *gemmaScratch) ([]f
 	return out, nil
 }
 
-// gqaAttention computes grouped-query attention.
+// gqaAttention computes grouped-query attention using SIMD-accelerated dot products.
 func (g *GemmaEmbedder) gqaAttention(out, q, k, v []float32,
 	seq, nHeads, nKVHeads, headDim, qStride, kvStride int, scores []float32) {
 
@@ -297,27 +316,23 @@ func (g *GemmaEmbedder) gqaAttention(out, q, k, v []float32,
 			qOff := sq*qStride + h*headDim
 			qVec := q[qOff : qOff+headDim]
 
+			// Score computation: use SIMD dot product instead of scalar loop
 			for sk := 0; sk < seq; sk++ {
 				kOff := sk*kvStride + kvH*headDim
-				var d float32
-				for i := 0; i < headDim; i++ {
-					d += qVec[i] * k[kOff+i]
-				}
-				scores[sk] = d * scale
+				scores[sk] = tensor.Dot(qVec, k[kOff:kOff+headDim]) * scale
 			}
 
 			tensor.Softmax(scores[:seq])
 
+			// Weighted sum of V: zero output then accumulate
 			outOff := sq*qStride + h*headDim
-			for i := 0; i < headDim; i++ {
-				out[outOff+i] = 0
+			outSlice := out[outOff : outOff+headDim]
+			for i := range outSlice {
+				outSlice[i] = 0
 			}
 			for sk := 0; sk < seq; sk++ {
 				vOff := sk*kvStride + kvH*headDim
-				w := scores[sk]
-				for i := 0; i < headDim; i++ {
-					out[outOff+i] += w * v[vOff+i]
-				}
+				tensor.Axpy(scores[sk], v[vOff:vOff+headDim], outSlice)
 			}
 		}
 	}

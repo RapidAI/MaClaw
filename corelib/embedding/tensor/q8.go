@@ -60,19 +60,21 @@ func getMatMulWorkers() int {
 // MatMulQ8 computes out = A @ B^T where A is [M, K] float32 and B is Q8_0 [N, K].
 // Result out is [M, N]. Each B row is dequantized into a temporary buffer, then
 // vek32.Dot (AVX2/NEON SIMD) computes the dot product against the A row.
+//
+// Performance: dequant-then-SIMD-dot is faster than fused scalar dequant-dot
+// because AVX2/NEON processes 8 floats per cycle. The dequant buffer is reused
+// across iterations to avoid allocation overhead.
 func MatMulQ8(out, a []float32, b *Q8Tensor, M, N, K int) {
-	// Parallelize when there's enough work: either across M rows or N columns.
 	nCPU := getMatMulWorkers()
 	if nCPU > 1 && N*K > 4096 {
 		if M > 1 {
 			matMulQ8Parallel(out, a, b, M, N, K)
 			return
 		}
-		// M is small (often 1 for short sequences) — parallelize across N columns.
 		matMulQ8ParallelN(out, a, b, M, N, K)
 		return
 	}
-	buf := make([]float32, K) // dequant buffer, reused across all N iterations
+	buf := make([]float32, K)
 	nBlocks := K / q8BlockSize
 	for m := 0; m < M; m++ {
 		aRow := a[m*K : m*K+K]
@@ -154,6 +156,7 @@ func matMulQ8ParallelN(out, a []float32, b *Q8Tensor, M, N, K int) {
 
 // dequantRowInto dequantizes a Q8_0 row into dst (len >= nBlocks*32).
 // This is the hot path — called once per dot product.
+// Uses 8x unrolled loop to help the compiler auto-vectorize.
 func dequantRowInto(data []byte, row int, nBlocks int, dst []float32) {
 	rowOff := row * nBlocks * q8BlockBytes
 	for b := 0; b < nBlocks; b++ {
@@ -161,12 +164,16 @@ func dequantRowInto(data []byte, row int, nBlocks int, dst []float32) {
 		scale := float16to32(binary.LittleEndian.Uint16(data[off:]))
 		base := b * q8BlockSize
 		qOff := off + 2
-		// 4x unrolled dequant
-		for i := 0; i < q8BlockSize; i += 4 {
+		// 8x unrolled for better ILP and auto-vectorization
+		for i := 0; i < q8BlockSize; i += 8 {
 			dst[base+i] = scale * float32(int8(data[qOff+i]))
 			dst[base+i+1] = scale * float32(int8(data[qOff+i+1]))
 			dst[base+i+2] = scale * float32(int8(data[qOff+i+2]))
 			dst[base+i+3] = scale * float32(int8(data[qOff+i+3]))
+			dst[base+i+4] = scale * float32(int8(data[qOff+i+4]))
+			dst[base+i+5] = scale * float32(int8(data[qOff+i+5]))
+			dst[base+i+6] = scale * float32(int8(data[qOff+i+6]))
+			dst[base+i+7] = scale * float32(int8(data[qOff+i+7]))
 		}
 	}
 }

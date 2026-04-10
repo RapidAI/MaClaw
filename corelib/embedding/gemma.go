@@ -92,6 +92,9 @@ type gemmaScratch struct {
 	kNormed []float32
 	rowBuf  []float32
 	scores  []float32
+	// Pre-computed RoPE cos/sin tables: [seq][halfDim] for the current sequence length.
+	ropeCos []float32
+	ropeSin []float32
 	seqCap  int // max seq length these buffers were allocated for
 }
 

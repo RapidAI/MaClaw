@@ -150,3 +150,82 @@ func TestGemmaEmbedder_PrintVec(t *testing.T) {
 		fmt.Printf("  [%d] = %.8f\n", i, vec[i])
 	}
 }
+
+func findModelBench(b *testing.B) string {
+	b.Helper()
+	if p := os.Getenv("GEMMA_EMB_MODEL"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	p := filepath.Join(home, ".maclaw", "models", "embeddinggemma-300M-Q8_0.gguf")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	b.Skip("no gemma embedding model found")
+	return ""
+}
+
+// BenchmarkEmbed_Short benchmarks single short text embedding.
+func BenchmarkEmbed_Short(b *testing.B) {
+	modelPath := findModelBench(b)
+	emb, err := NewGemmaEmbedder(modelPath, 256)
+	if err != nil {
+		b.Fatalf("load failed: %v", err)
+	}
+	defer emb.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := emb.Embed("hello world")
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkEmbed_Medium benchmarks a medium-length text (~50 tokens).
+func BenchmarkEmbed_Medium(b *testing.B) {
+	modelPath := findModelBench(b)
+	emb, err := NewGemmaEmbedder(modelPath, 256)
+	if err != nil {
+		b.Fatalf("load failed: %v", err)
+	}
+	defer emb.Close()
+
+	text := "The quick brown fox jumps over the lazy dog. This is a medium length sentence that should produce around fifty tokens for benchmarking the embedding model inference performance."
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := emb.Embed(text)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkEmbedBatch benchmarks batch embedding of 8 texts.
+func BenchmarkEmbedBatch(b *testing.B) {
+	modelPath := findModelBench(b)
+	emb, err := NewGemmaEmbedder(modelPath, 256)
+	if err != nil {
+		b.Fatalf("load failed: %v", err)
+	}
+	defer emb.Close()
+
+	texts := []string{
+		"hello world",
+		"machine learning",
+		"natural language processing",
+		"deep neural networks",
+		"transformer architecture",
+		"attention mechanism",
+		"embedding vectors",
+		"semantic similarity",
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := emb.EmbedBatch(texts)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}

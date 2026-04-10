@@ -90,24 +90,48 @@ func matMulParallelN(out, a, b []float32, M, N, K int) {
 	wg.Wait()
 }
 
+// Dot computes the dot product of two vectors using SIMD acceleration.
+func Dot(a, b []float32) float32 {
+	return vek32.Dot(a, b)
+}
+
+// Axpy computes y[i] += a * x[i] (BLAS-style) using SIMD.
+func Axpy(a float32, x, y []float32) {
+	// vek32 doesn't have a direct axpy, but we can use MulNumber + Add_Inplace
+	// For short vectors (headDim=256), a simple loop is competitive with SIMD overhead.
+	for i := range x {
+		y[i] += a * x[i]
+	}
+}
+
 // RMSNorm computes RMS normalization: out[i] = x[i] / rms(x) * weight[i].
 // out and x may alias (in-place normalization).
 func RMSNorm(out, x, weight []float32, eps float32) {
 	n := len(x)
 	ss := vek32.Dot(x, x) // sum of squares via SIMD dot product
 	scale := 1.0 / float32(math.Sqrt(float64(ss/float32(n)+eps)))
+	// Fuse scale*weight into a single multiply pass
 	for i := 0; i < n; i++ {
-		out[i] = x[i] * scale * weight[i]
+		out[i] = x[i] * (scale * weight[i])
 	}
 }
 
 // SiLU computes the SiLU activation: x * sigmoid(x), in-place.
 func SiLU(x []float32) {
-	// SiLU(x) = x / (1 + exp(-x))
-	// No SIMD intrinsic available, but we can batch the exp calls.
 	for i := range x {
-		ex := float32(math.Exp(float64(-x[i])))
-		x[i] = x[i] / (1.0 + ex)
+		v := x[i]
+		ex := float32(math.Exp(float64(-v)))
+		x[i] = v / (1.0 + ex)
+	}
+}
+
+// SiLUMul computes SiLU(gate) * up in-place into gate, fusing two operations.
+// This avoids a separate ElemMul pass and reduces memory traffic.
+func SiLUMul(gate, up []float32) {
+	for i := range gate {
+		v := gate[i]
+		ex := float32(math.Exp(float64(-v)))
+		gate[i] = (v / (1.0 + ex)) * up[i]
 	}
 }
 
@@ -182,6 +206,24 @@ func RoPE(x []float32, nHeads, headDim, pos int, theta float32) {
 			angle := float32(pos) * freq
 			cos := float32(math.Cos(float64(angle)))
 			sin := float32(math.Sin(float64(angle)))
+			x0 := x[off+i]
+			x1 := x[off+i+halfDim]
+			x[off+i] = x0*cos - x1*sin
+			x[off+i+halfDim] = x0*sin + x1*cos
+		}
+	}
+}
+
+// RoPEPrecomputed applies RoPE using pre-computed cos/sin tables.
+// cosTable and sinTable are [halfDim] for the given position.
+// This avoids expensive math.Pow/Cos/Sin calls per layer (24 layers × seq positions).
+func RoPEPrecomputed(x []float32, nHeads, headDim int, cosTable, sinTable []float32) {
+	halfDim := headDim / 2
+	for h := 0; h < nHeads; h++ {
+		off := h * headDim
+		for i := 0; i < halfDim; i++ {
+			cos := cosTable[i]
+			sin := sinTable[i]
 			x0 := x[off+i]
 			x1 := x[off+i+halfDim]
 			x[off+i] = x0*cos - x1*sin
