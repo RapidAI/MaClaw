@@ -3765,7 +3765,7 @@ ${instruction}`;
                                     { label: 'LLM', on: maclawLLMOnline },
                                     { label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'Net', on: clawNetRunning },
                                     { label: lang === 'zh-Hans' ? '移动' : lang === 'zh-Hant' ? '移動' : 'Mob', on: !!remoteActivationStatus?.activated },
-                                    { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected', link: 'im' },
+                                    { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerStatus === 'connected', link: 'im' },
                                 ].map(({ label, on, link }) => (
                                     <div
                                         key={label}
