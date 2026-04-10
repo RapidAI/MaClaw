@@ -32,7 +32,7 @@ func (a *App) clawNetStartAllowed() error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	if !cfg.AgentNetEnabled {
-		return fmt.Errorf("clawnet is disabled in settings")
+		return fmt.Errorf("agentnet is disabled in settings")
 	}
 	return nil
 }

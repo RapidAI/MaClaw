@@ -921,21 +921,21 @@ func needsUpdate() bool {
 // Errors are logged but never propagated.
 func (c *ClawNetClient) tryAutoUpdate(logFn func(string)) {
 	if logFn != nil {
-		logFn("ClawNet: auto-update check started")
+		logFn("AgentNet: auto-update check started")
 	}
 	if err := c.SelfUpdate(); err != nil {
 		if logFn != nil {
-			logFn(fmt.Sprintf("ClawNet: auto-update failed (non-fatal): %v", err))
+			logFn(fmt.Sprintf("AgentNet: auto-update failed (non-fatal): %v", err))
 		}
 		return
 	}
 	writeLastUpdateTime()
 	if logFn != nil {
-		logFn("ClawNet: auto-update completed successfully")
+		logFn("AgentNet: auto-update completed successfully")
 	}
 	// SelfUpdate may replace the binary; verify daemon is still alive.
 	if !c.ping() && logFn != nil {
-		logFn("ClawNet: daemon unreachable after update — it may need a manual restart")
+		logFn("AgentNet: daemon unreachable after update — it may need a manual restart")
 	}
 }
 

@@ -199,6 +199,22 @@ const (
 	MsgTUIConfigNotSet                = "msg.tui_config_not_set"
 	MsgTUIConfigFooterEditing         = "msg.tui_config_footer_editing"
 	MsgTUIConfigFooterNormal          = "msg.tui_config_footer_normal"
+	MsgTUIConfigDescHubURL            = "msg.tui_config_desc_hub_url"
+	MsgTUIConfigDescToken             = "msg.tui_config_desc_token"
+	MsgTUIConfigDescDataDir           = "msg.tui_config_desc_data_dir"
+	MsgTUIConfigDescMaxIterations     = "msg.tui_config_desc_max_iterations"
+	MsgTUIConfigDescAgentNetEnabled   = "msg.tui_config_desc_agentnet_enabled"
+	MsgTUIConfigDescLLMURL            = "msg.tui_config_desc_llm_url"
+	MsgTUIConfigDescLLMKey            = "msg.tui_config_desc_llm_key"
+	MsgTUIConfigDescLLMModel          = "msg.tui_config_desc_llm_model"
+	MsgTUIConfigDescLLMProtocol       = "msg.tui_config_desc_llm_protocol"
+	MsgTUIConfigDescLLMContextLength  = "msg.tui_config_desc_llm_context_length"
+	MsgTUIConfigDescQQBotEnabled      = "msg.tui_config_desc_qqbot_enabled"
+	MsgTUIConfigDescQQBotAppID        = "msg.tui_config_desc_qqbot_app_id"
+	MsgTUIConfigDescQQBotAppSecret    = "msg.tui_config_desc_qqbot_app_secret"
+	MsgTUIConfigDescTelegramEnabled   = "msg.tui_config_desc_telegram_enabled"
+	MsgTUIConfigDescTelegramToken     = "msg.tui_config_desc_telegram_token"
+	MsgTUIConfigDescSkillPurchaseMode = "msg.tui_config_desc_skill_purchase_mode"
 	MsgTUIAgentNetLoading             = "msg.tui_agentnet_loading"
 	MsgTUIAgentNetTabPeers            = "msg.tui_agentnet_tab_peers"
 	MsgTUIAgentNetTabTasks            = "msg.tui_agentnet_tab_tasks"
@@ -418,6 +434,22 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigNotSet:    "(未设置)",
 		MsgTUIConfigFooterEditing: "Enter:确认  Esc:取消",
 		MsgTUIConfigFooterNormal:  "Up/Down:选择  Enter:编辑  r:刷新",
+		MsgTUIConfigDescHubURL:            "Hub 服务地址",
+		MsgTUIConfigDescToken:             "认证令牌",
+		MsgTUIConfigDescDataDir:           "数据目录",
+		MsgTUIConfigDescMaxIterations:     "Agent 最大迭代次数 (30-300)",
+		MsgTUIConfigDescAgentNetEnabled:   "启用 AgentNet",
+		MsgTUIConfigDescLLMURL:            "LLM API 地址",
+		MsgTUIConfigDescLLMKey:            "LLM API 密钥",
+		MsgTUIConfigDescLLMModel:          "LLM 模型名称",
+		MsgTUIConfigDescLLMProtocol:       "LLM 协议 (openai/anthropic)",
+		MsgTUIConfigDescLLMContextLength:  "上下文长度 (tokens)",
+		MsgTUIConfigDescQQBotEnabled:      "启用 QQ 机器人",
+		MsgTUIConfigDescQQBotAppID:        "QQ 机器人 AppID",
+		MsgTUIConfigDescQQBotAppSecret:    "QQ 机器人 AppSecret",
+		MsgTUIConfigDescTelegramEnabled:   "启用 Telegram 机器人",
+		MsgTUIConfigDescTelegramToken:     "Telegram 机器人 Token",
+		MsgTUIConfigDescSkillPurchaseMode: "技能购买模式 (auto/free_only)",
 		MsgTUIAgentNetLoading: "正在加载 AgentNet...",
 		MsgTUIAgentNetTabPeers: "Peers",
 		MsgTUIAgentNetTabTasks: "Tasks",
@@ -626,6 +658,22 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigNotSet:    "(not set)",
 		MsgTUIConfigFooterEditing: "Enter:confirm  Esc:cancel",
 		MsgTUIConfigFooterNormal:  "Up/Down:select  Enter:edit  r:refresh",
+		MsgTUIConfigDescHubURL:            "Hub server URL",
+		MsgTUIConfigDescToken:             "auth token",
+		MsgTUIConfigDescDataDir:           "data directory",
+		MsgTUIConfigDescMaxIterations:     "Agent max iterations (30-300)",
+		MsgTUIConfigDescAgentNetEnabled:   "enable AgentNet",
+		MsgTUIConfigDescLLMURL:            "LLM API URL",
+		MsgTUIConfigDescLLMKey:            "LLM API Key",
+		MsgTUIConfigDescLLMModel:          "LLM model name",
+		MsgTUIConfigDescLLMProtocol:       "LLM protocol (openai/anthropic)",
+		MsgTUIConfigDescLLMContextLength:  "context length (tokens)",
+		MsgTUIConfigDescQQBotEnabled:      "enable QQ bot",
+		MsgTUIConfigDescQQBotAppID:        "QQ Bot AppID",
+		MsgTUIConfigDescQQBotAppSecret:    "QQ Bot AppSecret",
+		MsgTUIConfigDescTelegramEnabled:   "enable Telegram bot",
+		MsgTUIConfigDescTelegramToken:     "Telegram Bot Token",
+		MsgTUIConfigDescSkillPurchaseMode: "Skill purchase mode (auto/free_only)",
 		MsgTUIAgentNetLoading: "Loading AgentNet...",
 		MsgTUIAgentNetTabPeers: "Peers",
 		MsgTUIAgentNetTabTasks: "Tasks",
