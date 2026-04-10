@@ -9,6 +9,10 @@ import {
 import { colors, radius } from "./styles";
 import { cnCard, cnLabel, cnInput, cnActionBtn } from "./agentnetStyles";
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
 type Props = { lang: string; clawNetRunning: boolean };
 
 interface SwarmSession {
@@ -26,7 +30,6 @@ const STANCES = [
 const ACTION_MSG_TTL = 4000;
 
 export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
-    const zh = lang?.startsWith("zh");
     const [sessions, setSessions] = useState<SwarmSession[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
@@ -84,7 +87,7 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
         try {
             const res = await ClawNetJoinSwarm(id);
             if (!res.ok) showMsg(`❌ ${res.error}`);
-            else { showMsg(zh ? "✅ 已加入" : "✅ Joined"); refresh(); }
+            else { showMsg(localizeText(lang, "✅ Joined", "✅ 已加入")); refresh(); }
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
     };
 
@@ -93,7 +96,7 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
         setContribBusy(true);
         try {
             const res = await ClawNetContributeToSwarm(activeSession, contribText.trim(), contribStance);
-            if (res.ok) { setContribText(""); showMsg(zh ? "✅ 已贡献" : "✅ Contributed"); refresh(); }
+            if (res.ok) { setContribText(""); showMsg(localizeText(lang, "✅ Contributed", "✅ 已贡献")); refresh(); }
             else showMsg(`❌ ${res.error}`);
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
         setContribBusy(false);
@@ -102,20 +105,20 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
     const handleSynthesize = async (id: string) => {
         try {
             const res = await ClawNetSynthesizeSwarm(id);
-            if (res.ok) { showMsg(zh ? "✅ 综合完成" : "✅ Synthesized"); refresh(); }
+            if (res.ok) { showMsg(localizeText(lang, "✅ Synthesized", "✅ 综合完成")); refresh(); }
             else showMsg(`❌ ${res.error}`);
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{zh ? "智网未连接" : "ClawNet not connected"}</div>;
+    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                <span style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text }}>🧠 {zh ? "群体思考" : "Swarm Think"}</span>
+                <span style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text }}>🧠 {localizeText(lang, "Swarm Think", "群体思考")}</span>
                 <div style={{ display: "flex", gap: "6px" }}>
-                    <button style={cnActionBtn()} onClick={() => setShowCreate(!showCreate)}>{showCreate ? (zh ? "取消" : "Cancel") : (zh ? "发起讨论" : "New Swarm")}</button>
-                    <button style={cnActionBtn(loading)} onClick={refresh} disabled={loading}>{zh ? "刷新" : "Refresh"}</button>
+                    <button style={cnActionBtn()} onClick={() => setShowCreate(!showCreate)}>{showCreate ? localizeText(lang, "Cancel", "取消") : localizeText(lang, "New Swarm", "发起讨论")}</button>
+                    <button style={cnActionBtn(loading)} onClick={refresh} disabled={loading}>{localizeText(lang, "Refresh", "刷新")}</button>
                 </div>
             </div>
 
@@ -123,17 +126,17 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
 
             {showCreate && (
                 <div style={{ ...cnCard, background: colors.bg }}>
-                    <input value={newTopic} onChange={e => setNewTopic(e.target.value)} placeholder={zh ? "讨论主题" : "Topic"} style={{ ...cnInput, marginBottom: "6px" }} />
-                    <textarea value={newQuestion} onChange={e => setNewQuestion(e.target.value)} placeholder={zh ? "核心问题（可选）" : "Question (optional)"}
+                    <input value={newTopic} onChange={e => setNewTopic(e.target.value)} placeholder={localizeText(lang, "Topic", "讨论主题")} style={{ ...cnInput, marginBottom: "6px" }} />
+                    <textarea value={newQuestion} onChange={e => setNewQuestion(e.target.value)} placeholder={localizeText(lang, "Question (optional)", "核心问题（可选）")}
                         style={{ ...cnInput, minHeight: "60px", resize: "vertical", marginBottom: "8px" }} />
                     <button style={cnActionBtn(createBusy || !newTopic.trim())} onClick={handleCreate} disabled={createBusy || !newTopic.trim()}>
-                        {createBusy ? "..." : (zh ? "创建" : "Create")}
+                        {createBusy ? "..." : localizeText(lang, "Create", "创建")}
                     </button>
                 </div>
             )}
 
             {error && <div style={{ fontSize: "0.72rem", color: colors.danger, marginBottom: "8px" }}>{error}</div>}
-            {loading && <div style={cnLabel}>{zh ? "加载中..." : "Loading..."}</div>}
+            {loading && <div style={cnLabel}>{localizeText(lang, "Loading...", "加载中...")}</div>}
 
             {sessions.map(s => (
                 <div key={s.id} style={cnCard}>
@@ -147,15 +150,15 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
                     </div>
                     {s.synthesis && (
                         <div style={{ fontSize: "0.72rem", color: colors.textSecondary, background: colors.accentBg, padding: "6px 8px", borderRadius: radius.md, marginBottom: "6px", whiteSpace: "pre-wrap" }}>
-                            <span style={{ fontWeight: 600 }}>📝 {zh ? "综合结论" : "Synthesis"}:</span> {s.synthesis}
+                            <span style={{ fontWeight: 600 }}>📝 {localizeText(lang, "Synthesis", "综合结论")}:</span> {s.synthesis}
                         </div>
                     )}
                     <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                        <button style={{ ...cnActionBtn(), padding: "2px 8px", fontSize: "0.68rem" }} onClick={() => handleJoin(s.id)}>{zh ? "加入" : "Join"}</button>
+                        <button style={{ ...cnActionBtn(), padding: "2px 8px", fontSize: "0.68rem" }} onClick={() => handleJoin(s.id)}>{localizeText(lang, "Join", "加入")}</button>
                         <button style={{ ...cnActionBtn(), padding: "2px 8px", fontSize: "0.68rem" }} onClick={() => setActiveSession(activeSession === s.id ? null : s.id)}>
-                            {zh ? "贡献观点" : "Contribute"}
+                            {localizeText(lang, "Contribute", "贡献观点")}
                         </button>
-                        <button style={{ ...cnActionBtn(), padding: "2px 8px", fontSize: "0.68rem" }} onClick={() => handleSynthesize(s.id)}>{zh ? "综合" : "Synthesize"}</button>
+                        <button style={{ ...cnActionBtn(), padding: "2px 8px", fontSize: "0.68rem" }} onClick={() => handleSynthesize(s.id)}>{localizeText(lang, "Synthesize", "综合")}</button>
                     </div>
                     {activeSession === s.id && (
                         <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: `1px solid ${colors.border}` }}>
@@ -164,22 +167,22 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
                                     <button key={st.value} onClick={() => setContribStance(st.value)}
                                         style={{ background: contribStance === st.value ? st.color : "transparent", color: contribStance === st.value ? "#fff" : st.color,
                                             border: `1px solid ${st.color}`, borderRadius: radius.md, padding: "2px 8px", fontSize: "0.68rem", cursor: "pointer" }}>
-                                        {zh ? st.zh : st.en}
+                                        {localizeText(lang, st.en, st.zh)}
                                     </button>
                                 ))}
                             </div>
                             <div style={{ display: "flex", gap: "4px" }}>
-                                <input value={contribText} onChange={e => setContribText(e.target.value)} placeholder={zh ? "你的观点..." : "Your contribution..."}
+                                <input value={contribText} onChange={e => setContribText(e.target.value)} placeholder={localizeText(lang, "Your contribution...", "你的观点...")}
                                     style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && handleContribute()} />
                                 <button style={cnActionBtn(contribBusy || !contribText.trim())} onClick={handleContribute} disabled={contribBusy}>
-                                    {zh ? "发送" : "Send"}
+                                    {localizeText(lang, "Send", "发送")}
                                 </button>
                             </div>
                         </div>
                     )}
                 </div>
             ))}
-            {!loading && sessions.length === 0 && <div style={cnLabel}>{zh ? "暂无活跃讨论" : "No active swarms"}</div>}
+            {!loading && sessions.length === 0 && <div style={cnLabel}>{localizeText(lang, "No active swarms", "暂无活跃讨论")}</div>}
         </div>
     );
 }

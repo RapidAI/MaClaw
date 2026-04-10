@@ -291,6 +291,13 @@ func (h *TUIAgentHandler) buildSystemPromptWithFirstTurn(_ string, isFirstTurn b
 	// 注入 SSH 远程能力提示
 	prompt += `
 
+## 文件编码与大文件写入
+- write_file 工具始终以 UTF-8 编码写入文件，不会产生 GBK 乱码。
+- bash 工具在 Windows 上已自动设置 UTF-8 输出编码（PYTHONIOENCODING=utf-8, PYTHONUTF8=1），Python/Node 脚本的中文输出不会乱码。
+- 写入大文件（>3000 字符）时，使用 write_file 的 mode=append 分块写入：先用 overwrite 写入第一部分，再用 append 追加后续部分。
+- 生成 Python 脚本写文件时，始终在 open() 中指定 encoding='utf-8'。
+- ⚠️ 不要因为怀疑编码问题而反复尝试不同方案——write_file 就是 UTF-8，直接写中文即可。
+
 🖥️ SSH 远程服务器管理：
 你有 ssh 工具，可以连接远程服务器并交互式执行命令。
 当用户提到"登录"、"服务器"、"远程"、"SSH"、"部署"、"运维"等关键词时，使用 ssh 工具。
@@ -364,7 +371,7 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 		toolDef("read_file", "读取文件内容", map[string]interface{}{
 			"path": map[string]interface{}{"type": "string", "description": "文件路径"},
 		}, []string{"path"}),
-		toolDef("write_file", "写入文件（支持覆盖或追加，允许空内容）", map[string]interface{}{
+		toolDef("write_file", "写入文件（UTF-8 编码，支持覆盖或追加，允许空内容。大文件请分块写入：先 overwrite 第一部分，再 append 后续部分）", map[string]interface{}{
 			"path":    map[string]interface{}{"type": "string", "description": "文件路径"},
 			"content": map[string]interface{}{"type": "string", "description": "文件内容，可为空字符串"},
 			"mode":    map[string]interface{}{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
@@ -721,10 +728,14 @@ func (h *TUIAgentHandler) toolBash(args map[string]interface{}) string {
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
+		// Use PowerShell with UTF-8 output encoding to prevent GBK mojibake.
+		wrapped := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", wrapped)
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
+	// Force UTF-8 encoding for subprocess I/O (Python, Node, etc.).
+	cmd.Env = coretool.AppendUTF8Env(os.Environ())
 	out, err := cmd.CombinedOutput()
 	result := string(out)
 	if err != nil {

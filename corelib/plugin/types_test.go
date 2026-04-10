@@ -22,6 +22,9 @@ func TestPluginType_Constants(t *testing.T) {
 	if PluginTypeNative != "native" {
 		t.Errorf("PluginTypeNative = %q, want %q", PluginTypeNative, "native")
 	}
+	if PluginTypeScript != "script" {
+		t.Errorf("PluginTypeScript = %q, want %q", PluginTypeScript, "script")
+	}
 }
 
 func TestPluginScope_Constants(t *testing.T) {

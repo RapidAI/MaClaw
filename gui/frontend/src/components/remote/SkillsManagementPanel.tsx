@@ -1,5 +1,21 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, type CSSProperties } from "react";
 import { useDialog } from "../CustomDialog";
+import {
+    colors,
+    remoteCardStyle,
+    remoteCodeBlockStyle,
+    remoteDisabledBadgeStyle,
+    remoteEmptyStateStyle,
+    remoteErrorStateStyle,
+    remoteInfoPanelStyle,
+    remoteLoadingStateStyle,
+    remoteStatusBadgeStyle,
+    remoteSuccessBadgeStyle,
+    remoteTableCellStyle,
+    remoteTableContainerStyle,
+    remoteTableHeaderCellStyle,
+    remoteTagStyle,
+} from "./styles";
 import {
     ListNLSkills,
     CreateNLSkill,
@@ -711,7 +727,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {/* Tab switcher — sticky so it stays visible while content scrolls */}
-            <div style={{ display: "flex", gap: "0", borderBottom: "1px solid #e1e4e8", position: "sticky", top: 0, backgroundColor: "var(--bg-color)", zIndex: 5, paddingTop: "2px" }}>
+            <div style={{ display: "flex", gap: "0", borderBottom: `1px solid ${colors.border}`, position: "sticky", top: 0, backgroundColor: colors.bg, zIndex: 5, paddingTop: "2px" }}>
                 <button
                     style={{
                         ...tabBtnStyle,
@@ -755,7 +771,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 <>
                     {/* Header with create button */}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: "0.78rem", color: "#5a6577" }}>
+                        <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
                             {installedSkills.length} {localizeText("skill(s) registered", "个已注册 Skill", "個已註冊 Skill")}
                         </span>
                         <div style={{ display: "flex", gap: "6px" }}>
@@ -783,7 +799,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             </button>
                         </div>
                     </div>
-                    <div style={{ fontSize: "0.74rem", color: "#6b7280" }}>
+                    <div style={{ fontSize: "0.74rem", color: colors.textMuted }}>
                         {localizeText(
                             "OpenClaw skill zips usually contain SKILL.md or skill.md; skill.yaml / skill.yml and skill.json are also supported.",
                             "标准 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml 和 skill.json。",
@@ -793,19 +809,19 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Diagnose results */}
                     {diagEntries && diagEntries.length > 0 && (
-                        <div style={{ border: "1px solid #e1e4e8", borderRadius: "6px", padding: "10px", background: "#f9fafb", fontSize: "0.76rem" }}>
+                        <div style={{ ...remoteInfoPanelStyle, fontSize: "0.76rem" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                                <span style={{ fontWeight: 500, color: "#24292e" }}>📋 {localizeText("Skill Directory Diagnosis", "Skill 目录诊断结果", "Skill 目錄診斷結果")}</span>
+                                <span style={{ fontWeight: 500, color: colors.text }}>📋 {localizeText("Skill Directory Diagnosis", "Skill 目录诊断结果", "Skill 目錄診斷結果")}</span>
                                 <button className="btn-secondary" style={{ fontSize: "0.7rem", padding: "2px 8px" }} onClick={() => setDiagEntries(null)}>{localizeText("Close", "关闭", "關閉")}</button>
                             </div>
                             {diagEntries.map((d, i) => (
-                                <div key={i} style={{ display: "flex", gap: "6px", alignItems: "baseline", padding: "3px 0", borderTop: i > 0 ? "1px solid #eaecef" : undefined }}>
+                                <div key={i} style={{ display: "flex", gap: "6px", alignItems: "baseline", padding: "3px 0", borderTop: i > 0 ? `1px solid ${colors.borderLight}` : undefined }}>
                                     <span>{d.ok ? "✅" : "❌"}</span>
                                     <span style={{ fontWeight: 500, minWidth: "100px" }}>{d.dir}</span>
                                     {d.ok ? (
-                                        <span style={{ color: "#22863a" }}>{localizeText("Loaded", "加载成功", "載入成功")}{d.name ? ` → ${d.name}` : ""}</span>
+                                        <span style={{ color: colors.success }}>{localizeText("Loaded", "加载成功", "載入成功")}{d.name ? ` → ${d.name}` : ""}</span>
                                     ) : (
-                                        <span style={{ color: "#cb2431" }}>{d.reason}</span>
+                                        <span style={{ color: colors.danger }}>{d.reason}</span>
                                     )}
                                 </div>
                             ))}
@@ -814,24 +830,24 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Loading */}
                     {loading && (
-                        <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: "#8b95a5" }}>
+                        <div style={remoteLoadingStateStyle}>
                             {localizeText("Loading...", "加载中...", "載入中...")}
                         </div>
                     )}
 
                     {/* Error */}
                     {error && (
-                        <div style={{ fontSize: "0.78rem", color: "#c53030", background: "#fff5f5", padding: "6px 10px", borderRadius: "4px", border: "1px solid #fecdd3" }}>
+                        <div style={remoteErrorStateStyle}>
                             {error}
                         </div>
                     )}
 
                     {/* Skills table */}
                     {!loading && installedSkills.length > 0 && (
-                        <div style={{ border: "1px solid #e1e4e8", borderRadius: "6px", overflow: "hidden" }}>
+                        <div style={remoteTableContainerStyle}>
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem" }}>
                                 <thead>
-                                    <tr style={{ background: "#f4f5f7" }}>
+                                    <tr style={{ background: colors.surfaceMuted }}>
                                         <th style={thStyle}>{localizeText("Name", "名称", "名稱")}</th>
                                         <th style={thStyle}>{localizeText("Description", "描述", "描述")}</th>
                                         <th style={{ ...thStyle, width: "120px" }}>{localizeText("Type", "类型", "類型")}</th>
@@ -843,7 +859,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 </thead>
                                 <tbody>
                                     {installedSkills.map((s) => (
-                                        <tr key={s.name} style={{ borderTop: "1px solid #e1e4e8" }}>
+                                        <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
                                             <td style={tdStyle}>{s.name}</td>
                                             <td style={tdStyle}>
                                                 <div style={descCellStyle} title={s.description || undefined}>{s.description || "—"}</div>
@@ -854,7 +870,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         {getExecutionClassLabel(s.execution_class)}
                                                     </span>
                                                 ) : (
-                                                    <span style={{ fontSize: "0.72rem", color: "#b0b8c4" }}>—</span>
+                                                    <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>—</span>
                                                 )}
                                             </td>
                                             <td style={tdStyle}>
@@ -866,11 +882,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             </td>
                                             <td style={tdStyle}>
                                                 {(s.usage_count ?? 0) > 0 ? (
-                                                    <span style={{ fontSize: "0.72rem", color: "#5a6577" }}>
+                                                    <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
                                                         {s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%
                                                     </span>
                                                 ) : (
-                                                    <span style={{ fontSize: "0.72rem", color: "#b0b8c4" }}>{localizeText("Unused", "未使用", "未使用")}</span>
+                                                    <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>
                                                 )}
                                             </td>
                                             <td style={tdStyle}>
@@ -892,7 +908,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {!loading && installedSkills.length === 0 && !error && (
-                        <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: "#8b95a5" }}>
+                        <div style={remoteEmptyStateStyle}>
                             {localizeText("No registered Skills yet", "暂无已注册的 Skill", "暫無已註冊的 Skill")}
                         </div>
                     )}
@@ -925,7 +941,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Hub error */}
                     {hubError && (
-                        <div style={{ fontSize: "0.78rem", color: "#c53030", background: "#fff5f5", padding: "6px 10px", borderRadius: "4px", border: "1px solid #fecdd3" }}>
+                        <div style={remoteErrorStateStyle}>
                             {hubError}
                         </div>
                     )}
@@ -933,12 +949,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {/* Loading state */}
                     {hubSearching && (
                         <div style={{
-                            border: "1px solid #e1e4e8",
-                            borderRadius: "6px",
-                            padding: "24px",
-                            textAlign: "center",
-                            fontSize: "0.78rem",
-                            color: "#8b95a5",
+                            ...remoteLoadingStateStyle,
                             minHeight: "120px",
                             display: "flex",
                             alignItems: "center",
@@ -951,12 +962,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {/* Results */}
                     {!hubSearching && hubSearched && hubResults.length === 0 && !hubError && (
                         <div style={{
-                            border: "1px solid #e1e4e8",
-                            borderRadius: "6px",
-                            padding: "24px",
-                            textAlign: "center",
-                            fontSize: "0.78rem",
-                            color: "#8b95a5",
+                            ...remoteLoadingStateStyle,
                             minHeight: "120px",
                             display: "flex",
                             alignItems: "center",
@@ -973,7 +979,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
                                         <div style={{ flex: 1, minWidth: 0 }}>
                                             <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                                                <span style={{ fontWeight: 600, fontSize: "0.82rem", color: "#1a202c" }}>{skill.name}</span>
+                                                <span style={{ fontWeight: 600, fontSize: "0.82rem", color: colors.text }}>{skill.name}</span>
                                                 <span style={{
                                                     display: "inline-flex",
                                                     alignItems: "center",
@@ -981,9 +987,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     fontSize: "0.66rem",
                                                     padding: "2px 6px",
                                                     borderRadius: "999px",
-                                                    background: "#edf2f7",
-                                                    color: "#4a5568",
-                                                    border: "1px solid #e2e8f0",
+                                                    background: colors.surfaceMuted,
+                                                    color: colors.textSecondary,
+                                                    border: `1px solid ${colors.borderLight}`,
                                                 }}>
                                                     {skill.source_label}
                                                 </span>
@@ -993,11 +999,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     </span>
                                                 )}
                                                 {skill.version && (
-                                                    <span style={{ fontSize: "0.68rem", color: "#8b95a5" }}>v{skill.version}</span>
+                                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>v{skill.version}</span>
                                                 )}
                                             </div>
                                             {skill.source === "github" && (skill.repo_url || skill.file_path) && (
-                                                <div style={{ fontSize: "0.68rem", color: "#8b95a5", marginTop: "4px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                                                <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: "4px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
                                                     {skill.repo_url && (
                                                         <button
                                                             type="button"
@@ -1006,7 +1012,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                                 padding: 0,
                                                                 border: "none",
                                                                 background: "transparent",
-                                                                color: "#3182ce",
+                                                                color: colors.link,
                                                                 cursor: "pointer",
                                                                 fontSize: "0.68rem",
                                                                 textDecoration: "underline",
@@ -1019,17 +1025,17 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     {skill.file_path && <span>{skill.file_path}</span>}
                                                 </div>
                                             )}
-                                            <div style={{ fontSize: "0.76rem", color: "#5a6577", marginTop: "4px", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }} title={skill.description || undefined}>
+                                            <div style={{ fontSize: "0.76rem", color: colors.textSecondary, marginTop: "4px", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }} title={skill.description || undefined}>
                                                 {skill.description || localizeText("No description", "暂无描述", "暫無描述")}
                                             </div>
                                             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px", flexWrap: "wrap" }}>
                                                 {(skill.tags || []).map((tag, i) => (
                                                     <span key={i} style={tagStyle}>{tag}</span>
                                                 ))}
-                                                <span style={{ fontSize: "0.68rem", color: "#8b95a5", marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                                <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                                                     {skill.rating_count > 0 && (
                                                         <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
-                                                            <span style={{ color: "#f59e0b" }}>{renderStars(skill.avg_rating)}</span>
+                                                            <span style={{ color: colors.warning }}>{renderStars(skill.avg_rating)}</span>
                                                             <span>({skill.rating_count})</span>
                                                         </span>
                                                     )}
@@ -1052,12 +1058,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {/* Initial state — no search performed yet */}
                     {!hubSearching && !hubSearched && !hubError && (
                         <div style={{
-                            border: "1px solid #e1e4e8",
-                            borderRadius: "6px",
-                            padding: "24px",
-                            textAlign: "center",
-                            fontSize: "0.78rem",
-                            color: "#8b95a5",
+                            ...remoteLoadingStateStyle,
                             minHeight: "120px",
                             display: "flex",
                             alignItems: "center",
@@ -1074,7 +1075,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 <>
                     {/* Header with export/import buttons */}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: "0.78rem", color: "#5a6577" }}>
+                        <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
                             {learnedSkills.length} {localizeText("learned skill(s)", "个自学习技能", "個自學習技能")}
                             {learnedSelected.size > 0 && ` (${localizeText("selected", "已选", "已選")} ${learnedSelected.size})`}
                         </span>
@@ -1090,12 +1091,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Import report */}
                     {importReport && (
-                        <div style={{ fontSize: "0.76rem", padding: "8px 10px", borderRadius: "4px", border: "1px solid #e1e4e8", background: "#f9fafb" }}>
+                        <div style={{ ...remoteInfoPanelStyle, padding: "8px 10px", borderRadius: "4px" }}>
                             <div style={{ marginBottom: "4px", fontWeight: 600 }}>
                                 {localizeText("Import complete:", "导入完成：", "匯入完成：")} {importReport.restored} {localizeText("succeeded", "成功", "成功")}，{importReport.skipped} {localizeText("skipped (duplicate)", "跳过（重名）", "跳過（重名）")}，{importReport.failed} {localizeText("failed", "失败", "失敗")}
                             </div>
                             {importReport.details.length > 0 && (
-                                <ul style={{ margin: 0, paddingLeft: "16px", color: "#5a6577" }}>
+                                <ul style={{ margin: 0, paddingLeft: "16px", color: colors.textSecondary }}>
                                     {importReport.details.map((d, i) => <li key={i}>{d}</li>)}
                                 </ul>
                             )}
@@ -1105,22 +1106,22 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Error */}
                     {error && (
-                        <div style={{ fontSize: "0.78rem", color: "#c53030", background: "#fff5f5", padding: "6px 10px", borderRadius: "4px", border: "1px solid #fecdd3" }}>
+                        <div style={remoteErrorStateStyle}>
                             {error}
                         </div>
                     )}
 
                     {/* Loading */}
                     {loading && (
-                        <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: "#8b95a5" }}>{localizeText("Loading...", "加载中...", "載入中...")}</div>
+                        <div style={remoteLoadingStateStyle}>{localizeText("Loading...", "加载中...", "載入中...")}</div>
                     )}
 
                     {/* Learned skills table */}
                     {!loading && learnedSkills.length > 0 && (
-                        <div style={{ border: "1px solid #e1e4e8", borderRadius: "6px", overflow: "hidden" }}>
+                        <div style={remoteTableContainerStyle}>
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem" }}>
                                 <thead>
-                                    <tr style={{ background: "#f4f5f7" }}>
+                                    <tr style={{ background: colors.surfaceMuted }}>
                                         <th style={{ ...thStyle, width: "36px", textAlign: "center" }}>
                                             <input type="checkbox" checked={learnedSkills.length > 0 && learnedSelected.size === learnedSkills.length} onChange={toggleLearnedSelectAll} />
                                         </th>
@@ -1134,7 +1135,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 </thead>
                                 <tbody>
                                     {learnedSkills.map((s) => (
-                                        <tr key={s.name} style={{ borderTop: "1px solid #e1e4e8" }}>
+                                        <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
                                             <td style={{ ...tdStyle, textAlign: "center" }}>
                                                 <input type="checkbox" checked={learnedSelected.has(s.name)} onChange={() => toggleLearnedSelect(s.name)} />
                                             </td>
@@ -1152,16 +1153,16 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             </td>
                                             <td style={tdStyle}>
                                                 {(s.usage_count ?? 0) > 0 ? (
-                                                    <span style={{ fontSize: "0.72rem", color: "#5a6577" }}>
+                                                    <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
                                                         {s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%
                                                     </span>
                                                 ) : (
-                                                    <span style={{ fontSize: "0.72rem", color: "#b0b8c4" }}>{localizeText("Unused", "未使用", "未使用")}</span>
+                                                    <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>
                                                 )}
                                             </td>
                                             <td style={tdStyle}>
                                                 <span style={statusDotStyle(s.status === "active")}>
-                                                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.status === "active" ? "#22c55e" : "#d1d5db", flexShrink: 0 }} />
+                                                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.status === "active" ? colors.success : colors.border, flexShrink: 0 }} />
                                                     {s.status === "active" ? localizeText("Active", "启用", "啟用") : localizeText("Disabled", "停用", "停用")}
                                                 </span>
                                             </td>
@@ -1202,7 +1203,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     >
                                                         {uploadingSkill === s.name ? localizeText("Uploading...", "上传中...", "上傳中...") : s.hub_skill_id ? localizeText("⬆ Re-upload", "⬆ 重新上传", "⬆ 重新上傳") : localizeText("⬆ Upload", "⬆ 上传", "⬆ 上傳")}
                                                     </button>
-                                                    {s.hub_skill_id && <span title={localizeText("Uploaded to Skill Market", "已上传到技能市场", "已上傳到技能市場")} style={{ fontSize: "0.68rem", color: "#16a34a" }}>✅</span>}
+                                                    {s.hub_skill_id && <span title={localizeText("Uploaded to Skill Market", "已上传到技能市场", "已上傳到技能市場")} style={{ fontSize: "0.68rem", color: colors.success }}>✅</span>}
                                                 </div>
                                             </td>
                                         </tr>
@@ -1213,7 +1214,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {!loading && learnedSkills.length === 0 && !error && (
-                        <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: "#8b95a5" }}>
+                        <div style={remoteEmptyStateStyle}>
                             {localizeText("No learned skills yet. MaClaw automatically learns and generates skills during use.", "暂无自学习技能。MaClaw 在使用过程中会自动学习并生成技能。", "暫無自學習技能。MaClaw 在使用過程中會自動學習並生成技能。")}
                         </div>
                     )}
@@ -1223,7 +1224,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             {/* === External Skill Directories Tab === */}
             {activeTab === "extdirs" && (
                 <>
-                    <div style={{ fontSize: "0.76rem", color: "#5a6577", marginBottom: "4px" }}>
+                    <div style={{ fontSize: "0.76rem", color: colors.textSecondary, marginBottom: "4px" }}>
                         {localizeText(
                             "Add external directories that contain skill subdirectories (each with skill.md or skill.yaml).",
                             "添加包含技能子目录的外部目录（每个子目录需包含 skill.md 或 skill.yaml）。",
@@ -1285,24 +1286,24 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Error */}
                     {extDirError && (
-                        <div style={{ fontSize: "0.78rem", color: "#c53030", background: "#fff5f5", padding: "6px 10px", borderRadius: "4px", border: "1px solid #fecdd3" }}>
+                        <div style={remoteErrorStateStyle}>
                             {extDirError}
                         </div>
                     )}
 
                     {/* Loading */}
                     {extDirsLoading && (
-                        <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: "#8b95a5" }}>
+                        <div style={remoteLoadingStateStyle}>
                             {localizeText("Loading...", "加载中...", "載入中...")}
                         </div>
                     )}
 
                     {/* Directory list */}
                     {!extDirsLoading && extDirs.length > 0 && (
-                        <div style={{ border: "1px solid #e1e4e8", borderRadius: "6px", overflow: "hidden" }}>
+                        <div style={remoteTableContainerStyle}>
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem" }}>
                                 <thead>
-                                    <tr style={{ background: "#f4f5f7" }}>
+                                    <tr style={{ background: colors.surfaceMuted }}>
                                         <th style={thStyle}>{localizeText("Directory Path", "目录路径", "目錄路徑")}</th>
                                         <th style={{ ...thStyle, width: "100px" }}>{localizeText("Skills Found", "技能数量", "技能數量")}</th>
                                         <th style={{ ...thStyle, width: "120px" }}>{localizeText("Status", "状态", "狀態")}</th>
@@ -1311,16 +1312,16 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 </thead>
                                 <tbody>
                                     {extDirs.map((d) => (
-                                        <tr key={d.path} style={{ borderTop: "1px solid #e1e4e8" }}>
+                                        <tr key={d.path} style={{ borderTop: `1px solid ${colors.border}` }}>
                                             <td style={tdStyle}>
                                                 <span style={{ fontFamily: "monospace", fontSize: "0.74rem", wordBreak: "break-all" }}>{d.path}</span>
                                             </td>
                                             <td style={{ ...tdStyle, textAlign: "center" }}>{d.skill_count}</td>
                                             <td style={tdStyle}>
                                                 {d.error ? (
-                                                    <span style={{ color: "#cb2431", fontSize: "0.72rem" }}>⚠ {d.error}</span>
+                                                    <span style={{ color: colors.danger, fontSize: "0.72rem" }}>⚠ {d.error}</span>
                                                 ) : (
-                                                    <span style={{ color: "#22863a", fontSize: "0.72rem" }}>✅ {localizeText("OK", "正常", "正常")}</span>
+                                                    <span style={{ color: colors.success, fontSize: "0.72rem" }}>✅ {localizeText("OK", "正常", "正常")}</span>
                                                 )}
                                             </td>
                                             <td style={tdStyle}>
@@ -1341,7 +1342,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     )}
 
                     {!extDirsLoading && extDirs.length === 0 && !extDirError && (
-                        <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: "#8b95a5" }}>
+                        <div style={remoteEmptyStateStyle}>
                             {localizeText(
                                 "No external skill directories configured. Add a directory above to scan for skills.",
                                 "暂无外部技能目录。在上方添加目录以扫描技能。",
@@ -1361,7 +1362,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             <button className="btn-close" onClick={() => setToastMsg(null)}>×</button>
                         </div>
                         <div className="modal-body">
-                            <p style={{ fontSize: "0.8rem", color: toastMsg.type === "error" ? "#c53030" : "#5a6577", margin: 0, wordBreak: "break-all" }}>
+                            <p style={{ fontSize: "0.8rem", color: toastMsg.type === "error" ? colors.danger : colors.textSecondary, margin: 0, wordBreak: "break-all" }}>
                                 {toastMsg.text}
                             </p>
                         </div>
@@ -1397,7 +1398,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "4px" }}>
                                     {(detailSkill.triggers || []).length > 0
                                         ? detailSkill.triggers.map((trigger, index) => <span key={index} style={tagStyle}>{trigger}</span>)
-                                        : <span style={{ fontSize: "0.74rem", color: "#8b95a5" }}>—</span>}
+                                        : <span style={{ fontSize: "0.74rem", color: colors.textMuted }}>—</span>}
                                 </div>
                             </div>
                             <div>
@@ -1484,7 +1485,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 />
                             </div>
                             {formError && (
-                                <div style={{ fontSize: "0.76rem", color: "#c53030", background: "#fff5f5", padding: "4px 8px", borderRadius: "4px" }}>
+                                <div style={{ ...remoteErrorStateStyle, fontSize: "0.76rem", padding: "4px 8px" }}>
                                     {formError}
                                 </div>
                             )}
@@ -1503,149 +1504,113 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 }
 
 /* Inline style constants */
-const thStyle: React.CSSProperties = {
-    padding: "6px 8px",
-    textAlign: "left",
-    fontWeight: 600,
-    fontSize: "0.74rem",
-    color: "#5a6577",
-    borderBottom: "1px solid #e1e4e8",
+const thStyle: CSSProperties = {
+    ...remoteTableHeaderCellStyle,
 };
 
-const tdStyle: React.CSSProperties = {
-    padding: "6px 8px",
-    fontSize: "0.76rem",
-    color: "#1a202c",
-    verticalAlign: "top",
+const tdStyle: CSSProperties = {
+    ...remoteTableCellStyle,
 };
 
-const descCellStyle: React.CSSProperties = {
+const descCellStyle: CSSProperties = {
     maxWidth: "220px",
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
 };
 
-const tagStyle: React.CSSProperties = {
-    display: "inline-block",
-    background: "#f4f5f7",
-    border: "1px solid #e1e4e8",
-    borderRadius: "999px",
-    padding: "1px 8px",
-    fontSize: "0.7rem",
-    color: "#4f5d75",
+const tagStyle: CSSProperties = {
+    ...remoteTagStyle,
 };
 
-const statusBadgeStyle: React.CSSProperties = {
-    display: "inline-block",
-    padding: "1px 8px",
-    borderRadius: "999px",
-    fontSize: "0.68rem",
-    fontWeight: 600,
+const statusBadgeStyle: CSSProperties = {
+    ...remoteStatusBadgeStyle,
 };
 
-const activeBadge: React.CSSProperties = {
-    background: "#f0fdf4",
-    color: "#2f855a",
-    border: "1px solid #86efac",
+const activeBadge: CSSProperties = {
+    ...remoteSuccessBadgeStyle,
 };
 
-const disabledBadge: React.CSSProperties = {
-    background: "#f4f5f7",
-    color: "#8b95a5",
-    border: "1px solid #e1e4e8",
+const disabledBadge: CSSProperties = {
+    ...remoteDisabledBadgeStyle,
 };
 
-const smallBtnStyle: React.CSSProperties = {
+const smallBtnStyle: CSSProperties = {
     fontSize: "0.72rem",
     padding: "2px 8px",
 };
 
-const detailGridStyle: React.CSSProperties = {
+const detailGridStyle: CSSProperties = {
     display: "grid",
     gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     gap: "10px 14px",
     fontSize: "0.76rem",
-    color: "#1a202c",
+    color: colors.text,
 };
 
-const detailTextBlockStyle: React.CSSProperties = {
+const detailTextBlockStyle: CSSProperties = {
     marginTop: "4px",
     fontSize: "0.76rem",
-    color: "#1a202c",
+    color: colors.text,
     whiteSpace: "pre-wrap",
     wordBreak: "break-word",
     lineHeight: 1.5,
 };
 
-const detailPreStyle: React.CSSProperties = {
-    marginTop: "4px",
-    marginBottom: 0,
-    padding: "8px 10px",
-    borderRadius: "6px",
-    background: "#f8fafc",
-    border: "1px solid #e2e8f0",
-    fontSize: "0.74rem",
-    lineHeight: 1.5,
-    color: "#1f2937",
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    overflowX: "auto",
+const detailPreStyle: CSSProperties = {
+    ...remoteCodeBlockStyle,
 };
 
-const tabBtnStyle: React.CSSProperties = {
+const tabBtnStyle: CSSProperties = {
     background: "none",
     border: "none",
     borderBottom: "2px solid transparent",
     padding: "6px 14px",
     fontSize: "0.78rem",
-    color: "#5a6577",
+    color: colors.textSecondary,
     cursor: "pointer",
     fontWeight: 500,
     transition: "color 0.15s, border-color 0.15s",
 };
 
-const tabBtnActiveStyle: React.CSSProperties = {
-    color: "#2563eb",
-    borderBottomColor: "#2563eb",
+const tabBtnActiveStyle: CSSProperties = {
+    color: colors.primary,
+    borderBottomColor: colors.primary,
     fontWeight: 600,
 };
 
-const hubCardStyle: React.CSSProperties = {
-    border: "1px solid #e1e4e8",
-    borderRadius: "6px",
-    padding: "10px 12px",
-    background: "#fff",
+const hubCardStyle: CSSProperties = {
+    ...remoteCardStyle,
 };
 
-const sourceTextStyle: React.CSSProperties = {
+const sourceTextStyle: CSSProperties = {
     fontSize: "0.72rem",
-    color: "#5a6577",
+    color: colors.textSecondary,
     whiteSpace: "nowrap",
 };
 
-const executionClassBadgeStyle: React.CSSProperties = {
+const executionClassBadgeStyle: CSSProperties = {
     display: "inline-block",
     padding: "1px 8px",
     borderRadius: "999px",
     fontSize: "0.68rem",
     fontWeight: 600,
-    color: "#374151",
-    background: "#f3f4f6",
-    border: "1px solid #d1d5db",
+    color: colors.text,
+    background: colors.surfaceMuted,
+    border: `1px solid ${colors.border}`,
     whiteSpace: "nowrap",
 };
 
-const statusDotStyle = (active: boolean): React.CSSProperties => ({
+const statusDotStyle = (active: boolean): CSSProperties => ({
     display: "inline-flex",
     alignItems: "center",
     gap: "5px",
     fontSize: "0.72rem",
-    color: active ? "#16a34a" : "#9ca3af",
+    color: active ? colors.success : colors.textMuted,
     whiteSpace: "nowrap",
 });
 
-const uploadBtnStyle: React.CSSProperties = {
+const uploadBtnStyle: CSSProperties = {
     fontSize: "0.7rem",
     padding: "2px 10px",
     whiteSpace: "nowrap",
@@ -1653,13 +1618,13 @@ const uploadBtnStyle: React.CSSProperties = {
     textAlign: "center",
 };
 
-const trustBadgeStyle = (level: string): React.CSSProperties => {
-    const colors: Record<string, { bg: string; color: string; border: string }> = {
-        official: { bg: "#f0fdf4", color: "#2f855a", border: "#86efac" },
-        community: { bg: "#eff6ff", color: "#2563eb", border: "#93c5fd" },
-        unknown: { bg: "#f4f5f7", color: "#8b95a5", border: "#e1e4e8" },
+const trustBadgeStyle = (level: string): CSSProperties => {
+    const levelColors: Record<string, { bg: string; color: string; border: string }> = {
+        official: { bg: colors.successBg, color: colors.success, border: colors.success },
+        community: { bg: colors.infoBg, color: colors.primary, border: colors.primary },
+        unknown: { bg: colors.surfaceMuted, color: colors.textMuted, border: colors.border },
     };
-    const c = colors[level] || colors.unknown;
+    const c = levelColors[level] || levelColors.unknown;
     return {
         display: "inline-block",
         padding: "0px 6px",

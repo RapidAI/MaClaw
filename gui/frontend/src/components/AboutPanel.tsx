@@ -60,6 +60,11 @@ export function AboutPanel({
     const businessContact = brandInfo?.businessContact || t("businessCooperation");
     const showGithubActions = Boolean(brandInfo?.githubURL) || brandInfo?.id !== 'qianxin';
 
+    // Override product name for TigerClaw brand on About panel
+    const productName = brandInfo?.id === 'qianxin'
+        ? '虎爪·浴火 （TigerClaw）'
+        : t("aboutProductName");
+
     return (
         <div className="about-page">
             <div className="about-page__container">
@@ -68,7 +73,7 @@ export function AboutPanel({
                         <img src={currentIcon} alt="Logo" className="about-hero-card__icon" />
                     </div>
                     <div className="about-hero-card__body">
-                        <h2 className="about-hero-card__title">{t("aboutProductName")}</h2>
+                        <h2 className="about-hero-card__title">{productName}</h2>
                         <p className="about-hero-card__slogan">{slogan}</p>
                         <div className="about-version-row">
                             <span className="about-version-badge">{t("version")} {appVersion}</span>

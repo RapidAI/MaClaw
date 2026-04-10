@@ -816,7 +816,8 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	// When the task dispatcher is active and the Coordinator supports it,
 	// try to answer simple questions directly without queuing.
 	if a.taskDispatcher != nil && a.coordinator != nil {
-		if fastResp := a.coordinator.TryFastAnswer(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text); fastResp != nil {
+		hasAttachments := len(msg.Attachments) > 0
+		if fastResp := a.coordinator.TryFastAnswer(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text, hasAttachments); fastResp != nil {
 			a.sendResponse(ctx, plugin, target, fastResp)
 			return
 		}
@@ -830,7 +831,19 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			Attachments:  msg.Attachments,
 		}
 		queueResp := a.taskDispatcher.Enqueue(task)
-		a.sendResponse(ctx, plugin, target, queueResp)
+		// Only send the queue ack if the task is actually queued behind
+		// another running task. When the worker is idle the task starts
+		// immediately, so the ack ("⏳ 已收到") would race with (and
+		// often arrive after) the real progress/response — suppress it.
+		if queueResp.StatusCode == 429 || queueResp.StatusCode != 202 {
+			// 429 = queue full, non-202 = error — user needs to know.
+			a.sendResponse(ctx, plugin, target, queueResp)
+		} else if stats := a.taskDispatcher.Stats(unifiedID); stats.Pending > 0 {
+			// Task is queued behind others — tell the user their position.
+			a.sendResponse(ctx, plugin, target, queueResp)
+		}
+		// Otherwise (worker idle, task starts immediately) — skip the ack.
+		// The Agent's own progress messages will serve as acknowledgment.
 		return
 	}
 

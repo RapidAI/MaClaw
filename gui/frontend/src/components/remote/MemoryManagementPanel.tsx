@@ -59,13 +59,13 @@ const CATEGORIES = [
 ] as const;
 
 const CATEGORY_COLORS: Record<string, string> = {
-    self_identity: "#e11d48",
-    user_fact: "#6366f1",
-    preference: "#0891b2",
-    project_knowledge: "#059669",
-    instruction: "#d97706",
-    conversation_summary: "#8b5cf6",
-    session_checkpoint: "#64748b",
+    self_identity: "var(--theme-danger)",
+    user_fact: "var(--theme-primary)",
+    preference: "var(--theme-info, #0891b2)",
+    project_knowledge: "var(--theme-success)",
+    instruction: "var(--theme-warning)",
+    conversation_summary: "var(--theme-primary-strong, #8b5cf6)",
+    session_checkpoint: "var(--theme-text-muted)",
 };
 
 type Props = { lang: string };
@@ -85,16 +85,20 @@ const tabBtnStyle = (active: boolean): React.CSSProperties => ({
 });
 
 /** Shared date formatter. */
-function fmtDate(s: string, isZh: boolean): string {
+function fmtDate(s: string, lang: string): string {
     if (!s) return "-";
-    try { return new Date(s).toLocaleString(isZh ? "zh-CN" : "en-US"); }
+    const locale = lang === 'zh-Hans' ? 'zh-CN' : lang === 'zh-Hant' ? 'zh-TW' : 'en-US';
+    try { return new Date(s).toLocaleString(locale); }
     catch { return s; }
 }
 
 /** Category value → display label. */
-function catLabel(cat: string, isZh: boolean): string {
+function catLabel(cat: string, lang: string): string {
     const found = CATEGORIES.find(c => c.value === cat);
-    return found ? (isZh ? found.label.zh : found.label.en) : cat;
+    if (!found) return cat;
+    if (lang === 'zh-Hans') return found.label.zh;
+    if (lang === 'zh-Hant') return found.label.zh; // TODO: add zhHant to CATEGORIES
+    return found.label.en;
 }
 
 /** Human-readable file size. */
@@ -140,8 +144,8 @@ const dangerBtnStyle: React.CSSProperties = {
 
 export function MemoryManagementPanel({ lang }: Props) {
     const [tab, setTab] = useState<"edit" | "timemachine">("edit");
-    const isZh = lang?.startsWith("zh");
-    const t = useCallback((zh: string, en: string) => isZh ? zh : en, [isZh]);
+    const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
     // Revision counter — bumped by TimeMachine after restore/compress so
     // MemoryEditTab can re-fetch without unmount/remount.
     const [revision, setRevision] = useState(0);
@@ -153,23 +157,23 @@ export function MemoryManagementPanel({ lang }: Props) {
         <div style={{ padding: 0 }}>
             <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${colors.border}`, marginBottom: 10 }} role="tablist">
                 <button role="tab" aria-selected={tab === "edit"} style={tabBtnStyle(tab === "edit")} onClick={() => setTab("edit")}>
-                    📝 {t("记忆编辑", "Memory Edit")}
+                    📝 {t("Memory Edit", "记忆编辑")}
                 </button>
                 <button role="tab" aria-selected={tab === "timemachine"} style={tabBtnStyle(tab === "timemachine")} onClick={() => setTab("timemachine")}>
-                    ⏳ {t("时光机", "Time Machine")}
+                    ⏳ {t("Time Machine", "时光机")}
                 </button>
                 {tab === "edit" && (
                     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>{entryCount} {t("条记忆", "entries")}</span>
+                        <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>{entryCount} {t("entries", "条记忆")}</span>
                         <button onClick={() => createRef.current?.()} style={{ padding: "3px 12px", fontSize: "0.72rem", fontWeight: 600, background: "#6366f1", color: "#fff", border: "none", borderRadius: radius.md, cursor: "pointer" }}>
-                            + {t("新建", "New")}
+                            + {t("New", "新建")}
                         </button>
                     </div>
                 )}
             </div>
             {tab === "edit"
-                ? <MemoryEditTab t={t} isZh={isZh} revision={revision} onCountChange={setEntryCount} createRef={createRef} />
-                : <TimeMachineTab t={t} isZh={isZh} onDataChanged={bumpRevision} />}
+                ? <MemoryEditTab t={t} lang={lang} revision={revision} onCountChange={setEntryCount} createRef={createRef} />
+                : <TimeMachineTab t={t} lang={lang} onDataChanged={bumpRevision} />}
         </div>
     );
 }
@@ -178,15 +182,15 @@ export function MemoryManagementPanel({ lang }: Props) {
 // Tab 1: Memory Edit
 // ---------------------------------------------------------------------------
 type EditTabProps = {
-    t: (zh: string, en: string) => string;
-    isZh: boolean;
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    lang: string;
     /** Incremented externally (e.g. after backup restore) to trigger re-fetch. */
     revision: number;
     onCountChange: (count: number) => void;
     createRef: React.MutableRefObject<(() => void) | null>;
 };
 
-function MemoryEditTab({ t, isZh, revision, onCountChange, createRef }: EditTabProps) {
+function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabProps) {
     const [entries, setEntries] = useState<MemoryEntry[]>([]);
     const [loading, setLoading] = useState(false);
     const [filterCat, setFilterCat] = useState("");
@@ -256,36 +260,36 @@ function MemoryEditTab({ t, isZh, revision, onCountChange, createRef }: EditTabP
         <>
             {/* Filters */}
             <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-                <select value={filterCat} onChange={e => setFilterCat(e.target.value)} aria-label={t("分类筛选", "Filter by category")} style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: "0.76rem" }}>
-                    {CATEGORIES.map(c => (<option key={c.value} value={c.value}>{isZh ? c.label.zh : c.label.en}</option>))}
+                <select value={filterCat} onChange={e => setFilterCat(e.target.value)} aria-label={t("Filter by category", "分类筛选")} style={{ ...inputStyle, width: "auto", padding: "4px 8px", fontSize: "0.76rem" }}>
+                    {CATEGORIES.map(c => (<option key={c.value} value={c.value}>{catLabel(c.value, lang)}</option>))}
                 </select>
-                <input placeholder={t("搜索关键词…", "Search keyword…")} value={keyword} onChange={e => setKeyword(e.target.value)} aria-label={t("搜索关键词", "Search keyword")} style={{ ...inputStyle, width: "180px", padding: "4px 8px", fontSize: "0.76rem" }} />
+                <input placeholder={t("Search keyword…", "搜索关键词…")} value={keyword} onChange={e => setKeyword(e.target.value)} aria-label={t("Search keyword", "搜索关键词")} style={{ ...inputStyle, width: "180px", padding: "4px 8px", fontSize: "0.76rem" }} />
             </div>
 
             {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.76rem", marginBottom: 8 }}>{error}</div>}
-            {loading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("加载中…", "Loading…")}</div>}
+            {loading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("Loading…", "加载中…")}</div>}
 
             {/* Entry list */}
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "calc(100vh - 310px)", overflowY: "auto", border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 6 }}>
                 {entries.length === 0 && !loading && (
-                    <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>{t("暂无记忆条目", "No memory entries")}</div>
+                    <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>{t("No memory entries", "暂无记忆条目")}</div>
                 )}
                 {entries.map(entry => (
                     <div key={entry.id} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "8px 10px", background: colors.surface }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                             <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap", justifyContent: "flex-start" }}>
-                                    <span style={{ fontSize: "0.66rem", fontWeight: 600, padding: "1px 6px", borderRadius: radius.sm, color: "#fff", background: CATEGORY_COLORS[entry.category] || colors.textMuted }}>{catLabel(entry.category, isZh)}</span>
+                                    <span style={{ fontSize: "0.66rem", fontWeight: 600, padding: "1px 6px", borderRadius: radius.sm, color: "#fff", background: CATEGORY_COLORS[entry.category] || colors.textMuted }}>{catLabel(entry.category, lang)}</span>
                                     {(entry.tags || []).map(tag => (
                                         <span key={tag} style={{ fontSize: "0.64rem", padding: "1px 5px", borderRadius: radius.sm, background: colors.bg, color: colors.textSecondary, border: `1px solid ${colors.border}` }}>{tag}</span>
                                     ))}
                                 </div>
                                 <div style={{ fontSize: "0.78rem", color: colors.text, whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 120, overflowY: "auto", paddingRight: 4, textAlign: "left" }}>{entry.content}</div>
-                                <div style={{ fontSize: "0.66rem", color: colors.textMuted, marginTop: 4, textAlign: "left" }}>{t("更新", "Updated")}: {fmtDate(entry.updated_at, isZh)} · {t("访问", "Access")}: {entry.access_count}</div>
+                                <div style={{ fontSize: "0.66rem", color: colors.textMuted, marginTop: 4, textAlign: "left" }}>{t("Updated", "更新")}: {fmtDate(entry.updated_at, lang)} · {t("Access", "访问")}: {entry.access_count}</div>
                             </div>
                             <div style={{ display: "flex", gap: 4, flexShrink: 0, alignSelf: "flex-start" }}>
-                                <button onClick={() => openEdit(entry)} aria-label={t("编辑", "Edit")} title={t("编辑", "Edit")} style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>✏️</button>
-                                <button onClick={() => setDeleteTarget(entry.id)} aria-label={t("删除", "Delete")} title={t("删除", "Delete")} style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger }}>🗑️</button>
+                                <button onClick={() => openEdit(entry)} aria-label={t("Edit", "编辑")} title={t("Edit", "编辑")} style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>✏️</button>
+                                <button onClick={() => setDeleteTarget(entry.id)} aria-label={t("Delete", "删除")} title={t("Delete", "删除")} style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger }}>🗑️</button>
                             </div>
                         </div>
                     </div>
@@ -295,10 +299,10 @@ function MemoryEditTab({ t, isZh, revision, onCountChange, createRef }: EditTabP
             {/* Delete confirmation */}
             {deleteTarget && (
                 <ModalOverlay onClose={() => setDeleteTarget(null)}>
-                    <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("确定删除这条记忆？此操作不可撤销。", "Delete this memory? This cannot be undone.")}</p>
+                    <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this memory? This cannot be undone.", "确定删除这条记忆？此操作不可撤销。")}</p>
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                        <button onClick={() => setDeleteTarget(null)} style={cancelBtnStyle}>{t("取消", "Cancel")}</button>
-                        <button onClick={() => handleDelete(deleteTarget)} style={dangerBtnStyle}>{t("删除", "Delete")}</button>
+                        <button onClick={() => setDeleteTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
+                        <button onClick={() => handleDelete(deleteTarget)} style={dangerBtnStyle}>{t("Delete", "删除")}</button>
                     </div>
                 </ModalOverlay>
             )}
@@ -307,24 +311,24 @@ function MemoryEditTab({ t, isZh, revision, onCountChange, createRef }: EditTabP
             {dlgOpen && (
                 <ModalOverlay onClose={() => setDlgOpen(false)}>
                     <div style={{ width: 420, maxWidth: "90vw" }}>
-                        <h4 style={{ fontSize: "0.82rem", margin: "0 0 14px", color: colors.text }}>{editEntry ? t("编辑记忆", "Edit Memory") : t("新建记忆", "New Memory")}</h4>
+                        <h4 style={{ fontSize: "0.82rem", margin: "0 0 14px", color: colors.text }}>{editEntry ? t("Edit Memory", "编辑记忆") : t("New Memory", "新建记忆")}</h4>
                         <div style={{ marginBottom: 10 }}>
-                            <label style={labelStyle}>{t("分类", "Category")}</label>
+                            <label style={labelStyle}>{t("Category", "分类")}</label>
                             <select value={formCategory} onChange={e => setFormCategory(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
-                                {CATEGORIES.filter(c => c.value).map(c => (<option key={c.value} value={c.value}>{isZh ? c.label.zh : c.label.en}</option>))}
+                                {CATEGORIES.filter(c => c.value).map(c => (<option key={c.value} value={c.value}>{catLabel(c.value, lang)}</option>))}
                             </select>
                         </div>
                         <div style={{ marginBottom: 10 }}>
-                            <label style={labelStyle}>{t("内容", "Content")}</label>
+                            <label style={labelStyle}>{t("Content", "内容")}</label>
                             <textarea value={formContent} onChange={e => setFormContent(e.target.value)} rows={4} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} />
                         </div>
                         <div style={{ marginBottom: 14 }}>
-                            <label style={labelStyle}>{t("标签（逗号分隔）", "Tags (comma separated)")}</label>
+                            <label style={labelStyle}>{t("Tags (comma separated)", "标签（逗号分隔）")}</label>
                             <input value={formTags} onChange={e => setFormTags(e.target.value)} placeholder="tag1, tag2" style={inputStyle} />
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                            <button onClick={() => setDlgOpen(false)} style={cancelBtnStyle}>{t("取消", "Cancel")}</button>
-                            <button onClick={handleSave} disabled={saving || !formContent.trim()} style={{ padding: "5px 14px", fontSize: "0.76rem", border: "none", borderRadius: radius.md, background: "#6366f1", color: "#fff", cursor: "pointer", opacity: saving || !formContent.trim() ? 0.5 : 1 }}>{saving ? t("保存中…", "Saving…") : t("保存", "Save")}</button>
+                            <button onClick={() => setDlgOpen(false)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
+                            <button onClick={handleSave} disabled={saving || !formContent.trim()} style={{ padding: "5px 14px", fontSize: "0.76rem", border: "none", borderRadius: radius.md, background: "#6366f1", color: "#fff", cursor: "pointer", opacity: saving || !formContent.trim() ? 0.5 : 1 }}>{saving ? t("Saving…", "保存中…") : t("Save", "保存")}</button>
                         </div>
                     </div>
                 </ModalOverlay>
@@ -337,13 +341,13 @@ function MemoryEditTab({ t, isZh, revision, onCountChange, createRef }: EditTabP
 // Tab 2: Time Machine (compression + backup restore)
 // ---------------------------------------------------------------------------
 type TimeMachineProps = {
-    t: (zh: string, en: string) => string;
-    isZh: boolean;
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    lang: string;
     /** Called after restore or compress so the edit tab can refresh. */
     onDataChanged: () => void;
 };
 
-function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
+function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
     const [compressing, setCompressing] = useState(false);
     const [compressResult, setCompressResult] = useState<CompressResult | null>(null);
     const [backups, setBackups] = useState<BackupInfo[]>([]);
@@ -408,7 +412,7 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
         setCompressing(true); setError(""); setCompressResult(null);
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timeout = new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error(t("压缩超时，请稍后重试", "Compress timed out, please retry later"))), 6 * 60 * 1000);
+            timer = setTimeout(() => reject(new Error(t("Compress timed out, please retry later", "压缩超时，请稍后重试"))), 6 * 60 * 1000);
         });
         try {
             const result = await Promise.race([CompressMemories(), timeout]);
@@ -445,13 +449,13 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
             <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "10px 14px", background: colors.surface, marginBottom: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.76rem", color: colors.text, fontWeight: 600, minWidth: 0 }}>
-                        🔄 {t("自动压缩", "Auto-Compress")}
+                        🔄 {t("Auto-Compress", "自动压缩")}
                         <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400 }}>
-                            {t("每6h去重+LLM压缩", "Every 6h dedup+LLM")}
+                            {t("Every 6h dedup+LLM", "每6h去重+LLM压缩")}
                         </span>
                         {serviceStatus?.last_run && (
                             <span style={{ fontSize: "0.66rem", color: colors.textMuted, fontWeight: 400 }}>
-                                · {fmtDate(serviceStatus.last_run, isZh)}
+                                · {fmtDate(serviceStatus.last_run, lang)}
                                 {serviceStatus.last_error && <span style={{ color: colors.danger }}> · {serviceStatus.last_error}</span>}
                             </span>
                         )}
@@ -461,21 +465,21 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
                             padding: "4px 14px", fontSize: "0.74rem", fontWeight: 600, border: "none", borderRadius: radius.md, cursor: toggling ? "wait" : "pointer",
                             background: autoEnabled ? "#059669" : colors.textMuted, color: "#fff", whiteSpace: "nowrap",
                         }}>
-                            {autoEnabled ? t("已开启", "ON") : t("已关闭", "OFF")}
+                            {autoEnabled ? t("ON", "已开启") : t("OFF", "已关闭")}
                         </button>
-                        <button onClick={handleCompress} disabled={compressing} aria-label={t("立即压缩", "Compress Now")} style={{
+                        <button onClick={handleCompress} disabled={compressing} aria-label={t("Compress Now", "立即压缩")} style={{
                             padding: "4px 14px", fontSize: "0.74rem", fontWeight: 600, border: "none", borderRadius: radius.md, cursor: compressing ? "wait" : "pointer",
                             background: compressing ? colors.textMuted : "#6366f1", color: "#fff", opacity: compressing ? 0.6 : 1, whiteSpace: "nowrap",
                         }}>
-                            {compressing ? t("压缩中…", "…") : t("立即压缩", "Compress")}
+                            {compressing ? t("…", "压缩中…") : t("Compress", "立即压缩")}
                         </button>
                     </div>
                 </div>
                 {compressResult && (
                     <div role="status" style={{ fontSize: "0.72rem", color: "#059669", background: "#ecfdf5", borderRadius: radius.sm, padding: "5px 10px", marginTop: 6 }}>
-                        {compressResult.dedup_count > 0 && <>{t("去重", "Dedup")}: {compressResult.dedup_count} {t("条移除", "removed")} · </>}
-                        {compressResult.merged_count > 0 && <>{t("合并", "Merged")}: {compressResult.merged_count} {t("条合并", "merged")} · </>}
-                        {t("压缩", "Compress")}: {compressResult.compressed_count} {t("条已压缩", "compressed")}, {compressResult.skipped_count} {t("条跳过", "skipped")}, {compressResult.error_count} {t("条失败", "errors")}, {t("节省", "saved")} {compressResult.saved_chars} {t("字符", "chars")}
+                        {compressResult.dedup_count > 0 && <>{t("Dedup", "去重")}: {compressResult.dedup_count} {t("removed", "条移除")} · </>}
+                        {compressResult.merged_count > 0 && <>{t("Merged", "合并")}: {compressResult.merged_count} {t("merged", "条合并")} · </>}
+                        {t("Compress", "压缩")}: {compressResult.compressed_count} {t("compressed", "条已压缩")}, {compressResult.skipped_count} {t("skipped", "条跳过")}, {compressResult.error_count} {t("errors", "条失败")}, {t("saved", "节省")} {compressResult.saved_chars} {t("chars", "字符")}
                     </div>
                 )}
             </div>
@@ -484,9 +488,9 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
 
             {/* Backup list */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <div style={{ fontSize: "0.8rem", color: colors.text, fontWeight: 600 }}>📦 {t("历史备份", "Backup History")}</div>
+                <div style={{ fontSize: "0.8rem", color: colors.text, fontWeight: 600 }}>📦 {t("Backup History", "历史备份")}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.7rem", color: colors.textMuted }}>
-                    {t("保留", "Keep")}
+                    {t("Keep", "保留")}
                     <input
                         type="number" min={8} max={100} value={maxBackups}
                         onChange={e => { const v = parseInt(e.target.value, 10); if (!isNaN(v)) setMaxBackupsLocal(v); }}
@@ -494,15 +498,15 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
                         onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                         disabled={savingMax}
                         style={{ width: 48, padding: "2px 4px", fontSize: "0.7rem", border: `1px solid ${colors.border}`, borderRadius: radius.sm, textAlign: "center", background: colors.surface, color: colors.text }}
-                        aria-label={t("最大备份数", "Max backups")}
+                        aria-label={t("Max backups", "最大备份数")}
                     />
-                    {t("份", "backups")}
+                    {t("backups", "份")}
                 </div>
             </div>
-            {backupsLoading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("加载中…", "Loading…")}</div>}
+            {backupsLoading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("Loading…", "加载中…")}</div>}
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "calc(100vh - 390px)", overflowY: "auto" }}>
                 {backups.length === 0 && !backupsLoading && (
-                    <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>{t("暂无备份", "No backups yet")}</div>
+                    <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>{t("No backups yet", "暂无备份")}</div>
                 )}
                 {backups.map(bk => (
                     <div key={bk.name} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "8px 10px", background: colors.surface }}>
@@ -510,15 +514,15 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
                             <div style={{ minWidth: 0 }}>
                                 <div style={{ fontSize: "0.76rem", color: colors.text, fontWeight: 500 }}>{bk.name}</div>
                                 <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: 2 }}>
-                                    {fmtDate(bk.created_at, isZh)} · {bk.entry_count >= 0 ? `${bk.entry_count} ${t("条", "entries")}` : "?"} · {fmtSize(bk.size_bytes)}
+                                    {fmtDate(bk.created_at, lang)} · {bk.entry_count >= 0 ? `${bk.entry_count} ${t("entries", "条")}` : "?"} · {fmtSize(bk.size_bytes)}
                                 </div>
                             </div>
                             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                                <button onClick={() => setRestoreTarget(bk.name)} aria-label={`${t("恢复", "Restore")} ${bk.name}`} title={t("恢复", "Restore")} style={{
+                                <button onClick={() => setRestoreTarget(bk.name)} aria-label={`${t("Restore", "恢复")} ${bk.name}`} title={t("Restore", "恢复")} style={{
                                     padding: "3px 10px", fontSize: "0.7rem", cursor: "pointer", fontWeight: 600,
                                     background: "#059669", color: "#fff", border: "none", borderRadius: radius.sm,
-                                }}>⏪ {t("恢复", "Restore")}</button>
-                                <button onClick={() => setDeleteTarget(bk.name)} aria-label={`${t("删除", "Delete")} ${bk.name}`} title={t("删除", "Delete")} style={{
+                                }}>⏪ {t("Restore", "恢复")}</button>
+                                <button onClick={() => setDeleteTarget(bk.name)} aria-label={`${t("Delete", "删除")} ${bk.name}`} title={t("Delete", "删除")} style={{
                                     padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer",
                                     background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger,
                                 }}>🗑️</button>
@@ -531,13 +535,13 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
             {/* Restore confirmation */}
             {restoreTarget && (
                 <ModalOverlay onClose={() => setRestoreTarget(null)}>
-                    <p style={{ fontSize: "0.82rem", marginBottom: 6 }}>{t("确定恢复此备份？", "Restore this backup?")}</p>
+                    <p style={{ fontSize: "0.82rem", marginBottom: 6 }}>{t("Restore this backup?", "确定恢复此备份？")}</p>
                     <p style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: 16 }}>
-                        {t("当前记忆将被此备份覆盖并立即生效。覆盖前会自动保存一份当前记忆的备份。", "Current memory will be replaced by this backup immediately. A safety backup of the current state will be created first.")}
+                        {t("Current memory will be replaced by this backup immediately. A safety backup of the current state will be created first.", "当前记忆将被此备份覆盖并立即生效。覆盖前会自动保存一份当前记忆的备份。")}
                     </p>
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                        <button onClick={() => setRestoreTarget(null)} style={cancelBtnStyle}>{t("取消", "Cancel")}</button>
-                        <button onClick={() => handleRestore(restoreTarget)} style={{ ...cancelBtnStyle, background: "#059669", color: "#fff", border: "none" }}>{t("确认恢复", "Confirm Restore")}</button>
+                        <button onClick={() => setRestoreTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
+                        <button onClick={() => handleRestore(restoreTarget)} style={{ ...cancelBtnStyle, background: "#059669", color: "#fff", border: "none" }}>{t("Confirm Restore", "确认恢复")}</button>
                     </div>
                 </ModalOverlay>
             )}
@@ -545,10 +549,10 @@ function TimeMachineTab({ t, isZh, onDataChanged }: TimeMachineProps) {
             {/* Delete backup confirmation */}
             {deleteTarget && (
                 <ModalOverlay onClose={() => setDeleteTarget(null)}>
-                    <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("确定删除此备份？", "Delete this backup?")}</p>
+                    <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this backup?", "确定删除此备份？")}</p>
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                        <button onClick={() => setDeleteTarget(null)} style={cancelBtnStyle}>{t("取消", "Cancel")}</button>
-                        <button onClick={() => handleDeleteBackup(deleteTarget)} style={dangerBtnStyle}>{t("删除", "Delete")}</button>
+                        <button onClick={() => setDeleteTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
+                        <button onClick={() => handleDeleteBackup(deleteTarget)} style={dangerBtnStyle}>{t("Delete", "删除")}</button>
                     </div>
                 </ModalOverlay>
             )}

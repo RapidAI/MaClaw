@@ -67,7 +67,7 @@ const mono = {
 
 const tabStyle = (active: boolean) => ({
     background: active ? colors.primary : colors.bg,
-    color: active ? "#fff" : colors.textSecondary,
+    color: active ? "var(--theme-text-primary)" : colors.textSecondary,
     border: "none",
     borderRadius: radius.md,
     padding: "4px 12px",
@@ -141,7 +141,9 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
     const mountedRef = useRef(true);
     useEffect(() => { return () => { mountedRef.current = false; }; }, []);
 
-    const zh = lang?.startsWith("zh");
+    const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
+    const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
     const enabled = !!config?.agentnet_enabled;
 
     // Poll running state; also checks identity when not yet detected.
@@ -319,18 +321,18 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
 
     const handleManualUpdate = async () => {
         setUpdating(true);
-        setUpdateMsg(zh ? "⏳ 正在检查更新..." : "⏳ Checking for updates...");
+        setUpdateMsg(t("⏳ Checking for updates...", "⏳ 正在检查更新..."));
         try {
             const res = await ClawNetManualUpdate();
             if (!mountedRef.current) return;
             if (res.ok) {
-                setUpdateMsg(zh ? "✅ 更新完成，服务已重启" : "✅ Updated and restarted");
+                setUpdateMsg(t("✅ Updated and restarted", "✅ 更新完成，服务已重启"));
                 await refreshStatus();
             } else if (res.updated) {
                 // Updated but restart failed
-                setUpdateMsg(zh ? `⚠️ 已更新，但重启失败: ${res.error}` : `⚠️ Updated, but restart failed: ${res.error}`);
+                setUpdateMsg(t(`⚠️ Updated, but restart failed: ${res.error}`, `⚠️ 已更新，但重启失败: ${res.error}`));
             } else {
-                setUpdateMsg(`❌ ${res.error || (zh ? "更新失败" : "Update failed")}`);
+                setUpdateMsg(`❌ ${res.error || (t("Update failed", "更新失败"))}`);
             }
         } catch (e) {
             if (!mountedRef.current) return;
@@ -347,7 +349,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         try {
             const res = await ClawNetExportIdentity();
             if (res.ok) {
-                setKeyMsg(zh ? `✅ 已导出到 ${res.path}` : `✅ Exported to ${res.path}`);
+                setKeyMsg(t(`✅ Exported to ${res.path}`, `✅ 已导出到 ${res.path}`));
             } else if (res.error !== "cancelled") {
                 setKeyMsg(`❌ ${res.error}`);
             }
@@ -360,9 +362,10 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
     };
 
     const handleImportKey = async () => {
-        const confirmMsg = zh
-            ? "⚠️ 恢复身份密钥将替换当前密钥（已有密钥会自动备份为 .bak）。确定继续？"
-            : "⚠️ Restoring an identity key will replace the current one (existing key is auto-backed up as .bak). Continue?";
+        const confirmMsg = t(
+            "⚠️ Restoring an identity key will replace the current one (existing key is auto-backed up as .bak). Continue?",
+            "⚠️ 恢复身份密钥将替换当前密钥（已有密钥会自动备份为 .bak）。确定继续？"
+        );
         if (!await showConfirm(confirmMsg)) return;
         setKeyBusy(true);
         setKeyMsg("");
@@ -371,10 +374,10 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             if (res.ok) {
                 await refreshIdentity();
                 if (res.restarted) {
-                    setKeyMsg(zh ? "✅ 身份密钥已恢复，智网已重新上线" : "✅ Identity restored, ClawNet is back online");
+                    setKeyMsg(t("✅ Identity restored, ClawNet is back online", "✅ 身份密钥已恢复，智网已重新上线"));
                     await refreshStatus();
                 } else {
-                    setKeyMsg(zh ? "✅ 身份密钥已恢复" : "✅ Identity restored");
+                    setKeyMsg(t("✅ Identity restored", "✅ 身份密钥已恢复"));
                 }
             } else if (res.error !== "cancelled") {
                 setKeyMsg(`❌ ${res.error}`);
@@ -389,11 +392,11 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
 
     const handleOnlineBackup = async () => {
         if (onlinePwd.length < 6) {
-            setOnlineMsg(zh ? "❌ 口令至少6位" : "❌ Password must be at least 6 characters");
+            setOnlineMsg(t("❌ Password must be at least 6 characters", "❌ 口令至少6位"));
             return;
         }
         if (onlinePwd !== onlinePwd2) {
-            setOnlineMsg(zh ? "❌ 两次口令不一致" : "❌ Passwords do not match");
+            setOnlineMsg(t("❌ Passwords do not match", "❌ 两次口令不一致"));
             return;
         }
         setOnlineBusy(true);
@@ -401,7 +404,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         try {
             const res = await ClawNetOnlineBackupKey(onlinePwd);
             if (res.ok) {
-                setOnlineMsg(zh ? "✅ 已加密备份到 Hub" : "✅ Encrypted backup saved to Hub");
+                setOnlineMsg(t("✅ Encrypted backup saved to Hub", "✅ 已加密备份到 Hub"));
                 setOnlinePwd("");
                 setOnlinePwd2("");
             } else {
@@ -417,12 +420,13 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
 
     const handleOnlineRestore = async () => {
         if (!onlineRestorePwd) {
-            setOnlineMsg(zh ? "❌ 请输入口令" : "❌ Please enter password");
+            setOnlineMsg(t("❌ Please enter password", "❌ 请输入口令"));
             return;
         }
-        const confirmMsg = zh
-            ? "⚠️ 从 Hub 恢复身份密钥将替换当前密钥（已有密钥会自动备份为 .bak）。确定继续？"
-            : "⚠️ Restoring identity key from Hub will replace the current one (existing key is auto-backed up as .bak). Continue?";
+        const confirmMsg = t(
+            "⚠️ Restoring identity key from Hub will replace the current one (existing key is auto-backed up as .bak). Continue?",
+            "⚠️ 从 Hub 恢复身份密钥将替换当前密钥（已有密钥会自动备份为 .bak）。确定继续？"
+        );
         if (!await showConfirm(confirmMsg)) return;
         setOnlineBusy(true);
         setOnlineMsg("");
@@ -432,10 +436,10 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 setOnlineRestorePwd("");
                 await refreshIdentity();
                 if (res.restarted) {
-                    setOnlineMsg(zh ? "✅ 身份密钥已从 Hub 恢复，智网已重新上线" : "✅ Identity restored from Hub, ClawNet is back online");
+                    setOnlineMsg(t("✅ Identity restored from Hub, ClawNet is back online", "✅ 身份密钥已从 Hub 恢复，智网已重新上线"));
                     await refreshStatus();
                 } else {
-                    setOnlineMsg(zh ? "✅ 身份密钥已从 Hub 恢复" : "✅ Identity restored from Hub");
+                    setOnlineMsg(t("✅ Identity restored from Hub", "✅ 身份密钥已从 Hub 恢复"));
                 }
             } else {
                 setOnlineMsg(`❌ ${res.error}`);
@@ -450,12 +454,12 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
 
     const handleTriggerNow = async () => {
         setPickerBusy(true);
-        setTriggerMsg(zh ? "⏳ 正在寻找任务..." : "⏳ Searching for tasks...");
+        setTriggerMsg(t("⏳ Searching for tasks...", "⏳ 正在寻找任务..."));
         try {
             const res = await ClawNetAutoPickerTriggerNow();
             if (!mountedRef.current) return;
             if (res.ok) {
-                setTriggerMsg(zh ? "✅ 已触发任务搜索，请稍候查看结果" : "✅ Task search triggered, check results shortly");
+                setTriggerMsg(t("✅ Task search triggered, check results shortly", "✅ 已触发任务搜索，请稍候查看结果"));
             } else {
                 setTriggerMsg(`❌ ${res.error || "Failed"}`);
             }
@@ -479,7 +483,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             {/* Header */}
             <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
                 <span style={{ fontSize: "0.8rem", fontWeight: 600, color: colors.text, letterSpacing: "0.01em" }}>
-                    🦞 ClawNet {zh ? "智网" : "P2P Network"}
+                    🦞 ClawNet {t("P2P Network", "智网")}
                 </span>
             </div>
 
@@ -488,14 +492,14 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                     <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "0.78rem", color: colors.textSecondary }}>
                         <input type="checkbox" checked={enabled} onChange={(e) => handleToggle(e.target.checked)} disabled={busy} />
-                        <span>{zh ? "启用智网" : "Enable ClawNet"}</span>
+                        <span>{t("Enable ClawNet", "启用智网")}</span>
                     </label>
                     <button
                         onClick={handleManualUpdate}
                         disabled={updating || busy}
                         style={actionBtn(updating || busy)}
                     >
-                        {updating ? (zh ? "更新中..." : "Updating...") : (zh ? "手动更新" : "Update")}
+                        {updating ? (t("Updating...", "更新中...")) : (t("Update", "手动更新"))}
                     </button>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -504,7 +508,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                         backgroundColor: running ? colors.success : colors.primaryLight,
                     }} />
                     <span style={{ fontSize: "0.72rem", color: running ? colors.success : colors.textMuted }}>
-                        {running ? (zh ? "已连接" : "Connected") : (zh ? "未连接" : "Disconnected")}
+                        {running ? (t("Connected", "已连接")) : (t("Disconnected", "未连接"))}
                     </span>
                 </div>
             </div>
@@ -542,7 +546,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             {downloadProgress && downloadProgress.stage !== "done" && (
                 <div style={{ ...card, background: colors.accentBg }}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px", fontSize: "0.78rem", color: colors.textSecondary }}>
-                        <span>{zh ? "正在下载 ClawNet..." : "Downloading ClawNet..."}</span>
+                        <span>{t("Downloading ClawNet...", "正在下载 ClawNet...")}</span>
                         <span style={{ fontFamily: "monospace" }}>{downloadProgress.percent}%</span>
                     </div>
                     <div style={{ height: "4px", background: colors.border, borderRadius: "2px", overflow: "hidden" }}>
@@ -557,10 +561,10 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 <div style={{ ...card, background: colors.successBg }}>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px", fontSize: "0.78rem" }}>
                         <div><span style={label}>Peer ID:</span> <span style={{ ...mono, fontSize: "0.68rem" }}>{String(status.peer_id || "").slice(0, 16)}…</span></div>
-                        <div><span style={label}>{zh ? "节点数" : "Peers"}:</span> <span style={mono}>{status.peers}</span></div>
-                        <div><span style={label}>{zh ? "未读私信" : "Unread DM"}:</span> <span style={mono}>{status.unread_dm || 0}</span></div>
-                        <div><span style={label}>{zh ? "版本" : "Version"}:</span> <span style={mono}>{status.version}</span></div>
-                        {status.uptime && <div><span style={label}>{zh ? "运行时间" : "Uptime"}:</span> <span style={mono}>{status.uptime}</span></div>}
+                        <div><span style={label}>{t("Peers", "节点数")}:</span> <span style={mono}>{status.peers}</span></div>
+                        <div><span style={label}>{t("Unread DM", "未读私信")}:</span> <span style={mono}>{status.unread_dm || 0}</span></div>
+                        <div><span style={label}>{t("Version", "版本")}:</span> <span style={mono}>{status.version}</span></div>
+                        {status.uptime && <div><span style={label}>{t("Uptime", "运行时间")}:</span> <span style={mono}>{status.uptime}</span></div>}
                     </div>
                 </div>
             )}
@@ -569,7 +573,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             {enabled && daemonInfo && (
                 <div style={{ ...card, background: colors.bg }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.72rem", flexWrap: "wrap" }}>
-                        <span style={label}>{zh ? "进程" : "Process"}:</span>
+                        <span style={label}>{t("Process", "进程")}:</span>
                         <span style={mono}>clawnet{daemonInfo.bin_path?.endsWith(".exe") ? ".exe" : ""}</span>
                         {daemonInfo.pid > 0 && (
                             <>
@@ -586,7 +590,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                         )}
                         {!running && daemonInfo.pid > 0 && (
                             <span style={{ fontSize: "0.68rem", color: colors.danger }}>
-                                ({zh ? "进程已断开" : "process lost"})
+                                ({t("process lost", "进程已断开")})
                             </span>
                         )}
                     </div>
@@ -599,7 +603,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                     <span style={{ ...label, marginRight: "4px" }}>🐚 Shell:</span>
                     <span style={{ fontWeight: 600, fontSize: "0.78rem", color: colors.text }}>{credits.balance ?? 0}</span>
                     {credits.local_value && <span style={{ marginLeft: "6px", color: colors.warning, fontSize: "0.68rem" }}>({credits.local_value})</span>}
-                    {credits.tier && <span style={{ marginLeft: "10px", ...label }}>{zh ? "等级" : "Tier"}: {credits.tier}</span>}
+                    {credits.tier && <span style={{ marginLeft: "10px", ...label }}>{t("Tier", "等级")}: {credits.tier}</span>}
                 </div>
             )}
 
@@ -621,7 +625,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 >
                     <FinanceIcon />
                     <span style={{ fontSize: "0.78rem", fontWeight: 500, color: colors.text, flex: 1 }}>
-                        {zh ? "财务信息" : "Finance Details"}
+                        {t("Finance Details", "财务信息")}
                     </span>
                     {credits && (
                         <span style={{ fontSize: "0.68rem", color: colors.textSecondary, marginRight: "6px" }}>
@@ -632,23 +636,23 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 </div>
                 {financeOpen && !running && (
                     <div style={{ padding: "8px 14px", borderTop: `1px solid ${colors.border}`, fontSize: "0.72rem", color: colors.textMuted }}>
-                        {zh ? "智网未连接，连接后可查看财务数据" : "ClawNet not connected. Connect to view finance data."}
+                        {t("ClawNet not connected. Connect to view finance data.", "智网未连接，连接后可查看财务数据")}
                     </div>
                 )}
                 {financeOpen && running && (
                     <div style={{ padding: "0 14px 10px 14px", borderTop: `1px solid ${colors.border}` }}>
                         <div style={{ display: "flex", gap: "4px", margin: "10px 0" }}>
                             {([
-                                { key: "transactions" as const, lbl: zh ? "交易记录" : "Transactions" },
-                                { key: "audit" as const, lbl: zh ? "审计日志" : "Audit" },
-                                { key: "leaderboard" as const, lbl: zh ? "排行榜" : "Leaderboard" },
+                                { key: "transactions" as const, lbl: t("Transactions", "交易记录") },
+                                { key: "audit" as const, lbl: t("Audit", "审计日志") },
+                                { key: "leaderboard" as const, lbl: t("Leaderboard", "排行榜") },
                             ]).map(t => (
                                 <button key={t.key} onClick={() => { setFinanceTab(t.key); refreshFinance(t.key); }} style={tabStyle(financeTab === t.key)}>
                                     {t.lbl}
                                 </button>
                             ))}
                         </div>
-                        {financeLoading && <div style={{ ...label, padding: "8px 0" }}>{zh ? "加载中..." : "Loading..."}</div>}
+                        {financeLoading && <div style={{ ...label, padding: "8px 0" }}>{t("Loading...", "加载中...")}</div>}
                         {!financeLoading && financeError && (
                             <div style={{ padding: "6px 0", fontSize: "0.72rem", color: colors.danger }}>
                                 {financeError}
@@ -656,7 +660,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                         )}
                         {!financeLoading && !financeError && financeTab === "transactions" && (
                             <div style={{ maxHeight: "180px", overflowY: "auto", fontSize: "0.72rem" }}>
-                                {transactions.length === 0 && <div style={{ ...label, padding: "6px 0" }}>{zh ? "暂无交易记录" : "No transactions yet"}</div>}
+                                {transactions.length === 0 && <div style={{ ...label, padding: "6px 0" }}>{t("No transactions yet", "暂无交易记录")}</div>}
                                 {transactions.map((tx: any, i: number) => (
                                     <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: `1px solid ${colors.border}` }}>
                                         <div>
@@ -672,7 +676,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                         )}
                         {!financeLoading && !financeError && financeTab === "audit" && (
                             <div style={{ maxHeight: "180px", overflowY: "auto", fontSize: "0.72rem" }}>
-                                {auditLog.length === 0 && <div style={{ ...label, padding: "6px 0" }}>{zh ? "暂无审计记录" : "No audit entries"}</div>}
+                                {auditLog.length === 0 && <div style={{ ...label, padding: "6px 0" }}>{t("No audit entries", "暂无审计记录")}</div>}
                                 {auditLog.map((entry: any, i: number) => (
                                     <div key={i} style={{ padding: "4px 0", borderBottom: `1px solid ${colors.border}` }}>
                                         <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -688,7 +692,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                         )}
                         {!financeLoading && !financeError && financeTab === "leaderboard" && (
                             <div style={{ maxHeight: "180px", overflowY: "auto", fontSize: "0.72rem" }}>
-                                {leaderboard.length === 0 && <div style={{ ...label, padding: "6px 0" }}>{zh ? "暂无排行数据" : "No leaderboard data"}</div>}
+                                {leaderboard.length === 0 && <div style={{ ...label, padding: "6px 0" }}>{t("No leaderboard data", "暂无排行数据")}</div>}
                                 {leaderboard.map((entry: any, i: number) => {
                                     if (!entry || typeof entry !== "object") return null;
                                     const peerId = String(entry.peer_id || entry.name || "");
@@ -719,7 +723,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 <div style={card}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
                         <div style={{ ...heading, marginBottom: 0, color: colors.primary }}>
-                            🤖 {zh ? "自动接单" : "Auto Task Pickup"}
+                            🤖 {t("Auto Task Pickup", "自动接单")}
                         </div>
                         <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer", fontSize: "0.72rem" }}>
                             <input
@@ -736,25 +740,24 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                                 }}
                             />
                             <span style={{ color: pickerStatus?.enabled ? colors.primary : colors.textMuted }}>
-                                {pickerStatus?.enabled ? (zh ? "已开启" : "Enabled") : (zh ? "已关闭" : "Disabled")}
+                                {pickerStatus?.enabled ? (t("Enabled", "已开启")) : (t("Disabled", "已关闭"))}
                             </span>
                         </label>
                     </div>
                     <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: "6px" }}>
-                        {zh
-                            ? "开启后，maClaw 会自动从智网寻找任务、完成并提交，赚取 🐚 Shell"
-                            : "When enabled, maClaw auto-discovers tasks from ClawNet, completes them, and earns 🐚 Shell"}
+                        {t("When enabled, maClaw auto-discovers tasks from ClawNet, completes them, and earns 🐚 Shell",
+                           "开启后，maClaw 会自动从智网寻找任务、完成并提交，赚取 🐚 Shell")}
                     </div>
                     {pickerStatus?.enabled && (
                         <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
                             <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "6px" }}>
-                                <span>{zh ? "已完成" : "Completed"}: {pickerStatus.completed_count ?? 0}</span>
-                                <span>{zh ? "失败" : "Failed"}: {pickerStatus.failed_count ?? 0}</span>
-                                <span>{zh ? "累计赚取" : "Earned"}: {pickerStatus.total_earned ?? 0} 🐚</span>
+                                <span>{t("Completed", "已完成")}: {pickerStatus.completed_count ?? 0}</span>
+                                <span>{t("Failed", "失败")}: {pickerStatus.failed_count ?? 0}</span>
+                                <span>{t("Earned", "累计赚取")}: {pickerStatus.total_earned ?? 0} 🐚</span>
                             </div>
                             {pickerStatus.active_tasks?.length > 0 && (
                                 <div style={{ marginTop: "4px", padding: "4px 8px", background: colors.accentBg, borderRadius: radius.sm, fontSize: "0.68rem" }}>
-                                    {zh ? "正在执行" : "Running"}: {pickerStatus.active_tasks.map((t: any) => t.title).join(", ")}
+                                    {t("Running", "正在执行")}: {pickerStatus.active_tasks.map((t: any) => t.title).join(", ")}
                                 </div>
                             )}
                             {pickerStatus.last_error && (
@@ -768,8 +771,8 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                                 style={{ ...actionBtn(pickerBusy), marginTop: "6px" }}
                             >
                                 {pickerBusy
-                                    ? (zh ? "搜索中..." : "Searching...")
-                                    : (zh ? "立即寻找任务" : "Find Task Now")}
+                                    ? (t("Searching...", "搜索中..."))
+                                    : (t("Find Task Now", "立即寻找任务"))}
                             </button>
                             {triggerMsg && (
                                 <div style={{ fontSize: "0.72rem", marginTop: "4px", color: triggerMsg.startsWith("✅") ? colors.success : triggerMsg.startsWith("⏳") ? colors.primary : colors.danger }}>
@@ -784,7 +787,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             {/* Peers list */}
             {running && peers.length > 0 && (
                 <div style={{ marginBottom: "10px" }}>
-                    <div style={{ ...label, marginBottom: "4px" }}>{zh ? "已连接节点" : "Connected Peers"} ({peers.length})</div>
+                    <div style={{ ...label, marginBottom: "4px" }}>{t("Connected Peers", "已连接节点")} ({peers.length})</div>
                     <div style={{ maxHeight: "120px", overflowY: "auto", fontSize: "0.72rem", fontFamily: "monospace", background: colors.bg, borderRadius: radius.md, padding: "6px 10px", border: `1px solid ${colors.border}` }}>
                         {peers.slice(0, 20).map((p: any, i: number) => (
                             <div key={i} style={{ display: "flex", gap: "8px", padding: "2px 0" }}>
@@ -799,11 +802,10 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
 
             {/* Identity Key Backup / Restore */}
             <div style={cardMuted}>
-                <div style={heading}>🔑 {zh ? "身份密钥" : "Identity Key"}</div>
+                <div style={heading}>🔑 {t("Identity Key", "身份密钥")}</div>
                 <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: "8px" }}>
-                    {zh
-                        ? "身份密钥是你在智网上的唯一身份凭证（Ed25519），丢失后无法恢复。请妥善备份。"
-                        : "Your identity key (Ed25519) is your unique credential on ClawNet. Back it up — it cannot be recovered if lost."}
+                    {t("Your identity key (Ed25519) is your unique credential on ClawNet. Back it up — it cannot be recovered if lost.",
+                       "身份密钥是你在智网上的唯一身份凭证（Ed25519），丢失后无法恢复。请妥善备份。")}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                     <span style={{
@@ -812,13 +814,13 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                         color: identityExists ? colors.success : colors.danger,
                         border: `1px solid ${identityExists ? colors.success : colors.danger}20`,
                     }}>
-                        {identityExists ? (zh ? "已生成" : "Exists") : (zh ? "未生成" : "Not found")}
+                        {identityExists ? (t("Exists", "已生成")) : (t("Not found", "未生成"))}
                     </span>
                     <button onClick={handleExportKey} disabled={keyBusy || !identityExists} style={actionBtn(keyBusy || !identityExists)}>
-                        {zh ? "备份" : "Export"}
+                        {t("Export", "备份")}
                     </button>
                     <button onClick={handleImportKey} disabled={keyBusy} style={actionBtn(keyBusy)}>
-                        {zh ? "恢复" : "Import"}
+                        {t("Import", "恢复")}
                     </button>
                 </div>
                 {keyMsg && (
@@ -835,28 +837,27 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
 
             {/* Online Key Backup / Restore via Hub */}
             <div style={cardMuted}>
-                <div style={heading}>☁️ {zh ? "在线备份 / 恢复" : "Online Backup / Restore"}</div>
+                <div style={heading}>☁️ {t("Online Backup / Restore", "在线备份 / 恢复")}</div>
                 <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: "8px" }}>
-                    {zh
-                        ? "将密钥加密后保存到 Hub，与你的邮箱绑定。换设备时可用口令恢复。"
-                        : "Encrypt and save your key to Hub, bound to your email. Restore on any device with your password."}
+                    {t("Encrypt and save your key to Hub, bound to your email. Restore on any device with your password.",
+                       "将密钥加密后保存到 Hub，与你的邮箱绑定。换设备时可用口令恢复。")}
                 </div>
 
                 {/* Backup section */}
                 <div style={{ marginBottom: "8px" }}>
                     <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginBottom: "4px", fontWeight: 500 }}>
-                        {zh ? "备份（设置口令）" : "Backup (set password)"}
+                        {t("Backup (set password)", "备份（设置口令）")}
                     </div>
                     <div style={{ display: "flex", gap: "4px", alignItems: "center", flexWrap: "wrap" }}>
                         <input type="password" value={onlinePwd} onChange={(e) => setOnlinePwd(e.target.value)}
-                            placeholder={zh ? "口令（≥6位）" : "Password (≥6)"}
+                            placeholder={t("Password (≥6)", "口令（≥6位）")}
                             style={{ width: "100px", border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "3px 8px", fontSize: "0.72rem" }} />
                         <input type="password" value={onlinePwd2} onChange={(e) => setOnlinePwd2(e.target.value)}
-                            placeholder={zh ? "确认口令" : "Confirm"}
+                            placeholder={t("Confirm", "确认口令")}
                             style={{ width: "100px", border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "3px 8px", fontSize: "0.72rem" }} />
                         <button onClick={handleOnlineBackup} disabled={onlineBusy || !identityExists || !onlinePwd || !onlinePwd2}
                             style={actionBtn(onlineBusy || !identityExists || !onlinePwd || !onlinePwd2)}>
-                            {zh ? "加密备份" : "Backup"}
+                            {t("Backup", "加密备份")}
                         </button>
                     </div>
                 </div>
@@ -864,15 +865,15 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 {/* Restore section */}
                 <div>
                     <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginBottom: "4px", fontWeight: 500 }}>
-                        {zh ? "恢复（输入口令）" : "Restore (enter password)"}
+                        {t("Restore (enter password)", "恢复（输入口令）")}
                     </div>
                     <div style={{ display: "flex", gap: "4px", alignItems: "center", flexWrap: "wrap" }}>
                         <input type="password" value={onlineRestorePwd} onChange={(e) => setOnlineRestorePwd(e.target.value)}
-                            placeholder={zh ? "口令" : "Password"}
+                            placeholder={t("Password", "口令")}
                             style={{ width: "100px", border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "3px 8px", fontSize: "0.72rem" }} />
                         <button onClick={handleOnlineRestore} disabled={onlineBusy || !onlineRestorePwd}
                             style={actionBtn(onlineBusy || !onlineRestorePwd)}>
-                            {zh ? "在线恢复" : "Restore"}
+                            {t("Restore", "在线恢复")}
                         </button>
                     </div>
                 </div>
@@ -886,7 +887,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
 
             {/* Binary path info */}
             <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: "4px" }}>
-                {zh ? "二进制路径" : "Binary"}: {binPath || (zh ? "未找到" : "not found")}
+                {t("Binary", "二进制路径")}: {binPath || (t("not found", "未找到"))}
             </div>
         </div>
     );

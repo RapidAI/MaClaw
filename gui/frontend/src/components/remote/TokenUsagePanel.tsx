@@ -74,7 +74,8 @@ const getPreferredProvider = (providerNames: string[], currentProviderName: stri
 };
 
 export function TokenUsagePanel({ lang }: Props) {
-    const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
+    const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
 
     const [providers, setProviders] = useState<string[]>([]);
     const [currentProvider, setCurrentProvider] = useState("");
@@ -166,7 +167,7 @@ export function TokenUsagePanel({ lang }: Props) {
         }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                 <span style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text }}>
-                    {t("Token 用量统计", "Token Usage Stats")}
+                    {t("Token Usage Stats", "Token 用量统计")}
                 </span>
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     <button onClick={() => void loadData()} disabled={loading} style={{
@@ -174,7 +175,7 @@ export function TokenUsagePanel({ lang }: Props) {
                         background: colors.bg, color: colors.textSecondary,
                         border: `1px solid ${colors.border}`, cursor: loading ? "default" : "pointer",
                     }}>
-                        {loading ? "..." : t("刷新", "Refresh")}
+                        {loading ? "..." : t("Refresh", "刷新")}
                     </button>
                 </div>
             </div>
@@ -191,7 +192,7 @@ export function TokenUsagePanel({ lang }: Props) {
                 >
                     {providers.map(name => (
                         <option key={name} value={name}>
-                            {name}{name === currentProvider ? t(" (当前)", " (current)") : ""}
+                            {name}{name === currentProvider ? t(" (current)", " (当前)") : ""}
                         </option>
                     ))}
                 </select>
@@ -201,17 +202,17 @@ export function TokenUsagePanel({ lang }: Props) {
                 <div>
                     <div style={statRowStyle}>
                         <span style={{ color: colors.textSecondary }}>Input Tokens</span>
-                        <span style={{ fontWeight: 600, color: "#3b82f6" }}>{formatTokens(usage.input_tokens)}</span>
+                        <span style={{ fontWeight: 600, color: "var(--theme-primary)" }}>{formatTokens(usage.input_tokens)}</span>
                     </div>
                     <div style={statRowStyle}>
                         <span style={{ color: colors.textSecondary }}>Output Tokens</span>
-                        <span style={{ fontWeight: 600, color: "#8b5cf6" }}>{formatTokens(usage.output_tokens)}</span>
+                        <span style={{ fontWeight: 600, color: "var(--theme-primary-strong)" }}>{formatTokens(usage.output_tokens)}</span>
                     </div>
                     <div style={{
                         ...statRowStyle,
                         borderTop: `1px solid ${colors.border}`, paddingTop: 6, marginTop: 2,
                     }}>
-                        <span style={{ color: colors.textSecondary, fontWeight: 600 }}>{t("总计", "Total")}</span>
+                        <span style={{ color: colors.textSecondary, fontWeight: 600 }}>{t("Total", "总计")}</span>
                         <span style={{ fontWeight: 700, fontSize: "0.82rem", color: colors.text }}>
                             {formatTokens(usage.total_tokens)}
                         </span>
@@ -222,17 +223,17 @@ export function TokenUsagePanel({ lang }: Props) {
             <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
                 <button onClick={() => handleReset(selectedProvider)} style={{
                     fontSize: "0.7rem", padding: "3px 10px", borderRadius: 4,
-                    background: "transparent", color: "#ef4444",
-                    border: "1px solid #fca5a5", cursor: "pointer",
+                    background: "transparent", color: colors.danger,
+                    border: `1px solid ${colors.danger}`, cursor: "pointer",
                 }}>
-                    {t("重置当前", "Reset Current")}
+                    {t("Reset Current", "重置当前")}
                 </button>
                 <button onClick={() => handleReset("")} style={{
                     fontSize: "0.7rem", padding: "3px 10px", borderRadius: 4,
-                    background: "transparent", color: "#ef4444",
-                    border: "1px solid #fca5a5", cursor: "pointer",
+                    background: "transparent", color: colors.danger,
+                    border: `1px solid ${colors.danger}`, cursor: "pointer",
                 }}>
-                    {t("重置全部", "Reset All")}
+                    {t("Reset All", "重置全部")}
                 </button>
             </div>
         </div>

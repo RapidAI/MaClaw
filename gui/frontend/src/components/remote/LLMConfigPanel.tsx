@@ -124,7 +124,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [loadError, setLoadError] = useState<string | null>(null);
     const loadSeqRef = useRef(0);
 
-    const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
+    const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
 
     /** Shared OAuth login handler for both first-login and re-login scenarios. */
     const handleOAuthLogin = useCallback(async () => {
@@ -143,7 +144,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 if (oaIdx >= 0) setDlgSelectedIdx(oaIdx);
                 setDlgDirty(false);
                 onStatusChange?.(true, true);
-                setDlgTestResult({ ok: true, msg: t("OAuth 登录成功", "OAuth login successful") });
+                setDlgTestResult({ ok: true, msg: t("OAuth login successful", "OAuth 登录成功") });
                 setTimeout(() => setDlgOpen(false), 1200);
             }
         } catch (e) {
@@ -194,7 +195,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             }
 
             if (failed) {
-                setLoadError(t("部分 LLM 配置加载失败，可点击重试。", "Some LLM settings failed to load. Click retry."));
+                setLoadError(t("Some LLM settings failed to load. Click retry.", "部分 LLM 配置加载失败，可点击重试。"));
             }
         } finally {
             if (loadSeq === loadSeqRef.current) {
@@ -353,7 +354,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
                 onStatusChange?.(!!sp.key, !!sp.key);
-                setDlgTestResult({ ok: true, msg: t("已保存", "Saved") });
+                setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
                 setTimeout(() => setDlgOpen(false), 800);
             } catch (e) {
                 setDlgTestResult({ ok: false, msg: String(e) });
@@ -371,7 +372,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
                 onStatusChange?.(proxyRunning, true);
-                setDlgTestResult({ ok: true, msg: t("已保存", "Saved") });
+                setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
                 setTimeout(() => setDlgOpen(false), 800);
             } catch (e) {
                 setDlgTestResult({ ok: false, msg: String(e) });
@@ -391,7 +392,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
                 onStatusChange?.(true, true);
-                setDlgTestResult({ ok: true, msg: t("已保存", "Saved") });
+                setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
                 setTimeout(() => setDlgOpen(false), 800);
                 setDlgSaving(false);
                 return;
@@ -426,8 +427,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             setDlgTestResult({
                 ok: true,
                 msg: `${testResult.message}\n${testResult.supports_vision
-                    ? t("图片理解：支持", "Vision support: enabled")
-                    : t("图片理解：不支持", "Vision support: disabled")}`,
+                    ? t("Vision support: enabled", "图片理解：支持")
+                    : t("Vision support: disabled", "图片理解：不支持")}`,
             });
             onStatusChange?.(true, true);
             // Don't auto-close: let user review the vision probe result and
@@ -438,12 +439,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgSaving(false);
     };
 
-    if (loading) return <div style={{ padding: 16, color: "#888" }}>{t("加载中...", "Loading...")}</div>;
+    if (loading) return <div style={{ padding: 16, color: colors.textMuted }}>{t("Loading...", "加载中...")}</div>;
 
     return (
         <div style={{ padding: "0 4px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                <p style={{ fontSize: "0.72rem", color: "#888", margin: 0, lineHeight: 1.5 }}>
+                <p style={{ fontSize: "0.72rem", color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
                     {t(
                         "选择 LLM 服务商（支持 OpenAI / Anthropic 协议）",
                         "Select LLM provider (OpenAI / Anthropic supported)"
@@ -451,9 +452,9 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 </p>
                 <button onClick={openDialog} style={{
                     fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
-                    background: "#6366f1", color: "#fff", border: "none", borderRadius: 4, flexShrink: 0, marginLeft: 12,
+                    background: colors.primary, color: "var(--theme-text-primary)", border: "none", borderRadius: 4, flexShrink: 0, marginLeft: 12,
                 }}>
-                    {t("配置", "Configure")}
+                    {t("Configure", "配置")}
                 </button>
             </div>
 
@@ -464,10 +465,10 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 display: "flex", justifyContent: "space-between", alignItems: "center",
             }}>
                 <span style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
-                    {t("当前服务商", "Provider")}
+                    {t("Provider", "当前服务商")}
                 </span>
-                <span style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? "#ef4444" : colors.text }}>
-                    {isNone ? t("暂不配置", "None") : currentName}
+                <span style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? colors.danger : colors.text }}>
+                    {isNone ? t("None", "暂不配置") : currentName}
                 </span>
             </div>
 
@@ -492,21 +493,21 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                     <label style={{ ...labelStyle, marginBottom: 0 }}>
-                        {t("Agent 最大推理轮数", "Agent Max Iterations")}
-                        <span style={{ fontSize: "0.68rem", color: "#888", fontWeight: 400, marginLeft: 6 }}>
-                            {t("0=不限制，默认12", "0=unlimited, default 12")}
+                        {t("Agent Max Iterations", "Agent 最大推理轮数")}
+                        <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400, marginLeft: 6 }}>
+                            {t("0=unlimited, default 12", "0=不限制，默认12")}
                         </span>
                     </label>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <input type="range" min={0} max={300} step={1} value={maxIter}
                         onChange={e => { const v = Number(e.target.value); setMaxIter(v); SetMaclawAgentMaxIterations(v).catch(() => {}); }}
-                        style={{ flex: 1, accentColor: "#6366f1" }} />
+                        style={{ flex: 1, accentColor: "var(--theme-primary)" }} />
                     <input type="number" min={0} max={300} value={maxIter}
                         onChange={e => { const v = Math.max(0, Math.min(300, Number(e.target.value) || 0)); setMaxIter(v); SetMaclawAgentMaxIterations(v).catch(() => {}); }}
                         style={{ ...inputStyle, width: 60, textAlign: "center" as const }} />
                     <span style={{ fontSize: "0.72rem", color: colors.textSecondary, whiteSpace: "nowrap" }}>
-                        {maxIter === 0 ? t("不限制", "Unlimited") : `${maxIter} ${t("轮", "rounds")}`}
+                        {maxIter === 0 ? t("Unlimited", "不限制") : `${maxIter} ${t("rounds", "轮")}`}
                     </span>
                 </div>
             </div>
@@ -514,9 +515,9 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             {isNone && (
                 <div style={{
                     padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
-                    background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: "#ef4444",
+                    background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: colors.danger,
                 }}>
-                    ⚠️ {t("不配置服务商，MaClaw 远程将失效。", "Without a provider, MaClaw remote will be disabled.")}
+                    ⚠️ {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
                 </div>
             )}
 
@@ -536,7 +537,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                         {/* Header */}
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
                             <span style={{ fontSize: "0.92rem", fontWeight: 700, color: colors.text }}>
-                                {t("MaClaw LLM 配置", "MaClaw LLM Configuration")}
+                                {t("MaClaw LLM Configuration", "MaClaw LLM 配置")}
                             </span>
                             <button onClick={closeDialog} style={{
                                 border: "none", background: "transparent", cursor: "pointer",
@@ -546,7 +547,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
                         {/* Provider selection */}
                         <div style={{ marginBottom: 16 }}>
-                            <label style={labelStyle}>{t("选择服务商", "Select Provider")}</label>
+                            <label style={labelStyle}>{t("Select Provider", "选择服务商")}</label>
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                 {dlgProviders.map((p, i) => {
                                     const active = dlgSelectedIdx === i;
@@ -555,9 +556,9 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     return (
                                         <button key={i} onClick={() => dlgSelectProvider(i)} style={{
                                             fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
-                                            background: active ? "#6366f1" : colors.surface,
-                                            color: active ? "#fff" : colors.text,
-                                            border: `1px solid ${active ? "#6366f1" : colors.border}`,
+                                            background: active ? colors.primary : colors.surface,
+                                            color: active ? "var(--theme-text-primary)" : colors.text,
+                                            border: `1px solid ${active ? colors.primary : colors.border}`,
                                             borderRadius: 4, transition: "all 0.15s",
                                             position: "relative" as const,
                                             display: "inline-flex", alignItems: "center", gap: 5,
@@ -568,8 +569,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     position: "absolute", top: -8, right: -10,
                                                     fontSize: "0.56rem", lineHeight: 1, padding: "2px 5px",
                                                     borderRadius: 6, whiteSpace: "nowrap",
-                                                    background: active ? "#f59e0b" : "#6366f1",
-                                                    color: "#fff", fontWeight: 600, pointerEvents: "none",
+                                                    background: active ? "var(--theme-warning)" : colors.primary,
+                                                    color: "var(--theme-text-primary)", fontWeight: 600, pointerEvents: "none",
                                                 }}>{tag}</span>
                                             )}
                                         </button>
@@ -578,12 +579,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 {/* "None" button */}
                                 <button onClick={() => dlgSelectProvider(null)} style={{
                                     fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
-                                    background: dlgIsNone ? "#6366f1" : colors.surface,
-                                    color: dlgIsNone ? "#fff" : colors.text,
-                                    border: `1px solid ${dlgIsNone ? "#6366f1" : colors.border}`,
+                                    background: dlgIsNone ? colors.primary : colors.surface,
+                                    color: dlgIsNone ? "var(--theme-text-primary)" : colors.text,
+                                    border: `1px solid ${dlgIsNone ? colors.primary : colors.border}`,
                                     borderRadius: 4, transition: "all 0.15s",
                                 }}>
-                                    {t("暂不配置", "None")}
+                                    {t("None", "暂不配置")}
                                 </button>
                             </div>
                         </div>
@@ -592,10 +593,10 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                         {dlgIsNone && (
                             <div style={{
                                 padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
-                                background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: "#ef4444",
+                                background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: colors.danger,
                                 marginBottom: 16,
                             }}>
-                                ⚠️ {t("不配置服务商，MaClaw 远程将失效。", "Without a provider, MaClaw remote will be disabled.")}
+                                ⚠️ {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
                             </div>
                         )}
 
@@ -607,20 +608,20 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             }}>
                                 <div style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text, marginBottom: 12 }}>
                                     {dlgProvider.is_custom
-                                        ? t("自定义服务商配置", "Custom Provider Configuration")
-                                        : `${dlgProvider.name} ${t("配置", "Configuration")}`}
+                                        ? t("Custom Provider Configuration", "自定义服务商配置")
+                                        : `${dlgProvider.name} ${t("Configuration", "配置")}`}
                                 </div>
 
                                 {/* Custom: quick-fill from known endpoints */}
                                 {dlgProvider.is_custom && (
                                     <div style={{ marginBottom: 12 }}>
-                                        <label style={labelStyle}>{t("从已知服务商快速填充", "Quick-fill from known provider")}</label>
+                                        <label style={labelStyle}>{t("Quick-fill from known provider", "从已知服务商快速填充")}</label>
                                         <select
                                             style={{ ...inputStyle, cursor: "pointer" }}
                                             value=""
                                             onChange={e => dlgQuickFill(e.target.value)}
                                         >
-                                            <option value="">{t("-- 选择已知服务商自动填充 --", "-- Select a known provider to auto-fill --")}</option>
+                                            <option value="">{t("-- Select a known provider to auto-fill --", "-- 选择已知服务商自动填充 --")}</option>
                                             {KNOWN_OPENAI_ENDPOINTS.map(ep => (
                                                 <option key={ep.name} value={ep.name}>{ep.name} — {ep.model}</option>
                                             ))}
@@ -631,16 +632,16 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 {/* Protocol selection — only for custom providers */}
                                 {dlgProvider.is_custom && (
                                     <div style={{ marginBottom: 12 }}>
-                                        <label style={labelStyle}>{t("API 协议", "API Protocol")}</label>
+                                        <label style={labelStyle}>{t("API Protocol", "API 协议")}</label>
                                         <div style={{ display: "flex", gap: 6 }}>
                                             {(["openai", "anthropic"] as const).map(proto => {
                                                 const active = (dlgProvider.protocol || "openai") === proto;
                                                 return (
                                                     <button key={proto} onClick={() => dlgUpdateField("protocol", proto)} style={{
                                                         fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                        background: active ? "#6366f1" : colors.surface,
-                                                        color: active ? "#fff" : colors.text,
-                                                        border: `1px solid ${active ? "#6366f1" : colors.border}`,
+                                                        background: active ? colors.primary : colors.surface,
+                                                        color: active ? "var(--theme-text-primary)" : colors.text,
+                                                        border: `1px solid ${active ? colors.primary : colors.border}`,
                                                         borderRadius: 4, transition: "all 0.15s",
                                                     }}>
                                                         {proto === "openai" ? "OpenAI" : "Anthropic"}
@@ -650,8 +651,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         </div>
                                         <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                             {(dlgProvider.protocol || "openai") === "anthropic"
-                                                ? t("使用 Anthropic Messages API（x-api-key 鉴权）", "Uses Anthropic Messages API (x-api-key auth)")
-                                                : t("使用 OpenAI 兼容接口（Bearer Token 鉴权）", "Uses OpenAI-compatible API (Bearer token auth)")}
+                                                ? t("Uses Anthropic Messages API (x-api-key auth)", "使用 Anthropic Messages API（x-api-key 鉴权）")
+                                                : t("Uses OpenAI-compatible API (Bearer token auth)", "使用 OpenAI 兼容接口（Bearer Token 鉴权）")}
                                         </p>
                                     </div>
                                 )}
@@ -665,9 +666,9 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                             return (
                                                 <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)} style={{
                                                     fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                    background: active ? "#6366f1" : colors.surface,
-                                                    color: active ? "#fff" : colors.text,
-                                                    border: `1px solid ${active ? "#6366f1" : colors.border}`,
+                                                    background: active ? colors.primary : colors.surface,
+                                                    color: active ? "var(--theme-text-primary)" : colors.text,
+                                                    border: `1px solid ${active ? colors.primary : colors.border}`,
                                                     borderRadius: 4, transition: "all 0.15s",
                                                 }}>
                                                     {ua}
@@ -677,18 +678,18 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     </div>
                                     <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                         {(dlgProvider.agent_type || "openclaw") === "claude-code/2.0.0"
-                                            ? t("Kimi 等需要 Claude Coding Plan 身份的服务商", "For providers requiring Claude Coding Plan identity (e.g. Kimi)")
-                                            : t("智谱龙虾等大多数服务商使用 OpenClaw 身份", "Most providers use OpenClaw identity (e.g. Zhipu Lobster)")}
+                                            ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi)", "Kimi 等需要 Claude Coding Plan 身份的服务商")
+                                            : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "智谱龙虾等大多数服务商使用 OpenClaw 身份")}
                                     </p>
                                 </div>
 
                                 {/* Custom: editable name */}
                                 {dlgProvider.is_custom && (
                                     <div style={{ marginBottom: 12 }}>
-                                        <label style={labelStyle}>{t("服务商名称", "Provider Name")}</label>
+                                        <label style={labelStyle}>{t("Provider Name", "服务商名称")}</label>
                                         <input style={inputStyle} value={dlgProvider.name}
                                             onChange={e => dlgUpdateField("name", e.target.value)}
-                                            placeholder={t("自定义名称", "Custom name")}
+                                            placeholder={t("Custom name", "自定义名称")}
                                             autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
                                     </div>
                                 )}
@@ -696,10 +697,10 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 {/* URL */}
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
-                                        {t("API 地址 (URL)", "API URL")}
+                                        {t("API URL", "API 地址 (URL)")}
                                         {!dlgProvider.is_custom && (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
-                                                {t("（预设，无需修改）", "(preset)")}
+                                                {t("(preset)", "（预设，无需修改）")}
                                             </span>
                                         )}
                                     </label>
@@ -716,15 +717,15 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 {/* Model */}
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
-                                        {t("模型名称", "Model Name")}
+                                        {t("Model Name", "模型名称")}
                                         {!dlgProvider.is_custom && dlgProvider.auth_type !== "oauth" && (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
-                                                {t("（预设，无需修改）", "(preset)")}
+                                                {t("(preset)", "（预设，无需修改）")}
                                             </span>
                                         )}
                                         {dlgProvider.auth_type === "oauth" && (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
-                                                {t("（可修改）", "(editable)")}
+                                                {t("(editable)", "（可修改）")}
                                             </span>
                                         )}
                                     </label>
@@ -746,50 +747,50 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 {/* Auth: OAuth login button / no-key hint / API Key input */}
                                 {dlgProvider.auth_type === "oauth" ? (
                                     <div>
-                                        <label style={labelStyle}>{t("认证方式", "Authentication")}</label>
+                                        <label style={labelStyle}>{t("Authentication", "认证方式")}</label>
                                         {dlgProvider.key ? (
                                             <div style={{
                                                 display: "flex", alignItems: "center", gap: 10,
                                                 padding: "8px 12px", borderRadius: 4,
                                                 background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
                                             }}>
-                                                <span style={{ fontSize: "0.76rem", color: "#22c55e", flex: 1 }}>
-                                                    ✅ {t("已通过 OAuth 认证", "OAuth authenticated")}
+                                                <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
+                                                    ✅ {t("OAuth authenticated", "已通过 OAuth 认证")}
                                                 </span>
                                                 <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                     fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
-                                                    background: "transparent", color: "#6366f1",
-                                                    border: `1px solid #6366f1`, borderRadius: 4,
+                                                    background: "transparent", color: "var(--theme-primary)",
+                                                    border: `1px solid ${colors.primary}`, borderRadius: 4,
                                                     opacity: oauthBusy ? 0.5 : 1,
                                                 }}>
-                                                    {oauthBusy ? t("登录中...", "Logging in...") : t("重新登录", "Re-login")}
+                                                    {oauthBusy ? t("Logging in...", "登录中...") : t("Re-login", "重新登录")}
                                                 </button>
                                             </div>
                                         ) : (
                                             <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                 width: "100%", padding: "10px 0", fontSize: "0.8rem",
                                                 cursor: oauthBusy ? "default" : "pointer",
-                                                background: "#6366f1", color: "#fff",
+                                                background: colors.primary, color: "var(--theme-text-primary)",
                                                 border: "none", borderRadius: 4,
                                                 opacity: oauthBusy ? 0.6 : 1,
                                             }}>
                                                 {oauthBusy
-                                                    ? `⏳ ${t("等待浏览器授权...", "Waiting for browser authorization...")}`
-                                                    : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
+                                                    ? `⏳ ${t("Waiting for browser authorization...", "等待浏览器授权...")}`
+                                                    : t("Sign in with OpenAI", "使用 OpenAI 账号登录")}
                                             </button>
                                         )}
                                     </div>
                                 ) : dlgProvider.auth_type === "none" ? (
                                     <div>
                                         {/* 当贝 AI login status */}
-                                        <label style={labelStyle}>{t("当贝 AI 登录", "Dangbei AI Login")}</label>
+                                        <label style={labelStyle}>{t("Dangbei AI Login", "当贝 AI 登录")}</label>
                                         {authChecking ? (
                                             <div style={{
                                                 padding: "8px 12px", borderRadius: 4, marginBottom: 10,
                                                 background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)",
                                             }}>
-                                                <span style={{ fontSize: "0.76rem", color: "#6366f1" }}>
-                                                    ⏳ {t("正在验证登录状态...", "Validating login status...")}
+                                                <span style={{ fontSize: "0.76rem", color: "var(--theme-primary)" }}>
+                                                    ⏳ {t("Validating login status...", "正在验证登录状态...")}
                                                 </span>
                                             </div>
                                         ) : dangbeiLoggedIn ? (
@@ -798,8 +799,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                 padding: "8px 12px", borderRadius: 4, marginBottom: 10,
                                                 background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
                                             }}>
-                                                <span style={{ fontSize: "0.76rem", color: "#22c55e", flex: 1 }}>
-                                                    ✅ {t("已登录当贝 AI", "Logged in to Dangbei AI")}
+                                                <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
+                                                    ✅ {t("Logged in to Dangbei AI", "已登录当贝 AI")}
                                                 </span>
                                                 <button
                                                     disabled={loginBusy}
@@ -809,7 +810,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                         try {
                                                             await DangbeiLogin();
                                                             setBrowserLaunched(true);
-                                                            setDlgTestResult({ ok: true, msg: t("浏览器已打开，请登录后点击「完成登录」", "Browser opened. Log in then click 'Finish Login'") });
+                                                            setDlgTestResult({ ok: true, msg: t("Browser opened. Log in then click 'Finish Login'", "浏览器已打开，请登录后点击「完成登录」") });
                                                         } catch (e) {
                                                             setDlgTestResult({ ok: false, msg: String(e) });
                                                         }
@@ -817,26 +818,26 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     }}
                                                     style={{
                                                         fontSize: "0.72rem", padding: "4px 12px", cursor: loginBusy ? "default" : "pointer",
-                                                        background: "transparent", color: "#6366f1",
-                                                        border: "1px solid #6366f1", borderRadius: 4,
+                                                        background: "transparent", color: "var(--theme-primary)",
+                                                        border: `1px solid ${colors.primary}`, borderRadius: 4,
                                                         opacity: loginBusy ? 0.5 : 1,
                                                     }}
                                                 >
-                                                    {loginBusy ? "..." : t("重新登录", "Re-login")}
+                                                    {loginBusy ? "..." : t("Re-login", "重新登录")}
                                                 </button>
                                             </div>
                                         ) : (
                                             <div style={{ marginBottom: 10 }}>
                                                 {/* Browser detection */}
                                                 {browserInfo === null ? (
-                                                    <p style={{ fontSize: "0.72rem", color: colors.textMuted }}>{t("检测浏览器...", "Detecting browser...")}</p>
+                                                    <p style={{ fontSize: "0.72rem", color: colors.textMuted }}>{t("Detecting browser...", "检测浏览器...")}</p>
                                                 ) : browserInfo.found === "true" ? (
                                                     <div style={{
                                                         display: "flex", alignItems: "center", gap: 8,
                                                         padding: "8px 12px", borderRadius: 4, marginBottom: 8,
                                                         background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
                                                     }}>
-                                                        <span style={{ fontSize: "0.76rem", color: "#22c55e", flex: 1 }}>
+                                                        <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
                                                             ✅ {t(`已找到 ${browserInfo.name === "edge" ? "Edge" : "Chrome"}`, `${browserInfo.name === "edge" ? "Edge" : "Chrome"} found`)}
                                                         </span>
                                                     </div>
@@ -846,14 +847,14 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                         padding: "8px 12px", borderRadius: 4, marginBottom: 8,
                                                         background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
                                                     }}>
-                                                        <span style={{ fontSize: "0.76rem", color: "#ef4444", flex: 1 }}>
-                                                            ❌ {t("未找到 Chrome 或 Edge", "Chrome/Edge not found")}
+                                                        <span style={{ fontSize: "0.76rem", color: colors.danger, flex: 1 }}>
+                                                            ❌ {t("Chrome/Edge not found", "未找到 Chrome 或 Edge")}
                                                         </span>
                                                         <button onClick={() => window.open("https://www.google.com/chrome/", "_blank")} style={{
                                                             fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
-                                                            background: "#6366f1", color: "#fff", border: "none", borderRadius: 4,
+                                                            background: colors.primary, color: "var(--theme-text-primary)", border: "none", borderRadius: 4,
                                                         }}>
-                                                            {t("下载 Chrome", "Download Chrome")}
+                                                            {t("Download Chrome", "下载 Chrome")}
                                                         </button>
                                                     </div>
                                                 )}
@@ -866,7 +867,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                         try {
                                                             await DangbeiLogin();
                                                             setBrowserLaunched(true);
-                                                            setDlgTestResult({ ok: true, msg: t("浏览器已打开，请在浏览器中登录当贝 AI，完成后点击下方「完成登录」按钮", "Browser opened. Log in to Dangbei AI, then click 'Finish Login' below") });
+                                                            setDlgTestResult({ ok: true, msg: t("Browser opened. Log in to Dangbei AI, then click 'Finish Login' below", "浏览器已打开，请在浏览器中登录当贝 AI，完成后点击下方「完成登录」按钮") });
                                                         } catch (e) {
                                                             setDlgTestResult({ ok: false, msg: String(e) });
                                                         }
@@ -875,12 +876,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     style={{
                                                         width: "100%", padding: "10px 0", fontSize: "0.8rem",
                                                         cursor: loginBusy ? "default" : "pointer",
-                                                        background: "#6366f1", color: "#fff",
+                                                        background: colors.primary, color: "var(--theme-text-primary)",
                                                         border: "none", borderRadius: 4,
                                                         opacity: (loginBusy || browserInfo?.found !== "true") ? 0.6 : 1,
                                                     }}
                                                 >
-                                                    {loginBusy ? `⏳ ${t("正在启动浏览器...", "Launching browser...")}` : t("登录当贝 AI", "Login to Dangbei AI")}
+                                                    {loginBusy ? `⏳ ${t("Launching browser...", "正在启动浏览器...")}` : t("Login to Dangbei AI", "登录当贝 AI")}
                                                 </button>
                                             </div>
                                         )}
@@ -905,7 +906,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                                     setProxyRunning(true);
                                                                 }
                                                             } catch { /* non-fatal */ }
-                                                            setDlgTestResult({ ok: true, msg: t("登录成功，代理已自动启动", "Login successful, proxy auto-started") });
+                                                            setDlgTestResult({ ok: true, msg: t("Login successful, proxy auto-started", "登录成功，代理已自动启动") });
                                                         } catch (e) {
                                                             setDlgTestResult({ ok: false, msg: String(e) });
                                                         }
@@ -914,12 +915,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     style={{
                                                         width: "100%", padding: "10px 0", fontSize: "0.8rem",
                                                         cursor: loginBusy ? "default" : "pointer",
-                                                        background: "#22c55e", color: "#fff",
+                                                        background: colors.success, color: "var(--theme-text-primary)",
                                                         border: "none", borderRadius: 4,
                                                         opacity: loginBusy ? 0.6 : 1,
                                                     }}
                                                 >
-                                                    {loginBusy ? `⏳ ${t("正在关闭浏览器并提取登录信息...", "Closing browser & extracting login info...")}` : t("✅ 我已在浏览器中登录，完成登录", "✅ I've logged in, finish login")}
+                                                    {loginBusy ? `⏳ ${t("Closing browser & extracting login info...", "正在关闭浏览器并提取登录信息...")}` : t("✅ I've logged in, finish login", "✅ 我已在浏览器中登录，完成登录")}
                                                 </button>
                                                 {dlgTestResult && (
                                                     <div style={{
@@ -927,7 +928,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                         lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
                                                         background: dlgTestResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
                                                         border: `1px solid ${dlgTestResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                                        color: dlgTestResult.ok ? "#22c55e" : "#ef4444",
+                                                        color: dlgTestResult.ok ? colors.success : colors.danger,
                                                     }}>
                                                         {dlgTestResult.ok ? "✅ " : "❌ "}{dlgTestResult.msg}
                                                     </div>
@@ -943,7 +944,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         </p>
 
                                         {/* Model selection */}
-                                        <label style={labelStyle}>{t("模型选择", "Model Selection")}</label>
+                                        <label style={labelStyle}>{t("Model Selection", "模型选择")}</label>
                                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12 }}>
                                             {freeModels.map(m => {
                                                 const active = freeSelectedModel === m.id;
@@ -953,9 +954,9 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                         SetFreeProxyModel(m.id).catch(() => {});
                                                     }} style={{
                                                         fontSize: "0.72rem", padding: "4px 10px", cursor: "pointer",
-                                                        background: active ? "#6366f1" : colors.surface,
-                                                        color: active ? "#fff" : colors.text,
-                                                        border: `1px solid ${active ? "#6366f1" : colors.border}`,
+                                                        background: active ? colors.primary : colors.surface,
+                                                        color: active ? "var(--theme-text-primary)" : colors.text,
+                                                        border: `1px solid ${active ? colors.primary : colors.border}`,
                                                         borderRadius: 4, transition: "all 0.15s",
                                                     }}>
                                                         {m.name}
@@ -965,7 +966,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         </div>
 
                                         {/* Proxy status */}
-                                        <label style={labelStyle}>{t("代理状态", "Proxy Status")}</label>
+                                        <label style={labelStyle}>{t("Proxy Status", "代理状态")}</label>
                                         <div style={{
                                             display: "flex", alignItems: "center", gap: 10,
                                             padding: "8px 12px", borderRadius: 4,
@@ -974,13 +975,13 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         }}>
                                             <span style={{
                                                 width: 8, height: 8, borderRadius: "50%",
-                                                background: proxyRunning ? "#22c55e" : "#ef4444",
+                                                background: proxyRunning ? colors.success : colors.danger,
                                                 display: "inline-block", flexShrink: 0,
                                             }} />
-                                            <span style={{ fontSize: "0.76rem", color: proxyRunning ? "#22c55e" : "#ef4444", flex: 1 }}>
+                                            <span style={{ fontSize: "0.76rem", color: proxyRunning ? colors.success : colors.danger, flex: 1 }}>
                                                 {proxyRunning
-                                                    ? t("代理服务运行中 (localhost:18099)", "Proxy running (localhost:18099)")
-                                                    : t("代理服务未运行", "Proxy not running")}
+                                                    ? t("Proxy running (localhost:18099)", "代理服务运行中 (localhost:18099)")
+                                                    : t("Proxy not running", "代理服务未运行")}
                                             </span>
                                             <button
                                                 disabled={proxyBusy}
@@ -999,13 +1000,13 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                 }}
                                                 style={{
                                                     fontSize: "0.72rem", padding: "4px 12px", cursor: proxyBusy ? "default" : "pointer",
-                                                    background: proxyRunning ? "transparent" : "#6366f1",
-                                                    color: proxyRunning ? "#ef4444" : "#fff",
-                                                    border: `1px solid ${proxyRunning ? "#ef4444" : "#6366f1"}`,
+                                                    background: proxyRunning ? "transparent" : colors.primary,
+                                                    color: proxyRunning ? colors.danger : "var(--theme-text-primary)",
+                                                    border: `1px solid ${proxyRunning ? colors.danger : colors.primary}`,
                                                     borderRadius: 4, opacity: proxyBusy ? 0.5 : 1,
                                                 }}
                                             >
-                                                {proxyBusy ? "..." : proxyRunning ? t("停止", "Stop") : t("启动", "Start")}
+                                                {proxyBusy ? "..." : proxyRunning ? t("Stop", "停止") : t("Start", "启动")}
                                             </button>
                                         </div>
                                         <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "6px 0 0 0", lineHeight: 1.4 }}>
@@ -1017,7 +1018,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     </div>
                                 ) : (
                                     <div>
-                                        <label style={labelStyle}>{t("API 密钥", "API Key")} <span style={{ color: "#ef4444" }}>*</span></label>
+                                        <label style={labelStyle}>{t("API Key", "API 密钥")} <span style={{ color: colors.danger }}>*</span></label>
                                         <input style={inputStyle} type="password" value={dlgProvider.key}
                                             onChange={e => dlgUpdateField("key", e.target.value)}
                                             placeholder={((dlgProvider.name === "智谱龙虾" || dlgProvider.name === "智谱编程") || (dlgProvider.protocol || "openai") === "anthropic") ? "xxxxxxxx.yyyyyyyy" : "sk-..."}
@@ -1027,7 +1028,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
                                 {/* Context Length */}
                                 <div style={{ marginTop: 12 }}>
-                                    <label style={labelStyle}>{t("上下文长度 (tokens)", "Context Length (tokens)")}</label>
+                                    <label style={labelStyle}>{t("Context Length (tokens)", "上下文长度 (tokens)")}</label>
                                     <input style={inputStyle} type="number" min={0} step={1000}
                                         autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off"
                                         value={dlgProvider.context_length || ""}
@@ -1048,12 +1049,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 }}>
                                     <div style={{ flex: 1 }}>
                                         <label style={{ ...labelStyle, marginBottom: 2 }}>
-                                            {t("图片理解", "Vision Support")}
+                                            {t("Vision Support", "图片理解")}
                                         </label>
                                         <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: 0, lineHeight: 1.4 }}>
                                             {dlgProvider.supports_vision
-                                                ? t("✅ 支持图片输入（微信发图可被模型理解）", "✅ Supports image input (WeChat images understood by model)")
-                                                : t("❌ 不支持图片（发图将保存为文件而非发送给模型）", "❌ No vision (images saved as files, not sent to model)")}
+                                                ? t("✅ Supports image input (WeChat images understood by model)", "✅ 支持图片输入（微信发图可被模型理解）")
+                                                : t("❌ No vision (images saved as files, not sent to model)", "❌ 不支持图片（发图将保存为文件而非发送给模型）")}
                                         </p>
                                         <p style={{ fontSize: "0.64rem", color: colors.textMuted, margin: "2px 0 0 0", lineHeight: 1.4 }}>
                                             {t(
@@ -1073,7 +1074,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                             setDlgDirty(true);
                                             setDlgTestResult(null);
                                         }}
-                                        style={{ width: 18, height: 18, accentColor: "#6366f1", cursor: "pointer", flexShrink: 0 }} />
+                                        style={{ width: 18, height: 18, accentColor: "var(--theme-primary)", cursor: "pointer", flexShrink: 0 }} />
                                 </div>
 
 
@@ -1083,20 +1084,20 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
                         {/* Footer */}
                         <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end", marginTop: 20 }}>
-                            {dlgDirty && <span style={{ fontSize: "0.68rem", color: "#f59e0b", marginRight: "auto" }}>{t("未保存", "unsaved")}</span>}
+                            {dlgDirty && <span style={{ fontSize: "0.68rem", color: colors.warning, marginRight: "auto" }}>{t("unsaved", "未保存")}</span>}
                             <button onClick={closeDialog} style={{
                                 fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
                                 background: colors.bg, color: colors.text,
                                 border: `1px solid ${colors.border}`, borderRadius: 4,
                             }}>
-                                {t("取消", "Cancel")}
+                                {t("Cancel", "取消")}
                             </button>
                             <button onClick={dlgHandleSave} disabled={dlgSaving || oauthBusy || (!dlgDirty && !dlgTested)} style={{
                                 fontSize: "0.76rem", padding: "6px 18px", cursor: (dlgDirty || dlgTested) ? "pointer" : "default",
-                                background: (dlgDirty || dlgTested) ? "#6366f1" : colors.bg, color: (dlgDirty || dlgTested) ? "#fff" : colors.textMuted,
+                                background: (dlgDirty || dlgTested) ? colors.primary : colors.bg, color: (dlgDirty || dlgTested) ? "var(--theme-text-primary)" : colors.textMuted,
                                 border: "none", borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
                             }}>
-                                {dlgSaving ? t("检测并保存中...", "Testing & Saving...") : dlgTested ? t("保存修改", "Save Changes") : t("检测并保存", "Test & Save")}
+                                {dlgSaving ? t("Testing & Saving...", "检测并保存中...") : dlgTested ? t("Save Changes", "保存修改") : t("Test & Save", "检测并保存")}
                             </button>
                         </div>
 
@@ -1107,11 +1108,11 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
                                 background: dlgTestResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
                                 border: `1px solid ${dlgTestResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                color: dlgTestResult.ok ? "#22c55e" : "#ef4444",
+                                color: dlgTestResult.ok ? colors.success : colors.danger,
                             }}>
                                 {dlgTestResult.ok
-                                    ? `✅ ${t("连接成功，已保存", "Connection OK, saved")}\n${dlgTestResult.msg}`
-                                    : `❌ ${t("连接失败，未保存", "Connection failed, not saved")}\n${dlgTestResult.msg}`}
+                                    ? `✅ ${t("Connection OK, saved", "连接成功，已保存")}\n${dlgTestResult.msg}`
+                                    : `❌ ${t("Connection failed, not saved", "连接失败，未保存")}\n${dlgTestResult.msg}`}
                             </div>
                         )}
                     </div>

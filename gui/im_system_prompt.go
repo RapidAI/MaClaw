@@ -238,6 +238,13 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
 - 创建会话时可用 project_id 参数指定预设项目，或用 project_manage(action="list") 查看可用项目列表
 
+## 文件编码与大文件写入
+- write_file 工具始终以 UTF-8 编码写入文件，不会产生 GBK 乱码。如果用户反馈乱码，问题通常在打开文件的程序（如记事本）而非写入过程。
+- bash 工具在 Windows 上已自动设置 UTF-8 输出编码（PYTHONIOENCODING=utf-8, PYTHONUTF8=1, [Console]::OutputEncoding=UTF8），Python/Node 脚本的中文输出不会乱码。
+- 写入大文件（>3000 字符）时，使用 write_file 的 mode=append 分块写入：先用 overwrite 写入第一部分，再用 append 追加后续部分。
+- 生成 Python 脚本写文件时，始终在 open() 中指定 encoding='utf-8'，例如：open('output.md', 'w', encoding='utf-8')。
+- ⚠️ 不要因为怀疑编码问题而反复尝试不同方案（unicode 转义、GBK 编码等）——write_file 就是 UTF-8，直接写中文即可。
+
 `)	} else {
 		// Lite/simple mode: no coding session tools available.
 		b.WriteString(`
@@ -262,6 +269,13 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - 截屏直接调用 screenshot
 - 用 send_file 通过 IM 通道直接发送文件给用户。如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
+
+## 文件编码与大文件写入
+- write_file 工具始终以 UTF-8 编码写入文件，不会产生 GBK 乱码。
+- bash 工具在 Windows 上已自动设置 UTF-8 输出编码，Python/Node 脚本的中文输出不会乱码。
+- 写入大文件（>3000 字符）时，使用 write_file 的 mode=append 分块写入。
+- 生成 Python 脚本写文件时，始终在 open() 中指定 encoding='utf-8'。
+- ⚠️ 不要因为怀疑编码问题而反复尝试不同方案——write_file 就是 UTF-8，直接写中文即可。
 
 `)
 	}

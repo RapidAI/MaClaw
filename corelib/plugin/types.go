@@ -10,6 +10,7 @@ const (
 	PluginTypeLocalMCP PluginType = "local_mcp"  // 本地 stdio MCP Server
 	PluginTypeNLSkill  PluginType = "nlskill"    // NL 技能
 	PluginTypeNative   PluginType = "native"     // 原生 Go 插件
+	PluginTypeScript   PluginType = "script"     // 脚本工具（shell/python 等，无需 MCP 协议）
 )
 
 // PluginScope 标识插件的发现来源。

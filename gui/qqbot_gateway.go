@@ -102,6 +102,9 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 	if err := gw.Start(context.Background()); err != nil {
 		log.Printf("[qqbot-mgr] start failed: %v", err)
 		m.mu.Lock()
+		m.gateway = nil
+		m.lastAppID = ""
+		m.lastSecret = ""
 		m.status = "error"
 		m.mu.Unlock()
 		m.emitStatusEvent()
@@ -126,6 +129,7 @@ func (m *qqBotGatewayManager) Stop() {
 	if gw != nil {
 		_ = gw.Stop()
 	}
+	m.emitStatusEvent()
 }
 
 // Status returns the current connection status.
@@ -139,6 +143,11 @@ func (m *qqBotGatewayManager) Status() string {
 func (m *qqBotGatewayManager) onStatusChange(status string) {
 	m.mu.Lock()
 	m.status = status
+	if status == "error" {
+		m.gateway = nil
+		m.lastAppID = ""
+		m.lastSecret = ""
+	}
 	m.mu.Unlock()
 	m.emitStatusEvent()
 

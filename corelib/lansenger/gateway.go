@@ -300,6 +300,12 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
 	defer hbCancel()
 	go g.heartbeatLoop(hbCtx, conn)
 
+	// Set Pong handler to reset read deadline when server responds to our Ping.
+	conn.SetPongHandler(func(appData string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return nil
+	})
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -321,7 +327,7 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
 }
 
 func (g *Gateway) heartbeatLoop(ctx context.Context, conn *websocket.Conn) {
-	ticker := time.NewTicker(55 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {

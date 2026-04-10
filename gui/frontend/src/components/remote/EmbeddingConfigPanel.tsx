@@ -6,7 +6,8 @@ import { colors } from "./styles";
 type Props = { lang: string };
 
 export function EmbeddingConfigPanel({ lang }: Props) {
-    const t = useCallback((zh: string, en: string) => lang?.startsWith('zh') ? zh : en, [lang]);
+    const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
     const [enabled, setEnabled] = useState(false);
     const [modelExists, setModelExists] = useState(false);
     const [modelSize, setModelSize] = useState(0);
@@ -77,60 +78,61 @@ export function EmbeddingConfigPanel({ lang }: Props) {
         return (bytes / 1024 / 1024).toFixed(1) + ' MB';
     };
 
-    if (loading) return <div style={{ padding: 20, color: colors.textMuted }}>{t('加载中...', 'Loading...')}</div>;
+    if (loading) return <div style={{ padding: 20, color: colors.textMuted }}>{t('Loading...', '加载中...', '加載中...')}</div>;
 
     return (
         <div style={{ padding: '0 2px' }}>
-            <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: 12, marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
-                {t('嵌入模型', 'Embedding Model')}
+            <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: 12, marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+                {t('Embedding Model', '嵌入模型', '嵌入模型')}
             </h4>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
                 <label style={{ fontSize: '0.82rem', color: colors.text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
                     <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} disabled={downloading} style={{ width: 16, height: 16, cursor: 'pointer' }} />
-                    {t('启用向量搜索', 'Enable Vector Search')}
+                    {t('Enable Vector Search', '启用向量搜索', '啟用向量搜索')}
                 </label>
             </div>            <p style={{ fontSize: '0.76rem', color: colors.textSecondary, margin: '0 0 16px 0', lineHeight: 1.5 }}>
                 {t(
                     '向量搜索使用 EmbeddingGemma 300M 模型为记忆和文档生成语义向量，提升搜索精度。模型文件约 300MB，将从 Hub 下载到本地。',
-                    'Vector search uses EmbeddingGemma 300M to generate semantic embeddings for memory and documents. The model (~300MB) will be downloaded from Hub.'
+                    '向量搜索使用 EmbeddingGemma 300M 模型为记忆和文档生成语义向量，提升搜索精度。模型文件约 300MB，将从 Hub 下载到本地。',
+                    '向量搜索使用 EmbeddingGemma 300M 模型为记忆和文档生成语义向量，提升搜索精度。模型文件約 300MB，將從 Hub 下載到本地。'
                 )}
             </p>
             {enabled && (
                 <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 6, padding: '12px 14px' }}>
                     {modelExists && !downloading && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span style={{ color: '#22c55e', fontSize: '1rem' }}>✓</span>
-                            <span style={{ fontSize: '0.8rem', color: colors.text }}>{t('模型已就绪', 'Model Ready')}</span>
+                            <span style={{ color: 'var(--theme-success)', fontSize: '1rem' }}>✓</span>
+                            <span style={{ fontSize: '0.8rem', color: colors.text }}>{t('Model Ready', '模型已就绪', '模型已就緒')}</span>
                             <span style={{ fontSize: '0.74rem', color: colors.textMuted, marginLeft: 'auto' }}>{formatBytes(modelSize)}</span>
                         </div>
                     )}
                     {downloading && (
                         <div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                                <span style={{ fontSize: '0.78rem', color: colors.text }}>{t('正在从 Hub 下载模型...', 'Downloading from Hub...')}</span>
+                                <span style={{ fontSize: '0.78rem', color: colors.text }}>{t('Downloading from Hub...', '正在从 Hub 下载模型...', '正在從 Hub 下載模型...')}</span>
                                 <span style={{ fontSize: '0.74rem', color: colors.textMuted }}>{progress}% — {formatBytes(downloaded)} / {total > 0 ? formatBytes(total) : '?'}</span>
                             </div>
                             <div style={{ width: '100%', height: 6, background: colors.border, borderRadius: 3, overflow: 'hidden' }}>
-                                <div style={{ width: `${progress}%`, height: '100%', background: '#6366f1', borderRadius: 3, transition: 'width 0.3s ease' }} />
+                                <div style={{ width: `${progress}%`, height: '100%', background: 'var(--theme-primary)', borderRadius: 3, transition: 'width 0.3s ease' }} />
                             </div>
                         </div>
                     )}
                     {!modelExists && !downloading && (
                         <div>
                             <div style={{ fontSize: '0.78rem', color: colors.textSecondary, marginBottom: 8 }}>
-                                {t('模型文件未找到，需要从 Hub 下载。', 'Model file not found. Download from Hub required.')}
+                                {t('Model file not found. Download from Hub required.', '模型文件未找到，需要从 Hub 下载。', '模型文件未找到，需要從 Hub 下載。')}
                             </div>
-                            <button onClick={startDownload} style={{ padding: '6px 16px', fontSize: '0.78rem', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
-                                {t('下载模型', 'Download Model')}
+                            <button onClick={startDownload} style={{ padding: '6px 16px', fontSize: '0.78rem', background: 'var(--theme-primary)', color: 'var(--theme-text-primary)', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
+                                {t('Download Model', '下载模型', '下載模型')}
                             </button>
                         </div>
                     )}
                     {error && (
                         <div style={{ marginTop: 8 }}>
-                            <span style={{ fontSize: '0.76rem', color: '#ef4444' }}>{t('错误：', 'Error: ')}{error}</span>
+                            <span style={{ fontSize: '0.76rem', color: 'var(--theme-danger)' }}>{t('Error: ', '错误：', '錯誤：')}{error}</span>
                             {!downloading && (
                                 <button onClick={startDownload} style={{ marginLeft: 10, padding: '4px 12px', fontSize: '0.74rem', background: colors.surface, color: colors.text, border: `1px solid ${colors.border}`, borderRadius: 4, cursor: 'pointer' }}>
-                                    {t('重试', 'Retry')}
+                                    {t('Retry', '重试', '重試')}
                                 </button>
                             )}
                         </div>

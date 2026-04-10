@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { CSSProperties } from "react";
+import { colors, radius } from "./styles";
 import {
     ListMCPServers,
     RegisterMCPServer,
@@ -84,7 +85,7 @@ const tabStyle: CSSProperties = {
     cursor: "pointer",
     textAlign: "center",
     borderBottom: "2px solid transparent",
-    color: "#8b95a5",
+    color: colors.textMuted,
     background: "none",
     border: "none",
     borderRadius: 0,
@@ -93,8 +94,8 @@ const tabStyle: CSSProperties = {
 
 const tabActiveStyle: CSSProperties = {
     ...tabStyle,
-    color: "var(--primary-color, #6366f1)",
-    borderBottom: "2px solid var(--primary-color, #6366f1)",
+    color: "var(--theme-primary)",
+    borderBottom: "2px solid var(--theme-primary)",
 };
 
 export function MCPManagementPanel({ translate }: Props) {
@@ -102,7 +103,7 @@ export function MCPManagementPanel({ translate }: Props) {
 
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            <div style={{ display: "flex", borderBottom: "1px solid #e1e4e8" }}>
+            <div style={{ display: "flex", borderBottom: `1px solid ${colors.border}` }}>
                 <button
                     style={activeTab === "local" ? tabActiveStyle : tabStyle}
                     onClick={() => setActiveTab("local")}
@@ -316,7 +317,7 @@ function LocalMCPPanel({ translate }: Props) {
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: "0.78rem", color: "#5a6577" }}>
+                <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
                     {servers.length} {translate("mcpLocalCount")}
                 </span>
                 <div style={{ display: "flex", gap: "6px" }}>
@@ -329,17 +330,17 @@ function LocalMCPPanel({ translate }: Props) {
                 </div>
             </div>
 
-            {loading && <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: "#8b95a5" }}>{translate("mcpLoading")}</div>}
-            {error && <div style={{ fontSize: "0.78rem", color: "#c53030", background: "#fff5f5", padding: "6px 10px", borderRadius: "4px", border: "1px solid #fecdd3" }}>{error}</div>}
+            {loading && <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: colors.textMuted }}>{translate("mcpLoading")}</div>}
+            {error && <div style={{ fontSize: "0.78rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "6px 10px", borderRadius: "4px", border: `1px solid ${colors.danger}` }}>{error}</div>}
 
             {!loading && servers.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     {servers.map((s) => (
                         <div key={s.id} style={{
-                            border: "1px solid #e1e4e8",
+                            border: `1px solid ${colors.border}`,
                             borderRadius: "6px",
                             padding: "8px 10px",
-                            background: s.disabled ? "#f9fafb" : "#fff",
+                            background: s.disabled ? colors.surfaceMuted : colors.surface,
                             opacity: s.disabled ? 0.6 : 1,
                         }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -350,14 +351,14 @@ function LocalMCPPanel({ translate }: Props) {
                                             width: "8px",
                                             height: "8px",
                                             borderRadius: "50%",
-                                            background: s.disabled ? "#d1d5db" : statusMap[s.id] ? "#22c55e" : "#ef4444",
+                                            background: s.disabled ? colors.textMuted : statusMap[s.id] ? colors.success : colors.danger,
                                             flexShrink: 0,
                                         }}
                                         title={s.disabled ? translate("mcpDisabled") : statusMap[s.id] ? translate("mcpRunning") : translate("mcpNotRunning")}
                                     />
-                                    <span style={{ fontSize: "0.78rem", fontWeight: 600, color: "#1a202c" }}>{s.name}</span>
-                                    {s.disabled && <span style={{ fontSize: "0.66rem", color: "#8b95a5" }}>({translate("mcpDisabled")})</span>}
-                                    {s.auto_start && !s.disabled && <span style={{ fontSize: "0.66rem", color: "#2563eb" }}>({translate("mcpAutoStartOn")})</span>}
+                                    <span style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text }}>{s.name}</span>
+                                    {s.disabled && <span style={{ fontSize: "0.66rem", color: colors.textMuted }}>({translate("mcpDisabled")})</span>}
+                                    {s.auto_start && !s.disabled && <span style={{ fontSize: "0.66rem", color: colors.primary }}>({translate("mcpAutoStartOn")})</span>}
                                 </div>
                                 <div style={{ display: "flex", gap: "4px" }}>
                                     <button className="btn-secondary" style={smallBtnStyle} onClick={() => handleToggleDisabled(s)} disabled={busy}>
@@ -370,15 +371,15 @@ function LocalMCPPanel({ translate }: Props) {
                                     <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={() => setDeleteTarget(s)} disabled={busy}>{translate("mcpDelete")}</button>
                                 </div>
                             </div>
-                            <div style={{ fontSize: "0.72rem", color: "#5a6577", fontFamily: "monospace", marginTop: "4px", wordBreak: "break-all" }}>
+                            <div style={{ fontSize: "0.72rem", color: colors.textSecondary, fontFamily: "monospace", marginTop: "4px", wordBreak: "break-all" }}>
                                 {s.command} {(s.args || []).join(" ")}
                             </div>
                             {s.env && Object.keys(s.env).length > 0 && (
-                                <div style={{ fontSize: "0.68rem", color: "#8b95a5", marginTop: "2px" }}>
+                                <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: "2px" }}>
                                     {translate("mcpEnvVars")}: {Object.keys(s.env).join(", ")}
                                 </div>
                             )}
-                            <div style={{ fontSize: "0.68rem", color: "#8b95a5", marginTop: "2px" }}>
+                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: "2px" }}>
                                 {translate("mcpAutoStartStatus")}: {s.auto_start ? translate("mcpAutoStartEnabled") : translate("mcpAutoStartDisabled")}
                             </div>
                         </div>
@@ -387,7 +388,7 @@ function LocalMCPPanel({ translate }: Props) {
             )}
 
             {!loading && servers.length === 0 && !error && (
-                <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: "#8b95a5" }}>
+                <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: colors.textMuted }}>
                     {translate("mcpNoLocalServers")}
                 </div>
             )}
@@ -400,7 +401,7 @@ function LocalMCPPanel({ translate }: Props) {
                             <button className="btn-close" onClick={() => setDeleteTarget(null)}>×</button>
                         </div>
                         <div className="modal-body">
-                            <p style={{ fontSize: "0.8rem", color: "#5a6577", margin: 0 }}>
+                            <p style={{ fontSize: "0.8rem", color: colors.textSecondary, margin: 0 }}>
                                 {translate("mcpConfirmDeleteLocal").replace("{name}", deleteTarget.name)}
                             </p>
                         </div>
@@ -422,10 +423,10 @@ function LocalMCPPanel({ translate }: Props) {
                             <button className="btn-close" onClick={() => setShowJsonImport(false)}>×</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                            <div style={{ fontSize: "0.72rem", color: "#5a6577" }}>
+                            <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
                                 {translate("mcpImportJsonDesc")}
                             </div>
-                            <pre style={{ fontSize: "0.68rem", background: "#f4f5f7", padding: "6px 8px", borderRadius: "4px", margin: 0, whiteSpace: "pre-wrap", color: "#4f5d75" }}>
+                            <pre style={{ fontSize: "0.68rem", background: colors.surfaceMuted, padding: "6px 8px", borderRadius: "4px", margin: 0, whiteSpace: "pre-wrap", color: colors.textSecondary }}>
 {`{"mcpServers": {"server-name": {
   "command": "npx",
   "args": ["-y", "@scope/package"],
@@ -443,7 +444,7 @@ function LocalMCPPanel({ translate }: Props) {
                                 style={{ fontFamily: "monospace", fontSize: "0.74rem", resize: "vertical" }}
                             />
                             {jsonError && (
-                                <div style={{ fontSize: "0.76rem", color: "#c53030", background: "#fff5f5", padding: "4px 8px", borderRadius: "4px" }}>
+                                <div style={{ fontSize: "0.76rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "4px 8px", borderRadius: "4px" }}>
                                     {jsonError}
                                 </div>
                             )}
@@ -502,7 +503,7 @@ function LocalMCPPanel({ translate }: Props) {
                                             placeholder="KEY"
                                             spellCheck={false}
                                         />
-                                        <span style={{ color: "#8b95a5" }}>=</span>
+                                        <span style={{ color: colors.textMuted }}>=</span>
                                         <input
                                             className="form-input"
                                             style={{ flex: 2, fontSize: "0.74rem" }}
@@ -522,7 +523,7 @@ function LocalMCPPanel({ translate }: Props) {
                                     {translate("mcpAddEnvVar")}
                                 </button>
                             </div>
-                            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.76rem", color: "#374151" }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.76rem", color: colors.text }}>
                                 <input
                                     type="checkbox"
                                     checked={!!formData.auto_start}
@@ -531,7 +532,7 @@ function LocalMCPPanel({ translate }: Props) {
                                 <span>{translate("mcpAutoStartCheckbox")}</span>
                             </label>
                             {formError && (
-                                <div style={{ fontSize: "0.76rem", color: "#c53030", background: "#fff5f5", padding: "4px 8px", borderRadius: "4px" }}>
+                                <div style={{ fontSize: "0.76rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "4px 8px", borderRadius: "4px" }}>
                                     {formError}
                                 </div>
                             )}
@@ -671,28 +672,28 @@ function RemoteMCPPanel({ translate }: Props) {
 
     const healthColor = (status: string): string => {
         switch (status) {
-            case "healthy": return "#2f855a";
-            case "slow": return "#b7791f";
-            case "unavailable": return "#c53030";
-            default: return "#8b95a5";
+            case "healthy": return "var(--theme-success)";
+            case "slow": return "var(--theme-warning)";
+            case "unavailable": return "var(--theme-danger)";
+            default: return colors.textMuted;
         }
     };
 
     const healthBg = (status: string): string => {
         switch (status) {
-            case "healthy": return "#f0fdf4";
-            case "slow": return "#fffbeb";
-            case "unavailable": return "#fff5f5";
-            default: return "#f4f5f7";
+            case "healthy": return "var(--theme-success-bg)";
+            case "slow": return "var(--theme-warning-bg)";
+            case "unavailable": return "var(--theme-danger-bg)";
+            default: return colors.surfaceMuted;
         }
     };
 
     const healthBorder = (status: string): string => {
         switch (status) {
-            case "healthy": return "#86efac";
-            case "slow": return "#fbbf24";
-            case "unavailable": return "#fecdd3";
-            default: return "#e1e4e8";
+            case "healthy": return "var(--theme-success)";
+            case "slow": return "var(--theme-warning)";
+            case "unavailable": return "var(--theme-danger)";
+            default: return colors.border;
         }
     };
 
@@ -708,7 +709,7 @@ function RemoteMCPPanel({ translate }: Props) {
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: "0.78rem", color: "#5a6577" }}>
+                <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
                     {servers.length} {translate("mcpServersRegistered")}
                 </span>
                 <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
@@ -716,14 +717,14 @@ function RemoteMCPPanel({ translate }: Props) {
                 </button>
             </div>
 
-            {loading && <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: "#8b95a5" }}>{translate("mcpLoading")}</div>}
-            {error && <div style={{ fontSize: "0.78rem", color: "#c53030", background: "#fff5f5", padding: "6px 10px", borderRadius: "4px", border: "1px solid #fecdd3" }}>{error}</div>}
+            {loading && <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: colors.textMuted }}>{translate("mcpLoading")}</div>}
+            {error && <div style={{ fontSize: "0.78rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "6px 10px", borderRadius: "4px", border: `1px solid ${colors.danger}` }}>{error}</div>}
 
             {!loading && servers.length > 0 && (
-                <div style={{ border: "1px solid #e1e4e8", borderRadius: "6px", overflow: "hidden" }}>
+                <div style={{ border: `1px solid ${colors.border}`, borderRadius: "6px", overflow: "hidden" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem" }}>
                         <thead>
-                            <tr style={{ background: "#f4f5f7" }}>
+                            <tr style={{ background: colors.surfaceMuted }}>
                                 <th style={thStyle}>{translate("mcpColName")}</th>
                                 <th style={thStyle}>{translate("mcpColEndpoint")}</th>
                                 <th style={thStyle}>{translate("mcpColHealth")}</th>
@@ -759,7 +760,7 @@ function RemoteMCPPanel({ translate }: Props) {
             )}
 
             {!loading && servers.length === 0 && !error && (
-                <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: "#8b95a5" }}>
+                <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: colors.textMuted }}>
                     {translate("mcpNoRemoteServers")}
                 </div>
             )}
@@ -772,7 +773,7 @@ function RemoteMCPPanel({ translate }: Props) {
                             <button className="btn-close" onClick={() => setDeleteTarget(null)}>×</button>
                         </div>
                         <div className="modal-body">
-                            <p style={{ fontSize: "0.8rem", color: "#5a6577", margin: 0 }}>
+                            <p style={{ fontSize: "0.8rem", color: colors.textSecondary, margin: 0 }}>
                                 {translate("mcpConfirmDeleteRemote").replace("{name}", deleteTarget.name)}
                             </p>
                         </div>
@@ -817,7 +818,7 @@ function RemoteMCPPanel({ translate }: Props) {
                                 </div>
                             )}
                             {formError && (
-                                <div style={{ fontSize: "0.76rem", color: "#c53030", background: "#fff5f5", padding: "4px 8px", borderRadius: "4px" }}>{formError}</div>
+                                <div style={{ fontSize: "0.76rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "4px 8px", borderRadius: "4px" }}>{formError}</div>
                             )}
                         </div>
                         <div className="modal-footer">
@@ -874,10 +875,10 @@ function ServerRow({
 
     return (
         <>
-            <tr style={{ borderTop: "1px solid #e1e4e8" }}>
+            <tr style={{ borderTop: `1px solid ${colors.border}` }}>
                 <td style={tdStyle}>{server.name}</td>
                 <td style={tdStyle}>
-                    <span style={{ fontFamily: "monospace", fontSize: "0.72rem", color: "#4f5d75", wordBreak: "break-all" }}>
+                    <span style={{ fontFamily: "monospace", fontSize: "0.72rem", color: colors.textSecondary, wordBreak: "break-all" }}>
                         {server.endpoint_url}
                     </span>
                 </td>
@@ -910,8 +911,8 @@ function ServerRow({
 
             {showHealthDetail && (
                 <tr>
-                    <td colSpan={5} style={{ padding: "6px 8px", background: "#fafbfc", borderTop: "1px solid #e1e4e8" }}>
-                        <div style={{ fontSize: "0.72rem", color: "#5a6577" }}>
+                    <td colSpan={5} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
+                        <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
                             <div style={{ fontWeight: 600, marginBottom: "4px" }}>{translate("mcpHealthRecord")}</div>
                             <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
                                 <span>{translate("mcpHealthStatus")}: <span style={{ color: healthColor(server.health_status), fontWeight: 600 }}>{healthLabel(server.health_status)}</span></span>
@@ -930,23 +931,23 @@ function ServerRow({
 
             {isExpanded && (
                 <tr>
-                    <td colSpan={5} style={{ padding: "6px 8px", background: "#fafbfc", borderTop: "1px solid #e1e4e8" }}>
+                    <td colSpan={5} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
                         {toolsLoading ? (
-                            <div style={{ fontSize: "0.74rem", color: "#8b95a5", padding: "4px 0" }}>{translate("mcpLoadingTools")}</div>
+                            <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "4px 0" }}>{translate("mcpLoadingTools")}</div>
                         ) : expandedTools.length > 0 ? (
                             <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                                <div style={{ fontSize: "0.72rem", fontWeight: 600, color: "#5a6577", marginBottom: "2px" }}>
+                                <div style={{ fontSize: "0.72rem", fontWeight: 600, color: colors.textSecondary, marginBottom: "2px" }}>
                                     {translate("mcpToolList")} ({expandedTools.length})
                                 </div>
                                 {expandedTools.map((tool) => (
-                                    <div key={tool.name} style={{ background: "#ffffff", border: "1px solid #e1e4e8", borderRadius: "4px", padding: "4px 8px" }}>
-                                        <div style={{ fontSize: "0.74rem", fontWeight: 600, color: "#1a202c" }}>{tool.name}</div>
-                                        <div style={{ fontSize: "0.7rem", color: "#5a6577" }}>{tool.description || translate("mcpNoDescription")}</div>
+                                    <div key={tool.name} style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", padding: "4px 8px" }}>
+                                        <div style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>{tool.name}</div>
+                                        <div style={{ fontSize: "0.7rem", color: colors.textSecondary }}>{tool.description || translate("mcpNoDescription")}</div>
                                     </div>
                                 ))}
                             </div>
                         ) : (
-                            <div style={{ fontSize: "0.74rem", color: "#8b95a5", padding: "4px 0" }}>{translate("mcpNoTools")}</div>
+                            <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "4px 0" }}>{translate("mcpNoTools")}</div>
                         )}
                     </td>
                 </tr>
@@ -960,14 +961,14 @@ const thStyle: CSSProperties = {
     textAlign: "left",
     fontWeight: 600,
     fontSize: "0.74rem",
-    color: "#5a6577",
-    borderBottom: "1px solid #e1e4e8",
+    color: colors.textSecondary,
+    borderBottom: `1px solid ${colors.border}`,
 };
 
 const tdStyle: CSSProperties = {
     padding: "6px 8px",
     fontSize: "0.76rem",
-    color: "#1a202c",
+    color: colors.text,
     verticalAlign: "top",
 };
 

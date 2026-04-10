@@ -91,6 +91,8 @@ func (m *telegramGatewayManager) SyncFromConfig() {
 	if err := gw.Start(context.Background()); err != nil {
 		log.Printf("[telegram-mgr] start failed: %v", err)
 		m.mu.Lock()
+		m.gateway = nil
+		m.lastToken = ""
 		m.status = "error"
 		m.mu.Unlock()
 		m.emitStatusEvent()
@@ -114,6 +116,7 @@ func (m *telegramGatewayManager) Stop() {
 	if gw != nil {
 		_ = gw.Stop()
 	}
+	m.emitStatusEvent()
 }
 
 // Status returns the current connection status.
@@ -126,6 +129,10 @@ func (m *telegramGatewayManager) Status() string {
 func (m *telegramGatewayManager) onStatusChange(status string) {
 	m.mu.Lock()
 	m.status = status
+	if status == "error" {
+		m.gateway = nil
+		m.lastToken = ""
+	}
 	m.mu.Unlock()
 	m.emitStatusEvent()
 

@@ -30,7 +30,8 @@ const inputStyle: React.CSSProperties = {
 };
 
 export function WebSearchConfigPanel({ lang }: Props) {
-    const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
+    const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
     const [providers, setProviders] = useState<WebSearchProvider[]>([]);
     const [current, setCurrent] = useState("duckduckgo");
     const [saving, setSaving] = useState(false);
@@ -82,7 +83,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
     }, [providers, current, t]);
 
     if (loading) {
-        return <div style={{ padding: 16, color: colors.textMuted }}>{t("加载中...", "Loading...")}</div>;
+        return <div style={{ padding: 16, color: colors.textMuted }}>{t("Loading...", "加载中...")}</div>;
     }
 
     return (
@@ -121,8 +122,8 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                 <div style={{ fontSize: "0.82rem", fontWeight: 600 }}>{provider.name || provider.type}</div>
                                 <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginTop: 4 }}>
                                     {provider.type === "duckduckgo"
-                                        ? t("免费，无需 Key", "Free, no key needed")
-                                        : t("可配置 API Key", "API key supported")}
+                                        ? t("Free, no key needed", "免费，无需 Key")
+                                        : t("API key supported", "可配置 API Key")}
                                 </div>
                             </button>
                         );
@@ -136,9 +137,9 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                 {currentProvider.name}
                             </div>
                             <div style={{ fontSize: "0.75rem", color: colors.textSecondary, marginBottom: 16, lineHeight: 1.6 }}>
-                                {currentProvider.type === "brave" && t("使用 Brave Search API。未填写 API Key 时，运行时将回退到默认联网搜索。", "Uses Brave Search API. Without an API key, runtime falls back to the default direct web search.")}
-                                {currentProvider.type === "serper" && t("使用 Serper Search API。未填写 API Key 时，运行时将回退到默认联网搜索。", "Uses Serper Search API. Without an API key, runtime falls back to the default direct web search.")}
-                                {currentProvider.type === "duckduckgo" && t("DuckDuckGo 为免费选项，采用独立 provider 实现，无需 API Key。", "DuckDuckGo is the free option and uses its own provider implementation with no API key required.")}
+                                {currentProvider.type === "brave" && t("Uses Brave Search API. Without an API key, runtime falls back to the default direct web search.", "使用 Brave Search API。未填写 API Key 时，运行时将回退到默认联网搜索。")}
+                                {currentProvider.type === "serper" && t("Uses Serper Search API. Without an API key, runtime falls back to the default direct web search.", "使用 Serper Search API。未填写 API Key 时，运行时将回退到默认联网搜索。")}
+                                {currentProvider.type === "duckduckgo" && t("DuckDuckGo is the free option and uses its own provider implementation with no API key required.", "DuckDuckGo 为免费选项，采用独立 provider 实现，无需 API Key。")}
                             </div>
 
                             {currentProvider.type !== "duckduckgo" ? (
@@ -150,14 +151,14 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                         type="password"
                                         value={currentProvider.key || ""}
                                         onChange={(e) => updateProviderKey(currentProvider.type, e.target.value)}
-                                        placeholder={t("输入 API Key", "Enter API Key")}
+                                        placeholder={t("Enter API Key", "输入 API Key")}
                                         style={inputStyle}
                                         autoComplete="new-password"
                                     />
                                 </div>
                             ) : (
                                 <div style={{ fontSize: "0.78rem", color: colors.textMuted }}>
-                                    {t("当前 provider 无需额外配置。", "No extra configuration is needed for this provider.")}
+                                    {t("No extra configuration is needed for this provider.", "当前 provider 无需额外配置。")}
                                 </div>
                             )}
                         </>
@@ -176,13 +177,13 @@ export function WebSearchConfigPanel({ lang }: Props) {
                         padding: "8px 16px",
                         borderRadius: 4,
                         border: "none",
-                        background: saving ? colors.primaryLight : "#6366f1",
+                        background: saving ? colors.primaryLight : colors.primary,
                         color: "#fff",
                         cursor: saving ? "default" : "pointer",
                         fontSize: "0.8rem",
                     }}
                 >
-                    {saving ? t("保存中...", "Saving...") : saved ? t("已保存 ✓", "Saved ✓") : t("保存", "Save")}
+                    {saving ? t("Saving...", "保存中...") : saved ? t("Saved ✓", "已保存 ✓") : t("Save", "保存")}
                 </button>
             </div>
         </div>

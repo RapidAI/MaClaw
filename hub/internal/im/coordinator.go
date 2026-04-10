@@ -145,6 +145,7 @@ func (c *Coordinator) HandleDeviceProfileUpdate(userID string, payload json.RawM
 func (c *Coordinator) TryFastAnswer(
 	ctx context.Context,
 	userID, platformName, platformUID, text string,
+	hasAttachments ...bool,
 ) *GenericResponse {
 	machines := c.devices.FindAllOnlineMachinesForUser(ctx, userID)
 
@@ -156,6 +157,12 @@ func (c *Coordinator) TryFastAnswer(
 			Title:      "设备不在线",
 			Body:       "您的设备当前不在线，无法处理请求。\n\n请确认 MaClaw 客户端已启动并连接到 Hub。",
 		}
+	}
+
+	// Messages with attachments (files, images) always need device-side
+	// processing — Hub LLM cannot inspect file contents. Skip fast path.
+	if len(hasAttachments) > 0 && hasAttachments[0] {
+		return nil // queue it — device Agent handles attachments
 	}
 
 	// No smart route permission — can't do fast-path classification.
@@ -182,7 +189,11 @@ func (c *Coordinator) TryFastAnswer(
 		return nil // single device, direct forward, queue it
 	}
 
-	// Run intent classification (5s timeout — acceptable for fast path).
+	// Fast-path classification: only use the intent cache to avoid blocking
+	// the HandleMessage goroutine with a synchronous LLM call (up to 5s).
+	// If there's no cache hit, return nil immediately — the task queue's
+	// executor will call Coordinate → classifyAndRoute which does the full
+	// LLM classification in the background worker.
 	profiles := c.profileCache.GetAll(userID)
 	if len(profiles) == 0 {
 		for _, m := range machines {
@@ -193,14 +204,15 @@ func (c *Coordinator) TryFastAnswer(
 			})
 		}
 	}
-	cc := c.convContext.GetOrCreate(userID)
-	convRounds := cc.GetRecentSummaries(3)
-	history := c.getRecentHistory(userID)
 
-	result, err := c.intentClassifier.Classify(ctx, userID, text, profiles, history, convRounds)
-	if err != nil {
-		return nil // classification failed, queue it
+	// Check cache only — no LLM call.
+	machineSet := buildMachineSet(profiles)
+	textHash := hashText(text)
+	cached := c.intentClassifier.lookupCache(userID, machineSet, textHash)
+	if cached == nil {
+		return nil // no cache hit, queue it for background classification
 	}
+	result := cached
 
 	// Only direct_answer and need_clarification are fast-path.
 	// Do NOT recordHistory here for non-fast-path results — Coordinate

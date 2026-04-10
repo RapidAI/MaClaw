@@ -44,10 +44,13 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 		return
 	}
 
-	token := strings.TrimSpace(cfg.LansengerToken)
+	// Three simple fields: AppID, AppSecret, Gateway URL (with default).
+	appID := strings.TrimSpace(cfg.LansengerAppID)
+	appSecret := strings.TrimSpace(cfg.LansengerAppSecret)
+	gwURL := cfg.LansengerApiGatewayURL()
 
 	m.mu.Lock()
-	if !cfg.LansengerEnabled || token == "" {
+	if !cfg.LansengerEnabled || appID == "" || appSecret == "" {
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
@@ -66,7 +69,10 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 		return
 	}
 
-	if m.gateway != nil && m.lastToken == token {
+	// Compose a cache key from all credential fields so any change triggers reconnect.
+	cacheKey := appID + "|" + appSecret + "|" + gwURL
+
+	if m.gateway != nil && m.lastToken == cacheKey {
 		m.mu.Unlock()
 		return
 	}
@@ -78,14 +84,10 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 		_ = oldGw.Stop()
 	}
 
-	gwCfg, err := lansenger.ParseToken(token)
-	if err != nil {
-		log.Printf("[lansenger-mgr] invalid token: %v", err)
-		m.mu.Lock()
-		m.status = "error"
-		m.mu.Unlock()
-		m.emitStatusEvent()
-		return
+	gwCfg := lansenger.Config{
+		AppID:         appID,
+		AppSecret:     appSecret,
+		ApiGatewayURL: gwURL,
 	}
 
 	gw := lansenger.NewGateway(gwCfg, m.onIncomingMessage)
@@ -93,12 +95,14 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 
 	m.mu.Lock()
 	m.gateway = gw
-	m.lastToken = token
+	m.lastToken = cacheKey
 	m.mu.Unlock()
 
 	if err := gw.Start(context.Background()); err != nil {
 		log.Printf("[lansenger-mgr] start failed: %v", err)
 		m.mu.Lock()
+		m.gateway = nil
+		m.lastToken = ""
 		m.status = "error"
 		m.mu.Unlock()
 		m.emitStatusEvent()
@@ -122,6 +126,7 @@ func (m *lansengerGatewayManager) Stop() {
 	if gw != nil {
 		_ = gw.Stop()
 	}
+	m.emitStatusEvent()
 }
 
 // Status returns the current connection status.
@@ -134,6 +139,11 @@ func (m *lansengerGatewayManager) Status() string {
 func (m *lansengerGatewayManager) onStatusChange(status string) {
 	m.mu.Lock()
 	m.status = status
+	if status == "error" {
+		// Clear gateway reference so SyncFromConfig can retry on next call.
+		m.gateway = nil
+		m.lastToken = ""
+	}
 	m.mu.Unlock()
 	m.emitStatusEvent()
 
@@ -327,7 +337,30 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	}
 
 	text := msg.Text
-	if text == "" {
+
+	// Pass images/files as attachments, matching the pattern used by
+	// WeChat, Telegram and QQ gateways.
+	var attachments []MessageAttachment
+	if msg.MediaType != "" && len(msg.MediaData) > 0 {
+		if msg.MediaType == "image" {
+			// Image → multimodal attachment for LLM vision.
+			// If the LLM doesn't support vision, buildUserContent will
+			// save it to a local file and tell the LLM accordingly.
+			attachments = append(attachments, buildLocalImageAttachment(msg.MediaData, msg.MediaName, ""))
+		} else {
+			// Non-image media (file, voice, video) → save to local temp
+			// and prepend the path to the text so the agent can read it.
+			mediaPath, err := saveMediaToTempDir("lansenger", "ls_", msg.FromUserID, msg.MediaType, msg.MediaData, msg.MediaName)
+			if err != nil {
+				log.Printf("[lansenger-mgr] save media error: %v", err)
+			} else {
+				prefix := "[收到" + mediaLabel(msg.MediaType) + ": " + mediaPath + "]\n"
+				text = prefix + text
+			}
+		}
+	}
+
+	if text == "" && len(attachments) == 0 {
 		return
 	}
 
@@ -338,7 +371,7 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 			return
 		}
 		now := time.Now()
-		if now.Sub(lastProgress) < 5*time.Second {
+		if now.Sub(lastProgress) < 2*time.Second {
 			return
 		}
 		stripped := textutil.StripMarkdown(progressText)
@@ -354,10 +387,11 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	}
 
 	resp := handler.HandleIMMessageWithProgress(IMUserMessage{
-		UserID:   msg.FromUserID,
-		Platform: "lansenger_local",
-		Text:     text,
-		Lang:     "zh",
+		UserID:      msg.FromUserID,
+		Platform:    "lansenger_local",
+		Text:        text,
+		Lang:        "zh",
+		Attachments: attachments,
 	}, onProgress)
 
 	if resp == nil || resp.Deferred {
@@ -465,7 +499,7 @@ func (a *App) ensureLansengerGateway() {
 	if err != nil {
 		return
 	}
-	if !cfg.LansengerEnabled || strings.TrimSpace(cfg.LansengerToken) == "" {
+	if !cfg.LansengerEnabled || strings.TrimSpace(cfg.LansengerAppID) == "" || strings.TrimSpace(cfg.LansengerAppSecret) == "" {
 		if a.lansengerGateway != nil {
 			a.lansengerGateway.SyncFromConfig()
 		}

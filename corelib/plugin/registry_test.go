@@ -247,3 +247,127 @@ func TestLoadAndStart_SingleFailureDoesNotAffectOthers(t *testing.T) {
 		t.Errorf("running status = %q", statuses["running"])
 	}
 }
+
+func TestEnable_StartsStoppedPlugin(t *testing.T) {
+	toolReg := tool.NewRegistry()
+	pr := NewPluginRegistry(toolReg)
+
+	p := &mockRegistryPlugin{
+		name: "enable-test",
+		tools: []ToolDefinition{
+			{Name: "et_tool", Description: "test", Handler: func(args map[string]interface{}) (string, error) { return "ok", nil }},
+		},
+	}
+
+	// Manually insert as stopped.
+	pr.mu.Lock()
+	pr.plugins["enable-test"] = &pluginEntry{
+		plugin:   p,
+		manifest: p.Manifest(),
+		status:   "stopped",
+	}
+	pr.mu.Unlock()
+
+	if err := pr.Enable(context.Background(), "enable-test"); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+
+	info, _ := pr.Get("enable-test")
+	if info.Status != "running" {
+		t.Errorf("status = %q, want running", info.Status)
+	}
+	if info.ToolCount != 1 {
+		t.Errorf("tool count = %d, want 1", info.ToolCount)
+	}
+
+	// Tool should be in tool.Registry.
+	if _, ok := toolReg.Get("et_tool"); !ok {
+		t.Error("tool not registered in tool.Registry")
+	}
+}
+
+func TestEnable_AlreadyRunningIsNoop(t *testing.T) {
+	pr := NewPluginRegistry(tool.NewRegistry())
+	p := &mockRegistryPlugin{name: "running-test"}
+
+	pr.mu.Lock()
+	pr.plugins["running-test"] = &pluginEntry{
+		plugin:   p,
+		manifest: p.Manifest(),
+		status:   "running",
+	}
+	pr.mu.Unlock()
+
+	if err := pr.Enable(context.Background(), "running-test"); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+}
+
+func TestEnable_NotRegisteredReturnsError(t *testing.T) {
+	pr := NewPluginRegistry(tool.NewRegistry())
+	if err := pr.Enable(context.Background(), "missing"); err == nil {
+		t.Error("expected error for missing plugin")
+	}
+}
+
+func TestDisable_StopsRunningPlugin(t *testing.T) {
+	toolReg := tool.NewRegistry()
+	pr := NewPluginRegistry(toolReg)
+
+	p := &mockRegistryPlugin{name: "disable-test"}
+	toolReg.Register(tool.RegisteredTool{Name: "dt_tool", Status: tool.StatusAvailable})
+
+	pr.mu.Lock()
+	pr.plugins["disable-test"] = &pluginEntry{
+		plugin:   p,
+		manifest: p.Manifest(),
+		status:   "running",
+		tools:    []string{"dt_tool"},
+	}
+	pr.mu.Unlock()
+
+	if err := pr.Disable("disable-test"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+
+	if !p.stopped {
+		t.Error("Stop was not called")
+	}
+
+	info, _ := pr.Get("disable-test")
+	if info.Status != "stopped" {
+		t.Errorf("status = %q, want stopped", info.Status)
+	}
+
+	// Tool should be removed.
+	if _, ok := toolReg.Get("dt_tool"); ok {
+		t.Error("tool still in registry after disable")
+	}
+}
+
+func TestDisable_AlreadyStoppedIsNoop(t *testing.T) {
+	pr := NewPluginRegistry(tool.NewRegistry())
+	p := &mockRegistryPlugin{name: "stopped-test"}
+
+	pr.mu.Lock()
+	pr.plugins["stopped-test"] = &pluginEntry{
+		plugin:   p,
+		manifest: p.Manifest(),
+		status:   "stopped",
+	}
+	pr.mu.Unlock()
+
+	if err := pr.Disable("stopped-test"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if p.stopped {
+		t.Error("Stop should not be called on already stopped plugin")
+	}
+}
+
+func TestDisable_NotRegisteredReturnsError(t *testing.T) {
+	pr := NewPluginRegistry(tool.NewRegistry())
+	if err := pr.Disable("missing"); err == nil {
+		t.Error("expected error for missing plugin")
+	}
+}

@@ -190,6 +190,11 @@
 	    weixin_cdn_url: string;
 	    weixin_account_id: string;
 	    weixin_local_mode?: boolean;
+	    lansenger_enabled?: boolean;
+	    lansenger_app_id: string;
+	    lansenger_app_secret: string;
+	    lansenger_gateway_url: string;
+	    lansenger_local_mode?: boolean;
 	    ui_mode: string;
 	    skill_purchase_mode: string;
 	    gossip_auto_publish: boolean;
@@ -304,6 +309,11 @@
 	        this.weixin_cdn_url = source["weixin_cdn_url"];
 	        this.weixin_account_id = source["weixin_account_id"];
 	        this.weixin_local_mode = source["weixin_local_mode"];
+	        this.lansenger_enabled = source["lansenger_enabled"];
+	        this.lansenger_app_id = source["lansenger_app_id"];
+	        this.lansenger_app_secret = source["lansenger_app_secret"];
+	        this.lansenger_gateway_url = source["lansenger_gateway_url"];
+	        this.lansenger_local_mode = source["lansenger_local_mode"];
 	        this.ui_mode = source["ui_mode"];
 	        this.skill_purchase_mode = source["skill_purchase_mode"];
 	        this.gossip_auto_publish = source["gossip_auto_publish"];

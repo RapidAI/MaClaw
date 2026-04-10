@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { main } from "../../../wailsjs/go/models";
+import { colors } from "./styles";
 
 type Props = {
     config: main.AppConfig | null;
@@ -17,7 +18,8 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
     const [gossipEnabled, setGossipEnabled] = useState(true);
 
     const t = useCallback(
-        (zh: string, en: string) => (lang?.startsWith("zh") ? zh : en),
+        (en: string, zhHans: string, zhHant: string = zhHans) =>
+            lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en,
         [lang]
     );
 
@@ -55,10 +57,10 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
 
     return (
         <div>
-            <p style={{ fontSize: "0.78rem", color: "#888", marginBottom: "14px", lineHeight: 1.5 }}>
+            <p style={{ fontSize: "0.78rem", color: colors.textSecondary, marginBottom: "14px", lineHeight: 1.5 }}>
                 {t(
-                    "自定义 MaClaw Agent 的名字和角色描述。保存后立即生效。用户也可以在聊天中临时重新定义角色。",
-                    "Customize MaClaw Agent's name and role description. Takes effect immediately after saving. You can also redefine the role during chat."
+                    "Customize MaClaw Agent's name and role description. Takes effect immediately after saving. You can also redefine the role during chat.",
+                    "自定义 MaClaw Agent 的名字和角色描述。保存后立即生效。用户也可以在聊天中临时重新定义角色。"
                 )}
             </p>
 
@@ -97,9 +99,9 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
             </div>
 
             {/* Gossip 聊天八卦自动发帖开关 */}
-            <div style={{ marginTop: "20px", borderTop: "1px solid #e0e0e0", paddingTop: "16px" }}>
+            <div style={{ marginTop: "20px", borderTop: `1px solid ${colors.border}`, paddingTop: "16px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "0.85rem" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "0.85rem", color: colors.text }}>
                         <input
                             type="checkbox"
                             checked={gossipEnabled}
@@ -113,7 +115,7 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
                         {t("聊天八卦自动发帖", "Auto-post Chat Gossip")}
                     </label>
                 </div>
-                <p style={{ fontSize: "0.75rem", color: "#999", marginTop: "6px", lineHeight: 1.4 }}>
+                <p style={{ fontSize: "0.75rem", color: colors.textMuted, marginTop: "6px", lineHeight: 1.4 }}>
                     {t(
                         "开启后，MaClaw 在与你聊天时如果发现有趣的内容，会自动提取精华发布到 Gossip 社区。",
                         "When enabled, MaClaw will automatically extract interesting highlights from your conversations and post them to the Gossip community."

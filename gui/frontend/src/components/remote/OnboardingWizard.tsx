@@ -70,17 +70,29 @@ const labelStyle: React.CSSProperties = {
     fontSize: "0.76rem", color: "#64748b", marginBottom: 4, display: "block",
 };
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
 // TigerClaw 品牌三步流程：SSO+注册 → 界面选择 → 绑定微信
 const TIGERCLAW_TOTAL_STEPS = 3;
-const STEP_LABELS_ZH_TIGERCLAW = ["企业认证", "界面模式", "绑定微信"];
-const STEP_LABELS_EN_TIGERCLAW = ["SSO Auth", "UI Mode", "WeChat"];
+const STEP_LABELS = {
+    tigerclaw: {
+        en: ["SSO Auth", "UI Mode", "WeChat"],
+        zhHans: ["企业认证", "界面模式", "绑定微信"],
+        zhHant: ["企業認證", "介面模式", "綁定微信"],
+    },
+    standard: {
+        en: ["Register", "UI Mode", "LLM", "WeChat"],
+        zhHans: ["邮件注册", "界面模式", "配置 LLM", "绑定微信"],
+        zhHant: ["郵件註冊", "介面模式", "配置 LLM", "綁定微信"],
+    },
+};
 
 const TOTAL_STEPS = 4;
-const STEP_LABELS_ZH = ["邮件注册", "界面模式", "配置 LLM", "绑定微信"];
-const STEP_LABELS_EN = ["Register", "UI Mode", "LLM", "WeChat"];
 
 export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
-    const t = useCallback((zh: string, en: string) => lang?.startsWith("zh") ? zh : en, [lang]);
+    const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
 
     // 是否为 TigerClaw 品牌（oem_qianxin）
     const isTigerclaw = brandId === 'qianxin';
@@ -119,6 +131,14 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     // ── Step 2: UI Mode（普通品牌 step2；tigerclaw step2）──
     const [selectedMode, setSelectedMode] = useState<'pro' | 'lite'>(uiMode === 'pro' ? 'pro' : 'lite');
     const [modeDone, setModeDone] = useState(!!uiMode && uiMode !== '');
+
+    // 进入 UI Mode 步骤时，如果已有默认选择但尚未标记完成，自动保存并标记
+    useEffect(() => {
+        if (step === 2 && !modeDone && selectedMode) {
+            onSaveField({ ui_mode: selectedMode });
+            setModeDone(true);
+        }
+    }, [step, modeDone, selectedMode, onSaveField]);
 
     // ── Step 3: LLM（普通品牌 step3；tigerclaw 在 step1 SSO 后自动完成）──
     const [providers, setProviders] = useState<LLMProvider[]>([]);
@@ -620,10 +640,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
 
     // ── Step labels (memoized) ──
     const labels = useMemo(() => {
-        if (isTigerclaw) {
-            return lang?.startsWith("zh") ? STEP_LABELS_ZH_TIGERCLAW : STEP_LABELS_EN_TIGERCLAW;
-        }
-        return lang?.startsWith("zh") ? STEP_LABELS_ZH : STEP_LABELS_EN;
+        const labelSet = isTigerclaw ? STEP_LABELS.tigerclaw : STEP_LABELS.standard;
+        return lang === 'zh-Hans'
+            ? labelSet.zhHans
+            : lang === 'zh-Hant'
+                ? labelSet.zhHant
+                : labelSet.en;
     }, [lang, isTigerclaw]);
 
     return (

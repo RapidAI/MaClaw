@@ -127,6 +127,90 @@ func (pr *PluginRegistry) List() []PluginInfo {
 	return out
 }
 
+// Enable starts a previously stopped or registered plugin.
+func (pr *PluginRegistry) Enable(ctx context.Context, name string) error {
+	pr.mu.Lock()
+	entry, exists := pr.plugins[name]
+	if !exists {
+		pr.mu.Unlock()
+		return fmt.Errorf("plugin: %q is not registered", name)
+	}
+	if entry.status == "running" {
+		pr.mu.Unlock()
+		return nil // already running
+	}
+	p := entry.plugin
+	manifest := entry.manifest // snapshot under lock
+	pr.mu.Unlock()
+
+	if err := p.Start(ctx); err != nil {
+		pr.mu.Lock()
+		entry.status = "error"
+		entry.err = err
+		pr.mu.Unlock()
+		return fmt.Errorf("plugin %q start failed: %w", name, err)
+	}
+
+	// Register tools.
+	var toolNames []string
+	for _, td := range p.Tools() {
+		rt := pluginToolToRegistered(td, manifest)
+		if err := pr.toolReg.Register(rt); err != nil {
+			log.Printf("WARN: plugin %q: failed to register tool %q: %v", name, td.Name, err)
+			continue
+		}
+		toolNames = append(toolNames, td.Name)
+	}
+
+	pr.mu.Lock()
+	entry.status = "running"
+	entry.tools = toolNames
+	entry.err = nil
+	pr.mu.Unlock()
+	return nil
+}
+
+// Disable stops a running plugin and removes its tools.
+func (pr *PluginRegistry) Disable(name string) error {
+	pr.mu.Lock()
+	entry, exists := pr.plugins[name]
+	if !exists {
+		pr.mu.Unlock()
+		return fmt.Errorf("plugin: %q is not registered", name)
+	}
+	if entry.status == "stopped" {
+		pr.mu.Unlock()
+		return nil // already stopped
+	}
+	toolNames := entry.tools
+	p := entry.plugin
+	pr.mu.Unlock()
+
+	// Stop with timeout.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer stopCancel()
+
+	if err := p.Stop(stopCtx); err != nil {
+		if stopCtx.Err() == context.DeadlineExceeded {
+			log.Printf("ERROR: plugin %q Stop timed out after 10s", name)
+		} else {
+			log.Printf("ERROR: plugin %q Stop failed: %v", name, err)
+		}
+	}
+
+	// Remove tools.
+	for _, tn := range toolNames {
+		pr.toolReg.Unregister(tn)
+	}
+
+	pr.mu.Lock()
+	entry.status = "stopped"
+	entry.tools = nil
+	entry.err = nil
+	pr.mu.Unlock()
+	return nil
+}
+
 // Get returns info for a single plugin by name.
 func (pr *PluginRegistry) Get(name string) (*PluginInfo, bool) {
 	pr.mu.RLock()
@@ -302,6 +386,8 @@ func CreateAdapter(manifest PluginManifest) Plugin {
 		return NewLocalMCPPluginAdapter(manifest)
 	case PluginTypeNLSkill:
 		return NewNLSkillPluginAdapter(manifest)
+	case PluginTypeScript:
+		return NewScriptPluginAdapter(manifest)
 	case PluginTypeNative:
 		return nil // native plugins are registered via EntryPointProvider
 	default:

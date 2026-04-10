@@ -48,7 +48,7 @@ export const cnActionBtn = (disabled?: boolean): CSSProperties => ({
 /** Tab button factory */
 export const cnTabStyle = (active: boolean): CSSProperties => ({
     background: active ? colors.primary : colors.bg,
-    color: active ? "#fff" : colors.textSecondary,
+    color: active ? "var(--theme-text-primary)" : colors.textSecondary,
     border: "none",
     borderRadius: radius.md,
     padding: "4px 12px",
@@ -60,7 +60,7 @@ export const cnTabStyle = (active: boolean): CSSProperties => ({
 /** Tab button with icon layout 鈥?used by AgentNetTabContainer */
 export const cnTabBtn = (active: boolean): CSSProperties => ({
     background: active ? colors.primary : "transparent",
-    color: active ? "#fff" : colors.textSecondary,
+    color: active ? "var(--theme-text-primary)" : colors.textSecondary,
     border: active ? "none" : `1px solid ${colors.border}`,
     borderRadius: radius.md,
     padding: "5px 12px",

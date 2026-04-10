@@ -12,6 +12,39 @@ import (
 	"time"
 )
 
+// AppendUTF8Env appends environment variables that force child processes to
+// use UTF-8 encoding for stdin/stdout/stderr. This prevents GBK/CP936
+// mojibake on Chinese Windows systems where the default code page is not
+// UTF-8. The variables are always set (harmless on non-Windows) so that
+// Python, Node, and PowerShell all produce UTF-8 output.
+func AppendUTF8Env(base []string) []string {
+	// PYTHONIOENCODING: forces Python's stdin/stdout/stderr to UTF-8.
+	// PYTHONUTF8: Python 3.7+ UTF-8 mode (affects open() default encoding too).
+	// NODE_OPTIONS: not needed — Node always uses UTF-8 for stdout.
+	// POWERSHELL: [Console]::OutputEncoding is set via command wrapper instead.
+	//
+	// If the caller's environment already defines these variables, the
+	// existing values are preserved (user overrides are respected).
+	env := make([]string, 0, len(base)+2)
+	hasPyIO, hasPyUTF8 := false, false
+	for _, e := range base {
+		switch {
+		case strings.HasPrefix(e, "PYTHONIOENCODING="):
+			hasPyIO = true
+		case strings.HasPrefix(e, "PYTHONUTF8="):
+			hasPyUTF8 = true
+		}
+		env = append(env, e)
+	}
+	if !hasPyIO {
+		env = append(env, "PYTHONIOENCODING=utf-8")
+	}
+	if !hasPyUTF8 {
+		env = append(env, "PYTHONUTF8=1")
+	}
+	return env
+}
+
 // CraftedToolsDir returns the directory for storing crafted tool scripts.
 func CraftedToolsDir() string {
 	home, _ := os.UserHomeDir()
@@ -84,6 +117,10 @@ func ExecuteScript(scriptPath, language string, timeout int) (string, error) {
 			cmd = exec.CommandContext(ctx, "bash", scriptPath)
 		}
 	}
+
+	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
+	// GBK/CP936 mojibake when scripts output non-ASCII text.
+	cmd.Env = AppendUTF8Env(os.Environ())
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

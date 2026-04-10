@@ -8,6 +8,12 @@ import {
     remoteSidePanelStyle,
 } from "./styles";
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
+);
+
+const getCurrentLang = () => document.documentElement.lang || navigator.language || "en";
+
 // Strip ANSI escape sequences and non-printable control characters from terminal output
 const ansiRe = /\x1b(?:\[[0-9;?]*[a-zA-Z~^$]|\].*?(?:\x07|\x1b\\)|[()#][A-Z0-9]?|[a-zA-Z])/g;
 const controlRe = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
@@ -32,10 +38,10 @@ type Props = {
 
 const genericTitles = new Set(["参考文献", "Reference", "Untitled", "Project"]);
 
-const getLaunchSourceLabel = (source?: string) => {
-    if (source === "mobile") return "手机启动";
-    if (source === "handoff") return "本地转远程";
-    return "远程";
+const getLaunchSourceLabel = (lang: string | undefined, source?: string) => {
+    if (source === "mobile") return localizeText(lang, "Mobile", "手机启动", "手機啟動");
+    if (source === "handoff") return localizeText(lang, "Handoff", "本地转远程", "本地轉遠端");
+    return localizeText(lang, "Remote", "远程", "遠端");
 };
 
 const getStatusStyle = (status?: string) => {
@@ -81,7 +87,7 @@ const getSeverityStyle = (severity?: string): React.CSSProperties => {
 const formatEventTime = (ts?: number): string => {
     if (!ts) return "";
     const d = new Date(ts * 1000);
-    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return d.toLocaleTimeString(getCurrentLang(), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 };
 
 export function RemoteSessionCard(props: Props) {
@@ -134,11 +140,12 @@ export function RemoteSessionCard(props: Props) {
         }
     }, [previewLines.length, showOutput]);
 
+    const currentLang = getCurrentLang();
     const sendButtonLabel =
-        sendStatus === "sending" ? "发送中…" :
-        sendStatus === "sent" ? "已发送 ✓" :
-        sendStatus === "failed" ? "发送失败 ✗" :
-        "发送指令";
+        sendStatus === "sending" ? localizeText(currentLang, "Sending…", "发送中…", "發送中…") :
+        sendStatus === "sent" ? localizeText(currentLang, "Sent ✓", "已发送 ✓", "已發送 ✓") :
+        sendStatus === "failed" ? localizeText(currentLang, "Failed ✗", "发送失败 ✗", "發送失敗 ✗") :
+        localizeText(currentLang, "Send command", "发送指令", "發送指令");
 
     const sendButtonStyle: React.CSSProperties | undefined =
         sendStatus === "sent" ? { background: colors.successBg, color: colors.success, borderColor: colors.success } :
@@ -146,7 +153,7 @@ export function RemoteSessionCard(props: Props) {
         undefined;
 
     const launchSource = session.launch_source || session.summary?.source || "desktop";
-    const launchSourceLabel = getLaunchSourceLabel(launchSource);
+    const launchSourceLabel = getLaunchSourceLabel(currentLang, launchSource);
     const statusText = session.status || session.summary?.status || translate("remoteStatusUnknown");
     const statusStyle = getStatusStyle(statusText);
     const sourceStyle = getLaunchSourceStyle(launchSource);
@@ -188,7 +195,7 @@ export function RemoteSessionCard(props: Props) {
                         }}
                     >
                         <div style={{ minWidth: 0 }}>
-                            <div style={remoteSubLabelStyle}>实例</div>
+                            <div style={remoteSubLabelStyle}>{localizeText(currentLang, "Instance", "实例", "實例")}</div>
                             <div style={{ fontSize: "0.84rem", fontWeight: 600, color: colors.text, marginBottom: "2px", wordBreak: "break-word" }}>
                                 {displayTitle}
                             </div>
@@ -196,38 +203,38 @@ export function RemoteSessionCard(props: Props) {
                         </div>
 
                         <div>
-                            <div style={remoteSubLabelStyle}>类型</div>
+                            <div style={remoteSubLabelStyle}>{localizeText(currentLang, "Type", "类型", "類型")}</div>
                             <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: radius.pill, fontSize: "0.7rem", fontWeight: 600, background: sourceStyle.background, color: sourceStyle.color }}>
                                 {launchSourceLabel}
                             </span>
                         </div>
 
                         <div>
-                            <div style={remoteSubLabelStyle}>状态</div>
+                            <div style={remoteSubLabelStyle}>{localizeText(currentLang, "Status", "状态", "狀態")}</div>
                             <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: radius.pill, fontSize: "0.7rem", fontWeight: 600, background: statusStyle.background, color: statusStyle.color }}>
                                 {statusText}
                             </span>
                         </div>
 
                         <div style={{ minWidth: 0 }}>
-                            <div style={remoteSubLabelStyle}>项目与工具</div>
+                            <div style={remoteSubLabelStyle}>{localizeText(currentLang, "Project & tool", "项目与工具", "專案與工具")}</div>
                             <div style={{ fontSize: "0.74rem", color: colors.text, lineHeight: 1.4, wordBreak: "break-word" }}>{session.project_path || "-"}</div>
-                            <div style={{ fontSize: "0.68rem", color: colors.textSecondary, marginTop: "2px" }}>工具: {session.tool || "-"}</div>
+                            <div style={{ fontSize: "0.68rem", color: colors.textSecondary, marginTop: "2px" }}>{localizeText(currentLang, "Tool", "工具", "工具")}: {session.tool || "-"}</div>
                         </div>
                     </div>
 
                     {/* Summary cards */}
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "6px", marginTop: "8px" }}>
                         <div style={remoteInfoCardStyle}>
-                            <div style={remoteSubLabelStyle}>当前任务</div>
+                            <div style={remoteSubLabelStyle}>{localizeText(currentLang, "Current task", "当前任务", "目前任務")}</div>
                             <div style={{ fontSize: "0.74rem", color: colors.text, lineHeight: 1.4, wordBreak: "break-word" }}>{currentTask}</div>
                         </div>
                         <div style={remoteInfoCardStyle}>
-                            <div style={remoteSubLabelStyle}>最近结果</div>
+                            <div style={remoteSubLabelStyle}>{localizeText(currentLang, "Last result", "最近结果", "最近結果")}</div>
                             <div style={{ fontSize: "0.74rem", color: colors.text, lineHeight: 1.4, wordBreak: "break-word" }}>{lastResult}</div>
                         </div>
                         <div style={remoteInfoCardStyle}>
-                            <div style={remoteSubLabelStyle}>进度</div>
+                            <div style={remoteSubLabelStyle}>{localizeText(currentLang, "Progress", "进度", "進度")}</div>
                             <div style={{ fontSize: "0.74rem", color: colors.text, lineHeight: 1.4, wordBreak: "break-word" }}>{progressSummary}</div>
                         </div>
                     </div>
@@ -268,7 +275,7 @@ export function RemoteSessionCard(props: Props) {
                                 fontWeight: 500,
                             }}
                         >
-                            {showOutput ? "▼" : "▶"} 输出 {hasOutput ? `(${previewLines.length})` : "(空)"}
+                            {showOutput ? "▼" : "▶"} {localizeText(currentLang, "Output", "输出", "輸出")} {hasOutput ? `(${previewLines.length})` : localizeText(currentLang, "(empty)", "(空)", "(空)")}
                         </button>
                         {hasEvents && (
                             <button
@@ -284,7 +291,7 @@ export function RemoteSessionCard(props: Props) {
                                     fontWeight: 500,
                                 }}
                             >
-                                {showEvents ? "▼" : "▶"} 事件 ({events.length})
+                                {showEvents ? "▼" : "▶"} {localizeText(currentLang, "Events", "事件", "事件")} ({events.length})
                             </button>
                         )}
                     </div>
@@ -293,7 +300,7 @@ export function RemoteSessionCard(props: Props) {
                 {/* Side panel: actions + input */}
                 <div style={remoteSidePanelStyle}>
                     <div>
-                        <div style={{ ...remoteSubLabelStyle, marginBottom: "6px" }}>操作</div>
+                        <div style={{ ...remoteSubLabelStyle, marginBottom: "6px" }}>{localizeText(currentLang, "Actions", "操作", "操作")}</div>
                         <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
                             <button className="btn-primary" disabled={sendStatus === "sending"} style={sendButtonStyle} onClick={handleSend}>
                                 {sendButtonLabel}
@@ -309,7 +316,7 @@ export function RemoteSessionCard(props: Props) {
                                     }
                                 }}
                             >
-                                中断实例
+                                {localizeText(currentLang, "Interrupt session", "中断实例", "中斷實例")}
                             </button>
                             <button
                                 className="btn-secondary"
@@ -323,13 +330,13 @@ export function RemoteSessionCard(props: Props) {
                                     }
                                 }}
                             >
-                                停止实例
+                                {localizeText(currentLang, "Stop session", "停止实例", "停止實例")}
                             </button>
                         </div>
                     </div>
 
                     <div>
-                        <div style={{ ...remoteSubLabelStyle, marginBottom: "6px" }}>快速输入</div>
+                        <div style={{ ...remoteSubLabelStyle, marginBottom: "6px" }}>{localizeText(currentLang, "Quick input", "快速输入", "快速輸入")}</div>
                         <input
                             className="form-input"
                             style={{ width: "100%" }}
@@ -341,7 +348,7 @@ export function RemoteSessionCard(props: Props) {
                                     handleSend();
                                 }
                             }}
-                            placeholder="输入指令后回车发送"
+                            placeholder={localizeText(currentLang, "Type a command and press Enter", "输入指令后回车发送", "輸入指令後按 Enter 發送")}
                             disabled={sendStatus === "sending"}
                         />
                     </div>
@@ -353,7 +360,7 @@ export function RemoteSessionCard(props: Props) {
                 <div
                     style={{ borderTop: `1px solid ${colors.border}`, cursor: onOpenConsole ? "pointer" : undefined }}
                     onClick={onOpenConsole ? () => onOpenConsole(session.id) : undefined}
-                    title={onOpenConsole ? "点击打开全屏终端" : undefined}
+                    title={onOpenConsole ? localizeText(currentLang, "Click to open fullscreen terminal", "点击打开全屏终端", "點擊開啟全螢幕終端") : undefined}
                 >
                     {/* Terminal title bar */}
                     <div style={{
@@ -365,11 +372,11 @@ export function RemoteSessionCard(props: Props) {
                         <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#febc2e", display: "inline-block" }} />
                         <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#28c840", display: "inline-block" }} />
                         <span style={{ flex: 1, textAlign: "center", fontSize: "0.68rem", color: "#888", fontFamily: "monospace" }}>
-                            {session.tool || "terminal"} — {previewLines.length} lines
+                            {session.tool || "terminal"} — {previewLines.length} {localizeText(currentLang, "lines", "行", "行")}
                         </span>
                         {onOpenConsole && (
                             <span style={{ fontSize: "0.68rem", color: "#6a9955", fontFamily: "monospace", flexShrink: 0 }}>
-                                ⛶ 全屏
+                                ⛶ {localizeText(currentLang, "Fullscreen", "全屏", "全螢幕")}
                             </span>
                         )}
                     </div>
@@ -405,7 +412,7 @@ export function RemoteSessionCard(props: Props) {
                             >
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
                                     <span style={{ fontWeight: 600, color: colors.text }}>
-                                        {evt.title || evt.type || "事件"}
+                                        {evt.title || evt.type || localizeText(currentLang, "Event", "事件", "事件")}
                                         {evt.count && evt.count > 1 ? ` (×${evt.count})` : ""}
                                     </span>
                                     <span style={{ fontSize: "0.65rem", color: colors.textMuted, whiteSpace: "nowrap" }}>

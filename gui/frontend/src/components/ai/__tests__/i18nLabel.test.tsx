@@ -27,8 +27,12 @@ const expectedLabels: Record<string, { label: string; tooltip: string }> = {
 // The label/tooltip derivation function (extracted from App.tsx logic).
 // In App.tsx, label and tooltip use the same ternary expression,
 // so a single function covers both.
+function localizeText(lang: string, en: string, zhHans: string, zhHant: string = zhHans): string {
+    return lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en;
+}
+
 function getAIAssistantText(lang: string): string {
-    return lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst';
+    return localizeText(lang, 'AI Asst', 'AI 助手');
 }
 
 describe('AI Assistant i18n property tests', () => {
@@ -52,9 +56,8 @@ describe('AI Assistant i18n property tests', () => {
 
         fc.assert(
             fc.property(langArb, (lang) => {
-                const expectedTitle = lang === 'en' ? 'AI Assistant' : 'AI 助手';
-                // This mirrors the title logic inside AIAssistantPanel.
-                const title = lang === 'en' ? 'AI Assistant' : 'AI 助手';
+                const expectedTitle = localizeText(lang, 'AI Assistant', 'AI 助手');
+                const title = localizeText(lang, 'AI Assistant', 'AI 助手');
                 expect(title).toBe(expectedTitle);
             }),
             { numRuns: 100 },

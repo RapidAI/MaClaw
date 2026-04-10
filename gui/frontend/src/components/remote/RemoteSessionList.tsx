@@ -45,26 +45,26 @@ const getPathLeaf = (value?: string) => {
     return parts[parts.length - 1] || "";
 };
 
-const getStatusBadge = (status?: string): { label: string; bg: string; color: string } => {
+const getStatusBadge = (status?: string, localizeText?: (en: string, zhHans: string, zhHant: string) => string): { label: string; bg: string; color: string } => {
     const s = String(status || "").toLowerCase();
     if (s === "error" || s === "failed") return { label: status || "error", bg: colors.dangerBg, color: "#9b2c2c" };
-    if (s === "waiting_input") return { label: "等待输入", bg: colors.warningBg, color: colors.warning };
-    if (s === "paused") return { label: "已暂停", bg: colors.warningBg, color: colors.warning };
+    if (s === "waiting_input") return { label: localizeText ? localizeText("Waiting input", "等待输入", "等待輸入") : "等待输入", bg: colors.warningBg, color: colors.warning };
+    if (s === "paused") return { label: localizeText ? localizeText("Paused", "已暂停", "已暫停") : "已暂停", bg: colors.warningBg, color: colors.warning };
     if (terminalStatuses.has(s)) return { label: status || "stopped", bg: colors.bg, color: colors.textSecondary };
     return { label: status || "running", bg: "#eef2ff", color: "#4338ca" };
 };
 
-const getLaunchSourceTag = (source?: string): { label: string; bg: string; color: string } => {
+const getLaunchSourceTag = (source: string | undefined, localizeText: (en: string, zhHans: string, zhHant: string) => string): { label: string; bg: string; color: string } => {
     if (source === "ai") return { label: "🤖 AI", bg: "#f0e6ff", color: "#6b21a8" };
-    if (source === "mobile") return { label: "📱 手机", bg: colors.successBg, color: "#276749" };
-    if (source === "handoff") return { label: "🔀 转远程", bg: "#f3f0ff", color: "#553c9a" };
-    return { label: "☁️ 远程", bg: colors.bg, color: colors.textSecondary };
+    if (source === "mobile") return { label: `📱 ${localizeText("Mobile", "手机", "手機")}`, bg: colors.successBg, color: "#276749" };
+    if (source === "handoff") return { label: `🔀 ${localizeText("Handoff", "转远程", "轉遠端")}`, bg: "#f3f0ff", color: "#553c9a" };
+    return { label: `☁️ ${localizeText("Remote", "远程", "遠端")}`, bg: colors.bg, color: colors.textSecondary };
 };
 
-const getSlotKindTag = (kind: string): { icon: string; label: string } => {
-    if (kind === "coding") return { icon: "🤖", label: "编程" };
-    if (kind === "scheduled") return { icon: "⏰", label: "定时" };
-    if (kind === "auto") return { icon: "🌐", label: "自动" };
+const getSlotKindTag = (kind: string, localizeText: (en: string, zhHans: string, zhHant: string) => string): { icon: string; label: string } => {
+    if (kind === "coding") return { icon: "🤖", label: localizeText("Coding", "编程", "編程") };
+    if (kind === "scheduled") return { icon: "⏰", label: localizeText("Scheduled", "定时", "定時") };
+    if (kind === "auto") return { icon: "🌐", label: localizeText("Auto", "自动", "自動") };
     return { icon: "⚙️", label: kind };
 };
 
@@ -84,6 +84,7 @@ export function RemoteSessionList(props: Props) {
         showToastMessage,
         translate,
         formatText,
+        localizeText,
     } = props;
 
     const [sessionTab, setSessionTab] = useState<"remote" | "background">("remote");
@@ -192,20 +193,20 @@ export function RemoteSessionList(props: Props) {
     const handleStopLoop = async (loopID: string) => {
         try {
             await StopBackgroundLoop(loopID);
-            showToastMessage("后台任务已停止", 2500);
+            showToastMessage(localizeText("Background task stopped", "后台任务已停止", "後台任務已停止"), 2500);
             refreshBgLoops();
         } catch (err) {
-            showToastMessage(`停止失败: ${String(err)}`, 4000);
+            showToastMessage(localizeText("Stop failed: {error}", "停止失败: {error}", "停止失敗: {error}").replace("{error}", String(err)), 4000);
         }
     };
 
     const handleContinueLoop = async (loopID: string) => {
         try {
             await ContinueBackgroundLoop(loopID, 20);
-            showToastMessage("已续命 +20 轮", 2500);
+            showToastMessage(localizeText("Extended by +20 rounds", "已续命 +20 轮", "已續命 +20 輪"), 2500);
             refreshBgLoops();
         } catch (err) {
-            showToastMessage(`续命失败: ${String(err)}`, 4000);
+            showToastMessage(localizeText("Extend failed: {error}", "续命失败: {error}", "續命失敗: {error}").replace("{error}", String(err)), 4000);
         }
     };
 
@@ -266,18 +267,18 @@ export function RemoteSessionList(props: Props) {
             </colgroup>
             <thead>
                 <tr style={{ background: colors.bg }}>
-                    <th style={thStyle}>项目</th>
-                    <th style={thStyle}>工具 / 实例</th>
-                    <th style={thStyle}>状态</th>
-                    <th style={thStyle}>来源</th>
-                    <th style={{ ...thStyle, textAlign: "right" }}>操作</th>
+                    <th style={thStyle}>{localizeText("Project", "项目", "專案")}</th>
+                    <th style={thStyle}>{localizeText("Tool / session", "工具 / 实例", "工具 / 實例")}</th>
+                    <th style={thStyle}>{localizeText("Status", "状态", "狀態")}</th>
+                    <th style={thStyle}>{localizeText("Source", "来源", "來源")}</th>
+                    <th style={{ ...thStyle, textAlign: "right" }}>{localizeText("Actions", "操作", "操作")}</th>
                 </tr>
             </thead>
             <tbody>
                 {sessions.map((session) => {
                     const projectName = getPathLeaf(session.project_path) || getPathLeaf(session.workspace_root) || getPathLeaf(session.workspace_path) || "-";
-                    const statusInfo = getStatusBadge(session.status || session.summary?.status);
-                    const sourceInfo = getLaunchSourceTag(session.launch_source || session.summary?.source);
+                    const statusInfo = getStatusBadge(session.status || session.summary?.status, localizeText);
+                    const sourceInfo = getLaunchSourceTag(session.launch_source || session.summary?.source, localizeText);
                     const isTerminal = terminalStatuses.has(String(session.status || session.summary?.status || "").toLowerCase());
                     const rawPreviewLines = session.raw_output_lines || session.preview?.preview_lines || [];
                     const previewLines = rawPreviewLines.map((l) => stripAnsi(l).trimEnd()).filter((l) => l.length > 0);
@@ -318,7 +319,7 @@ export function RemoteSessionList(props: Props) {
                                     <div style={{ display: "inline-flex", gap: "4px", alignItems: "center", flexWrap: "nowrap" }}>
                                         <button
                                             style={{ ...iconBtnStyle, color: hasPreview ? colors.primary : colors.textMuted }}
-                                            title={isPreviewOpen ? "收起预览" : "展开预览"}
+                                            title={isPreviewOpen ? localizeText("Collapse preview", "收起预览", "收起預覽") : localizeText("Expand preview", "展开预览", "展開預覽")}
                                             onClick={() => togglePreview(session.id)}
                                         >
                                             {isPreviewOpen ? "▼" : "▶"}
@@ -327,7 +328,7 @@ export function RemoteSessionList(props: Props) {
                                             <>
                                                 <button
                                                     style={{ ...iconBtnStyle, color: colors.primary }}
-                                                    title={isAITab ? "查看终端" : "打开控制台"}
+                                                    title={isAITab ? localizeText("View terminal", "查看终端", "查看終端") : localizeText("Open console", "打开控制台", "打開控制台")}
                                                     onClick={() => openConsole(session.id, isAITab)}
                                                 >
                                                     🖥
@@ -335,7 +336,7 @@ export function RemoteSessionList(props: Props) {
                                                 {!isAITab && (
                                                     <button
                                                         style={{ ...iconBtnStyle, color: colors.warning }}
-                                                        title="中断实例"
+                                                        title={localizeText("Interrupt session", "中断实例", "中斷實例")}
                                                         onClick={() => handleInterrupt(session.id)}
                                                     >
                                                         ⏸
@@ -346,7 +347,7 @@ export function RemoteSessionList(props: Props) {
                                         {!isAITab && (
                                             <button
                                                 style={{ ...iconBtnStyle, color: colors.danger }}
-                                                title={isTerminal ? "移除" : "停止实例"}
+                                                title={isTerminal ? localizeText("Remove", "移除", "移除") : localizeText("Stop session", "停止实例", "停止實例")}
                                                 onClick={() => isTerminal ? hideSession(session.id) : handleKill(session.id)}
                                             >
                                                 {isTerminal ? "✕" : "⏹"}
@@ -355,7 +356,7 @@ export function RemoteSessionList(props: Props) {
                                         {isAITab && isTerminal && (
                                             <button
                                                 style={{ ...iconBtnStyle, color: colors.textMuted }}
-                                                title="移除"
+                                                title={localizeText("Remove", "移除", "移除")}
                                                 onClick={() => hideSession(session.id)}
                                             >
                                                 ✕
@@ -381,7 +382,7 @@ export function RemoteSessionList(props: Props) {
                                                 transition: "background 0.15s",
                                             }}
                                             onClick={() => openConsole(session.id, isAITab)}
-                                            title="点击打开全屏终端"
+                                            title={localizeText("Click to open fullscreen terminal", "点击打开全屏终端", "點擊開啟全螢幕終端")}
                                             onMouseEnter={(e) => { e.currentTarget.style.background = "#252526"; }}
                                             onMouseLeave={(e) => { e.currentTarget.style.background = "#1e1e1e"; }}
                                         >
@@ -394,10 +395,10 @@ export function RemoteSessionList(props: Props) {
                                                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#febc2e", display: "inline-block" }} />
                                                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#28c840", display: "inline-block" }} />
                                                 <span style={{ flex: 1, textAlign: "center", fontSize: "0.65rem", color: "#888", fontFamily: "monospace" }}>
-                                                    {session.tool || "terminal"} — {previewLines.length} lines
+                                                    {session.tool || "terminal"} — {previewLines.length} {localizeText("lines", "行", "行")}
                                                 </span>
                                                 <span style={{ fontSize: "0.65rem", color: "#6a9955", fontFamily: "monospace", flexShrink: 0 }}>
-                                                    ⛶ 点击全屏
+                                                    ⛶ {localizeText("Click fullscreen", "点击全屏", "點擊全螢幕")}
                                                 </span>
                                             </div>
                                             <div style={{
@@ -435,7 +436,7 @@ export function RemoteSessionList(props: Props) {
         return (
             <div style={{ marginBottom: "8px" }}>
                 <div style={{ padding: "8px 14px 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 600 }}>
-                    Agent Loop 任务
+                    {localizeText("Agent Loop tasks", "Agent Loop 任务", "Agent Loop 任務")}
                 </div>
                 <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
                     <colgroup>
@@ -447,17 +448,17 @@ export function RemoteSessionList(props: Props) {
                     </colgroup>
                     <thead>
                         <tr style={{ background: colors.bg }}>
-                            <th style={thStyle}>类型</th>
-                            <th style={thStyle}>描述</th>
-                            <th style={thStyle}>轮次</th>
-                            <th style={thStyle}>状态</th>
-                            <th style={{ ...thStyle, textAlign: "right" }}>操作</th>
+                            <th style={thStyle}>{localizeText("Type", "类型", "類型")}</th>
+                            <th style={thStyle}>{localizeText("Description", "描述", "描述")}</th>
+                            <th style={thStyle}>{localizeText("Rounds", "轮次", "輪次")}</th>
+                            <th style={thStyle}>{localizeText("Status", "状态", "狀態")}</th>
+                            <th style={{ ...thStyle, textAlign: "right" }}>{localizeText("Actions", "操作", "操作")}</th>
                         </tr>
                     </thead>
                     <tbody>
                         {bgLoops.map((loop) => {
-                            const tag = getSlotKindTag(loop.slot_kind);
-                            const statusInfo = getStatusBadge(loop.status);
+                            const tag = getSlotKindTag(loop.slot_kind, localizeText);
+                            const statusInfo = getStatusBadge(loop.status, localizeText);
                             const isPaused = loop.status === "paused";
                             const hasSess = loop.session_id && loop.session_id.length > 0;
                             return (
@@ -474,7 +475,7 @@ export function RemoteSessionList(props: Props) {
                                         </div>
                                         {loop.queued_count > 0 && (
                                             <div style={{ fontSize: "0.65rem", color: colors.textMuted }}>
-                                                排队: {loop.queued_count}
+                                                {localizeText("Queued", "排队", "排隊")}: {loop.queued_count}
                                             </div>
                                         )}
                                     </td>
@@ -491,7 +492,7 @@ export function RemoteSessionList(props: Props) {
                                             {hasSess && (
                                                 <button
                                                     style={{ ...iconBtnStyle, color: colors.primary }}
-                                                    title="查看终端"
+                                                    title={localizeText("View terminal", "查看终端", "查看終端")}
                                                     onClick={() => openConsole(loop.session_id, true)}
                                                 >
                                                     🖥
@@ -500,15 +501,15 @@ export function RemoteSessionList(props: Props) {
                                             {isPaused && (
                                                 <button
                                                     style={{ ...iconBtnStyle, color: "#16a34a", fontWeight: 600, fontSize: "0.72rem" }}
-                                                    title="续命 +20 轮"
+                                                    title={localizeText("Extend by +20 rounds", "续命 +20 轮", "續命 +20 輪")}
                                                     onClick={() => handleContinueLoop(loop.id)}
                                                 >
-                                                    ▶ 续命
+                                                    ▶ {localizeText("Extend", "续命", "續命")}
                                                 </button>
                                             )}
                                             <button
                                                 style={{ ...iconBtnStyle, color: colors.danger }}
-                                                title="停止"
+                                                title={localizeText("Stop", "停止", "停止")}
                                                 onClick={() => handleStopLoop(loop.id)}
                                             >
                                                 ⏹
@@ -547,7 +548,7 @@ export function RemoteSessionList(props: Props) {
                             transition: "all 0.15s",
                         }}
                     >
-                        ☁️ 远程
+                        ☁️ {localizeText("Remote", "远程", "遠端")}
                         {remoteLiveCount > 0 && (
                             <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: "#eef2ff", color: "#4338ca", padding: "1px 6px", borderRadius: "999px" }}>
                                 {remoteLiveCount}
@@ -568,7 +569,7 @@ export function RemoteSessionList(props: Props) {
                             transition: "all 0.15s",
                         }}
                     >
-                        ⚙️ 后台
+                        ⚙️ {localizeText("Background", "后台", "後台")}
                         {bgTotalCount > 0 && (
                             <span style={{ marginLeft: "6px", fontSize: "0.68rem", background: "#f0e6ff", color: "#6b21a8", padding: "1px 6px", borderRadius: "999px" }}>
                                 {bgTotalCount}
@@ -582,7 +583,7 @@ export function RemoteSessionList(props: Props) {
                             style={{ fontSize: "0.72rem", marginBottom: "4px" }}
                             onClick={() => setShowHistory((v) => !v)}
                         >
-                            {showHistory ? "隐藏历史" : `查看历史 (${historySessions.length})`}
+                            {showHistory ? localizeText("Hide history", "隐藏历史", "隱藏歷史") : localizeText("View history ({count})", "查看历史 ({count})", "查看歷史 ({count})").replace("{count}", String(historySessions.length))}
                         </button>
                     )}
                 </div>
@@ -593,7 +594,7 @@ export function RemoteSessionList(props: Props) {
                 <>
                     {liveSessions.length === 0 && !showHistory ? (
                         <div style={{ padding: "20px 14px", textAlign: "center", fontSize: "0.76rem", color: colors.textMuted }}>
-                            当前没有运行中的远程实例
+                            {localizeText("No running remote sessions", "当前没有运行中的远程实例", "目前沒有執行中的遠端實例")}
                         </div>
                     ) : (
                         liveSessions.length > 0 && renderTable(liveSessions, false, false)
@@ -601,7 +602,7 @@ export function RemoteSessionList(props: Props) {
                     {showHistory && historySessions.length > 0 && (
                         <div style={{ borderTop: `1px solid ${colors.border}` }}>
                             <div style={{ padding: "8px 14px 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 500 }}>
-                                已结束
+                                {localizeText("Ended", "已结束", "已結束")}
                             </div>
                             {renderTable(historySessions, true, false)}
                         </div>
@@ -618,15 +619,15 @@ export function RemoteSessionList(props: Props) {
                     {/* AI coding sessions section */}
                     <div>
                         <div style={{ padding: "8px 14px 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 600 }}>
-                            AI 编程会话
+                            {localizeText("AI coding sessions", "AI 编程会话", "AI 編程會話")}
                         </div>
                         {aiSessions.length === 0 && bgLoops.length === 0 ? (
                             <div style={{ padding: "20px 14px", textAlign: "center", fontSize: "0.76rem", color: colors.textMuted }}>
-                                当前没有运行中的后台任务
+                                {localizeText("No running background tasks", "当前没有运行中的后台任务", "目前沒有執行中的後台任務")}
                             </div>
                         ) : aiSessions.length === 0 ? (
                             <div style={{ padding: "10px 14px", textAlign: "center", fontSize: "0.74rem", color: colors.textMuted }}>
-                                暂无 AI 编程会话
+                                {localizeText("No AI coding sessions", "暂无 AI 编程会话", "暫無 AI 編程會話")}
                             </div>
                         ) : (
                             renderTable(aiSessions, false, true)

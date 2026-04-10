@@ -15,6 +15,10 @@ import (
 const installScriptURL = "https://clawnet.cc/install.sh"
 const installPowerShellURL = "https://clawnet.cc/install.ps1"
 
+// gitHubRepo is the GitHub repository for direct binary download fallback.
+// Uses /latest/download/ which 302-redirects to the newest release asset.
+const gitHubRepo = "ChatChatTech/skills"
+
 var supportedOS = map[string]bool{"windows": true, "darwin": true, "linux": true}
 var supportedArch = map[string]bool{"amd64": true, "arm64": true}
 
@@ -154,7 +158,8 @@ func installWindows(emit func(string, int, string)) error {
 	return nil
 }
 
-// downloadDirect is a fallback that downloads the binary directly via HTTP.
+// downloadDirect is a fallback that downloads the binary from GitHub Releases.
+// Uses the /latest/download/ URL which 302-redirects to the newest release asset.
 func downloadDirect(emit func(string, int, string)) error {
 	arch := runtime.GOARCH
 	osName := runtime.GOOS
@@ -163,8 +168,8 @@ func downloadDirect(emit func(string, int, string)) error {
 		asset += ".exe"
 	}
 
-	downloadURL := fmt.Sprintf("https://clawnet.cc/download/%s", asset)
-	emit("downloading", 55, fmt.Sprintf("Downloading %s ...", asset))
+	downloadURL := fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", gitHubRepo, asset)
+	emit("downloading", 55, fmt.Sprintf("Downloading from GitHub Releases: %s ...", asset))
 
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(downloadURL)

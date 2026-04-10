@@ -2,6 +2,12 @@ import { useState, useRef, useCallback, useEffect, useMemo, type Dispatch, type 
 import type { RemoteSessionView } from "./types";
 import { SendRemoteSessionInput, SendRemoteSessionRawInput, SendRemoteSessionImage, CaptureRemoteScreenshot, CaptureRemoteWindowScreenshot, InterruptRemoteSession } from "../../../wailsjs/go/main/App";
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
+);
+
+const getCurrentLang = () => document.documentElement.lang || navigator.language || "en";
+
 type Props = {
     session: RemoteSessionView;
     remoteInputDrafts: Record<string, string>;
@@ -292,6 +298,7 @@ export function RemoteSessionConsole(props: Props) {
         readOnly = false,
     } = props;
 
+    const currentLang = getCurrentLang();
     const [sending, setSending] = useState(false);
     const [lastSendInfo, setLastSendInfo] = useState("");
     const [imageUploading, setImageUploading] = useState(false);
@@ -482,11 +489,11 @@ export function RemoteSessionConsole(props: Props) {
 
     const handleImageFile = useCallback(async (file: File) => {
         if (!SUPPORTED_IMAGE_TYPES.includes(file.type)) {
-            showSendInfo("✗ 不支持的图片格式，仅支持 PNG/JPEG/GIF/WebP");
+            showSendInfo(localizeText(currentLang, "✗ Unsupported image format. Only PNG/JPEG/GIF/WebP are allowed", "✗ 不支持的图片格式，仅支持 PNG/JPEG/GIF/WebP", "✗ 不支援的圖片格式，僅支援 PNG/JPEG/GIF/WebP"));
             return;
         }
         if (file.size > MAX_IMAGE_SIZE) {
-            showSendInfo("✗ 图片超过 5MB 限制");
+            showSendInfo(localizeText(currentLang, "✗ Image exceeds the 5MB limit", "✗ 图片超过 5MB 限制", "✗ 圖片超過 5MB 限制"));
             return;
         }
         setImageUploading(true);
@@ -499,16 +506,16 @@ export function RemoteSessionConsole(props: Props) {
                     const idx = result.indexOf(",");
                     resolve(idx >= 0 ? result.slice(idx + 1) : result);
                 };
-                reader.onerror = () => reject(new Error("读取文件失败"));
+                reader.onerror = () => reject(new Error(localizeText(currentLang, "Failed to read file", "读取文件失败", "讀取檔案失敗")));
                 reader.readAsDataURL(file);
             });
             await SendRemoteSessionImage(session.id, file.type, base64);
-            showSendInfo(`✓ 📷 图片已发送 (${(file.size / 1024).toFixed(0)}KB)`);
+            showSendInfo(`${localizeText(currentLang, "✓ 📷 Image sent", "✓ 📷 图片已发送", "✓ 📷 圖片已發送")} (${(file.size / 1024).toFixed(0)}KB)`);
             setTimeout(() => refreshSessionsOnly(), 200);
             setTimeout(() => refreshSessionsOnly(), 800);
             setTimeout(() => refreshSessionsOnly(), 2000);
         } catch (e) {
-            showSendInfo(`✗ 图片发送失败: ${String(e)}`);
+            showSendInfo(`${localizeText(currentLang, "✗ Failed to send image", "✗ 图片发送失败", "✗ 圖片發送失敗")}: ${String(e)}`);
         }
         setImageUploading(false);
     }, [session.id, refreshSessionsOnly, showSendInfo]);
@@ -542,20 +549,20 @@ export function RemoteSessionConsole(props: Props) {
     }, [handlePaste]);
 
     const handleScreenshot = useCallback(async () => {
-        const title = prompt("输入窗口标题（留空截全屏）：");
+        const title = prompt(localizeText(currentLang, "Enter a window title (leave blank for fullscreen):", "输入窗口标题（留空截全屏）：", "輸入視窗標題（留空截全螢幕）："));
         if (title === null) return; // cancelled
         setImageUploading(true);
         try {
             if (title.trim()) {
                 await CaptureRemoteWindowScreenshot(session.id, title.trim());
-                showSendInfo(`✓ 📸 窗口截图已发送: ${title.trim()}`);
+                showSendInfo(`${localizeText(currentLang, "✓ 📸 Window screenshot sent", "✓ 📸 窗口截图已发送", "✓ 📸 視窗截圖已發送")}: ${title.trim()}`);
             } else {
                 await CaptureRemoteScreenshot(session.id);
-                showSendInfo("✓ 📸 全屏截图已发送");
+                showSendInfo(localizeText(currentLang, "✓ 📸 Fullscreen screenshot sent", "✓ 📸 全屏截图已发送", "✓ 📸 全螢幕截圖已發送"));
             }
             setTimeout(() => refreshSessionsOnly(), 500);
         } catch (e) {
-            showSendInfo(`✗ 截图失败: ${String(e)}`);
+            showSendInfo(`${localizeText(currentLang, "✗ Screenshot failed", "✗ 截图失败", "✗ 截圖失敗")}: ${String(e)}`);
         }
         setImageUploading(false);
     }, [session.id, refreshSessionsOnly, showSendInfo]);
@@ -814,7 +821,7 @@ export function RemoteSessionConsole(props: Props) {
                 <div style={titleRightStyle}>
                     <button onClick={handleClear}
                         style={{ ...actionBtnStyle, color: "#569cd6" }}
-                        title="清屏">
+                        title={localizeText(currentLang, "Clear screen", "清屏", "清屏")}>
                         ⌧
                     </button>
                     {!readOnly && !isStructured && (
@@ -826,20 +833,20 @@ export function RemoteSessionConsole(props: Props) {
                     {!readOnly && (
                         <button onClick={handleCtrlC} disabled={sessionClosed}
                             style={{ ...actionBtnStyle, color: "#e8a838" }}
-                            title={isStructured ? "中断" : "Ctrl+C"}>
+                            title={isStructured ? localizeText(currentLang, "Interrupt", "中断", "中斷") : "Ctrl+C"}>
                             {isStructured ? "⏸" : "⌃C"}
                         </button>
                     )}
                     {!readOnly && (
                         <button onClick={handleKill} disabled={sessionClosed}
                             style={{ ...actionBtnStyle, color: "#f44747" }}
-                            title="终止">
+                            title={localizeText(currentLang, "Terminate", "终止", "終止")}>
                             Kill
                         </button>
                     )}
                     <button onClick={onClose}
                         style={{ ...actionBtnStyle, color: "#ccc", fontSize: "14px", padding: "0 8px" }}
-                        title="关闭">
+                        title={localizeText(currentLang, "Close", "关闭", "關閉")}>
                         ✕
                     </button>
                 </div>
@@ -891,7 +898,7 @@ export function RemoteSessionConsole(props: Props) {
                             handleSend();
                         }
                     }}
-                    placeholder={disabled ? (sessionClosed ? "会话已结束" : "发送中...") : (isStructured ? "输入消息..." : "输入命令...")}
+                    placeholder={disabled ? (sessionClosed ? localizeText(currentLang, "Session ended", "会话已结束", "會話已結束") : localizeText(currentLang, "Sending...", "发送中...", "發送中...")) : (isStructured ? localizeText(currentLang, "Type a message...", "输入消息...", "輸入訊息..." ) : localizeText(currentLang, "Type a command...", "输入命令...", "輸入命令..."))}
                     disabled={disabled}
                     autoCapitalize="off"
                     autoCorrect="off"
@@ -900,7 +907,7 @@ export function RemoteSessionConsole(props: Props) {
                 {!isStructured && (
                     <button onClick={handleSendRaw} disabled={disabled}
                         style={{ ...inputBtnStyle, color: "#6a9955", borderColor: "#6a9955" }}
-                        title="逐字符发送 (TUI)">
+                        title={localizeText(currentLang, "Send character by character (TUI)", "逐字符发送 (TUI)", "逐字元發送 (TUI)")}>
                         Raw
                     </button>
                 )}
@@ -917,7 +924,7 @@ export function RemoteSessionConsole(props: Props) {
                             onClick={() => fileInputRef.current?.click()}
                             disabled={disabled || imageUploading}
                             style={{ ...inputBtnStyle, color: "#c586c0", borderColor: "#c586c0" }}
-                            title="上传图片 (也可粘贴)"
+                            title={localizeText(currentLang, "Upload image (or paste)", "上传图片 (也可粘贴)", "上傳圖片 (也可貼上)")}
                         >
                             {imageUploading ? "…" : "📷"}
                         </button>
@@ -925,7 +932,7 @@ export function RemoteSessionConsole(props: Props) {
                             onClick={handleScreenshot}
                             disabled={disabled || imageUploading}
                             style={{ ...inputBtnStyle, color: "#4ec9b0", borderColor: "#4ec9b0" }}
-                            title="截图 (全屏或指定窗口)"
+                            title={localizeText(currentLang, "Capture screenshot (fullscreen or window)", "截图 (全屏或指定窗口)", "截圖 (全螢幕或指定視窗)")}
                         >
                             🖥
                         </button>
@@ -933,7 +940,7 @@ export function RemoteSessionConsole(props: Props) {
                 )}
                 <button onClick={handleSend} disabled={disabled}
                     style={{ ...inputBtnStyle, color: "#569cd6", borderColor: "#569cd6" }}
-                    title="发送">
+                    title={localizeText(currentLang, "Send", "发送", "發送")}>
                     {sending ? "…" : "⏎"}
                 </button>
             </div>
@@ -941,7 +948,7 @@ export function RemoteSessionConsole(props: Props) {
             {readOnly && (
                 <div style={{ ...inputBarStyle, justifyContent: "center" }}>
                     <span style={{ color: "#6a6a6a", fontSize: "11px", fontFamily: "Consolas, monospace" }}>
-                        🔒 AI 进程监控模式 — 仅查看
+                        🔒 {localizeText(currentLang, "AI process monitor mode — view only", "AI 进程监控模式 — 仅查看", "AI 進程監控模式 — 僅查看")}
                     </span>
                 </div>
             )}

@@ -273,7 +273,7 @@
     font-size: 0.64rem !important;
     font-weight: 500;
     letter-spacing: 0.08em !important;
-    color: #9ca3af !important;
+    color: var(--theme-text-muted) !important;
     text-transform: uppercase;
 }
 
@@ -285,7 +285,7 @@
     background: transparent;
     font-size: 0.7rem;
     line-height: 1.24;
-    color: #7c8593;
+    color: var(--theme-text-secondary);
     text-align: left;
     word-break: break-word;
 }
@@ -308,7 +308,7 @@
     margin-bottom: 1px;
     line-height: 1.16;
     font-size: 0.72rem;
-    color: #7c8593;
+    color: var(--theme-text-secondary);
 }
 
 .about-thanks-content p {
@@ -1640,6 +1640,7 @@ body {
     color: var(--theme-text-primary);
 }
 
+.main-container[data-ai-theme='dark'] .settings-panel {
     background: #111827;
     border-color: #1e293b;
     color: #e5e7eb;

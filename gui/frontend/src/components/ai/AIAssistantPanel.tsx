@@ -54,6 +54,10 @@ interface AIAssistantPanelProps {
 
 const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
 /* ── Theme definitions ── */
 
 interface Theme {
@@ -615,6 +619,7 @@ function renderConfirmationCard(
     actions: ChatAction[] | undefined,
     executeAction: (command: string) => void,
     t: Theme,
+    lang: string,
 ): React.ReactNode {
     const targetPaths = confirmation.targetPaths || [];
     const plannedActions = confirmation.plannedActions || [];
@@ -634,20 +639,22 @@ function renderConfirmationCard(
             }}
         >
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
-                {taskType ? `执行前确认 · ${taskType}` : "执行前确认"}
+                {taskType
+                    ? localizeText(lang, `Pre-execution confirmation · ${taskType}`, `执行前确认 · ${taskType}`)
+                    : localizeText(lang, "Pre-execution confirmation", "执行前确认")}
             </div>
             {status && (
                 <div data-testid="confirmation-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
-                    状态：{status}
+                    {localizeText(lang, `Status: ${status}`, `状态：${status}`)}
                 </div>
             )}
             <div data-testid="confirmation-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
                 {renderContentWithCodeBlocks(confirmation.summary, t)}
             </div>
-            {renderConfirmationList("confirmation-target-paths", "目标目录", targetPaths, t)}
-            {renderConfirmationList("confirmation-planned-actions", "计划动作", plannedActions, t)}
-            {renderConfirmationList("confirmation-risk-flags", "风险提示", riskFlags, t)}
-            {renderConfirmationList("confirmation-revision-hints", "可补充/修正", revisionHints, t)}
+            {renderConfirmationList("confirmation-target-paths", localizeText(lang, "Target paths", "目标目录"), targetPaths, t)}
+            {renderConfirmationList("confirmation-planned-actions", localizeText(lang, "Planned actions", "计划动作"), plannedActions, t)}
+            {renderConfirmationList("confirmation-risk-flags", localizeText(lang, "Risk warnings", "风险提示"), riskFlags, t)}
+            {renderConfirmationList("confirmation-revision-hints", localizeText(lang, "Revision hints", "可补充/修正"), revisionHints, t)}
             {actions && actions.length > 0 && renderActions(actions, executeAction, t)}
         </div>
     );
@@ -657,6 +664,7 @@ function renderUnfinishedSlotCard(
     slot: ChatUnfinishedSlot,
     executeAction: (command: string) => void,
     t: Theme,
+    lang: string,
 ): React.ReactNode {
     const actions = slot.actions || [];
     return (
@@ -671,11 +679,11 @@ function renderUnfinishedSlotCard(
             }}
         >
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
-                未完成任务
+                {localizeText(lang, "Unfinished task", "未完成任务")}
             </div>
             {slot.status && (
                 <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
-                    状态：{slot.status}
+                    {localizeText(lang, `Status: ${slot.status}`, `状态：${slot.status}`)}
                 </div>
             )}
             {slot.title && (
@@ -712,7 +720,7 @@ function openFileInFolder(event: React.MouseEvent, filePath: string) {
 
 /* ── Render a single ChatMessage ── */
 
-function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string): React.ReactNode {
+function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, lang: string, isLastAssistant: boolean, savedFileLabel: string): React.ReactNode {
     const visibleFilePaths = msg.localFilePaths && msg.localFilePaths.length > 0
         ? msg.localFilePaths
         : (msg.localFilePath ? [msg.localFilePath] : []);
@@ -759,8 +767,8 @@ function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t
                         </div>
                     )}
                     {renderContentWithCodeBlocks(msg.content, t)}
-                    {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t)}
-                    {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t)}
+                    {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
+                    {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
                     {visibleFilePaths.length > 0 && (
                         <div style={{ margin: "4px 0" }}>
                             {visibleFilePaths.map((fp, i) => (
@@ -893,25 +901,25 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
 
-    const title = lang === "en" ? "AI Assistant" : "AI 助手";
-    const thinkingText = lang === "en" ? "Thinking..." : "正在思考...";
-    const processingText = lang === "en" ? "Executing tools and finishing task..." : "正在执行工具并完成任务...";
-    const idlePlaceholderText = lang === "en" ? "Type a message..." : "输入消息...";
-    const savedFileLabel = lang === "en" ? "Saved file" : "文件已保存";
+    const title = localizeText(lang, "AI Assistant", "AI 助手");
+    const thinkingText = localizeText(lang, "Thinking...", "正在思考...");
+    const processingText = localizeText(lang, "Executing tools and finishing task...", "正在执行工具并完成任务...");
+    const idlePlaceholderText = localizeText(lang, "Type a message...", "输入消息...");
+    const savedFileLabel = localizeText(lang, "Saved file", "文件已保存");
     const isBusy = sending;
     const inputLocked = isBusy || cancelPending;
     const showThinkingState = streaming;
     const showProcessingState = isBusy && !streaming;
     const showBusySpinner = isBusy;
 
-    const initStatusLabels: Record<AIAssistantInitStatus, { en: string; zh: string }> = {
-        connecting: { en: "Connecting to Hub...", zh: "正在连接 Hub..." },
-        loading:    { en: "Loading components...", zh: "正在加载组件..." },
-        warming:    { en: "Warming up...", zh: "正在预热..." },
-        ready:      { en: "Ready", zh: "就绪" },
+    const initStatusLabels: Record<AIAssistantInitStatus, { en: string; zhHans: string; zhHant: string }> = {
+        connecting: { en: "Connecting to Hub...", zhHans: "正在连接 Hub...", zhHant: "正在連線 Hub..." },
+        loading:    { en: "Loading components...", zhHans: "正在加载组件...", zhHant: "正在載入組件..." },
+        warming:    { en: "Warming up...", zhHans: "正在预热...", zhHant: "正在預熱..." },
+        ready:      { en: "Ready", zhHans: "就绪", zhHant: "就緒" },
     };
     const statusKey = initStatus ?? "connecting";
-    const initLabel = initStatusLabels[statusKey][lang === "en" ? "en" : "zh"];
+    const initLabel = localizeText(lang, initStatusLabels[statusKey].en, initStatusLabels[statusKey].zhHans, initStatusLabels[statusKey].zhHant);
 
     const placeholderText = !ready
         ? initLabel
@@ -1151,12 +1159,12 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
 
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => {
-        return otherMessages.map((msg, idx) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel));
+        return otherMessages.map((msg, idx) => renderMessage(msg, executeAction, t, lang, idx === lastAssistantIdx, savedFileLabel));
     }, [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel]);
 
     const renderedProgressMessages = useMemo(() => {
-        return progressMessages.map(msg => renderMessage(msg, executeAction, t, false, savedFileLabel));
-    }, [progressMessages, executeAction, t, savedFileLabel]);
+        return progressMessages.map(msg => renderMessage(msg, executeAction, t, lang, false, savedFileLabel));
+    }, [progressMessages, executeAction, t, lang, savedFileLabel]);
 
     const containerStyle: React.CSSProperties = inline
         ? (maximized
@@ -1211,7 +1219,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             <span
                                 style={{ ...dotBase, background: "#ff5f57" }}
                                 onClick={onClose}
-                                title={lang === "en" ? "Close" : "关闭"}
+                                title={localizeText(lang, "Close", "关闭")}
                             />
                         </div>
                     )}
@@ -1232,7 +1240,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             border: `1px solid ${t.titleBarBorder}`,
                             flexShrink: 0,
                         }}>
-                            {lang === "en" ? "Trial+Reflect" : "试错反思"}
+                            {localizeText(lang, "Trial+Reflect", "试错反思")}
                         </span>
                     )}
                 </div>
@@ -1251,7 +1259,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         className="ai-titlebar-tool"
                         {...(inline ? { onMouseDown: onOpenTutorial } : { onClick: onOpenTutorial })}
                         style={getTitleBarToolButtonStyle(t)}
-                        title={lang === "en" ? "Tutorial" : "教程"}
+                        title={localizeText(lang, "Tutorial", "教程")}
                     >
                         <span
                             aria-hidden="true"
@@ -1289,12 +1297,12 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             } : {
                                 onClick: () => setThemeMode('light'),
                             })}
-                            aria-label={lang === 'en' ? 'Switch to normal mode' : '切换到普通模式'}
+                            aria-label={localizeText(lang, 'Switch to normal mode', '切换到普通模式')}
                             aria-pressed={themeMode === 'light'}
                             style={{ ...getTitleBarToolButtonStyle(t, themeMode === 'light' ? 'active' : 'default'), width: 'auto', minWidth: '56px', padding: '0 10px', fontSize: '11px', fontWeight: 600 }}
-                            title={lang === 'en' ? 'Switch to normal mode' : '切换到普通模式'}
+                            title={localizeText(lang, 'Switch to normal mode', '切换到普通模式')}
                         >
-                            {lang === 'en' ? 'Normal' : '普通'}
+                            {localizeText(lang, 'Normal', '普通')}
                         </button>
                         <button
                             className="ai-titlebar-tool"
@@ -1308,19 +1316,19 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             } : {
                                 onClick: () => setThemeMode('dark'),
                             })}
-                            aria-label={lang === 'en' ? 'Switch to dark mode' : '切换到暗黑模式'}
+                            aria-label={localizeText(lang, 'Switch to dark mode', '切换到暗黑模式')}
                             aria-pressed={themeMode === 'dark'}
                             style={{ ...getTitleBarToolButtonStyle(t, themeMode === 'dark' ? 'active' : 'default'), width: 'auto', minWidth: '56px', padding: '0 10px', fontSize: '11px', fontWeight: 600 }}
-                            title={lang === 'en' ? 'Switch to dark mode' : '切换到暗黑模式'}
+                            title={localizeText(lang, 'Switch to dark mode', '切换到暗黑模式')}
                         >
-                            {lang === 'en' ? 'Dark' : '暗黑'}
+                            {localizeText(lang, 'Dark', '暗黑')}
                         </button>
                     </div>
                     <button
                         className="ai-titlebar-tool"
                         {...(inline ? { onMouseDown: refreshNews } : { onClick: refreshNews })}
                         style={getTitleBarToolButtonStyle(t)}
-                        title={lang === "en" ? "Refresh news" : "刷新消息"}
+                        title={localizeText(lang, "Refresh news", "刷新消息")}
                     >
                         <span
                             aria-hidden="true"
@@ -1337,7 +1345,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         className="ai-titlebar-tool"
                         {...(inline ? { onMouseDown: clearHistory } : { onClick: clearHistory })}
                         style={getTitleBarToolButtonStyle(t, "danger")}
-                        title={lang === "en" ? "Clear history" : "清空历史"}
+                        title={localizeText(lang, "Clear history", "清空历史")}
                     >
                         <span
                             aria-hidden="true"
@@ -1357,9 +1365,9 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         className="ai-window-control"
                         onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onHideWindow(); }}
                         data-testid="ai-hide-toggle"
-                        aria-label={lang === "en" ? "Minimize window" : "最小化窗口"}
+                        aria-label={localizeText(lang, "Minimize window", "最小化窗口")}
                         style={getWindowControlButtonStyle(t, "hide")}
-                        title={lang === "en" ? "Minimize window" : "最小化窗口"}
+                        title={localizeText(lang, "Minimize window", "最小化窗口")}
                     >
                         <span style={{ width: "10px", borderTop: "1.5px solid currentColor", transform: "translateY(4px)" }} />
                     </button>
@@ -1369,9 +1377,9 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         className="ai-window-control"
                         onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onToggleMaximize?.(); }}
                         data-testid="ai-maximize-toggle"
-                        aria-label={maximized ? (lang === "en" ? "Restore window" : "还原窗口") : (lang === "en" ? "Maximize window" : "最大化窗口")}
+                        aria-label={maximized ? localizeText(lang, "Restore window", "还原窗口") : localizeText(lang, "Maximize window", "最大化窗口")}
                         style={getWindowControlButtonStyle(t, "fullscreen", maximized)}
-                        title={maximized ? (lang === "en" ? "Restore window" : "还原窗口") : (lang === "en" ? "Maximize window" : "最大化窗口")}
+                        title={maximized ? localizeText(lang, "Restore window", "还原窗口") : localizeText(lang, "Maximize window", "最大化窗口")}
                     >
                         <span style={{
                             position: "relative",
@@ -1403,7 +1411,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         className="ai-window-control"
                         onClick={onClose}
                         style={{ ...getWindowControlButtonStyle(t, "hide"), color: t.closeBtnColor, fontSize: "14px" }}
-                        title={lang === "en" ? "Close" : "关闭"}
+                        title={localizeText(lang, "Close", "关闭")}
                     >
                         ✕
                     </button>
@@ -1448,7 +1456,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 {onboardingIncomplete ? (
                     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "16px" }}>
                         <div style={{ color: t.textMuted, fontSize: "13px" }}>
-                            {lang === "en" ? "Setup not completed" : "设置未完成"}
+                            {localizeText(lang, "Setup not completed", "设置未完成")}
                         </div>
                         <button
                             onClick={onOpenOnboarding}
@@ -1461,7 +1469,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             onMouseEnter={e => (e.currentTarget.style.opacity = "0.85")}
                             onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
                         >
-                            {lang === "en" ? "Complete Setup" : "完成设置"}
+                            {localizeText(lang, "Complete Setup", "完成设置")}
                         </button>
                     </div>
                 ) : !ready ? (
@@ -1479,7 +1487,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     </div>
                 ) : messages.length === 0 ? (
                     <span style={{ color: t.emptyHint }}>
-                        {lang === "en" ? "Ask me anything..." : "有什么可以帮你的？"}
+                        {localizeText(lang, "Ask me anything...", "有什么可以帮你的？")}
                     </span>
                 ) : (
                     <>
@@ -1595,7 +1603,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                                 background: "transparent",
                                 opacity: inputLocked ? 0.5 : 1,
                             }}
-                            title={lang === "en" ? "Clear selected file" : "清除已选文件"}
+                            title={localizeText(lang, "Clear selected file", "清除已选文件")}
                         >
                             ×
                         </button>
@@ -1678,7 +1686,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             opacity: (!ready || inputLocked) ? 0.5 : 1,
                             marginBottom: "4px",
                         }}
-                        title={lang === "en" ? "Choose file" : "选择文件"}
+                        title={localizeText(lang, "Choose file", "选择文件")}
                     >
                         📎
                     </button>
@@ -1699,8 +1707,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                                 borderColor: inline ? "#6366f1" : "#7c3aed",
                                 color: inline ? "#6366f1" : "#7c3aed",
                             }}
-                            title={lang === "en" ? "Cancel" : "取消"}
-                            aria-label={lang === "en" ? "Cancel" : "取消"}
+                            title={localizeText(lang, "Cancel", "取消")}
+                            aria-label={localizeText(lang, "Cancel", "取消")}
                         >
                             {showBusySpinner ? (
                                 <span
@@ -1728,7 +1736,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                                 </span>
                             )}
                             <span style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}>
-                                {lang === "en" ? "Cancel" : "取消"}
+                                {localizeText(lang, "Cancel", "取消")}
                             </span>
                         </button>
                     ) : (
@@ -1744,7 +1752,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                                 opacity: canSend ? 1 : 0.5,
                                 marginBottom: "4px",
                             }}
-                            title={lang === "en" ? "Send" : "发送"}
+                            title={localizeText(lang, "Send", "发送")}
                         >
                             {isBusy ? "…" : "⏎"}
                         </button>

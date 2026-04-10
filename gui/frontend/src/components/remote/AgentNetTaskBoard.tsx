@@ -6,6 +6,7 @@ import {
     ClawNetCreateTask, ClawNetBrowseNetworkTasks, ClawNetPublishTasksToHub,
     ClawNetManualPickTask,
 } from "../../../wailsjs/go/main/App";
+import { colors } from "./styles";
 
 type Props = {
     lang: string;
@@ -24,12 +25,12 @@ interface ClawNetTask {
 }
 
 const STATUS_COLORS: Record<string, { bg: string; text: string; label_zh: string; label_en: string }> = {
-    open:      { bg: "#ecfdf5", text: "#059669", label_zh: "开放", label_en: "Open" },
-    assigned:  { bg: "#eff6ff", text: "#2563eb", label_zh: "已分配", label_en: "Assigned" },
-    submitted: { bg: "#fefce8", text: "#ca8a04", label_zh: "已提交", label_en: "Submitted" },
-    approved:  { bg: "#f0fdf4", text: "#16a34a", label_zh: "已通过", label_en: "Approved" },
-    rejected:  { bg: "#fef2f2", text: "#dc2626", label_zh: "已拒绝", label_en: "Rejected" },
-    cancelled: { bg: "#f8fafc", text: "#94a3b8", label_zh: "已取消", label_en: "Cancelled" },
+    open:      { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "开放", label_en: "Open" },
+    assigned:  { bg: "var(--theme-info-bg)", text: "var(--theme-primary)", label_zh: "已分配", label_en: "Assigned" },
+    submitted: { bg: "var(--theme-warning-bg)", text: "var(--theme-warning)", label_zh: "已提交", label_en: "Submitted" },
+    approved:  { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "已通过", label_en: "Approved" },
+    rejected:  { bg: "var(--theme-danger-bg)", text: "var(--theme-danger)", label_zh: "已拒绝", label_en: "Rejected" },
+    cancelled: { bg: "var(--theme-surface-muted)", text: "var(--theme-text-muted)", label_zh: "已取消", label_en: "Cancelled" },
 };
 
 const MAX_TASKS_LOCAL = 12;
@@ -37,6 +38,10 @@ const MAX_TASKS_TOTAL = 24;
 const POLL_INTERVAL_MS = 30_000;
 
 type ViewMode = "all" | "matched" | "network";
+
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
 
 export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
     const [tasks, setTasks] = useState<ClawNetTask[]>([]);
@@ -53,8 +58,6 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
     const [showCreate, setShowCreate] = useState(false);
     const [newTitle, setNewTitle] = useState("");
     const [newReward, setNewReward] = useState(100);
-
-    const zh = lang?.startsWith("zh");
 
     const refresh = useCallback(async () => {
         if (!clawNetRunning) return;
@@ -143,7 +146,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         try {
             const res = await fn();
             if (res.ok) {
-                showMsg(zh ? "操作成功" : "Success", "success");
+                showMsg(localizeText(lang, "Success", "操作成功"), "success");
                 refresh();
             } else {
                 showMsg(res.error || "Failed", "error");
@@ -153,61 +156,61 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         } finally {
             setActionBusy(null);
         }
-    }, [zh, showMsg, refresh]);
+    }, [lang, showMsg, refresh]);
 
     const handleCreate = useCallback(async () => {
         if (!newTitle.trim()) return;
         const reward = Math.max(0, Math.floor(newReward));
         if (reward !== 0 && reward < 100) {
-            showMsg(zh ? "赏金最低 100 🐚（或 0 表示免费协作）" : "Minimum reward is 100 🐚 (or 0 for free collaboration)", "info", 4000);
+            showMsg(localizeText(lang, "Minimum reward is 100 🐚 (or 0 for free collaboration)", "赏金最低 100 🐚（或 0 表示免费协作）"), "info", 4000);
             return;
         }
         if (reward > 0 && credits && credits.balance < reward) {
-            showMsg(zh ? `余额不足（当前 ${credits.balance} 🐚，需要 ${reward} 🐚）` : `Insufficient balance (have ${credits.balance} 🐚, need ${reward} 🐚)`, "info", 4000);
+            showMsg(localizeText(lang, `Insufficient balance (have ${credits.balance} 🐚, need ${reward} 🐚)`, `余额不足（当前 ${credits.balance} 🐚，需要 ${reward} 🐚）`), "info", 4000);
             return;
         }
         await doAction("create", () => ClawNetCreateTask(newTitle.trim(), reward));
         setNewTitle("");
         setNewReward(100);
         setShowCreate(false);
-    }, [newTitle, newReward, credits, zh, showMsg, doAction]);
+    }, [newTitle, newReward, credits, lang, showMsg, doAction]);
 
     const handleManualPick = useCallback(async (taskId: string) => {
         setManualPickId(taskId);
-        showMsg(zh ? "⏳ 正在接单并执行任务..." : "⏳ Picking up and executing task...", "info", 60000);
+        showMsg(localizeText(lang, "⏳ Picking up and executing task...", "⏳ 正在接单并执行任务..."), "info", 60000);
         try {
             const res = await ClawNetManualPickTask(taskId);
             if (res.ok) {
-                showMsg(zh ? "✅ 任务已完成并提交" : "✅ Task completed and submitted", "success", 5000);
+                showMsg(localizeText(lang, "✅ Task completed and submitted", "✅ 任务已完成并提交"), "success", 5000);
                 refresh();
             } else {
-                showMsg(res.error || (zh ? "接单失败" : "Failed to pick task"), "error", 6000);
+                showMsg(res.error || localizeText(lang, "Failed to pick task", "接单失败"), "error", 6000);
             }
         } catch (e) {
             showMsg(String(e), "error", 6000);
         } finally {
             setManualPickId(null);
         }
-    }, [zh, showMsg, refresh]);
+    }, [lang, showMsg, refresh]);
 
     if (!clawNetRunning) {
         return (
-            <div style={{ padding: "40px 20px", textAlign: "center", color: "#94a3b8" }}>
+            <div style={{ padding: "40px 20px", textAlign: "center", color: colors.textMuted }}>
                 <div style={{ fontSize: "3rem", marginBottom: "12px" }}>🦞</div>
-                <div style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "6px" }}>
-                    {zh ? "智网未连接" : "ClawNet Not Connected"}
+                <div style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "6px", color: colors.text }}>
+                    {localizeText(lang, "ClawNet Not Connected", "智网未连接")}
                 </div>
-                <div style={{ fontSize: "0.82rem", color: "#b0b8c8" }}>
-                    {zh ? "请在设置 → 智网中启用 ClawNet" : "Enable ClawNet in Settings → ClawNet"}
+                <div style={{ fontSize: "0.82rem", color: colors.textSecondary }}>
+                    {localizeText(lang, "Enable ClawNet in Settings → ClawNet", "请在设置 → 智网中启用 ClawNet")}
                 </div>
             </div>
         );
     }
 
     const btnStyle = useMemo(() => (active?: boolean): React.CSSProperties => ({
-        background: active ? "var(--primary-dark, #2d3748)" : "none",
-        color: active ? "#fff" : "var(--text-secondary, #5a6577)",
-        border: active ? "1px solid var(--primary-dark, #2d3748)" : "1px solid var(--border-color, #e1e4e8)",
+        background: active ? colors.primary : "none",
+        color: active ? "var(--theme-text-primary)" : colors.textSecondary,
+        border: active ? `1px solid ${colors.primary}` : `1px solid ${colors.border}`,
         borderRadius: "var(--radius-sm, 4px)",
         padding: "3px 10px",
         fontSize: "0.72rem",
@@ -218,12 +221,12 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
 
     const smallBtn = useMemo(() => (disabled?: boolean): React.CSSProperties => ({
         background: "none",
-        border: "1px solid var(--border-color, #e1e4e8)",
+        border: `1px solid ${colors.border}`,
         borderRadius: "var(--radius-sm, 4px)",
         padding: "2px 8px",
         fontSize: "0.65rem",
         cursor: disabled ? "not-allowed" : "pointer",
-        color: disabled ? "#cbd5e1" : "var(--primary-dark, #2d3748)",
+        color: disabled ? colors.textMuted : colors.primary,
         opacity: disabled ? 0.5 : 1,
         transition: "all 0.15s",
     }), []);
@@ -235,7 +238,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     {credits && (
                         <span style={{
-                            fontSize: "0.75rem", background: "#fffbeb", color: "#b45309",
+                            fontSize: "0.75rem", background: "var(--theme-warning-bg)", color: "var(--theme-warning)",
                             padding: "2px 8px", borderRadius: "10px", fontWeight: 500,
                         }}>
                             🐚 {credits.balance ?? 0} {credits.tier && `· ${credits.tier}`}
@@ -244,16 +247,16 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                 </div>
                 <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
                     <button style={btnStyle(viewMode === "all")} onClick={() => setViewMode("all")}>
-                        {zh ? "全部" : "All"}
+                        {localizeText(lang, "All", "全部")}
                     </button>
                     <button style={btnStyle(viewMode === "network")} onClick={() => setViewMode("network")}>
-                        {zh ? "网络" : "Network"}
+                        {localizeText(lang, "Network", "网络")}
                     </button>
                     <button style={btnStyle(viewMode === "matched")} onClick={() => setViewMode("matched")}>
-                        {zh ? "匹配" : "Matched"}
+                        {localizeText(lang, "Matched", "匹配")}
                     </button>
                     <button style={btnStyle()} onClick={() => setShowCreate(!showCreate)}>
-                        + {zh ? "发布" : "Post"}
+                        + {localizeText(lang, "Post", "发布")}
                     </button>
                     <button onClick={refresh} disabled={loading} style={btnStyle()}>
                         {loading ? "..." : "↻"}
@@ -265,8 +268,8 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
             {actionMsg && (
                 <div style={{
                     fontSize: "0.75rem",
-                    color: actionMsg.type === "success" ? "#16a34a" : actionMsg.type === "info" ? "#2563eb" : "#ef4444",
-                    background: actionMsg.type === "success" ? "#f0fdf4" : actionMsg.type === "info" ? "#eff6ff" : "#fef2f2",
+                    color: actionMsg.type === "success" ? "var(--theme-success)" : actionMsg.type === "info" ? "var(--theme-primary)" : "var(--theme-danger)",
+                    background: actionMsg.type === "success" ? "var(--theme-success-bg)" : actionMsg.type === "info" ? "var(--theme-info-bg)" : "var(--theme-danger-bg)",
                     padding: "5px 10px",
                     borderRadius: "6px",
                     marginBottom: "8px",
@@ -277,36 +280,40 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
 
             {/* Create task form */}
             {showCreate && (
-                <div style={{ background: "#f8fafc", borderRadius: "8px", padding: "10px 12px", marginBottom: "10px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ background: colors.surfaceMuted, borderRadius: "8px", padding: "10px 12px", marginBottom: "10px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                     <input
                         value={newTitle}
                         onChange={(e) => setNewTitle(e.target.value)}
-                        placeholder={zh ? "任务标题..." : "Task title..."}
-                        style={{ flex: 1, minWidth: "120px", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "4px 8px", fontSize: "0.78rem" }}
+                        placeholder={localizeText(lang, "Task title...", "任务标题...")}
+                        style={{ flex: 1, minWidth: "120px", border: `1px solid ${colors.border}`, borderRadius: "6px", padding: "4px 8px", fontSize: "0.78rem", background: colors.surface, color: colors.text }}
                     />
                     <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                         <span style={{ fontSize: "0.75rem" }}>🐚</span>
                         <input
                             type="number" value={newReward} min={0}
                             onChange={(e) => setNewReward(Number(e.target.value))}
-                            style={{ width: "50px", border: "1px solid #e2e8f0", borderRadius: "6px", padding: "4px 6px", fontSize: "0.78rem" }}
+                            style={{ width: "50px", border: `1px solid ${colors.border}`, borderRadius: "6px", padding: "4px 6px", fontSize: "0.78rem", background: colors.surface, color: colors.text }}
                         />
                     </div>
                     <button onClick={handleCreate} disabled={!newTitle.trim() || actionBusy === "create"} className="btn-primary" style={{ padding: "4px 12px", fontSize: "0.72rem" }}>
-                        {zh ? "发布" : "Post"}
+                        {localizeText(lang, "Post", "发布")}
                     </button>
                 </div>
             )}
 
             {error && (
-                <div style={{ fontSize: "0.78rem", color: "#ef4444", marginBottom: "10px", padding: "6px 10px", background: "#fef2f2", borderRadius: "6px" }}>
+                <div style={{ fontSize: "0.78rem", color: "var(--theme-danger)", marginBottom: "10px", padding: "6px 10px", background: "var(--theme-danger-bg)", borderRadius: "6px" }}>
                     {error}
                 </div>
             )}
 
             {tasks.length === 0 && !loading && !error && (
-                <div style={{ textAlign: "center", color: "#94a3b8", padding: "30px 0", fontSize: "0.85rem" }}>
-                    {viewMode === "matched" ? (zh ? "暂无匹配任务" : "No matched tasks") : viewMode === "network" ? (zh ? "暂无网络任务（其他节点尚未发布任务到 Hub）" : "No network tasks (peers haven't published to Hub yet)") : (zh ? "暂无任务" : "No tasks available")}
+                <div style={{ textAlign: "center", color: colors.textMuted, padding: "30px 0", fontSize: "0.85rem" }}>
+                    {viewMode === "matched"
+                        ? localizeText(lang, "No matched tasks", "暂无匹配任务")
+                        : viewMode === "network"
+                            ? localizeText(lang, "No network tasks (peers haven't published to Hub yet)", "暂无网络任务（其他节点尚未发布任务到 Hub）")
+                            : localizeText(lang, "No tasks available", "暂无任务")}
                 </div>
             )}
 
@@ -330,40 +337,40 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                     const sc = STATUS_COLORS[normalizedStatus] || STATUS_COLORS.open;
                     return (
                         <div key={task.id} style={{
-                            background: "var(--surface-color, #fff)", border: "1px solid var(--border-color, #e1e4e8)", borderRadius: "var(--radius-lg, 8px)",
+                            background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "var(--radius-lg, 8px)",
                             padding: "7px 10px", display: "flex", flexDirection: "column", gap: "3px",
                             transition: "box-shadow 0.15s, border-color 0.15s",
                             minWidth: 0, overflow: "hidden",
                         }}
-                        onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 1px 6px rgba(45,55,72,0.10)"; e.currentTarget.style.borderColor = "var(--primary-light, #a0aec0)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "var(--border-color, #e1e4e8)"; }}
+                        onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 1px 6px rgba(45,55,72,0.10)"; e.currentTarget.style.borderColor = colors.primaryLight || "var(--theme-primary)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = colors.border; }}
                         >
                             {/* Row 1: title + status */}
                             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "4px" }}>
-                                <div title={task.title} style={{ fontSize: "0.76rem", fontWeight: 600, color: "#1e293b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+                                <div title={task.title} style={{ fontSize: "0.76rem", fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
                                     {task.title}
                                 </div>
                                 <span style={{ fontSize: "0.6rem", fontWeight: 500, background: sc.bg, color: sc.text, padding: "0px 5px", borderRadius: "6px", flexShrink: 0, whiteSpace: "nowrap", lineHeight: "16px" }}>
-                                    {zh ? sc.label_zh : sc.label_en}
+                                    {localizeText(lang, sc.label_en, sc.label_zh)}
                                 </span>
                             </div>
 
                             {task.description && (
-                                <div title={task.description} style={{ fontSize: "0.68rem", color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                <div title={task.description} style={{ fontSize: "0.68rem", color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                     {task.description}
                                 </div>
                             )}
 
                             {/* Row 2: reward + actions (right-aligned) */}
                             <div style={{ display: "flex", alignItems: "center", gap: "4px", marginTop: "auto" }}>
-                                <span style={{ fontSize: "0.7rem", fontWeight: 600, color: "#b45309" }}>
+                                <span style={{ fontSize: "0.7rem", fontWeight: 600, color: "var(--theme-warning)" }}>
                                     🐚 {task.reward}
                                 </span>
                                 <span style={{ flex: 1 }} />
                                 {normalizedStatus === "assigned" && (
                                     <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => doAction("submit-" + task.id, () => ClawNetSubmitTaskResult(task.id, ""))}>
-                                        {zh ? "提交" : "Submit"}
+                                        {localizeText(lang, "Submit", "提交")}
                                     </button>
                                 )}
                                 {normalizedStatus === "submitted" && (
@@ -389,16 +396,16 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                                             cursor: (!!actionBusy || !!manualPickId) ? "not-allowed" : "pointer",
                                             opacity: (!!actionBusy || !!manualPickId) && manualPickId !== task.id ? 0.5 : 1,
                                             ...(manualPickId === task.id ? {
-                                                background: "var(--warning-bg, #fffbeb)",
-                                                color: "var(--warning-color, #b7791f)",
-                                                border: "1px solid var(--warning-color, #b7791f)",
+                                                background: "var(--theme-warning-bg)",
+                                                color: "var(--theme-warning)",
+                                                border: "1px solid var(--theme-warning)",
                                                 boxShadow: "none",
                                             } : {}),
                                         }}
                                         disabled={!!actionBusy || !!manualPickId}
                                         onClick={() => handleManualPick(task.id)}
                                     >
-                                        {manualPickId === task.id ? (zh ? "执行中..." : "Running...") : (zh ? "🤖 接单" : "🤖 Pick")}
+                                        {manualPickId === task.id ? localizeText(lang, "Running...", "执行中...") : localizeText(lang, "🤖 Pick", "🤖 接单")}
                                     </button>
                                 )}
                             </div>

@@ -36,7 +36,9 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress Prog
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
 		shellName = "powershell"
-		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", command}
+		// Prepend UTF-8 OutputEncoding to prevent GBK mojibake on Chinese Windows.
+		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
+			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command}
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}
@@ -44,6 +46,9 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress Prog
 
 	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
 	cmd.Dir = workDir
+	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
+	// GBK/CP936 mojibake when commands output non-ASCII text.
+	cmd.Env = coretool.AppendUTF8Env(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

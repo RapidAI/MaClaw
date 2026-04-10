@@ -3,6 +3,12 @@ import { main } from "../../../wailsjs/go/models";
 import { ListRemoteHubs } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { RemoteActivationStatus } from "./types";
+import {
+    colors,
+    remoteBodyTextStyle,
+    remoteCodeBlockStyle,
+    remoteModalCardStyle,
+} from "./styles";
 
 const COUNTRY_CODES = [
     { code: "+86", label: "🇨🇳 +86" },
@@ -67,6 +73,40 @@ type Props = {
     invitationCode: string;
     setInvitationCode: (code: string) => void;
     invitationCodeError: string;
+};
+
+const modalTitleStyle = {
+    fontSize: "16px",
+    fontWeight: 700,
+    marginBottom: "12px",
+    color: colors.text,
+};
+
+const modalBodyPrimaryStyle = {
+    ...remoteBodyTextStyle,
+    fontSize: "14px",
+    lineHeight: 1.6,
+    marginBottom: "8px",
+};
+
+const modalBodySecondaryStyle = {
+    ...remoteBodyTextStyle,
+    fontSize: "13px",
+    color: colors.textMuted,
+    lineHeight: 1.6,
+    marginBottom: "12px",
+};
+
+const modalNumberStyle = {
+    ...remoteCodeBlockStyle,
+    fontSize: "20px",
+    fontWeight: 700,
+    textAlign: "center" as const,
+    padding: "14px",
+    margin: "12px 0",
+    background: colors.infoBg,
+    color: colors.primaryDark,
+    letterSpacing: "1px",
 };
 
 export function RemoteSettingsPanel({
@@ -209,7 +249,7 @@ export function RemoteSettingsPanel({
                         spellCheck={false}
                     />
                     {hubProbeError && (
-                        <div style={{ fontSize: "0.78rem", color: "#ef4444", marginTop: "4px" }}>{hubProbeError}</div>
+                        <div style={{ fontSize: "0.78rem", color: colors.danger, marginTop: "4px" }}>{hubProbeError}</div>
                     )}
                 </div>
             </div>
@@ -261,10 +301,10 @@ export function RemoteSettingsPanel({
                                 placeholder="请输入邀请码"
                                 spellCheck={false}
                                 maxLength={10}
-                                style={invitationCodeError ? { borderColor: "#ef4444" } : undefined}
+                                style={invitationCodeError ? { borderColor: colors.danger } : undefined}
                             />
                             {invitationCodeError && (
-                                <div style={{ fontSize: "0.78rem", color: "#ef4444", marginTop: "4px" }}>{invitationCodeError}</div>
+                                <div style={{ fontSize: "0.78rem", color: colors.danger, marginTop: "4px" }}>{invitationCodeError}</div>
                             )}
                         </div>
                     )}
@@ -294,34 +334,15 @@ export function RemoteSettingsPanel({
 
             {/* 手机号确认弹窗 */}
             {showMobileConfirm && (
-                <div
-                    style={{
-                        position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-                        background: "rgba(0,0,0,0.35)", display: "flex",
-                        alignItems: "center", justifyContent: "center", zIndex: 9999,
-                    }}
-                    onClick={() => setShowMobileConfirm(false)}
-                >
-                    <div
-                        style={{
-                            background: "#fff", borderRadius: "16px", padding: "24px 28px",
-                            maxWidth: "420px", width: "90%", boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                        <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "12px" }}>
-                            确认手机号
-                        </div>
-                        <div style={{ fontSize: "14px", color: "#555", lineHeight: 1.6, marginBottom: "8px" }}>
+                <div className="modal-backdrop" onClick={() => setShowMobileConfirm(false)}>
+                    <div style={remoteModalCardStyle} onClick={(e) => e.stopPropagation()}>
+                        <div style={modalTitleStyle}>确认手机号</div>
+                        <div style={modalBodyPrimaryStyle}>
                             注册后将使用以下手机号自动加入飞书组织。
                             <br />
                             手机号填写错误会导致邀请失败，且需要管理员手动处理，请务必确认：
                         </div>
-                        <div style={{
-                            fontSize: "20px", fontWeight: 700, textAlign: "center",
-                            padding: "14px", margin: "12px 0", borderRadius: "10px",
-                            background: "#f0f5ff", color: "#1a3a6b", letterSpacing: "1px",
-                        }}>
+                        <div style={modalNumberStyle}>
                             {(() => {
                                 const m = parseMobile(((config as any)?.remote_mobile || "").trim());
                                 return m.localNumber ? `${m.countryCode} ${m.localNumber}` : ((config as any)?.remote_mobile || "").trim();
@@ -349,34 +370,19 @@ export function RemoteSettingsPanel({
 
             {/* 未填手机号提示弹窗 */}
             {showNoMobilePrompt && (
-                <div
-                    style={{
-                        position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-                        background: "rgba(0,0,0,0.35)", display: "flex",
-                        alignItems: "center", justifyContent: "center", zIndex: 9999,
-                    }}
-                    onClick={() => setShowNoMobilePrompt(false)}
-                >
-                    <div
-                        style={{
-                            background: "#fff", borderRadius: "16px", padding: "24px 28px",
-                            maxWidth: "420px", width: "90%", boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                        <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "12px" }}>
-                            是否需要使用飞书？
-                        </div>
-                        <div style={{ fontSize: "14px", color: "#555", lineHeight: 1.7, marginBottom: "4px" }}>
+                <div className="modal-backdrop" onClick={() => setShowNoMobilePrompt(false)}>
+                    <div style={remoteModalCardStyle} onClick={(e) => e.stopPropagation()}>
+                        <div style={modalTitleStyle}>是否需要使用飞书？</div>
+                        <div style={{ ...modalBodyPrimaryStyle, lineHeight: 1.7, marginBottom: "4px" }}>
                             您尚未填写手机号。如果需要通过飞书接收消息和管理会话，请先填写手机号再注册，系统会自动将您加入飞书组织。
                         </div>
-                        <div style={{ fontSize: "13px", color: "#888", lineHeight: 1.6, marginBottom: "12px" }}>
+                        <div style={modalBodySecondaryStyle}>
                             如果确定不使用飞书，可以直接注册，后续将无法通过飞书进行交互。
                         </div>
                         <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", marginTop: "16px" }}>
                             <button
-                                className="btn-ghost"
-                                style={{ minWidth: "120px", color: "#999", fontSize: "0.85rem" }}
+                                className="btn-secondary"
+                                style={{ minWidth: "120px", fontSize: "0.85rem" }}
                                 onClick={skipFeishuAndRegister}
                             >
                                 不使用飞书，直接注册

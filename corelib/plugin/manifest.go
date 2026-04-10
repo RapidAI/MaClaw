@@ -13,6 +13,7 @@ var knownPluginTypes = map[PluginType]bool{
 	PluginTypeLocalMCP: true,
 	PluginTypeNLSkill:  true,
 	PluginTypeNative:   true,
+	PluginTypeScript:   true,
 }
 
 // typeConfigKeys lists the YAML keys that hold type-specific configuration.
@@ -20,6 +21,7 @@ var typeConfigKeys = map[string]bool{
 	"mcp":      true,
 	"local_mcp": true,
 	"nlskill":  true,
+	"script":   true,
 }
 
 // rawManifest is the intermediate struct used for YAML round-tripping.

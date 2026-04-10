@@ -4,7 +4,7 @@ package main
 // When the anet binary is not found locally, installs using:
 //   Linux/macOS: curl -fsSL https://clawnet.cc/install.sh | sh
 //   Windows:     irm https://clawnet.cc/install.ps1 | iex
-// Fallback: direct HTTP download from https://clawnet.cc/download/anet-{os}-{arch}[.exe]
+// Fallback: direct download from GitHub Releases (ChatChatTech/skills)
 
 import (
 	"fmt"
@@ -20,7 +20,8 @@ import (
 const (
 	anetInstallScriptURL     = "https://clawnet.cc/install.sh"
 	anetInstallPowerShellURL = "https://clawnet.cc/install.ps1"
-	anetDirectDownloadBase   = "https://clawnet.cc/download"
+	// GitHub Releases: uses /latest/download/ which 302-redirects to the newest tag.
+	anetGitHubRepo = "ChatChatTech/skills"
 )
 
 // anetLocalBinaryName returns "anet.exe" on Windows, "anet" otherwise.
@@ -149,15 +150,21 @@ func anetInstallWindows(emit func(string, int, string)) error {
 	return nil
 }
 
-// anetDownloadDirect is a fallback that downloads the binary directly via HTTP.
+// anetDownloadDirect is a fallback that downloads the binary from GitHub Releases.
+// Uses the /latest/download/ URL which 302-redirects to the newest release asset.
 func anetDownloadDirect(emit func(string, int, string)) error {
-	asset := fmt.Sprintf("anet-%s-%s", runtime.GOOS, runtime.GOARCH)
+	// Map Go GOOS/GOARCH to GitHub release asset names.
+	// Asset naming: anet-{os}-{arch}[.exe]
+	// os: windows, darwin, linux   arch: amd64, arm64
+	osName := runtime.GOOS
+	arch := runtime.GOARCH
+	asset := fmt.Sprintf("anet-%s-%s", osName, arch)
 	if runtime.GOOS == "windows" {
 		asset += ".exe"
 	}
 
-	downloadURL := fmt.Sprintf("%s/%s", anetDirectDownloadBase, asset)
-	emit("downloading", 55, fmt.Sprintf("Downloading %s ...", asset))
+	downloadURL := fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", anetGitHubRepo, asset)
+	emit("downloading", 55, fmt.Sprintf("Downloading from GitHub Releases: %s ...", asset))
 
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(downloadURL)

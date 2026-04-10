@@ -30,8 +30,11 @@ interface ScheduledTask {
     last_error: string;
 }
 
-const WEEKDAYS_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-const WEEKDAYS_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WEEKDAYS = {
+    'zh-Hans': ["周日", "周一", "周二", "周三", "周四", "周五", "周六"],
+    'zh-Hant': ["週日", "週一", "週二", "週三", "週四", "週五", "週六"],
+    'en': ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+} as const;
 
 const inputStyle: React.CSSProperties = {
     width: "100%", padding: "7px 10px", fontSize: "0.8rem",
@@ -44,14 +47,24 @@ const labelStyle: React.CSSProperties = {
 
 type Props = { lang: string };
 
-function fmtDate(s: string | null, isZh: boolean): string {
+function getWeekdays(lang: string): readonly string[] {
+    const key = lang === 'zh-Hant' ? 'zh-Hant' : lang === 'zh-Hans' ? 'zh-Hans' : 'en';
+    return WEEKDAYS[key];
+}
+
+function getDateTimeLocale(lang: string): string {
+    return lang === 'zh-Hans' ? 'zh-CN' : lang === 'zh-Hant' ? 'zh-TW' : 'en-US';
+}
+
+function fmtDate(s: string | null, lang: string): string {
     if (!s) return "-";
-    try { return new Date(s).toLocaleString(isZh ? "zh-CN" : "en-US"); }
+    try { return new Date(s).toLocaleString(getDateTimeLocale(lang)); }
     catch { return s; }
 }
 
-function scheduleDesc(t: ScheduledTask, isZh: boolean): string {
-    const weekdays = isZh ? WEEKDAYS_ZH : WEEKDAYS_EN;
+function scheduleDesc(t: ScheduledTask, lang: string): string {
+    const isZh = lang === 'zh-Hans' || lang === 'zh-Hant';
+    const weekdays = getWeekdays(lang);
     const time = `${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")}`;
 
     // One-time task: start_date == end_date (both non-empty)
@@ -59,7 +72,9 @@ function scheduleDesc(t: ScheduledTask, isZh: boolean): string {
 
     let desc = "";
     if (isOneTime) {
-        desc = isZh ? `${t.start_date} ${time}（仅一次）` : `${t.start_date} ${time} (once)`;
+        desc = lang === 'zh-Hans' ? `${t.start_date} ${time}（仅一次）`
+            : lang === 'zh-Hant' ? `${t.start_date} ${time}（僅一次）`
+            : `${t.start_date} ${time} (once)`;
     } else if (t.day_of_month > 0) {
         desc = isZh ? `每月${t.day_of_month}号 ${time}` : `${t.day_of_month}th of month at ${time}`;
     } else if (t.day_of_week >= 0 && t.day_of_week <= 6) {
@@ -76,12 +91,12 @@ function scheduleDesc(t: ScheduledTask, isZh: boolean): string {
 const STATUS_COLORS: Record<string, string> = {
     active: "#059669",
     paused: "#d97706",
-    expired: "#8b95a5",
+    expired: "var(--theme-text-muted)",
 };
 
 export function ScheduledTasksPanel({ lang }: Props) {
-    const isZh = lang?.startsWith("zh");
-    const t = useCallback((zh: string, en: string) => isZh ? zh : en, [isZh]);
+    const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
 
     const [tasks, setTasks] = useState<ScheduledTask[]>([]);
     const [loading, setLoading] = useState(false);
@@ -183,25 +198,25 @@ export function ScheduledTasksPanel({ lang }: Props) {
         <div style={{ padding: 0 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                 <span style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
-                    {tasks.length} {t("个定时任务", "scheduled task(s)")}
+                    {tasks.length} {t("scheduled task(s)", "个定时任务")}
                 </span>
                 <button onClick={openCreate} style={{
                     padding: "4px 14px", fontSize: "0.76rem", fontWeight: 600,
-                    background: "#6366f1", color: "#fff", border: "none",
+                    background: colors.primary, color: "#fff", border: "none",
                     borderRadius: radius.md, cursor: "pointer",
                 }}>
-                    + {t("新建", "New")}
+                    + {t("New", "新建")}
                 </button>
             </div>
 
             {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.76rem", marginBottom: 8 }}>{error}</div>}
-            {loading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("加载中…", "Loading…")}</div>}
+            {loading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("Loading…", "加载中…")}</div>}
 
             {/* Task list */}
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "400px", overflowY: "auto" }}>
                 {tasks.length === 0 && !loading && (
                     <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>
-                        {t("暂无定时任务。可通过上方按钮创建，或在聊天中告诉 MaClaw 每天9点做XX", "No scheduled tasks. Create one above, or tell MaClaw in chat.")}
+                        {t("No scheduled tasks. Create one above, or tell MaClaw in chat.", "暂无定时任务。可通过上方按钮创建，或在聊天中告诉 MaClaw 每天9点做XX")}
                     </div>
                 )}
                 {tasks.map(task => (
@@ -218,9 +233,9 @@ export function ScheduledTasksPanel({ lang }: Props) {
                                 </div>
                                 <div style={{ fontSize: "0.72rem", color: colors.textMuted, wordBreak: "break-word", maxHeight: 120, overflowY: "auto", whiteSpace: "pre-wrap" }}>
                                     🎯 {task.action}
-                                    {"\n"}⏰ {scheduleDesc(task, isZh)}
-                                    {task.next_run_at && <>{"\n"}{t("下次", "Next")}: {fmtDate(task.next_run_at, isZh)}</>}
-                                    {task.run_count > 0 && <>{" · "}{t("已执行", "Runs")}: {task.run_count}</>}
+                                    {"\n"}⏰ {scheduleDesc(task, lang)}
+                                    {task.next_run_at && <>{"\n"}{t("Next", "下次")}: {fmtDate(task.next_run_at, lang)}</>}
+                                    {task.run_count > 0 && <>{" · "}{t("Runs", "已执行")}: {task.run_count}</>}
                                 </div>
                                 {task.last_error && (
                                     <div style={{ fontSize: "0.68rem", color: colors.danger, marginTop: 2 }}>⚠️ {task.last_error}</div>
@@ -230,23 +245,23 @@ export function ScheduledTasksPanel({ lang }: Props) {
                                 {task.status === "active" && (
                                     <button onClick={() => handleTrigger(task.id)}
                                         disabled={triggering === task.id}
-                                        title={t("立即运行", "Run Now")}
-                                        style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: "#6366f1", opacity: triggering === task.id ? 0.5 : 1 }}>
+                                        title={t("Run Now", "立即运行")}
+                                        style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.primary, opacity: triggering === task.id ? 0.5 : 1 }}>
                                         {triggering === task.id ? "⏳" : "▶️"}
                                     </button>
                                 )}
                                 {task.status !== "expired" && (
                                     <button onClick={() => handleTogglePause(task)}
-                                        title={task.status === "active" ? t("暂停", "Pause") : t("恢复", "Resume")}
+                                        title={task.status === "active" ? t("Pause", "暂停") : t("Resume", "恢复")}
                                         style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>
                                         {task.status === "active" ? "⏸️" : "▶️"}
                                     </button>
                                 )}
-                                <button onClick={() => openEdit(task)} title={t("编辑", "Edit")}
+                                <button onClick={() => openEdit(task)} title={t("Edit", "编辑")}
                                     style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>
                                     ✏️
                                 </button>
-                                <button onClick={() => setDeleteTarget(task.id)} title={t("删除", "Delete")}
+                                <button onClick={() => setDeleteTarget(task.id)} title={t("Delete", "删除")}
                                     style={{ padding: "3px 8px", fontSize: "0.7rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger }}>
                                     🗑️
                                 </button>
@@ -258,12 +273,12 @@ export function ScheduledTasksPanel({ lang }: Props) {
 
             {/* Delete confirmation */}
             {deleteTarget && (
-                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }} onClick={() => setDeleteTarget(null)}>
+                <div style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }} onClick={() => setDeleteTarget(null)}>
                     <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)" }}>
-                        <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("确定删除这个定时任务？", "Delete this scheduled task?")}</p>
+                        <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this scheduled task?", "确定删除这个定时任务？")}</p>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                            <button onClick={() => setDeleteTarget(null)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, cursor: "pointer" }}>{t("取消", "Cancel")}</button>
-                            <button onClick={() => handleDelete(deleteTarget)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: "none", borderRadius: radius.md, background: colors.danger, color: "#fff", cursor: "pointer" }}>{t("删除", "Delete")}</button>
+                            <button onClick={() => setDeleteTarget(null)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, cursor: "pointer" }}>{t("Cancel", "取消")}</button>
+                            <button onClick={() => handleDelete(deleteTarget)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: "none", borderRadius: radius.md, background: colors.danger, color: "#fff", cursor: "pointer" }}>{t("Delete", "删除")}</button>
                         </div>
                     </div>
                 </div>
@@ -271,49 +286,49 @@ export function ScheduledTasksPanel({ lang }: Props) {
 
             {/* Create / Edit dialog */}
             {dlgOpen && (
-                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }} onClick={() => setDlgOpen(false)}>
+                <div style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }} onClick={() => setDlgOpen(false)}>
                     <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", width: 440, maxWidth: "90vw", boxShadow: "0 8px 30px rgba(0,0,0,0.12)" }}>
                         <h4 style={{ fontSize: "0.82rem", margin: "0 0 14px", color: colors.text }}>
-                            {editTask ? t("编辑定时任务", "Edit Scheduled Task") : t("新建定时任务", "New Scheduled Task")}
+                            {editTask ? t("Edit Scheduled Task", "编辑定时任务") : t("New Scheduled Task", "新建定时任务")}
                         </h4>
 
                         <div style={{ marginBottom: 10 }}>
-                            <label style={labelStyle}>{t("任务名称", "Task Name")}</label>
-                            <input value={fName} onChange={e => setFName(e.target.value)} placeholder={t("如：每日代码审查", "e.g. Daily code review")} style={inputStyle} />
+                            <label style={labelStyle}>{t("Task Name", "任务名称")}</label>
+                            <input value={fName} onChange={e => setFName(e.target.value)} placeholder={t("e.g. Daily code review", "如：每日代码审查")} style={inputStyle} />
                         </div>
 
                         <div style={{ marginBottom: 10 }}>
-                            <label style={labelStyle}>{t("执行内容（到时发给 Agent 执行）", "Action (sent to Agent at trigger time)")}</label>
+                            <label style={labelStyle}>{t("Action (sent to Agent at trigger time)", "执行内容（到时发给 Agent 执行）")}</label>
                             <textarea value={fAction} onChange={e => setFAction(e.target.value)} rows={3}
-                                placeholder={t("如：检查项目 /home/dev/myapp 的测试是否通过，如果失败发送报告", "e.g. Run tests for /home/dev/myapp and report failures")}
+                                placeholder={t("e.g. Run tests for /home/dev/myapp and report failures", "如：检查项目 /home/dev/myapp 的测试是否通过，如果失败发送报告")}
                                 style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} />
                         </div>
 
                         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                             <div style={{ flex: 1 }}>
-                                <label style={labelStyle}>{t("小时", "Hour")} (0-23)</label>
+                                <label style={labelStyle}>{t("Hour", "小时")} (0-23)</label>
                                 <input type="number" min={0} max={23} value={fHour} onChange={e => setFHour(Number(e.target.value))} style={inputStyle} />
                             </div>
                             <div style={{ flex: 1 }}>
-                                <label style={labelStyle}>{t("分钟", "Minute")} (0-59)</label>
+                                <label style={labelStyle}>{t("Minute", "分钟")} (0-59)</label>
                                 <input type="number" min={0} max={59} value={fMinute} onChange={e => setFMinute(Number(e.target.value))} style={inputStyle} />
                             </div>
                         </div>
 
                         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                             <div style={{ flex: 1 }}>
-                                <label style={labelStyle}>{t("星期", "Day of Week")}</label>
+                                <label style={labelStyle}>{t("Day of Week", "星期")}</label>
                                 <select value={fDow} onChange={e => setFDow(Number(e.target.value))} style={{ ...inputStyle }}>
-                                    <option value={-1}>{t("每天", "Every day")}</option>
-                                    {(isZh ? WEEKDAYS_ZH : WEEKDAYS_EN).map((d, i) => (
+                                    <option value={-1}>{t("Every day", "每天")}</option>
+                                    {getWeekdays(lang).map((d, i) => (
                                         <option key={i} value={i}>{d}</option>
                                     ))}
                                 </select>
                             </div>
                             <div style={{ flex: 1 }}>
-                                <label style={labelStyle}>{t("每月几号", "Day of Month")}</label>
+                                <label style={labelStyle}>{t("Day of Month", "每月几号")}</label>
                                 <select value={fDom} onChange={e => setFDom(Number(e.target.value))} style={{ ...inputStyle }}>
-                                    <option value={-1}>{t("不限", "Any")}</option>
+                                    <option value={-1}>{t("Any", "不限")}</option>
                                     {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
                                         <option key={d} value={d}>{d}</option>
                                     ))}
@@ -323,25 +338,25 @@ export function ScheduledTasksPanel({ lang }: Props) {
 
                         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
                             <div style={{ flex: 1 }}>
-                                <label style={labelStyle}>{t("开始日期（可选）", "Start Date (optional)")}</label>
+                                <label style={labelStyle}>{t("Start Date (optional)", "开始日期（可选）")}</label>
                                 <input type="date" value={fStartDate} onChange={e => setFStartDate(e.target.value)} style={inputStyle} />
                             </div>
                             <div style={{ flex: 1 }}>
-                                <label style={labelStyle}>{t("结束日期（可选）", "End Date (optional)")}</label>
+                                <label style={labelStyle}>{t("End Date (optional)", "结束日期（可选）")}</label>
                                 <input type="date" value={fEndDate} onChange={e => setFEndDate(e.target.value)} style={inputStyle} />
                             </div>
                         </div>
 
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                             <button onClick={() => setDlgOpen(false)} style={{ padding: "5px 14px", fontSize: "0.76rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, cursor: "pointer" }}>
-                                {t("取消", "Cancel")}
+                                {t("Cancel", "取消")}
                             </button>
                             <button onClick={handleSave} disabled={saving || !fName.trim() || !fAction.trim()} style={{
                                 padding: "5px 14px", fontSize: "0.76rem", border: "none", borderRadius: radius.md,
-                                background: "#6366f1", color: "#fff", cursor: "pointer",
+                                background: colors.primary, color: "#fff", cursor: "pointer",
                                 opacity: saving || !fName.trim() || !fAction.trim() ? 0.5 : 1,
                             }}>
-                                {saving ? t("保存中…", "Saving…") : t("保存", "Save")}
+                                {saving ? t("Saving…", "保存中…") : t("Save", "保存")}
                             </button>
                         </div>
                     </div>

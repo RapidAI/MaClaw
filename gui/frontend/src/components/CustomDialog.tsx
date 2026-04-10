@@ -1,6 +1,10 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { EventsOn, EventsOff } from '../../wailsjs/runtime';
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
 // ── Types ──
 
 interface DialogState {
@@ -8,6 +12,7 @@ interface DialogState {
     title: string;
     message: string;
     mode: 'alert' | 'confirm';
+    lang?: string;
 }
 
 interface DialogContextValue {
@@ -27,7 +32,7 @@ export function useDialog(): DialogContextValue {
 
 export function DialogProvider({ children }: { children: React.ReactNode }) {
     const [state, setState] = useState<DialogState>({
-        open: false, title: '', message: '', mode: 'alert',
+        open: false, title: '', message: '', mode: 'alert', lang: 'en',
     });
     const resolveRef = useRef<((value: boolean) => void) | null>(null);
 
@@ -40,14 +45,14 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     const showAlert = useCallback((message: string, title?: string): Promise<void> => {
         return new Promise(resolve => {
             resolveRef.current = () => resolve();
-            setState({ open: true, title: title || '', message, mode: 'alert' });
+            setState({ open: true, title: title || '', message, mode: 'alert', lang: document.documentElement.lang || 'en' });
         });
     }, []);
 
     const showConfirm = useCallback((message: string, title?: string): Promise<boolean> => {
         return new Promise(resolve => {
             resolveRef.current = resolve;
-            setState({ open: true, title: title || '', message, mode: 'confirm' });
+            setState({ open: true, title: title || '', message, mode: 'confirm', lang: document.documentElement.lang || 'en' });
         });
     }, []);
 
@@ -91,11 +96,11 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                         <div className="modal-footer">
                             {state.mode === 'confirm' && (
                                 <button className="btn-secondary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={() => close(false)}>
-                                    取消
+                                    {localizeText(state.lang, 'Cancel', '取消')}
                                 </button>
                             )}
                             <button className="btn-primary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={() => close(true)}>
-                                确定
+                                {localizeText(state.lang, 'OK', '确定')}
                             </button>
                         </div>
                     </div>

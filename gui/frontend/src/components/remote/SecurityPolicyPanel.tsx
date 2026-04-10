@@ -25,8 +25,8 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
     const [readOnly, setReadOnly] = useState(false);
     const [hubPolicy, setHubPolicy] = useState<any>(null);
 
-    const isEn = lang === "en";
-    const t = (zh: string, en: string) => isEn ? en : zh;
+    const t = (en: string, zhHans: string, zhHant: string = zhHans) =>
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en;
 
     // Load Hub security state
     useEffect(() => {
@@ -100,12 +100,12 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                             disabled={readOnly}
                             onClick={() => saveRemoteConfigField({ security_policy_mode: mode.value } as any)}
                         >
-                            {isEn ? mode.labelEn : mode.labelZh}
+                            {t(mode.labelEn, mode.labelZh)}
                         </button>
                     ))}
                 </div>
                 <div style={{ fontSize: "0.75rem", color: colors.textMuted, marginTop: "4px" }}>
-                    {currentMode ? (isEn ? currentMode.descEn : currentMode.descZh) : ""}
+                    {currentMode ? t(currentMode.descEn, currentMode.descZh) : ""}
                 </div>
             </div>
 
@@ -128,7 +128,7 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                             { level: "critical", zh: "危险", relaxed: "⚠️", standard: "⚠️", strict: "⛔" },
                         ].map((row) => (
                             <tr key={row.level} style={{ borderBottom: `1px solid ${colors.borderLight}` }}>
-                                <td style={{ padding: "3px 6px" }}>{isEn ? row.level : row.zh}</td>
+                                <td style={{ padding: "3px 6px" }}>{t(row.level, row.zh)}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{row.relaxed}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{row.standard}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{row.strict}</td>

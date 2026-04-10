@@ -47,26 +47,51 @@ func TestMCPPluginAdapter_Lifecycle(t *testing.T) {
 }
 
 func TestLocalMCPPluginAdapter_Lifecycle(t *testing.T) {
-	m := PluginManifest{Name: "local-test", Type: PluginTypeLocalMCP}
+	m := PluginManifest{
+		Name: "local-test",
+		Type: PluginTypeLocalMCP,
+		RawTypeConfig: map[string]interface{}{
+			"local_mcp": map[string]interface{}{
+				"command": "echo",
+				"args":    []interface{}{"hello"},
+			},
+		},
+	}
 	a := NewLocalMCPPluginAdapter(m)
 
 	if a.Manifest().Name != "local-test" {
 		t.Errorf("Name = %q", a.Manifest().Name)
 	}
 
-	a.Init(PluginConfig{})
-	a.Start(context.Background())
-
-	if a.Health().Status != "healthy" {
-		t.Errorf("health = %q", a.Health().Status)
+	// Init should parse config successfully.
+	if err := a.Init(PluginConfig{}); err != nil {
+		t.Fatalf("Init: %v", err)
 	}
 
-	a.Stop(context.Background())
+	// Init without config section should fail.
+	a2 := NewLocalMCPPluginAdapter(PluginManifest{Name: "no-config", Type: PluginTypeLocalMCP})
+	if err := a2.Init(PluginConfig{}); err == nil {
+		t.Error("expected error for missing local_mcp config")
+	}
+
+	// Init without command should fail.
+	a3 := NewLocalMCPPluginAdapter(PluginManifest{
+		Name: "no-cmd",
+		Type: PluginTypeLocalMCP,
+		RawTypeConfig: map[string]interface{}{
+			"local_mcp": map[string]interface{}{},
+		},
+	})
+	if err := a3.Init(PluginConfig{}); err == nil {
+		t.Error("expected error for missing command")
+	}
+
+	// Health before start should be unhealthy.
 	if a.Health().Status != "unhealthy" {
-		t.Errorf("post-stop health = %q", a.Health().Status)
+		t.Errorf("pre-start health = %q", a.Health().Status)
 	}
 	if len(a.Tools()) != 0 {
-		t.Errorf("post-stop tools = %d", len(a.Tools()))
+		t.Errorf("pre-start tools = %d", len(a.Tools()))
 	}
 }
 
@@ -159,5 +184,137 @@ func TestCreateAdapter_Unknown(t *testing.T) {
 	p := CreateAdapter(PluginManifest{Name: "e", Type: "unknown"})
 	if p != nil {
 		t.Error("expected nil for unknown type")
+	}
+}
+
+func TestScriptPluginAdapter_Lifecycle(t *testing.T) {
+	m := PluginManifest{
+		Name:        "script-test",
+		Type:        PluginTypeScript,
+		Description: "A test script",
+		Tags:        []string{"test"},
+		RawTypeConfig: map[string]interface{}{
+			"script": map[string]interface{}{
+				"command":     "echo",
+				"args":        []interface{}{"hello"},
+				"timeout":     5,
+				"tool_name":   "my_echo",
+				"description": "Echo tool",
+				"input_schema": map[string]interface{}{
+					"msg": map[string]interface{}{
+						"type":        "string",
+						"description": "message",
+					},
+				},
+				"required": []interface{}{"msg"},
+			},
+		},
+	}
+	a := NewScriptPluginAdapter(m)
+
+	if a.Manifest().Name != "script-test" {
+		t.Errorf("Name = %q", a.Manifest().Name)
+	}
+
+	if err := a.Init(PluginConfig{}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// Verify parsed config.
+	if a.command != "echo" {
+		t.Errorf("command = %q", a.command)
+	}
+	if a.toolName != "my_echo" {
+		t.Errorf("toolName = %q", a.toolName)
+	}
+	if a.timeoutSec != 5 {
+		t.Errorf("timeoutSec = %d", a.timeoutSec)
+	}
+
+	// Start creates tool definitions.
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	tools := a.Tools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].Name != "my_echo" {
+		t.Errorf("tool name = %q", tools[0].Name)
+	}
+	if tools[0].Description != "Echo tool" {
+		t.Errorf("tool desc = %q", tools[0].Description)
+	}
+	if len(tools[0].Required) != 1 || tools[0].Required[0] != "msg" {
+		t.Errorf("required = %v", tools[0].Required)
+	}
+
+	// Health should be healthy.
+	if a.Health().Status != "healthy" {
+		t.Errorf("health = %q", a.Health().Status)
+	}
+
+	// Stop clears tools.
+	if err := a.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(a.Tools()) != 0 {
+		t.Errorf("post-stop tools = %d", len(a.Tools()))
+	}
+}
+
+func TestScriptPluginAdapter_InitErrors(t *testing.T) {
+	// Missing script config section.
+	a1 := NewScriptPluginAdapter(PluginManifest{Name: "no-config", Type: PluginTypeScript})
+	if err := a1.Init(PluginConfig{}); err == nil {
+		t.Error("expected error for missing script config")
+	}
+
+	// Missing command.
+	a2 := NewScriptPluginAdapter(PluginManifest{
+		Name: "no-cmd",
+		Type: PluginTypeScript,
+		RawTypeConfig: map[string]interface{}{
+			"script": map[string]interface{}{},
+		},
+	})
+	if err := a2.Init(PluginConfig{}); err == nil {
+		t.Error("expected error for missing command")
+	}
+}
+
+func TestScriptPluginAdapter_DefaultToolName(t *testing.T) {
+	m := PluginManifest{
+		Name:        "my-script",
+		Type:        PluginTypeScript,
+		Description: "desc",
+		RawTypeConfig: map[string]interface{}{
+			"script": map[string]interface{}{
+				"command": "echo",
+			},
+		},
+	}
+	a := NewScriptPluginAdapter(m)
+	a.Init(PluginConfig{})
+	a.Start(context.Background())
+
+	tools := a.Tools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	// Should use manifest name as default tool name.
+	if tools[0].Name != "my-script" {
+		t.Errorf("tool name = %q, want my-script", tools[0].Name)
+	}
+}
+
+func TestCreateAdapter_Script(t *testing.T) {
+	p := CreateAdapter(PluginManifest{Name: "s", Type: PluginTypeScript})
+	if p == nil {
+		t.Fatal("expected non-nil for Script")
+	}
+	if _, ok := p.(*ScriptPluginAdapter); !ok {
+		t.Errorf("expected *ScriptPluginAdapter, got %T", p)
 	}
 }

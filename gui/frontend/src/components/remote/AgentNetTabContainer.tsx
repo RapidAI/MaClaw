@@ -45,12 +45,12 @@ class ClawNetErrorBoundary extends Component<
     render() {
         if (this.state.hasError) {
             return (
-                <div style={{ padding: "40px 20px", textAlign: "center", color: "#94a3b8" }}>
+                <div style={{ padding: "40px 20px", textAlign: "center", color: colors.textMuted }}>
                     <div style={{ fontSize: "2.5rem", marginBottom: "12px" }}>⚠️</div>
-                    <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#ef4444", marginBottom: "6px" }}>
+                    <div style={{ fontSize: "0.9rem", fontWeight: 600, color: colors.danger, marginBottom: "6px" }}>
                         {localizeText(this.props.lang, "Panel failed to load", "面板加载出错")}
                     </div>
-                    <div style={{ fontSize: "0.78rem", color: "#b0b8c8", maxWidth: "360px", margin: "0 auto 12px" }}>
+                    <div style={{ fontSize: "0.78rem", color: colors.textSecondary, maxWidth: "360px", margin: "0 auto 12px" }}>
                         {this.state.error}
                     </div>
                     <button

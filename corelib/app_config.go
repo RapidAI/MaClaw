@@ -121,9 +121,9 @@ type AppConfig struct {
 	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (单机), false = remote/Hub (多机)
 	// IM — Lansenger (蓝信) client-side gateway
 	LansengerEnabled   bool   `json:"lansenger_enabled,omitempty"`
-	LansengerAppID     string `json:"lansenger_app_id,omitempty"`
-	LansengerAppSecret string `json:"lansenger_app_secret,omitempty"`
-	LansengerToken     string `json:"lansenger_token,omitempty"` // composite "AppID:AppSecret:ApiGatewayURL"
+	LansengerAppID      string `json:"lansenger_app_id,omitempty"`
+	LansengerAppSecret  string `json:"lansenger_app_secret,omitempty"`
+	LansengerGatewayURL string `json:"lansenger_gateway_url,omitempty"` // API gateway base URL, default https://apigw.lx.qianxin.com
 	// IM — local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
 	QQBotLocalMode    *bool `json:"qqbot_local_mode,omitempty"`    // nil = auto-detect, true = local, false = hub
 	TelegramLocalMode *bool `json:"telegram_local_mode,omitempty"` // nil = auto-detect, true = local, false = hub
@@ -275,18 +275,14 @@ func (c *AppConfig) SetTelegramLocal(v bool) {
 	c.TelegramLocalMode = &v
 }
 
-// LansengerApiGatewayURL extracts the API gateway URL from the composite token.
-// Returns empty string if token is not configured or invalid.
+// LansengerApiGatewayURL returns the effective API gateway URL.
+// Falls back to the default Lansenger gateway if not configured.
 func (c *AppConfig) LansengerApiGatewayURL() string {
-	token := strings.TrimSpace(c.LansengerToken)
-	if token == "" {
-		return ""
+	url := strings.TrimSpace(c.LansengerGatewayURL)
+	if url != "" {
+		return url
 	}
-	parts := strings.SplitN(token, ":", 3)
-	if len(parts) < 3 {
-		return ""
-	}
-	return parts[2]
+	return "https://apigw.lx.qianxin.com"
 }
 
 // IsLansengerLocalMode returns the effective Lansenger local mode setting.

@@ -285,7 +285,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolReadFile(args) })
 
-	reg("write_file", "写入内容到本机文件（支持覆盖或追加，允许空内容，会创建不存在的目录）",
+	reg("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。大文件请分块写入：先 overwrite 第一部分，再 append 后续部分）",
 		ToolCategoryBuiltin, []string{"file", "write"},
 		map[string]interface{}{
 			"path":    map[string]string{"type": "string", "description": "文件路径"},

@@ -210,12 +210,9 @@ goto :error
 echo.
 echo [SUCCESS] Build and packaging complete!
 echo Artifacts are in: %OUTPUT_DIR%
-endlocal
-goto :eof
+endlocal & exit /b 0
 
 :error
 echo.
 echo [FAILED] The build process failed. Please check the output above for errors.
-endlocal
-pause
-exit /b 1
+endlocal & exit /b 1

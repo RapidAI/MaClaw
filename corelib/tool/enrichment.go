@@ -193,8 +193,8 @@ Typical usage: Read source code, config files, logs`,
 
 	"write_file": `Parameters:
 - path (string, required): Destination file path
-- content (string, required): Content to write, may be empty to clear/create an empty file
-- mode (string, optional): Write mode (overwrite/append), default overwrite
+- content (string, required): Content to write (always saved as UTF-8), may be empty to clear/create an empty file
+- mode (string, optional): Write mode (overwrite/append), default overwrite. For large content, use overwrite for the first chunk, then append for subsequent chunks.
 Typical usage: Create files, overwrite configs, append markdown or logs`,
 
 	"edit_file": `Parameters:

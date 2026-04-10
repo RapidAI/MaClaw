@@ -10,6 +10,10 @@ import {
 import { colors, radius } from "./styles";
 import { cnCard, cnLabel, cnHeading, cnInput, cnActionBtn, cnTabStyle } from "./agentnetStyles";
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
 type Props = { lang: string; clawNetRunning: boolean };
 
 interface Prediction {
@@ -23,7 +27,6 @@ interface Prediction {
 }
 
 export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
-    const zh = lang?.startsWith("zh");
     const [tab, setTab] = useState<"market" | "create" | "leaderboard">("market");
     const [preds, setPreds] = useState<Prediction[]>([]);
     const [loading, setLoading] = useState(false);
@@ -81,12 +84,12 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
     const handleCreate = async () => {
         if (!newQuestion.trim()) return;
         const opts = newOptions.split(",").map(s => s.trim()).filter(Boolean);
-        if (opts.length < 2) { showMsg(zh ? "至少需要2个选项" : "Need at least 2 options"); return; }
+        if (opts.length < 2) { showMsg(localizeText(lang, "Need at least 2 options", "至少需要2个选项")); return; }
         setActionBusy("create");
         try {
             const res = await ClawNetCreatePrediction(newQuestion.trim(), opts);
             if (!mountedRef.current) return;
-            if (res.ok) { setNewQuestion(""); setNewOptions("yes, no"); showMsg(zh ? "✅ 预测已创建" : "✅ Prediction created"); setTab("market"); loadPredictions(); }
+            if (res.ok) { setNewQuestion(""); setNewOptions("yes, no"); showMsg(localizeText(lang, "✅ Prediction created", "✅ 预测已创建")); setTab("market"); loadPredictions(); }
             else showMsg(`❌ ${res.error}`);
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
         if (mountedRef.current) setActionBusy("");
@@ -98,7 +101,7 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
         try {
             const res = await ClawNetPlaceBet(betPredId, betOption, betAmount);
             if (!mountedRef.current) return;
-            if (res.ok) { showMsg(zh ? "✅ 下注成功" : "✅ Bet placed"); setBetPredId(null); loadPredictions(); }
+            if (res.ok) { showMsg(localizeText(lang, "✅ Bet placed", "✅ 下注成功")); setBetPredId(null); loadPredictions(); }
             else showMsg(`❌ ${res.error}`);
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
         if (mountedRef.current) setActionBusy("");
@@ -109,33 +112,33 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
         try {
             const res = await ClawNetResolvePrediction(predId, option);
             if (!mountedRef.current) return;
-            if (res.ok) { showMsg(zh ? "✅ 已结算" : "✅ Resolved"); loadPredictions(); }
+            if (res.ok) { showMsg(localizeText(lang, "✅ Resolved", "✅ 已结算")); loadPredictions(); }
             else showMsg(`❌ ${res.error}`);
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
         if (mountedRef.current) setActionBusy("");
     };
 
     const handleAppeal = async (predId: string) => {
-        const reason = prompt(zh ? "申诉理由：" : "Appeal reason:");
+        const reason = prompt(localizeText(lang, "Appeal reason:", "申诉理由："));
         if (!reason) return;
         setActionBusy("appeal-" + predId);
         try {
             const res = await ClawNetAppealPrediction(predId, reason);
             if (!mountedRef.current) return;
-            if (res.ok) showMsg(zh ? "✅ 申诉已提交" : "✅ Appeal submitted");
+            if (res.ok) showMsg(localizeText(lang, "✅ Appeal submitted", "✅ 申诉已提交"));
             else showMsg(`❌ ${res.error}`);
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
         if (mountedRef.current) setActionBusy("");
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{zh ? "智网未连接" : "ClawNet not connected"}</div>;
+    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>
             <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
-                <button style={cnTabStyle(tab === "market")} onClick={() => setTab("market")}>🔮 {zh ? "市场" : "Market"}</button>
-                <button style={cnTabStyle(tab === "create")} onClick={() => setTab("create")}>➕ {zh ? "创建" : "Create"}</button>
-                <button style={cnTabStyle(tab === "leaderboard")} onClick={() => setTab("leaderboard")}>🏆 {zh ? "排行榜" : "Leaderboard"}</button>
+                <button style={cnTabStyle(tab === "market")} onClick={() => setTab("market")}>🔮 {localizeText(lang, "Market", "市场")}</button>
+                <button style={cnTabStyle(tab === "create")} onClick={() => setTab("create")}>➕ {localizeText(lang, "Create", "创建")}</button>
+                <button style={cnTabStyle(tab === "leaderboard")} onClick={() => setTab("leaderboard")}>🏆 {localizeText(lang, "Leaderboard", "排行榜")}</button>
             </div>
             {msg && <div style={{ fontSize: "0.72rem", marginBottom: "8px", color: msg.startsWith("✅") ? colors.success : colors.danger }}>{msg}</div>}
             {error && <div style={{ fontSize: "0.72rem", color: colors.danger, marginBottom: "8px" }}>{error}</div>}
@@ -143,9 +146,9 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
             {tab === "market" && (
                 <>
                     <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
-                        <button style={cnActionBtn(loading)} onClick={loadPredictions} disabled={loading}>{zh ? "刷新" : "Refresh"}</button>
+                        <button style={cnActionBtn(loading)} onClick={loadPredictions} disabled={loading}>{localizeText(lang, "Refresh", "刷新")}</button>
                     </div>
-                    {loading && <div style={cnLabel}>{zh ? "加载中..." : "Loading..."}</div>}
+                    {loading && <div style={cnLabel}>{localizeText(lang, "Loading...", "加载中...")}</div>}
                     {preds.map((p) => (
                         <div key={p.id} style={cnCard}>
                             <div style={{ fontSize: "0.76rem", fontWeight: 600, color: colors.text }}>{p.question}</div>
@@ -168,7 +171,7 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
                                         <>
                                             <select value={betOption} onChange={e => setBetOption(e.target.value)}
                                                 style={{ ...cnInput, width: "auto", flex: 1 }}>
-                                                <option value="">{zh ? "选择..." : "Pick..."}</option>
+                                                <option value="">{localizeText(lang, "Pick...", "选择...")}</option>
                                                 {(p.options || []).map(o => <option key={o} value={o}>{o}</option>)}
                                             </select>
                                             <input type="number" value={betAmount} onChange={e => setBetAmount(Number(e.target.value))}
@@ -179,14 +182,14 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
                                         </>
                                     ) : (
                                         <button style={cnActionBtn(!!actionBusy)} onClick={() => { setBetPredId(p.id); setBetOption(""); }}
-                                            disabled={!!actionBusy}>{zh ? "下注" : "Bet"}</button>
+                                            disabled={!!actionBusy}>{localizeText(lang, "Bet", "下注")}</button>
                                     )}
                                 </div>
                             )}
                             {p.status === "resolved" && (
                                 <button style={{ ...cnActionBtn(!!actionBusy), marginTop: "6px" }}
                                     onClick={() => handleAppeal(p.id)} disabled={!!actionBusy}>
-                                    {zh ? "申诉" : "Appeal"}
+                                    {localizeText(lang, "Appeal", "申诉")}
                                 </button>
                             )}
                             {p.status === "open" && (
@@ -194,33 +197,33 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
                                     {(p.options || []).map(opt => (
                                         <button key={opt} style={{ ...cnActionBtn(!!actionBusy), fontSize: "0.65rem" }}
                                             onClick={() => handleResolve(p.id, opt)} disabled={!!actionBusy}>
-                                            {zh ? `结算→${opt}` : `Resolve→${opt}`}
+                                            {localizeText(lang, `Resolve→${opt}`, `结算→${opt}`)}
                                         </button>
                                     ))}
                                 </div>
                             )}
                         </div>
                     ))}
-                    {!loading && preds.length === 0 && <div style={cnLabel}>{zh ? "暂无预测" : "No predictions"}</div>}
+                    {!loading && preds.length === 0 && <div style={cnLabel}>{localizeText(lang, "No predictions", "暂无预测")}</div>}
                 </>
             )}
 
             {tab === "create" && (
                 <div style={cnCard}>
-                    <div style={cnHeading}>🔮 {zh ? "创建预测" : "Create Prediction"}</div>
+                    <div style={cnHeading}>🔮 {localizeText(lang, "Create Prediction", "创建预测")}</div>
                     <div style={{ marginBottom: "6px" }}>
-                        <div style={cnLabel}>{zh ? "问题" : "Question"}</div>
+                        <div style={cnLabel}>{localizeText(lang, "Question", "问题")}</div>
                         <input value={newQuestion} onChange={e => setNewQuestion(e.target.value)}
-                            placeholder={zh ? "会发生什么？" : "What will happen?"} style={cnInput} />
+                            placeholder={localizeText(lang, "What will happen?", "会发生什么？")} style={cnInput} />
                     </div>
                     <div style={{ marginBottom: "8px" }}>
-                        <div style={cnLabel}>{zh ? "选项（逗号分隔）" : "Options (comma separated)"}</div>
+                        <div style={cnLabel}>{localizeText(lang, "Options (comma separated)", "选项（逗号分隔）")}</div>
                         <input value={newOptions} onChange={e => setNewOptions(e.target.value)}
                             placeholder="yes, no" style={cnInput} />
                     </div>
                     <button style={cnActionBtn(!!actionBusy || !newQuestion.trim())} onClick={handleCreate}
                         disabled={!!actionBusy || !newQuestion.trim()}>
-                        {actionBusy === "create" ? "..." : (zh ? "创建" : "Create")}
+                        {actionBusy === "create" ? "..." : localizeText(lang, "Create", "创建")}
                     </button>
                 </div>
             )}
@@ -228,9 +231,9 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
             {tab === "leaderboard" && (
                 <>
                     <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
-                        <button style={cnActionBtn(loading)} onClick={loadLeaderboard} disabled={loading}>{zh ? "刷新" : "Refresh"}</button>
+                        <button style={cnActionBtn(loading)} onClick={loadLeaderboard} disabled={loading}>{localizeText(lang, "Refresh", "刷新")}</button>
                     </div>
-                    {loading && <div style={cnLabel}>{zh ? "加载中..." : "Loading..."}</div>}
+                    {loading && <div style={cnLabel}>{localizeText(lang, "Loading...", "加载中...")}</div>}
                     {leaderboard.map((entry: any, i: number) => (
                         <div key={i} style={cnCard}>
                             <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -243,12 +246,12 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
                             </div>
                             {entry.wins !== undefined && (
                                 <div style={{ fontSize: "0.65rem", color: colors.textMuted, marginTop: "2px" }}>
-                                    {zh ? `胜: ${entry.wins}  负: ${entry.losses}` : `W: ${entry.wins}  L: ${entry.losses}`}
+                                    {localizeText(lang, `W: ${entry.wins}  L: ${entry.losses}`, `胜: ${entry.wins}  负: ${entry.losses}`)}
                                 </div>
                             )}
                         </div>
                     ))}
-                    {!loading && leaderboard.length === 0 && <div style={cnLabel}>{zh ? "暂无数据" : "No data"}</div>}
+                    {!loading && leaderboard.length === 0 && <div style={cnLabel}>{localizeText(lang, "No data", "暂无数据")}</div>}
                 </>
             )}
         </div>

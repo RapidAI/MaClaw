@@ -306,6 +306,28 @@ func (a *App) ClawNetManualUpdate() map[string]interface{} {
 	c := a.initClawNet()
 	a.log("AgentNet: manual update triggered")
 
+	emitter := func(stage string, pct int, msg string) {
+		a.emitEvent("clawnet-install-progress", map[string]interface{}{
+			"stage":   stage,
+			"percent": pct,
+			"message": msg,
+		})
+	}
+
+	// If binary is not installed yet, download it first.
+	if c.findBinary() == "" {
+		a.log("AgentNet: binary not found, downloading first...")
+		downloaded, dlErr := DownloadAnet(emitter)
+		if dlErr != nil {
+			a.log(fmt.Sprintf("AgentNet: download failed: %v", dlErr))
+			return map[string]interface{}{"ok": false, "error": dlErr.Error()}
+		}
+		c.mu.Lock()
+		c.binPath = downloaded
+		c.mu.Unlock()
+		a.log(fmt.Sprintf("AgentNet: binary installed at %s", downloaded))
+	}
+
 	// Run `clawnet update` via SelfUpdate.
 	err := c.SelfUpdate()
 	if err != nil {
@@ -324,14 +346,7 @@ func (a *App) ClawNetManualUpdate() map[string]interface{} {
 	// Stop the current daemon.
 	c.StopDaemon()
 
-	// Restart with progress events.
-	emitter := func(stage string, pct int, msg string) {
-		a.emitEvent("clawnet-install-progress", map[string]interface{}{
-			"stage":   stage,
-			"percent": pct,
-			"message": msg,
-		})
-	}
+	// Restart with progress events (reuse emitter from above).
 	if restartErr := c.EnsureDaemonWithProgress(emitter); restartErr != nil {
 		a.log(fmt.Sprintf("AgentNet: restart after update failed: %v", restartErr))
 		return map[string]interface{}{"ok": false, "updated": true, "error": restartErr.Error()}

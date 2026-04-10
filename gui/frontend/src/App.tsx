@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -1603,18 +1603,18 @@ const ToolConfiguration = ({
     handleModelSwitch, t, lang
 }: ToolConfigurationProps) => {
     if (!toolCfg || !toolCfg.models) {
-        return <div style={{ padding: '15px', color: '#6b7280' }}>Loading configuration...</div>;
+        return <div style={{ padding: '15px', color: 'var(--theme-text-secondary)' }}>Loading configuration...</div>;
     }
 
     const getBadge = (model: any): { bg: string; label: string } | null => {
         const name = model.model_name.toLowerCase();
-        if (model.model_name === "Original") return { bg: '#6366f1', label: t("originalFlag") };
+        if (model.model_name === "Original") return { bg: 'var(--theme-primary)', label: t("originalFlag") };
         if (model.has_subscription) return { bg: '#ec4899', label: t("subscription") };
         if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax"))
             return { bg: '#ec4899', label: t("monthly") };
-        if (name.includes("deepseek")) return { bg: '#f59e0b', label: t("premium") };
-        if (name.includes("xiaomi")) return { bg: '#f59e0b', label: t("bigSpender") };
-        if (model.is_custom) return { bg: '#9ca3af', label: t("customized") };
+        if (name.includes("deepseek")) return { bg: 'var(--theme-warning)', label: t("premium") };
+        if (name.includes("xiaomi")) return { bg: 'var(--theme-warning)', label: t("bigSpender") };
+        if (model.is_custom) return { bg: 'var(--theme-text-muted)', label: t("customized") };
         if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "chatfire", "coderelay"].some(p => name.includes(p)))
             return { bg: '#14b8a6', label: t("forward") };
         return null;
@@ -1622,10 +1622,10 @@ const ToolConfiguration = ({
 
     return (
         <div style={{
-            backgroundColor: '#fafbff',
+            backgroundColor: 'var(--theme-surface-muted)',
             padding: '9px 12px',
             borderRadius: '12px',
-            border: '1px solid rgba(99, 102, 241, 0.08)',
+            border: '1px solid var(--theme-border-subtle)',
             marginBottom: '10px'
         }}>
             <div className="model-switcher" style={{
@@ -2215,6 +2215,16 @@ function App() {
         // QQ Bot status listener
         EventsOn("qqbot-status-changed", (status: string) => {
             setQQBotStatus(status);
+            if (status === 'error') {
+                // Auto-rollback: disable the checkbox and save config
+                LoadConfig().then((c: any) => {
+                    if (c?.qqbot_enabled) {
+                        const next = new main.AppConfig({ ...c, qqbot_enabled: false });
+                        setConfig(next);
+                        SaveConfig(next).then(() => RestartQQBot()).catch(() => {});
+                    }
+                }).catch(() => {});
+            }
         });
         // Fetch initial QQ Bot status
         GetQQBotStatus().then(setQQBotStatus).catch(() => {});
@@ -2223,6 +2233,15 @@ function App() {
         // Telegram Bot status listener
         EventsOn("telegram-status-changed", (status: string) => {
             setTelegramStatus(status);
+            if (status === 'error') {
+                LoadConfig().then((c: any) => {
+                    if (c?.telegram_bot_enabled) {
+                        const next = new main.AppConfig({ ...c, telegram_bot_enabled: false });
+                        setConfig(next);
+                        SaveConfig(next).then(() => RestartTelegram()).catch(() => {});
+                    }
+                }).catch(() => {});
+            }
         });
         GetTelegramStatus().then(setTelegramStatus).catch(() => {});
         GetTelegramLocalMode().then(setTelegramLocalModeState).catch(() => {});
@@ -2236,14 +2255,27 @@ function App() {
 
         // Lansenger status listener
         EventsOn("lansenger-status-changed", (payload: any) => {
+            let status = '';
             if (typeof payload === 'string') {
-                setLansengerStatus(payload);
-                return;
-            }
-            if (payload?.Status) {
-                setLansengerStatus(payload.Status);
+                status = payload;
+            } else if (payload?.Status) {
+                status = payload.Status;
             } else if (payload?.status) {
-                setLansengerStatus(payload.status);
+                status = payload.status;
+            }
+            if (status) {
+                setLansengerStatus(status);
+                if (status === 'error') {
+                    LoadConfig().then((c: any) => {
+                        if (c?.lansenger_enabled) {
+                            const next = new main.AppConfig({ ...c, lansenger_enabled: false });
+                            setConfig(next);
+                            SaveConfig(next).catch(() => {});
+                            StopLansenger().catch(() => {});
+                            setLansengerStatus('disabled');
+                        }
+                    }).catch(() => {});
+                }
             }
         });
         GetLansengerStatus().then(setLansengerStatus).catch(() => {});
@@ -3561,17 +3593,17 @@ ${instruction}`;
                             const netOk = clawNetRunning;
                             const mobileOk = !!remoteActivationStatus?.activated;
                             if (isLiteMode) {
-                                if (llmOk && netOk) return lang?.startsWith('zh') ? '全部在线' : 'All online';
+                                if (llmOk && netOk) return localizeText('All online', '全部在线', '全部在線');
                                 const parts: string[] = [];
                                 parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                                parts.push(netOk ? (lang?.startsWith('zh') ? '智网 ✓' : 'ClawNet ✓') : (lang?.startsWith('zh') ? '智网 ✗' : 'ClawNet ✗'));
+                                parts.push(netOk ? localizeText('ClawNet ✓', '智网 ✓', '智網 ✓') : localizeText('ClawNet ✗', '智网 ✗', '智網 ✗'));
                                 return parts.join('  ');
                             }
-                            if (llmOk && netOk && mobileOk) return lang?.startsWith('zh') ? '全部在线' : 'All online';
+                            if (llmOk && netOk && mobileOk) return localizeText('All online', '全部在线', '全部在線');
                             const parts: string[] = [];
                             parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                            parts.push(netOk ? (lang?.startsWith('zh') ? '智网 ✓' : 'ClawNet ✓') : (lang?.startsWith('zh') ? '智网 ✗' : 'ClawNet ✗'));
-                            parts.push(mobileOk ? (lang?.startsWith('zh') ? '移动端 ✓' : 'Mobile ✓') : (lang?.startsWith('zh') ? '移动端 ✗' : 'Mobile ✗'));
+                            parts.push(netOk ? localizeText('ClawNet ✓', '智网 ✓', '智網 ✓') : localizeText('ClawNet ✗', '智网 ✗', '智網 ✗'));
+                            parts.push(mobileOk ? localizeText('Mobile ✓', '移动端 ✓', '移動端 ✓') : localizeText('Mobile ✗', '移动端 ✗', '移動端 ✗'));
                             return parts.join('  ');
                         })()} style={{
                             margin: 0,
@@ -3752,7 +3784,7 @@ ${instruction}`;
                                             cursor: link ? 'pointer' : undefined,
                                         }}
                                         onClick={link ? () => { setNavTab('settings'); setSettingsTab(link as any); } : undefined}
-                                        title={link && !on ? (lang?.startsWith('zh') ? '点击配置' : 'Click to configure') : undefined}
+                                        title={link && !on ? localizeText('Click to configure', '点击配置', '點擊配置') : undefined}
                                     >
                                         <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: on ? '#b14df0' : (aiThemeMode === 'dark' ? 'rgba(148, 163, 184, 0.72)' : 'rgba(139, 149, 165, 0.65)'), boxShadow: on ? '0 0 4px rgba(177, 77, 240, 0.35)' : 'none', display: 'inline-block' }}></span>
                                         <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.42rem', color: on ? (aiThemeMode === 'dark' ? '#f8fafc' : 'var(--text-color)') : (aiThemeMode === 'dark' ? '#94a3b8' : 'var(--text-secondary)'), fontWeight: 600 }}>{label}</span>
@@ -3997,9 +4029,9 @@ ${instruction}`;
                                         right: '0',
                                         zIndex: 100,
                                         padding: '4px 12px',
-                                        backgroundColor: 'rgba(224, 242, 254, 0.95)',
+                                        backgroundColor: 'var(--theme-info-bg, rgba(224, 242, 254, 0.95))',
                                         borderRadius: '16px',
-                                        color: '#0369a1',
+                                        color: 'var(--theme-primary)',
                                         fontSize: '0.75rem',
                                         fontWeight: 'bold',
                                         boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
@@ -4012,14 +4044,14 @@ ${instruction}`;
                             </div>
 
                             <div className="markdown-content" style={{
-                                backgroundColor: '#fff',
+                                backgroundColor: 'var(--theme-surface)',
                                 padding: '20px',
                                 borderRadius: '8px',
                                 border: '1px solid var(--border-color)',
                                 fontFamily: 'inherit',
                                 fontSize: '0.75rem',
                                 lineHeight: '1.6',
-                                color: '#374151',
+                                color: 'var(--theme-text-primary)',
                                 marginBottom: '20px',
                                 textAlign: 'left'
                             }}>
@@ -4086,8 +4118,8 @@ ${instruction}`;
                                         <div
                                             key={index}
                                             style={{
-                                                backgroundColor: '#fff',
-                                                border: '1px solid var(--border-color)',
+                                                backgroundColor: 'var(--theme-surface)',
+                                                border: '1px solid var(--theme-border)',
                                                 borderRadius: '8px',
                                                 padding: '8px 12px',
                                                 display: 'flex',
@@ -4099,7 +4131,7 @@ ${instruction}`;
                                                 minHeight: '42px'
                                             }}
                                             onMouseEnter={(e) => {
-                                                e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
+                                                e.currentTarget.style.boxShadow = '0 10px 24px rgba(15,23,42,0.18)';
                                                 e.currentTarget.style.transform = 'translateY(-2px)';
                                             }}
                                             onMouseLeave={(e) => {
@@ -4113,13 +4145,13 @@ ${instruction}`;
                                                     position: 'absolute',
                                                     top: '-6px',
                                                     right: '-6px',
-                                                    backgroundColor: '#6366f1',
+                                                    backgroundColor: 'var(--theme-primary)',
                                                     color: '#fff',
                                                     padding: '3px 10px',
                                                     borderRadius: '4px',
                                                     fontSize: '0.65rem',
                                                     fontWeight: 'bold',
-                                                    boxShadow: '0 2px 4px rgba(0,0,0,0.15)'
+                                                    boxShadow: '0 2px 4px rgba(15,23,42,0.18)'
                                                 }}>
                                                     {t("relayService")}
                                                 </div>
@@ -4145,13 +4177,13 @@ ${instruction}`;
                                                     position: 'absolute',
                                                     top: '-6px',
                                                     right: '-6px',
-                                                    backgroundColor: '#f59e0b',
+                                                    backgroundColor: 'var(--theme-warning)',
                                                     color: '#fff',
                                                     padding: '3px 10px',
                                                     borderRadius: '4px',
                                                     fontSize: '0.65rem',
                                                     fontWeight: 'bold',
-                                                    boxShadow: '0 2px 4px rgba(0,0,0,0.15)'
+                                                    boxShadow: '0 2px 4px rgba(15,23,42,0.18)'
                                                 }}>
                                                     {t("billing")}
                                                 </div>
@@ -4159,14 +4191,14 @@ ${instruction}`;
                                             <div style={{
                                                 fontSize: '0.85rem',
                                                 fontWeight: 600,
-                                                color: '#6366f1',
+                                                color: 'var(--theme-primary)',
                                                 marginBottom: '8px'
                                             }}>
                                                 {provider.name}
                                             </div>
                                             <div style={{
                                                 fontSize: '0.85rem',
-                                                color: '#6b7280'
+                                                color: 'var(--theme-text-secondary)'
                                             }}>
                                                 🛒
                                             </div>
@@ -4239,7 +4271,7 @@ ${instruction}`;
                                             spellCheck={false}
                                             autoComplete="off"
                                         />
-                                        <div style={{ flex: 1, fontSize: '0.78rem', color: '#6b7280', backgroundColor: '#f9fafb', padding: '3px 6px', borderRadius: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.1 }}>
+                                        <div style={{ flex: 1, fontSize: '0.78rem', color: 'var(--theme-text-secondary)', backgroundColor: 'var(--theme-surface-muted)', padding: '3px 6px', borderRadius: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.1 }}>
                                             {proj.path}
                                         </div>
 
@@ -4257,7 +4289,7 @@ ${instruction}`;
                                             }}>{t("change")}</button>
 
                                             <button
-                                                style={{ color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.85rem' }}
+                                                style={{ color: 'var(--theme-danger)', background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.85rem' }}
                                                 onClick={() => {
                                                     if (config.projects.length > 1) {
                                                         const newList = config.projects.filter((p: any) => p.id !== proj.id);
@@ -4362,6 +4394,44 @@ ${instruction}`;
                                 </label>
                                 <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
                                     {isLiteMode ? t("uiModeLiteDesc") : t("uiModeProDesc")}
+                                </span>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={config?.log_detail_enabled || false}
+                                        onChange={(e) => {
+                                            if (!config) return;
+                                            const c = new main.AppConfig({ ...config, log_detail_enabled: e.target.checked });
+                                            setConfig(c);
+                                            SaveConfig(c);
+                                        }}
+                                    />
+                                    <span>{lang === 'zh-Hans' ? '日志详情' : lang === 'zh-Hant' ? '日誌詳情' : 'Detailed logs'}</span>
+                                </label>
+                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
+                                    {lang === 'zh-Hans' ? '开启后显示更完整的运行日志；关闭时仅保留错误日志' : lang === 'zh-Hant' ? '開啟後顯示更完整的運行日誌；關閉時僅保留錯誤日誌' : 'Show more complete runtime logs; when off, only error logs are kept'}
+                                </span>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={config?.llm_trajectory_logging || false}
+                                        onChange={(e) => {
+                                            if (!config) return;
+                                            const c = new main.AppConfig({ ...config, llm_trajectory_logging: e.target.checked });
+                                            setConfig(c);
+                                            SaveConfig(c);
+                                        }}
+                                    />
+                                    <span>{lang === 'zh-Hans' ? '记录 LLM 轨迹' : lang === 'zh-Hant' ? '記錄 LLM 軌跡' : 'Record LLM trajectory'}</span>
+                                </label>
+                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
+                                    {lang === 'zh-Hans' ? '保存 LLM 交互轨迹，用于分析与训练' : lang === 'zh-Hant' ? '保存 LLM 互動軌跡，用於分析與訓練' : 'Save LLM interaction trajectories for analysis and training'}
                                 </span>
                             </div>
                             </div>
@@ -4552,9 +4622,9 @@ ${instruction}`;
                                             style={{
                                                 padding: '4px 14px',
                                                 borderRadius: '14px',
-                                                border: imSubTab === t.key ? '1.5px solid #6366f1' : '1px solid #ddd',
-                                                background: imSubTab === t.key ? '#eef2ff' : 'transparent',
-                                                color: imSubTab === t.key ? '#6366f1' : '#555',
+                                                border: imSubTab === t.key ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+                                                background: imSubTab === t.key ? 'var(--theme-info-bg)' : 'transparent',
+                                                color: imSubTab === t.key ? 'var(--theme-primary)' : 'var(--theme-text-secondary)',
                                                 fontWeight: imSubTab === t.key ? 600 : 400,
                                                 fontSize: '0.75rem',
                                                 cursor: 'pointer',
@@ -4569,7 +4639,7 @@ ${instruction}`;
                                 {/* QQ Bot tab */}
                                 {imSubTab === 'qq' && (
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
+                                    <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
                                             ? '配置你自己的 QQ 机器人，通过 QQ 与 MaClaw Agent 对话。'
                                             : lang === 'zh-Hant'
@@ -4582,7 +4652,21 @@ ${instruction}`;
                                             <input
                                                 type="checkbox"
                                                 checked={config?.qqbot_enabled || false}
-                                                onChange={(e) => saveRemoteConfigField({ qqbot_enabled: e.target.checked } as any)}
+                                                onChange={async (e) => {
+                                                    const enabled = e.target.checked;
+                                                    await saveRemoteConfigField({ qqbot_enabled: enabled } as any);
+                                                    if (enabled) {
+                                                        try {
+                                                            const s = await RestartQQBot();
+                                                            setQQBotStatus(typeof s === 'string' ? s : 'disconnected');
+                                                        } catch (err: any) {
+                                                            console.error('[qqbot] restart failed:', err);
+                                                        }
+                                                    } else {
+                                                        try { await RestartQQBot(); } catch {}
+                                                        setQQBotStatus('disconnected');
+                                                    }
+                                                }}
                                             />
                                             {lang === 'zh-Hans' ? '启用 QQ 机器人' : lang === 'zh-Hant' ? '啟用 QQ 機器人' : 'Enable QQ Bot'}
                                         </label>
@@ -4592,9 +4676,9 @@ ${instruction}`;
                                                 fontSize: '0.68rem',
                                                 padding: '1px 8px',
                                                 borderRadius: '4px',
-                                                border: '1px solid #6366f1',
+                                                border: '1px solid var(--theme-primary)',
                                                 background: 'transparent',
-                                                color: '#6366f1',
+                                                color: 'var(--theme-primary)',
                                                 cursor: 'pointer',
                                                 whiteSpace: 'nowrap',
                                             }}
@@ -4608,8 +4692,8 @@ ${instruction}`;
                                                     fontSize: '0.7rem',
                                                     padding: '2px 8px',
                                                     borderRadius: '10px',
-                                                    background: qqBotStatus === 'connected' ? '#dcfce7' : qqBotStatus === 'connecting' || qqBotStatus === 'reconnecting' ? '#fef9c3' : '#fee2e2',
-                                                    color: qqBotStatus === 'connected' ? '#166534' : qqBotStatus === 'connecting' || qqBotStatus === 'reconnecting' ? '#854d0e' : '#991b1b',
+                                                    background: qqBotStatus === 'connected' ? 'var(--theme-success-bg)' : qqBotStatus === 'connecting' || qqBotStatus === 'reconnecting' ? 'var(--theme-warning-bg)' : 'var(--theme-danger-bg)',
+                                                    color: qqBotStatus === 'connected' ? 'var(--theme-success)' : qqBotStatus === 'connecting' || qqBotStatus === 'reconnecting' ? 'var(--theme-warning)' : 'var(--theme-danger)',
                                                 }}>
                                                     {qqBotStatus === 'connected' ? '● 已连接' : qqBotStatus === 'connecting' ? '◌ 连接中...' : qqBotStatus === 'reconnecting' ? '◌ 重连中...' : qqBotStatus === 'error' ? '✕ 错误' : '○ 未连接'}
                                                 </span>
@@ -4619,9 +4703,9 @@ ${instruction}`;
                                                         fontSize: '0.68rem',
                                                         padding: '2px 8px',
                                                         borderRadius: '4px',
-                                                        border: '1px solid #ddd',
+                                                        border: '1px solid var(--theme-border)',
                                                         background: 'transparent',
-                                                        color: '#555',
+                                                        color: 'var(--theme-text-secondary)',
                                                         cursor: 'pointer',
                                                     }}
                                                     onClick={() => RestartQQBot().then(setQQBotStatus)}
@@ -4675,23 +4759,23 @@ ${instruction}`;
 
                                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', maxWidth: '520px' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>App ID</label>
+                                            <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '62px' }}>App ID</label>
                                             <input
                                                 type="text"
                                                 value={config?.qqbot_app_id || ''}
                                                 onChange={(e) => saveRemoteConfigField({ qqbot_app_id: e.target.value } as any)}
                                                 placeholder="e.g. 102012345"
-                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }}
                                             />
                                         </div>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>App Secret</label>
+                                            <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '62px' }}>App Secret</label>
                                             <input
                                                 type="password"
                                                 value={config?.qqbot_app_secret || ''}
                                                 onChange={(e) => saveRemoteConfigField({ qqbot_app_secret: e.target.value } as any)}
                                                 placeholder="••••••••"
-                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }}
                                             />
                                         </div>
                                     </div>
@@ -4701,7 +4785,7 @@ ${instruction}`;
                                 {/* Telegram Bot tab */}
                                 {imSubTab === 'telegram' && (
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
+                                    <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
                                             ? '配置你自己的 Telegram Bot，通过 Telegram 与 MaClaw Agent 对话。'
                                             : lang === 'zh-Hant'
@@ -4714,7 +4798,21 @@ ${instruction}`;
                                             <input
                                                 type="checkbox"
                                                 checked={(config as any)?.telegram_bot_enabled || false}
-                                                onChange={(e) => saveRemoteConfigField({ telegram_bot_enabled: e.target.checked } as any)}
+                                                onChange={async (e) => {
+                                                    const enabled = e.target.checked;
+                                                    await saveRemoteConfigField({ telegram_bot_enabled: enabled } as any);
+                                                    if (enabled) {
+                                                        try {
+                                                            const s = await RestartTelegram();
+                                                            setTelegramStatus(typeof s === 'string' ? s : 'disconnected');
+                                                        } catch (err: any) {
+                                                            console.error('[telegram] restart failed:', err);
+                                                        }
+                                                    } else {
+                                                        try { await RestartTelegram(); } catch {}
+                                                        setTelegramStatus('disconnected');
+                                                    }
+                                                }}
                                             />
                                             {lang === 'zh-Hans' ? '启用 Telegram Bot' : lang === 'zh-Hant' ? '啟用 Telegram Bot' : 'Enable Telegram Bot'}
                                         </label>
@@ -4724,9 +4822,9 @@ ${instruction}`;
                                                 fontSize: '0.68rem',
                                                 padding: '1px 8px',
                                                 borderRadius: '4px',
-                                                border: '1px solid #6366f1',
+                                                border: '1px solid var(--theme-primary)',
                                                 background: 'transparent',
-                                                color: '#6366f1',
+                                                color: 'var(--theme-primary)',
                                                 cursor: 'pointer',
                                                 whiteSpace: 'nowrap',
                                             }}
@@ -4751,9 +4849,9 @@ ${instruction}`;
                                                         fontSize: '0.68rem',
                                                         padding: '2px 8px',
                                                         borderRadius: '4px',
-                                                        border: '1px solid #ddd',
+                                                        border: '1px solid var(--theme-border)',
                                                         background: 'transparent',
-                                                        color: '#555',
+                                                        color: 'var(--theme-text-secondary)',
                                                         cursor: 'pointer',
                                                     }}
                                                     onClick={() => RestartTelegram().then(setTelegramStatus)}
@@ -4813,7 +4911,7 @@ ${instruction}`;
                                                 value={(config as any)?.telegram_bot_token || ''}
                                                 onChange={(e) => saveRemoteConfigField({ telegram_bot_token: e.target.value } as any)}
                                                 placeholder="e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }}
                                             />
                                         </div>
                                     </div>
@@ -4823,7 +4921,7 @@ ${instruction}`;
                                 {/* WeChat tab */}
                                 {imSubTab === 'weixin' && (
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
+                                    <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans' || lang === 'zh-Hant'
                                             ? '扫码登录微信，通过微信与 MaClaw Agent 对话。'
                                             : 'Scan QR code to log in to WeChat and chat with MaClaw Agent.'}
@@ -4969,7 +5067,7 @@ ${instruction}`;
                                         )}
 
                                         {weixinQRLoading && (
-                                            <p style={{ fontSize: '0.75rem', color: '#6366f1' }}>
+                                            <p style={{ fontSize: '0.75rem', color: 'var(--theme-primary)' }}>
                                                 {lang === 'zh-Hans' ? '正在获取二维码...' : 'Loading QR code...'}
                                             </p>
                                         )}
@@ -4980,21 +5078,21 @@ ${instruction}`;
                                                     value={weixinQRCode}
                                                     size={220}
                                                     level="M"
-                                                    bgColor="#ffffff"
-                                                    style={{ borderRadius: '8px', border: '1px solid #e5e7eb', padding: '8px', background: '#fff' }}
+                                                    bgColor="var(--theme-surface)"
+                                                    style={{ borderRadius: '8px', border: '1px solid var(--theme-border)', padding: '8px', background: 'var(--theme-surface)' }}
                                                 />
-                                                <p style={{ fontSize: '0.72rem', color: '#6366f1', marginTop: '8px' }}>
+                                                <p style={{ fontSize: '0.72rem', color: 'var(--theme-primary)', marginTop: '8px' }}>
                                                     {lang === 'zh-Hans' || lang === 'zh-Hant' ? '请用微信扫描上方二维码' : 'Scan the QR code with WeChat'}
                                                 </p>
                                                 {weixinQRWaiting && (
-                                                    <p style={{ fontSize: '0.68rem', color: '#888' }}>
+                                                    <p style={{ fontSize: '0.68rem', color: 'var(--theme-text-muted)' }}>
                                                         {lang === 'zh-Hans' ? '等待扫码确认中...' : 'Waiting for confirmation...'}
                                                     </p>
                                                 )}
                                                 <button
                                                     type="button"
                                                     aria-label="Cancel QR login"
-                                                    style={{ marginTop: '10px', fontSize: '0.72rem', padding: '3px 14px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#888', cursor: 'pointer' }}
+                                                    style={{ marginTop: '10px', fontSize: '0.72rem', padding: '3px 14px', borderRadius: '4px', border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-text-muted)', cursor: 'pointer' }}
                                                     onClick={() => {
                                                         setWeixinQRCode('');
                                                         setWeixinQRWaiting(false);
@@ -5007,7 +5105,7 @@ ${instruction}`;
                                         )}
 
                                         {weixinQRError && (
-                                            <p style={{ fontSize: '0.72rem', color: '#ef4444', marginTop: '8px' }}>
+                                            <p style={{ fontSize: '0.72rem', color: 'var(--theme-danger)', marginTop: '8px' }}>
                                                 {weixinQRError}
                                             </p>
                                         )}
@@ -5019,7 +5117,7 @@ ${instruction}`;
                                 {/* Lansenger tab — only visible for qianxin/TigerClaw OEM */}
                                 {imSubTab === 'lansenger' && brandInfo?.id === 'qianxin' && (
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
+                                    <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'
                                             ? '配置蓝信机器人凭证，通过 WebSocket 长连接接入蓝信与 MaClaw Agent 对话。'
                                             : lang === 'zh-Hant'
@@ -5032,11 +5130,27 @@ ${instruction}`;
                                             <input
                                                 type="checkbox"
                                                 checked={(config as any)?.lansenger_enabled || false}
-                                                onChange={(e) => {
+                                                onChange={async (e) => {
                                                     if (!config) return;
-                                                    const next = new main.AppConfig({ ...config, lansenger_enabled: e.target.checked } as any);
+                                                    const enabled = e.target.checked;
+                                                    const next = new main.AppConfig({ ...config, lansenger_enabled: enabled } as any);
                                                     setConfig(next);
-                                                    SaveConfig(next);
+                                                    try { await SaveConfig(next); } catch (err) { console.error('[lansenger] save failed:', err); }
+                                                    if (enabled) {
+                                                        try {
+                                                            const s = await RestartLansenger();
+                                                            setLansengerStatus(typeof s === 'string' ? s : 'disconnected');
+                                                        } catch (err: any) {
+                                                            console.error('[lansenger] restart failed:', err);
+                                                        }
+                                                    } else {
+                                                        try {
+                                                            await StopLansenger();
+                                                        } catch (err: any) {
+                                                            console.error('[lansenger] stop failed:', err);
+                                                        }
+                                                        setLansengerStatus('disabled');
+                                                    }
                                                 }}
                                             />
                                             {lang === 'zh-Hans' ? '启用蓝信' : lang === 'zh-Hant' ? '啟用藍信' : 'Enable Lansenger'}
@@ -5045,8 +5159,8 @@ ${instruction}`;
                                             fontSize: '0.7rem',
                                             padding: '2px 8px',
                                             borderRadius: '10px',
-                                            background: lansengerStatus === 'connected' ? '#dcfce7' : lansengerStatus === 'disconnected' || lansengerStatus === 'disabled' ? '#e5e7eb' : lansengerStatus === 'error' ? '#fee2e2' : '#fef9c3',
-                                            color: lansengerStatus === 'connected' ? '#166534' : lansengerStatus === 'disconnected' || lansengerStatus === 'disabled' ? '#4b5563' : lansengerStatus === 'error' ? '#991b1b' : '#854d0e',
+                                            background: lansengerStatus === 'connected' ? 'var(--theme-success-bg)' : lansengerStatus === 'disconnected' || lansengerStatus === 'disabled' ? 'var(--theme-surface-muted)' : lansengerStatus === 'error' ? 'var(--theme-danger-bg)' : 'var(--theme-warning-bg)',
+                                            color: lansengerStatus === 'connected' ? 'var(--theme-success)' : lansengerStatus === 'disconnected' || lansengerStatus === 'disabled' ? 'var(--theme-text-secondary)' : lansengerStatus === 'error' ? 'var(--theme-danger)' : 'var(--theme-warning)',
                                         }}>
                                             {{ connected: '● 已连接', connecting: '◌ 连接中...', reconnecting: '◌ 重连中...', disconnected: '○ 未连接', disabled: '○ 未启用', error: '✕ 错误' }[lansengerStatus] || `◌ ${lansengerStatus}`}
                                         </span>
@@ -5109,54 +5223,46 @@ ${instruction}`;
 
                                     <div style={{ maxWidth: '680px', display: 'grid', gap: '10px' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '84px' }}>App ID</label>
+                                            <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '84px' }}>App ID</label>
                                             <input
                                                 type="text"
                                                 value={(config as any)?.lansenger_app_id || ''}
-                                                onChange={(e) => {
-                                                    if (!config) return;
-                                                    const next = new main.AppConfig({ ...config, lansenger_app_id: e.target.value } as any);
-                                                    setConfig(next);
-                                                    SaveConfig(next);
-                                                }}
+                                                onChange={(e) => saveRemoteConfigField({ lansenger_app_id: e.target.value } as any)}
                                                 placeholder="2285568-16138496"
-                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                                autoComplete="off"
+                                                spellCheck={false}
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)', cursor: 'text' }}
                                             />
                                         </div>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '84px' }}>App Secret</label>
+                                            <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '84px' }}>App Secret</label>
                                             <input
                                                 type="password"
                                                 value={(config as any)?.lansenger_app_secret || ''}
-                                                onChange={(e) => {
-                                                    if (!config) return;
-                                                    const next = new main.AppConfig({ ...config, lansenger_app_secret: e.target.value } as any);
-                                                    setConfig(next);
-                                                    SaveConfig(next);
-                                                }}
+                                                onChange={(e) => saveRemoteConfigField({ lansenger_app_secret: e.target.value } as any)}
                                                 placeholder="FC0CADED7561247CAA2D2C4E5DEF17B8"
-                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                                autoComplete="off"
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)', cursor: 'text' }}
                                             />
                                         </div>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '84px' }}>Token</label>
+                                            <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '84px' }}>
+                                                {lang === 'zh-Hans' || lang === 'zh-Hant' ? 'API 网关' : 'API Gateway'}
+                                            </label>
                                             <input
                                                 type="text"
-                                                value={(config as any)?.lansenger_token || ''}
-                                                onChange={(e) => {
-                                                    if (!config) return;
-                                                    const next = new main.AppConfig({ ...config, lansenger_token: e.target.value } as any);
-                                                    setConfig(next);
-                                                    SaveConfig(next);
-                                                }}
-                                                placeholder="AppID:AppSecret:https://apigw.lx.qianxin.com"
-                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
+                                                value={(config as any)?.lansenger_gateway_url || ''}
+                                                onChange={(e) => saveRemoteConfigField({ lansenger_gateway_url: e.target.value } as any)}
+                                                placeholder="https://apigw.lx.qianxin.com"
+                                                autoComplete="off"
+                                                spellCheck={false}
+                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)', cursor: 'text' }}
                                             />
                                         </div>
-                                        <div style={{ fontSize: '0.68rem', color: '#9ca3af', marginTop: '2px' }}>
+                                        <div style={{ fontSize: '0.68rem', color: 'var(--theme-text-muted)', marginTop: '2px' }}>
                                             {lang === 'zh-Hans'
-                                                ? 'Token 格式：AppID:AppSecret:API网关地址。在蓝信PC客户端 → 个人机器人 → 创建机器人后获取。'
-                                                : 'Token format: AppID:AppSecret:ApiGatewayURL. Get from Lansenger PC client → Personal Bot → Create Bot.'}
+                                                ? '在蓝信PC客户端 → 个人机器人 → 创建机器人后获取 AppID 和 AppSecret。API 网关地址一般无需修改。'
+                                                : 'Get AppID and AppSecret from Lansenger PC client → Personal Bot → Create Bot. API Gateway URL usually does not need to be changed.'}
                                         </div>
                                     </div>
                                 </div>
@@ -5248,7 +5354,7 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'ui' ? 'block' : 'none' }}>
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0', marginBottom: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '界面缩放' : lang === 'zh-Hant' ? '介面縮放' : 'UI Zoom'}</h4>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '界面缩放' : lang === 'zh-Hant' ? '介面縮放' : 'UI Zoom'}</h4>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                                         <input type="range" min={50} max={200} step={5} value={Math.round(uiZoom * 100)}
                                             onChange={e => {
@@ -5260,14 +5366,14 @@ ${instruction}`;
                                                 setUiZoom(v);
                                                 await SetUIZoomFactor(v).catch(() => {});
                                             }}
-                                            style={{ flex: 1, accentColor: '#6366f1' }} />
-                                        <span style={{ fontSize: '0.78rem', color: '#4b5563', minWidth: '42px', textAlign: 'center' }}>{Math.round(uiZoom * 100)}%</span>
+                                            style={{ flex: 1, accentColor: 'var(--theme-primary)' }} />
+                                        <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{Math.round(uiZoom * 100)}%</span>
                                         <button onClick={() => { setUiZoom(1.0); SetUIZoomFactor(1.0).catch(() => {}); }}
-                                            style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: '#f3f4f6', color: '#4b5563', border: '1px solid #e5e7eb', borderRadius: 4 }}>
+                                            style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}>
                                             {lang === 'zh-Hans' ? '重置' : lang === 'zh-Hant' ? '重置' : 'Reset'}
                                         </button>
                                     </div>
-                                    <p style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '6px', marginBottom: 0 }}>
+                                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
                                         {lang === 'zh-Hans' ? '调整界面整体缩放比例，适配高 DPI 屏幕或个人偏好。' : lang === 'zh-Hant' ? '調整介面整體縮放比例，適配高 DPI 螢幕或個人偏好。' : 'Adjust overall UI scale for HiDPI displays or personal preference.'}
                                     </p>
                                 </div>
@@ -5276,7 +5382,7 @@ ${instruction}`;
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
 
                             <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '工具显示' : lang === 'zh-Hant' ? '工具顯示' : 'Tool Visibility'}</h4>
+                                <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '工具显示' : lang === 'zh-Hant' ? '工具顯示' : 'Tool Visibility'}</h4>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                         <input
@@ -5291,7 +5397,7 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>Gemini CLI</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>Gemini CLI</span>
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                         <input
@@ -5306,7 +5412,7 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>OpenAI Codex</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>OpenAI Codex</span>
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                         <input
@@ -5321,7 +5427,7 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>OpenCode AI</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>OpenCode AI</span>
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                         <input
@@ -5336,7 +5442,7 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>CodeBuddy</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>CodeBuddy</span>
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: isWindows ? 'not-allowed' : 'pointer', opacity: isWindows ? 0.5 : 1 }}>
                                         <input
@@ -5367,7 +5473,7 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>iFlow CLI</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>iFlow CLI</span>
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                         <input
@@ -5382,7 +5488,7 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>Kilo Code CLI</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>Kilo Code CLI</span>
                                     </label>
                                 </div>
                             </div>
@@ -5406,16 +5512,16 @@ ${instruction}`;
                                         }}
                                         style={{ width: '16px', height: '16px' }}
                                     />
-                                    <span style={{ fontSize: '0.8rem', color: '#374151' }}>{t("showWelcomePage")}</span>
+                                    <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>{t("showWelcomePage")}</span>
                                 </label>
-                                <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginLeft: '24px', marginTop: '4px' }}>
+                                <p style={{ fontSize: '0.75rem', color: 'var(--theme-text-muted)', marginLeft: '24px', marginTop: '4px' }}>
                                     {lang === 'zh-Hans' ? '开启后，程序启动时将显示新手教学和快速入门链接' :
                                         lang === 'zh-Hant' ? '開啟後，程序啟動時將顯示新手教學和快速入門鏈接' :
                                             'When enabled, a welcome popup with tutorial links will be shown at startup.'}
                                 </p>
                             </div>
 
-                            <div className="form-group" style={{ marginTop: '10px', borderTop: '1px solid #f1f5f9', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            <div className="form-group" style={{ marginTop: '10px', borderTop: '1px solid var(--theme-border-subtle)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                         <input
@@ -5430,7 +5536,7 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: '#374151' }}>{t("pauseEnvCheck")}</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>{t("pauseEnvCheck")}</span>
                                     </label>
                                     {/* Windows Terminal option - only show when available */}
                                     {hasWindowsTerminal && (
@@ -5447,13 +5553,13 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: '#374151' }}>{t("useWindowsTerminal")}</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>{t("useWindowsTerminal")}</span>
                                     </label>
                                     )}
                                 </div>
                                 {config?.pause_env_check && (
                                     <div style={{ marginLeft: '24px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', color: '#6b7280' }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
                                             <span>{t("envCheckIntervalPrefix")}</span>
                                             <select
                                                 value={envCheckInterval}
@@ -5465,7 +5571,7 @@ ${instruction}`;
                                                 style={{
                                                     padding: '3px 6px',
                                                     borderRadius: '4px',
-                                                    border: '1px solid #d1d5db',
+                                                    border: '1px solid var(--theme-border)',
                                                     fontSize: '0.8rem',
                                                     width: '60px'
                                                 }}
@@ -5480,7 +5586,7 @@ ${instruction}`;
                                 )}
                             </div>
 
-                            <div className="form-group" style={{ marginTop: '10px', borderTop: '1px solid #f1f5f9', paddingTop: '10px' }}>
+                            <div className="form-group" style={{ marginTop: '10px', borderTop: '1px solid var(--theme-border-subtle)', paddingTop: '10px' }}>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                     <input
                                         type="checkbox"
@@ -5494,9 +5600,9 @@ ${instruction}`;
                                         }}
                                         style={{ width: '16px', height: '16px' }}
                                     />
-                                    <span style={{ fontSize: '0.8rem', color: '#374151' }}>MaClaw Debug</span>
+                                    <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>MaClaw Debug</span>
                                 </label>
-                                <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginLeft: '24px', marginTop: '4px' }}>
+                                <p style={{ fontSize: '0.75rem', color: 'var(--theme-text-muted)', marginLeft: '24px', marginTop: '4px' }}>
                                     {lang === 'zh-Hans' || lang === 'zh' ? '开启后，远程会话中将显示工具调用过程（如"正在执行工具…"）；关闭后仅显示最终结果和错误信息' :
                                         lang === 'zh-Hant' ? '開啟後，遠端會話中將顯示工具調用過程；關閉後僅顯示最終結果和錯誤信息' :
                                             'When enabled, tool call progress (e.g. "Executing tool…") is shown during remote sessions. When disabled, only final results and errors are displayed.'}
@@ -5567,7 +5673,7 @@ ${instruction}`;
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                                 {activeTool !== 'kilo' && (
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
                                         <input
                                             type="checkbox"
                                             checked={resolvedLaunchProject?.yolo_mode || false}
@@ -5598,7 +5704,7 @@ ${instruction}`;
                                     </label>
                                 )}
                                 {activeTool === 'claude' && (
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
                                         <input
                                             type="checkbox"
                                             checked={resolvedLaunchProject?.team_mode || false}
@@ -5608,7 +5714,7 @@ ${instruction}`;
                                     </label>
                                 )}
                                 {!isWindows && (
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
                                         <input
                                             type="checkbox"
                                             checked={resolvedLaunchProject?.use_proxy || false}
@@ -5634,7 +5740,7 @@ ${instruction}`;
                                         </span>
                                     </label>
                                 )}
-                                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
                                     <input
                                         type="checkbox"
                                         checked={resolvedLaunchProject?.admin_mode || false}
@@ -5655,7 +5761,7 @@ ${instruction}`;
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '15px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    <div style={{ display: 'inline-flex', padding: '3px', borderRadius: '999px', border: '1px solid #e0e7ff', background: '#eef2ff' }}>
+                                    <div style={{ display: 'inline-flex', padding: '3px', borderRadius: '999px', border: '1px solid var(--theme-border-subtle)', background: 'var(--theme-info-bg)' }}>
                                         <button
                                             type="button"
                                             onClick={() => {
@@ -5667,8 +5773,8 @@ ${instruction}`;
                                                 border: 'none',
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
-                                                background: !config?.remote_enabled ? '#6366f1' : 'transparent',
-                                                color: !config?.remote_enabled ? '#ffffff' : '#475569',
+                                                background: !config?.remote_enabled ? 'var(--theme-primary)' : 'transparent',
+                                                color: !config?.remote_enabled ? '#ffffff' : 'var(--theme-text-secondary)',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
                                                 cursor: 'pointer'
@@ -5688,8 +5794,8 @@ ${instruction}`;
                                                 border: 'none',
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
-                                                background: config?.remote_enabled ? '#6366f1' : 'transparent',
-                                                color: config?.remote_enabled ? '#ffffff' : '#475569',
+                                                background: config?.remote_enabled ? 'var(--theme-primary)' : 'transparent',
+                                                color: config?.remote_enabled ? '#ffffff' : 'var(--theme-text-secondary)',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
                                                 cursor: isRemoteCapableActiveTool ? 'pointer' : 'not-allowed',
@@ -5703,7 +5809,7 @@ ${instruction}`;
                                 </div>
                                 {config?.remote_enabled && (
                                     <div
-                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', background: remoteActivationStatus?.activated ? '#f0fdf4' : '#fffbeb', border: `1px solid ${remoteActivationStatus?.activated ? '#bbf7d0' : '#fde68a'}`, borderRadius: '999px', cursor: remoteActivationStatus?.activated ? 'default' : 'pointer' }}
+                                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', background: remoteActivationStatus?.activated ? 'var(--theme-success-bg)' : 'var(--theme-warning-bg)', border: `1px solid ${remoteActivationStatus?.activated ? 'var(--theme-success)' : 'var(--theme-warning)'}`, borderRadius: '999px', cursor: remoteActivationStatus?.activated ? 'default' : 'pointer' }}
                                         onClick={() => {
                                             if (!remoteActivationStatus?.activated) {
                                                 openRemoteActivationModal(activeTool);
@@ -5711,12 +5817,12 @@ ${instruction}`;
                                         }}
                                         title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '点击注册' : lang === 'zh-Hant' ? '點擊註冊' : 'Click to register')}
                                     >
-                                        <span style={{ fontSize: '0.75rem', color: remoteActivationStatus?.activated ? '#16a34a' : '#d97706', whiteSpace: 'nowrap' }}>
+                                        <span style={{ fontSize: '0.75rem', color: remoteActivationStatus?.activated ? 'var(--theme-success)' : 'var(--theme-warning)', whiteSpace: 'nowrap' }}>
                                             {remoteActivationStatus?.activated ? t("remoteActivated") : t("remoteRegister")}
                                         </span>
                                     </div>
                                 )}
-                                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: '#6b7280' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
                                     <input
                                         type="checkbox"
                                         checked={resolvedLaunchProject?.python_project || false}
@@ -5727,7 +5833,7 @@ ${instruction}`;
                                 </label>
                                 {resolvedLaunchProject?.python_project && (
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>{t("pythonEnvLabel")}:</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>{t("pythonEnvLabel")}:</span>
                                         <select
                                             value={resolvedLaunchProject?.python_env || ""}
                                             onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, python_env: e.target.value }))}
@@ -5754,7 +5860,7 @@ ${instruction}`;
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '10px', flexWrap: 'nowrap' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: '1 1 auto', minWidth: 0 }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: '1 1 auto', minWidth: 0 }}>
-                                        <span style={{ fontSize: '0.8rem', color: '#6b7280', whiteSpace: 'nowrap', lineHeight: 1 }}>{t("project")}:</span>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', lineHeight: 1 }}>{t("project")}:</span>
                                         <input
                                             type="text"
                                             className="form-input"
@@ -5795,9 +5901,9 @@ ${instruction}`;
                                                 padding: '0',
                                                 height: '20px',
                                                 borderRadius: '6px',
-                                                border: '1px solid #d1d5db',
-                                                backgroundColor: '#f3f4f6',
-                                                color: '#6b7280',
+                                                border: '1px solid var(--theme-border)',
+                                                backgroundColor: 'var(--theme-surface-muted)',
+                                                color: 'var(--theme-text-secondary)',
                                                 fontSize: '0.85rem',
                                                 fontWeight: '500',
                                                 cursor: 'pointer',
@@ -5811,12 +5917,12 @@ ${instruction}`;
                                                 flexShrink: 0
                                             }}
                                             onMouseEnter={(e) => {
-                                                e.currentTarget.style.backgroundColor = '#e5e7eb';
-                                                e.currentTarget.style.color = '#4b5563';
+                                                e.currentTarget.style.backgroundColor = 'var(--theme-border-subtle)';
+                                                e.currentTarget.style.color = 'var(--theme-text-primary)';
                                             }}
                                             onMouseLeave={(e) => {
-                                                e.currentTarget.style.backgroundColor = '#f3f4f6';
-                                                e.currentTarget.style.color = '#6b7280';
+                                                e.currentTarget.style.backgroundColor = 'var(--theme-surface-muted)';
+                                                e.currentTarget.style.color = 'var(--theme-text-secondary)';
                                             }}
                                         >
                                             ...
@@ -6028,7 +6134,7 @@ ${instruction}`;
                             <span
                                 style={{ fontSize: '0.72rem', color: '#f59e0b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
                                 onClick={() => { if (isImIssue) { setNavTab('settings'); setSettingsTab('im'); } else { setNavTab('settings'); setSettingsTab('llm'); } }}
-                                title={lang?.startsWith('zh') ? '点击配置' : 'Click to configure'}
+                                title={localizeText('Click to configure', '点击配置', '點擊配置')}
                             >
                                 <img src={(() => {
                                     if (!maclawLLMOnline && !remoteActivationStatus?.activated && !clawNetRunning) return lobsterOffline;
@@ -6036,13 +6142,13 @@ ${instruction}`;
                                 })()} alt="" style={{ width: '14px', height: '14px' }} />
                                 {!maclawLLMOnline
                                     ? (maclawLLMConfigured
-                                        ? (lang?.startsWith('zh') ? 'LLM 无法连接，无法响应远程命令' : 'LLM unreachable, remote commands unavailable')
-                                        : (lang?.startsWith('zh') ? 'MaClaw 未配置 LLM，无法响应远程命令' : 'LLM not configured, remote commands unavailable'))
+                                        ? localizeText('LLM unreachable, remote commands unavailable', 'LLM 无法连接，无法响应远程命令', 'LLM 無法連接，無法響應遠程命令')
+                                        : localizeText('LLM not configured, remote commands unavailable', 'MaClaw 未配置 LLM，无法响应远程命令', 'MaClaw 未配置 LLM，無法響應遠程命令'))
                                     : !remoteActivationStatus?.activated
-                                        ? (lang?.startsWith('zh') ? '移动端未注册' : 'Mobile not registered')
+                                        ? localizeText('Mobile not registered', '移动端未注册', '移動端未註冊')
                                         : !clawNetRunning
-                                            ? (lang?.startsWith('zh') ? '智网未连接' : 'ClawNet not connected')
-                                            : (lang?.startsWith('zh') ? 'IM 未连接' : 'IM not connected')}
+                                            ? localizeText('ClawNet not connected', '智网未连接', '智網未連接')
+                                            : localizeText('IM not connected', 'IM 未连接', 'IM 未連接')}
                             </span>
                                 );
                             }
@@ -6764,7 +6870,7 @@ ${instruction}`;
             {showProviderSelector && (
                 <div className="modal-overlay" style={{ backgroundColor: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)' }} onClick={() => { setShowProviderSelector(false); setHoveredProvider(null); }}>
                     <div className="modal-content" style={{ maxWidth: '480px', maxHeight: '70vh', padding: '20px', borderRadius: '16px', border: 'none', boxShadow: '0 20px 40px rgba(0,0,0,0.12)' }} onClick={(e) => e.stopPropagation()}>
-                        <h2 style={{ margin: '0 0 16px 0', fontSize: '1.1rem', fontWeight: 700, color: '#1e293b', textAlign: 'center' }}>{t("selectProviderTitle")}</h2>
+                        <h2 style={{ margin: '0 0 16px 0', fontSize: '1.1rem', fontWeight: 700, color: 'var(--theme-text-primary)', textAlign: 'center' }}>{t("selectProviderTitle")}</h2>
                         
                         {/* Filter pills */}
                         <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', justifyContent: 'center' }}>
@@ -6774,8 +6880,8 @@ ${instruction}`;
                                     onClick={() => setProviderFilter(f)}
                                     style={{
                                         padding: '5px 16px', fontSize: '0.8rem', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 600,
-                                        backgroundColor: providerFilter === f ? '#6366f1' : '#f1f5f9',
-                                        color: providerFilter === f ? '#fff' : '#64748b',
+                                        backgroundColor: providerFilter === f ? 'var(--theme-primary)' : 'var(--theme-surface-muted)',
+                                        color: providerFilter === f ? '#fff' : 'var(--theme-text-secondary)',
                                         transition: 'all 0.2s'
                                     }}
                                 >
@@ -6801,14 +6907,14 @@ ${instruction}`;
                                             onMouseLeave={() => setHoveredProvider(null)}
                                             style={{
                                                 padding: '10px 8px', borderRadius: '10px', cursor: 'pointer', textAlign: 'center',
-                                                border: isSelected ? '2px solid #6366f1' : '1.5px solid #e8ecf1',
-                                                backgroundColor: isSelected ? '#eef2ff' : '#fff',
+                                                border: isSelected ? '2px solid var(--theme-primary)' : '1.5px solid var(--theme-border-subtle)',
+                                                backgroundColor: isSelected ? 'var(--theme-info-bg)' : 'var(--theme-surface)',
                                                 transition: 'all 0.15s ease',
-                                                boxShadow: isSelected ? '0 2px 8px rgba(59,130,246,0.15)' : '0 1px 3px rgba(0,0,0,0.04)',
+                                                boxShadow: isSelected ? '0 2px 8px rgba(59,130,246,0.15)' : '0 1px 3px rgba(15,23,42,0.08)',
                                                 position: 'relative'
                                             }}
                                         >
-                                            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: isSelected ? '#6366f1' : '#334155', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px' }}>
+                                            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: isSelected ? 'var(--theme-primary)' : 'var(--theme-text-primary)', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px' }}>
                                                 <span title={provider.region === 'china' ? (lang === 'en' ? 'China' : '国内') : (lang === 'en' ? 'Global' : '国外')} style={{ fontSize: '0.7rem', flexShrink: 0 }}>{provider.region === 'china' ? '🇨🇳' : '🌐'}</span>
                                                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{provider.name}</span>
                                             </div>
@@ -6832,8 +6938,8 @@ ${instruction}`;
                             left: hoveredProvider.x,
                             top: hoveredProvider.y,
                             transform: 'translate(-50%, -100%)',
-                            backgroundColor: '#1e293b',
-                            color: '#1f2937',
+                            backgroundColor: 'var(--theme-surface)',
+                            color: 'var(--theme-text-primary)',
                             padding: '6px 12px',
                             borderRadius: '8px',
                             fontSize: '0.75rem',
@@ -6848,13 +6954,13 @@ ${instruction}`;
                         }}>
                             {hoveredProvider.provider.url}
                             {hoveredProvider.provider.description && (
-                                <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginTop: '2px' }}>{hoveredProvider.provider.description}</div>
+                                <div style={{ fontSize: '0.65rem', color: 'var(--theme-text-muted)', marginTop: '2px' }}>{hoveredProvider.provider.description}</div>
                             )}
                             {/* Arrow */}
                             <div style={{
                                 position: 'absolute', bottom: '-5px', left: '50%', transform: 'translateX(-50%)',
                                 width: 0, height: 0,
-                                borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderTop: '6px solid #1e293b'
+                                borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderTop: '6px solid var(--theme-surface)'
                             }} />
                         </div>
                     )}
@@ -7005,6 +7111,8 @@ ${instruction}`;
                     hubUrl={config?.remote_hub_url || ""}
                     email={config?.remote_email || ""}
                     uiMode={config?.ui_mode || ""}
+                    brandId={brandInfo?.id}
+                    brandDisplayName={brandInfo?.displayName}
                     onClose={() => setShowMaclawLLMPopup(false)}
                     onLLMConfigured={() => {
                         setMaclawLLMOnline(true);

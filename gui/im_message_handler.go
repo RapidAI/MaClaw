@@ -3504,7 +3504,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// the user sees only the final card, avoiding the redundant "收到，正在处理中" message.
 	// When streaming (onToken != nil), the user already sees real-time output,
 	// so the acknowledgment is unnecessary.
-	const ackDelay = 3 * time.Second
+	// Use a shorter delay (1.5s) so IM users get faster feedback — the desktop
+	// AI assistant has streaming and never hits this path anyway.
+	const ackDelay = 1500 * time.Millisecond
 	ackDone := make(chan struct{})
 	if !isDebug() && onToken == nil {
 		ackTimer := time.NewTimer(ackDelay)
