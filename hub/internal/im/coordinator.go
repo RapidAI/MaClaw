@@ -159,89 +159,11 @@ func (c *Coordinator) TryFastAnswer(
 		}
 	}
 
-	// Messages with attachments (files, images) always need device-side
-	// processing — Hub LLM cannot inspect file contents. Skip fast path.
-	if len(hasAttachments) > 0 && hasAttachments[0] {
-		return nil // queue it — device Agent handles attachments
-	}
-
-	// No smart route permission — can't do fast-path classification.
-	if !c.IsUserSmartRouteEnabled(ctx, userID) {
-		return nil // queue it
-	}
-
-	// Private/meeting mode — needs device routing, queue it.
-	state := c.spaceState.GetOrCreate(userID)
-	if state.State != SpaceLobby {
-		return nil
-	}
-
-	// In lobby with LLM enabled — try intent classification to detect direct_answer.
-	cfg := c.configProvider()
-	llmEnabled := cfg != nil && cfg.Enabled && c.breaker.Allow()
-	if !llmEnabled {
-		return nil // no LLM, can't classify, queue it
-	}
-
-	// Only attempt fast classification for multi-device or smart-route-single scenarios.
-	smartRouteSingle := cfg != nil && cfg.SmartRouteSingleDevice
-	if len(machines) == 1 && !smartRouteSingle {
-		return nil // single device, direct forward, queue it
-	}
-
-	// Fast-path classification: only use the intent cache to avoid blocking
-	// the HandleMessage goroutine with a synchronous LLM call (up to 5s).
-	// If there's no cache hit, return nil immediately — the task queue's
-	// executor will call Coordinate → classifyAndRoute which does the full
-	// LLM classification in the background worker.
-	profiles := c.profileCache.GetAll(userID)
-	if len(profiles) == 0 {
-		for _, m := range machines {
-			profiles = append(profiles, DeviceProfile{
-				MachineID:     m.MachineID,
-				Name:          m.Name,
-				LLMConfigured: m.LLMConfigured,
-			})
-		}
-	}
-
-	// Check cache only — no LLM call.
-	machineSet := buildMachineSet(profiles)
-	textHash := hashText(text)
-	cached := c.intentClassifier.lookupCache(userID, machineSet, textHash)
-	if cached == nil {
-		return nil // no cache hit, queue it for background classification
-	}
-	result := cached
-
-	// Only direct_answer and need_clarification are fast-path.
-	// Do NOT recordHistory here for non-fast-path results — Coordinate
-	// will do its own classification (cache-hit) and record there.
-	switch result.Type {
-	case IntentDirectAnswer:
-		c.recordHistory(userID, text, result)
-		resp, err := c.hubDirectAnswer(ctx, userID, platformName, platformUID, text, machines)
-		if err != nil {
-			return nil // error, let queue handle it
-		}
-		return resp
-
-	case IntentNeedClarification:
-		c.recordHistory(userID, text, result)
-		msg := result.Message
-		if msg == "" {
-			msg = "请补充更多信息，以便我判断应该发给哪台设备。"
-		}
-		return &GenericResponse{
-			StatusCode: 200,
-			StatusIcon: "❓",
-			Title:      "需要更多信息",
-			Body:       msg,
-		}
-
-	default:
-		return nil // needs device routing, queue it
-	}
+	// Everything else goes through the task queue. The queue executor calls
+	// Coordinate which handles intent classification, hub direct answer,
+	// device routing, etc. — all in a background worker goroutine so the
+	// HandleMessage path returns immediately.
+	return nil
 }
 
 // Coordinate is the main entry point called by the Adapter for non-command

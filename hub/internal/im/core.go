@@ -816,8 +816,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	// When the task dispatcher is active and the Coordinator supports it,
 	// try to answer simple questions directly without queuing.
 	if a.taskDispatcher != nil && a.coordinator != nil {
-		hasAttachments := len(msg.Attachments) > 0
-		if fastResp := a.coordinator.TryFastAnswer(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text, hasAttachments); fastResp != nil {
+		if fastResp := a.coordinator.TryFastAnswer(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text); fastResp != nil {
 			a.sendResponse(ctx, plugin, target, fastResp)
 			return
 		}
