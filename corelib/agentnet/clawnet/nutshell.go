@@ -15,8 +15,12 @@ import (
 
 // NutshellManager wraps the nutshell CLI for .nut bundle operations.
 type NutshellManager struct {
-	clawnetBin string // path to clawnet binary
+	clawnetBin string // path to anet binary
 }
+
+// supportedOS/supportedArch for nutshell asset downloads.
+var supportedOS = map[string]bool{"windows": true, "darwin": true, "linux": true}
+var supportedArch = map[string]bool{"amd64": true, "arm64": true}
 
 // NewNutshellManager creates a NutshellManager using the given clawnet binary path.
 func NewNutshellManager(clawnetBin string) *NutshellManager {
@@ -55,7 +59,7 @@ func (n *NutshellManager) Check(dir string) (string, error) {
 	return n.runNutshell("check", "--dir", dir)
 }
 
-// Publish publishes a nutshell bundle to the ClawNet network with a reward.
+// Publish publishes a nutshell bundle to the AgentNet network with a reward.
 func (n *NutshellManager) Publish(dir string, reward float64) (string, error) {
 	return n.runNutshell("publish", "--dir", dir, "--reward", fmt.Sprintf("%.0f", reward))
 }
@@ -98,11 +102,11 @@ func (n *NutshellManager) ListBundles() ([]map[string]interface{}, error) {
 	return bundles, nil
 }
 
-// runClawnet executes a clawnet subcommand.
+// runClawnet executes an anet subcommand.
 func (n *NutshellManager) runClawnet(args ...string) (string, error) {
 	bin := n.clawnetBin
 	if bin == "" {
-		bin = "clawnet"
+		bin = "anet"
 	}
 	cmd := exec.Command(bin, args...)
 	out, err := cmd.CombinedOutput()
@@ -159,7 +163,7 @@ func NutshellLocalBinaryName() string {
 
 // NutshellInstallDir returns the directory where nutshell is installed.
 func NutshellInstallDir() (string, error) {
-	return installDir() // same as clawnet: ~/.openclaw/clawnet/
+	return installDir() // same as anet: ~/.anet/
 }
 
 // NutshellBinaryPath returns the expected nutshell binary path (may not exist).
@@ -216,7 +220,7 @@ func (n *NutshellManager) InstallWithProgress(emitProgress func(stage string, pc
 		return "", fmt.Errorf(
 			"[nutshell-not-available] 📦 Nutshell binary for %s/%s is not available yet.\n\n"+
 				"You can manually download or build the nutshell binary and place it at:\n  %s\n\n"+
-				"GitHub Releases: https://github.com/ChatChatTech/ClawNet/releases",
+				"GitHub Releases: https://github.com/ChatChatTech/AgentNet/releases",
 			runtime.GOOS, runtime.GOARCH, targetPath,
 		)
 	}
@@ -228,7 +232,7 @@ func (n *NutshellManager) InstallWithProgress(emitProgress func(stage string, pc
 		return "", fmt.Errorf(
 			"[nutshell-not-available] 📦 Nutshell binary for %s/%s is not available yet.\n\n"+
 				"You can manually download or build the nutshell binary and place it at:\n  %s\n\n"+
-				"GitHub Releases: https://github.com/ChatChatTech/ClawNet/releases",
+				"GitHub Releases: https://github.com/ChatChatTech/AgentNet/releases",
 			runtime.GOOS, runtime.GOARCH, targetPath,
 		)
 	}

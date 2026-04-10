@@ -29,7 +29,9 @@ type SortMode = 'newest' | 'hottest' | 'score';
 const PAGE_SIZE = 10;
 const POLL_INTERVAL = 30_000; // 30s
 
-const t = (lang: string, zh: string, en: string) => lang?.startsWith('zh') ? zh : en;
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
 
 const categoryLabel = (lang: string, cat: string) => {
     const map: Record<string, Record<string, string>> = {
@@ -37,7 +39,7 @@ const categoryLabel = (lang: string, cat: string) => {
         project: { zh: '项目八卦', en: 'Project Gossip' },
         news:    { zh: '业界新闻', en: 'Industry News' },
     };
-    return map[cat]?.[lang?.startsWith('zh') ? 'zh' : 'en'] ?? cat;
+    return map[cat]?.[lang === 'zh-Hans' || lang === 'zh-Hant' ? 'zh' : 'en'] ?? cat;
 };
 
 export function GossipPanel({ lang }: GossipPanelProps) {
@@ -72,7 +74,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
             setPosts(result.posts || []);
             setError('');
         } catch (err: any) {
-            if (!isPolling) setError(err.message || 'Failed to load');
+            if (!isPolling) setError(err.message || localizeText(lang, 'Failed to load', '加载失败'));
         } finally {
             if (!isPolling) setLoading(false);
         }
@@ -89,7 +91,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
             etagRef.current = '';
             fetchSnapshot();
         } catch (err: any) {
-            setPublishError(err.message || t(lang, '发布失败', 'Publish failed'));
+            setPublishError(err.message || localizeText(lang, 'Publish failed', '发布失败'));
         } finally {
             setPublishing(false);
         }
@@ -101,7 +103,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
             setPostComments(prev => ({ ...prev, [postID]: result.comments || [] }));
             setCommentErrors(prev => ({ ...prev, [postID]: '' }));
         } catch (err: any) {
-            setCommentErrors(prev => ({ ...prev, [postID]: err.message || t(lang, '加载评论失败', 'Failed to load comments') }));
+            setCommentErrors(prev => ({ ...prev, [postID]: err.message || localizeText(lang, 'Failed to load comments', '加载评论失败') }));
         }
     }, [lang]);
 
@@ -124,7 +126,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
             etagRef.current = '';
             fetchSnapshot();
         } catch (err: any) {
-            setCommentErrors(prev => ({ ...prev, [postID]: err.message || t(lang, '评论失败', 'Comment failed') }));
+            setCommentErrors(prev => ({ ...prev, [postID]: err.message || localizeText(lang, 'Comment failed', '评论失败') }));
         }
     }, [commentInputs, fetchComments, fetchSnapshot, lang]);
 
@@ -135,7 +137,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
             etagRef.current = '';
             fetchSnapshot();
         } catch (err: any) {
-            setRatingErrors(prev => ({ ...prev, [postID]: err.message || t(lang, '评分失败', 'Rating failed') }));
+            setRatingErrors(prev => ({ ...prev, [postID]: err.message || localizeText(lang, 'Rating failed', '评分失败') }));
         }
     }, [fetchSnapshot, lang]);
 
@@ -182,7 +184,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                     type="text"
                     value={search}
                     onChange={e => setSearch(e.target.value)}
-                    placeholder={t(lang, '搜索昵称/内容/分类...', 'Search nickname/content/category...')}
+                    placeholder={localizeText(lang, 'Search nickname/content/category...', '搜索昵称/内容/分类...')}
                     style={{ flex: 1, minWidth: '140px', padding: '5px 10px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '0.8rem', outline: 'none' }}
                 />
                 <select
@@ -190,21 +192,21 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                     onChange={e => setSort(e.target.value as SortMode)}
                     style={{ padding: '5px 8px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '0.8rem', outline: 'none', cursor: 'pointer' }}
                 >
-                    <option value="newest">{t(lang, '最新', 'Newest')}</option>
-                    <option value="hottest">{t(lang, '最热', 'Hottest')}</option>
-                    <option value="score">{t(lang, '评分', 'Score')}</option>
+                    <option value="newest">{localizeText(lang, 'Newest', '最新')}</option>
+                    <option value="hottest">{localizeText(lang, 'Hottest', '最热')}</option>
+                    <option value="score">{localizeText(lang, 'Score', '评分')}</option>
                 </select>
                 <button
                     onClick={() => { etagRef.current = ''; fetchSnapshot(); }}
                     style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #d1d5db', background: '#fff', fontSize: '0.8rem', cursor: 'pointer' }}
                 >
-                    {t(lang, '刷新', 'Refresh')}
+                    {localizeText(lang, 'Refresh', '刷新')}
                 </button>
                 <button
                     onClick={() => setShowPublish(v => !v)}
                     style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #d1d5db', background: showPublish ? '#eef2ff' : '#fff', fontSize: '0.8rem', cursor: 'pointer' }}
                 >
-                    {t(lang, '发布', 'Publish')}
+                    {localizeText(lang, 'Publish', '发布')}
                 </button>
             </div>
 
@@ -214,7 +216,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                     <textarea
                         value={publishContent}
                         onChange={e => setPublishContent(e.target.value)}
-                        placeholder={t(lang, '写点什么八卦...', 'Write some gossip...')}
+                        placeholder={localizeText(lang, 'Write some gossip...', '写点什么八卦...')}
                         style={{
                             width: '100%', minHeight: '80px', padding: '8px 10px', borderRadius: '6px',
                             border: '1px solid #d1d5db', fontSize: '0.8rem', resize: 'vertical',
@@ -248,7 +250,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                                 opacity: publishing ? 0.6 : 1
                             }}
                         >
-                            {publishing ? t(lang, '发布中...', 'Publishing...') : t(lang, '提交', 'Submit')}
+                            {publishing ? localizeText(lang, 'Publishing...', '发布中...') : localizeText(lang, 'Submit', '提交')}
                         </button>
                     </div>
                     {publishError && (
@@ -258,13 +260,13 @@ export function GossipPanel({ lang }: GossipPanelProps) {
             )}
 
             {/* Status */}
-            {loading && <div style={{ textAlign: 'center', padding: '20px', color: '#6b7280', fontSize: '0.8rem' }}>{t(lang, '加载中...', 'Loading...')}</div>}
+            {loading && <div style={{ textAlign: 'center', padding: '20px', color: '#6b7280', fontSize: '0.8rem' }}>{localizeText(lang, 'Loading...', '加载中...')}</div>}
             {error && <div style={{ textAlign: 'center', padding: '20px', color: '#ef4444', fontSize: '0.8rem' }}>{error}</div>}
 
             {/* Posts */}
             {!loading && !error && pageItems.length === 0 && (
                 <div style={{ textAlign: 'center', padding: '40px 20px', color: '#9ca3af', fontSize: '0.85rem' }}>
-                    {search ? t(lang, '没有匹配的八卦', 'No matching gossip') : t(lang, '暂无八卦', 'No gossip yet')}
+                    {search ? localizeText(lang, 'No matching gossip', '没有匹配的八卦') : localizeText(lang, 'No gossip yet', '暂无八卦')}
                 </div>
             )}
 
@@ -293,7 +295,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                     <div style={{ color: '#374151', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{p.content}</div>
                     <div style={{ display: 'flex', gap: '12px', marginTop: '6px', fontSize: '0.7rem', color: '#6b7280' }}>
                         <span>⭐ {p.score > 0 ? (p.score / Math.max(p.votes, 1)).toFixed(1) : '-'}</span>
-                        <span>👥 {p.votes} {t(lang, '票', 'votes')}</span>
+                        <span>👥 {p.votes} {localizeText(lang, 'votes', '票')}</span>
                     </div>
 
                     {/* Comment button + Rating stars */}
@@ -306,10 +308,10 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                                 fontSize: '0.75rem', cursor: 'pointer', color: '#4f46e5'
                             }}
                         >
-                            {t(lang, '评论', 'Comment')}
+                            {localizeText(lang, 'Comment', '评论')}
                         </button>
                         {p.locked ? (
-                            <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>🔒 {t(lang, '已锁定', 'Locked')}</span>
+                            <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>🔒 {localizeText(lang, 'Locked', '已锁定')}</span>
                         ) : (
                             <span style={{ display: 'flex', gap: '2px', cursor: 'pointer' }}>
                                 {[1, 2, 3, 4, 5].map(star => (
@@ -317,7 +319,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                                         key={star}
                                         onClick={() => handleRate(p.id, star)}
                                         style={{ fontSize: '0.9rem', cursor: 'pointer' }}
-                                        title={`${t(lang, '评分', 'Rate')} ${star}`}
+                                        title={`${localizeText(lang, 'Rate', '评分')} ${star}`}
                                     >
                                         {star <= Math.round(p.score / Math.max(p.votes, 1)) ? '★' : '☆'}
                                     </span>
@@ -354,7 +356,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                                 </div>
                             ) : (
                                 <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '8px' }}>
-                                    {t(lang, '暂无评论', 'No comments yet')}
+                                    {localizeText(lang, 'No comments yet', '暂无评论')}
                                 </div>
                             )}
 
@@ -365,7 +367,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                                         <textarea
                                             value={commentInputs[p.id] || ''}
                                             onChange={e => setCommentInputs(prev => ({ ...prev, [p.id]: e.target.value }))}
-                                            placeholder={t(lang, '写评论...', 'Write a comment...')}
+                                            placeholder={localizeText(lang, 'Write a comment...', '写评论...')}
                                             style={{
                                                 width: '100%', minHeight: '50px', padding: '6px 8px', borderRadius: '6px',
                                                 border: '1px solid #d1d5db', fontSize: '0.75rem', resize: 'vertical',
@@ -389,7 +391,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                                                     color: (!(commentInputs[p.id] || '').trim() || (commentInputs[p.id] || '').length > 1000) ? '#9ca3af' : '#fff'
                                                 }}
                                             >
-                                                {t(lang, '提交', 'Submit')}
+                                                {localizeText(lang, 'Submit', '提交')}
                                             </button>
                                         </div>
                                     </div>
@@ -413,7 +415,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                         onClick={() => setPage(p => Math.max(1, p - 1))}
                         style={{ padding: '4px 10px', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff', cursor: currentPage <= 1 ? 'default' : 'pointer', opacity: currentPage <= 1 ? 0.4 : 1 }}
                     >
-                        ‹ {t(lang, '上一页', 'Prev')}
+                        ‹ {localizeText(lang, 'Prev', '上一页')}
                     </button>
                     <span style={{ color: '#6b7280' }}>{currentPage} / {totalPages}</span>
                     <button
@@ -421,14 +423,14 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                         onClick={() => setPage(p => Math.min(totalPages, p + 1))}
                         style={{ padding: '4px 10px', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff', cursor: currentPage >= totalPages ? 'default' : 'pointer', opacity: currentPage >= totalPages ? 0.4 : 1 }}
                     >
-                        {t(lang, '下一页', 'Next')} ›
+                        {localizeText(lang, 'Next', '下一页')} ›
                     </button>
                 </div>
             )}
 
             {/* Summary */}
             <div style={{ textAlign: 'center', fontSize: '0.7rem', color: '#9ca3af', padding: '4px 0' }}>
-                {t(lang, `共 ${filtered.length} 条`, `${filtered.length} total`)}
+                {localizeText(lang, `${filtered.length} total`, `共 ${filtered.length} 条`)}
             </div>
         </div>
     );

@@ -15,21 +15,20 @@ import (
 	"time"
 )
 
-// ClawNetClient wraps the ClawNet daemon REST API (localhost:3998).
+// ClawNetClient wraps the anet daemon REST API (localhost:3998).
 // It manages the daemon lifecycle and provides typed access to all endpoints.
-// Upstream updates only require replacing the clawnet binary — no code changes.
+// The anet daemon is a standalone process that persists across maclaw restarts.
 type ClawNetClient struct {
 	mu      sync.Mutex
 	baseURL string
 	client  *http.Client
-	daemon  *exec.Cmd
 	binPath string
 	running bool
 
 	autoUpdateStop chan struct{} // signals the auto-update goroutine to stop
 }
 
-// BinPath returns the resolved path to the clawnet binary.
+// BinPath returns the resolved path to the anet binary.
 func (c *ClawNetClient) BinPath() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -162,43 +161,35 @@ func NewClawNetClient() *ClawNetClient {
 
 // ---------- Daemon lifecycle ----------
 
-// findBinary locates the clawnet executable.
-// Search order: project vendor dir → user home dir → PATH.
+// findBinary locates the anet executable.
+// Search order: install dir → PATH.
 func (c *ClawNetClient) findBinary() string {
-	binName := clawnetLocalBinaryName()
-	// 1. Vendored binary alongside the app
-	candidates := []string{
-		filepath.Join(".", "vendor", "clawnet", binName),
-	}
-	// 2. User home install dir
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, ".openclaw", "clawnet", binName),
-		)
-	}
-	for _, p := range candidates {
+	binName := anetLocalBinaryName()
+	// 1. Standard install dir
+	if dir, err := anetInstallDir(); err == nil {
+		p := filepath.Join(dir, binName)
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
-	// 3. PATH lookup
-	if p, err := exec.LookPath("clawnet"); err == nil {
+	// 2. PATH lookup
+	if p, err := exec.LookPath("anet"); err == nil {
 		return p
 	}
 	return ""
 }
 
-// EnsureDaemon starts the clawnet daemon if not already running.
+// EnsureDaemon starts the anet daemon if not already running.
 // It first checks whether the daemon is reachable; if so, it skips launching.
 func (c *ClawNetClient) EnsureDaemon() error {
 	return c.EnsureDaemonWithProgress(nil)
 }
 
 // EnsureDaemonWithProgress starts the daemon, auto-downloading the binary if needed.
-// The optional emitProgress callback reports download progress to the caller.
+// The anet daemon is a standalone process — it persists across maclaw restarts.
+// We only start it if no instance is already running (ping or process check).
 func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string, pct int, msg string)) error {
-	// Check reachability without holding the lock (ping does a network call).
-	// If an existing daemon is already healthy, just reuse it — no new process.
+	// Fast path: daemon already reachable.
 	if c.ping() {
 		c.mu.Lock()
 		c.running = true
@@ -206,10 +197,8 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 		return nil
 	}
 
-	// --- Cross-process file lock ---
-	// Only one process at a time may attempt to start the daemon.
-	// If another process holds the lock, wait for it to finish and then
-	// just check if the daemon is now reachable.
+	// Cross-process file lock to prevent multiple maclaw instances from
+	// racing to start the daemon simultaneously.
 	lockFile, lockErr := acquireGUIDaemonLock()
 	if lockErr != nil {
 		// Another process is starting the daemon — wait for it.
@@ -223,11 +212,11 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 			}
 			time.Sleep(1 * time.Second)
 		}
-		return fmt.Errorf("another process is starting clawnet daemon but it did not become reachable")
+		return fmt.Errorf("another process is starting anet daemon but it did not become reachable")
 	}
-	defer lockFile.Close() // releases the file lock
+	defer lockFile.Close()
 
-	// Re-check after acquiring lock — the previous holder may have started it.
+	// Re-check after acquiring lock.
 	if c.ping() {
 		c.mu.Lock()
 		c.running = true
@@ -235,20 +224,19 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 		return nil
 	}
 
+	// Locate or install the binary.
 	c.mu.Lock()
 	bin := c.binPath
 	if bin == "" {
 		bin = c.findBinary()
 	}
 	if bin == "" {
-		// Release lock during potentially long download.
 		c.mu.Unlock()
-		downloaded, err := DownloadClawNet(emitProgress)
+		downloaded, err := DownloadAnet(emitProgress)
 		if err != nil {
-			return err // DownloadClawNet already provides a user-friendly message
+			return err
 		}
 		c.mu.Lock()
-		// Re-check: another goroutine may have started the daemon while we downloaded.
 		if c.ping() {
 			c.running = true
 			c.mu.Unlock()
@@ -257,39 +245,11 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 		bin = downloaded
 	}
 	c.binPath = bin
-
-	// --- Cleanup stale/zombie daemon processes before starting a new one ---
-	// If we reach here, ping failed — there may be orphaned clawnet processes
-	// holding the port (e.g. maclaw was force-killed without clean shutdown).
-	// Release the lock during cleanup to avoid blocking other goroutines.
 	c.mu.Unlock()
-	stopCmd := exec.Command(bin, "stop")
-	hideCommandWindow(stopCmd)
-	// Run with a timeout so a hung zombie can't block us forever.
-	stopDone := make(chan error, 1)
-	go func() { stopDone <- stopCmd.Run() }()
-	select {
-	case <-stopDone:
-	case <-time.After(5 * time.Second):
-		if stopCmd.Process != nil {
-			_ = stopCmd.Process.Kill()
-		}
-	}
-	// Give the OS a moment to release the port.
-	time.Sleep(1 * time.Second)
 
-	// One more ping — the stop may have cleaned up a half-alive daemon that
-	// is now restarting itself, or another maclaw instance may have started one.
-	if c.ping() {
-		c.mu.Lock()
-		c.running = true
-		c.mu.Unlock()
-		return nil
-	}
-
-	// Final guard: if a clawnet process already exists (e.g. another maclaw
-	// instance just started one), wait for it instead of spawning a duplicate.
-	if pid := clawnetFindProcessByName(clawnetLocalBinaryName()); pid != 0 {
+	// Check if an anet process is already running (e.g. started externally).
+	// If so, wait for it to become reachable instead of spawning a duplicate.
+	if pid := clawnetFindProcessByName(anetLocalBinaryName()); pid != 0 {
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
 			if c.ping() {
@@ -300,36 +260,30 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		// Process exists but never became reachable — kill it before starting fresh.
+		// Process exists but not responding — kill it before starting fresh.
 		if p, err := os.FindProcess(pid); err == nil {
 			_ = p.Kill()
 		}
-		// Wait until the process is truly gone (up to 3s).
 		for i := 0; i < 6; i++ {
-			if clawnetFindProcessByName(clawnetLocalBinaryName()) == 0 {
+			if clawnetFindProcessByName(anetLocalBinaryName()) == 0 {
 				break
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
 
-	c.mu.Lock()
-
+	// Start the daemon. anet manages its own singleton via PID file internally.
 	cmd := exec.Command(bin, "start")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	hideCommandWindow(cmd)
 	if err := cmd.Start(); err != nil {
-		c.mu.Unlock()
-		return fmt.Errorf("failed to start clawnet daemon: %w", err)
+		return fmt.Errorf("failed to start anet daemon: %w", err)
 	}
-	c.daemon = cmd
-	c.mu.Unlock()
-
 	// Reap the child process in the background to avoid zombie processes.
 	go func() { _ = cmd.Wait() }()
 
-	// Wait for daemon to become ready (up to 15s) without holding the lock
+	// Wait for daemon to become ready (up to 15s).
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if c.ping() {
@@ -340,25 +294,22 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("clawnet daemon started but not responding on %s", c.baseURL)
+	return fmt.Errorf("anet daemon started but not responding on %s", c.baseURL)
 }
 
-// StopDaemon gracefully stops the daemon via `clawnet stop`.
+// StopDaemon gracefully stops the daemon via `anet stop`.
+// Note: the anet daemon is designed to persist independently. This is only
+// called when the user explicitly requests a stop from the GUI.
 func (c *ClawNetClient) StopDaemon() {
 	c.StopAutoUpdate()
 	c.mu.Lock()
-
-	// Prefer using the CLI to stop the daemon gracefully.
 	bin := c.binPath
 	if bin == "" {
 		bin = c.findBinary()
 	}
-	daemon := c.daemon
-	c.daemon = nil
 	c.running = false
 	c.mu.Unlock()
 
-	// Run stop command outside the lock to avoid blocking other goroutines.
 	if bin != "" {
 		cmd := exec.Command(bin, "stop")
 		hideCommandWindow(cmd)
@@ -371,9 +322,6 @@ func (c *ClawNetClient) StopDaemon() {
 				_ = cmd.Process.Kill()
 			}
 		}
-	} else if daemon != nil && daemon.Process != nil {
-		// Fallback: kill the launcher process directly.
-		_ = daemon.Process.Kill()
 	}
 }
 
@@ -399,15 +347,9 @@ func (c *ClawNetClient) ping() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// DaemonPID returns the PID of the daemon process we launched, or 0 if unknown.
+// DaemonPID returns the PID of a running anet process, or 0 if not found.
 func (c *ClawNetClient) DaemonPID() int {
-	c.mu.Lock()
-	daemon := c.daemon
-	c.mu.Unlock()
-	if daemon != nil && daemon.Process != nil {
-		return daemon.Process.Pid
-	}
-	return 0
+	return clawnetFindProcessByName(anetLocalBinaryName())
 }
 
 // ---------- HTTP helpers ----------
@@ -857,7 +799,7 @@ func (c *ClawNetClient) SelfUpdate() error {
 		bin = c.findBinary()
 	}
 	if bin == "" {
-		return fmt.Errorf("clawnet binary not found")
+		return fmt.Errorf("anet binary not found")
 	}
 	cmd := exec.Command(bin, "update")
 	hideCommandWindow(cmd)
@@ -874,11 +816,11 @@ const clawnetAutoUpdateInterval = 24 * time.Hour
 
 // clawnetLastUpdatePath returns the path to the timestamp file.
 func clawnetLastUpdatePath() string {
-	home, err := os.UserHomeDir()
+	dir, err := anetInstallDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".openclaw", "clawnet", ".last_update")
+	return filepath.Join(dir, ".last_update")
 }
 
 // readLastUpdateTime reads the last successful update timestamp.
@@ -1149,7 +1091,7 @@ func (c *ClawNetClient) PublishTasksToHub(hubURL string) error {
 	}
 
 	body, _ := json.Marshal(payload)
-	endpoint := strings.TrimRight(hubURL, "/") + "/api/clawnet/tasks/publish"
+	endpoint := strings.TrimRight(hubURL, "/") + "/api/agentnet/tasks/publish"
 	hubClient := &http.Client{Timeout: 30 * time.Second}
 	resp, err := hubClient.Post(endpoint, "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -1168,7 +1110,7 @@ func (c *ClawNetClient) BrowseHubTasks(hubURL string) ([]ClawNetTask, error) {
 	if hubURL == "" {
 		return nil, fmt.Errorf("hub URL is empty")
 	}
-	endpoint := strings.TrimRight(hubURL, "/") + "/api/clawnet/tasks/browse?limit=50"
+	endpoint := strings.TrimRight(hubURL, "/") + "/api/agentnet/tasks/browse?limit=50"
 	hubClient := &http.Client{Timeout: 30 * time.Second}
 	resp, err := hubClient.Get(endpoint)
 	if err != nil {

@@ -12,11 +12,11 @@ import (
 // daemonLockPath returns the path to the cross-process lock file used to
 // serialize daemon startup attempts.
 func daemonLockPath() string {
-	home, err := os.UserHomeDir()
+	dir, err := installDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".openclaw", "clawnet", "daemon.lock")
+	return filepath.Join(dir, "daemon.lock")
 }
 
 // acquireDaemonLock tries to obtain an exclusive, non-blocking lock on the

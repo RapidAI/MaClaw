@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// AutoTaskPicker monitors the ClawNet network and automatically picks
+// AutoTaskPicker monitors the AgentNet network and automatically picks
 // up tasks to execute via the maClaw agent, earning credits upon completion.
 type AutoTaskPicker struct {
 	mu       sync.Mutex
@@ -387,7 +387,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 		return map[string]interface{}{"ok": false, "error": "executor not configured"}
 	}
 	if !client.IsRunning() {
-		return map[string]interface{}{"ok": false, "error": "ClawNet is not running"}
+		return map[string]interface{}{"ok": false, "error": "AgentNet is not running"}
 	}
 
 	task, err := client.GetTask(taskID)

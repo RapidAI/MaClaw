@@ -10,7 +10,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentnet"
 )
 
-// ClawNetAutoTaskPicker monitors the ClawNet network and automatically picks
+// AgentNetAutoTaskPicker monitors the AgentNet network and automatically picks
 // up tasks to execute via the maClaw agent, earning credits upon completion.
 //
 // Flow: detect online -> browse tasks -> select best -> claim -> execute via agent -> submit result
@@ -56,7 +56,7 @@ type autoTaskRun struct {
 // and should return the result text. This is wired to the IM handler agent loop.
 type AutoTaskExecutor func(taskTitle, taskDescription string) (result string, err error)
 
-// NewClawNetAutoTaskPicker creates a new auto task picker.
+// NewAgentNetAutoTaskPicker creates a new auto task picker.
 func NewClawNetAutoTaskPicker(client *ClawNetClient, hubURL string) *ClawNetAutoTaskPicker {
 	return &ClawNetAutoTaskPicker{
 		client:        client,
@@ -201,7 +201,7 @@ func (p *ClawNetAutoTaskPicker) loop() {
 	}
 }
 
-// pollAndPickTask checks if ClawNet is online, browses tasks, and picks one.
+// pollAndPickTask checks if AgentNet is online, browses tasks, and picks one.
 // Protected by pollMu to prevent concurrent invocations from loop + TriggerNow.
 func (p *ClawNetAutoTaskPicker) pollAndPickTask() {
 	if !p.pollMu.TryLock() {
@@ -237,7 +237,7 @@ func (p *ClawNetAutoTaskPicker) pollAndPickTask() {
 		return
 	}
 
-	// Step 1: Check if ClawNet is online.
+	// Step 1: Check if AgentNet is online.
 	if !client.IsRunning() {
 		// Not an error �?just not online yet. Don't spam lastError.
 		return
@@ -500,7 +500,7 @@ func (p *ClawNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[st
 		return map[string]interface{}{"ok": false, "error": "executor not configured"}
 	}
 	if !client.IsRunning() {
-		return map[string]interface{}{"ok": false, "error": "ClawNet is not running"}
+		return map[string]interface{}{"ok": false, "error": "AgentNet is not running"}
 	}
 
 	// Fetch the task details.

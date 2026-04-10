@@ -9,18 +9,22 @@ import { ClawNetNutshellPanel } from "./AgentNetNutshellPanel";
 import { colors } from "./styles";
 import { cnTabBtn } from "./agentnetStyles";
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
 type Props = { lang: string; clawNetRunning: boolean };
 
 type ClawNetSubTab = "tasks" | "knowledge" | "swarm" | "chat" | "prediction" | "nutshell" | "resume";
 
-const tabDefs: { id: ClawNetSubTab; icon: string; zh: string; en: string }[] = [
-    { id: "tasks", icon: "🏪", zh: "任务集市", en: "Tasks" },
-    { id: "knowledge", icon: "📚", zh: "知识网络", en: "Knowledge" },
-    { id: "swarm", icon: "🧠", zh: "群体思考", en: "Swarm" },
-    { id: "chat", icon: "💬", zh: "聊天", en: "Chat" },
-    { id: "prediction", icon: "🔮", zh: "预测市场", en: "Predict" },
-    { id: "nutshell", icon: "📦", zh: "任务包", en: "Nutshell" },
-    { id: "resume", icon: "📋", zh: "简历/搜索", en: "Resume" },
+const tabDefs: { id: ClawNetSubTab; icon: string; label: (lang: string) => string }[] = [
+    { id: "tasks", icon: "🏪", label: (lang) => localizeText(lang, "Tasks", "任务集市") },
+    { id: "knowledge", icon: "📚", label: (lang) => localizeText(lang, "Knowledge", "知识网络") },
+    { id: "swarm", icon: "🧠", label: (lang) => localizeText(lang, "Swarm", "群体思考") },
+    { id: "chat", icon: "💬", label: (lang) => localizeText(lang, "Chat", "聊天") },
+    { id: "prediction", icon: "🔮", label: (lang) => localizeText(lang, "Predict", "预测市场") },
+    { id: "nutshell", icon: "📦", label: (lang) => localizeText(lang, "Nutshell", "任务包") },
+    { id: "resume", icon: "📋", label: (lang) => localizeText(lang, "Resume", "简历/搜索") },
 ];
 
 // ErrorBoundary to prevent a single panel crash from white-screening the entire view
@@ -40,12 +44,11 @@ class ClawNetErrorBoundary extends Component<
     }
     render() {
         if (this.state.hasError) {
-            const zh = this.props.lang?.startsWith("zh");
             return (
                 <div style={{ padding: "40px 20px", textAlign: "center", color: "#94a3b8" }}>
                     <div style={{ fontSize: "2.5rem", marginBottom: "12px" }}>⚠️</div>
                     <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#ef4444", marginBottom: "6px" }}>
-                        {zh ? "面板加载出错" : "Panel failed to load"}
+                        {localizeText(this.props.lang, "Panel failed to load", "面板加载出错")}
                     </div>
                     <div style={{ fontSize: "0.78rem", color: "#b0b8c8", maxWidth: "360px", margin: "0 auto 12px" }}>
                         {this.state.error}
@@ -57,7 +60,7 @@ class ClawNetErrorBoundary extends Component<
                             background: colors.bg, color: colors.text, cursor: "pointer", fontSize: "0.78rem", fontWeight: 600,
                         }}
                     >
-                        {zh ? "重试" : "Retry"}
+                        {localizeText(this.props.lang, "Retry", "重试")}
                     </button>
                 </div>
             );
@@ -80,7 +83,6 @@ function renderSubTab(subTab: ClawNetSubTab, lang: string, clawNetRunning: boole
 }
 
 export function ClawNetTabContainer({ lang, clawNetRunning }: Props) {
-    const zh = lang?.startsWith("zh");
     const [subTab, setSubTab] = useState<ClawNetSubTab>("tasks");
     // Key to force remount on retry
     const [retryKey, setRetryKey] = useState(0);
@@ -96,7 +98,7 @@ export function ClawNetTabContainer({ lang, clawNetRunning }: Props) {
                 {tabDefs.map(t => (
                     <button key={t.id} style={cnTabBtn(subTab === t.id)} onClick={() => setSubTab(t.id)}>
                         <span>{t.icon}</span>
-                        <span>{zh ? t.zh : t.en}</span>
+                        <span>{t.label(lang)}</span>
                     </button>
                 ))}
             </div>

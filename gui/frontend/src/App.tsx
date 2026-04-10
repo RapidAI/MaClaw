@@ -3959,7 +3959,6 @@ ${instruction}`;
                             >
                                 <span aria-hidden="true" className="btn-window-minimize__icon" />
                             </button>
-                            <span className="btn-window-close-placeholder" aria-hidden="true" />
                         </div>
                     </div>
                 </div>
@@ -4544,7 +4543,7 @@ ${instruction}`;
                                         { key: 'qq' as const, label: lang === 'zh-Hans' ? 'QQ 机器人' : lang === 'zh-Hant' ? 'QQ 機器人' : 'QQ Bot' },
                                         { key: 'telegram' as const, label: 'Telegram Bot' },
                                         { key: 'weixin' as const, label: lang === 'zh-Hans' ? '微信' : lang === 'zh-Hant' ? '微信' : 'WeChat' },
-                                        { key: 'lansenger' as const, label: lang === 'zh-Hans' ? '蓝信' : lang === 'zh-Hant' ? '藍信' : 'Lansenger' },
+                                        ...(brandInfo?.id === 'qianxin' ? [{ key: 'lansenger' as const, label: lang === 'zh-Hans' ? '蓝信' : lang === 'zh-Hant' ? '藍信' : 'Lansenger' }] : []),
                                     ]).map((t) => (
                                         <button
                                             key={t.key}
@@ -5017,8 +5016,8 @@ ${instruction}`;
                                 </div>
                                 )}
 
-                                {/* Lansenger tab */}
-                                {imSubTab === 'lansenger' && (
+                                {/* Lansenger tab — only visible for qianxin/TigerClaw OEM */}
+                                {imSubTab === 'lansenger' && brandInfo?.id === 'qianxin' && (
                                 <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                     <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
                                         {lang === 'zh-Hans'

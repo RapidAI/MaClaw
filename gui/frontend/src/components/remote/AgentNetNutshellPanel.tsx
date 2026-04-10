@@ -14,10 +14,13 @@ import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
 import { colors } from "./styles";
 import { cnCard, cnLabel, cnHeading, cnInput, cnActionBtn, cnTabStyle } from "./agentnetStyles";
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
 type Props = { lang: string; clawNetRunning: boolean };
 
 export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
-    const zh = lang?.startsWith("zh");
     const [installed, setInstalled] = useState<boolean | null>(null);
     const [version, setVersion] = useState("");
     const [busy, setBusy] = useState(false);
@@ -75,19 +78,19 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
 
     const handleInstall = async () => {
         setBusy(true); setOutput(""); setMsg(""); setManualPath("");
-        setDlProgress({ stage: "downloading", percent: 0, message: zh ? "准备下载..." : "Preparing..." });
+        setDlProgress({ stage: "downloading", percent: 0, message: localizeText(lang, "Preparing...", "准备下载...") });
         try {
             const res = await ClawNetNutshellInstall();
             if (!mountedRef.current) return;
-            if (res.ok) { showMsg(zh ? "✅ Nutshell 已安装" : "✅ Nutshell installed"); checkStatus(); }
+            if (res.ok) { showMsg(localizeText(lang, "✅ Nutshell installed", "✅ Nutshell 已安装")); checkStatus(); }
             else {
                 const errStr = res.error || "";
                 const isNotAvailable = errStr.includes("nutshell-not-available") || errStr.includes("not available");
                 if (isNotAvailable) {
                     setManualPath(res.manualPath || "");
-                    showMsg(zh
-                        ? "❌ 当前平台暂无预编译的 Nutshell 二进制"
-                        : "❌ No prebuilt Nutshell binary for your platform", 30000);
+                    showMsg(localizeText(lang,
+                        "❌ No prebuilt Nutshell binary for your platform",
+                        "❌ 当前平台暂无预编译的 Nutshell 二进制"), 30000);
                 } else {
                     showMsg(`❌ ${errStr}`);
                 }
@@ -107,17 +110,17 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
         if (mountedRef.current) setBusy(false);
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{zh ? "智网未连接" : "ClawNet not connected"}</div>;
+    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
 
     if (installed === false) {
         return (
             <div style={{ padding: "40px 20px", textAlign: "center" }}>
                 <div style={{ fontSize: "2.5rem", marginBottom: "12px" }}>📦</div>
                 <div style={{ fontSize: "0.82rem", fontWeight: 600, color: colors.text, marginBottom: "6px" }}>
-                    {zh ? "Nutshell 未安装" : "Nutshell Not Installed"}
+                    {localizeText(lang, "Nutshell Not Installed", "Nutshell 未安装")}
                 </div>
                 <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: "12px" }}>
-                    {zh ? "Nutshell 是 ClawNet 的任务打包工具" : "Nutshell packages AI task context into .nut bundles"}
+                    {localizeText(lang, "Nutshell packages AI task context into .nut bundles", "Nutshell 是 ClawNet 的任务打包工具")}
                 </div>
 
                 {/* Progress bar during download */}
@@ -137,7 +140,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                 )}
 
                 <button style={cnActionBtn(busy)} onClick={handleInstall} disabled={busy}>
-                    {busy ? (zh ? "下载中..." : "Downloading...") : (zh ? "安装 Nutshell" : "Install Nutshell")}
+                    {busy ? localizeText(lang, "Downloading...", "下载中...") : localizeText(lang, "Install Nutshell", "安装 Nutshell")}
                 </button>
 
                 {msg && <div style={{ fontSize: "0.72rem", marginTop: "8px", color: msg.startsWith("✅") ? colors.success : colors.danger }}>{msg}</div>}
@@ -146,9 +149,9 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                 {manualPath && (
                     <div style={{ marginTop: "12px", padding: "10px", background: colors.bg, borderRadius: "6px", textAlign: "left", fontSize: "0.68rem", color: colors.textSecondary, lineHeight: 1.6 }}>
                         <div style={{ marginBottom: "4px", fontWeight: 600, color: colors.text }}>
-                            {zh ? "💡 手动安装方法" : "💡 Manual Installation"}
+                            {localizeText(lang, "💡 Manual Installation", "💡 手动安装方法")}
                         </div>
-                        <div>{zh ? "下载或编译 nutshell 二进制，放到：" : "Download or build the nutshell binary and place it at:"}</div>
+                        <div>{localizeText(lang, "Download or build the nutshell binary and place it at:", "下载或编译 nutshell 二进制，放到：")}</div>
                         <div style={{ fontFamily: "monospace", fontSize: "0.65rem", padding: "4px 6px", background: colors.accentBg, borderRadius: "4px", margin: "4px 0", wordBreak: "break-all" }}>
                             {manualPath}
                         </div>
@@ -164,7 +167,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
         );
     }
 
-    if (installed === null) return <div style={cnLabel}>{zh ? "检查中..." : "Checking..."}</div>;
+    if (installed === null) return <div style={cnLabel}>{localizeText(lang, "Checking...", "检查中...")}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>
@@ -172,35 +175,35 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                 📦 Nutshell {version}
             </div>
             <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
-                <button style={cnTabStyle(tab === "publish")} onClick={() => setTab("publish")}>🚀 {zh ? "发布" : "Publish"}</button>
-                <button style={cnTabStyle(tab === "claim")} onClick={() => setTab("claim")}>📥 {zh ? "认领" : "Claim"}</button>
-                <button style={cnTabStyle(tab === "pack")} onClick={() => setTab("pack")}>📦 {zh ? "打包" : "Pack"}</button>
+                <button style={cnTabStyle(tab === "publish")} onClick={() => setTab("publish")}>🚀 {localizeText(lang, "Publish", "发布")}</button>
+                <button style={cnTabStyle(tab === "claim")} onClick={() => setTab("claim")}>📥 {localizeText(lang, "Claim", "认领")}</button>
+                <button style={cnTabStyle(tab === "pack")} onClick={() => setTab("pack")}>📦 {localizeText(lang, "Pack", "打包")}</button>
             </div>
             {msg && <div style={{ fontSize: "0.72rem", marginBottom: "8px", color: msg.startsWith("✅") ? colors.success : colors.danger }}>{msg}</div>}
 
             {tab === "publish" && (
                 <div style={cnCard}>
-                    <div style={cnHeading}>🚀 {zh ? "发布任务包" : "Publish Bundle"}</div>
+                    <div style={cnHeading}>🚀 {localizeText(lang, "Publish Bundle", "发布任务包")}</div>
                     <div style={{ marginBottom: "6px" }}>
-                        <div style={cnLabel}>{zh ? "任务目录" : "Task directory"}</div>
+                        <div style={cnLabel}>{localizeText(lang, "Task directory", "任务目录")}</div>
                         <input value={pubDir} onChange={e => setPubDir(e.target.value)} placeholder="./my-task" style={cnInput} />
                     </div>
                     <div style={{ marginBottom: "8px" }}>
-                        <div style={cnLabel}>{zh ? "奖励 (🐚)" : "Reward (🐚)"}</div>
+                        <div style={cnLabel}>{localizeText(lang, "Reward (🐚)", "奖励 (🐚)")}</div>
                         <input type="number" value={pubReward} onChange={e => setPubReward(Number(e.target.value))} min={1} style={{ ...cnInput, width: "100px" }} />
                     </div>
                     <div style={{ display: "flex", gap: "6px" }}>
                         <button style={cnActionBtn(busy || !pubDir.trim())} disabled={busy || !pubDir.trim()}
-                            onClick={() => runAction(zh ? "初始化完成" : "Initialized", () => ClawNetNutshellInit(pubDir.trim()))}>
-                            {zh ? "初始化" : "Init"}
+                            onClick={() => runAction(localizeText(lang, "Initialized", "初始化完成"), () => ClawNetNutshellInit(pubDir.trim()))}>
+                            {localizeText(lang, "Init", "初始化")}
                         </button>
                         <button style={cnActionBtn(busy || !pubDir.trim())} disabled={busy || !pubDir.trim()}
-                            onClick={() => runAction(zh ? "校验通过" : "Check passed", () => ClawNetNutshellCheck(pubDir.trim()))}>
-                            {zh ? "校验" : "Check"}
+                            onClick={() => runAction(localizeText(lang, "Check passed", "校验通过"), () => ClawNetNutshellCheck(pubDir.trim()))}>
+                            {localizeText(lang, "Check", "校验")}
                         </button>
                         <button style={cnActionBtn(busy || !pubDir.trim())} disabled={busy || !pubDir.trim()}
-                            onClick={() => runAction(zh ? "已发布" : "Published", () => ClawNetNutshellPublish(pubDir.trim(), pubReward))}>
-                            {zh ? "发布" : "Publish"}
+                            onClick={() => runAction(localizeText(lang, "Published", "已发布"), () => ClawNetNutshellPublish(pubDir.trim(), pubReward))}>
+                            {localizeText(lang, "Publish", "发布")}
                         </button>
                     </div>
                 </div>
@@ -209,29 +212,29 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
             {tab === "claim" && (
                 <>
                     <div style={cnCard}>
-                        <div style={cnHeading}>📥 {zh ? "认领任务" : "Claim Task"}</div>
+                        <div style={cnHeading}>📥 {localizeText(lang, "Claim Task", "认领任务")}</div>
                         <div style={{ marginBottom: "6px" }}>
-                            <div style={cnLabel}>{zh ? "任务 ID" : "Task ID"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Task ID", "任务 ID")}</div>
                             <input value={claimTaskId} onChange={e => setClaimTaskId(e.target.value)} placeholder="task-id" style={cnInput} />
                         </div>
                         <div style={{ marginBottom: "8px" }}>
-                            <div style={cnLabel}>{zh ? "输出目录" : "Output directory"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Output directory", "输出目录")}</div>
                             <input value={claimOutDir} onChange={e => setClaimOutDir(e.target.value)} placeholder="./workspace" style={cnInput} />
                         </div>
                         <button style={cnActionBtn(busy || !claimTaskId.trim())} disabled={busy || !claimTaskId.trim()}
-                            onClick={() => runAction(zh ? "已认领" : "Claimed", () => ClawNetNutshellClaim(claimTaskId.trim(), claimOutDir.trim() || "./workspace"))}>
-                            {zh ? "认领" : "Claim"}
+                            onClick={() => runAction(localizeText(lang, "Claimed", "已认领"), () => ClawNetNutshellClaim(claimTaskId.trim(), claimOutDir.trim() || "./workspace"))}>
+                            {localizeText(lang, "Claim", "认领")}
                         </button>
                     </div>
                     <div style={cnCard}>
-                        <div style={cnHeading}>📤 {zh ? "提交成果" : "Deliver Work"}</div>
+                        <div style={cnHeading}>📤 {localizeText(lang, "Deliver Work", "提交成果")}</div>
                         <div style={{ marginBottom: "8px" }}>
-                            <div style={cnLabel}>{zh ? "工作目录" : "Workspace directory"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Workspace directory", "工作目录")}</div>
                             <input value={deliverDir} onChange={e => setDeliverDir(e.target.value)} placeholder="./workspace" style={cnInput} />
                         </div>
                         <button style={cnActionBtn(busy || !deliverDir.trim())} disabled={busy || !deliverDir.trim()}
-                            onClick={() => runAction(zh ? "已提交" : "Delivered", () => ClawNetNutshellDeliver(deliverDir.trim()))}>
-                            {zh ? "提交" : "Deliver"}
+                            onClick={() => runAction(localizeText(lang, "Delivered", "已提交"), () => ClawNetNutshellDeliver(deliverDir.trim()))}>
+                            {localizeText(lang, "Deliver", "提交")}
                         </button>
                     </div>
                 </>
@@ -240,37 +243,37 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
             {tab === "pack" && (
                 <>
                     <div style={cnCard}>
-                        <div style={cnHeading}>📦 {zh ? "打包 .nut" : "Pack .nut"}</div>
+                        <div style={cnHeading}>📦 {localizeText(lang, "Pack .nut", "打包 .nut")}</div>
                         <div style={{ marginBottom: "6px" }}>
-                            <div style={cnLabel}>{zh ? "源目录" : "Source directory"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Source directory", "源目录")}</div>
                             <input value={packDir} onChange={e => setPackDir(e.target.value)} placeholder="./my-task" style={cnInput} />
                         </div>
                         <div style={{ marginBottom: "6px" }}>
-                            <div style={cnLabel}>{zh ? "输出文件" : "Output file"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Output file", "输出文件")}</div>
                             <input value={packOut} onChange={e => setPackOut(e.target.value)} placeholder="task.nut" style={cnInput} />
                         </div>
                         <div style={{ marginBottom: "8px" }}>
-                            <div style={cnLabel}>{zh ? "加密目标 Peer（可选）" : "Encrypt for peer (optional)"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Encrypt for peer (optional)", "加密目标 Peer（可选）")}</div>
                             <input value={packPeer} onChange={e => setPackPeer(e.target.value)} placeholder="12D3KooW..." style={cnInput} />
                         </div>
                         <button style={cnActionBtn(busy || !packDir.trim() || !packOut.trim())} disabled={busy || !packDir.trim() || !packOut.trim()}
-                            onClick={() => runAction(zh ? "已打包" : "Packed", () => ClawNetNutshellPack(packDir.trim(), packOut.trim(), packPeer.trim()))}>
-                            {zh ? "打包" : "Pack"}
+                            onClick={() => runAction(localizeText(lang, "Packed", "已打包"), () => ClawNetNutshellPack(packDir.trim(), packOut.trim(), packPeer.trim()))}>
+                            {localizeText(lang, "Pack", "打包")}
                         </button>
                     </div>
                     <div style={cnCard}>
-                        <div style={cnHeading}>📂 {zh ? "解包 .nut" : "Unpack .nut"}</div>
+                        <div style={cnHeading}>📂 {localizeText(lang, "Unpack .nut", "解包 .nut")}</div>
                         <div style={{ marginBottom: "6px" }}>
-                            <div style={cnLabel}>{zh ? ".nut 文件" : ".nut file"}</div>
+                            <div style={cnLabel}>{localizeText(lang, ".nut file", ".nut 文件")}</div>
                             <input value={unpackFile} onChange={e => setUnpackFile(e.target.value)} placeholder="task.nut" style={cnInput} />
                         </div>
                         <div style={{ marginBottom: "8px" }}>
-                            <div style={cnLabel}>{zh ? "输出目录" : "Output directory"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Output directory", "输出目录")}</div>
                             <input value={unpackDir} onChange={e => setUnpackDir(e.target.value)} placeholder="./output" style={cnInput} />
                         </div>
                         <button style={cnActionBtn(busy || !unpackFile.trim())} disabled={busy || !unpackFile.trim()}
-                            onClick={() => runAction(zh ? "已解包" : "Unpacked", () => ClawNetNutshellUnpack(unpackFile.trim(), unpackDir.trim() || "./output"))}>
-                            {zh ? "解包" : "Unpack"}
+                            onClick={() => runAction(localizeText(lang, "Unpacked", "已解包"), () => ClawNetNutshellUnpack(unpackFile.trim(), unpackDir.trim() || "./output"))}>
+                            {localizeText(lang, "Unpack", "解包")}
                         </button>
                     </div>
                 </>

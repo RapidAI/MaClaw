@@ -168,6 +168,29 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 		},
 	})
 
+	// --- DateTime tool ---
+	registry.Register(RegisteredTool{
+		Name:        "current_datetime",
+		Description: "获取当前日期和时间，包括年月日、星期几、今年第几周、时分秒。Get current date and time with year, month, day, weekday, ISO week number, hour, minute, second.",
+		Category:    ToolCategoryNonCode,
+		Tags:        []string{"time", "date", "datetime", "clock", "week"},
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{},
+		Source:      "non_code",
+		Handler: func(args map[string]interface{}) string {
+			now := time.Now()
+			weekdayCN := [...]string{"日", "一", "二", "三", "四", "五", "六"}
+			isoYear, isoWeek := now.ISOWeek()
+			return fmt.Sprintf(
+				"%d年%02d月%02d日 星期%s %d年第%d周 %02d:%02d:%02d (时区: %s)",
+				now.Year(), int(now.Month()), now.Day(),
+				weekdayCN[now.Weekday()], isoYear, isoWeek,
+				now.Hour(), now.Minute(), now.Second(),
+				now.Location().String(),
+			)
+		},
+	})
+
 	// --- Environment tools ---
 	registry.Register(RegisteredTool{
 		Name:        "check_health",

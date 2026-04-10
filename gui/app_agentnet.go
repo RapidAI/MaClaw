@@ -260,7 +260,7 @@ func (a *App) ClawNetListPredictions() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "predictions": preds}
 }
 
-// ClawNetInstallBinary downloads the clawnet binary from GitHub Releases.
+// ClawNetInstallBinary downloads the anet binary via official installer.
 // Emits "clawnet-install-progress" events to the frontend during download.
 func (a *App) ClawNetInstallBinary() map[string]interface{} {
 	emitter := func(stage string, pct int, msg string) {
@@ -270,7 +270,7 @@ func (a *App) ClawNetInstallBinary() map[string]interface{} {
 			"message": msg,
 		})
 	}
-	path, err := DownloadClawNet(emitter)
+	path, err := DownloadAnet(emitter)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -304,22 +304,22 @@ func (a *App) ClawNetEnsureDaemonWithDownload() map[string]interface{} {
 // Returns {ok, updated, message, error}.
 func (a *App) ClawNetManualUpdate() map[string]interface{} {
 	c := a.initClawNet()
-	a.log("ClawNet: manual update triggered")
+	a.log("AgentNet: manual update triggered")
 
 	// Run `clawnet update` via SelfUpdate.
 	err := c.SelfUpdate()
 	if err != nil {
-		a.log(fmt.Sprintf("ClawNet: manual update failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: manual update failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 
-	a.log("ClawNet: update applied")
+	a.log("AgentNet: update applied")
 	if !a.clawNetEnabled() {
-		a.log("ClawNet: daemon restart skipped after update because clawnet_enabled=false")
+		a.log("AgentNet: daemon restart skipped after update because agentnet_enabled=false")
 		return map[string]interface{}{"ok": true, "updated": true, "restarted": false}
 	}
 
-	a.log("ClawNet: update applied, restarting daemon...")
+	a.log("AgentNet: update applied, restarting daemon...")
 
 	// Stop the current daemon.
 	c.StopDaemon()
@@ -333,12 +333,12 @@ func (a *App) ClawNetManualUpdate() map[string]interface{} {
 		})
 	}
 	if restartErr := c.EnsureDaemonWithProgress(emitter); restartErr != nil {
-		a.log(fmt.Sprintf("ClawNet: restart after update failed: %v", restartErr))
+		a.log(fmt.Sprintf("AgentNet: restart after update failed: %v", restartErr))
 		return map[string]interface{}{"ok": false, "updated": true, "error": restartErr.Error()}
 	}
 
 	c.StartAutoUpdate(func(msg string) { a.log(msg) })
-	a.log("ClawNet: manual update completed, daemon restarted")
+	a.log("AgentNet: manual update completed, daemon restarted")
 	return map[string]interface{}{"ok": true, "updated": true, "restarted": true}
 }
 
@@ -350,20 +350,20 @@ func (a *App) ClawNetGetBinaryPath() string {
 	}
 	p := c.findBinary()
 	if p == "" {
-		return "not found (searched vendor/clawnet/, ~/.openclaw/clawnet/, PATH)"
+		return "not found (searched ~/.anet/, %LOCALAPPDATA%\\anet\\, PATH)"
 	}
 	return p
 }
 
 // ---------- Profile (with local cache fallback) ----------
 
-// profileCachePath returns ~/.openclaw/clawnet/profile_cache.json
+// profileCachePath returns ~/.anet/profile_cache.json
 func profileCachePath() string {
-	home, err := os.UserHomeDir()
+	dir, err := anetInstallDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".openclaw", "clawnet", "profile_cache.json")
+	return filepath.Join(dir, "profile_cache.json")
 }
 
 // profileCache is the structure persisted to local JSON for offline fallback.
@@ -671,13 +671,13 @@ func (a *App) ClawNetGetDMThread(peerID string, limit int) map[string]interface{
 
 // ---------- Identity Key Backup / Restore ----------
 
-// clawnetIdentityKeyPath returns the path to ~/.openclaw/clawnet/identity.key
+// clawnetIdentityKeyPath returns the path to ~/.anet/anet/identity.key
 func clawnetIdentityKeyPath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := anetInstallDir()
 	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".openclaw", "clawnet", "identity.key"), nil
+	return filepath.Join(dir, "anet", "identity.key"), nil
 }
 
 // ClawNetHasIdentity checks whether an identity.key file exists.
@@ -716,10 +716,10 @@ func (a *App) ClawNetExportIdentity() map[string]interface{} {
 	}
 
 	if err := clawnetCopyFile(keyPath, dest); err != nil {
-		a.log(fmt.Sprintf("ClawNet: export identity key failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: export identity key failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	a.log(fmt.Sprintf("ClawNet: identity key exported to %s", dest))
+	a.log(fmt.Sprintf("AgentNet: identity key exported to %s", dest))
 	return map[string]interface{}{"ok": true, "path": dest}
 }
 
@@ -739,12 +739,12 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 
 	info, err := os.Stat(src)
 	if err != nil {
-		a.log(fmt.Sprintf("ClawNet: import identity — cannot read source file: %v", err))
+		a.log(fmt.Sprintf("AgentNet: import identity — cannot read source file: %v", err))
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("cannot read file: %v", err)}
 	}
 	// Sanity check: Ed25519 key files are small (typically < 1KB)
 	if info.Size() > 10*1024 {
-		a.log(fmt.Sprintf("ClawNet: import identity — file too large (%d bytes)", info.Size()))
+		a.log(fmt.Sprintf("AgentNet: import identity — file too large (%d bytes)", info.Size()))
 		return map[string]interface{}{"ok": false, "error": "file too large — does not look like an identity key"}
 	}
 
@@ -755,43 +755,43 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 
 	// Stop daemon before replacing key
 	if a.clawNetClient != nil && a.clawNetClient.IsRunning() {
-		a.log("ClawNet: stopping daemon before key import")
+		a.log("AgentNet: stopping daemon before key import")
 		a.clawNetClient.StopDaemon()
 	}
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0755); err != nil {
-		a.log(fmt.Sprintf("ClawNet: import identity — mkdir failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: import identity — mkdir failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 
 	// Backup existing key if present
 	if _, err := os.Stat(keyPath); err == nil {
 		if renameErr := os.Rename(keyPath, keyPath+".bak"); renameErr != nil {
-			a.log(fmt.Sprintf("ClawNet: import identity — backup rename failed: %v", renameErr))
+			a.log(fmt.Sprintf("AgentNet: import identity — backup rename failed: %v", renameErr))
 		} else {
-			a.log(fmt.Sprintf("ClawNet: existing identity key backed up to %s.bak", keyPath))
+			a.log(fmt.Sprintf("AgentNet: existing identity key backed up to %s.bak", keyPath))
 		}
 	}
 
 	if err := clawnetCopyFile(src, keyPath); err != nil {
-		a.log(fmt.Sprintf("ClawNet: import identity — copy failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: import identity — copy failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	a.log(fmt.Sprintf("ClawNet: identity key imported from %s", src))
+	a.log(fmt.Sprintf("AgentNet: identity key imported from %s", src))
 
 	// Restart daemon with new identity only when the main switch allows it.
 	restarted := false
 	if !a.clawNetEnabled() {
-		a.log("ClawNet: daemon restart skipped after identity import because clawnet_enabled=false")
+		a.log("AgentNet: daemon restart skipped after identity import because agentnet_enabled=false")
 		return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
 	}
 	c := a.initClawNet()
 	if err := c.EnsureDaemon(); err != nil {
-		a.log(fmt.Sprintf("ClawNet: daemon restart after import failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: daemon restart after import failed: %v", err))
 	} else {
 		restarted = true
-		a.log("ClawNet: daemon restarted with new identity")
+		a.log("AgentNet: daemon restarted with new identity")
 	}
 
 	return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
@@ -860,7 +860,7 @@ func (a *App) ClawNetOnlineBackupKey(password string) map[string]interface{} {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Post(hubURL+"/api/clawnet/key/backup", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		a.log(fmt.Sprintf("ClawNet: online backup request failed for %s: %v", email, err))
+		a.log(fmt.Sprintf("AgentNet: online backup request failed for %s: %v", email, err))
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("hub request failed: %v", err)}
 	}
 	defer resp.Body.Close()
@@ -872,10 +872,10 @@ func (a *App) ClawNetOnlineBackupKey(password string) map[string]interface{} {
 		if errMsg == "" {
 			errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		a.log(fmt.Sprintf("ClawNet: online backup failed for %s: %s", email, errMsg))
+		a.log(fmt.Sprintf("AgentNet: online backup failed for %s: %s", email, errMsg))
 		return map[string]interface{}{"ok": false, "error": errMsg}
 	}
-	a.log(fmt.Sprintf("ClawNet: identity key backed up to Hub for %s", email))
+	a.log(fmt.Sprintf("AgentNet: identity key backed up to Hub for %s", email))
 	return map[string]interface{}{"ok": true}
 }
 
@@ -903,7 +903,7 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Post(hubURL+"/api/clawnet/key/restore", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		a.log(fmt.Sprintf("ClawNet: online restore request failed for %s: %v", email, err))
+		a.log(fmt.Sprintf("AgentNet: online restore request failed for %s: %v", email, err))
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("hub request failed: %v", err)}
 	}
 	defer resp.Body.Close()
@@ -915,24 +915,24 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 		if errMsg == "" {
 			errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		a.log(fmt.Sprintf("ClawNet: online restore failed for %s: %s", email, errMsg))
+		a.log(fmt.Sprintf("AgentNet: online restore failed for %s: %s", email, errMsg))
 		return map[string]interface{}{"ok": false, "error": errMsg}
 	}
 
 	keyDataB64, _ := result["key_data"].(string)
 	if keyDataB64 == "" {
-		a.log(fmt.Sprintf("ClawNet: online restore — empty key data in response for %s", email))
+		a.log(fmt.Sprintf("AgentNet: online restore — empty key data in response for %s", email))
 		return map[string]interface{}{"ok": false, "error": "empty key data in response"}
 	}
 	keyData, err := base64.StdEncoding.DecodeString(keyDataB64)
 	if err != nil {
-		a.log(fmt.Sprintf("ClawNet: online restore — invalid key encoding for %s: %v", email, err))
+		a.log(fmt.Sprintf("AgentNet: online restore — invalid key encoding for %s: %v", email, err))
 		return map[string]interface{}{"ok": false, "error": "invalid key data encoding"}
 	}
 
 	// Stop daemon before replacing key
 	if a.clawNetClient != nil && a.clawNetClient.IsRunning() {
-		a.log("ClawNet: stopping daemon before online key restore")
+		a.log("AgentNet: stopping daemon before online key restore")
 		a.clawNetClient.StopDaemon()
 	}
 
@@ -941,35 +941,35 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0755); err != nil {
-		a.log(fmt.Sprintf("ClawNet: online restore — mkdir failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: online restore — mkdir failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	// Backup existing key
 	if _, err := os.Stat(keyPath); err == nil {
 		if renameErr := os.Rename(keyPath, keyPath+".bak"); renameErr != nil {
-			a.log(fmt.Sprintf("ClawNet: online restore — backup rename failed: %v", renameErr))
+			a.log(fmt.Sprintf("AgentNet: online restore — backup rename failed: %v", renameErr))
 		} else {
-			a.log(fmt.Sprintf("ClawNet: existing identity key backed up to %s.bak", keyPath))
+			a.log(fmt.Sprintf("AgentNet: existing identity key backed up to %s.bak", keyPath))
 		}
 	}
 	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
-		a.log(fmt.Sprintf("ClawNet: online restore — write key failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: online restore — write key failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	a.log(fmt.Sprintf("ClawNet: identity key restored from Hub for %s", email))
+	a.log(fmt.Sprintf("AgentNet: identity key restored from Hub for %s", email))
 
 	// Restart daemon with restored identity only when the main switch allows it.
 	restarted := false
 	if !a.clawNetEnabled() {
-		a.log("ClawNet: daemon restart skipped after online restore because clawnet_enabled=false")
+		a.log("AgentNet: daemon restart skipped after online restore because agentnet_enabled=false")
 		return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
 	}
 	c := a.initClawNet()
 	if err := c.EnsureDaemon(); err != nil {
-		a.log(fmt.Sprintf("ClawNet: daemon restart after online restore failed: %v", err))
+		a.log(fmt.Sprintf("AgentNet: daemon restart after online restore failed: %v", err))
 	} else {
 		restarted = true
-		a.log("ClawNet: daemon restarted with restored identity")
+		a.log("AgentNet: daemon restarted with restored identity")
 	}
 
 	return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
@@ -1252,7 +1252,7 @@ func (a *App) ClawNetAutoPickerConfigure(enabled bool, pollMinutes int, minRewar
 			cfg.AgentNetAutoPickerMinReward = minReward
 			_ = a.SaveConfig(cfg)
 		}
-		return map[string]interface{}{"ok": false, "error": "clawnet is disabled in settings"}
+		return map[string]interface{}{"ok": false, "error": "agentnet is disabled in settings"}
 	}
 	a.autoTaskPicker.Configure(enabled, pollMinutes, minReward, tags)
 

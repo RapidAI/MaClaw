@@ -529,7 +529,7 @@ body {
     justify-content: space-between;
     align-items: stretch;
     min-height: 29px;
-    gap: 8px;
+    gap: 4px;
 }
 
 .top-header h2,
@@ -895,9 +895,9 @@ body {
 .window-controls {
     display: flex;
     align-items: stretch;
-    margin-right: -8px;
-    margin-top: -4px;
-    margin-bottom: -4px;
+    margin-right: -4px;
+    margin-top: -3px;
+    margin-bottom: -3px;
     pointer-events: auto;
     overflow: hidden;
     border-top-right-radius: 8px;
@@ -907,8 +907,8 @@ body {
     background: transparent;
     border: none;
     color: #374151;
-    width: 46px;
-    height: 32px;
+    width: 44px;
+    height: 30px;
     padding: 0;
     border-radius: 0;
     transition: background-color var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
@@ -924,42 +924,6 @@ body {
     height: 1px;
     background: currentColor;
     display: block;
-}
-
-.btn-window-close-placeholder {
-    width: 46px;
-    height: 32px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: rgba(107, 114, 128, 0.42);
-    background: transparent;
-    position: relative;
-    pointer-events: none;
-    transition: color var(--transition-fast), opacity var(--transition-fast);
-    opacity: 0.6;
-}
-
-.btn-window-close-placeholder::before,
-.btn-window-close-placeholder::after {
-    content: "";
-    position: absolute;
-    width: 9px;
-    height: 1px;
-    background: currentColor;
-}
-
-.btn-window-close-placeholder::before {
-    transform: rotate(45deg);
-}
-
-.btn-window-close-placeholder::after {
-    transform: rotate(-45deg);
-}
-
-.window-controls:hover .btn-window-close-placeholder {
-    color: rgba(107, 114, 128, 0.58);
-    opacity: 0.78;
 }
 
 .btn-window-minimize:hover {
@@ -1606,16 +1570,6 @@ body {
     color: #d1d5db;
     border: none;
     box-shadow: none;
-}
-
-.main-container[data-ai-theme='dark'] .btn-window-close-placeholder {
-    color: rgba(203, 213, 225, 0.4);
-    opacity: 0.62;
-}
-
-.main-container[data-ai-theme='dark'] .window-controls:hover .btn-window-close-placeholder {
-    color: rgba(248, 250, 252, 0.55);
-    opacity: 0.78;
 }
 
 .main-container[data-ai-theme='dark'] .btn-window-minimize:hover {

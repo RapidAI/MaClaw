@@ -14,7 +14,7 @@ type SlotKind int
 const (
 	SlotKindCoding    SlotKind = iota // 编程任务 — max 1
 	SlotKindScheduled                 // 定时任务 — max 1
-	SlotKindAuto                      // ClawNet 自动任务 — max 1
+	SlotKindAuto                      // AgentNet 自动任务 — max 1
 	SlotKindSSH                       // SSH 远程会话 — max 10
 	SlotKindBrowser                   // 浏览器任务 — max 2
 	SlotKindGUI                       // GUI 桌面自动化任务 — max 1

@@ -1,72 +1,59 @@
 package main
 
-// clawnet_installer.go — Auto-download ClawNet binary from GitHub Releases.
-// When the clawnet binary is not found locally, downloads the correct
-// precompiled binary for the current OS/arch from:
-//   https://github.com/ChatChatTech/ClawNet/releases/latest/download/clawnet-{os}-{arch}[.exe]
-// Saves to ~/.openclaw/clawnet/clawnet[.exe] and makes it executable.
+// agentnet_installer.go — Auto-install anet binary via official installer.
+// When the anet binary is not found locally, installs using:
+//   Linux/macOS: curl -fsSL https://clawnet.cc/install.sh | sh
+//   Windows:     irm https://clawnet.cc/install.ps1 | iex
+// Fallback: direct HTTP download from https://clawnet.cc/download/anet-{os}-{arch}[.exe]
 
 import (
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"time"
 )
 
 const (
-	clawnetGitHubReleasesBase = "https://github.com/ChatChatTech/ClawNet/releases/latest/download"
+	anetInstallScriptURL     = "https://clawnet.cc/install.sh"
+	anetInstallPowerShellURL = "https://clawnet.cc/install.ps1"
+	anetDirectDownloadBase   = "https://clawnet.cc/download"
 )
 
-// supportedOS lists the operating systems for which prebuilt binaries exist.
-var supportedOS = map[string]bool{"windows": true, "darwin": true, "linux": true}
-
-// supportedArch lists the architectures for which prebuilt binaries exist.
-var supportedArch = map[string]bool{"amd64": true, "arm64": true}
-
-// clawnetAssetName returns the expected release asset filename for the current platform.
-// Pattern: clawnet-{os}-{arch}[.exe]
-func clawnetAssetName() (string, error) {
-	if !supportedOS[runtime.GOOS] {
-		return "", fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-	if !supportedArch[runtime.GOARCH] {
-		return "", fmt.Errorf("unsupported arch: %s", runtime.GOARCH)
-	}
-	name := fmt.Sprintf("clawnet-%s-%s", runtime.GOOS, runtime.GOARCH)
+// anetLocalBinaryName returns "anet.exe" on Windows, "anet" otherwise.
+func anetLocalBinaryName() string {
 	if runtime.GOOS == "windows" {
-		name += ".exe"
+		return "anet.exe"
 	}
-	return name, nil
+	return "anet"
 }
 
-// clawnetInstallDir returns ~/.openclaw/clawnet/
-func clawnetInstallDir() (string, error) {
+// anetInstallDir returns the expected install directory for the anet binary.
+// Windows: %LOCALAPPDATA%\anet   (or ~/.anet as fallback)
+// Others:  ~/.anet
+func anetInstallDir() (string, error) {
+	if runtime.GOOS == "windows" {
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			return filepath.Join(localAppData, "anet"), nil
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	return filepath.Join(home, ".openclaw", "clawnet"), nil
+	return filepath.Join(home, ".anet"), nil
 }
 
-// clawnetLocalBinaryName returns "clawnet.exe" on Windows, "clawnet" otherwise.
-func clawnetLocalBinaryName() string {
-	if runtime.GOOS == "windows" {
-		return "clawnet.exe"
-	}
-	return "clawnet"
-}
-
-// clawnetManualBinaryPath checks if the user has manually placed a clawnet binary
-// at ~/.openclaw/clawnet/clawnet (or .exe on Windows). Returns the path if found.
-func clawnetManualBinaryPath() (string, bool) {
-	installDir, err := clawnetInstallDir()
+// anetManualBinaryPath checks if the anet binary exists in the install dir.
+func anetManualBinaryPath() (string, bool) {
+	dir, err := anetInstallDir()
 	if err != nil {
 		return "", false
 	}
-	p := filepath.Join(installDir, clawnetLocalBinaryName())
+	p := filepath.Join(dir, anetLocalBinaryName())
 	info, err := os.Stat(p)
 	if err == nil && !info.IsDir() && info.Size() > 0 {
 		return p, true
@@ -74,74 +61,129 @@ func clawnetManualBinaryPath() (string, bool) {
 	return "", false
 }
 
-// DownloadClawNet downloads the clawnet binary from GitHub Releases.
-// It accepts an optional emitProgress callback for reporting status to the frontend.
+// DownloadAnet installs the anet binary using the official installer script.
+// On Linux/macOS: curl -fsSL https://clawnet.cc/install.sh | sh
+// On Windows: irm https://clawnet.cc/install.ps1 | iex (fallback: direct download)
 // Returns the path to the installed binary.
-func DownloadClawNet(emitProgress func(stage string, pct int, msg string)) (string, error) {
+func DownloadAnet(emitProgress func(stage string, pct int, msg string)) (string, error) {
 	emit := func(stage string, pct int, msg string) {
 		if emitProgress != nil {
 			emitProgress(stage, pct, msg)
 		}
 	}
 
-	asset, err := clawnetAssetName()
-	if err != nil {
-		return "", err
+	// Check if already installed
+	if p, ok := anetManualBinaryPath(); ok {
+		emit("done", 100, fmt.Sprintf("Using existing binary → %s", p))
+		return p, nil
 	}
-
-	installDir, err := clawnetInstallDir()
-	if err != nil {
-		return "", err
-	}
-
-	if err := os.MkdirAll(installDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create install directory %s: %w", installDir, err)
-	}
-
-	targetPath := filepath.Join(installDir, clawnetLocalBinaryName())
-
-	// Check for a manually placed binary before attempting download.
-	if p, ok := clawnetManualBinaryPath(); ok {
-		emit("done", 100, fmt.Sprintf("Using manually installed binary → %s", p))
+	if p, err := exec.LookPath("anet"); err == nil {
+		emit("done", 100, fmt.Sprintf("Using anet from PATH → %s", p))
 		return p, nil
 	}
 
-	downloadURL := fmt.Sprintf("%s/%s", clawnetGitHubReleasesBase, asset)
+	emit("downloading", 10, "Installing anet via official installer...")
 
-	emit("downloading", 0, fmt.Sprintf("Downloading %s ...", asset))
-
-	client := &http.Client{
-		Timeout: 10 * time.Minute, // generous timeout for large binaries
+	dir, err := anetInstallDir()
+	if err != nil {
+		return "", err
 	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create install directory %s: %w", dir, err)
+	}
+
+	targetPath := filepath.Join(dir, anetLocalBinaryName())
+
+	if runtime.GOOS == "windows" {
+		err = anetInstallWindows(emit)
+	} else {
+		err = anetInstallUnix(emit)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	// Verify installation
+	if p, ok := anetManualBinaryPath(); ok {
+		emit("done", 100, fmt.Sprintf("AgentNet installed → %s", p))
+		return p, nil
+	}
+	if p, err := exec.LookPath("anet"); err == nil {
+		emit("done", 100, fmt.Sprintf("AgentNet installed → %s", p))
+		return p, nil
+	}
+
+	return "", fmt.Errorf(
+		"[agentnet-not-available] 🌐 AgentNet installation failed for %s/%s\n\n"+
+			"You can manually install by running:\n"+
+			"  curl -fsSL https://clawnet.cc/install.sh | sh\n\n"+
+			"Or place the anet binary at:\n  %s",
+		runtime.GOOS, runtime.GOARCH, targetPath,
+	)
+}
+
+func anetInstallUnix(emit func(string, int, string)) error {
+	emit("downloading", 30, "Running: curl -fsSL https://clawnet.cc/install.sh | sh")
+	cmd := exec.Command("sh", "-c", "curl -fsSL https://clawnet.cc/install.sh | sh")
+	cmd.Env = append(os.Environ(), "ANET_NO_INTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("installer failed: %w\n%s", err, string(out))
+	}
+	emit("downloading", 90, "Installation script completed")
+	return nil
+}
+
+func anetInstallWindows(emit func(string, int, string)) error {
+	emit("downloading", 30, "Running PowerShell installer...")
+	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+		"-Command", fmt.Sprintf("irm %s | iex", anetInstallPowerShellURL))
+	hideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		emit("downloading", 50, "PowerShell installer failed, trying direct download...")
+		return anetDownloadDirect(emit)
+	}
+	_ = out
+	emit("downloading", 90, "Installation completed")
+	return nil
+}
+
+// anetDownloadDirect is a fallback that downloads the binary directly via HTTP.
+func anetDownloadDirect(emit func(string, int, string)) error {
+	asset := fmt.Sprintf("anet-%s-%s", runtime.GOOS, runtime.GOARCH)
+	if runtime.GOOS == "windows" {
+		asset += ".exe"
+	}
+
+	downloadURL := fmt.Sprintf("%s/%s", anetDirectDownloadBase, asset)
+	emit("downloading", 55, fmt.Sprintf("Downloading %s ...", asset))
+
+	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(downloadURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to download clawnet: %w", err)
+		return fmt.Errorf("failed to download anet: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// Drain body so the connection can be reused.
 		io.Copy(io.Discard, resp.Body)
-		return "", fmt.Errorf(
-			"[clawnet-not-available] 🦞 ClawNet %s/%s not yet available\n\n"+
-				"The author hasn't published a prebuilt binary for your platform yet.\n"+
-				"This is not your fault — just waiting on an upstream release.\n\n"+
-				"You can manually place the binary at:\n  %s\n"+
-				"and it will be picked up automatically next time.",
-			runtime.GOOS, runtime.GOARCH,
-			targetPath,
-		)
+		return fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	totalSize := resp.ContentLength // may be -1 if unknown
-
-	// Write to a temp file first, then rename for atomicity.
+	dir, err := anetInstallDir()
+	if err != nil {
+		return err
+	}
+	targetPath := filepath.Join(dir, anetLocalBinaryName())
 	tmpPath := targetPath + ".download"
+
 	outFile, err := os.Create(tmpPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %w", err)
+		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 
+	totalSize := resp.ContentLength
 	var written int64
 	buf := make([]byte, 64*1024)
 	lastPct := -1
@@ -151,16 +193,16 @@ func DownloadClawNet(emitProgress func(stage string, pct int, msg string)) (stri
 			if _, wErr := outFile.Write(buf[:n]); wErr != nil {
 				outFile.Close()
 				os.Remove(tmpPath)
-				return "", fmt.Errorf("write error: %w", wErr)
+				return fmt.Errorf("write error: %w", wErr)
 			}
 			written += int64(n)
 			if totalSize > 0 {
-				pct := int(written * 100 / totalSize)
+				pct := 55 + int(written*40/totalSize)
 				if pct != lastPct {
 					lastPct = pct
 					mb := float64(written) / (1024 * 1024)
 					totalMB := float64(totalSize) / (1024 * 1024)
-					emit("downloading", pct, fmt.Sprintf("%.1f / %.1f MB (%d%%)", mb, totalMB, pct))
+					emit("downloading", pct, fmt.Sprintf("%.1f / %.1f MB (%d%%)", mb, totalMB, pct-55))
 				}
 			}
 		}
@@ -170,31 +212,22 @@ func DownloadClawNet(emitProgress func(stage string, pct int, msg string)) (stri
 			}
 			outFile.Close()
 			os.Remove(tmpPath)
-			return "", fmt.Errorf("download interrupted: %w", readErr)
+			return fmt.Errorf("download interrupted: %w", readErr)
 		}
 	}
-	if err := outFile.Sync(); err != nil {
-		outFile.Close()
-		os.Remove(tmpPath)
-		return "", fmt.Errorf("sync error: %w", err)
-	}
-	if err := outFile.Close(); err != nil {
-		os.Remove(tmpPath)
-		return "", fmt.Errorf("close error: %w", err)
-	}
+	outFile.Sync()
+	outFile.Close()
 
-	// Remove old binary if present, then rename temp → final.
 	os.Remove(targetPath)
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("failed to install binary: %w", err)
+		return fmt.Errorf("failed to install binary: %w", err)
 	}
 
-	// Make executable on unix
 	if runtime.GOOS != "windows" {
 		os.Chmod(targetPath, 0755)
 	}
 
-	emit("done", 100, fmt.Sprintf("ClawNet installed → %s", targetPath))
-	return targetPath, nil
+	emit("downloading", 95, "Direct download completed")
+	return nil
 }

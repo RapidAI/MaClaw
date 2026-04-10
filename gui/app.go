@@ -1056,9 +1056,9 @@ func (a *App) startup(ctx context.Context) {
 			}
 			a.ensureCodeGenProxyIfNeeded()
 		}()
-		// Kill residual ClawNet daemon when disabled in config.
+		// Kill residual AgentNet daemon when disabled in config.
 		// The daemon is a standalone process that survives app restarts;
-		// if the user unchecked "enable ClawNet" but the app was force-killed
+		// if the user unchecked "enable AgentNet" but the app was force-killed
 		// before shutdown could stop it, the daemon lingers. Clean it up now.
 		// Use a temporary client to avoid leaving a.clawNetClient initialized
 		// (which would cause shutdown() to redundantly call StopDaemon).
@@ -1066,7 +1066,7 @@ func (a *App) startup(ctx context.Context) {
 			go func() {
 				tmp := NewClawNetClient()
 				if tmp.IsRunning() {
-					a.log("ClawNet: stopping residual daemon (clawnet_enabled=false)")
+					a.log("AgentNet: stopping residual daemon (agentnet_enabled=false)")
 					tmp.StopDaemon()
 				}
 			}()

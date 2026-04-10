@@ -10,6 +10,10 @@ import {
 import { colors, radius } from "./styles";
 import { cnCard, cnLabel, cnInput, cnActionBtn, cnTabStyle } from "./agentnetStyles";
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
 type Props = { lang: string; clawNetRunning: boolean };
 
 interface KnowledgeEntry {
@@ -19,7 +23,6 @@ interface KnowledgeEntry {
 }
 
 export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
-    const zh = lang?.startsWith("zh");
     const [tab, setTab] = useState<"feed" | "search" | "publish">("feed");
     const [entries, setEntries] = useState<KnowledgeEntry[]>([]);
     const [loading, setLoading] = useState(false);
@@ -67,7 +70,7 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
         try {
             const tags = pubTags.split(",").map(s => s.trim()).filter(Boolean);
             const res = await ClawNetPublishKnowledgeFull(pubTitle.trim(), pubBody.trim(), tags);
-            if (res.ok) { setPubMsg(zh ? "✅ 发布成功" : "✅ Published"); setPubTitle(""); setPubBody(""); setPubTags(""); }
+            if (res.ok) { setPubMsg(localizeText(lang, "✅ Published", "✅ 发布成功")); setPubTitle(""); setPubBody(""); setPubTags(""); }
             else setPubMsg(`❌ ${res.error}`);
         } catch (e: any) { setPubMsg(`❌ ${e.message}`); }
         setPubBusy(false);
@@ -102,41 +105,41 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
         setReplyBusy(false);
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{zh ? "智网未连接" : "ClawNet not connected"}</div>;
+    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>
             <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
-                <button style={cnTabStyle(tab === "feed")} onClick={() => setTab("feed")}>{zh ? "知识流" : "Feed"}</button>
-                <button style={cnTabStyle(tab === "search")} onClick={() => setTab("search")}>{zh ? "搜索" : "Search"}</button>
-                <button style={cnTabStyle(tab === "publish")} onClick={() => setTab("publish")}>{zh ? "发布" : "Publish"}</button>
+                <button style={cnTabStyle(tab === "feed")} onClick={() => setTab("feed")}>{localizeText(lang, "Feed", "知识流")}</button>
+                <button style={cnTabStyle(tab === "search")} onClick={() => setTab("search")}>{localizeText(lang, "Search", "搜索")}</button>
+                <button style={cnTabStyle(tab === "publish")} onClick={() => setTab("publish")}>{localizeText(lang, "Publish", "发布")}</button>
             </div>
 
             {tab === "search" && (
                 <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
-                    <input value={query} onChange={e => setQuery(e.target.value)} placeholder={zh ? "搜索知识..." : "Search knowledge..."}
+                    <input value={query} onChange={e => setQuery(e.target.value)} placeholder={localizeText(lang, "Search knowledge...", "搜索知识...")}
                         style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && doSearch()} />
                     <button style={cnActionBtn(loading || !query.trim())} onClick={doSearch} disabled={loading || !query.trim()}>
-                        {loading ? "..." : (zh ? "搜索" : "Search")}
+                        {loading ? "..." : localizeText(lang, "Search", "搜索")}
                     </button>
                 </div>
             )}
 
             {tab === "publish" && (
                 <div style={{ ...cnCard, background: colors.bg }}>
-                    <input value={pubTitle} onChange={e => setPubTitle(e.target.value)} placeholder={zh ? "标题" : "Title"} style={{ ...cnInput, marginBottom: "6px" }} />
-                    <textarea value={pubBody} onChange={e => setPubBody(e.target.value)} placeholder={zh ? "内容（支持 Markdown）" : "Body (Markdown supported)"}
+                    <input value={pubTitle} onChange={e => setPubTitle(e.target.value)} placeholder={localizeText(lang, "Title", "标题")} style={{ ...cnInput, marginBottom: "6px" }} />
+                    <textarea value={pubBody} onChange={e => setPubBody(e.target.value)} placeholder={localizeText(lang, "Body (Markdown supported)", "内容（支持 Markdown）")}
                         style={{ ...cnInput, minHeight: "80px", resize: "vertical", marginBottom: "6px" }} />
-                    <input value={pubTags} onChange={e => setPubTags(e.target.value)} placeholder={zh ? "标签（逗号分隔）" : "Tags (comma separated)"} style={{ ...cnInput, marginBottom: "8px" }} />
+                    <input value={pubTags} onChange={e => setPubTags(e.target.value)} placeholder={localizeText(lang, "Tags (comma separated)", "标签（逗号分隔）")} style={{ ...cnInput, marginBottom: "8px" }} />
                     <button style={cnActionBtn(pubBusy || !pubTitle.trim() || !pubBody.trim())} onClick={handlePublish} disabled={pubBusy || !pubTitle.trim() || !pubBody.trim()}>
-                        {pubBusy ? "..." : (zh ? "发布知识" : "Publish")}
+                        {pubBusy ? "..." : localizeText(lang, "Publish", "发布知识")}
                     </button>
                     {pubMsg && <div style={{ fontSize: "0.72rem", marginTop: "6px", color: pubMsg.startsWith("✅") ? colors.success : colors.danger }}>{pubMsg}</div>}
                 </div>
             )}
 
             {error && <div style={{ fontSize: "0.72rem", color: colors.danger, marginBottom: "8px" }}>{error}</div>}
-            {(tab === "feed" || tab === "search") && loading && <div style={cnLabel}>{zh ? "加载中..." : "Loading..."}</div>}
+            {(tab === "feed" || tab === "search") && loading && <div style={cnLabel}>{localizeText(lang, "Loading...", "加载中...")}</div>}
 
             {(tab === "feed" || tab === "search") && entries.map(e => (
                 <div key={e.id} style={cnCard}>
@@ -154,7 +157,7 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
                             </button>
                         ))}
                         <button onClick={() => toggleReplies(e.id)} style={{ ...cnActionBtn(), padding: "2px 8px", fontSize: "0.68rem" }}>
-                            {zh ? "回复" : "Replies"}
+                            {localizeText(lang, "Replies", "回复")}
                         </button>
                     </div>
                     {expandedId === e.id && (
@@ -165,10 +168,10 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
                                 </div>
                             ))}
                             <div style={{ display: "flex", gap: "4px", marginTop: "4px" }}>
-                                <input value={replyText} onChange={e => setReplyText(e.target.value)} placeholder={zh ? "回复..." : "Reply..."}
+                                <input value={replyText} onChange={e => setReplyText(e.target.value)} placeholder={localizeText(lang, "Reply...", "回复...")}
                                     style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && handleReply()} />
                                 <button style={cnActionBtn(replyBusy || !replyText.trim())} onClick={handleReply} disabled={replyBusy}>
-                                    {zh ? "发送" : "Send"}
+                                    {localizeText(lang, "Send", "发送")}
                                 </button>
                             </div>
                         </div>
@@ -176,7 +179,7 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
                 </div>
             ))}
             {(tab === "feed" || tab === "search") && !loading && entries.length === 0 && (
-                <div style={cnLabel}>{zh ? "暂无内容" : "No entries yet"}</div>
+                <div style={cnLabel}>{localizeText(lang, "No entries yet", "暂无内容")}</div>
             )}
         </div>
     );

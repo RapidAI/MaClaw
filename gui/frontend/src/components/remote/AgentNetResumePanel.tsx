@@ -10,10 +10,13 @@ import {
 import { colors, radius } from "./styles";
 import { cnCard, cnLabel, cnHeading, cnInput, cnActionBtn, cnTabStyle } from "./agentnetStyles";
 
+const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
 type Props = { lang: string; clawNetRunning: boolean };
 
 export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
-    const zh = lang?.startsWith("zh");
     const [tab, setTab] = useState<"resume" | "search">("resume");
 
     // Resume
@@ -77,7 +80,7 @@ export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
             ]);
             const failed = saveResults.find((r: any) => !r.ok);
             if (failed) setMsg(`❌ ${(failed as any).error}`);
-            else setMsg(zh ? "✅ 已保存" : "✅ Saved");
+            else setMsg(localizeText(lang, "✅ Saved", "✅ 已保存"));
         } catch (e: any) { setMsg(`❌ ${e.message}`); }
         if (mountedRef.current) setSaving(false);
     };
@@ -92,50 +95,50 @@ export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
         if (mountedRef.current) setSearching(false);
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{zh ? "智网未连接" : "ClawNet not connected"}</div>;
+    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
 
     const viewBtnStyle: CSSProperties = { marginLeft: "auto", fontSize: "0.65rem", padding: "2px 10px", borderRadius: radius.pill, border: `1px solid ${colors.border}`, background: colors.accentBg, color: colors.primary, cursor: "pointer", fontWeight: 600, lineHeight: "1.6" };
 
     return (
         <div style={{ padding: "10px 14px" }}>
             <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
-                <button style={cnTabStyle(tab === "resume")} onClick={() => setTab("resume")}>📋 {zh ? "简历" : "Resume"}</button>
-                <button style={cnTabStyle(tab === "search")} onClick={() => setTab("search")}>🔍 {zh ? "全文搜索" : "Search"}</button>
+                <button style={cnTabStyle(tab === "resume")} onClick={() => setTab("resume")}>📋 {localizeText(lang, "Resume", "简历")}</button>
+                <button style={cnTabStyle(tab === "search")} onClick={() => setTab("search")}>🔍 {localizeText(lang, "Search", "全文搜索")}</button>
             </div>
 
             {tab === "resume" && (
                 <div>
                     <div style={cnCard}>
-                        <div style={cnHeading}>👤 {zh ? "个人资料" : "Profile"}</div>
+                        <div style={cnHeading}>👤 {localizeText(lang, "Profile", "个人资料")}</div>
                         <div style={{ marginBottom: "6px" }}>
-                            <div style={cnLabel}>{zh ? "名称" : "Name"}</div>
-                            <input value={name} onChange={e => setName(e.target.value)} placeholder={zh ? "你的名称" : "Your name"} style={cnInput} />
+                            <div style={cnLabel}>{localizeText(lang, "Name", "名称")}</div>
+                            <input value={name} onChange={e => setName(e.target.value)} placeholder={localizeText(lang, "Your name", "你的名称")} style={cnInput} />
                         </div>
                         <div style={{ marginBottom: "6px" }}>
-                            <div style={cnLabel}>{zh ? "座右铭" : "Motto"}</div>
-                            <input value={motto} onChange={e => setMotto(e.target.value)} placeholder={zh ? "一句话介绍" : "One-liner"} style={cnInput} />
+                            <div style={cnLabel}>{localizeText(lang, "Motto", "座右铭")}</div>
+                            <input value={motto} onChange={e => setMotto(e.target.value)} placeholder={localizeText(lang, "One-liner", "一句话介绍")} style={cnInput} />
                         </div>
                     </div>
                     <div style={cnCard}>
-                        <div style={cnHeading}>🛠 {zh ? "技能与领域" : "Skills & Domains"}</div>
+                        <div style={cnHeading}>🛠 {localizeText(lang, "Skills & Domains", "技能与领域")}</div>
                         <div style={{ marginBottom: "6px" }}>
-                            <div style={cnLabel}>{zh ? "技能（逗号分隔）" : "Skills (comma separated)"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Skills (comma separated)", "技能（逗号分隔）")}</div>
                             <input value={skills} onChange={e => setSkills(e.target.value)}
-                                placeholder="research, coding, translation, analysis" style={cnInput} />
+                                placeholder={localizeText(lang, "research, coding, translation, analysis", "研究, 编码, 翻译, 分析") } style={cnInput} />
                         </div>
                         <div style={{ marginBottom: "6px" }}>
-                            <div style={cnLabel}>{zh ? "领域（逗号分隔）" : "Domains (comma separated)"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Domains (comma separated)", "领域（逗号分隔）")}</div>
                             <input value={domains} onChange={e => setDomains(e.target.value)}
-                                placeholder="AI, web-dev, data-science" style={cnInput} />
+                                placeholder={localizeText(lang, "AI, web-dev, data-science", "AI, Web 开发, 数据科学")} style={cnInput} />
                         </div>
                         <div style={{ marginBottom: "8px" }}>
-                            <div style={cnLabel}>{zh ? "简介" : "Bio"}</div>
+                            <div style={cnLabel}>{localizeText(lang, "Bio", "简介")}</div>
                             <textarea value={bio} onChange={e => setBio(e.target.value)}
-                                placeholder={zh ? "描述你的能力和特长..." : "Describe your capabilities..."}
+                                placeholder={localizeText(lang, "Describe your capabilities...", "描述你的能力和特长...")}
                                 style={{ ...cnInput, minHeight: "60px", resize: "vertical" }} />
                         </div>
                         <button style={cnActionBtn(saving)} onClick={handleSave} disabled={saving}>
-                            {saving ? "..." : (zh ? "保存简历" : "Save Resume")}
+                            {saving ? "..." : localizeText(lang, "Save Resume", "保存简历")}
                         </button>
                         {msg && <div style={{ fontSize: "0.72rem", marginTop: "6px", color: msg.startsWith("✅") ? colors.success : colors.danger }}>{msg}</div>}
                     </div>
@@ -146,10 +149,10 @@ export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
                 <div>
                     <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
                         <input value={query} onChange={e => setQuery(e.target.value)}
-                            placeholder={zh ? "搜索知识、文档、Agent..." : "Search knowledge, docs, agents..."}
+                            placeholder={localizeText(lang, "Search knowledge, docs, agents...", "搜索知识、文档、Agent...")}
                             style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && doSearch()} />
                         <button style={cnActionBtn(searching || !query.trim())} onClick={doSearch} disabled={searching || !query.trim()}>
-                            {searching ? "..." : (zh ? "搜索" : "Search")}
+                            {searching ? "..." : localizeText(lang, "Search", "搜索")}
                         </button>
                     </div>
                     {results.map((r: any, i: number) => (
@@ -159,11 +162,11 @@ export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
                             <div style={{ display: "flex", gap: "8px", marginTop: "4px", alignItems: "center" }}>
                                 {r.author && <span style={{ fontSize: "0.65rem", color: colors.textMuted }}>{(r.author || "").slice(0, 12)}…</span>}
                                 {r.domains?.map((d: string) => <span key={d} style={{ fontSize: "0.65rem", padding: "1px 6px", background: colors.accentBg, borderRadius: radius.pill, color: colors.textSecondary }}>{d}</span>)}
-                                {r.body && <button onClick={() => setViewingEntry(r)} style={viewBtnStyle}>{zh ? "查看" : "View"}</button>}
+                                {r.body && <button onClick={() => setViewingEntry(r)} style={viewBtnStyle}>{localizeText(lang, "View", "查看")}</button>}
                             </div>
                         </div>
                     ))}
-                    {!searching && results.length === 0 && query && <div style={cnLabel}>{zh ? "无结果" : "No results"}</div>}
+                    {!searching && results.length === 0 && query && <div style={cnLabel}>{localizeText(lang, "No results", "无结果")}</div>}
                 </div>
             )}
 
@@ -172,7 +175,7 @@ export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
                     <div onClick={e => e.stopPropagation()} style={{ background: colors.bg, borderRadius: radius.lg, maxWidth: "640px", width: "100%", maxHeight: "80vh", display: "flex", flexDirection: "column", boxShadow: "0 8px 32px rgba(0,0,0,0.25)" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", borderBottom: `1px solid ${colors.border}` }}>
                             <span style={{ fontSize: "0.82rem", fontWeight: 700, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{viewingEntry.title}</span>
-                            <button onClick={() => setViewingEntry(null)} aria-label="Close" style={{ fontSize: "0.78rem", padding: "4px 12px", borderRadius: radius.pill, border: `1px solid ${colors.border}`, background: "transparent", color: colors.textSecondary, cursor: "pointer", fontWeight: 600, flexShrink: 0, marginLeft: "12px" }}>✕</button>
+                            <button onClick={() => setViewingEntry(null)} aria-label={localizeText(lang, "Close", "关闭")} style={{ fontSize: "0.78rem", padding: "4px 12px", borderRadius: radius.pill, border: `1px solid ${colors.border}`, background: "transparent", color: colors.textSecondary, cursor: "pointer", fontWeight: 600, flexShrink: 0, marginLeft: "12px" }}>✕</button>
                         </div>
                         <div style={{ padding: "16px", overflowY: "auto", flex: 1 }}>
                             <div style={{ fontSize: "0.76rem", color: colors.text, whiteSpace: "pre-wrap", lineHeight: "1.7" }}>{viewingEntry.body}</div>

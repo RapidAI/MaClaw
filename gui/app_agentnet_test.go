@@ -38,11 +38,11 @@ func TestClawNetEnsureDaemonDisabledReturnsErrorWithoutInit(t *testing.T) {
 		t.Fatalf("expected ok=false, got %#v", result)
 	}
 	errMsg, _ := result["error"].(string)
-	if !strings.Contains(errMsg, "clawnet is disabled in settings") {
+	if !strings.Contains(errMsg, "agentnet is disabled in settings") {
 		t.Fatalf("expected disabled error, got %#v", result)
 	}
 	if app.clawNetClient != nil {
-		t.Fatal("expected clawNetClient to remain nil when ClawNet is disabled")
+		t.Fatal("expected clawNetClient to remain nil when AgentNet is disabled")
 	}
 }
 
@@ -57,11 +57,11 @@ func TestClawNetEnsureDaemonWithDownloadDisabledReturnsErrorWithoutInit(t *testi
 		t.Fatalf("expected ok=false, got %#v", result)
 	}
 	errMsg, _ := result["error"].(string)
-	if !strings.Contains(errMsg, "clawnet is disabled in settings") {
+	if !strings.Contains(errMsg, "agentnet is disabled in settings") {
 		t.Fatalf("expected disabled error, got %#v", result)
 	}
 	if app.clawNetClient != nil {
-		t.Fatal("expected clawNetClient to remain nil when ClawNet is disabled")
+		t.Fatal("expected clawNetClient to remain nil when AgentNet is disabled")
 	}
 }
 
@@ -77,7 +77,7 @@ func TestClawNetAutoPickerConfigureRejectsEnableWhenClawNetDisabled(t *testing.T
 		t.Fatalf("expected ok=false, got %#v", result)
 	}
 	errMsg, _ := result["error"].(string)
-	if !strings.Contains(errMsg, "clawnet is disabled in settings") {
+	if !strings.Contains(errMsg, "agentnet is disabled in settings") {
 		t.Fatalf("expected disabled error, got %#v", result)
 	}
 	if app.autoTaskPicker == nil {
@@ -96,7 +96,7 @@ func TestClawNetAutoPickerConfigureRejectsEnableWhenClawNetDisabled(t *testing.T
 		t.Fatalf("LoadConfig() after configure error = %v", err)
 	}
 	if saved.AgentNetAutoPickerEnabled {
-		t.Fatal("expected saved AgentNetAutoPickerEnabled=false when ClawNet is disabled")
+		t.Fatal("expected saved AgentNetAutoPickerEnabled=false when AgentNet is disabled")
 	}
 }
 

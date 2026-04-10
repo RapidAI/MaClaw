@@ -59,24 +59,24 @@ func NewConfigModel(lang string) ConfigModel {
 
 	return ConfigModel{
 		entries: []ConfigEntry{
-			{Key: "hub_url", Value: "", Desc: "Hub server URL", Section: "general"},
-			{Key: "token", Value: "", Desc: "auth token", Section: "general"},
-			{Key: "data_dir", Value: "", Desc: "data directory", Section: "general"},
-			{Key: "max_iterations", Value: "300", Desc: "Agent max iterations (30-300)", Section: "general"},
-			{Key: "agentnet_enabled", Value: "false", Desc: "enable AgentNet", Section: "general"},
+			{Key: "hub_url", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescHubURL, lang), Section: "general"},
+			{Key: "token", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescToken, lang), Section: "general"},
+			{Key: "data_dir", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescDataDir, lang), Section: "general"},
+			{Key: "max_iterations", Value: "300", Desc: i18n.T(i18n.MsgTUIConfigDescMaxIterations, lang), Section: "general"},
+			{Key: "agentnet_enabled", Value: "false", Desc: i18n.T(i18n.MsgTUIConfigDescAgentNetEnabled, lang), Section: "general"},
 			// LLM config
-			{Key: "maclaw_llm_url", Value: "", Desc: "LLM API URL", Section: "maclaw_llm"},
-			{Key: "maclaw_llm_key", Value: "", Desc: "LLM API Key", Section: "maclaw_llm"},
-			{Key: "maclaw_llm_model", Value: "", Desc: "LLM model name", Section: "maclaw_llm"},
-			{Key: "maclaw_llm_protocol", Value: "openai", Desc: "LLM protocol (openai/anthropic)", Section: "maclaw_llm"},
-			{Key: "maclaw_llm_context_length", Value: "", Desc: "context length (tokens)", Section: "maclaw_llm"},
+			{Key: "maclaw_llm_url", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescLLMURL, lang), Section: "maclaw_llm"},
+			{Key: "maclaw_llm_key", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescLLMKey, lang), Section: "maclaw_llm"},
+			{Key: "maclaw_llm_model", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescLLMModel, lang), Section: "maclaw_llm"},
+			{Key: "maclaw_llm_protocol", Value: "openai", Desc: i18n.T(i18n.MsgTUIConfigDescLLMProtocol, lang), Section: "maclaw_llm"},
+			{Key: "maclaw_llm_context_length", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescLLMContextLength, lang), Section: "maclaw_llm"},
 			// IM config
-			{Key: "qqbot_enabled", Value: "false", Desc: "enable QQ bot", Section: "qqbot"},
-			{Key: "qqbot_app_id", Value: "", Desc: "QQ Bot AppID", Section: "qqbot"},
-			{Key: "qqbot_app_secret", Value: "", Desc: "QQ Bot AppSecret", Section: "qqbot"},
-			{Key: "telegram_bot_enabled", Value: "false", Desc: "enable Telegram bot", Section: "telegram"},
-			{Key: "telegram_bot_token", Value: "", Desc: "Telegram Bot Token", Section: "telegram"},
-			{Key: "skill_purchase_mode", Value: "auto", Desc: "Skill purchase mode (auto/free_only)", Section: "skillmarket"},
+			{Key: "qqbot_enabled", Value: "false", Desc: i18n.T(i18n.MsgTUIConfigDescQQBotEnabled, lang), Section: "qqbot"},
+			{Key: "qqbot_app_id", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescQQBotAppID, lang), Section: "qqbot"},
+			{Key: "qqbot_app_secret", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescQQBotAppSecret, lang), Section: "qqbot"},
+			{Key: "telegram_bot_enabled", Value: "false", Desc: i18n.T(i18n.MsgTUIConfigDescTelegramEnabled, lang), Section: "telegram"},
+			{Key: "telegram_bot_token", Value: "", Desc: i18n.T(i18n.MsgTUIConfigDescTelegramToken, lang), Section: "telegram"},
+			{Key: "skill_purchase_mode", Value: "auto", Desc: i18n.T(i18n.MsgTUIConfigDescSkillPurchaseMode, lang), Section: "skillmarket"},
 		},
 		input: ti,
 		lang:  lang,
@@ -86,6 +86,42 @@ func NewConfigModel(lang string) ConfigModel {
 // SetEntries updates config entries.
 func (m *ConfigModel) SetLang(lang string) {
 	m.lang = i18n.NormalizeLang(lang)
+	for i, e := range m.entries {
+		switch e.Key {
+		case "hub_url":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescHubURL, m.lang)
+		case "token":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescToken, m.lang)
+		case "data_dir":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescDataDir, m.lang)
+		case "max_iterations":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescMaxIterations, m.lang)
+		case "agentnet_enabled":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescAgentNetEnabled, m.lang)
+		case "maclaw_llm_url":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescLLMURL, m.lang)
+		case "maclaw_llm_key":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescLLMKey, m.lang)
+		case "maclaw_llm_model":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescLLMModel, m.lang)
+		case "maclaw_llm_protocol":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescLLMProtocol, m.lang)
+		case "maclaw_llm_context_length":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescLLMContextLength, m.lang)
+		case "qqbot_enabled":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescQQBotEnabled, m.lang)
+		case "qqbot_app_id":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescQQBotAppID, m.lang)
+		case "qqbot_app_secret":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescQQBotAppSecret, m.lang)
+		case "telegram_bot_enabled":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescTelegramEnabled, m.lang)
+		case "telegram_bot_token":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescTelegramToken, m.lang)
+		case "skill_purchase_mode":
+			m.entries[i].Desc = i18n.T(i18n.MsgTUIConfigDescSkillPurchaseMode, m.lang)
+		}
+	}
 }
 
 // SetEntries updates config entries.
