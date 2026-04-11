@@ -21,9 +21,9 @@ function renderStartupError(error: unknown) {
     if (!container) return
     const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
     container.innerHTML = `
-        <div style="font-family: Arial, sans-serif; padding: 24px; color: #111827; background: #ffffff; min-height: 100vh; box-sizing: border-box;">
-            <h2 style="margin: 0 0 12px; color: #dc2626;">${localizeStartupText('Startup error', '启动错误', '啟動錯誤')}</h2>
-            <pre style="white-space: pre-wrap; word-break: break-word; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px;">${message}</pre>
+        <div style="font-family: Arial, sans-serif; padding: 24px; color: var(--theme-text-primary, #111827); background: var(--theme-surface, #ffffff); min-height: 100vh; box-sizing: border-box;">
+            <h2 style="margin: 0 0 12px; color: var(--theme-danger, #dc2626);">${localizeStartupText('Startup error', '启动错误', '啟動錯誤')}</h2>
+            <pre style="white-space: pre-wrap; word-break: break-word; background: var(--theme-surface-muted, #f9fafb); border: 1px solid var(--theme-border, #e5e7eb); border-radius: 8px; padding: 12px;">${message}</pre>
         </div>
     `
 }

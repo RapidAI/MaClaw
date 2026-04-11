@@ -1401,6 +1401,15 @@ func (a *App) hubClient() *RemoteHubClient {
 	return a.remoteSessions.GetHubClient()
 }
 
+// ensureHubClient returns the existing RemoteHubClient or creates the fully
+// wired default instance used by the AI assistant and remote launch flows.
+func (a *App) ensureHubClient() *RemoteHubClient {
+	if hubClient := a.hubClient(); hubClient != nil {
+		return hubClient
+	}
+	return a.createAndWireHubClient()
+}
+
 // ---------------------------------------------------------------------------
 // Nutshell Integration
 // ---------------------------------------------------------------------------

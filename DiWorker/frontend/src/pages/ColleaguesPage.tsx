@@ -1,24 +1,43 @@
-import { useState } from 'react';
-import { colleagues } from '../mock/colleagues';
+import { useState, useEffect } from 'react';
+import { colleagues as mockColleagues } from '../mock/colleagues';
+import type { Colleague } from '../types';
 
 type Props = {
   selectedColleagueName: string;
   onPickColleagueTask: (task: string, colleagueName: string) => void;
 };
 
-const categories = [
-  { label: '全部', count: colleagues.length },
-  { label: '办公', count: colleagues.filter((c) => c.role.includes('办公')).length },
-  { label: '数据', count: colleagues.filter((c) => c.role.includes('数据')).length },
-  { label: '生产', count: colleagues.filter((c) => c.role.includes('生产')).length },
-  { label: '质量', count: colleagues.filter((c) => c.role.includes('质量')).length },
-];
+const hasWails = () => typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
+
+function buildCategories(list: Colleague[]) {
+  return [
+    { label: '全部', count: list.length },
+    { label: '办公', count: list.filter((c) => c.role.includes('办公')).length },
+    { label: '数据', count: list.filter((c) => c.role.includes('数据')).length },
+    { label: '生产', count: list.filter((c) => c.role.includes('生产')).length },
+    { label: '质量', count: list.filter((c) => c.role.includes('质量')).length },
+  ];
+}
 
 const avatarColors = ['#f3e8ff', '#fef3c7', '#dbeafe', '#dcfce7', '#fce7f3', '#e0e7ff'];
 const roleColors = ['#7c3aed', '#d97706', '#2563eb', '#16a34a', '#db2777', '#4f46e5'];
 
 export function ColleaguesPage({ selectedColleagueName, onPickColleagueTask }: Props) {
+  const [colleagues, setColleagues] = useState<Colleague[]>(mockColleagues);
   const [activeCategory, setActiveCategory] = useState('全部');
+
+  useEffect(() => {
+    if (!hasWails()) return;
+    (window as any).go.main.App.FetchColleagues()
+      .then((cols: Colleague[]) => {
+        if (Array.isArray(cols) && cols.length > 0) {
+          setColleagues(cols);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const categories = buildCategories(colleagues);
 
   const filtered = activeCategory === '全部'
     ? colleagues

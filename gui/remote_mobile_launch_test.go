@@ -68,6 +68,9 @@ func TestStartRemoteSessionForProjectResumeSessionIDPassThrough(t *testing.T) {
 	if provider.lastSpec.ResumeSessionID != "resume-123" {
 		t.Fatalf("ResumeSessionID = %q, want %q", provider.lastSpec.ResumeSessionID, "resume-123")
 	}
+	if !app.IsAIAssistantReady() {
+		t.Fatalf("expected AI assistant to be ready after mobile remote start, status=%q", app.GetAIAssistantInitStatus())
+	}
 }
 
 func TestStartRemoteSessionForProjectCodexResumeSessionIDPassThrough(t *testing.T) {

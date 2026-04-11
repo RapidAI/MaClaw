@@ -22,6 +22,8 @@ type DynamicToolBuilder struct {
 	enrichStore    *EnrichmentStore
 	tracker        *UsageTracker
 	reranker       Reranker         // nil when reranking is disabled
+	skillProvider  SkillProvider
+	skillBM25      *bm25.Index      // separate index for skill trigger matching
 }
 
 // NewDynamicToolBuilder creates a builder backed by the given registry.
@@ -31,7 +33,70 @@ func NewDynamicToolBuilder(registry *Registry) *DynamicToolBuilder {
 		maxDirectTools: 20,
 		maxDynamic:     15,
 		bm25Index:      bm25.New(),
+		skillBM25:      bm25.New(),
 	}
+}
+
+// SetSkillProvider sets the SkillProvider used for skill-aware routing.
+func (b *DynamicToolBuilder) SetSkillProvider(provider SkillProvider) {
+	b.skillProvider = provider
+	b.refreshSkillIndex()
+}
+
+// refreshSkillIndex rebuilds the skill BM25 index from the current SkillProvider.
+func (b *DynamicToolBuilder) refreshSkillIndex() {
+	if b.skillProvider == nil {
+		return
+	}
+	skills := b.skillProvider.ListActiveSkills()
+	docs := make([]bm25.Doc, len(skills))
+	for i, s := range skills {
+		text := s.Name + " " + s.Description + " " + strings.Join(s.Triggers, " ")
+		docs[i] = bm25.Doc{ID: s.Name, Text: text}
+	}
+	b.skillBM25.Rebuild(docs)
+}
+
+// RefreshSkillIndex forces a rebuild of the skill BM25 index.
+func (b *DynamicToolBuilder) RefreshSkillIndex() {
+	b.refreshSkillIndex()
+}
+
+// builderSkillMatchScore computes the best skill match score for the given user message.
+func (b *DynamicToolBuilder) builderSkillMatchScore(userMessage string) (float64, []string) {
+	if b.skillProvider == nil {
+		return 0, nil
+	}
+	// Index is built on SetSkillProvider / RefreshSkillIndex — no rebuild here.
+	scores := b.skillBM25.Score(userMessage)
+	if len(scores) == 0 {
+		return 0, nil
+	}
+	type entry struct {
+		name  string
+		score float64
+	}
+	var sorted []entry
+	for name, sc := range scores {
+		if sc > 0 {
+			sorted = append(sorted, entry{name, sc})
+		}
+	}
+	if len(sorted) == 0 {
+		return 0, nil
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
+	bestRaw := sorted[0].score
+	normBest := clampFloat(bestRaw/3.0, 0, 1)
+	n := 3
+	if len(sorted) < n {
+		n = len(sorted)
+	}
+	names := make([]string, n)
+	for i := 0; i < n; i++ {
+		names[i] = sorted[i].name
+	}
+	return normBest, names
 }
 
 // SetRegistry replaces the registry without discarding the cached BM25 index.
@@ -152,9 +217,16 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		bm25Scores = b.hybrid.FuseScores(userMessage, bm25Scores, embeddingTexts)
 	}
 
-	// Three-signal scoring: retrieval + experience + priority.
+	// Three-signal scoring: retrieval + experience + priority + skill_match.
 	queryTokens := bm25.Tokenize(userMessage)
 	normScores := minMaxNormalize(bm25Scores)
+
+	// Compute skill match score (fourth signal).
+	var skillScore float64
+	var matchedSkills []string
+	if b.skillProvider != nil {
+		skillScore, matchedSkills = b.builderSkillMatchScore(userMessage)
+	}
 
 	type scored struct {
 		tool  RegisteredTool
@@ -169,8 +241,16 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		}
 		priorityBonus := clampFloat(float64(t.Priority)*0.1, 0, 1)
 
+		// Skill match bonus: only applies to run_skill tool.
+		var skillBonus float64
+		if b.skillProvider != nil && t.Name == "run_skill" {
+			skillBonus = skillScore
+		}
+
 		var s float64
-		if b.tracker != nil {
+		if b.skillProvider != nil && b.tracker != nil {
+			s = 0.5*retrievalScore + 0.25*expScore + 0.15*skillBonus + 0.1*priorityBonus
+		} else if b.tracker != nil {
 			s = 0.6*retrievalScore + 0.3*expScore + 0.1*priorityBonus
 		} else {
 			s = 0.9*retrievalScore + 0.1*priorityBonus
@@ -239,7 +319,12 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 
 	out := make([]map[string]interface{}, 0, len(builtins)+len(groupActivated)+limit)
 	for _, t := range builtins {
-		out = append(out, RegisteredToolToDef(t))
+		def := RegisteredToolToDef(t)
+		// Enhance run_skill description with matched skill names.
+		if t.Name == "run_skill" && len(matchedSkills) > 0 && skillScore > 0.3 {
+			def = enrichRunSkillDescription(def, matchedSkills)
+		}
+		out = append(out, def)
 	}
 	for _, t := range groupActivated {
 		out = append(out, RegisteredToolToDef(t))

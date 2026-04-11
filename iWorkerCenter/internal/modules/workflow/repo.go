@@ -1,0 +1,290 @@
+package workflow
+
+import (
+	"database/sql"
+	"fmt"
+	"time"
+)
+
+// Repo provides persistence for workflow definitions, instances, steps, and events.
+type Repo struct {
+	write *sql.DB
+	read  *sql.DB
+}
+
+// NewRepo creates a Repo.
+func NewRepo(write, read *sql.DB) *Repo {
+	return &Repo{write: write, read: read}
+}
+
+// --- Definition CRUD ---
+
+func (r *Repo) InsertDefinition(d *Definition) error {
+	_, err := r.write.Exec(`INSERT INTO workflow_definitions (id, name, description, trigger_type, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?)`, d.ID, d.Name, d.Description, d.TriggerType, d.Status,
+		d.CreatedAt.Format(time.RFC3339), d.UpdatedAt.Format(time.RFC3339))
+	return err
+}
+
+func (r *Repo) InsertDefinitionTx(tx *sql.Tx, d *Definition) error {
+	_, err := tx.Exec(`INSERT INTO workflow_definitions (id, name, description, trigger_type, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?)`, d.ID, d.Name, d.Description, d.TriggerType, d.Status,
+		d.CreatedAt.Format(time.RFC3339), d.UpdatedAt.Format(time.RFC3339))
+	return err
+}
+
+func (r *Repo) UpdateDefinition(d *Definition) error {
+	res, err := r.write.Exec(`UPDATE workflow_definitions SET name=?, description=?, trigger_type=?, status=?, updated_at=? WHERE id=?`,
+		d.Name, d.Description, d.TriggerType, d.Status, d.UpdatedAt.Format(time.RFC3339), d.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("definition %s not found", d.ID)
+	}
+	return nil
+}
+
+func (r *Repo) GetDefinition(id string) (*Definition, error) {
+	row := r.read.QueryRow(`SELECT id, name, description, trigger_type, status, created_at, updated_at FROM workflow_definitions WHERE id=?`, id)
+	return scanDefinition(row)
+}
+
+func (r *Repo) ListDefinitions() ([]*Definition, error) {
+	rows, err := r.read.Query(`SELECT id, name, description, trigger_type, status, created_at, updated_at FROM workflow_definitions ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*Definition
+	for rows.Next() {
+		var d Definition
+		var ca, ua string
+		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.TriggerType, &d.Status, &ca, &ua); err != nil {
+			return nil, err
+		}
+		d.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+		d.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+		result = append(result, &d)
+	}
+	return result, rows.Err()
+}
+
+// --- Step Definition CRUD ---
+
+func (r *Repo) InsertStepDefinition(s *StepDefinition) error {
+	_, err := r.write.Exec(`INSERT INTO workflow_step_definitions
+		(id, workflow_id, step_code, step_name, step_type, assignee_mode, assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		s.ID, s.WorkflowID, s.StepCode, s.StepName, s.StepType,
+		s.AssigneeMode, s.AssigneeRoleCode, s.AssigneeColleagueID,
+		s.TimeoutMinutes, s.RejectRule, s.SortOrder)
+	return err
+}
+
+func (r *Repo) InsertStepDefinitionTx(tx *sql.Tx, s *StepDefinition) error {
+	_, err := tx.Exec(`INSERT INTO workflow_step_definitions
+		(id, workflow_id, step_code, step_name, step_type, assignee_mode, assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		s.ID, s.WorkflowID, s.StepCode, s.StepName, s.StepType,
+		s.AssigneeMode, s.AssigneeRoleCode, s.AssigneeColleagueID,
+		s.TimeoutMinutes, s.RejectRule, s.SortOrder)
+	return err
+}
+
+func (r *Repo) ListStepDefinitions(workflowID string) ([]*StepDefinition, error) {
+	rows, err := r.read.Query(`SELECT id, workflow_id, step_code, step_name, step_type, assignee_mode,
+		assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order
+		FROM workflow_step_definitions WHERE workflow_id=? ORDER BY sort_order`, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*StepDefinition
+	for rows.Next() {
+		var s StepDefinition
+		if err := rows.Scan(&s.ID, &s.WorkflowID, &s.StepCode, &s.StepName, &s.StepType,
+			&s.AssigneeMode, &s.AssigneeRoleCode, &s.AssigneeColleagueID,
+			&s.TimeoutMinutes, &s.RejectRule, &s.SortOrder); err != nil {
+			return nil, err
+		}
+		result = append(result, &s)
+	}
+	return result, rows.Err()
+}
+
+func (r *Repo) GetStepDefinition(id string) (*StepDefinition, error) {
+	row := r.read.QueryRow(`SELECT id, workflow_id, step_code, step_name, step_type, assignee_mode,
+		assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order
+		FROM workflow_step_definitions WHERE id=?`, id)
+	var s StepDefinition
+	if err := row.Scan(&s.ID, &s.WorkflowID, &s.StepCode, &s.StepName, &s.StepType,
+		&s.AssigneeMode, &s.AssigneeRoleCode, &s.AssigneeColleagueID,
+		&s.TimeoutMinutes, &s.RejectRule, &s.SortOrder); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// --- Instance CRUD ---
+
+func (r *Repo) InsertInstanceTx(tx *sql.Tx, inst *Instance) error {
+	_, err := tx.Exec(`INSERT INTO workflow_instances (id, definition_id, title, initiator_id, current_step_id, status, input_data, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?)`, inst.ID, inst.DefinitionID, inst.Title, inst.InitiatorID,
+		inst.CurrentStepID, inst.Status, inst.InputData,
+		inst.CreatedAt.Format(time.RFC3339), inst.UpdatedAt.Format(time.RFC3339))
+	return err
+}
+
+func (r *Repo) UpdateInstanceTx(tx *sql.Tx, inst *Instance) error {
+	_, err := tx.Exec(`UPDATE workflow_instances SET current_step_id=?, status=?, updated_at=? WHERE id=?`,
+		inst.CurrentStepID, inst.Status, inst.UpdatedAt.Format(time.RFC3339), inst.ID)
+	return err
+}
+
+func (r *Repo) GetInstance(id string) (*Instance, error) {
+	row := r.read.QueryRow(`SELECT id, definition_id, title, initiator_id, current_step_id, status, input_data, created_at, updated_at
+		FROM workflow_instances WHERE id=?`, id)
+	return scanInstance(row)
+}
+
+func (r *Repo) ListInstances() ([]*Instance, error) {
+	rows, err := r.read.Query(`SELECT id, definition_id, title, initiator_id, current_step_id, status, input_data, created_at, updated_at
+		FROM workflow_instances ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*Instance
+	for rows.Next() {
+		var inst Instance
+		var ca, ua string
+		if err := rows.Scan(&inst.ID, &inst.DefinitionID, &inst.Title, &inst.InitiatorID,
+			&inst.CurrentStepID, &inst.Status, &inst.InputData, &ca, &ua); err != nil {
+			return nil, err
+		}
+		inst.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+		inst.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+		result = append(result, &inst)
+	}
+	return result, rows.Err()
+}
+
+// --- Step Instance CRUD ---
+
+func (r *Repo) InsertStepInstanceTx(tx *sql.Tx, si *StepInstance) error {
+	_, err := tx.Exec(`INSERT INTO workflow_step_instances
+		(id, instance_id, step_definition_id, assignee_colleague_id, collaboration_task_id, status, result, sort_order, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		si.ID, si.InstanceID, si.StepDefinitionID, si.AssigneeColleagueID,
+		si.CollaborationTaskID, si.Status, si.Result, si.SortOrder,
+		si.CreatedAt.Format(time.RFC3339), si.UpdatedAt.Format(time.RFC3339))
+	return err
+}
+
+func (r *Repo) UpdateStepInstanceTx(tx *sql.Tx, si *StepInstance) error {
+	_, err := tx.Exec(`UPDATE workflow_step_instances SET status=?, result=?, collaboration_task_id=?, updated_at=? WHERE id=?`,
+		si.Status, si.Result, si.CollaborationTaskID, si.UpdatedAt.Format(time.RFC3339), si.ID)
+	return err
+}
+
+func (r *Repo) GetStepInstance(id string) (*StepInstance, error) {
+	row := r.read.QueryRow(`SELECT id, instance_id, step_definition_id, assignee_colleague_id, collaboration_task_id, status, result, sort_order, created_at, updated_at
+		FROM workflow_step_instances WHERE id=?`, id)
+	return scanStepInstance(row)
+}
+
+func (r *Repo) ListStepInstances(instanceID string) ([]*StepInstance, error) {
+	rows, err := r.read.Query(`SELECT id, instance_id, step_definition_id, assignee_colleague_id, collaboration_task_id, status, result, sort_order, created_at, updated_at
+		FROM workflow_step_instances WHERE instance_id=? ORDER BY sort_order`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*StepInstance
+	for rows.Next() {
+		si, err := scanStepInstanceRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, si)
+	}
+	return result, rows.Err()
+}
+
+// --- Instance Events ---
+
+func (r *Repo) InsertEventTx(tx *sql.Tx, e *InstanceEvent) error {
+	_, err := tx.Exec(`INSERT INTO workflow_instance_events (id, instance_id, step_id, event, actor_id, note, created_at)
+		VALUES (?,?,?,?,?,?,?)`, e.ID, e.InstanceID, e.StepID, e.Event, e.ActorID, e.Note, e.CreatedAt.Format(time.RFC3339))
+	return err
+}
+
+func (r *Repo) ListEvents(instanceID string) ([]*InstanceEvent, error) {
+	rows, err := r.read.Query(`SELECT id, instance_id, step_id, event, actor_id, note, created_at
+		FROM workflow_instance_events WHERE instance_id=? ORDER BY created_at`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*InstanceEvent
+	for rows.Next() {
+		var e InstanceEvent
+		var ca string
+		if err := rows.Scan(&e.ID, &e.InstanceID, &e.StepID, &e.Event, &e.ActorID, &e.Note, &ca); err != nil {
+			return nil, err
+		}
+		e.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+		result = append(result, &e)
+	}
+	return result, rows.Err()
+}
+
+// --- scan helpers ---
+
+func scanDefinition(row *sql.Row) (*Definition, error) {
+	var d Definition
+	var ca, ua string
+	if err := row.Scan(&d.ID, &d.Name, &d.Description, &d.TriggerType, &d.Status, &ca, &ua); err != nil {
+		return nil, err
+	}
+	d.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+	d.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	return &d, nil
+}
+
+func scanInstance(row *sql.Row) (*Instance, error) {
+	var inst Instance
+	var ca, ua string
+	if err := row.Scan(&inst.ID, &inst.DefinitionID, &inst.Title, &inst.InitiatorID,
+		&inst.CurrentStepID, &inst.Status, &inst.InputData, &ca, &ua); err != nil {
+		return nil, err
+	}
+	inst.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+	inst.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	return &inst, nil
+}
+
+func scanStepInstance(row *sql.Row) (*StepInstance, error) {
+	var si StepInstance
+	var ca, ua string
+	if err := row.Scan(&si.ID, &si.InstanceID, &si.StepDefinitionID, &si.AssigneeColleagueID,
+		&si.CollaborationTaskID, &si.Status, &si.Result, &si.SortOrder, &ca, &ua); err != nil {
+		return nil, err
+	}
+	si.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+	si.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	return &si, nil
+}
+
+func scanStepInstanceRows(rows *sql.Rows) (*StepInstance, error) {
+	var si StepInstance
+	var ca, ua string
+	if err := rows.Scan(&si.ID, &si.InstanceID, &si.StepDefinitionID, &si.AssigneeColleagueID,
+		&si.CollaborationTaskID, &si.Status, &si.Result, &si.SortOrder, &ca, &ua); err != nil {
+		return nil, err
+	}
+	si.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+	si.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	return &si, nil
+}

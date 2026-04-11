@@ -89,7 +89,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
                             </div>
                         )}
                         <div className="modal-body">
-                            <p style={{ fontSize: '0.8rem', color: '#5a6577', margin: 0, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                            <p style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)', margin: 0, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
                                 {state.message}
                             </p>
                         </div>

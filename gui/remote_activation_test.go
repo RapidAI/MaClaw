@@ -546,7 +546,7 @@ func TestActivateRemote_ReturnsBeforeBackgroundHubConnect(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if app.remoteSessions != nil && app.remoteSessions.hubClient != nil && app.remoteSessions.hubClient.IsConnected() && authCount.Load() > 0 {
+		if app.remoteSessions != nil && app.remoteSessions.hubClient != nil && app.remoteSessions.hubClient.IsConnected() && authCount.Load() > 0 && app.IsAIAssistantReady() {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -556,8 +556,8 @@ func TestActivateRemote_ReturnsBeforeBackgroundHubConnect(t *testing.T) {
 		t.Fatal("expected remote hub client to be initialized")
 	}
 
-	t.Fatalf("hub client did not connect after activation: connected=%v authCount=%d",
-		app.remoteSessions.hubClient.IsConnected(), authCount.Load())
+	t.Fatalf("hub client did not fully initialize after activation: connected=%v authCount=%d ai_ready=%v init_status=%q",
+		app.remoteSessions.hubClient.IsConnected(), authCount.Load(), app.IsAIAssistantReady(), app.GetAIAssistantInitStatus())
 }
 
 func TestActivateRemote_SendsNormalizedPlatform(t *testing.T) {

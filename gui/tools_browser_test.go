@@ -28,3 +28,28 @@ func TestRegisterBrowserToolsIncludesSessionMVP(t *testing.T) {
 		}
 	}
 }
+
+func TestRegisterBrowserToolsPassesContinuationSchema(t *testing.T) {
+	registry := NewToolRegistry()
+	app := &App{}
+	app.browserSessions = NewBrowserAgentManager(app)
+	registerBrowserTools(registry, app)
+
+	tool, ok := registry.Get("browser_extract")
+	if !ok || tool == nil {
+		t.Fatal("browser_extract missing")
+	}
+	for _, field := range []string{"offset", "max_chars"} {
+		entry, ok := tool.InputSchema[field]
+		if !ok {
+			t.Fatalf("browser_extract missing %q", field)
+		}
+		meta, ok := entry.(map[string]interface{})
+		if !ok {
+			t.Fatalf("schema[%q] = %#v", field, entry)
+		}
+		if meta["type"] != "integer" {
+			t.Fatalf("schema[%q].type = %#v", field, meta["type"])
+		}
+	}
+}

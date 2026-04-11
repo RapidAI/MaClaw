@@ -32,10 +32,12 @@ import (
 
 // FetchOptions configures the Fetch operation.
 type FetchOptions struct {
-	MaxBytes  int64  // max response body size (default 2MB, max 10MB)
-	RenderJS  bool   // attempt headless Chrome rendering
-	SavePath  string // if set, save raw content to this file path instead of returning text
-	TimeoutS  int    // timeout in seconds (default 30)
+	MaxBytes int64  // max response body size (default 2MB, max 10MB)
+	RenderJS bool   // attempt headless Chrome rendering
+	SavePath string // if set, save raw content to this file path instead of returning text
+	TimeoutS int    // timeout in seconds (default 30)
+	Offset   int    // rune offset for continued reading
+	MaxChars int    // max characters to return in Content (0 = full content)
 }
 
 // FetchResult contains the fetched content.
@@ -46,6 +48,10 @@ type FetchResult struct {
 	Content     string `json:"content"`
 	BytesRead   int    `json:"bytes_read"`
 	SavedTo     string `json:"saved_to,omitempty"`
+	Truncated   bool   `json:"truncated"`
+	TotalChars  int    `json:"total_chars"`
+	HasMore     bool   `json:"has_more"`
+	NextOffset  int    `json:"next_offset"`
 }
 
 // Fetch retrieves a URL and extracts readable text content.
@@ -77,6 +83,12 @@ func Fetch(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 	}
 	if opts.TimeoutS > 120 {
 		opts.TimeoutS = 120
+	}
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
+	if opts.MaxChars < 0 {
+		opts.MaxChars = 0
 	}
 
 	// Dispatch by scheme
@@ -161,6 +173,7 @@ func fetchHTTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 		result.Content = fmt.Sprintf("[二进制内容: %s, %d 字节。如需下载请使用 save_path 参数]", ct, len(body))
 	}
 
+	applyContentWindow(result, opts.Offset, opts.MaxChars)
 	return result, nil
 }
 
@@ -426,6 +439,37 @@ func collapseBlankLines(s string) string {
 	return multiBlankLine.ReplaceAllString(s, "\n\n")
 }
 
+func applyContentWindow(result *FetchResult, offset, maxChars int) {
+	if result == nil {
+		return
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	runes := []rune(result.Content)
+	total := len(runes)
+	result.TotalChars = total
+	if offset > total {
+		offset = total
+	}
+	end := total
+	if maxChars > 0 {
+		end = min(total, offset+maxChars)
+	}
+	if offset > 0 || end < total {
+		result.Content = string(runes[offset:end])
+	} else {
+		result.Content = string(runes)
+	}
+	result.Truncated = offset > 0 || end < total
+	result.HasMore = end < total
+	if result.HasMore {
+		result.NextOffset = end
+	} else {
+		result.NextOffset = 0
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Content type helpers
 // ---------------------------------------------------------------------------
@@ -619,6 +663,7 @@ func fetchFTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 	} else {
 		result.Content = fmt.Sprintf("[二进制文件: %d 字节。请使用 save_path 参数下载到本地]", len(body))
 	}
+	applyContentWindow(result, opts.Offset, opts.MaxChars)
 	return result, nil
 }
 
@@ -708,13 +753,15 @@ func fetchWithChrome(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 	}
 
 	title, text := extractReadableContent(body)
-	return &FetchResult{
+	result := &FetchResult{
 		URL:         rawURL,
 		Title:       title,
 		ContentType: "text/html (Chrome rendered)",
 		Content:     text,
 		BytesRead:   len(body),
-	}, nil
+	}
+	applyContentWindow(result, opts.Offset, opts.MaxChars)
+	return result, nil
 }
 
 // findChrome locates Chrome/Chromium executable on the system.

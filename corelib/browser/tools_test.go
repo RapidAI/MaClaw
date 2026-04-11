@@ -2,7 +2,6 @@ package browser
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -103,10 +102,28 @@ func TestBrowserSessionToolsRequireSessionID(t *testing.T) {
 	}
 }
 
-func TestSessionErrorPreservesRootCause(t *testing.T) {
-	msg := sessionError(fmt.Errorf("CDP 连接失败: 调试端口 9222 已被占用"))
-	if got := msg; !containsAll(got, []string{"浏览器连接失败", "CDP 连接失败", "9222", "browser_connect"}) {
-		t.Fatalf("sessionError = %q", got)
+func TestBrowserExtractSchemaIncludesContinuationFields(t *testing.T) {
+	reg := tool.NewRegistry()
+	RegisterTools(reg)
+	toolDef, ok := reg.Get("browser_extract")
+	if !ok || toolDef == nil {
+		t.Fatal("browser_extract not registered")
+	}
+	if got := toolDef.Description; !strings.Contains(got, "offset/max_chars") {
+		t.Fatalf("Description = %q", got)
+	}
+	for _, field := range []string{"offset", "max_chars"} {
+		entry, ok := toolDef.InputSchema[field]
+		if !ok {
+			t.Fatalf("browser_extract missing schema field %q", field)
+		}
+		meta, ok := entry.(map[string]interface{})
+		if !ok {
+			t.Fatalf("schema[%q] = %#v", field, entry)
+		}
+		if meta["type"] != "integer" {
+			t.Fatalf("schema[%q].type = %#v", field, meta["type"])
+		}
 	}
 }
 

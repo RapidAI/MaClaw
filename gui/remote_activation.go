@@ -250,17 +250,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		logAfterConnect := func() {
 			a.logMemorySnapshot("remoteActivation:after-connect")
 		}
-		hubClient := (*RemoteHubClient)(nil)
-		if a.remoteSessions != nil {
-			hubClient = a.remoteSessions.hubClient
-		}
-		if hubClient == nil && a.remoteSessions != nil {
-			hubClient = NewRemoteHubClient(a, a.remoteSessions)
-			a.remoteSessions.SetHubClient(hubClient)
-		}
-		if hubClient == nil {
-			hubClient = a.createAndWireHubClient()
-		}
+		hubClient := a.ensureHubClient()
 		log.Printf("[onboarding] ActivateRemote ensure_remote_infra=%s hub_client_ready=%t", time.Since(infraStart), hubClient != nil)
 		if hubClient != nil && !hubClient.IsConnected() {
 			if err := hubClient.Connect(); err != nil {

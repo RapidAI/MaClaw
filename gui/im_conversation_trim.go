@@ -405,12 +405,13 @@ func truncateToolResult(s string) string {
 // truncateToolResultForTool applies tool-specific truncation strategies.
 // Terminal output (get_session_output, bash) keeps more tail (recent output
 // is more relevant). Structured data keeps more head (headers/schema).
-// webFetchMaxToolResult allows web_fetch to return up to 20KB to the LLM,
-// since its content is already pre-truncated inside the handler.
-const webFetchMaxToolResult = 20480
+// webFetchMaxToolResult allows web_fetch to return up to 32KB to the LLM,
+// since its content is already windowed inside the handler and carries
+// continuation metadata that must survive truncation.
+const webFetchMaxToolResult = 32768
 
 func truncateToolResultForTool(toolName, s string) string {
-	// web_fetch gets a higher budget — content is already truncated in handler
+	// web_fetch gets a higher budget — content is already windowed in handler
 	limit := maxToolResultLen
 	if toolName == "web_fetch" {
 		limit = webFetchMaxToolResult
@@ -420,6 +421,9 @@ func truncateToolResultForTool(toolName, s string) string {
 	}
 	if len(s) <= limit {
 		return s
+	}
+	if toolName == "web_fetch" {
+		return truncateWebFetchToolResult(s, limit)
 	}
 	sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
 	sepLen := len(sep)
@@ -437,6 +441,35 @@ func truncateToolResultForTool(toolName, s string) string {
 		tailLen := budget - headLen
 		return s[:headLen] + sep + s[len(s)-tailLen:]
 	}
+}
+
+func truncateWebFetchToolResult(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	marker := "\n\n--- 完整性信号 ---\n"
+	idx := strings.LastIndex(s, marker)
+	if idx < 0 {
+		sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
+		budget := limit - len(sep)
+		headLen := budget * 2 / 3
+		tailLen := budget - headLen
+		return s[:headLen] + sep + s[len(s)-tailLen:]
+	}
+	meta := s[idx:]
+	head := s[:idx]
+	sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
+	if len(meta)+len(sep) >= limit {
+		return sep + meta[len(meta)-(limit-len(sep)):]
+	}
+	headBudget := limit - len(meta) - len(sep)
+	if headBudget <= 0 {
+		return sep + meta
+	}
+	if len(head) > headBudget {
+		head = head[:headBudget]
+	}
+	return head + sep + meta
 }
 
 // inferFileDeliveryMessage generates a user-facing prompt based on the file name

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { colors, radius } from "./styles";
 import { QRCodeSVG } from "qrcode.react";
 import {
     GetMaclawLLMProviders,
@@ -60,14 +61,14 @@ type Props = {
 /* ── Hoisted style objects ── */
 const inputStyle: React.CSSProperties = {
     width: "100%", padding: "7px 10px", fontSize: "0.8rem",
-    border: "1px solid #e2e8f0", borderRadius: 4,
-    background: "#fff", color: "#1e293b", boxSizing: "border-box",
+    border: `1px solid var(--theme-border)`, borderRadius: 4,
+    background: "var(--theme-surface)", color: "var(--theme-text-primary)", boxSizing: "border-box",
 };
 const readonlyInputStyle: React.CSSProperties = {
-    ...inputStyle, background: "#f1f5f9", color: "#94a3b8", cursor: "default",
+    ...inputStyle, background: "var(--theme-surface-muted)", color: "var(--theme-text-muted)", cursor: "default",
 };
 const labelStyle: React.CSSProperties = {
-    fontSize: "0.76rem", color: "#64748b", marginBottom: 4, display: "block",
+    fontSize: "0.76rem", color: "var(--theme-text-muted)", marginBottom: 4, display: "block",
 };
 
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
@@ -655,21 +656,21 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
             display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
         }}>
             <div style={{
-                background: "#fff", borderRadius: 14, width: 440, maxHeight: "90vh",
+                background: "var(--theme-surface)", borderRadius: 14, width: 440, maxHeight: "90vh",
                 overflowY: "auto", boxShadow: "0 8px 24px rgba(99,102,241,0.12)",
-                border: "1px solid #e0e7ff", display: "flex", flexDirection: "column",
+                border: "1px solid var(--theme-border)", display: "flex", flexDirection: "column",
             }}>
                 {/* ── Header ── */}
                 <div style={{
-                    background: "linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)",
+                    background: "linear-gradient(135deg, var(--theme-info-bg, #eef2ff) 0%, var(--theme-primary-soft, #e0e7ff) 100%)",
                     padding: "12px 18px 10px", position: "relative", flexShrink: 0,
                 }}>
                     <button onClick={onClose} style={{
                         position: "absolute", top: 8, right: 12, border: "none",
-                        background: "transparent", cursor: "pointer", fontSize: "1.1rem", color: "#a5b4fc",
+                        background: "transparent", cursor: "pointer", fontSize: "1.1rem", color: colors.textMuted,
                     }}>&times;</button>
                     <div style={{ fontSize: "1.2rem", marginBottom: 2, lineHeight: 1 }}>👋</div>
-                    <h3 style={{ margin: 0, color: "#4338ca", fontSize: "0.88rem", fontWeight: 600 }}>
+                    <h3 style={{ margin: 0, color: colors.primary, fontSize: "0.88rem", fontWeight: 600 }}>
                         {t(`来，配置一下 ${displayName} 吧`, `Let's get ${displayName} ready!`)}
                     </h3>
                 </div>
@@ -685,13 +686,13 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                         const active = s === step;
                         // Last step (WeChat) skipped: show grey instead of green
                         const skippedStep = s === totalSteps && wxSkipped && !wxDone;
-                        const circleColor = skippedStep ? "#94a3b8" : done ? "#22c55e" : active ? "#6366f1" : "#cbd5e1";
+                        const circleColor = skippedStep ? colors.textMuted : done ? colors.success : active ? colors.primary : "var(--theme-border)";
                         return (
                             <div key={s} style={{ display: "flex", alignItems: "center" }}>
                                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 54 }}>
                                     <div style={{
                                         width: 26, height: 26, borderRadius: "50%",
-                                        background: circleColor, color: "#fff",
+                                        background: circleColor, color: "var(--theme-text-primary)",
                                         display: "flex", alignItems: "center", justifyContent: "center",
                                         fontSize: "0.72rem", fontWeight: 700,
                                         transition: "background 0.2s",
@@ -700,7 +701,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     </div>
                                     <span style={{
                                         fontSize: "0.62rem", marginTop: 3,
-                                        color: active ? "#4338ca" : "#94a3b8",
+                                        color: active ? colors.primary : colors.textMuted,
                                         fontWeight: active ? 600 : 400,
                                     }}>
                                         {labels[i]}
@@ -708,7 +709,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 </div>
                                 {s < totalSteps && (
                                     <div style={{
-                                        width: 32, height: 2, background: stepDone[s] ? "#22c55e" : "#e2e8f0",
+                                        width: 32, height: 2, background: stepDone[s] ? colors.success : "var(--theme-border)",
                                         margin: "0 2px", marginBottom: 14, transition: "background 0.2s",
                                     }} />
                                 )}
@@ -728,7 +729,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     */}
                     {step === 1 && isTigerclaw && (
                         <div>
-                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
+                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t(
                                     `使用企业账号一键登录，自动配置 ${displayName} 和 TigerClaw Code，并注册到 Hub。`,
                                     `Sign in with your enterprise account to configure ${displayName}, TigerClaw Code, and register to Hub.`
@@ -736,8 +737,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                             </p>
                             <button onClick={handleEmbeddedSSOLogin} disabled={ssoBusy || (llmDone && regDone)} style={{
                                 width: "100%", padding: "12px 0", fontSize: "0.84rem", fontWeight: 600,
-                                background: ssoBusy || regBusy ? "#a5b4fc" : (llmDone && regDone) ? "#86efac" : "#6366f1",
-                                color: "#fff", border: "none", borderRadius: 6,
+                                background: ssoBusy || regBusy ? colors.primaryLight : (llmDone && regDone) ? colors.successBg : colors.primary,
+                                color: "var(--theme-text-primary)", border: "none", borderRadius: 6,
                                 cursor: (ssoBusy || regBusy || (llmDone && regDone)) ? "default" : "pointer",
                                 display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                             }}>
@@ -751,7 +752,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                             </button>
                             {embeddedSSOLoading && (
                                 <div style={{ textAlign: "center", padding: "20px 0" }}>
-                                    <p style={{ fontSize: "0.76rem", color: "#94a3b8" }}>
+                                    <p style={{ fontSize: "0.76rem", color: colors.textMuted }}>
                                         {t("正在打开登录页面...", "Opening login page...")}
                                     </p>
                                 </div>
@@ -759,10 +760,10 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                             {ssoBusy && !embeddedSSOLoading && (
                                 <div style={{ textAlign: "center", padding: "16px 0" }}>
                                     <div style={{ fontSize: "2rem", marginBottom: 8 }}>🔐</div>
-                                    <p style={{ fontSize: "0.76rem", color: "#64748b", marginTop: 10 }}>
+                                    <p style={{ fontSize: "0.76rem", color: colors.textSecondary, marginTop: 10 }}>
                                         {t("请在弹出的浏览器页面中扫码", "Please scan the QR code in the browser window")}
                                     </p>
-                                    <p style={{ fontSize: "0.7rem", color: "#94a3b8" }}>
+                                    <p style={{ fontSize: "0.7rem", color: colors.textMuted }}>
                                         {t("扫码完成后将自动继续...", "Will continue automatically after scanning...")}
                                     </p>
                                 </div>
@@ -777,14 +778,14 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                         }).catch(e => setSsoResult({ ok: false, msg: String(e) }));
                                     }} style={{
                                         width: "100%", padding: "8px 0", fontSize: "0.76rem",
-                                        background: "#f8fafc", color: "#6366f1", border: "1px solid #e2e8f0",
+                                        background: "var(--theme-surface-muted)", color: colors.primary, border: "1px solid var(--theme-border)",
                                         borderRadius: 6, cursor: "pointer", marginTop: 6,
                                     }}>
                                         {t("🌐 在浏览器中打开", "🌐 Open in Browser")}
                                     </button>
                                     <button onClick={handleEmbeddedSSOLogin} style={{
                                         width: "100%", padding: "8px 0", fontSize: "0.76rem",
-                                        background: "#f8fafc", color: "#6366f1", border: "1px solid #e2e8f0",
+                                        background: "var(--theme-surface-muted)", color: colors.primary, border: "1px solid var(--theme-border)",
                                         borderRadius: 6, cursor: "pointer", marginTop: 6,
                                     }}>
                                         {t("🔄 重试", "🔄 Retry")}
@@ -797,26 +798,26 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
                                     background: ssoResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
                                     border: `1px solid ${ssoResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                    color: ssoResult.ok ? "#22c55e" : "#ef4444",
+                                    color: ssoResult.ok ? colors.success : colors.danger,
                                 }}>
                                     {ssoResult.ok ? `✅ ${ssoResult.msg}` : `❌ ${ssoResult.msg}`}
                                 </div>
                             )}
                             {!(llmDone && regDone) && !ssoBusy && !regBusy && !embeddedSSOLoading && !embeddedSSOError && (
-                                <p style={{ marginTop: 8, fontSize: "0.7rem", color: "#94a3b8", textAlign: "center" }}>
+                                <p style={{ marginTop: 8, fontSize: "0.7rem", color: colors.textMuted, textAlign: "center" }}>
                                     {t("点击后自动弹出企业登录页，扫码后自动完成所有配置", "Browser opens automatically; all config applied after login")}
                                 </p>
                             )}
 
                             {/* ── 模型选择区域（SSO 成功后显示）── */}
                             {llmDone && (
-                                <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f8fafc" }}>
-                                    <div style={{ fontSize: "0.76rem", fontWeight: 600, color: "#334155", marginBottom: 10 }}>
+                                <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 8, border: `1px solid ${colors.border}`, background: colors.surfaceMuted }}>
+                                    <div style={{ fontSize: "0.76rem", fontWeight: 600, color: colors.text, marginBottom: 10 }}>
                                         {t("🔧 选择使用的模型（可选）", "🔧 Select Models (optional)")}
                                     </div>
 
                                     {codegenModelsFetching && (
-                                        <p style={{ fontSize: "0.72rem", color: "#94a3b8" }}>
+                                        <p style={{ fontSize: "0.72rem", color: colors.textMuted }}>
                                             {t("正在获取可用模型列表...", "Fetching available models...")}
                                         </p>
                                     )}
@@ -825,16 +826,16 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                         <>
                                             {/* MaClaw 模型 */}
                                             <div style={{ marginBottom: 10 }}>
-                                                <label style={{ fontSize: "0.72rem", color: "#64748b", display: "block", marginBottom: 4 }}>
+                                                <label style={{ fontSize: "0.72rem", color: colors.textSecondary, display: "block", marginBottom: 4 }}>
                                                     🤖 {t(`${displayName} Agent 模型`, `${displayName} Agent Model`)}
                                                 </label>
                                                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                                     {codegenModels.map(m => (
                                                         <button key={m.id} onClick={() => setMaclawModel(m.id)} style={{
                                                             fontSize: "0.7rem", padding: "4px 10px", cursor: "pointer",
-                                                            background: maclawModel === m.id ? "#6366f1" : "#fff",
-                                                            color: maclawModel === m.id ? "#fff" : "#334155",
-                                                            border: `1px solid ${maclawModel === m.id ? "#6366f1" : "#e2e8f0"}`,
+                                                            background: maclawModel === m.id ? colors.primary : colors.surface,
+                                                            color: maclawModel === m.id ? "var(--theme-text-primary)" : colors.text,
+                                                            border: `1px solid ${maclawModel === m.id ? colors.primary : colors.border}`,
                                                             borderRadius: 4, transition: "all 0.12s",
                                                         }}>
                                                             {m.name}
@@ -845,16 +846,16 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
 
                                             {/* TigerClaw Code 模型 */}
                                             <div style={{ marginBottom: 10 }}>
-                                                <label style={{ fontSize: "0.72rem", color: "#64748b", display: "block", marginBottom: 4 }}>
+                                                <label style={{ fontSize: "0.72rem", color: colors.textSecondary, display: "block", marginBottom: 4 }}>
                                                     🐯 {t("TigerClaw Code 模型", "TigerClaw Code Model")}
                                                 </label>
                                                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                                     {codegenModels.map(m => (
                                                         <button key={m.id} onClick={() => setClaudeCodeModel(m.id)} style={{
                                                             fontSize: "0.7rem", padding: "4px 10px", cursor: "pointer",
-                                                            background: claudeCodeModel === m.id ? "#0ea5e9" : "#fff",
-                                                            color: claudeCodeModel === m.id ? "#fff" : "#334155",
-                                                            border: `1px solid ${claudeCodeModel === m.id ? "#0ea5e9" : "#e2e8f0"}`,
+                                                            background: claudeCodeModel === m.id ? "var(--theme-primary-strong)" : colors.surface,
+                                                            color: claudeCodeModel === m.id ? "var(--theme-text-primary)" : colors.text,
+                                                            border: `1px solid ${claudeCodeModel === m.id ? "var(--theme-primary-strong)" : colors.border}`,
                                                             borderRadius: 4, transition: "all 0.12s",
                                                         }}>
                                                             {m.name}
@@ -866,8 +867,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                             {/* 保存按钮 */}
                                             <button onClick={handleModelSave} disabled={modelSaving || modelSaved} style={{
                                                 width: "100%", padding: "7px 0", fontSize: "0.76rem", fontWeight: 600,
-                                                background: modelSaved ? "#86efac" : modelSaving ? "#a5b4fc" : "#6366f1",
-                                                color: "#fff", border: "none", borderRadius: 6,
+                                                background: modelSaved ? colors.successBg : modelSaving ? colors.primaryLight : colors.primary,
+                                                color: "var(--theme-text-primary)", border: "none", borderRadius: 6,
                                                 cursor: modelSaving || modelSaved ? "default" : "pointer",
                                             }}>
                                                 {modelSaved
@@ -885,12 +886,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
 
                     {step === 1 && !isTigerclaw && (
                         <div>
-                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
+                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t("注册设备邮箱到 Hub，即可通过移动端操控。",
                                     "Register your email to the Hub for remote control.")}
                             </p>
                             <div style={{ marginBottom: 10 }}>
-                                <label style={labelStyle}>{t("邮箱", "Email")} <span style={{ color: "#ef4444" }}>*</span></label>
+                                <label style={labelStyle}>{t("邮箱", "Email")} <span style={{ color: colors.danger }}>*</span></label>
                                 <input style={inputStyle} value={regEmail}
                                     onChange={e => setRegEmail(e.target.value)}
                                     placeholder="name@example.com" spellCheck={false} />
@@ -899,20 +900,20 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 <div style={{ marginBottom: 10 }}>
                                     <label style={labelStyle}>
                                         {t("邀请码", "Invitation Code")}{" "}
-                                        <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("可选", "optional")})</span>
+                                        <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional")})</span>
                                     </label>
-                                    <input style={{ ...inputStyle, ...(invError ? { borderColor: "#ef4444" } : {}) }}
+                                    <input style={{ ...inputStyle, ...(invError ? { borderColor: colors.danger } : {}) }}
                                         value={invCode}
                                         onChange={e => { setInvCode(e.target.value.toUpperCase()); setInvError(""); }}
                                         placeholder={t("请输入邀请码", "Enter invitation code")}
                                         maxLength={10} spellCheck={false} />
-                                    {invError && <div style={{ fontSize: "0.72rem", color: "#ef4444", marginTop: 4 }}>{invError}</div>}
+                                    {invError && <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: 4 }}>{invError}</div>}
                                 </div>
                             )}
                             <button onClick={handleRegisterClick} disabled={regBusy || regDone} style={{
                                 width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
-                                background: regBusy ? "#a5b4fc" : regDone ? (hubConnecting ? "#60a5fa" : "#86efac") : "#6366f1",
-                                color: "#fff", border: "none", borderRadius: 6,
+                                background: regBusy ? colors.primaryLight : regDone ? (hubConnecting ? "var(--theme-primary-soft)" : colors.successBg) : colors.primary,
+                                color: "var(--theme-text-primary)", border: "none", borderRadius: 6,
                                 cursor: regBusy || regDone ? "default" : "pointer",
                                 display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                             }}>
@@ -924,11 +925,11 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
                                     background: regResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
                                     border: `1px solid ${regResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                    color: regResult.ok ? "#22c55e" : "#ef4444",
+                                    color: regResult.ok ? colors.success : colors.danger,
                                 }}>
                                     {regResult.ok ? `✅ ${regResult.msg}` : `❌ ${regResult.msg}`}
                                     {regResult.ok && (
-                                        <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, fontSize: "0.68rem", color: hubConnecting ? "#2563eb" : "#16a34a" }}>
+                                        <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, fontSize: "0.68rem", color: hubConnecting ? colors.primary : colors.success }}>
                                             <HubStatusBadge connecting={hubConnecting} t={t} />
                                         </div>
                                     )}
@@ -943,7 +944,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     */}
                     {step === 2 && (
                         <div>
-                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
+                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t("选择适合你的界面模式。", "Choose the interface mode that suits you.")}
                             </p>
                             <div style={{ display: "flex", gap: 10 }}>
@@ -951,15 +952,15 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     onClick={() => { setSelectedMode('pro'); onSaveField({ ui_mode: 'pro' }); setModeDone(true); }}
                                     style={{
                                         flex: 1, padding: "14px 14px", borderRadius: 10, cursor: "pointer",
-                                        border: `2px solid ${selectedMode === 'pro' ? '#6366f1' : '#e2e8f0'}`,
-                                        background: selectedMode === 'pro' ? 'rgba(99,102,241,0.06)' : '#f8fafc',
+                                        border: `2px solid ${selectedMode === 'pro' ? colors.primary : colors.border}`,
+                                        background: selectedMode === 'pro' ? 'var(--theme-info-bg)' : colors.surfaceMuted,
                                         transition: "all 0.15s",
                                     }}
                                 >
-                                    <div style={{ fontSize: "0.88rem", fontWeight: 600, color: selectedMode === 'pro' ? '#4338ca' : '#334155', marginBottom: 4 }}>
+                                    <div style={{ fontSize: "0.88rem", fontWeight: 600, color: selectedMode === 'pro' ? colors.primary : colors.text, marginBottom: 4 }}>
                                         🛠️ {t("专业模式", "Pro")}
                                     </div>
-                                    <div style={{ fontSize: "0.72rem", color: "#94a3b8", lineHeight: 1.4 }}>
+                                    <div style={{ fontSize: "0.72rem", color: colors.textMuted, lineHeight: 1.4 }}>
                                         {t("包含完整编程工具链，适合开发者", "Full coding toolchain for developers")}
                                     </div>
                                 </div>
@@ -967,15 +968,15 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     onClick={() => { setSelectedMode('lite'); onSaveField({ ui_mode: 'lite' }); setModeDone(true); }}
                                     style={{
                                         flex: 1, padding: "14px 14px", borderRadius: 10, cursor: "pointer",
-                                        border: `2px solid ${selectedMode === 'lite' ? '#6366f1' : '#e2e8f0'}`,
-                                        background: selectedMode === 'lite' ? 'rgba(99,102,241,0.06)' : '#f8fafc',
+                                        border: `2px solid ${selectedMode === 'lite' ? colors.primary : colors.border}`,
+                                        background: selectedMode === 'lite' ? 'var(--theme-info-bg)' : colors.surfaceMuted,
                                         transition: "all 0.15s",
                                     }}
                                 >
-                                    <div style={{ fontSize: "0.88rem", fontWeight: 600, color: selectedMode === 'lite' ? '#4338ca' : '#334155', marginBottom: 4 }}>
+                                    <div style={{ fontSize: "0.88rem", fontWeight: 600, color: selectedMode === 'lite' ? colors.primary : colors.text, marginBottom: 4 }}>
                                         ✨ {t("简洁模式", "Lite")}
                                     </div>
-                                    <div style={{ fontSize: "0.72rem", color: "#94a3b8", lineHeight: 1.4 }}>
+                                    <div style={{ fontSize: "0.72rem", color: colors.textMuted, lineHeight: 1.4 }}>
                                         {t("专注 AI 助手与技能扩展，隐藏编程工具", "AI assistant & skills, coding tools hidden")}
                                     </div>
                                 </div>
@@ -990,7 +991,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
 
                     {step === 3 && !isTigerclaw && (
                         <div>
-                            <p style={{ margin: "0 0 8px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
+                            <p style={{ margin: "0 0 8px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t("选择一个 LLM 服务商，输入 API Key 后测试并保存。",
                                     "Pick a provider, enter your API Key, then test & save.")}
                             </p>
@@ -1008,9 +1009,9 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                                 setSelectedIdx(active ? null : i); setLlmResult(null);
                                             }} style={{
                                                 fontSize: "0.78rem", padding: "6px 16px", cursor: "pointer",
-                                                background: active ? "#6366f1" : "#f8fafc",
-                                                color: active ? "#fff" : "#334155",
-                                                border: `1px solid ${active ? "#6366f1" : "#e2e8f0"}`,
+                                                background: active ? colors.primary : colors.surfaceMuted,
+                                                color: active ? "var(--theme-text-primary)" : colors.text,
+                                                border: `1px solid ${active ? colors.primary : colors.border}`,
                                                 borderRadius: 6, fontWeight: active ? 600 : 400,
                                                 transition: "all 0.15s",
                                                 display: "inline-flex", alignItems: "center", gap: 5,
@@ -1018,12 +1019,12 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                                 {PROVIDER_LOGOS[p.name] ?? null}{p.name}
                                             </button>
                                             {p.auth_type === "oauth" && (
-                                                <div style={{ fontSize: "0.62rem", color: "#94a3b8", marginTop: 2 }}>
+                                                <div style={{ fontSize: "0.62rem", color: colors.textMuted, marginTop: 2 }}>
                                                     {t("一键登录", "One-click")}
                                                 </div>
                                             )}
                                             {isFree && (
-                                                <div style={{ fontSize: "0.62rem", color: "#22c55e", marginTop: 2 }}>
+                                                <div style={{ fontSize: "0.62rem", color: colors.success, marginTop: 2 }}>
                                                     🆓 {t("免费", "Free")}
                                                 </div>
                                             )}
@@ -1035,17 +1036,17 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                             {selectedProvider && (
                                 <div style={{
                                     padding: 14, borderRadius: 8,
-                                    border: "1px solid #e2e8f0", background: "#f8fafc",
+                                    border: `1px solid ${colors.border}`, background: colors.surfaceMuted,
                                 }}>
                                     {selectedProvider.auth_type === "oauth" ? (
                                         <>
-                                            <p style={{ fontSize: "0.76rem", color: "#64748b", margin: "0 0 12px 0", lineHeight: 1.4 }}>
+                                            <p style={{ fontSize: "0.76rem", color: colors.textSecondary, margin: "0 0 12px 0", lineHeight: 1.4 }}>
                                                 {t("点击下方按钮，将在浏览器中完成 OpenAI 账号授权。",
                                                     "Click below to authorize with your OpenAI account in the browser.")}
                                             </p>
                                             <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                 width: "100%", padding: "10px 0", fontSize: "0.82rem", fontWeight: 600,
-                                                background: oauthBusy ? "#a5b4fc" : "#6366f1", color: "#fff",
+                                                background: oauthBusy ? colors.primaryLight : colors.primary, color: "var(--theme-text-primary)",
                                                 border: "none", borderRadius: 6, cursor: oauthBusy ? "default" : "pointer",
                                             }}>
                                                 {oauthBusy ? t("等待浏览器授权...", "Waiting for browser auth...") : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
@@ -1064,9 +1065,9 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                                                 return (
                                                                     <button key={proto} onClick={() => updateField("protocol", proto)} style={{
                                                                         fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                                        background: active ? "#6366f1" : "#fff",
-                                                                        color: active ? "#fff" : "#1e293b",
-                                                                        border: `1px solid ${active ? "#6366f1" : "#e2e8f0"}`,
+                                                                        background: active ? colors.primary : colors.surface,
+                                                                        color: active ? "var(--theme-text-primary)" : colors.text,
+                                                                        border: `1px solid ${active ? colors.primary : colors.border}`,
                                                                         borderRadius: 4, transition: "all 0.15s",
                                                                     }}>
                                                                         {proto === "openai" ? "OpenAI" : "Anthropic"}
@@ -1074,7 +1075,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                                                 );
                                                             })}
                                                         </div>
-                                                        <p style={{ fontSize: "0.68rem", color: "#94a3b8", margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                                             {(selectedProvider.protocol || "openai") === "anthropic"
                                                                 ? t("使用 Anthropic Messages API（x-api-key 鉴权）", "Uses Anthropic Messages API (x-api-key auth)")
                                                                 : t("使用 OpenAI 兼容接口（Bearer Token 鉴权）", "Uses OpenAI-compatible API (Bearer token auth)")}
@@ -1089,9 +1090,9 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                                                 return (
                                                                     <button key={ua} onClick={() => updateField("agent_type", ua)} style={{
                                                                         fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                                        background: active ? "#6366f1" : "#fff",
-                                                                        color: active ? "#fff" : "#1e293b",
-                                                                        border: `1px solid ${active ? "#6366f1" : "#e2e8f0"}`,
+                                                                        background: active ? colors.primary : colors.surface,
+                                                                        color: active ? "var(--theme-text-primary)" : colors.text,
+                                                                        border: `1px solid ${active ? colors.primary : colors.border}`,
                                                                         borderRadius: 4, transition: "all 0.15s",
                                                                     }}>
                                                                         {ua}
@@ -1099,14 +1100,14 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                                                 );
                                                             })}
                                                         </div>
-                                                        <p style={{ fontSize: "0.68rem", color: "#94a3b8", margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                                             {(selectedProvider.agent_type || "openclaw") === "claude-code/2.0.0"
                                                                 ? t("Kimi 等需要编程套餐身份的服务商", "For providers requiring Claude Coding Plan identity (e.g. Kimi)")
                                                                 : t("智谱龙虾等大多数服务商使用 OpenClaw 身份", "Most providers use OpenClaw identity (e.g. Zhipu Lobster)")}
                                                         </p>
                                                     </div>
                                                     <div style={{ marginBottom: 10 }}>
-                                                        <label style={labelStyle}>API URL <span style={{ color: "#ef4444" }}>*</span></label>
+                                                        <label style={labelStyle}>API URL <span style={{ color: colors.danger }}>*</span></label>
                                                         <input style={inputStyle} value={selectedProvider.url}
                                                             onChange={e => updateField("url", e.target.value)}
                                                             placeholder="https://api.openai.com/v1" />
@@ -1121,17 +1122,17 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                             ) : (
                                                 <>
                                                     <div style={{ marginBottom: 10 }}>
-                                                        <label style={labelStyle}>API URL <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("预设", "preset")})</span></label>
+                                                        <label style={labelStyle}>API URL <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("预设", "preset")})</span></label>
                                                         <input style={readonlyInputStyle} value={selectedProvider.url} readOnly tabIndex={-1} />
                                                     </div>
                                                     <div style={{ marginBottom: 10 }}>
-                                                        <label style={labelStyle}>{t("模型名称", "Model Name")} <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>({t("预设", "preset")})</span></label>
+                                                        <label style={labelStyle}>{t("模型名称", "Model Name")} <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("预设", "preset")})</span></label>
                                                         <input style={readonlyInputStyle} value={selectedProvider.model} readOnly tabIndex={-1} />
                                                     </div>
                                                 </>
                                             )}
                                             <div style={{ marginBottom: 12 }}>
-                                                <label style={labelStyle}>API Key <span style={{ color: "#ef4444" }}>*</span></label>
+                                                <label style={labelStyle}>API Key <span style={{ color: colors.danger }}>*</span></label>
                                                 <input style={inputStyle} type="password" value={selectedProvider.key}
                                                     onChange={e => updateField("key", e.target.value)}
                                                     placeholder={selectedProvider.is_custom ? "sk-..." : ((selectedProvider.name === "智谱龙虾" || selectedProvider.name === "智谱编程") ? "xxxxxxxx.yyyyyyyy" : "sk-...")}
@@ -1139,7 +1140,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                             </div>
                                             <button onClick={handleLLMSave} disabled={llmSaving} style={{
                                                 width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
-                                                background: llmSaving ? "#a5b4fc" : "#6366f1", color: "#fff",
+                                                background: llmSaving ? colors.primaryLight : colors.primary, color: "var(--theme-text-primary)",
                                                 border: "none", borderRadius: 6, cursor: llmSaving ? "default" : "pointer",
                                             }}>
                                                 {llmSaving ? t("测试并保存中...", "Testing & Saving...") : t("测试并保存", "Test & Save")}
@@ -1152,7 +1153,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                             lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
                                             background: llmResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
                                             border: `1px solid ${llmResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                            color: llmResult.ok ? "#22c55e" : "#ef4444",
+                                            color: llmResult.ok ? colors.success : colors.danger,
                                         }}>
                                             {llmResult.ok ? `✅ ${t("连接成功，已保存", "Connected & saved")}\n${llmResult.msg}` : `❌ ${llmResult.msg}`}
                                         </div>
@@ -1168,7 +1169,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     */}
                     {((isTigerclaw && step === 3) || (!isTigerclaw && step === 4)) && (
                         <div>
-                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: "#64748b", lineHeight: 1.4 }}>
+                            <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t(`扫码绑定微信，即可通过微信与 ${displayName} 交互。`,
                                     `Scan to bind WeChat for messaging with ${displayName}.`)}
                             </p>
@@ -1178,7 +1179,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)",
                                 }}>
                                     <div style={{ fontSize: "1.4rem", marginBottom: 4 }}>✅</div>
-                                    <div style={{ fontSize: "0.82rem", color: "#22c55e", fontWeight: 600 }}>
+                                    <div style={{ fontSize: "0.82rem", color: colors.success, fontWeight: 600 }}>
                                         {t("微信已绑定", "WeChat connected")}
                                     </div>
                                 </div>
@@ -1188,7 +1189,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     background: "rgba(148,163,184,0.08)", border: "1px solid rgba(148,163,184,0.2)",
                                 }}>
                                     <div style={{ fontSize: "1.4rem", marginBottom: 4 }}>⏭️</div>
-                                    <div style={{ fontSize: "0.82rem", color: "#94a3b8", fontWeight: 600 }}>
+                                    <div style={{ fontSize: "0.82rem", color: colors.textMuted, fontWeight: 600 }}>
                                         {t("已跳过，可稍后在设置中绑定", "Skipped — you can bind later in settings")}
                                     </div>
                                 </div>
@@ -1197,7 +1198,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     {!wxQrUrl && wxStatus !== "error" && (
                                         <button onClick={startWxQR} disabled={wxLoading} style={{
                                             width: "100%", padding: "10px 0", fontSize: "0.82rem", fontWeight: 600,
-                                            background: wxLoading ? "#a5b4fc" : "#6366f1", color: "#fff",
+                                            background: wxLoading ? colors.primaryLight : colors.primary, color: "var(--theme-text-primary)",
                                             border: "none", borderRadius: 6, cursor: wxLoading ? "default" : "pointer",
                                         }}>
                                             {wxLoading ? t("获取中...", "Loading...") : t("显示二维码", "Show QR Code")}
@@ -1206,13 +1207,13 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     {wxQrUrl && wxStatus !== "expired" && wxStatus !== "error" && (
                                         <div style={{ textAlign: "center" }}>
                                             <QRCodeSVG value={wxQrUrl} size={200} style={{
-                                                borderRadius: 8, border: "1px solid #e2e8f0",
+                                                borderRadius: 8, border: `1px solid ${colors.border}`,
                                             }} />
                                             <div style={{ marginTop: 8 }}>
                                                 <button onClick={startWxQR} disabled={wxLoading} style={{
                                                     fontSize: "0.72rem", padding: "4px 14px",
-                                                    background: "transparent", color: "#6366f1",
-                                                    border: "1px solid #e2e8f0", borderRadius: 4,
+                                                    background: "transparent", color: colors.primary,
+                                                    border: `1px solid ${colors.border}`, borderRadius: 4,
                                                     cursor: wxLoading ? "default" : "pointer",
                                                     opacity: wxLoading ? 0.5 : 1,
                                                 }}>
@@ -1224,7 +1225,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     {(wxStatus === "expired" || wxStatus === "error") && (
                                         <button onClick={startWxQR} disabled={wxLoading} style={{
                                             width: "100%", padding: "10px 0", fontSize: "0.82rem", fontWeight: 600,
-                                            background: wxLoading ? "#a5b4fc" : "#6366f1", color: "#fff",
+                                            background: wxLoading ? colors.primaryLight : colors.primary, color: "var(--theme-text-primary)",
                                             border: "none", borderRadius: 6, cursor: wxLoading ? "default" : "pointer",
                                         }}>
                                             {t("刷新二维码", "Refresh QR Code")}
@@ -1234,7 +1235,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                         <div style={{
                                             marginTop: 8, padding: "6px 10px", borderRadius: 4, fontSize: "0.74rem",
                                             textAlign: "center",
-                                            color: wxStatus === "error" || wxStatus === "expired" ? "#ef4444" : wxStatus === "scaned" ? "#b45309" : "#64748b",
+                                            color: wxStatus === "error" || wxStatus === "expired" ? colors.danger : wxStatus === "scaned" ? colors.warning : colors.textMuted,
                                         }}>
                                             {wxMsg}
                                         </div>
@@ -1248,16 +1249,16 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                 {/* ── Navigation bar ── */}
                 <div style={{
                     display: "flex", justifyContent: "space-between", alignItems: "center",
-                    padding: "12px 18px 14px", borderTop: "1px solid #e0e7ff", flexShrink: 0,
+                    padding: "12px 18px 14px", borderTop: `1px solid ${colors.border}`, flexShrink: 0,
                 }}>
                     <button
                         onClick={() => setStep(s => Math.max(1, s - 1))}
                         disabled={!canPrev}
                         style={{
                             padding: "7px 20px", fontSize: "0.8rem", borderRadius: 6,
-                            background: canPrev ? "#f1f5f9" : "#f8fafc",
-                            color: canPrev ? "#334155" : "#cbd5e1",
-                            border: `1px solid ${canPrev ? "#e2e8f0" : "#f1f5f9"}`,
+                            background: canPrev ? colors.surfaceMuted : colors.surfaceMuted,
+                            color: canPrev ? colors.text : colors.textMuted,
+                            border: `1px solid ${canPrev ? colors.border : colors.surfaceMuted}`,
                             cursor: canPrev ? "pointer" : "default",
                             fontWeight: 500,
                         }}
@@ -1265,7 +1266,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                         {t("上一步", "Back")}
                     </button>
 
-                    <span style={{ fontSize: "0.7rem", color: "#94a3b8" }}>
+                    <span style={{ fontSize: "0.7rem", color: colors.textMuted }}>
                         {step} / {totalSteps}
                     </span>
 
@@ -1278,7 +1279,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     }}
                                     style={{
                                         padding: "7px 14px", fontSize: "0.75rem", fontWeight: 500, borderRadius: 6,
-                                        background: "transparent", color: "#94a3b8", border: "1px solid #e2e8f0",
+                                        background: colors.primary, color: colors.textMuted, border: `1px solid ${colors.border}`,
                                         cursor: "pointer",
                                     }}
                                 >
@@ -1293,8 +1294,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 disabled={!wxCompleted}
                                 style={{
                                     padding: "7px 20px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,
-                                    background: wxCompleted ? "#22c55e" : "#cbd5e1",
-                                    color: "#fff", border: "none",
+                                    background: wxCompleted ? colors.success : colors.border,
+                                    color: "var(--theme-text-primary)", border: "none",
                                     cursor: wxCompleted ? "pointer" : "default",
                                 }}
                             >
@@ -1307,8 +1308,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                             disabled={!canNext}
                             style={{
                                 padding: "7px 20px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,
-                                background: canNext ? "#6366f1" : "#cbd5e1",
-                                color: "#fff", border: "none",
+                                background: canNext ? colors.primary : colors.border,
+                                color: "var(--theme-text-primary)", border: "none",
                                 cursor: canNext ? "pointer" : "default",
                             }}
                         >
@@ -1326,17 +1327,17 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     alignItems: "center", justifyContent: "center", zIndex: 10000,
                 }} onClick={closeFreeModal}>
                     <div style={{
-                        background: "#fff", borderRadius: 12, padding: "20px 24px",
+                        background: colors.surface, borderRadius: 12, padding: "20px 24px",
                         maxWidth: 460, width: "90%", maxHeight: "80vh", overflowY: "auto",
                         boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
                     }} onClick={e => e.stopPropagation()}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                            <span style={{ fontSize: "0.88rem", fontWeight: 700, color: "#1e293b" }}>
+                            <span style={{ fontSize: "0.88rem", fontWeight: 700, color: colors.text }}>
                                 🆓 {t("免费服务商配置", "Free Provider Setup")}
                             </span>
                             <button onClick={closeFreeModal} style={{
                                 border: "none", background: "transparent", cursor: "pointer",
-                                fontSize: "1.1rem", color: "#94a3b8", padding: "0 4px",
+                                fontSize: "1.1rem", color: colors.textMuted, padding: "0 4px",
                             }}>✕</button>
                         </div>
 
@@ -1347,7 +1348,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 padding: "8px 12px", borderRadius: 4, marginBottom: 10,
                                 background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)",
                             }}>
-                                <span style={{ fontSize: "0.76rem", color: "#6366f1" }}>
+                                <span style={{ fontSize: "0.76rem", color: colors.primary }}>
                                     ⏳ {t("正在验证登录状态...", "Validating login status...")}
                                 </span>
                             </div>
@@ -1357,7 +1358,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 padding: "8px 12px", borderRadius: 4, marginBottom: 10,
                                 background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
                             }}>
-                                <span style={{ fontSize: "0.76rem", color: "#22c55e", flex: 1 }}>
+                                <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
                                     ✅ {t("已登录当贝 AI", "Logged in to Dangbei AI")}
                                 </span>
                                 <button disabled={loginBusy} onClick={async () => {
@@ -1367,8 +1368,8 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     setLoginBusy(false);
                                 }} style={{
                                     fontSize: "0.72rem", padding: "4px 12px", cursor: loginBusy ? "default" : "pointer",
-                                    background: "transparent", color: "#6366f1",
-                                    border: "1px solid #6366f1", borderRadius: 4, opacity: loginBusy ? 0.5 : 1,
+                                    background: "transparent", color: colors.primary,
+                                    border: `1px solid ${colors.primary}`, borderRadius: 4, opacity: loginBusy ? 0.5 : 1,
                                 }}>
                                     {loginBusy ? "..." : t("重新登录", "Re-login")}
                                 </button>
@@ -1376,14 +1377,14 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                         ) : (
                             <div style={{ marginBottom: 10 }}>
                                 {browserInfo === null ? (
-                                    <p style={{ fontSize: "0.72rem", color: "#94a3b8" }}>{t("检测浏览器...", "Detecting browser...")}</p>
+                                    <p style={{ fontSize: "0.72rem", color: colors.textMuted }}>{t("检测浏览器...", "Detecting browser...")}</p>
                                 ) : browserInfo.found === "true" ? (
                                     <div style={{
                                         display: "flex", alignItems: "center", gap: 8,
                                         padding: "8px 12px", borderRadius: 4, marginBottom: 8,
                                         background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
                                     }}>
-                                        <span style={{ fontSize: "0.76rem", color: "#22c55e" }}>
+                                        <span style={{ fontSize: "0.76rem", color: colors.success }}>
                                             ✅ {t(`已找到 ${browserInfo.name === "edge" ? "Edge" : "Chrome"}`, `${browserInfo.name === "edge" ? "Edge" : "Chrome"} found`)}
                                         </span>
                                     </div>
@@ -1393,7 +1394,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                         padding: "8px 12px", borderRadius: 4, marginBottom: 8,
                                         background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
                                     }}>
-                                        <span style={{ fontSize: "0.76rem", color: "#ef4444", flex: 1 }}>
+                                        <span style={{ fontSize: "0.76rem", color: colors.danger, flex: 1 }}>
                                             ❌ {t("未找到 Chrome 或 Edge", "Chrome/Edge not found")}
                                         </span>
                                     </div>
@@ -1406,7 +1407,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 }} style={{
                                     width: "100%", padding: "10px 0", fontSize: "0.8rem",
                                     cursor: loginBusy ? "default" : "pointer",
-                                    background: "#6366f1", color: "#fff",
+                                    background: colors.primary, color: "var(--theme-text-primary)",
                                     border: "none", borderRadius: 4,
                                     opacity: (loginBusy || browserInfo?.found !== "true") ? 0.6 : 1,
                                 }}>
@@ -1430,7 +1431,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 }} style={{
                                     width: "100%", padding: "10px 0", fontSize: "0.8rem",
                                     cursor: loginBusy ? "default" : "pointer",
-                                    background: "#22c55e", color: "#fff",
+                                    background: colors.success, color: "var(--theme-text-primary)",
                                     border: "none", borderRadius: 4, opacity: loginBusy ? 0.6 : 1,
                                 }}>
                                     {loginBusy ? `⏳ ${t("正在关闭浏览器并提取登录信息...", "Closing browser & extracting login info...")}` : t("✅ 我已在浏览器中登录，完成登录", "✅ I've logged in, finish login")}
@@ -1444,7 +1445,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
                                 background: freeResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
                                 border: `1px solid ${freeResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                color: freeResult.ok ? "#22c55e" : "#ef4444",
+                                color: freeResult.ok ? colors.success : colors.danger,
                             }}>
                                 {freeResult.ok ? "✅ " : "❌ "}{freeResult.msg}
                             </div>
@@ -1458,9 +1459,9 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 return (
                                     <button key={m.id} onClick={() => { setFreeSelectedModel(m.id); SetFreeProxyModel(m.id).catch(() => {}); }} style={{
                                         fontSize: "0.72rem", padding: "4px 10px", cursor: "pointer",
-                                        background: active ? "#6366f1" : "#f8fafc",
-                                        color: active ? "#fff" : "#334155",
-                                        border: `1px solid ${active ? "#6366f1" : "#e2e8f0"}`,
+                                        background: active ? colors.primary : colors.surfaceMuted,
+                                        color: active ? "var(--theme-text-primary)" : colors.text,
+                                        border: `1px solid ${active ? colors.primary : colors.border}`,
                                         borderRadius: 4, transition: "all 0.15s",
                                     }}>
                                         {m.name}
@@ -1479,10 +1480,10 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                         }}>
                             <span style={{
                                 width: 8, height: 8, borderRadius: "50%",
-                                background: proxyRunning ? "#22c55e" : "#ef4444",
+                                background: proxyRunning ? colors.success : colors.danger,
                                 display: "inline-block", flexShrink: 0,
                             }} />
-                            <span style={{ fontSize: "0.76rem", color: proxyRunning ? "#22c55e" : "#ef4444", flex: 1 }}>
+                            <span style={{ fontSize: "0.76rem", color: proxyRunning ? colors.success : colors.danger, flex: 1 }}>
                                 {proxyRunning
                                     ? t("代理服务运行中", "Proxy running")
                                     : t("代理服务未运行", "Proxy not running")}
@@ -1496,9 +1497,9 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 setProxyBusy(false);
                             }} style={{
                                 fontSize: "0.72rem", padding: "4px 12px", cursor: proxyBusy ? "default" : "pointer",
-                                background: proxyRunning ? "transparent" : "#6366f1",
-                                color: proxyRunning ? "#ef4444" : "#fff",
-                                border: `1px solid ${proxyRunning ? "#ef4444" : "#6366f1"}`,
+                                background: proxyRunning ? "transparent" : colors.primary,
+                                color: proxyRunning ? colors.danger : "var(--theme-text-primary)",
+                                border: `1px solid ${proxyRunning ? colors.danger : colors.primary}`,
                                 borderRadius: 4, opacity: proxyBusy ? 0.5 : 1,
                             }}>
                                 {proxyBusy ? "..." : proxyRunning ? t("停止", "Stop") : t("启动", "Start")}
@@ -1509,15 +1510,15 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                             <button onClick={closeFreeModal} style={{
                                 fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
-                                background: "#f1f5f9", color: "#334155",
-                                border: "1px solid #e2e8f0", borderRadius: 4,
+                                background: colors.surfaceMuted, color: colors.text,
+                                border: `1px solid ${colors.border}`, borderRadius: 4
                             }}>
                                 {t("取消", "Cancel")}
                             </button>
                             <button onClick={handleFreeSave} disabled={llmSaving || !dangbeiLoggedIn || !proxyRunning} style={{
                                 fontSize: "0.76rem", padding: "6px 18px", cursor: (dangbeiLoggedIn && proxyRunning) ? "pointer" : "default",
-                                background: (dangbeiLoggedIn && proxyRunning) ? "#6366f1" : "#cbd5e1",
-                                color: "#fff", border: "none", borderRadius: 4,
+                                background: (dangbeiLoggedIn && proxyRunning) ? colors.primary : colors.border,
+                                color: "var(--theme-text-primary)", border: "none", borderRadius: 4,
                                 opacity: llmSaving ? 0.6 : 1,
                             }}>
                                 {llmSaving ? t("保存中...", "Saving...") : t("保存并继续", "Save & Continue")}
@@ -1535,35 +1536,35 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     alignItems: "center", justifyContent: "center", zIndex: 10000,
                 }} onClick={() => setShowConfirm(false)}>
                     <div style={{
-                        background: "#fff", borderRadius: 16, padding: "24px 28px",
+                        background: colors.surface, borderRadius: 16, padding: "24px 28px",
                         maxWidth: 400, width: "90%", boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
                     }} onClick={e => e.stopPropagation()}>
                         <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>
                             {t("确认注册信息", "Confirm Registration")}
                         </div>
-                        <div style={{ fontSize: 14, color: "#555", lineHeight: 1.6, marginBottom: 8 }}>
+                        <div style={{ fontSize: 14, color: colors.textSecondary, lineHeight: 1.6, marginBottom: 8 }}>
                             {t("请确认邮箱正确无误。填写错误会导致注册失败，且需要管理员手动处理。",
                                 "Please confirm the email below is correct. Errors require admin intervention.")}
                         </div>
                         <div style={{
                             padding: 14, margin: "12px 0", borderRadius: 10,
-                            background: "#f0f5ff", fontSize: "0.88rem", lineHeight: 1.8,
+                            background: "var(--theme-info-bg)", fontSize: "0.88rem", lineHeight: 1.8,
                         }}>
                             <div>
-                                <span style={{ color: "#64748b" }}>{t("邮箱", "Email")}:</span>{" "}
+                                <span style={{ color: colors.textSecondary }}>{t("邮箱", "Email")}:</span>{" "}
                                 <span style={{ fontWeight: 600 }}>{regEmail}</span>
                             </div>
                         </div>
                         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
                             <button onClick={() => setShowConfirm(false)} style={{
                                 padding: "6px 18px", fontSize: "0.8rem", borderRadius: 6,
-                                background: "#f1f5f9", color: "#334155", border: "1px solid #e2e8f0", cursor: "pointer",
+                                background: colors.surfaceMuted, color: colors.text, border: `1px solid ${colors.border}`, cursor: "pointer",
                             }}>
                                 {t("返回修改", "Go Back")}
                             </button>
                             <button onClick={doRegister} style={{
                                 padding: "6px 18px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,
-                                background: "#6366f1", color: "#fff", border: "none", cursor: "pointer",
+                                background: colors.primary, color: "var(--theme-text-primary)", border: "none", cursor: "pointer",
                             }}>
                                 {t("确认注册", "Confirm & Register")}
                             </button>

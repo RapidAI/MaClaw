@@ -1330,10 +1330,11 @@ func (a *App) buildCodexLaunchEnv(
 	env := map[string]string{}
 
 	if !selectedModel.IsBuiltin {
-		// Only pass API key via env var; all other config goes through config.toml.
-		// OPENAI_BASE_URL is deprecated in Codex CLI — use config.toml instead.
 		if selectedModel.ApiKey != "" {
 			env["OPENAI_API_KEY"] = selectedModel.ApiKey
+		}
+		if selectedModel.ModelUrl != "" {
+			env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
 		}
 	} else {
 		// Restore native config so Codex can use its own auth.
@@ -1356,14 +1357,20 @@ func (a *App) buildOpencodeLaunchEnv(
 	}
 
 	env := map[string]string{}
-	if selectedModel.ApiKey != "" {
-		env["OPENCODE_API_KEY"] = selectedModel.ApiKey
-	}
-	if selectedModel.ModelUrl != "" {
-		env["OPENCODE_BASE_URL"] = selectedModel.ModelUrl
-	}
-	if selectedModel.ModelId != "" {
-		env["OPENCODE_MODEL"] = selectedModel.ModelId
+	if !selectedModel.IsBuiltin {
+		if selectedModel.ApiKey != "" {
+			env["OPENCODE_API_KEY"] = selectedModel.ApiKey
+		}
+		if selectedModel.ModelUrl != "" {
+			env["OPENCODE_BASE_URL"] = selectedModel.ModelUrl
+		}
+		if selectedModel.ModelId != "" {
+			env["OPENCODE_MODEL"] = selectedModel.ModelId
+		}
+		a.backupToolNativeConfig("opencode")
+	} else {
+		// Restore native config so Opencode can use its own auth.
+		a.restoreToolNativeConfig("opencode")
 	}
 
 	a.injectProxyEnv(env, config, projectDir, useProxy)
@@ -1382,16 +1389,22 @@ func (a *App) buildIFlowLaunchEnv(
 	}
 
 	env := map[string]string{}
-	if selectedModel.ApiKey != "" {
-		env["OPENAI_API_KEY"] = selectedModel.ApiKey
-		env["IFLOW_API_KEY"] = selectedModel.ApiKey
-	}
-	if selectedModel.ModelUrl != "" {
-		env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
-		env["IFLOW_BASE_URL"] = selectedModel.ModelUrl
-	}
-	if selectedModel.ModelId != "" {
-		env["IFLOW_MODEL"] = selectedModel.ModelId
+	if !selectedModel.IsBuiltin {
+		if selectedModel.ApiKey != "" {
+			env["OPENAI_API_KEY"] = selectedModel.ApiKey
+			env["IFLOW_API_KEY"] = selectedModel.ApiKey
+		}
+		if selectedModel.ModelUrl != "" {
+			env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
+			env["IFLOW_BASE_URL"] = selectedModel.ModelUrl
+		}
+		if selectedModel.ModelId != "" {
+			env["IFLOW_MODEL"] = selectedModel.ModelId
+		}
+		a.backupToolNativeConfig("iflow")
+	} else {
+		// Restore native config so iFlow can use its own auth.
+		a.restoreToolNativeConfig("iflow")
 	}
 
 	a.injectProxyEnv(env, config, projectDir, useProxy)
@@ -1410,16 +1423,22 @@ func (a *App) buildKiloLaunchEnv(
 	}
 
 	env := map[string]string{}
-	if selectedModel.ApiKey != "" {
-		env["OPENAI_API_KEY"] = selectedModel.ApiKey
-		env["KILO_API_KEY"] = selectedModel.ApiKey
-	}
-	if selectedModel.ModelUrl != "" {
-		env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
-		env["KILO_BASE_URL"] = selectedModel.ModelUrl
-	}
-	if selectedModel.ModelId != "" {
-		env["KILO_MODEL"] = selectedModel.ModelId
+	if !selectedModel.IsBuiltin {
+		if selectedModel.ApiKey != "" {
+			env["OPENAI_API_KEY"] = selectedModel.ApiKey
+			env["KILO_API_KEY"] = selectedModel.ApiKey
+		}
+		if selectedModel.ModelUrl != "" {
+			env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
+			env["KILO_BASE_URL"] = selectedModel.ModelUrl
+		}
+		if selectedModel.ModelId != "" {
+			env["KILO_MODEL"] = selectedModel.ModelId
+		}
+		a.backupToolNativeConfig("kilo")
+	} else {
+		// Restore native config so Kilo can use its own auth.
+		a.restoreToolNativeConfig("kilo")
 	}
 
 	a.injectProxyEnv(env, config, projectDir, useProxy)
@@ -3070,6 +3089,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			a.log("Codex: Using environment variables only (cleared old config)")
 		case "opencode":
 			// Opencode needs config file - use instanceID for isolation
+			a.backupToolNativeConfig("opencode")
 			a.syncToOpencodeSettings(config, projectDir, instanceID)
 		case "codebuddy":
 			// CodeBuddy may need config file
@@ -3081,9 +3101,11 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			if selectedModel.ModelUrl != "" {
 				env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
 			}
+			a.backupToolNativeConfig("iflow")
 			a.syncToIFlowSettings(config, projectDir, instanceID)
 		case "kilo":
 			// Kilo needs config file - use instanceID for isolation
+			a.backupToolNativeConfig("kilo")
 			a.syncToKiloSettings(config, projectDir, instanceID)
 		default:
 			// OEM extra tools: if EnvBuilderFunc is set, merge its output into env

@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react';
-import { quickTasks } from '../mock/tasks';
+import { useState, useRef, useEffect } from 'react';
+import { quickTasks as defaultQuickTasks } from '../mock/tasks';
 import type { HistoryTaskItem } from '../types';
 import { IconSearch, IconChevronRight } from '../components/layout/SidebarIcons';
 
@@ -16,6 +16,8 @@ type Props = {
 
 type WorkMode = 'code' | 'office';
 
+const hasWails = () => typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
+
 const skillChips = [
   { icon: '📄', label: '文档处理' },
   { icon: '🎬', label: '视频生成' },
@@ -29,7 +31,19 @@ const skillChips = [
 
 export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, onDraftChange, onPickTask, onOpenNewTask }: Props) {
   const [workMode, setWorkMode] = useState<WorkMode>('office');
+  const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
   const chipScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!hasWails()) return;
+    (window as any).go.main.App.GetWelcomeData()
+      .then((data: { quick_tasks?: string[] }) => {
+        if (data?.quick_tasks && data.quick_tasks.length > 0) {
+          setQuickTasks(data.quick_tasks);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = () => {
     if (draft.trim()) {

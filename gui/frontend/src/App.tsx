@@ -176,7 +176,7 @@ const badgeBaseStyle: React.CSSProperties = {
     position: 'absolute',
     top: '-8px',
     right: '0px',
-    color: 'white',
+    color: 'var(--theme-text-primary)',
     fontSize: '10px',
     padding: '1px 6px',
     borderRadius: '999px',
@@ -195,7 +195,7 @@ const MarkdownLink = ({ node, ...props }: any) => (
             e.preventDefault();
             if (props.href) BrowserOpenURL(props.href);
         }}
-        style={{ cursor: 'pointer', color: '#6366f1', textDecoration: 'underline' }}
+        style={{ cursor: 'pointer', color: 'var(--theme-link-color)', textDecoration: 'underline' }}
     />
 );
 
@@ -761,7 +761,7 @@ const translations: any = {
         "version": "版本",
         "author": "作者",
         "aboutSectionTag": "关于",
-        "aboutProductName": "码卡龙·浴火 MaClaw",
+        "aboutProductName": "码卡龙·涅槃 MaClaw",
         "buildLabel": "构建",
         "quickActionsTitle": "快捷操作",
         "quickActionsDesc": "打开官网资源、检查更新或反馈问题。",
@@ -1209,7 +1209,7 @@ const translations: any = {
         "version": "版本",
         "author": "作者",
         "aboutSectionTag": "關於",
-        "aboutProductName": "碼卡龍·浴火 MaClaw",
+        "aboutProductName": "碼卡龍·涅槃 MaClaw",
         "buildLabel": "構建",
         "quickActionsTitle": "快捷操作",
         "quickActionsDesc": "打開官網資源、檢查更新或反饋問題。",
@@ -1609,14 +1609,14 @@ const ToolConfiguration = ({
     const getBadge = (model: any): { bg: string; label: string } | null => {
         const name = model.model_name.toLowerCase();
         if (model.model_name === "Original") return { bg: 'var(--theme-primary)', label: t("originalFlag") };
-        if (model.has_subscription) return { bg: '#ec4899', label: t("subscription") };
+        if (model.has_subscription) return { bg: 'var(--theme-danger)', label: t("subscription") };
         if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax"))
-            return { bg: '#ec4899', label: t("monthly") };
+            return { bg: 'var(--theme-danger)', label: t("monthly") };
         if (name.includes("deepseek")) return { bg: 'var(--theme-warning)', label: t("premium") };
         if (name.includes("xiaomi")) return { bg: 'var(--theme-warning)', label: t("bigSpender") };
         if (model.is_custom) return { bg: 'var(--theme-text-muted)', label: t("customized") };
         if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "chatfire", "coderelay"].some(p => name.includes(p)))
-            return { bg: '#14b8a6', label: t("forward") };
+            return { bg: 'var(--theme-success)', label: t("forward") };
         return null;
     };
 
@@ -3322,12 +3322,13 @@ ${instruction}`;
                 flexDirection: 'column',
                 justifyContent: 'center',
                 alignItems: 'center',
-                backgroundColor: '#fff',
+                backgroundColor: 'var(--theme-surface)',
+                color: 'var(--theme-text-primary)',
                 padding: '20px',
                 textAlign: 'center',
                 boxSizing: 'border-box',
                 borderRadius: '12px',
-                border: '1px solid rgba(0, 0, 0, 0.15)',
+                border: '1px solid var(--theme-border)',
                 overflow: 'hidden'
             }}>
                 <div style={{
@@ -3340,18 +3341,18 @@ ${instruction}`;
                     '--wails-draggable': 'drag'
                 } as any}></div>
                 <h2 style={{
-                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
+                    background: 'linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong), var(--theme-link-color))',
                     WebkitBackgroundClip: 'text',
                     WebkitTextFillColor: 'transparent',
                     marginBottom: '20px',
                     display: 'inline-block',
                     fontWeight: 'bold'
                 }}>{t("envCheckTitle")}</h2>
-                <div style={{ width: '100%', height: '4px', backgroundColor: '#e2e8f0', borderRadius: '2px', overflow: 'hidden', marginBottom: '15px' }}>
+                <div style={{ width: '100%', height: '4px', backgroundColor: 'var(--theme-surface-muted)', borderRadius: '2px', overflow: 'hidden', marginBottom: '15px' }}>
                     <div style={{
                         width: '50%',
                         height: '100%',
-                        backgroundColor: '#6366f1',
+                        backgroundColor: 'var(--theme-primary)',
                         borderRadius: '2px',
                         animation: 'indeterminate 1.5s infinite linear'
                     }}></div>
@@ -3368,9 +3369,9 @@ ${instruction}`;
                             padding: '10px',
                             fontSize: '0.85rem',
                             fontFamily: 'monospace',
-                            color: '#4b5563',
-                            backgroundColor: '#fffdfa',
-                            border: '1px solid #e2e8f0',
+                            color: 'var(--theme-text-secondary)',
+                            backgroundColor: 'var(--theme-surface-muted)',
+                            border: '1px solid var(--theme-border)',
                             borderRadius: '8px',
                             resize: 'none',
                             outline: 'none',
@@ -3378,7 +3379,7 @@ ${instruction}`;
                         }}
                     />
                 ) : (
-                    <div style={{ fontSize: '0.9rem', color: '#6b7280', marginBottom: '15px', height: '20px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ fontSize: '0.9rem', color: 'var(--theme-text-muted)', marginBottom: '15px', height: '20px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {envLogs.length > 0 ? envLogs[envLogs.length - 1] : t("initializing")}
                     </div>
                 )}
@@ -3389,7 +3390,7 @@ ${instruction}`;
                         style={{
                             background: 'none',
                             border: 'none',
-                            color: '#6366f1',
+                            color: 'var(--theme-link-color)',
                             fontSize: '0.8rem',
                             cursor: 'pointer',
                             textDecoration: 'underline'
@@ -3403,11 +3404,11 @@ ${instruction}`;
                             <button onClick={() => {
                                 setIsLoading(false);
                                 setIsManualCheck(false);
-                            }} className="btn-hide" style={{ borderColor: '#6366f1', color: '#6366f1', padding: '4px 12px' }}>
+                            }} className="btn-hide" style={{ borderColor: 'var(--theme-link-color)', color: 'var(--theme-link-color)', padding: '4px 12px' }}>
                                 {t("close")}
                             </button>
                         ) : (
-                            <button onClick={Quit} className="btn-hide" style={{ borderColor: '#ef4444', color: '#ef4444', padding: '4px 12px' }}>
+                            <button onClick={Quit} className="btn-hide" style={{ borderColor: 'var(--theme-danger)', color: 'var(--theme-danger)', padding: '4px 12px' }}>
                                 {lang === 'zh-Hans' ? '退出程序' : 'Quit'}
                             </button>
                         )
@@ -3540,8 +3541,8 @@ ${instruction}`;
                     alignItems: 'center',
                     padding: '6px 0',
                     background: aiThemeMode === 'dark'
-                        ? 'linear-gradient(180deg, #111827 0%, #0f172a 68px, #0b1220 100%)'
-                        : 'linear-gradient(180deg, #fff8f6 0%, #fafbff 68px, #fafbff 100%)',
+                        ? 'linear-gradient(180deg, var(--theme-surface) 0%, var(--theme-page-bg) 68px, var(--theme-page-bg) 100%)'
+                        : 'linear-gradient(180deg, var(--theme-surface) 0%, var(--theme-page-bg) 68px, var(--theme-page-bg) 100%)',
                     flexShrink: 0
                 }}>
                     <div className="sidebar-header" style={{ padding: '10px 0 14px 0', justifyContent: 'center', width: '100%' }}>
@@ -3551,7 +3552,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item left-nav-item ${navTab === 'remote' ? 'active' : ''}`}
                         onClick={() => switchTool('remote')}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>📡</span>
@@ -3561,7 +3562,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item left-nav-item ${navTab === 'skills' ? 'active' : ''}`}
                         onClick={() => { switchTool('skills'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
                         title={t("skills")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🧩</span>
@@ -3570,7 +3571,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item left-nav-item ${navTab === 'mcp' ? 'active' : ''}`}
                         onClick={() => { switchTool('mcp'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
                         title="MCP"
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🔌</span>
@@ -3612,15 +3613,13 @@ ${instruction}`;
                             borderRadius: '50%',
                             padding: '3px',
                             background: (() => {
-                                const on = '#e74c3c';
-                                const off = '#ccc';
-                                const llm = maclawLLMOnline ? on : off;
-                                const net = clawNetRunning ? on : off;
+                                const llm = maclawLLMOnline;
+                                const net = clawNetRunning;
                                 if (isLiteMode) {
-                                    return `conic-gradient(${llm} 0deg, ${llm} 180deg, ${net} 180deg, ${net} 360deg)`;
+                                    return llm && net ? 'var(--theme-primary-strong)' : (!llm && !net ? 'var(--theme-text-muted)' : llm ? 'var(--theme-primary)' : 'var(--theme-text-muted)');
                                 }
-                                const mob = remoteActivationStatus?.activated ? on : off;
-                                return `conic-gradient(${llm} 0deg, ${llm} 180deg, ${net} 180deg, ${net} 270deg, ${mob} 270deg, ${mob} 360deg)`;
+                                const mob = remoteActivationStatus?.activated;
+                                return (llm && net && mob) ? 'var(--theme-primary-strong)' : (!llm && !net && !mob) ? 'var(--theme-text-muted)' : 'var(--theme-primary)';
                             })(),
                             boxShadow: (() => {
                                 const allOn = isLiteMode
@@ -3630,16 +3629,16 @@ ${instruction}`;
                                     ? (!maclawLLMOnline && !clawNetRunning)
                                     : (!maclawLLMOnline && !clawNetRunning && !remoteActivationStatus?.activated);
                                 if (noneOn) return 'none';
-                                if (allOn && navTab === 'ai') return '0 0 10px rgba(231,76,60,0.6), 0 0 20px rgba(231,76,60,0.3)';
-                                if (allOn) return '0 0 6px rgba(231,76,60,0.4), 0 0 12px rgba(231,76,60,0.15)';
-                                return '0 0 4px rgba(231,76,60,0.3)';
+                                if (allOn && navTab === 'ai') return '0 0 10px color-mix(in srgb, var(--theme-primary) 60%, transparent), 0 0 20px color-mix(in srgb, var(--theme-primary) 30%, transparent)';
+                                if (allOn) return '0 0 6px color-mix(in srgb, var(--theme-primary) 40%, transparent), 0 0 12px color-mix(in srgb, var(--theme-primary) 15%, transparent)';
+                                return '0 0 4px color-mix(in srgb, var(--theme-primary) 30%, transparent)';
                             })(),
                             transition: 'box-shadow 0.2s ease, background 0.3s ease'
                         }}>
                             <span style={{
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 width: '100%', height: '100%',
-                                borderRadius: '50%', background: aiThemeMode === 'dark' ? '#0f172a' : '#f8f9fc',
+                                borderRadius: '50%', background: aiThemeMode === 'dark' ? 'var(--theme-surface)' : 'var(--theme-surface)',
                                 fontSize: '1.3rem', lineHeight: 1
                             }}>🦞</span>
                         </span>
@@ -3654,7 +3653,7 @@ ${instruction}`;
                         <div
                             className={`sidebar-item left-nav-item ${navTab === 'gossip' ? 'active' : ''}`}
                             onClick={() => { switchTool('gossip'); }}
-                            style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'gossip' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
+                            style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'gossip' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
                             title={t("gossip")}
                         >
                             <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🗣️</span>
@@ -3665,7 +3664,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item left-nav-item ${navTab === 'clawnet' ? 'active' : ''}`}
                         onClick={() => { switchTool('clawnet'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'ClawNet'}
                     >
                         <img src={clawnetIcon} alt="ClawNet" style={{ width: '22px', height: '22px', margin: 0 }} />
@@ -3675,7 +3674,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item left-nav-item ${navTab === 'settings' ? 'active' : ''}`}
                         onClick={() => { switchTool('settings'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
                         title={t("settings")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>⚙️</span>
@@ -3685,7 +3684,7 @@ ${instruction}`;
                     <div
                         className={`sidebar-item left-nav-item ${navTab === 'about' ? 'active' : ''}`}
                         onClick={() => switchTool('about')}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid #9ca3af' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
                         title={t("about")}
                     >
                         <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>ℹ️</span>
@@ -3694,8 +3693,8 @@ ${instruction}`;
                 </div>
 
                 {/* Right Tool List */}
-                <div style={{ flex: 1, padding: '5px 4px 4px', overflowY: 'auto', backgroundColor: aiThemeMode === 'dark' ? '#0f172a' : '#fafbff', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', minHeight: 0 }}>
-                    <div style={{ width: '72%', height: '1px', background: aiThemeMode === 'dark' ? 'linear-gradient(90deg, transparent, #475569, transparent)' : 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '0 auto 4px', flexShrink: 0, display: isLiteMode ? 'none' : undefined }}></div>
+                <div style={{ flex: 1, padding: '5px 4px 4px', overflowY: 'auto', backgroundColor: 'var(--theme-page-bg)', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', minHeight: 0 }}>
+                    <div style={{ width: '72%', height: '1px', background: 'linear-gradient(90deg, transparent, var(--theme-border), transparent)', margin: '0 auto 4px', flexShrink: 0, display: isLiteMode ? 'none' : undefined }}></div>
                     <div style={{ flex: 1, minHeight: 0, display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                     <div className="tool-grid" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2px' }}>
                         <div className={`sidebar-item ${navTab === 'claude' ? 'active' : ''}`} onClick={() => switchTool('claude')}>
@@ -3786,17 +3785,17 @@ ${instruction}`;
                                         onClick={link ? () => { setNavTab('settings'); setSettingsTab(link as any); } : undefined}
                                         title={link && !on ? localizeText('Click to configure', '点击配置', '點擊配置') : undefined}
                                     >
-                                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: on ? '#b14df0' : (aiThemeMode === 'dark' ? 'rgba(148, 163, 184, 0.72)' : 'rgba(139, 149, 165, 0.65)'), boxShadow: on ? '0 0 4px rgba(177, 77, 240, 0.35)' : 'none', display: 'inline-block' }}></span>
-                                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.42rem', color: on ? (aiThemeMode === 'dark' ? '#f8fafc' : 'var(--text-color)') : (aiThemeMode === 'dark' ? '#94a3b8' : 'var(--text-secondary)'), fontWeight: 600 }}>{label}</span>
+                                        <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: on ? 'var(--theme-primary-strong)' : (aiThemeMode === 'dark' ? 'rgba(148, 163, 184, 0.72)' : 'rgba(148, 163, 184, 0.65)'), boxShadow: on ? '0 0 4px color-mix(in srgb, var(--theme-primary-strong) 35%, transparent)' : 'none', display: 'inline-block' }}></span>
+                                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.42rem', color: on ? 'var(--theme-text-primary)' : 'var(--theme-text-muted)', fontWeight: 600 }}>{label}</span>
                                     </div>
                                 ))}
                             </div>
                             <div style={{ marginBottom: '2px', minWidth: 0, borderRadius: '4px', background: aiThemeMode === 'dark' ? 'rgba(17, 24, 39, 0.96)' : 'rgba(247, 248, 250, 0.74)', border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.72)' : '1px solid rgba(225, 228, 232, 0.72)', padding: '3px 4px', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: '4px' }}>
-                                <div style={{ fontSize: '0.42rem', color: aiThemeMode === 'dark' ? '#94a3b8' : 'var(--text-secondary)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>
+                                <div style={{ fontSize: '0.42rem', color: 'var(--theme-text-muted)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>
                                     {lang === 'zh-Hans' ? '服务商' : lang === 'zh-Hant' ? '服務商' : 'Provider'}
                                 </div>
                                 <div
-                                    style={{ color: aiThemeMode === 'dark' ? '#f8fafc' : 'var(--text-color)', fontWeight: 700, fontSize: '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                                    style={{ color: 'var(--theme-text-primary)', fontWeight: 700, fontSize: '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
                                 >
                                     {sidebarCurrentProviderTokenUsage.provider || (lang === 'zh-Hans' ? '未选择' : lang === 'zh-Hant' ? '未選擇' : 'Not selected')}
                                 </div>
@@ -3808,8 +3807,8 @@ ${instruction}`;
                                     { label: lang === 'zh-Hans' ? '总' : lang === 'zh-Hant' ? '總' : 'All', value: sidebarCurrentProviderTokenUsage.total, tone: 'primary', bold: true },
                                 ].map(({ label, value, tone, bold }) => (
                                     <div key={label} style={{ minWidth: 0, borderRadius: '4px', background: aiThemeMode === 'dark' ? 'rgba(17, 24, 39, 0.96)' : 'rgba(247, 248, 250, 0.74)', border: aiThemeMode === 'dark' ? '1px solid rgba(71, 85, 105, 0.72)' : '1px solid rgba(225, 228, 232, 0.72)', padding: '3px 3px', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: '4px' }}>
-                                        <div style={{ fontSize: '0.42rem', color: aiThemeMode === 'dark' ? '#94a3b8' : 'var(--text-secondary)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>{label}</div>
-                                        <div style={{ color: tone === 'primary' ? (aiThemeMode === 'dark' ? '#f8fafc' : 'var(--text-color)') : (aiThemeMode === 'dark' ? '#cbd5e1' : 'var(--text-secondary)'), fontWeight: bold ? 700 : 600, fontSize: bold ? '0.5rem' : '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }} title={value.toLocaleString()}>
+                                        <div style={{ fontSize: '0.42rem', color: 'var(--theme-text-muted)', fontWeight: 600, lineHeight: 1, whiteSpace: 'nowrap' }}>{label}</div>
+                                        <div style={{ color: tone === 'primary' ? 'var(--theme-text-primary)' : 'var(--theme-text-secondary)', fontWeight: bold ? 700 : 600, fontSize: bold ? '0.5rem' : '0.46rem', lineHeight: 1.02, textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }} title={value.toLocaleString()}>
                                             {value.toLocaleString()}
                                         </div>
                                     </div>
@@ -3938,8 +3937,8 @@ ${instruction}`;
                                             marginLeft: '10px',
                                             padding: '2px 8px',
                                             fontSize: '0.8rem',
-                                            borderColor: '#6366f1',
-                                            color: '#6366f1',
+                                            borderColor: 'var(--theme-primary)',
+                                            color: 'var(--theme-primary)',
                                             '--wails-draggable': 'no-drag'
                                         } as any}
                                     >
@@ -3956,8 +3955,8 @@ ${instruction}`;
                                                 marginLeft: '10px',
                                                 padding: '2px 8px',
                                                 fontSize: '0.8rem',
-                                                borderColor: '#10b981',
-                                                color: '#10b981',
+                                                borderColor: 'var(--theme-success)',
+                                                color: 'var(--theme-success)',
                                                 '--wails-draggable': 'no-drag'
                                             } as any}
                                         >
@@ -3971,8 +3970,8 @@ ${instruction}`;
                                             marginLeft: '10px',
                                             padding: '2px 8px',
                                             fontSize: '0.8rem',
-                                            borderColor: '#c65c37',
-                                            color: '#c65c37',
+                                            borderColor: 'var(--theme-warning)',
+                                            color: 'var(--theme-warning)',
                                             '--wails-draggable': 'no-drag'
                                         } as any}
                                     >
@@ -4146,7 +4145,7 @@ ${instruction}`;
                                                     top: '-6px',
                                                     right: '-6px',
                                                     backgroundColor: 'var(--theme-primary)',
-                                                    color: '#fff',
+                                                    color: 'var(--theme-text-primary)',
                                                     padding: '3px 10px',
                                                     borderRadius: '4px',
                                                     fontSize: '0.65rem',
@@ -4161,8 +4160,8 @@ ${instruction}`;
                                                     position: 'absolute',
                                                     top: '-6px',
                                                     right: '-6px',
-                                                    backgroundColor: '#ec4899',
-                                                    color: '#fff',
+                                                    backgroundColor: 'var(--theme-danger)',
+                                                    color: 'var(--theme-text-primary)',
                                                     padding: '3px 10px',
                                                     borderRadius: '4px',
                                                     fontSize: '0.65rem',
@@ -4178,7 +4177,7 @@ ${instruction}`;
                                                     top: '-6px',
                                                     right: '-6px',
                                                     backgroundColor: 'var(--theme-warning)',
-                                                    color: '#fff',
+                                                    color: 'var(--theme-text-primary)',
                                                     padding: '3px 10px',
                                                     borderRadius: '4px',
                                                     fontSize: '0.65rem',
@@ -4392,7 +4391,7 @@ ${instruction}`;
                                     <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); const currentTab: string = navTab; if (currentTab === 'remote' || currentTab === 'skills' || currentTab === 'mcp' || isToolTab(currentTab)) { setNavTab('ai'); } if (settingsTab === 'display' || settingsTab === 'remote' || settingsTab === 'ui') { setSettingsTab('general'); } } }} />
                                     {t("uiModeLite")}
                                 </label>
-                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
+                                <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
                                     {isLiteMode ? t("uiModeLiteDesc") : t("uiModeProDesc")}
                                 </span>
                             </div>
@@ -4411,7 +4410,7 @@ ${instruction}`;
                                     />
                                     <span>{lang === 'zh-Hans' ? '日志详情' : lang === 'zh-Hant' ? '日誌詳情' : 'Detailed logs'}</span>
                                 </label>
-                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
+                                <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
                                     {lang === 'zh-Hans' ? '开启后显示更完整的运行日志；关闭时仅保留错误日志' : lang === 'zh-Hant' ? '開啟後顯示更完整的運行日誌；關閉時僅保留錯誤日誌' : 'Show more complete runtime logs; when off, only error logs are kept'}
                                 </span>
                             </div>
@@ -4430,7 +4429,7 @@ ${instruction}`;
                                     />
                                     <span>{lang === 'zh-Hans' ? '记录 LLM 轨迹' : lang === 'zh-Hant' ? '記錄 LLM 軌跡' : 'Record LLM trajectory'}</span>
                                 </label>
-                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
+                                <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
                                     {lang === 'zh-Hans' ? '保存 LLM 交互轨迹，用于分析与训练' : lang === 'zh-Hant' ? '保存 LLM 互動軌跡，用於分析與訓練' : 'Save LLM interaction trajectories for analysis and training'}
                                 </span>
                             </div>
@@ -4521,11 +4520,11 @@ ${instruction}`;
                                         onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_bypass: e.target.value })); }}
                                         style={{ resize: 'vertical', minHeight: '40px', fontFamily: 'monospace', fontSize: '0.78rem' }}
                                     />
-                                    <div style={{ fontSize: '0.7rem', color: '#888', marginTop: '3px' }}>{t("proxyBypassHint")}</div>
+                                    <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '3px' }}>{t("proxyBypassHint")}</div>
                                 </div>
 
                                 {/* Scope checkboxes */}
-                                <div style={{ marginBottom: '12px', padding: '10px', backgroundColor: 'var(--bg-secondary, #f8fafc)', borderRadius: '6px', border: '1px solid var(--border-color, #e2e8f0)' }}>
+                                <div style={{ marginBottom: '12px', padding: '10px', backgroundColor: 'var(--theme-info-bg)', borderRadius: '6px', border: '1px solid var(--theme-primary-soft)' }}>
                                     <label className="form-label" style={{ fontSize: '0.78rem', marginBottom: '8px', display: 'block' }}>{t("proxyScopeTitle")}</label>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                         <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem' }}>
@@ -4718,7 +4717,7 @@ ${instruction}`;
 
                                     {/* 单机/多机 mode selector */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
+                                        <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>
                                             {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
                                         </span>
                                         {[
@@ -4733,9 +4732,9 @@ ${instruction}`;
                                                 style={{
                                                     padding: '4px 14px',
                                                     borderRadius: '14px',
-                                                    border: qqBotLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
-                                                    background: qqBotLocalMode === opt.value ? '#eef2ff' : 'transparent',
-                                                    color: qqBotLocalMode === opt.value ? '#6366f1' : '#555',
+                                                    border: qqBotLocalMode === opt.value ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+                                                    background: qqBotLocalMode === opt.value ? 'var(--theme-info-bg)' : 'transparent',
+                                                    color: qqBotLocalMode === opt.value ? 'var(--theme-primary)' : 'var(--theme-text-secondary)',
                                                     fontWeight: qqBotLocalMode === opt.value ? 600 : 400,
                                                     fontSize: '0.75rem',
                                                     cursor: 'pointer',
@@ -4838,8 +4837,8 @@ ${instruction}`;
                                                     fontSize: '0.7rem',
                                                     padding: '2px 8px',
                                                     borderRadius: '10px',
-                                                    background: telegramStatus === 'connected' ? '#dcfce7' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? '#fef9c3' : '#fee2e2',
-                                                    color: telegramStatus === 'connected' ? '#166534' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? '#854d0e' : '#991b1b',
+                                                    background: telegramStatus === 'connected' ? 'var(--theme-success-bg)' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? 'var(--theme-warning-bg)' : 'var(--theme-danger-bg)',
+                                                    color: telegramStatus === 'connected' ? 'var(--theme-success)' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? 'var(--theme-warning)' : 'var(--theme-danger)',
                                                 }}>
                                                     {telegramStatus === 'connected' ? '● 已连接' : telegramStatus === 'connecting' ? '◌ 连接中...' : telegramStatus === 'reconnecting' ? '◌ 重连中...' : telegramStatus === 'error' ? '✕ 错误' : '○ 未连接'}
                                                 </span>
@@ -4864,7 +4863,7 @@ ${instruction}`;
 
                                     {/* 单机/多机 mode selector */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
+                                        <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>
                                             {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
                                         </span>
                                         {[
@@ -4879,9 +4878,9 @@ ${instruction}`;
                                                 style={{
                                                     padding: '4px 14px',
                                                     borderRadius: '14px',
-                                                    border: telegramLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
-                                                    background: telegramLocalMode === opt.value ? '#eef2ff' : 'transparent',
-                                                    color: telegramLocalMode === opt.value ? '#6366f1' : '#555',
+                                                    border: telegramLocalMode === opt.value ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+                                                    background: telegramLocalMode === opt.value ? 'var(--theme-info-bg)' : 'transparent',
+                                                    color: telegramLocalMode === opt.value ? 'var(--theme-primary)' : 'var(--theme-text-secondary)',
                                                     fontWeight: telegramLocalMode === opt.value ? 600 : 400,
                                                     fontSize: '0.75rem',
                                                     cursor: 'pointer',
@@ -4905,7 +4904,7 @@ ${instruction}`;
 
                                     <div style={{ maxWidth: '520px' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>Bot Token</label>
+                                            <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-muted)', whiteSpace: 'nowrap', minWidth: '62px' }}>Bot Token</label>
                                             <input
                                                 type="password"
                                                 value={(config as any)?.telegram_bot_token || ''}
@@ -4933,17 +4932,17 @@ ${instruction}`;
                                             fontSize: '0.7rem',
                                             padding: '2px 8px',
                                             borderRadius: '10px',
-                                            background: weixinStatus === 'connected' ? '#dcfce7'
-                                                : ['connecting', 'reconnecting', 'paused'].includes(weixinStatus) ? '#fef9c3'
-                                                : '#fee2e2',
-                                            color: weixinStatus === 'connected' ? '#166534'
-                                                : ['connecting', 'reconnecting', 'paused'].includes(weixinStatus) ? '#854d0e'
-                                                : '#991b1b',
+                                            background: weixinStatus === 'connected' ? 'var(--theme-success-bg)'
+                                                : ['connecting', 'reconnecting', 'paused'].includes(weixinStatus) ? 'var(--theme-warning-bg)'
+                                                : 'var(--theme-danger-bg)',
+                                            color: weixinStatus === 'connected' ? 'var(--theme-success)'
+                                                : ['connecting', 'reconnecting', 'paused'].includes(weixinStatus) ? 'var(--theme-warning)'
+                                                : 'var(--theme-danger)',
                                         }}>
                                             {{ connected: '● 已连接', connecting: '◌ 连接中...', reconnecting: '◌ 重连中...', paused: '◌ 已暂停', error: '✕ 错误' }[weixinStatus] || '○ 未连接'}
                                         </span>
                                         {(config as any)?.weixin_account_id && (
-                                            <span style={{ fontSize: '0.7rem', color: '#888' }}>
+                                            <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
                                                 ID: {(config as any).weixin_account_id}
                                             </span>
                                         )}
@@ -4952,7 +4951,7 @@ ${instruction}`;
                                                 <button
                                                     type="button"
                                                     aria-label="Restart WeChat connection"
-                                                    style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#555', cursor: 'pointer' }}
+                                                    style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-text-secondary)', cursor: 'pointer' }}
                                                     onClick={() => RestartWeixin().then(setWeixinStatus)}
                                                 >
                                                     {lang === 'zh-Hans' ? '重启' : 'Restart'}
@@ -4960,7 +4959,7 @@ ${instruction}`;
                                                 <button
                                                     type="button"
                                                     aria-label="Disconnect WeChat"
-                                                    style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ef4444', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
+                                                    style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-danger)', background: 'transparent', color: 'var(--theme-danger)', cursor: 'pointer' }}
                                                     onClick={() => { StopWeixin(); setWeixinStatus('disconnected'); }}
                                                 >
                                                     {lang === 'zh-Hans' ? '断开' : 'Disconnect'}
@@ -4971,7 +4970,7 @@ ${instruction}`;
 
                                     {/* 单机/多机 mode selector */}
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
+                                        <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>
                                             {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
                                         </span>
                                         {((() => {
@@ -4989,9 +4988,9 @@ ${instruction}`;
                                                 style={{
                                                     padding: '4px 14px',
                                                     borderRadius: '14px',
-                                                    border: weixinLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
-                                                    background: weixinLocalMode === opt.value ? '#eef2ff' : 'transparent',
-                                                    color: weixinLocalMode === opt.value ? '#6366f1' : '#555',
+                                                    border: weixinLocalMode === opt.value ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+                                                    background: weixinLocalMode === opt.value ? 'var(--theme-info-bg)' : 'transparent',
+                                                    color: weixinLocalMode === opt.value ? 'var(--theme-primary)' : 'var(--theme-text-secondary)',
                                                     fontWeight: weixinLocalMode === opt.value ? 600 : 400,
                                                     fontSize: '0.75rem',
                                                     cursor: 'pointer',
@@ -5025,9 +5024,9 @@ ${instruction}`;
                                                 style={{
                                                     padding: '6px 18px',
                                                     borderRadius: '6px',
-                                                    border: '1.5px solid #6366f1',
-                                                    background: '#eef2ff',
-                                                    color: '#6366f1',
+                                                    border: '1.5px solid var(--theme-primary)',
+                                                    background: 'var(--theme-info-bg)',
+                                                    color: 'var(--theme-primary)',
                                                     fontWeight: 600,
                                                     fontSize: '0.78rem',
                                                     cursor: 'pointer',
@@ -5166,7 +5165,7 @@ ${instruction}`;
                                         </span>
                                         <button
                                             type="button"
-                                            style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#555', cursor: 'pointer' }}
+                                            style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-text-secondary)', cursor: 'pointer' }}
                                             disabled={!(config as any)?.lansenger_enabled}
                                             onClick={async () => {
                                                 try {
@@ -5182,7 +5181,7 @@ ${instruction}`;
                                     </div>
 
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
+                                        <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>
                                             {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
                                         </span>
                                         {[
@@ -5197,9 +5196,9 @@ ${instruction}`;
                                                 style={{
                                                     padding: '4px 14px',
                                                     borderRadius: '14px',
-                                                    border: lansengerLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
-                                                    background: lansengerLocalMode === opt.value ? '#eef2ff' : 'transparent',
-                                                    color: lansengerLocalMode === opt.value ? '#6366f1' : '#555',
+                                                    border: lansengerLocalMode === opt.value ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+                                                    background: lansengerLocalMode === opt.value ? 'var(--theme-info-bg)' : 'transparent',
+                                                    color: lansengerLocalMode === opt.value ? 'var(--theme-primary)' : 'var(--theme-text-secondary)',
                                                     fontWeight: lansengerLocalMode === opt.value ? 600 : 400,
                                                     fontSize: '0.75rem',
                                                     cursor: 'pointer',
@@ -5458,7 +5457,7 @@ ${instruction}`;
                                             }}
                                             style={{ width: '16px', height: '16px' }}
                                         />
-                                        <span style={{ fontSize: '0.8rem', color: isWindows ? '#9ca3af' : '#4b5563' }}>Cursor Agent{isWindows ? ' (macOS/Linux)' : ''}</span>
+                                        <span style={{ fontSize: '0.8rem', color: isWindows ? 'var(--theme-text-muted)' : 'var(--theme-text-secondary)' }}>Cursor Agent{isWindows ? ' (macOS/Linux)' : ''}</span>
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                         <input
@@ -5659,10 +5658,10 @@ ${instruction}`;
                             <div style={{ display: 'flex', alignItems: 'center', gap: '20px', justifyContent: 'flex-start' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     {/* runnerStatus label removed */}
-                                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--primary-color)', textTransform: 'capitalize' }}>{activeTool}</span>
-                                    <span style={{ color: '#d1d5db' }}>|</span>
+                                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--theme-primary)' , textTransform: 'capitalize' }}>{activeTool}</span>
+                                    <span style={{ color: 'var(--theme-border)' }}>|</span>
                                     <span
-                                        style={{ fontSize: '0.85rem', fontWeight: 600, color: '#374151' }}
+                                        style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--theme-text-primary)' }}
                                         title={(config as any)[activeTool].current_model === "Original" ? t("original") : (config as any)[activeTool].current_model}
                                     >
                                         {(() => {
@@ -5691,8 +5690,8 @@ ${instruction}`;
                                         {resolvedLaunchProject?.yolo_mode && (
                                             <span style={{
                                                 marginLeft: '2px',
-                                                backgroundColor: '#fee2e2',
-                                                color: '#ef4444',
+                                                backgroundColor: 'var(--theme-danger-bg)',
+                                                color: 'var(--theme-danger)',
                                                 padding: '0 4px',
                                                 borderRadius: '3px',
                                                 fontSize: '0.6rem',
@@ -5774,7 +5773,7 @@ ${instruction}`;
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
                                                 background: !config?.remote_enabled ? 'var(--theme-primary)' : 'transparent',
-                                                color: !config?.remote_enabled ? '#ffffff' : 'var(--theme-text-secondary)',
+                                                color: !config?.remote_enabled ? 'var(--theme-text-primary)' : 'var(--theme-text-secondary)',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
                                                 cursor: 'pointer'
@@ -5795,7 +5794,7 @@ ${instruction}`;
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
                                                 background: config?.remote_enabled ? 'var(--theme-primary)' : 'transparent',
-                                                color: config?.remote_enabled ? '#ffffff' : 'var(--theme-text-secondary)',
+                                                color: config?.remote_enabled ? 'var(--theme-text-primary)' : 'var(--theme-text-secondary)',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
                                                 cursor: isRemoteCapableActiveTool ? 'pointer' : 'not-allowed',
@@ -5840,10 +5839,10 @@ ${instruction}`;
                                             style={{
                                                 padding: '5px 8px',
                                                 borderRadius: '4px',
-                                                border: '1px solid #d1d5db',
-                                                backgroundColor: '#ffffff',
+                                                border: '1px solid var(--theme-border)',
+                                                backgroundColor: 'var(--theme-surface)',
                                                 fontSize: '0.85rem',
-                                                color: '#374151',
+                                                color: 'var(--theme-text-primary)',
                                                 cursor: 'pointer',
                                                 maxWidth: '200px'
                                             }}
@@ -5877,10 +5876,10 @@ ${instruction}`;
                                             style={{
                                                 padding: '5px 8px',
                                                 borderRadius: '4px',
-                                                border: '1px solid #d1d5db',
-                                                backgroundColor: '#ffffff',
+                                                border: '1px solid var(--theme-border)',
+                                                backgroundColor: 'var(--theme-surface)',
                                                 fontSize: '0.85rem',
-                                                color: '#374151',
+                                                color: 'var(--theme-text-primary)',
                                                 cursor: 'pointer',
                                                 minWidth: '80px',
                                                 maxWidth: '160px',
@@ -5938,9 +5937,9 @@ ${instruction}`;
                                             width: '36px',
                                             height: '36px',
                                             borderRadius: '50%',
-                                            border: '1px solid #c4b5fd',
-                                            background: 'linear-gradient(135deg, #ede9fe, #f5f3ff)',
-                                            color: '#7c3aed',
+                                            border: '1px solid var(--theme-primary-soft)',
+                                            background: 'linear-gradient(135deg, var(--theme-info-bg), var(--theme-surface))',
+                                            color: 'var(--theme-primary-strong)',
                                             fontSize: '1rem',
                                             display: 'flex',
                                             alignItems: 'center',
@@ -5951,12 +5950,12 @@ ${instruction}`;
                                             padding: 0,
                                         }}
                                         onMouseEnter={(e) => {
-                                            e.currentTarget.style.background = 'linear-gradient(135deg, #ddd6fe, #ede9fe)';
-                                            e.currentTarget.style.borderColor = '#a78bfa';
+                                            e.currentTarget.style.background = 'linear-gradient(135deg, var(--theme-primary-soft), var(--theme-info-bg))';
+                                            e.currentTarget.style.borderColor = 'var(--theme-primary)';
                                         }}
                                         onMouseLeave={(e) => {
-                                            e.currentTarget.style.background = 'linear-gradient(135deg, #ede9fe, #f5f3ff)';
-                                            e.currentTarget.style.borderColor = '#c4b5fd';
+                                            e.currentTarget.style.background = 'linear-gradient(135deg, var(--theme-info-bg), var(--theme-surface))';
+                                            e.currentTarget.style.borderColor = 'var(--theme-primary-soft)';
                                         }}
                                         onClick={async () => {
                                             if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
@@ -6120,7 +6119,7 @@ ${instruction}`;
                 )}
 
                 <div className="status-message" style={{ padding: '0 20px 4px 20px', minHeight: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span key={status} style={{ color: (status.includes("Error") || status.includes("!") || status.includes("first")) ? '#ef4444' : '#10b981' }}>
+                    <span key={status} style={{ color: (status.includes("Error") || status.includes("!") || status.includes("first")) ? 'var(--theme-danger)' : 'var(--theme-success)' }}>
                         {status}
                     </span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -6132,7 +6131,7 @@ ${instruction}`;
                                 const isImIssue = maclawLLMOnline && !!remoteActivationStatus?.activated && clawNetRunning && showImWarning;
                                 return (
                             <span
-                                style={{ fontSize: '0.72rem', color: '#f59e0b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
+                                style={{ fontSize: '0.72rem', color: 'var(--theme-warning)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
                                 onClick={() => { if (isImIssue) { setNavTab('settings'); setSettingsTab('im'); } else { setNavTab('settings'); setSettingsTab('llm'); } }}
                                 title={localizeText('Click to configure', '点击配置', '點擊配置')}
                             >
@@ -6157,7 +6156,7 @@ ${instruction}`;
                         {backgroundInstallStatus && (
                         <span style={{ 
                             fontSize: '0.75rem', 
-                            color: backgroundInstallStatus.startsWith('✓') ? '#10b981' : '#9ca3af',
+                            color: backgroundInstallStatus.startsWith('✓') ? 'var(--theme-success)' : 'var(--theme-text-muted)',
                             display: 'flex',
                             alignItems: 'center',
                             gap: '4px'
@@ -6167,7 +6166,7 @@ ${instruction}`;
                                     display: 'inline-block', 
                                     width: '10px', 
                                     height: '10px', 
-                                    border: '2px solid #9ca3af',
+                                    border: '2px solid var(--theme-text-muted)',
                                     borderTopColor: 'transparent',
                                     borderRadius: '50%',
                                     animation: 'spin 1s linear infinite'
@@ -6190,7 +6189,7 @@ ${instruction}`;
                             <button className="btn-close" onClick={() => { setShowRemoteActivationModal(false); setPendingRemoteLaunchTool(""); setRemoteCenterHubs([]); }}>&times;</button>
                         </div>
                         <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', paddingBottom: '10px' }}>
-                            <div style={{ fontSize: '0.82rem', color: '#64748b', lineHeight: 1.5 }}>
+                            <div style={{ fontSize: '0.82rem', color: 'var(--theme-text-secondary)', lineHeight: 1.5 }}>
                                 {t("remoteActivationDialogDesc")}
                             </div>
                             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '10px' }}>
@@ -6254,7 +6253,7 @@ ${instruction}`;
                                     />
                                 </div>
                             </div>
-                            <div style={{ fontSize: '0.79rem', color: '#64748b', lineHeight: 1.5 }}>
+                            <div style={{ fontSize: '0.79rem', color: 'var(--theme-text-muted)', lineHeight: 1.5 }}>
                                 {t("remoteHubManualOrSelect")}
                             </div>
                         </div>
@@ -6272,14 +6271,14 @@ ${instruction}`;
                 <div className="modal-overlay" onClick={() => setShowInstallLog(false)}>
                     <div className="modal-content" style={{ width: '600px', maxWidth: '90vw' }} onClick={e => e.stopPropagation()}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                            <h3 style={{ margin: 0, color: '#6366f1' }}>{t("installLogTitle")}</h3>
+                            <h3 style={{ margin: 0, color: 'var(--theme-primary)' }}>{t("installLogTitle")}</h3>
                             <button className="modal-close" onClick={() => setShowInstallLog(false)}>&times;</button>
                         </div>
                         <div
                             className="elegant-scrollbar"
                             style={{
-                                backgroundColor: '#1e293b',
-                                color: '#e2e8f0',
+                                backgroundColor: 'var(--theme-surface-muted)',
+                                color: 'var(--theme-text-primary)',
                                 padding: '15px',
                                 borderRadius: '8px',
                                 height: '250px',
@@ -6291,7 +6290,7 @@ ${instruction}`;
                                 marginBottom: '15px'
                             }}>
                             {envLogs.length === 0 ? (
-                                <div style={{ color: '#94a3b8', fontStyle: 'italic' }}>
+                                <div style={{ color: 'var(--theme-text-muted)', fontStyle: 'italic' }}>
                                     {t("initializing")}
                                 </div>
                             ) : (
@@ -6299,7 +6298,7 @@ ${instruction}`;
                                     const isError = /error|failed/i.test(log);
                                     return (
                                         <div key={index} style={{
-                                            color: isError ? '#ef4444' : 'inherit',
+                                            color: isError ? 'var(--theme-danger)' : 'inherit',
                                             marginBottom: '4px'
                                         }}>
                                             {isError ? `** ${log}` : log}
@@ -6356,28 +6355,30 @@ ${instruction}`;
 
             {/* Tool Repair Progress Dialog */}
             {toolRepairStatus.show && (
-                <div className="modal-overlay" style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)' }}>
+                <div className="modal-overlay" style={{ backgroundColor: 'color-mix(in srgb, var(--theme-page-bg) 30%, transparent)' }}>
                     <div style={{
-                        backgroundColor: 'white',
+                        backgroundColor: 'var(--theme-surface)',
+                        color: 'var(--theme-text-primary)',
                         borderRadius: '16px',
                         padding: '20px 28px',
                         textAlign: 'center',
                         boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
                         minWidth: '220px',
-                        maxWidth: '280px'
+                        maxWidth: '280px',
+                        border: '1px solid var(--theme-border)'
                     }}>
                         {toolRepairStatus.status === 'installing' && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
                                 <div style={{
                                     width: '24px',
                                     height: '24px',
-                                    border: '3px solid #e2e8f0',
-                                    borderTop: '3px solid #6366f1',
+                                    border: '3px solid var(--theme-border)',
+                                    borderTop: '3px solid var(--theme-primary)',
                                     borderRadius: '50%',
                                     animation: 'spin 0.8s linear infinite',
                                     flexShrink: 0
                                 }}></div>
-                                <span style={{ color: '#475569', fontSize: '0.9rem', fontWeight: 500 }}>
+                                <span style={{ color: 'var(--theme-text-secondary)', fontSize: '0.9rem', fontWeight: 500 }}>
                                     {t("toolRepairInstalling").replace("{tool}", toolRepairStatus.toolName)}
                                 </span>
                             </div>
@@ -6387,16 +6388,16 @@ ${instruction}`;
                                 <div style={{
                                     width: '28px',
                                     height: '28px',
-                                    backgroundColor: '#dcfce7',
+                                    backgroundColor: 'var(--theme-success-bg)',
                                     borderRadius: '50%',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
                                     flexShrink: 0
                                 }}>
-                                    <span style={{ color: '#16a34a', fontSize: '16px' }}>✓</span>
+                                    <span style={{ color: 'var(--theme-success)', fontSize: '16px' }}>✓</span>
                                 </div>
-                                <span style={{ color: '#16a34a', fontSize: '0.9rem', fontWeight: 500 }}>
+                                <span style={{ color: 'var(--theme-success)', fontSize: '0.9rem', fontWeight: 500 }}>
                                     {t("toolRepairSuccess").replace("{tool}", toolRepairStatus.toolName)}
                                 </span>
                             </div>
@@ -6407,30 +6408,30 @@ ${instruction}`;
                                     <div style={{
                                         width: '28px',
                                         height: '28px',
-                                        backgroundColor: '#fee2e2',
+                                        backgroundColor: 'var(--theme-danger-bg)',
                                         borderRadius: '50%',
                                         display: 'flex',
                                         alignItems: 'center',
                                         justifyContent: 'center',
                                         flexShrink: 0
                                     }}>
-                                        <span style={{ color: '#dc2626', fontSize: '14px' }}>✕</span>
+                                        <span style={{ color: 'var(--theme-danger)', fontSize: '14px' }}>✕</span>
                                     </div>
-                                    <span style={{ color: '#dc2626', fontSize: '0.9rem', fontWeight: 500 }}>
+                                    <span style={{ color: 'var(--theme-danger)', fontSize: '0.9rem', fontWeight: 500 }}>
                                         {t("toolRepairFailed").replace("{tool}", toolRepairStatus.toolName)}
                                     </span>
                                 </div>
-                                <p style={{ color: '#6b7280', fontSize: '0.8rem', margin: '0 0 12px 0', wordBreak: 'break-word', textAlign: 'left' }}>
+                                <p style={{ color: 'var(--theme-text-muted)', fontSize: '0.8rem', margin: '0 0 12px 0', wordBreak: 'break-word', textAlign: 'left' }}>
                                     {toolRepairStatus.message}
                                 </p>
                                 <button
                                     style={{
-                                        backgroundColor: '#f1f5f9',
-                                        border: 'none',
+                                        backgroundColor: 'var(--theme-surface-muted)',
+                                        border: '1px solid var(--theme-border)',
                                         borderRadius: '8px',
                                         padding: '6px 16px',
                                         fontSize: '0.85rem',
-                                        color: '#475569',
+                                        color: 'var(--theme-text-secondary)',
                                         cursor: 'pointer',
                                         fontWeight: 500
                                     }}
@@ -6450,11 +6451,11 @@ ${instruction}`;
                         <h3>{t("foundNewVersion")}</h3>
                         {updateResult.has_update ? (
                             <>
-                                <div style={{ backgroundColor: '#eef2ff', padding: '12px', borderRadius: '6px', marginBottom: '15px', border: '1px solid #e0e7ff' }}>
-                                    <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{appVersion}</div>
-                                    <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("latestVersion")}</div>
-                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: '#059669' }}>{updateResult.latest_version}</div>
+                                <div style={{ backgroundColor: 'var(--theme-info-bg)', padding: '12px', borderRadius: '6px', marginBottom: '15px', border: '1px solid var(--theme-primary-soft)' }}>
+                                    <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-muted)', marginBottom: '8px' }}>{t("currentVersion")}</div>
+                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-primary)', marginBottom: '12px' }}>v{appVersion}</div>
+                                    <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-muted)', marginBottom: '8px' }}>{t("latestVersion")}</div>
+                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-success)' }}>{updateResult.latest_version}</div>
                                 </div>
 
                                 <div style={{ marginTop: '15px' }}>
@@ -6464,12 +6465,12 @@ ${instruction}`;
                                                 <span>{t("downloading")}</span>
                                                 <span>{downloadProgress}%</span>
                                             </div>
-                                            <div style={{ width: '100%', height: '10px', backgroundColor: '#e2e8f0', borderRadius: '5px', overflow: 'hidden' }}>
-                                                <div style={{ width: `${downloadProgress}%`, height: '100%', backgroundColor: '#6366f1', transition: 'width 0.2s ease' }}></div>
+                                            <div style={{ width: '100%', height: '10px', backgroundColor: 'var(--theme-surface-muted)', borderRadius: '5px', overflow: 'hidden' }}>
+                                                <div style={{ width: `${downloadProgress}%`, height: '100%', backgroundColor: 'var(--theme-primary)', transition: 'width 0.2s ease' }}></div>
                                             </div>
                                             <button
                                                 className="btn-link"
-                                                style={{ marginTop: '10px', color: '#ef4444' }}
+                                                style={{ marginTop: '10px', color: 'var(--theme-danger)' }}
                                                 onClick={handleCancelDownload}
                                             >
                                                 {t("cancelDownload")}
@@ -6477,7 +6478,7 @@ ${instruction}`;
                                         </div>
                                     ) : installerPath ? (
                                         <div style={{ textAlign: 'center', padding: '10px' }}>
-                                            <p style={{ color: '#059669', fontWeight: 'bold', marginBottom: '15px' }}>{t("downloadComplete")}</p>
+                                            <p style={{ color: 'var(--theme-success)', fontWeight: 'bold', marginBottom: '15px' }}>{t("downloadComplete")}</p>
                                             <button className="btn-primary" style={{ width: '100%' }} onClick={handleInstall}>
                                                 {t("installNow")}
                                             </button>
@@ -6486,15 +6487,15 @@ ${instruction}`;
                                         <div>
                                             {downloadError && (
                                                 <div style={{ marginBottom: '10px' }}>
-                                                    <p style={{ color: '#ef4444', fontSize: '0.85rem', marginBottom: '5px' }}>{t("downloadError").replace("{error}", downloadError)}</p>
-                                                    <button className="btn-primary" style={{ width: '100%', backgroundColor: '#ef4444' }} onClick={handleDownload}>
+                                                    <p style={{ color: 'var(--theme-danger)', fontSize: '0.85rem', marginBottom: '5px' }}>{t("downloadError").replace("{error}", downloadError)}</p>
+                                                    <button className="btn-primary" style={{ width: '100%', backgroundColor: 'var(--theme-danger)' }} onClick={handleDownload}>
                                                         {t("retry")}
                                                     </button>
                                                 </div>
                                             )}
                                             {!downloadError && (
                                                 <>
-                                                    <p style={{ margin: '10px 0', fontSize: '0.9rem', color: '#374151' }}>{t("foundNewVersionMsg")}</p>
+                                                    <p style={{ margin: '10px 0', fontSize: '0.9rem', color: 'var(--theme-text-primary)' }}>{t("foundNewVersionMsg")}</p>
                                                     <button className="btn-primary" style={{ width: '100%' }} onClick={handleDownload}>
                                                         {t("downloadAndUpdate")}
                                                     </button>
@@ -6505,12 +6506,12 @@ ${instruction}`;
                                 </div>
                             </>
                         ) : (
-                            <div style={{ backgroundColor: '#eef2ff', padding: '12px', borderRadius: '6px', border: '1px solid #e0e7ff' }}>
-                                <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                                <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{appVersion}</div>
-                                <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("latestVersion")}</div>
-                                <div style={{ fontSize: '1rem', fontWeight: '600', color: '#059669', marginBottom: '12px' }}>{updateResult.latest_version}</div>
-                                <p style={{ margin: '0', fontSize: '0.9rem', color: '#059669', fontWeight: '500' }}>✓ {t("isLatestVersion")}</p>
+                            <div style={{ backgroundColor: 'var(--theme-info-bg)', padding: '12px', borderRadius: '6px', border: '1px solid var(--theme-primary-soft)' }}>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-muted)', marginBottom: '8px' }}>{t("currentVersion")}</div>
+                                <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-primary)', marginBottom: '12px' }}>v{appVersion}</div>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-muted)', marginBottom: '8px' }}>{t("latestVersion")}</div>
+                                <div style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--theme-success)', marginBottom: '12px' }}>{updateResult.latest_version}</div>
+                                <p style={{ margin: '0', fontSize: '0.9rem', color: 'var(--theme-success)', fontWeight: '500' }}>✓ {t("isLatestVersion")}</p>
                             </div>
                         )}
                         <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '20px' }}>
@@ -6534,7 +6535,7 @@ ${instruction}`;
                 <div className="modal-overlay">
                     <div className="modal-content" style={{ width: '529px', textAlign: 'left' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                            <h3 style={{ margin: 0, color: '#6366f1' }}>{t("modelSettings")}</h3>
+                            <h3 style={{ margin: 0, color: 'var(--theme-primary)' }}>{t("modelSettings")}</h3>
                             <button className="modal-close" onClick={() => setShowModelSettings(false)}>&times;</button>
                         </div>
 
@@ -6558,7 +6559,7 @@ ${instruction}`;
                                                         onClick={() => setTabStartIndex(Math.max(0, tabStartIndex - 1))}
                                                         style={{
                                                             border: 'none', background: 'transparent', cursor: 'pointer',
-                                                            padding: '6px 4px', color: '#9ca3af', fontSize: '1rem'
+                                                            padding: '6px 4px', color: 'var(--theme-text-muted)', fontSize: '1rem'
                                                         }}
                                                     >
                                                         ◀
@@ -6574,17 +6575,17 @@ ${instruction}`;
                                                 let badge = null;
 
                                                 if (model.has_subscription) {
-                                                    badge = { bg: '#ec4899', label: t("subscription") };
+                                                    badge = { bg: 'var(--theme-danger)', label: t("subscription") };
                                                 } else if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax")) {
-                                                    badge = { bg: '#ec4899', label: t("monthly") };
+                                                    badge = { bg: 'var(--theme-danger)', label: t("monthly") };
                                                 } else if (name.includes("deepseek")) {
-                                                    badge = { bg: '#f59e0b', label: t("premium") };
+                                                    badge = { bg: 'var(--theme-warning)', label: t("premium") };
                                                 } else if (name.includes("xiaomi")) {
-                                                    badge = { bg: '#f59e0b', label: t("bigSpender") };
+                                                    badge = { bg: 'var(--theme-warning)', label: t("bigSpender") };
                                                 } else if (model.is_custom) {
-                                                    badge = { bg: '#9ca3af', label: t("customized") };
+                                                    badge = { bg: 'var(--theme-text-muted)', label: t("customized") };
                                                 } else if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "chatfire", "coderelay"].some(p => name.includes(p))) {
-                                                    badge = { bg: '#14b8a6', label: t("forward") };
+                                                    badge = { bg: 'var(--theme-success)', label: t("forward") };
                                                 }
 
                                                 return (
@@ -6601,7 +6602,7 @@ ${instruction}`;
                                                                 top: '-6px',
                                                                 right: '-6px',
                                                                 backgroundColor: badge.bg,
-                                                                color: '#fff',
+                                                                color: 'var(--theme-text-primary)',
                                                                 padding: '2px 6px',
                                                                 borderRadius: '4px',
                                                                 fontSize: '0.6rem',
@@ -6624,7 +6625,7 @@ ${instruction}`;
                                                         onClick={() => setTabStartIndex(Math.min(configurableModels.length - 4, tabStartIndex + 1))}
                                                         style={{
                                                             border: 'none', background: 'transparent', cursor: 'pointer',
-                                                            padding: '6px 4px', color: '#9ca3af', fontSize: '1rem'
+                                                            padding: '6px 4px', color: 'var(--theme-text-muted)', fontSize: '1rem'
                                                         }}
                                                     >
                                                         ▶
@@ -6658,7 +6659,7 @@ ${instruction}`;
                                 <div className="form-group" style={{ flex: 1 }}>
                                     <label className="form-label">
                                         {t("modelName")}
-                                        {activeTool === 'codebuddy' && <span style={{ fontSize: '0.7rem', color: '#94a3b8', marginLeft: '5px' }}>(Supports multiple, separated by comma)</span>}
+                                        {activeTool === 'codebuddy' && <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginLeft: '5px' }}>(Supports multiple, separated by comma)</span>}
                                     </label>
                                     <div style={{ position: 'relative' }}>
                                         <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
@@ -6679,7 +6680,7 @@ ${instruction}`;
                                                 if (!models || models.length === 0) return null;
                                                 return (
                                                     <button
-                                                        style={{ border: '1px solid #d1d5db', background: '#ffffff', color: '#374151', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0 }}
+                                                        style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-surface)', color: 'var(--theme-text-secondary)', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0 }}
                                                         onClick={() => setShowModelRecommend(!showModelRecommend)}
                                                         title="推荐模型"
                                                     >...</button>
@@ -6691,17 +6692,17 @@ ${instruction}`;
                                             const models = (activeTool === 'claude' || (providerName !== '阿里云' && providerName !== 'aliyun')) ? recommendedModels[providerName] : undefined;
                                             if (!models || models.length === 0) return null;
                                             return (
-                                                <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 100, marginTop: '4px', background: '#ffffff', border: '1px solid #d1d5db', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', minWidth: '200px', maxHeight: '240px', overflowY: 'auto', padding: '4px 0' }}>
+                                                <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 100, marginTop: '4px', background: 'var(--theme-surface)', border: '1px solid var(--theme-border)', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', minWidth: '200px', maxHeight: '240px', overflowY: 'auto', padding: '4px 0' }}>
                                                     {models.map((m: any, i: number) => (
                                                         <div
                                                             key={i}
-                                                            style={{ padding: '6px 12px', cursor: 'pointer', fontSize: '0.82rem', color: '#1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}
-                                                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f3f4f6')}
+                                                            style={{ padding: '6px 12px', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--theme-text-primary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}
+                                                            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--theme-surface-muted)')}
                                                             onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                                                             onClick={() => { handleModelIdChange(m.id); setShowModelRecommend(false); }}
                                                         >
                                                             <span>{m.id}</span>
-                                                            {m.note && <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>{m.note}</span>}
+                                                            {m.note && <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>{m.note}</span>}
                                                         </div>
                                                     ))}
                                                 </div>
@@ -6783,7 +6784,7 @@ ${instruction}`;
                                             spellCheck={false}
                                             autoComplete="off"
                                             readOnly={!(config as any)[activeTool].models[activeTab].is_custom}
-                                            style={!(config as any)[activeTool].models[activeTab].is_custom ? { backgroundColor: '#f3f4f6', cursor: 'not-allowed', color: '#9ca3af' } : {}}
+                                            style={!(config as any)[activeTool].models[activeTab].is_custom ? { backgroundColor: 'var(--theme-surface-muted)', cursor: 'not-allowed', color: 'var(--theme-text-muted)' } : {}}
                                         />
                                     </div>
                             </>
@@ -6794,7 +6795,7 @@ ${instruction}`;
                             {(config as any)[activeTool].models[activeTab].is_custom && (
                                 <button
                                     className="btn-hide"
-                                    style={{ flex: 0.5, backgroundColor: '#fca5a5', color: '#991b1b', border: '1px solid #fca5a5' }}
+                                    style={{ flex: 0.5, backgroundColor: 'var(--theme-danger)', color: 'var(--theme-text-primary)', border: '1px solid color-mix(in srgb, var(--theme-danger) 70%, var(--theme-surface) 30%)' }}
                                     onClick={() => {
                                         const allModels = (config as any)[activeTool].models;
                                         const customModels = allModels.filter((m: any) => m.is_custom);
@@ -6827,7 +6828,7 @@ ${instruction}`;
                                 return canAddMore && (
                                     <button
                                         className="btn-hide"
-                                        style={{ flex: 0.5, backgroundColor: '#93c5fd', color: '#4338ca', border: '1px solid #93c5fd' }}
+                                        style={{ flex: 0.5, backgroundColor: 'var(--theme-info-bg)', color: 'var(--theme-primary)', border: '1px solid var(--theme-primary-soft)' }}
                                         onClick={() => {
                                             const customCount = customModels.length;
                                             if (customCount >= 6) {
@@ -6881,7 +6882,7 @@ ${instruction}`;
                                     style={{
                                         padding: '5px 16px', fontSize: '0.8rem', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 600,
                                         backgroundColor: providerFilter === f ? 'var(--theme-primary)' : 'var(--theme-surface-muted)',
-                                        color: providerFilter === f ? '#fff' : 'var(--theme-text-secondary)',
+                                        color: providerFilter === f ? 'var(--theme-text-primary)' : 'var(--theme-text-secondary)',
                                         transition: 'all 0.2s'
                                     }}
                                 >
@@ -6968,42 +6969,43 @@ ${instruction}`;
             )}
 
             {showStartupPopup && (
-                <div className="modal-overlay" style={{ backgroundColor: 'rgba(0, 0, 0, 0.4)', backdropFilter: 'blur(4px)' }}>
+                <div className="modal-overlay" style={{ backgroundColor: 'color-mix(in srgb, var(--theme-page-bg) 55%, transparent)', backdropFilter: 'blur(4px)' }}>
                     <div className="modal-content" style={{
                         width: '320px',
                         textAlign: 'center',
                         padding: 0,
                         borderRadius: '16px',
                         overflow: 'hidden',
-                        border: 'none',
-                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
+                        border: '1px solid var(--theme-border)',
+                        backgroundColor: 'var(--theme-surface)',
+                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.16), 0 10px 10px -5px rgba(0, 0, 0, 0.08)'
                     }}>
                         <div style={{
-                            background: 'linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)',
+                            background: 'linear-gradient(135deg, var(--theme-info-bg) 0%, color-mix(in srgb, var(--theme-primary-soft) 65%, var(--theme-surface) 35%) 100%)',
                             padding: '25px 20px',
-                            color: '#1e293b',
+                            color: 'var(--theme-text-primary)',
                             position: 'relative',
-                            borderBottom: '1px solid #e2e8f0'
+                            borderBottom: '1px solid var(--theme-border)'
                         }}>
                             <button
                                 className="modal-close"
                                 onClick={() => setShowStartupPopup(false)}
-                                style={{ color: '#9ca3af', opacity: 0.8, top: '10px', right: '15px', zIndex: 10 }}
+                                style={{ color: 'var(--theme-text-muted)', opacity: 0.8, top: '10px', right: '15px', zIndex: 10 }}
                             >&times;</button>
                             <div style={{
                                 fontSize: '2.5rem',
                                 marginBottom: '10px',
-                                background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+                                background: 'linear-gradient(135deg, var(--theme-primary) 0%, var(--theme-primary-strong) 55%, var(--theme-link-color) 100%)',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
                                 fontWeight: '900',
                                 lineHeight: 1,
-                                filter: 'drop-shadow(0 2px 4px rgba(59, 130, 246, 0.1))'
+                                filter: 'drop-shadow(0 2px 4px color-mix(in srgb, var(--theme-primary) 18%, transparent))'
                             }}>{`</>`}</div>
-                            <h3 style={{ margin: 0, color: '#0f172a', fontSize: '1.2rem', fontWeight: 'bold' }}>{t("startupTitle")}</h3>
+                            <h3 style={{ margin: 0, color: 'var(--theme-text-primary)', fontSize: '1.2rem', fontWeight: 'bold' }}>{t("startupTitle")}</h3>
                             <p style={{
                                 margin: '6px 0 0 0',
-                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
+                                background: 'linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong), var(--theme-link-color))',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
                                 fontSize: '0.95rem',
@@ -7026,10 +7028,10 @@ ${instruction}`;
                                         alignItems: 'center',
                                         justifyContent: 'center',
                                         gap: '8px',
-                                        background: 'linear-gradient(135deg, #eef2ff, #e0e7ff)',
-                                        color: '#4338ca',
-                                        border: '1px solid #c7d2fe',
-                                        boxShadow: '0 2px 4px rgba(59, 130, 246, 0.1)',
+                                        background: 'linear-gradient(135deg, var(--theme-info-bg), color-mix(in srgb, var(--theme-primary-soft) 55%, var(--theme-surface) 45%))',
+                                        color: 'var(--theme-primary)',
+                                        border: '1px solid var(--theme-primary-soft)',
+                                        boxShadow: '0 2px 4px color-mix(in srgb, var(--theme-primary) 16%, transparent)',
                                         cursor: 'pointer',
                                         transition: 'all 0.2s'
                                     }}
@@ -7043,12 +7045,12 @@ ${instruction}`;
                                     className="btn-link"
                                     style={{
                                         padding: '10px',
-                                        border: '1px solid #e2e8f0',
+                                        border: '1px solid var(--theme-border)',
                                         borderRadius: '10px',
                                         fontSize: '0.95rem',
                                         fontWeight: '500',
-                                        color: '#9ca3af',
-                                        backgroundColor: '#ffffff',
+                                        color: 'var(--theme-text-secondary)',
+                                        backgroundColor: 'var(--theme-surface)',
                                         display: 'flex',
                                         alignItems: 'center',
                                         justifyContent: 'center',
@@ -7078,7 +7080,7 @@ ${instruction}`;
                                     gap: '6px',
                                     cursor: 'pointer',
                                     fontSize: '0.8rem',
-                                    color: '#94a3b8'
+                                    color: 'var(--theme-text-muted)'
                                 }}>
                                     <input
                                         type="checkbox"
@@ -7142,7 +7144,7 @@ ${instruction}`;
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+                    backgroundColor: 'color-mix(in srgb, var(--theme-page-bg) 65%, transparent)',
                     backdropFilter: 'blur(4px)',
                     display: 'flex',
                     alignItems: 'center',
@@ -7151,29 +7153,30 @@ ${instruction}`;
                     animation: 'fadeIn 0.2s ease-out'
                 }}>
                     <div style={{
-                        backgroundColor: '#ffffff',
+                        backgroundColor: 'var(--theme-surface)',
                         borderRadius: '12px',
                         padding: '24px',
                         minWidth: '360px',
                         maxWidth: '420px',
-                        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 0, 0, 0.05)',
-                        border: 'none',
+                        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.24), 0 0 0 1px color-mix(in srgb, var(--theme-border) 65%, transparent)',
+                        border: '1px solid var(--theme-border)',
                         animation: 'slideUp 0.3s ease-out',
-                        position: 'relative'
+                        position: 'relative',
+                        color: 'var(--theme-text-primary)'
                     }}>
                         {/* Icon */}
                         <div style={{
                             width: '48px',
                             height: '48px',
                             borderRadius: '50%',
-                            backgroundColor: '#fef2f2',
+                            backgroundColor: 'var(--theme-danger-bg)',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
                             marginBottom: '16px',
-                            border: '2px solid #fee2e2'
+                            border: '2px solid color-mix(in srgb, var(--theme-danger) 18%, transparent)'
                         }}>
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--theme-danger)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                 <circle cx="12" cy="12" r="10"></circle>
                                 <line x1="12" y1="8" x2="12" y2="12"></line>
                                 <line x1="12" y1="16" x2="12.01" y2="16"></line>
@@ -7184,7 +7187,7 @@ ${instruction}`;
                         <h3 style={{
                             margin: '0 0 8px 0',
                             fontSize: '1.15rem',
-                            color: '#1f2937',
+                            color: 'var(--theme-text-primary)',
                             fontWeight: '700',
                             letterSpacing: '-0.02em'                    }}>
                             {confirmDialog.title}
@@ -7193,7 +7196,7 @@ ${instruction}`;
                         {/* Message */}
                         <p style={{
                             margin: '0 0 20px 0',
-                            color: '#6b7280',
+                            color: 'var(--theme-text-secondary)',
                             fontSize: '0.9rem',
                             lineHeight: '1.5',
                             fontWeight: '400'
@@ -7211,9 +7214,9 @@ ${instruction}`;
                                 onClick={() => setConfirmDialog({ ...confirmDialog, show: false })}
                                 style={{
                                     padding: '8px 20px',
-                                    backgroundColor: '#f9fafb',
-                                    color: '#374151',
-                                    border: '1px solid #e5e7eb',
+                                    backgroundColor: 'var(--theme-surface-muted)',
+                                    color: 'var(--theme-text-secondary)',
+                                    border: '1px solid var(--theme-border)',
                                     borderRadius: '8px',
                                     cursor: 'pointer',
                                     fontSize: '0.875rem',
@@ -7222,14 +7225,14 @@ ${instruction}`;
                                     boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)'
                                 }}
                                 onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#f3f4f6';
-                                    e.currentTarget.style.borderColor = '#d1d5db';
+                                    e.currentTarget.style.backgroundColor = 'var(--theme-surface)';
+                                    e.currentTarget.style.borderColor = 'var(--theme-primary-soft)';
                                     e.currentTarget.style.transform = 'translateY(-1px)';
                                     e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.1)';
                                 }}
                                 onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#f9fafb';
-                                    e.currentTarget.style.borderColor = '#e5e7eb';
+                                    e.currentTarget.style.backgroundColor = 'var(--theme-surface-muted)';
+                                    e.currentTarget.style.borderColor = 'var(--theme-border)';
                                     e.currentTarget.style.transform = 'translateY(0)';
                                     e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
                                 }}
@@ -7240,25 +7243,25 @@ ${instruction}`;
                                 onClick={confirmDialog.onConfirm}
                                 style={{
                                     padding: '8px 20px',
-                                    backgroundColor: '#ef4444',
-                                    color: 'white',
-                                    border: 'none',
+                                    backgroundColor: 'var(--theme-danger)',
+                                    color: 'var(--theme-text-primary)',
+                                    border: '1px solid color-mix(in srgb, var(--theme-danger) 30%, transparent)',
                                     borderRadius: '8px',
                                     cursor: 'pointer',
                                     fontSize: '0.875rem',
                                     fontWeight: '600',
                                     transition: 'all 0.2s',
-                                    boxShadow: '0 2px 4px rgba(239, 68, 68, 0.3)'
+                                    boxShadow: '0 2px 4px color-mix(in srgb, var(--theme-danger) 35%, transparent)'
                                 }}
                                 onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#dc2626';
+                                    e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--theme-danger) 88%, black 12%)';
                                     e.currentTarget.style.transform = 'translateY(-1px)';
-                                    e.currentTarget.style.boxShadow = '0 4px 8px rgba(239, 68, 68, 0.4)';
+                                    e.currentTarget.style.boxShadow = '0 4px 8px color-mix(in srgb, var(--theme-danger) 45%, transparent)';
                                 }}
                                 onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#ef4444';
+                                    e.currentTarget.style.backgroundColor = 'var(--theme-danger)';
                                     e.currentTarget.style.transform = 'translateY(0)';
-                                    e.currentTarget.style.boxShadow = '0 2px 4px rgba(239, 68, 68, 0.3)';
+                                    e.currentTarget.style.boxShadow = '0 2px 4px color-mix(in srgb, var(--theme-danger) 35%, transparent)';
                                 }}
                             >
                                 {t("confirm")}
@@ -7273,14 +7276,14 @@ ${instruction}`;
                 <div className="modal-overlay">
                     <div className="modal-content" style={{ width: '540px', textAlign: 'left' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                            <h3 style={{ margin: 0, color: '#6366f1' }}>
+                            <h3 style={{ margin: 0, color: 'var(--theme-primary)' }}>
                                 {t("proxySettings")}
                             </h3>
                             <button className="modal-close" onClick={() => setShowProxySettings(false)}>&times;</button>
                         </div>
 
                         {config?.default_proxy_host && (
-                            <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#eef2ff', borderRadius: '6px', fontSize: '0.85rem' }}>
+                            <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: 'var(--theme-info-bg)', borderRadius: '6px', fontSize: '0.85rem', border: '1px solid var(--theme-primary-soft)' }}>
                                 <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
                                     <input
                                         type="checkbox"
@@ -7378,33 +7381,33 @@ ${instruction}`;
                 <div className="modal-overlay">
                     <div className="modal-content" style={{ width: '500px', maxWidth: '95vw' }}>
                         <div className="modal-header" style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
-                            <h3 style={{ margin: 0, color: '#10b981', whiteSpace: 'nowrap' }}>{t("selectSkillsToInstall")}</h3>
-                            
-                            <div style={{ 
-                                display: 'flex', 
-                                alignItems: 'center', 
-                                gap: '12px', 
-                                padding: '4px 12px', 
-                                backgroundColor: '#f3f4f6', 
+                            <h3 style={{ margin: 0, color: 'var(--theme-success)', whiteSpace: 'nowrap' }}>{t("selectSkillsToInstall")}</h3>
+
+                            <div style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '12px',
+                                padding: '4px 12px',
+                                backgroundColor: 'var(--theme-surface-muted)',
                                 borderRadius: '20px',
                                 fontSize: '0.8rem',
                                 marginLeft: '5px'
                             }}>
-                                <span style={{ color: '#6b7280', fontWeight: '500' }}>{t("installLocation")}</span>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: installLocation === 'user' ? '#10b981' : '#4b5563', fontWeight: installLocation === 'user' ? 'bold' : 'normal' }}>
-                                    <input 
-                                        type="radio" 
-                                        name="installLocation" 
-                                        checked={installLocation === 'user'} 
+                                <span style={{ color: 'var(--theme-text-muted)', fontWeight: '500' }}>{t("installLocation")}</span>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: installLocation === 'user' ? 'var(--theme-success)' : 'var(--theme-text-secondary)', fontWeight: installLocation === 'user' ? 'bold' : 'normal' }}>
+                                    <input
+                                        type="radio"
+                                        name="installLocation"
+                                        checked={installLocation === 'user'}
                                         onChange={() => setInstallLocation('user')}
                                         style={{ margin: 0 }}
                                     /> {t("userLocation")}
                                 </label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: installLocation === 'project' ? '#10b981' : '#4b5563', fontWeight: installLocation === 'project' ? 'bold' : 'normal' }}>
-                                    <input 
-                                        type="radio" 
-                                        name="installLocation" 
-                                        checked={installLocation === 'project'} 
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: installLocation === 'project' ? 'var(--theme-success)' : 'var(--theme-text-secondary)', fontWeight: installLocation === 'project' ? 'bold' : 'normal' }}>
+                                    <input
+                                        type="radio"
+                                        name="installLocation"
+                                        checked={installLocation === 'project'}
                                         onChange={() => {
                                             setInstallLocation('project');
                                             if (config && config.current_project) {
@@ -7421,8 +7424,10 @@ ${instruction}`;
                                         style={{
                                             padding: '2px 4px',
                                             borderRadius: '4px',
-                                            border: '1px solid #d1d5db',
+                                            border: '1px solid var(--theme-border)',
                                             fontSize: '0.8rem',
+                                            background: 'var(--theme-surface)',
+                                            color: 'var(--theme-text-primary)',
                                             maxWidth: '120px'
                                         }}
                                     >
@@ -7439,12 +7444,12 @@ ${instruction}`;
                                 onClick={() => { setShowInstallSkillModal(false); switchTool('skills'); }}
                                 style={{
                                     background: 'none',
-                                    border: '1px solid #d1d5db',
+                                    border: '1px solid var(--theme-border)',
                                     borderRadius: '16px',
                                     padding: '4px 10px',
                                     fontSize: '0.8rem',
                                     cursor: 'pointer',
-                                    color: '#6366f1',
+                                    color: 'var(--theme-link-color)',
                                     display: 'flex',
                                     alignItems: 'center',
                                     gap: '4px',
@@ -7465,7 +7470,7 @@ ${instruction}`;
                                 
                                 if (filtered.length === 0) {
                                     return (
-                                        <div style={{ textAlign: 'center', color: '#6b7280', padding: '20px' }}>
+                                        <div style={{ textAlign: 'center', color: 'var(--theme-text-muted)', padding: '20px' }}>
                                             {t("noSkills")}
                                         </div>
                                     );
@@ -7478,10 +7483,10 @@ ${instruction}`;
                                                 display: 'flex',
                                                 alignItems: 'center',
                                                 padding: '8px 12px',
-                                                border: '1px solid var(--border-color)',
+                                                border: '1px solid var(--theme-border)',
                                                 borderRadius: '6px',
                                                 cursor: skill.installed ? 'not-allowed' : 'pointer',
-                                                backgroundColor: selectedSkillsToInstall.includes(skill.name) ? '#f0fdf4' : '#fff',
+                                                backgroundColor: selectedSkillsToInstall.includes(skill.name) ? 'var(--theme-success-bg)' : 'var(--theme-surface)',
                                                 opacity: skill.installed ? 0.5 : 1,
                                                 position: 'relative'
                                             }}>
@@ -7505,8 +7510,8 @@ ${instruction}`;
                                                             <span style={{
                                                                 marginLeft: '8px',
                                                                 fontSize: '0.75rem',
-                                                                color: '#10b981',
-                                                                backgroundColor: '#d1fae5',
+                                                                color: 'var(--theme-success)',
+                                                                backgroundColor: 'var(--theme-success-bg)',
                                                                 padding: '2px 6px',
                                                                 borderRadius: '4px',
                                                                 fontWeight: 'normal'
@@ -7524,15 +7529,15 @@ ${instruction}`;
                         </div>
                         <div className="modal-footer" style={{ marginTop: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             {activeTool === 'claude' ? (
-                                <button 
-                                    className="btn-link" 
-                                    style={{ 
-                                        color: '#6366f1', 
-                                        fontSize: '0.85rem', 
-                                        padding: '4px 15px', 
-                                        display: 'flex', 
-                                        alignItems: 'center', 
-                                        gap: '6px', 
+                                <button
+                                    className="btn-link"
+                                    style={{
+                                        color: 'var(--theme-link-color)',
+                                        fontSize: '0.85rem',
+                                        padding: '4px 15px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '6px',
                                         opacity: isMarketplaceInstalling ? 0.6 : 1,
                                         minWidth: '120px',
                                         justifyContent: 'center'
@@ -7554,7 +7559,7 @@ ${instruction}`;
                                         <div style={{
                                             width: '12px',
                                             height: '12px',
-                                            border: '2px solid #6366f1',
+                                            border: '2px solid var(--theme-link-color)',
                                             borderTopColor: 'transparent',
                                             borderRadius: '50%',
                                             animation: 'spin 1s linear infinite'
@@ -7569,13 +7574,13 @@ ${instruction}`;
                                 <button className="btn-secondary" onClick={() => setShowInstallSkillModal(false)}>{t("cancel")}</button>
                                 <button
                                     className="btn-primary"
-                                    style={{ 
-                                        backgroundColor: '#10b981', 
-                                        borderColor: '#10b981',
-                                        display: 'flex', 
-                                        alignItems: 'center', 
-                                        gap: '6px', 
-                                        opacity: (selectedSkillsToInstall.length === 0 || isBatchInstalling) ? 0.6 : 1 
+                                    style={{
+                                        backgroundColor: 'var(--theme-success)',
+                                        borderColor: 'var(--theme-success)',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '6px',
+                                        opacity: (selectedSkillsToInstall.length === 0 || isBatchInstalling) ? 0.6 : 1
                                     }}
                                     disabled={selectedSkillsToInstall.length === 0 || isBatchInstalling}
                                     onClick={async () => {
@@ -7630,7 +7635,7 @@ ${instruction}`;
                                         <div style={{
                                             width: '12px',
                                             height: '12px',
-                                            border: '2px solid white',
+                                            border: '2px solid var(--theme-text-primary)',
                                             borderTopColor: 'transparent',
                                             borderRadius: '50%',
                                             animation: 'spin 1s linear infinite'

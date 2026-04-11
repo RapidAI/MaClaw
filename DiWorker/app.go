@@ -191,22 +191,137 @@ func (a *App) GetAppInfo() AppInfo {
 	}
 }
 
+// FetchColleagues returns colleagues from iWorkerCenter if available, otherwise local defaults.
+// Exposed as a Wails binding so the frontend can refresh colleague data independently.
+func (a *App) FetchColleagues() []Colleague {
+	settings, _ := readDiWorkerSettings()
+	if settings.Center.Enabled {
+		baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+		if baseURL == "" {
+			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+		}
+		if centerColleagues := fetchCenterColleagues(baseURL, 5); len(centerColleagues) > 0 {
+			colleagues := make([]Colleague, 0, len(centerColleagues))
+			for _, cc := range centerColleagues {
+				colleagues = append(colleagues, centerColleagueToLocal(cc))
+			}
+			return colleagues
+		}
+	}
+	return defaultColleagues()
+}
+
+// FetchRoles returns roles from iWorkerCenter if available.
+func (a *App) FetchRoles() []CenterRole {
+	settings, _ := readDiWorkerSettings()
+	if settings.Center.Enabled {
+		baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+		if baseURL == "" {
+			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+		}
+		if roles := fetchCenterRoles(baseURL, 5); len(roles) > 0 {
+			return roles
+		}
+	}
+	return nil
+}
+
+// FetchCapabilities returns capabilities from iWorkerCenter.
+// If colleagueID is provided, returns only capabilities bound to that colleague.
+func (a *App) FetchCapabilities(colleagueID string) []CenterCapability {
+	settings, _ := readDiWorkerSettings()
+	if settings.Center.Enabled {
+		baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+		if baseURL == "" {
+			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+		}
+		if caps := fetchCenterCapabilities(baseURL, colleagueID, 5); len(caps) > 0 {
+			return caps
+		}
+	}
+	return nil
+}
+
+func defaultColleagues() []Colleague {
+	return []Colleague{
+		{ID: "xiaodi", Name: "小迪", Role: "你的办公同事", Description: "擅长通知、纪要、周报和邮件草稿。", Strengths: []string{"通知", "纪要", "周报", "邮件"}, Tasks: []string{"写通知", "会议纪要", "周报总结", "邮件草稿"}},
+		{ID: "aning", Name: "阿宁", Role: "你的数据同事", Description: "擅长表格整理、数据汇总和分析摘要。", Strengths: []string{"表格整理", "数据汇总", "图表分析"}, Tasks: []string{"整理表格", "汇总数据", "生成图表", "写分析摘要"}},
+		{ID: "laochen", Name: "老陈", Role: "你的生产同事", Description: "擅长日报、交接班和异常说明。", Strengths: []string{"生产日报", "交接班", "异常汇总"}, Tasks: []string{"生产日报", "交接班记录", "异常说明", "上报摘要"}},
+		{ID: "xiaozhou", Name: "小周", Role: "你的质量同事", Description: "擅长问题归类、原因分析和整改建议。", Strengths: []string{"质量说明", "原因分析", "整改建议"}, Tasks: []string{"质量说明", "问题归类", "整改建议", "原因分析"}},
+	}
+}
+
 func (a *App) GetWelcomeData() WelcomeData {
+	greeting := "今天想找哪位同事帮你处理工作？"
+	hint := "选一位同事，或者直接告诉我你要做什么。"
+
+	// Try fetching real colleagues from iWorkerCenter
+	var colleagues []Colleague
+	settings, _ := readDiWorkerSettings()
+	if settings.Center.Enabled {
+		baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+		if baseURL == "" {
+			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+		}
+		if centerColleagues := fetchCenterColleagues(baseURL, 5); len(centerColleagues) > 0 {
+			colleagues = make([]Colleague, 0, len(centerColleagues))
+			for _, cc := range centerColleagues {
+				colleagues = append(colleagues, centerColleagueToLocal(cc))
+			}
+		}
+	}
+
+	// Fallback to local mock data
+	if len(colleagues) == 0 {
+		colleagues = defaultColleagues()
+	}
+
+	// Build quick tasks from colleagues' tasks
+	quickTasks := []string{"写通知", "会议纪要", "周报总结", "整理表格", "异常上报", "生产日报"}
+	if len(colleagues) > 0 {
+		seen := make(map[string]bool)
+		var collected []string
+		for _, c := range colleagues {
+			for _, t := range c.Tasks {
+				if !seen[t] && len(collected) < 8 {
+					seen[t] = true
+					collected = append(collected, t)
+				}
+			}
+		}
+		if len(collected) > 0 {
+			quickTasks = collected
+		}
+	}
+
+	// Load recent tasks from history
+	recentTasks := []TaskItem{
+		{ID: "task-101", Title: "整理今日生产异常", Owner: "老陈", Status: "处理中", UpdatedAt: "今天 15:20", Description: "汇总产线异常并生成汇报摘要"},
+		{ID: "task-102", Title: "周会纪要整理", Owner: "小迪", Status: "已完成", UpdatedAt: "今天 11:40", Description: "提炼会议结论和待办事项"},
+		{ID: "task-103", Title: "质检问题归类", Owner: "小周", Status: "待确认", UpdatedAt: "昨天 18:05", Description: "按原因和影响范围整理质量问题"},
+	}
+	if history, err := readTaskHistory(); err == nil && len(history) > 0 {
+		items := make([]TaskItem, 0, len(history))
+		for _, h := range history {
+			if len(items) >= 5 {
+				break
+			}
+			items = append(items, TaskItem{
+				ID: h.ID, Title: h.Title, Owner: h.Owner,
+				Status: h.Status, UpdatedAt: h.UpdatedAt, Description: h.Description,
+			})
+		}
+		if len(items) > 0 {
+			recentTasks = items
+		}
+	}
+
 	return WelcomeData{
-		Greeting: "今天想找哪位同事帮你处理工作？",
-		Hint:     "选一位同事，或者直接告诉我你要做什么。",
-		Colleagues: []Colleague{
-			{ID: "xiaodi", Name: "小迪", Role: "你的办公同事", Description: "擅长通知、纪要、周报和邮件草稿。", Strengths: []string{"通知", "纪要", "周报", "邮件"}, Tasks: []string{"写通知", "会议纪要", "周报总结", "邮件草稿"}},
-			{ID: "aning", Name: "阿宁", Role: "你的数据同事", Description: "擅长表格整理、数据汇总和分析摘要。", Strengths: []string{"表格整理", "数据汇总", "图表分析"}, Tasks: []string{"整理表格", "汇总数据", "生成图表", "写分析摘要"}},
-			{ID: "laochen", Name: "老陈", Role: "你的生产同事", Description: "擅长日报、交接班和异常说明。", Strengths: []string{"生产日报", "交接班", "异常汇总"}, Tasks: []string{"生产日报", "交接班记录", "异常说明", "上报摘要"}},
-			{ID: "xiaozhou", Name: "小周", Role: "你的质量同事", Description: "擅长问题归类、原因分析和整改建议。", Strengths: []string{"质量说明", "原因分析", "整改建议"}, Tasks: []string{"质量说明", "问题归类", "整改建议", "原因分析"}},
-		},
-		QuickTasks: []string{"写通知", "会议纪要", "周报总结", "整理表格", "异常上报", "生产日报"},
-		RecentTasks: []TaskItem{
-			{ID: "task-101", Title: "整理今日生产异常", Owner: "老陈", Status: "处理中", UpdatedAt: "今天 15:20", Description: "汇总产线异常并生成汇报摘要"},
-			{ID: "task-102", Title: "周会纪要整理", Owner: "小迪", Status: "已完成", UpdatedAt: "今天 11:40", Description: "提炼会议结论和待办事项"},
-			{ID: "task-103", Title: "质检问题归类", Owner: "小周", Status: "待确认", UpdatedAt: "昨天 18:05", Description: "按原因和影响范围整理质量问题"},
-		},
+		Greeting:    greeting,
+		Hint:        hint,
+		Colleagues:  colleagues,
+		QuickTasks:  quickTasks,
+		RecentTasks: recentTasks,
 	}
 }
 
@@ -277,10 +392,27 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 		expectedOutput = "summary"
 	}
 
+	// Build system prompt with shared memory injection
+	systemPrompt := "你是 DiWorker 的数字化同事，请使用简体中文直接产出可交付内容。输出要紧贴用户任务，不要解释模型规则，不要输出无关前言。"
+
+	// Fetch shared memories from iWorkerCenter (non-blocking, best-effort)
+	settings, _ := readDiWorkerSettings()
+	if settings.Center.Enabled {
+		baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+		if baseURL == "" {
+			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+		}
+		roleCode := colleagueRoleCode(colleagueName)
+		memories := fetchSharedMemories(baseURL, roleCode, 5)
+		if memoryBlock := buildMemorySystemPrompt(memories); memoryBlock != "" {
+			systemPrompt = systemPrompt + "\n\n以下是你需要了解的企业背景和角色知识，请在回答中自然运用这些信息：\n\n" + memoryBlock
+		}
+	}
+
 	messages := []interface{}{
 		map[string]string{
 			"role":    "system",
-			"content": "你是 DiWorker 的数字化同事，请使用简体中文直接产出可交付内容。输出要紧贴用户任务，不要解释模型规则，不要输出无关前言。",
+			"content": systemPrompt,
 		},
 		map[string]string{
 			"role": "user",
@@ -298,12 +430,15 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 		return SubmitTaskResult{}, fmt.Errorf("提交任务失败: %w", err)
 	}
 
+	// Strip thinking tags from reasoning models (DeepSeek, Kimi, QwQ, etc.)
+	content := agent.StripThinkingTags(resp.Content)
+
 	return SubmitTaskResult{
 		TaskType:       taskType,
 		ColleagueName:  colleagueName,
 		ExpectedOutput: expectedOutput,
 		Model:          usedCfg.Model,
-		Content:        strings.TrimSpace(resp.Content),
+		Content:        strings.TrimSpace(content),
 	}, nil
 }
 
@@ -629,8 +764,8 @@ func defaultDiWorkerSettings() DiWorkerSettings {
 		Center: CenterConfig{
 			Enabled:    false,
 			Host:       "127.0.0.1",
-			Port:       8714,
-			BaseURL:    "http://127.0.0.1:8714",
+			Port:       9377,
+			BaseURL:    "http://127.0.0.1:9377",
 			TimeoutSec: 60,
 		},
 		Routing: RoutingPolicy{
@@ -797,4 +932,33 @@ func currentProviderConfig(cfgFile maclawConfigFile) (corelib.MaclawLLMConfig, b
 		return cfg, true
 	}
 	return corelib.MaclawLLMConfig{}, false
+}
+
+// --- Collaboration Wails bindings ---
+
+// FetchCollaborations returns collaboration tasks from iWorkerCenter.
+// If colleagueID is provided, returns only tasks assigned to that colleague.
+func (a *App) FetchCollaborations(colleagueID string) []CenterCollabTask {
+	settings, _ := readDiWorkerSettings()
+	if !settings.Center.Enabled {
+		return nil
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+	}
+	return fetchCenterCollaborations(baseURL, colleagueID, 5)
+}
+
+// FetchWorkflowInstances returns workflow instances from iWorkerCenter.
+func (a *App) FetchWorkflowInstances() []CenterWorkflowInstance {
+	settings, _ := readDiWorkerSettings()
+	if !settings.Center.Enabled {
+		return nil
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+	}
+	return fetchCenterWorkflowInstances(baseURL, 5)
 }

@@ -127,6 +127,8 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		[]float64{0.9, 0.8},
 		[]string{"tool_a"},
 		nil, // no reranker result
+		0,   // skillMatchScore
+		nil, // matchedSkills
 	)
 
 	// Call again with bodyAware=false to verify both paths work.
@@ -139,6 +141,8 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		[]float64{0.7},
 		[]string{"tool_c"},
 		[]string{"tool_c"}, // with reranker result
+		0.5,                // skillMatchScore
+		[]string{"deploy-app"}, // matchedSkills
 	)
 
 	// Read the log file and verify body_aware field is present.

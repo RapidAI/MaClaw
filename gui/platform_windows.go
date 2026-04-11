@@ -1447,24 +1447,48 @@ func (a *App) GetDownloadsFolder() (string, error) {
 	return filepath.Join(home, "Downloads"), nil
 }
 
-func (a *App) findSh() string {
-	path, err := exec.LookPath("sh")
-	if err == nil {
-		return path
-	}
-
-	commonPaths := []string{
+func (a *App) findSh() (string, error) {
+	// 1. 优先检查已知的 Git Bash / MSYS2 路径
+	candidates := []string{
 		`C:\Program Files\Git\bin\sh.exe`,
 		`C:\Program Files\Git\usr\bin\sh.exe`,
+		`C:\Program Files\Git\bin\bash.exe`,
+		`C:\Program Files\Git\usr\bin\bash.exe`,
 		`C:\Program Files (x86)\Git\bin\sh.exe`,
 		`C:\Program Files (x86)\Git\usr\bin\sh.exe`,
+		`C:\Program Files (x86)\Git\bin\bash.exe`,
+		`C:\Program Files (x86)\Git\usr\bin\bash.exe`,
+		`C:\msys64\usr\bin\bash.exe`,
+		`C:\cygwin64\bin\bash.exe`,
 	}
-	for _, p := range commonPaths {
-		if _, err := os.Stat(p); err == nil {
-			return p
+	for _, p := range candidates {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p, nil
 		}
 	}
-	return "sh"
+
+	// 2. PATH 查找，但排除 WSL 入口
+	for _, name := range []string{"sh.exe", "bash.exe"} {
+		if path, err := exec.LookPath(name); err == nil && !isWSLShell(path) {
+			return path, nil
+		}
+	}
+
+	return "", fmt.Errorf(
+		"找不到 Unix 兼容的 shell（如 Git Bash）\n" +
+			"Suggestion: 安装 Git for Windows: https://git-scm.com/download/win\n" +
+			"或运行: winget install Git.Git")
+}
+
+func isWSLShell(path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	lower := strings.ToLower(filepath.ToSlash(abs))
+	return strings.Contains(lower, "windows/system32/") ||
+		strings.Contains(lower, "windowsapps/") ||
+		strings.Contains(lower, "windowsolders/")
 }
 
 func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, pythonEnv string, projectDir string, env map[string]string, modelId string) {
@@ -1627,8 +1651,12 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 	} else if ext == ".js" {
 		batchContent += fmt.Sprintf("node \"%s\"%s\r\n", binaryPath, cmdArgs)
 	} else if ext == "" {
-		shPath := a.findSh()
-		batchContent += fmt.Sprintf("\"%s\" \"%s\"%s\r\n", shPath, binaryPath, cmdArgs)
+		if shPath, err := a.findSh(); err == nil {
+			batchContent += fmt.Sprintf("\"%s\" \"%s\"%s\r\n", shPath, binaryPath, cmdArgs)
+		} else {
+			// No Unix shell found, try to run the binary directly
+			batchContent += fmt.Sprintf("\"%s\"%s\r\n", binaryPath, cmdArgs)
+		}
 	} else {
 		batchContent += fmt.Sprintf("\"%s\"%s\r\n", binaryPath, cmdArgs)
 	}

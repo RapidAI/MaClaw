@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -463,6 +466,126 @@ func TestRouteTools_WithRouterFilters(t *testing.T) {
 	}
 	if len(routed) == 0 {
 		t.Fatal("expected non-empty routed tools")
+	}
+}
+
+// TestBuildToolDefinitions_WebFetchHasContinuationParams verifies that the
+// web_fetch tool definition advertises continuation parameters.
+func TestBuildToolDefinitions_WebFetchHasContinuationParams(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := handler.buildToolDefinitions()
+
+	for _, tool := range tools {
+		if extractToolName(tool) != "web_fetch" {
+			continue
+		}
+		fn, _ := tool["function"].(map[string]interface{})
+		desc, _ := fn["description"].(string)
+		if !contains(desc, "has_more=true") || !contains(desc, "offset=next_offset") {
+			t.Fatalf("unexpected web_fetch description: %s", desc)
+		}
+		params, _ := fn["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		for _, field := range []string{"offset", "max_chars"} {
+			entry, ok := props[field]
+			if !ok {
+				t.Fatalf("web_fetch missing %q", field)
+			}
+			meta, _ := entry.(map[string]string)
+			if meta["type"] != "integer" {
+				t.Fatalf("web_fetch %q type = %#v", field, meta["type"])
+			}
+		}
+		return
+	}
+	t.Fatal("web_fetch tool not found in buildToolDefinitions")
+}
+
+func TestRouteTools_WithRouterKeepsSSHForSSHIntent(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+
+	for i := 0; i < 20; i++ {
+		handler.registry.Register(RegisteredTool{
+			Name:        fmt.Sprintf("extra_%d", i),
+			Description: fmt.Sprintf("extra tool %d", i),
+			Category:    ToolCategoryNonCode,
+			Status:      RegToolAvailable,
+		})
+	}
+
+	builder := NewDynamicToolBuilder(handler.registry)
+	tools := builder.BuildAll()
+	if len(tools) <= maxToolBudget {
+		t.Fatalf("need more than %d tools to test routing, got %d", maxToolBudget, len(tools))
+	}
+
+	gen := NewToolDefinitionGenerator(nil, tools)
+	router := NewToolRouter(gen)
+	handler.SetToolRouter(router)
+
+	runCase := func(message string, wantSSH bool) {
+		routed := handler.routeTools(message, tools)
+		foundSSH := false
+		for _, tool := range routed {
+			if extractToolName(tool) == "ssh" {
+				foundSSH = true
+				break
+			}
+		}
+		if foundSSH != wantSSH {
+			names := make([]string, len(routed))
+			for i, tool := range routed {
+				names[i] = extractToolName(tool)
+			}
+			t.Fatalf("ssh presence for %q = %v, want %v; got: %v", message, foundSSH, wantSSH, names)
+		}
+	}
+
+	runCase("登录 4090 服务器，host home.rapidai.tech 端口 33", true)
+	runCase("我要查询数据库", false)
+}
+
+func TestToolWebFetchIncludesContinuationMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><head><title>Long Page</title></head><body><main>ABCDEFGHIJ</main></body></html>`))
+	}))
+	defer server.Close()
+
+	h := &IMMessageHandler{}
+	result := h.toolWebFetch(map[string]interface{}{
+		"url":       server.URL,
+		"offset":    2,
+		"max_chars": 4,
+	})
+	if !contains(result, "标题: Long Page") {
+		t.Fatalf("missing title in result: %s", result)
+	}
+	if !contains(result, "已读取: 2-6 / 10 字符") {
+		t.Fatalf("missing window range: %s", result)
+	}
+	if !contains(result, "truncated: true | has_more: true | next_offset: 6") {
+		t.Fatalf("missing continuation metadata: %s", result)
+	}
+	if !contains(result, "CDEF") {
+		t.Fatalf("missing windowed content: %s", result)
+	}
+	if !contains(result, "继续读取时请传入 offset=6") {
+		t.Fatalf("missing continuation hint: %s", result)
+	}
+}
+
+func TestTruncateToolResultForWebFetchPreservesIntegritySignal(t *testing.T) {
+	meta := "\n\n--- 完整性信号 ---\nhas_more: true\nnext_offset: 123\n继续读取时请传入 offset=123\n"
+	s := "标题: demo\n\n" + strings.Repeat("A", webFetchMaxToolResult) + meta
+	got := truncateToolResultForTool("web_fetch", s)
+	if len(got) > webFetchMaxToolResult {
+		t.Fatalf("len(got) = %d", len(got))
+	}
+	if !contains(got, "--- 完整性信号 ---") || !contains(got, "next_offset: 123") {
+		t.Fatalf("missing integrity metadata after truncation: %s", got)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -42,24 +43,89 @@ var CoreToolNames = map[string]bool{
 	"list_sessions": true, "create_session": true,
 	"send_and_observe": true, "get_session_output": true, "get_session_events": true,
 	"control_session": true,
-	"bash": true, "read_file": true, "write_file": true, "edit_file": true, "list_directory": true,
+	"bash":            true, "read_file": true, "write_file": true, "edit_file": true, "list_directory": true,
 	"call_mcp_tool": true, "list_skills": true, "run_skill": true,
-	"screenshot": true, "send_file": true,
-	"open": true, "craft_tool": true,
-	"memory": true,
-	"web_search": true, "web_fetch": true,
+	"screenshot": true,
+	"memory":     true,
+	"web_fetch":  true,
 	"set_nickname": true,
-	"browser_session_start": true, "browser_observe": true, "browser_navigate": true,
 	"discover_tool": true,
+}
+
+type conditionalKeepRule struct {
+	keepTools []string
+	matches   func(string) bool
+}
+
+var sshIntentIPv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+
+var sshIntentKeywords = []string{
+	"ssh", "服务器", "服务端", "主机", "远程机器", "远程主机", "云服务器", "线上机器",
+	"登录服务器", "连上服务器", "连接服务器", "远程登录", "看日志", "查看日志", "日志", "tail -f",
+	"journalctl", "systemctl", "service ", "nginx", "docker", "docker compose", "k8s", "kubectl",
+	"pm2", "supervisor", "重启服务", "重启 nginx", "重启进程", "上传到服务器", "下载服务器文件",
+	"sftp", "scp", "rsync", "端口", "进程", "服务器文件", "服务器上", "远程执行",
+	"host", "user", "label", "initial_command",
+}
+
+// containsAnyKeyword returns true if msg contains any of the given keywords (case-insensitive).
+func containsAnyKeyword(msg string, keywords []string) bool {
+	lower := strings.ToLower(msg)
+	for _, kw := range keywords {
+		if strings.Contains(lower, strings.ToLower(kw)) {
+			return true
+		}
+	}
+	return false
+}
+
+var searchIntentKeywords = []string{
+	"搜索", "search", "查找", "网页", "web", "google", "papers", "paper", "huggingface",
+}
+
+var documentDeliveryKeywords = []string{
+	"pdf", "报告", "综述", "附件", "发送文件", "文件发我", "发给我", "导出",
+}
+
+var browserIntentKeywords = []string{"浏览器", "browser"}
+var browserPageKeywords = []string{"页面", "网页", "网站", "url"}
+var browserActionKeywords = []string{"访问", "导航", "点击", "观察"}
+
+var conditionalKeepRules = []conditionalKeepRule{
+	{
+		keepTools: []string{"ssh"},
+		matches: func(msg string) bool {
+			return containsAnyKeyword(msg, sshIntentKeywords) || sshIntentIPv4Pattern.MatchString(msg)
+		},
+	},
+	{
+		keepTools: []string{"web_search"},
+		matches: func(msg string) bool {
+			return containsAnyKeyword(msg, searchIntentKeywords)
+		},
+	},
+	{
+		keepTools: []string{"send_file", "open", "craft_tool"},
+		matches: func(msg string) bool {
+			return containsAnyKeyword(msg, documentDeliveryKeywords)
+		},
+	},
+	{
+		keepTools: []string{"browser_session_start", "browser_observe", "browser_navigate"},
+		matches: func(msg string) bool {
+			return containsAnyKeyword(msg, browserIntentKeywords) ||
+				(containsAnyKeyword(msg, browserPageKeywords) && containsAnyKeyword(msg, browserActionKeywords))
+		},
+	},
 }
 
 // CodingSessionToolNames lists tools that require a coding LLM session provider.
 // When the coding LLM is not configured (simple mode), these tools should be
 // filtered out since they would be non-functional.
 var CodingSessionToolNames = map[string]bool{
-	"create_session":    true,
-	"list_sessions":     true,
-	"send_input":        true,
+	"create_session":     true,
+	"list_sessions":      true,
+	"send_input":         true,
 	"get_session_output": true,
 	"get_session_events": true,
 	"interrupt_session":  true,
@@ -94,24 +160,24 @@ func FilterCodingTools(tools []map[string]interface{}) []map[string]interface{} 
 // CoreToolNames are merged in automatically via init(), so there is no need
 // to duplicate entries that already appear in CoreToolNames.
 var BuiltinToolNames = map[string]bool{
-	"list_providers": true,
-	"send_input": true,
+	"list_providers":    true,
+	"send_input":        true,
 	"interrupt_session": true, "kill_session": true,
-	"list_mcp_tools": true,
+	"list_mcp_tools":   true,
 	"search_skill_hub": true, "install_skill_hub": true,
 	"parallel_execute": true, "recommend_tool": true, "craft_tool": true,
-	"open": true,
-	"edit_file": true,
+	"open":            true,
+	"edit_file":       true,
 	"create_template": true, "list_templates": true, "launch_template": true,
 	"get_config": true, "update_config": true, "batch_update_config": true,
 	"list_config_schema": true, "export_config": true, "import_config": true,
-	"set_max_iterations": true,
+	"set_max_iterations":    true,
 	"create_scheduled_task": true, "list_scheduled_tasks": true,
 	"delete_scheduled_task": true, "update_scheduled_task": true,
 	"search_and_install_skill": true,
-	"switch_llm_provider": true,
-	"manage_config": true,
-	"query_audit_log": true,
+	"switch_llm_provider":      true,
+	"manage_config":            true,
+	"query_audit_log":          true,
 	// Browser automation tools (browser agent session + legacy CDP helpers).
 	"browser_session_start": true, "browser_session_stop": true, "browser_observe": true,
 	"browser_navigate": true, "browser_click": true, "browser_type": true,
@@ -146,24 +212,112 @@ type SkillRecommender interface {
 	GetRecommendations() []SkillRecommendation
 }
 
+// SkillSummary is a lightweight view of an active Skill for routing.
+type SkillSummary struct {
+	Name        string
+	Triggers    []string
+	Description string
+}
+
+// SkillProvider abstracts access to active skills for routing decisions.
+type SkillProvider interface {
+	ListActiveSkills() []SkillSummary
+}
+
 // Router selects the most relevant tools for a given user message.
 type Router struct {
-	generator    *DefinitionGenerator
-	registry     *Registry
-	recommender  SkillRecommender
-	bm25Index    *bm25.Index
-	hybrid       *HybridRetriever
-	enrichStore  *EnrichmentStore
-	tracker      *UsageTracker
-	reranker     Reranker // nil when reranking is disabled
-	sessionTools map[string]bool
+	generator     *DefinitionGenerator
+	registry      *Registry
+	recommender   SkillRecommender
+	skillProvider SkillProvider
+	bm25Index     *bm25.Index
+	skillBM25     *bm25.Index // separate index for skill trigger matching
+	hybrid        *HybridRetriever
+	enrichStore   *EnrichmentStore
+	tracker       *UsageTracker
+	reranker      Reranker // nil when reranking is disabled
+	sessionTools  map[string]bool
 }
 
 func NewRouter(generator *DefinitionGenerator) *Router {
 	return &Router{
 		generator: generator,
 		bm25Index: bm25.New(),
+		skillBM25: bm25.New(),
 	}
+}
+
+// SetSkillProvider sets the SkillProvider used for skill-aware routing.
+func (r *Router) SetSkillProvider(provider SkillProvider) {
+	r.skillProvider = provider
+	r.refreshSkillIndex()
+}
+
+// refreshSkillIndex rebuilds the skill BM25 index from the current SkillProvider.
+// Called once on SetSkillProvider; subsequent refreshes are triggered explicitly
+// via RefreshSkillIndex() to avoid rebuilding on every Route() call.
+func (r *Router) refreshSkillIndex() {
+	if r.skillProvider == nil {
+		return
+	}
+	skills := r.skillProvider.ListActiveSkills()
+	docs := make([]bm25.Doc, len(skills))
+	for i, s := range skills {
+		text := s.Name + " " + s.Description + " " + strings.Join(s.Triggers, " ")
+		docs[i] = bm25.Doc{ID: s.Name, Text: text}
+	}
+	r.skillBM25.Rebuild(docs)
+}
+
+// RefreshSkillIndex forces a rebuild of the skill BM25 index.
+// Call this after new skills are learned or existing skills are updated.
+func (r *Router) RefreshSkillIndex() {
+	r.refreshSkillIndex()
+}
+
+// skillMatchScore computes the best skill match score for the given user message.
+// Returns a score in [0,1] and the names of the top matched skills.
+func (r *Router) skillMatchScore(userMessage string) (float64, []string) {
+	if r.skillProvider == nil {
+		return 0, nil
+	}
+	// Index is built on SetSkillProvider / RefreshSkillIndex — no rebuild here.
+
+	scores := r.skillBM25.Score(userMessage)
+	if len(scores) == 0 {
+		return 0, nil
+	}
+
+	// Find top-3 by score.
+	type entry struct {
+		name  string
+		score float64
+	}
+	var sorted []entry
+	for name, sc := range scores {
+		if sc > 0 {
+			sorted = append(sorted, entry{name, sc})
+		}
+	}
+	if len(sorted) == 0 {
+		return 0, nil
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
+
+	// Normalize: clamp raw BM25 score to [0,1] using sigmoid-like mapping.
+	// Raw BM25 scores vary widely; a score > 1.0 indicates strong match.
+	bestRaw := sorted[0].score
+	normBest := clampFloat(bestRaw/3.0, 0, 1) // scale: 3.0 raw → 1.0 normalized
+
+	n := 3
+	if len(sorted) < n {
+		n = len(sorted)
+	}
+	names := make([]string, n)
+	for i := 0; i < n; i++ {
+		names[i] = sorted[i].name
+	}
+	return normBest, names
 }
 
 // SetRegistry sets the Registry used for dynamic builtin detection and tag-based scoring.
@@ -295,18 +449,68 @@ func (r *Router) tagsForTool(name string) []string {
 	return nil
 }
 
+// allConditionalKeepTools returns the set of all tool names that appear in any
+// conditional keep rule.
+var allConditionalKeepTools map[string]bool
+
+func init() {
+	allConditionalKeepTools = make(map[string]bool)
+	for _, rule := range conditionalKeepRules {
+		for _, name := range rule.keepTools {
+			allConditionalKeepTools[name] = true
+		}
+	}
+}
+
+// matchConditionalKeepRules returns the set of tool names to conditionally keep
+// and the set to penalize for the given user message.
+// Tools that have a conditional keep rule but did NOT match the current message
+// are filtered out entirely so they don't sneak in via tie-breaking at the score tail.
+func matchConditionalKeepRules(userMessage string) (keep map[string]bool, filterOut map[string]bool) {
+	keep = make(map[string]bool)
+	filterOut = make(map[string]bool)
+	msg := strings.ToLower(strings.TrimSpace(userMessage))
+	if msg == "" {
+		// Empty message: filter out ALL conditionally-kept tools.
+		for name := range allConditionalKeepTools {
+			filterOut[name] = true
+		}
+		return keep, filterOut
+	}
+	for _, rule := range conditionalKeepRules {
+		if rule.matches(msg) {
+			for _, name := range rule.keepTools {
+				keep[name] = true
+			}
+		}
+	}
+	// Filter out tools that are conditionally kept but NOT matched this time.
+	for name := range allConditionalKeepTools {
+		if !keep[name] {
+			filterOut[name] = true
+		}
+	}
+	return keep, filterOut
+}
+
 // Route selects the most relevant tools for userMessage from allTools.
 func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
 	if len(allTools) <= MaxToolBudget {
 		return allTools
 	}
 
+	condKeep, condFilterOut := matchConditionalKeepRules(userMessage)
+
 	var core, candidates []map[string]interface{}
 	var candidateNames []string
 	for _, t := range allTools {
 		name := ExtractToolName(t)
-		if CoreToolNames[name] || r.sessionTools[name] {
+		if CoreToolNames[name] || r.sessionTools[name] || condKeep[name] {
 			core = append(core, t)
+		} else if condFilterOut[name] {
+			// This tool has a conditional keep rule that did NOT match this
+			// message — exclude it from candidates entirely.
+			continue
 		} else {
 			candidates = append(candidates, t)
 			candidateNames = append(candidateNames, name)
@@ -357,9 +561,16 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	// Three-signal scoring: retrieval + experience + priority.
+	// Three-signal scoring: retrieval + experience + priority + skill_match.
 	queryTokens := bm25.Tokenize(userMessage)
 	normScores := minMaxNormalize(scores)
+
+	// Compute skill match score (fourth signal).
+	var skillScore float64
+	var matchedSkills []string
+	if r.skillProvider != nil {
+		skillScore, matchedSkills = r.skillMatchScore(userMessage)
+	}
 
 	type scored struct {
 		index int
@@ -378,13 +589,26 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 				priorityBonus = clampFloat(float64(t.Priority)*0.1, 0, 1)
 			}
 		}
-		if r.tracker != nil {
+
+		// Skill match bonus: only applies to run_skill tool.
+		var skillBonus float64
+		if r.skillProvider != nil && name == "run_skill" {
+			skillBonus = skillScore
+		}
+
+		var finalScore float64
+		if r.skillProvider != nil && r.tracker != nil {
+			// Four signals: α=0.5 retrieval + β=0.25 experience + γ=0.15 skill_match + δ=0.1 priority
+			finalScore = 0.5*retrievalScore + 0.25*expScore + 0.15*skillBonus + 0.1*priorityBonus
+		} else if r.tracker != nil {
 			// α=0.6 retrieval + β=0.3 experience + γ=0.1 priority
-			scoredList[i] = scored{index: i, score: 0.6*retrievalScore + 0.3*expScore + 0.1*priorityBonus}
+			finalScore = 0.6*retrievalScore + 0.3*expScore + 0.1*priorityBonus
 		} else {
 			// No tracker: α=0.9 retrieval + γ=0.1 priority
-			scoredList[i] = scored{index: i, score: 0.9*retrievalScore + 0.1*priorityBonus}
+			finalScore = 0.9*retrievalScore + 0.1*priorityBonus
 		}
+
+		scoredList[i] = scored{index: i, score: finalScore}
 	}
 	sort.SliceStable(scoredList, func(i, j int) bool {
 		return scoredList[i].score > scoredList[j].score
@@ -456,6 +680,17 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	dynamicCount := 0
 	result := make([]map[string]interface{}, len(core), MaxToolBudget+2)
 	copy(result, core)
+
+	// Enhance run_skill description with matched skill names.
+	if len(matchedSkills) > 0 && skillScore > 0.3 {
+		for i, t := range result {
+			if ExtractToolName(t) == "run_skill" {
+				result[i] = enrichRunSkillDescription(t, matchedSkills)
+				break
+			}
+		}
+	}
+
 	for _, s := range scoredList {
 		if len(result) >= MaxToolBudget {
 			break
@@ -498,7 +733,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, selectedNames, rerankerResult)
+	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, selectedNames, rerankerResult, skillScore, matchedSkills)
 
 	return result
 }
@@ -562,6 +797,28 @@ func ExtractToolDescription(def map[string]interface{}) string {
 	return desc
 }
 
+// enrichRunSkillDescription returns a shallow copy of the run_skill tool
+// definition with matched skill names appended to the description.
+func enrichRunSkillDescription(def map[string]interface{}, skillNames []string) map[string]interface{} {
+	fn, ok := def["function"].(map[string]interface{})
+	if !ok {
+		return def
+	}
+	desc, _ := fn["description"].(string)
+	suffix := " 可用 Skill: " + strings.Join(skillNames, ", ")
+	newFn := make(map[string]interface{}, len(fn))
+	for k, v := range fn {
+		newFn[k] = v
+	}
+	newFn["description"] = desc + suffix
+	newDef := make(map[string]interface{}, len(def))
+	for k, v := range def {
+		newDef[k] = v
+	}
+	newDef["function"] = newFn
+	return newDef
+}
+
 // writeRouteLog writes a detailed tool routing decision log to ~/.maclaw/logs/tool_route.log.
 // Runs in a goroutine to avoid blocking the hot path.
 func writeRouteLog(
@@ -573,6 +830,8 @@ func writeRouteLog(
 	rankedScores []float64,
 	selectedNames []string,
 	rerankerResult []string,
+	skillMatchScore float64,
+	matchedSkills []string,
 ) {
 	if !logDetailEnabled.Load() {
 		return
@@ -632,6 +891,11 @@ func writeRouteLog(
 			fmt.Fprintf(f, " #%d %s", i+1, name)
 		}
 		fmt.Fprintln(f)
+	}
+
+	// Skill match info
+	if skillMatchScore > 0 || len(matchedSkills) > 0 {
+		fmt.Fprintf(f, "Skill match: score=%.4f matched=%v\n", skillMatchScore, matchedSkills)
 	}
 
 	fmt.Fprintln(f, "---")

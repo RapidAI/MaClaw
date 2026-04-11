@@ -1442,7 +1442,12 @@ func (h *TUIAgentHandler) toolWebFetch(args map[string]interface{}) string {
 		return "缺少 url 参数"
 	}
 
-	opts := &websearch.FetchOptions{}
+	offset := intArg(args, "offset", 0)
+	maxChars := intArg(args, "max_chars", 16384)
+	if _, ok := args["max_chars"]; ok && maxChars <= 0 {
+		maxChars = 0
+	}
+	opts := &websearch.FetchOptions{Offset: offset, MaxChars: maxChars}
 	if renderJS, ok := args["render_js"].(bool); ok {
 		opts.RenderJS = renderJS
 	}
@@ -1463,21 +1468,24 @@ func (h *TUIAgentHandler) toolWebFetch(args map[string]interface{}) string {
 		return result.Content
 	}
 
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	end := start + len([]rune(result.Content))
+
 	var sb strings.Builder
 	if result.Title != "" {
 		sb.WriteString(fmt.Sprintf("标题: %s\n", result.Title))
 	}
 	sb.WriteString(fmt.Sprintf("URL: %s\n", result.URL))
-	sb.WriteString(fmt.Sprintf("类型: %s | 大小: %d 字节\n\n", result.ContentType, result.BytesRead))
-
-	content := result.Content
-	const webFetchMaxContent = 16384
-	if len(content) > webFetchMaxContent {
-		headLen := webFetchMaxContent * 2 / 3
-		tailLen := webFetchMaxContent - headLen - 60
-		content = content[:headLen] + "\n\n... (内容已截断，共 " + fmt.Sprintf("%d", len(content)) + " 字符) ...\n\n" + content[len(content)-tailLen:]
+	sb.WriteString(fmt.Sprintf("类型: %s | 大小: %d 字节\n", result.ContentType, result.BytesRead))
+	sb.WriteString(fmt.Sprintf("已读取: %d-%d / %d 字符\n", start, end, result.TotalChars))
+	sb.WriteString(fmt.Sprintf("truncated: %t | has_more: %t | next_offset: %d\n\n", result.Truncated, result.HasMore, result.NextOffset))
+	sb.WriteString(result.Content)
+	if result.HasMore {
+		sb.WriteString(fmt.Sprintf("\n\n--- 完整性信号 ---\nhas_more: true\nnext_offset: %d\n继续读取时请传入 offset=%d\n", result.NextOffset, result.NextOffset))
 	}
-	sb.WriteString(content)
 	return sb.String()
 }
 

@@ -55,6 +55,11 @@ func (b *DynamicToolBuilder) SetReranker(rr tool.Reranker) {
 	b.inner.SetReranker(rr)
 }
 
+// SetSkillProvider delegates to corelib/tool.DynamicToolBuilder.SetSkillProvider.
+func (b *DynamicToolBuilder) SetSkillProvider(provider tool.SkillProvider) {
+	b.inner.SetSkillProvider(provider)
+}
+
 // syncRegistry refreshes the inner corelib registry from the gui registry.
 // The corelib builder's BM25 index is preserved; only the registry is swapped.
 func (b *DynamicToolBuilder) syncRegistry() {

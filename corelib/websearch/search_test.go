@@ -134,3 +134,48 @@ func TestPrepareSearchCapsMaxResults(t *testing.T) {
 		t.Fatalf("query=%q maxResults=%d", query, maxResults)
 	}
 }
+
+func TestApplyContentWindowUsesRuneOffsets(t *testing.T) {
+	result := &FetchResult{Content: "甲乙丙丁戊"}
+	applyContentWindow(result, 1, 2)
+	if result.Content != "乙丙" {
+		t.Fatalf("Content = %q", result.Content)
+	}
+	if result.TotalChars != 5 {
+		t.Fatalf("TotalChars = %d", result.TotalChars)
+	}
+	if !result.Truncated || !result.HasMore {
+		t.Fatalf("Truncated=%t HasMore=%t", result.Truncated, result.HasMore)
+	}
+	if result.NextOffset != 3 {
+		t.Fatalf("NextOffset = %d", result.NextOffset)
+	}
+}
+
+func TestFetchSupportsContentWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><head><title>Long Page</title></head><body><main>ABCDEFGHIJ</main></body></html>`))
+	}))
+	defer server.Close()
+
+	result, err := Fetch(server.URL, &FetchOptions{Offset: 2, MaxChars: 4})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if result.Title != "Long Page" {
+		t.Fatalf("Title = %q", result.Title)
+	}
+	if result.Content != "CDEF" {
+		t.Fatalf("Content = %q", result.Content)
+	}
+	if result.TotalChars != 10 {
+		t.Fatalf("TotalChars = %d", result.TotalChars)
+	}
+	if !result.Truncated || !result.HasMore {
+		t.Fatalf("Truncated=%t HasMore=%t", result.Truncated, result.HasMore)
+	}
+	if result.NextOffset != 6 {
+		t.Fatalf("NextOffset = %d", result.NextOffset)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -218,4 +220,91 @@ func (t *UsageTracker) saveSnapshot(records []UsageRecord) {
 		return
 	}
 	os.Rename(tmp, t.path)
+}
+
+// UsagePattern describes a high-frequency successful tool usage pattern.
+type UsagePattern struct {
+	ToolName    string   `json:"tool_name"`
+	TopTokens   []string `json:"top_tokens"`
+	SuccessRate float64  `json:"success_rate"`
+	Count       int      `json:"count"`
+	Description string   `json:"description"`
+}
+
+// ExtractPatterns scans records from the last windowDays and returns
+// patterns for tools with success rate > 80% and count > 5.
+func (t *UsageTracker) ExtractPatterns(windowDays int) []UsagePattern {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	cutoff := time.Now().AddDate(0, 0, -windowDays)
+
+	// Group by tool name.
+	type toolStats struct {
+		total   int
+		success int
+		tokens  map[string]int // token → frequency
+	}
+	stats := make(map[string]*toolStats)
+
+	for _, r := range t.records {
+		if r.Timestamp.Before(cutoff) {
+			continue
+		}
+		s, ok := stats[r.ToolName]
+		if !ok {
+			s = &toolStats{tokens: make(map[string]int)}
+			stats[r.ToolName] = s
+		}
+		s.total++
+		if r.Success {
+			s.success++
+		}
+		for _, tok := range r.QueryTokens {
+			s.tokens[tok]++
+		}
+	}
+
+	var patterns []UsagePattern
+	for toolName, s := range stats {
+		if s.total < 5 {
+			continue
+		}
+		rate := float64(s.success) / float64(s.total)
+		if rate < 0.8 {
+			continue
+		}
+
+		// Extract top-5 tokens by frequency.
+		type tokenFreq struct {
+			token string
+			freq  int
+		}
+		var tfs []tokenFreq
+		for tok, freq := range s.tokens {
+			tfs = append(tfs, tokenFreq{tok, freq})
+		}
+		sort.Slice(tfs, func(i, j int) bool { return tfs[i].freq > tfs[j].freq })
+		topN := 5
+		if len(tfs) < topN {
+			topN = len(tfs)
+		}
+		topTokens := make([]string, topN)
+		for i := 0; i < topN; i++ {
+			topTokens[i] = tfs[i].token
+		}
+
+		desc := fmt.Sprintf("工具 %s 在 [%s] 类任务中表现稳定（成功率 %.0f%%，近%d天 %d 次）",
+			toolName, strings.Join(topTokens, ", "), rate*100, windowDays, s.total)
+
+		patterns = append(patterns, UsagePattern{
+			ToolName:    toolName,
+			TopTokens:   topTokens,
+			SuccessRate: rate,
+			Count:       s.total,
+			Description: desc,
+		})
+	}
+
+	return patterns
 }

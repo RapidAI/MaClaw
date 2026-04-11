@@ -95,6 +95,208 @@ func TestRouter_BM25_EmptyMessage(t *testing.T) {
 	}
 }
 
+func TestRouter_BM25_ConditionalKeep_PDFWorkflow(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	// Add workflow-specific tools that are not core.
+	tools = append(tools,
+		makeToolDef("web_search", "搜索网页和在线内容"),
+		makeToolDef("send_file", "发送文件给用户"),
+		makeToolDef("open", "打开文件"),
+		makeToolDef("generate_pdf", "生成PDF文档"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("搜索 huggingface daily papers，生成每日论文综述，生成pdf发我", tools)
+	resultNames := make(map[string]bool)
+	for _, r := range result {
+		resultNames[ExtractToolName(r)] = true
+	}
+
+	// web_search and document delivery tools should be kept for PDF intent.
+	for _, name := range []string{"web_search", "send_file", "open"} {
+		if !resultNames[name] {
+			names := make([]string, len(result))
+			for i, r := range result {
+				names[i] = ExtractToolName(r)
+			}
+			t.Errorf("PDF workflow tool %q should be in result, got: %v", name, names)
+		}
+	}
+
+	// SSH should NOT be in result (no SSH intent).
+	if resultNames["ssh"] {
+		t.Error("ssh should not be routed for PDF workflow")
+	}
+}
+
+func TestRouter_BM25_ConditionalKeep_SearchWorkflow(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("web_search", "搜索网页和在线内容"),
+		makeToolDef("ssh", "通过 SSH 连接服务器"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("搜索最新的 AI 新闻", tools)
+	resultNames := make(map[string]bool)
+	for _, r := range result {
+		resultNames[ExtractToolName(r)] = true
+	}
+
+	// web_search should be kept for search intent.
+	if !resultNames["web_search"] {
+		names := make([]string, len(result))
+		for i, r := range result {
+			names[i] = ExtractToolName(r)
+		}
+		t.Errorf("web_search should be in result for search intent, got: %v", names)
+	}
+
+	// ssh should NOT be in result.
+	if resultNames["ssh"] {
+		t.Error("ssh should not be routed for search intent")
+	}
+}
+
+func TestRouter_BM25_ConditionalKeep_BrowserWorkflow(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("browser_session_start", "启动浏览器会话"),
+		makeToolDef("browser_observe", "观察当前页面内容"),
+		makeToolDef("browser_navigate", "导航到指定URL"),
+		makeToolDef("ssh", "通过 SSH 连接服务器"),
+		makeToolDef("web_search", "搜索网页"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("打开浏览器访问 example.com 网站并观察页面内容", tools)
+	resultNames := make(map[string]bool)
+	for _, r := range result {
+		resultNames[ExtractToolName(r)] = true
+	}
+
+	// Browser tools should be kept for browser intent.
+	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate"} {
+		if !resultNames[name] {
+			names := make([]string, len(result))
+			for i, r := range result {
+				names[i] = ExtractToolName(r)
+			}
+			t.Errorf("browser tool %q should be in result, got: %v", name, names)
+		}
+	}
+
+	// ssh and web_search should NOT be in result.
+	if resultNames["ssh"] {
+		t.Error("ssh should not be routed for browser workflow")
+	}
+	if resultNames["web_search"] {
+		t.Error("web_search should not be routed for browser workflow")
+	}
+}
+
+func TestRouter_BM25_ConditionalKeep_NoFalseTriggers(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("ssh", "通过 SSH 连接服务器"),
+		makeToolDef("web_search", "搜索网页"),
+		makeToolDef("send_file", "发送文件"),
+		makeToolDef("open", "打开文件"),
+		makeToolDef("craft_tool", "生成内容"),
+		makeToolDef("browser_session_start", "启动浏览器"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	// Database query — none of the conditional keep intents should match.
+	result := router.Route("我要查询数据库", tools)
+	resultNames := make(map[string]bool)
+	for _, r := range result {
+		resultNames[ExtractToolName(r)] = true
+	}
+
+	// All conditional tools should be absent.
+	for _, name := range []string{"ssh", "web_search", "send_file", "open", "craft_tool", "browser_session_start"} {
+		if resultNames[name] {
+			names := make([]string, len(result))
+			for i, r := range result {
+				names[i] = ExtractToolName(r)
+			}
+			t.Errorf("conditional keep tool %q should NOT be in result for '我要查询数据库', got: %v", name, names)
+		}
+	}
+}
+
+func TestRouter_Route_ConditionallyKeepsSSHForSSHIntent(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("ssh", "通过 SSH 连接服务器并执行命令"))
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	if len(tools) <= MaxToolBudget {
+		t.Fatalf("need more than %d tools to test routing, got %d", MaxToolBudget, len(tools))
+	}
+
+	runCase := func(message string, wantSSH bool) {
+		result := router.Route(message, tools)
+		found := false
+		for _, r := range result {
+			if ExtractToolName(r) == "ssh" {
+				found = true
+				break
+			}
+		}
+		if found != wantSSH {
+			names := make([]string, len(result))
+			for i, r := range result {
+				names[i] = ExtractToolName(r)
+			}
+			t.Fatalf("ssh presence for %q = %v, want %v; got: %v", message, found, wantSSH, names)
+		}
+	}
+
+	runCase("登录 4090 服务器，host home.rapidai.tech 端口 33", true)
+	runCase("我要查询数据库", false)
+}
+
 func TestDynamicToolBuilder_BM25(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})

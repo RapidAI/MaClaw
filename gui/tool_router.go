@@ -71,6 +71,11 @@ func (r *ToolRouter) SetReranker(rr tool.Reranker) {
 	r.inner.SetReranker(rr)
 }
 
+// SetSkillProvider delegates to corelib/tool.Router.SetSkillProvider.
+func (r *ToolRouter) SetSkillProvider(provider tool.SkillProvider) {
+	r.inner.SetSkillProvider(provider)
+}
+
 // ActivateSessionTool delegates to corelib/tool.Router.ActivateSessionTool.
 func (r *ToolRouter) ActivateSessionTool(name string) {
 	r.inner.ActivateSessionTool(name)

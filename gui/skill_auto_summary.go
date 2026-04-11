@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -580,6 +581,37 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	log.Printf("[skill-auto-summary] session=%s stage=DraftSkill result=ok name=%s steps=%d",
 		sid, draft.Name, len(draft.Steps))
 
+	// Stage 2.5: FindSimilarSkill — check if an existing skill should be updated.
+	existing, simScore := skill.FindSimilarSkill(draft.Description, 0.6)
+	if existing != nil {
+		log.Printf("[skill-auto-summary] session=%s stage=FindSimilarSkill result=matched score=%.2f existing=%s",
+			sid, simScore, existing.Name)
+		if shouldUpdateSkill(draft, existing) {
+			versioner := &skill.Versioner{}
+			ver, backupErr := versioner.BackupCurrent(existing.SkillDir)
+			if backupErr != nil {
+				log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate backup_error=%v", sid, backupErr)
+			} else {
+				log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate backed_up=v%d", sid, ver)
+				// Write new version.
+				data, fmtErr := skill.FormatSkillYAMLFile(draft)
+				if fmtErr == nil {
+					yamlPath := filepath.Join(existing.SkillDir, "skill.yaml")
+					if writeErr := os.WriteFile(yamlPath, data, 0o644); writeErr != nil {
+						log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate write_error=%v", sid, writeErr)
+					} else {
+						log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate result=ok", sid)
+						_ = versioner.CleanOldVersions(existing.SkillDir, 5)
+					}
+				}
+			}
+		} else {
+			log.Printf("[skill-auto-summary] session=%s stage=FindSimilarSkill existing skill is better, skipping iteration", sid)
+		}
+		return // Skip new skill creation — either updated or skipped.
+	}
+	log.Printf("[skill-auto-summary] session=%s stage=FindSimilarSkill result=unmatched score=%.2f", sid, simScore)
+
 	// Stage 3: ValidateSkillDraft
 	draft, err = ValidateSkillDraft(draft, p.checker, nil)
 	if err != nil {
@@ -625,4 +657,34 @@ func (p *SkillAutoSummaryPipeline) clearActivity() {
 	if p.activity != nil {
 		p.activity.Clear("skill_summarizing")
 	}
+}
+
+// shouldUpdateSkill returns true if the new draft is better than the existing skill.
+// "Better" means fewer steps (more efficient) or fewer error steps.
+func shouldUpdateSkill(newDraft *skill.SkillYAMLFile, existing *corelib.NLSkillEntry) bool {
+	newSteps := len(newDraft.Steps)
+	oldSteps := len(existing.Steps)
+
+	newErrors := 0
+	for _, s := range newDraft.Steps {
+		if s.OnError == "skip" {
+			newErrors++
+		}
+	}
+	oldErrors := 0
+	for _, s := range existing.Steps {
+		if s.OnError == "skip" || s.OnError == "continue" {
+			oldErrors++
+		}
+	}
+
+	// New version has fewer steps (more efficient).
+	if newSteps < oldSteps {
+		return true
+	}
+	// New version has fewer error steps.
+	if newErrors < oldErrors {
+		return true
+	}
+	return false
 }

@@ -310,8 +310,8 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         }
     };
 
-    const handleToggle = (checked: boolean) => {
-        saveRemoteConfigField({ agentnet_enabled: checked });
+    const handleToggle = async (checked: boolean) => {
+        await saveRemoteConfigField({ agentnet_enabled: checked });
         if (!checked && running) {
             handleStop();
         } else if (checked && !running) {

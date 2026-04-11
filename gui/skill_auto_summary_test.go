@@ -701,3 +701,83 @@ func TestSkillAutoSummary_Pipeline_Idempotency(t *testing.T) {
 		t.Errorf("expected session_id to appear once in processed map, got %d", count)
 	}
 }
+
+// --- shouldUpdateSkill tests (P1: Skill auto-iteration) ---
+
+func TestShouldUpdateSkill_FewerSteps(t *testing.T) {
+	newDraft := &skill.SkillYAMLFile{
+		Steps: []skill.SkillYAMLStep{
+			{Action: "read_file"},
+			{Action: "write_file"},
+		},
+	}
+	existing := &NLSkillEntry{
+		Steps: []NLSkillStep{
+			{Action: "read_file"},
+			{Action: "write_file"},
+			{Action: "exec_cmd"},
+		},
+	}
+	if !shouldUpdateSkill(newDraft, existing) {
+		t.Error("new draft with fewer steps should trigger update")
+	}
+}
+
+func TestShouldUpdateSkill_FewerErrors(t *testing.T) {
+	newDraft := &skill.SkillYAMLFile{
+		Steps: []skill.SkillYAMLStep{
+			{Action: "read_file"},
+			{Action: "write_file"},
+			{Action: "exec_cmd"},
+		},
+	}
+	existing := &NLSkillEntry{
+		Steps: []NLSkillStep{
+			{Action: "read_file"},
+			{Action: "write_file", OnError: "skip"},
+			{Action: "exec_cmd", OnError: "continue"},
+		},
+	}
+	if !shouldUpdateSkill(newDraft, existing) {
+		t.Error("new draft with fewer error steps should trigger update")
+	}
+}
+
+func TestShouldUpdateSkill_NotBetter(t *testing.T) {
+	newDraft := &skill.SkillYAMLFile{
+		Steps: []skill.SkillYAMLStep{
+			{Action: "read_file"},
+			{Action: "write_file"},
+			{Action: "exec_cmd"},
+			{Action: "deploy", OnError: "skip"},
+		},
+	}
+	existing := &NLSkillEntry{
+		Steps: []NLSkillStep{
+			{Action: "read_file"},
+			{Action: "write_file"},
+			{Action: "exec_cmd"},
+		},
+	}
+	if shouldUpdateSkill(newDraft, existing) {
+		t.Error("new draft with more steps and more errors should NOT trigger update")
+	}
+}
+
+func TestShouldUpdateSkill_SameStepsSameErrors(t *testing.T) {
+	newDraft := &skill.SkillYAMLFile{
+		Steps: []skill.SkillYAMLStep{
+			{Action: "read_file"},
+			{Action: "write_file"},
+		},
+	}
+	existing := &NLSkillEntry{
+		Steps: []NLSkillStep{
+			{Action: "read_file"},
+			{Action: "write_file"},
+		},
+	}
+	if shouldUpdateSkill(newDraft, existing) {
+		t.Error("same steps and errors should NOT trigger update")
+	}
+}

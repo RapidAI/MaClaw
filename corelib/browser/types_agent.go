@@ -97,6 +97,9 @@ type BrowserSnapshot struct {
 	FrameTree       []BrowserFrameSnapshot `json:"frame_tree,omitempty"`
 	Refs            []BrowserElementRef    `json:"refs"`
 	PageTextExcerpt string                 `json:"page_text_excerpt,omitempty"`
+	PageTextTotal   int                    `json:"page_text_total,omitempty"`
+	PageTextOffset  int                    `json:"page_text_offset,omitempty"`
+	PageTextHasMore bool                   `json:"page_text_has_more,omitempty"`
 	ConsoleSummary  string                 `json:"console_summary,omitempty"`
 	NetworkSummary  string                 `json:"network_summary,omitempty"`
 	Screenshot      string                 `json:"screenshot,omitempty"`

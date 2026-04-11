@@ -63,11 +63,13 @@ type SkillRunStatus struct {
 
 // StepResult 记录单步执行结果。
 type StepResult struct {
-	Index  int    `json:"index"`
-	Action string `json:"action"`
-	Status string `json:"status"` // "pending", "running", "success", "failed", "skipped"
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Index     int    `json:"index"`
+	Action    string `json:"action"`
+	Status    string `json:"status"` // "pending", "running", "success", "failed", "skipped"
+	Output    string `json:"output,omitempty"`
+	Error     string `json:"error,omitempty"`
+	ShellPath string `json:"shell_path,omitempty"` // 使用的 shell（仅 bash action）
+	Duration  string `json:"duration,omitempty"`   // 执行耗时
 }
 
 // ── Skill Runner ────────────────────────────────────────────────────────
@@ -939,7 +941,7 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		if command == "" {
 			return "", fmt.Errorf("missing command parameter")
 		}
-		return runBashStepWithContext(ctx, command, step.Params, skillDir)
+		return runBashStepWithContext(ctx, command, step.Params, skillDir, r.executor.app)
 
 	case "craft_tool":
 		if r.executor == nil || r.executor.app == nil {
@@ -954,7 +956,7 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 
 // ── bash step 执行（带 context + skillDir 作为默认 working_dir） ────────
 
-func runBashStepWithContext(ctx context.Context, command string, params map[string]interface{}, skillDir string) (string, error) {
+func runBashStepWithContext(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App) (string, error) {
 	timeout := 30
 	if t, ok := params["timeout"].(float64); ok && t > 0 {
 		timeout = int(t)
@@ -975,8 +977,22 @@ func runBashStepWithContext(ctx context.Context, command string, params map[stri
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
-		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", command}
+		if app != nil {
+			if shPath, err := app.findSh(); err == nil {
+				shellName = shPath
+			} else {
+				// Shell not found — return clear error
+				return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤\n%v\n请安装 Git for Windows: https://git-scm.com/download/win", err)
+			}
+		} else {
+			// Fallback: try PATH lookup
+			if shPath, err := exec.LookPath("sh.exe"); err == nil {
+				shellName = shPath
+			} else {
+				return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤，且 app 实例为空")
+			}
+		}
+		shellArgs = []string{"-c", command}
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}
@@ -991,9 +1007,15 @@ func runBashStepWithContext(ctx context.Context, command string, params map[stri
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	startTime := time.Now()
 	err := cmd.Run()
+	elapsed := time.Since(startTime).Round(time.Millisecond)
 
 	var b strings.Builder
+	b.WriteString(fmt.Sprintf("🐚 shell: %s\n", filepath.Base(shellName)))
+	b.WriteString(fmt.Sprintf("⏱  %s\n", elapsed))
+	b.WriteString(fmt.Sprintf("📂 %s\n", workDir))
+	b.WriteString("───────────────\n")
 	if stdout.Len() > 0 {
 		out := stdout.String()
 		if len(out) > 8192 {
@@ -1021,7 +1043,7 @@ func runBashStepWithContext(ctx context.Context, command string, params map[stri
 		return b.String(), err
 	}
 	if b.Len() == 0 {
-		return "(completed, no output)", nil
+		return fmt.Sprintf("(completed, no output, %s)", elapsed), nil
 	}
 	return b.String(), nil
 }

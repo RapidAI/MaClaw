@@ -237,7 +237,7 @@ func RegisterTools(registry *tool.Registry) {
 		},
 		{
 			Name:        "browser_extract",
-			Description: "从当前页面或 snapshot 中提取文本，支持按 ref/selector 或整页摘要提取。",
+			Description: "从当前页面或 snapshot 中提取文本，支持按 ref/selector 或整页摘要提取。整页提取支持 offset/max_chars 续读。",
 			Category:    tool.CategoryBuiltin,
 			Tags:        []string{"browser", "extract", "text", "session", "浏览器", "提取"},
 			Priority:    5,
@@ -249,13 +249,23 @@ func RegisterTools(registry *tool.Registry) {
 				"selector":    map[string]interface{}{"type": "string", "description": "可选 selector"},
 				"query":       map[string]interface{}{"type": "string", "description": "提取目标说明"},
 				"format":      map[string]interface{}{"type": "string", "description": "返回格式，默认 text"},
+				"offset":      map[string]interface{}{"type": "integer", "description": "从第几个字符开始提取（用于整页续读，默认 0）"},
+				"max_chars":   map[string]interface{}{"type": "integer", "description": "最多返回字符数（用于整页续读，默认 1200）"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
 				if err != nil {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
-				result, err := agentSession.Extract(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), strArg(args, "query", ""), strArg(args, "format", "text"))
+				result, err := agentSession.Extract(
+					strArg(args, "snapshot_id", ""),
+					strArg(args, "ref", ""),
+					strArg(args, "selector", ""),
+					strArg(args, "query", ""),
+					strArg(args, "format", "text"),
+					intArg(args, "offset", 0),
+					intArg(args, "max_chars", 1200),
+				)
 				if err != nil {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}

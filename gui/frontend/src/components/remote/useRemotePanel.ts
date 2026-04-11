@@ -102,7 +102,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     const [invitationCode, setInvitationCodeRaw] = useState("");
     const [invitationCodeError, setInvitationCodeError] = useState("");
     const [providers, setProviders] = useState<Array<{name: string; model_id: string; is_default: boolean}>>([]);
-    const [selectedProvider, setSelectedProvider] = useState<string>("");
+    const [selectedProviderState, setSelectedProviderState] = useState<string>("");
 
     // Track session IDs that have been killed locally but may not yet be
     // reflected by the backend.  refreshRemotePanel will filter these out
@@ -161,6 +161,35 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     });
 
     const getUseProxy = (): boolean => !!config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.use_proxy;
+    const toolConfig = useMemo(() => {
+        if (!config) return null;
+        return (config as any)[selectedRemoteTool] as main.ToolConfig | undefined;
+    }, [config, selectedRemoteTool]);
+    const currentProvider = (toolConfig?.current_model || "").trim();
+    const getProviderForTool = useCallback((tool: RemoteToolName) => {
+        if (!config) return "";
+        return (((config as any)[tool] as main.ToolConfig | undefined)?.current_model || "").trim();
+    }, [config]);
+    const selectedProvider = selectedProviderState;
+    const setSelectedProvider = useCallback((provider: string) => {
+        const normalizedProvider = provider.trim();
+        setSelectedProviderState(normalizedProvider);
+        if (!config || !selectedRemoteTool) return;
+        const currentToolConfig = (config as any)[selectedRemoteTool] as main.ToolConfig | undefined;
+        if (!currentToolConfig || currentToolConfig.current_model === normalizedProvider) return;
+        const newConfig = new main.AppConfig({
+            ...config,
+            [selectedRemoteTool]: {
+                ...currentToolConfig,
+                current_model: normalizedProvider,
+            },
+        });
+        setConfig(newConfig);
+        void SaveConfig(newConfig).catch((err) => {
+            console.error("Failed to sync remote provider selection:", err);
+            showToastMessage(formatText("remoteSaveFailed", { error: String(err) }), 4000);
+        });
+    }, [config, formatText, selectedRemoteTool, setConfig, showToastMessage]);
 
     // Lightweight refresh: only fetches session list (used for high-frequency events)
     const refreshSessionsOnly = useCallback(async () => {
@@ -378,7 +407,7 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         }
         setRemoteBusy("start-session");
         try {
-            await StartRemoteSession(selectedRemoteTool, projectDir, getUseProxy(), selectedProvider, "desktop");
+            await StartRemoteSession(selectedRemoteTool, projectDir, getUseProxy(), "", "desktop");
             await refreshRemotePanel();
             showToastMessage(formatText("remoteStartTool", { tool: getRemoteToolLabel(selectedRemoteTool) }), 3000);
         } catch (err) {
@@ -411,10 +440,11 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         setSelectedRemoteTool(tool);
         setRemoteBusy("quick-start");
         try {
+            const provider = getProviderForTool(tool);
             if (launchSource === "handoff") {
-                await StartRemoteHandoffSession(tool, projectDir, getUseProxy(), selectedProvider, "handoff");
+                await StartRemoteHandoffSession(tool, projectDir, getUseProxy(), provider, "handoff");
             } else {
-                await StartRemoteSession(tool, projectDir, getUseProxy(), selectedProvider, "desktop");
+                await StartRemoteSession(tool, projectDir, getUseProxy(), provider, "desktop");
             }
             await refreshRemotePanel();
             showToastMessage(formatText("remoteStartTool", { tool: getRemoteToolLabel(tool) }), 3000);
@@ -662,6 +692,12 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         };
     }, [config?.remote_enabled, refreshSessionsOnly]);
 
+    useEffect(() => {
+        if (!selectedRemoteTool) return;
+        const nextProvider = getProviderForTool(selectedRemoteTool);
+        setSelectedProviderState(nextProvider);
+    }, [getProviderForTool, selectedRemoteTool]);
+
     // Auto-restore activation status on startup once config is loaded.
     // Previously gated on config?.remote_enabled, but the sidebar lobster
     // indicator needs activation status regardless of remote_enabled so that
@@ -675,6 +711,13 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     }, [!!config]);
 
     useEffect(() => {
+        if (!config) return;
+        const normalizedTool = (config.active_tool || selectedRemoteTool || "claude") as RemoteToolName;
+        if (normalizedTool === selectedRemoteTool) return;
+        setSelectedRemoteTool(normalizedTool);
+    }, [config?.active_tool, selectedRemoteTool]);
+
+    useEffect(() => {
         setRemoteToolReadiness(null);
         setRemoteToolLaunchProbe(null);
         setRemoteSmokeReport(null);
@@ -684,16 +727,16 @@ export function useRemotePanel(params: UseRemotePanelParams) {
         // Clear stale provider state immediately so a mid-flight "Start"
         // won't send a provider name that belongs to the previous tool.
         setProviders([]);
-        setSelectedProvider("");
+        setSelectedProviderState(currentProvider);
         ListValidProviders(selectedRemoteTool)
             .then((list) => {
                 const providerList = Array.isArray(list) ? list : [];
                 setProviders(providerList);
                 const defaultProvider = providerList.find((p: any) => p.is_default);
-                setSelectedProvider(defaultProvider?.name || (providerList.length > 0 ? providerList[0].name : ""));
+                setSelectedProviderState(currentProvider || defaultProvider?.name || (providerList.length > 0 ? providerList[0].name : ""));
             })
             .catch((err) => console.error("Failed to load providers:", err));
-    }, [selectedRemoteTool]);
+    }, [currentProvider, selectedRemoteTool]);
 
     return {
         remoteActivationStatus,

@@ -288,12 +288,14 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"query":       map[string]string{"type": "string", "description": "搜索关键词"},
 				"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 8，最大 20）"},
 			}, []string{"query"}),
-		toolDef("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持 HTTP/HTTPS/FTP 协议，自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。也可用 save_path 下载文件到本地。",
+		toolDef("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持 HTTP/HTTPS/FTP 协议，自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。也可用 save_path 下载文件到本地。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。",
 			map[string]interface{}{
 				"url":       map[string]string{"type": "string", "description": "要抓取的 URL（支持 http/https/ftp 协议）"},
 				"render_js": map[string]string{"type": "boolean", "description": "是否使用 Chrome 渲染 JS（可选，默认 false。适用于 SPA 等 JS 渲染页面）"},
 				"save_path": map[string]string{"type": "string", "description": "保存文件路径（可选。指定后将原始内容保存到文件而非返回文本，适用于下载文件）"},
 				"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
+				"offset":    map[string]string{"type": "integer", "description": "从第几个字符开始读取（用于长页面续读，默认 0）"},
+				"max_chars": map[string]string{"type": "integer", "description": "本次最多返回字符数（可选；不传表示返回全部提取内容）"},
 			}, []string{"url"}),
 	)
 

@@ -349,3 +349,93 @@ func fileModTime(path string) string {
 	}
 	return fi.ModTime().Format(time.RFC3339)
 }
+
+// FindSimilarSkill searches all active skills for one similar to the given
+// description. Uses BM25 scoring against each skill's description + triggers.
+// Returns the best match and its score, or nil if no match exceeds threshold.
+func FindSimilarSkill(description string, threshold float64) (*corelib.NLSkillEntry, float64) {
+	if strings.TrimSpace(description) == "" {
+		return nil, 0
+	}
+
+	allSkills := ScanAllSkillDirs()
+	if len(allSkills) == 0 {
+		return nil, 0
+	}
+
+	// Build BM25 index over skill descriptions + triggers.
+	type doc struct {
+		id   int
+		text string
+	}
+	docs := make([]doc, 0, len(allSkills))
+	for i, s := range allSkills {
+		if s.Status == "disabled" {
+			continue
+		}
+		text := s.Name + " " + s.Description + " " + strings.Join(s.Triggers, " ")
+		docs = append(docs, doc{id: i, text: text})
+	}
+	if len(docs) == 0 {
+		return nil, 0
+	}
+
+	// Simple BM25 scoring using tokenized overlap.
+	bestIdx := -1
+	bestScore := 0.0
+	queryTokens := tokenizeSimple(description)
+	for _, d := range docs {
+		docTokens := tokenizeSimple(d.text)
+		score := bm25ScoreSimple(queryTokens, docTokens)
+		if score > bestScore {
+			bestScore = score
+			bestIdx = d.id
+		}
+	}
+
+	if bestIdx < 0 || bestScore < threshold {
+		return nil, bestScore
+	}
+	return &allSkills[bestIdx], bestScore
+}
+
+// tokenizeSimple splits text into lowercase tokens for simple BM25 matching.
+func tokenizeSimple(text string) []string {
+	words := strings.Fields(strings.ToLower(text))
+	seen := make(map[string]bool, len(words))
+	var result []string
+	for _, w := range words {
+		w = strings.Trim(w, ".,;:!?\"'()[]{}") 
+		if w != "" && !seen[w] {
+			seen[w] = true
+			result = append(result, w)
+		}
+	}
+	return result
+}
+
+// bm25ScoreSimple computes a BM25-like score with IDF weighting.
+// docCount is the total number of documents in the corpus.
+func bm25ScoreSimple(queryTokens, docTokens []string) float64 {
+	if len(queryTokens) == 0 || len(docTokens) == 0 {
+		return 0
+	}
+	docSet := make(map[string]int, len(docTokens))
+	for _, t := range docTokens {
+		docSet[t]++
+	}
+	var score float64
+	for _, qt := range queryTokens {
+		if count, ok := docSet[qt]; ok {
+			// BM25 TF with k1=1.2 saturation
+			tf := float64(count) * 2.2 / (float64(count) + 1.2)
+			score += tf
+		}
+	}
+	// Normalize by query length to make scores comparable across queries.
+	return score / float64(len(queryTokens))
+}
+
+// newSkillBM25Index is a placeholder for future BM25 index integration.
+// Currently unused — kept for API compatibility.
+// func newSkillBM25Index() interface{} { return nil }

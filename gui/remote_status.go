@@ -495,11 +495,7 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 		a.ensureRemoteInfra()
 	}
 
-	hubClient := a.remoteSessions.hubClient
-	if hubClient == nil {
-		hubClient = NewRemoteHubClient(a, a.remoteSessions)
-		a.remoteSessions.SetHubClient(hubClient)
-	}
+	hubClient := a.ensureHubClient()
 
 	if cfg.RemoteHubURL != "" && cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "" && !hubClient.IsConnected() {
 		if err := hubClient.Connect(); err != nil {
@@ -542,11 +538,7 @@ func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bo
 		a.ensureRemoteInfra()
 	}
 
-	hubClient := a.remoteSessions.hubClient
-	if hubClient == nil {
-		hubClient = NewRemoteHubClient(a, a.remoteSessions)
-		a.remoteSessions.SetHubClient(hubClient)
-	}
+	hubClient := a.ensureHubClient()
 
 	if cfg.RemoteHubURL != "" && cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "" && !hubClient.IsConnected() {
 		if err := hubClient.Connect(); err != nil {
@@ -577,11 +569,7 @@ func (a *App) ReconnectRemoteHub() error {
 		a.ensureRemoteInfra()
 	}
 
-	hubClient := a.remoteSessions.hubClient
-	if hubClient == nil {
-		hubClient = NewRemoteHubClient(a, a.remoteSessions)
-		a.remoteSessions.SetHubClient(hubClient)
-	}
+	hubClient := a.ensureHubClient()
 
 	_ = hubClient.Disconnect()
 	return hubClient.Connect()

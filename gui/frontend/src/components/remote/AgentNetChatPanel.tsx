@@ -215,7 +215,7 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
                         <button style={cnActionBtn()} onClick={() => setShowNewTopic(!showNewTopic)}>{showNewTopic ? localizeText(lang, "Cancel", "取消") : localizeText(lang, "New Topic", "创建频道")}</button>
                         <div style={{ flex: 1, display: "flex", gap: "4px", overflow: "hidden", flexWrap: "wrap" }}>
                             {favTopics.map(fn => (
-                                <button key={fn} style={{ padding: "2px 8px", fontSize: "0.68rem", borderRadius: "999px", border: "1px solid rgba(47,128,237,.25)", background: "rgba(47,128,237,.08)", color: colors.primary || "#2c6fca", cursor: "pointer", whiteSpace: "nowrap", lineHeight: "1.6" }}
+                                <button key={fn} style={{ padding: "2px 8px", fontSize: "0.68rem", borderRadius: "999px", border: "1px solid var(--theme-primary-soft)", background: "var(--theme-info-bg)", color: colors.primary, cursor: "pointer", whiteSpace: "nowrap", lineHeight: "1.6" }}
                                     onClick={() => loadTopicMsgs(fn)} title={fn}>
                                     ★ {fn.length > 10 ? fn.slice(0, 10) + "…" : fn}
                                 </button>
@@ -241,7 +241,7 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
                                     {t.description && <div style={{ fontSize: "0.7rem", color: colors.textMuted }}>{t.description}</div>}
                                 </div>
                                 <button onClick={(e) => { e.stopPropagation(); toggleFav(topicKey); }}
-                                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.85rem", padding: "2px 4px", flexShrink: 0, color: isFav ? "#e6a817" : colors.textMuted || "#999", lineHeight: 1 }}
+                                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.85rem", padding: "2px 4px", flexShrink: 0, color: isFav ? "var(--theme-warning)" : colors.textMuted, lineHeight: 1 }}
                                     title={isFav ? localizeText(lang, "Unfavorite", "取消收藏") : localizeText(lang, "Favorite", "收藏")}>
                                     {isFav ? "★" : "☆"}
                                 </button>

@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -344,13 +345,16 @@ func (s *BrowserAgentSession) Back() (*BrowserActionResult, error) {
 }
 
 // Extract returns text from a specific target or the page summary.
-func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format string) (*BrowserActionResult, error) {
+func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format string, offset, maxChars int) (*BrowserActionResult, error) {
 	if s == nil || s.session == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
 	query = strings.TrimSpace(query)
 	value := ""
 	resolvedSelector := strings.TrimSpace(selector)
+	pageTotal := 0
+	pageHasMore := false
+	pageOffset := 0
 	if resolvedSelector != "" {
 		candidates, _, err := s.selectorCandidatesForAction(snapshotID, "", resolvedSelector)
 		if err != nil {
@@ -379,6 +383,14 @@ func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format s
 			return nil, fmt.Errorf("browser snapshot not found: %s", snapshotID)
 		}
 		value = snap.PageTextExcerpt
+		pageTotal = snap.PageTextTotal
+		pageHasMore = snap.PageTextHasMore
+		pageOffset = snap.PageTextOffset
+		var err error
+		value, pageTotal, pageHasMore, pageOffset, err = s.extractPageTextWindow(offset, maxChars)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		obs, err := s.Observe(false)
 		if err != nil {
@@ -386,6 +398,13 @@ func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format s
 		}
 		value = obs.Snapshot.PageTextExcerpt
 		snapshotID = obs.Snapshot.SnapshotID
+		pageTotal = obs.Snapshot.PageTextTotal
+		pageHasMore = obs.Snapshot.PageTextHasMore
+		pageOffset = obs.Snapshot.PageTextOffset
+		value, pageTotal, pageHasMore, pageOffset, err = s.extractPageTextWindow(offset, maxChars)
+		if err != nil {
+			return nil, err
+		}
 	}
 	value = strings.TrimSpace(value)
 	detail := strings.TrimSpace(query)
@@ -399,6 +418,16 @@ func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format s
 		"content":     value,
 		"snapshot_id": snapshotID,
 	}
+	if pageTotal > 0 {
+		nextOffset := 0
+		if pageHasMore {
+			nextOffset = pageOffset + len([]rune(value))
+		}
+		data["total_chars"] = pageTotal
+		data["offset"] = pageOffset
+		data["has_more"] = pageHasMore
+		data["next_offset"] = nextOffset
+	}
 	return &BrowserActionResult{
 		SessionID:  s.ID,
 		SnapshotID: snapshotID,
@@ -407,4 +436,47 @@ func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format s
 		Display:    fmt.Sprintf("已提取 %s", detail),
 		Data:       data,
 	}, nil
+}
+
+func (s *BrowserAgentSession) extractPageTextWindow(offset, maxChars int) (string, int, bool, int, error) {
+	if s == nil || s.session == nil {
+		return "", 0, false, 0, fmt.Errorf("browser session not connected")
+	}
+	js := `(function() {
+		const full = String(document.body ? (document.body.innerText || document.body.textContent || '') : '').replace(/\s+/g, ' ').trim();
+		return JSON.stringify({text: full, total_chars: full.length});
+	})()`
+	raw, err := s.session.Eval(js)
+	if err != nil {
+		return "", 0, false, 0, err
+	}
+	var payload struct {
+		Text       string `json:"text"`
+		TotalChars int    `json:"total_chars"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", 0, false, 0, fmt.Errorf("parse page text: %w", err)
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	runes := []rune(payload.Text)
+	total := len(runes)
+	if payload.TotalChars > 0 {
+		total = payload.TotalChars
+	}
+	if offset > len(runes) {
+		offset = len(runes)
+	}
+	end := len(runes)
+	if maxChars > 0 {
+		end = min(len(runes), offset+maxChars)
+	}
+	hasMore := end < len(runes)
+	nextOffset := offset
+	if hasMore {
+		nextOffset = end
+	}
+	_ = nextOffset
+	return strings.TrimSpace(string(runes[offset:end])), total, hasMore, offset, nil
 }

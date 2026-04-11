@@ -114,8 +114,8 @@ func TestSaveDiWorkerSettingsRoundTrip(t *testing.T) {
 		Center: CenterConfig{
 			Enabled:    true,
 			Host:       "10.0.0.8",
-			Port:       8714,
-			BaseURL:    "http://10.0.0.8:8714",
+			Port:       9377,
+			BaseURL:    "http://10.0.0.8:9377",
 			TimeoutSec: 45,
 		},
 		Routing: RoutingPolicy{
@@ -262,7 +262,7 @@ func TestCenterLLMConfigUsesCenterSettings(t *testing.T) {
 	settings := DiWorkerSettings{
 		Center: CenterConfig{
 			Enabled:    true,
-			BaseURL:    "http://127.0.0.1:8714",
+			BaseURL:    "http://127.0.0.1:9377",
 			TimeoutSec: 33,
 		},
 		Routing: RoutingPolicy{
@@ -277,8 +277,8 @@ func TestCenterLLMConfigUsesCenterSettings(t *testing.T) {
 	if !ok {
 		t.Fatalf("centerLLMConfig returned ok=false")
 	}
-	if cfg.URL != "http://127.0.0.1:8714" {
-		t.Fatalf("URL = %q, want http://127.0.0.1:8714", cfg.URL)
+	if cfg.URL != "http://127.0.0.1:9377" {
+		t.Fatalf("URL = %q, want http://127.0.0.1:9377", cfg.URL)
 	}
 	if cfg.Model != "analysis-anthropic" {
 		t.Fatalf("Model = %q, want analysis-anthropic", cfg.Model)
@@ -330,7 +330,7 @@ func TestLoadSubmitLLMConfigsReturnsCenterAndFallback(t *testing.T) {
 	settings := DiWorkerSettings{
 		Center: CenterConfig{
 			Enabled:    true,
-			BaseURL:    "http://127.0.0.1:8714",
+			BaseURL:    "http://127.0.0.1:9377",
 			TimeoutSec: 40,
 		},
 		Routing: RoutingPolicy{
@@ -355,7 +355,7 @@ func TestLoadSubmitLLMConfigsReturnsCenterAndFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadSubmitLLMConfigs returned error: %v", err)
 	}
-	if primaryCfg.URL != "http://127.0.0.1:8714" || primaryCfg.Model != "analysis-anthropic" {
+	if primaryCfg.URL != "http://127.0.0.1:9377" || primaryCfg.Model != "analysis-anthropic" {
 		t.Fatalf("primaryCfg = %+v, want center config", primaryCfg)
 	}
 	if fallbackCfg == nil {
@@ -381,7 +381,7 @@ func TestSubmitTaskWithFallbackUsesSecondConfig(t *testing.T) {
 
 	resp, usedCfg, err := submitTaskWithFallback(
 		[]interface{}{map[string]string{"role": "user", "content": "test"}},
-		corelib.MaclawLLMConfig{URL: "http://127.0.0.1:8714", Model: "center-model", TimeoutSec: 10},
+		corelib.MaclawLLMConfig{URL: "http://127.0.0.1:9377", Model: "center-model", TimeoutSec: 10},
 		&corelib.MaclawLLMConfig{URL: "http://127.0.0.1:9000", Model: "fallback-model", TimeoutSec: 10},
 	)
 	if err != nil {
@@ -408,7 +408,7 @@ func TestSubmitTaskWithFallbackReturnsCombinedError(t *testing.T) {
 
 	_, _, err := submitTaskWithFallback(
 		[]interface{}{map[string]string{"role": "user", "content": "test"}},
-		corelib.MaclawLLMConfig{URL: "http://127.0.0.1:8714", Model: "center-model", TimeoutSec: 10},
+		corelib.MaclawLLMConfig{URL: "http://127.0.0.1:9377", Model: "center-model", TimeoutSec: 10},
 		&corelib.MaclawLLMConfig{URL: "http://127.0.0.1:9000", Model: "fallback-model", TimeoutSec: 10},
 	)
 	if err == nil {

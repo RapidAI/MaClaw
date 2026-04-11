@@ -46,7 +46,7 @@ const getLaunchSourceLabel = (lang: string | undefined, source?: string) => {
 
 const getStatusStyle = (status?: string) => {
     const value = String(status || "").toLowerCase();
-    if (value === "error" || value === "failed") return { background: colors.dangerBg, color: "#9b2c2c" };
+    if (value === "error" || value === "failed") return { background: colors.dangerBg, color: colors.danger };
     if (value === "waiting_input") return { background: colors.warningBg, color: colors.warning };
     if (["stopped", "finished", "killed", "closed", "done", "completed", "terminated", "exited"].includes(value)) {
         return { background: colors.bg, color: colors.textSecondary };
@@ -70,16 +70,16 @@ const getDisplayTitle = (session: RemoteSessionView) => {
 };
 
 const getLaunchSourceStyle = (source: string) => {
-    if (source === "mobile") return { background: colors.successBg, color: "#276749" };
-    if (source === "handoff") return { background: "#f3f0ff", color: "#553c9a" };
+    if (source === "mobile") return { background: colors.successBg, color: colors.success };
+    if (source === "handoff") return { background: colors.infoBg, color: colors.primary };
     return { background: colors.bg, color: colors.textSecondary };
 };
 
 const getSeverityStyle = (severity?: string): React.CSSProperties => {
     switch (severity) {
-        case "error": return { borderLeft: "3px solid #c53030", background: colors.dangerBg };
-        case "warning": return { borderLeft: "3px solid #b7791f", background: colors.warningBg };
-        case "success": return { borderLeft: "3px solid #2f855a", background: colors.successBg };
+        case "error": return { borderLeft: `3px solid ${colors.danger}`, background: colors.dangerBg };
+        case "warning": return { borderLeft: `3px solid ${colors.warning}`, background: colors.warningBg };
+        case "success": return { borderLeft: `3px solid ${colors.success}`, background: colors.successBg };
         default: return { borderLeft: `3px solid ${colors.border}`, background: colors.bg };
     }
 };
@@ -248,7 +248,7 @@ export function RemoteSessionCard(props: Props) {
                                 </span>
                             )}
                             {lastCommand && (
-                                <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: radius.sm, background: "#1a202c", color: "#e2e8f0", fontFamily: "monospace" }}>
+                                <span style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: radius.sm, background: "var(--theme-surface-muted)", color: colors.textSecondary, fontFamily: "monospace" }}>
                                     $ {lastCommand}
                                 </span>
                             )}
@@ -268,7 +268,7 @@ export function RemoteSessionCard(props: Props) {
                                 border: `1px solid ${colors.border}`,
                                 borderRadius: radius.sm,
                                 background: showOutput ? colors.primaryDark : colors.bg,
-                                color: showOutput ? "#fff" : colors.textSecondary,
+                                color: showOutput ? "var(--theme-text-primary)" : colors.textSecondary,
                                 fontSize: "0.7rem",
                                 padding: "3px 10px",
                                 cursor: "pointer",
@@ -284,7 +284,7 @@ export function RemoteSessionCard(props: Props) {
                                     border: `1px solid ${colors.border}`,
                                     borderRadius: radius.sm,
                                     background: showEvents ? colors.primaryDark : colors.bg,
-                                    color: showEvents ? "#fff" : colors.textSecondary,
+                                    color: showEvents ? "var(--theme-text-primary)" : colors.textSecondary,
                                     fontSize: "0.7rem",
                                     padding: "3px 10px",
                                     cursor: "pointer",
@@ -320,7 +320,7 @@ export function RemoteSessionCard(props: Props) {
                             </button>
                             <button
                                 className="btn-secondary"
-                                style={{ background: colors.dangerBg, color: "#9b2c2c", borderColor: "#feb2b2" }}
+                                style={{ background: colors.dangerBg, color: colors.danger, borderColor: colors.danger }}
                                 onClick={async () => {
                                     try {
                                         await killRemoteSession(session.id);
@@ -365,17 +365,17 @@ export function RemoteSessionCard(props: Props) {
                     {/* Terminal title bar */}
                     <div style={{
                         display: "flex", alignItems: "center", gap: "8px",
-                        padding: "5px 12px", background: "#2d2d2d",
-                        borderBottom: "1px solid #3a3a3a",
+                        padding: "5px 12px", background: "var(--theme-surface-muted)",
+                        borderBottom: `1px solid ${colors.border}`,
                     }}>
-                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#ff5f57", display: "inline-block" }} />
-                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#febc2e", display: "inline-block" }} />
-                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#28c840", display: "inline-block" }} />
-                        <span style={{ flex: 1, textAlign: "center", fontSize: "0.68rem", color: "#888", fontFamily: "monospace" }}>
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--theme-danger)", display: "inline-block" }} />
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--theme-warning)", display: "inline-block" }} />
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--theme-success)", display: "inline-block" }} />
+                        <span style={{ flex: 1, textAlign: "center", fontSize: "0.68rem", color: colors.textMuted, fontFamily: "monospace" }}>
                             {session.tool || "terminal"} — {previewLines.length} {localizeText(currentLang, "lines", "行", "行")}
                         </span>
                         {onOpenConsole && (
-                            <span style={{ fontSize: "0.68rem", color: "#6a9955", fontFamily: "monospace", flexShrink: 0 }}>
+                            <span style={{ fontSize: "0.68rem", color: colors.success, fontFamily: "monospace", flexShrink: 0 }}>
                                 ⛶ {localizeText(currentLang, "Fullscreen", "全屏", "全螢幕")}
                             </span>
                         )}
@@ -383,7 +383,7 @@ export function RemoteSessionCard(props: Props) {
                     {/* Terminal body */}
                     <div className="terminal-output">
                         {previewLines.length === 0 ? (
-                            <span style={{ color: "#555" }}>$ _</span>
+                            <span style={{ color: colors.textMuted }}>$ _</span>
                         ) : (
                             previewLines.map((line, i) => (
                                 <div key={i} style={{ minHeight: "1.2em" }}>
@@ -423,7 +423,7 @@ export function RemoteSessionCard(props: Props) {
                                     <div style={{ color: colors.textSecondary, marginTop: "2px", lineHeight: 1.4 }}>{evt.summary}</div>
                                 )}
                                 {evt.command && (
-                                    <div style={{ marginTop: "2px", fontFamily: "monospace", fontSize: "0.68rem", color: "#4a5568", background: "rgba(0,0,0,0.04)", padding: "2px 6px", borderRadius: "3px", display: "inline-block" }}>
+                                    <div style={{ marginTop: "2px", fontFamily: "monospace", fontSize: "0.68rem", color: colors.textSecondary, background: "var(--theme-surface-muted)", padding: "2px 6px", borderRadius: "3px", display: "inline-block" }}>
                                         $ {evt.command}
                                     </div>
                                 )}

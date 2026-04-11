@@ -15,6 +15,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/app"
 )
 
 type CenterProvider struct {
@@ -29,6 +30,7 @@ type CenterProvider struct {
 	Description string
 	Enabled     bool
 	TimeoutSec  int
+	CostTier    string
 }
 
 type openAIChatRequest struct {
@@ -63,7 +65,10 @@ type anthropicResponse struct {
 }
 
 type centerSettingsFile struct {
-	Providers []centerProviderFile `json:"providers"`
+	Providers         []centerProviderFile `json:"providers"`
+	WorkTypeKeywords  map[string][]string  `json:"work_type_keywords,omitempty"`
+	WorkTypeTier      map[string]string    `json:"work_type_tier,omitempty"`
+	RoleProviderBoost map[string][]string  `json:"role_provider_boost,omitempty"`
 }
 
 type CenterStatus struct {
@@ -84,21 +89,24 @@ type centerProviderFile struct {
 	Description string   `json:"description"`
 	Enabled     bool     `json:"enabled"`
 	TimeoutSec  int      `json:"timeout_sec"`
+	CostTier    string   `json:"cost_tier"`
 }
 
 type centerServer struct {
 	addr           string
 	providers      []CenterProvider
+	routingRules   RoutingRules
 	client         *http.Client
 	forward        func(context.Context, CenterProvider, openAIChatRequest) ([]byte, error)
 	providerLoader func() []CenterProvider
+	center         *app.Center
 }
 
 func startCenterServer(ctx context.Context) {
-	server := newCenterServer(":8714")
+	server := newCenterServer(":9377")
 	go func() {
 		if err := server.Start(ctx); err != nil && !strings.Contains(err.Error(), "Server closed") {
-			log.Printf("[iWokerCenter] server stopped: %v", err)
+			log.Printf("[iWorkerCenter] server stopped: %v", err)
 		}
 	}()
 }
@@ -118,9 +126,32 @@ func newCenterServer(addr string) *centerServer {
 func (s *centerServer) Start(ctx context.Context) error {
 	s.refreshProviders()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", s.handleHealth)
+
+	// existing LLM proxy routes
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
+
+	// bootstrap modular backend (Slice A+B)
+	center, err := app.Bootstrap()
+	if err != nil {
+		log.Printf("[iWorkerCenter] bootstrap failed (running without modules): %v", err)
+		// fallback: register legacy health only
+		mux.HandleFunc("/health", s.handleHealth)
+	} else {
+		s.center = center
+		// mount modular routes (includes /health, /admin/colleagues, /client/colleagues)
+		// wrap: modular mux takes priority, fall through to legacy health
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			s.refreshProviders()
+			center.Mux.ServeHTTP(w, r)
+		})
+		mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
+			center.Mux.ServeHTTP(w, r)
+		})
+		mux.HandleFunc("/client/", func(w http.ResponseWriter, r *http.Request) {
+			center.Mux.ServeHTTP(w, r)
+		})
+	}
 
 	httpServer := &http.Server{
 		Addr:    s.addr,
@@ -132,9 +163,12 @@ func (s *centerServer) Start(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
+		if s.center != nil {
+			s.center.Close()
+		}
 	}()
 
-	log.Printf("[iWokerCenter] listening on %s", s.addr)
+	log.Printf("[iWorkerCenter] listening on %s", s.addr)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
@@ -195,7 +229,49 @@ func (s *centerServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	providers := s.rankProviders(req)
+	// Extract task_type from raw body
+	var extra struct {
+		TaskType string `json:"task_type"`
+	}
+	_ = json.Unmarshal(body, &extra)
+
+	// Build ClassifyInput
+	messageContent := extractMessageText(req.Messages)
+	classifyInput := ClassifyInput{
+		TaskType:       extra.TaskType,
+		MessageContent: messageContent,
+		ColleagueName:  "", // future enhancement
+	}
+
+	// Use routing rules loaded by refreshProviders (no extra disk IO)
+	rules := s.routingRules
+
+	// Classify the request (pure in-memory, should be <1ms)
+	classResult := Classify(classifyInput, rules)
+
+	// Generate request ID and prepare audit log fields
+	reqID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	summary := messageContent
+	if len([]rune(summary)) > 200 {
+		summary = string([]rune(summary)[:200])
+	}
+
+	// Determine providers: use tier-aware ranking, fall back if classification was too slow
+	var providers []CenterProvider
+	if classResult.Latency > 10*time.Millisecond {
+		// Classification exceeded latency budget, fall back
+		providers = s.rankProviders(req)
+	} else {
+		providers = s.rankProvidersWithTier(req, classResult.CostTier, rules.RoleProviderBoost, "")
+	}
+
+	// Log [TaskRoute] audit entry
+	providerID := "none"
+	if len(providers) > 0 {
+		providerID = providers[0].ID
+	}
+	log.Printf("%s", FormatTaskRouteLog(classResult, reqID, providerID, summary))
+
 	if len(providers) == 0 {
 		writeCenterError(w, http.StatusServiceUnavailable, "no available provider")
 		return
@@ -210,7 +286,7 @@ func (s *centerServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		lastErr = err
-		log.Printf("[iWokerCenter] provider %s failed, fallback next: %v", provider.ID, err)
+		log.Printf("[iWorkerCenter] provider %s failed, fallback next: %v", provider.ID, err)
 	}
 
 	writeCenterError(w, http.StatusBadGateway, lastErr.Error())
@@ -264,6 +340,91 @@ func (s *centerServer) rankProviders(req openAIChatRequest) []CenterProvider {
 	for _, item := range candidates {
 		providers = append(providers, item.provider)
 	}
+	return providers
+}
+
+func (s *centerServer) rankProvidersWithTier(
+	req openAIChatRequest,
+	costTier string,
+	roleBoost map[string][]string,
+	roleCode string,
+) []CenterProvider {
+	// Step 1: If model explicitly specifies a provider ID, bypass tier filtering
+	modelHint := strings.TrimSpace(req.Model)
+	if modelHint != "" {
+		for _, provider := range s.providers {
+			if provider.Enabled && strings.EqualFold(provider.ID, modelHint) {
+				return []CenterProvider{provider}
+			}
+		}
+	}
+
+	// Step 2: Filter enabled providers by matching CostTier
+	joined := strings.ToLower(extractMessageText(req.Messages))
+	boostedIDs := make(map[string]bool)
+	if roleCode != "" && roleBoost != nil {
+		for _, id := range roleBoost[roleCode] {
+			boostedIDs[id] = true
+		}
+	}
+
+	type candidate struct {
+		provider CenterProvider
+		score    int
+	}
+	var candidates []candidate
+	for _, provider := range s.providers {
+		if !provider.Enabled {
+			continue
+		}
+		if !strings.EqualFold(provider.CostTier, costTier) {
+			continue
+		}
+		score := provider.Priority
+		// Feature match bonus: +20 per matching feature keyword
+		for _, feature := range provider.Features {
+			if strings.Contains(joined, strings.ToLower(feature)) {
+				score += 20
+			}
+		}
+		// Role boost: +10 if provider is in the role's preferred list
+		if boostedIDs[provider.ID] {
+			score += 10
+		}
+		candidates = append(candidates, candidate{provider: provider, score: score})
+	}
+
+	// Step 6: If no providers match the tier, fall back to existing rankProviders
+	if len(candidates) == 0 {
+		return s.rankProviders(req)
+	}
+
+	// Step 5: Sort by score descending
+	for i := 0; i < len(candidates); i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].score > candidates[i].score {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
+		}
+	}
+
+	providers := make([]CenterProvider, 0, len(candidates))
+	for _, item := range candidates {
+		providers = append(providers, item.provider)
+	}
+
+	// Append providers from other tiers as cross-tier fallback (Req 3.3)
+	tierIDs := make(map[string]bool, len(providers))
+	for _, p := range providers {
+		tierIDs[p.ID] = true
+	}
+	fallback := s.rankProviders(req)
+	for _, p := range fallback {
+		if !tierIDs[p.ID] {
+			providers = append(providers, p)
+		}
+	}
+
 	return providers
 }
 
@@ -386,6 +547,7 @@ func defaultCenterProviders() []CenterProvider {
 			Description: "适合通知、纪要、日报与正式文档。",
 			Enabled:     true,
 			TimeoutSec:  60,
+			CostTier:    "high",
 		},
 		{
 			ID:          "analysis-anthropic",
@@ -398,6 +560,7 @@ func defaultCenterProviders() []CenterProvider {
 			Description: "适合异常说明、质量分析与整改建议。",
 			Enabled:     true,
 			TimeoutSec:  60,
+			CostTier:    "high",
 		},
 	}
 }
@@ -406,11 +569,26 @@ func (s *centerServer) refreshProviders() {
 	if s.providerLoader == nil {
 		return
 	}
-	providers := s.providerLoader()
+
+	// Read settings once, derive both providers and routing rules
+	settings, err := readCenterSettings()
+	if err != nil {
+		s.providers = defaultCenterProviders()
+		s.routingRules = DefaultRoutingRules()
+		return
+	}
+
+	providers := normalizeCenterProviders(settings)
 	if len(providers) == 0 {
 		providers = defaultCenterProviders()
 	}
 	s.providers = providers
+
+	s.routingRules = RoutingRules{
+		WorkTypeKeywords:  settings.WorkTypeKeywords,
+		WorkTypeTier:      settings.WorkTypeTier,
+		RoleProviderBoost: settings.RoleProviderBoost,
+	}.MergeWithDefaults()
 }
 
 func loadCenterProviders() []CenterProvider {
@@ -419,6 +597,21 @@ func loadCenterProviders() []CenterProvider {
 		return defaultCenterProviders()
 	}
 	return normalizeCenterProviders(settings)
+}
+
+func loadCenterProvidersAndRules() ([]CenterProvider, RoutingRules) {
+	settings, err := readCenterSettings()
+	if err != nil {
+		return defaultCenterProviders(), DefaultRoutingRules()
+	}
+	providers := normalizeCenterProviders(settings)
+	rules := RoutingRules{
+		WorkTypeKeywords:  settings.WorkTypeKeywords,
+		WorkTypeTier:      settings.WorkTypeTier,
+		RoleProviderBoost: settings.RoleProviderBoost,
+	}
+	rules = rules.MergeWithDefaults()
+	return providers, rules
 }
 
 func readCenterSettings() (centerSettingsFile, error) {
@@ -466,6 +659,10 @@ func normalizeCenterProviders(settings centerSettingsFile) []CenterProvider {
 		if strings.TrimSpace(provider.ID) == "" || baseURL == "" || strings.TrimSpace(provider.Model) == "" {
 			continue
 		}
+		costTier := strings.TrimSpace(provider.CostTier)
+		if costTier == "" {
+			costTier = "medium"
+		}
 		providers = append(providers, CenterProvider{
 			ID:          strings.TrimSpace(provider.ID),
 			Name:        strings.TrimSpace(provider.Name),
@@ -478,6 +675,7 @@ func normalizeCenterProviders(settings centerSettingsFile) []CenterProvider {
 			Description: strings.TrimSpace(provider.Description),
 			Enabled:     provider.Enabled,
 			TimeoutSec:  provider.TimeoutSec,
+			CostTier:    costTier,
 		})
 	}
 	if len(providers) == 0 {
@@ -504,6 +702,10 @@ func normalizeCenterProviderFiles(providers []centerProviderFile) []centerProvid
 		if features == nil {
 			features = []string{}
 		}
+		costTier := strings.TrimSpace(provider.CostTier)
+		if costTier == "" {
+			costTier = "medium"
+		}
 		normalized = append(normalized, centerProviderFile{
 			ID:          strings.TrimSpace(provider.ID),
 			Name:        strings.TrimSpace(provider.Name),
@@ -516,6 +718,7 @@ func normalizeCenterProviderFiles(providers []centerProviderFile) []centerProvid
 			Description: strings.TrimSpace(provider.Description),
 			Enabled:     provider.Enabled,
 			TimeoutSec:  timeoutSec,
+			CostTier:    costTier,
 		})
 	}
 	return normalized
@@ -537,6 +740,7 @@ func defaultCenterProviderFiles() []centerProviderFile {
 			Description: provider.Description,
 			Enabled:     provider.Enabled,
 			TimeoutSec:  provider.TimeoutSec,
+			CostTier:    provider.CostTier,
 		})
 	}
 	return providers

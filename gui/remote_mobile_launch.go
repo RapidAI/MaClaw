@@ -83,11 +83,7 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 		a.ensureRemoteInfra()
 	}
 
-	hubClient := a.remoteSessions.hubClient
-	if hubClient == nil {
-		hubClient = NewRemoteHubClient(a, a.remoteSessions)
-		a.remoteSessions.SetHubClient(hubClient)
-	}
+	hubClient := a.ensureHubClient()
 	if cfg.RemoteHubURL != "" && cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "" && !hubClient.IsConnected() {
 		if err := hubClient.Connect(); err != nil {
 			a.log("remote hub connect before launch failed: " + err.Error())

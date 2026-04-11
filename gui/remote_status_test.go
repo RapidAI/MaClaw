@@ -530,6 +530,64 @@ func TestStartRemoteSessionSupportsCodex(t *testing.T) {
 	if session.ModelID != "gpt-5.2-codex" {
 		t.Fatalf("session.ModelID = %q, want %q", session.ModelID, "gpt-5.2-codex")
 	}
+	if !app.IsAIAssistantReady() {
+		t.Fatalf("expected AI assistant to be ready after desktop remote start, status=%q", app.GetAIAssistantInitStatus())
+	}
+}
+
+func TestStartRemoteHandoffSessionInitializesAIAssistantWhenCreatingHubClient(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	toolsDir := filepath.Join(tempHome, ".maclaw", "data", "tools")
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(toolsDir) error = %v", err)
+	}
+
+	codexExe := "codex"
+	if runtime.GOOS == "windows" {
+		codexExe = "codex.exe"
+	}
+	if err := os.WriteFile(filepath.Join(toolsDir, codexExe), []byte("stub"), 0o644); err != nil {
+		t.Fatalf("WriteFile(codex) error = %v", err)
+	}
+
+	projectDir := filepath.Join(tempHome, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(projectDir) error = %v", err)
+	}
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEnabled = true
+	cfg.Codex.CurrentModel = "Original"
+	cfg.Codex.Models = []ModelConfig{{ModelName: "Original", ModelId: "gpt-5.2-codex", IsBuiltin: true}}
+	cfg.Projects = []ProjectConfig{{Id: "p1", Path: projectDir}}
+	cfg.CurrentProject = "p1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.remoteSessions = NewRemoteSessionManager(app)
+	app.remoteSessions.executionFactory = func(spec LaunchSpec) (ExecutionStrategy, error) {
+		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(103)}, nil
+	}
+
+	session, err := app.StartRemoteHandoffSession("codex", projectDir, false, "", RemoteLaunchSourceDesktop)
+	if err != nil {
+		t.Fatalf("StartRemoteHandoffSession(codex) error = %v", err)
+	}
+	if session.Tool != "codex" {
+		t.Fatalf("session.Tool = %q, want %q", session.Tool, "codex")
+	}
+	if !app.IsAIAssistantReady() {
+		t.Fatalf("expected AI assistant to be ready after handoff start, status=%q", app.GetAIAssistantInitStatus())
+	}
 }
 
 func TestBuildRemoteLaunchSpecSupportsOpencode(t *testing.T) {
@@ -872,7 +930,7 @@ func TestToRemoteSessionViewIncludesPendingQuestion(t *testing.T) {
 				ToolUseID: "call_q1",
 				ToolName:  "AskUserQuestion",
 				Question:  "Choose a template",
-				Options: []PendingQuestionOption{{Label: "Python"}, {Label: "TypeScript"}},
+				Options:   []PendingQuestionOption{{Label: "Python"}, {Label: "TypeScript"}},
 			},
 		},
 	}
@@ -903,14 +961,14 @@ func TestBuildRemoteLaunchSpecReturnsErrorWhenConfigSelectorMissing(t *testing.T
 	const toolName = "broken-launch-spec"
 	original, existed := remoteToolCatalog[toolName]
 	remoteToolCatalog[toolName] = RemoteToolMetadata{
-		Name:             toolName,
-		DisplayName:      "Broken Launch Tool",
-		BinaryName:       toolName,
-		DefaultTitle:     "Broken Launch Tool Session",
-		SupportsRemote:   true,
-		SupportsProxy:    true,
-		ConfigSelector:   nil,
-		ProviderFactory:  nil,
+		Name:            toolName,
+		DisplayName:     "Broken Launch Tool",
+		BinaryName:      toolName,
+		DefaultTitle:    "Broken Launch Tool Session",
+		SupportsRemote:  true,
+		SupportsProxy:   true,
+		ConfigSelector:  nil,
+		ProviderFactory: nil,
 	}
 	defer func() {
 		if existed {
