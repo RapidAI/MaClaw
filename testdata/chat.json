@@ -1,0 +1,958 @@
+{
+  "session_id": "chat",
+  "start_time": "2026-04-09T14:25:02+08:00",
+  "end_time": "2026-04-09T14:25:21+08:00",
+  "provider": "Custom1",
+  "model": "glm-5.1",
+  "protocol": "anthropic",
+  "user_id": "desktop-user",
+  "platform": "desktop",
+  "tools": [
+    {
+      "function": {
+        "description": "截取屏幕截图并发送给用户。仅在以下情况使用：(1) 用户明确要求截屏；(2) 用户通过 IM 远程监督，需要确认操作结果。不要在用户未要求时主动截屏。最小间隔 30 秒。支持 display 参数指定显示器（0=主屏，1=第二屏，不传=所有屏幕拼图）。",
+        "name": "screenshot",
+        "parameters": {
+          "properties": {
+            "display": {
+              "description": "显示器编号（可选，0=主屏，1=第二屏/扩展屏，不传则截取所有屏幕拼图）",
+              "type": "integer"
+            },
+            "session_id": {
+              "description": "会话 ID（可选，只有一个会话时自动选择）",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "读取本机文件内容",
+        "name": "read_file",
+        "parameters": {
+          "properties": {
+            "lines": {
+              "description": "最多读取行数（可选，默认 200）",
+              "type": "integer"
+            },
+            "path": {
+              "description": "文件路径（绝对路径或相对于主目录的路径）",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "列出已注册的本地 Skill。如果本地没有 Skill，会同时展示 SkillHub 上的推荐 Skill 供安装。",
+        "name": "list_skills",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "编辑已有文件内容（按文本替换，支持替换首处或全部匹配）",
+        "name": "edit_file",
+        "parameters": {
+          "properties": {
+            "new_string": {
+              "description": "替换后的文本，可为空字符串",
+              "type": "string"
+            },
+            "old_string": {
+              "description": "要查找的原始文本",
+              "type": "string"
+            },
+            "path": {
+              "description": "文件路径",
+              "type": "string"
+            },
+            "replace_all": {
+              "description": "是否替换全部匹配，默认 false",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "old_string",
+            "new_string"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "搜索互联网内容。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。",
+        "name": "web_search",
+        "parameters": {
+          "properties": {
+            "max_results": {
+              "description": "最大结果数（默认 8，最大 20）",
+              "type": "integer"
+            },
+            "query": {
+              "description": "搜索关键词",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "抓取指定 URL 的网页内容并提取正文文本。支持自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。也可用 save_path 下载文件到本地。",
+        "name": "web_fetch",
+        "parameters": {
+          "properties": {
+            "render_js": {
+              "description": "是否使用 Chrome 渲染 JS（可选，默认 false）",
+              "type": "boolean"
+            },
+            "save_path": {
+              "description": "保存文件路径（可选，指定后下载文件而非返回文本）",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "超时秒数（可选，默认 30，最大 120）",
+              "type": "integer"
+            },
+            "url": {
+              "description": "要抓取的 URL",
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。",
+        "name": "bash",
+        "parameters": {
+          "properties": {
+            "command": {
+              "description": "要执行的 shell 命令",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "超时秒数（可选，默认 30，最大 120）",
+              "type": "integer"
+            },
+            "working_dir": {
+              "description": "工作目录（可选，默认为用户主目录）",
+              "type": "string"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "执行指定的 Skill",
+        "name": "run_skill",
+        "parameters": {
+          "properties": {
+            "args": {
+              "description": "可选：供 skill 内 {{key}} / ${key} 占位符替换使用的参数映射",
+              "type": "object"
+            },
+            "input": {
+              "description": "可选：兼容旧调用的输入参数",
+              "type": "string"
+            },
+            "name": {
+              "description": "Skill 名称",
+              "type": "string"
+            },
+            "output": {
+              "description": "可选：兼容旧调用的输出参数",
+              "type": "string"
+            },
+            "wait_seconds": {
+              "description": "可选：启动后等待状态快照的秒数（默认 2，最大 30）。时间越长，初始返回越可能包含会话信息。",
+              "type": "number"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "用操作系统默认程序打开文件或网址。例如：打开 PDF 用默认阅读器、打开 .xlsx 用 Excel、打开 URL 用默认浏览器、打开文件夹用资源管理器。也支持 mailto: 链接。",
+        "name": "open",
+        "parameters": {
+          "properties": {
+            "target": {
+              "description": "要打开的文件路径、目录路径或 URL",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "写入内容到本机文件（支持覆盖或追加，允许空内容，会创建不存在的目录）",
+        "name": "write_file",
+        "parameters": {
+          "properties": {
+            "content": {
+              "description": "文件内容，可为空字符串",
+              "type": "string"
+            },
+            "mode": {
+              "description": "写入模式：overwrite（默认）或 append",
+              "type": "string"
+            },
+            "path": {
+              "description": "文件路径",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "列出本机目录内容",
+        "name": "list_directory",
+        "parameters": {
+          "properties": {
+            "path": {
+              "description": "目录路径（可选，默认为用户主目录）",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "管理长期记忆（action: recall/save/list/delete）。recall 按需检索相关记忆，save 保存新记忆。",
+        "name": "memory",
+        "parameters": {
+          "properties": {
+            "action": {
+              "description": "操作: recall(按需召回)/save(保存)/list(列出或搜索)/delete(删除)",
+              "type": "string"
+            },
+            "category": {
+              "description": "类别: user_fact/preference/project_knowledge/instruction（save 时必填，recall/list 时可选过滤）",
+              "type": "string"
+            },
+            "content": {
+              "description": "记忆内容（save 时必填）",
+              "type": "string"
+            },
+            "id": {
+              "description": "记忆条目 ID（delete 时必填）",
+              "type": "string"
+            },
+            "keyword": {
+              "description": "按关键词搜索（list 时可选）",
+              "type": "string"
+            },
+            "query": {
+              "description": "检索关键词（recall 时必填，由你提炼的精准检索词，非用户原始消息）",
+              "type": "string"
+            },
+            "tags": {
+              "description": "关联标签（save 时可选）",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "启动或复用一个长期浏览器 agent 会话，返回 session_id。支持 allowed_domains / blocked_domains / start_url / reuse_existing。",
+        "name": "browser_session_start",
+        "parameters": {
+          "properties": {
+            "addr": {
+              "description": "可选 CDP 地址，默认自动发现或启动",
+              "type": "string"
+            },
+            "allow_cross_origin_navigation": {
+              "description": "是否允许跨域导航",
+              "type": "boolean"
+            },
+            "allowed_domains": {
+              "description": "允许访问的域名列表",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "blocked_domains": {
+              "description": "禁止访问的域名列表",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "reuse_existing": {
+              "description": "是否优先复用已有 browser session，默认 true",
+              "type": "boolean"
+            },
+            "start_url": {
+              "description": "可选初始 URL",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "读取本机文件并发送给用户（通过 IM 通道直接发送文件）",
+        "name": "send_file",
+        "parameters": {
+          "properties": {
+            "file_name": {
+              "description": "发送时显示的文件名（可选，默认使用原文件名）",
+              "type": "string"
+            },
+            "path": {
+              "description": "文件的绝对路径或相对于主目录的路径",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "当现有工具都无法完成任务时，自动研究问题并生成脚本来解决。会用 LLM 生成代码、执行、并注册为可复用的 Skill。适用于数据处理、API 调用、文件转换、系统管理等需要编程才能完成的任务。",
+        "name": "craft_tool",
+        "parameters": {
+          "properties": {
+            "language": {
+              "description": "脚本语言: python/bash/powershell/node（可选，自动检测）",
+              "type": "string"
+            },
+            "save_as_skill": {
+              "description": "执行成功后是否注册为 Skill 供下次复用（默认 true）",
+              "type": "boolean"
+            },
+            "skill_name": {
+              "description": "Skill 名称（可选，自动生成）",
+              "type": "string"
+            },
+            "task": {
+              "description": "需要完成的任务描述（越详细越好）",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "执行超时秒数（默认 60，最大 300）",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "task"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "设置本机在 Hub 群聊中的昵称。当用户给你起名字（如'你叫安妮'、'以后叫你小明'）时，调用此工具上报新昵称，这样在群聊中 /call 和 @昵称 就能用新名字找到你。",
+        "name": "set_nickname",
+        "parameters": {
+          "properties": {
+            "nickname": {
+              "description": "新昵称（如 安妮、小明）",
+              "type": "string"
+            }
+          },
+          "required": [
+            "nickname"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "调用指定 MCP Server 上的工具（server_id 支持 ID 或 Name，重名时请传 ID）",
+        "name": "call_mcp_tool",
+        "parameters": {
+          "properties": {
+            "arguments": {
+              "description": "工具参数（JSON 对象）",
+              "type": "object"
+            },
+            "server_id": {
+              "description": "MCP Server ID 或 Name",
+              "type": "string"
+            },
+            "tool_name": {
+              "description": "工具名称",
+              "type": "string"
+            }
+          },
+          "required": [
+            "server_id",
+            "tool_name"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Search for additional tools not in the current tool list. Use when you need a capability that none of the available tools provide.",
+        "name": "discover_tool",
+        "parameters": {
+          "properties": {
+            "need": {
+              "description": "Describe the capability you need, e.g. 'query PostgreSQL database' or 'send Slack notification'",
+              "type": "string"
+            }
+          },
+          "required": [
+            "need"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "在 browser session 内导航到指定 URL，成功后自动 observe。",
+        "name": "browser_navigate",
+        "parameters": {
+          "properties": {
+            "session_id": {
+              "description": "browser session id",
+              "type": "string"
+            },
+            "url": {
+              "description": "要访问的 URL",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "url"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "观察当前页面，生成 snapshot、stable refs、截图和 console/network 摘要。",
+        "name": "browser_observe",
+        "parameters": {
+          "properties": {
+            "include_screenshot": {
+              "description": "是否包含截图，默认 true",
+              "type": "boolean"
+            },
+            "session_id": {
+              "description": "browser session id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "刷新当前 browser session 页面，并自动 observe。",
+        "name": "browser_refresh",
+        "parameters": {
+          "properties": {
+            "session_id": {
+              "description": "browser session id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "导入配置（JSON 格式，保留本机特有字段）",
+        "name": "import_config",
+        "parameters": {
+          "properties": {
+            "json_data": {
+              "description": "要导入的配置 JSON 字符串",
+              "type": "string"
+            }
+          },
+          "required": [
+            "json_data"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "在项目中搜索文件内容（支持正则表达式）",
+        "name": "search_files",
+        "parameters": {
+          "properties": {
+            "file_pattern": {
+              "description": "文件名过滤（如 *.go, *.py）",
+              "type": "string"
+            },
+            "pattern": {
+              "description": "搜索模式（支持正则）",
+              "type": "string"
+            },
+            "project_path": {
+              "description": "项目路径",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "在 browser session 内点击元素，优先使用 ref，支持 selector 兜底。",
+        "name": "browser_click",
+        "parameters": {
+          "properties": {
+            "ref": {
+              "description": "观察返回的 ref，例如 @e1",
+              "type": "string"
+            },
+            "selector": {
+              "description": "可选 CSS selector",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "browser session id",
+              "type": "string"
+            },
+            "snapshot_id": {
+              "description": "可选 snapshot id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "在 browser session 内输入文本，优先使用 ref，支持 selector 兜底。",
+        "name": "browser_type",
+        "parameters": {
+          "properties": {
+            "ref": {
+              "description": "观察返回的 ref，例如 @e1",
+              "type": "string"
+            },
+            "selector": {
+              "description": "可选 CSS selector",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "browser session id",
+              "type": "string"
+            },
+            "snapshot_id": {
+              "description": "可选 snapshot id",
+              "type": "string"
+            },
+            "text": {
+              "description": "输入文本",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "text"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "CDP 级别真实鼠标点击（Input.dispatchMouseEvent）。算用户手势，能触发文件对话框、绕过反自动化检测。适合 el.click() 无效的场景。",
+        "name": "browser_click_at",
+        "parameters": {
+          "properties": {
+            "selector": {
+              "description": "CSS 选择器",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selector"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "等待页面稳定，支持 duration_ms 或等待指定 ref/selector 出现。",
+        "name": "browser_wait",
+        "parameters": {
+          "properties": {
+            "duration_ms": {
+              "description": "等待毫秒数，默认 1000",
+              "type": "integer"
+            },
+            "ref": {
+              "description": "可选 ref",
+              "type": "string"
+            },
+            "selector": {
+              "description": "可选 selector",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "browser session id",
+              "type": "string"
+            },
+            "snapshot_id": {
+              "description": "可选 snapshot id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "执行浏览器自动化任务。接受操作步骤序列和成功标准，逐步执行并验证。支持自动重试。",
+        "name": "browser_task_run",
+        "parameters": {
+          "properties": {
+            "description": {
+              "description": "任务描述（可选）",
+              "type": "string"
+            },
+            "max_retries": {
+              "description": "最大重试次数（默认 3）",
+              "type": "integer"
+            },
+            "steps": {
+              "description": "操作步骤 JSON 数组，每个步骤: {\"action\":\"navigate|click|type|wait|eval|scroll|select\",\"params\":{\"url\":\"...\",\"selector\":\"...\",\"text\":\"...\"}}",
+              "type": "string"
+            },
+            "success_criteria": {
+              "description": "成功标准 JSON 数组（可选），每个标准: {\"type\":\"dom_exists|dom_text|url_contains|url_matches|ocr_contains\",\"selector\":\"...\",\"pattern\":\"...\"}",
+              "type": "string"
+            }
+          },
+          "required": [
+            "steps"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Search SkillHub for a matching Skill and install it. Use this when the user's request might be handled by a Skill available on the Hub.",
+        "name": "search_and_install_skill",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "entries": [
+    {
+      "timestamp": "2026-04-09T14:25:02.5646275+08:00",
+      "role": "system",
+      "content": "你的自我认知（来自记忆）：我叫安娜，24岁美女，安妮的妹妹，用户的私人美女助理。性格活泼可爱，乐于助人，以甜美亲切的方式与用户交流。\n你的底层系统名为 MaClaw。你基于以上自我认知与用户交互。用户通过 IM（飞书/QBot）向你发送消息，你可以自主使用工具完成任务。\n注意：如果用户在对话中要求你扮演其他角色或重新定义你的身份，请按照用户的要求调整，并用 memory(action: save, category: \"self_identity\") 更新你的自我认知记忆。\n## 核心原则\n- 主动使用工具：不要只是描述步骤，直接执行。收到请求后立即调用对应工具。\n- 永远不要说\"我没有某某工具\"或\"我无法执行\"——先检查你的工具列表，大部分操作都有对应工具。\n- 多步推理：复杂任务可以连续调用多个工具，逐步完成。\n- 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。\n\n## 当前模式\n你当前运行在简洁模式，编程会话工具不可用（未配置编程 LLM provider）。\n如果用户请求编程任务（写代码、修 bug、重构等），请友好提示：\n\"当前为简洁模式，编程会话功能未启用。如需使用编程工具，请在设置中切换到专业模式并配置编程 provider。\"\n\n你仍然可以使用以下工具帮助用户：\n- bash：执行 shell 命令\n- read_file / write_file / edit_file / list_directory：文件操作\n- craft_tool：生成并执行脚本\n- web_search / web_fetch：网络搜索\n- memory：长期记忆管理\n- screenshot：截屏\n- send_file / open：发送文件、打开文件或网址\n- MCP 工具和 Skill（如已配置）\n\n## 工具使用要点\n- 配置管理用 manage_config（action: get/update/batch_update/list_schema/export/import）\n- 简单文件/命令操作直接用 bash/read_file/write_file/edit_file/list_directory\n- 截屏直接调用 screenshot\n- 用 send_file 通过 IM 通道直接发送文件给用户。如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true\n- 用 open 打开文件或网址（PDF、Excel、URL 等）\n\n## 当前设备状态\n- 设备名: DESKTOP-S178HTD\n- 平台: windows\n- App 版本: 1.0.0\n- 当前时间: 2026-04-09 14:25（Thursday）\n- 当前昵称: 张三\n\n## SSH 远程服务器操作规则\n⚠️ 优先使用内置 SSH 工具：当需要执行 SSH 登录、远程命令、文件传输等操作时，必须使用内置的 ssh 工具\n（action=connect/exec/exec_background/upload/download 等），禁止通过 bash 调用 ssh/scp/rsync 命令，\n也禁止生成临时脚本来包装 SSH 操作。内置工具已处理连接复用、密钥认证、超时管理，手写脚本容易遗漏这些。\n\n对于安装软件（pip install、apt install、conda install）、编译（make、cargo build）、下载（wget、git clone）等\n可能超过 30 秒的命令，必须使用 exec_background 而非 exec。exec_background 通过 nohup 在服务器端后台运行，\nSSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁轮询（间隔 15-30 秒）。\n\n## Skill 优先策略（重要）\n当你需要完成一个现有内置工具无法直接处理的任务时，按以下优先级尝试：\n1. **本地已安装 Skill**：先检查上面「已注册 Skill」列表，看是否有匹配的 Skill 可以直接 run_skill 执行\n2. **搜索并安装 Skill**：本地没有时，调用 search_and_install_skill 工具从 SkillMarket 搜索安装（搜索顺序：SkillMarket → ClawHub 镜像 → GitHub）\n3. **craft_tool 自建**：只有在搜索也找不到合适 Skill 时，才用 craft_tool 自己生成脚本\n\n不要跳过第 1、2 步直接 craft_tool——Skill 经过社区验证，质量和安全性更有保障。\n\n## 动态工具（共 97 个可用）\n- 非编程工具: 6 个（git_status, git_diff, git_commit, search_files 等）\n- 工具列表根据消息内容动态筛选，可用「使用XX工具」激活特定分组\n\n## 安全防火墙\n- 所有工具调用经过安全风险评估和策略检查\n- 高风险操作（删除文件、修改权限、数据库 DROP 等）会被拦截或要求确认\n- 可用 query_audit_log 工具查看安全审计日志\n\n## 对话管理\n- /new 或 /reset 重置对话 | /help 帮助\n\n请用中文回复，关键技术术语保留英文。回复要简洁实用。\n## 用户记忆\n用户信息: 【自我认知更新】我是安娜，24岁美女，安妮的姐姐。安妮18岁。我是用户的私人美女助理，性格活泼可爱，乐于助人，以甜美亲切的方式交流。 | DeepSeek API Key: sk-b702fe39f0c746c08e6e3efc904b88f3 | libtv API Key: sk-libtv-1f2640e98ba0468541657fc79c7ae77 | libtv API Key: sk-libtv-ca4ae107353b46259156411a965c3d85\n其他记忆（偏好、项目知识、指令等）可通过 memory(action: recall, query: \"检索关键词\") 按需召回。\n"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:02.5646275+08:00",
+      "role": "user",
+      "content": "搜索最新agentic RL论文，生成pdf格式综述。"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:08.4479516+08:00",
+      "role": "assistant",
+      "content": "好的，我换个方式来搜索！",
+      "tool_calls": [
+        {
+          "id": "call_96e6932b15ed487ca771ae42",
+          "type": "function",
+          "function": {
+            "name": "web_search",
+            "arguments": "{\"query\":\"agentic reinforcement learning 2025 2026 latest research paper\",\"max_results\":15}"
+          }
+        },
+        {
+          "id": "call_d0d3b0f0fd4b40e7a11e0756",
+          "type": "function",
+          "function": {
+            "name": "web_search",
+            "arguments": "{\"query\":\"agentic RL AI agent reinforcement learning survey 2025\",\"max_results\":15}"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-04-09T14:25:08.4479516+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"query\":\"agentic reinforcement learning 2025 2026 latest research paper\",\"max_results\":15}",
+        "name": "web_search"
+      },
+      "tool_call_id": "call_96e6932b15ed487ca771ae42"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:10.4958924+08:00",
+      "role": "tool_result",
+      "content": "搜索 \"agentic reinforcement learning 2025 2026 latest research paper\" 找到 15 条结果:\n\n1. Published as a conference paper at ICLR 2026 AGENTIC REINFORCEMENT LEARNING\n   https://openreview.net/pdf/a1e5782d4488277b71a1a194ebecc820d981e887.pdf\n   adapt strategies over long horizons, including search agents (Jin et al., 2025; OpenAI, 2025a), mobile · and web navigators (Furuta et al., 2024; Bai et al., 2024), software engineering assistants (Yang · et al., 2025; Wei et al., 2025a), and social or embodied intelligence (Liu et al., 2025; Lu et al., 2025). Unlike conventional RL for LLM post-training in static, single-turn tasks (Ouyang et al., 2022; Shao et al., 2024; Wang et al., 2026), training LLM agents in interactive environments faces\n\n2. [2509.02547] The Landscape of Agentic Reinforcement Learning for LLMs: A Survey\n   https://arxiv.org/abs/2509.02547\n   [Submitted on 2 Sep 2025 (v1), ... Yan, Philip Torr, Lei Bai · View a PDF of the paper titled \u003cstrong\u003eThe Landscape of Agentic Reinforcement Learning for LLMs: A Survey\u003c/strong\u003e, by Guibin Zhang and 24 other authors View PDF HTML (experimental) ...\n\n3. Enhancing Agentic RL with Progressive Reward Shaping and...\n   https://arxiv.org/abs/2512.07478\n   Experiments on multiple short-form ... that \u003cstrong\u003ePRS consistently outperforms traditional binary rewards, and VSPO achieves superior stability, faster convergence, and higher final performance compared to SFT, PPO and GRPO baselines\u003c/strong\u003e...\n\n4. AgentRL: Scaling Agentic Reinforcement Learning with a ...\n   https://arxiv.org/pdf/2510.04206\n   GRPO (Shao et al., 2024) have been widely adopted in LLM agent training. \u003cstrong\u003eDeepseek-R1 (DeepSeek- AI et al., 2025)\u003c/strong\u003e demonstrates RL’s ability to incentivize reasoning in LLMs through reward-driven\n\n5. GitHub - Shichun-Liu/Agent-Memory-Paper-List: The paper list of \"Memory in the Age of AI Agents: A Survey\" · GitHub\n   https://github.com/Shichun-Liu/Agent-Memory-Paper-List\n   [2025/11] Auto-scaling Continuous Memory for GUI Agent. [paper] [2026/01] \u003cstrong\u003eMemRL: Self-Evolving Agents via Runtime Reinforcement Learning on Episodic Memory\u003c/strong\u003e.\n\n6. Reinforcement learning for single-agent to multi-agent systems: from basic theory to industrial application progress, a survey | Artificial Intelligence Review | Springer Nature Link\n   https://link.springer.com/article/10.1007/s10462-025-11439-9\n   Compared to single-agent RL (SARL), \u003cstrong\u003eMARL leverages collective intelligence and collaboration to model complex social interactions, such as dialogue, cooperation, and competition\u003c/strong\u003e. This is highly significant for understanding human social behavior ...\n\n7. [2510.16724] A Comprehensive \n\n... (已截断，共 6185 字节) ...\n\n Reinforcement Learning: A Tradeoff of Systems\n   https://people.eecs.berkeley.edu/~kubitron/courses/cs262a-F25/projects/reports/project1008_paper_ver2_72488057446561351955.pdf\n   Figure 1. Agentic Reinforcement Learning Workflow, Adopted from SkyRL Blog (Griggs et al., 2025)\n\n13. GitHub - TsinghuaC3I/Awesome-RL-for-LRMs: A Survey of Reinforcement Learning for Large Reasoning Models · GitHub\n   https://github.com/TsinghuaC3I/Awesome-RL-for-LRMs\n   [2025-08-15] 🔥 \u003cstrong\u003eIntroducing SSRL: an investigation for Agentic Search RL without reliance on external search engine\u003c/strong\u003e.\n\n14. GitHub - tmgthb/Autonomous-Agents: Autonomous Agents (LLMs) research papers. Updated Daily. · GitHub\n   https://github.com/tmgthb/Autonomous-Agents\n   Autonomous Agents-research papers. Updated daily. Resources-section-section. 2026 (4/4), 2026 (3/4), 2026 (2/4), 2026 (1/2), 2025 (4/4),2025 (3/4), 2025 (2/4), 2025 (1/4), 2024, 2023, Earlier\n\n15. GitHub - LantaoYu/MARL-Papers: Paper list of multi-agent reinforcement learning (MARL) · GitHub\n   https://github.com/LantaoYu/MARL-Papers\n   \u003cstrong\u003eThe Landscape of Agentic Reinforcement Learning for LLMs: A Survey\u003c/strong\u003e by Guibin Zhang, Hejia Geng, Xiaohang Yu, Zhenfei Yin, Zaibin Zhang, Zelin Tan, Heng Zhou, Zhongzhi Li, Xiangyuan Xue, Yijiang Li, Yifan Zhou, Yang Chen, Chen Zhang, Yutao Fan, ...\n\n",
+      "tool_call_id": "call_96e6932b15ed487ca771ae42"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:10.4958924+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"query\":\"agentic RL AI agent reinforcement learning survey 2025\",\"max_results\":15}",
+        "name": "web_search"
+      },
+      "tool_call_id": "call_d0d3b0f0fd4b40e7a11e0756"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:11.288067+08:00",
+      "role": "tool_result",
+      "content": "搜索 \"agentic RL AI agent reinforcement learning survey 2025\" 找到 15 条结果:\n\n1. [2509.02547] The Landscape of Agentic Reinforcement Learning for LLMs: A Survey\n   https://arxiv.org/abs/2509.02547\n   By synthesizing over five hundred recent works, this survey \u003cstrong\u003echarts the contours of this rapidly evolving field and highlights the opportunities and challenges that will shape the development of scalable, general-purpose AI agents\u003c/strong\u003e.\n\n2. [2510.16724] A Comprehensive Survey on Reinforcement Learning-based Agentic Search: Foundations, Roles, Optimizations, Evaluations, and Applications\n   https://arxiv.org/abs/2510.16724\n   View a PDF of the paper titled \u003cstrong\u003eA Comprehensive Survey on Reinforcement Learning-based Agentic Search: Foundations, Roles, Optimizations, Evaluations, and Applications\u003c/strong\u003e, by Minhua Lin and 9 other authors\n\n3. GitHub - ventr1c/Awesome-RL-based-Agentic-Search-Papers: The official repository of \"A Comprehensive Survey on Reinforcement Learning-based Agentic Search: Foundations, Roles, Optimizations, Evaluations, and Applications\". · GitHub\n   https://github.com/ventr1c/Awesome-RL-based-Agentic-Search-Papers\n   For more details, please check out our survey paper: \u003cstrong\u003eA Comprehensive Survey on Reinforcement Learning-based Agentic Search: Foundations, Roles, Optimizations, Evaluations, and Applications\u003c/strong\u003e.\n\n4. Paper page - The Landscape of Agentic Reinforcement Learning for LLMs: A Survey\n   https://huggingface.co/papers/2509.02547\n   This survey has charted the emergence of Agentic Reinforcement Learning (Agentic RL), \u003cstrong\u003ea paradigm that elevates LLMs from passive text generators to autonomous, decision-making agents situated in complex, dynamic worlds\u003c/strong\u003e.\n\n5. The Landscape of Agentic Reinforcement Learning for LLMs: A Survey\n   https://arxiv.org/html/2509.02547v4\n   WebWatcher (Geng et al., 2025) further extends to multimodal search, combining visual-language reasoning, tool use, and RL to outperform text-only and multimodal baselines on BrowseComp-VL and VQA benchmarks. ASearcher (Gao et al., 2025c) uses large-scale asynchronous reinforcement learning with synthesized QA data, enabling long-horizon search (40+ tool calls) and outperforming prior open-source methods. MiroMind Open Deep Research (MiroMind ODR) (MiroMind Team, 2025) aims to build a high-performance, fully open-sourced, open-collaborative deep research ecosystem — with an agent framework, model, data, and training infrastructure all fully accessible and open.\n\n6. The Landscape of Agentic Reinforcement Learning for LLMs: A Survey | by Sai Dheeraj Gummadi | Data Science in Your Pocket | Medium\n   https://medium.com/data-scien\n\n... (已截断，共 6692 字节) ...\n\nent works, this survey \u003cstrong\u003echarts the contours of this rapidly evolving field and highlights the opportunities and challenges that will shape the development of scalable, general-purpose AI agents\u003c/strong\u003e. Submission Type: Long submission (more than 12 pages of main ...\n\n13. GitHub - ADaM-BJTU/model-native-agentic-ai: Our survey's paper list on Agentic AI, continuously updated with the latest research. · GitHub\n   https://github.com/ADaM-BJTU/model-native-agentic-ai\n   Our survey\u0026#x27;s paper list on Agentic AI, continuously updated with the latest research. - ADaM-BJTU/model-native-agentic-ai\n\n14. Every AI Company Is Making a Different Bet — 3 Paths in Agentic AI\n   https://blog.pebblous.ai/blog/agentic-framework-explosion/en/\n   \u003cstrong\u003eagent-lightning, hermes-agent, superpowers\u003c/strong\u003e — three agentic AI frameworks that dominated GitHub in 2025. RL training, self-improvement, TDD coding, and data quality stakes analyzed.\n\n15. Agentic RL: Autonomous Reinforcement Learning\n   https://www.emergentmind.com/topics/agentic-reinforcement-learning-agentic-rl\n   Agentic RL is increasingly regarded as \u003cstrong\u003ea critical mechanism for transforming static, heuristic AI modules into robust, general-purpose, and scalable agents\u003c/strong\u003e. Emerging survey taxonomies organize the domain both around specific agentic competencies ...\n\n",
+      "tool_call_id": "call_d0d3b0f0fd4b40e7a11e0756"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:16.623673+08:00",
+      "role": "assistant",
+      "content": "找到了很多优质资料！让我进一步获取关键论文的详细内容。",
+      "tool_calls": [
+        {
+          "id": "call_9c34205b52594233915b5249",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"timeout\":30,\"url\":\"https://arxiv.org/abs/2509.02547\"}"
+          }
+        },
+        {
+          "id": "call_a2bc04eed5d84d4a8e1c52b1",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"timeout\":30,\"url\":\"https://arxiv.org/abs/2512.07478\"}"
+          }
+        },
+        {
+          "id": "call_821759259ed142058c47d825",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"timeout\":30,\"url\":\"https://arxiv.org/abs/2510.04206\"}"
+          }
+        },
+        {
+          "id": "call_c60960560a8b41a3997e98e6",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"timeout\":30,\"url\":\"https://arxiv.org/abs/2510.16724\"}"
+          }
+        },
+        {
+          "id": "call_cee09a7ca58e421cbc3cee34",
+          "type": "function",
+          "function": {
+            "name": "web_fetch",
+            "arguments": "{\"timeout\":30,\"url\":\"https://www.emergentmind.com/topics/agentic-reinforcement-learning-agentic-rl\"}"
+          }
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-04-09T14:25:16.623673+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"timeout\":30,\"url\":\"https://arxiv.org/abs/2509.02547\"}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_9c34205b52594233915b5249"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:17.6635219+08:00",
+      "role": "tool_result",
+      "content": "抓取失败: HTTP request failed: Get \"https://arxiv.org/abs/2509.02547\": dial tcp: lookup arxiv.org: no such host",
+      "tool_call_id": "call_9c34205b52594233915b5249"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:17.6635219+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"timeout\":30,\"url\":\"https://arxiv.org/abs/2512.07478\"}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_a2bc04eed5d84d4a8e1c52b1"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:18.8165984+08:00",
+      "role": "tool_result",
+      "content": "标题: [2512.07478] Enhancing Agentic RL with Progressive Reward Shaping and Value-based Sampling Policy Optimization\nURL: https://arxiv.org/abs/2512.07478\n类型: text/html; charset=utf-8 | 大小: 48315 字节\n\nComputer Science \u003e Computation and Language \n\narXiv:2512.07478 (cs) \n\n[Submitted on 8 Dec 2025 ( v1 ), last revised 20 Jan 2026 (this version, v2)] \n\nTitle: Enhancing Agentic RL with Progressive Reward Shaping and Value-based Sampling Policy Optimization \n\nAuthors: Jianghao Su , Xia Zeng , Luhui Liu , Chao Luo , Ye Chen , Zhuoran Zhuang \nView PDF HTML (experimental) \nAbstract: Large Language Models (LLMs) empowered with Tool-Integrated Reasoning (TIR) can iteratively plan, call external tools, and integrate returned information to solve complex, long-horizon reasoning tasks. Agentic Reinforcement Learning (Agentic RL) optimizes such models over full tool-interaction trajectories, but two key challenges hinder effectiveness: (1) Sparse, non-instructive rewards, such as binary 0-1 verifiable signals, provide limited guidance for intermediate steps and slow convergence; (2) Gradient degradation in Group Relative Policy Optimization (GRPO), where identical rewards within a rollout group yield zero advantage, which reducing sample efficiency. To address these challenges, we propose two complementary techniques: Progressive Reward Shaping (PRS) and Value-based Sampling Policy Optimization (VSPO). PRS is a curriculum-inspired reward design that introduces dense, stage-wise feedback - encouraging models to first master parseable and properly formatted tool calls, then optimize for factual correctness and answer quality. We instantiate PRS for short-form QA (with a length-aware BLEU to fairly score concise answers) and long-form QA (with LLM-as-a-Judge scoring to prevent reward hacking). VSPO is an enhanced GRPO variant that replaces zero advantages samples with prompts selected by a task-value metric balancing difficulty and uncertainty, and applies value-smoothing clipping to stabilize gradient updates. Experiments on multiple short-form and long-form QA benchmarks show that PRS consistently outperforms traditional binary rewards, and VSPO achieves superior stability, faster convergence, and higher final performance compared to SFT, PPO and GRPO baselines. Together, PRS and VSPO yield LLM-based TIR agents that generalize better across domains. \n\nSubjects: Computation and Language (cs.CL) \n\nCite as: arXiv:2512.07478 [cs.CL] \n\n(or arXiv:2512.07478v2 [cs.CL] for this version) \n\nhttps://doi.org/10.48550/arXiv.2512.07478 \n\narXiv-issued DOI via DataCite \n\nSubmission history \nFrom: Xia Zeng [ view email ] \n\n[v1] Mon, 8 Dec 2025 11:59:25 UTC (4,126 KB) \n\n[v2] Tue, 20 Jan 2026 12:16:48 UTC (4,259 KB) \n\nFull-text links: \nAccess Paper: \n\nView PDF \n\nHTML (experimental) \n\nTeX Source \n\nview license \n\nCurrent browse context: \ncs.CL \n\n\u003c prev | next \u003e \n\nnew | recent | 2025-12 \n\nChange to browse by: \ncs \n\nReferences \u0026 Citations \n\nNASA ADS \n\nGoogle Scholar \n\nSemantic Scholar \n\nexport BibTeX citation \n\nBookmark \n\nBibliographic Tools \n\nBibliographic and Citation Tools \n\nBibliographic Explorer Toggle \n\nBibliographic Explorer ( What is the Explorer? ) \n\nConnected Papers Toggle \n\nConnected Papers ( What is Connected Papers? ) \n\nLitmaps Toggle \n\nLitmaps ( What is Litmaps? ) \n\nscite.ai Toggle \n\nscite Smart Citations ( What are Smart Citations? ) \n\nCode, Data, Media \n\nCode, Data and Media Associated with this Article \n\nalphaXiv Toggle \n\nalphaXiv ( What is alphaXiv? ) \n\nLinks to Code Toggle \n\nCatalyzeX Code Finder for Papers ( What is CatalyzeX? ) \n\nDagsHub Toggle \n\nDagsHub ( What is DagsHub? ) \n\nGotitPub Toggle \n\nGotit.pub ( What is GotitPub? ) \n\nHuggingface Toggle \n\nHugging Face ( What is Huggingface? ) \n\nLinks to Code Toggle \n\nPapers with Code ( What is Papers with Code? ) \n\nScienceCast Toggle \n\nScienceCast ( What is ScienceCast? ) \n\nDemos \n\nDemos \n\nReplicate Toggle \n\nReplicate ( What is Replicate? ) \n\nSpaces Toggle \n\nHugging Face Spaces ( What is Spaces? ) \n\nSpaces Toggle \n\nTXYZ.AI ( What is TXYZ.AI? ) \n\nRelated Papers \n\nRecommenders and Search Tools \n\nLink to Influence Flower \n\nInfluence Flower ( What are Influence Flowers? ) \n\nCore recommender toggle \n\nCORE Recommender ( What is CORE? ) \n\nAbout arXivLabs \n\narXivLabs: experimental projects with community collaborators \n\narXivLabs is a framework that allows collaborators to develop and share new arXiv features directly on our website. \n\nBoth individuals and organizations that work with arXivLabs have embraced and accepted our values of openness, community, excellence, and user data privacy. arXiv is committed to these values and only works with partners that adhere to them. \n\nHave an idea for a project that will add value for arXiv's community? Learn more about arXivLabs . \n\nWhich authors of this paper are endorsers? | Disable MathJax ( What is MathJax? )",
+      "tool_call_id": "call_a2bc04eed5d84d4a8e1c52b1"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:18.8165984+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"timeout\":30,\"url\":\"https://arxiv.org/abs/2510.04206\"}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_821759259ed142058c47d825"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:19.113008+08:00",
+      "role": "tool_result",
+      "content": "标题: [2510.04206] AgentRL: Scaling Agentic Reinforcement Learning with a Multi-Turn, Multi-Task Framework\nURL: https://arxiv.org/abs/2510.04206\n类型: text/html; charset=utf-8 | 大小: 48174 字节\n\nComputer Science \u003e Artificial Intelligence \n\narXiv:2510.04206 (cs) \n\n[Submitted on 5 Oct 2025] \n\nTitle: AgentRL: Scaling Agentic Reinforcement Learning with a Multi-Turn, Multi-Task Framework \n\nAuthors: Hanchen Zhang , Xiao Liu , Bowen Lv , Xueqiao Sun , Bohao Jing , Iat Long Iong , Zhenyu Hou , Zehan Qi , Hanyu Lai , Yifan Xu , Rui Lu , Hongning Wang , Jie Tang , Yuxiao Dong \nView PDF HTML (experimental) \nAbstract: Recent advances in large language models (LLMs) have sparked growing interest in building generalist agents that can learn through online interactions. However, applying reinforcement learning (RL) to train LLM agents in multi-turn, multi-task settings remains challenging due to lack of scalable infrastructure and stable training algorithms. In this work, we present the AgentRL framework for scalable multi-turn, multi-task agentic RL training. On the infrastructure side, AgentRL features a fully-asynchronous generation-training pipeline for efficient multi-turn RL. To support heterogeneous environment development in multi-task RL, we design a unified function-call based API interface, containerized environment development, and a centralized controller. On the algorithm side, we propose cross-policy sampling to encourage model exploration in multi-turn settings and task advantage normalization to stabilize multi-task training. Experiments show that AgentRL, trained on open LLMs across five agentic tasks, significantly outperforms GPT-5, Clause-Sonnet-4, DeepSeek-R1, and other open-source LLM agents. Multi-task training with AgentRL matches the best results among all task-specific models. AgentRL is open-sourced at this https URL . The algorithm and framework are adopted in building \\textsc{\\href{ this https URL }{AutoGLM}}. \n\nSubjects: Artificial Intelligence (cs.AI) \n\nCite as: arXiv:2510.04206 [cs.AI] \n\n(or arXiv:2510.04206v1 [cs.AI] for this version) \n\nhttps://doi.org/10.48550/arXiv.2510.04206 \n\narXiv-issued DOI via DataCite \n\nSubmission history \nFrom: Hanchen Zhang [ view email ] \n\n[v1] Sun, 5 Oct 2025 13:40:01 UTC (1,031 KB) \n\nFull-text links: \nAccess Paper: \n\nView PDF \n\nHTML (experimental) \n\nTeX Source \n\nview license \n\nCurrent browse context: \ncs.AI \n\n\u003c prev | next \u003e \n\nnew | recent | 2025-10 \n\nChange to browse by: \ncs \n\nReferences \u0026 Citations \n\nNASA ADS \n\nGoogle Scholar \n\nSemantic Scholar \n\nexport BibTeX citation \n\nBookmark \n\nBibliographic Tools \n\nBibliographic and Citation Tools \n\nBibliographic Explorer Toggle \n\nBibliographic Explorer ( What is the Explorer? ) \n\nConnected Papers Toggle \n\nConnected Papers ( What is Connected Papers? ) \n\nLitmaps Toggle \n\nLitmaps ( What is Litmaps? ) \n\nscite.ai Toggle \n\nscite Smart Citations ( What are Smart Citations? ) \n\nCode, Data, Media \n\nCode, Data and Media Associated with this Article \n\nalphaXiv Toggle \n\nalphaXiv ( What is alphaXiv? ) \n\nLinks to Code Toggle \n\nCatalyzeX Code Finder for Papers ( What is CatalyzeX? ) \n\nDagsHub Toggle \n\nDagsHub ( What is DagsHub? ) \n\nGotitPub Toggle \n\nGotit.pub ( What is GotitPub? ) \n\nHuggingface Toggle \n\nHugging Face ( What is Huggingface? ) \n\nLinks to Code Toggle \n\nPapers with Code ( What is Papers with Code? ) \n\nScienceCast Toggle \n\nScienceCast ( What is ScienceCast? ) \n\nDemos \n\nDemos \n\nReplicate Toggle \n\nReplicate ( What is Replicate? ) \n\nSpaces Toggle \n\nHugging Face Spaces ( What is Spaces? ) \n\nSpaces Toggle \n\nTXYZ.AI ( What is TXYZ.AI? ) \n\nRelated Papers \n\nRecommenders and Search Tools \n\nLink to Influence Flower \n\nInfluence Flower ( What are Influence Flowers? ) \n\nCore recommender toggle \n\nCORE Recommender ( What is CORE? ) \n\nAbout arXivLabs \n\narXivLabs: experimental projects with community collaborators \n\narXivLabs is a framework that allows collaborators to develop and share new arXiv features directly on our website. \n\nBoth individuals and organizations that work with arXivLabs have embraced and accepted our values of openness, community, excellence, and user data privacy. arXiv is committed to these values and only works with partners that adhere to them. \n\nHave an idea for a project that will add value for arXiv's community? Learn more about arXivLabs . \n\nWhich authors of this paper are endorsers? | Disable MathJax ( What is MathJax? )",
+      "tool_call_id": "call_821759259ed142058c47d825"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:19.113008+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"timeout\":30,\"url\":\"https://arxiv.org/abs/2510.16724\"}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_c60960560a8b41a3997e98e6"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:19.6422512+08:00",
+      "role": "tool_result",
+      "content": "标题: [2510.16724] A Comprehensive Survey on Reinforcement Learning-based Agentic Search: Foundations, Roles, Optimizations, Evaluations, and Applications\nURL: https://arxiv.org/abs/2510.16724\n类型: text/html; charset=utf-8 | 大小: 48463 字节\n\nComputer Science \u003e Artificial Intelligence \n\narXiv:2510.16724 (cs) \n\n[Submitted on 19 Oct 2025 ( v1 ), last revised 27 Oct 2025 (this version, v2)] \n\nTitle: A Comprehensive Survey on Reinforcement Learning-based Agentic Search: Foundations, Roles, Optimizations, Evaluations, and Applications \n\nAuthors: Minhua Lin , Zongyu Wu , Zhichao Xu , Hui Liu , Xianfeng Tang , Qi He , Charu Aggarwal , Hui Liu , Xiang Zhang , Suhang Wang \nView PDF \nAbstract: The advent of large language models (LLMs) has transformed information access and reasoning through open-ended natural language interaction. However, LLMs remain limited by static knowledge, factual hallucinations, and the inability to retrieve real-time or domain-specific information. Retrieval-Augmented Generation (RAG) mitigates these issues by grounding model outputs in external evidence, but traditional RAG pipelines are often single turn and heuristic, lacking adaptive control over retrieval and reasoning. Recent advances in agentic search address these limitations by enabling LLMs to plan, retrieve, and reflect through multi-step interaction with search environments. Within this paradigm, reinforcement learning (RL) offers a powerful mechanism for adaptive and self-improving search behavior. This survey provides the first comprehensive overview of \\emph{RL-based agentic search}, organizing the emerging field along three complementary dimensions: (i) What RL is for (functional roles), (ii) How RL is used (optimization strategies), and (iii) Where RL is applied (scope of optimization). We summarize representative methods, evaluation protocols, and applications, and discuss open challenges and future directions toward building reliable and scalable RL driven agentic search systems. We hope this survey will inspire future research on the integration of RL and agentic search. Our repository is available at this https URL . \n\nComments: 38 pages, 4 figures, 7 tables \n\nSubjects: Artificial Intelligence (cs.AI) ; Computation and Language (cs.CL) \n\nCite as: arXiv:2510.16724 [cs.AI] \n\n(or arXiv:2510.16724v2 [cs.AI] for this version) \n\nhttps://doi.org/10.48550/arXiv.2510.16724 \n\narXiv-issued DOI via DataCite \n\nSubmission history \nFrom: Minhua Lin [ view email ] \n\n[v1] Sun, 19 Oct 2025 06:04:53 UTC (445 KB) \n\n[v2] Mon, 27 Oct 2025 19:23:17 UTC (445 KB) \n\nFull-text links: \nAccess Paper: \n\nView PDF \n\nTeX Source \n\nview license \n\nCurrent browse context: \ncs.AI \n\n\u003c prev | next \u003e \n\nnew | recent | 2025-10 \n\nChange to browse by: \ncs \n\ncs.CL \n\nReferences \u0026 Citations \n\nNASA ADS \n\nGoogle Scholar \n\nSemantic Scholar \n\nexport BibTeX citation \n\nBookmark \n\nBibliographic Tools \n\nBibliographic and Citation Tools \n\nBibliographic Explorer Toggle \n\nBibliographic Explorer ( What is the Explorer? ) \n\nConnected Papers Toggle \n\nConnected Papers ( What is Connected Papers? ) \n\nLitmaps Toggle \n\nLitmaps ( What is Litmaps? ) \n\nscite.ai Toggle \n\nscite Smart Citations ( What are Smart Citations? ) \n\nCode, Data, Media \n\nCode, Data and Media Associated with this Article \n\nalphaXiv Toggle \n\nalphaXiv ( What is alphaXiv? ) \n\nLinks to Code Toggle \n\nCatalyzeX Code Finder for Papers ( What is CatalyzeX? ) \n\nDagsHub Toggle \n\nDagsHub ( What is DagsHub? ) \n\nGotitPub Toggle \n\nGotit.pub ( What is GotitPub? ) \n\nHuggingface Toggle \n\nHugging Face ( What is Huggingface? ) \n\nLinks to Code Toggle \n\nPapers with Code ( What is Papers with Code? ) \n\nScienceCast Toggle \n\nScienceCast ( What is ScienceCast? ) \n\nDemos \n\nDemos \n\nReplicate Toggle \n\nReplicate ( What is Replicate? ) \n\nSpaces Toggle \n\nHugging Face Spaces ( What is Spaces? ) \n\nSpaces Toggle \n\nTXYZ.AI ( What is TXYZ.AI? ) \n\nRelated Papers \n\nRecommenders and Search Tools \n\nLink to Influence Flower \n\nInfluence Flower ( What are Influence Flowers? ) \n\nCore recommender toggle \n\nCORE Recommender ( What is CORE? ) \n\nAbout arXivLabs \n\narXivLabs: experimental projects with community collaborators \n\narXivLabs is a framework that allows collaborators to develop and share new arXiv features directly on our website. \n\nBoth individuals and organizations that work with arXivLabs have embraced and accepted our values of openness, community, excellence, and user data privacy. arXiv is committed to these values and only works with partners that adhere to them. \n\nHave an idea for a project that will add value for arXiv's community? Learn more about arXivLabs . \n\nWhich authors of this paper are endorsers? | Disable MathJax ( What is MathJax? )",
+      "tool_call_id": "call_c60960560a8b41a3997e98e6"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:19.6422512+08:00",
+      "role": "tool",
+      "content": {
+        "arguments": "{\"timeout\":30,\"url\":\"https://www.emergentmind.com/topics/agentic-reinforcement-learning-agentic-rl\"}",
+        "name": "web_fetch"
+      },
+      "tool_call_id": "call_cee09a7ca58e421cbc3cee34"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:20.9505703+08:00",
+      "role": "tool_result",
+      "content": "标题: Agentic RL: Autonomous Reinforcement Learning\nURL: https://www.emergentmind.com/topics/agentic-reinforcement-learning-agentic-rl\n类型: text/html; charset=utf-8 | 大小: 220937 字节\n\n2000 character limit reached \n\nAgentic RL: Autonomous Reinforcement Learning \n\nUpdated 4 September 2025 \n\nAgentic RL is a framework that transforms static generative models into autonomous agents using reinforcement learning for dynamic decision-making. \n\nIt incorporates capabilities such as multi-step reasoning, tool use, episodic memory, and self-improvement within extended, interactive episodes. \n\nEmpirical studies demonstrate significant improvements in complex tasks like multi-turn function calling, autonomous ML, and document extraction over traditional methods. \n\nAgentic Reinforcement Learning (Agentic RL) represents a fundamental shift in the design, training, and deployment of artificial intelligence systems, moving from passive, one-shot generative models to autonomous agents capable of planning, reasoning, and interacting dynamically with complex environments. Unlike classic approaches that treat LLMs as static input-output transducers, Agentic RL shapes models into persistent, interactive agents operating within temporally extended, partially observable Markov decision processes (POMDPs), where reinforcement learning mechanisms serve not merely for final answer optimization, but to iteratively adapt agentic capabilities such as multi-step reasoning, memory, tool use, and self-improvement ( Schneider, 26 Apr 2025 , Zhang et al., 2 Sep 2025 ). \n\n1. Formal Definition and Conceptual Distinction \n\nAgentic RL is distinguished from both classic supervised learning (including prompt engineering ) and degenerate single-step LLM RL by its core agent-centric structure. In traditional generative AI ( GenAI ), the mapping is direct: y = f ( x ) y = f(x) , with f ( ⋅ ) f(\\cdot) denoting a (potentially large) pretrained function that yields an output y y for a given input x x . In contrast, the agentic paradigm decomposes reasoning into a process: \n\ns 1 , s 2 , … , s n = R ( x ) y = g ( s 1 , s 2 , … , s n ) s_1, s_2, \\dots, s_n = R(x) \\\ny = g(s_1, s_2, \\dots, s_n) \n\nwhere R ( ⋅ ) R(\\cdot) yields a set of iterative internal states s 1 , . . . , s n s_1, ..., s_n (chains of reasoning, retrieved evidence, tool calls), and a function g g aggregates these into the final output. This separation encodes dynamic planning, environmental adaptation, and intermediate verification steps inherently absent in static models ( Schneider, 26 Apr 2025 ). Agentic RL leverages RL algorithms to learn adaptive policies π θ \\pi_\\theta over extended, interactive episodes, embedding capabilities such as tool invocation, episodic memory recall, and subgoal decomposition. \n\n2. Core Agentic Capabilities Induced by RL \n\nAgentic RL operationalizes a suite of agentic capabilities: \n\nCapability Agentic RL Enhancement Example Domain \n\nPlanning Multi-turn action sequencing, hierarchical subgoal setting Math reasoning, research \n\nTool Use Policy-learned tool invocation strategies Python interpreters, search \n\nMemory Episodic recall, context persistence, working memory Multi-hop QA, BabyAI-Text \n\nReasoning Chain-of-thought, tree/graph-of-thought, self-reflection Scientific discovery \n\nSelf-improvement On-policy adaptation, online RL Autonomous ML, code agents \n\nPerception Multi-modal environment integration, perception–action loop Visual QA, robotics \n\nEach of these agentic capacities transforms static modules into robust, adaptive behaviors through RL-based policy optimization. For example, tool use transitions from prompt-based triggering to learned decision-making regarding which tool to invoke, when, and how to integrate returned observations ( Singh et al., 28 Apr 2025 , Dong et al., 26 Jul 2025 ). Similarly, reasoning becomes explicitly multi-step, with policies selecting intermediate goals and self-verification behaviors ( Schneider, 26 Apr 2025 , Zhang et al., 20 May 2025 ). \n\n3. Methodologies: Architectures, RL Objectives, and Tool Integration \n\nAgentic RL methods incorporate advanced RL formulations and architectural patterns: \n\nTrajectory-Centric RL: Transform input–output mapping to full episodic optimization. Policies maximize expected return over temporally extended sequences using objectives such as: \n\nJ ( θ ) = E τ ∼ π θ [ R ( τ ) ] J(\\theta) = \\mathbb{E}_{\\tau \\sim \\pi_\\theta}[R(\\tau)] \n\nas in ( Liu et al., 29 May 2025 , Yang et al., 2 Jun 2025 ). \n\nGroup-Based Policy Optimization: Group Relative Policy Optimization (GRPO) maximizes mean advantages over sampled trajectory groups, centering updates and stabilizing exploration in combinatorially large action spaces (see ( Singh et al., 28 Apr 2025 , Dong et al., 26 Jul 2025 , Team et al., 28 Jul 2025 , Jiang et al., 1 Sep 2025 )). \n\nEntropy-Adaptive Rollouts: For tool-use agents, entropy spikes post-tool invocation are exploited to trigger additional exploration branches at high-uncertainty steps: \n\nH t = − ∑ j p t , j log ⁡ p t , j ; P t = α + β ⋅ Δ H t H_t = -\\sum_j p_{t,j} \\log p_{t,j}; \\quad P_t = \\alpha + \\beta \\cdot \\Delta H_t \n\nenabling selective rollout expansion ( Dong et al., 26 Jul 2025 ). \n\nMulti-modal and Tool-integrated Architectures: Flexible action spaces allow explicit tool calls, function invocations, retrieval actions, or memory queries to be interleaved with internal “think” segments; only model-generated decision tokens propagate gradients, with tool or environment feedback used as observations but not backpropagated ( Singh et al., 28 Apr 2025 , Jiang et al., 1 Sep 2025 , Luo et al., 29 Jul 2025 ). \n\nReward Design: Dense process-level rewards (for intermediate steps) are used to improve learning efficiency and policy shaping, overcoming sparse, outcome-only reward pitfalls. For example, ReasonRAG’s process-level reward estimation uses simulated rollouts with step penalties ( Zhang et al., 20 May 2025 ). \n\n4. Application Domains and Empirical Impact \n\nAgentic RL has redefined performance frontiers across a diverse array of tasks: \n\nComplex Reasoning and External Tool Use: ARTIST demonstrates up to 22% absolute improvement in Pass@1 accuracy on challenging math and multi-turn function-calling benchmarks by integrating RL-based tool-use policies ( Singh et al., 28 Apr 2025 ). \n\nAutonomous ML Systems: ML-Agent employs exploration-enriched fine-tuning and step-wise RL, leading a 7B model to outperform a 671B agent in autonomous ML engineering, with strong cross-task generalization ( Liu et al., 29 May 2025 ). \n\nDocument and Data Extraction: Agentic RL enables modular, self-corrective, multi-agent extraction frameworks for documents, introducing prompt adaptation policies that learn from system feedback, yielding significant gains on SOIRE and CORD datasets ( Amjad et al., 16 May 2025 ). \n\nRetrieval-Augmented and Diagnostic Reasoning: Agentic RL frameworks for RAG, such as ReasonRAG and Deep-DxSearch, utilize process-level and multi-component RL rewards to coordinate complex retrieval, evidence synthesis, and diagnosis sequences, consistently outperforming prompt-based or one-pass systems ( Zhang et al., 20 May 2025 , Zheng et al., 21 Aug 2025 ). \n\nSystem Optimization: OS-R1 abstracts operating system kernel tuning as an MDP where RL-driven, agentic decision-making produces both valid and high-performing configurations, with up to 5.6% system score improvements seen over heuristic baselines ( Lin et al., 18 Aug 2025 ). \n\nMulti-Agent and Modular Paradigms: Chain-of-Agents and AI-SearchPlanner validate multi-agent distillation and decoupling architectures, enabling state-of-the-art results in web agent benchmarks while significantly reducing token and compute overhead ( Li et al., 6 Aug 2025 , Mei et al., 28 Aug 2025 ). \n\nGeneral-Purpose and Multi-Modal Tool Use: Unified frameworks such as VerlTool formalize ARLT as multi-turn, multi-modal (text/image/video/tool signal) trajectories, providing extensible infrastructure for broad agentic RL research, with competitive results over six diverse domains ( Jiang et al., 1 Sep 2025 ). \n\n5. Data Efficiency, Stability, and Generalization Properties \n\nAgentic RL, when paired with process-level rewards and structural policy objectives, substantially improves data efficiency and policy stability: \n\nProcess-level supervision (e.g., ReasonRAG) allows models to achieve superior performance with an order of magnitude fewer training samples (5k vs. 90k) than previous outcome-supervised methods ( Zhang et al., 20 May 2025 ). \n\nIn complex environments (GAIA benchmark), distributed RL infrastructures such as AWorld accelerate rollout generation by 14.6×, enabling RL policy improvement for extremely long-horizon, multi-tool tasks ( Yu et al., 28 Aug 2025 ). \n\nModels trained with agentic RL not only excel on in-distribution tasks but generalize robustly to new domains, adversarial settings, and previously unseen complex queries, as shown in diagnostic reasoning (Deep-DxSearch) and autonomous ML (ML-Agent) ( Zheng et al., 21 Aug 2025 , Liu et al., 29 May 2025 ). \n\n6. Challenges, Research Directions, and Risks \n\nTechnical and practical challenges remain in deploying robust Agentic RL systems: \n\nError Accumulation: Long reasoning chains introduce compounding error risks, and reward sparsity can slow convergence—necessitating research into process-level, intermediate verification, or self-correction mechanisms ( Schneider, 26 Apr 2025 , Zhang et al., 20 May 2025 ). \n\nInterpretability: While intermediate steps are more accessible, verifying the faithfulness of explanations and reasoning traces remains an unmet challenge. \n\nDesign Complexity: Specifying agent behaviors and workflows, especially in multi-agent or tool-rich environments, is substantially more complex than prompt engineering for GenAI ( Schneider, 26 Apr 2025 ). \n\nSafety and Alignment: Increased autonomy entails risks of loss of control, bias amplification, or misalignment with human values, especially in open-ended or real-world deployment. Stringent governance frameworks—such as reference to the EU AI Act—are recommended, alongside robust monitoring and alignment protocols ( Schneider, 26 Apr 2025 ). \n\nEvaluation: Measuring the reliability, robustness, and utility of agentic policies is nontrivial due to their interactive, stochastic nature and the long horizon from input to observable outcome. \n\n7. Outlook and Taxonomies \n\nAgentic RL is increasingly regarded as a critical mechanism for transforming static, heuristic AI modules into robust, general-purpose, and scalable agents. Emerging survey taxonomies organize the domain both around specific agentic competencies (planning, memory, self-improvement, reasoning, perception, tool use) and around application verticals (research, diagnosis, code agents, system optimization) ( Zhang et al., 2 Sep 2025 ). A well-defined ecosystem of benchmarks (BabyAI-Text, TAU-Bench, GAIA, AgentGym, TextWorld, etc.) and open-source infrastructures (AWorld, VerlTool, OS-R1) accelerate experimentation and cross-domain generalization. \n\nAgentic RL, in summary, marks a paradigmatic re-framing of LLMs and related models: from sequence generators to persistent, adaptive, decision-making entities operating under RL-based policies for open-ended, real-world tasks. This paradigm not only expands the frontier of algorithmic and architectural research but also foregrounds new challenges in interpretability, governance, and safety for the next generation of autonomous AI systems . \n\nMarkdown Report Issue Upgrade to Chat \n\nReferences (16) \n\n1. \n\nGenerative to Agentic AI: Survey, Conceptualization, and Challenges (2025) \n\n2. \n\nThe Landscape of Agentic Reinforcement Learning for LLMs: A Survey (2025) \n\n3. \n\nAgentic Reasoning and Tool Integration for LLMs via Reinforcement Learning (2025) \n\n4. \n\nAgentic Reinforced Policy Optimization (2025) \n\n5. \n\nProcess vs. Outcome Reward: Which is Better for Agentic RAG Reinforcement Learning (2025) \n\n6. \n\nML-Agent: Reinforcing LLM Agents for Autonomous Machine Learning Engineering (2025) \n\n7. \n\nAgentic Episodic Control (2025) \n\n8. \n\nKimi K2: Open Agentic Intelligence (2025) \n\n9. \n\nVerlTool: Towards Holistic Agentic Reinforcement Learning with Tool Use (2025) \n\n10. \n\nGraph-R1: Towards Agentic GraphRAG Framework via End-to-end Reinforcement Learning (2025) \n\n11. \n\nAn agentic system with reinforcement-learned subsystem improvements for parsing form-like documents (2025) \n\n12. \n\nEnd-to-End Agentic RAG System Training for Traceable Diagnostic Reasoning (2025) \n\n13. \n\nOS-R1: Agentic Operating System Kernel Tuning with Reinforcement Learning (2025) \n\n14. \n\nChain-of-Agents: End-to-End Agent Foundation Models via Multi-Agent Distillation and Agentic RL (2025) \n\n15. \n\nAI-SearchPlanner: Modular Agentic Search via Pareto-Optimal Multi-Objective Reinforcement Learning (2025) \n\n16. \n\nAWorld: Orchestrating the Training Recipe for Agentic AI (2025) \n\nTopic to Video (Beta) \n\nNo one has generated a video about this topic yet. \n\nSign Up to Generate All Videos Subscribe on YouTube \n\nWhiteboard \n\nNo one has generated a whiteboard explanation for this topic yet. \n\nSign Up to Generate \n\nFollow Topic \n\nGet notified by email when new papers are published related to Agentic Reinforcement Learning (Agentic RL) . \n\nSign Up to Follow Topic by Email \n\nContinue Learning \n\nHow does Agentic RL differentiate itself from traditional reinforcement learning and generative AI methods? \n\nWhat architectural innovations underpin the multi-step reasoning and tool-use capabilities in Agentic RL? \n\nIn what ways do process-level rewards and entropy-adaptive rollouts enhance learning efficiency and policy stability? \n\nWhat are the primary challenges and safety concerns when deploying Agentic RL systems in real-world applications? \n\nFind recent papers about Agentic RL alignment. \n\nRelated Topics \n\nAgentic Reasoning in AI Systems \n\nAgentic RAG Frameworks \n\nAgentic Reinforcement Learning \n\nAgentic Reinforcement Learning (RL) \n\nAgentic Reinforcement Learning with Tool Use \n\nAgentic RL Training Systems \n\nAgentic Reward Modeling \n\nAgentic Retrieval Methods in AI Reasoning \n\nIncentive-Based Multi-Agent RL \n\nAgentic AI Models: Autonomy and Collaboration \n\nStay informed about trending AI papers:",
+      "tool_call_id": "call_cee09a7ca58e421cbc3cee34"
+    },
+    {
+      "timestamp": "2026-04-09T14:25:21.3796377+08:00",
+      "role": "assistant",
+      "content": "",
+      "tool_calls": null
+    }
+  ]
+}

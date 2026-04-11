@@ -205,10 +205,17 @@ func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMess
 			cat = CategoryInstruction
 		}
 
+		// Extract meaningful tags from content using ExpandQuery.
+		expanded := ExpandQuery(content)
+		tags := []string{"extracted", userID}
+		for _, entity := range expanded.Entities {
+			tags = append(tags, entity)
+		}
+
 		entry := Entry{
 			Content:  content,
 			Category: cat,
-			Tags:     []string{"extracted", userID},
+			Tags:     tags,
 		}
 		if err := ke.store.Save(entry); err != nil {
 			return fmt.Errorf("knowledge_extractor: save: %w", err)

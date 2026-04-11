@@ -1,14 +1,19 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { SideNav } from './components/layout/SideNav';
 import { TopHeader } from './components/layout/TopHeader';
+import { AccountSettingsPage } from './pages/AccountSettingsPage';
+import { AuthPage } from './pages/AuthPage';
 import { CommunicationsPage } from './pages/CommunicationsPage';
 import { DeliveryPage } from './pages/DeliveryPage';
 import { EmployeesPage } from './pages/EmployeesPage';
+import { IMSettingsPage } from './pages/IMSettingsPage';
 import { KnowledgePage } from './pages/KnowledgePage';
+import { LoginPage } from './pages/LoginPage';
 import { ModelRoutingPage } from './pages/ModelRoutingPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { PackagesPage } from './pages/PackagesPage';
 import { SecurityPage } from './pages/SecurityPage';
+import { SetupTenantPage } from './pages/SetupTenantPage';
 import { UsagePage } from './pages/UsagePage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
 import type { CenterTab } from './types';
@@ -24,35 +29,61 @@ const meta: Record<CenterTab, { title: string; subtitle: string }> = {
   security: { title: '安全规则', subtitle: '下发统一治理规则并保留审计入口。' },
   delivery: { title: '下发管理', subtitle: '查看配置和能力向客户端下发的状态。' },
   usage: { title: '使用情况', subtitle: '跟踪数字员工使用量和趋势变化。' },
+  im: { title: 'IM 管理', subtitle: '配置飞书、钉钉、企业微信网关接入。' },
+  auth: { title: '认证管理', subtitle: '管理数字员工的 LDAP 和本地账户认证方式。' },
+  settings: { title: '账户设置', subtitle: '管理邮箱和登录密码。' },
 };
 
+// In Wails mode, skip login (desktop app handles auth).
+const isWails = typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
+
 export default function App() {
+  const [authenticated, setAuthenticated] = useState(isWails);
+  const [checking, setChecking] = useState(!isWails);
+  const [needsSetup, setNeedsSetup] = useState(false);
   const [activeTab, setActiveTab] = useState<CenterTab>('overview');
+
+  // Check tenant status and existing session on mount (HTTP mode only)
+  useEffect(() => {
+    if (isWails) return;
+    Promise.all([
+      fetch('/auth/tenant-status').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/auth/check').then(r => { if (r.ok) setAuthenticated(true); }).catch(() => {}),
+    ]).then(([tenantStatus]) => {
+      if (tenantStatus && tenantStatus.needs_setup) {
+        setNeedsSetup(true);
+      }
+    }).finally(() => setChecking(false));
+  }, []);
+
+  if (checking) {
+    return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>加载中...</div>;
+  }
+
+  if (needsSetup) {
+    return <SetupTenantPage onSetupComplete={() => { setNeedsSetup(false); }} />;
+  }
+
+  if (!authenticated) {
+    return <LoginPage onLogin={() => setAuthenticated(true)} />;
+  }
 
   const content = useMemo(() => {
     switch (activeTab) {
-      case 'employees':
-        return <EmployeesPage />;
-      case 'models':
-        return <ModelRoutingPage />;
-      case 'overview':
-        return <OverviewPage />;
-      case 'communications':
-        return <CommunicationsPage />;
-      case 'workflows':
-        return <WorkflowsPage />;
-      case 'knowledge':
-        return <KnowledgePage />;
-      case 'packages':
-        return <PackagesPage />;
-      case 'security':
-        return <SecurityPage />;
-      case 'delivery':
-        return <DeliveryPage />;
-      case 'usage':
-        return <UsagePage />;
-      default:
-        return null;
+      case 'employees': return <EmployeesPage />;
+      case 'models': return <ModelRoutingPage />;
+      case 'overview': return <OverviewPage />;
+      case 'communications': return <CommunicationsPage />;
+      case 'workflows': return <WorkflowsPage />;
+      case 'knowledge': return <KnowledgePage />;
+      case 'packages': return <PackagesPage />;
+      case 'security': return <SecurityPage />;
+      case 'delivery': return <DeliveryPage />;
+      case 'usage': return <UsagePage />;
+      case 'im': return <IMSettingsPage />;
+      case 'auth': return <AuthPage />;
+      case 'settings': return <AccountSettingsPage />;
+      default: return null;
     }
   }, [activeTab]);
 

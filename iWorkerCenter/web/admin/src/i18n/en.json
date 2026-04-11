@@ -1,0 +1,91 @@
+{
+  "app": {
+    "loading": "Loading...",
+    "title": "Digital Worker Center"
+  },
+  "nav": {
+    "overview": "Overview",
+    "employees": "Workers",
+    "communications": "Communications",
+    "workflows": "Workflows",
+    "knowledge": "Knowledge",
+    "packages": "Packages",
+    "models": "Model Routing",
+    "compute": "Compute Power",
+    "security": "Security",
+    "delivery": "Delivery",
+    "usage": "Usage",
+    "im": "IM Settings",
+    "auth": "Authentication",
+    "settings": "Account"
+  },
+  "subtitle": {
+    "overview": "Get a quick overview of the Digital Worker Center status.",
+    "employees": "Manage identities, roles, capabilities and model policies.",
+    "communications": "View collaboration records and request routing between workers.",
+    "workflows": "Configure how tasks flow between different digital workers.",
+    "knowledge": "Accumulate experience and enable reuse across workers.",
+    "packages": "Manage capability package sources, versions and distribution.",
+    "models": "Configure default models, fallbacks and routing rules.",
+    "compute": "Manage LLM compute sources, provider config and usage stats.",
+    "security": "Distribute governance rules and maintain audit trails.",
+    "delivery": "View configuration and capability delivery status to clients.",
+    "usage": "Track digital worker usage and trends.",
+    "im": "Configure Feishu, DingTalk, WeCom gateway integration.",
+    "auth": "Manage LDAP and local account authentication for workers.",
+    "settings": "Manage email and login credentials."
+  },
+  "login": {
+    "title": "Login",
+    "username": "Username",
+    "password": "Password",
+    "submit": "Sign In",
+    "error": "Invalid username or password"
+  },
+  "setup": {
+    "title": "Initial Setup",
+    "description": "First time use. Please set up an admin account."
+  },
+  "im": {
+    "feishu": "Feishu (Lark)",
+    "feishuDesc": "Configure Feishu bot App ID and secrets.",
+    "dingtalk": "DingTalk",
+    "dingtalkDesc": "Configure DingTalk bot App Key and secrets.",
+    "wecom": "WeCom",
+    "wecomDesc": "Configure WeCom Corp ID, Agent ID and secrets."
+  },
+  "compute": {
+    "title": "Compute Power Management",
+    "modeCloud": "Cloud Sync Mode",
+    "modeLocal": "Local Management Mode",
+    "fromCloud": "From iWorkerCloud",
+    "local": "Local Config",
+    "lastSync": "Last Sync",
+    "syncNow": "Sync Now",
+    "switchLocal": "Switch to Local",
+    "switchCloud": "Switch to Cloud",
+    "noPermission": "Requires iWorkerCloud admin to grant compute self-management permission",
+    "providerName": "Provider Name",
+    "protocol": "Protocol",
+    "computeType": "Compute Type",
+    "model": "Model",
+    "enabled": "Enabled",
+    "source": "Source",
+    "test": "Test Connectivity",
+    "addProvider": "Add Provider"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "create": "Create",
+    "delete": "Delete",
+    "edit": "Edit",
+    "search": "Search",
+    "confirm": "Confirm",
+    "back": "Back",
+    "loading": "Loading...",
+    "noData": "No data",
+    "success": "Success",
+    "error": "Error"
+  }
+}

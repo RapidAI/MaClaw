@@ -5,6 +5,7 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
@@ -146,6 +147,7 @@ func newGemmaScratch(hp GemmaHParams, seq int) *gemmaScratch {
 	}
 
 	return &gemmaScratch{
+		x:       make([]float32, seq*dim),
 		normed:  make([]float32, seq*dim),
 		q:       make([]float32, seq*dim),
 		k:       make([]float32, seq*kvDim),
@@ -155,10 +157,9 @@ func newGemmaScratch(hp GemmaHParams, seq int) *gemmaScratch {
 		ffGate:  make([]float32, seq*ffDim),
 		ffUp:    make([]float32, seq*ffDim),
 		ffDown:  make([]float32, seq*dim),
-		qNormed: make([]float32, headDim),
-		kNormed: make([]float32, headDim),
 		rowBuf:  make([]float32, dim),
 		scores:  make([]float32, seq),
+		poolOut: make([]float32, dim),
 		ropeCos: ropeCos,
 		ropeSin: ropeSin,
 		seqCap:  seq,
@@ -236,16 +237,20 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 	nKVHeads := hp.NKVHeads
 	ffDim := hp.FFDim
 
-	// Token embedding lookup: dequantize only the rows we need from Q8
-	x := make([]float32, seq*dim)
+	// Token embedding lookup: use cache for hot tokens, dequantize for the rest.
+	x := sc.x[:seq*dim]
 	embScale := float32(math.Sqrt(float64(dim)))
 	for si, id := range tokenIDs {
 		if id < 0 || id >= hp.VocabSize {
 			return nil, fmt.Errorf("gemma: token id %d out of range [0,%d)", id, hp.VocabSize)
 		}
-		g.weights.tokenEmb.DequantRow(id, sc.rowBuf)
 		dst := x[si*dim : (si+1)*dim]
-		copy(dst, sc.rowBuf)
+		if cached := g.tokenCache.Get(id); cached != nil {
+			copy(dst, cached)
+		} else {
+			g.weights.tokenEmb.DequantRow(id, sc.rowBuf)
+			copy(dst, sc.rowBuf)
+		}
 		tensor.Scale(dst, embScale)
 	}
 
@@ -258,11 +263,15 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 	ffGate := sc.ffGate[:seq*ffDim]
 	ffUp := sc.ffUp[:seq*ffDim]
 	ffDown := sc.ffDown[:seq*dim]
-	qNormed := sc.qNormed
-	kNormed := sc.kNormed
 	halfDim := headDim / 2
 
-	for l := 0; l < hp.NLayers; l++ {
+	// Early exit: run fewer layers when output dim is small (MRL truncation).
+	nLayers := hp.NLayers
+	if ee := int(atomic.LoadInt32(&g.earlyExit)); ee > 0 && ee < nLayers {
+		nLayers = ee
+	}
+
+	for l := 0; l < nLayers; l++ {
 		layer := &g.weights.layers[l]
 
 		// === Self-attention ===
@@ -280,13 +289,12 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 		for s := 0; s < seq; s++ {
 			for h := 0; h < nHeads; h++ {
 				off := s*dim + h*headDim
-				tensor.RMSNorm(qNormed, q[off:off+headDim], layer.attnQNormW, hp.RMSNormEps)
-				copy(q[off:off+headDim], qNormed)
+				// In-place RMSNorm — avoids copy through temp buffer.
+				tensor.RMSNorm(q[off:off+headDim], q[off:off+headDim], layer.attnQNormW, hp.RMSNormEps)
 			}
 			for h := 0; h < nKVHeads; h++ {
 				off := s*kvDim + h*headDim
-				tensor.RMSNorm(kNormed, k[off:off+headDim], layer.attnKNormW, hp.RMSNormEps)
-				copy(k[off:off+headDim], kNormed)
+				tensor.RMSNorm(k[off:off+headDim], k[off:off+headDim], layer.attnKNormW, hp.RMSNormEps)
 			}
 			cosTab := sc.ropeCos[s*halfDim : (s+1)*halfDim]
 			sinTab := sc.ropeSin[s*halfDim : (s+1)*halfDim]
@@ -332,13 +340,20 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 		tensor.RMSNorm(x[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], g.weights.outputNorm, hp.RMSNormEps)
 	}
 
-	// Mean pooling — use SIMD-accelerated addition
-	out := make([]float32, dim)
+	// Mean pooling — use scratch buffer and SIMD-accelerated addition
+	out := sc.poolOut[:dim]
+	for i := range out {
+		out[i] = 0
+	}
 	for s := 0; s < seq; s++ {
 		tensor.Add(out, out, x[s*dim:(s+1)*dim])
 	}
 	tensor.Scale(out, 1.0/float32(seq))
-	return out, nil
+
+	// Copy result out of scratch so caller owns the memory.
+	result := make([]float32, dim)
+	copy(result, out)
+	return result, nil
 }
 
 // gqaAttention computes grouped-query attention using SIMD-accelerated dot products.
@@ -363,15 +378,24 @@ func (g *GemmaEmbedder) gqaAttention(out, q, k, v []float32,
 
 			tensor.Softmax(scores[:seq])
 
-			// Weighted sum of V: zero output then accumulate
+			// Weighted sum of V: fused scale-add without Axpy pool overhead.
+			// For typical seq=40, headDim=256, this is ~10K FMAs — fast enough
+			// as a scalar loop that the compiler can auto-vectorize.
 			outOff := sq*qStride + h*headDim
 			outSlice := out[outOff : outOff+headDim]
 			for i := range outSlice {
 				outSlice[i] = 0
 			}
 			for sk := 0; sk < seq; sk++ {
+				s := scores[sk]
+				if s == 0 {
+					continue
+				}
 				vOff := sk*kvStride + kvH*headDim
-				tensor.Axpy(scores[sk], v[vOff:vOff+headDim], outSlice)
+				vSlice := v[vOff : vOff+headDim]
+				for i := 0; i < headDim; i++ {
+					outSlice[i] += s * vSlice[i]
+				}
 			}
 		}
 	}

@@ -22,6 +22,9 @@ const items: NavItem[] = [
   { id: 'security', label: '安全规则', hint: '统一治理和审计' },
   { id: 'delivery', label: '下发管理', hint: '查看下发状态' },
   { id: 'usage', label: '使用情况', hint: '统计和趋势' },
+  { id: 'im', label: 'IM 管理', hint: '飞书/钉钉/企微' },
+  { id: 'auth', label: '认证管理', hint: 'LDAP/本地账户' },
+  { id: 'settings', label: '账户设置', hint: '资料与密码' },
 ];
 
 export function SideNav({ activeTab, onChange }: Props) {

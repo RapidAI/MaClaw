@@ -100,5 +100,14 @@ func collectOpenAIChatPassThrough(req map[string]any) map[string]any {
 			out[k] = v
 		}
 	}
+	// Clamp max_tokens / max_completion_tokens to provider limit
+	// (e.g. Alibaba Bailian caps at 65536).
+	for _, k := range []string{"max_tokens", "max_completion_tokens"} {
+		if v, ok := out[k]; ok {
+			if f, ok := v.(float64); ok && f > 65536 {
+				out[k] = float64(65536)
+			}
+		}
+	}
 	return out
 }

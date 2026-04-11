@@ -127,9 +127,11 @@ type hubSkillDependency struct {
 }
 
 type hubSkillStep struct {
-	Action  string                 `json:"action"`
-	Params  map[string]interface{} `json:"params"`
-	OnError string                 `json:"on_error"`
+	Action    string                 `json:"action"`
+	Params    map[string]interface{} `json:"params"`
+	OnError   string                 `json:"on_error"`
+	Name      string                 `json:"name,omitempty"`
+	Condition string                 `json:"condition,omitempty"`
 }
 
 func hubItemToMeta(item hubSkillItem, hubURL string) HubSkillMeta {
@@ -214,9 +216,11 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 	steps := make([]NLSkillStep, 0, len(full.Steps))
 	for _, s := range full.Steps {
 		steps = append(steps, NLSkillStep{
-			Action:  s.Action,
-			Params:  s.Params,
-			OnError: s.OnError,
+			Action:    s.Action,
+			Params:    s.Params,
+			OnError:   s.OnError,
+			Name:      s.Name,
+			Condition: s.Condition,
 		})
 	}
 

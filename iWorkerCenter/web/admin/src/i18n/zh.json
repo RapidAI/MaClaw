@@ -1,0 +1,91 @@
+{
+  "app": {
+    "loading": "加载中...",
+    "title": "数字员工中心"
+  },
+  "nav": {
+    "overview": "总览",
+    "employees": "数字员工",
+    "communications": "员工通讯",
+    "workflows": "流程设计",
+    "knowledge": "经验共享",
+    "packages": "能力包",
+    "models": "模型调度",
+    "compute": "算力管理",
+    "security": "安全规则",
+    "delivery": "下发管理",
+    "usage": "使用情况",
+    "im": "IM 管理",
+    "auth": "认证管理",
+    "settings": "账户设置"
+  },
+  "subtitle": {
+    "overview": "帮助管理员快速了解数字员工中心的整体运行情况。",
+    "employees": "管理身份、角色、能力偏好和模型策略。",
+    "communications": "查看数字员工之间的协作记录和请求流转。",
+    "workflows": "配置事务如何在不同数字员工之间流转。",
+    "knowledge": "沉淀经验并支持不同员工复用。",
+    "packages": "管理能力包来源、版本和分发状态。",
+    "models": "统一配置默认模型、备用模型与路由规则。",
+    "compute": "管理 LLM 算力来源、服务商配置与用量统计。",
+    "security": "下发统一治理规则并保留审计入口。",
+    "delivery": "查看配置和能力向客户端下发的状态。",
+    "usage": "跟踪数字员工使用量和趋势变化。",
+    "im": "配置飞书、钉钉、企业微信网关接入。",
+    "auth": "管理数字员工的 LDAP 和本地账户认证方式。",
+    "settings": "管理邮箱和登录密码。"
+  },
+  "login": {
+    "title": "登录",
+    "username": "用户名",
+    "password": "密码",
+    "submit": "登录",
+    "error": "用户名或密码错误"
+  },
+  "setup": {
+    "title": "初始化设置",
+    "description": "首次使用，请设置管理员账户。"
+  },
+  "im": {
+    "feishu": "飞书",
+    "feishuDesc": "配置飞书机器人的 App ID 和密钥。",
+    "dingtalk": "钉钉",
+    "dingtalkDesc": "配置钉钉机器人的 App Key 和密钥。",
+    "wecom": "企业微信",
+    "wecomDesc": "配置企业微信的 Corp ID、Agent ID 和密钥。"
+  },
+  "compute": {
+    "title": "算力管理",
+    "modeCloud": "云端同步模式",
+    "modeLocal": "本地管理模式",
+    "fromCloud": "来自 iWorkerCloud",
+    "local": "本地配置",
+    "lastSync": "上次同步",
+    "syncNow": "立即同步",
+    "switchLocal": "切换为本地管理",
+    "switchCloud": "切换为云端同步",
+    "noPermission": "需要 iWorkerCloud 管理员授予算力自管理权限",
+    "providerName": "服务商名称",
+    "protocol": "协议",
+    "computeType": "算力类型",
+    "model": "模型",
+    "enabled": "启用",
+    "source": "来源",
+    "test": "测试连通性",
+    "addProvider": "添加服务商"
+  },
+  "common": {
+    "save": "保存",
+    "cancel": "取消",
+    "create": "新建",
+    "delete": "删除",
+    "edit": "编辑",
+    "search": "搜索",
+    "confirm": "确认",
+    "back": "返回",
+    "loading": "加载中...",
+    "noData": "暂无数据",
+    "success": "操作成功",
+    "error": "操作失败"
+  }
+}

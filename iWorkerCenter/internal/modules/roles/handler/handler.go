@@ -7,6 +7,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/domain"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/service"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
 
@@ -34,7 +35,7 @@ func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 func (h *Handler) handleAdminRoles(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		h.listRoles(w)
+		h.listRoles(w, r)
 	case http.MethodPost:
 		h.createRole(w, r)
 	default:
@@ -62,7 +63,7 @@ func (h *Handler) handleAdminRoleByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		h.getRole(w, id)
+		h.getRole(w, r, id)
 	case http.MethodPut:
 		h.updateRole(w, r, id)
 	default:
@@ -75,7 +76,8 @@ func (h *Handler) handleClientRoles(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	items, err := h.svc.ListActive()
+	tid := tenant.TenantIDFromContext(r.Context())
+	items, err := h.svc.ListActive(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -83,8 +85,9 @@ func (h *Handler) handleClientRoles(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, map[string]any{"roles": toClientDTOs(items)})
 }
 
-func (h *Handler) listRoles(w http.ResponseWriter) {
-	items, err := h.svc.List()
+func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) {
+	tid := tenant.TenantIDFromContext(r.Context())
+	items, err := h.svc.List(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -93,12 +96,13 @@ func (h *Handler) listRoles(w http.ResponseWriter) {
 }
 
 func (h *Handler) createRole(w http.ResponseWriter, r *http.Request) {
+	tid := tenant.TenantIDFromContext(r.Context())
 	var req service.CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
-	role, err := h.svc.Create(req)
+	role, err := h.svc.Create(tid, req)
 	if err != nil {
 		response.BadRequest(w, "CREATE_FAILED", err.Error())
 		return
@@ -106,8 +110,9 @@ func (h *Handler) createRole(w http.ResponseWriter, r *http.Request) {
 	response.Created(w, toAdminDTO(role))
 }
 
-func (h *Handler) getRole(w http.ResponseWriter, id string) {
-	role, err := h.svc.GetByID(id)
+func (h *Handler) getRole(w http.ResponseWriter, r *http.Request, id string) {
+	tid := tenant.TenantIDFromContext(r.Context())
+	role, err := h.svc.GetByID(tid, id)
 	if err != nil {
 		response.NotFound(w, "NOT_FOUND", "role not found")
 		return
@@ -116,12 +121,13 @@ func (h *Handler) getRole(w http.ResponseWriter, id string) {
 }
 
 func (h *Handler) updateRole(w http.ResponseWriter, r *http.Request, id string) {
+	tid := tenant.TenantIDFromContext(r.Context())
 	var req service.UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
-	role, err := h.svc.Update(id, req)
+	role, err := h.svc.Update(tid, id, req)
 	if err != nil {
 		response.BadRequest(w, "UPDATE_FAILED", err.Error())
 		return
@@ -130,6 +136,7 @@ func (h *Handler) updateRole(w http.ResponseWriter, r *http.Request, id string) 
 }
 
 func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
+	tid := tenant.TenantIDFromContext(r.Context())
 	var req struct {
 		Status string `json:"status"`
 	}
@@ -137,7 +144,7 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
-	if err := h.svc.SetStatus(id, req.Status); err != nil {
+	if err := h.svc.SetStatus(tid, id, req.Status); err != nil {
 		response.BadRequest(w, "STATUS_FAILED", err.Error())
 		return
 	}

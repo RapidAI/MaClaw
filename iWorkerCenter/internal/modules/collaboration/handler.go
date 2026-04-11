@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
 
@@ -36,7 +37,8 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	tasks, err := h.svc.ListAll()
+	tid := tenant.TenantIDFromContext(r.Context())
+	tasks, err := h.svc.ListAll(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -49,13 +51,14 @@ func (h *Handler) handleClientList(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
+	tid := tenant.TenantIDFromContext(r.Context())
 	colleagueID := r.URL.Query().Get("colleague_id")
 	if colleagueID == "" {
-		tasks, _ := h.svc.ListAll()
+		tasks, _ := h.svc.ListAll(tid)
 		response.OK(w, map[string]any{"tasks": toTaskDTOs(tasks)})
 		return
 	}
-	tasks, err := h.svc.ListByColleague(colleagueID)
+	tasks, err := h.svc.ListByColleague(tid, colleagueID)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -68,12 +71,13 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
+	tid := tenant.TenantIDFromContext(r.Context())
 	var req CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
-	task, err := h.svc.Create(req)
+	task, err := h.svc.Create(tid, req)
 	if err != nil {
 		response.BadRequest(w, "CREATE_FAILED", err.Error())
 		return
@@ -82,6 +86,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleByID(w http.ResponseWriter, r *http.Request) {
+	tid := tenant.TenantIDFromContext(r.Context())
 	// /admin/collaborations/{id}
 	// /admin/collaborations/{id}/events
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/collaborations/")
@@ -94,7 +99,7 @@ func (h *Handler) handleByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 2 && parts[1] == "events" {
-		events, err := h.svc.ListEvents(id)
+		events, err := h.svc.ListEvents(tid, id)
 		if err != nil {
 			response.Internal(w, err.Error())
 			return
@@ -103,7 +108,7 @@ func (h *Handler) handleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.svc.GetByID(id)
+	task, err := h.svc.GetByID(tid, id)
 	if err != nil {
 		response.NotFound(w, "NOT_FOUND", "task not found")
 		return
@@ -116,6 +121,7 @@ func (h *Handler) handleTransition(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
+	tid := tenant.TenantIDFromContext(r.Context())
 	// /runtime/collaboration/{id}/{action}
 	rest := strings.TrimPrefix(r.URL.Path, "/runtime/collaboration/")
 	rest = strings.TrimRight(rest, "/")
@@ -145,7 +151,7 @@ func (h *Handler) handleTransition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.Transition(id, newStatus, body.ActorID, body.Result, body.Note); err != nil {
+	if err := h.svc.Transition(tid, id, newStatus, body.ActorID, body.Result, body.Note); err != nil {
 		response.BadRequest(w, "TRANSITION_FAILED", err.Error())
 		return
 	}

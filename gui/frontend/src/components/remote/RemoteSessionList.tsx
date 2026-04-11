@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect, useCallback, type Dispatch, type S
 import { colors, radius } from "./styles";
 import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
 import { RemoteSessionConsole } from "./RemoteSessionConsole";
-import { ListBackgroundLoops, StopBackgroundLoop, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
+import { ListBackgroundLoops, StopBackgroundLoop, StopAllBackgroundLoops, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 // Strip ANSI escape sequences and non-printable control characters from terminal output
@@ -197,6 +197,20 @@ export function RemoteSessionList(props: Props) {
             refreshBgLoops();
         } catch (err) {
             showToastMessage(localizeText("Stop failed: {error}", "停止失败: {error}", "停止失敗: {error}").replace("{error}", String(err)), 4000);
+        }
+    };
+
+    const handleStopAllLoops = async () => {
+        try {
+            const stopped = await StopAllBackgroundLoops();
+            if (stopped && stopped.length > 0) {
+                showToastMessage(localizeText("Stopped {count} tasks", "已停止 {count} 个任务", "已停止 {count} 個任務").replace("{count}", String(stopped.length)), 2500);
+            } else {
+                showToastMessage(localizeText("No running tasks to stop", "没有运行中的任务可停止", "沒有執行中的任務可停止"), 1500);
+            }
+            refreshBgLoops();
+        } catch (err) {
+            showToastMessage(localizeText("Stop all failed: {error}", "停止全部失败: {error}", "停止全部失敗: {error}").replace("{error}", String(err)), 4000);
         }
     };
 
@@ -577,6 +591,15 @@ export function RemoteSessionList(props: Props) {
                         )}
                     </button>
                     <div style={{ flex: 1 }} />
+                    {isBackgroundTab && bgTotalCount > 0 && (
+                        <button
+                            className="btn-link"
+                            style={{ fontSize: "0.72rem", marginBottom: "4px", color: colors.danger }}
+                            onClick={handleStopAllLoops}
+                        >
+                            {localizeText("Stop all ({count})", "停止全部 ({count})", "停止全部 ({count})").replace("{count}", String(bgTotalCount))}
+                        </button>
+                    )}
                     {!isBackgroundTab && historySessions.length > 0 && (
                         <button
                             className="btn-link"

@@ -1,18 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-    ClawNetGetDMInbox,
-    ClawNetGetDMThread,
-    ClawNetSendDM,
-    ClawNetListTopics,
-    ClawNetCreateTopic,
-    ClawNetGetTopicMessages,
-    ClawNetPostTopicMessage,
+    AgentNetGetDMInbox,
+    AgentNetGetDMThread,
+    AgentNetSendDM,
+    AgentNetListTopics,
+    AgentNetCreateTopic,
+    AgentNetGetTopicMessages,
+    AgentNetPostTopicMessage,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
 import { cnCard, cnLabel, cnInput, cnActionBtn, cnTabStyle } from "./agentnetStyles";
 import { useDialog } from "../CustomDialog";
 
-const FAV_STORAGE_KEY = "clawnet_fav_topics";
+const FAV_STORAGE_KEY = "agentnet_fav_topics";
 const FAV_LIMIT = 5;
 
 function readFavs(): string[] {
@@ -32,9 +32,9 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-type Props = { lang: string; clawNetRunning: boolean };
+type Props = { lang: string; agentNetRunning: boolean };
 
-export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
+export function AgentNetChatPanel({ lang, agentNetRunning }: Props) {
     const { showAlert } = useDialog();
     const [tab, setTab] = useState<"dm" | "topics">("dm");
 
@@ -85,18 +85,18 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
 
     // DM
     const loadInbox = useCallback(async () => {
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         setLoading(true); setError("");
         try {
-            const res = await ClawNetGetDMInbox();
+            const res = await AgentNetGetDMInbox();
             if (mountedRef.current && res.ok) setInbox(res.inbox as any[] || []);
         } catch (e: any) { if (mountedRef.current) setError(e.message); }
         if (mountedRef.current) setLoading(false);
-    }, [clawNetRunning]);
+    }, [agentNetRunning]);
 
     const loadThread = useCallback(async (peerID: string) => {
         try {
-            const res = await ClawNetGetDMThread(peerID, 50);
+            const res = await AgentNetGetDMThread(peerID, 50);
             if (mountedRef.current && res.ok) setThread(res.thread as any[] || []);
         } catch {}
     }, []);
@@ -108,7 +108,7 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
         if (!target || !dmText.trim()) return;
         setDmBusy(true);
         try {
-            const res = await ClawNetSendDM(target, dmText.trim());
+            const res = await AgentNetSendDM(target, dmText.trim());
             if (!mountedRef.current) return;
             if (res.ok) { setDmText(""); if (activePeer) loadThread(activePeer); else { setNewPeer(""); setActivePeer(target); loadThread(target); } loadInbox(); }
         } catch {}
@@ -117,19 +117,19 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
 
     // Topics
     const loadTopics = useCallback(async () => {
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         setLoading(true);
         try {
-            const res = await ClawNetListTopics();
+            const res = await AgentNetListTopics();
             if (mountedRef.current && res.ok) setTopics(res.topics as any[] || []);
         } catch {}
         if (mountedRef.current) setLoading(false);
-    }, [clawNetRunning]);
+    }, [agentNetRunning]);
 
     const loadTopicMsgs = async (name: string) => {
         setActiveTopic(name); setTopicMsgs([]);
         try {
-            const res = await ClawNetGetTopicMessages(name);
+            const res = await AgentNetGetTopicMessages(name);
             if (mountedRef.current && res.ok) setTopicMsgs(res.messages as any[] || []);
         } catch {}
     };
@@ -138,7 +138,7 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
         if (!activeTopic || !topicText.trim()) return;
         setTopicBusy(true);
         try {
-            const res = await ClawNetPostTopicMessage(activeTopic, topicText.trim());
+            const res = await AgentNetPostTopicMessage(activeTopic, topicText.trim());
             if (!mountedRef.current) return;
             if (res.ok) { setTopicText(""); loadTopicMsgs(activeTopic); }
         } catch {}
@@ -148,7 +148,7 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
     const createTopic = async () => {
         if (!newTopicName.trim()) return;
         try {
-            const res = await ClawNetCreateTopic(newTopicName.trim(), newTopicDesc.trim());
+            const res = await AgentNetCreateTopic(newTopicName.trim(), newTopicDesc.trim());
             if (!mountedRef.current) return;
             if (res.ok) { setNewTopicName(""); setNewTopicDesc(""); setShowNewTopic(false); loadTopics(); }
         } catch {}
@@ -156,7 +156,7 @@ export function ClawNetChatPanel({ lang, clawNetRunning }: Props) {
 
     useEffect(() => { if (tab === "dm") loadInbox(); else loadTopics(); }, [tab, loadInbox, loadTopics]);
 
-    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
+    if (!agentNetRunning) return <div style={cnLabel}>{localizeText(lang, "AgentNet not connected", "智网未连接")}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>

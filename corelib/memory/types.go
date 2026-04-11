@@ -110,6 +110,23 @@ func (c Category) Tier() MemoryTier {
 	}
 }
 
+// LinkType describes the semantic relationship between two memory entries.
+type LinkType string
+
+const (
+	LinkRelated    LinkType = ""           // default — generic relatedness
+	LinkReferences LinkType = "references" // A references B
+	LinkSupersedes LinkType = "supersedes" // A supersedes B
+	LinkDerivedFrom LinkType = "derived_from" // A was derived from B
+	LinkConflicts  LinkType = "conflicts"  // A conflicts with B
+)
+
+// VersionSnapshot records a previous version of an entry's content.
+type VersionSnapshot struct {
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // Entry represents a single memory record.
 type Entry struct {
 	ID          string    `json:"id"`
@@ -133,6 +150,15 @@ type Entry struct {
 	Pinned bool `json:"pinned,omitempty"`
 	// --- Compact form for context injection ---
 	CompactForm string `json:"compact_form,omitempty"`
+	// --- Source provenance (inspired by GBrain) ---
+	SourceURL  string `json:"source_url,omitempty"`
+	SourceType string `json:"source_type,omitempty"` // e.g. "conversation", "web", "meeting", "manual"
+	// --- Content hash for idempotent import (inspired by GBrain) ---
+	ContentHash string `json:"content_hash,omitempty"`
+	// --- Version history: last 3 snapshots (inspired by GBrain page_versions) ---
+	Versions []VersionSnapshot `json:"versions,omitempty"`
+	// --- Stale flag: set by dream cycle when newer conflicting entry exists ---
+	Stale bool `json:"stale,omitempty"`
 }
 
 // IsActive returns true if the entry participates in normal recall.
@@ -175,4 +201,40 @@ type GCResult struct {
 	ActiveBefore  int `json:"active_before"`
 	ActiveAfter   int `json:"active_after"`
 	SkippedPinned int `json:"skipped_pinned"`
+}
+
+// DreamCycleResult records the outcome of a dream cycle (background self-healing).
+type DreamCycleResult struct {
+	StaleDetected    int `json:"stale_detected"`
+	LinksDiscovered  int `json:"links_discovered"`
+	HashesBackfilled int `json:"hashes_backfilled"`
+}
+
+// SearchMode controls which retrieval strategy to use.
+type SearchMode int
+
+const (
+	SearchHybrid      SearchMode = iota // BM25 + vector + RRF (default)
+	SearchKeywordOnly                   // BM25 only, no vector
+	SearchDirect                        // exact ID lookup
+)
+
+// HealthReport provides an aggregated view of memory system health.
+// Inspired by GBrain's `gbrain health` / `gbrain doctor` commands.
+type HealthReport struct {
+	ActiveEntries    int            `json:"active_entries"`
+	MaxCapacity      int            `json:"max_capacity"`
+	CapacityPercent  float64        `json:"capacity_percent"`
+	ArchivedEntries  int            `json:"archived_entries"`
+	StaleEntries     int            `json:"stale_entries"`
+	OrphanEntries    int            `json:"orphan_entries"`    // no graph edges
+	NoEmbedding      int            `json:"no_embedding"`      // missing vector
+	NoHash           int            `json:"no_hash"`           // missing content hash
+	PinnedEntries    int            `json:"pinned_entries"`
+	EmbedderActive   bool           `json:"embedder_active"`
+	CategoryCounts   map[string]int `json:"category_counts"`
+	AvgAccessCount   float64        `json:"avg_access_count"`
+	OldestEntry      string         `json:"oldest_entry,omitempty"`      // RFC3339
+	NewestEntry      string         `json:"newest_entry,omitempty"`      // RFC3339
+	VersionedEntries int            `json:"versioned_entries"` // entries with version history
 }

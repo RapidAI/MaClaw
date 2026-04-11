@@ -1538,6 +1538,20 @@ body {
 .sidebar[data-ai-theme='dark'] {
     background: linear-gradient(180deg, var(--theme-surface) 0%, var(--theme-page-bg) 100%);
     color: var(--theme-text-primary);
+    --theme-primary: #818cf8;
+    --theme-primary-strong: #6366f1;
+    --theme-primary-soft: rgba(129, 140, 248, 0.18);
+    --theme-page-bg: #0b1220;
+    --theme-surface: #111827;
+    --theme-surface-muted: #0f172a;
+    --theme-text-primary: #e5e7eb;
+    --theme-text-secondary: #cbd5e1;
+    --theme-text-muted: #94a3b8;
+    --theme-border: #334155;
+    --theme-border-subtle: #1e293b;
+    --theme-danger: #f87171;
+    --theme-info-bg: rgba(99, 102, 241, 0.14);
+    --theme-link-color: #a5b4fc;
 }
 
 .sidebar[data-ai-theme='dark'] .sidebar-item {
@@ -2139,9 +2153,9 @@ body {
     padding: 8px 12px;
     max-height: 300px;
     overflow-y: auto;
-    overflow-x: hidden;
+    overflow-x: auto;
     white-space: pre-wrap;
-    word-break: break-all;
+    word-break: normal;
     scrollbar-width: thin;
     scrollbar-color: var(--theme-border) var(--theme-surface-muted);
 }

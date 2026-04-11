@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from "react";
 import {
-    ClawNetGetResume,
-    ClawNetUpdateResume,
-    ClawNetGetProfile,
-    ClawNetUpdateProfile,
-    ClawNetSetMotto,
-    ClawNetSearchKnowledge,
+    AgentNetGetResume,
+    AgentNetUpdateResume,
+    AgentNetGetProfile,
+    AgentNetUpdateProfile,
+    AgentNetSetMotto,
+    AgentNetSearchKnowledge,
 } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 import { cnCard, cnLabel, cnHeading, cnInput, cnActionBtn, cnTabStyle } from "./agentnetStyles";
@@ -14,9 +14,9 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-type Props = { lang: string; clawNetRunning: boolean };
+type Props = { lang: string; agentNetRunning: boolean };
 
-export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
+export function AgentNetResumePanel({ lang, agentNetRunning }: Props) {
     const [tab, setTab] = useState<"resume" | "search">("resume");
 
     // Resume
@@ -47,9 +47,9 @@ export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
     useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
     const loadResume = useCallback(async () => {
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         try {
-            const [rRes, pRes] = await Promise.all([ClawNetGetResume(), ClawNetGetProfile()]);
+            const [rRes, pRes] = await Promise.all([AgentNetGetResume(), AgentNetGetProfile()]);
             if (!mountedRef.current) return;
             if (rRes.ok && rRes.resume) {
                 const r = rRes.resume as any;
@@ -64,7 +64,7 @@ export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
             }
             setLoaded(true);
         } catch {}
-    }, [clawNetRunning]);
+    }, [agentNetRunning]);
 
     useEffect(() => { if (tab === "resume" && !loaded) loadResume(); }, [tab, loaded, loadResume]);
 
@@ -74,9 +74,9 @@ export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
             const skillList = skills.split(",").map(s => s.trim()).filter(Boolean);
             const domainList = domains.split(",").map(s => s.trim()).filter(Boolean);
             const saveResults = await Promise.all([
-                ClawNetUpdateResume(skillList, domainList, bio.trim()),
-                name.trim() ? ClawNetUpdateProfile(name.trim(), bio.trim()) : Promise.resolve({ ok: true }),
-                motto.trim() ? ClawNetSetMotto(motto.trim()) : Promise.resolve({ ok: true }),
+                AgentNetUpdateResume(skillList, domainList, bio.trim()),
+                name.trim() ? AgentNetUpdateProfile(name.trim(), bio.trim()) : Promise.resolve({ ok: true }),
+                motto.trim() ? AgentNetSetMotto(motto.trim()) : Promise.resolve({ ok: true }),
             ]);
             const failed = saveResults.find((r: any) => !r.ok);
             if (failed) setMsg(`❌ ${(failed as any).error}`);
@@ -89,13 +89,13 @@ export function ClawNetResumePanel({ lang, clawNetRunning }: Props) {
         if (!query.trim()) return;
         setSearching(true); setResults([]);
         try {
-            const res = await ClawNetSearchKnowledge(query.trim());
+            const res = await AgentNetSearchKnowledge(query.trim());
             if (mountedRef.current && res.ok) setResults(res.entries as any[] || []);
         } catch {}
         if (mountedRef.current) setSearching(false);
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
+    if (!agentNetRunning) return <div style={cnLabel}>{localizeText(lang, "AgentNet not connected", "智网未连接")}</div>;
 
     const viewBtnStyle: CSSProperties = { marginLeft: "auto", fontSize: "0.65rem", padding: "2px 10px", borderRadius: radius.pill, border: `1px solid ${colors.border}`, background: colors.accentBg, color: colors.primary, cursor: "pointer", fontWeight: 600, lineHeight: "1.6" };
 

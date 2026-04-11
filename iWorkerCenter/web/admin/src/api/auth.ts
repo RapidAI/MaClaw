@@ -1,0 +1,26 @@
+import { apiGet, apiPost } from './client';
+
+export interface TenantStatus {
+  needs_setup: boolean;
+  tenant_id?: string;
+}
+
+export interface LoginResult {
+  token: string;
+}
+
+export function checkTenantStatus(): Promise<TenantStatus> {
+  return apiGet('/auth/tenant-status');
+}
+
+export function checkSession(): Promise<{ ok: boolean }> {
+  return apiGet('/auth/check');
+}
+
+export function login(username: string, password: string): Promise<LoginResult> {
+  return apiPost('/auth/login', { username, password });
+}
+
+export function setupTenant(data: { tenant_name: string; admin_username: string; admin_password: string }): Promise<void> {
+  return apiPost('/auth/setup', data);
+}

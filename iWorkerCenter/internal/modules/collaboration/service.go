@@ -32,7 +32,7 @@ type CreateRequest struct {
 }
 
 // Create validates and persists a new collaboration task.
-func (s *Service) Create(req CreateRequest) (*Task, error) {
+func (s *Service) Create(tenantID string, req CreateRequest) (*Task, error) {
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		return nil, fmt.Errorf("title is required")
@@ -58,11 +58,11 @@ func (s *Service) Create(req CreateRequest) (*Task, error) {
 		UpdatedAt:       now,
 	}
 
-	if err := s.repo.InsertTask(task); err != nil {
+	if err := s.repo.InsertTask(tenantID, task); err != nil {
 		return nil, fmt.Errorf("create task: %w", err)
 	}
 
-	_ = s.repo.InsertEvent(&TaskEvent{
+	_ = s.repo.InsertEvent(tenantID, &TaskEvent{
 		ID: idgen.New("cevt"), TaskID: task.ID,
 		Event: "created", ActorID: task.FromColleagueID, CreatedAt: now,
 	})
@@ -78,8 +78,8 @@ var validTransitions = map[string][]string{
 }
 
 // Transition moves a task to a new status with validation.
-func (s *Service) Transition(taskID, newStatus, actorID, result, note string) error {
-	task, err := s.repo.GetByID(taskID)
+func (s *Service) Transition(tenantID string, taskID, newStatus, actorID, result, note string) error {
+	task, err := s.repo.GetByID(tenantID, taskID)
 	if err != nil {
 		return fmt.Errorf("task not found: %w", err)
 	}
@@ -99,11 +99,11 @@ func (s *Service) Transition(taskID, newStatus, actorID, result, note string) er
 		return fmt.Errorf("cannot transition from %s to %s", task.Status, newStatus)
 	}
 
-	if err := s.repo.UpdateStatus(taskID, newStatus, result); err != nil {
+	if err := s.repo.UpdateStatus(tenantID, taskID, newStatus, result); err != nil {
 		return err
 	}
 
-	_ = s.repo.InsertEvent(&TaskEvent{
+	_ = s.repo.InsertEvent(tenantID, &TaskEvent{
 		ID: idgen.New("cevt"), TaskID: taskID,
 		Event: newStatus, ActorID: actorID, Note: note, CreatedAt: time.Now(),
 	})
@@ -112,21 +112,21 @@ func (s *Service) Transition(taskID, newStatus, actorID, result, note string) er
 }
 
 // GetByID returns a task by ID.
-func (s *Service) GetByID(id string) (*Task, error) {
-	return s.repo.GetByID(id)
+func (s *Service) GetByID(tenantID string, id string) (*Task, error) {
+	return s.repo.GetByID(tenantID, id)
 }
 
 // ListByColleague returns tasks assigned to a colleague.
-func (s *Service) ListByColleague(colleagueID string) ([]*Task, error) {
-	return s.repo.ListByColleague(colleagueID)
+func (s *Service) ListByColleague(tenantID string, colleagueID string) ([]*Task, error) {
+	return s.repo.ListByColleague(tenantID, colleagueID)
 }
 
 // ListAll returns all tasks.
-func (s *Service) ListAll() ([]*Task, error) {
-	return s.repo.ListAll()
+func (s *Service) ListAll(tenantID string) ([]*Task, error) {
+	return s.repo.ListAll(tenantID)
 }
 
 // ListEvents returns events for a task.
-func (s *Service) ListEvents(taskID string) ([]*TaskEvent, error) {
-	return s.repo.ListEvents(taskID)
+func (s *Service) ListEvents(tenantID string, taskID string) ([]*TaskEvent, error) {
+	return s.repo.ListEvents(tenantID, taskID)
 }

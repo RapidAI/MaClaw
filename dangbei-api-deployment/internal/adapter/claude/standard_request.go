@@ -22,6 +22,12 @@ func normalizeClaudeRequest(store *config.Store, req map[string]any) (claudeNorm
 	if _, ok := req["max_tokens"]; !ok {
 		req["max_tokens"] = 8192
 	}
+	// Clamp max_tokens to provider limit (e.g. Alibaba Bailian caps at 65536).
+	if mt, ok := req["max_tokens"]; ok {
+		if mtf, ok := mt.(float64); ok && mtf > 65536 {
+			req["max_tokens"] = 65536
+		}
+	}
 	normalizedMessages := normalizeClaudeMessages(messagesRaw)
 	payload := cloneMap(req)
 	payload["messages"] = normalizedMessages

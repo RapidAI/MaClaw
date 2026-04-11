@@ -10,10 +10,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// clawnetFindProcessByName returns the PID of a running process whose
+// agentnetFindProcessByName returns the PID of a running process whose
 // executable name matches the given name (case-insensitive). Returns 0 if
 // not found. It skips the current process so the caller never matches itself.
-func clawnetFindProcessByName(name string) int {
+func agentnetFindProcessByName(name string) int {
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return 0

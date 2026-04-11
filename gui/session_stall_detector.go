@@ -254,7 +254,33 @@ func (d *StallDetector) monitorLoop(sessionID string, ss *sessionStallState) {
 			exec := ss.exec
 			d.mu.Unlock()
 
-			// Send the nudge.
+			// For SDK sessions, the first nudge sends an interrupt control
+			// request instead of a user message.  The Claude Code SDK
+			// protocol defines interrupt as the proper way to break out of
+			// a stuck turn — it's processed even when the agent is busy
+			// executing tools, whereas a user message may be queued behind
+			// the current turn and never read.
+			//
+			// On the second nudge (if the interrupt didn't help), we fall
+			// back to sending a user message as before.
+			if nudgeCount == 1 {
+				if _, isSDK := exec.(*SDKExecutionHandle); isSDK {
+					d.logger("[stall-nudge-interrupt] session=" + sessionID + " sending SDK interrupt before nudge text")
+					if err := exec.Interrupt(); err != nil {
+						d.logger("[stall-nudge-interrupt-error] session=" + sessionID + " error=" + err.Error())
+						// Interrupt failed — fall through to send nudge text
+					} else {
+						d.logger("[stall-nudge-interrupt] session=" + sessionID + " interrupt sent, skipping nudge text for this round")
+						d.mu.Lock()
+						ss.timer.Reset(d.config.StallTimeout)
+						d.mu.Unlock()
+						continue
+					}
+				}
+			}
+
+			// Send the nudge as a user message (non-SDK sessions, or SDK
+			// sessions where interrupt didn't help on the first attempt).
 			if err := exec.Write([]byte(nudgeText)); err != nil {
 				d.logger("[stall-nudge-error] session=" + sessionID + " error=" + err.Error())
 

@@ -1,7 +1,7 @@
 package main
 
-// app_clawnet.go — Wails bindings for ClawNet integration.
-// Exposes ClawNet P2P network features to the frontend via the App struct.
+// app_agentnet.go — Wails bindings for AgentNet integration.
+// Exposes AgentNet P2P network features to the frontend via the App struct.
 
 import (
 	"bytes"
@@ -18,15 +18,15 @@ import (
 	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// initClawNet lazily creates the ClawNet client on first use.
-func (a *App) initClawNet() *ClawNetClient {
-	if a.clawNetClient == nil {
-		a.clawNetClient = NewClawNetClient()
+// initAgentNet lazily creates the AgentNet client on first use.
+func (a *App) initAgentNet() *AgentNetClient {
+	if a.agentNetClient == nil {
+		a.agentNetClient = NewAgentNetClient()
 	}
-	return a.clawNetClient
+	return a.agentNetClient
 }
 
-func (a *App) clawNetStartAllowed() error {
+func (a *App) agentNetStartAllowed() error {
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -37,18 +37,18 @@ func (a *App) clawNetStartAllowed() error {
 	return nil
 }
 
-func (a *App) clawNetEnabled() bool {
-	return a.clawNetStartAllowed() == nil
+func (a *App) agentNetEnabled() bool {
+	return a.agentNetStartAllowed() == nil
 }
 
 // ---------- Wails-exposed methods ----------
 
-// ClawNetEnsureDaemon starts the ClawNet daemon if not running.
-func (a *App) ClawNetEnsureDaemon() map[string]interface{} {
-	if err := a.clawNetStartAllowed(); err != nil {
+// AgentNetEnsureDaemon starts the AgentNet daemon if not running.
+func (a *App) AgentNetEnsureDaemon() map[string]interface{} {
+	if err := a.agentNetStartAllowed(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	c := a.initClawNet()
+	c := a.initAgentNet()
 	if err := c.EnsureDaemon(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -57,25 +57,25 @@ func (a *App) ClawNetEnsureDaemon() map[string]interface{} {
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetStopDaemon stops the ClawNet daemon.
-func (a *App) ClawNetStopDaemon() {
-	if a.clawNetClient != nil {
-		a.clawNetClient.StopDaemon()
+// AgentNetStopDaemon stops the AgentNet daemon.
+func (a *App) AgentNetStopDaemon() {
+	if a.agentNetClient != nil {
+		a.agentNetClient.StopDaemon()
 	}
 }
 
-// ClawNetIsRunning checks if the daemon is reachable.
+// AgentNetIsRunning checks if the daemon is reachable.
 // Lazily initialises the client so the App-level poller can detect a
 // daemon that was started externally (e.g. by the OS or a previous run)
 // without requiring the user to visit the settings panel first.
-func (a *App) ClawNetIsRunning() bool {
-	c := a.initClawNet()
+func (a *App) AgentNetIsRunning() bool {
+	c := a.initAgentNet()
 	return c.IsRunning()
 }
 
-// ClawNetGetStatus returns node status.
-func (a *App) ClawNetGetStatus() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetStatus returns node status.
+func (a *App) AgentNetGetStatus() map[string]interface{} {
+	c := a.initAgentNet()
 	s, err := c.GetStatus()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -90,9 +90,9 @@ func (a *App) ClawNetGetStatus() map[string]interface{} {
 	}
 }
 
-// ClawNetGetPeers returns connected peers.
-func (a *App) ClawNetGetPeers() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetPeers returns connected peers.
+func (a *App) AgentNetGetPeers() map[string]interface{} {
+	c := a.initAgentNet()
 	peers, err := c.GetPeers()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -100,9 +100,9 @@ func (a *App) ClawNetGetPeers() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "peers": peers}
 }
 
-// ClawNetListTasks lists tasks with optional status filter.
-func (a *App) ClawNetListTasks(status string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetListTasks lists tasks with optional status filter.
+func (a *App) AgentNetListTasks(status string) map[string]interface{} {
+	c := a.initAgentNet()
 	tasks, err := c.ListTasks(status)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -110,9 +110,9 @@ func (a *App) ClawNetListTasks(status string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "tasks": tasks}
 }
 
-// ClawNetCreateTask posts a new task to the network.
-func (a *App) ClawNetCreateTask(title string, reward float64) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetCreateTask posts a new task to the network.
+func (a *App) AgentNetCreateTask(title string, reward float64) map[string]interface{} {
+	c := a.initAgentNet()
 	task, err := c.CreateTask(title, reward)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -120,9 +120,9 @@ func (a *App) ClawNetCreateTask(title string, reward float64) map[string]interfa
 	return map[string]interface{}{"ok": true, "task": task}
 }
 
-// ClawNetCreateTaskFull creates a task with description, tags, and optional target peer.
-func (a *App) ClawNetCreateTaskFull(title, description string, reward float64, tags []string, targetPeer string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetCreateTaskFull creates a task with description, tags, and optional target peer.
+func (a *App) AgentNetCreateTaskFull(title, description string, reward float64, tags []string, targetPeer string) map[string]interface{} {
+	c := a.initAgentNet()
 	task, err := c.CreateTaskFull(title, description, reward, tags, targetPeer)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -130,9 +130,9 @@ func (a *App) ClawNetCreateTaskFull(title, description string, reward float64, t
 	return map[string]interface{}{"ok": true, "task": task}
 }
 
-// ClawNetGetCredits returns Shell balance and tier info.
-func (a *App) ClawNetGetCredits() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetCredits returns Shell balance and tier info.
+func (a *App) AgentNetGetCredits() map[string]interface{} {
+	c := a.initAgentNet()
 	credits, err := c.GetCredits()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -147,9 +147,9 @@ func (a *App) ClawNetGetCredits() map[string]interface{} {
 	}
 }
 
-// ClawNetSearchKnowledge searches the knowledge mesh.
-func (a *App) ClawNetSearchKnowledge(query string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetSearchKnowledge searches the knowledge mesh.
+func (a *App) AgentNetSearchKnowledge(query string) map[string]interface{} {
+	c := a.initAgentNet()
 	entries, err := c.SearchKnowledge(query)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -157,9 +157,9 @@ func (a *App) ClawNetSearchKnowledge(query string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "entries": entries}
 }
 
-// ClawNetPublishKnowledge publishes a knowledge entry.
-func (a *App) ClawNetPublishKnowledge(title, body string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetPublishKnowledge publishes a knowledge entry.
+func (a *App) AgentNetPublishKnowledge(title, body string) map[string]interface{} {
+	c := a.initAgentNet()
 	entry, err := c.PublishKnowledge(title, body)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -167,9 +167,9 @@ func (a *App) ClawNetPublishKnowledge(title, body string) map[string]interface{}
 	return map[string]interface{}{"ok": true, "entry": entry}
 }
 
-// ClawNetPublishKnowledgeFull publishes a knowledge entry with domain tags.
-func (a *App) ClawNetPublishKnowledgeFull(title, body string, domains []string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetPublishKnowledgeFull publishes a knowledge entry with domain tags.
+func (a *App) AgentNetPublishKnowledgeFull(title, body string, domains []string) map[string]interface{} {
+	c := a.initAgentNet()
 	entry, err := c.PublishKnowledgeFull(title, body, domains)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -177,18 +177,18 @@ func (a *App) ClawNetPublishKnowledgeFull(title, body string, domains []string) 
 	return map[string]interface{}{"ok": true, "entry": entry}
 }
 
-// ClawNetSendDM sends an encrypted direct message.
-func (a *App) ClawNetSendDM(peerID, body string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetSendDM sends an encrypted direct message.
+func (a *App) AgentNetSendDM(peerID, body string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.SendDM(peerID, body); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetGetDMInbox returns the DM inbox.
-func (a *App) ClawNetGetDMInbox() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetDMInbox returns the DM inbox.
+func (a *App) AgentNetGetDMInbox() map[string]interface{} {
+	c := a.initAgentNet()
 	inbox, err := c.GetDMInbox()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -196,9 +196,9 @@ func (a *App) ClawNetGetDMInbox() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "inbox": inbox}
 }
 
-// ClawNetListSwarmSessions lists active Swarm Think sessions.
-func (a *App) ClawNetListSwarmSessions() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetListSwarmSessions lists active Swarm Think sessions.
+func (a *App) AgentNetListSwarmSessions() map[string]interface{} {
+	c := a.initAgentNet()
 	sessions, err := c.ListSwarmSessions()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -206,9 +206,9 @@ func (a *App) ClawNetListSwarmSessions() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "sessions": sessions}
 }
 
-// ClawNetCreateSwarmSession starts a new Swarm Think session.
-func (a *App) ClawNetCreateSwarmSession(topic, question string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetCreateSwarmSession starts a new Swarm Think session.
+func (a *App) AgentNetCreateSwarmSession(topic, question string) map[string]interface{} {
+	c := a.initAgentNet()
 	session, err := c.CreateSwarmSession(topic, question)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -216,9 +216,9 @@ func (a *App) ClawNetCreateSwarmSession(topic, question string) map[string]inter
 	return map[string]interface{}{"ok": true, "session": session}
 }
 
-// ClawNetGetResume returns the agent's profile (with local cache fallback).
-func (a *App) ClawNetGetResume() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetResume returns the agent's profile (with local cache fallback).
+func (a *App) AgentNetGetResume() map[string]interface{} {
+	c := a.initAgentNet()
 	r, err := c.GetResume()
 	if err != nil {
 		// Fallback to local cache on API failure.
@@ -250,9 +250,9 @@ func (a *App) ClawNetGetResume() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "resume": r}
 }
 
-// ClawNetListPredictions lists active prediction markets.
-func (a *App) ClawNetListPredictions() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetListPredictions lists active prediction markets.
+func (a *App) AgentNetListPredictions() map[string]interface{} {
+	c := a.initAgentNet()
 	preds, err := c.ListPredictions()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -260,11 +260,11 @@ func (a *App) ClawNetListPredictions() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "predictions": preds}
 }
 
-// ClawNetInstallBinary downloads the anet binary via official installer.
-// Emits "clawnet-install-progress" events to the frontend during download.
-func (a *App) ClawNetInstallBinary() map[string]interface{} {
+// AgentNetInstallBinary downloads the anet binary via official installer.
+// Emits "agentnet-install-progress" events to the frontend during download.
+func (a *App) AgentNetInstallBinary() map[string]interface{} {
 	emitter := func(stage string, pct int, msg string) {
-		a.emitEvent("clawnet-install-progress", map[string]interface{}{
+		a.emitEvent("agentnet-install-progress", map[string]interface{}{
 			"stage":   stage,
 			"percent": pct,
 			"message": msg,
@@ -277,15 +277,15 @@ func (a *App) ClawNetInstallBinary() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "path": path}
 }
 
-// ClawNetEnsureDaemonWithDownload starts the daemon, auto-downloading if needed.
-// Emits "clawnet-install-progress" events during download.
-func (a *App) ClawNetEnsureDaemonWithDownload() map[string]interface{} {
-	if err := a.clawNetStartAllowed(); err != nil {
+// AgentNetEnsureDaemonWithDownload starts the daemon, auto-downloading if needed.
+// Emits "agentnet-install-progress" events during download.
+func (a *App) AgentNetEnsureDaemonWithDownload() map[string]interface{} {
+	if err := a.agentNetStartAllowed(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	c := a.initClawNet()
+	c := a.initAgentNet()
 	emitter := func(stage string, pct int, msg string) {
-		a.emitEvent("clawnet-install-progress", map[string]interface{}{
+		a.emitEvent("agentnet-install-progress", map[string]interface{}{
 			"stage":   stage,
 			"percent": pct,
 			"message": msg,
@@ -299,15 +299,15 @@ func (a *App) ClawNetEnsureDaemonWithDownload() map[string]interface{} {
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetManualUpdate checks for a new version of the clawnet binary,
+// AgentNetManualUpdate checks for a new version of the agentnet binary,
 // downloads it if available, and restarts the daemon.
 // Returns {ok, updated, message, error}.
-func (a *App) ClawNetManualUpdate() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetManualUpdate() map[string]interface{} {
+	c := a.initAgentNet()
 	a.log("AgentNet: manual update triggered")
 
 	emitter := func(stage string, pct int, msg string) {
-		a.emitEvent("clawnet-install-progress", map[string]interface{}{
+		a.emitEvent("agentnet-install-progress", map[string]interface{}{
 			"stage":   stage,
 			"percent": pct,
 			"message": msg,
@@ -328,7 +328,7 @@ func (a *App) ClawNetManualUpdate() map[string]interface{} {
 		a.log(fmt.Sprintf("AgentNet: binary installed at %s", downloaded))
 	}
 
-	// Run `clawnet update` via SelfUpdate.
+	// Run `agentnet update` via SelfUpdate.
 	err := c.SelfUpdate()
 	if err != nil {
 		a.log(fmt.Sprintf("AgentNet: manual update failed: %v", err))
@@ -336,7 +336,7 @@ func (a *App) ClawNetManualUpdate() map[string]interface{} {
 	}
 
 	a.log("AgentNet: update applied")
-	if !a.clawNetEnabled() {
+	if !a.agentNetEnabled() {
 		a.log("AgentNet: daemon restart skipped after update because agentnet_enabled=false")
 		return map[string]interface{}{"ok": true, "updated": true, "restarted": false}
 	}
@@ -357,9 +357,9 @@ func (a *App) ClawNetManualUpdate() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "updated": true, "restarted": true}
 }
 
-// ClawNetGetBinaryPath returns the resolved clawnet binary path (for diagnostics).
-func (a *App) ClawNetGetBinaryPath() string {
-	c := a.initClawNet()
+// AgentNetGetBinaryPath returns the resolved agentnet binary path (for diagnostics).
+func (a *App) AgentNetGetBinaryPath() string {
+	c := a.initAgentNet()
 	if c.binPath != "" {
 		return c.binPath
 	}
@@ -440,8 +440,8 @@ func writeProfileCacheFields(name *string, bio *string, motto *string, skills []
 	_ = os.WriteFile(p, data, 0644)
 }
 
-func (a *App) ClawNetGetProfile() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetGetProfile() map[string]interface{} {
+	c := a.initAgentNet()
 	p, err := c.GetProfile()
 	if err != nil {
 		// Fallback to local cache on API failure.
@@ -473,8 +473,8 @@ func (a *App) ClawNetGetProfile() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "profile": p}
 }
 
-func (a *App) ClawNetUpdateProfile(name, bio string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetUpdateProfile(name, bio string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.UpdateProfile(name, bio); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -483,8 +483,8 @@ func (a *App) ClawNetUpdateProfile(name, bio string) map[string]interface{} {
 	return map[string]interface{}{"ok": true}
 }
 
-func (a *App) ClawNetSetMotto(motto string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetSetMotto(motto string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.SetMotto(motto); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -494,11 +494,11 @@ func (a *App) ClawNetSetMotto(motto string) map[string]interface{} {
 
 // ---------- Daemon Info ----------
 
-// ClawNetGetDaemonInfo returns daemon process info for diagnostics display.
+// AgentNetGetDaemonInfo returns daemon process info for diagnostics display.
 // Returns PID (if we launched it), binary path, and version.
-// The caller (frontend) already knows the alive/running state from ClawNetIsRunning.
-func (a *App) ClawNetGetDaemonInfo() map[string]interface{} {
-	c := a.initClawNet()
+// The caller (frontend) already knows the alive/running state from AgentNetIsRunning.
+func (a *App) AgentNetGetDaemonInfo() map[string]interface{} {
+	c := a.initAgentNet()
 	binPath := c.binPath
 	if binPath == "" {
 		binPath = c.findBinary()
@@ -520,8 +520,8 @@ func (a *App) ClawNetGetDaemonInfo() map[string]interface{} {
 
 // ---------- Topic Rooms ----------
 
-func (a *App) ClawNetListTopics() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetListTopics() map[string]interface{} {
+	c := a.initAgentNet()
 	topics, err := c.ListTopics()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -529,16 +529,16 @@ func (a *App) ClawNetListTopics() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "topics": topics}
 }
 
-func (a *App) ClawNetCreateTopic(name, description string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetCreateTopic(name, description string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.CreateTopic(name, description); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-func (a *App) ClawNetGetTopicMessages(topicName string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetGetTopicMessages(topicName string) map[string]interface{} {
+	c := a.initAgentNet()
 	msgs, err := c.GetTopicMessages(topicName)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -546,8 +546,8 @@ func (a *App) ClawNetGetTopicMessages(topicName string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "messages": msgs}
 }
 
-func (a *App) ClawNetPostTopicMessage(topicName, body string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetPostTopicMessage(topicName, body string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.PostTopicMessage(topicName, body); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -556,48 +556,48 @@ func (a *App) ClawNetPostTopicMessage(topicName, body string) map[string]interfa
 
 // ---------- Task Bazaar (extended) ----------
 
-func (a *App) ClawNetBidOnTask(id string, amount float64, message string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetBidOnTask(id string, amount float64, message string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.BidOnTask(id, amount, message); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-func (a *App) ClawNetSubmitTaskResult(id, result string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetSubmitTaskResult(id, result string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.SubmitTaskResult(id, result); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-func (a *App) ClawNetApproveTask(id string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetApproveTask(id string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.ApproveTask(id); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-func (a *App) ClawNetRejectTask(id string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetRejectTask(id string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.RejectTask(id); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-func (a *App) ClawNetCancelTask(id string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetCancelTask(id string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.CancelTask(id); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-func (a *App) ClawNetGetTaskBids(id string) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetGetTaskBids(id string) map[string]interface{} {
+	c := a.initAgentNet()
 	bids, err := c.GetTaskBids(id)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -605,8 +605,8 @@ func (a *App) ClawNetGetTaskBids(id string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "bids": bids}
 }
 
-func (a *App) ClawNetMatchTasks() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetMatchTasks() map[string]interface{} {
+	c := a.initAgentNet()
 	tasks, err := c.MatchTasks()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -614,8 +614,8 @@ func (a *App) ClawNetMatchTasks() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "tasks": tasks}
 }
 
-func (a *App) ClawNetGetTaskBoard() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetGetTaskBoard() map[string]interface{} {
+	c := a.initAgentNet()
 	board, err := c.GetTaskBoard()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -625,8 +625,8 @@ func (a *App) ClawNetGetTaskBoard() map[string]interface{} {
 
 // ---------- Credits (extended) ----------
 
-func (a *App) ClawNetGetTransactions() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetGetTransactions() map[string]interface{} {
+	c := a.initAgentNet()
 	txns, err := c.GetCreditsTransactions()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -634,8 +634,8 @@ func (a *App) ClawNetGetTransactions() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "transactions": txns}
 }
 
-func (a *App) ClawNetGetLeaderboard() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetGetLeaderboard() map[string]interface{} {
+	c := a.initAgentNet()
 	lb, err := c.GetLeaderboard()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -645,8 +645,8 @@ func (a *App) ClawNetGetLeaderboard() map[string]interface{} {
 
 // ---------- Diagnostics ----------
 
-func (a *App) ClawNetGetDiagnostics() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetGetDiagnostics() map[string]interface{} {
+	c := a.initAgentNet()
 	diag, err := c.GetDiagnostics()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -654,8 +654,8 @@ func (a *App) ClawNetGetDiagnostics() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "diagnostics": diag}
 }
 
-func (a *App) ClawNetSelfUpdate() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetSelfUpdate() map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.SelfUpdate(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -664,8 +664,8 @@ func (a *App) ClawNetSelfUpdate() map[string]interface{} {
 
 // ---------- Knowledge Feed ----------
 
-func (a *App) ClawNetGetKnowledgeFeed(domain string, limit int) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetGetKnowledgeFeed(domain string, limit int) map[string]interface{} {
+	c := a.initAgentNet()
 	entries, err := c.GetKnowledgeFeed(domain, limit)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -675,8 +675,8 @@ func (a *App) ClawNetGetKnowledgeFeed(domain string, limit int) map[string]inter
 
 // ---------- DM Thread ----------
 
-func (a *App) ClawNetGetDMThread(peerID string, limit int) map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetGetDMThread(peerID string, limit int) map[string]interface{} {
+	c := a.initAgentNet()
 	thread, err := c.GetDMThread(peerID, limit)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -686,8 +686,8 @@ func (a *App) ClawNetGetDMThread(peerID string, limit int) map[string]interface{
 
 // ---------- Identity Key Backup / Restore ----------
 
-// clawnetIdentityKeyPath returns the path to ~/.anet/anet/identity.key
-func clawnetIdentityKeyPath() (string, error) {
+// agentnetIdentityKeyPath returns the path to ~/.anet/anet/identity.key
+func agentnetIdentityKeyPath() (string, error) {
 	dir, err := anetInstallDir()
 	if err != nil {
 		return "", err
@@ -695,9 +695,9 @@ func clawnetIdentityKeyPath() (string, error) {
 	return filepath.Join(dir, "anet", "identity.key"), nil
 }
 
-// ClawNetHasIdentity checks whether an identity.key file exists.
-func (a *App) ClawNetHasIdentity() map[string]interface{} {
-	keyPath, err := clawnetIdentityKeyPath()
+// AgentNetHasIdentity checks whether an identity.key file exists.
+func (a *App) AgentNetHasIdentity() map[string]interface{} {
+	keyPath, err := agentnetIdentityKeyPath()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -708,9 +708,9 @@ func (a *App) ClawNetHasIdentity() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "exists": true, "path": keyPath, "size": info.Size()}
 }
 
-// ClawNetExportIdentity copies identity.key to a user-chosen location via save dialog.
-func (a *App) ClawNetExportIdentity() map[string]interface{} {
-	keyPath, err := clawnetIdentityKeyPath()
+// AgentNetExportIdentity copies identity.key to a user-chosen location via save dialog.
+func (a *App) AgentNetExportIdentity() map[string]interface{} {
+	keyPath, err := agentnetIdentityKeyPath()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -719,8 +719,8 @@ func (a *App) ClawNetExportIdentity() map[string]interface{} {
 	}
 
 	dest, err := wailsrt.SaveFileDialog(a.ctx, wailsrt.SaveDialogOptions{
-		Title:           "Export ClawNet Identity Key",
-		DefaultFilename: "clawnet-identity.key",
+		Title:           "Export AgentNet Identity Key",
+		DefaultFilename: "agentnet-identity.key",
 		Filters: []wailsrt.FileFilter{
 			{DisplayName: "Key Files", Pattern: "*.key"},
 			{DisplayName: "All Files", Pattern: "*"},
@@ -730,7 +730,7 @@ func (a *App) ClawNetExportIdentity() map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": "cancelled"}
 	}
 
-	if err := clawnetCopyFile(keyPath, dest); err != nil {
+	if err := agentnetCopyFile(keyPath, dest); err != nil {
 		a.log(fmt.Sprintf("AgentNet: export identity key failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -738,11 +738,11 @@ func (a *App) ClawNetExportIdentity() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "path": dest}
 }
 
-// ClawNetImportIdentity restores identity.key from a user-chosen file via open dialog.
-// Stops daemon before importing, and only restarts if ClawNet is enabled.
-func (a *App) ClawNetImportIdentity() map[string]interface{} {
+// AgentNetImportIdentity restores identity.key from a user-chosen file via open dialog.
+// Stops daemon before importing, and only restarts if AgentNet is enabled.
+func (a *App) AgentNetImportIdentity() map[string]interface{} {
 	src, err := wailsrt.OpenFileDialog(a.ctx, wailsrt.OpenDialogOptions{
-		Title: "Import ClawNet Identity Key",
+		Title: "Import AgentNet Identity Key",
 		Filters: []wailsrt.FileFilter{
 			{DisplayName: "Key Files", Pattern: "*.key"},
 			{DisplayName: "All Files", Pattern: "*"},
@@ -763,15 +763,15 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": "file too large — does not look like an identity key"}
 	}
 
-	keyPath, err := clawnetIdentityKeyPath()
+	keyPath, err := agentnetIdentityKeyPath()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 
 	// Stop daemon before replacing key
-	if a.clawNetClient != nil && a.clawNetClient.IsRunning() {
+	if a.agentNetClient != nil && a.agentNetClient.IsRunning() {
 		a.log("AgentNet: stopping daemon before key import")
-		a.clawNetClient.StopDaemon()
+		a.agentNetClient.StopDaemon()
 	}
 
 	// Ensure directory exists
@@ -789,7 +789,7 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 		}
 	}
 
-	if err := clawnetCopyFile(src, keyPath); err != nil {
+	if err := agentnetCopyFile(src, keyPath); err != nil {
 		a.log(fmt.Sprintf("AgentNet: import identity — copy failed: %v", err))
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -797,11 +797,11 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 
 	// Restart daemon with new identity only when the main switch allows it.
 	restarted := false
-	if !a.clawNetEnabled() {
+	if !a.agentNetEnabled() {
 		a.log("AgentNet: daemon restart skipped after identity import because agentnet_enabled=false")
 		return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
 	}
-	c := a.initClawNet()
+	c := a.initAgentNet()
 	if err := c.EnsureDaemon(); err != nil {
 		a.log(fmt.Sprintf("AgentNet: daemon restart after import failed: %v", err))
 	} else {
@@ -812,9 +812,9 @@ func (a *App) ClawNetImportIdentity() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
 }
 
-// clawnetCopyFile copies src to dst atomically via temp file.
+// agentnetCopyFile copies src to dst atomically via temp file.
 // Preserves 0600 permissions for security-sensitive files like identity keys.
-func clawnetCopyFile(src, dst string) error {
+func agentnetCopyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -841,9 +841,9 @@ func clawnetCopyFile(src, dst string) error {
 
 // ---------- Online Key Backup / Restore via Hub ----------
 
-// ClawNetOnlineBackupKey encrypts the identity key with the user's password
+// AgentNetOnlineBackupKey encrypts the identity key with the user's password
 // and uploads it to the Hub, bound to the user's email.
-func (a *App) ClawNetOnlineBackupKey(password string) map[string]interface{} {
+func (a *App) AgentNetOnlineBackupKey(password string) map[string]interface{} {
 	config, err := a.LoadConfig()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": "failed to load config"}
@@ -857,7 +857,7 @@ func (a *App) ClawNetOnlineBackupKey(password string) map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": "no hub URL configured"}
 	}
 
-	keyPath, err := clawnetIdentityKeyPath()
+	keyPath, err := agentnetIdentityKeyPath()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -873,7 +873,7 @@ func (a *App) ClawNetOnlineBackupKey(password string) map[string]interface{} {
 	})
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(hubURL+"/api/clawnet/key/backup", "application/json", bytes.NewReader(payload))
+	resp, err := client.Post(hubURL+"/api/agentnet/key/backup", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		a.log(fmt.Sprintf("AgentNet: online backup request failed for %s: %v", email, err))
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("hub request failed: %v", err)}
@@ -894,9 +894,9 @@ func (a *App) ClawNetOnlineBackupKey(password string) map[string]interface{} {
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetOnlineRestoreKey downloads and decrypts the identity key from the Hub.
-// Stops daemon before replacing key, and only restarts if ClawNet is enabled.
-func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
+// AgentNetOnlineRestoreKey downloads and decrypts the identity key from the Hub.
+// Stops daemon before replacing key, and only restarts if AgentNet is enabled.
+func (a *App) AgentNetOnlineRestoreKey(password string) map[string]interface{} {
 	config, err := a.LoadConfig()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": "failed to load config"}
@@ -916,7 +916,7 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 	})
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(hubURL+"/api/clawnet/key/restore", "application/json", bytes.NewReader(payload))
+	resp, err := client.Post(hubURL+"/api/agentnet/key/restore", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		a.log(fmt.Sprintf("AgentNet: online restore request failed for %s: %v", email, err))
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("hub request failed: %v", err)}
@@ -946,12 +946,12 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 	}
 
 	// Stop daemon before replacing key
-	if a.clawNetClient != nil && a.clawNetClient.IsRunning() {
+	if a.agentNetClient != nil && a.agentNetClient.IsRunning() {
 		a.log("AgentNet: stopping daemon before online key restore")
-		a.clawNetClient.StopDaemon()
+		a.agentNetClient.StopDaemon()
 	}
 
-	keyPath, err := clawnetIdentityKeyPath()
+	keyPath, err := agentnetIdentityKeyPath()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -975,11 +975,11 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 
 	// Restart daemon with restored identity only when the main switch allows it.
 	restarted := false
-	if !a.clawNetEnabled() {
+	if !a.agentNetEnabled() {
 		a.log("AgentNet: daemon restart skipped after online restore because agentnet_enabled=false")
 		return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
 	}
-	c := a.initClawNet()
+	c := a.initAgentNet()
 	if err := c.EnsureDaemon(); err != nil {
 		a.log(fmt.Sprintf("AgentNet: daemon restart after online restore failed: %v", err))
 	} else {
@@ -992,10 +992,10 @@ func (a *App) ClawNetOnlineRestoreKey(password string) map[string]interface{} {
 
 // ---------- Missing Wails Bindings ----------
 
-// ClawNetUpdateResume updates the agent's resume/skills profile.
-func (a *App) ClawNetUpdateResume(skills []string, domains []string, bio string) map[string]interface{} {
-	c := a.initClawNet()
-	resume := &ClawNetResume{Skills: skills, Domains: domains, Bio: bio}
+// AgentNetUpdateResume updates the agent's resume/skills profile.
+func (a *App) AgentNetUpdateResume(skills []string, domains []string, bio string) map[string]interface{} {
+	c := a.initAgentNet()
+	resume := &AgentNetResume{Skills: skills, Domains: domains, Bio: bio}
 	if err := c.UpdateResume(resume); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1004,27 +1004,27 @@ func (a *App) ClawNetUpdateResume(skills []string, domains []string, bio string)
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetAssignTask assigns a task to a specific bidder.
-func (a *App) ClawNetAssignTask(id, peerID string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetAssignTask assigns a task to a specific bidder.
+func (a *App) AgentNetAssignTask(id, peerID string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.AssignTask(id, peerID); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetClaimTask claims an open task.
-func (a *App) ClawNetClaimTask(id string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetClaimTask claims an open task.
+func (a *App) AgentNetClaimTask(id string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.ClaimTask(id); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetCreatePrediction creates a new prediction market question.
-func (a *App) ClawNetCreatePrediction(question string, options []string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetCreatePrediction creates a new prediction market question.
+func (a *App) AgentNetCreatePrediction(question string, options []string) map[string]interface{} {
+	c := a.initAgentNet()
 	pred, err := c.CreatePrediction(question, options)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1032,36 +1032,36 @@ func (a *App) ClawNetCreatePrediction(question string, options []string) map[str
 	return map[string]interface{}{"ok": true, "prediction": pred}
 }
 
-// ClawNetPlaceBet places a bet on a prediction.
-func (a *App) ClawNetPlaceBet(predID, option string, stake float64) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetPlaceBet places a bet on a prediction.
+func (a *App) AgentNetPlaceBet(predID, option string, stake float64) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.PlaceBet(predID, option, stake); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetResolvePrediction resolves a prediction with the winning option.
-func (a *App) ClawNetResolvePrediction(predID, result string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetResolvePrediction resolves a prediction with the winning option.
+func (a *App) AgentNetResolvePrediction(predID, result string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.ResolvePrediction(predID, result); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetAppealPrediction files an appeal against a prediction resolution.
-func (a *App) ClawNetAppealPrediction(predID, reason string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetAppealPrediction files an appeal against a prediction resolution.
+func (a *App) AgentNetAppealPrediction(predID, reason string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.AppealPrediction(predID, reason); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetGetPredictionLeaderboard returns the prediction market leaderboard.
-func (a *App) ClawNetGetPredictionLeaderboard() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetPredictionLeaderboard returns the prediction market leaderboard.
+func (a *App) AgentNetGetPredictionLeaderboard() map[string]interface{} {
+	c := a.initAgentNet()
 	lb, err := c.GetPredictionLeaderboard()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1069,27 +1069,27 @@ func (a *App) ClawNetGetPredictionLeaderboard() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "leaderboard": lb}
 }
 
-// ClawNetJoinSwarm joins an existing swarm session.
-func (a *App) ClawNetJoinSwarm(sessionID string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetJoinSwarm joins an existing swarm session.
+func (a *App) AgentNetJoinSwarm(sessionID string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.JoinSwarm(sessionID); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetContributeToSwarm adds a contribution to a swarm session.
-func (a *App) ClawNetContributeToSwarm(sessionID, message, stance string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetContributeToSwarm adds a contribution to a swarm session.
+func (a *App) AgentNetContributeToSwarm(sessionID, message, stance string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.ContributeToSwarm(sessionID, message, stance); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetSynthesizeSwarm triggers synthesis for a swarm session.
-func (a *App) ClawNetSynthesizeSwarm(sessionID string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetSynthesizeSwarm triggers synthesis for a swarm session.
+func (a *App) AgentNetSynthesizeSwarm(sessionID string) map[string]interface{} {
+	c := a.initAgentNet()
 	result, err := c.SynthesizeSwarm(sessionID)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1097,27 +1097,27 @@ func (a *App) ClawNetSynthesizeSwarm(sessionID string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "result": result}
 }
 
-// ClawNetReactKnowledge reacts to a knowledge entry.
-func (a *App) ClawNetReactKnowledge(id, reaction string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetReactKnowledge reacts to a knowledge entry.
+func (a *App) AgentNetReactKnowledge(id, reaction string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.ReactKnowledge(id, reaction); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetReplyKnowledge replies to a knowledge entry.
-func (a *App) ClawNetReplyKnowledge(id, body string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetReplyKnowledge replies to a knowledge entry.
+func (a *App) AgentNetReplyKnowledge(id, body string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.ReplyKnowledge(id, body); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetGetKnowledgeReplies returns replies for a knowledge entry.
-func (a *App) ClawNetGetKnowledgeReplies(id string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetKnowledgeReplies returns replies for a knowledge entry.
+func (a *App) AgentNetGetKnowledgeReplies(id string) map[string]interface{} {
+	c := a.initAgentNet()
 	replies, err := c.GetKnowledgeReplies(id)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1125,9 +1125,9 @@ func (a *App) ClawNetGetKnowledgeReplies(id string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "replies": replies}
 }
 
-// ClawNetGetCreditsAudit returns the credit audit log.
-func (a *App) ClawNetGetCreditsAudit() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetCreditsAudit returns the credit audit log.
+func (a *App) AgentNetGetCreditsAudit() map[string]interface{} {
+	c := a.initAgentNet()
 	audit, err := c.GetCreditsAudit()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1135,9 +1135,9 @@ func (a *App) ClawNetGetCreditsAudit() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "audit": audit}
 }
 
-// ClawNetMatchAgentsForTask finds agents matching a task's requirements.
-func (a *App) ClawNetMatchAgentsForTask(taskID string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetMatchAgentsForTask finds agents matching a task's requirements.
+func (a *App) AgentNetMatchAgentsForTask(taskID string) map[string]interface{} {
+	c := a.initAgentNet()
 	agents, err := c.MatchAgentsForTask(taskID)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1147,18 +1147,18 @@ func (a *App) ClawNetMatchAgentsForTask(taskID string) map[string]interface{} {
 
 // ---------- Auction House Bindings ----------
 
-// ClawNetSubmitTaskWork submits work for an auction-style task.
-func (a *App) ClawNetSubmitTaskWork(id, result string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetSubmitTaskWork submits work for an auction-style task.
+func (a *App) AgentNetSubmitTaskWork(id, result string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.SubmitTaskWork(id, result); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetGetTaskSubmissions returns all submissions for an auction-style task.
-func (a *App) ClawNetGetTaskSubmissions(id string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetTaskSubmissions returns all submissions for an auction-style task.
+func (a *App) AgentNetGetTaskSubmissions(id string) map[string]interface{} {
+	c := a.initAgentNet()
 	subs, err := c.GetTaskSubmissions(id)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1166,9 +1166,9 @@ func (a *App) ClawNetGetTaskSubmissions(id string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "submissions": subs}
 }
 
-// ClawNetPickTaskWinner selects the winning submission for an auction-style task.
-func (a *App) ClawNetPickTaskWinner(id, winnerPeerID string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetPickTaskWinner selects the winning submission for an auction-style task.
+func (a *App) AgentNetPickTaskWinner(id, winnerPeerID string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.PickTaskWinner(id, winnerPeerID); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1177,9 +1177,9 @@ func (a *App) ClawNetPickTaskWinner(id, winnerPeerID string) map[string]interfac
 
 // ---------- Overlay Mesh Bindings ----------
 
-// ClawNetGetOverlayStatus returns the overlay mesh network status.
-func (a *App) ClawNetGetOverlayStatus() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetOverlayStatus returns the overlay mesh network status.
+func (a *App) AgentNetGetOverlayStatus() map[string]interface{} {
+	c := a.initAgentNet()
 	status, err := c.GetOverlayStatus()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1187,9 +1187,9 @@ func (a *App) ClawNetGetOverlayStatus() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "overlay": status}
 }
 
-// ClawNetGetOverlayPeersGeo returns overlay peers with geographic info.
-func (a *App) ClawNetGetOverlayPeersGeo() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetOverlayPeersGeo returns overlay peers with geographic info.
+func (a *App) AgentNetGetOverlayPeersGeo() map[string]interface{} {
+	c := a.initAgentNet()
 	peers, err := c.GetOverlayPeersGeo()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1199,10 +1199,10 @@ func (a *App) ClawNetGetOverlayPeersGeo() map[string]interface{} {
 
 // ---------- Hub-relayed task discovery ----------
 
-// ClawNetBrowseNetworkTasks fetches tasks from the Hub bulletin board
-// (tasks published by other ClawNet peers) and merges them with local tasks.
-func (a *App) ClawNetBrowseNetworkTasks() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetBrowseNetworkTasks fetches tasks from the Hub bulletin board
+// (tasks published by other AgentNet peers) and merges them with local tasks.
+func (a *App) AgentNetBrowseNetworkTasks() map[string]interface{} {
+	c := a.initAgentNet()
 	cfg, err := a.LoadConfig()
 	if err != nil || cfg.RemoteHubURL == "" {
 		return map[string]interface{}{"ok": false, "error": "Hub URL not configured"}
@@ -1212,15 +1212,15 @@ func (a *App) ClawNetBrowseNetworkTasks() map[string]interface{} {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	if tasks == nil {
-		tasks = []ClawNetTask{}
+		tasks = []AgentNetTask{}
 	}
 	return map[string]interface{}{"ok": true, "tasks": tasks}
 }
 
-// ClawNetPublishTasksToHub pushes local open tasks to the Hub bulletin board
+// AgentNetPublishTasksToHub pushes local open tasks to the Hub bulletin board
 // so other peers can discover them.
-func (a *App) ClawNetPublishTasksToHub() map[string]interface{} {
-	c := a.initClawNet()
+func (a *App) AgentNetPublishTasksToHub() map[string]interface{} {
+	c := a.initAgentNet()
 	cfg, err := a.LoadConfig()
 	if err != nil || cfg.RemoteHubURL == "" {
 		return map[string]interface{}{"ok": false, "error": "Hub URL not configured"}
@@ -1232,11 +1232,11 @@ func (a *App) ClawNetPublishTasksToHub() map[string]interface{} {
 }
 
 // ---------------------------------------------------------------------------
-// Auto Task Picker — maClaw automatically picks up ClawNet tasks for credits
+// Auto Task Picker — maClaw automatically picks up AgentNet tasks for credits
 // ---------------------------------------------------------------------------
 
-// ClawNetAutoPickerGetStatus returns the current auto-task-picker status.
-func (a *App) ClawNetAutoPickerGetStatus() map[string]interface{} {
+// AgentNetAutoPickerGetStatus returns the current auto-task-picker status.
+func (a *App) AgentNetAutoPickerGetStatus() map[string]interface{} {
 	a.ensureAutoTaskPicker()
 	if a.autoTaskPicker == nil {
 		return map[string]interface{}{
@@ -1250,13 +1250,13 @@ func (a *App) ClawNetAutoPickerGetStatus() map[string]interface{} {
 	return status
 }
 
-// ClawNetAutoPickerConfigure enables/disables and configures the auto-task-picker.
-func (a *App) ClawNetAutoPickerConfigure(enabled bool, pollMinutes int, minReward float64, tags []string) map[string]interface{} {
+// AgentNetAutoPickerConfigure enables/disables and configures the auto-task-picker.
+func (a *App) AgentNetAutoPickerConfigure(enabled bool, pollMinutes int, minReward float64, tags []string) map[string]interface{} {
 	a.ensureAutoTaskPicker()
 	if a.autoTaskPicker == nil {
 		return map[string]interface{}{"ok": false, "error": "auto-task-picker not initialized"}
 	}
-	if enabled && !a.clawNetEnabled() {
+	if enabled && !a.agentNetEnabled() {
 		a.autoTaskPicker.Configure(false, pollMinutes, minReward, tags)
 		a.autoTaskPicker.Stop()
 		if cfg, err := a.LoadConfig(); err == nil {
@@ -1293,8 +1293,8 @@ func (a *App) ClawNetAutoPickerConfigure(enabled bool, pollMinutes int, minRewar
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetAutoPickerTriggerNow forces an immediate task poll (for testing/manual trigger).
-func (a *App) ClawNetAutoPickerTriggerNow() map[string]interface{} {
+// AgentNetAutoPickerTriggerNow forces an immediate task poll (for testing/manual trigger).
+func (a *App) AgentNetAutoPickerTriggerNow() map[string]interface{} {
 	a.ensureAutoTaskPicker()
 	if a.autoTaskPicker == nil {
 		return map[string]interface{}{"ok": false, "error": "auto-task-picker not initialized"}
@@ -1303,9 +1303,9 @@ func (a *App) ClawNetAutoPickerTriggerNow() map[string]interface{} {
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetManualPickTask manually picks a specific task: claim → execute → submit.
+// AgentNetManualPickTask manually picks a specific task: claim → execute → submit.
 // Returns detailed status/error for the frontend to display.
-func (a *App) ClawNetManualPickTask(taskID string) map[string]interface{} {
+func (a *App) AgentNetManualPickTask(taskID string) map[string]interface{} {
 	if taskID == "" {
 		return map[string]interface{}{"ok": false, "error": "task ID is required"}
 	}
@@ -1320,13 +1320,13 @@ func (a *App) ClawNetManualPickTask(taskID string) map[string]interface{} {
 // Thread-safe via sync.Once — safe to call from multiple goroutines.
 func (a *App) ensureAutoTaskPicker() {
 	a.autoPickerOnce.Do(func() {
-		c := a.initClawNet()
+		c := a.initAgentNet()
 		cfg, err := a.LoadConfig()
 		if err != nil {
 			return
 		}
 
-		picker := NewClawNetAutoTaskPicker(c, cfg.RemoteHubURL)
+		picker := NewAgentNetAutoTaskPicker(c, cfg.RemoteHubURL)
 
 		// Wire the executor: send the task to the agent via the IM handler,
 		// similar to how scheduled tasks work.
@@ -1337,13 +1337,13 @@ func (a *App) ensureAutoTaskPicker() {
 				return "", fmt.Errorf("hub client not available")
 			}
 
-			// Prepend a hint so the agent knows this is an autonomous ClawNet task.
+			// Prepend a hint so the agent knows this is an autonomous AgentNet task.
 			actionText := fmt.Sprintf("[智网自动接单任务 — 请一次性完成，不要等待用户输入]\n任务: %s\n\n%s", taskTitle, taskDescription)
 
 			handler := hubClient.ensureIMHandler()
 			resp := handler.HandleIMMessageWithProgress(IMUserMessage{
-				UserID:        "clawnet_auto_task",
-				Platform:      "clawnet",
+				UserID:        "agentnet_auto_task",
+				Platform:      "agentnet",
 				Text:          actionText,
 				MinIterations: 30,
 				IsBackground:  true,
@@ -1375,7 +1375,7 @@ func (a *App) ensureAutoTaskPicker() {
 		// Wire onChange to emit Wails event for frontend reactivity.
 		picker.SetOnChange(func() {
 			if a.ctx != nil {
-				wailsrt.EventsEmit(a.ctx, "clawnet:auto-picker-changed")
+				wailsrt.EventsEmit(a.ctx, "agentnet:auto-picker-changed")
 			}
 		})
 
@@ -1415,18 +1415,18 @@ func (a *App) ensureHubClient() *RemoteHubClient {
 // ---------------------------------------------------------------------------
 
 func (a *App) nutshellMgr() *agentnet.NutshellManager {
-	c := a.initClawNet()
+	c := a.initAgentNet()
 	return agentnet.NewNutshellManager(c.BinPath())
 }
 
-// ClawNetNutshellStatus checks if the nutshell CLI is installed.
-func (a *App) ClawNetNutshellStatus() map[string]interface{} {
+// AgentNetNutshellStatus checks if the nutshell CLI is installed.
+func (a *App) AgentNetNutshellStatus() map[string]interface{} {
 	st := a.nutshellMgr().IsInstalled()
 	return map[string]interface{}{"ok": true, "installed": st.Installed, "version": st.Version, "error": st.Error}
 }
 
-// ClawNetNutshellInstall installs the nutshell CLI via agentnet.
-func (a *App) ClawNetNutshellInstall() map[string]interface{} {
+// AgentNetNutshellInstall installs the nutshell CLI via agentnet.
+func (a *App) AgentNetNutshellInstall() map[string]interface{} {
 	emitter := func(stage string, pct int, msg string) {
 		a.emitEvent("nutshell-install-progress", map[string]interface{}{
 			"stage":   stage,
@@ -1441,8 +1441,8 @@ func (a *App) ClawNetNutshellInstall() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "path": path}
 }
 
-// ClawNetNutshellInit initializes a new nutshell bundle in the given directory.
-func (a *App) ClawNetNutshellInit(dir string) map[string]interface{} {
+// AgentNetNutshellInit initializes a new nutshell bundle in the given directory.
+func (a *App) AgentNetNutshellInit(dir string) map[string]interface{} {
 	out, err := a.nutshellMgr().Init(dir)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
@@ -1450,8 +1450,8 @@ func (a *App) ClawNetNutshellInit(dir string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "output": out}
 }
 
-// ClawNetNutshellCheck validates a nutshell bundle directory.
-func (a *App) ClawNetNutshellCheck(dir string) map[string]interface{} {
+// AgentNetNutshellCheck validates a nutshell bundle directory.
+func (a *App) AgentNetNutshellCheck(dir string) map[string]interface{} {
 	out, err := a.nutshellMgr().Check(dir)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
@@ -1459,8 +1459,8 @@ func (a *App) ClawNetNutshellCheck(dir string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "output": out}
 }
 
-// ClawNetNutshellPublish publishes a nutshell bundle with a reward.
-func (a *App) ClawNetNutshellPublish(dir string, reward float64) map[string]interface{} {
+// AgentNetNutshellPublish publishes a nutshell bundle with a reward.
+func (a *App) AgentNetNutshellPublish(dir string, reward float64) map[string]interface{} {
 	out, err := a.nutshellMgr().Publish(dir, reward)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
@@ -1468,8 +1468,8 @@ func (a *App) ClawNetNutshellPublish(dir string, reward float64) map[string]inte
 	return map[string]interface{}{"ok": true, "output": out}
 }
 
-// ClawNetNutshellClaim claims a task and creates a local workspace.
-func (a *App) ClawNetNutshellClaim(taskID, outputDir string) map[string]interface{} {
+// AgentNetNutshellClaim claims a task and creates a local workspace.
+func (a *App) AgentNetNutshellClaim(taskID, outputDir string) map[string]interface{} {
 	out, err := a.nutshellMgr().Claim(taskID, outputDir)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
@@ -1477,8 +1477,8 @@ func (a *App) ClawNetNutshellClaim(taskID, outputDir string) map[string]interfac
 	return map[string]interface{}{"ok": true, "output": out}
 }
 
-// ClawNetNutshellDeliver submits completed work from a workspace directory.
-func (a *App) ClawNetNutshellDeliver(dir string) map[string]interface{} {
+// AgentNetNutshellDeliver submits completed work from a workspace directory.
+func (a *App) AgentNetNutshellDeliver(dir string) map[string]interface{} {
 	out, err := a.nutshellMgr().Deliver(dir)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
@@ -1486,8 +1486,8 @@ func (a *App) ClawNetNutshellDeliver(dir string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "output": out}
 }
 
-// ClawNetNutshellPack creates a .nut bundle file. peerID is optional for encryption.
-func (a *App) ClawNetNutshellPack(dir, outputFile, peerID string) map[string]interface{} {
+// AgentNetNutshellPack creates a .nut bundle file. peerID is optional for encryption.
+func (a *App) AgentNetNutshellPack(dir, outputFile, peerID string) map[string]interface{} {
 	out, err := a.nutshellMgr().Pack(dir, outputFile, peerID)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
@@ -1495,8 +1495,8 @@ func (a *App) ClawNetNutshellPack(dir, outputFile, peerID string) map[string]int
 	return map[string]interface{}{"ok": true, "output": out}
 }
 
-// ClawNetNutshellUnpack extracts a .nut bundle file.
-func (a *App) ClawNetNutshellUnpack(nutFile, outputDir string) map[string]interface{} {
+// AgentNetNutshellUnpack extracts a .nut bundle file.
+func (a *App) AgentNetNutshellUnpack(nutFile, outputDir string) map[string]interface{} {
 	out, err := a.nutshellMgr().Unpack(nutFile, outputDir)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
@@ -1506,9 +1506,9 @@ func (a *App) ClawNetNutshellUnpack(nutFile, outputDir string) map[string]interf
 
 // ========== P2P Service Gateway (skill.md §Workflow F) ==========
 
-// ClawNetListServices returns locally registered P2P services.
-func (a *App) ClawNetListServices() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetListServices returns locally registered P2P services.
+func (a *App) AgentNetListServices() map[string]interface{} {
+	c := a.initAgentNet()
 	svcs, err := c.ListServices()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1516,10 +1516,10 @@ func (a *App) ClawNetListServices() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "services": svcs}
 }
 
-// ClawNetRegisterService registers a local HTTP service on the P2P network.
-func (a *App) ClawNetRegisterService(name, localURL, description string, tags []string, modes []string, billing string, price float64, freeTier int) map[string]interface{} {
-	c := a.initClawNet()
-	reg := &ClawNetServiceRegistration{
+// AgentNetRegisterService registers a local HTTP service on the P2P network.
+func (a *App) AgentNetRegisterService(name, localURL, description string, tags []string, modes []string, billing string, price float64, freeTier int) map[string]interface{} {
+	c := a.initAgentNet()
+	reg := &AgentNetServiceRegistration{
 		Name: name, URL: localURL, Description: description,
 		Tags: tags, Modes: modes, Billing: billing,
 		Price: price, FreeTier: freeTier,
@@ -1530,18 +1530,18 @@ func (a *App) ClawNetRegisterService(name, localURL, description string, tags []
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetUnregisterService removes a registered service.
-func (a *App) ClawNetUnregisterService(name string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetUnregisterService removes a registered service.
+func (a *App) AgentNetUnregisterService(name string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.UnregisterService(name); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetCallService calls a remote peer's service (request-response).
-func (a *App) ClawNetCallService(peer, service, method, path string, headers map[string]string, body string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetCallService calls a remote peer's service (request-response).
+func (a *App) AgentNetCallService(peer, service, method, path string, headers map[string]string, body string) map[string]interface{} {
+	c := a.initAgentNet()
 	result, err := c.CallService(peer, service, method, path, headers, body)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1549,9 +1549,9 @@ func (a *App) ClawNetCallService(peer, service, method, path string, headers map
 	return map[string]interface{}{"ok": true, "result": result}
 }
 
-// ClawNetDiscoverServices discovers services on a remote peer.
-func (a *App) ClawNetDiscoverServices(peer string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetDiscoverServices discovers services on a remote peer.
+func (a *App) AgentNetDiscoverServices(peer string) map[string]interface{} {
+	c := a.initAgentNet()
 	svcs, err := c.DiscoverServices(peer)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1561,9 +1561,9 @@ func (a *App) ClawNetDiscoverServices(peer string) map[string]interface{} {
 
 // ========== ANS (Agent Name Service) ==========
 
-// ClawNetANSRegister registers an ANS name with skill tags.
-func (a *App) ClawNetANSRegister(name, tags string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetANSRegister registers an ANS name with skill tags.
+func (a *App) AgentNetANSRegister(name, tags string) map[string]interface{} {
+	c := a.initAgentNet()
 	entry, err := c.ANSRegister(name, tags)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1571,9 +1571,9 @@ func (a *App) ClawNetANSRegister(name, tags string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "entry": entry}
 }
 
-// ClawNetANSResolve resolves an ANS name to a DID.
-func (a *App) ClawNetANSResolve(name string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetANSResolve resolves an ANS name to a DID.
+func (a *App) AgentNetANSResolve(name string) map[string]interface{} {
+	c := a.initAgentNet()
 	entry, err := c.ANSResolve(name)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1581,9 +1581,9 @@ func (a *App) ClawNetANSResolve(name string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "name": entry.Name, "did": entry.DID, "tags": entry.Tags}
 }
 
-// ClawNetANSLookup finds agents by skill tags.
-func (a *App) ClawNetANSLookup(tags string, limit int) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetANSLookup finds agents by skill tags.
+func (a *App) AgentNetANSLookup(tags string, limit int) map[string]interface{} {
+	c := a.initAgentNet()
 	entries, err := c.ANSLookup(tags, limit)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1593,9 +1593,9 @@ func (a *App) ClawNetANSLookup(tags string, limit int) map[string]interface{} {
 
 // ========== Agent Discovery ==========
 
-// ClawNetDiscoverAgents performs full-text agent search.
-func (a *App) ClawNetDiscoverAgents(query string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetDiscoverAgents performs full-text agent search.
+func (a *App) AgentNetDiscoverAgents(query string) map[string]interface{} {
+	c := a.initAgentNet()
 	agents, err := c.DiscoverAgents(query)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1603,9 +1603,9 @@ func (a *App) ClawNetDiscoverAgents(query string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "agents": agents}
 }
 
-// ClawNetCrossDomainSearch performs cross-domain search.
-func (a *App) ClawNetCrossDomainSearch(query string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetCrossDomainSearch performs cross-domain search.
+func (a *App) AgentNetCrossDomainSearch(query string) map[string]interface{} {
+	c := a.initAgentNet()
 	results, err := c.CrossDomainSearch(query)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1613,10 +1613,10 @@ func (a *App) ClawNetCrossDomainSearch(query string) map[string]interface{} {
 	return map[string]interface{}{"ok": true, "results": results}
 }
 
-// ClawNetFindClaw performs semantic knowledge search (FindClaw).
-func (a *App) ClawNetFindClaw(query string) map[string]interface{} {
-	c := a.initClawNet()
-	entries, err := c.FindClaw(query)
+// AgentNetFindClaw performs semantic knowledge search (FindClaw).
+func (a *App) AgentNetFindClaw(query string) map[string]interface{} {
+	c := a.initAgentNet()
+	entries, err := c.FindAgent(query)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1625,9 +1625,9 @@ func (a *App) ClawNetFindClaw(query string) map[string]interface{} {
 
 // ========== Reputation ==========
 
-// ClawNetGetReputation returns the reputation score for a DID.
-func (a *App) ClawNetGetReputation(did string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetReputation returns the reputation score for a DID.
+func (a *App) AgentNetGetReputation(did string) map[string]interface{} {
+	c := a.initAgentNet()
 	rep, err := c.GetReputation(did)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1637,9 +1637,9 @@ func (a *App) ClawNetGetReputation(did string) map[string]interface{} {
 
 // ========== Proof of Intelligence (PoI) ==========
 
-// ClawNetListPoIChallenges returns available PoI challenges.
-func (a *App) ClawNetListPoIChallenges() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetListPoIChallenges returns available PoI challenges.
+func (a *App) AgentNetListPoIChallenges() map[string]interface{} {
+	c := a.initAgentNet()
 	challenges, err := c.ListPoIChallenges()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1647,18 +1647,18 @@ func (a *App) ClawNetListPoIChallenges() map[string]interface{} {
 	return map[string]interface{}{"ok": true, "challenges": challenges}
 }
 
-// ClawNetRespondToPoI submits a response to a PoI challenge.
-func (a *App) ClawNetRespondToPoI(challengeID, response string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetRespondToPoI submits a response to a PoI challenge.
+func (a *App) AgentNetRespondToPoI(challengeID, response string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.RespondToPoI(challengeID, map[string]interface{}{"response": response}); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetGetPoIScores returns PoI intelligence ranking scores.
-func (a *App) ClawNetGetPoIScores() map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetGetPoIScores returns PoI intelligence ranking scores.
+func (a *App) AgentNetGetPoIScores() map[string]interface{} {
+	c := a.initAgentNet()
 	scores, err := c.GetPoIScores()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1668,18 +1668,18 @@ func (a *App) ClawNetGetPoIScores() map[string]interface{} {
 
 // ========== Agent Card & Init ==========
 
-// ClawNetPublishAgentCard publishes the agent's profile card to the network.
-func (a *App) ClawNetPublishAgentCard(name, desc string, skills []string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetPublishAgentCard publishes the agent's profile card to the network.
+func (a *App) AgentNetPublishAgentCard(name, desc string, skills []string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.PublishAgentCard(name, desc, skills); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetInitAgent initializes the agent identity and profile.
-func (a *App) ClawNetInitAgent(name string, skills []string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetInitAgent initializes the agent identity and profile.
+func (a *App) AgentNetInitAgent(name string, skills []string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.InitAgent(name, skills); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1688,9 +1688,9 @@ func (a *App) ClawNetInitAgent(name string, skills []string) map[string]interfac
 
 // ========== Credits Transfer ==========
 
-// ClawNetTransferCredits transfers Shell credits to another agent.
-func (a *App) ClawNetTransferCredits(toDID string, amount float64, reason string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetTransferCredits transfers Shell credits to another agent.
+func (a *App) AgentNetTransferCredits(toDID string, amount float64, reason string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.TransferCredits(toDID, amount, reason); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1699,22 +1699,22 @@ func (a *App) ClawNetTransferCredits(toDID string, amount float64, reason string
 
 // ========== Task Bundles ==========
 
-// ClawNetAttachBundle attaches a .nut bundle to a task (base64-encoded data).
-func (a *App) ClawNetAttachBundle(taskID, base64Data string) map[string]interface{} {
+// AgentNetAttachBundle attaches a .nut bundle to a task (base64-encoded data).
+func (a *App) AgentNetAttachBundle(taskID, base64Data string) map[string]interface{} {
 	data, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": "invalid base64: " + err.Error()}
 	}
-	c := a.initClawNet()
+	c := a.initAgentNet()
 	if err := c.AttachBundle(taskID, data); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"ok": true}
 }
 
-// ClawNetDownloadBundle downloads a .nut bundle from a task (returns base64).
-func (a *App) ClawNetDownloadBundle(taskID string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetDownloadBundle downloads a .nut bundle from a task (returns base64).
+func (a *App) AgentNetDownloadBundle(taskID string) map[string]interface{} {
+	c := a.initAgentNet()
 	data, err := c.DownloadBundle(taskID)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1724,9 +1724,9 @@ func (a *App) ClawNetDownloadBundle(taskID string) map[string]interface{} {
 
 // ========== Split Tasks ==========
 
-// ClawNetCreateSplitTask creates a multi-slot task.
-func (a *App) ClawNetCreateSplitTask(title string, reward float64, slots int) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetCreateSplitTask creates a multi-slot task.
+func (a *App) AgentNetCreateSplitTask(title string, reward float64, slots int) map[string]interface{} {
+	c := a.initAgentNet()
 	task, err := c.CreateSplitTask(title, reward, slots)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1736,9 +1736,9 @@ func (a *App) ClawNetCreateSplitTask(title string, reward float64, slots int) ma
 
 // ========== Disputes ==========
 
-// ClawNetFileDispute files a dispute for a rejected task.
-func (a *App) ClawNetFileDispute(taskID, reason string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetFileDispute files a dispute for a rejected task.
+func (a *App) AgentNetFileDispute(taskID, reason string) map[string]interface{} {
+	c := a.initAgentNet()
 	if err := c.FileDispute(taskID, reason); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1747,9 +1747,9 @@ func (a *App) ClawNetFileDispute(taskID, reason string) map[string]interface{} {
 
 // ========== DAG & Ontology ==========
 
-// ClawNetExtractDAG extracts a structured DAG from task steps.
-func (a *App) ClawNetExtractDAG(intent string, steps []string, outputs []string) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetExtractDAG extracts a structured DAG from task steps.
+func (a *App) AgentNetExtractDAG(intent string, steps []string, outputs []string) map[string]interface{} {
+	c := a.initAgentNet()
 	nodes, err := c.ExtractDAG(intent, steps, outputs)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1757,9 +1757,9 @@ func (a *App) ClawNetExtractDAG(intent string, steps []string, outputs []string)
 	return map[string]interface{}{"ok": true, "nodes": nodes}
 }
 
-// ClawNetQueryOntology queries the knowledge graph for a subgraph.
-func (a *App) ClawNetQueryOntology(query string, depth int) map[string]interface{} {
-	c := a.initClawNet()
+// AgentNetQueryOntology queries the knowledge graph for a subgraph.
+func (a *App) AgentNetQueryOntology(query string, depth int) map[string]interface{} {
+	c := a.initAgentNet()
 	result, err := c.QueryOntology(query, depth)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}

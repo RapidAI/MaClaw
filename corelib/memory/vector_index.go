@@ -1,8 +1,9 @@
 package memory
 
 import (
-	"math"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 // vectorIndex stores embedding vectors keyed by entry ID and computes
@@ -61,7 +62,7 @@ func (v *vectorIndex) rebuild(entries []Entry) {
 
 // score computes cosine similarity between queryEmb and all stored embeddings.
 // If embeddings are L2-normalized (as produced by GemmaEmbedder), this reduces
-// to a dot product. Returns a map of entry ID → similarity score.
+// to a dot product. Uses SIMD-accelerated tensor.Dot for performance.
 func (v *vectorIndex) score(queryEmb []float32) map[string]float64 {
 	if len(queryEmb) == 0 {
 		return nil
@@ -75,51 +76,13 @@ func (v *vectorIndex) score(queryEmb []float32) map[string]float64 {
 
 	scores := make(map[string]float64, len(v.embeddings))
 	for id, emb := range v.embeddings {
-		sim := dotProduct(queryEmb, emb)
+		if len(emb) != len(queryEmb) {
+			continue
+		}
+		sim := float64(tensor.Dot(queryEmb, emb))
 		if sim > 0 {
 			scores[id] = sim
 		}
 	}
 	return scores
-}
-
-// dotProduct computes the dot product of two vectors over their overlapping dimensions.
-func dotProduct(a, b []float32) float64 {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	var dot float64
-	for i := 0; i < n; i++ {
-		dot += float64(a[i]) * float64(b[i])
-	}
-	return dot
-}
-
-// cosineSim computes cosine similarity given a pre-computed query norm.
-// Used when vectors are NOT pre-normalized.
-func cosineSim(a, b []float32, aNorm float64) float64 {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	var dot float64
-	var bSq float64
-	for i := 0; i < n; i++ {
-		dot += float64(a[i]) * float64(b[i])
-		bSq += float64(b[i]) * float64(b[i])
-	}
-	bNorm := math.Sqrt(bSq)
-	if bNorm == 0 {
-		return 0
-	}
-	return dot / (aNorm * bNorm)
-}
-
-func vecNorm(v []float32) float64 {
-	var sq float64
-	for _, x := range v {
-		sq += float64(x) * float64(x)
-	}
-	return math.Sqrt(sq)
 }

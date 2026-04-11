@@ -9,11 +9,18 @@ func TestIsWSLShell_WindowsSystem32(t *testing.T) {
 	if !isWSLShell(`C:\Windows\System32\bash.exe`) {
 		t.Fatal("expected C:\\Windows\\System32\\bash.exe to be detected as WSL")
 	}
+	if !isWSLShell(`C:\WINDOWS\system32\bash.exe`) {
+		t.Fatal("expected case-insensitive System32 path to be detected as WSL")
+	}
 }
 
 func TestIsWSLShell_WindowsApps(t *testing.T) {
 	if !isWSLShell(`C:\Program Files\WindowsApps\bash.exe`) {
 		t.Fatal("expected WindowsApps path to be detected as WSL")
+	}
+	// Also test the Microsoft\WindowsApps alias path
+	if !isWSLShell(`C:\Users\testuser\AppData\Local\Microsoft\WindowsApps\bash.exe`) {
+		t.Fatal("expected Microsoft\\WindowsApps path to be detected as WSL")
 	}
 }
 

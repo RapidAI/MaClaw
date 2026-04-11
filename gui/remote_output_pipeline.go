@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type OutputPipeline struct {
@@ -374,6 +375,12 @@ var screenClearPattern = regexp.MustCompile(`\x1b\[2J|\x1b\[H|\x1b\[1;1H|\x1b\[\
 // a screen refresh so the caller can replace (not append) the output buffer.
 func rawChunkLines(chunk []byte) rawChunkResult {
 	raw := string(chunk)
+	// Sanitize invalid UTF-8 sequences that ConPTY on Windows may produce
+	// (e.g. emoji bytes truncated by GBK code page). Replace with empty
+	// string so garbled replacement characters (�) don't leak to the UI.
+	if !utf8.ValidString(raw) {
+		raw = strings.ToValidUTF8(raw, "")
+	}
 	isRefresh := screenClearPattern.MatchString(raw)
 
 	text := strings.ReplaceAll(raw, "\r\n", "\n")

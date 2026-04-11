@@ -50,7 +50,7 @@ type AssignRoleRequest struct {
 }
 
 // Create validates and persists a new colleague.
-func (s *ColleagueService) Create(req CreateRequest) (*domain.Colleague, error) {
+func (s *ColleagueService) Create(tenantID string, req CreateRequest) (*domain.Colleague, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, fmt.Errorf("name is required")
@@ -60,7 +60,7 @@ func (s *ColleagueService) Create(req CreateRequest) (*domain.Colleague, error) 
 		return nil, fmt.Errorf("role_id is required")
 	}
 	// validate role exists and is active
-	role, err := s.roleRepo.GetByID(roleID)
+	role, err := s.roleRepo.GetByID(tenantID, roleID)
 	if err != nil {
 		return nil, fmt.Errorf("role not found: %s", roleID)
 	}
@@ -91,19 +91,19 @@ func (s *ColleagueService) Create(req CreateRequest) (*domain.Colleague, error) 
 		UpdatedAt:   now,
 	}
 
-	if err := s.repo.Insert(c); err != nil {
+	if err := s.repo.Insert(tenantID, c); err != nil {
 		return nil, fmt.Errorf("create colleague: %w", err)
 	}
 
 	// record initial assignment
-	_ = s.roleSvc.RecordAssignment(c.ID, "", roleID, "initial creation")
+	_ = s.roleSvc.RecordAssignment(tenantID, c.ID, "", roleID, "initial creation")
 
 	return c, nil
 }
 
 // Update modifies an existing colleague (does not change role — use AssignRole for that).
-func (s *ColleagueService) Update(id string, req UpdateRequest) (*domain.Colleague, error) {
-	existing, err := s.repo.GetByID(id)
+func (s *ColleagueService) Update(tenantID string, id string, req UpdateRequest) (*domain.Colleague, error) {
+	existing, err := s.repo.GetByID(tenantID, id)
 	if err != nil {
 		return nil, fmt.Errorf("colleague not found: %w", err)
 	}
@@ -125,21 +125,21 @@ func (s *ColleagueService) Update(id string, req UpdateRequest) (*domain.Colleag
 	}
 	existing.UpdatedAt = time.Now()
 
-	if err := s.repo.Update(existing); err != nil {
+	if err := s.repo.Update(tenantID, existing); err != nil {
 		return nil, fmt.Errorf("update colleague: %w", err)
 	}
 	return existing, nil
 }
 
 // AssignRole changes a colleague's role and records the change.
-func (s *ColleagueService) AssignRole(colleagueID string, req AssignRoleRequest) error {
+func (s *ColleagueService) AssignRole(tenantID string, colleagueID string, req AssignRoleRequest) error {
 	roleID := strings.TrimSpace(req.RoleID)
 	if roleID == "" {
 		return fmt.Errorf("role_id is required")
 	}
 
 	// validate new role
-	role, err := s.roleRepo.GetByID(roleID)
+	role, err := s.roleRepo.GetByID(tenantID, roleID)
 	if err != nil {
 		return fmt.Errorf("role not found: %s", roleID)
 	}
@@ -148,7 +148,7 @@ func (s *ColleagueService) AssignRole(colleagueID string, req AssignRoleRequest)
 	}
 
 	// get current colleague
-	colleague, err := s.repo.GetByID(colleagueID)
+	colleague, err := s.repo.GetByID(tenantID, colleagueID)
 	if err != nil {
 		return fmt.Errorf("colleague not found: %s", colleagueID)
 	}
@@ -159,7 +159,7 @@ func (s *ColleagueService) AssignRole(colleagueID string, req AssignRoleRequest)
 	}
 
 	// update
-	if err := s.repo.UpdateRoleID(colleagueID, roleID); err != nil {
+	if err := s.repo.UpdateRoleID(tenantID, colleagueID, roleID); err != nil {
 		return fmt.Errorf("assign role: %w", err)
 	}
 
@@ -168,35 +168,35 @@ func (s *ColleagueService) AssignRole(colleagueID string, req AssignRoleRequest)
 	if reason == "" {
 		reason = "role reassignment"
 	}
-	_ = s.roleSvc.RecordAssignment(colleagueID, oldRoleID, roleID, reason)
+	_ = s.roleSvc.RecordAssignment(tenantID, colleagueID, oldRoleID, roleID, reason)
 
 	return nil
 }
 
 // GetByID returns a colleague by ID.
-func (s *ColleagueService) GetByID(id string) (*domain.Colleague, error) {
-	return s.repo.GetByID(id)
+func (s *ColleagueService) GetByID(tenantID string, id string) (*domain.Colleague, error) {
+	return s.repo.GetByID(tenantID, id)
 }
 
 // List returns all colleagues.
-func (s *ColleagueService) List() ([]*domain.Colleague, error) {
-	return s.repo.List()
+func (s *ColleagueService) List(tenantID string) ([]*domain.Colleague, error) {
+	return s.repo.List(tenantID)
 }
 
 // ListActive returns only active colleagues (for client API).
-func (s *ColleagueService) ListActive() ([]*domain.Colleague, error) {
-	return s.repo.ListActive()
+func (s *ColleagueService) ListActive(tenantID string) ([]*domain.Colleague, error) {
+	return s.repo.ListActive(tenantID)
 }
 
 // ListByRoleID returns active colleagues assigned to a specific role.
-func (s *ColleagueService) ListByRoleID(roleID string) ([]*domain.Colleague, error) {
-	return s.repo.ListByRoleID(roleID)
+func (s *ColleagueService) ListByRoleID(tenantID string, roleID string) ([]*domain.Colleague, error) {
+	return s.repo.ListByRoleID(tenantID, roleID)
 }
 
 // SetStatus changes a colleague's status.
-func (s *ColleagueService) SetStatus(id, status string) error {
+func (s *ColleagueService) SetStatus(tenantID string, id, status string) error {
 	if status != domain.StatusActive && status != domain.StatusDisabled {
 		return fmt.Errorf("invalid status: %s", status)
 	}
-	return s.repo.UpdateStatus(id, status)
+	return s.repo.UpdateStatus(tenantID, id, status)
 }

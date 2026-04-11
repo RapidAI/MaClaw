@@ -648,15 +648,17 @@ func verifyCraftExecution(request craftToolRequest, attempt craftAttemptResult) 
 		result.VerificationMessage = firstNonEmptyCraftText(errorText(attempt.ExecErr), "脚本执行失败")
 		return result
 	}
-	outputLower := strings.ToLower(attempt.Output)
-	for _, marker := range []string{"traceback", "syntaxerror", "exception", "command not found", "is not recognized as an internal or external command", "no module named", "cannot find path", "error:"} {
-		if strings.Contains(outputLower, marker) {
-			result.VerificationStatus = craftVerificationOutputSuspicious
-			result.VerificationMessage = "脚本输出包含明显错误信号，自动验收未通过。"
-			return result
-		}
-	}
+	// 仅在有预期产物时才做输出可疑性检查。
+	// 纯输出型脚本（诊断、echo 等）exit code == 0 即视为成功。
 	if len(request.ExpectedArtifacts) > 0 || strings.EqualFold(request.VerificationMode, "artifact_required") {
+		outputLower := strings.ToLower(attempt.Output)
+		for _, marker := range []string{"traceback", "syntaxerror", "exception", "command not found", "is not recognized as an internal or external command", "no module named", "cannot find path"} {
+			if strings.Contains(outputLower, marker) {
+				result.VerificationStatus = craftVerificationOutputSuspicious
+				result.VerificationMessage = "脚本输出包含明显错误信号，自动验收未通过。"
+				return result
+			}
+		}
 		if info, err := os.Stat(artifactPath); err == nil && !info.IsDir() && info.Size() > 0 {
 			result.VerificationStatus = craftVerificationPassed
 			result.VerificationMessage = fmt.Sprintf("已验证目标产物存在：%s（%d bytes）", artifactPath, info.Size())

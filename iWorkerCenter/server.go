@@ -16,6 +16,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/app"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 )
 
 type CenterProvider struct {
@@ -102,15 +104,7 @@ type centerServer struct {
 	center         *app.Center
 }
 
-func startCenterServer(ctx context.Context) {
-	server := newCenterServer(":9377")
-	go func() {
-		if err := server.Start(ctx); err != nil && !strings.Contains(err.Error(), "Server closed") {
-			log.Printf("[iWorkerCenter] server stopped: %v", err)
-		}
-	}()
-}
-
+// newCenterServer creates the LLM proxy server (used by buildMux).
 func newCenterServer(addr string) *centerServer {
 	server := &centerServer{
 		addr:           addr,
@@ -121,58 +115,6 @@ func newCenterServer(addr string) *centerServer {
 	server.forward = server.forwardRequest
 	server.refreshProviders()
 	return server
-}
-
-func (s *centerServer) Start(ctx context.Context) error {
-	s.refreshProviders()
-	mux := http.NewServeMux()
-
-	// existing LLM proxy routes
-	mux.HandleFunc("/v1/models", s.handleModels)
-	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
-
-	// bootstrap modular backend (Slice A+B)
-	center, err := app.Bootstrap()
-	if err != nil {
-		log.Printf("[iWorkerCenter] bootstrap failed (running without modules): %v", err)
-		// fallback: register legacy health only
-		mux.HandleFunc("/health", s.handleHealth)
-	} else {
-		s.center = center
-		// mount modular routes (includes /health, /admin/colleagues, /client/colleagues)
-		// wrap: modular mux takes priority, fall through to legacy health
-		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			s.refreshProviders()
-			center.Mux.ServeHTTP(w, r)
-		})
-		mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
-			center.Mux.ServeHTTP(w, r)
-		})
-		mux.HandleFunc("/client/", func(w http.ResponseWriter, r *http.Request) {
-			center.Mux.ServeHTTP(w, r)
-		})
-	}
-
-	httpServer := &http.Server{
-		Addr:    s.addr,
-		Handler: mux,
-	}
-
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutdownCtx)
-		if s.center != nil {
-			s.center.Close()
-		}
-	}()
-
-	log.Printf("[iWorkerCenter] listening on %s", s.addr)
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
-	}
-	return nil
 }
 
 func (s *centerServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -211,6 +153,7 @@ func (s *centerServer) handleModels(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *centerServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
 	s.refreshProviders()
 	if r.Method != http.MethodPost {
 		writeCenterError(w, http.StatusMethodNotAllowed, "POST required")
@@ -272,6 +215,23 @@ func (s *centerServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	}
 	log.Printf("%s", FormatTaskRouteLog(classResult, reqID, providerID, summary))
 
+	tenantID := tenant.TenantIDFromContext(r.Context())
+
+	// Record audit log (best-effort, non-blocking)
+	if s.center != nil && s.center.AuditRepo != nil {
+		go func() {
+			_ = s.center.AuditRepo.Insert(tenantID, &audit.ProxyLog{
+				RequestID:  reqID,
+				ProviderID: providerID,
+				Model:      req.Model,
+				WorkType:   string(classResult.WorkType),
+				CostTier:   string(classResult.CostTier),
+				Status:     "pending",
+				Summary:    summary,
+			})
+		}()
+	}
+
 	if len(providers) == 0 {
 		writeCenterError(w, http.StatusServiceUnavailable, "no available provider")
 		return
@@ -281,12 +241,48 @@ func (s *centerServer) handleChatCompletions(w http.ResponseWriter, r *http.Requ
 	for _, provider := range providers {
 		respBody, err := s.forward(r.Context(), provider, req)
 		if err == nil {
+			// Update audit log to success
+			if s.center != nil && s.center.AuditRepo != nil {
+				go func(pid string) {
+					_ = s.center.AuditRepo.Insert(tenantID, &audit.ProxyLog{
+						RequestID:  reqID,
+						ProviderID: pid,
+						Model:      req.Model,
+						WorkType:   string(classResult.WorkType),
+						CostTier:   string(classResult.CostTier),
+						Status:     "ok",
+						LatencyMs:  int(time.Since(now).Milliseconds()),
+						Summary:    summary,
+					})
+				}(provider.ID)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(respBody)
 			return
 		}
 		lastErr = err
 		log.Printf("[iWorkerCenter] provider %s failed, fallback next: %v", provider.ID, err)
+	}
+
+	// Record failure audit
+	if s.center != nil && s.center.AuditRepo != nil {
+		errMsg := ""
+		if lastErr != nil {
+			errMsg = lastErr.Error()
+		}
+		go func() {
+			_ = s.center.AuditRepo.Insert(tenantID, &audit.ProxyLog{
+				RequestID:  reqID,
+				ProviderID: providerID,
+				Model:      req.Model,
+				WorkType:   string(classResult.WorkType),
+				CostTier:   string(classResult.CostTier),
+				Status:     "error",
+				LatencyMs:  int(time.Since(now).Milliseconds()),
+				Summary:    summary,
+				ErrorMsg:   errMsg,
+			})
+		}()
 	}
 
 	writeCenterError(w, http.StatusBadGateway, lastErr.Error())

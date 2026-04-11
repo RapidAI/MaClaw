@@ -14,12 +14,12 @@ import (
 // up tasks to execute via the maClaw agent, earning credits upon completion.
 //
 // Flow: detect online -> browse tasks -> select best -> claim -> execute via agent -> submit result
-type ClawNetAutoTaskPicker struct {
+type AgentNetAutoTaskPicker struct {
 	mu       sync.Mutex
 	running  bool
 	stopCh   chan struct{}
 	pollMu   sync.Mutex // prevents concurrent pollAndPickTask invocations
-	client   *ClawNetClient
+	client   *AgentNetClient
 	hubURL   string
 	executor AutoTaskExecutor
 	onChange func() // optional callback after state changes
@@ -57,8 +57,8 @@ type autoTaskRun struct {
 type AutoTaskExecutor func(taskTitle, taskDescription string) (result string, err error)
 
 // NewAgentNetAutoTaskPicker creates a new auto task picker.
-func NewClawNetAutoTaskPicker(client *ClawNetClient, hubURL string) *ClawNetAutoTaskPicker {
-	return &ClawNetAutoTaskPicker{
+func NewAgentNetAutoTaskPicker(client *AgentNetClient, hubURL string) *AgentNetAutoTaskPicker {
+	return &AgentNetAutoTaskPicker{
 		client:        client,
 		hubURL:        hubURL,
 		pollInterval:  5 * time.Minute,
@@ -71,28 +71,28 @@ func NewClawNetAutoTaskPicker(client *ClawNetClient, hubURL string) *ClawNetAuto
 }
 
 // SetExecutor sets the callback invoked to execute a picked task.
-func (p *ClawNetAutoTaskPicker) SetExecutor(fn AutoTaskExecutor) {
+func (p *AgentNetAutoTaskPicker) SetExecutor(fn AutoTaskExecutor) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.executor = fn
 }
 
 // SetOnChange sets an optional callback for state changes.
-func (p *ClawNetAutoTaskPicker) SetOnChange(fn func()) {
+func (p *AgentNetAutoTaskPicker) SetOnChange(fn func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onChange = fn
 }
 
 // SetLang sets the language for error messages ("zh" or "en").
-func (p *ClawNetAutoTaskPicker) SetLang(lang string) {
+func (p *AgentNetAutoTaskPicker) SetLang(lang string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lang = lang
 }
 
 // Configure updates picker settings.
-func (p *ClawNetAutoTaskPicker) Configure(enabled bool, pollMinutes int, minReward float64, tags []string) {
+func (p *AgentNetAutoTaskPicker) Configure(enabled bool, pollMinutes int, minReward float64, tags []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.autoEnabled = enabled
@@ -104,14 +104,14 @@ func (p *ClawNetAutoTaskPicker) Configure(enabled bool, pollMinutes int, minRewa
 }
 
 // IsEnabled returns whether auto-pickup is enabled.
-func (p *ClawNetAutoTaskPicker) IsEnabled() bool {
+func (p *AgentNetAutoTaskPicker) IsEnabled() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.autoEnabled
 }
 
 // Start begins the background polling loop.
-func (p *ClawNetAutoTaskPicker) Start() {
+func (p *AgentNetAutoTaskPicker) Start() {
 	p.mu.Lock()
 	if p.running {
 		p.mu.Unlock()
@@ -125,7 +125,7 @@ func (p *ClawNetAutoTaskPicker) Start() {
 }
 
 // Stop halts the background polling loop.
-func (p *ClawNetAutoTaskPicker) Stop() {
+func (p *AgentNetAutoTaskPicker) Stop() {
 	p.mu.Lock()
 	if !p.running {
 		p.mu.Unlock()
@@ -137,7 +137,7 @@ func (p *ClawNetAutoTaskPicker) Stop() {
 }
 
 // GetStatus returns the current picker status for the frontend.
-func (p *ClawNetAutoTaskPicker) GetStatus() map[string]interface{} {
+func (p *AgentNetAutoTaskPicker) GetStatus() map[string]interface{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -175,7 +175,7 @@ func formatTimeOrEmpty(t time.Time) string {
 }
 
 // loop is the main polling goroutine.
-func (p *ClawNetAutoTaskPicker) loop() {
+func (p *AgentNetAutoTaskPicker) loop() {
 	// Initial delay: wait a bit before first poll to let the system settle.
 	select {
 	case <-time.After(30 * time.Second):
@@ -203,7 +203,7 @@ func (p *ClawNetAutoTaskPicker) loop() {
 
 // pollAndPickTask checks if AgentNet is online, browses tasks, and picks one.
 // Protected by pollMu to prevent concurrent invocations from loop + TriggerNow.
-func (p *ClawNetAutoTaskPicker) pollAndPickTask() {
+func (p *AgentNetAutoTaskPicker) pollAndPickTask() {
 	if !p.pollMu.TryLock() {
 		return // another poll is already in progress
 	}
@@ -264,11 +264,11 @@ func (p *ClawNetAutoTaskPicker) pollAndPickTask() {
 }
 
 // discoverTasks tries matched tasks first, then falls back to network browse.
-func (p *ClawNetAutoTaskPicker) discoverTasks(client *ClawNetClient, hubURL string) ([]ClawNetTask, error) {
+func (p *AgentNetAutoTaskPicker) discoverTasks(client *AgentNetClient, hubURL string) ([]AgentNetTask, error) {
 	// Try the match API first (returns tasks suited to our capabilities).
 	matched, err := client.MatchTasks()
 	if err == nil && len(matched) > 0 {
-		var open []ClawNetTask
+		var open []AgentNetTask
 		for _, t := range matched {
 			if t.Status == "open" {
 				open = append(open, t)
@@ -288,7 +288,7 @@ func (p *ClawNetAutoTaskPicker) discoverTasks(client *ClawNetClient, hubURL stri
 	if err != nil {
 		return nil, err
 	}
-	var open []ClawNetTask
+	var open []AgentNetTask
 	for _, t := range netTasks {
 		if t.Status == "open" {
 			open = append(open, t)
@@ -298,13 +298,13 @@ func (p *ClawNetAutoTaskPicker) discoverTasks(client *ClawNetClient, hubURL stri
 }
 
 // selectTask picks the best task from the available list.
-func (p *ClawNetAutoTaskPicker) selectTask(tasks []ClawNetTask, minReward float64, preferredTags []string) *ClawNetTask {
+func (p *AgentNetAutoTaskPicker) selectTask(tasks []AgentNetTask, minReward float64, preferredTags []string) *AgentNetTask {
 	if len(tasks) == 0 {
 		return nil
 	}
 
 	// Filter by minimum reward.
-	var candidates []ClawNetTask
+	var candidates []AgentNetTask
 	for _, t := range tasks {
 		if t.Reward >= minReward {
 			candidates = append(candidates, t)
@@ -322,7 +322,7 @@ func (p *ClawNetAutoTaskPicker) selectTask(tasks []ClawNetTask, minReward float6
 	}
 	p.mu.Unlock()
 
-	var filtered []ClawNetTask
+	var filtered []AgentNetTask
 	for _, t := range candidates {
 		if !activeIDs[t.ID] {
 			filtered = append(filtered, t)
@@ -334,7 +334,7 @@ func (p *ClawNetAutoTaskPicker) selectTask(tasks []ClawNetTask, minReward float6
 
 	// Score tasks: prefer matching tags and higher rewards.
 	type scored struct {
-		task  ClawNetTask
+		task  AgentNetTask
 		score float64
 	}
 	tagSet := make(map[string]bool)
@@ -366,7 +366,7 @@ func (p *ClawNetAutoTaskPicker) selectTask(tasks []ClawNetTask, minReward float6
 }
 
 // executeTask claims a task, runs it through the agent, and submits the result.
-func (p *ClawNetAutoTaskPicker) executeTask(client *ClawNetClient, task *ClawNetTask, executor AutoTaskExecutor) {
+func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *AgentNetTask, executor AutoTaskExecutor) {
 	p.mu.Lock()
 	lang := p.lang
 	p.mu.Unlock()
@@ -435,7 +435,7 @@ func (p *ClawNetAutoTaskPicker) executeTask(client *ClawNetClient, task *ClawNet
 }
 
 // setRunStatus updates a run's status under the lock and notifies.
-func (p *ClawNetAutoTaskPicker) setRunStatus(run *autoTaskRun, status string) {
+func (p *AgentNetAutoTaskPicker) setRunStatus(run *autoTaskRun, status string) {
 	p.mu.Lock()
 	run.Status = status
 	p.mu.Unlock()
@@ -443,7 +443,7 @@ func (p *ClawNetAutoTaskPicker) setRunStatus(run *autoTaskRun, status string) {
 }
 
 // failTask marks a task run as failed and cleans up.
-func (p *ClawNetAutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
+func (p *AgentNetAutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 	p.mu.Lock()
 	run.Status = "failed"
 	run.Error = errMsg
@@ -457,14 +457,14 @@ func (p *ClawNetAutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 }
 
 // setError records an error without failing a specific task.
-func (p *ClawNetAutoTaskPicker) setError(msg string) {
+func (p *AgentNetAutoTaskPicker) setError(msg string) {
 	p.mu.Lock()
 	p.lastError = msg
 	p.mu.Unlock()
 }
 
 // notifyChange calls the onChange callback if set.
-func (p *ClawNetAutoTaskPicker) notifyChange() {
+func (p *AgentNetAutoTaskPicker) notifyChange() {
 	p.mu.Lock()
 	fn := p.onChange
 	p.mu.Unlock()
@@ -476,7 +476,7 @@ func (p *ClawNetAutoTaskPicker) notifyChange() {
 // PickAndExecuteTask manually picks a specific task by ID: claim �?execute �?submit.
 // Runs synchronously (Wails dispatches each binding call in its own goroutine).
 // Returns a result map with "ok", "error", and progress info suitable for the frontend.
-func (p *ClawNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]interface{}) {
+func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]interface{}) {
 	// Recover from panics in the executor so the Wails call always returns.
 	defer func() {
 		if r := recover(); r != nil {

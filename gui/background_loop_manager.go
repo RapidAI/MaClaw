@@ -29,10 +29,7 @@ type pendingTask struct {
 	slotKind    SlotKind
 	userID      string
 	description string
-	systemPrompt string
-	userText    string
 	maxIter     int
-	onProgress  ProgressCallback
 	resultC     chan *LoopContext // signals the caller with the spawned context
 }
 
@@ -298,6 +295,42 @@ func (m *BackgroundLoopManager) Complete(loopID string) {
 	}
 
 	m.notifyChange()
+}
+
+// StopAll cancels all running/paused loops and clears all queues.
+// Unlike calling Stop() on each loop individually, this does NOT
+// dequeue or spawn replacement tasks.
+func (m *BackgroundLoopManager) StopAll() {
+	m.mu.Lock()
+
+	// Clear all queues so no replacement tasks are spawned.
+	m.queues = make(map[SlotKind][]*pendingTask)
+
+	// Collect loops to stop and remove them from the map under lock.
+	toStop := make([]*LoopContext, 0, len(m.loops))
+	for id, ctx := range m.loops {
+		state := ctx.State()
+		if state == "running" || state == "paused" {
+			delete(m.loops, id)
+			m.slotCounts[ctx.SlotKind]--
+			if m.slotCounts[ctx.SlotKind] < 0 {
+				m.slotCounts[ctx.SlotKind] = 0
+			}
+			toStop = append(toStop, ctx)
+		}
+	}
+
+	m.mu.Unlock()
+
+	// Cancel outside lock.
+	for _, ctx := range toStop {
+		ctx.Cancel()
+		ctx.SetState("stopped")
+	}
+
+	if len(toStop) > 0 {
+		m.notifyChange()
+	}
 }
 
 // notifyChange calls the OnChange callback if set.

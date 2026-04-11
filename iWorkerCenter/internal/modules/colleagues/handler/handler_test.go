@@ -11,8 +11,22 @@ import (
 	colSvc "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/service"
 	roleRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/repo"
 	roleSvc "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/service"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/db"
 )
+
+const testTenant = "test-tenant"
+
+// newTenantRequest creates an httptest.NewRequest with tenant context injected.
+func newTenantRequest(method, target string, body *bytes.Buffer) *http.Request {
+	var r *http.Request
+	if body != nil {
+		r = httptest.NewRequest(method, target, body)
+	} else {
+		r = httptest.NewRequest(method, target, nil)
+	}
+	return r.WithContext(tenant.WithTenantID(r.Context(), testTenant))
+}
 
 func setup(t *testing.T) (*http.ServeMux, *roleSvc.RoleService) {
 	t.Helper()
@@ -40,7 +54,7 @@ func setup(t *testing.T) (*http.ServeMux, *roleSvc.RoleService) {
 // createRole is a test helper that creates a role and returns its ID.
 func createRole(t *testing.T, rs *roleSvc.RoleService, code string) string {
 	t.Helper()
-	role, err := rs.Create(roleSvc.CreateRequest{
+	role, err := rs.Create(testTenant, roleSvc.CreateRequest{
 		Name: "测试角色_" + code, Code: code, Description: "test role",
 	})
 	if err != nil {
@@ -55,7 +69,7 @@ func TestCreateAndListColleagues(t *testing.T) {
 
 	// create colleague
 	body := `{"name":"小迪","role_id":"` + roleID + `","description":"擅长通知和纪要","strengths":["通知","纪要"],"tasks":["写通知","会议纪要"]}`
-	req := httptest.NewRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body))
+	req := newTenantRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -79,7 +93,7 @@ func TestCreateAndListColleagues(t *testing.T) {
 
 	// list admin
 	w2 := httptest.NewRecorder()
-	mux.ServeHTTP(w2, httptest.NewRequest(http.MethodGet, "/admin/colleagues", nil))
+	mux.ServeHTTP(w2, newTenantRequest(http.MethodGet, "/admin/colleagues", nil))
 	if w2.Code != http.StatusOK {
 		t.Fatalf("list status = %d", w2.Code)
 	}
@@ -93,7 +107,7 @@ func TestCreateAndListColleagues(t *testing.T) {
 
 	// client list
 	w3 := httptest.NewRecorder()
-	mux.ServeHTTP(w3, httptest.NewRequest(http.MethodGet, "/client/colleagues", nil))
+	mux.ServeHTTP(w3, newTenantRequest(http.MethodGet, "/client/colleagues", nil))
 	if w3.Code != http.StatusOK {
 		t.Fatalf("client list status = %d", w3.Code)
 	}
@@ -105,7 +119,7 @@ func TestCreateRequiresRole(t *testing.T) {
 	// missing role_id
 	body := `{"name":"测试","role_id":""}`
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body)))
+	mux.ServeHTTP(w, newTenantRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body)))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing role status = %d, want 400", w.Code)
 	}
@@ -113,7 +127,7 @@ func TestCreateRequiresRole(t *testing.T) {
 	// non-existent role_id
 	body2 := `{"name":"测试","role_id":"nonexistent"}`
 	w2 := httptest.NewRecorder()
-	mux.ServeHTTP(w2, httptest.NewRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body2)))
+	mux.ServeHTTP(w2, newTenantRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body2)))
 	if w2.Code != http.StatusBadRequest {
 		t.Fatalf("bad role status = %d, want 400", w2.Code)
 	}
@@ -127,21 +141,21 @@ func TestAssignRole(t *testing.T) {
 	// create colleague with office role
 	body := `{"name":"阿宁","role_id":"` + officeID + `"}`
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body)))
+	mux.ServeHTTP(w, newTenantRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body)))
 	var created adminDTO
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 
 	// assign new role
 	assignBody := `{"role_id":"` + dataID + `","reason":"转岗到数据组"}`
 	w2 := httptest.NewRecorder()
-	mux.ServeHTTP(w2, httptest.NewRequest(http.MethodPost, "/admin/colleagues/"+created.ID+"/assign-role", bytes.NewBufferString(assignBody)))
+	mux.ServeHTTP(w2, newTenantRequest(http.MethodPost, "/admin/colleagues/"+created.ID+"/assign-role", bytes.NewBufferString(assignBody)))
 	if w2.Code != http.StatusOK {
 		t.Fatalf("assign role status = %d, body: %s", w2.Code, w2.Body.String())
 	}
 
 	// verify role changed
 	w3 := httptest.NewRecorder()
-	mux.ServeHTTP(w3, httptest.NewRequest(http.MethodGet, "/admin/colleagues/"+created.ID, nil))
+	mux.ServeHTTP(w3, newTenantRequest(http.MethodGet, "/admin/colleagues/"+created.ID, nil))
 	var updated adminDTO
 	_ = json.Unmarshal(w3.Body.Bytes(), &updated)
 	if updated.RoleID != dataID {
@@ -153,7 +167,7 @@ func TestAssignRole(t *testing.T) {
 
 	// check role history
 	w4 := httptest.NewRecorder()
-	mux.ServeHTTP(w4, httptest.NewRequest(http.MethodGet, "/admin/colleagues/"+created.ID+"/role-history", nil))
+	mux.ServeHTTP(w4, newTenantRequest(http.MethodGet, "/admin/colleagues/"+created.ID+"/role-history", nil))
 	if w4.Code != http.StatusOK {
 		t.Fatalf("role-history status = %d", w4.Code)
 	}
@@ -192,7 +206,7 @@ func TestFilterByRole(t *testing.T) {
 	} {
 		body := `{"name":"` + pair.name + `","role_id":"` + pair.roleID + `"}`
 		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body)))
+		mux.ServeHTTP(w, newTenantRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body)))
 		if w.Code != http.StatusCreated {
 			t.Fatalf("create %s: status %d", pair.name, w.Code)
 		}
@@ -200,7 +214,7 @@ func TestFilterByRole(t *testing.T) {
 
 	// filter by office role
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/admin/colleagues?role_id="+officeID, nil))
+	mux.ServeHTTP(w, newTenantRequest(http.MethodGet, "/admin/colleagues?role_id="+officeID, nil))
 	var resp struct {
 		Colleagues []adminDTO `json:"colleagues"`
 	}
@@ -214,7 +228,7 @@ func TestFilterByRole(t *testing.T) {
 
 	// client filter by role
 	w2 := httptest.NewRecorder()
-	mux.ServeHTTP(w2, httptest.NewRequest(http.MethodGet, "/client/colleagues?role_id="+dataID, nil))
+	mux.ServeHTTP(w2, newTenantRequest(http.MethodGet, "/client/colleagues?role_id="+dataID, nil))
 	var clientResp struct {
 		Colleagues []clientDTO `json:"colleagues"`
 	}
@@ -230,20 +244,20 @@ func TestSetStatus(t *testing.T) {
 
 	body := `{"name":"老陈","role_id":"` + roleID + `"}`
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body)))
+	mux.ServeHTTP(w, newTenantRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body)))
 	var created adminDTO
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 
 	// disable
 	w2 := httptest.NewRecorder()
-	mux.ServeHTTP(w2, httptest.NewRequest(http.MethodPost, "/admin/colleagues/"+created.ID+"/status", bytes.NewBufferString(`{"status":"disabled"}`)))
+	mux.ServeHTTP(w2, newTenantRequest(http.MethodPost, "/admin/colleagues/"+created.ID+"/status", bytes.NewBufferString(`{"status":"disabled"}`)))
 	if w2.Code != http.StatusOK {
 		t.Fatalf("set status = %d", w2.Code)
 	}
 
 	// client list should be empty
 	w3 := httptest.NewRecorder()
-	mux.ServeHTTP(w3, httptest.NewRequest(http.MethodGet, "/client/colleagues", nil))
+	mux.ServeHTTP(w3, newTenantRequest(http.MethodGet, "/client/colleagues", nil))
 	var clientResp struct {
 		Colleagues []clientDTO `json:"colleagues"`
 	}

@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-    ClawNetListSwarmSessions,
-    ClawNetCreateSwarmSession,
-    ClawNetJoinSwarm,
-    ClawNetContributeToSwarm,
-    ClawNetSynthesizeSwarm,
+    AgentNetListSwarmSessions,
+    AgentNetCreateSwarmSession,
+    AgentNetJoinSwarm,
+    AgentNetContributeToSwarm,
+    AgentNetSynthesizeSwarm,
 } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 import { cnCard, cnLabel, cnInput, cnActionBtn } from "./agentnetStyles";
@@ -13,7 +13,7 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-type Props = { lang: string; clawNetRunning: boolean };
+type Props = { lang: string; agentNetRunning: boolean };
 
 interface SwarmSession {
     id: string; topic: string; question?: string; status?: string;
@@ -29,7 +29,7 @@ const STANCES = [
 
 const ACTION_MSG_TTL = 4000;
 
-export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
+export function AgentNetSwarmPanel({ lang, agentNetRunning }: Props) {
     const [sessions, setSessions] = useState<SwarmSession[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
@@ -60,15 +60,15 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
     }, []);
 
     const refresh = useCallback(async () => {
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         setLoading(true); setError("");
         try {
-            const res = await ClawNetListSwarmSessions();
+            const res = await AgentNetListSwarmSessions();
             if (mountedRef.current && res.ok) setSessions((res.sessions as SwarmSession[]) || []);
             else if (mountedRef.current && res.error) setError(res.error as string);
         } catch (e: any) { if (mountedRef.current) setError(e.message); }
         if (mountedRef.current) setLoading(false);
-    }, [clawNetRunning]);
+    }, [agentNetRunning]);
 
     useEffect(() => { refresh(); }, [refresh]);
 
@@ -76,7 +76,7 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
         if (!newTopic.trim()) return;
         setCreateBusy(true);
         try {
-            const res = await ClawNetCreateSwarmSession(newTopic.trim(), newQuestion.trim());
+            const res = await AgentNetCreateSwarmSession(newTopic.trim(), newQuestion.trim());
             if (res.ok) { setNewTopic(""); setNewQuestion(""); setShowCreate(false); refresh(); }
             else showMsg(`❌ ${res.error}`);
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
@@ -85,7 +85,7 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
 
     const handleJoin = async (id: string) => {
         try {
-            const res = await ClawNetJoinSwarm(id);
+            const res = await AgentNetJoinSwarm(id);
             if (!res.ok) showMsg(`❌ ${res.error}`);
             else { showMsg(localizeText(lang, "✅ Joined", "✅ 已加入")); refresh(); }
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
@@ -95,7 +95,7 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
         if (!activeSession || !contribText.trim()) return;
         setContribBusy(true);
         try {
-            const res = await ClawNetContributeToSwarm(activeSession, contribText.trim(), contribStance);
+            const res = await AgentNetContributeToSwarm(activeSession, contribText.trim(), contribStance);
             if (res.ok) { setContribText(""); showMsg(localizeText(lang, "✅ Contributed", "✅ 已贡献")); refresh(); }
             else showMsg(`❌ ${res.error}`);
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
@@ -104,13 +104,13 @@ export function ClawNetSwarmPanel({ lang, clawNetRunning }: Props) {
 
     const handleSynthesize = async (id: string) => {
         try {
-            const res = await ClawNetSynthesizeSwarm(id);
+            const res = await AgentNetSynthesizeSwarm(id);
             if (res.ok) { showMsg(localizeText(lang, "✅ Synthesized", "✅ 综合完成")); refresh(); }
             else showMsg(`❌ ${res.error}`);
         } catch (e: any) { showMsg(`❌ ${e.message}`); }
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
+    if (!agentNetRunning) return <div style={cnLabel}>{localizeText(lang, "AgentNet not connected", "智网未连接")}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>

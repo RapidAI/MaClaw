@@ -8,10 +8,12 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
@@ -36,6 +38,8 @@ func NewRouter(
 	feishuPlugin *feishu.FeishuPlugin,
 	openclawIMPlugin *im.WebhookIMPlugin,
 	qqbotPlugin *qqbot.Plugin,
+	wecomPlugin *wecom.Plugin,
+	dingtalkPlugin *dingtalk.Plugin,
 	hubLLMStatusFn func() string,
 	convStatsFn func() (int, int),
 	chatStore *chat.Store,
@@ -48,6 +52,7 @@ func NewRouter(
 	chatNotifier *chat.Notifier,
 	voiceprintSvc *voiceprint.Service,
 	securitySvc *security.SecurityService,
+	computeHandler *ComputeHandler,
 	hubCfg *config.Config,
 	configPath string,
 	ensureTLSCert func(certFile, keyFile string) error,
@@ -67,6 +72,12 @@ func NewRouter(
 	var imCleaners []IMBindingCleaner
 	if qqbotPlugin != nil {
 		imCleaners = append(imCleaners, qqbotPlugin)
+	}
+	if wecomPlugin != nil {
+		imCleaners = append(imCleaners, wecomPlugin)
+	}
+	if dingtalkPlugin != nil {
+		imCleaners = append(imCleaners, dingtalkPlugin)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler("maclaw-hub"))
@@ -114,6 +125,9 @@ func NewRouter(
 		}
 		if feishuPlugin != nil {
 			feishuPlugin.SetPublicBaseURL(url)
+		}
+		if dingtalkPlugin != nil {
+			dingtalkPlugin.SetPublicBaseURL(url)
 		}
 	})))
 	mux.HandleFunc("GET /api/admin/mail/config", RequireAdmin(admins, GetMailConfigHandler(mailer)))
@@ -177,6 +191,25 @@ func NewRouter(
 		// Public endpoint for enrollment group tree
 		mux.HandleFunc("GET /api/enroll/group-tree", EnrollGroupTreeHandler(securitySvc))
 	}
+	// Compute power management
+	if computeHandler != nil {
+		ch := computeHandler
+		mux.HandleFunc("POST /api/admin/compute/providers", RequireAdmin(admins, ch.CreateProvider()))
+		mux.HandleFunc("GET /api/admin/compute/providers", RequireAdmin(admins, ch.ListProviders()))
+		mux.HandleFunc("GET /api/admin/compute/providers/{id}", RequireAdmin(admins, ch.GetProvider()))
+		mux.HandleFunc("PUT /api/admin/compute/providers/{id}", RequireAdmin(admins, ch.UpdateProvider()))
+		mux.HandleFunc("DELETE /api/admin/compute/providers/{id}", RequireAdmin(admins, ch.DeleteProvider()))
+		mux.HandleFunc("POST /api/admin/compute/providers/{id}/test", RequireAdmin(admins, ch.TestProvider()))
+		mux.HandleFunc("POST /api/admin/compute/providers/{id}/toggle", RequireAdmin(admins, ch.ToggleProvider()))
+		mux.HandleFunc("GET /api/admin/compute/permissions", RequireAdmin(admins, ch.ListCenterPermissions()))
+		mux.HandleFunc("POST /api/admin/compute/permissions/{id}", RequireAdmin(admins, ch.ToggleCenterPermission()))
+		mux.HandleFunc("PUT /api/admin/centers/{id}/compute-permission", RequireAdmin(admins, ch.SetComputePermission()))
+		mux.HandleFunc("POST /api/admin/centers/{id}/compute-providers", RequireAdmin(admins, ch.AssignProviderToCenter()))
+		mux.HandleFunc("GET /api/admin/centers/{id}/compute-providers", RequireAdmin(admins, ch.ListCenterAssignments()))
+		mux.HandleFunc("DELETE /api/admin/centers/{id}/compute-providers/{provider_id}", RequireAdmin(admins, ch.UnassignProviderFromCenter()))
+		mux.HandleFunc("GET /api/centers/{id}/compute-providers", ch.CenterComputeProviders())
+	}
+
 	// Conversation stats
 	if convStatsFn != nil {
 		mux.HandleFunc("GET /api/admin/conversation_stats", RequireAdmin(admins, func(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +227,19 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/qqbot/bindings", RequireAdmin(admins, DeleteQQBotBindingHandler(qqbotPlugin)))
 	mux.HandleFunc("POST /api/qqbot/webhook", QQBotWebhookHandler(qqbotPlugin))
 	mux.HandleFunc("GET /api/qqbot/tempfile/{token}", qqbotPlugin.ServeTempFile)
+
+	// WeCom (企业微信) Bot
+	mux.HandleFunc("GET /api/admin/settings/wecom", RequireAdmin(admins, GetWeComConfigHandler(system)))
+	mux.HandleFunc("POST /api/admin/settings/wecom", RequireAdmin(admins, UpdateWeComConfigHandler(system, wecomPlugin)))
+	mux.HandleFunc("GET /api/admin/wecom/bindings", RequireAdmin(admins, GetWeComBindingsHandler(wecomPlugin)))
+	mux.HandleFunc("DELETE /api/admin/wecom/bindings", RequireAdmin(admins, DeleteWeComBindingHandler(wecomPlugin)))
+
+	// DingTalk (钉钉) Bot
+	mux.HandleFunc("GET /api/admin/settings/dingtalk", RequireAdmin(admins, GetDingTalkConfigHandler(system)))
+	mux.HandleFunc("POST /api/admin/settings/dingtalk", RequireAdmin(admins, UpdateDingTalkConfigHandler(system, dingtalkPlugin)))
+	mux.HandleFunc("GET /api/admin/dingtalk/bindings", RequireAdmin(admins, GetDingTalkBindingsHandler(dingtalkPlugin)))
+	mux.HandleFunc("DELETE /api/admin/dingtalk/bindings", RequireAdmin(admins, DeleteDingTalkBindingHandler(dingtalkPlugin)))
+
 	mux.HandleFunc("/api/feishu/webhook", feishu.WebhookHandler(feishuNotifier))
 	if feishuPlugin != nil {
 		mux.HandleFunc("GET /api/feishu/tempfile/{token}", feishuPlugin.ServeTempFile)

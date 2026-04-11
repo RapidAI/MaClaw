@@ -10,7 +10,7 @@ import (
 // testCleanLastUpdate removes the timestamp file before/after a test.
 func testCleanLastUpdate(t *testing.T) string {
 	t.Helper()
-	p := clawnetLastUpdatePath()
+	p := agentnetLastUpdatePath()
 	if p == "" {
 		t.Skip("cannot determine home dir")
 	}
@@ -61,7 +61,7 @@ func TestNeedsUpdate_StaleTimestamp(t *testing.T) {
 }
 
 func TestStartAutoUpdate_Idempotent(t *testing.T) {
-	c := NewClawNetClient()
+	c := NewAgentNetClient()
 	defer c.StopAutoUpdate()
 
 	c.StartAutoUpdate(func(string) {})
@@ -71,14 +71,14 @@ func TestStartAutoUpdate_Idempotent(t *testing.T) {
 }
 
 func TestStopAutoUpdate_BeforeStart(t *testing.T) {
-	c := NewClawNetClient()
+	c := NewAgentNetClient()
 	// StopAutoUpdate before StartAutoUpdate should not panic.
 	c.StopAutoUpdate()
 	c.StopAutoUpdate()
 }
 
 func TestAutoUpdate_RestartAfterStop(t *testing.T) {
-	c := NewClawNetClient()
+	c := NewAgentNetClient()
 
 	c.StartAutoUpdate(func(string) {})
 	c.StopAutoUpdate()

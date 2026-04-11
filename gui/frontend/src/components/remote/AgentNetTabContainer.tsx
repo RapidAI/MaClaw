@@ -1,11 +1,11 @@
 import React, { useState, Component, ReactNode } from "react";
-import { ClawNetTaskBoard } from "./AgentNetTaskBoard";
-import { ClawNetKnowledgePanel } from "./AgentNetKnowledgePanel";
-import { ClawNetSwarmPanel } from "./AgentNetSwarmPanel";
-import { ClawNetChatPanel } from "./AgentNetChatPanel";
-import { ClawNetResumePanel } from "./AgentNetResumePanel";
-import { ClawNetPredictionPanel } from "./AgentNetPredictionPanel";
-import { ClawNetNutshellPanel } from "./AgentNetNutshellPanel";
+import { AgentNetTaskBoard } from "./AgentNetTaskBoard";
+import { AgentNetKnowledgePanel } from "./AgentNetKnowledgePanel";
+import { AgentNetSwarmPanel } from "./AgentNetSwarmPanel";
+import { AgentNetChatPanel } from "./AgentNetChatPanel";
+import { AgentNetResumePanel } from "./AgentNetResumePanel";
+import { AgentNetPredictionPanel } from "./AgentNetPredictionPanel";
+import { AgentNetNutshellPanel } from "./AgentNetNutshellPanel";
 import { colors } from "./styles";
 import { cnTabBtn } from "./agentnetStyles";
 
@@ -13,11 +13,11 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-type Props = { lang: string; clawNetRunning: boolean };
+type Props = { lang: string; agentNetRunning: boolean };
 
-type ClawNetSubTab = "tasks" | "knowledge" | "swarm" | "chat" | "prediction" | "nutshell" | "resume";
+type AgentNetSubTab = "tasks" | "knowledge" | "swarm" | "chat" | "prediction" | "nutshell" | "resume";
 
-const tabDefs: { id: ClawNetSubTab; icon: string; label: (lang: string) => string }[] = [
+const tabDefs: { id: AgentNetSubTab; icon: string; label: (lang: string) => string }[] = [
     { id: "tasks", icon: "🏪", label: (lang) => localizeText(lang, "Tasks", "任务集市") },
     { id: "knowledge", icon: "📚", label: (lang) => localizeText(lang, "Knowledge", "知识网络") },
     { id: "swarm", icon: "🧠", label: (lang) => localizeText(lang, "Swarm", "群体思考") },
@@ -28,7 +28,7 @@ const tabDefs: { id: ClawNetSubTab; icon: string; label: (lang: string) => strin
 ];
 
 // ErrorBoundary to prevent a single panel crash from white-screening the entire view
-class ClawNetErrorBoundary extends Component<
+class AgentNetErrorBoundary extends Component<
     { lang?: string; onRetry: () => void; children: ReactNode },
     { hasError: boolean; error: string }
 > {
@@ -40,7 +40,7 @@ class ClawNetErrorBoundary extends Component<
         return { hasError: true, error: error?.message || "Unknown error" };
     }
     componentDidCatch(error: Error, info: React.ErrorInfo) {
-        console.error("[ClawNet] Panel crashed:", error, info.componentStack);
+        console.error("[AgentNet] Panel crashed:", error, info.componentStack);
     }
     render() {
         if (this.state.hasError) {
@@ -69,21 +69,21 @@ class ClawNetErrorBoundary extends Component<
     }
 }
 
-function renderSubTab(subTab: ClawNetSubTab, lang: string, clawNetRunning: boolean) {
+function renderSubTab(subTab: AgentNetSubTab, lang: string, agentNetRunning: boolean) {
     switch (subTab) {
-        case "tasks": return <ClawNetTaskBoard lang={lang} clawNetRunning={clawNetRunning} />;
-        case "knowledge": return <ClawNetKnowledgePanel lang={lang} clawNetRunning={clawNetRunning} />;
-        case "swarm": return <ClawNetSwarmPanel lang={lang} clawNetRunning={clawNetRunning} />;
-        case "chat": return <ClawNetChatPanel lang={lang} clawNetRunning={clawNetRunning} />;
-        case "prediction": return <ClawNetPredictionPanel lang={lang} clawNetRunning={clawNetRunning} />;
-        case "nutshell": return <ClawNetNutshellPanel lang={lang} clawNetRunning={clawNetRunning} />;
-        case "resume": return <ClawNetResumePanel lang={lang} clawNetRunning={clawNetRunning} />;
+        case "tasks": return <AgentNetTaskBoard lang={lang} agentNetRunning={agentNetRunning} />;
+        case "knowledge": return <AgentNetKnowledgePanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "swarm": return <AgentNetSwarmPanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "chat": return <AgentNetChatPanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "prediction": return <AgentNetPredictionPanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "nutshell": return <AgentNetNutshellPanel lang={lang} agentNetRunning={agentNetRunning} />;
+        case "resume": return <AgentNetResumePanel lang={lang} agentNetRunning={agentNetRunning} />;
         default: return null;
     }
 }
 
-export function ClawNetTabContainer({ lang, clawNetRunning }: Props) {
-    const [subTab, setSubTab] = useState<ClawNetSubTab>("tasks");
+export function AgentNetTabContainer({ lang, agentNetRunning }: Props) {
+    const [subTab, setSubTab] = useState<AgentNetSubTab>("tasks");
     // Key to force remount on retry
     const [retryKey, setRetryKey] = useState(0);
 
@@ -105,9 +105,9 @@ export function ClawNetTabContainer({ lang, clawNetRunning }: Props) {
 
             {/* Content – only render the active panel (lazy) to avoid concurrent backend storms */}
             <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
-                <ClawNetErrorBoundary key={`${subTab}-${retryKey}`} lang={lang} onRetry={() => setRetryKey(k => k + 1)}>
-                    {renderSubTab(subTab, lang, clawNetRunning)}
-                </ClawNetErrorBoundary>
+                <AgentNetErrorBoundary key={`${subTab}-${retryKey}`} lang={lang} onRetry={() => setRetryKey(k => k + 1)}>
+                    {renderSubTab(subTab, lang, agentNetRunning)}
+                </AgentNetErrorBoundary>
             </div>
         </div>
     );

@@ -216,11 +216,10 @@ func (a *ClaudeAdapter) buildCommandEnv(base map[string]string) map[string]strin
 	if env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] == "" {
 		env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] = "1"
 	}
-	// Pass max output tokens via environment variable instead of CLI flag,
-	// because Claude Code 2.x does not support --max-output-tokens.
-	if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "" {
-		env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
-	}
+	// Do NOT set CLAUDE_CODE_MAX_OUTPUT_TOKENS — let Claude Code use its own
+	// default, which is compatible with all providers. Setting a large value
+	// (e.g. 128000) causes 400 errors on providers with lower limits like
+	// Alibaba Bailian (max 65536).
 
 	return env
 }

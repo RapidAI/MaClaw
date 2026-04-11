@@ -47,7 +47,7 @@ func TestSystemPrompt_FirstTurn_ContainsProactiveMemoryInstruction(t *testing.T)
 
 	assertContainsAll(t, prompt, []string{
 		corememory.PromptSectionUserMemory,
-		"其他记忆（偏好、项目知识、指令等）可通过 " + corememory.PromptActionRecallColon,
+		"如需更多记忆，可通过 " + corememory.PromptActionRecallColon,
 		corememory.BuildIMMemoryGuidePrompt(),
 	})
 }

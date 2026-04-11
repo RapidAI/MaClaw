@@ -211,7 +211,7 @@ const darkTheme: Theme = {
     linkColor: "var(--theme-primary-soft)",
     pathColor: "var(--theme-success)",
     promptColor: "var(--theme-primary-soft)",
-    userColor: "var(--theme-primary-soft)",
+    userColor: "var(--theme-text-primary)",
     divider: "var(--theme-border)",
     fieldBg: "var(--theme-surface-muted)",
     fieldBorder: "var(--theme-border)",

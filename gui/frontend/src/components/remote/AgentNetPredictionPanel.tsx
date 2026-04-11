@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-    ClawNetListPredictions,
-    ClawNetCreatePrediction,
-    ClawNetPlaceBet,
-    ClawNetResolvePrediction,
-    ClawNetAppealPrediction,
-    ClawNetGetPredictionLeaderboard,
+    AgentNetListPredictions,
+    AgentNetCreatePrediction,
+    AgentNetPlaceBet,
+    AgentNetResolvePrediction,
+    AgentNetAppealPrediction,
+    AgentNetGetPredictionLeaderboard,
 } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 import { cnCard, cnLabel, cnHeading, cnInput, cnActionBtn, cnTabStyle } from "./agentnetStyles";
@@ -14,7 +14,7 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-type Props = { lang: string; clawNetRunning: boolean };
+type Props = { lang: string; agentNetRunning: boolean };
 
 interface Prediction {
     id: string;
@@ -26,7 +26,7 @@ interface Prediction {
     resolved_option?: string;
 }
 
-export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
+export function AgentNetPredictionPanel({ lang, agentNetRunning }: Props) {
     const [tab, setTab] = useState<"market" | "create" | "leaderboard">("market");
     const [preds, setPreds] = useState<Prediction[]>([]);
     const [loading, setLoading] = useState(false);
@@ -57,24 +57,24 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
     };
 
     const loadPredictions = useCallback(async () => {
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         setLoading(true); setError("");
         try {
-            const res = await ClawNetListPredictions();
+            const res = await AgentNetListPredictions();
             if (mountedRef.current && res.ok) setPreds(res.predictions as Prediction[] || []);
         } catch (e: any) { if (mountedRef.current) setError(e.message); }
         if (mountedRef.current) setLoading(false);
-    }, [clawNetRunning]);
+    }, [agentNetRunning]);
 
     const loadLeaderboard = useCallback(async () => {
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         setLoading(true);
         try {
-            const res = await ClawNetGetPredictionLeaderboard();
+            const res = await AgentNetGetPredictionLeaderboard();
             if (mountedRef.current && res.ok) setLeaderboard(res.leaderboard as any[] || []);
         } catch {}
         if (mountedRef.current) setLoading(false);
-    }, [clawNetRunning]);
+    }, [agentNetRunning]);
 
     useEffect(() => {
         if (tab === "market") loadPredictions();
@@ -87,7 +87,7 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
         if (opts.length < 2) { showMsg(localizeText(lang, "Need at least 2 options", "至少需要2个选项")); return; }
         setActionBusy("create");
         try {
-            const res = await ClawNetCreatePrediction(newQuestion.trim(), opts);
+            const res = await AgentNetCreatePrediction(newQuestion.trim(), opts);
             if (!mountedRef.current) return;
             if (res.ok) { setNewQuestion(""); setNewOptions("yes, no"); showMsg(localizeText(lang, "✅ Prediction created", "✅ 预测已创建")); setTab("market"); loadPredictions(); }
             else showMsg(`❌ ${res.error}`);
@@ -99,7 +99,7 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
         if (!betPredId || !betOption || betAmount <= 0) return;
         setActionBusy("bet-" + betPredId);
         try {
-            const res = await ClawNetPlaceBet(betPredId, betOption, betAmount);
+            const res = await AgentNetPlaceBet(betPredId, betOption, betAmount);
             if (!mountedRef.current) return;
             if (res.ok) { showMsg(localizeText(lang, "✅ Bet placed", "✅ 下注成功")); setBetPredId(null); loadPredictions(); }
             else showMsg(`❌ ${res.error}`);
@@ -110,7 +110,7 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
     const handleResolve = async (predId: string, option: string) => {
         setActionBusy("resolve-" + predId);
         try {
-            const res = await ClawNetResolvePrediction(predId, option);
+            const res = await AgentNetResolvePrediction(predId, option);
             if (!mountedRef.current) return;
             if (res.ok) { showMsg(localizeText(lang, "✅ Resolved", "✅ 已结算")); loadPredictions(); }
             else showMsg(`❌ ${res.error}`);
@@ -123,7 +123,7 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
         if (!reason) return;
         setActionBusy("appeal-" + predId);
         try {
-            const res = await ClawNetAppealPrediction(predId, reason);
+            const res = await AgentNetAppealPrediction(predId, reason);
             if (!mountedRef.current) return;
             if (res.ok) showMsg(localizeText(lang, "✅ Appeal submitted", "✅ 申诉已提交"));
             else showMsg(`❌ ${res.error}`);
@@ -131,7 +131,7 @@ export function ClawNetPredictionPanel({ lang, clawNetRunning }: Props) {
         if (mountedRef.current) setActionBusy("");
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
+    if (!agentNetRunning) return <div style={cnLabel}>{localizeText(lang, "AgentNet not connected", "智网未连接")}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>

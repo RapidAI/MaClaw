@@ -23,24 +23,25 @@ func New(write, read *sql.DB) *ColleagueRepo {
 const cols = "id, name, avatar, role_id, description, strengths, tasks, status, created_at, updated_at"
 
 // Insert creates a new colleague record.
-func (r *ColleagueRepo) Insert(c *domain.Colleague) error {
+func (r *ColleagueRepo) Insert(tenantID string, c *domain.Colleague) error {
 	strengths, _ := json.Marshal(c.Strengths)
 	tasks, _ := json.Marshal(c.Tasks)
-	_, err := r.write.Exec(`INSERT INTO colleagues (`+cols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := r.write.Exec(`INSERT INTO colleagues (`+cols+`, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.Name, c.Avatar, c.RoleID, c.Description,
 		string(strengths), string(tasks), c.Status,
-		c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339))
+		c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339),
+		tenantID)
 	return err
 }
 
 // Update modifies an existing colleague.
-func (r *ColleagueRepo) Update(c *domain.Colleague) error {
+func (r *ColleagueRepo) Update(tenantID string, c *domain.Colleague) error {
 	strengths, _ := json.Marshal(c.Strengths)
 	tasks, _ := json.Marshal(c.Tasks)
-	res, err := r.write.Exec(`UPDATE colleagues SET name=?, avatar=?, role_id=?, description=?, strengths=?, tasks=?, status=?, updated_at=? WHERE id=?`,
+	res, err := r.write.Exec(`UPDATE colleagues SET name=?, avatar=?, role_id=?, description=?, strengths=?, tasks=?, status=?, updated_at=? WHERE id=? AND tenant_id=?`,
 		c.Name, c.Avatar, c.RoleID, c.Description,
 		string(strengths), string(tasks), c.Status,
-		c.UpdatedAt.Format(time.RFC3339), c.ID)
+		c.UpdatedAt.Format(time.RFC3339), c.ID, tenantID)
 	if err != nil {
 		return err
 	}
@@ -51,9 +52,9 @@ func (r *ColleagueRepo) Update(c *domain.Colleague) error {
 }
 
 // UpdateRoleID changes only the role_id of a colleague.
-func (r *ColleagueRepo) UpdateRoleID(id, roleID string) error {
-	res, err := r.write.Exec("UPDATE colleagues SET role_id=?, updated_at=? WHERE id=?",
-		roleID, time.Now().Format(time.RFC3339), id)
+func (r *ColleagueRepo) UpdateRoleID(tenantID string, id, roleID string) error {
+	res, err := r.write.Exec("UPDATE colleagues SET role_id=?, updated_at=? WHERE id=? AND tenant_id=?",
+		roleID, time.Now().Format(time.RFC3339), id, tenantID)
 	if err != nil {
 		return err
 	}
@@ -64,24 +65,24 @@ func (r *ColleagueRepo) UpdateRoleID(id, roleID string) error {
 }
 
 // GetByID returns a single colleague by ID.
-func (r *ColleagueRepo) GetByID(id string) (*domain.Colleague, error) {
-	row := r.read.QueryRow("SELECT "+cols+" FROM colleagues WHERE id=?", id)
+func (r *ColleagueRepo) GetByID(tenantID string, id string) (*domain.Colleague, error) {
+	row := r.read.QueryRow("SELECT "+cols+" FROM colleagues WHERE id=? AND tenant_id=?", id, tenantID)
 	return scanColleague(row)
 }
 
 // List returns all colleagues ordered by name.
-func (r *ColleagueRepo) List() ([]*domain.Colleague, error) {
-	return r.queryMany("SELECT " + cols + " FROM colleagues ORDER BY name")
+func (r *ColleagueRepo) List(tenantID string) ([]*domain.Colleague, error) {
+	return r.queryMany("SELECT "+cols+" FROM colleagues WHERE tenant_id=? ORDER BY name", tenantID)
 }
 
 // ListActive returns only active colleagues.
-func (r *ColleagueRepo) ListActive() ([]*domain.Colleague, error) {
-	return r.queryMany("SELECT " + cols + " FROM colleagues WHERE status='active' ORDER BY name")
+func (r *ColleagueRepo) ListActive(tenantID string) ([]*domain.Colleague, error) {
+	return r.queryMany("SELECT "+cols+" FROM colleagues WHERE status='active' AND tenant_id=? ORDER BY name", tenantID)
 }
 
 // ListByRoleID returns colleagues assigned to a specific role.
-func (r *ColleagueRepo) ListByRoleID(roleID string) ([]*domain.Colleague, error) {
-	rows, err := r.read.Query("SELECT "+cols+" FROM colleagues WHERE role_id=? AND status='active' ORDER BY name", roleID)
+func (r *ColleagueRepo) ListByRoleID(tenantID string, roleID string) ([]*domain.Colleague, error) {
+	rows, err := r.read.Query("SELECT "+cols+" FROM colleagues WHERE role_id=? AND status='active' AND tenant_id=? ORDER BY name", roleID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -90,10 +91,10 @@ func (r *ColleagueRepo) ListByRoleID(roleID string) ([]*domain.Colleague, error)
 }
 
 // ListByRoleCode returns active colleagues whose role matches the given role code.
-func (r *ColleagueRepo) ListByRoleCode(roleCode string) ([]*domain.Colleague, error) {
+func (r *ColleagueRepo) ListByRoleCode(tenantID string, roleCode string) ([]*domain.Colleague, error) {
 	rows, err := r.read.Query(`SELECT c.id, c.name, c.avatar, c.role_id, c.description, c.strengths, c.tasks, c.status, c.created_at, c.updated_at
 		FROM colleagues c JOIN roles r ON c.role_id = r.id
-		WHERE r.code=? AND c.status='active' ORDER BY c.name`, roleCode)
+		WHERE r.code=? AND c.status='active' AND c.tenant_id=? ORDER BY c.name`, roleCode, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,9 +103,9 @@ func (r *ColleagueRepo) ListByRoleCode(roleCode string) ([]*domain.Colleague, er
 }
 
 // UpdateStatus changes the status of a colleague.
-func (r *ColleagueRepo) UpdateStatus(id, status string) error {
-	res, err := r.write.Exec("UPDATE colleagues SET status=?, updated_at=? WHERE id=?",
-		status, time.Now().Format(time.RFC3339), id)
+func (r *ColleagueRepo) UpdateStatus(tenantID string, id, status string) error {
+	res, err := r.write.Exec("UPDATE colleagues SET status=?, updated_at=? WHERE id=? AND tenant_id=?",
+		status, time.Now().Format(time.RFC3339), id, tenantID)
 	if err != nil {
 		return err
 	}
@@ -114,8 +115,8 @@ func (r *ColleagueRepo) UpdateStatus(id, status string) error {
 	return nil
 }
 
-func (r *ColleagueRepo) queryMany(query string) ([]*domain.Colleague, error) {
-	rows, err := r.read.Query(query)
+func (r *ColleagueRepo) queryMany(query string, args ...any) ([]*domain.Colleague, error) {
+	rows, err := r.read.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}

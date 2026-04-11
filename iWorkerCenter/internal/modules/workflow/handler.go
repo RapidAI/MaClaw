@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
 
 // Handler exposes HTTP endpoints for workflow management and runtime.
 type Handler struct {
-	svc *Service
+	svc      *Service
+	designer *Designer
 }
 
 // NewHandler creates a Handler.
@@ -18,10 +20,16 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// SetDesigner sets the optional AI workflow designer.
+func (h *Handler) SetDesigner(d *Designer) {
+	h.designer = d
+}
+
 // RegisterAdminRoutes registers admin-facing routes.
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/workflows", h.handleDefinitions)
 	mux.HandleFunc("/admin/workflows/", h.handleDefinitionByID)
+	mux.HandleFunc("/admin/workflow-design", h.handleDesign)
 	mux.HandleFunc("/admin/workflow-instances", h.handleInstances)
 	mux.HandleFunc("/admin/workflow-instances/", h.handleInstanceByID)
 }
@@ -41,9 +49,10 @@ func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 // --- Definition endpoints ---
 
 func (h *Handler) handleDefinitions(w http.ResponseWriter, r *http.Request) {
+	tid := tenant.TenantIDFromContext(r.Context())
 	switch r.Method {
 	case http.MethodGet:
-		defs, err := h.svc.ListDefinitions()
+		defs, err := h.svc.ListDefinitions(tid)
 		if err != nil {
 			response.Internal(w, err.Error())
 			return
@@ -55,7 +64,7 @@ func (h *Handler) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}
-		def, err := h.svc.CreateDefinition(req)
+		def, err := h.svc.CreateDefinition(tid, req)
 		if err != nil {
 			response.BadRequest(w, "CREATE_FAILED", err.Error())
 			return
@@ -67,6 +76,7 @@ func (h *Handler) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleDefinitionByID(w http.ResponseWriter, r *http.Request) {
+	tid := tenant.TenantIDFromContext(r.Context())
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/workflows/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
@@ -78,7 +88,7 @@ func (h *Handler) handleDefinitionByID(w http.ResponseWriter, r *http.Request) {
 
 	// /admin/workflows/{id}/publish
 	if len(parts) == 2 && parts[1] == "publish" && r.Method == http.MethodPost {
-		if err := h.svc.PublishDefinition(id); err != nil {
+		if err := h.svc.PublishDefinition(tid, id); err != nil {
 			response.BadRequest(w, "PUBLISH_FAILED", err.Error())
 			return
 		}
@@ -88,7 +98,7 @@ func (h *Handler) handleDefinitionByID(w http.ResponseWriter, r *http.Request) {
 
 	// /admin/workflows/{id}/steps
 	if len(parts) == 2 && parts[1] == "steps" && r.Method == http.MethodGet {
-		steps, err := h.svc.ListStepDefinitions(id)
+		steps, err := h.svc.ListStepDefinitions(tid, id)
 		if err != nil {
 			response.Internal(w, err.Error())
 			return
@@ -99,12 +109,12 @@ func (h *Handler) handleDefinitionByID(w http.ResponseWriter, r *http.Request) {
 
 	// /admin/workflows/{id}
 	if r.Method == http.MethodGet {
-		def, err := h.svc.GetDefinition(id)
+		def, err := h.svc.GetDefinition(tid, id)
 		if err != nil {
 			response.NotFound(w, "NOT_FOUND", "workflow not found")
 			return
 		}
-		steps, _ := h.svc.ListStepDefinitions(id)
+		steps, _ := h.svc.ListStepDefinitions(tid, id)
 		dto := toDefDTO(def)
 		response.OK(w, map[string]any{"workflow": dto, "steps": toStepDefDTOs(steps)})
 		return
@@ -120,7 +130,8 @@ func (h *Handler) handleInstances(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	instances, err := h.svc.ListInstances()
+	tid := tenant.TenantIDFromContext(r.Context())
+	instances, err := h.svc.ListInstances(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -129,6 +140,7 @@ func (h *Handler) handleInstances(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleInstanceByID(w http.ResponseWriter, r *http.Request) {
+	tid := tenant.TenantIDFromContext(r.Context())
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/workflow-instances/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
@@ -136,7 +148,7 @@ func (h *Handler) handleInstanceByID(w http.ResponseWriter, r *http.Request) {
 
 	// /admin/workflow-instances/{id}/steps
 	if len(parts) == 2 && parts[1] == "steps" {
-		steps, err := h.svc.ListStepInstances(id)
+		steps, err := h.svc.ListStepInstances(tid, id)
 		if err != nil {
 			response.Internal(w, err.Error())
 			return
@@ -147,7 +159,7 @@ func (h *Handler) handleInstanceByID(w http.ResponseWriter, r *http.Request) {
 
 	// /admin/workflow-instances/{id}/events
 	if len(parts) == 2 && parts[1] == "events" {
-		events, err := h.svc.ListEvents(id)
+		events, err := h.svc.ListEvents(tid, id)
 		if err != nil {
 			response.Internal(w, err.Error())
 			return
@@ -156,7 +168,7 @@ func (h *Handler) handleInstanceByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inst, err := h.svc.GetInstance(id)
+	inst, err := h.svc.GetInstance(tid, id)
 	if err != nil {
 		response.NotFound(w, "NOT_FOUND", "instance not found")
 		return
@@ -166,17 +178,45 @@ func (h *Handler) handleInstanceByID(w http.ResponseWriter, r *http.Request) {
 
 // --- Runtime endpoints ---
 
+func (h *Handler) handleDesign(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+	if h.designer == nil {
+		response.Error(w, http.StatusServiceUnavailable, "DESIGNER_NOT_AVAILABLE", "AI workflow designer is not configured")
+		return
+	}
+	tid := tenant.TenantIDFromContext(r.Context())
+	var req DesignRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
+		return
+	}
+	result, err := h.designer.Design(tid, req)
+	if err != nil {
+		response.BadRequest(w, "DESIGN_FAILED", err.Error())
+		return
+	}
+	response.Created(w, map[string]any{
+		"workflow":  toDefDTO(result.Definition),
+		"steps":    toStepDefDTOs(result.Steps),
+		"published": result.Published,
+	})
+}
+
 func (h *Handler) handleStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
+	tid := tenant.TenantIDFromContext(r.Context())
 	var req StartInstanceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
-	inst, err := h.svc.StartInstance(req)
+	inst, err := h.svc.StartInstance(tid, req)
 	if err != nil {
 		response.BadRequest(w, "START_FAILED", err.Error())
 		return
@@ -189,6 +229,7 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
+	tid := tenant.TenantIDFromContext(r.Context())
 	// /runtime/workflows/steps/{id}/{action}
 	rest := strings.TrimPrefix(r.URL.Path, "/runtime/workflows/steps/")
 	rest = strings.TrimRight(rest, "/")
@@ -208,12 +249,12 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 
 	switch action {
 	case "complete":
-		if err := h.svc.CompleteStep(stepID, body.ActorID, body.Result); err != nil {
+		if err := h.svc.CompleteStep(tid, stepID, body.ActorID, body.Result); err != nil {
 			response.BadRequest(w, "COMPLETE_FAILED", err.Error())
 			return
 		}
 	case "reject":
-		if err := h.svc.RejectStep(stepID, body.ActorID, body.Note); err != nil {
+		if err := h.svc.RejectStep(tid, stepID, body.ActorID, body.Note); err != nil {
 			response.BadRequest(w, "REJECT_FAILED", err.Error())
 			return
 		}
@@ -231,7 +272,8 @@ func (h *Handler) handleClientWorkflows(w http.ResponseWriter, r *http.Request) 
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	defs, err := h.svc.ListDefinitions()
+	tid := tenant.TenantIDFromContext(r.Context())
+	defs, err := h.svc.ListDefinitions(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -251,7 +293,8 @@ func (h *Handler) handleClientInstances(w http.ResponseWriter, r *http.Request) 
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	instances, err := h.svc.ListInstances()
+	tid := tenant.TenantIDFromContext(r.Context())
+	instances, err := h.svc.ListInstances(tid)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return

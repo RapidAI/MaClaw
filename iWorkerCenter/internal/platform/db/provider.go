@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -16,7 +17,10 @@ type Provider struct {
 	Read  *sql.DB
 }
 
-// Open creates a new Provider with separate read/write connections.
+// Open creates a new Provider with separate read/write connections optimized
+// for concurrent access. The write pool is limited to 1 connection (SQLite
+// single-writer constraint). The read pool scales with CPU count to support
+// many concurrent readers via WAL mode.
 func Open(dsn string) (*Provider, error) {
 	if err := ensureParentDir(dsn); err != nil {
 		return nil, err
@@ -39,12 +43,18 @@ func Open(dsn string) (*Provider, error) {
 		return nil, fmt.Errorf("open read db: %w", err)
 	}
 
+	// Write: single connection (SQLite serializes writes regardless)
 	writeDB.SetMaxOpenConns(1)
 	writeDB.SetMaxIdleConns(1)
 	writeDB.SetConnMaxLifetime(30 * time.Minute)
 
-	readDB.SetMaxOpenConns(4)
-	readDB.SetMaxIdleConns(2)
+	// Read: scale with CPU count, minimum 4 for concurrent HTTP handlers
+	readConns := runtime.NumCPU()
+	if readConns < 4 {
+		readConns = 4
+	}
+	readDB.SetMaxOpenConns(readConns)
+	readDB.SetMaxIdleConns(readConns)
 	readDB.SetConnMaxLifetime(30 * time.Minute)
 
 	for _, conn := range []*sql.DB{writeDB, readDB} {
@@ -93,6 +103,9 @@ func applyPragmas(conn *sql.DB) error {
 		"PRAGMA busy_timeout = 5000;",
 		"PRAGMA synchronous = NORMAL;",
 		"PRAGMA temp_store = MEMORY;",
+		"PRAGMA cache_size = -8000;",       // 8 MB page cache per connection
+		"PRAGMA mmap_size = 268435456;",    // 256 MB memory-mapped I/O
+		"PRAGMA wal_autocheckpoint = 1000;", // checkpoint every 1000 pages
 	}
 	for _, stmt := range stmts {
 		if _, err := conn.Exec(stmt); err != nil {

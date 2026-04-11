@@ -26,6 +26,9 @@ func main() {
 	corelib.SyncLogDetailEnabledFromDefaultConfig()
 	initLogFile()
 
+	// --- Program log for programming tool output ---
+	programLogger.Init()
+
 	// Migrate ~/.maclaw/skills → ~/.maclaw/data/skills (one-time).
 	skill.MigrateSkillsDir()
 

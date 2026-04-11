@@ -139,21 +139,27 @@ func ScanAllSkillDirs() []corelib.NLSkillEntry {
 
 // SkillYAMLFile is the on-disk YAML format for a skill definition.
 type SkillYAMLFile struct {
-	Name        string          `yaml:"name"`
-	Description string          `yaml:"description"`
-	Triggers    []string        `yaml:"triggers"`
-	Steps       []SkillYAMLStep `yaml:"steps"`
-	Status      string          `yaml:"status"`
-	Platforms   []string        `yaml:"platforms"`
-	RequiresGUI bool            `yaml:"requires_gui"`
-	Extra       map[string]any  `yaml:"-"`
+	Name             string          `yaml:"name"`
+	Description      string          `yaml:"description"`
+	Triggers         []string        `yaml:"triggers"`
+	Steps            []SkillYAMLStep `yaml:"steps"`
+	Status           string          `yaml:"status"`
+	Platforms        []string        `yaml:"platforms"`
+	RequiresGUI      bool            `yaml:"requires_gui"`
+	ProducesArtifact *bool           `yaml:"produces_artifact,omitempty"` // false = diagnostic/instruction skill, no file output expected
+	Mode             string          `yaml:"mode,omitempty"`              // "sequential" (default) | "interactive"
+	Extra            map[string]any  `yaml:"-"`
 }
 
 // SkillYAMLStep is a single step in a YAML skill definition.
 type SkillYAMLStep struct {
-	Action  string                 `yaml:"action"`
-	Params  map[string]interface{} `yaml:"params"`
-	OnError string                 `yaml:"on_error"`
+	Action         string                 `yaml:"action"`
+	Params         map[string]interface{} `yaml:"params"`
+	OnError        string                 `yaml:"on_error"`
+	Name           string                 `yaml:"name,omitempty"`
+	Condition      string                 `yaml:"condition,omitempty"`
+	TimeoutSeconds int                    `yaml:"timeout,omitempty"` // per-step timeout in seconds (0 = use default)
+	ContinueOnErr  bool                   `yaml:"continue_on_error"`
 }
 
 func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
@@ -168,6 +174,7 @@ func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
 	knownKeys := map[string]bool{
 		"name": true, "description": true, "triggers": true, "steps": true,
 		"status": true, "platforms": true, "requires_gui": true,
+		"produces_artifact": true,
 	}
 	extra := make(map[string]any)
 	for k, v := range raw {
@@ -236,13 +243,34 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 		}
 		steps := make([]corelib.NLSkillStep, 0, len(sf.Steps))
 		for _, s := range sf.Steps {
+			params := s.Params
+			if params == nil {
+				params = make(map[string]interface{})
+			}
+			if s.TimeoutSeconds > 0 {
+				params["timeout"] = float64(s.TimeoutSeconds)
+			}
+			onError := s.OnError
+			if onError == "" {
+				if s.ContinueOnErr {
+					onError = "continue"
+				} else {
+					onError = "stop"
+				}
+			}
 			steps = append(steps, corelib.NLSkillStep{
-				Action:  s.Action,
-				Params:  s.Params,
-				OnError: s.OnError,
+				Action:    s.Action,
+				Params:    params,
+				OnError:   onError,
+				Name:      s.Name,
+				Condition: s.Condition,
 			})
 		}
 		if len(steps) == 0 {
+			producesArtifact := true
+			if sf.ProducesArtifact != nil && !*sf.ProducesArtifact {
+				producesArtifact = false
+			}
 			parsed, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
 				NameFallback:        name,
 				DescriptionFallback: sf.Description,
@@ -251,6 +279,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				SkillDir:            skillDir,
 				Platforms:           sf.Platforms,
 				RequiresGUI:         &sf.RequiresGUI,
+				ProducesArtifact:    &producesArtifact,
 			})
 			if err == nil {
 				if mdPath, mdErr := skillMarkdownPath(skillDir); mdErr == nil {
@@ -258,6 +287,10 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				}
 				return parsed, yamlPath, nil
 			}
+		}
+		producesArtifact := true
+		if sf.ProducesArtifact != nil && !*sf.ProducesArtifact {
+			producesArtifact = false
 		}
 		return &corelib.NLSkillEntry{
 			Name:        name,
@@ -268,8 +301,10 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			Source:      "file",
 			Platforms:   sf.Platforms,
 			RequiresGUI: sf.RequiresGUI,
+			Mode:        sf.Mode,
 			SkillDir:    skillDir,
 			CreatedAt:   fileModTime(yamlPath),
+			ProducesArtifact: producesArtifact,
 		}, yamlPath, nil
 	}
 

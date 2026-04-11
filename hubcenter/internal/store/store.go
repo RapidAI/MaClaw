@@ -193,6 +193,8 @@ type NewsRepository interface {
 	CountPinned(ctx context.Context) (int, error)
 }
 
+// ── DiWorker Accounts ──────────────────────────────────────────────
+
 type Store struct {
 	Admins        AdminUserRepository
 	System        SystemSettingsRepository

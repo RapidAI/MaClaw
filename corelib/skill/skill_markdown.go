@@ -11,6 +11,107 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+// bashBlockRe matches fenced bash code blocks in markdown.
+// Captures the content between ```bash and ```.
+var bashBlockRe = regexp.MustCompile("(?s)```bash\\s*\n(.*?)```")
+
+// hasUnresolvedPlaceholders checks if a line contains template-like
+// placeholders such as {{input}}, {baseDir}, etc. that were not resolved.
+func hasUnresolvedPlaceholders(line string) bool {
+	if strings.Contains(line, "{baseDir}") || strings.Contains(line, "{base_dir}") {
+		return true
+	}
+	// Only flag {{...}} patterns that look like file paths (contain / or .)
+	// as these are typically usage examples, not runtime template variables.
+	if strings.Contains(line, "{{/") || strings.Contains(line, "{{\\") ||
+		strings.Contains(line, "}}.pdf") || strings.Contains(line, "}}.md") {
+		return true
+	}
+	return false
+}
+
+// hasChinesePathSegments detects Chinese characters that appear in what
+// looks like a file path argument (quoted string containing Chinese).
+// These are typically example placeholders, not executable commands.
+func hasChinesePathSegments(line string) bool {
+	// Check for quoted strings containing CJK characters — typical of
+	// example usage like "/绝对路径/输入.md"
+	inQuote := false
+	quoteChar := byte(0)
+	var segment strings.Builder
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if (c == '"' || c == '\'') && (i == 0 || line[i-1] != '\\') {
+			if !inQuote {
+				inQuote = true
+				quoteChar = c
+				segment.Reset()
+			} else if c == quoteChar {
+				inQuote = false
+				// Check if the quoted segment contains CJK and looks like a path
+				s := segment.String()
+				if containsCJK(s) && (strings.Contains(s, "/") || strings.Contains(s, `\`)) {
+					return true
+				}
+			}
+		} else if inQuote {
+			segment.WriteByte(c)
+		}
+	}
+	return false
+}
+
+// containsCJK reports whether s contains any CJK Unified Ideographs.
+func containsCJK(s string) bool {
+	for _, r := range s {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return true
+		}
+	}
+	return false
+}
+
+// isExecutableBashBlock checks if a bash code block looks like an actual
+// executable command rather than a usage example with placeholders.
+func isExecutableBashBlock(block string) bool {
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if hasUnresolvedPlaceholders(line) {
+			return false
+		}
+		if hasChinesePathSegments(line) {
+			return false
+		}
+	}
+	return true
+}
+
+// extractBashBlocksFromMarkdown returns all bash code blocks found in the
+// given markdown content. This is used to determine the number of executable
+// steps for skills that define steps inline in skill.md.
+func extractBashBlocksFromMarkdown(content string) []string {
+	matches := bashBlockRe.FindAllStringSubmatch(content, -1)
+	var blocks []string
+	for _, m := range matches {
+		if len(m) > 1 {
+			trimmed := strings.TrimSpace(m[1])
+			if trimmed == "" {
+				continue
+			}
+			// Skip blocks that look like usage examples with unresolved
+			// placeholders or Chinese path segments.
+			if !isExecutableBashBlock(trimmed) {
+				continue
+			}
+			blocks = append(blocks, trimmed)
+		}
+	}
+	return blocks
+}
+
 type MarkdownSkillOptions struct {
 	NameFallback        string
 	DescriptionFallback string
@@ -21,6 +122,7 @@ type MarkdownSkillOptions struct {
 	Triggers            []string
 	Platforms           []string
 	RequiresGUI         *bool
+	ProducesArtifact    *bool // false = diagnostic/instruction skill, no file output expected
 }
 
 func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLSkillEntry, error) {
@@ -35,9 +137,20 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 	if parsed.compatibility != "" && !containsString(triggers, "agent-skill") {
 		triggers = append(triggers, "agent-skill")
 	}
+	producesArtifact := true // default: skills produce artifacts
+	if opts.ProducesArtifact != nil && !*opts.ProducesArtifact {
+		producesArtifact = false
+	}
+	verificationMode := "artifact_required"
+	if !producesArtifact {
+		verificationMode = "artifact_optional"
+	}
+	if v := parsed.frontmatter["verification_mode"]; v != "" {
+		verificationMode = v
+	}
 	params := map[string]interface{}{
 		"instructions":      parsed.markdown,
-		"verification_mode": "artifact_required",
+		"verification_mode": verificationMode,
 		"register_policy":   "manual",
 	}
 	if skillDir := strings.TrimSpace(opts.SkillDir); skillDir != "" {
@@ -69,6 +182,7 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		SkillDir:      strings.TrimSpace(opts.SkillDir),
 		Platforms:     platforms,
 		RequiresGUI:   requiresGUI,
+		ProducesArtifact: producesArtifact,
 	}, nil
 }
 
@@ -99,9 +213,36 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	}
 	steps := make([]corelib.NLSkillStep, 0)
 	scriptsDir := filepath.Join(skillDir, "scripts")
+	// Collect script file names referenced in markdown bash blocks.
+	// Only scripts explicitly mentioned in the markdown are turned into steps,
+	// preventing stale scripts in the scripts/ directory from becoming phantom steps.
+	referencedScripts := make(map[string]bool)
+	if strings.TrimSpace(parsed.markdown) != "" {
+		for _, block := range extractBashBlocksFromMarkdown(parsed.markdown) {
+			for _, line := range strings.Split(block, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				// Extract script file references from the command line.
+				for _, field := range strings.Fields(line) {
+					field = strings.Trim(field, "\"'`")
+					base := filepath.Base(field)
+					if isScriptFileName(base) {
+						referencedScripts[base] = true
+					}
+				}
+			}
+		}
+	}
 	if entries, err := os.ReadDir(scriptsDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() {
+				continue
+			}
+			// If markdown references exist, only include scripts mentioned there.
+			// Otherwise, fall back to including all scripts (legacy behavior).
+			if len(referencedScripts) > 0 && !referencedScripts[e.Name()] {
 				continue
 			}
 			scriptPath := filepath.Join(scriptsDir, e.Name())
@@ -127,6 +268,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 			Triggers:            triggers,
 			Platforms:           platforms,
 			RequiresGUI:         &requiresGUI,
+			ProducesArtifact:    opts.ProducesArtifact,
 		})
 		if err != nil {
 			return nil, err
@@ -137,6 +279,10 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	source := strings.TrimSpace(opts.Source)
 	if source == "" {
 		source = "file"
+	}
+	producesArtifact := true
+	if opts.ProducesArtifact != nil {
+		producesArtifact = *opts.ProducesArtifact
 	}
 	entry := &corelib.NLSkillEntry{
 		Name:          parsed.name,
@@ -151,6 +297,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		SkillDir:      firstNonEmpty(strings.TrimSpace(opts.SkillDir), skillDir),
 		Platforms:     platforms,
 		RequiresGUI:   requiresGUI,
+		ProducesArtifact: producesArtifact,
 	}
 	return entry, nil
 }
@@ -253,11 +400,12 @@ func skillMarkdownPath(skillDir string) (string, error) {
 }
 
 type parsedSkillMarkdown struct {
-	markdown      string
-	body          string
-	name          string
-	description   string
-	compatibility string
+	markdown       string
+	body           string
+	name           string
+	description    string
+	compatibility  string
+	frontmatter    map[string]string
 }
 
 func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback string) (*parsedSkillMarkdown, error) {
@@ -374,6 +522,16 @@ func containsString(values []string, target string) bool {
 		if value == target {
 			return true
 		}
+	}
+	return false
+}
+
+// isScriptFileName checks if a file name looks like an executable script.
+func isScriptFileName(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".mjs", ".cjs", ".js", ".sh", ".py", ".ps1", ".bat", ".cmd", ".rb", ".pl":
+		return true
 	}
 	return false
 }

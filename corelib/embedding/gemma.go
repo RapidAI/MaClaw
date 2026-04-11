@@ -14,6 +14,7 @@ package embedding
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/gguf"
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
@@ -77,11 +78,47 @@ type GemmaEmbedder struct {
 	mmap        *gguf.MmapFile // kept alive for the mmap backing
 	scratch     *gemmaScratch  // reusable inference buffers (lazily initialized)
 	scratchPool sync.Pool      // pool of *gemmaScratch for EmbedConcurrent
+	tokenCache  *tokenEmbCache // cached float32 embeddings for hot tokens
+	earlyExit   int32          // 0 = disabled; >0 = exit after this many layers (atomic)
+}
+
+// tokenEmbCache caches dequantized float32 embeddings for frequently-used tokens.
+// Avoids repeated Q8→float32 dequantization for common tokens (articles, prepositions,
+// punctuation, etc.) that appear in nearly every tool description.
+type tokenEmbCache struct {
+	cache map[int][]float32 // token_id → float32[dim]
+}
+
+const tokenCacheSize = 1024 // cache top-N most common tokens
+
+// newTokenEmbCache pre-computes float32 embeddings for the most frequent tokens.
+// Low-ID tokens in SentencePiece vocabularies tend to be the most common
+// (single characters, common subwords), so we cache the first tokenCacheSize IDs.
+func newTokenEmbCache(tokenEmb *tensor.Q8Tensor, dim int) *tokenEmbCache {
+	tc := &tokenEmbCache{cache: make(map[int][]float32, tokenCacheSize)}
+	n := tokenCacheSize
+	if n > tokenEmb.Rows {
+		n = tokenEmb.Rows
+	}
+	buf := make([]float32, dim)
+	for id := 0; id < n; id++ {
+		emb := make([]float32, dim)
+		tokenEmb.DequantRow(id, buf)
+		copy(emb, buf)
+		tc.cache[id] = emb
+	}
+	return tc
+}
+
+// Get returns the cached float32 embedding for a token, or nil if not cached.
+func (tc *tokenEmbCache) Get(id int) []float32 {
+	return tc.cache[id]
 }
 
 // gemmaScratch holds reusable scratch buffers for forward pass.
 // Allocated once on first Embed call, reused across subsequent calls.
 type gemmaScratch struct {
+	x       []float32 // hidden state [seq*dim]
 	normed  []float32
 	q, k, v []float32
 	attnOut []float32
@@ -89,10 +126,9 @@ type gemmaScratch struct {
 	ffGate  []float32
 	ffUp    []float32
 	ffDown  []float32
-	qNormed []float32
-	kNormed []float32
 	rowBuf  []float32
 	scores  []float32
+	poolOut []float32 // mean-pooling output [dim]
 	// Pre-computed RoPE cos/sin tables: [seq][halfDim] for the current sequence length.
 	ropeCos  []float32
 	ropeSin  []float32
@@ -155,7 +191,19 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	}
 	tok := LoadTokenizerFromGGUF(tokens, scores)
 
-	return &GemmaEmbedder{hp: hp, weights: *w, tokenizer: tok, dim: dim, mmap: mf}, nil
+	g := &GemmaEmbedder{hp: hp, weights: *w, tokenizer: tok, dim: dim, mmap: mf,
+		tokenCache: newTokenEmbCache(&w.tokenEmb, hp.Dim)}
+
+	// Early exit: for low-dim MRL outputs, skip later transformer layers.
+	// Empirically, for dim<=256 the first 16/24 layers capture >95% of the
+	// embedding quality. Set earlyExit=0 to disable (full model).
+	if dim <= 128 && hp.NLayers > 12 {
+		atomic.StoreInt32(&g.earlyExit, int32(hp.NLayers*2/3)) // ~16 of 24
+	} else if dim <= 256 && hp.NLayers > 16 {
+		atomic.StoreInt32(&g.earlyExit, int32(hp.NLayers*3/4)) // ~18 of 24
+	}
+
+	return g, nil
 }
 
 // Close releases the mmap and all resources.
@@ -167,6 +215,20 @@ func (g *GemmaEmbedder) Close() {
 		g.mmap.CloseMmap()
 		g.mmap = nil
 	}
+}
+
+// SetEarlyExit overrides the automatic early-exit layer count.
+// Set to 0 to disable early exit (run all layers).
+// Set to n > 0 to exit after n layers (must be <= hp.NLayers).
+// Safe to call concurrently with Embed/EmbedConcurrent.
+func (g *GemmaEmbedder) SetEarlyExit(layers int) {
+	if layers < 0 {
+		layers = 0
+	}
+	if layers > g.hp.NLayers {
+		layers = g.hp.NLayers
+	}
+	atomic.StoreInt32(&g.earlyExit, int32(layers))
 }
 
 // readQ8Tensor reads a tensor as Q8Tensor from the mmap file.

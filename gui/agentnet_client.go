@@ -15,21 +15,25 @@ import (
 	"time"
 )
 
-// ClawNetClient wraps the anet daemon REST API (localhost:3998).
+// AgentNetClient wraps the anet daemon REST API (localhost:3998).
 // It manages the daemon lifecycle and provides typed access to all endpoints.
 // The anet daemon is a standalone process that persists across maclaw restarts.
-type ClawNetClient struct {
-	mu      sync.Mutex
-	baseURL string
-	client  *http.Client
-	binPath string
-	running bool
+type AgentNetClient struct {
+	mu       sync.Mutex
+	baseURL  string
+	client   *http.Client
+	binPath  string
+	running  bool
+
+	tokenMu      sync.RWMutex // guards apiToken / tokenLoaded
+	apiToken     string       // Bearer token read from ~/.anet/api_token
+	tokenLoaded  bool         // true after first successful or failed load attempt
 
 	autoUpdateStop chan struct{} // signals the auto-update goroutine to stop
 }
 
 // BinPath returns the resolved path to the anet binary.
-func (c *ClawNetClient) BinPath() string {
+func (c *AgentNetClient) BinPath() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.binPath != "" {
@@ -38,9 +42,9 @@ func (c *ClawNetClient) BinPath() string {
 	return c.findBinary()
 }
 
-// ClawNet API response types
+// AgentNet API response types
 
-type ClawNetStatus struct {
+type AgentNetStatus struct {
 	PeerID   string `json:"peer_id"`
 	Peers    int    `json:"peers"`
 	UnreadDM int    `json:"unread_dm"`
@@ -48,7 +52,7 @@ type ClawNetStatus struct {
 	Uptime   string `json:"uptime,omitempty"`
 }
 
-type ClawNetPeer struct {
+type AgentNetPeer struct {
 	PeerID  string `json:"peer_id"`
 	Addr    string `json:"addr,omitempty"`
 	Latency string `json:"latency,omitempty"`
@@ -56,7 +60,7 @@ type ClawNetPeer struct {
 	City    string `json:"city,omitempty"`
 }
 
-type ClawNetTask struct {
+type AgentNetTask struct {
 	ID          string         `json:"id"`
 	Title       string         `json:"title"`
 	Description string         `json:"description,omitempty"`
@@ -97,7 +101,7 @@ func (f *FlexStringList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type ClawNetCredits struct {
+type AgentNetCredits struct {
 	Balance      float64 `json:"balance"`
 	Tier         string  `json:"tier"`
 	TierRank     int     `json:"tier_rank,omitempty"`
@@ -107,7 +111,7 @@ type ClawNetCredits struct {
 	LocalValue   string  `json:"local_value,omitempty"`
 }
 
-type ClawNetKnowledgeEntry struct {
+type AgentNetKnowledgeEntry struct {
 	ID        string   `json:"id"`
 	Title     string   `json:"title"`
 	Body      string   `json:"body,omitempty"`
@@ -118,7 +122,7 @@ type ClawNetKnowledgeEntry struct {
 	CreatedAt string   `json:"created_at,omitempty"`
 }
 
-type ClawNetPrediction struct {
+type AgentNetPrediction struct {
 	ID       string   `json:"id"`
 	Question string   `json:"question"`
 	Options  []string `json:"options,omitempty"`
@@ -126,7 +130,7 @@ type ClawNetPrediction struct {
 	Creator  string   `json:"creator,omitempty"`
 }
 
-type ClawNetSwarmSession struct {
+type AgentNetSwarmSession struct {
 	ID       string `json:"id"`
 	Topic    string `json:"topic"`
 	Question string `json:"question,omitempty"`
@@ -134,14 +138,14 @@ type ClawNetSwarmSession struct {
 	Members  int    `json:"members,omitempty"`
 }
 
-type ClawNetDM struct {
+type AgentNetDM struct {
 	PeerID  string `json:"peer_id"`
 	Body    string `json:"body"`
 	Unread  int    `json:"unread,omitempty"`
 	SentAt  string `json:"sent_at,omitempty"`
 }
 
-type ClawNetResume struct {
+type AgentNetResume struct {
 	PeerID  string   `json:"peer_id,omitempty"`
 	Name    string   `json:"name,omitempty"`
 	Skills  []string `json:"skills,omitempty"`
@@ -149,9 +153,9 @@ type ClawNetResume struct {
 	Bio     string   `json:"bio,omitempty"`
 }
 
-// NewClawNetClient creates a client pointing at the default daemon port.
-func NewClawNetClient() *ClawNetClient {
-	return &ClawNetClient{
+// NewAgentNetClient creates a client pointing at the default daemon port.
+func NewAgentNetClient() *AgentNetClient {
+	return &AgentNetClient{
 		baseURL: "http://127.0.0.1:3998",
 		client: &http.Client{
 			Timeout: 3 * time.Second,
@@ -163,7 +167,7 @@ func NewClawNetClient() *ClawNetClient {
 
 // findBinary locates the anet executable.
 // Search order: install dir → PATH.
-func (c *ClawNetClient) findBinary() string {
+func (c *AgentNetClient) findBinary() string {
 	binName := anetLocalBinaryName()
 	// 1. Standard install dir
 	if dir, err := anetInstallDir(); err == nil {
@@ -181,14 +185,14 @@ func (c *ClawNetClient) findBinary() string {
 
 // EnsureDaemon starts the anet daemon if not already running.
 // It first checks whether the daemon is reachable; if so, it skips launching.
-func (c *ClawNetClient) EnsureDaemon() error {
+func (c *AgentNetClient) EnsureDaemon() error {
 	return c.EnsureDaemonWithProgress(nil)
 }
 
 // EnsureDaemonWithProgress starts the daemon, auto-downloading the binary if needed.
 // The anet daemon is a standalone process — it persists across maclaw restarts.
 // We only start it if no instance is already running (ping or process check).
-func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string, pct int, msg string)) error {
+func (c *AgentNetClient) EnsureDaemonWithProgress(emitProgress func(stage string, pct int, msg string)) error {
 	// Fast path: daemon already reachable.
 	if c.ping() {
 		c.mu.Lock()
@@ -249,7 +253,7 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 
 	// Check if an anet process is already running (e.g. started externally).
 	// If so, wait for it to become reachable instead of spawning a duplicate.
-	if pid := clawnetFindProcessByName(anetLocalBinaryName()); pid != 0 {
+	if pid := agentnetFindProcessByName(anetLocalBinaryName()); pid != 0 {
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
 			if c.ping() {
@@ -265,7 +269,7 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 			_ = p.Kill()
 		}
 		for i := 0; i < 6; i++ {
-			if clawnetFindProcessByName(anetLocalBinaryName()) == 0 {
+			if agentnetFindProcessByName(anetLocalBinaryName()) == 0 {
 				break
 			}
 			time.Sleep(500 * time.Millisecond)
@@ -290,6 +294,7 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 			c.mu.Lock()
 			c.running = true
 			c.mu.Unlock()
+			c.clearTokenCache() // re-read token from disk after daemon restart
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -300,7 +305,7 @@ func (c *ClawNetClient) EnsureDaemonWithProgress(emitProgress func(stage string,
 // StopDaemon gracefully stops the daemon via `anet stop`.
 // Note: the anet daemon is designed to persist independently. This is only
 // called when the user explicitly requests a stop from the GUI.
-func (c *ClawNetClient) StopDaemon() {
+func (c *AgentNetClient) StopDaemon() {
 	c.StopAutoUpdate()
 	c.mu.Lock()
 	bin := c.binPath
@@ -328,7 +333,7 @@ func (c *ClawNetClient) StopDaemon() {
 // IsRunning returns true if the daemon is reachable.
 // It retries once after a short pause to tolerate transient failures
 // (e.g. after system wake from sleep).
-func (c *ClawNetClient) IsRunning() bool {
+func (c *AgentNetClient) IsRunning() bool {
 	if c.ping() {
 		return true
 	}
@@ -337,32 +342,101 @@ func (c *ClawNetClient) IsRunning() bool {
 	return c.ping()
 }
 
-func (c *ClawNetClient) ping() bool {
+func (c *AgentNetClient) ping() bool {
 	resp, err := c.client.Get(c.baseURL + "/api/status")
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode == http.StatusOK
+	// 401 means the daemon is alive (just needs auth), so treat it as reachable.
+	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized
 }
 
 // DaemonPID returns the PID of a running anet process, or 0 if not found.
-func (c *ClawNetClient) DaemonPID() int {
-	return clawnetFindProcessByName(anetLocalBinaryName())
+func (c *AgentNetClient) DaemonPID() int {
+	return agentnetFindProcessByName(anetLocalBinaryName())
 }
 
 // ---------- HTTP helpers ----------
 
-func (c *ClawNetClient) get(path string, out interface{}) error {
-	resp, err := c.client.Get(c.baseURL + path)
+// loadAPIToken reads the API token from ~/.anet/api_token (or the install dir).
+// The result is cached; disk I/O happens at most once until the cache is
+// explicitly cleared (e.g. after a daemon restart).
+func (c *AgentNetClient) loadAPIToken() string {
+	// Fast path: already loaded.
+	c.tokenMu.RLock()
+	if c.tokenLoaded {
+		tok := c.apiToken
+		c.tokenMu.RUnlock()
+		return tok
+	}
+	c.tokenMu.RUnlock()
+
+	// Slow path: read from disk.
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	if c.tokenLoaded {
+		return c.apiToken // another goroutine loaded it while we waited
+	}
+	c.tokenLoaded = true
+
+	// Try ~/.anet/api_token first (matches the daemon's error message).
+	if home, err := os.UserHomeDir(); err == nil {
+		if data, err := os.ReadFile(filepath.Join(home, ".anet", "api_token")); err == nil {
+			c.apiToken = strings.TrimSpace(string(data))
+			return c.apiToken
+		}
+	}
+	// Fallback: anetInstallDir (e.g. %LOCALAPPDATA%\anet on Windows).
+	if dir, err := anetInstallDir(); err == nil {
+		if data, err := os.ReadFile(filepath.Join(dir, "api_token")); err == nil {
+			c.apiToken = strings.TrimSpace(string(data))
+			return c.apiToken
+		}
+	}
+	return ""
+}
+
+// clearTokenCache resets the cached token so the next request re-reads from disk.
+func (c *AgentNetClient) clearTokenCache() {
+	c.tokenMu.Lock()
+	c.apiToken = ""
+	c.tokenLoaded = false
+	c.tokenMu.Unlock()
+}
+
+// setAuth adds the Authorization header if a token is available.
+func (c *AgentNetClient) setAuth(req *http.Request) {
+	if tok := c.loadAPIToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+}
+
+// handleAuthError checks if the response is 401 and clears the token cache
+// so the next request will re-read the token from disk. This handles the case
+// where the daemon was restarted externally and generated a new token.
+func (c *AgentNetClient) handleAuthError(resp *http.Response) {
+	if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+		c.clearTokenCache()
+	}
+}
+
+func (c *AgentNetClient) get(path string, out interface{}) error {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return fmt.Errorf("clawnet GET %s: %w", path, err)
+		return fmt.Errorf("agentnet GET %s: %w", path, err)
+	}
+	c.setAuth(req)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("agentnet GET %s: %w", path, err)
 	}
 	defer resp.Body.Close()
+	c.handleAuthError(resp)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("clawnet GET %s: status %d: %s", path, resp.StatusCode, string(body))
+		return fmt.Errorf("agentnet GET %s: status %d: %s", path, resp.StatusCode, string(body))
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -371,7 +445,7 @@ func (c *ClawNetClient) get(path string, out interface{}) error {
 	return nil
 }
 
-func (c *ClawNetClient) post(path string, payload interface{}, out interface{}) error {
+func (c *AgentNetClient) post(path string, payload interface{}, out interface{}) error {
 	var body io.Reader
 	if payload != nil {
 		data, err := json.Marshal(payload)
@@ -380,14 +454,21 @@ func (c *ClawNetClient) post(path string, payload interface{}, out interface{}) 
 		}
 		body = bytes.NewReader(data)
 	}
-	resp, err := c.client.Post(c.baseURL+path, "application/json", body)
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, body)
 	if err != nil {
-		return fmt.Errorf("clawnet POST %s: %w", path, err)
+		return fmt.Errorf("agentnet POST %s: %w", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("agentnet POST %s: %w", path, err)
 	}
 	defer resp.Body.Close()
+	c.handleAuthError(resp)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("clawnet POST %s: status %d: %s", path, resp.StatusCode, string(b))
+		return fmt.Errorf("agentnet POST %s: status %d: %s", path, resp.StatusCode, string(b))
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -396,25 +477,27 @@ func (c *ClawNetClient) post(path string, payload interface{}, out interface{}) 
 	return nil
 }
 
-func (c *ClawNetClient) delete(path string) error {
+func (c *AgentNetClient) delete(path string) error {
 	req, err := http.NewRequest(http.MethodDelete, c.baseURL+path, nil)
 	if err != nil {
 		return err
 	}
+	c.setAuth(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("clawnet DELETE %s: %w", path, err)
+		return fmt.Errorf("agentnet DELETE %s: %w", path, err)
 	}
 	defer resp.Body.Close()
+	c.handleAuthError(resp)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("clawnet DELETE %s: status %d: %s", path, resp.StatusCode, string(b))
+		return fmt.Errorf("agentnet DELETE %s: status %d: %s", path, resp.StatusCode, string(b))
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
-func (c *ClawNetClient) put(path string, payload interface{}, out interface{}) error {
+func (c *AgentNetClient) put(path string, payload interface{}, out interface{}) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -424,14 +507,16 @@ func (c *ClawNetClient) put(path string, payload interface{}, out interface{}) e
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setAuth(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("clawnet PUT %s: %w", path, err)
+		return fmt.Errorf("agentnet PUT %s: %w", path, err)
 	}
 	defer resp.Body.Close()
+	c.handleAuthError(resp)
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("clawnet PUT %s: status %d: %s", path, resp.StatusCode, string(b))
+		return fmt.Errorf("agentnet PUT %s: status %d: %s", path, resp.StatusCode, string(b))
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -442,38 +527,38 @@ func (c *ClawNetClient) put(path string, payload interface{}, out interface{}) e
 
 // ---------- Status & Peers ----------
 
-func (c *ClawNetClient) GetStatus() (*ClawNetStatus, error) {
-	var s ClawNetStatus
+func (c *AgentNetClient) GetStatus() (*AgentNetStatus, error) {
+	var s AgentNetStatus
 	return &s, c.get("/api/status", &s)
 }
 
-func (c *ClawNetClient) GetPeers() ([]ClawNetPeer, error) {
-	var peers []ClawNetPeer
+func (c *AgentNetClient) GetPeers() ([]AgentNetPeer, error) {
+	var peers []AgentNetPeer
 	return peers, c.get("/api/peers", &peers)
 }
 
 // ---------- Task Bazaar ----------
 
-func (c *ClawNetClient) ListTasks(status string) ([]ClawNetTask, error) {
+func (c *AgentNetClient) ListTasks(status string) ([]AgentNetTask, error) {
 	path := "/api/tasks"
 	if status != "" {
 		path += "?status=" + url.QueryEscape(status)
 	}
-	var tasks []ClawNetTask
+	var tasks []AgentNetTask
 	return tasks, c.get(path, &tasks)
 }
 
-func (c *ClawNetClient) GetTaskBoard() (map[string]interface{}, error) {
+func (c *AgentNetClient) GetTaskBoard() (map[string]interface{}, error) {
 	var board map[string]interface{}
 	return board, c.get("/api/tasks/board", &board)
 }
 
-func (c *ClawNetClient) CreateTask(title string, reward float64) (*ClawNetTask, error) {
+func (c *AgentNetClient) CreateTask(title string, reward float64) (*AgentNetTask, error) {
 	return c.CreateTaskFull(title, "", reward, nil, "")
 }
 
 // CreateTaskFull creates a task with all optional fields: description, tags, target_peer.
-func (c *ClawNetClient) CreateTaskFull(title, description string, reward float64, tags []string, targetPeer string) (*ClawNetTask, error) {
+func (c *AgentNetClient) CreateTaskFull(title, description string, reward float64, tags []string, targetPeer string) (*AgentNetTask, error) {
 	payload := map[string]interface{}{
 		"title":  title,
 		"reward": reward,
@@ -487,16 +572,16 @@ func (c *ClawNetClient) CreateTaskFull(title, description string, reward float64
 	if targetPeer != "" {
 		payload["target_peer"] = targetPeer
 	}
-	var task ClawNetTask
+	var task AgentNetTask
 	return &task, c.post("/api/tasks", payload, &task)
 }
 
-func (c *ClawNetClient) GetTask(id string) (*ClawNetTask, error) {
-	var task ClawNetTask
+func (c *AgentNetClient) GetTask(id string) (*AgentNetTask, error) {
+	var task AgentNetTask
 	return &task, c.get("/api/tasks/"+id, &task)
 }
 
-func (c *ClawNetClient) BidOnTask(id string, amount float64, message string) error {
+func (c *AgentNetClient) BidOnTask(id string, amount float64, message string) error {
 	payload := map[string]interface{}{
 		"message": message,
 	}
@@ -506,43 +591,43 @@ func (c *ClawNetClient) BidOnTask(id string, amount float64, message string) err
 	return c.post("/api/tasks/"+id+"/bid", payload, nil)
 }
 
-func (c *ClawNetClient) AssignTask(id, peerID string) error {
+func (c *AgentNetClient) AssignTask(id, peerID string) error {
 	return c.post("/api/tasks/"+id+"/assign", map[string]interface{}{
 		"bidder_id": peerID,
 	}, nil)
 }
 
-func (c *ClawNetClient) ClaimTask(id string) error {
+func (c *AgentNetClient) ClaimTask(id string) error {
 	return c.post("/api/tasks/"+id+"/claim", nil, nil)
 }
 
-func (c *ClawNetClient) ApproveTask(id string) error {
+func (c *AgentNetClient) ApproveTask(id string) error {
 	return c.post("/api/tasks/"+id+"/approve", nil, nil)
 }
 
-func (c *ClawNetClient) RejectTask(id string) error {
+func (c *AgentNetClient) RejectTask(id string) error {
 	return c.post("/api/tasks/"+id+"/reject", nil, nil)
 }
 
-func (c *ClawNetClient) CancelTask(id string) error {
+func (c *AgentNetClient) CancelTask(id string) error {
 	return c.post("/api/tasks/"+id+"/cancel", nil, nil)
 }
 
 // ---------- Shell Economy ----------
 
-func (c *ClawNetClient) GetCredits() (*ClawNetCredits, error) {
-	var credits ClawNetCredits
+func (c *AgentNetClient) GetCredits() (*AgentNetCredits, error) {
+	var credits AgentNetCredits
 	return &credits, c.get("/api/credits/balance", &credits)
 }
 
-func (c *ClawNetClient) GetCreditsHistory() ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetCreditsHistory() ([]map[string]interface{}, error) {
 	var history []map[string]interface{}
 	return history, c.get("/api/credits/history", &history)
 }
 
 // ---------- Knowledge Mesh ----------
 
-func (c *ClawNetClient) GetKnowledgeFeed(domain string, limit int) ([]ClawNetKnowledgeEntry, error) {
+func (c *AgentNetClient) GetKnowledgeFeed(domain string, limit int) ([]AgentNetKnowledgeEntry, error) {
 	params := make(url.Values)
 	if domain != "" {
 		params.Set("domain", domain)
@@ -554,21 +639,21 @@ func (c *ClawNetClient) GetKnowledgeFeed(domain string, limit int) ([]ClawNetKno
 	if len(params) > 0 {
 		path += "?" + params.Encode()
 	}
-	var entries []ClawNetKnowledgeEntry
+	var entries []AgentNetKnowledgeEntry
 	return entries, c.get(path, &entries)
 }
 
-func (c *ClawNetClient) SearchKnowledge(query string) ([]ClawNetKnowledgeEntry, error) {
-	var entries []ClawNetKnowledgeEntry
+func (c *AgentNetClient) SearchKnowledge(query string) ([]AgentNetKnowledgeEntry, error) {
+	var entries []AgentNetKnowledgeEntry
 	return entries, c.get("/api/knowledge/search?q="+url.QueryEscape(query), &entries)
 }
 
-func (c *ClawNetClient) PublishKnowledge(title, body string) (*ClawNetKnowledgeEntry, error) {
+func (c *AgentNetClient) PublishKnowledge(title, body string) (*AgentNetKnowledgeEntry, error) {
 	return c.PublishKnowledgeFull(title, body, nil)
 }
 
 // PublishKnowledgeFull publishes knowledge with optional domain tags.
-func (c *ClawNetClient) PublishKnowledgeFull(title, body string, domains []string) (*ClawNetKnowledgeEntry, error) {
+func (c *AgentNetClient) PublishKnowledgeFull(title, body string, domains []string) (*AgentNetKnowledgeEntry, error) {
 	payload := map[string]interface{}{
 		"title": title,
 		"body":  body,
@@ -576,17 +661,17 @@ func (c *ClawNetClient) PublishKnowledgeFull(title, body string, domains []strin
 	if len(domains) > 0 {
 		payload["domains"] = domains
 	}
-	var entry ClawNetKnowledgeEntry
+	var entry AgentNetKnowledgeEntry
 	return &entry, c.post("/api/knowledge", payload, &entry)
 }
 
-func (c *ClawNetClient) ReactKnowledge(id, reaction string) error {
+func (c *AgentNetClient) ReactKnowledge(id, reaction string) error {
 	return c.post("/api/knowledge/"+id+"/react", map[string]interface{}{
 		"emoji": reaction,
 	}, nil)
 }
 
-func (c *ClawNetClient) ReplyKnowledge(id, body string) error {
+func (c *AgentNetClient) ReplyKnowledge(id, body string) error {
 	return c.post("/api/knowledge/"+id+"/reply", map[string]interface{}{
 		"body": body,
 	}, nil)
@@ -594,27 +679,27 @@ func (c *ClawNetClient) ReplyKnowledge(id, body string) error {
 
 // ---------- Prediction Market ----------
 
-func (c *ClawNetClient) ListPredictions() ([]ClawNetPrediction, error) {
-	var preds []ClawNetPrediction
+func (c *AgentNetClient) ListPredictions() ([]AgentNetPrediction, error) {
+	var preds []AgentNetPrediction
 	return preds, c.get("/api/predictions", &preds)
 }
 
-func (c *ClawNetClient) CreatePrediction(question string, options []string) (*ClawNetPrediction, error) {
-	var pred ClawNetPrediction
+func (c *AgentNetClient) CreatePrediction(question string, options []string) (*AgentNetPrediction, error) {
+	var pred AgentNetPrediction
 	return &pred, c.post("/api/predictions", map[string]interface{}{
 		"question": question,
 		"options":  options,
 	}, &pred)
 }
 
-func (c *ClawNetClient) PlaceBet(predID, option string, stake float64) error {
+func (c *AgentNetClient) PlaceBet(predID, option string, stake float64) error {
 	return c.post("/api/predictions/"+predID+"/bet", map[string]interface{}{
 		"option": option,
 		"amount": stake,
 	}, nil)
 }
 
-func (c *ClawNetClient) ResolvePrediction(predID, result string) error {
+func (c *AgentNetClient) ResolvePrediction(predID, result string) error {
 	return c.post("/api/predictions/"+predID+"/resolve", map[string]interface{}{
 		"winning_option": result,
 	}, nil)
@@ -622,24 +707,24 @@ func (c *ClawNetClient) ResolvePrediction(predID, result string) error {
 
 // ---------- Swarm Think ----------
 
-func (c *ClawNetClient) ListSwarmSessions() ([]ClawNetSwarmSession, error) {
-	var sessions []ClawNetSwarmSession
+func (c *AgentNetClient) ListSwarmSessions() ([]AgentNetSwarmSession, error) {
+	var sessions []AgentNetSwarmSession
 	return sessions, c.get("/api/swarm", &sessions)
 }
 
-func (c *ClawNetClient) CreateSwarmSession(topic, question string) (*ClawNetSwarmSession, error) {
-	var session ClawNetSwarmSession
+func (c *AgentNetClient) CreateSwarmSession(topic, question string) (*AgentNetSwarmSession, error) {
+	var session AgentNetSwarmSession
 	return &session, c.post("/api/swarm", map[string]interface{}{
 		"topic":       topic,
 		"description": question,
 	}, &session)
 }
 
-func (c *ClawNetClient) JoinSwarm(sessionID string) error {
+func (c *AgentNetClient) JoinSwarm(sessionID string) error {
 	return c.post("/api/swarm/"+sessionID+"/join", nil, nil)
 }
 
-func (c *ClawNetClient) ContributeToSwarm(sessionID, message, stance string) error {
+func (c *AgentNetClient) ContributeToSwarm(sessionID, message, stance string) error {
 	payload := map[string]interface{}{
 		"body": message,
 	}
@@ -649,103 +734,103 @@ func (c *ClawNetClient) ContributeToSwarm(sessionID, message, stance string) err
 	return c.post("/api/swarm/"+sessionID+"/contribute", payload, nil)
 }
 
-func (c *ClawNetClient) SynthesizeSwarm(sessionID string) (map[string]interface{}, error) {
+func (c *AgentNetClient) SynthesizeSwarm(sessionID string) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	return result, c.post("/api/swarm/"+sessionID+"/synthesize", nil, &result)
 }
 
 // ---------- Direct Messages ----------
 
-func (c *ClawNetClient) SendDM(peerID, body string) error {
+func (c *AgentNetClient) SendDM(peerID, body string) error {
 	return c.post("/api/dm/send", map[string]interface{}{
 		"peer_id": peerID,
 		"body":    body,
 	}, nil)
 }
 
-func (c *ClawNetClient) GetDMInbox() ([]ClawNetDM, error) {
-	var inbox []ClawNetDM
+func (c *AgentNetClient) GetDMInbox() ([]AgentNetDM, error) {
+	var inbox []AgentNetDM
 	return inbox, c.get("/api/dm/inbox", &inbox)
 }
 
-func (c *ClawNetClient) GetDMThread(peerID string, limit int) ([]ClawNetDM, error) {
+func (c *AgentNetClient) GetDMThread(peerID string, limit int) ([]AgentNetDM, error) {
 	path := "/api/dm/thread/" + url.PathEscape(peerID)
 	if limit > 0 {
 		path += fmt.Sprintf("?limit=%d", limit)
 	}
-	var thread []ClawNetDM
+	var thread []AgentNetDM
 	return thread, c.get(path, &thread)
 }
 
 // ---------- Resume / Agent Profile ----------
 
-func (c *ClawNetClient) GetResume() (*ClawNetResume, error) {
-	var r ClawNetResume
+func (c *AgentNetClient) GetResume() (*AgentNetResume, error) {
+	var r AgentNetResume
 	return &r, c.get("/api/resume", &r)
 }
 
-func (c *ClawNetClient) UpdateResume(resume *ClawNetResume) error {
+func (c *AgentNetClient) UpdateResume(resume *AgentNetResume) error {
 	return c.put("/api/resume", resume, nil)
 }
 
 // MatchResume finds agents matching a task. Delegates to MatchAgentsForTask.
-func (c *ClawNetClient) MatchResume(taskID string) ([]ClawNetResume, error) {
+func (c *AgentNetClient) MatchResume(taskID string) ([]AgentNetResume, error) {
 	return c.MatchAgentsForTask(taskID)
 }
 
 // ---------- Profile ----------
 
-type ClawNetProfile struct {
+type AgentNetProfile struct {
 	PeerID string `json:"peer_id,omitempty"`
 	Name   string `json:"name,omitempty"`
 	Bio    string `json:"bio,omitempty"`
 	Motto  string `json:"motto,omitempty"`
 }
 
-func (c *ClawNetClient) GetProfile() (*ClawNetProfile, error) {
-	var p ClawNetProfile
+func (c *AgentNetClient) GetProfile() (*AgentNetProfile, error) {
+	var p AgentNetProfile
 	return &p, c.get("/api/profile", &p)
 }
 
-func (c *ClawNetClient) UpdateProfile(name, bio string) error {
+func (c *AgentNetClient) UpdateProfile(name, bio string) error {
 	return c.put("/api/profile", map[string]interface{}{"name": name, "bio": bio}, nil)
 }
 
-func (c *ClawNetClient) SetMotto(motto string) error {
+func (c *AgentNetClient) SetMotto(motto string) error {
 	return c.put("/api/motto", map[string]interface{}{"motto": motto}, nil)
 }
 
 // ---------- Topic Rooms ----------
 
-type ClawNetTopic struct {
+type AgentNetTopic struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Members     int    `json:"members,omitempty"`
 }
 
-type ClawNetTopicMessage struct {
+type AgentNetTopicMessage struct {
 	PeerID string `json:"peer_id,omitempty"`
 	Body   string `json:"body"`
 	SentAt string `json:"sent_at,omitempty"`
 }
 
-func (c *ClawNetClient) ListTopics() ([]ClawNetTopic, error) {
-	var topics []ClawNetTopic
+func (c *AgentNetClient) ListTopics() ([]AgentNetTopic, error) {
+	var topics []AgentNetTopic
 	return topics, c.get("/api/topics", &topics)
 }
 
-func (c *ClawNetClient) CreateTopic(name, description string) error {
+func (c *AgentNetClient) CreateTopic(name, description string) error {
 	return c.post("/api/topics", map[string]interface{}{
 		"name": name, "description": description,
 	}, nil)
 }
 
-func (c *ClawNetClient) GetTopicMessages(topicName string) ([]ClawNetTopicMessage, error) {
-	var msgs []ClawNetTopicMessage
+func (c *AgentNetClient) GetTopicMessages(topicName string) ([]AgentNetTopicMessage, error) {
+	var msgs []AgentNetTopicMessage
 	return msgs, c.get("/api/topics/"+url.PathEscape(topicName)+"/messages", &msgs)
 }
 
-func (c *ClawNetClient) PostTopicMessage(topicName, body string) error {
+func (c *AgentNetClient) PostTopicMessage(topicName, body string) error {
 	return c.post("/api/topics/"+url.PathEscape(topicName)+"/messages", map[string]interface{}{
 		"body": body,
 	}, nil)
@@ -753,47 +838,47 @@ func (c *ClawNetClient) PostTopicMessage(topicName, body string) error {
 
 // ---------- Task Bazaar (extended) ----------
 
-func (c *ClawNetClient) SubmitTaskResult(id, result string) error {
+func (c *AgentNetClient) SubmitTaskResult(id, result string) error {
 	return c.post("/api/tasks/"+id+"/submit", map[string]interface{}{
 		"result": result,
 	}, nil)
 }
 
-func (c *ClawNetClient) GetTaskBids(id string) ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetTaskBids(id string) ([]map[string]interface{}, error) {
 	var bids []map[string]interface{}
 	return bids, c.get("/api/tasks/"+id+"/bids", &bids)
 }
 
-func (c *ClawNetClient) MatchTasks() ([]ClawNetTask, error) {
-	var tasks []ClawNetTask
+func (c *AgentNetClient) MatchTasks() ([]AgentNetTask, error) {
+	var tasks []AgentNetTask
 	return tasks, c.get("/api/match/tasks", &tasks)
 }
 
-func (c *ClawNetClient) MatchAgentsForTask(taskID string) ([]ClawNetResume, error) {
-	var agents []ClawNetResume
+func (c *AgentNetClient) MatchAgentsForTask(taskID string) ([]AgentNetResume, error) {
+	var agents []AgentNetResume
 	return agents, c.get("/api/tasks/"+taskID+"/match", &agents)
 }
 
 // ---------- Credits (extended) ----------
 
-func (c *ClawNetClient) GetCreditsTransactions() ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetCreditsTransactions() ([]map[string]interface{}, error) {
 	var txns []map[string]interface{}
 	return txns, c.get("/api/credits/transactions", &txns)
 }
 
-func (c *ClawNetClient) GetLeaderboard() ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetLeaderboard() ([]map[string]interface{}, error) {
 	var lb []map[string]interface{}
 	return lb, c.get("/api/leaderboard", &lb)
 }
 
 // ---------- Diagnostics ----------
 
-func (c *ClawNetClient) GetDiagnostics() (map[string]interface{}, error) {
+func (c *AgentNetClient) GetDiagnostics() (map[string]interface{}, error) {
 	var diag map[string]interface{}
 	return diag, c.get("/api/diagnostics", &diag)
 }
 
-func (c *ClawNetClient) SelfUpdate() error {
+func (c *AgentNetClient) SelfUpdate() error {
 	bin := c.binPath
 	if bin == "" {
 		bin = c.findBinary()
@@ -812,10 +897,10 @@ func (c *ClawNetClient) SelfUpdate() error {
 
 // ---------- Auto-Update ----------
 
-const clawnetAutoUpdateInterval = 24 * time.Hour
+const agentnetAutoUpdateInterval = 24 * time.Hour
 
-// clawnetLastUpdatePath returns the path to the timestamp file.
-func clawnetLastUpdatePath() string {
+// agentnetLastUpdatePath returns the path to the timestamp file.
+func agentnetLastUpdatePath() string {
 	dir, err := anetInstallDir()
 	if err != nil {
 		return ""
@@ -825,7 +910,7 @@ func clawnetLastUpdatePath() string {
 
 // readLastUpdateTime reads the last successful update timestamp.
 func readLastUpdateTime() time.Time {
-	p := clawnetLastUpdatePath()
+	p := agentnetLastUpdatePath()
 	if p == "" {
 		return time.Time{}
 	}
@@ -842,7 +927,7 @@ func readLastUpdateTime() time.Time {
 
 // writeLastUpdateTime persists the current time as the last update timestamp.
 func writeLastUpdateTime() {
-	p := clawnetLastUpdatePath()
+	p := agentnetLastUpdatePath()
 	if p == "" {
 		return
 	}
@@ -856,12 +941,12 @@ func needsUpdate() bool {
 	if last.IsZero() {
 		return true
 	}
-	return time.Since(last) > clawnetAutoUpdateInterval
+	return time.Since(last) > agentnetAutoUpdateInterval
 }
 
 // tryAutoUpdate runs SelfUpdate and records the timestamp on success.
 // Errors are logged but never propagated.
-func (c *ClawNetClient) tryAutoUpdate(logFn func(string)) {
+func (c *AgentNetClient) tryAutoUpdate(logFn func(string)) {
 	if logFn != nil {
 		logFn("AgentNet: auto-update check started")
 	}
@@ -887,7 +972,7 @@ func (c *ClawNetClient) tryAutoUpdate(logFn func(string)) {
 //
 // Idempotent while running. After StopAutoUpdate/StopDaemon it can be
 // started again (e.g. daemon restart).
-func (c *ClawNetClient) StartAutoUpdate(logFn func(string)) {
+func (c *AgentNetClient) StartAutoUpdate(logFn func(string)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.autoUpdateStop != nil {
@@ -904,7 +989,7 @@ func (c *ClawNetClient) StartAutoUpdate(logFn func(string)) {
 }
 
 // StopAutoUpdate cancels the background auto-update goroutine.
-func (c *ClawNetClient) StopAutoUpdate() {
+func (c *AgentNetClient) StopAutoUpdate() {
 	c.mu.Lock()
 	ch := c.autoUpdateStop
 	c.autoUpdateStop = nil
@@ -918,13 +1003,13 @@ func (c *ClawNetClient) StopAutoUpdate() {
 	}
 }
 
-func (c *ClawNetClient) autoUpdateLoop(logFn func(string), stop <-chan struct{}) {
+func (c *AgentNetClient) autoUpdateLoop(logFn func(string), stop <-chan struct{}) {
 	// Immediate check on startup.
 	if needsUpdate() {
 		c.tryAutoUpdate(logFn)
 	}
 
-	ticker := time.NewTicker(clawnetAutoUpdateInterval)
+	ticker := time.NewTicker(agentnetAutoUpdateInterval)
 	defer ticker.Stop()
 
 	for {
@@ -942,7 +1027,7 @@ func (c *ClawNetClient) autoUpdateLoop(logFn func(string), stop <-chan struct{})
 // ---------- Knowledge Replies ----------
 
 // GetKnowledgeReplies returns replies for a knowledge entry.
-func (c *ClawNetClient) GetKnowledgeReplies(id string) ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetKnowledgeReplies(id string) ([]map[string]interface{}, error) {
 	var replies []map[string]interface{}
 	return replies, c.get("/api/knowledge/"+id+"/replies", &replies)
 }
@@ -950,7 +1035,7 @@ func (c *ClawNetClient) GetKnowledgeReplies(id string) ([]map[string]interface{}
 // ---------- Credits Audit ----------
 
 // GetCreditsAudit returns the credit audit log.
-func (c *ClawNetClient) GetCreditsAudit() ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetCreditsAudit() ([]map[string]interface{}, error) {
 	var audit []map[string]interface{}
 	return audit, c.get("/api/credits/audit", &audit)
 }
@@ -958,14 +1043,14 @@ func (c *ClawNetClient) GetCreditsAudit() ([]map[string]interface{}, error) {
 // ---------- Prediction Market (extended) ----------
 
 // AppealPrediction files an appeal against a prediction resolution.
-func (c *ClawNetClient) AppealPrediction(predID, reason string) error {
+func (c *AgentNetClient) AppealPrediction(predID, reason string) error {
 	return c.post("/api/predictions/"+predID+"/appeal", map[string]interface{}{
 		"reason": reason,
 	}, nil)
 }
 
 // GetPredictionLeaderboard returns the prediction market leaderboard.
-func (c *ClawNetClient) GetPredictionLeaderboard() ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetPredictionLeaderboard() ([]map[string]interface{}, error) {
 	var lb []map[string]interface{}
 	return lb, c.get("/api/predictions/leaderboard", &lb)
 }
@@ -973,20 +1058,20 @@ func (c *ClawNetClient) GetPredictionLeaderboard() ([]map[string]interface{}, er
 // ---------- Auction House ----------
 
 // SubmitTaskWork submits work for an auction-style task (multi-worker).
-func (c *ClawNetClient) SubmitTaskWork(id, result string) error {
+func (c *AgentNetClient) SubmitTaskWork(id, result string) error {
 	return c.post("/api/tasks/"+id+"/work", map[string]interface{}{
 		"result": result,
 	}, nil)
 }
 
 // GetTaskSubmissions returns all submissions for an auction-style task.
-func (c *ClawNetClient) GetTaskSubmissions(id string) ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetTaskSubmissions(id string) ([]map[string]interface{}, error) {
 	var subs []map[string]interface{}
 	return subs, c.get("/api/tasks/"+id+"/submissions", &subs)
 }
 
 // PickTaskWinner selects the winning submission for an auction-style task.
-func (c *ClawNetClient) PickTaskWinner(id, winnerPeerID string) error {
+func (c *AgentNetClient) PickTaskWinner(id, winnerPeerID string) error {
 	return c.post("/api/tasks/"+id+"/pick", map[string]interface{}{
 		"winner": winnerPeerID,
 	}, nil)
@@ -995,25 +1080,25 @@ func (c *ClawNetClient) PickTaskWinner(id, winnerPeerID string) error {
 // ---------- Overlay Mesh ----------
 
 // GetOverlayStatus returns the overlay mesh network status.
-func (c *ClawNetClient) GetOverlayStatus() (map[string]interface{}, error) {
+func (c *AgentNetClient) GetOverlayStatus() (map[string]interface{}, error) {
 	var status map[string]interface{}
 	return status, c.get("/api/overlay/status", &status)
 }
 
 // GetOverlayTree returns the overlay peer tree.
-func (c *ClawNetClient) GetOverlayTree() (map[string]interface{}, error) {
+func (c *AgentNetClient) GetOverlayTree() (map[string]interface{}, error) {
 	var tree map[string]interface{}
 	return tree, c.get("/api/overlay/tree", &tree)
 }
 
 // GetOverlayPeersGeo returns overlay peers with geographic info.
-func (c *ClawNetClient) GetOverlayPeersGeo() ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetOverlayPeersGeo() ([]map[string]interface{}, error) {
 	var peers []map[string]interface{}
 	return peers, c.get("/api/overlay/peers/geo", &peers)
 }
 
 // AddOverlayPeer adds a custom overlay peer by URI.
-func (c *ClawNetClient) AddOverlayPeer(uri string) error {
+func (c *AgentNetClient) AddOverlayPeer(uri string) error {
 	return c.post("/api/overlay/peers/add", map[string]interface{}{
 		"uri": uri,
 	}, nil)
@@ -1022,13 +1107,13 @@ func (c *ClawNetClient) AddOverlayPeer(uri string) error {
 // ---------- Extended Diagnostics ----------
 
 // GetMatrixStatus returns the matrix status diagnostics.
-func (c *ClawNetClient) GetMatrixStatus() (map[string]interface{}, error) {
+func (c *AgentNetClient) GetMatrixStatus() (map[string]interface{}, error) {
 	var status map[string]interface{}
 	return status, c.get("/api/matrix/status", &status)
 }
 
 // GetTraffic returns network traffic statistics.
-func (c *ClawNetClient) GetTraffic() (map[string]interface{}, error) {
+func (c *AgentNetClient) GetTraffic() (map[string]interface{}, error) {
 	var traffic map[string]interface{}
 	return traffic, c.get("/api/traffic", &traffic)
 }
@@ -1039,7 +1124,7 @@ func (c *ClawNetClient) GetTraffic() (map[string]interface{}, error) {
 
 // PublishTasksToHub pushes local open tasks to the Hub task bulletin board
 // so other peers can discover them.
-func (c *ClawNetClient) PublishTasksToHub(hubURL string) error {
+func (c *AgentNetClient) PublishTasksToHub(hubURL string) error {
 	if hubURL == "" {
 		return fmt.Errorf("hub URL is empty")
 	}
@@ -1106,7 +1191,7 @@ func (c *ClawNetClient) PublishTasksToHub(hubURL string) error {
 
 // BrowseHubTasks fetches tasks from the Hub bulletin board (tasks published
 // by other peers). Returns tasks that are NOT from the local peer.
-func (c *ClawNetClient) BrowseHubTasks(hubURL string) ([]ClawNetTask, error) {
+func (c *AgentNetClient) BrowseHubTasks(hubURL string) ([]AgentNetTask, error) {
 	if hubURL == "" {
 		return nil, fmt.Errorf("hub URL is empty")
 	}
@@ -1146,12 +1231,12 @@ func (c *ClawNetClient) BrowseHubTasks(hubURL string) ([]ClawNetTask, error) {
 		localPeerID = status.PeerID
 	}
 
-	var tasks []ClawNetTask
+	var tasks []AgentNetTask
 	for _, t := range result.Tasks {
 		if localPeerID != "" && t.PeerID == localPeerID {
 			continue // skip own tasks
 		}
-		tasks = append(tasks, ClawNetTask{
+		tasks = append(tasks, AgentNetTask{
 			ID:          t.ID,
 			Title:       t.Title,
 			Description: t.Description,
@@ -1167,8 +1252,8 @@ func (c *ClawNetClient) BrowseHubTasks(hubURL string) ([]ClawNetTask, error) {
 
 // ---------- P2P Service Gateway (skill.md §Workflow F) ----------
 
-// ClawNetServiceRegistration describes a local service to expose on the P2P network.
-type ClawNetServiceRegistration struct {
+// AgentNetServiceRegistration describes a local service to expose on the P2P network.
+type AgentNetServiceRegistration struct {
 	Name        string   `json:"name"`
 	URL         string   `json:"url"`
 	Description string   `json:"description,omitempty"`
@@ -1179,8 +1264,8 @@ type ClawNetServiceRegistration struct {
 	FreeTier    int      `json:"free_tier,omitempty"`
 }
 
-// ClawNetServiceInfo describes a registered service.
-type ClawNetServiceInfo struct {
+// AgentNetServiceInfo describes a registered service.
+type AgentNetServiceInfo struct {
 	Name        string   `json:"name"`
 	URL         string   `json:"url,omitempty"`
 	Description string   `json:"description,omitempty"`
@@ -1191,20 +1276,20 @@ type ClawNetServiceInfo struct {
 	FreeTier    int      `json:"free_tier,omitempty"`
 }
 
-func (c *ClawNetClient) ListServices() ([]ClawNetServiceInfo, error) {
-	var svcs []ClawNetServiceInfo
+func (c *AgentNetClient) ListServices() ([]AgentNetServiceInfo, error) {
+	var svcs []AgentNetServiceInfo
 	return svcs, c.get("/api/svc", &svcs)
 }
 
-func (c *ClawNetClient) RegisterService(reg *ClawNetServiceRegistration) error {
+func (c *AgentNetClient) RegisterService(reg *AgentNetServiceRegistration) error {
 	return c.post("/api/svc/register", reg, nil)
 }
 
-func (c *ClawNetClient) UnregisterService(name string) error {
+func (c *AgentNetClient) UnregisterService(name string) error {
 	return c.post("/api/svc/unregister", map[string]interface{}{"name": name}, nil)
 }
 
-func (c *ClawNetClient) CallService(peer, service, method, path string, headers map[string]string, body string) (map[string]interface{}, error) {
+func (c *AgentNetClient) CallService(peer, service, method, path string, headers map[string]string, body string) (map[string]interface{}, error) {
 	payload := map[string]interface{}{
 		"peer":    peer,
 		"service": service,
@@ -1221,8 +1306,8 @@ func (c *ClawNetClient) CallService(peer, service, method, path string, headers 
 	return result, c.post("/api/svc/call", payload, &result)
 }
 
-func (c *ClawNetClient) DiscoverServices(peer string) ([]ClawNetServiceInfo, error) {
-	var svcs []ClawNetServiceInfo
+func (c *AgentNetClient) DiscoverServices(peer string) ([]AgentNetServiceInfo, error) {
+	var svcs []AgentNetServiceInfo
 	payload := map[string]interface{}{
 		"peer":    peer,
 		"service": "__discover__",
@@ -1232,14 +1317,14 @@ func (c *ClawNetClient) DiscoverServices(peer string) ([]ClawNetServiceInfo, err
 
 // ---------- ANS (Agent Name Service) ----------
 
-type ClawNetANSEntry struct {
+type AgentNetANSEntry struct {
 	Name string `json:"name"`
 	DID  string `json:"did"`
 	Tags string `json:"tags,omitempty"`
 }
 
-func (c *ClawNetClient) ANSRegister(name string, tags string) (*ClawNetANSEntry, error) {
-	var entry ClawNetANSEntry
+func (c *AgentNetClient) ANSRegister(name string, tags string) (*AgentNetANSEntry, error) {
+	var entry AgentNetANSEntry
 	payload := map[string]interface{}{"name": name}
 	if tags != "" {
 		payload["tags"] = tags
@@ -1247,75 +1332,75 @@ func (c *ClawNetClient) ANSRegister(name string, tags string) (*ClawNetANSEntry,
 	return &entry, c.post("/api/ans/register?confirm=yes", payload, &entry)
 }
 
-func (c *ClawNetClient) ANSResolve(name string) (*ClawNetANSEntry, error) {
-	var entry ClawNetANSEntry
+func (c *AgentNetClient) ANSResolve(name string) (*AgentNetANSEntry, error) {
+	var entry AgentNetANSEntry
 	return &entry, c.get("/api/ans/resolve?name="+url.QueryEscape(name), &entry)
 }
 
-func (c *ClawNetClient) ANSLookup(tags string, limit int) ([]ClawNetANSEntry, error) {
+func (c *AgentNetClient) ANSLookup(tags string, limit int) ([]AgentNetANSEntry, error) {
 	params := url.Values{"tags": {tags}}
 	if limit > 0 {
 		params.Set("limit", fmt.Sprintf("%d", limit))
 	}
-	var entries []ClawNetANSEntry
+	var entries []AgentNetANSEntry
 	return entries, c.get("/api/ans/lookup?"+params.Encode(), &entries)
 }
 
 // ---------- Agent Discovery ----------
 
-func (c *ClawNetClient) DiscoverAgents(query string) ([]map[string]interface{}, error) {
+func (c *AgentNetClient) DiscoverAgents(query string) ([]map[string]interface{}, error) {
 	var agents []map[string]interface{}
 	return agents, c.get("/api/discover?q="+url.QueryEscape(query), &agents)
 }
 
-func (c *ClawNetClient) CrossDomainSearch(query string) ([]map[string]interface{}, error) {
+func (c *AgentNetClient) CrossDomainSearch(query string) ([]map[string]interface{}, error) {
 	var results []map[string]interface{}
 	return results, c.get("/api/search?q="+url.QueryEscape(query), &results)
 }
 
-func (c *ClawNetClient) FindClaw(query string) ([]ClawNetKnowledgeEntry, error) {
-	var entries []ClawNetKnowledgeEntry
+func (c *AgentNetClient) FindAgent(query string) ([]AgentNetKnowledgeEntry, error) {
+	var entries []AgentNetKnowledgeEntry
 	return entries, c.post("/api/knowledge/findclaw", map[string]interface{}{"query": query}, &entries)
 }
 
 // ---------- Reputation ----------
 
-type ClawNetReputation struct {
+type AgentNetReputation struct {
 	DID   string  `json:"did"`
 	Score float64 `json:"score"`
 	Tier  string  `json:"tier,omitempty"`
 }
 
-func (c *ClawNetClient) GetReputation(did string) (*ClawNetReputation, error) {
-	var rep ClawNetReputation
+func (c *AgentNetClient) GetReputation(did string) (*AgentNetReputation, error) {
+	var rep AgentNetReputation
 	return &rep, c.get("/api/reputation/"+url.PathEscape(did), &rep)
 }
 
 // ---------- Proof of Intelligence (PoI) ----------
 
-func (c *ClawNetClient) ListPoIChallenges() ([]map[string]interface{}, error) {
+func (c *AgentNetClient) ListPoIChallenges() ([]map[string]interface{}, error) {
 	var challenges []map[string]interface{}
 	return challenges, c.get("/api/poi/challenges", &challenges)
 }
 
-func (c *ClawNetClient) RespondToPoI(challengeID string, response map[string]interface{}) error {
+func (c *AgentNetClient) RespondToPoI(challengeID string, response map[string]interface{}) error {
 	return c.post("/api/poi/challenges/"+challengeID+"/respond", response, nil)
 }
 
-func (c *ClawNetClient) GetPoIScores() ([]map[string]interface{}, error) {
+func (c *AgentNetClient) GetPoIScores() ([]map[string]interface{}, error) {
 	var scores []map[string]interface{}
 	return scores, c.get("/api/poi/scores", &scores)
 }
 
 // ---------- Agent Card & Init ----------
 
-func (c *ClawNetClient) PublishAgentCard(name, desc string, skills []string) error {
+func (c *AgentNetClient) PublishAgentCard(name, desc string, skills []string) error {
 	return c.post("/api/adp/publish", map[string]interface{}{
 		"name": name, "desc": desc, "skills": skills,
 	}, nil)
 }
 
-func (c *ClawNetClient) InitAgent(name string, skills []string) error {
+func (c *AgentNetClient) InitAgent(name string, skills []string) error {
 	return c.post("/api/init", map[string]interface{}{
 		"name": name, "skills": skills,
 	}, nil)
@@ -1323,7 +1408,7 @@ func (c *ClawNetClient) InitAgent(name string, skills []string) error {
 
 // ---------- Credits Transfer ----------
 
-func (c *ClawNetClient) TransferCredits(toDID string, amount float64, reason string) error {
+func (c *AgentNetClient) TransferCredits(toDID string, amount float64, reason string) error {
 	payload := map[string]interface{}{"to": toDID, "amount": amount}
 	if reason != "" {
 		payload["reason"] = reason
@@ -1333,17 +1418,19 @@ func (c *ClawNetClient) TransferCredits(toDID string, amount float64, reason str
 
 // ---------- Task Bundles ----------
 
-func (c *ClawNetClient) AttachBundle(taskID string, bundleData []byte) error {
+func (c *AgentNetClient) AttachBundle(taskID string, bundleData []byte) error {
 	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/tasks/"+taskID+"/bundle", bytes.NewReader(bundleData))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
+	c.setAuth(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("POST /api/tasks/%s/bundle: %w", taskID, err)
 	}
 	defer resp.Body.Close()
+	c.handleAuthError(resp)
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("POST /api/tasks/%s/bundle: status %d: %s", taskID, resp.StatusCode, string(b))
@@ -1351,12 +1438,18 @@ func (c *ClawNetClient) AttachBundle(taskID string, bundleData []byte) error {
 	return nil
 }
 
-func (c *ClawNetClient) DownloadBundle(taskID string) ([]byte, error) {
-	resp, err := c.client.Get(c.baseURL + "/api/tasks/" + taskID + "/bundle")
+func (c *AgentNetClient) DownloadBundle(taskID string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/tasks/"+taskID+"/bundle", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setAuth(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET /api/tasks/%s/bundle: %w", taskID, err)
 	}
 	defer resp.Body.Close()
+	c.handleAuthError(resp)
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("GET /api/tasks/%s/bundle: status %d: %s", taskID, resp.StatusCode, string(b))
@@ -1366,8 +1459,8 @@ func (c *ClawNetClient) DownloadBundle(taskID string) ([]byte, error) {
 
 // ---------- Split Tasks ----------
 
-func (c *ClawNetClient) CreateSplitTask(title string, reward float64, slots int) (*ClawNetTask, error) {
-	var task ClawNetTask
+func (c *AgentNetClient) CreateSplitTask(title string, reward float64, slots int) (*AgentNetTask, error) {
+	var task AgentNetTask
 	return &task, c.post("/api/tasks/split", map[string]interface{}{
 		"title": title, "reward": reward, "slots": slots,
 	}, &task)
@@ -1375,7 +1468,7 @@ func (c *ClawNetClient) CreateSplitTask(title string, reward float64, slots int)
 
 // ---------- Disputes ----------
 
-func (c *ClawNetClient) FileDispute(taskID, reason string) error {
+func (c *AgentNetClient) FileDispute(taskID, reason string) error {
 	return c.post("/api/disputes", map[string]interface{}{
 		"task_id": taskID, "reason": reason,
 	}, nil)
@@ -1383,14 +1476,14 @@ func (c *ClawNetClient) FileDispute(taskID, reason string) error {
 
 // ---------- DAG & Ontology ----------
 
-func (c *ClawNetClient) ExtractDAG(intent string, steps []string, outputs []string) ([]map[string]interface{}, error) {
+func (c *AgentNetClient) ExtractDAG(intent string, steps []string, outputs []string) ([]map[string]interface{}, error) {
 	var nodes []map[string]interface{}
 	return nodes, c.post("/api/dag/extract", map[string]interface{}{
 		"intent": intent, "steps": steps, "outputs": outputs,
 	}, &nodes)
 }
 
-func (c *ClawNetClient) QueryOntology(query string, depth int) (map[string]interface{}, error) {
+func (c *AgentNetClient) QueryOntology(query string, depth int) (map[string]interface{}, error) {
 	path := fmt.Sprintf("/api/ontology/subgraph?q=%s&depth=%d", url.QueryEscape(query), depth)
 	var result map[string]interface{}
 	return result, c.get(path, &result)

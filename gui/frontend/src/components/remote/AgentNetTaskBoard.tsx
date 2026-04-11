@@ -1,19 +1,19 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
-    ClawNetListTasks, ClawNetGetCredits,
-    ClawNetSubmitTaskResult, ClawNetApproveTask,
-    ClawNetRejectTask, ClawNetMatchTasks,
-    ClawNetCreateTask, ClawNetBrowseNetworkTasks, ClawNetPublishTasksToHub,
-    ClawNetManualPickTask,
+    AgentNetListTasks, AgentNetGetCredits,
+    AgentNetSubmitTaskResult, AgentNetApproveTask,
+    AgentNetRejectTask, AgentNetMatchTasks,
+    AgentNetCreateTask, AgentNetBrowseNetworkTasks, AgentNetPublishTasksToHub,
+    AgentNetManualPickTask,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
 
 type Props = {
     lang: string;
-    clawNetRunning: boolean;
+    agentNetRunning: boolean;
 };
 
-interface ClawNetTask {
+interface AgentNetTask {
     id: string;
     title: string;
     description?: string;
@@ -43,8 +43,8 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
-    const [tasks, setTasks] = useState<ClawNetTask[]>([]);
+export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
+    const [tasks, setTasks] = useState<AgentNetTask[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [credits, setCredits] = useState<{ balance: number; tier: string } | null>(null);
@@ -60,39 +60,39 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
     const [newReward, setNewReward] = useState(100);
 
     const refresh = useCallback(async () => {
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         const seq = ++refreshRef.current;
         setLoading(true);
         setError("");
         try {
             // Fire primary fetch + credits in parallel
             const primaryFetch = viewMode === "matched"
-                ? ClawNetMatchTasks()
+                ? AgentNetMatchTasks()
                 : viewMode === "network"
-                    ? ClawNetBrowseNetworkTasks()
-                    : ClawNetListTasks("");
+                    ? AgentNetBrowseNetworkTasks()
+                    : AgentNetListTasks("");
 
             const [res, creditsRes] = await Promise.all([
                 primaryFetch,
-                ClawNetGetCredits().catch(() => null),
+                AgentNetGetCredits().catch(() => null),
             ]);
 
             // Stale guard: discard if a newer refresh was triggered
             if (seq !== refreshRef.current) return;
 
             if (res.ok) {
-                let finalTasks: ClawNetTask[] = (res.tasks || []).slice(
+                let finalTasks: AgentNetTask[] = (res.tasks || []).slice(
                     0, viewMode === "network" ? MAX_TASKS_TOTAL : MAX_TASKS_LOCAL,
                 );
                 // In "all" mode, also fetch network tasks and merge
                 if (viewMode === "all") {
                     try {
-                        const netRes = await ClawNetBrowseNetworkTasks();
+                        const netRes = await AgentNetBrowseNetworkTasks();
                         if (seq !== refreshRef.current) return;
                         if (netRes.ok && netRes.tasks?.length) {
                             // Normalize IDs to handle Wails uppercase key serialization
                             const localIds = new Set(finalTasks.map((t) => t.id || (t as any).ID || ""));
-                            const netTasks = (netRes.tasks as ClawNetTask[]).filter(t => {
+                            const netTasks = (netRes.tasks as AgentNetTask[]).filter(t => {
                                 const tid = t.id || (t as any).ID || "";
                                 return tid && !localIds.has(tid);
                             });
@@ -110,7 +110,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
 
             // Publish local tasks to Hub in background
             if (viewMode !== "network") {
-                ClawNetPublishTasksToHub().catch(() => {});
+                AgentNetPublishTasksToHub().catch(() => {});
             }
         } catch (e) {
             if (seq !== refreshRef.current) return;
@@ -118,14 +118,14 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         } finally {
             if (seq === refreshRef.current) setLoading(false);
         }
-    }, [clawNetRunning, viewMode]);
+    }, [agentNetRunning, viewMode]);
 
     useEffect(() => {
         refresh();
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         const timer = setInterval(refresh, POLL_INTERVAL_MS);
         return () => clearInterval(timer);
-    }, [refresh, clawNetRunning]);
+    }, [refresh, agentNetRunning]);
 
     // Cleanup message timer on unmount
     useEffect(() => {
@@ -169,7 +169,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
             showMsg(localizeText(lang, `Insufficient balance (have ${credits.balance} 🐚, need ${reward} 🐚)`, `余额不足（当前 ${credits.balance} 🐚，需要 ${reward} 🐚）`), "info", 4000);
             return;
         }
-        await doAction("create", () => ClawNetCreateTask(newTitle.trim(), reward));
+        await doAction("create", () => AgentNetCreateTask(newTitle.trim(), reward));
         setNewTitle("");
         setNewReward(100);
         setShowCreate(false);
@@ -179,7 +179,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         setManualPickId(taskId);
         showMsg(localizeText(lang, "⏳ Picking up and executing task...", "⏳ 正在接单并执行任务..."), "info", 60000);
         try {
-            const res = await ClawNetManualPickTask(taskId);
+            const res = await AgentNetManualPickTask(taskId);
             if (res.ok) {
                 showMsg(localizeText(lang, "✅ Task completed and submitted", "✅ 任务已完成并提交"), "success", 5000);
                 refresh();
@@ -193,15 +193,15 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
         }
     }, [lang, showMsg, refresh]);
 
-    if (!clawNetRunning) {
+    if (!agentNetRunning) {
         return (
             <div style={{ padding: "40px 20px", textAlign: "center", color: colors.textMuted }}>
                 <div style={{ fontSize: "3rem", marginBottom: "12px" }}>🦞</div>
                 <div style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "6px", color: colors.text }}>
-                    {localizeText(lang, "ClawNet Not Connected", "智网未连接")}
+                    {localizeText(lang, "AgentNet Not Connected", "智网未连接")}
                 </div>
                 <div style={{ fontSize: "0.82rem", color: colors.textSecondary }}>
-                    {localizeText(lang, "Enable ClawNet in Settings → ClawNet", "请在设置 → 智网中启用 ClawNet")}
+                    {localizeText(lang, "Enable AgentNet in Settings → AgentNet", "请在设置 → 智网中启用 AgentNet")}
                 </div>
             </div>
         );
@@ -322,7 +322,7 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                 {tasks.map((rawTask) => {
                     // Wails may serialize Go struct fields with uppercase keys when nested in map[string]interface{}.
                     // Normalize field access to handle both cases (e.g. Status vs status).
-                    const task: ClawNetTask = {
+                    const task: AgentNetTask = {
                         id: rawTask.id || (rawTask as any).ID || "",
                         title: rawTask.title || (rawTask as any).Title || "",
                         description: rawTask.description || (rawTask as any).Description,
@@ -369,18 +369,18 @@ export function ClawNetTaskBoard({ lang, clawNetRunning }: Props) {
                                 <span style={{ flex: 1 }} />
                                 {normalizedStatus === "assigned" && (
                                     <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
-                                        onClick={() => doAction("submit-" + task.id, () => ClawNetSubmitTaskResult(task.id, ""))}>
+                                        onClick={() => doAction("submit-" + task.id, () => AgentNetSubmitTaskResult(task.id, ""))}>
                                         {localizeText(lang, "Submit", "提交")}
                                     </button>
                                 )}
                                 {normalizedStatus === "submitted" && (
                                     <>
                                         <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
-                                            onClick={() => doAction("approve-" + task.id, () => ClawNetApproveTask(task.id))}>
+                                            onClick={() => doAction("approve-" + task.id, () => AgentNetApproveTask(task.id))}>
                                             ✓
                                         </button>
                                         <button style={smallBtn(!!actionBusy || !!manualPickId)} disabled={!!actionBusy || !!manualPickId}
-                                            onClick={() => doAction("reject-" + task.id, () => ClawNetRejectTask(task.id))}>
+                                            onClick={() => doAction("reject-" + task.id, () => AgentNetRejectTask(task.id))}>
                                             ✗
                                         </button>
                                     </>

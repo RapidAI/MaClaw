@@ -59,14 +59,14 @@ vi.mock('../../CustomDialog', () => ({
     }),
 }));
 
-import { ClawNetPanel } from '../AgentNetPanel';
+import { AgentNetPanel } from '../AgentNetPanel';
 
-function renderPanel(clawnetEnabled: boolean, extraConfig: Record<string, unknown> = {}) {
+function renderPanel(agentNetEnabled: boolean, extraConfig: Record<string, unknown> = {}) {
     const saveRemoteConfigField = vi.fn();
     const onRunningChange = vi.fn();
     render(
-        <ClawNetPanel
-            config={{ agentnet_enabled: clawnetEnabled, ...extraConfig } as any}
+        <AgentNetPanel
+            config={{ agentnet_enabled: agentNetEnabled, ...extraConfig } as any}
             saveRemoteConfigField={saveRemoteConfigField}
             lang="zh-Hans"
             onRunningChange={onRunningChange}

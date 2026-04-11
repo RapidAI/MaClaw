@@ -66,8 +66,10 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 		return h.sshList()
 	case "close":
 		return h.sshClose(args)
+	case "close_all":
+		return h.sshCloseAll()
 	default:
-		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）", action)
+		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close/close_all）", action)
 	}
 }
 
@@ -103,6 +105,25 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	port := 22
 	if p, ok := args["port"].(float64); ok && p > 0 {
 		port = int(p)
+	}
+
+	// Check if a running session already exists for this host.
+	// Reuse it instead of creating duplicate sessions — this prevents
+	// the common problem of the LLM spawning many sessions to the same
+	// host when previous ones time out or become unresponsive.
+	// Use force_new=true to bypass and create a new session.
+	forceNew, _ := args["force_new"].(bool)
+	if !forceNew {
+		targetID := fmt.Sprintf("%s@%s:%d", user, host, port)
+		if existing := h.findRunningSSHSession(mgr, targetID, label); existing != nil {
+			summary := existing.GetSummary()
+			result := fmt.Sprintf("♻️ 复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
+				existing.ID, summary.HostID, summary.Status)
+			if summary.LastOutput != "" {
+				result += "\n\n最近输出: " + summary.LastOutput
+			}
+			return result
+		}
 	}
 
 	cfg := remote.SSHHostConfig{
@@ -141,6 +162,21 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		result += "\n\n--- 初始输出 ---\n" + preview
 	}
 	return result
+}
+
+// findRunningSSHSession looks for an existing SSH session matching the
+// given hostID (user@host:port) or label that is still running.
+func (h *IMMessageHandler) findRunningSSHSession(mgr interface{ List() []*remote.SSHManagedSession }, hostID, label string) *remote.SSHManagedSession {
+	for _, s := range mgr.List() {
+		summary := s.GetSummary()
+		if summary.Status != string(remote.SessionRunning) {
+			continue
+		}
+		if summary.HostID == hostID || (label != "" && summary.HostLabel == label) {
+			return s
+		}
+	}
+	return nil
 }
 
 func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
@@ -421,6 +457,36 @@ func (h *IMMessageHandler) sshClose(args map[string]interface{}) string {
 	h.completeSSHBackgroundLoop(sessionID)
 
 	return fmt.Sprintf("✅ SSH 会话 %s 已关闭", sessionID)
+}
+
+// sshCloseAll closes all running SSH sessions.
+func (h *IMMessageHandler) sshCloseAll() string {
+	if h.sshMgr == nil {
+		return "当前无 SSH 会话"
+	}
+	sessions := h.sshMgr.List()
+	running := make([]*remote.SSHManagedSession, 0, len(sessions))
+	for _, s := range sessions {
+		summary := s.GetSummary()
+		if summary.Status == string(remote.SessionRunning) {
+			running = append(running, s)
+		}
+	}
+	if len(running) == 0 {
+		return "当前无运行中的 SSH 会话"
+	}
+	var errs []string
+	for _, s := range running {
+		if err := h.sshMgr.Kill(s.ID); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", s.ID, err))
+		}
+		h.completeSSHBackgroundLoop(s.ID)
+	}
+	result := fmt.Sprintf("✅ 已关闭 %d 个 SSH 会话", len(running))
+	if len(errs) > 0 {
+		result += fmt.Sprintf("\n⚠️ 部分关闭失败:\n%s", strings.Join(errs, "\n"))
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------

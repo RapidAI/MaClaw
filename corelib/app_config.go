@@ -171,10 +171,6 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 		AgentNetAutoPickerEnabled   *bool    `json:"agentnet_auto_picker_enabled,omitempty"`
 		AgentNetAutoPickerPollMin   *int     `json:"agentnet_auto_picker_poll_min,omitempty"`
 		AgentNetAutoPickerMinReward *float64 `json:"agentnet_auto_picker_min_reward,omitempty"`
-		LegacyClawNetEnabled             *bool    `json:"clawnet_enabled"`
-		LegacyClawNetAutoPickerEnabled   *bool    `json:"clawnet_auto_picker_enabled,omitempty"`
-		LegacyClawNetAutoPickerPollMin   *int     `json:"clawnet_auto_picker_poll_min,omitempty"`
-		LegacyClawNetAutoPickerMinReward *float64 `json:"clawnet_auto_picker_min_reward,omitempty"`
 	}
 
 	var raw rawAppConfig
@@ -182,17 +178,17 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*c = AppConfig(raw.appConfigAlias)
-	if raw.AgentNetEnabled == nil && raw.LegacyClawNetEnabled != nil {
-		c.AgentNetEnabled = *raw.LegacyClawNetEnabled
+	if raw.AgentNetEnabled != nil {
+		c.AgentNetEnabled = *raw.AgentNetEnabled
 	}
-	if raw.AgentNetAutoPickerEnabled == nil && raw.LegacyClawNetAutoPickerEnabled != nil {
-		c.AgentNetAutoPickerEnabled = *raw.LegacyClawNetAutoPickerEnabled
+	if raw.AgentNetAutoPickerEnabled != nil {
+		c.AgentNetAutoPickerEnabled = *raw.AgentNetAutoPickerEnabled
 	}
-	if raw.AgentNetAutoPickerPollMin == nil && raw.LegacyClawNetAutoPickerPollMin != nil {
-		c.AgentNetAutoPickerPollMin = *raw.LegacyClawNetAutoPickerPollMin
+	if raw.AgentNetAutoPickerPollMin != nil {
+		c.AgentNetAutoPickerPollMin = *raw.AgentNetAutoPickerPollMin
 	}
-	if raw.AgentNetAutoPickerMinReward == nil && raw.LegacyClawNetAutoPickerMinReward != nil {
-		c.AgentNetAutoPickerMinReward = *raw.LegacyClawNetAutoPickerMinReward
+	if raw.AgentNetAutoPickerMinReward != nil {
+		c.AgentNetAutoPickerMinReward = *raw.AgentNetAutoPickerMinReward
 	}
 	return nil
 }

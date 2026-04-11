@@ -148,6 +148,8 @@ export function ShowMessage(arg1:string,arg2:string):Promise<void>;
 
 export function InterruptRemoteSession(arg1:string):Promise<void>;
 
+export function SetFullscreen(arg1:boolean):Promise<void>;
+
 export function KillRemoteSession(arg1:string):Promise<void>;
 
 export function UpdateLastEnvCheckTime():Promise<void>;
@@ -301,6 +303,8 @@ export function SetAutoCompress(arg1:boolean):Promise<void>;
 
 export function GetAutoCompressStatus():Promise<any>;
 
+export function GetMemoryHealth():Promise<any>;
+
 export function GetMemoryMaxBackups():Promise<number>;
 
 export function SetMemoryMaxBackups(arg1:number):Promise<void>;
@@ -320,114 +324,114 @@ export function ResumeScheduledTask(arg1:string):Promise<void>;
 
 export function TriggerScheduledTask(arg1:string):Promise<void>;
 
-// ClawNet P2P network bindings
-export function ClawNetEnsureDaemon():Promise<any>;
+// AgentNet P2P network bindings
+export function AgentNetEnsureDaemon():Promise<any>;
 
-export function ClawNetStopDaemon():Promise<void>;
+export function AgentNetStopDaemon():Promise<void>;
 
-export function ClawNetIsRunning():Promise<boolean>;
+export function AgentNetIsRunning():Promise<boolean>;
 
-export function ClawNetGetStatus():Promise<any>;
+export function AgentNetGetStatus():Promise<any>;
 
-export function ClawNetGetPeers():Promise<any>;
+export function AgentNetGetPeers():Promise<any>;
 
-export function ClawNetGetCredits():Promise<any>;
+export function AgentNetGetCredits():Promise<any>;
 
-export function ClawNetCreateTask(arg1:string, arg2:number):Promise<any>;
+export function AgentNetCreateTask(arg1:string, arg2:number):Promise<any>;
 
-export function ClawNetSearchKnowledge(arg1:string):Promise<any>;
-export function ClawNetPublishKnowledge(arg1:string, arg2:string):Promise<any>;
-export function ClawNetSendDM(arg1:string, arg2:string):Promise<any>;
-export function ClawNetGetDMInbox():Promise<any>;
-export function ClawNetListSwarmSessions():Promise<any>;
-export function ClawNetCreateSwarmSession(arg1:string, arg2:string):Promise<any>;
-export function ClawNetGetResume():Promise<any>;
-export function ClawNetListPredictions():Promise<any>;
+export function AgentNetSearchKnowledge(arg1:string):Promise<any>;
+export function AgentNetPublishKnowledge(arg1:string, arg2:string):Promise<any>;
+export function AgentNetSendDM(arg1:string, arg2:string):Promise<any>;
+export function AgentNetGetDMInbox():Promise<any>;
+export function AgentNetListSwarmSessions():Promise<any>;
+export function AgentNetCreateSwarmSession(arg1:string, arg2:string):Promise<any>;
+export function AgentNetGetResume():Promise<any>;
+export function AgentNetListPredictions():Promise<any>;
 
-export function ClawNetGetBinaryPath():Promise<string>;
+export function AgentNetGetBinaryPath():Promise<string>;
 
-export function ClawNetInstallBinary():Promise<any>;
+export function AgentNetInstallBinary():Promise<any>;
 
-export function ClawNetEnsureDaemonWithDownload():Promise<any>;
+export function AgentNetEnsureDaemonWithDownload():Promise<any>;
 
-export function ClawNetManualUpdate():Promise<any>;
+export function AgentNetManualUpdate():Promise<any>;
 
-export function ClawNetListTasks(arg1:string):Promise<any>;
+export function AgentNetListTasks(arg1:string):Promise<any>;
 
-// ClawNet extended bindings
-export function ClawNetGetProfile():Promise<any>;
-export function ClawNetUpdateProfile(arg1:string, arg2:string):Promise<any>;
-export function ClawNetSetMotto(arg1:string):Promise<any>;
-export function ClawNetListTopics():Promise<any>;
-export function ClawNetCreateTopic(arg1:string, arg2:string):Promise<any>;
-export function ClawNetGetTopicMessages(arg1:string):Promise<any>;
-export function ClawNetPostTopicMessage(arg1:string, arg2:string):Promise<any>;
-export function ClawNetBidOnTask(arg1:string, arg2:number, arg3:string):Promise<any>;
-export function ClawNetSubmitTaskResult(arg1:string, arg2:string):Promise<any>;
-export function ClawNetApproveTask(arg1:string):Promise<any>;
-export function ClawNetRejectTask(arg1:string):Promise<any>;
-export function ClawNetCancelTask(arg1:string):Promise<any>;
-export function ClawNetGetTaskBids(arg1:string):Promise<any>;
-export function ClawNetMatchTasks():Promise<any>;
-export function ClawNetGetTaskBoard():Promise<any>;
-export function ClawNetGetTransactions():Promise<any>;
-export function ClawNetGetLeaderboard():Promise<any>;
-export function ClawNetGetDaemonInfo():Promise<any>;
-export function ClawNetGetDiagnostics():Promise<any>;
-export function ClawNetGetCreditsAudit():Promise<any>;
-export function ClawNetSelfUpdate():Promise<any>;
-export function ClawNetGetKnowledgeFeed(arg1:string, arg2:number):Promise<any>;
-export function ClawNetGetDMThread(arg1:string, arg2:number):Promise<any>;
-export function ClawNetHasIdentity():Promise<any>;
-export function ClawNetExportIdentity():Promise<any>;
-export function ClawNetImportIdentity():Promise<any>;
-export function ClawNetOnlineBackupKey(arg1:string):Promise<any>;
-export function ClawNetOnlineRestoreKey(arg1:string):Promise<any>;
+// AgentNet extended bindings
+export function AgentNetGetProfile():Promise<any>;
+export function AgentNetUpdateProfile(arg1:string, arg2:string):Promise<any>;
+export function AgentNetSetMotto(arg1:string):Promise<any>;
+export function AgentNetListTopics():Promise<any>;
+export function AgentNetCreateTopic(arg1:string, arg2:string):Promise<any>;
+export function AgentNetGetTopicMessages(arg1:string):Promise<any>;
+export function AgentNetPostTopicMessage(arg1:string, arg2:string):Promise<any>;
+export function AgentNetBidOnTask(arg1:string, arg2:number, arg3:string):Promise<any>;
+export function AgentNetSubmitTaskResult(arg1:string, arg2:string):Promise<any>;
+export function AgentNetApproveTask(arg1:string):Promise<any>;
+export function AgentNetRejectTask(arg1:string):Promise<any>;
+export function AgentNetCancelTask(arg1:string):Promise<any>;
+export function AgentNetGetTaskBids(arg1:string):Promise<any>;
+export function AgentNetMatchTasks():Promise<any>;
+export function AgentNetGetTaskBoard():Promise<any>;
+export function AgentNetGetTransactions():Promise<any>;
+export function AgentNetGetLeaderboard():Promise<any>;
+export function AgentNetGetDaemonInfo():Promise<any>;
+export function AgentNetGetDiagnostics():Promise<any>;
+export function AgentNetGetCreditsAudit():Promise<any>;
+export function AgentNetSelfUpdate():Promise<any>;
+export function AgentNetGetKnowledgeFeed(arg1:string, arg2:number):Promise<any>;
+export function AgentNetGetDMThread(arg1:string, arg2:number):Promise<any>;
+export function AgentNetHasIdentity():Promise<any>;
+export function AgentNetExportIdentity():Promise<any>;
+export function AgentNetImportIdentity():Promise<any>;
+export function AgentNetOnlineBackupKey(arg1:string):Promise<any>;
+export function AgentNetOnlineRestoreKey(arg1:string):Promise<any>;
 
-// ClawNet Hub-relayed task discovery
-export function ClawNetBrowseNetworkTasks():Promise<any>;
-export function ClawNetPublishTasksToHub():Promise<any>;
+// AgentNet Hub-relayed task discovery
+export function AgentNetBrowseNetworkTasks():Promise<any>;
+export function AgentNetPublishTasksToHub():Promise<any>;
 
-// ClawNet Auto Task Picker
-export function ClawNetAutoPickerGetStatus():Promise<any>;
-export function ClawNetAutoPickerConfigure(arg1:boolean, arg2:number, arg3:number, arg4:Array<string>):Promise<any>;
-export function ClawNetAutoPickerTriggerNow():Promise<any>;
-export function ClawNetManualPickTask(arg1:string):Promise<any>;
+// AgentNet Auto Task Picker
+export function AgentNetAutoPickerGetStatus():Promise<any>;
+export function AgentNetAutoPickerConfigure(arg1:boolean, arg2:number, arg3:number, arg4:Array<string>):Promise<any>;
+export function AgentNetAutoPickerTriggerNow():Promise<any>;
+export function AgentNetManualPickTask(arg1:string):Promise<any>;
 
-// ClawNet extended bindings (Swarm, Knowledge, Resume, etc.)
-export function ClawNetUpdateResume(arg1:Array<string>, arg2:Array<string>, arg3:string):Promise<any>;
-export function ClawNetJoinSwarm(arg1:string):Promise<any>;
-export function ClawNetContributeToSwarm(arg1:string, arg2:string, arg3:string):Promise<any>;
-export function ClawNetSynthesizeSwarm(arg1:string):Promise<any>;
-export function ClawNetReactKnowledge(arg1:string, arg2:string):Promise<any>;
-export function ClawNetReplyKnowledge(arg1:string, arg2:string):Promise<any>;
-export function ClawNetGetKnowledgeReplies(arg1:string):Promise<any>;
-export function ClawNetPublishKnowledgeFull(arg1:string, arg2:string, arg3:Array<string>):Promise<any>;
-export function ClawNetAssignTask(arg1:string, arg2:string):Promise<any>;
-export function ClawNetClaimTask(arg1:string):Promise<any>;
-export function ClawNetCreateTaskFull(arg1:string, arg2:string, arg3:number, arg4:Array<string>, arg5:string):Promise<any>;
-export function ClawNetMatchAgentsForTask(arg1:string):Promise<any>;
-export function ClawNetSubmitTaskWork(arg1:string, arg2:string):Promise<any>;
-export function ClawNetGetTaskSubmissions(arg1:string):Promise<any>;
-export function ClawNetPickTaskWinner(arg1:string, arg2:string):Promise<any>;
-export function ClawNetGetOverlayStatus():Promise<any>;
-export function ClawNetGetOverlayPeersGeo():Promise<any>;
-export function ClawNetCreatePrediction(arg1:string, arg2:Array<string>):Promise<any>;
-export function ClawNetPlaceBet(arg1:string, arg2:string, arg3:number):Promise<any>;
-export function ClawNetResolvePrediction(arg1:string, arg2:string):Promise<any>;
-export function ClawNetAppealPrediction(arg1:string, arg2:string):Promise<any>;
-export function ClawNetGetPredictionLeaderboard():Promise<any>;
+// AgentNet extended bindings (Swarm, Knowledge, Resume, etc.)
+export function AgentNetUpdateResume(arg1:Array<string>, arg2:Array<string>, arg3:string):Promise<any>;
+export function AgentNetJoinSwarm(arg1:string):Promise<any>;
+export function AgentNetContributeToSwarm(arg1:string, arg2:string, arg3:string):Promise<any>;
+export function AgentNetSynthesizeSwarm(arg1:string):Promise<any>;
+export function AgentNetReactKnowledge(arg1:string, arg2:string):Promise<any>;
+export function AgentNetReplyKnowledge(arg1:string, arg2:string):Promise<any>;
+export function AgentNetGetKnowledgeReplies(arg1:string):Promise<any>;
+export function AgentNetPublishKnowledgeFull(arg1:string, arg2:string, arg3:Array<string>):Promise<any>;
+export function AgentNetAssignTask(arg1:string, arg2:string):Promise<any>;
+export function AgentNetClaimTask(arg1:string):Promise<any>;
+export function AgentNetCreateTaskFull(arg1:string, arg2:string, arg3:number, arg4:Array<string>, arg5:string):Promise<any>;
+export function AgentNetMatchAgentsForTask(arg1:string):Promise<any>;
+export function AgentNetSubmitTaskWork(arg1:string, arg2:string):Promise<any>;
+export function AgentNetGetTaskSubmissions(arg1:string):Promise<any>;
+export function AgentNetPickTaskWinner(arg1:string, arg2:string):Promise<any>;
+export function AgentNetGetOverlayStatus():Promise<any>;
+export function AgentNetGetOverlayPeersGeo():Promise<any>;
+export function AgentNetCreatePrediction(arg1:string, arg2:Array<string>):Promise<any>;
+export function AgentNetPlaceBet(arg1:string, arg2:string, arg3:number):Promise<any>;
+export function AgentNetResolvePrediction(arg1:string, arg2:string):Promise<any>;
+export function AgentNetAppealPrediction(arg1:string, arg2:string):Promise<any>;
+export function AgentNetGetPredictionLeaderboard():Promise<any>;
 
 // Nutshell bindings
-export function ClawNetNutshellStatus():Promise<any>;
-export function ClawNetNutshellInstall():Promise<any>;
-export function ClawNetNutshellInit(arg1:string):Promise<any>;
-export function ClawNetNutshellCheck(arg1:string):Promise<any>;
-export function ClawNetNutshellPublish(arg1:string, arg2:number):Promise<any>;
-export function ClawNetNutshellClaim(arg1:string, arg2:string):Promise<any>;
-export function ClawNetNutshellDeliver(arg1:string):Promise<any>;
-export function ClawNetNutshellPack(arg1:string, arg2:string, arg3:string):Promise<any>;
-export function ClawNetNutshellUnpack(arg1:string, arg2:string):Promise<any>;
+export function AgentNetNutshellStatus():Promise<any>;
+export function AgentNetNutshellInstall():Promise<any>;
+export function AgentNetNutshellInit(arg1:string):Promise<any>;
+export function AgentNetNutshellCheck(arg1:string):Promise<any>;
+export function AgentNetNutshellPublish(arg1:string, arg2:number):Promise<any>;
+export function AgentNetNutshellClaim(arg1:string, arg2:string):Promise<any>;
+export function AgentNetNutshellDeliver(arg1:string):Promise<any>;
+export function AgentNetNutshellPack(arg1:string, arg2:string, arg3:string):Promise<any>;
+export function AgentNetNutshellUnpack(arg1:string, arg2:string):Promise<any>;
 
 // AI Assistant bindings
 export function IsAIAssistantReady():Promise<boolean>;
@@ -456,6 +460,8 @@ export function GetAIAssistantTrace(arg1:string):Promise<any>;
 export function ListBackgroundLoops():Promise<Array<any>>;
 
 export function StopBackgroundLoop(arg1:string):Promise<void>;
+
+export function StopAllBackgroundLoops():Promise<Array<string>>;
 
 export function ContinueBackgroundLoop(arg1:string, arg2:number):Promise<void>;
 

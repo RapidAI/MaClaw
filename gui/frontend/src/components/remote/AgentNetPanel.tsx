@@ -1,26 +1,26 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { main } from "../../../wailsjs/go/models";
 import {
-    ClawNetStopDaemon,
-    ClawNetIsRunning,
-    ClawNetGetStatus,
-    ClawNetGetPeers,
-    ClawNetGetCredits,
-    ClawNetGetBinaryPath,
-    ClawNetEnsureDaemonWithDownload,
-    ClawNetHasIdentity,
-    ClawNetExportIdentity,
-    ClawNetImportIdentity,
-    ClawNetOnlineBackupKey,
-    ClawNetOnlineRestoreKey,
-    ClawNetGetTransactions,
-    ClawNetGetCreditsAudit,
-    ClawNetGetLeaderboard,
-    ClawNetAutoPickerGetStatus,
-    ClawNetAutoPickerConfigure,
-    ClawNetAutoPickerTriggerNow,
-    ClawNetGetDaemonInfo,
-    ClawNetManualUpdate,
+    AgentNetStopDaemon,
+    AgentNetIsRunning,
+    AgentNetGetStatus,
+    AgentNetGetPeers,
+    AgentNetGetCredits,
+    AgentNetGetBinaryPath,
+    AgentNetEnsureDaemonWithDownload,
+    AgentNetHasIdentity,
+    AgentNetExportIdentity,
+    AgentNetImportIdentity,
+    AgentNetOnlineBackupKey,
+    AgentNetOnlineRestoreKey,
+    AgentNetGetTransactions,
+    AgentNetGetCreditsAudit,
+    AgentNetGetLeaderboard,
+    AgentNetAutoPickerGetStatus,
+    AgentNetAutoPickerConfigure,
+    AgentNetAutoPickerTriggerNow,
+    AgentNetGetDaemonInfo,
+    AgentNetManualUpdate,
 } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
 import { colors, radius } from "./styles";
@@ -100,7 +100,7 @@ const FinanceIcon = () => (
     </svg>
 );
 
-export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningChange }: Props) {
+export function AgentNetPanel({ config, saveRemoteConfigField, lang, onRunningChange }: Props) {
     const { showConfirm } = useDialog();
     const [running, setRunning] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -149,15 +149,15 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
     // Poll running state; also checks identity when not yet detected.
     const refreshStatus = useCallback(async () => {
         try {
-            const isUp = await ClawNetIsRunning();
+            const isUp = await AgentNetIsRunning();
             setRunning(isUp);
             onRunningChange(isUp);
             if (isUp) {
                 const [s, p, c, d] = await Promise.all([
-                    ClawNetGetStatus(),
-                    ClawNetGetPeers(),
-                    ClawNetGetCredits(),
-                    ClawNetGetDaemonInfo(),
+                    AgentNetGetStatus(),
+                    AgentNetGetPeers(),
+                    AgentNetGetCredits(),
+                    AgentNetGetDaemonInfo(),
                 ]);
                 if (s.ok) setStatus(s);
                 if (p.ok) setPeers(p.peers || []);
@@ -169,7 +169,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 setCredits(null);
                 // Still fetch daemon info when disconnected — shows last known PID / "process lost".
                 try {
-                    const d = await ClawNetGetDaemonInfo();
+                    const d = await AgentNetGetDaemonInfo();
                     if (d.ok) setDaemonInfo(d);
                 } catch {}
             }
@@ -179,7 +179,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         }
         if (!identityFoundRef.current) {
             try {
-                const res = await ClawNetHasIdentity();
+                const res = await AgentNetHasIdentity();
                 if (res.ok) {
                     if (res.exists) identityFoundRef.current = true;
                     setIdentityExists(!!res.exists);
@@ -191,7 +191,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
 
     const refreshIdentity = useCallback(async () => {
         try {
-            const res = await ClawNetHasIdentity();
+            const res = await AgentNetHasIdentity();
             if (res.ok) {
                 if (res.exists) identityFoundRef.current = true;
                 setIdentityExists(!!res.exists);
@@ -205,15 +205,15 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         setFinanceError("");
         try {
             if (tab === "transactions") {
-                const res = await ClawNetGetTransactions();
+                const res = await AgentNetGetTransactions();
                 if (res.ok) setTransactions((res.transactions || []).slice(0, 20));
                 else setFinanceError(res.error || "Failed to load transactions");
             } else if (tab === "audit") {
-                const res = await ClawNetGetCreditsAudit();
+                const res = await AgentNetGetCreditsAudit();
                 if (res.ok) setAuditLog((res.audit || []).slice(0, 20));
                 else setFinanceError(res.error || "Failed to load audit");
             } else if (tab === "leaderboard") {
-                const res = await ClawNetGetLeaderboard();
+                const res = await AgentNetGetLeaderboard();
                 if (res.ok) setLeaderboard((res.leaderboard || []).slice(0, 20));
                 else setFinanceError(res.error || "Failed to load leaderboard");
             }
@@ -224,7 +224,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
     }, []);
 
     useEffect(() => {
-        ClawNetGetBinaryPath().then(setBinPath).catch(() => {});
+        AgentNetGetBinaryPath().then(setBinPath).catch(() => {});
         refreshStatus();
         const timer = setInterval(refreshStatus, 8000);
         return () => clearInterval(timer);
@@ -232,28 +232,28 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
 
     const refreshPickerStatus = useCallback(async () => {
         try {
-            const res = await ClawNetAutoPickerGetStatus();
+            const res = await AgentNetAutoPickerGetStatus();
             if (res.ok) setPickerStatus(res);
         } catch {}
     }, []);
 
     useEffect(() => {
         if (running) refreshPickerStatus();
-        EventsOn("clawnet:auto-picker-changed", refreshPickerStatus);
-        return () => { EventsOff("clawnet:auto-picker-changed"); };
+        EventsOn("agentnet:auto-picker-changed", refreshPickerStatus);
+        return () => { EventsOff("agentnet:auto-picker-changed"); };
     }, [running, refreshPickerStatus]);
 
     useEffect(() => {
-        EventsOn("clawnet-install-progress", (data: any) => {
+        EventsOn("agentnet-install-progress", (data: any) => {
             if (data && typeof data === "object") {
                 setDownloadProgress({ stage: data.stage, percent: data.percent, message: data.message });
                 if (data.stage === "done") {
                     setTimeout(() => { if (mountedRef.current) setDownloadProgress(null); }, 3000);
-                    ClawNetGetBinaryPath().then(setBinPath).catch(() => {});
+                    AgentNetGetBinaryPath().then(setBinPath).catch(() => {});
                 }
             }
         });
-        return () => { EventsOff("clawnet-install-progress"); };
+        return () => { EventsOff("agentnet-install-progress"); };
     }, []);
 
     // Auto-start daemon when enabled — but check running state first to avoid
@@ -261,7 +261,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
     useEffect(() => {
         if (!enabled || running || busy) return;
         let cancelled = false;
-        ClawNetIsRunning().then(up => {
+        AgentNetIsRunning().then(up => {
             if (!cancelled && !up) handleStart();
         }).catch(() => {});
         return () => { cancelled = true; };
@@ -272,7 +272,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         setBusy(true);
         setError("");
         try {
-            const res = await ClawNetEnsureDaemonWithDownload();
+            const res = await AgentNetEnsureDaemonWithDownload();
             if (!res.ok) {
                 setError(res.error || "Failed to start");
             }
@@ -289,7 +289,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         setBusy(true);
         setError("");
         try {
-            await ClawNetStopDaemon();
+            await AgentNetStopDaemon();
             setRunning(false);
             onRunningChange(false);
             setStatus(null);
@@ -311,19 +311,32 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
     };
 
     const handleToggle = async (checked: boolean) => {
-        await saveRemoteConfigField({ agentnet_enabled: checked });
+        setBusy(true);
+        setError("");
+        try {
+            await saveRemoteConfigField({ agentnet_enabled: checked });
+        } catch (e) {
+            // Rollback on failure — keep checkbox in previous state.
+            setError(checked
+                ? t("Failed to enable AgentNet. Please try again.", "启用智网失败，请重试。")
+                : t("Failed to disable AgentNet. Please try again.", "关闭智网失败，请重试。"));
+            // saveRemoteConfigField already handles rollback of the local config ref.
+            setBusy(false);
+            return;
+        }
         if (!checked && running) {
             handleStop();
         } else if (checked && !running) {
             handleStart();
         }
+        setBusy(false);
     };
 
     const handleManualUpdate = async () => {
         setUpdating(true);
         setUpdateMsg(t("⏳ Checking for updates...", "⏳ 正在检查更新..."));
         try {
-            const res = await ClawNetManualUpdate();
+            const res = await AgentNetManualUpdate();
             if (!mountedRef.current) return;
             if (res.ok) {
                 setUpdateMsg(t("✅ Updated and restarted", "✅ 更新完成，服务已重启"));
@@ -347,7 +360,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         setKeyBusy(true);
         setKeyMsg("");
         try {
-            const res = await ClawNetExportIdentity();
+            const res = await AgentNetExportIdentity();
             if (res.ok) {
                 setKeyMsg(t(`✅ Exported to ${res.path}`, `✅ 已导出到 ${res.path}`));
             } else if (res.error !== "cancelled") {
@@ -370,11 +383,11 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         setKeyBusy(true);
         setKeyMsg("");
         try {
-            const res = await ClawNetImportIdentity();
+            const res = await AgentNetImportIdentity();
             if (res.ok) {
                 await refreshIdentity();
                 if (res.restarted) {
-                    setKeyMsg(t("✅ Identity restored, ClawNet is back online", "✅ 身份密钥已恢复，智网已重新上线"));
+                    setKeyMsg(t("✅ Identity restored, AgentNet is back online", "✅ 身份密钥已恢复，智网已重新上线"));
                     await refreshStatus();
                 } else {
                     setKeyMsg(t("✅ Identity restored", "✅ 身份密钥已恢复"));
@@ -402,7 +415,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         setOnlineBusy(true);
         setOnlineMsg("");
         try {
-            const res = await ClawNetOnlineBackupKey(onlinePwd);
+            const res = await AgentNetOnlineBackupKey(onlinePwd);
             if (res.ok) {
                 setOnlineMsg(t("✅ Encrypted backup saved to Hub", "✅ 已加密备份到 Hub"));
                 setOnlinePwd("");
@@ -431,12 +444,12 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         setOnlineBusy(true);
         setOnlineMsg("");
         try {
-            const res = await ClawNetOnlineRestoreKey(onlineRestorePwd);
+            const res = await AgentNetOnlineRestoreKey(onlineRestorePwd);
             if (res.ok) {
                 setOnlineRestorePwd("");
                 await refreshIdentity();
                 if (res.restarted) {
-                    setOnlineMsg(t("✅ Identity restored from Hub, ClawNet is back online", "✅ 身份密钥已从 Hub 恢复，智网已重新上线"));
+                    setOnlineMsg(t("✅ Identity restored from Hub, AgentNet is back online", "✅ 身份密钥已从 Hub 恢复，智网已重新上线"));
                     await refreshStatus();
                 } else {
                     setOnlineMsg(t("✅ Identity restored from Hub", "✅ 身份密钥已从 Hub 恢复"));
@@ -456,7 +469,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
         setPickerBusy(true);
         setTriggerMsg(t("⏳ Searching for tasks...", "⏳ 正在寻找任务..."));
         try {
-            const res = await ClawNetAutoPickerTriggerNow();
+            const res = await AgentNetAutoPickerTriggerNow();
             if (!mountedRef.current) return;
             if (res.ok) {
                 setTriggerMsg(t("✅ Task search triggered, check results shortly", "✅ 已触发任务搜索，请稍候查看结果"));
@@ -483,7 +496,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             {/* Header */}
             <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
                 <span style={{ fontSize: "0.8rem", fontWeight: 600, color: colors.text, letterSpacing: "0.01em" }}>
-                    🦞 ClawNet {t("P2P Network", "智网")}
+                    🦞 AgentNet {t("P2P Network", "智网")}
                 </span>
             </div>
 
@@ -492,7 +505,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                     <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "0.78rem", color: colors.textSecondary }}>
                         <input type="checkbox" checked={enabled} onChange={(e) => handleToggle(e.target.checked)} disabled={busy} />
-                        <span>{t("Enable ClawNet", "启用智网")}</span>
+                        <span>{t("Enable AgentNet", "启用智网")}</span>
                     </label>
                     <button
                         onClick={handleManualUpdate}
@@ -528,17 +541,17 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             {error && (
                 <div style={{
                     fontSize: "0.75rem",
-                    color: error.includes("[clawnet-not-available]") ? colors.warning : colors.danger,
+                    color: error.includes("[agentnet-not-available]") ? colors.warning : colors.danger,
                     marginBottom: "8px",
                     padding: "8px 12px",
-                    background: error.includes("[clawnet-not-available]") ? colors.warningBg : colors.dangerBg,
+                    background: error.includes("[agentnet-not-available]") ? colors.warningBg : colors.dangerBg,
                     borderRadius: radius.md,
                     border: `1px solid ${colors.border}`,
                     whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
                     lineHeight: 1.6,
                 }}>
-                    {error.replace("[clawnet-not-available] ", "")}
+                    {error.replace("[agentnet-not-available] ", "")}
                 </div>
             )}
 
@@ -546,7 +559,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             {downloadProgress && downloadProgress.stage !== "done" && (
                 <div style={{ ...card, background: colors.accentBg }}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px", fontSize: "0.78rem", color: colors.textSecondary }}>
-                        <span>{t("Downloading ClawNet...", "正在下载 ClawNet...")}</span>
+                        <span>{t("Downloading AgentNet...", "正在下载 AgentNet...")}</span>
                         <span style={{ fontFamily: "monospace" }}>{downloadProgress.percent}%</span>
                     </div>
                     <div style={{ height: "4px", background: colors.border, borderRadius: "2px", overflow: "hidden" }}>
@@ -574,7 +587,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 <div style={{ ...card, background: colors.bg }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.72rem", flexWrap: "wrap" }}>
                         <span style={label}>{t("Process", "进程")}:</span>
-                        <span style={mono}>clawnet{daemonInfo.bin_path?.endsWith(".exe") ? ".exe" : ""}</span>
+                        <span style={mono}>agentnet{daemonInfo.bin_path?.endsWith(".exe") ? ".exe" : ""}</span>
                         {daemonInfo.pid > 0 && (
                             <>
                                 <span style={{ color: colors.border }}>|</span>
@@ -636,7 +649,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                 </div>
                 {financeOpen && !running && (
                     <div style={{ padding: "8px 14px", borderTop: `1px solid ${colors.border}`, fontSize: "0.72rem", color: colors.textMuted }}>
-                        {t("ClawNet not connected. Connect to view finance data.", "智网未连接，连接后可查看财务数据")}
+                        {t("AgentNet not connected. Connect to view finance data.", "智网未连接，连接后可查看财务数据")}
                     </div>
                 )}
                 {financeOpen && running && (
@@ -733,7 +746,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                                 onChange={async (e) => {
                                     setPickerBusy(true);
                                     try {
-                                        await ClawNetAutoPickerConfigure(e.target.checked, 5, 0, []);
+                                        await AgentNetAutoPickerConfigure(e.target.checked, 5, 0, []);
                                         if (mountedRef.current) await refreshPickerStatus();
                                     } catch {}
                                     if (mountedRef.current) setPickerBusy(false);
@@ -745,7 +758,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
                         </label>
                     </div>
                     <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: "6px" }}>
-                        {t("When enabled, maClaw auto-discovers tasks from ClawNet, completes them, and earns 🐚 Shell",
+                        {t("When enabled, maClaw auto-discovers tasks from AgentNet, completes them, and earns 🐚 Shell",
                            "开启后，maClaw 会自动从智网寻找任务、完成并提交，赚取 🐚 Shell")}
                     </div>
                     {pickerStatus?.enabled && (
@@ -804,7 +817,7 @@ export function ClawNetPanel({ config, saveRemoteConfigField, lang, onRunningCha
             <div style={cardMuted}>
                 <div style={heading}>🔑 {t("Identity Key", "身份密钥")}</div>
                 <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: "8px" }}>
-                    {t("Your identity key (Ed25519) is your unique credential on ClawNet. Back it up — it cannot be recovered if lost.",
+                    {t("Your identity key (Ed25519) is your unique credential on AgentNet. Back it up — it cannot be recovered if lost.",
                        "身份密钥是你在智网上的唯一身份凭证（Ed25519），丢失后无法恢复。请妥善备份。")}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>

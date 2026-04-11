@@ -64,7 +64,7 @@ func main() {
 		runLocalCommand("audit", os.Args[2:])
 	case "policy":
 		runLocalCommand("policy", os.Args[2:])
-	case "agentnet", "clawnet":
+	case "agentnet":
 		if err := commands.RunAgentNet(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(exitCodeForError(err))

@@ -10,13 +10,13 @@ import (
 	"strings"
 )
 
-// clawnetFindProcessByName returns the PID of a running process whose
+// agentnetFindProcessByName returns the PID of a running process whose
 // executable name matches the given name. Returns 0 if not found. It skips
 // the current process so the caller never matches itself.
 //
 // On Linux it reads /proc directly. On other Unix systems (macOS, BSDs) it
 // falls back to pgrep.
-func clawnetFindProcessByName(name string) int {
+func agentnetFindProcessByName(name string) int {
 	if pid := guiFindViaProc(name); pid != 0 {
 		return pid
 	}

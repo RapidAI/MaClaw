@@ -267,7 +267,7 @@ func (a *TUIApp) initKernel() tea.Msg {
 	a.configMgr = config.NewManager(store)
 
 	// --- 新增：MemoryStore ---
-	memPath := filepath.Join(dataDir, "memory.json")
+	memPath := filepath.Join(dataDir, "memories.json")
 	memStore, memErr := memory.NewStore(memPath)
 	if memErr != nil {
 		logger.Error("memory store init failed: %v", memErr)

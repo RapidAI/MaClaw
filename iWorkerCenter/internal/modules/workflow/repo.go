@@ -19,23 +19,23 @@ func NewRepo(write, read *sql.DB) *Repo {
 
 // --- Definition CRUD ---
 
-func (r *Repo) InsertDefinition(d *Definition) error {
-	_, err := r.write.Exec(`INSERT INTO workflow_definitions (id, name, description, trigger_type, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?)`, d.ID, d.Name, d.Description, d.TriggerType, d.Status,
+func (r *Repo) InsertDefinition(tenantID string, d *Definition) error {
+	_, err := r.write.Exec(`INSERT INTO workflow_definitions (tenant_id, id, name, description, trigger_type, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?)`, tenantID, d.ID, d.Name, d.Description, d.TriggerType, d.Status,
 		d.CreatedAt.Format(time.RFC3339), d.UpdatedAt.Format(time.RFC3339))
 	return err
 }
 
-func (r *Repo) InsertDefinitionTx(tx *sql.Tx, d *Definition) error {
-	_, err := tx.Exec(`INSERT INTO workflow_definitions (id, name, description, trigger_type, status, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?)`, d.ID, d.Name, d.Description, d.TriggerType, d.Status,
+func (r *Repo) InsertDefinitionTx(tenantID string, tx *sql.Tx, d *Definition) error {
+	_, err := tx.Exec(`INSERT INTO workflow_definitions (tenant_id, id, name, description, trigger_type, status, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?)`, tenantID, d.ID, d.Name, d.Description, d.TriggerType, d.Status,
 		d.CreatedAt.Format(time.RFC3339), d.UpdatedAt.Format(time.RFC3339))
 	return err
 }
 
-func (r *Repo) UpdateDefinition(d *Definition) error {
-	res, err := r.write.Exec(`UPDATE workflow_definitions SET name=?, description=?, trigger_type=?, status=?, updated_at=? WHERE id=?`,
-		d.Name, d.Description, d.TriggerType, d.Status, d.UpdatedAt.Format(time.RFC3339), d.ID)
+func (r *Repo) UpdateDefinition(tenantID string, d *Definition) error {
+	res, err := r.write.Exec(`UPDATE workflow_definitions SET name=?, description=?, trigger_type=?, status=?, updated_at=? WHERE id=? AND tenant_id=?`,
+		d.Name, d.Description, d.TriggerType, d.Status, d.UpdatedAt.Format(time.RFC3339), d.ID, tenantID)
 	if err != nil {
 		return err
 	}
@@ -45,13 +45,13 @@ func (r *Repo) UpdateDefinition(d *Definition) error {
 	return nil
 }
 
-func (r *Repo) GetDefinition(id string) (*Definition, error) {
-	row := r.read.QueryRow(`SELECT id, name, description, trigger_type, status, created_at, updated_at FROM workflow_definitions WHERE id=?`, id)
+func (r *Repo) GetDefinition(tenantID string, id string) (*Definition, error) {
+	row := r.read.QueryRow(`SELECT id, name, description, trigger_type, status, created_at, updated_at FROM workflow_definitions WHERE id=? AND tenant_id=?`, id, tenantID)
 	return scanDefinition(row)
 }
 
-func (r *Repo) ListDefinitions() ([]*Definition, error) {
-	rows, err := r.read.Query(`SELECT id, name, description, trigger_type, status, created_at, updated_at FROM workflow_definitions ORDER BY created_at DESC`)
+func (r *Repo) ListDefinitions(tenantID string) ([]*Definition, error) {
+	rows, err := r.read.Query(`SELECT id, name, description, trigger_type, status, created_at, updated_at FROM workflow_definitions WHERE tenant_id=? ORDER BY created_at DESC`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -72,30 +72,30 @@ func (r *Repo) ListDefinitions() ([]*Definition, error) {
 
 // --- Step Definition CRUD ---
 
-func (r *Repo) InsertStepDefinition(s *StepDefinition) error {
+func (r *Repo) InsertStepDefinition(tenantID string, s *StepDefinition) error {
 	_, err := r.write.Exec(`INSERT INTO workflow_step_definitions
-		(id, workflow_id, step_code, step_name, step_type, assignee_mode, assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		s.ID, s.WorkflowID, s.StepCode, s.StepName, s.StepType,
+		(tenant_id, id, workflow_id, step_code, step_name, step_type, assignee_mode, assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		tenantID, s.ID, s.WorkflowID, s.StepCode, s.StepName, s.StepType,
 		s.AssigneeMode, s.AssigneeRoleCode, s.AssigneeColleagueID,
 		s.TimeoutMinutes, s.RejectRule, s.SortOrder)
 	return err
 }
 
-func (r *Repo) InsertStepDefinitionTx(tx *sql.Tx, s *StepDefinition) error {
+func (r *Repo) InsertStepDefinitionTx(tenantID string, tx *sql.Tx, s *StepDefinition) error {
 	_, err := tx.Exec(`INSERT INTO workflow_step_definitions
-		(id, workflow_id, step_code, step_name, step_type, assignee_mode, assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		s.ID, s.WorkflowID, s.StepCode, s.StepName, s.StepType,
+		(tenant_id, id, workflow_id, step_code, step_name, step_type, assignee_mode, assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		tenantID, s.ID, s.WorkflowID, s.StepCode, s.StepName, s.StepType,
 		s.AssigneeMode, s.AssigneeRoleCode, s.AssigneeColleagueID,
 		s.TimeoutMinutes, s.RejectRule, s.SortOrder)
 	return err
 }
 
-func (r *Repo) ListStepDefinitions(workflowID string) ([]*StepDefinition, error) {
+func (r *Repo) ListStepDefinitions(tenantID string, workflowID string) ([]*StepDefinition, error) {
 	rows, err := r.read.Query(`SELECT id, workflow_id, step_code, step_name, step_type, assignee_mode,
 		assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order
-		FROM workflow_step_definitions WHERE workflow_id=? ORDER BY sort_order`, workflowID)
+		FROM workflow_step_definitions WHERE workflow_id=? AND tenant_id=? ORDER BY sort_order`, workflowID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -113,10 +113,10 @@ func (r *Repo) ListStepDefinitions(workflowID string) ([]*StepDefinition, error)
 	return result, rows.Err()
 }
 
-func (r *Repo) GetStepDefinition(id string) (*StepDefinition, error) {
+func (r *Repo) GetStepDefinition(tenantID string, id string) (*StepDefinition, error) {
 	row := r.read.QueryRow(`SELECT id, workflow_id, step_code, step_name, step_type, assignee_mode,
 		assignee_role_code, assignee_colleague_id, timeout_minutes, reject_rule, sort_order
-		FROM workflow_step_definitions WHERE id=?`, id)
+		FROM workflow_step_definitions WHERE id=? AND tenant_id=?`, id, tenantID)
 	var s StepDefinition
 	if err := row.Scan(&s.ID, &s.WorkflowID, &s.StepCode, &s.StepName, &s.StepType,
 		&s.AssigneeMode, &s.AssigneeRoleCode, &s.AssigneeColleagueID,
@@ -128,29 +128,29 @@ func (r *Repo) GetStepDefinition(id string) (*StepDefinition, error) {
 
 // --- Instance CRUD ---
 
-func (r *Repo) InsertInstanceTx(tx *sql.Tx, inst *Instance) error {
-	_, err := tx.Exec(`INSERT INTO workflow_instances (id, definition_id, title, initiator_id, current_step_id, status, input_data, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, inst.ID, inst.DefinitionID, inst.Title, inst.InitiatorID,
+func (r *Repo) InsertInstanceTx(tenantID string, tx *sql.Tx, inst *Instance) error {
+	_, err := tx.Exec(`INSERT INTO workflow_instances (tenant_id, id, definition_id, title, initiator_id, current_step_id, status, input_data, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`, tenantID, inst.ID, inst.DefinitionID, inst.Title, inst.InitiatorID,
 		inst.CurrentStepID, inst.Status, inst.InputData,
 		inst.CreatedAt.Format(time.RFC3339), inst.UpdatedAt.Format(time.RFC3339))
 	return err
 }
 
-func (r *Repo) UpdateInstanceTx(tx *sql.Tx, inst *Instance) error {
-	_, err := tx.Exec(`UPDATE workflow_instances SET current_step_id=?, status=?, updated_at=? WHERE id=?`,
-		inst.CurrentStepID, inst.Status, inst.UpdatedAt.Format(time.RFC3339), inst.ID)
+func (r *Repo) UpdateInstanceTx(tenantID string, tx *sql.Tx, inst *Instance) error {
+	_, err := tx.Exec(`UPDATE workflow_instances SET current_step_id=?, status=?, updated_at=? WHERE id=? AND tenant_id=?`,
+		inst.CurrentStepID, inst.Status, inst.UpdatedAt.Format(time.RFC3339), inst.ID, tenantID)
 	return err
 }
 
-func (r *Repo) GetInstance(id string) (*Instance, error) {
+func (r *Repo) GetInstance(tenantID string, id string) (*Instance, error) {
 	row := r.read.QueryRow(`SELECT id, definition_id, title, initiator_id, current_step_id, status, input_data, created_at, updated_at
-		FROM workflow_instances WHERE id=?`, id)
+		FROM workflow_instances WHERE id=? AND tenant_id=?`, id, tenantID)
 	return scanInstance(row)
 }
 
-func (r *Repo) ListInstances() ([]*Instance, error) {
+func (r *Repo) ListInstances(tenantID string) ([]*Instance, error) {
 	rows, err := r.read.Query(`SELECT id, definition_id, title, initiator_id, current_step_id, status, input_data, created_at, updated_at
-		FROM workflow_instances ORDER BY created_at DESC`)
+		FROM workflow_instances WHERE tenant_id=? ORDER BY created_at DESC`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -172,31 +172,31 @@ func (r *Repo) ListInstances() ([]*Instance, error) {
 
 // --- Step Instance CRUD ---
 
-func (r *Repo) InsertStepInstanceTx(tx *sql.Tx, si *StepInstance) error {
+func (r *Repo) InsertStepInstanceTx(tenantID string, tx *sql.Tx, si *StepInstance) error {
 	_, err := tx.Exec(`INSERT INTO workflow_step_instances
-		(id, instance_id, step_definition_id, assignee_colleague_id, collaboration_task_id, status, result, sort_order, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		si.ID, si.InstanceID, si.StepDefinitionID, si.AssigneeColleagueID,
+		(tenant_id, id, instance_id, step_definition_id, assignee_colleague_id, collaboration_task_id, status, result, sort_order, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		tenantID, si.ID, si.InstanceID, si.StepDefinitionID, si.AssigneeColleagueID,
 		si.CollaborationTaskID, si.Status, si.Result, si.SortOrder,
 		si.CreatedAt.Format(time.RFC3339), si.UpdatedAt.Format(time.RFC3339))
 	return err
 }
 
-func (r *Repo) UpdateStepInstanceTx(tx *sql.Tx, si *StepInstance) error {
-	_, err := tx.Exec(`UPDATE workflow_step_instances SET status=?, result=?, collaboration_task_id=?, updated_at=? WHERE id=?`,
-		si.Status, si.Result, si.CollaborationTaskID, si.UpdatedAt.Format(time.RFC3339), si.ID)
+func (r *Repo) UpdateStepInstanceTx(tenantID string, tx *sql.Tx, si *StepInstance) error {
+	_, err := tx.Exec(`UPDATE workflow_step_instances SET status=?, result=?, collaboration_task_id=?, updated_at=? WHERE id=? AND tenant_id=?`,
+		si.Status, si.Result, si.CollaborationTaskID, si.UpdatedAt.Format(time.RFC3339), si.ID, tenantID)
 	return err
 }
 
-func (r *Repo) GetStepInstance(id string) (*StepInstance, error) {
+func (r *Repo) GetStepInstance(tenantID string, id string) (*StepInstance, error) {
 	row := r.read.QueryRow(`SELECT id, instance_id, step_definition_id, assignee_colleague_id, collaboration_task_id, status, result, sort_order, created_at, updated_at
-		FROM workflow_step_instances WHERE id=?`, id)
+		FROM workflow_step_instances WHERE id=? AND tenant_id=?`, id, tenantID)
 	return scanStepInstance(row)
 }
 
-func (r *Repo) ListStepInstances(instanceID string) ([]*StepInstance, error) {
+func (r *Repo) ListStepInstances(tenantID string, instanceID string) ([]*StepInstance, error) {
 	rows, err := r.read.Query(`SELECT id, instance_id, step_definition_id, assignee_colleague_id, collaboration_task_id, status, result, sort_order, created_at, updated_at
-		FROM workflow_step_instances WHERE instance_id=? ORDER BY sort_order`, instanceID)
+		FROM workflow_step_instances WHERE instance_id=? AND tenant_id=? ORDER BY sort_order`, instanceID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -214,15 +214,15 @@ func (r *Repo) ListStepInstances(instanceID string) ([]*StepInstance, error) {
 
 // --- Instance Events ---
 
-func (r *Repo) InsertEventTx(tx *sql.Tx, e *InstanceEvent) error {
-	_, err := tx.Exec(`INSERT INTO workflow_instance_events (id, instance_id, step_id, event, actor_id, note, created_at)
-		VALUES (?,?,?,?,?,?,?)`, e.ID, e.InstanceID, e.StepID, e.Event, e.ActorID, e.Note, e.CreatedAt.Format(time.RFC3339))
+func (r *Repo) InsertEventTx(tenantID string, tx *sql.Tx, e *InstanceEvent) error {
+	_, err := tx.Exec(`INSERT INTO workflow_instance_events (tenant_id, id, instance_id, step_id, event, actor_id, note, created_at)
+		VALUES (?,?,?,?,?,?,?,?)`, tenantID, e.ID, e.InstanceID, e.StepID, e.Event, e.ActorID, e.Note, e.CreatedAt.Format(time.RFC3339))
 	return err
 }
 
-func (r *Repo) ListEvents(instanceID string) ([]*InstanceEvent, error) {
+func (r *Repo) ListEvents(tenantID string, instanceID string) ([]*InstanceEvent, error) {
 	rows, err := r.read.Query(`SELECT id, instance_id, step_id, event, actor_id, note, created_at
-		FROM workflow_instance_events WHERE instance_id=? ORDER BY created_at`, instanceID)
+		FROM workflow_instance_events WHERE instance_id=? AND tenant_id=? ORDER BY created_at`, instanceID, tenantID)
 	if err != nil {
 		return nil, err
 	}

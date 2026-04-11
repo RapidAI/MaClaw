@@ -111,9 +111,11 @@ type LocalMCPServerEntry struct {
 
 // NLSkillStep 描述自然语言技能中的单个操作步骤。
 type NLSkillStep struct {
-	Action  string                 `json:"action"`
-	Params  map[string]interface{} `json:"params"`
-	OnError string                 `json:"on_error"` // "stop" (default), "continue"
+	Action    string                 `json:"action"`
+	Params    map[string]interface{} `json:"params"`
+	OnError   string                 `json:"on_error"`   // "stop" (default), "continue"
+	Name      string                 `json:"name,omitempty"`      // optional descriptive name
+	Condition string                 `json:"condition,omitempty"` // "" (always), "on_failure"
 }
 
 // NLSkillEntry 描述一个自然语言技能条目。
@@ -129,13 +131,15 @@ type NLSkillEntry struct {
 	HubSkillID    string        `json:"hub_skill_id,omitempty"`
 	HubVersion    string        `json:"hub_version,omitempty"`
 	TrustLevel    string        `json:"trust_level,omitempty"`
-	Platforms     []string      `json:"platforms,omitempty"`    // "windows","linux","macos"; empty = universal
-	RequiresGUI   bool          `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
-	SkillDir      string        `json:"skill_dir,omitempty"`    // 自包含 skill 目录的绝对路径（运行时填充）
-	UsageCount    int           `json:"usage_count"`
-	SuccessCount  int           `json:"success_count"`
-	LastUsedAt    string        `json:"last_used_at,omitempty"`
-	LastError     string        `json:"last_error,omitempty"`
+	Platforms        []string      `json:"platforms,omitempty"`    // "windows","linux","macos"; empty = universal
+	RequiresGUI      bool          `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
+	SkillDir         string        `json:"skill_dir,omitempty"`    // 自包含 skill 目录的绝对路径（运行时填充）
+	Mode             string        `json:"mode,omitempty"`         // "sequential" (default) | "interactive"
+	ProducesArtifact bool          `json:"produces_artifact"`      // true = expects file output (default); false = diagnostic/instruction only
+	UsageCount       int           `json:"usage_count"`
+	SuccessCount     int           `json:"success_count"`
+	LastUsedAt       string        `json:"last_used_at,omitempty"`
+	LastError        string        `json:"last_error,omitempty"`
 }
 
 // MaclawLLMProvider 描述一个 MaClaw LLM 提供商配置。

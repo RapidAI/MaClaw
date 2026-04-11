@@ -77,14 +77,22 @@ func (a *Archiver) Archive(userID string, entries []ConversationEntry) error {
 	}
 
 	now := time.Now()
+
+	// Extract meaningful tags from the summary content.
+	expanded := ExpandQuery(summary)
+	tags := []string{
+		"conversation_summary",
+		userID,
+		now.Format("2006-01-02"),
+	}
+	for _, entity := range expanded.Entities {
+		tags = append(tags, entity)
+	}
+
 	entry := Entry{
 		Content:  summary,
 		Category: CategoryConversationSummary,
-		Tags: []string{
-			"conversation_summary",
-			userID,
-			now.Format("2006-01-02"),
-		},
+		Tags:     tags,
 	}
 	return a.store.Save(entry)
 }

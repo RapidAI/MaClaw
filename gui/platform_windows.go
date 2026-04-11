@@ -1448,7 +1448,8 @@ func (a *App) GetDownloadsFolder() (string, error) {
 }
 
 func (a *App) findSh() (string, error) {
-	// 1. 优先检查已知的 Git Bash / MSYS2 路径
+	// 1. 硬编码路径（最高优先级）— Git Bash / MSYS2 / Cygwin / Scoop
+	userProfile := os.Getenv("USERPROFILE")
 	candidates := []string{
 		`C:\Program Files\Git\bin\sh.exe`,
 		`C:\Program Files\Git\usr\bin\sh.exe`,
@@ -1460,6 +1461,14 @@ func (a *App) findSh() (string, error) {
 		`C:\Program Files (x86)\Git\usr\bin\bash.exe`,
 		`C:\msys64\usr\bin\bash.exe`,
 		`C:\cygwin64\bin\bash.exe`,
+	}
+	// Scoop 安装路径
+	if userProfile != "" {
+		candidates = append(candidates,
+			filepath.Join(userProfile, "scoop", "shims", "bash.exe"),
+			filepath.Join(userProfile, "scoop", "apps", "git", "current", "bin", "sh.exe"),
+			filepath.Join(userProfile, "scoop", "apps", "git", "current", "bin", "bash.exe"),
+		)
 	}
 	for _, p := range candidates {
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
@@ -1480,6 +1489,8 @@ func (a *App) findSh() (string, error) {
 			"或运行: winget install Git.Git")
 }
 
+// isWSLShell 检测路径是否指向 WSL 转发器（不可用的 bash.exe / sh.exe）。
+// WSL 转发器位于 System32、WindowsApps 等目录，当未安装 WSL 发行版时调用必失败。
 func isWSLShell(path string) bool {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -1488,7 +1499,7 @@ func isWSLShell(path string) bool {
 	lower := strings.ToLower(filepath.ToSlash(abs))
 	return strings.Contains(lower, "windows/system32/") ||
 		strings.Contains(lower, "windowsapps/") ||
-		strings.Contains(lower, "windowsolders/")
+		strings.Contains(lower, "microsoft/windowsapps/")
 }
 
 func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, pythonEnv string, projectDir string, env map[string]string, modelId string) {

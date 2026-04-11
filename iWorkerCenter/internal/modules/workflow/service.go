@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/collaboration"
 	colleagueRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/repo"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/experience"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/db"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/idgen"
 )
@@ -18,11 +19,17 @@ type Service struct {
 	dbProvider  *db.Provider
 	collabRepo  *collaboration.Repo
 	colleagueRp *colleagueRepo.ColleagueRepo
+	expExtractor *experience.Extractor // optional, may be nil
 }
 
 // NewService creates a Service.
 func NewService(repo *Repo, dbProvider *db.Provider, collabRepo *collaboration.Repo, colleagueRp *colleagueRepo.ColleagueRepo) *Service {
 	return &Service{repo: repo, dbProvider: dbProvider, collabRepo: collabRepo, colleagueRp: colleagueRp}
+}
+
+// SetExperienceExtractor sets the optional experience extractor for auto-learning.
+func (s *Service) SetExperienceExtractor(ext *experience.Extractor) {
+	s.expExtractor = ext
 }
 
 // --- Definition management ---
@@ -48,7 +55,7 @@ type CreateStepDefRequest struct {
 }
 
 // CreateDefinition creates a workflow definition with its steps atomically.
-func (s *Service) CreateDefinition(req CreateDefinitionRequest) (*Definition, error) {
+func (s *Service) CreateDefinition(tenantID string, req CreateDefinitionRequest) (*Definition, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, fmt.Errorf("name is required")
@@ -90,11 +97,11 @@ func (s *Service) CreateDefinition(req CreateDefinitionRequest) (*Definition, er
 	}
 
 	if err := s.dbProvider.RunInTx(func(tx *sql.Tx) error {
-		if err := s.repo.InsertDefinitionTx(tx, def); err != nil {
+		if err := s.repo.InsertDefinitionTx(tenantID, tx, def); err != nil {
 			return fmt.Errorf("create definition: %w", err)
 		}
 		for i, step := range steps {
-			if err := s.repo.InsertStepDefinitionTx(tx, step); err != nil {
+			if err := s.repo.InsertStepDefinitionTx(tenantID, tx, step); err != nil {
 				return fmt.Errorf("create step %d: %w", i, err)
 			}
 		}
@@ -107,29 +114,29 @@ func (s *Service) CreateDefinition(req CreateDefinitionRequest) (*Definition, er
 }
 
 // PublishDefinition sets a definition to published status.
-func (s *Service) PublishDefinition(id string) error {
-	def, err := s.repo.GetDefinition(id)
+func (s *Service) PublishDefinition(tenantID string, id string) error {
+	def, err := s.repo.GetDefinition(tenantID, id)
 	if err != nil {
 		return fmt.Errorf("definition not found: %w", err)
 	}
 	def.Status = DefStatusPublished
 	def.UpdatedAt = time.Now()
-	return s.repo.UpdateDefinition(def)
+	return s.repo.UpdateDefinition(tenantID, def)
 }
 
 // GetDefinition returns a definition by ID.
-func (s *Service) GetDefinition(id string) (*Definition, error) {
-	return s.repo.GetDefinition(id)
+func (s *Service) GetDefinition(tenantID string, id string) (*Definition, error) {
+	return s.repo.GetDefinition(tenantID, id)
 }
 
 // ListDefinitions returns all definitions.
-func (s *Service) ListDefinitions() ([]*Definition, error) {
-	return s.repo.ListDefinitions()
+func (s *Service) ListDefinitions(tenantID string) ([]*Definition, error) {
+	return s.repo.ListDefinitions(tenantID)
 }
 
 // ListStepDefinitions returns steps for a definition.
-func (s *Service) ListStepDefinitions(workflowID string) ([]*StepDefinition, error) {
-	return s.repo.ListStepDefinitions(workflowID)
+func (s *Service) ListStepDefinitions(tenantID string, workflowID string) ([]*StepDefinition, error) {
+	return s.repo.ListStepDefinitions(tenantID, workflowID)
 }
 
 // --- Instance lifecycle ---
@@ -143,8 +150,8 @@ type StartInstanceRequest struct {
 }
 
 // StartInstance creates a workflow instance and its first step + collaboration task atomically.
-func (s *Service) StartInstance(req StartInstanceRequest) (*Instance, error) {
-	def, err := s.repo.GetDefinition(req.DefinitionID)
+func (s *Service) StartInstance(tenantID string, req StartInstanceRequest) (*Instance, error) {
+	def, err := s.repo.GetDefinition(tenantID, req.DefinitionID)
 	if err != nil {
 		return nil, fmt.Errorf("definition not found: %w", err)
 	}
@@ -152,13 +159,13 @@ func (s *Service) StartInstance(req StartInstanceRequest) (*Instance, error) {
 		return nil, fmt.Errorf("definition is not published (status=%s)", def.Status)
 	}
 
-	steps, err := s.repo.ListStepDefinitions(def.ID)
+	steps, err := s.repo.ListStepDefinitions(tenantID, def.ID)
 	if err != nil || len(steps) == 0 {
 		return nil, fmt.Errorf("no steps defined for workflow %s", def.ID)
 	}
 
 	firstStep := steps[0]
-	assigneeID, err := s.resolveAssignee(firstStep)
+	assigneeID, err := s.resolveAssignee(tenantID, firstStep)
 	if err != nil {
 		return nil, fmt.Errorf("cannot assign first step: %w", err)
 	}
@@ -204,22 +211,22 @@ func (s *Service) StartInstance(req StartInstanceRequest) (*Instance, error) {
 
 	// All-or-nothing transaction
 	if err := s.dbProvider.RunInTx(func(tx *sql.Tx) error {
-		if err := s.repo.InsertInstanceTx(tx, inst); err != nil {
+		if err := s.repo.InsertInstanceTx(tenantID, tx, inst); err != nil {
 			return fmt.Errorf("insert instance: %w", err)
 		}
-		if err := s.repo.InsertStepInstanceTx(tx, stepInst); err != nil {
+		if err := s.repo.InsertStepInstanceTx(tenantID, tx, stepInst); err != nil {
 			return fmt.Errorf("insert step instance: %w", err)
 		}
-		if err := s.collabRepo.InsertTaskTx(tx, collabTask); err != nil {
+		if err := s.collabRepo.InsertTaskTx(tenantID, tx, collabTask); err != nil {
 			return fmt.Errorf("insert collab task: %w", err)
 		}
-		if err := s.collabRepo.InsertEventTx(tx, &collaboration.TaskEvent{
+		if err := s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
 			ID: idgen.New("cevt"), TaskID: collabTask.ID,
 			Event: "created", ActorID: inst.InitiatorID, Note: "workflow auto-created", CreatedAt: now,
 		}); err != nil {
 			return fmt.Errorf("insert collab event: %w", err)
 		}
-		if err := s.repo.InsertEventTx(tx, &InstanceEvent{
+		if err := s.repo.InsertEventTx(tenantID, tx, &InstanceEvent{
 			ID: idgen.New("wfevt"), InstanceID: inst.ID, StepID: stepInst.ID,
 			Event: "instance_started", ActorID: inst.InitiatorID, CreatedAt: now,
 		}); err != nil {
@@ -234,8 +241,8 @@ func (s *Service) StartInstance(req StartInstanceRequest) (*Instance, error) {
 }
 
 // CompleteStep marks a step as completed and advances to the next step atomically.
-func (s *Service) CompleteStep(stepInstanceID, actorID, result string) error {
-	stepInst, err := s.repo.GetStepInstance(stepInstanceID)
+func (s *Service) CompleteStep(tenantID string, stepInstanceID, actorID, result string) error {
+	stepInst, err := s.repo.GetStepInstance(tenantID, stepInstanceID)
 	if err != nil {
 		return fmt.Errorf("step instance not found: %w", err)
 	}
@@ -243,7 +250,7 @@ func (s *Service) CompleteStep(stepInstanceID, actorID, result string) error {
 		return fmt.Errorf("step %s is already in terminal status %s", stepInstanceID, stepInst.Status)
 	}
 
-	inst, err := s.repo.GetInstance(stepInst.InstanceID)
+	inst, err := s.repo.GetInstance(tenantID, stepInst.InstanceID)
 	if err != nil {
 		return fmt.Errorf("workflow instance not found: %w", err)
 	}
@@ -251,12 +258,12 @@ func (s *Service) CompleteStep(stepInstanceID, actorID, result string) error {
 		return fmt.Errorf("workflow instance is not running (status=%s)", inst.Status)
 	}
 
-	stepDef, err := s.repo.GetStepDefinition(stepInst.StepDefinitionID)
+	stepDef, err := s.repo.GetStepDefinition(tenantID, stepInst.StepDefinitionID)
 	if err != nil {
 		return fmt.Errorf("step definition not found: %w", err)
 	}
 
-	allStepDefs, err := s.repo.ListStepDefinitions(inst.DefinitionID)
+	allStepDefs, err := s.repo.ListStepDefinitions(tenantID, inst.DefinitionID)
 	if err != nil {
 		return fmt.Errorf("list step definitions: %w", err)
 	}
@@ -272,21 +279,21 @@ func (s *Service) CompleteStep(stepInstanceID, actorID, result string) error {
 
 	now := time.Now()
 
-	return s.dbProvider.RunInTx(func(tx *sql.Tx) error {
+	err = s.dbProvider.RunInTx(func(tx *sql.Tx) error {
 		// 1. Mark current step completed
 		stepInst.Status = StepCompleted
 		stepInst.Result = result
 		stepInst.UpdatedAt = now
-		if err := s.repo.UpdateStepInstanceTx(tx, stepInst); err != nil {
+		if err := s.repo.UpdateStepInstanceTx(tenantID, tx, stepInst); err != nil {
 			return fmt.Errorf("update step: %w", err)
 		}
 
 		// 2. Mark collaboration task completed
 		if stepInst.CollaborationTaskID != "" {
-			if err := s.collabRepo.UpdateStatusTx(tx, stepInst.CollaborationTaskID, collaboration.StatusCompleted, result); err != nil {
+			if err := s.collabRepo.UpdateStatusTx(tenantID, tx, stepInst.CollaborationTaskID, collaboration.StatusCompleted, result); err != nil {
 				return fmt.Errorf("complete collab task: %w", err)
 			}
-			_ = s.collabRepo.InsertEventTx(tx, &collaboration.TaskEvent{
+			_ = s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
 				ID: idgen.New("cevt"), TaskID: stepInst.CollaborationTaskID,
 				Event: "completed", ActorID: actorID, Note: "workflow step completed", CreatedAt: now,
 			})
@@ -296,17 +303,17 @@ func (s *Service) CompleteStep(stepInstanceID, actorID, result string) error {
 			// No more steps — workflow completed
 			inst.Status = InstStatusCompleted
 			inst.UpdatedAt = now
-			if err := s.repo.UpdateInstanceTx(tx, inst); err != nil {
+			if err := s.repo.UpdateInstanceTx(tenantID, tx, inst); err != nil {
 				return fmt.Errorf("complete instance: %w", err)
 			}
-			return s.repo.InsertEventTx(tx, &InstanceEvent{
+			return s.repo.InsertEventTx(tenantID, tx, &InstanceEvent{
 				ID: idgen.New("wfevt"), InstanceID: inst.ID, StepID: stepInst.ID,
 				Event: "instance_completed", ActorID: actorID, CreatedAt: now,
 			})
 		}
 
 		// 3. Resolve assignee for next step
-		nextAssignee, err := s.resolveAssignee(nextStepDef)
+		nextAssignee, err := s.resolveAssignee(tenantID, nextStepDef)
 		if err != nil {
 			return fmt.Errorf("resolve next assignee: %w", err)
 		}
@@ -337,13 +344,13 @@ func (s *Service) CompleteStep(stepInstanceID, actorID, result string) error {
 		}
 		nextStepInst.CollaborationTaskID = nextCollab.ID
 
-		if err := s.repo.InsertStepInstanceTx(tx, nextStepInst); err != nil {
+		if err := s.repo.InsertStepInstanceTx(tenantID, tx, nextStepInst); err != nil {
 			return fmt.Errorf("insert next step: %w", err)
 		}
-		if err := s.collabRepo.InsertTaskTx(tx, nextCollab); err != nil {
+		if err := s.collabRepo.InsertTaskTx(tenantID, tx, nextCollab); err != nil {
 			return fmt.Errorf("insert next collab: %w", err)
 		}
-		_ = s.collabRepo.InsertEventTx(tx, &collaboration.TaskEvent{
+		_ = s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
 			ID: idgen.New("cevt"), TaskID: nextCollab.ID,
 			Event: "created", ActorID: actorID, Note: "workflow auto-advanced", CreatedAt: now,
 		})
@@ -351,21 +358,37 @@ func (s *Service) CompleteStep(stepInstanceID, actorID, result string) error {
 		// 5. Update instance current step
 		inst.CurrentStepID = nextStepInst.ID
 		inst.UpdatedAt = now
-		if err := s.repo.UpdateInstanceTx(tx, inst); err != nil {
+		if err := s.repo.UpdateInstanceTx(tenantID, tx, inst); err != nil {
 			return fmt.Errorf("update instance step: %w", err)
 		}
 
 		// 6. Write event
-		return s.repo.InsertEventTx(tx, &InstanceEvent{
+		return s.repo.InsertEventTx(tenantID, tx, &InstanceEvent{
 			ID: idgen.New("wfevt"), InstanceID: inst.ID, StepID: nextStepInst.ID,
 			Event: "step_advanced", ActorID: actorID, Note: nextStepDef.StepName, CreatedAt: now,
 		})
 	})
+	if err != nil {
+		return err
+	}
+
+	// Trigger experience extraction asynchronously (best-effort, after commit)
+	if s.expExtractor != nil && result != "" {
+		go s.expExtractor.Extract(tenantID, experience.ExtractionInput{
+			TaskTitle:     stepDef.StepName,
+			TaskResult:    result,
+			RoleCode:      stepDef.AssigneeRoleCode,
+			ColleagueName: actorID,
+			WorkflowName:  inst.Title,
+		})
+	}
+
+	return nil
 }
 
 // RejectStep rejects a step and terminates the workflow.
-func (s *Service) RejectStep(stepInstanceID, actorID, note string) error {
-	stepInst, err := s.repo.GetStepInstance(stepInstanceID)
+func (s *Service) RejectStep(tenantID string, stepInstanceID, actorID, note string) error {
+	stepInst, err := s.repo.GetStepInstance(tenantID, stepInstanceID)
 	if err != nil {
 		return fmt.Errorf("step instance not found: %w", err)
 	}
@@ -373,7 +396,7 @@ func (s *Service) RejectStep(stepInstanceID, actorID, note string) error {
 		return fmt.Errorf("step %s is already in terminal status %s", stepInstanceID, stepInst.Status)
 	}
 
-	inst, err := s.repo.GetInstance(stepInst.InstanceID)
+	inst, err := s.repo.GetInstance(tenantID, stepInst.InstanceID)
 	if err != nil {
 		return fmt.Errorf("workflow instance not found: %w", err)
 	}
@@ -387,14 +410,14 @@ func (s *Service) RejectStep(stepInstanceID, actorID, note string) error {
 		// 1. Reject step
 		stepInst.Status = StepRejected
 		stepInst.UpdatedAt = now
-		if err := s.repo.UpdateStepInstanceTx(tx, stepInst); err != nil {
+		if err := s.repo.UpdateStepInstanceTx(tenantID, tx, stepInst); err != nil {
 			return err
 		}
 
 		// 2. Reject collaboration task
 		if stepInst.CollaborationTaskID != "" {
-			_ = s.collabRepo.UpdateStatusTx(tx, stepInst.CollaborationTaskID, collaboration.StatusRejected, "")
-			_ = s.collabRepo.InsertEventTx(tx, &collaboration.TaskEvent{
+			_ = s.collabRepo.UpdateStatusTx(tenantID, tx, stepInst.CollaborationTaskID, collaboration.StatusRejected, "")
+			_ = s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
 				ID: idgen.New("cevt"), TaskID: stepInst.CollaborationTaskID,
 				Event: "rejected", ActorID: actorID, Note: note, CreatedAt: now,
 			})
@@ -403,12 +426,12 @@ func (s *Service) RejectStep(stepInstanceID, actorID, note string) error {
 		// 3. Reject workflow instance
 		inst.Status = InstStatusRejected
 		inst.UpdatedAt = now
-		if err := s.repo.UpdateInstanceTx(tx, inst); err != nil {
+		if err := s.repo.UpdateInstanceTx(tenantID, tx, inst); err != nil {
 			return err
 		}
 
 		// 4. Write event
-		return s.repo.InsertEventTx(tx, &InstanceEvent{
+		return s.repo.InsertEventTx(tenantID, tx, &InstanceEvent{
 			ID: idgen.New("wfevt"), InstanceID: inst.ID, StepID: stepInst.ID,
 			Event: "instance_rejected", ActorID: actorID, Note: note, CreatedAt: now,
 		})
@@ -416,33 +439,33 @@ func (s *Service) RejectStep(stepInstanceID, actorID, note string) error {
 }
 
 // GetInstance returns an instance by ID.
-func (s *Service) GetInstance(id string) (*Instance, error) {
-	return s.repo.GetInstance(id)
+func (s *Service) GetInstance(tenantID string, id string) (*Instance, error) {
+	return s.repo.GetInstance(tenantID, id)
 }
 
 // ListInstances returns all instances.
-func (s *Service) ListInstances() ([]*Instance, error) {
-	return s.repo.ListInstances()
+func (s *Service) ListInstances(tenantID string) ([]*Instance, error) {
+	return s.repo.ListInstances(tenantID)
 }
 
 // ListStepInstances returns step instances for a workflow instance.
-func (s *Service) ListStepInstances(instanceID string) ([]*StepInstance, error) {
-	return s.repo.ListStepInstances(instanceID)
+func (s *Service) ListStepInstances(tenantID string, instanceID string) ([]*StepInstance, error) {
+	return s.repo.ListStepInstances(tenantID, instanceID)
 }
 
 // ListEvents returns events for a workflow instance.
-func (s *Service) ListEvents(instanceID string) ([]*InstanceEvent, error) {
-	return s.repo.ListEvents(instanceID)
+func (s *Service) ListEvents(tenantID string, instanceID string) ([]*InstanceEvent, error) {
+	return s.repo.ListEvents(tenantID, instanceID)
 }
 
 // resolveAssignee finds the colleague to assign a step to.
-func (s *Service) resolveAssignee(stepDef *StepDefinition) (string, error) {
+func (s *Service) resolveAssignee(tenantID string, stepDef *StepDefinition) (string, error) {
 	if stepDef.AssigneeMode == "fixed_colleague" && stepDef.AssigneeColleagueID != "" {
 		return stepDef.AssigneeColleagueID, nil
 	}
 	// by_role: find first active colleague with matching role code
 	if stepDef.AssigneeRoleCode != "" {
-		colleagues, err := s.colleagueRp.ListByRoleCode(stepDef.AssigneeRoleCode)
+		colleagues, err := s.colleagueRp.ListByRoleCode(tenantID, stepDef.AssigneeRoleCode)
 		if err == nil && len(colleagues) > 0 {
 			return colleagues[0].ID, nil
 		}

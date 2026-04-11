@@ -15,6 +15,7 @@ import (
 type MemoryStore = memory.Store
 type MemoryEntry = memory.Entry
 type MemoryCategory = memory.Category
+type MemoryHealthReport = memory.HealthReport
 
 // Category constant aliases.
 const (

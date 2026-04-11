@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func newClawNetConfigTestApp(t *testing.T) *App {
+func newAgentNetConfigTestApp(t *testing.T) *App {
 	t.Helper()
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -15,7 +15,7 @@ func newClawNetConfigTestApp(t *testing.T) *App {
 	return &App{testHomeDir: tempHome}
 }
 
-func saveClawNetConfigForTest(t *testing.T, app *App, mutate func(*AppConfig)) {
+func saveAgentNetConfigForTest(t *testing.T, app *App, mutate func(*AppConfig)) {
 	t.Helper()
 	cfg, err := app.LoadConfig()
 	if err != nil {
@@ -27,13 +27,13 @@ func saveClawNetConfigForTest(t *testing.T, app *App, mutate func(*AppConfig)) {
 	}
 }
 
-func TestClawNetEnsureDaemonDisabledReturnsErrorWithoutInit(t *testing.T) {
-	app := newClawNetConfigTestApp(t)
-	saveClawNetConfigForTest(t, app, func(cfg *AppConfig) {
+func TestAgentNetEnsureDaemonDisabledReturnsErrorWithoutInit(t *testing.T) {
+	app := newAgentNetConfigTestApp(t)
+	saveAgentNetConfigForTest(t, app, func(cfg *AppConfig) {
 		cfg.AgentNetEnabled = false
 	})
 
-	result := app.ClawNetEnsureDaemon()
+	result := app.AgentNetEnsureDaemon()
 	if ok, _ := result["ok"].(bool); ok {
 		t.Fatalf("expected ok=false, got %#v", result)
 	}
@@ -41,18 +41,18 @@ func TestClawNetEnsureDaemonDisabledReturnsErrorWithoutInit(t *testing.T) {
 	if !strings.Contains(errMsg, "agentnet is disabled in settings") {
 		t.Fatalf("expected disabled error, got %#v", result)
 	}
-	if app.clawNetClient != nil {
-		t.Fatal("expected clawNetClient to remain nil when AgentNet is disabled")
+	if app.agentNetClient != nil {
+		t.Fatal("expected agentNetClient to remain nil when AgentNet is disabled")
 	}
 }
 
-func TestClawNetEnsureDaemonWithDownloadDisabledReturnsErrorWithoutInit(t *testing.T) {
-	app := newClawNetConfigTestApp(t)
-	saveClawNetConfigForTest(t, app, func(cfg *AppConfig) {
+func TestAgentNetEnsureDaemonWithDownloadDisabledReturnsErrorWithoutInit(t *testing.T) {
+	app := newAgentNetConfigTestApp(t)
+	saveAgentNetConfigForTest(t, app, func(cfg *AppConfig) {
 		cfg.AgentNetEnabled = false
 	})
 
-	result := app.ClawNetEnsureDaemonWithDownload()
+	result := app.AgentNetEnsureDaemonWithDownload()
 	if ok, _ := result["ok"].(bool); ok {
 		t.Fatalf("expected ok=false, got %#v", result)
 	}
@@ -60,19 +60,19 @@ func TestClawNetEnsureDaemonWithDownloadDisabledReturnsErrorWithoutInit(t *testi
 	if !strings.Contains(errMsg, "agentnet is disabled in settings") {
 		t.Fatalf("expected disabled error, got %#v", result)
 	}
-	if app.clawNetClient != nil {
-		t.Fatal("expected clawNetClient to remain nil when AgentNet is disabled")
+	if app.agentNetClient != nil {
+		t.Fatal("expected agentNetClient to remain nil when AgentNet is disabled")
 	}
 }
 
-func TestClawNetAutoPickerConfigureRejectsEnableWhenClawNetDisabled(t *testing.T) {
-	app := newClawNetConfigTestApp(t)
-	saveClawNetConfigForTest(t, app, func(cfg *AppConfig) {
+func TestAgentNetAutoPickerConfigureRejectsEnableWhenAgentNetDisabled(t *testing.T) {
+	app := newAgentNetConfigTestApp(t)
+	saveAgentNetConfigForTest(t, app, func(cfg *AppConfig) {
 		cfg.AgentNetEnabled = false
 		cfg.AgentNetAutoPickerEnabled = false
 	})
 
-	result := app.ClawNetAutoPickerConfigure(true, 3, 1.25, []string{"go"})
+	result := app.AgentNetAutoPickerConfigure(true, 3, 1.25, []string{"go"})
 	if ok, _ := result["ok"].(bool); ok {
 		t.Fatalf("expected ok=false, got %#v", result)
 	}
@@ -100,9 +100,9 @@ func TestClawNetAutoPickerConfigureRejectsEnableWhenClawNetDisabled(t *testing.T
 	}
 }
 
-func TestEnsureAutoTaskPickerDoesNotRestoreWhenClawNetDisabled(t *testing.T) {
-	app := newClawNetConfigTestApp(t)
-	saveClawNetConfigForTest(t, app, func(cfg *AppConfig) {
+func TestEnsureAutoTaskPickerDoesNotRestoreWhenAgentNetDisabled(t *testing.T) {
+	app := newAgentNetConfigTestApp(t)
+	saveAgentNetConfigForTest(t, app, func(cfg *AppConfig) {
 		cfg.AgentNetEnabled = false
 		cfg.AgentNetAutoPickerEnabled = true
 		cfg.AgentNetAutoPickerPollMin = 2

@@ -3,6 +3,7 @@ package remote
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z~^$]|\x1b\].*?(?:\x1b\\|\x07)|\x1b[()#][A-Z0-9]?|\x1b[a-zA-Z]`)
@@ -65,6 +66,11 @@ var screenClearPattern = regexp.MustCompile(`\x1b\[2J|\x1b\[H|\x1b\[1;1H|\x1b\[\
 // stripping applied. No noise filtering, no length truncation.
 func RawChunkLines(chunk []byte) RawChunkResult {
 	raw := string(chunk)
+	// Sanitize invalid UTF-8 sequences that ConPTY on Windows may produce
+	// (e.g. emoji bytes truncated by GBK code page).
+	if !utf8.ValidString(raw) {
+		raw = strings.ToValidUTF8(raw, "")
+	}
 	isRefresh := screenClearPattern.MatchString(raw)
 
 	text := strings.ReplaceAll(raw, "\r\n", "\n")

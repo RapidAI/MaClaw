@@ -384,6 +384,18 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 		taskType = "自由输入"
 	}
 	colleagueName := strings.TrimSpace(req.SelectedColleagueName)
+
+	// Auto-recommend colleague if none specified
+	settings, _ := readDiWorkerSettings()
+	if colleagueName == "" && settings.Center.Enabled {
+		baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+		if baseURL == "" {
+			baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+		}
+		if recs := fetchRecommendations(baseURL, draft, 1, 3); len(recs) > 0 {
+			colleagueName = recs[0].Name
+		}
+	}
 	if colleagueName == "" {
 		colleagueName = "自动匹配同事"
 	}
@@ -396,7 +408,6 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 	systemPrompt := "你是 DiWorker 的数字化同事，请使用简体中文直接产出可交付内容。输出要紧贴用户任务，不要解释模型规则，不要输出无关前言。"
 
 	// Fetch shared memories from iWorkerCenter (non-blocking, best-effort)
-	settings, _ := readDiWorkerSettings()
 	if settings.Center.Enabled {
 		baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
 		if baseURL == "" {
@@ -961,4 +972,17 @@ func (a *App) FetchWorkflowInstances() []CenterWorkflowInstance {
 		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
 	}
 	return fetchCenterWorkflowInstances(baseURL, 5)
+}
+
+// RecommendColleague asks iWorkerCenter to recommend the best colleague for a task.
+func (a *App) RecommendColleague(taskDescription string) []CenterRecommendation {
+	settings, _ := readDiWorkerSettings()
+	if !settings.Center.Enabled {
+		return nil
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+	}
+	return fetchRecommendations(baseURL, taskDescription, 3, 5)
 }

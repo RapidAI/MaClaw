@@ -26,6 +26,7 @@ const (
 
 // DequantRow dequantizes a single row into dst (must be len >= t.Cols).
 // This is used for token embedding lookup — only one row at a time.
+// Uses the same AVX2-accelerated path as dequantRowInto.
 func (t *Q8Tensor) DequantRow(row int, dst []float32) {
 	cols := t.Cols
 	nBlocks := cols / q8BlockSize
@@ -34,14 +35,7 @@ func (t *Q8Tensor) DequantRow(row int, dst []float32) {
 	if end > len(t.Data) {
 		return // out of bounds — caller should validate row index
 	}
-	for b := 0; b < nBlocks; b++ {
-		off := rowOff + b*q8BlockBytes
-		scale := float16to32(binary.LittleEndian.Uint16(t.Data[off:]))
-		base := b * q8BlockSize
-		for i := 0; i < q8BlockSize; i++ {
-			dst[base+i] = scale * float32(int8(t.Data[off+2+i]))
-		}
-	}
+	dequantRowIntoASM(dst, t.Data, rowOff, nBlocks)
 }
 
 // matMulMaxParallel controls internal parallelism for MatMul operations.
@@ -156,15 +150,20 @@ func matMulQ8ParallelN(out, a []float32, b *Q8Tensor, M, N, K int) {
 
 // dequantRowInto dequantizes a Q8_0 row into dst (len >= nBlocks*32).
 // This is the hot path — called once per dot product.
-// Uses 8x unrolled loop to help the compiler auto-vectorize.
+// On amd64, uses AVX2 SIMD acceleration via dequantRowIntoASM.
 func dequantRowInto(data []byte, row int, nBlocks int, dst []float32) {
 	rowOff := row * nBlocks * q8BlockBytes
+	dequantRowIntoASM(dst, data, rowOff, nBlocks)
+}
+
+// dequantRowIntoScalar is the pure Go fallback implementation.
+// Uses 8x unrolled loop to help the compiler auto-vectorize.
+func dequantRowIntoScalar(dst []float32, data []byte, rowOff int, nBlocks int) {
 	for b := 0; b < nBlocks; b++ {
 		off := rowOff + b*q8BlockBytes
 		scale := float16to32(binary.LittleEndian.Uint16(data[off:]))
 		base := b * q8BlockSize
 		qOff := off + 2
-		// 8x unrolled for better ILP and auto-vectorization
 		for i := 0; i < q8BlockSize; i += 8 {
 			dst[base+i] = scale * float32(int8(data[qOff+i]))
 			dst[base+i+1] = scale * float32(int8(data[qOff+i+1]))
@@ -174,6 +173,93 @@ func dequantRowInto(data []byte, row int, nBlocks int, dst []float32) {
 			dst[base+i+5] = scale * float32(int8(data[qOff+i+5]))
 			dst[base+i+6] = scale * float32(int8(data[qOff+i+6]))
 			dst[base+i+7] = scale * float32(int8(data[qOff+i+7]))
+		}
+	}
+}
+
+// DotQ8Row computes the dot product of a float32 vector a[0:cols] with a
+// single Q8_0 row, without materializing the full dequantized row.
+// On amd64, uses AVX2 SIMD acceleration via dotQ8RowASM.
+func DotQ8Row(a []float32, data []byte, row, nBlocks int) float32 {
+	rowOff := row * nBlocks * q8BlockBytes
+	return dotQ8RowASM(a, data, rowOff, nBlocks)
+}
+
+// dotQ8RowScalar is the pure Go fallback implementation.
+// Fuses dequantization and dot-product into one pass.
+func dotQ8RowScalar(a []float32, data []byte, rowOff, nBlocks int) float32 {
+	var sum float32
+	for b := 0; b < nBlocks; b++ {
+		off := rowOff + b*q8BlockBytes
+		scale := float16to32(binary.LittleEndian.Uint16(data[off:]))
+		base := b * q8BlockSize
+		qOff := off + 2
+		var blockSum float32
+		for i := 0; i < q8BlockSize; i += 8 {
+			blockSum += float32(int8(data[qOff+i])) * a[base+i]
+			blockSum += float32(int8(data[qOff+i+1])) * a[base+i+1]
+			blockSum += float32(int8(data[qOff+i+2])) * a[base+i+2]
+			blockSum += float32(int8(data[qOff+i+3])) * a[base+i+3]
+			blockSum += float32(int8(data[qOff+i+4])) * a[base+i+4]
+			blockSum += float32(int8(data[qOff+i+5])) * a[base+i+5]
+			blockSum += float32(int8(data[qOff+i+6])) * a[base+i+6]
+			blockSum += float32(int8(data[qOff+i+7])) * a[base+i+7]
+		}
+		sum += scale * blockSum
+	}
+	return sum
+}
+
+// MatMulQ8Fused computes out = A @ B^T where A is [M, K] float32 and B is Q8_0 [N, K].
+// Uses fused dequant-dot (DotQ8Row) instead of dequant-then-SIMD-dot.
+// For small N*K (< fusedThreshold), the fused path avoids buffer allocation and
+// memory bandwidth overhead. For large matrices, falls back to the SIMD path
+// which benefits from AVX2/NEON vectorized dot products.
+const fusedThreshold = 32768 // N*K threshold: below this, fused is faster
+
+func MatMulQ8Fused(out, a []float32, b *Q8Tensor, M, N, K int) {
+	// For large matrices, the SIMD dequant+dot path wins due to vectorization.
+	if N*K >= fusedThreshold {
+		MatMulQ8(out, a, b, M, N, K)
+		return
+	}
+	nBlocks := K / q8BlockSize
+	nCPU := getMatMulWorkers()
+	if nCPU > 1 && M > 1 {
+		// Parallelize across M rows
+		nWorkers := nCPU
+		if nWorkers > M {
+			nWorkers = M
+		}
+		var wg sync.WaitGroup
+		rowsPerWorker := (M + nWorkers - 1) / nWorkers
+		for w := 0; w < nWorkers; w++ {
+			start := w * rowsPerWorker
+			end := start + rowsPerWorker
+			if end > M {
+				end = M
+			}
+			if start >= end {
+				break
+			}
+			wg.Add(1)
+			go func(s, e int) {
+				defer wg.Done()
+				for m := s; m < e; m++ {
+					aRow := a[m*K : m*K+K]
+					for n := 0; n < N; n++ {
+						out[m*N+n] = DotQ8Row(aRow, b.Data, n, nBlocks)
+					}
+				}
+			}(start, end)
+		}
+		wg.Wait()
+		return
+	}
+	for m := 0; m < M; m++ {
+		aRow := a[m*K : m*K+K]
+		for n := 0; n < N; n++ {
+			out[m*N+n] = DotQ8Row(aRow, b.Data, n, nBlocks)
 		}
 	}
 }

@@ -15,6 +15,12 @@ type Memory = {
   updated_at: string;
 };
 
+type DedupResult = {
+  merged: number;
+  expired: number;
+  scanned: number;
+};
+
 const hasWails = () => typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
 
 const levelLabel = (level: string) => {
@@ -28,66 +34,116 @@ const levelLabel = (level: string) => {
 
 const statusLabel = (status: string) => {
   switch (status) {
-    case 'active': return '已共享';
-    case 'draft': return '草稿';
-    case 'archived': return '已归档';
+    case 'active': return '✅ 已共享';
+    case 'draft': return '📝 草稿';
+    case 'merged': return '🔗 已合并';
+    case 'expired': return '⏰ 已过期';
+    case 'disabled': return '⏸ 已停用';
     default: return status || '已共享';
   }
 };
 
-const defaultRows = [
-  { topic: '异常复盘模板', source: '生产团队', level: '团队级', updated: '今天 09:20', status: '已共享' },
-  { topic: '周报写作范式', source: '办公同事', level: '角色级', updated: '昨天 18:40', status: '审核中' },
-  { topic: '质量分析口径', source: '质量团队', level: '企业级', updated: '周一 14:10', status: '已共享' },
-];
+async function fetchJSON<T>(url: string): Promise<T | null> {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return resp.json();
+  } catch { return null; }
+}
 
 export function KnowledgePage() {
-  const [rows, setRows] = useState(defaultRows);
+  const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(false);
-  const [totalCount, setTotalCount] = useState(defaultRows.length);
+  const [dedupResult, setDedupResult] = useState<DedupResult | null>(null);
+  const [dedupRunning, setDedupRunning] = useState(false);
 
-  useEffect(() => {
-    if (!hasWails()) return;
+  const loadMemories = () => {
     setLoading(true);
-    (window as any).go.main.App.ListMemories()
-      .then((mems: Memory[]) => {
-        if (Array.isArray(mems) && mems.length > 0) {
-          setTotalCount(mems.length);
-          setRows(mems.map((m) => ({
-            topic: m.title,
-            source: m.scope || '通用',
-            level: levelLabel(m.level),
-            updated: m.updated_at || m.created_at || '-',
-            status: statusLabel(m.status),
-          })));
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+    fetchJSON<{ memories: Memory[] }>('/admin/memories').then(d => {
+      if (d?.memories) {
+        setMemories(d.memories);
+        setLoading(false);
+        return;
+      }
+      // Fallback to Wails
+      if (!hasWails()) { setLoading(false); return; }
+      (window as any).go.main.App.ListMemories()
+        .then((mems: Memory[]) => {
+          if (Array.isArray(mems)) setMemories(mems);
+        })
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    });
+  };
 
-  // Derive stats from rows
-  const sharedCount = rows.filter((r) => r.status === '已共享').length;
-  const levelCounts = rows.reduce<Record<string, number>>((acc, r) => {
-    acc[r.level] = (acc[r.level] || 0) + 1;
+  useEffect(() => { loadMemories(); }, []);
+
+  const runDedup = async () => {
+    setDedupRunning(true);
+    try {
+      const resp = await fetch('/admin/memories/dedup', { method: 'POST' });
+      if (resp.ok) {
+        const result: DedupResult = await resp.json();
+        setDedupResult(result);
+        loadMemories(); // Refresh
+      }
+    } catch { /* ignore */ }
+    setDedupRunning(false);
+  };
+
+  const activeMemories = memories.filter(m => m.status === 'active');
+  const autoExtracted = memories.filter(m => m.tags?.includes('自动提取'));
+
+  const rows = memories.map(m => ({
+    topic: m.title,
+    source: m.scope || '通用',
+    level: levelLabel(m.level),
+    tags: (m.tags || []).join(', '),
+    updated: m.updated_at || m.created_at || '-',
+    status: statusLabel(m.status),
+  }));
+
+  const levelCounts = memories.reduce<Record<string, number>>((acc, m) => {
+    if (m.status !== 'active') return acc;
+    const l = levelLabel(m.level);
+    acc[l] = (acc[l] || 0) + 1;
     return acc;
   }, {});
 
   return (
     <div className="center-page-stack">
-      <SectionCard title="经验共享" desc={`共 ${totalCount} 条共享记忆，${sharedCount} 条已生效。${loading ? ' 加载中...' : ''}`}>
+      <SectionCard title="经验共享" desc={`共 ${memories.length} 条记忆，${activeMemories.length} 条生效中，${autoExtracted.length} 条自动提取。${loading ? ' 加载中...' : ''}`}>
         <DataTable
           columns={[
-            { key: 'topic', label: '经验主题' },
-            { key: 'source', label: '来源/范围' },
+            { key: 'topic', label: '主题' },
+            { key: 'source', label: '范围' },
             { key: 'level', label: '级别' },
-            { key: 'updated', label: '最近更新' },
+            { key: 'tags', label: '标签' },
+            { key: 'updated', label: '更新时间' },
             { key: 'status', label: '状态' },
           ]}
           rows={rows}
         />
       </SectionCard>
-      <SectionCard title="记忆分布" desc="按级别查看共享记忆的分布情况。">
+
+      <SectionCard title="记忆维护" desc="去重合并近似经验，清理过期自动提取记忆（>90天）。">
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', padding: '8px 0' }}>
+          <button
+            onClick={runDedup}
+            disabled={dedupRunning}
+            style={{ padding: '6px 16px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
+          >
+            {dedupRunning ? '执行中...' : '🧹 执行去重与清理'}
+          </button>
+          {dedupResult && (
+            <span style={{ color: '#666' }}>
+              扫描 {dedupResult.scanned} 条，合并 {dedupResult.merged} 条，过期 {dedupResult.expired} 条
+            </span>
+          )}
+        </div>
+      </SectionCard>
+
+      <SectionCard title="记忆分布" desc="按级别查看共享记忆的分布。">
         <div className="item-list">
           {Object.entries(levelCounts).map(([level, count]) => (
             <div key={level} className="item-row">
@@ -96,6 +152,7 @@ export function KnowledgePage() {
               <span className="badge info">{level}</span>
             </div>
           ))}
+          {Object.keys(levelCounts).length === 0 && <p style={{ color: '#888' }}>暂无活跃记忆。</p>}
         </div>
       </SectionCard>
     </div>

@@ -198,6 +198,8 @@ func (mc *Compressor) backfillCompactForms(ctx context.Context) {
 		for i := range mc.store.entries {
 			if mc.store.entries[i].ID == p.id && mc.store.entries[i].CompactForm == "" {
 				mc.store.entries[i].CompactForm = compact
+				// Refresh BM25 index since entryToDoc now includes CompactForm.
+				mc.store.bm25.updateEntry(mc.store.entries[i])
 				updated++
 				break
 			}
@@ -582,6 +584,7 @@ func (mc *Compressor) Status() CompressorStatus {
 func (mc *Compressor) loop(ctx context.Context) {
 	mc.maybeRunGC(ctx)
 	mc.runOnce(ctx)
+	mc.runDreamCycle()
 
 	ticker := time.NewTicker(6 * time.Hour)
 	defer ticker.Stop()
@@ -601,6 +604,7 @@ func (mc *Compressor) loop(ctx context.Context) {
 
 			mc.maybeRunGC(ctx)
 			mc.runOnce(ctx)
+			mc.runDreamCycle()
 		}
 	}
 }
@@ -609,6 +613,14 @@ func (mc *Compressor) loop(ctx context.Context) {
 func (mc *Compressor) maybeRunGC(ctx context.Context) {
 	if mc.store.ActiveCount() >= mc.gcThreshold {
 		_, _ = mc.RunGC(ctx)
+	}
+}
+
+// runDreamCycle executes the background self-healing pass.
+func (mc *Compressor) runDreamCycle() {
+	result := mc.store.DreamCycle()
+	if mc.emitter != nil && result != nil {
+		mc.emitter.Emit("memory:dream", result)
 	}
 }
 

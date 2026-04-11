@@ -114,6 +114,50 @@ func TestImportMarkdownSkillDir_UsesScriptsAsBashSteps(t *testing.T) {
 	}
 }
 
+func TestExtractBashBlocksFromMarkdown_SkipsChinesePlaceholders(t *testing.T) {
+	content := `# Test Skill
+
+First block is a usage example with Chinese path:
+
+` + "```bash" + `
+node "{baseDir}/scripts/convert.mjs" "/绝对路径/输入.md" "/绝对路径/输出.pdf"
+` + "```\n" + `
+
+Second block is actual executable:
+
+` + "```bash" + `
+node /home/user/scripts/convert.mjs input.md output.pdf
+` + "```\n"
+
+	blocks := extractBashBlocksFromMarkdown(content)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 executable block, got %d", len(blocks))
+	}
+	if strings.Contains(blocks[0], "绝对路径") {
+		t.Fatalf("block still contains Chinese placeholder: %s", blocks[0])
+	}
+}
+
+func TestExtractBashBlocksFromMarkdown_SkipsUnresolvedPlaceholders(t *testing.T) {
+	// {baseDir} unresolved is a sign of an example, not executable
+	content := "```bash\nnode \"{baseDir}/scripts/script.mjs\"\n```\n"
+	blocks := extractBashBlocksFromMarkdown(content)
+	if len(blocks) != 0 {
+		t.Fatalf("expected 0 blocks (unresolved {baseDir}), got %d", len(blocks))
+	}
+}
+
+func TestExtractBashBlocksFromMarkdown_AcceptsCleanBlocks(t *testing.T) {
+	content := "```bash\necho hello world\n```"
+	blocks := extractBashBlocksFromMarkdown(content)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	if !strings.Contains(blocks[0], "echo hello world") {
+		t.Fatalf("unexpected block content: %s", blocks[0])
+	}
+}
+
 func TestScanSkillDir_RecognizesMarkdownSkillDirectory(t *testing.T) {
 	root := t.TempDir()
 	skillDir := filepath.Join(root, "pptx-generator")

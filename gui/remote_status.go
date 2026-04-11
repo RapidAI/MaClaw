@@ -153,6 +153,7 @@ func sanitizeSessionSummary(summary *SessionSummary) {
 	summary.Severity = sanitizeRemoteText(summary.Severity)
 	summary.CurrentTask = sanitizeRemoteText(summary.CurrentTask)
 	summary.ProgressSummary = sanitizeRemoteText(summary.ProgressSummary)
+	summary.StepProgress = sanitizeRemoteText(summary.StepProgress)
 	summary.LastResult = sanitizeRemoteText(summary.LastResult)
 	summary.SuggestedAction = sanitizeRemoteText(summary.SuggestedAction)
 	summary.LastCommand = sanitizeRemoteText(summary.LastCommand)

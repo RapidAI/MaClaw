@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type Dispatch, type SetStateAction } from "react";
 import type { RemoteSessionView } from "./types";
-import { SendRemoteSessionInput, SendRemoteSessionRawInput, SendRemoteSessionImage, CaptureRemoteScreenshot, CaptureRemoteWindowScreenshot, InterruptRemoteSession } from "../../../wailsjs/go/main/App";
+import { SendRemoteSessionInput, SendRemoteSessionRawInput, SendRemoteSessionImage, CaptureRemoteScreenshot, CaptureRemoteWindowScreenshot, InterruptRemoteSession, SetFullscreen } from "../../../wailsjs/go/main/App";
 
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
     lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
@@ -89,13 +89,28 @@ const outputAreaStyle: React.CSSProperties = {
     maxHeight: "none",
     padding: "8px 10px",
     fontSize: "12px",
-    lineHeight: 1.5,
+    lineHeight: 1.45,
     overflowY: "auto",
-    overflowX: "hidden",
+    overflowX: "auto",
     textAlign: "left",
     color: "#d4d4d4",
-    wordBreak: "break-all",
-    overflowWrap: "break-word",
+    background: "#0c0c0c",
+};
+
+// Style for raw terminal output (PTY mode) — preserve exact line breaks,
+// use monospace font, no word-breaking, horizontal scroll for overflow.
+const rawTerminalStyle: React.CSSProperties = {
+    flex: 1,
+    minHeight: 0,
+    padding: "8px 10px",
+    whiteSpace: "pre",
+    overflowY: "auto",
+    overflowX: "auto",
+    fontFamily: "'Cascadia Code', 'Cascadia Mono', 'SF Mono', 'Consolas', 'Courier New', monospace",
+    fontSize: "12px",
+    lineHeight: 1.45,
+    color: "#d4d4d4",
+    background: "#0c0c0c",
 };
 
 const inputBarStyle: React.CSSProperties = {
@@ -166,8 +181,13 @@ const SUPPORTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/we
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 
 // ── ANSI stripping (module-level for reuse) ──
-const _ansiRe = /\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[()][A-Z0-9]|[a-zA-Z])/g;
-function stripAnsi(s: string): string { return s.replace(_ansiRe, ""); }
+const _ansiRe = /\x1b(?:\[[0-9;?]*[a-zA-Z~^$]|\].*?(?:\x07|\x1b\\)|[()#][A-Z0-9]?|[a-zA-Z])/g;
+const _controlRe = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+// Clean up U+FFFD replacement characters (and trailing ?) left by
+// invalid UTF-8 from ConPTY on Windows (e.g. emoji bytes truncated
+// by GBK code page).
+const _replacementRe = /\uFFFD\??/g;
+function stripAnsi(s: string): string { return s.replace(_ansiRe, "").replace(_controlRe, "").replace(_replacementRe, ""); }
 
 // ── Lightweight inline markdown → React elements ──
 // Handles: **bold**, *italic*, `code`, [link](url)
@@ -302,6 +322,7 @@ export function RemoteSessionConsole(props: Props) {
     const [sending, setSending] = useState(false);
     const [lastSendInfo, setLastSendInfo] = useState("");
     const [imageUploading, setImageUploading] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const outputEndRef = useRef<HTMLDivElement | null>(null);
@@ -482,6 +503,12 @@ export function RemoteSessionConsole(props: Props) {
     const handleKill = useCallback(async () => {
         try { await killRemoteSession(session.id); onClose(); } catch { /* already stopped */ }
     }, [session.id, killRemoteSession, onClose]);
+
+    const handleToggleFullscreen = useCallback(() => {
+        const next = !isFullscreen;
+        setIsFullscreen(next);
+        SetFullscreen(next).catch(() => {});
+    }, [isFullscreen]);
 
     const handleClear = useCallback(() => {
         setClearOffset(lineCacheRef.current.length);
@@ -824,6 +851,11 @@ export function RemoteSessionConsole(props: Props) {
                         title={localizeText(currentLang, "Clear screen", "清屏", "清屏")}>
                         ⌧
                     </button>
+                    <button onClick={handleToggleFullscreen}
+                        style={{ ...actionBtnStyle, color: isFullscreen ? "#28c840" : "#888" }}
+                        title={localizeText(currentLang, "Toggle fullscreen", "切换全屏", "切換全螢幕")}>
+                        {isFullscreen ? "⛷" : "⛶"}
+                    </button>
                     {!readOnly && !isStructured && (
                         <button onClick={handleEsc} disabled={sessionClosed}
                             style={actionBtnStyle} title="Escape">
@@ -855,13 +887,15 @@ export function RemoteSessionConsole(props: Props) {
             {/* ── Output area ── */}
             <div
                 ref={outputContainerRef}
-                className="terminal-output"
-                style={outputAreaStyle}
+                className={isStructured ? "terminal-output" : undefined}
+                style={isStructured ? outputAreaStyle : rawTerminalStyle}
             >
                 {rawLines.length === 0 ? (
                     <span style={{ color: "#555" }}>$ _</span>
-                ) : (
+                ) : isStructured ? (
                     outputElements
+                ) : (
+                    rawLines.map(stripAnsi).join("\n")
                 )}
                 <div ref={outputEndRef} />
             </div>

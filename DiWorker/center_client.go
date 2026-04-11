@@ -264,3 +264,53 @@ func fetchCenterWorkflowInstances(centerBaseURL string, timeoutSec int) []Center
 	}
 	return result.Instances
 }
+
+
+// CenterRecommendation represents a colleague recommendation from iWorkerCenter.
+type CenterRecommendation struct {
+	ColleagueID string  `json:"colleague_id"`
+	Name        string  `json:"name"`
+	RoleCode    string  `json:"role_code"`
+	Score       float64 `json:"score"`
+	Reason      string  `json:"reason"`
+}
+
+// fetchRecommendations asks iWorkerCenter to recommend colleagues for a task.
+func fetchRecommendations(centerBaseURL string, taskDesc string, topN int, timeoutSec int) []CenterRecommendation {
+	if centerBaseURL == "" || taskDesc == "" {
+		return nil
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 5
+	}
+	if topN <= 0 {
+		topN = 3
+	}
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	url := strings.TrimRight(centerBaseURL, "/") + "/client/recommend"
+
+	payload, _ := json.Marshal(map[string]any{
+		"task_description": taskDesc,
+		"top_n":            topN,
+	})
+
+	resp, err := client.Post(url, "application/json", strings.NewReader(string(payload)))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return nil
+	}
+	var result struct {
+		Recommendations []CenterRecommendation `json:"recommendations"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil
+	}
+	return result.Recommendations
+}

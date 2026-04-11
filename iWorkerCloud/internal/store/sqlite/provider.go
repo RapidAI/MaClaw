@@ -1,0 +1,149 @@
+package sqlite
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+type Provider struct {
+	Write *sql.DB
+	Read  *sql.DB
+}
+
+// NewProvider creates a Provider with separate read/write connection pools
+// optimized for concurrent access. Write is limited to 1 connection (SQLite
+// single-writer constraint). Read scales with CPU count via WAL mode.
+func NewProvider(dsn string) (*Provider, error) {
+	if dsn != "" && dsn != ":memory:" {
+		dir := filepath.Dir(dsn)
+		if dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("mkdir %s: %w", dir, err)
+			}
+		}
+	}
+
+	// For in-memory databases, use shared cache so read/write see the same data.
+	effectiveDSN := dsn
+	if dsn == ":memory:" {
+		effectiveDSN = "file::memory:?cache=shared"
+	}
+
+	writeDB, err := sql.Open("sqlite", effectiveDSN)
+	if err != nil {
+		return nil, fmt.Errorf("open write db: %w", err)
+	}
+
+	readDB, err := sql.Open("sqlite", effectiveDSN)
+	if err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("open read db: %w", err)
+	}
+
+	// Write: single connection (SQLite serializes writes regardless)
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
+	writeDB.SetConnMaxLifetime(30 * time.Minute)
+
+	// Read: scale with CPU count, minimum 4 for concurrent HTTP handlers
+	readConns := runtime.NumCPU()
+	if readConns < 4 {
+		readConns = 4
+	}
+	readDB.SetMaxOpenConns(readConns)
+	readDB.SetMaxIdleConns(readConns)
+	readDB.SetConnMaxLifetime(30 * time.Minute)
+
+	for _, conn := range []*sql.DB{writeDB, readDB} {
+		if err := applyPragmas(conn); err != nil {
+			_ = readDB.Close()
+			_ = writeDB.Close()
+			return nil, err
+		}
+	}
+
+	return &Provider{Write: writeDB, Read: readDB}, nil
+}
+
+func (p *Provider) Close() {
+	if p == nil {
+		return
+	}
+	if p.Write != nil {
+		_ = p.Write.Close()
+	}
+	if p.Read != nil {
+		_ = p.Read.Close()
+	}
+}
+
+func applyPragmas(conn *sql.DB) error {
+	stmts := []string{
+		"PRAGMA journal_mode = WAL;",
+		"PRAGMA foreign_keys = ON;",
+		"PRAGMA busy_timeout = 5000;",
+		"PRAGMA synchronous = NORMAL;",
+		"PRAGMA temp_store = MEMORY;",
+		"PRAGMA cache_size = -8000;",       // 8 MB page cache per connection
+		"PRAGMA mmap_size = 268435456;",    // 256 MB memory-mapped I/O
+		"PRAGMA wal_autocheckpoint = 1000;", // checkpoint every 1000 pages
+	}
+	for _, stmt := range stmts {
+		if _, err := conn.Exec(stmt); err != nil {
+			return fmt.Errorf("pragma %q: %w", stmt, err)
+		}
+	}
+	return nil
+}
+
+func RunMigrations(db *sql.DB) error {
+	_, err := db.Exec(schema)
+	return err
+}
+
+const schema = `
+CREATE TABLE IF NOT EXISTS admins (
+	id TEXT PRIMARY KEY,
+	username TEXT UNIQUE NOT NULL,
+	password_hash TEXT NOT NULL,
+	created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS centers (
+	id TEXT PRIMARY KEY,
+	company_name TEXT NOT NULL,
+	admin_email TEXT NOT NULL,
+	admin_phone TEXT NOT NULL DEFAULT '',
+	address TEXT NOT NULL DEFAULT '',
+	legal_person TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'pending',
+	secret_hash TEXT NOT NULL DEFAULT '',
+	last_heartbeat TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL DEFAULT (datetime('now')),
+	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS licenses (
+	id TEXT PRIMARY KEY,
+	center_id TEXT NOT NULL,
+	modules TEXT NOT NULL DEFAULT '[]',
+	type TEXT NOT NULL DEFAULT 'trial',
+	expires_at TEXT NOT NULL,
+	is_long_term INTEGER NOT NULL DEFAULT 0,
+	certificate TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL DEFAULT (datetime('now')),
+	revoked_at TEXT,
+	FOREIGN KEY (center_id) REFERENCES centers(id)
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL DEFAULT ''
+);
+`

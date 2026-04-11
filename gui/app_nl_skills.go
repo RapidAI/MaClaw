@@ -1708,11 +1708,11 @@ func (a *App) packageSkillForMarket(skillName string) (string, error) {
 // executeBashStep runs a shell command as a skill step.
 // Supports optional "working_dir" and "timeout" params.
 func executeBashStep(command string, params map[string]interface{}) (string, error) {
-	timeout := 30
+	timeout := 120 // default 120 seconds
 	if t, ok := params["timeout"].(float64); ok && t > 0 {
 		timeout = int(t)
-		if timeout > 120 {
-			timeout = 120
+		if timeout > 300 {
+			timeout = 300
 		}
 	}
 
@@ -1724,8 +1724,18 @@ func executeBashStep(command string, params map[string]interface{}) (string, err
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
-		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", command}
+		// Use same smart shell selection as runBashStepWithContext.
+		if needsBashShell(command) {
+			shellName = "sh.exe"
+			shellArgs = []string{"-c", command}
+		} else {
+			cmdPath := os.Getenv("ComSpec")
+			if cmdPath == "" {
+				cmdPath = "cmd.exe"
+			}
+			shellName = cmdPath
+			shellArgs = []string{"/c", command}
+		}
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}

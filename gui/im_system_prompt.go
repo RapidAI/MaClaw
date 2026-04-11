@@ -13,7 +13,7 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 	return h.buildSystemPromptBase(false)
 }
 
-func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool) string {
+func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMessage ...string) string {
 	var b strings.Builder
 
 	// Use configurable role name and description from settings.
@@ -444,17 +444,21 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 	}
 	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
 
-	// Inject lightweight memory section: user_fact summary + tool hint.
-	h.appendMemorySection(&b, includeMemoryGuide)
+	// Inject lightweight memory section: user_fact summary + proactive recall + tool hint.
+	msg := ""
+	if len(userMessage) > 0 {
+		msg = userMessage[0]
+	}
+	h.appendMemorySection(&b, includeMemoryGuide, msg)
 
 	return b.String()
 }
 
 // buildSystemPromptWithMemory builds the system prompt with the lightweight
-// memory section (user_fact summary + dynamic recall hint). The isFirstTurn
-// flag controls whether the full memory management guide is included.
+// memory section (user_fact summary + proactive recall + dynamic recall hint).
+// The isFirstTurn flag controls whether the full memory management guide is included.
 func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFirstTurn bool) string {
-	base := h.buildSystemPromptBase(isFirstTurn)
+	base := h.buildSystemPromptBase(isFirstTurn, userMessage)
 	if !isFirstTurn {
 		return base
 	}
@@ -491,12 +495,10 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 
 // appendMemorySection appends a lightweight "## 用户记忆" section containing:
 //   - A compressed one-line summary of user_fact entries (always present)
+//   - Proactive recall of relevant memories based on userMessage (if non-empty)
 //   - A hint that other memories can be recalled via memory(action: recall)
 //   - Full memory management guide only on first turn (isFirstTurn=true)
-//
-// Non-user_fact memories are NO LONGER injected here. The LLM retrieves
-// them on demand via the memory(action: recall) tool.
-func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn bool) {
+func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn bool, userMessage ...string) {
 	if h.memoryStore == nil {
 		return
 	}
@@ -507,7 +509,54 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 	if summary != "" {
 		b.WriteString(fmt.Sprintf("用户信息: %s\n", summary))
 	}
-	b.WriteString("其他记忆（偏好、项目知识、指令等）可通过 " + corememory.PromptActionRecallColon + ", query: \"检索关键词\") 按需召回。\n")
+
+	// Proactive recall: if userMessage is provided, automatically recall
+	// relevant memories and inject them into the system prompt.
+	msg := ""
+	if len(userMessage) > 0 {
+		msg = userMessage[0]
+	}
+	if msg != "" {
+		projectPath := ""
+		if h.contextResolver != nil {
+			projectPath, _ = h.contextResolver.ResolveProject()
+		}
+		recalled := h.memoryStore.RecallForProject(msg, projectPath)
+
+		// Filter out user_fact and self_identity (already injected above).
+		var relevant []corememory.Entry
+		for _, e := range recalled {
+			canonical := corememory.MapToCanonical(e.Category)
+			if canonical == corememory.CategoryUserFact || canonical == corememory.CategorySelfIdentity {
+				continue
+			}
+			relevant = append(relevant, e)
+		}
+
+		// Cap at 8 entries to control prompt size.
+		const maxProactiveRecall = 8
+		if len(relevant) > maxProactiveRecall {
+			relevant = relevant[:maxProactiveRecall]
+		}
+
+		if len(relevant) > 0 {
+			b.WriteString("\n相关记忆（自动召回）:\n")
+			for _, e := range relevant {
+				text := e.CompactForm
+				if text == "" {
+					text = e.Content
+				}
+				runes := []rune(text)
+				if len(runes) > 200 {
+					text = string(runes[:200]) + "…"
+				}
+				b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
+			}
+			b.WriteString("（以上记忆已自动注入，无需再用 memory recall 重复搜索相同内容。仅在需要更多细节时才手动召回。）\n")
+		}
+	}
+
+	b.WriteString("如需更多记忆，可通过 " + corememory.PromptActionRecallColon + ", query: \"关键词\") 召回。\n")
 
 	if isFirstTurn {
 		b.WriteString("\n" + corememory.BuildIMMemoryGuidePrompt() + "\n")

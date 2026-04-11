@@ -8,9 +8,11 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
@@ -36,6 +38,8 @@ type App struct {
 	FeishuPlugin       *feishu.FeishuPlugin
 	OpenclawIMPlugin   *im.WebhookIMPlugin
 	QQBotPlugin        *qqbot.Plugin
+	WecomPlugin        *wecom.Plugin
+	DingTalkPlugin     *dingtalk.Plugin
 	QQRemotePlugin     *im.RemoteGatewayPlugin
 	TelegramPlugin     *im.RemoteGatewayPlugin
 

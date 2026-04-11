@@ -59,17 +59,27 @@ type SkillRunStatus struct {
 	StartedAt      string               `json:"started_at"`
 	EndedAt        string               `json:"ended_at,omitempty"`
 	Error          string               `json:"error,omitempty"`
+	DurationMs     int64                `json:"duration_ms,omitempty"`
+	TotalSteps     int                  `json:"total_steps,omitempty"`
+	FailedSteps    int                  `json:"failed_steps,omitempty"`
+	SkippedSteps   int                  `json:"skipped_steps,omitempty"`
 }
 
 // StepResult 记录单步执行结果。
 type StepResult struct {
-	Index     int    `json:"index"`
-	Action    string `json:"action"`
-	Status    string `json:"status"` // "pending", "running", "success", "failed", "skipped"
-	Output    string `json:"output,omitempty"`
-	Error     string `json:"error,omitempty"`
-	ShellPath string `json:"shell_path,omitempty"` // 使用的 shell（仅 bash action）
-	Duration  string `json:"duration,omitempty"`   // 执行耗时
+	Index           int      `json:"index"`
+	Name            string   `json:"name,omitempty"`
+	Action          string   `json:"action"`
+	Status          string   `json:"status"` // "pending", "running", "success", "failed", "skipped", "timeout"
+	Output          string   `json:"output,omitempty"`
+	Error           string   `json:"error,omitempty"`
+	ExitCode        int      `json:"exit_code,omitempty"`
+	StdoutLastLines []string `json:"stdout_last_lines,omitempty"`
+	StderrLastLines []string `json:"stderr_last_lines,omitempty"`
+	ShellPath       string   `json:"shell_path,omitempty"` // 使用的 shell（仅 bash action）
+	CommandResolved string   `json:"command_resolved,omitempty"`
+	DurationMs      int64    `json:"duration_ms,omitempty"`
+	Timeout         bool     `json:"timeout,omitempty"`
 }
 
 // ── Skill Runner ────────────────────────────────────────────────────────
@@ -283,6 +293,14 @@ func summarizeSkillRun(status *SkillRunStatus) {
 		return
 	}
 	status.Summary = SkillRunSummary{}
+	status.TotalSteps = len(status.Steps)
+	status.FailedSteps = 0
+	status.SkippedSteps = 0
+	if t, err := time.Parse(time.RFC3339, status.EndedAt); err == nil {
+		if s, err := time.Parse(time.RFC3339, status.StartedAt); err == nil {
+			status.DurationMs = t.Sub(s).Milliseconds()
+		}
+	}
 	if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
 		status.Summary.HasSessionBinding = true
 	}
@@ -322,9 +340,12 @@ func summarizeSkillRun(status *SkillRunStatus) {
 			status.Summary.CurrentStepIndex = i
 			status.Summary.CurrentStep = step.Action
 			status.Summary.CurrentStepStatus = step.Status
+			status.FailedSteps++
 			if snippet := strings.TrimSpace(firstNonEmptyTraceText(step.Error, step.Output)); snippet != "" {
 				status.Summary.LastErrorSnippet = truncateSkillRunSnippet(snippet)
 			}
+		case "skipped":
+			status.SkippedSteps++
 		}
 	}
 	if status.Summary.CurrentStep == "" && len(status.Steps) > 0 {
@@ -491,6 +512,7 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 	if command == "" {
 		return command
 	}
+	original := command
 	if len(vars) != 0 {
 		keys := make([]string, 0, len(vars))
 		for key := range vars {
@@ -503,7 +525,12 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 			command = strings.ReplaceAll(command, "${"+key+"}", value)
 		}
 	}
-	return stripUnresolvedSkillPlaceholders(command)
+	result := stripUnresolvedSkillPlaceholders(command)
+	// 记录变量替换结果，方便排查跨平台路径问题
+	if result != original {
+		log.Printf("[skill-runner] variable substitution: %q → %q", original, result)
+	}
+	return result
 }
 
 var unresolvedSkillPlaceholderPattern = regexp.MustCompile(`\{\{[^{}]+\}\}|\$\{[^{}]+\}`)
@@ -653,6 +680,11 @@ func (r *SkillRunner) resolveStepSessionID(runID string, step NLSkillStep) strin
 // ── 异步执行核心 ────────────────────────────────────────────────────────
 
 func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NLSkillEntry) {
+	// Global timeout: 5 minutes default for the entire skill execution.
+	globalTimeout := 5 * time.Minute
+	globalCtx, globalCancel := context.WithTimeout(ctx, globalTimeout)
+	defer globalCancel()
+
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.mu.Lock()
@@ -663,11 +695,41 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 		}
 	}()
 
+	// Interactive skills should not be auto-executed — they're meant to be
+	// invoked on-demand by AI agents. If mode == "interactive", skip automatic
+	// step execution and mark as success (the skill's instructions are available
+	// for the AI context, not for runner auto-execution).
+	if strings.EqualFold(skill.Mode, "interactive") {
+		r.mu.Lock()
+		for i := range skill.Steps {
+			run.status.Steps[i].Status = "skipped"
+		}
+		run.status.Status = "success"
+		run.status.EndedAt = time.Now().Format(time.RFC3339)
+		r.mu.Unlock()
+		r.updateUsageStats(skill, nil)
+		return
+	}
+
 	var execErr error
 	hasFailure := false
 	for i, step := range skill.Steps {
-		// 检查取消
+		// Check for global timeout
 		select {
+		case <-globalCtx.Done():
+			r.mu.Lock()
+			for j := i; j < len(skill.Steps); j++ {
+				run.status.Steps[j].Status = "skipped"
+				if j == i {
+					run.status.Steps[j].Timeout = true
+					run.status.Steps[j].Error = "global timeout exceeded"
+				}
+			}
+			run.status.Status = "failed"
+			run.status.Error = fmt.Sprintf("skill execution exceeded global timeout of %v", globalTimeout)
+			run.status.EndedAt = time.Now().Format(time.RFC3339)
+			r.mu.Unlock()
+			return
 		case <-ctx.Done():
 			r.mu.Lock()
 			for j := i; j < len(skill.Steps); j++ {
@@ -680,24 +742,48 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 		default:
 		}
 
+		// Handle condition: "on_failure" — skip if no prior failure
+		if step.Condition == "on_failure" && !hasFailure {
+			r.mu.Lock()
+			run.status.Steps[i].Status = "skipped"
+			r.mu.Unlock()
+			continue
+		}
+		// Handle condition: "on_success" — skip if there was a failure
+		if step.Condition == "on_success" && hasFailure {
+			r.mu.Lock()
+			run.status.Steps[i].Status = "skipped"
+			r.mu.Unlock()
+			continue
+		}
+
 		r.mu.Lock()
 		run.status.Steps[i].Status = "running"
 		r.mu.Unlock()
 
 		resolvedStep := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir)
-		result, err := r.executeStepWithContext(ctx, run.status.RunID, resolvedStep, skill.SkillDir)
+		result, stepErr := r.executeStepWithContext(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
 
 		r.mu.Lock()
-		if err != nil {
+		run.status.Steps[i].Name = resolvedStep.Name
+		run.status.Steps[i].CommandResolved = resolveCommandForDisplay(resolvedStep)
+		if stepErr != nil {
 			run.status.Steps[i].Status = "failed"
-			run.status.Steps[i].Error = err.Error()
+			run.status.Steps[i].Error = stepErr.Error()
 			run.status.Steps[i].Output = result
+			// Extract error details if it's a bashStepError
+			if bErr, ok := stepErr.(*bashStepError); ok {
+				run.status.Steps[i].ExitCode = bErr.ExitCode()
+				run.status.Steps[i].Timeout = bErr.IsTimeout()
+				run.status.Steps[i].StdoutLastLines = lastNLines(bErr.Stdout(), 10)
+				run.status.Steps[i].StderrLastLines = lastNLines(bErr.Stderr(), 10)
+			}
 			hasFailure = true
 			if step.OnError != "continue" {
 				run.status.Status = "failed"
-				run.status.Error = fmt.Sprintf("step %d (%s) failed: %s", i+1, step.Action, err.Error())
+				run.status.Error = fmt.Sprintf("step %d (%s) failed: %s", i+1, step.Action, stepErr.Error())
 				run.status.EndedAt = time.Now().Format(time.RFC3339)
-				execErr = err
+				execErr = stepErr
 				// 标记剩余 step 为 skipped
 				for j := i + 1; j < len(skill.Steps); j++ {
 					run.status.Steps[j].Status = "skipped"
@@ -706,7 +792,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 				break
 			}
 			if execErr == nil {
-				execErr = err // 记录第一个错误
+				execErr = stepErr // 记录第一个错误
 			}
 		} else {
 			run.status.Steps[i].Status = "success"
@@ -957,11 +1043,15 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 // ── bash step 执行（带 context + skillDir 作为默认 working_dir） ────────
 
 func runBashStepWithContext(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App) (string, error) {
-	timeout := 30
+	return runBashStepWithContextFull(ctx, command, params, skillDir, app)
+}
+
+func runBashStepWithContextFull(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App) (string, error) {
+	timeout := 120 // default 120 seconds per step
 	if t, ok := params["timeout"].(float64); ok && t > 0 {
 		timeout = int(t)
-		if timeout > 120 {
-			timeout = 120
+		if timeout > 300 {
+			timeout = 300
 		}
 	}
 
@@ -971,34 +1061,50 @@ func runBashStepWithContext(ctx context.Context, command string, params map[stri
 		workDir = skillDir
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-	defer cancel()
+	stepCtx, stepCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer stepCancel()
 
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		if app != nil {
-			if shPath, err := app.findSh(); err == nil {
-				shellName = shPath
+		// On Windows, prefer cmd.exe for direct script execution to avoid
+		// Git Bash subprocess restrictions that can block nested execFileSync.
+		// Only use sh.exe when the command contains shell-specific features.
+		if needsBashShell(command) {
+			if app != nil {
+				if shPath, err := app.findSh(); err == nil {
+					shellName = shPath
+					log.Printf("[skill-runner] bash step: using shell %s", shPath)
+				} else {
+					return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤\n%v\n请安装 Git for Windows: https://git-scm.com/download/win", err)
+				}
 			} else {
-				// Shell not found — return clear error
-				return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤\n%v\n请安装 Git for Windows: https://git-scm.com/download/win", err)
+				if shPath, err := exec.LookPath("sh.exe"); err == nil {
+					// Skip WSL bash on Windows (runtime check only)
+					shellName = shPath
+				} else {
+					return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤，且 app 实例为空")
+				}
 			}
+			shellArgs = []string{"-c", command}
 		} else {
-			// Fallback: try PATH lookup
-			if shPath, err := exec.LookPath("sh.exe"); err == nil {
-				shellName = shPath
-			} else {
-				return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤，且 app 实例为空")
+			// Direct command — use cmd.exe for better subprocess nesting support.
+			cmdPath := os.Getenv("ComSpec")
+			if cmdPath == "" {
+				cmdPath = "C:\\WINDOWS\\system32\\cmd.exe"
+				if _, err := os.Stat(cmdPath); err != nil {
+					cmdPath = "cmd.exe"
+				}
 			}
+			shellName = cmdPath
+			shellArgs = []string{"/c", command}
 		}
-		shellArgs = []string{"-c", command}
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}
 	}
 
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd := exec.CommandContext(stepCtx, shellName, shellArgs...)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -1009,11 +1115,13 @@ func runBashStepWithContext(ctx context.Context, command string, params map[stri
 
 	startTime := time.Now()
 	err := cmd.Run()
-	elapsed := time.Since(startTime).Round(time.Millisecond)
+	elapsed := time.Since(startTime)
+
+	isTimeout := stepCtx.Err() == context.DeadlineExceeded
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("🐚 shell: %s\n", filepath.Base(shellName)))
-	b.WriteString(fmt.Sprintf("⏱  %s\n", elapsed))
+	b.WriteString(fmt.Sprintf("⏱  %s\n", elapsed.Round(time.Millisecond)))
 	b.WriteString(fmt.Sprintf("📂 %s\n", workDir))
 	b.WriteString("───────────────\n")
 	if stdout.Len() > 0 {
@@ -1035,17 +1143,118 @@ func runBashStepWithContext(ctx context.Context, command string, params map[stri
 		b.WriteString(errOut)
 	}
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if isTimeout {
 			b.WriteString(fmt.Sprintf("\n[error] timeout after %ds", timeout))
 		} else {
 			b.WriteString(fmt.Sprintf("\n[error] %v", err))
 		}
-		return b.String(), err
+		// 构建包含 stderr 的错误消息，方便上层排查
+		errMsg := err.Error()
+		stderrText := strings.TrimSpace(stderr.String())
+		if stderrText != "" {
+			if len(stderrText) > 512 {
+				stderrText = stderrText[:512] + "..."
+			}
+			errMsg = fmt.Sprintf("%s | stderr: %s", errMsg, stderrText)
+		}
+		return b.String(), &bashStepError{
+			message:   errMsg,
+			exitCode:  extractExitCode(err),
+			isTimeout: isTimeout,
+			stdout:    stdout.String(),
+			stderr:    stderr.String(),
+		}
 	}
 	if b.Len() == 0 {
-		return fmt.Sprintf("(completed, no output, %s)", elapsed), nil
+		return fmt.Sprintf("(completed, no output, %s)", elapsed.Round(time.Millisecond)), nil
 	}
 	return b.String(), nil
+}
+
+// bashStepError wraps a bash execution error with exit code and output.
+type bashStepError struct {
+	message   string
+	exitCode  int
+	isTimeout bool
+	stdout    string
+	stderr    string
+}
+
+func (e *bashStepError) Error() string {
+	if e.isTimeout {
+		return fmt.Sprintf("timeout: %s (exit code: %d)", e.message, e.exitCode)
+	}
+	return fmt.Sprintf("%s (exit code: %d)", e.message, e.exitCode)
+}
+
+func (e *bashStepError) ExitCode() int    { return e.exitCode }
+func (e *bashStepError) IsTimeout() bool  { return e.isTimeout }
+func (e *bashStepError) Stdout() string   { return e.stdout }
+func (e *bashStepError) Stderr() string   { return e.stderr }
+
+// extractExitCode extracts the exit code from an error if possible.
+func extractExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode()
+	}
+	return 1
+}
+
+// lastNLines returns the last n non-empty lines of text.
+func lastNLines(text string, n int) []string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) <= n {
+		return lines
+	}
+	return lines[len(lines)-n:]
+}
+
+// needsBashShell checks whether a command contains shell-specific
+// features that require bash/sh instead of cmd.exe on Windows.
+// Default: prefer cmd.exe for better subprocess nesting support
+// (e.g. node execFileSync calls to powershell).
+func needsBashShell(command string) bool {
+	// If command starts with known interpreters that run fine under cmd.exe,
+	// prefer cmd.exe for better subprocess nesting.
+	lower := strings.TrimSpace(strings.ToLower(command))
+	for _, prefix := range []string{"node ", "python ", "python3 ", "java ", "npm ", "pip ", "npx ", "go run ", "cargo run ", "pnpm "} {
+		if strings.HasPrefix(lower, prefix) {
+			return false
+		}
+	}
+	// Direct script path invocation — cmd.exe handles this well.
+	if strings.Contains(lower, ".mjs") || strings.Contains(lower, ".js") ||
+		strings.Contains(lower, ".py") || strings.Contains(lower, ".bat") ||
+		strings.Contains(lower, ".cmd") {
+		return false
+	}
+	// Only use bash for genuine bash-specific syntax.
+	// Pipes, redirections, heredocs.
+	if strings.ContainsAny(command, "|<>") {
+		return true
+	}
+	if strings.Contains(command, "&&") || strings.Contains(command, "||") {
+		return true
+	}
+	// Command substitution.
+	if strings.Contains(command, "$(") || strings.Contains(command, "`") {
+		return true
+	}
+	// Globbing with path separators.
+	if strings.Contains(command, "*/") || strings.Contains(command, "/*") {
+		return true
+	}
+	// Default: prefer cmd.exe for Windows subprocess compatibility.
+	return false
+}
+
+// resolveCommandForDisplay returns the command string from a resolved step for display purposes.
+func resolveCommandForDisplay(step NLSkillStep) string {
+	cmd, _ := step.Params["command"].(string)
+	return cmd
 }
 
 // ── 平台兼容性检查 ──────────────────────────────────────────────────────

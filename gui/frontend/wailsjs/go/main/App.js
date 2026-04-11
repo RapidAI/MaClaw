@@ -294,6 +294,10 @@ export function InterruptRemoteSession(arg1) {
   return window['go']['main']['App']['InterruptRemoteSession'](arg1);
 }
 
+export function SetFullscreen(arg1) {
+  return window['go']['main']['App']['SetFullscreen'](arg1);
+}
+
 export function KillRemoteSession(arg1) {
   return window['go']['main']['App']['KillRemoteSession'](arg1);
 }
@@ -593,6 +597,10 @@ export function GetAutoCompressStatus() {
   return window['go']['main']['App']['GetAutoCompressStatus']();
 }
 
+export function GetMemoryHealth() {
+  return window['go']['main']['App']['GetMemoryHealth']();
+}
+
 export function GetMemoryMaxBackups() {
   return window['go']['main']['App']['GetMemoryMaxBackups']();
 }
@@ -630,348 +638,348 @@ export function TriggerScheduledTask(arg1) {
   return window['go']['main']['App']['TriggerScheduledTask'](arg1);
 }
 
-// ClawNet P2P network bindings
-export function ClawNetEnsureDaemon() {
-  return window['go']['main']['App']['ClawNetEnsureDaemon']();
+// AgentNet P2P network bindings
+export function AgentNetEnsureDaemon() {
+  return window['go']['main']['App']['AgentNetEnsureDaemon']();
 }
 
-export function ClawNetStopDaemon() {
-  return window['go']['main']['App']['ClawNetStopDaemon']();
+export function AgentNetStopDaemon() {
+  return window['go']['main']['App']['AgentNetStopDaemon']();
 }
 
-export function ClawNetIsRunning() {
-  return window['go']['main']['App']['ClawNetIsRunning']();
+export function AgentNetIsRunning() {
+  return window['go']['main']['App']['AgentNetIsRunning']();
 }
 
-export function ClawNetGetStatus() {
-  return window['go']['main']['App']['ClawNetGetStatus']();
+export function AgentNetGetStatus() {
+  return window['go']['main']['App']['AgentNetGetStatus']();
 }
 
-export function ClawNetGetPeers() {
-  return window['go']['main']['App']['ClawNetGetPeers']();
+export function AgentNetGetPeers() {
+  return window['go']['main']['App']['AgentNetGetPeers']();
 }
 
-export function ClawNetGetCredits() {
-  return window['go']['main']['App']['ClawNetGetCredits']();
+export function AgentNetGetCredits() {
+  return window['go']['main']['App']['AgentNetGetCredits']();
 }
 
-export function ClawNetCreateTask(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetCreateTask'](arg1, arg2);
+export function AgentNetCreateTask(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetCreateTask'](arg1, arg2);
 }
 
-export function ClawNetSearchKnowledge(arg1) {
-  return window['go']['main']['App']['ClawNetSearchKnowledge'](arg1);
+export function AgentNetSearchKnowledge(arg1) {
+  return window['go']['main']['App']['AgentNetSearchKnowledge'](arg1);
 }
 
-export function ClawNetPublishKnowledge(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetPublishKnowledge'](arg1, arg2);
+export function AgentNetPublishKnowledge(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetPublishKnowledge'](arg1, arg2);
 }
 
-export function ClawNetSendDM(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetSendDM'](arg1, arg2);
+export function AgentNetSendDM(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetSendDM'](arg1, arg2);
 }
 
-export function ClawNetGetDMInbox() {
-  return window['go']['main']['App']['ClawNetGetDMInbox']();
+export function AgentNetGetDMInbox() {
+  return window['go']['main']['App']['AgentNetGetDMInbox']();
 }
 
-export function ClawNetListSwarmSessions() {
-  return window['go']['main']['App']['ClawNetListSwarmSessions']();
+export function AgentNetListSwarmSessions() {
+  return window['go']['main']['App']['AgentNetListSwarmSessions']();
 }
 
-export function ClawNetCreateSwarmSession(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetCreateSwarmSession'](arg1, arg2);
+export function AgentNetCreateSwarmSession(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetCreateSwarmSession'](arg1, arg2);
 }
 
-export function ClawNetGetResume() {
-  return window['go']['main']['App']['ClawNetGetResume']();
+export function AgentNetGetResume() {
+  return window['go']['main']['App']['AgentNetGetResume']();
 }
 
-export function ClawNetListPredictions() {
-  return window['go']['main']['App']['ClawNetListPredictions']();
+export function AgentNetListPredictions() {
+  return window['go']['main']['App']['AgentNetListPredictions']();
 }
 
-export function ClawNetGetBinaryPath() {
-  return window['go']['main']['App']['ClawNetGetBinaryPath']();
+export function AgentNetGetBinaryPath() {
+  return window['go']['main']['App']['AgentNetGetBinaryPath']();
 }
 
-export function ClawNetInstallBinary() {
-  return window['go']['main']['App']['ClawNetInstallBinary']();
+export function AgentNetInstallBinary() {
+  return window['go']['main']['App']['AgentNetInstallBinary']();
 }
 
-export function ClawNetEnsureDaemonWithDownload() {
-  return window['go']['main']['App']['ClawNetEnsureDaemonWithDownload']();
+export function AgentNetEnsureDaemonWithDownload() {
+  return window['go']['main']['App']['AgentNetEnsureDaemonWithDownload']();
 }
 
-export function ClawNetManualUpdate() {
-  return window['go']['main']['App']['ClawNetManualUpdate']();
+export function AgentNetManualUpdate() {
+  return window['go']['main']['App']['AgentNetManualUpdate']();
 }
 
-export function ClawNetListTasks(arg1) {
-  return window['go']['main']['App']['ClawNetListTasks'](arg1);
+export function AgentNetListTasks(arg1) {
+  return window['go']['main']['App']['AgentNetListTasks'](arg1);
 }
 
-// ClawNet extended bindings
-export function ClawNetGetProfile() {
-  return window['go']['main']['App']['ClawNetGetProfile']();
+// AgentNet extended bindings
+export function AgentNetGetProfile() {
+  return window['go']['main']['App']['AgentNetGetProfile']();
 }
 
-export function ClawNetUpdateProfile(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetUpdateProfile'](arg1, arg2);
+export function AgentNetUpdateProfile(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetUpdateProfile'](arg1, arg2);
 }
 
-export function ClawNetSetMotto(arg1) {
-  return window['go']['main']['App']['ClawNetSetMotto'](arg1);
+export function AgentNetSetMotto(arg1) {
+  return window['go']['main']['App']['AgentNetSetMotto'](arg1);
 }
 
-export function ClawNetListTopics() {
-  return window['go']['main']['App']['ClawNetListTopics']();
+export function AgentNetListTopics() {
+  return window['go']['main']['App']['AgentNetListTopics']();
 }
 
-export function ClawNetCreateTopic(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetCreateTopic'](arg1, arg2);
+export function AgentNetCreateTopic(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetCreateTopic'](arg1, arg2);
 }
 
-export function ClawNetGetTopicMessages(arg1) {
-  return window['go']['main']['App']['ClawNetGetTopicMessages'](arg1);
+export function AgentNetGetTopicMessages(arg1) {
+  return window['go']['main']['App']['AgentNetGetTopicMessages'](arg1);
 }
 
-export function ClawNetPostTopicMessage(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetPostTopicMessage'](arg1, arg2);
+export function AgentNetPostTopicMessage(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetPostTopicMessage'](arg1, arg2);
 }
 
-export function ClawNetBidOnTask(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ClawNetBidOnTask'](arg1, arg2, arg3);
+export function AgentNetBidOnTask(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AgentNetBidOnTask'](arg1, arg2, arg3);
 }
 
-export function ClawNetSubmitTaskResult(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetSubmitTaskResult'](arg1, arg2);
+export function AgentNetSubmitTaskResult(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetSubmitTaskResult'](arg1, arg2);
 }
 
-export function ClawNetApproveTask(arg1) {
-  return window['go']['main']['App']['ClawNetApproveTask'](arg1);
+export function AgentNetApproveTask(arg1) {
+  return window['go']['main']['App']['AgentNetApproveTask'](arg1);
 }
 
-export function ClawNetRejectTask(arg1) {
-  return window['go']['main']['App']['ClawNetRejectTask'](arg1);
+export function AgentNetRejectTask(arg1) {
+  return window['go']['main']['App']['AgentNetRejectTask'](arg1);
 }
 
-export function ClawNetCancelTask(arg1) {
-  return window['go']['main']['App']['ClawNetCancelTask'](arg1);
+export function AgentNetCancelTask(arg1) {
+  return window['go']['main']['App']['AgentNetCancelTask'](arg1);
 }
 
-export function ClawNetGetTaskBids(arg1) {
-  return window['go']['main']['App']['ClawNetGetTaskBids'](arg1);
+export function AgentNetGetTaskBids(arg1) {
+  return window['go']['main']['App']['AgentNetGetTaskBids'](arg1);
 }
 
-export function ClawNetMatchTasks() {
-  return window['go']['main']['App']['ClawNetMatchTasks']();
+export function AgentNetMatchTasks() {
+  return window['go']['main']['App']['AgentNetMatchTasks']();
 }
 
-export function ClawNetGetTaskBoard() {
-  return window['go']['main']['App']['ClawNetGetTaskBoard']();
+export function AgentNetGetTaskBoard() {
+  return window['go']['main']['App']['AgentNetGetTaskBoard']();
 }
 
-export function ClawNetGetTransactions() {
-  return window['go']['main']['App']['ClawNetGetTransactions']();
+export function AgentNetGetTransactions() {
+  return window['go']['main']['App']['AgentNetGetTransactions']();
 }
 
-export function ClawNetGetLeaderboard() {
-  return window['go']['main']['App']['ClawNetGetLeaderboard']();
+export function AgentNetGetLeaderboard() {
+  return window['go']['main']['App']['AgentNetGetLeaderboard']();
 }
 
-export function ClawNetGetDaemonInfo() {
-  return window['go']['main']['App']['ClawNetGetDaemonInfo']();
+export function AgentNetGetDaemonInfo() {
+  return window['go']['main']['App']['AgentNetGetDaemonInfo']();
 }
 
-export function ClawNetGetDiagnostics() {
-  return window['go']['main']['App']['ClawNetGetDiagnostics']();
+export function AgentNetGetDiagnostics() {
+  return window['go']['main']['App']['AgentNetGetDiagnostics']();
 }
 
-export function ClawNetGetCreditsAudit() {
-  return window['go']['main']['App']['ClawNetGetCreditsAudit']();
+export function AgentNetGetCreditsAudit() {
+  return window['go']['main']['App']['AgentNetGetCreditsAudit']();
 }
 
-export function ClawNetSelfUpdate() {
-  return window['go']['main']['App']['ClawNetSelfUpdate']();
+export function AgentNetSelfUpdate() {
+  return window['go']['main']['App']['AgentNetSelfUpdate']();
 }
 
-export function ClawNetGetKnowledgeFeed(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetGetKnowledgeFeed'](arg1, arg2);
+export function AgentNetGetKnowledgeFeed(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetGetKnowledgeFeed'](arg1, arg2);
 }
 
-export function ClawNetGetDMThread(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetGetDMThread'](arg1, arg2);
+export function AgentNetGetDMThread(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetGetDMThread'](arg1, arg2);
 }
 
-export function ClawNetHasIdentity() {
-  return window['go']['main']['App']['ClawNetHasIdentity']();
+export function AgentNetHasIdentity() {
+  return window['go']['main']['App']['AgentNetHasIdentity']();
 }
 
-export function ClawNetExportIdentity() {
-  return window['go']['main']['App']['ClawNetExportIdentity']();
+export function AgentNetExportIdentity() {
+  return window['go']['main']['App']['AgentNetExportIdentity']();
 }
 
-export function ClawNetImportIdentity() {
-  return window['go']['main']['App']['ClawNetImportIdentity']();
+export function AgentNetImportIdentity() {
+  return window['go']['main']['App']['AgentNetImportIdentity']();
 }
 
-export function ClawNetOnlineBackupKey(arg1) {
-  return window['go']['main']['App']['ClawNetOnlineBackupKey'](arg1);
+export function AgentNetOnlineBackupKey(arg1) {
+  return window['go']['main']['App']['AgentNetOnlineBackupKey'](arg1);
 }
 
-export function ClawNetOnlineRestoreKey(arg1) {
-  return window['go']['main']['App']['ClawNetOnlineRestoreKey'](arg1);
+export function AgentNetOnlineRestoreKey(arg1) {
+  return window['go']['main']['App']['AgentNetOnlineRestoreKey'](arg1);
 }
 
-// ClawNet Hub-relayed task discovery
-export function ClawNetBrowseNetworkTasks() {
-  return window['go']['main']['App']['ClawNetBrowseNetworkTasks']();
+// AgentNet Hub-relayed task discovery
+export function AgentNetBrowseNetworkTasks() {
+  return window['go']['main']['App']['AgentNetBrowseNetworkTasks']();
 }
 
-export function ClawNetPublishTasksToHub() {
-  return window['go']['main']['App']['ClawNetPublishTasksToHub']();
+export function AgentNetPublishTasksToHub() {
+  return window['go']['main']['App']['AgentNetPublishTasksToHub']();
 }
 
-export function ClawNetAutoPickerGetStatus() {
-  return window['go']['main']['App']['ClawNetAutoPickerGetStatus']();
+export function AgentNetAutoPickerGetStatus() {
+  return window['go']['main']['App']['AgentNetAutoPickerGetStatus']();
 }
 
-export function ClawNetAutoPickerConfigure(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['ClawNetAutoPickerConfigure'](arg1, arg2, arg3, arg4);
+export function AgentNetAutoPickerConfigure(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['AgentNetAutoPickerConfigure'](arg1, arg2, arg3, arg4);
 }
 
-export function ClawNetAutoPickerTriggerNow() {
-  return window['go']['main']['App']['ClawNetAutoPickerTriggerNow']();
+export function AgentNetAutoPickerTriggerNow() {
+  return window['go']['main']['App']['AgentNetAutoPickerTriggerNow']();
 }
 
-export function ClawNetManualPickTask(arg1) {
-  return window['go']['main']['App']['ClawNetManualPickTask'](arg1);
+export function AgentNetManualPickTask(arg1) {
+  return window['go']['main']['App']['AgentNetManualPickTask'](arg1);
 }
 
-export function ClawNetUpdateResume(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ClawNetUpdateResume'](arg1, arg2, arg3);
+export function AgentNetUpdateResume(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AgentNetUpdateResume'](arg1, arg2, arg3);
 }
 
-export function ClawNetJoinSwarm(arg1) {
-  return window['go']['main']['App']['ClawNetJoinSwarm'](arg1);
+export function AgentNetJoinSwarm(arg1) {
+  return window['go']['main']['App']['AgentNetJoinSwarm'](arg1);
 }
 
-export function ClawNetContributeToSwarm(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ClawNetContributeToSwarm'](arg1, arg2, arg3);
+export function AgentNetContributeToSwarm(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AgentNetContributeToSwarm'](arg1, arg2, arg3);
 }
 
-export function ClawNetSynthesizeSwarm(arg1) {
-  return window['go']['main']['App']['ClawNetSynthesizeSwarm'](arg1);
+export function AgentNetSynthesizeSwarm(arg1) {
+  return window['go']['main']['App']['AgentNetSynthesizeSwarm'](arg1);
 }
 
-export function ClawNetReactKnowledge(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetReactKnowledge'](arg1, arg2);
+export function AgentNetReactKnowledge(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetReactKnowledge'](arg1, arg2);
 }
 
-export function ClawNetReplyKnowledge(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetReplyKnowledge'](arg1, arg2);
+export function AgentNetReplyKnowledge(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetReplyKnowledge'](arg1, arg2);
 }
 
-export function ClawNetGetKnowledgeReplies(arg1) {
-  return window['go']['main']['App']['ClawNetGetKnowledgeReplies'](arg1);
+export function AgentNetGetKnowledgeReplies(arg1) {
+  return window['go']['main']['App']['AgentNetGetKnowledgeReplies'](arg1);
 }
 
-export function ClawNetPublishKnowledgeFull(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ClawNetPublishKnowledgeFull'](arg1, arg2, arg3);
+export function AgentNetPublishKnowledgeFull(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AgentNetPublishKnowledgeFull'](arg1, arg2, arg3);
 }
 
-export function ClawNetAssignTask(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetAssignTask'](arg1, arg2);
+export function AgentNetAssignTask(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetAssignTask'](arg1, arg2);
 }
 
-export function ClawNetClaimTask(arg1) {
-  return window['go']['main']['App']['ClawNetClaimTask'](arg1);
+export function AgentNetClaimTask(arg1) {
+  return window['go']['main']['App']['AgentNetClaimTask'](arg1);
 }
 
-export function ClawNetCreateTaskFull(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['ClawNetCreateTaskFull'](arg1, arg2, arg3, arg4, arg5);
+export function AgentNetCreateTaskFull(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['AgentNetCreateTaskFull'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function ClawNetMatchAgentsForTask(arg1) {
-  return window['go']['main']['App']['ClawNetMatchAgentsForTask'](arg1);
+export function AgentNetMatchAgentsForTask(arg1) {
+  return window['go']['main']['App']['AgentNetMatchAgentsForTask'](arg1);
 }
 
-export function ClawNetSubmitTaskWork(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetSubmitTaskWork'](arg1, arg2);
+export function AgentNetSubmitTaskWork(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetSubmitTaskWork'](arg1, arg2);
 }
 
-export function ClawNetGetTaskSubmissions(arg1) {
-  return window['go']['main']['App']['ClawNetGetTaskSubmissions'](arg1);
+export function AgentNetGetTaskSubmissions(arg1) {
+  return window['go']['main']['App']['AgentNetGetTaskSubmissions'](arg1);
 }
 
-export function ClawNetPickTaskWinner(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetPickTaskWinner'](arg1, arg2);
+export function AgentNetPickTaskWinner(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetPickTaskWinner'](arg1, arg2);
 }
 
-export function ClawNetGetOverlayStatus() {
-  return window['go']['main']['App']['ClawNetGetOverlayStatus']();
+export function AgentNetGetOverlayStatus() {
+  return window['go']['main']['App']['AgentNetGetOverlayStatus']();
 }
 
-export function ClawNetGetOverlayPeersGeo() {
-  return window['go']['main']['App']['ClawNetGetOverlayPeersGeo']();
+export function AgentNetGetOverlayPeersGeo() {
+  return window['go']['main']['App']['AgentNetGetOverlayPeersGeo']();
 }
 
-export function ClawNetCreatePrediction(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetCreatePrediction'](arg1, arg2);
+export function AgentNetCreatePrediction(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetCreatePrediction'](arg1, arg2);
 }
 
-export function ClawNetPlaceBet(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ClawNetPlaceBet'](arg1, arg2, arg3);
+export function AgentNetPlaceBet(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AgentNetPlaceBet'](arg1, arg2, arg3);
 }
 
-export function ClawNetResolvePrediction(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetResolvePrediction'](arg1, arg2);
+export function AgentNetResolvePrediction(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetResolvePrediction'](arg1, arg2);
 }
 
-export function ClawNetAppealPrediction(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetAppealPrediction'](arg1, arg2);
+export function AgentNetAppealPrediction(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetAppealPrediction'](arg1, arg2);
 }
 
-export function ClawNetGetPredictionLeaderboard() {
-  return window['go']['main']['App']['ClawNetGetPredictionLeaderboard']();
+export function AgentNetGetPredictionLeaderboard() {
+  return window['go']['main']['App']['AgentNetGetPredictionLeaderboard']();
 }
 
 // Nutshell bindings
-export function ClawNetNutshellStatus() {
-  return window['go']['main']['App']['ClawNetNutshellStatus']();
+export function AgentNetNutshellStatus() {
+  return window['go']['main']['App']['AgentNetNutshellStatus']();
 }
 
-export function ClawNetNutshellInstall() {
-  return window['go']['main']['App']['ClawNetNutshellInstall']();
+export function AgentNetNutshellInstall() {
+  return window['go']['main']['App']['AgentNetNutshellInstall']();
 }
 
-export function ClawNetNutshellInit(arg1) {
-  return window['go']['main']['App']['ClawNetNutshellInit'](arg1);
+export function AgentNetNutshellInit(arg1) {
+  return window['go']['main']['App']['AgentNetNutshellInit'](arg1);
 }
 
-export function ClawNetNutshellCheck(arg1) {
-  return window['go']['main']['App']['ClawNetNutshellCheck'](arg1);
+export function AgentNetNutshellCheck(arg1) {
+  return window['go']['main']['App']['AgentNetNutshellCheck'](arg1);
 }
 
-export function ClawNetNutshellPublish(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetNutshellPublish'](arg1, arg2);
+export function AgentNetNutshellPublish(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetNutshellPublish'](arg1, arg2);
 }
 
-export function ClawNetNutshellClaim(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetNutshellClaim'](arg1, arg2);
+export function AgentNetNutshellClaim(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetNutshellClaim'](arg1, arg2);
 }
 
-export function ClawNetNutshellDeliver(arg1) {
-  return window['go']['main']['App']['ClawNetNutshellDeliver'](arg1);
+export function AgentNetNutshellDeliver(arg1) {
+  return window['go']['main']['App']['AgentNetNutshellDeliver'](arg1);
 }
 
-export function ClawNetNutshellPack(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ClawNetNutshellPack'](arg1, arg2, arg3);
+export function AgentNetNutshellPack(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AgentNetNutshellPack'](arg1, arg2, arg3);
 }
 
-export function ClawNetNutshellUnpack(arg1, arg2) {
-  return window['go']['main']['App']['ClawNetNutshellUnpack'](arg1, arg2);
+export function AgentNetNutshellUnpack(arg1, arg2) {
+  return window['go']['main']['App']['AgentNetNutshellUnpack'](arg1, arg2);
 }
 
 // AI Assistant bindings
@@ -1026,6 +1034,10 @@ export function ListBackgroundLoops() {
 
 export function StopBackgroundLoop(arg1) {
   return window['go']['main']['App']['StopBackgroundLoop'](arg1);
+}
+
+export function StopAllBackgroundLoops() {
+  return window['go']['main']['App']['StopAllBackgroundLoops']();
 }
 
 export function ContinueBackgroundLoop(arg1, arg2) {

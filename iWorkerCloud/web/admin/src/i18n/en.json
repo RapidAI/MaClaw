@@ -1,0 +1,38 @@
+{
+  "app": { "title": "iWorkerCloud Admin", "loading": "Loading..." },
+  "nav": { "overview": "Overview", "centers": "Centers", "licenses": "Licenses", "compute": "Compute Power", "settings": "Settings" },
+  "subtitle": {
+    "overview": "View iWorkerCenter registration and license overview.",
+    "centers": "Review, enable, disable registered iWorkerCenters.",
+    "licenses": "Manage module authorization certificates.",
+    "compute": "Manage LLM providers, compute permissions and usage stats.",
+    "settings": "Change admin password."
+  },
+  "login": { "title": "Admin Login", "username": "Username", "password": "Password", "submit": "Sign In", "error": "Login failed" },
+  "setup": { "title": "Initial Setup", "description": "First time use. Please set up an admin account." },
+  "centers": {
+    "pending": "Pending", "active": "Active", "disabled": "Disabled",
+    "confirmTrial": "Confirm Trial (30 days)", "confirmManual": "Manual Authorize",
+    "disable": "Disable", "enable": "Enable", "delete": "Delete",
+    "empty": "No registered iWorkerCenters."
+  },
+  "licenses": {
+    "issue": "Issue License", "revoke": "Revoke", "viewCert": "View Certificate",
+    "longTerm": "Long-term", "valid": "Valid", "revoked": "Revoked",
+    "empty": "No licenses.",
+    "centerId": "Center ID", "days": "Days", "modules": "Modules"
+  },
+  "common": { "save": "Save", "cancel": "Cancel", "confirm": "Confirm", "refresh": "Refresh", "loading": "Loading...", "noData": "No data", "success": "Success", "error": "Error", "logout": "Logout" },
+  "compute": {
+    "providers": "LLM Providers",
+    "centerPermissions": "Center Compute Permissions",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "selfManaged": "Self-managed",
+    "cloudManaged": "Cloud-managed",
+    "grantPermission": "Grant Self-management",
+    "revokePermission": "Revoke Self-management",
+    "test": "Test Connectivity",
+    "addProvider": "Add Provider"
+  }
+}

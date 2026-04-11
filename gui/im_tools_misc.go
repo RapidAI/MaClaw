@@ -1,7 +1,7 @@
 package main
 
 // Miscellaneous tools: MCP, skills, memory, templates, config, nickname,
-// LLM provider switch, scheduled tasks, ClawNet, audit log, web search/fetch.
+// LLM provider switch, scheduled tasks, AgentNet, audit log, web search/fetch.
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
@@ -229,6 +230,8 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	if err := h.app.skillExecutor.Register(*entry); err != nil {
 		return fmt.Sprintf("注册失败: %s", err.Error())
 	}
+	// Auto-install dependencies for file-backed skills.
+	go h.app.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
 
 	// Audit log
 	h.app.ensureAuditLog()
@@ -717,6 +720,11 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 					}
 				}
 			}
+		}
+		// Auto-enrich tags from content when LLM didn't provide any.
+		if len(tags) == 0 {
+			expanded := corememory.ExpandQuery(content)
+			tags = expanded.Entities
 		}
 		entry := MemoryEntry{
 			Content:  content,
@@ -1250,17 +1258,17 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 	return "✅ 定时任务已更新"
 }
 
-// ---------- ClawNet Knowledge Tools ----------
+// ---------- AgentNet Knowledge Tools ----------
 
-func (h *IMMessageHandler) toolClawNetSearch(args map[string]interface{}) string {
-	if h.app.clawNetClient == nil || !h.app.clawNetClient.IsRunning() {
-		return "智网未连接，请先在设置中启用 ClawNet"
+func (h *IMMessageHandler) toolAgentNetSearch(args map[string]interface{}) string {
+	if h.app.agentNetClient == nil || !h.app.agentNetClient.IsRunning() {
+		return "智网未连接，请先在设置中启用 AgentNet"
 	}
 	query := stringVal(args, "query")
 	if query == "" {
 		return "缺少 query 参数"
 	}
-	entries, err := h.app.clawNetClient.SearchKnowledge(query)
+	entries, err := h.app.agentNetClient.SearchKnowledge(query)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %s", err.Error())
 	}
@@ -1293,9 +1301,9 @@ func (h *IMMessageHandler) toolClawNetSearch(args map[string]interface{}) string
 	return b.String()
 }
 
-func (h *IMMessageHandler) toolClawNetPublish(args map[string]interface{}) string {
-	if h.app.clawNetClient == nil || !h.app.clawNetClient.IsRunning() {
-		return "智网未连接，请先在设置中启用 ClawNet"
+func (h *IMMessageHandler) toolAgentNetPublish(args map[string]interface{}) string {
+	if h.app.agentNetClient == nil || !h.app.agentNetClient.IsRunning() {
+		return "智网未连接，请先在设置中启用 AgentNet"
 	}
 	title := stringVal(args, "title")
 	body := stringVal(args, "body")
@@ -1305,7 +1313,7 @@ func (h *IMMessageHandler) toolClawNetPublish(args map[string]interface{}) strin
 	if body == "" {
 		return "缺少 body 参数"
 	}
-	entry, err := h.app.clawNetClient.PublishKnowledge(title, body)
+	entry, err := h.app.agentNetClient.PublishKnowledge(title, body)
 	if err != nil {
 		return fmt.Sprintf("发布失败: %s", err.Error())
 	}

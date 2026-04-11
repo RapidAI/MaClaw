@@ -48,7 +48,7 @@ func RunMemory(args []string, dataDir string) error {
 }
 
 func openMemoryStore(dataDir string) (*memory.Store, error) {
-	path := filepath.Join(dataDir, "memory.json")
+	path := filepath.Join(dataDir, "memories.json")
 	return memory.NewStore(path)
 }
 

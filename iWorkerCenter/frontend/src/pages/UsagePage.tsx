@@ -1,42 +1,82 @@
+import { useEffect, useState } from 'react';
 import { SectionCard } from '../components/cards/SectionCard';
 import { DataTable } from '../components/table/DataTable';
 
-const rows = [
-  { metric: '今日调用量', value: '3,248', trend: '+12%', scope: '全中心' },
-  { metric: '活跃数字员工', value: '18', trend: '+2', scope: '最近 24 小时' },
-  { metric: '平均响应耗时', value: '4.2s', trend: '-0.6s', scope: '核心任务' },
-];
+type AuditStats = {
+  total_requests: number;
+  ok_count: number;
+  error_count: number;
+  avg_latency_ms: number;
+  top_provider: string;
+  top_work_type: string;
+};
 
-const hotspots = [
-  { title: '办公同事调用量最高', desc: '周报、纪要和邮件草稿占比持续提升', tag: '热点' },
-  { title: '数据同事响应更快', desc: '最近 7 天平均响应耗时下降明显', tag: '优化中' },
+const hasWails = () => typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
+
+const defaultRows = [
+  { metric: '今日调用量', value: '0', trend: '-', scope: '全中心' },
+  { metric: '成功率', value: '-', trend: '-', scope: '最近 24 小时' },
+  { metric: '平均响应耗时', value: '-', trend: '-', scope: '核心任务' },
 ];
 
 export function UsagePage() {
+  const [rows, setRows] = useState(defaultRows);
+  const [loading, setLoading] = useState(false);
+  const [topInfo, setTopInfo] = useState<{ provider: string; workType: string }>({ provider: '', workType: '' });
+
+  useEffect(() => {
+    if (!hasWails()) return;
+    setLoading(true);
+    (window as any).go.main.App.GetAuditStats(24)
+      .then((stats: AuditStats) => {
+        if (!stats) return;
+        const successRate = stats.total_requests > 0
+          ? `${((stats.ok_count / stats.total_requests) * 100).toFixed(1)}%`
+          : '-';
+        setRows([
+          { metric: '今日调用量', value: String(stats.total_requests), trend: `成功 ${stats.ok_count}`, scope: '最近 24 小时' },
+          { metric: '成功率', value: successRate, trend: `失败 ${stats.error_count}`, scope: '最近 24 小时' },
+          { metric: '平均响应耗时', value: `${stats.avg_latency_ms}ms`, trend: '-', scope: '核心任务' },
+        ]);
+        setTopInfo({ provider: stats.top_provider || '-', workType: stats.top_work_type || '-' });
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
   return (
     <div className="center-page-stack">
-      <SectionCard title="使用情况" desc="跟踪调用量、活跃度和关键趋势变化。">
+      <SectionCard title="使用情况" desc={`LLM 代理调用统计。${loading ? ' 加载中...' : ''}`}>
         <DataTable
           columns={[
             { key: 'metric', label: '指标' },
             { key: 'value', label: '当前值' },
-            { key: 'trend', label: '趋势' },
+            { key: 'trend', label: '详情' },
             { key: 'scope', label: '统计范围' },
           ]}
           rows={rows}
         />
       </SectionCard>
-      <SectionCard title="热点观察" desc="补充高频使用场景和近期变化。">
-        <div className="item-list">
-          {hotspots.map((item) => (
-            <div key={item.title} className="item-row">
-              <strong>{item.title}</strong>
-              <p>{item.desc}</p>
-              <span className="badge info">{item.tag}</span>
-            </div>
-          ))}
-        </div>
-      </SectionCard>
+      {(topInfo.provider || topInfo.workType) && (
+        <SectionCard title="热点观察" desc="最近 24 小时的高频使用模式。">
+          <div className="item-list">
+            {topInfo.provider && topInfo.provider !== '-' && (
+              <div className="item-row">
+                <strong>最常用提供商: {topInfo.provider}</strong>
+                <p>该提供商在最近 24 小时内被调用最多</p>
+                <span className="badge info">热点</span>
+              </div>
+            )}
+            {topInfo.workType && topInfo.workType !== '-' && (
+              <div className="item-row">
+                <strong>最常见任务类型: {topInfo.workType}</strong>
+                <p>该任务类型在最近 24 小时内出现最多</p>
+                <span className="badge info">热点</span>
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      )}
     </div>
   );
 }

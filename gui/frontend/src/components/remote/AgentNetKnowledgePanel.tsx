@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-    ClawNetGetKnowledgeFeed,
-    ClawNetSearchKnowledge,
-    ClawNetPublishKnowledgeFull,
-    ClawNetReactKnowledge,
-    ClawNetReplyKnowledge,
-    ClawNetGetKnowledgeReplies,
+    AgentNetGetKnowledgeFeed,
+    AgentNetSearchKnowledge,
+    AgentNetPublishKnowledgeFull,
+    AgentNetReactKnowledge,
+    AgentNetReplyKnowledge,
+    AgentNetGetKnowledgeReplies,
 } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 import { cnCard, cnLabel, cnInput, cnActionBtn, cnTabStyle } from "./agentnetStyles";
@@ -14,7 +14,7 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-type Props = { lang: string; clawNetRunning: boolean };
+type Props = { lang: string; agentNetRunning: boolean };
 
 interface KnowledgeEntry {
     id: string; title: string; body?: string; author?: string;
@@ -22,7 +22,7 @@ interface KnowledgeEntry {
     created_at?: string;
 }
 
-export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
+export function AgentNetKnowledgePanel({ lang, agentNetRunning }: Props) {
     const [tab, setTab] = useState<"feed" | "search" | "publish">("feed");
     const [entries, setEntries] = useState<KnowledgeEntry[]>([]);
     const [loading, setLoading] = useState(false);
@@ -41,26 +41,26 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
     useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
     const loadFeed = useCallback(async () => {
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         setLoading(true); setError("");
         try {
-            const res = await ClawNetGetKnowledgeFeed("", 30);
+            const res = await AgentNetGetKnowledgeFeed("", 30);
             if (mountedRef.current && res.ok) setEntries((res.entries as KnowledgeEntry[]) || []);
             else if (mountedRef.current && res.error) setError(res.error as string);
         } catch (e: any) { if (mountedRef.current) setError(e.message); }
         if (mountedRef.current) setLoading(false);
-    }, [clawNetRunning]);
+    }, [agentNetRunning]);
 
     const doSearch = useCallback(async () => {
-        if (!clawNetRunning || !query.trim()) return;
+        if (!agentNetRunning || !query.trim()) return;
         setLoading(true); setError("");
         try {
-            const res = await ClawNetSearchKnowledge(query.trim());
+            const res = await AgentNetSearchKnowledge(query.trim());
             if (mountedRef.current && res.ok) setEntries((res.entries as KnowledgeEntry[]) || []);
             else if (mountedRef.current && res.error) setError(res.error as string);
         } catch (e: any) { if (mountedRef.current) setError(e.message); }
         if (mountedRef.current) setLoading(false);
-    }, [clawNetRunning, query]);
+    }, [agentNetRunning, query]);
 
     useEffect(() => { if (tab === "feed") loadFeed(); }, [tab, loadFeed]);
 
@@ -69,7 +69,7 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
         setPubBusy(true); setPubMsg("");
         try {
             const tags = pubTags.split(",").map(s => s.trim()).filter(Boolean);
-            const res = await ClawNetPublishKnowledgeFull(pubTitle.trim(), pubBody.trim(), tags);
+            const res = await AgentNetPublishKnowledgeFull(pubTitle.trim(), pubBody.trim(), tags);
             if (res.ok) { setPubMsg(localizeText(lang, "✅ Published", "✅ 发布成功")); setPubTitle(""); setPubBody(""); setPubTags(""); }
             else setPubMsg(`❌ ${res.error}`);
         } catch (e: any) { setPubMsg(`❌ ${e.message}`); }
@@ -83,14 +83,14 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
     }, [tab, query, doSearch, loadFeed]);
 
     const handleReact = async (id: string, reaction: string) => {
-        try { await ClawNetReactKnowledge(id, reaction); refreshCurrentView(); } catch {}
+        try { await AgentNetReactKnowledge(id, reaction); refreshCurrentView(); } catch {}
     };
 
     const toggleReplies = async (id: string) => {
         if (expandedId === id) { setExpandedId(null); return; }
         setExpandedId(id); setReplies([]); setReplyText("");
         try {
-            const res = await ClawNetGetKnowledgeReplies(id);
+            const res = await AgentNetGetKnowledgeReplies(id);
             if (res.ok) setReplies(res.replies as any[] || []);
         } catch {}
     };
@@ -99,13 +99,13 @@ export function ClawNetKnowledgePanel({ lang, clawNetRunning }: Props) {
         if (!expandedId || !replyText.trim()) return;
         setReplyBusy(true);
         try {
-            const res = await ClawNetReplyKnowledge(expandedId, replyText.trim());
+            const res = await AgentNetReplyKnowledge(expandedId, replyText.trim());
             if (res.ok) { setReplyText(""); toggleReplies(expandedId); }
         } catch {}
         setReplyBusy(false);
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
+    if (!agentNetRunning) return <div style={cnLabel}>{localizeText(lang, "AgentNet not connected", "智网未连接")}</div>;
 
     return (
         <div style={{ padding: "10px 14px" }}>

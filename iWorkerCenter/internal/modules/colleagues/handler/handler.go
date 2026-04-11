@@ -10,6 +10,7 @@ import (
 	roleDomain "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/domain"
 	roleRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/repo"
 	roleSvc "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/service"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
 
@@ -81,7 +82,7 @@ func (h *Handler) handleAdminColleagueByID(w http.ResponseWriter, r *http.Reques
 	if strings.HasSuffix(path, "/role-history") {
 		id = strings.TrimSuffix(id, "/role-history")
 		if r.Method == http.MethodGet {
-			h.roleHistory(w, id)
+			h.roleHistory(w, r, id)
 			return
 		}
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
@@ -90,7 +91,7 @@ func (h *Handler) handleAdminColleagueByID(w http.ResponseWriter, r *http.Reques
 
 	switch r.Method {
 	case http.MethodGet:
-		h.getColleague(w, id)
+		h.getColleague(w, r, id)
 	case http.MethodPut:
 		h.updateColleague(w, r, id)
 	default:
@@ -104,77 +105,89 @@ func (h *Handler) handleClientColleagues(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	tid := tenant.TenantIDFromContext(r.Context())
+
 	// optional filter by role_id
 	roleID := r.URL.Query().Get("role_id")
 	var items []*domain.Colleague
 	var err error
 	if roleID != "" {
-		items, err = h.svc.ListByRoleID(roleID)
+		items, err = h.svc.ListByRoleID(tid, roleID)
 	} else {
-		items, err = h.svc.ListActive()
+		items, err = h.svc.ListActive(tid)
 	}
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
 	}
-	response.OK(w, map[string]any{"colleagues": h.toClientDTOs(items)})
+	response.OK(w, map[string]any{"colleagues": h.toClientDTOs(tid, items)})
 }
 
 func (h *Handler) listColleagues(w http.ResponseWriter, r *http.Request) {
+	tid := tenant.TenantIDFromContext(r.Context())
+
 	// optional filter by role_id
 	roleID := r.URL.Query().Get("role_id")
 	var items []*domain.Colleague
 	var err error
 	if roleID != "" {
-		items, err = h.svc.ListByRoleID(roleID)
+		items, err = h.svc.ListByRoleID(tid, roleID)
 	} else {
-		items, err = h.svc.List()
+		items, err = h.svc.List(tid)
 	}
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
 	}
-	response.OK(w, map[string]any{"colleagues": h.toAdminDTOs(items)})
+	response.OK(w, map[string]any{"colleagues": h.toAdminDTOs(tid, items)})
 }
 
 func (h *Handler) createColleague(w http.ResponseWriter, r *http.Request) {
+	tid := tenant.TenantIDFromContext(r.Context())
+
 	var req service.CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
-	c, err := h.svc.Create(req)
+	c, err := h.svc.Create(tid, req)
 	if err != nil {
 		response.BadRequest(w, "CREATE_FAILED", err.Error())
 		return
 	}
-	response.Created(w, h.toAdminDTO(c))
+	response.Created(w, h.toAdminDTO(tid, c))
 }
 
-func (h *Handler) getColleague(w http.ResponseWriter, id string) {
-	c, err := h.svc.GetByID(id)
+func (h *Handler) getColleague(w http.ResponseWriter, r *http.Request, id string) {
+	tid := tenant.TenantIDFromContext(r.Context())
+
+	c, err := h.svc.GetByID(tid, id)
 	if err != nil {
 		response.NotFound(w, "NOT_FOUND", "colleague not found")
 		return
 	}
-	response.OK(w, h.toAdminDTO(c))
+	response.OK(w, h.toAdminDTO(tid, c))
 }
 
 func (h *Handler) updateColleague(w http.ResponseWriter, r *http.Request, id string) {
+	tid := tenant.TenantIDFromContext(r.Context())
+
 	var req service.UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
-	c, err := h.svc.Update(id, req)
+	c, err := h.svc.Update(tid, id, req)
 	if err != nil {
 		response.BadRequest(w, "UPDATE_FAILED", err.Error())
 		return
 	}
-	response.OK(w, h.toAdminDTO(c))
+	response.OK(w, h.toAdminDTO(tid, c))
 }
 
 func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
+	tid := tenant.TenantIDFromContext(r.Context())
+
 	var req struct {
 		Status string `json:"status"`
 	}
@@ -182,7 +195,7 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
-	if err := h.svc.SetStatus(id, req.Status); err != nil {
+	if err := h.svc.SetStatus(tid, id, req.Status); err != nil {
 		response.BadRequest(w, "STATUS_FAILED", err.Error())
 		return
 	}
@@ -190,20 +203,24 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func (h *Handler) assignRole(w http.ResponseWriter, r *http.Request, id string) {
+	tid := tenant.TenantIDFromContext(r.Context())
+
 	var req service.AssignRoleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
-	if err := h.svc.AssignRole(id, req); err != nil {
+	if err := h.svc.AssignRole(tid, id, req); err != nil {
 		response.BadRequest(w, "ASSIGN_FAILED", err.Error())
 		return
 	}
 	response.OK(w, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) roleHistory(w http.ResponseWriter, colleagueID string) {
-	logs, err := h.roleSvc.GetAssignmentHistory(colleagueID)
+func (h *Handler) roleHistory(w http.ResponseWriter, r *http.Request, colleagueID string) {
+	tid := tenant.TenantIDFromContext(r.Context())
+
+	logs, err := h.roleSvc.GetAssignmentHistory(tid, colleagueID)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -256,16 +273,16 @@ type clientDTO struct {
 	Tasks       []string `json:"tasks"`
 }
 
-func (h *Handler) resolveRole(roleID string) *roleDomain.Role {
+func (h *Handler) resolveRole(tenantID string, roleID string) *roleDomain.Role {
 	if roleID == "" {
 		return nil
 	}
-	r, _ := h.roleRepo.GetByID(roleID)
+	r, _ := h.roleRepo.GetByID(tenantID, roleID)
 	return r
 }
 
-func (h *Handler) toAdminDTO(c *domain.Colleague) adminDTO {
-	role := h.resolveRole(c.RoleID)
+func (h *Handler) toAdminDTO(tenantID string, c *domain.Colleague) adminDTO {
+	role := h.resolveRole(tenantID, c.RoleID)
 	dto := adminDTO{
 		ID: c.ID, Name: c.Name, Avatar: c.Avatar,
 		RoleID: c.RoleID, Description: c.Description,
@@ -280,16 +297,16 @@ func (h *Handler) toAdminDTO(c *domain.Colleague) adminDTO {
 	return dto
 }
 
-func (h *Handler) toAdminDTOs(items []*domain.Colleague) []adminDTO {
+func (h *Handler) toAdminDTOs(tenantID string, items []*domain.Colleague) []adminDTO {
 	dtos := make([]adminDTO, 0, len(items))
 	for _, c := range items {
-		dtos = append(dtos, h.toAdminDTO(c))
+		dtos = append(dtos, h.toAdminDTO(tenantID, c))
 	}
 	return dtos
 }
 
-func (h *Handler) toClientDTO(c *domain.Colleague) clientDTO {
-	role := h.resolveRole(c.RoleID)
+func (h *Handler) toClientDTO(tenantID string, c *domain.Colleague) clientDTO {
+	role := h.resolveRole(tenantID, c.RoleID)
 	dto := clientDTO{
 		ID: c.ID, Name: c.Name, Avatar: c.Avatar,
 		RoleID: c.RoleID, Description: c.Description,
@@ -302,10 +319,10 @@ func (h *Handler) toClientDTO(c *domain.Colleague) clientDTO {
 	return dto
 }
 
-func (h *Handler) toClientDTOs(items []*domain.Colleague) []clientDTO {
+func (h *Handler) toClientDTOs(tenantID string, items []*domain.Colleague) []clientDTO {
 	dtos := make([]clientDTO, 0, len(items))
 	for _, c := range items {
-		dtos = append(dtos, h.toClientDTO(c))
+		dtos = append(dtos, h.toClientDTO(tenantID, c))
 	}
 	return dtos
 }

@@ -13,8 +13,8 @@ import kiloIcon from './assets/images/KiloCode.png';
 import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import clawnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, ClawNetIsRunning, ClawNetEnsureDaemonWithDownload, ClawNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders } from "../wailsjs/go/main/App";
+import agentnetIcon from './assets/images/clawnet.svg';
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -34,8 +34,8 @@ import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
 import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
-import { ClawNetPanel } from './components/remote/AgentNetPanel';
-import { ClawNetTabContainer } from './components/remote/AgentNetTabContainer';
+import { AgentNetPanel } from './components/remote/AgentNetPanel';
+import { AgentNetTabContainer } from './components/remote/AgentNetTabContainer';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
 import { AboutPanel } from './components/AboutPanel';
@@ -354,6 +354,22 @@ const translations: any = {
         "showMore": "Show More",
         "showLess": "Show Less",
         "installLog": "View Log",
+        "memoryHealth": "Memory Health",
+        "memoryHealthTitle": "Memory Health Dashboard",
+        "memHealthCapacity": "Capacity",
+        "memHealthArchived": "Archived",
+        "memHealthStale": "Stale",
+        "memHealthOrphan": "Orphan (no links)",
+        "memHealthNoEmbed": "No Embedding",
+        "memHealthPinned": "Pinned",
+        "memHealthVersioned": "With History",
+        "memHealthEmbedder": "Embedder",
+        "memHealthAvgAccess": "Avg Access",
+        "memHealthOldest": "Oldest",
+        "memHealthNewest": "Newest",
+        "memHealthCategories": "Category Distribution",
+        "memHealthUnavailable": "Memory system not initialized.",
+        "loading": "Loading",
         "installLogTitle": "Installation Logs",
         "sendLog": "Send Log",
         "sendLogSubject": "MaClaw Environment Log",
@@ -824,6 +840,22 @@ const translations: any = {
         "showMore": "更多",
         "showLess": "收起",
         "installLog": "查看日志",
+        "memoryHealth": "记忆健康",
+        "memoryHealthTitle": "记忆健康仪表盘",
+        "memHealthCapacity": "容量",
+        "memHealthArchived": "已归档",
+        "memHealthStale": "可能过时",
+        "memHealthOrphan": "孤立（无关联）",
+        "memHealthNoEmbed": "无向量",
+        "memHealthPinned": "已固定",
+        "memHealthVersioned": "有历史版本",
+        "memHealthEmbedder": "向量引擎",
+        "memHealthAvgAccess": "平均访问",
+        "memHealthOldest": "最早",
+        "memHealthNewest": "最新",
+        "memHealthCategories": "分类分布",
+        "memHealthUnavailable": "记忆系统未初始化。",
+        "loading": "加载中",
         "installLogTitle": "环境检查与安装日志",
         "sendLog": "发送日志",
         "sendLogSubject": "MaClaw环境安装日志",
@@ -1272,6 +1304,22 @@ const translations: any = {
         "showMore": "更多",
         "showLess": "收起",
         "installLog": "查看日誌",
+        "memoryHealth": "記憶健康",
+        "memoryHealthTitle": "記憶健康儀表盤",
+        "memHealthCapacity": "容量",
+        "memHealthArchived": "已歸檔",
+        "memHealthStale": "可能過時",
+        "memHealthOrphan": "孤立（無關聯）",
+        "memHealthNoEmbed": "無向量",
+        "memHealthPinned": "已固定",
+        "memHealthVersioned": "有歷史版本",
+        "memHealthEmbedder": "向量引擎",
+        "memHealthAvgAccess": "平均訪問",
+        "memHealthOldest": "最早",
+        "memHealthNewest": "最新",
+        "memHealthCategories": "分類分佈",
+        "memHealthUnavailable": "記憶系統未初始化。",
+        "loading": "載入中",
         "installLogTitle": "環境檢查與安裝日誌",
         "sendLog": "發送日誌",
         "sendLogSubject": "MaClaw環境安裝日誌",
@@ -1691,7 +1739,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'search' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'clawnet' | 'security' | 'im' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'search' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'agentnet' | 'security' | 'im' | 'system'>('general');
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
@@ -1730,9 +1778,12 @@ function App() {
     const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<{ provider: string; input: number; output: number; total: number }>({ provider: '', input: 0, output: 0, total: 0 });
     const maclawLLMFirstPingDone = useRef(false);
 
-    // ClawNet P2P network running status (globe indicator)
-    const [clawNetRunning, setClawNetRunning] = useState<boolean>(false);
+    // AgentNet P2P network running status (globe indicator)
+    const [agentNetRunning, setAgentNetRunning] = useState<boolean>(false);
     const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
+
+    // Active background task count (for sidebar task icon badge)
+    const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
 
     // Ref to prevent multiple hide clicks
     const isHidingRef = useRef(false);
@@ -2354,61 +2405,61 @@ function App() {
         };
     }, []);
 
-    // Poll ClawNet running status so the globe indicator lights up without
+    // Poll AgentNet running status so the globe indicator lights up without
     // requiring the user to visit the settings panel first.
-    // When the settings tab is active, ClawNetPanel also polls — but the
-    // lightweight ClawNetIsRunning() call is idempotent, so the overlap is
+    // When the settings tab is active, AgentNetPanel also polls — but the
+    // lightweight AgentNetIsRunning() call is idempotent, so the overlap is
     // harmless and keeps the globe indicator responsive on tab switches.
     // NOTE: Only poll when agentnet_enabled — if disabled, report as not running.
-    const clawNetAutoStarted = useRef(false);
-    const clawNetPrevUp = useRef(false);
-    const clawNetEnabledRef = useRef(!!config?.agentnet_enabled);
-    useEffect(() => { clawNetEnabledRef.current = !!config?.agentnet_enabled; }, [config?.agentnet_enabled]);
+    const agentNetAutoStarted = useRef(false);
+    const agentNetPrevUp = useRef(false);
+    const agentNetEnabledRef = useRef(!!config?.agentnet_enabled);
+    useEffect(() => { agentNetEnabledRef.current = !!config?.agentnet_enabled; }, [config?.agentnet_enabled]);
     useEffect(() => {
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
         const clearRetry = () => {
             if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
         };
-        const checkClawNet = () => {
+        const checkAgentNet = () => {
             clearRetry();
-            // When ClawNet is disabled in config, don't report as running
+            // When AgentNet is disabled in config, don't report as running
             // even if a residual daemon process happens to be alive.
-            if (!clawNetEnabledRef.current) {
-                clawNetPrevUp.current = false;
-                setClawNetRunning(false);
+            if (!agentNetEnabledRef.current) {
+                agentNetPrevUp.current = false;
+                setAgentNetRunning(false);
                 return;
             }
-            ClawNetIsRunning().then(up => {
-                if (!up && clawNetPrevUp.current) {
+            AgentNetIsRunning().then(up => {
+                if (!up && agentNetPrevUp.current) {
                     // Was online, now looks offline — quick retry in 2s to
                     // avoid flashing the icon gray on a transient hiccup.
                     retryTimer = setTimeout(() => {
                         retryTimer = null;
-                        ClawNetIsRunning()
+                        AgentNetIsRunning()
                             .then(up2 => {
-                                clawNetPrevUp.current = up2;
-                                setClawNetRunning(up2);
+                                agentNetPrevUp.current = up2;
+                                setAgentNetRunning(up2);
                             })
                             .catch(() => {
-                                clawNetPrevUp.current = false;
-                                setClawNetRunning(false);
+                                agentNetPrevUp.current = false;
+                                setAgentNetRunning(false);
                             });
                     }, 2000);
                 } else {
-                    clawNetPrevUp.current = up;
-                    setClawNetRunning(up);
+                    agentNetPrevUp.current = up;
+                    setAgentNetRunning(up);
                 }
             }).catch(() => {
-                clawNetPrevUp.current = false;
-                setClawNetRunning(false);
+                agentNetPrevUp.current = false;
+                setAgentNetRunning(false);
             });
         };
-        checkClawNet();
-        const timer = setInterval(checkClawNet, 5000);
+        checkAgentNet();
+        const timer = setInterval(checkAgentNet, 5000);
         return () => { clearInterval(timer); clearRetry(); };
     }, []);
 
-    // Auto-start ClawNet daemon when enabled in config, so the user doesn't
+    // Auto-start AgentNet daemon when enabled in config, so the user doesn't
     // have to visit the settings panel to light up the globe icon.
     // When disabled, actively stop any residual daemon.
     useEffect(() => {
@@ -2417,24 +2468,24 @@ function App() {
         if (!config) return;
         if (!config.agentnet_enabled) {
             // Disabled — stop residual daemon if it's still running.
-            ClawNetIsRunning().then(up => {
+            AgentNetIsRunning().then(up => {
                 if (up) {
-                    ClawNetStopDaemon().catch(() => {});
+                    AgentNetStopDaemon().catch(() => {});
                 }
             }).catch(() => {});
-            setClawNetRunning(false);
+            setAgentNetRunning(false);
             return;
         }
-        if (clawNetAutoStarted.current) return;
-        clawNetAutoStarted.current = true;
-        ClawNetIsRunning().then(up => {
+        if (agentNetAutoStarted.current) return;
+        agentNetAutoStarted.current = true;
+        AgentNetIsRunning().then(up => {
             if (!up) {
-                ClawNetEnsureDaemonWithDownload()
-                    .then(() => ClawNetIsRunning())
-                    .then(up2 => setClawNetRunning(up2))
+                AgentNetEnsureDaemonWithDownload()
+                    .then(() => AgentNetIsRunning())
+                    .then(up2 => setAgentNetRunning(up2))
                     .catch(() => {});
             } else {
-                setClawNetRunning(true);
+                setAgentNetRunning(true);
             }
         }).catch(() => {});
     }, [config?.agentnet_enabled]);
@@ -2711,6 +2762,31 @@ function App() {
         setOnDemandInstallingTool,
     });
     const aiAssistant = useAIAssistant({ refreshSessionsOnly });
+
+    // ── Refresh active background task count for sidebar badge ──
+    const remoteSessionsRef = useRef(remoteSessions);
+    remoteSessionsRef.current = remoteSessions;
+
+    useEffect(() => {
+        let cancelled = false;
+        const refresh = () => {
+            let count = (remoteSessionsRef.current || []).filter((s: any) => !TERMINAL_SESSION_STATUSES.has(String(s.status || s.summary?.status || "").toLowerCase())).length;
+            void (async () => {
+                try {
+                    const loops = await ListBackgroundLoops();
+                    if (!cancelled) count += (loops || []).filter((l: any) => l.status === 'running').length;
+                } catch { /* ignore */ }
+                try {
+                    const tasks = await ListScheduledTasks();
+                    if (!cancelled) count += (tasks || []).filter((t: any) => t.status === 'active').length;
+                } catch { /* ignore */ }
+                if (!cancelled) setActiveTaskCount(count > 99 ? 99 : count);
+            })();
+        };
+        refresh();
+        const timer = setInterval(refresh, 10000);
+        return () => { cancelled = true; clearInterval(timer); };
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -3489,9 +3565,9 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '定时让 MaClaw 自动执行任务' : lang === 'zh-Hant' ? '定時讓 MaClaw 自動執行任務' : 'Schedule MaClaw to run tasks automatically',
         },
         {
-            id: 'clawnet' as const,
-            label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'ClawNet',
-            desc: lang === 'zh-Hans' ? 'ClawNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'ClawNet P2P 去中心化 Agent 網路' : 'ClawNet decentralized P2P agent network',
+            id: 'agentnet' as const,
+            label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet',
+            desc: lang === 'zh-Hans' ? 'AgentNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'AgentNet P2P 去中心化 Agent 網路' : 'AgentNet decentralized P2P agent network',
         },
         {
             id: 'im' as const,
@@ -3535,7 +3611,7 @@ ${instruction}`;
                 {/* Left Navigation Strip */}
                 <div style={{
                     width: '60px',
-                    borderRight: '1px solid var(--border-color)',
+                    borderRight: '1px solid var(--theme-border)',
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
@@ -3552,10 +3628,33 @@ ${instruction}`;
                     <div
                         className={`sidebar-item left-nav-item ${navTab === 'remote' ? 'active' : ''}`}
                         onClick={() => switchTool('remote')}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center', position: 'relative' }}
                         title={lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}
                     >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>📡</span>
+                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem', position: 'relative' }}>
+                            📡
+                            {activeTaskCount > 0 && (
+                                <span style={{
+                                    position: 'absolute',
+                                    top: '-5px',
+                                    right: '-8px',
+                                    minWidth: '16px',
+                                    height: '16px',
+                                    lineHeight: '16px',
+                                    fontSize: '9px',
+                                    fontWeight: 700,
+                                    textAlign: 'center',
+                                    padding: activeTaskCount > 99 ? '0 2px' : '0 3px',
+                                    borderRadius: '999px',
+                                    background: 'var(--theme-danger)',
+                                    color: '#ffffff',
+                                    boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                                    zIndex: 10,
+                                }}>
+                                    {activeTaskCount > 99 ? '99+' : activeTaskCount}
+                                </span>
+                            )}
+                        </span>
                         <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}</span>
                     </div>
 
@@ -3591,19 +3690,19 @@ ${instruction}`;
                     >
                         <span className="sidebar-icon" title={(() => {
                             const llmOk = maclawLLMOnline;
-                            const netOk = clawNetRunning;
+                            const netOk = agentNetRunning;
                             const mobileOk = !!remoteActivationStatus?.activated;
                             if (isLiteMode) {
                                 if (llmOk && netOk) return localizeText('All online', '全部在线', '全部在線');
                                 const parts: string[] = [];
                                 parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                                parts.push(netOk ? localizeText('ClawNet ✓', '智网 ✓', '智網 ✓') : localizeText('ClawNet ✗', '智网 ✗', '智網 ✗'));
+                                parts.push(netOk ? localizeText('AgentNet ✓', '智网 ✓', '智網 ✓') : localizeText('AgentNet ✗', '智网 ✗', '智網 ✗'));
                                 return parts.join('  ');
                             }
                             if (llmOk && netOk && mobileOk) return localizeText('All online', '全部在线', '全部在線');
                             const parts: string[] = [];
                             parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                            parts.push(netOk ? localizeText('ClawNet ✓', '智网 ✓', '智網 ✓') : localizeText('ClawNet ✗', '智网 ✗', '智網 ✗'));
+                            parts.push(netOk ? localizeText('AgentNet ✓', '智网 ✓', '智網 ✓') : localizeText('AgentNet ✗', '智网 ✗', '智網 ✗'));
                             parts.push(mobileOk ? localizeText('Mobile ✓', '移动端 ✓', '移動端 ✓') : localizeText('Mobile ✗', '移动端 ✗', '移動端 ✗'));
                             return parts.join('  ');
                         })()} style={{
@@ -3614,7 +3713,7 @@ ${instruction}`;
                             padding: '3px',
                             background: (() => {
                                 const llm = maclawLLMOnline;
-                                const net = clawNetRunning;
+                                const net = agentNetRunning;
                                 if (isLiteMode) {
                                     return llm && net ? 'var(--theme-primary-strong)' : (!llm && !net ? 'var(--theme-text-muted)' : llm ? 'var(--theme-primary)' : 'var(--theme-text-muted)');
                                 }
@@ -3623,11 +3722,11 @@ ${instruction}`;
                             })(),
                             boxShadow: (() => {
                                 const allOn = isLiteMode
-                                    ? (maclawLLMOnline && clawNetRunning)
-                                    : (maclawLLMOnline && clawNetRunning && !!remoteActivationStatus?.activated);
+                                    ? (maclawLLMOnline && agentNetRunning)
+                                    : (maclawLLMOnline && agentNetRunning && !!remoteActivationStatus?.activated);
                                 const noneOn = isLiteMode
-                                    ? (!maclawLLMOnline && !clawNetRunning)
-                                    : (!maclawLLMOnline && !clawNetRunning && !remoteActivationStatus?.activated);
+                                    ? (!maclawLLMOnline && !agentNetRunning)
+                                    : (!maclawLLMOnline && !agentNetRunning && !remoteActivationStatus?.activated);
                                 if (noneOn) return 'none';
                                 if (allOn && navTab === 'ai') return '0 0 10px color-mix(in srgb, var(--theme-primary) 60%, transparent), 0 0 20px color-mix(in srgb, var(--theme-primary) 30%, transparent)';
                                 if (allOn) return '0 0 6px color-mix(in srgb, var(--theme-primary) 40%, transparent), 0 0 12px color-mix(in srgb, var(--theme-primary) 15%, transparent)';
@@ -3662,13 +3761,13 @@ ${instruction}`;
                     )}
 
                     <div
-                        className={`sidebar-item left-nav-item ${navTab === 'clawnet' ? 'active' : ''}`}
-                        onClick={() => { switchTool('clawnet'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'clawnet' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'ClawNet'}
+                        className={`sidebar-item left-nav-item ${navTab === 'agentnet' ? 'active' : ''}`}
+                        onClick={() => { switchTool('agentnet'); }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'agentnet' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }}
+                        title={lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet'}
                     >
-                        <img src={clawnetIcon} alt="ClawNet" style={{ width: '22px', height: '22px', margin: 0 }} />
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'ClawNet'}</span>
+                        <img src={agentnetIcon} alt="AgentNet" style={{ width: '22px', height: '22px', margin: 0 }} />
+                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet'}</span>
                     </div>
 
                     <div
@@ -3762,7 +3861,7 @@ ${instruction}`;
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '2px', marginBottom: '2px' }}>
                                 {[
                                     { label: 'LLM', on: maclawLLMOnline },
-                                    { label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'Net', on: clawNetRunning },
+                                    { label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'Net', on: agentNetRunning },
                                     { label: lang === 'zh-Hans' ? '移动' : lang === 'zh-Hant' ? '移動' : 'Mob', on: !!remoteActivationStatus?.activated },
                                     { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerStatus === 'connected', link: 'im' },
                                 ].map(({ label, on, link }) => (
@@ -3885,7 +3984,7 @@ ${instruction}`;
                                                                                 navTab === 'api-store' ? t("apiStore") :
                                                                                     navTab === 'mcp' ? 'MCP' :
                                                                                         navTab === 'settings' ? t("globalSettings") :
-                                                                                            navTab === 'clawnet' ? (lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'ClawNet') : t("about")}
+                                                                                            navTab === 'agentnet' ? (lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet') : t("about")}
                             </span>
                             {navTab === 'projects' && (
                                 <>
@@ -4596,12 +4695,12 @@ ${instruction}`;
                                 <ScheduledTasksPanel lang={lang} />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'clawnet' ? 'block' : 'none' }}>
-                                <ClawNetPanel
+                            <div className="settings-panel" style={{ display: settingsTab === 'agentnet' ? 'block' : 'none' }}>
+                                <AgentNetPanel
                                     config={config}
                                     saveRemoteConfigField={saveRemoteConfigField}
                                     lang={lang}
-                                    onRunningChange={setClawNetRunning}
+                                    onRunningChange={setAgentNetRunning}
                                 />
                             </div>
 
@@ -5611,8 +5710,8 @@ ${instruction}`;
                         </div>
                     )}
 
-                    {navTab === 'clawnet' && (
-                        <ClawNetTabContainer lang={lang} clawNetRunning={clawNetRunning} />
+                    {navTab === 'agentnet' && (
+                        <AgentNetTabContainer lang={lang} agentNetRunning={agentNetRunning} />
                     )}
 
                     {navTab === 'about' && (
@@ -6127,8 +6226,8 @@ ${instruction}`;
                             const imConnected = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected';
                             const anyImConfigured = !!(config as any)?.qqbot_enabled || !!(config as any)?.telegram_enabled || !!(config as any)?.weixin_enabled;
                             const showImWarning = anyImConfigured && !imConnected;
-                            if ((!maclawLLMOnline || !remoteActivationStatus?.activated || !clawNetRunning || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm')) {
-                                const isImIssue = maclawLLMOnline && !!remoteActivationStatus?.activated && clawNetRunning && showImWarning;
+                            if ((!maclawLLMOnline || !remoteActivationStatus?.activated || !agentNetRunning || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm')) {
+                                const isImIssue = maclawLLMOnline && !!remoteActivationStatus?.activated && agentNetRunning && showImWarning;
                                 return (
                             <span
                                 style={{ fontSize: '0.72rem', color: 'var(--theme-warning)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
@@ -6136,7 +6235,7 @@ ${instruction}`;
                                 title={localizeText('Click to configure', '点击配置', '點擊配置')}
                             >
                                 <img src={(() => {
-                                    if (!maclawLLMOnline && !remoteActivationStatus?.activated && !clawNetRunning) return lobsterOffline;
+                                    if (!maclawLLMOnline && !remoteActivationStatus?.activated && !agentNetRunning) return lobsterOffline;
                                     return lobsterHalf;
                                 })()} alt="" style={{ width: '14px', height: '14px' }} />
                                 {!maclawLLMOnline
@@ -6145,8 +6244,8 @@ ${instruction}`;
                                         : localizeText('LLM not configured, remote commands unavailable', 'MaClaw 未配置 LLM，无法响应远程命令', 'MaClaw 未配置 LLM，無法響應遠程命令'))
                                     : !remoteActivationStatus?.activated
                                         ? localizeText('Mobile not registered', '移动端未注册', '移動端未註冊')
-                                        : !clawNetRunning
-                                            ? localizeText('ClawNet not connected', '智网未连接', '智網未連接')
+                                        : !agentNetRunning
+                                            ? localizeText('AgentNet not connected', '智网未连接', '智網未連接')
                                             : localizeText('IM not connected', 'IM 未连接', 'IM 未連接')}
                             </span>
                                 );

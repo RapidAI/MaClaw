@@ -8,7 +8,10 @@ export type CenterTab =
   | 'models'
   | 'security'
   | 'delivery'
-  | 'usage';
+  | 'usage'
+  | 'im'
+  | 'auth'
+  | 'settings';
 
 export type Metric = {
   label: string;

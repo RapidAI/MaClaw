@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -204,7 +206,61 @@ func (a *App) InstallHubSkill(skillID, hubURL string) error {
 	if err != nil {
 		return err
 	}
-	return a.skillExecutor.Register(*entry)
+	if err := a.skillExecutor.Register(*entry); err != nil {
+		return err
+	}
+	// Auto-install dependencies for file-backed skills (e.g. npm install, pip install).
+	go a.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
+	return nil
+}
+
+// installSkillDepsIfMissing checks for package.json / requirements.txt in the
+// skill directory and runs npm install or pip install if node_modules or
+// __pycache__ is missing. Runs asynchronously to avoid blocking the install call.
+func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
+	if skillDir == "" {
+		return
+	}
+	// Check if skill directory exists.
+	if _, err := os.Stat(skillDir); err != nil {
+		return
+	}
+
+	pkgJSON := filepath.Join(skillDir, "package.json")
+	reqTxt := filepath.Join(skillDir, "requirements.txt")
+	nodeModules := filepath.Join(skillDir, "node_modules")
+
+	if _, err := os.Stat(pkgJSON); err == nil {
+		// Has package.json — check if node_modules exists.
+		if _, err := os.Stat(nodeModules); os.IsNotExist(err) {
+			log.Printf("[skill-deps] installing npm dependencies for %s...", skillName)
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "npm", "install", "--production")
+			cmd.Dir = skillDir
+			hideCommandWindow(cmd)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				log.Printf("[skill-deps] npm install failed for %s: %v\n%s", skillName, err, output)
+			} else {
+				log.Printf("[skill-deps] npm install completed for %s", skillName)
+			}
+		}
+	}
+	if _, err := os.Stat(reqTxt); err == nil {
+		// Has requirements.txt — run pip install.
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "pip", "install", "-r", reqTxt)
+		cmd.Dir = skillDir
+		hideCommandWindow(cmd)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("[skill-deps] pip install failed for %s: %v\n%s", skillName, err, output)
+		} else {
+			log.Printf("[skill-deps] pip install completed for %s", skillName)
+		}
+	}
 }
 
 // CheckHubSkillUpdates checks all locally installed Hub Skills for available updates (Wails binding).
@@ -388,6 +444,15 @@ func (a *App) GetAutoCompressStatus() MemoryCompressorStatus {
 		return MemoryCompressorStatus{}
 	}
 	return a.memoryCompressor.Status()
+}
+
+// GetMemoryHealth returns an aggregated health report of the memory system (Wails binding).
+func (a *App) GetMemoryHealth() *MemoryHealthReport {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		return &MemoryHealthReport{}
+	}
+	return a.memoryStore.HealthReport()
 }
 
 // GetMemoryMaxBackups returns the configured max backup retention count (Wails binding).
@@ -976,6 +1041,29 @@ func (a *App) ListBackgroundLoops() []BackgroundLoopView {
 		return nil
 	}
 	return handler.bgManager.ListViews()
+}
+
+// StopAllBackgroundLoops stops all running background loops.
+// Returns the list of stopped loop IDs.
+func (a *App) StopAllBackgroundLoops() []string {
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return nil
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler.bgManager == nil {
+		return nil
+	}
+	// Snapshot IDs of running/paused loops before stopping.
+	views := handler.bgManager.ListViews()
+	var ids []string
+	for _, v := range views {
+		if v.Status == "running" || v.Status == "paused" {
+			ids = append(ids, v.ID)
+		}
+	}
+	handler.bgManager.StopAll()
+	return ids
 }
 
 // StopBackgroundLoop gracefully stops a background loop by ID.

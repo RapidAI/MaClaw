@@ -133,13 +133,21 @@ func putAxpyBuf(buf []float32) {
 
 // RMSNorm computes RMS normalization: out[i] = x[i] / rms(x) * weight[i].
 // out and x may alias (in-place normalization).
+// Uses SIMD for both the sum-of-squares and the fused scale*weight multiply.
 func RMSNorm(out, x, weight []float32, eps float32) {
 	n := len(x)
 	ss := vek32.Dot(x, x) // sum of squares via SIMD dot product
 	scale := 1.0 / float32(math.Sqrt(float64(ss/float32(n)+eps)))
-	// Fuse scale*weight into a single multiply pass
-	for i := 0; i < n; i++ {
-		out[i] = x[i] * (scale * weight[i])
+
+	// Check if out aliases x (same backing array start).
+	if len(out) > 0 && len(x) > 0 && &out[0] == &x[0] {
+		// In-place: scale x first, then element-wise multiply with weight.
+		vek32.MulNumber_Inplace(out[:n], scale)
+		vek32.Mul_Inplace(out[:n], weight[:n])
+	} else {
+		// Non-alias: compute scaled_weight into out, then multiply with x.
+		vek32.MulNumber_Into(out[:n], weight[:n], scale)
+		vek32.Mul_Inplace(out[:n], x[:n])
 	}
 }
 
@@ -172,9 +180,29 @@ func SiLU(x []float32) {
 }
 
 // SiLUMul computes SiLU(gate) * up in-place into gate, fusing two operations.
-// This avoids a separate ElemMul pass and reduces memory traffic.
+// On amd64, uses AVX2 SIMD acceleration.
 func SiLUMul(gate, up []float32) {
-	for i := range gate {
+	siluMulASM(gate, up)
+}
+
+// siluMulScalar is the pure Go fallback implementation.
+// Uses fastExp and 8x unrolled loop for ILP.
+func siluMulScalar(gate, up []float32) {
+	n := len(gate)
+	i := 0
+	for ; i+7 < n; i += 8 {
+		v0, v1, v2, v3 := gate[i], gate[i+1], gate[i+2], gate[i+3]
+		v4, v5, v6, v7 := gate[i+4], gate[i+5], gate[i+6], gate[i+7]
+		gate[i] = (v0 / (1.0 + fastExp(-v0))) * up[i]
+		gate[i+1] = (v1 / (1.0 + fastExp(-v1))) * up[i+1]
+		gate[i+2] = (v2 / (1.0 + fastExp(-v2))) * up[i+2]
+		gate[i+3] = (v3 / (1.0 + fastExp(-v3))) * up[i+3]
+		gate[i+4] = (v4 / (1.0 + fastExp(-v4))) * up[i+4]
+		gate[i+5] = (v5 / (1.0 + fastExp(-v5))) * up[i+5]
+		gate[i+6] = (v6 / (1.0 + fastExp(-v6))) * up[i+6]
+		gate[i+7] = (v7 / (1.0 + fastExp(-v7))) * up[i+7]
+	}
+	for ; i < n; i++ {
 		v := gate[i]
 		gate[i] = (v / (1.0 + fastExp(-v))) * up[i]
 	}
@@ -222,17 +250,19 @@ func Scale(x []float32, s float32) {
 }
 
 // Softmax computes softmax over a slice, in-place.
+// Fuses subtract-max and exp into a single pass to reduce memory traffic.
 func Softmax(x []float32) {
 	if len(x) == 0 {
 		return
 	}
 	max := vek32.Max(x)
-	vek32.AddNumber_Inplace(x, -max)
-	// Use fastExp for float32 — avoids float64 conversion per element
+	// Fused: subtract max and compute exp in one pass
+	var sum float32
 	for i := range x {
-		x[i] = fastExp(x[i])
+		v := fastExp(x[i] - max)
+		x[i] = v
+		sum += v
 	}
-	sum := vek32.Sum(x)
 	if sum != 0 {
 		vek32.MulNumber_Inplace(x, 1.0/sum)
 	}
@@ -259,12 +289,29 @@ func RoPE(x []float32, nHeads, headDim, pos int, theta float32) {
 
 // RoPEPrecomputed applies RoPE using pre-computed cos/sin tables.
 // cosTable and sinTable are [halfDim] for the given position.
-// This avoids expensive math.Pow/Cos/Sin calls per layer (24 layers × seq positions).
+// On amd64, uses AVX2 SIMD acceleration.
 func RoPEPrecomputed(x []float32, nHeads, headDim int, cosTable, sinTable []float32) {
+	ropePrecomputedASM(x, nHeads, headDim, cosTable, sinTable)
+}
+
+// ropePrecomputedScalar is the pure Go fallback implementation.
+// Uses 2x unrolled inner loop for better ILP.
+func ropePrecomputedScalar(x []float32, nHeads, headDim int, cosTable, sinTable []float32) {
 	halfDim := headDim / 2
 	for h := 0; h < nHeads; h++ {
 		off := h * headDim
-		for i := 0; i < halfDim; i++ {
+		i := 0
+		for ; i+1 < halfDim; i += 2 {
+			cos0, sin0 := cosTable[i], sinTable[i]
+			cos1, sin1 := cosTable[i+1], sinTable[i+1]
+			x0a, x1a := x[off+i], x[off+i+halfDim]
+			x0b, x1b := x[off+i+1], x[off+i+1+halfDim]
+			x[off+i] = x0a*cos0 - x1a*sin0
+			x[off+i+halfDim] = x0a*sin0 + x1a*cos0
+			x[off+i+1] = x0b*cos1 - x1b*sin1
+			x[off+i+1+halfDim] = x0b*sin1 + x1b*cos1
+		}
+		for ; i < halfDim; i++ {
 			cos := cosTable[i]
 			sin := sinTable[i]
 			x0 := x[off+i]

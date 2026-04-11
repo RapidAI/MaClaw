@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-    ClawNetNutshellStatus,
-    ClawNetNutshellInstall,
-    ClawNetNutshellInit,
-    ClawNetNutshellCheck,
-    ClawNetNutshellPublish,
-    ClawNetNutshellClaim,
-    ClawNetNutshellDeliver,
-    ClawNetNutshellPack,
-    ClawNetNutshellUnpack,
+    AgentNetNutshellStatus,
+    AgentNetNutshellInstall,
+    AgentNetNutshellInit,
+    AgentNetNutshellCheck,
+    AgentNetNutshellPublish,
+    AgentNetNutshellClaim,
+    AgentNetNutshellDeliver,
+    AgentNetNutshellPack,
+    AgentNetNutshellUnpack,
 } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
 import { colors } from "./styles";
@@ -18,9 +18,9 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-type Props = { lang: string; clawNetRunning: boolean };
+type Props = { lang: string; agentNetRunning: boolean };
 
-export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
+export function AgentNetNutshellPanel({ lang, agentNetRunning }: Props) {
     const [installed, setInstalled] = useState<boolean | null>(null);
     const [version, setVersion] = useState("");
     const [busy, setBusy] = useState(false);
@@ -55,12 +55,12 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
     const showMsg = (m: string, dur = 5000) => { if (msgTimerRef.current) clearTimeout(msgTimerRef.current); setMsg(m); msgTimerRef.current = setTimeout(() => { if (mountedRef.current) setMsg(""); }, dur); };
 
     const checkStatus = useCallback(async () => {
-        if (!clawNetRunning) return;
+        if (!agentNetRunning) return;
         try {
-            const res = await ClawNetNutshellStatus();
+            const res = await AgentNetNutshellStatus();
             if (mountedRef.current) { setInstalled(res.installed); setVersion(res.version || ""); }
         } catch { if (mountedRef.current) setInstalled(false); }
-    }, [clawNetRunning]);
+    }, [agentNetRunning]);
 
     useEffect(() => { checkStatus(); }, [checkStatus]);
 
@@ -80,7 +80,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
         setBusy(true); setOutput(""); setMsg(""); setManualPath("");
         setDlProgress({ stage: "downloading", percent: 0, message: localizeText(lang, "Preparing...", "准备下载...") });
         try {
-            const res = await ClawNetNutshellInstall();
+            const res = await AgentNetNutshellInstall();
             if (!mountedRef.current) return;
             if (res.ok) { showMsg(localizeText(lang, "✅ Nutshell installed", "✅ Nutshell 已安装")); checkStatus(); }
             else {
@@ -110,7 +110,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
         if (mountedRef.current) setBusy(false);
     };
 
-    if (!clawNetRunning) return <div style={cnLabel}>{localizeText(lang, "ClawNet not connected", "智网未连接")}</div>;
+    if (!agentNetRunning) return <div style={cnLabel}>{localizeText(lang, "AgentNet not connected", "智网未连接")}</div>;
 
     if (installed === false) {
         return (
@@ -120,7 +120,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                     {localizeText(lang, "Nutshell Not Installed", "Nutshell 未安装")}
                 </div>
                 <div style={{ fontSize: "0.72rem", color: colors.textMuted, marginBottom: "12px" }}>
-                    {localizeText(lang, "Nutshell packages AI task context into .nut bundles", "Nutshell 是 ClawNet 的任务打包工具")}
+                    {localizeText(lang, "Nutshell packages AI task context into .nut bundles", "Nutshell 是 AgentNet 的任务打包工具")}
                 </div>
 
                 {/* Progress bar during download */}
@@ -156,7 +156,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                             {manualPath}
                         </div>
                         <div>
-                            <a href="https://github.com/ChatChatTech/ClawNet/releases" target="_blank" rel="noopener noreferrer"
+                            <a href="https://github.com/ChatChatTech/AgentNet/releases" target="_blank" rel="noopener noreferrer"
                                 style={{ color: colors.primary, textDecoration: "underline", cursor: "pointer" }}>
                                 GitHub Releases →
                             </a>
@@ -194,15 +194,15 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                     </div>
                     <div style={{ display: "flex", gap: "6px" }}>
                         <button style={cnActionBtn(busy || !pubDir.trim())} disabled={busy || !pubDir.trim()}
-                            onClick={() => runAction(localizeText(lang, "Initialized", "初始化完成"), () => ClawNetNutshellInit(pubDir.trim()))}>
+                            onClick={() => runAction(localizeText(lang, "Initialized", "初始化完成"), () => AgentNetNutshellInit(pubDir.trim()))}>
                             {localizeText(lang, "Init", "初始化")}
                         </button>
                         <button style={cnActionBtn(busy || !pubDir.trim())} disabled={busy || !pubDir.trim()}
-                            onClick={() => runAction(localizeText(lang, "Check passed", "校验通过"), () => ClawNetNutshellCheck(pubDir.trim()))}>
+                            onClick={() => runAction(localizeText(lang, "Check passed", "校验通过"), () => AgentNetNutshellCheck(pubDir.trim()))}>
                             {localizeText(lang, "Check", "校验")}
                         </button>
                         <button style={cnActionBtn(busy || !pubDir.trim())} disabled={busy || !pubDir.trim()}
-                            onClick={() => runAction(localizeText(lang, "Published", "已发布"), () => ClawNetNutshellPublish(pubDir.trim(), pubReward))}>
+                            onClick={() => runAction(localizeText(lang, "Published", "已发布"), () => AgentNetNutshellPublish(pubDir.trim(), pubReward))}>
                             {localizeText(lang, "Publish", "发布")}
                         </button>
                     </div>
@@ -222,7 +222,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                             <input value={claimOutDir} onChange={e => setClaimOutDir(e.target.value)} placeholder="./workspace" style={cnInput} />
                         </div>
                         <button style={cnActionBtn(busy || !claimTaskId.trim())} disabled={busy || !claimTaskId.trim()}
-                            onClick={() => runAction(localizeText(lang, "Claimed", "已认领"), () => ClawNetNutshellClaim(claimTaskId.trim(), claimOutDir.trim() || "./workspace"))}>
+                            onClick={() => runAction(localizeText(lang, "Claimed", "已认领"), () => AgentNetNutshellClaim(claimTaskId.trim(), claimOutDir.trim() || "./workspace"))}>
                             {localizeText(lang, "Claim", "认领")}
                         </button>
                     </div>
@@ -233,7 +233,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                             <input value={deliverDir} onChange={e => setDeliverDir(e.target.value)} placeholder="./workspace" style={cnInput} />
                         </div>
                         <button style={cnActionBtn(busy || !deliverDir.trim())} disabled={busy || !deliverDir.trim()}
-                            onClick={() => runAction(localizeText(lang, "Delivered", "已提交"), () => ClawNetNutshellDeliver(deliverDir.trim()))}>
+                            onClick={() => runAction(localizeText(lang, "Delivered", "已提交"), () => AgentNetNutshellDeliver(deliverDir.trim()))}>
                             {localizeText(lang, "Deliver", "提交")}
                         </button>
                     </div>
@@ -257,7 +257,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                             <input value={packPeer} onChange={e => setPackPeer(e.target.value)} placeholder="12D3KooW..." style={cnInput} />
                         </div>
                         <button style={cnActionBtn(busy || !packDir.trim() || !packOut.trim())} disabled={busy || !packDir.trim() || !packOut.trim()}
-                            onClick={() => runAction(localizeText(lang, "Packed", "已打包"), () => ClawNetNutshellPack(packDir.trim(), packOut.trim(), packPeer.trim()))}>
+                            onClick={() => runAction(localizeText(lang, "Packed", "已打包"), () => AgentNetNutshellPack(packDir.trim(), packOut.trim(), packPeer.trim()))}>
                             {localizeText(lang, "Pack", "打包")}
                         </button>
                     </div>
@@ -272,7 +272,7 @@ export function ClawNetNutshellPanel({ lang, clawNetRunning }: Props) {
                             <input value={unpackDir} onChange={e => setUnpackDir(e.target.value)} placeholder="./output" style={cnInput} />
                         </div>
                         <button style={cnActionBtn(busy || !unpackFile.trim())} disabled={busy || !unpackFile.trim()}
-                            onClick={() => runAction(localizeText(lang, "Unpacked", "已解包"), () => ClawNetNutshellUnpack(unpackFile.trim(), unpackDir.trim() || "./output"))}>
+                            onClick={() => runAction(localizeText(lang, "Unpacked", "已解包"), () => AgentNetNutshellUnpack(unpackFile.trim(), unpackDir.trim() || "./output"))}>
                             {localizeText(lang, "Unpack", "解包")}
                         </button>
                     </div>

@@ -295,6 +295,22 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 		h.mu.Lock()
 	}
 
+	// If there is no onRequest callback, nobody can resolve the pending
+	// request — blocking here would freeze the SDK output loop forever.
+	// Auto-approve to prevent the session from hanging.
+	if h.onRequest == nil {
+		h.mu.Unlock()
+		comp := PermissionCompletion{
+			RequestID: req.RequestID,
+			Decision:  PermissionApproved,
+			Reason:    "auto-approved: no permission UI handler configured",
+		}
+		if h.onComplete != nil {
+			h.onComplete(comp)
+		}
+		return comp
+	}
+
 	// Create pending request (default path or PolicyAsk from security chain).
 	pending := &pendingPermission{
 		request:  req,
@@ -304,9 +320,7 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 	h.mu.Unlock()
 
 	// Notify external handler (e.g., Hub client, mobile UI).
-	if h.onRequest != nil {
-		h.onRequest(req)
-	}
+	h.onRequest(req)
 
 	// Block until resolved.
 	return <-pending.resultCh

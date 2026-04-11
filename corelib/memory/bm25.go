@@ -41,6 +41,11 @@ func (b *bm25Index) score(query string) map[string]float64 {
 
 func entryToDoc(e Entry) bm25.Doc {
 	text := e.Content
+	// Include CompactForm in the index — it may contain refined keywords
+	// that the LLM compressor extracted from the original content.
+	if e.CompactForm != "" && e.CompactForm != e.Content {
+		text += " " + e.CompactForm
+	}
 	if len(e.Tags) > 0 {
 		text += " " + strings.Join(e.Tags, " ")
 	}

@@ -1083,6 +1083,7 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 		s.mu.Unlock()
 
 		if len(rawLines) > 0 {
+			programLogger.WriteLines(s.ID, s.Tool, rawLines)
 			m.app.log(fmt.Sprintf("[remote-output] session=%s, chunk_bytes=%d, new_raw_lines=%d",
 				s.ID, len(chunk), len(rawLines)))
 			// Check for startup prompts and auto-respond
@@ -1393,6 +1394,8 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			previewAccum = previewAccum[lastNL+1:]
 
 			result := pipeline.Consume(s, []byte(toSend))
+
+			programLogger.WriteLines(s.ID, s.Tool, normalizeChunkLines([]byte(toSend)))
 
 			s.mu.Lock()
 			applyOutputResult(s, result)
@@ -1728,6 +1731,8 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 		appendRawOutputLines(s, lines)
 		s.mu.Unlock()
 
+		programLogger.WriteLines(s.ID, s.Tool, lines)
+
 		result := pipeline.Consume(s, chunk)
 
 		s.mu.Lock()
@@ -1742,6 +1747,7 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 	}
 
 	// If the output channel closed without any real codex output, the process
+	// likely crashed on startup.
 	// likely crashed on startup.  Update the summary so the user sees the issue.
 	if !gotRealOutput {
 		s.mu.Lock()
@@ -1893,6 +1899,8 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 		s.mu.Lock()
 		appendRawOutputLines(s, filtered)
 		s.mu.Unlock()
+
+		programLogger.WriteLines(s.ID, s.Tool, filtered)
 
 		filteredText := strings.Join(filtered, "\n") + "\n"
 		result := pipeline.Consume(s, []byte(filteredText))

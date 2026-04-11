@@ -1,0 +1,38 @@
+{
+  "app": { "title": "iWorkerCloud 管理中心", "loading": "加载中..." },
+  "nav": { "overview": "总览", "centers": "Center 管理", "licenses": "授权管理", "compute": "算力管理", "settings": "账户设置" },
+  "subtitle": {
+    "overview": "查看 iWorkerCenter 注册和授权概况。",
+    "centers": "审核、启用、禁用已注册的 iWorkerCenter。",
+    "licenses": "管理功能模块授权证书。",
+    "compute": "管理 LLM 服务商配置、算力权限与用量统计。",
+    "settings": "修改管理员密码。"
+  },
+  "login": { "title": "管理员登录", "username": "用户名", "password": "密码", "submit": "登录", "error": "登录失败" },
+  "setup": { "title": "初始化管理员", "description": "首次使用，请设置管理员账户。" },
+  "centers": {
+    "pending": "待审核", "active": "已激活", "disabled": "已禁用",
+    "confirmTrial": "邮件确认(Trial 30天)", "confirmManual": "手工授权",
+    "disable": "禁用", "enable": "启用", "delete": "删除",
+    "empty": "暂无注册的 iWorkerCenter。"
+  },
+  "licenses": {
+    "issue": "签发授权", "revoke": "吊销", "viewCert": "查看证书",
+    "longTerm": "长期", "valid": "有效", "revoked": "已吊销",
+    "empty": "暂无授权证书。",
+    "centerId": "Center ID", "days": "授权天数", "modules": "授权模块"
+  },
+  "common": { "save": "保存", "cancel": "取消", "confirm": "确认", "refresh": "刷新", "loading": "加载中...", "noData": "暂无数据", "success": "操作成功", "error": "操作失败", "logout": "退出" },
+  "compute": {
+    "providers": "LLM 服务商",
+    "centerPermissions": "Center 算力权限",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "selfManaged": "自管理",
+    "cloudManaged": "云端管理",
+    "grantPermission": "授予自管理权限",
+    "revokePermission": "收回自管理权限",
+    "test": "测试连通性",
+    "addProvider": "添加服务商"
+  }
+}

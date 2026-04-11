@@ -11,6 +11,8 @@ set "REMOTE_USER=root"
 set "REMOTE_HOSTKEY=ssh-ed25519 255 SHA256:i4dErlVhnE3VDG7s6lOJ/cg3wfyqf1bgRXSqIddwuog"
 set "REMOTE_HUB_DIR=/data/soft/hub"
 set "REMOTE_HUBCENTER_DIR=/data/soft/hubcenter"
+set "REMOTE_IWC_DIR=/data/soft/iworkercenter"
+set "REMOTE_IWCLOUD_DIR=/data/soft/iworkercloud"
 set "REMOTE_TMP_DIR=/tmp/aicoder_deploy"
 if not defined REMOTE_PASS (
   set "PAUSE_ON_EXIT=1"
@@ -59,6 +61,16 @@ if not exist "%ROOT_DIR%hubcenter\cmd\hubcenter" (
   goto :fail
 )
 
+if not exist "%ROOT_DIR%iWorkerCenter\cmd\iworkercenter" (
+  echo [ERROR] Missing iWorkerCenter source: %ROOT_DIR%iWorkerCenter\cmd\iworkercenter
+  goto :fail
+)
+
+if not exist "%ROOT_DIR%iWorkerCloud\main.go" (
+  echo [ERROR] Missing iWorkerCloud source: %ROOT_DIR%iWorkerCloud\main.go
+  goto :fail
+)
+
 call :resolve_tool PLINK_EXE plink.exe
 if errorlevel 1 goto :fail
 
@@ -75,8 +87,10 @@ echo.
 echo [1/5] Preparing connection info
 echo        Host: %REMOTE_USER%@%REMOTE_HOST%:%REMOTE_PORT%
 echo        HostKey: %REMOTE_HOSTKEY%
-echo        Deploy hub       -^> %REMOTE_HUB_DIR%
-echo        Deploy hubcenter -^> %REMOTE_HUBCENTER_DIR%
+echo        Deploy hub            -^> %REMOTE_HUB_DIR%
+echo        Deploy hubcenter      -^> %REMOTE_HUBCENTER_DIR%
+echo        Deploy iworkercenter  -^> %REMOTE_IWC_DIR%
+echo        Deploy iworkercloud   -^> %REMOTE_IWCLOUD_DIR%
 echo.
 
 echo [2/5] Preparing source package...
@@ -121,7 +135,7 @@ if errorlevel 1 (
 )
 
 echo [5/5] Running remote build and deployment...
-"%PLINK_EXE%" -batch -hostkey "%REMOTE_HOSTKEY%" -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "sed -i 's/\r$//' %REMOTE_TMP_DIR%/remote_deploy.sh && chmod +x %REMOTE_TMP_DIR%/remote_deploy.sh && CGO_ENABLED=%CGO_ENABLED% REMOTE_HUB_DIR=%REMOTE_HUB_DIR% REMOTE_HUBCENTER_DIR=%REMOTE_HUBCENTER_DIR% REMOTE_TMP_DIR=%REMOTE_TMP_DIR% %REMOTE_TMP_DIR%/remote_deploy.sh"
+"%PLINK_EXE%" -batch -hostkey "%REMOTE_HOSTKEY%" -P %REMOTE_PORT% -pw "%REMOTE_PASS%" "%REMOTE_USER%@%REMOTE_HOST%" "sed -i 's/\r$//' %REMOTE_TMP_DIR%/remote_deploy.sh && chmod +x %REMOTE_TMP_DIR%/remote_deploy.sh && CGO_ENABLED=%CGO_ENABLED% REMOTE_HUB_DIR=%REMOTE_HUB_DIR% REMOTE_HUBCENTER_DIR=%REMOTE_HUBCENTER_DIR% REMOTE_IWC_DIR=%REMOTE_IWC_DIR% REMOTE_IWCLOUD_DIR=%REMOTE_IWCLOUD_DIR% REMOTE_TMP_DIR=%REMOTE_TMP_DIR% %REMOTE_TMP_DIR%/remote_deploy.sh"
 if errorlevel 1 (
   echo [ERROR] Remote deployment failed.
   goto :fail
@@ -129,9 +143,11 @@ if errorlevel 1 (
 
 echo.
 echo Deployment completed successfully.
-echo   Hub       -^> %REMOTE_HOST%:%REMOTE_HUB_DIR%
-echo   HubCenter -^> %REMOTE_HOST%:%REMOTE_HUBCENTER_DIR%
-echo   Mode      -^> upload source, build on remote host, keep config/data
+echo   Hub            -^> %REMOTE_HOST%:%REMOTE_HUB_DIR%
+echo   HubCenter      -^> %REMOTE_HOST%:%REMOTE_HUBCENTER_DIR%
+echo   iWorkerCenter  -^> %REMOTE_HOST%:%REMOTE_IWC_DIR%
+echo   iWorkerCloud   -^> %REMOTE_HOST%:%REMOTE_IWCLOUD_DIR%
+echo   Mode           -^> upload source, build on remote host, keep config/data
 call :exit_with 0
 goto :eof
 
@@ -180,12 +196,12 @@ if not exist "%POWERSHELL%" (
   "$ErrorActionPreference = 'Stop';" ^
   "$src = '%ROOT_DIR_TRIM%';" ^
   "$dst = '%STAGE_ROOT%';" ^
-  "$copyDirs = @('corelib','hub','hubcenter','openclaw-bridge','gui\internal\systray');" ^
+  "$copyDirs = @('corelib','hub','hubcenter','iWorkerCenter','iWorkerCloud','openclaw-bridge','gui\internal\systray');" ^
   "$copyFiles = @('go.mod','go.sum');" ^
   "foreach ($f in $copyFiles) { $p = Join-Path $src $f; if (Test-Path $p) { Copy-Item -Path $p -Destination $dst -Force } };" ^
   "foreach ($d in $copyDirs) { $p = Join-Path $src $d; if (Test-Path $p) { Copy-Item -Path $p -Destination (Join-Path $dst $d) -Recurse -Force } };" ^
   "$buildSrc = Join-Path $src 'build'; $buildDst = Join-Path $dst 'build'; if (Test-Path $buildSrc) { New-Item -ItemType Directory -Path $buildDst -Force | Out-Null; Get-ChildItem -Path $buildSrc | Where-Object { $_.Name -ne 'deploy' } | ForEach-Object { Copy-Item -Path $_.FullName -Destination (Join-Path $buildDst $_.Name) -Recurse -Force } };" ^
-  "$removePaths = @('hub\bin','hub\package','hub\data','hub\.gocache','hub\.gomodcache','hubcenter\bin','hubcenter\package','hubcenter\data','hubcenter\.gocache','hubcenter\.gomodcache','openclaw-bridge\node_modules','openclaw-bridge\dist','RapidSpeech.cpp\build');" ^
+  "$removePaths = @('hub\bin','hub\package','hub\data','hub\.gocache','hub\.gomodcache','hubcenter\bin','hubcenter\package','hubcenter\data','hubcenter\.gocache','hubcenter\.gomodcache','iWorkerCenter\frontend\node_modules','iWorkerCenter\frontend\dist','openclaw-bridge\node_modules','openclaw-bridge\dist','RapidSpeech.cpp\build');" ^
   "foreach ($rel in $removePaths) { $path = Join-Path $dst $rel; if (Test-Path $path) { Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue } };" ^
   "Get-ChildItem -Path $dst -Recurse -File -Include *.exe,*.exe~ -Force | Remove-Item -Force -ErrorAction SilentlyContinue;"
 if errorlevel 1 (
@@ -203,6 +219,8 @@ setlocal DisableDelayedExpansion
   echo : "${REMOTE_TMP_DIR:=/tmp/aicoder_deploy}"
   echo : "${REMOTE_HUB_DIR:=/data/soft/hub}"
   echo : "${REMOTE_HUBCENTER_DIR:=/data/soft/hubcenter}"
+  echo : "${REMOTE_IWC_DIR:=/data/soft/iworkercenter}"
+  echo : "${REMOTE_IWCLOUD_DIR:=/data/soft/iworkercloud}"
   echo : "${CGO_ENABLED:=0}"
   echo : "${GOPROXY:=https://goproxy.cn,direct}"
   echo.
@@ -245,6 +263,10 @@ setlocal DisableDelayedExpansion
   echo GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$EXTRA_TAGS" -o "$BUILD_ROOT/maclaw-hub" ./hub/cmd/hub
   echo echo "[remote] Building hubcenter..."
   echo GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$EXTRA_TAGS" -o "$BUILD_ROOT/maclaw-hubcenter" ./hubcenter/cmd/hubcenter
+  echo echo "[remote] Building iworkercenter..."
+  echo GOPROXY="$GOPROXY" CGO_ENABLED=0 go build -o "$BUILD_ROOT/iworkercenter" ./iWorkerCenter/cmd/iworkercenter
+  echo echo "[remote] Building iworkercloud..."
+  echo GOPROXY="$GOPROXY" CGO_ENABLED=0 go build -o "$BUILD_ROOT/iworkercloud" ./iWorkerCloud
   echo.
   echo deploy_one^(^) {
   echo   source_dir="$1"
@@ -280,6 +302,48 @@ setlocal DisableDelayedExpansion
   echo deploy_one "$SRC_ROOT/hub" "$REMOTE_HUB_DIR" "$BUILD_ROOT/maclaw-hub" "maclaw-hub"
   echo echo "[remote] Deploying hubcenter files..."
   echo deploy_one "$SRC_ROOT/hubcenter" "$REMOTE_HUBCENTER_DIR" "$BUILD_ROOT/maclaw-hubcenter" "maclaw-hubcenter"
+  echo.
+  echo echo "[remote] Deploying iworkercenter files..."
+  echo mkdir -p "$REMOTE_IWC_DIR" "$REMOTE_IWC_DIR/data"
+  echo cp -f "$BUILD_ROOT/iworkercenter" "$REMOTE_IWC_DIR/iworkercenter"
+  echo chmod +x "$REMOTE_IWC_DIR/iworkercenter"
+  echo if [ -d "$SRC_ROOT/iWorkerCenter/cmd/iworkercenter/web" ]; then
+  echo   rm -rf "$REMOTE_IWC_DIR/web"
+  echo   cp -R "$SRC_ROOT/iWorkerCenter/cmd/iworkercenter/web" "$REMOTE_IWC_DIR/web"
+  echo fi
+  echo # Write iworkercenter start script if missing
+  echo if [ ! -f "$REMOTE_IWC_DIR/start.sh" ]; then
+  echo   cat ^> "$REMOTE_IWC_DIR/start.sh" ^<^< 'IWCEOF'
+  echo #!/bin/sh
+  echo cd "$(dirname "$0")"
+  echo pkill -f "iworkercenter" 2^>/dev/null ^|^| true
+  echo sleep 1
+  echo nohup ./iworkercenter -addr :9377 ^> data/iworkercenter.log 2^>^&1 ^&
+  echo echo "iWorkerCenter started on :9377 (PID: $!)"
+  echo IWCEOF
+  echo   chmod +x "$REMOTE_IWC_DIR/start.sh"
+  echo fi
+  echo.
+  echo echo "[remote] Deploying iworkercloud files..."
+  echo mkdir -p "$REMOTE_IWCLOUD_DIR" "$REMOTE_IWCLOUD_DIR/data"
+  echo cp -f "$BUILD_ROOT/iworkercloud" "$REMOTE_IWCLOUD_DIR/iworkercloud"
+  echo chmod +x "$REMOTE_IWCLOUD_DIR/iworkercloud"
+  echo if [ -d "$SRC_ROOT/iWorkerCloud/web" ]; then
+  echo   rm -rf "$REMOTE_IWCLOUD_DIR/web"
+  echo   cp -R "$SRC_ROOT/iWorkerCloud/web" "$REMOTE_IWCLOUD_DIR/web"
+  echo fi
+  echo # Write iworkercloud start script if missing
+  echo if [ ! -f "$REMOTE_IWCLOUD_DIR/start.sh" ]; then
+  echo   cat ^> "$REMOTE_IWCLOUD_DIR/start.sh" ^<^< 'IWCLOUDEOF'
+  echo #!/bin/sh
+  echo cd "$(dirname "$0")"
+  echo pkill -f "iworkercloud" 2^>/dev/null ^|^| true
+  echo sleep 1
+  echo nohup ./iworkercloud ^> data/iworkercloud.log 2^>^&1 ^&
+  echo echo "iWorkerCloud started on :9366 (PID: $!)"
+  echo IWCLOUDEOF
+  echo   chmod +x "$REMOTE_IWCLOUD_DIR/start.sh"
+  echo fi
   echo.
   echo # Deploy openclaw-bridge ^(Node.js project^)
   echo BRIDGE_SRC="$SRC_ROOT/openclaw-bridge"
@@ -317,6 +381,16 @@ setlocal DisableDelayedExpansion
   echo echo "[remote] Restarting hubcenter..."
   echo if [ -x "$REMOTE_HUBCENTER_DIR/start.sh" ]; then
   echo   cd "$REMOTE_HUBCENTER_DIR"
+  echo   ./start.sh
+  echo fi
+  echo echo "[remote] Restarting iworkercenter..."
+  echo if [ -x "$REMOTE_IWC_DIR/start.sh" ]; then
+  echo   cd "$REMOTE_IWC_DIR"
+  echo   ./start.sh
+  echo fi
+  echo echo "[remote] Restarting iworkercloud..."
+  echo if [ -x "$REMOTE_IWCLOUD_DIR/start.sh" ]; then
+  echo   cd "$REMOTE_IWCLOUD_DIR"
   echo   ./start.sh
   echo fi
   echo.

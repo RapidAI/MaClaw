@@ -22,6 +22,16 @@ type CenterSettings = {
   role_provider_boost?: Record<string, string[]>;
 };
 
+type DBEndpoint = {
+  id: string; name: string; protocol: string; model: string;
+  cost_tier: string; priority: number; status: string;
+};
+
+type DBPolicy = {
+  id: string; name: string; work_type: string; role_code: string;
+  endpoint_id: string; fallback_mode: string; priority: number; status: string;
+};
+
 const hasWails = () => typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
 
 const tierLabel = (tier: string) => {
@@ -33,28 +43,37 @@ const tierLabel = (tier: string) => {
   }
 };
 
-const defaultModelRows = [
-  { scene: '办公写作', primary: 'qwen3.5-plus', backup: 'glm-5', route: '按任务类型路由' },
-  { scene: '数据分析', primary: 'MiniMax-M2.5', backup: 'qwen3-coder-plus', route: '优先高精度模型' },
-  { scene: '生产汇总', primary: 'glm-4.7', backup: 'qwen3-max-2026-01-23', route: '失败时自动回退' },
-];
+async function fetchJSON<T>(url: string): Promise<T | null> {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return resp.json();
+  } catch { return null; }
+}
 
 export function ModelRoutingPage() {
   const [providerRows, setProviderRows] = useState<Array<Record<string, string>>>([]);
-  const [routingRows, setRoutingRows] = useState(defaultModelRows);
+  const [routingRows, setRoutingRows] = useState<Array<Record<string, string>>>([]);
+  const [dbEndpoints, setDbEndpoints] = useState<DBEndpoint[]>([]);
+  const [dbPolicies, setDbPolicies] = useState<DBPolicy[]>([]);
   const [loading, setLoading] = useState(false);
-  const [providerCount, setProviderCount] = useState(0);
 
   useEffect(() => {
+    // Load DB-managed endpoints and policies
+    fetchJSON<{ endpoints: DBEndpoint[] }>('/admin/model-endpoints').then(d => {
+      if (d?.endpoints) setDbEndpoints(d.endpoints);
+    });
+    fetchJSON<{ policies: DBPolicy[] }>('/admin/model-routing-policies').then(d => {
+      if (d?.policies) setDbPolicies(d.policies);
+    });
+
+    // Load settings-based providers (existing)
     if (!hasWails()) return;
     setLoading(true);
     (window as any).go.main.App.LoadCenterSettings()
       .then((settings: CenterSettings) => {
         if (!settings) return;
-
-        // Build provider table
         const providers = settings.providers || [];
-        setProviderCount(providers.length);
         setProviderRows(providers.map((p) => ({
           name: p.name || p.id,
           model: p.model,
@@ -64,17 +83,13 @@ export function ModelRoutingPage() {
           status: p.enabled ? '✅ 启用' : '⏸ 停用',
         })));
 
-        // Build routing rules table from work_type_tier
         if (settings.work_type_tier && Object.keys(settings.work_type_tier).length > 0) {
           const rows = Object.entries(settings.work_type_tier).map(([workType, tier]) => {
-            // Find matching providers for this tier
             const tierProviders = providers.filter((p) => p.enabled && p.cost_tier === tier);
-            const primary = tierProviders[0]?.model || '-';
-            const backup = tierProviders[1]?.model || '-';
             return {
               scene: workType,
-              primary,
-              backup,
+              primary: tierProviders[0]?.model || '-',
+              backup: tierProviders[1]?.model || '-',
               route: `${tierLabel(tier)} 路由`,
             };
           });
@@ -85,10 +100,21 @@ export function ModelRoutingPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  const endpointRows = dbEndpoints.map(e => ({
+    name: e.name, model: e.model, protocol: e.protocol,
+    tier: tierLabel(e.cost_tier), priority: String(e.priority), status: e.status,
+  }));
+
+  const policyRows = dbPolicies.map(p => ({
+    name: p.name, work_type: p.work_type === '*' ? '全部' : p.work_type,
+    role: p.role_code === '*' ? '全部' : p.role_code,
+    fallback: p.fallback_mode, priority: String(p.priority), status: p.status,
+  }));
+
   return (
     <div className="center-page-stack">
       {providerRows.length > 0 && (
-        <SectionCard title="模型提供商" desc={`共 ${providerCount} 个提供商。${loading ? ' 加载中...' : ''}`}>
+        <SectionCard title="配置文件提供商" desc={`来自 settings.json 的提供商配置。${loading ? ' 加载中...' : ''}`}>
           <DataTable
             columns={[
               { key: 'name', label: '名称' },
@@ -102,17 +128,50 @@ export function ModelRoutingPage() {
           />
         </SectionCard>
       )}
-      <SectionCard title="模型调度策略" desc="查看默认模型、备用模型和路由策略。">
+
+      <SectionCard title="模型端点（DB 管理）" desc="数据库管理的模型端点，支持动态增删改。">
         <DataTable
           columns={[
-            { key: 'scene', label: '场景' },
-            { key: 'primary', label: '默认模型' },
-            { key: 'backup', label: '备用模型' },
-            { key: 'route', label: '路由策略' },
+            { key: 'name', label: '名称' },
+            { key: 'model', label: '模型' },
+            { key: 'protocol', label: '协议' },
+            { key: 'tier', label: '成本层级' },
+            { key: 'priority', label: '优先级' },
+            { key: 'status', label: '状态' },
           ]}
-          rows={routingRows}
+          rows={endpointRows}
         />
+        {dbEndpoints.length === 0 && <p style={{ color: '#888', padding: '8px 0' }}>暂无 DB 端点，可通过 API 创建。</p>}
       </SectionCard>
+
+      <SectionCard title="路由策略（DB 管理）" desc="按工作类型和角色匹配端点的路由规则。">
+        <DataTable
+          columns={[
+            { key: 'name', label: '策略名称' },
+            { key: 'work_type', label: '工作类型' },
+            { key: 'role', label: '角色' },
+            { key: 'fallback', label: '回退模式' },
+            { key: 'priority', label: '优先级' },
+            { key: 'status', label: '状态' },
+          ]}
+          rows={policyRows}
+        />
+        {dbPolicies.length === 0 && <p style={{ color: '#888', padding: '8px 0' }}>暂无路由策略。</p>}
+      </SectionCard>
+
+      {routingRows.length > 0 && (
+        <SectionCard title="配置文件路由策略" desc="来自 settings.json 的路由规则。">
+          <DataTable
+            columns={[
+              { key: 'scene', label: '场景' },
+              { key: 'primary', label: '默认模型' },
+              { key: 'backup', label: '备用模型' },
+              { key: 'route', label: '路由策略' },
+            ]}
+            rows={routingRows}
+          />
+        </SectionCard>
+      )}
     </div>
   );
 }

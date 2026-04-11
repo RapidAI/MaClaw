@@ -98,7 +98,7 @@ type App struct {
 	remoteInfraOnce            sync.Once   // guards ensureRemoteInfra initialization
 	remoteInfraReady           atomic.Bool // fast-path check for ensureRemoteInfra
 	warmupDone                 atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
-	clawNetClient              *ClawNetClient
+	agentNetClient              *AgentNetClient
 	mcpAutoDiscovery           *MCPAutoDiscovery
 	securityFirewall           *SecurityFirewall
 	securityRiskAnalyzer       *SecurityRiskAnalyzer
@@ -106,7 +106,7 @@ type App struct {
 	contextBridge              *ContextBridge
 	aiTrace                    *AITraceService
 	taskOrchestrator2          *TaskOrchestrator2
-	autoTaskPicker             *ClawNetAutoTaskPicker
+	autoTaskPicker             *AgentNetAutoTaskPicker
 	autoPickerOnce             sync.Once
 	qqBotGateway               *qqBotGatewayManager
 	telegramGateway            *telegramGatewayManager
@@ -1060,11 +1060,11 @@ func (a *App) startup(ctx context.Context) {
 		// The daemon is a standalone process that survives app restarts;
 		// if the user unchecked "enable AgentNet" but the app was force-killed
 		// before shutdown could stop it, the daemon lingers. Clean it up now.
-		// Use a temporary client to avoid leaving a.clawNetClient initialized
+		// Use a temporary client to avoid leaving a.agentNetClient initialized
 		// (which would cause shutdown() to redundantly call StopDaemon).
 		if !config.AgentNetEnabled {
 			go func() {
-				tmp := NewClawNetClient()
+				tmp := NewAgentNetClient()
 				if tmp.IsRunning() {
 					a.log("AgentNet: stopping residual daemon (agentnet_enabled=false)")
 					tmp.StopDaemon()
@@ -1144,8 +1144,8 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.auditLog != nil {
 		a.auditLog.Close()
 	}
-	if a.clawNetClient != nil {
-		a.clawNetClient.StopDaemon()
+	if a.agentNetClient != nil {
+		a.agentNetClient.StopDaemon()
 	}
 	if a.autoTaskPicker != nil {
 		a.autoTaskPicker.Stop()
@@ -1247,7 +1247,6 @@ func (a *App) buildClaudeLaunchEnv(
 
 	env := map[string]string{}
 	env["CLAUDE_CODE_USE_COLORS"] = "true"
-	env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
 	env["MAX_THINKING_TOKENS"] = "10000"
 
 	wireAPI := effectiveToolWireAPI("claude", *selectedModel)
@@ -1256,16 +1255,16 @@ func (a *App) buildClaudeLaunchEnv(
 			return nil, fmt.Errorf("claude provider %q must use anthropic wire_api", selectedModel.ModelName)
 		}
 		if selectedModel.ApiKey != "" {
-			env["ANTHROPIC_AUTH_TOKEN"] = selectedModel.ApiKey
+			env["ANTHROPIC_AUTH_TOKEN"] = strings.TrimSpace(selectedModel.ApiKey)
 		}
 		if selectedModel.ModelUrl != "" {
-			env["ANTHROPIC_BASE_URL"] = selectedModel.ModelUrl
+			env["ANTHROPIC_BASE_URL"] = strings.TrimSpace(selectedModel.ModelUrl)
 		}
 		if selectedModel.ModelId != "" {
-			env["ANTHROPIC_MODEL"] = selectedModel.ModelId
-			env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = selectedModel.ModelId
-			env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = selectedModel.ModelId
-			env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = selectedModel.ModelId
+			env["ANTHROPIC_MODEL"] = strings.TrimSpace(selectedModel.ModelId)
+			env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = strings.TrimSpace(selectedModel.ModelId)
+			env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = strings.TrimSpace(selectedModel.ModelId)
+			env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = strings.TrimSpace(selectedModel.ModelId)
 		}
 	}
 
@@ -1295,10 +1294,13 @@ func (a *App) buildClaudeLaunchEnv(
 	a.injectProxyEnv(env, config, projectDir, useProxy)
 
 	if !selectedModel.IsBuiltin {
+		// Clear native config BEFORE writing provider settings, so the
+		// backup captures the pre-provider state and WriteClaudeProviderSettings
+		// output is not immediately deleted.
+		a.clearClaudeConfig()
 		if err := configfile.WriteClaudeProviderSettings(selectedModel.ModelName, selectedModel.ApiKey, env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_MODEL"]); err != nil {
 			return nil, fmt.Errorf("write claude provider settings: %w", err)
 		}
-		a.clearClaudeConfig()
 	} else {
 		// Restore native config so Claude can use its own Anthropic auth.
 		a.restoreToolNativeConfig("claude")
@@ -1755,6 +1757,13 @@ func (a *App) WindowHide() {
 	runtime.WindowHide(a.ctx)
 	if UpdateTrayVisibility != nil {
 		UpdateTrayVisibility(false)
+	}
+}
+func (a *App) SetFullscreen(fullscreen bool) {
+	if fullscreen {
+		runtime.WindowFullscreen(a.ctx)
+	} else {
+		runtime.WindowUnfullscreen(a.ctx)
 	}
 }
 func (a *App) SelectProjectDir() string {
@@ -2214,7 +2223,6 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 	// Exclusively use AUTH_TOKEN for custom providers
 	env["ANTHROPIC_AUTH_TOKEN"] = selectedModel.ApiKey
 	env["CLAUDE_CODE_USE_COLORS"] = "true"
-	env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
 	env["MAX_THINKING_TOKENS"] = "31999"
 	switch strings.ToLower(selectedModel.ModelName) {
 	case "kimi":
@@ -3563,8 +3571,6 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 	hasAgentNetEnabled := false
 	if _, ok := rawConfig["agentnet_enabled"]; ok {
 		hasAgentNetEnabled = true
-	} else if _, ok := rawConfig["clawnet_enabled"]; ok {
-		hasAgentNetEnabled = true
 	}
 	hasGossipAutoPublish := false
 	if _, ok := rawConfig["gossip_auto_publish"]; ok {
@@ -3803,6 +3809,7 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 	removeModel(&config.Kilo.Models, "aliyun")
 	removeModel(&config.Cursor.Models, "aliyun")
 	removeModel(&config.Cursor.Models, "百度千帆")
+
 	// Ensure 'Original' is always present and first
 	ensureOriginal := func(models *[]ModelConfig) {
 		found := false

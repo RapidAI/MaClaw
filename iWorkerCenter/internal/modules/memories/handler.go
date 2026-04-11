@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/idgen"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
@@ -81,11 +82,12 @@ func (h *Handler) handleClientMemories(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listMemories(w http.ResponseWriter, r *http.Request, activeOnly bool) {
+	tenantID := tenant.TenantIDFromContext(r.Context())
 	roleCode := r.URL.Query().Get("role_code")
 
 	query := "SELECT id, title, content, level, scope, tags, version, status, created_at, updated_at FROM shared_memories"
-	var conditions []string
-	var args []interface{}
+	conditions := []string{"tenant_id=?"}
+	args := []interface{}{tenantID}
 
 	if activeOnly {
 		conditions = append(conditions, "status='active'")
@@ -97,9 +99,7 @@ func (h *Handler) listMemories(w http.ResponseWriter, r *http.Request, activeOnl
 		args = append(args, roleCode)
 	}
 
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
-	}
+	query += " WHERE " + strings.Join(conditions, " AND ")
 	query += " ORDER BY level, title"
 
 	rows, err := h.read.Query(query, args...)
@@ -163,10 +163,11 @@ func (h *Handler) createMemory(w http.ResponseWriter, r *http.Request) {
 	tagsJSON, _ := json.Marshal(tags)
 	now := time.Now().Format(time.RFC3339)
 	id := idgen.New("mem")
+	tenantID := tenant.TenantIDFromContext(r.Context())
 
-	_, err := h.write.Exec(`INSERT INTO shared_memories (id, title, content, level, scope, tags, version, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)`,
-		id, title, strings.TrimSpace(req.Content), level, scope, string(tagsJSON), now, now)
+	_, err := h.write.Exec(`INSERT INTO shared_memories (id, tenant_id, title, content, level, scope, tags, version, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)`,
+		id, tenantID, title, strings.TrimSpace(req.Content), level, scope, string(tagsJSON), now, now)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -204,10 +205,11 @@ func (h *Handler) updateMemory(w http.ResponseWriter, r *http.Request, id string
 		status = "active"
 	}
 
-	res, err := h.write.Exec(`UPDATE shared_memories SET title=?, content=?, level=?, scope=?, tags=?, status=?, version=version+1, updated_at=? WHERE id=?`,
+	tenantID := tenant.TenantIDFromContext(r.Context())
+	res, err := h.write.Exec(`UPDATE shared_memories SET title=?, content=?, level=?, scope=?, tags=?, status=?, version=version+1, updated_at=? WHERE id=? AND tenant_id=?`,
 		strings.TrimSpace(req.Title), strings.TrimSpace(req.Content),
 		strings.TrimSpace(req.Level), strings.TrimSpace(req.Scope),
-		string(tagsJSON), status, now, id)
+		string(tagsJSON), status, now, id, tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return

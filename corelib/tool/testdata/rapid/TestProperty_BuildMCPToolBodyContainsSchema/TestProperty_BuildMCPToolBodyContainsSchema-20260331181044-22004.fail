@@ -1,0 +1,34 @@
+# 2026/03/31 18:10:44.149197 [TestProperty_BuildMCPToolBodyContainsSchema] [rapid] draw numProps: 2
+# 2026/03/31 18:10:44.149197 [TestProperty_BuildMCPToolBodyContainsSchema] [rapid] draw propName: "__"
+# 2026/03/31 18:10:44.149197 [TestProperty_BuildMCPToolBodyContainsSchema] [rapid] draw propType: "string"
+# 2026/03/31 18:10:44.149197 [TestProperty_BuildMCPToolBodyContainsSchema] [rapid] draw propName: "__"
+# 2026/03/31 18:10:44.149197 [TestProperty_BuildMCPToolBodyContainsSchema] [rapid] draw propType: "array"
+# 2026/03/31 18:10:44.149197 [TestProperty_BuildMCPToolBodyContainsSchema] result should contain type "string" for property "__", got: Parameters:
+# - __ (array)
+# 
+v0.4.8#6683828078433142008
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1f2b5a0e61c3a6
+0x0

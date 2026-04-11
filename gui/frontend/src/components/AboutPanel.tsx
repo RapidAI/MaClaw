@@ -1,9 +1,11 @@
 import ReactMarkdown from 'react-markdown';
 import type { MouseEvent } from 'react';
+import { useState } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { BrowserOpenURL } from '../../wailsjs/runtime';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
+import { MemoryHealthDialog } from './MemoryHealthDialog';
 
 type BrandInfo = {
     id: string;
@@ -62,8 +64,10 @@ export function AboutPanel({
 
     // Override product name for TigerClaw brand on About panel
     const productName = brandInfo?.id === 'qianxin'
-        ? '虎爪·浴火 （TigerClaw）'
+        ? '虎爪·涅槃 （TigerClaw）'
         : t("aboutProductName");
+
+    const [showHealthDialog, setShowHealthDialog] = useState(false);
 
     return (
         <div className="about-page">
@@ -100,6 +104,7 @@ export function AboutPanel({
                         <button className="btn-link about-action-button" onClick={onOpenWebsite}>{t("officialWebsite")}</button>
                         <button className="btn-link about-action-button" onClick={onCheckUpdate}>{t("onlineUpdate")}</button>
                         <button className="btn-link about-action-button" onClick={onShowInstallLog}>{t("installLog")}</button>
+                        <button className="btn-link about-action-button" onClick={() => setShowHealthDialog(true)}>{t("memoryHealth")}</button>
                         {showGithubActions && (
                             <>
                                 <button className="btn-link about-action-button" onClick={onOpenBugReport}>{t("bugReport")}</button>
@@ -129,6 +134,11 @@ export function AboutPanel({
                     </section>
                 )}
             </div>
+            <MemoryHealthDialog
+                open={showHealthDialog}
+                onClose={() => setShowHealthDialog(false)}
+                t={t}
+            />
         </div>
     );
 }

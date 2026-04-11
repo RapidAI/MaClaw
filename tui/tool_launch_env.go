@@ -130,9 +130,8 @@ func isValidToolProvider(m corelib.ModelConfig) bool {
 
 func buildClaudeEnv(cfg corelib.AppConfig, m *corelib.ModelConfig, projectDir string) map[string]string {
 	env := map[string]string{
-		"CLAUDE_CODE_USE_COLORS":        "true",
-		"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000",
-		"MAX_THINKING_TOKENS":           "10000",
+		"CLAUDE_CODE_USE_COLORS": "true",
+		"MAX_THINKING_TOKENS":    "10000",
 	}
 	if !m.IsBuiltin {
 		if m.ApiKey != "" {

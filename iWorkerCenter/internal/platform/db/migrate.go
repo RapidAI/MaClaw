@@ -205,6 +205,222 @@ var migrations = []string{
 	 CREATE INDEX IF NOT EXISTS idx_role_assign_log_colleague ON role_assignment_log(colleague_id);
 	 CREATE INDEX IF NOT EXISTS idx_cap_bindings_colleague ON colleague_capability_bindings(colleague_id);
 	 CREATE INDEX IF NOT EXISTS idx_cap_bindings_capability ON colleague_capability_bindings(capability_id);`,
+
+	// 15: proxy_audit_log — records every LLM proxy request for audit
+	`CREATE TABLE IF NOT EXISTS proxy_audit_log (
+		id           TEXT PRIMARY KEY,
+		request_id   TEXT NOT NULL DEFAULT '',
+		provider_id  TEXT NOT NULL DEFAULT '',
+		model        TEXT NOT NULL DEFAULT '',
+		work_type    TEXT NOT NULL DEFAULT '',
+		cost_tier    TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL DEFAULT 'ok',
+		latency_ms   INTEGER NOT NULL DEFAULT 0,
+		input_tokens INTEGER NOT NULL DEFAULT 0,
+		summary      TEXT NOT NULL DEFAULT '',
+		error_msg    TEXT NOT NULL DEFAULT '',
+		created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_proxy_audit_created ON proxy_audit_log(created_at);
+	CREATE INDEX IF NOT EXISTS idx_proxy_audit_provider ON proxy_audit_log(provider_id);`,
+
+	// 16: security_policies — configurable security rules
+	`CREATE TABLE IF NOT EXISTS security_policies (
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL,
+		policy_type TEXT NOT NULL DEFAULT 'keyword_block',
+		description TEXT NOT NULL DEFAULT '',
+		rules       TEXT NOT NULL DEFAULT '{}',
+		scope       TEXT NOT NULL DEFAULT 'all',
+		priority    INTEGER NOT NULL DEFAULT 0,
+		status      TEXT NOT NULL DEFAULT 'active',
+		created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_security_policies_status ON security_policies(status);
+	CREATE INDEX IF NOT EXISTS idx_security_policies_type ON security_policies(policy_type);`,
+
+	// 17: security_policy_hit_records — audit trail for policy triggers
+	`CREATE TABLE IF NOT EXISTS security_policy_hit_records (
+		id          TEXT PRIMARY KEY,
+		policy_id   TEXT NOT NULL,
+		policy_name TEXT NOT NULL DEFAULT '',
+		actor_id    TEXT NOT NULL DEFAULT '',
+		action      TEXT NOT NULL DEFAULT 'blocked',
+		detail      TEXT NOT NULL DEFAULT '',
+		created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+		FOREIGN KEY (policy_id) REFERENCES security_policies(id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_security_hits_policy ON security_policy_hit_records(policy_id);
+	CREATE INDEX IF NOT EXISTS idx_security_hits_created ON security_policy_hit_records(created_at);`,
+
+	// 18: config_bundles — configuration packages for delivery to DiWorker clients
+	`CREATE TABLE IF NOT EXISTS config_bundles (
+		id           TEXT PRIMARY KEY,
+		version      INTEGER NOT NULL DEFAULT 1,
+		content_type TEXT NOT NULL DEFAULT 'full',
+		payload      TEXT NOT NULL DEFAULT '{}',
+		status       TEXT NOT NULL DEFAULT 'draft',
+		note         TEXT NOT NULL DEFAULT '',
+		created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+		published_at TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX IF NOT EXISTS idx_config_bundles_status ON config_bundles(status);`,
+
+	// 19: model_endpoints — DB-managed model provider endpoints
+	`CREATE TABLE IF NOT EXISTS model_endpoints (
+		id         TEXT PRIMARY KEY,
+		name       TEXT NOT NULL,
+		protocol   TEXT NOT NULL DEFAULT 'openai',
+		base_url   TEXT NOT NULL DEFAULT '',
+		api_key    TEXT NOT NULL DEFAULT '',
+		model      TEXT NOT NULL DEFAULT '',
+		cost_tier  TEXT NOT NULL DEFAULT 'medium',
+		priority   INTEGER NOT NULL DEFAULT 0,
+		features   TEXT NOT NULL DEFAULT '[]',
+		status     TEXT NOT NULL DEFAULT 'active',
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_model_endpoints_status ON model_endpoints(status);
+	CREATE INDEX IF NOT EXISTS idx_model_endpoints_tier ON model_endpoints(cost_tier);`,
+
+	// 20: model_routing_policies — DB-managed routing rules
+	`CREATE TABLE IF NOT EXISTS model_routing_policies (
+		id            TEXT PRIMARY KEY,
+		name          TEXT NOT NULL,
+		description   TEXT NOT NULL DEFAULT '',
+		work_type     TEXT NOT NULL DEFAULT '*',
+		role_code     TEXT NOT NULL DEFAULT '*',
+		endpoint_id   TEXT NOT NULL DEFAULT '',
+		fallback_mode TEXT NOT NULL DEFAULT 'next_priority',
+		priority      INTEGER NOT NULL DEFAULT 0,
+		status        TEXT NOT NULL DEFAULT 'active',
+		created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_model_routing_status ON model_routing_policies(status);`,
+
+	// 21: admin_users — admin accounts for iWorkerCenter login
+	`CREATE TABLE IF NOT EXISTS admin_users (
+		id            TEXT PRIMARY KEY,
+		username      TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL,
+		salt          TEXT NOT NULL DEFAULT '',
+		email         TEXT NOT NULL DEFAULT '',
+		created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+	);`,
+
+	// 22: security_groups — hierarchical user groups for centralized security management
+	`CREATE TABLE IF NOT EXISTS security_groups (
+		id         TEXT PRIMARY KEY,
+		name       TEXT NOT NULL,
+		parent_id  TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_security_groups_parent ON security_groups(parent_id);`,
+
+	// 23: security_group_members — user-to-group assignment (single group per user)
+	`CREATE TABLE IF NOT EXISTS security_group_members (
+		email      TEXT PRIMARY KEY,
+		group_id   TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_sgm_group ON security_group_members(group_id);`,
+
+	// 24: security_group_policies — sparse policy overrides per group
+	`CREATE TABLE IF NOT EXISTS security_group_policies (
+		group_id    TEXT PRIMARY KEY,
+		policy_json TEXT NOT NULL DEFAULT '{}',
+		updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+	);`,
+
+	// 25: diworker_accounts — local authentication accounts for DiWorker
+	`CREATE TABLE IF NOT EXISTS diworker_accounts (
+		id            TEXT PRIMARY KEY,
+		username      TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL,
+		salt          TEXT NOT NULL DEFAULT '',
+		identifier    TEXT NOT NULL DEFAULT '',
+		expires_at    TEXT,
+		disabled      INTEGER NOT NULL DEFAULT 0,
+		created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_diworker_accounts_username ON diworker_accounts(username);`,
+
+	// 26: system_settings — generic key-value store for module configs (LDAP, etc.)
+	`CREATE TABLE IF NOT EXISTS system_settings (
+		key        TEXT PRIMARY KEY,
+		value_json TEXT NOT NULL DEFAULT '{}',
+		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	);`,
+
+	// 27: tenants — multi-tenancy: one row per company
+	`CREATE TABLE IF NOT EXISTS tenants (
+		id               TEXT PRIMARY KEY,
+		company_name     TEXT NOT NULL UNIQUE,
+		legal_person     TEXT NOT NULL DEFAULT '',
+		email            TEXT NOT NULL,
+		address          TEXT NOT NULL DEFAULT '',
+		status           TEXT NOT NULL DEFAULT 'active',
+		cloud_center_id  TEXT NOT NULL DEFAULT '',
+		cloud_secret     TEXT NOT NULL DEFAULT '',
+		created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);`,
+
+	// 28: add tenant_id column to all existing business tables
+	`ALTER TABLE roles ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE colleagues ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE role_assignment_log ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE shared_memories ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE capability_packages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE colleague_capability_bindings ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE collaboration_tasks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE collaboration_task_events ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE workflow_definitions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE workflow_step_definitions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE workflow_instances ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE workflow_step_instances ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE workflow_instance_events ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE proxy_audit_log ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE security_policies ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE security_policy_hit_records ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE config_bundles ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE model_endpoints ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE model_routing_policies ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE admin_users ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE security_groups ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE security_group_members ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE security_group_policies ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE diworker_accounts ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';`,
+
+	// 29: indexes on tenant_id for query performance
+	`CREATE INDEX IF NOT EXISTS idx_roles_tenant ON roles(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_colleagues_tenant ON colleagues(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_shared_memories_tenant ON shared_memories(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_capability_packages_tenant ON capability_packages(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_collab_tasks_tenant ON collaboration_tasks(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_workflow_defs_tenant ON workflow_definitions(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_workflow_instances_tenant ON workflow_instances(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_security_policies_tenant ON security_policies(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_model_endpoints_tenant ON model_endpoints(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_admin_users_tenant ON admin_users(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_security_groups_tenant ON security_groups(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_diworker_accounts_tenant ON diworker_accounts(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_config_bundles_tenant ON config_bundles(tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_proxy_audit_tenant ON proxy_audit_log(tenant_id);`,
+
+	// 30: provision_nonces — replay protection for cloud provision requests
+	`CREATE TABLE IF NOT EXISTS provision_nonces (
+		nonce      TEXT PRIMARY KEY,
+		expires_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_nonces_expires ON provision_nonces(expires_at);`,
 }
 
 // Migrate applies all pending migrations inside a transaction.

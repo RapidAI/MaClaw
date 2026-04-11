@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"encoding/gob"
 	"fmt"
@@ -28,19 +29,23 @@ type ConcurrentEmbedder interface {
 
 // CosineSimilarity computes the cosine similarity between two float32 vectors.
 // Returns 0.0 for nil, empty, mismatched-length, or zero-magnitude vectors.
+// Uses SIMD-accelerated dot product and norm for performance.
+// Fast path: if both vectors are already L2-normalized (norm ≈ 1.0),
+// cosine similarity equals the dot product — skips the expensive norm/sqrt.
 func CosineSimilarity(a, b []float32) float64 {
 	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
 		return 0.0
 	}
-	var dot, normA, normB float64
-	for i := range a {
-		ai, bi := float64(a[i]), float64(b[i])
-		dot += ai * bi
-		normA += ai * ai
-		normB += bi * bi
-	}
+	dot := float64(tensor.Dot(a, b))
+	normA := float64(tensor.Dot(a, a))
+	normB := float64(tensor.Dot(b, b))
 	if normA == 0 || normB == 0 {
 		return 0.0
+	}
+	// Fast path: both vectors are unit-length (L2-normalized).
+	// Our embeddings are always L2-normalized, so this is the common case.
+	if normA > 0.999 && normA < 1.001 && normB > 0.999 && normB < 1.001 {
+		return dot
 	}
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
@@ -113,6 +118,24 @@ func NewToolEmbeddingCache(emb embedding.Embedder) *ToolEmbeddingCache {
 func hashText(text string) string {
 	h := sha256.Sum256([]byte(text))
 	return fmt.Sprintf("%x", h)
+}
+
+// WarmUpAsync pre-computes embeddings for a set of tool descriptions in the
+// background. This eliminates cold-start latency on the first user query by
+// ensuring all tool embeddings are cached before they're needed.
+// Safe to call from app startup; does not block the caller.
+func (c *ToolEmbeddingCache) WarmUpAsync(toolTexts map[string]string) {
+	if len(toolTexts) == 0 {
+		return
+	}
+	go func() {
+		_, err := c.GetBatch(toolTexts)
+		if err != nil {
+			log.Printf("[ToolEmbeddingCache] warm-up error: %v", err)
+		} else {
+			log.Printf("[ToolEmbeddingCache] warm-up complete: %d tools", len(toolTexts))
+		}
+	}()
 }
 
 // loadFromDisk restores cached embeddings from the gob file.
@@ -421,14 +444,16 @@ func (c *ToolEmbeddingCache) GetBatch(texts map[string]string) (map[string][]flo
 type queryEntry struct {
 	vec       []float32
 	createdAt time.Time
+	query     string // stored for O(1) eviction
 }
 
 // QueryEmbeddingCache is an LRU cache with TTL for user query embeddings.
+// Uses container/list + map for O(1) get/put/evict operations.
 type QueryEmbeddingCache struct {
 	mu       sync.Mutex
 	embedder embedding.Embedder
-	entries  map[string]*queryEntry
-	order    []string // LRU order: most recent at end
+	items    map[string]*list.Element // query → list element
+	order    *list.List               // front = oldest, back = newest
 	maxSize  int
 	ttl      time.Duration
 }
@@ -437,8 +462,8 @@ type QueryEmbeddingCache struct {
 func NewQueryEmbeddingCache(emb embedding.Embedder, maxSize int, ttl time.Duration) *QueryEmbeddingCache {
 	return &QueryEmbeddingCache{
 		embedder: emb,
-		entries:  make(map[string]*queryEntry),
-		order:    nil,
+		items:    make(map[string]*list.Element, maxSize),
+		order:    list.New(),
 		maxSize:  maxSize,
 		ttl:      ttl,
 	}
@@ -448,65 +473,52 @@ func NewQueryEmbeddingCache(emb embedding.Embedder, maxSize int, ttl time.Durati
 // Expired entries are treated as cache misses.
 func (c *QueryEmbeddingCache) Get(query string) ([]float32, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	now := time.Now()
 
-	if entry, ok := c.entries[query]; ok {
+	if elem, ok := c.items[query]; ok {
+		entry := elem.Value.(*queryEntry)
 		if now.Sub(entry.createdAt) < c.ttl {
-			// Move to end of LRU order.
-			c.moveToEnd(query)
-			return entry.vec, nil
+			// Move to back (most recent) — O(1)
+			c.order.MoveToBack(elem)
+			vec := entry.vec
+			c.mu.Unlock()
+			return vec, nil
 		}
 		// Expired — remove and recompute.
-		c.removeLocked(query)
+		c.order.Remove(elem)
+		delete(c.items, query)
 	}
+	c.mu.Unlock()
 
+	// Compute embedding outside the lock to avoid blocking other callers.
 	vec, err := c.embedder.Embed(query)
 	if err != nil {
 		return nil, err
 	}
 
-	// Evict LRU if at capacity.
-	if len(c.entries) >= c.maxSize {
-		c.evictLocked()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check: another goroutine may have computed this while we were embedding.
+	if elem, ok := c.items[query]; ok {
+		entry := elem.Value.(*queryEntry)
+		c.order.MoveToBack(elem)
+		return entry.vec, nil
 	}
 
-	c.entries[query] = &queryEntry{vec: vec, createdAt: now}
-	c.order = append(c.order, query)
+	// Evict LRU if at capacity — O(1)
+	if len(c.items) >= c.maxSize {
+		front := c.order.Front()
+		if front != nil {
+			evicted := c.order.Remove(front).(*queryEntry)
+			delete(c.items, evicted.query)
+		}
+	}
+
+	entry := &queryEntry{vec: vec, createdAt: time.Now(), query: query}
+	elem := c.order.PushBack(entry)
+	c.items[query] = elem
 	return vec, nil
-}
-
-// moveToEnd moves query to the end of the LRU order slice.
-func (c *QueryEmbeddingCache) moveToEnd(query string) {
-	for i, q := range c.order {
-		if q == query {
-			c.order = append(c.order[:i], c.order[i+1:]...)
-			c.order = append(c.order, query)
-			return
-		}
-	}
-}
-
-// removeLocked removes a query from both the map and order slice.
-func (c *QueryEmbeddingCache) removeLocked(query string) {
-	delete(c.entries, query)
-	for i, q := range c.order {
-		if q == query {
-			c.order = append(c.order[:i], c.order[i+1:]...)
-			return
-		}
-	}
-}
-
-// evictLocked removes the least recently used entry (first element in order).
-func (c *QueryEmbeddingCache) evictLocked() {
-	if len(c.order) == 0 {
-		return
-	}
-	oldest := c.order[0]
-	c.order = c.order[1:]
-	delete(c.entries, oldest)
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +543,12 @@ func NewHybridRetriever(emb embedding.Embedder) *HybridRetriever {
 		queryCache: NewQueryEmbeddingCache(emb, 64, 30*time.Second),
 		alpha:      0.6,
 	}
+}
+
+// WarmUp pre-computes tool embeddings in the background to eliminate cold-start latency.
+// Call this at app startup with all known tool descriptions.
+func (h *HybridRetriever) WarmUp(toolTexts map[string]string) {
+	h.toolCache.WarmUpAsync(toolTexts)
 }
 
 // FuseScores combines BM25 scores with vector cosine similarity scores.

@@ -11,12 +11,15 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
 	chatpush "github.com/RapidAI/CodeClaw/hub/internal/chat/push"
+	"github.com/RapidAI/CodeClaw/hub/internal/compute"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
@@ -247,12 +250,55 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		log.Printf("[bootstrap] failed to start qqbot plugin: %v", err)
 	}
 
+	// 8c. WeCom Plugin — connects to WeCom Bot via WebSocket gateway (Hub-native)
+	wecomPlugin := wecom.New(func() wecom.Config {
+		raw, err := st.System.Get(context.Background(), "wecom_config")
+		if err != nil || raw == "" {
+			return wecom.Config{}
+		}
+		var cfg wecom.Config
+		if json.Unmarshal([]byte(raw), &cfg) != nil {
+			return wecom.Config{}
+		}
+		return cfg
+	}, st.Users, st.System, mailer)
+	if err := imAdapter.RegisterPlugin(wecomPlugin); err != nil {
+		log.Printf("[bootstrap] failed to register wecom plugin: %v", err)
+	}
+	if publicBaseURL := centerService.GetPublicBaseURL(context.Background()); publicBaseURL != "" {
+		wecomPlugin.SetPublicBaseURL(publicBaseURL)
+	}
+	if err := wecomPlugin.Start(context.Background()); err != nil {
+		log.Printf("[bootstrap] failed to start wecom plugin: %v", err)
+	}
+
+	// 8d. DingTalk Plugin — connects to DingTalk Bot via Stream Mode (Hub-native)
+	dingtalkPlugin := dingtalk.New(func() dingtalk.Config {
+		raw, err := st.System.Get(context.Background(), "dingtalk_config")
+		if err != nil || raw == "" {
+			return dingtalk.Config{}
+		}
+		var cfg dingtalk.Config
+		if json.Unmarshal([]byte(raw), &cfg) != nil {
+			return dingtalk.Config{}
+		}
+		return cfg
+	}, st.Users, st.System, mailer)
+	if err := imAdapter.RegisterPlugin(dingtalkPlugin); err != nil {
+		log.Printf("[bootstrap] failed to register dingtalk plugin: %v", err)
+	}
+	if err := dingtalkPlugin.Start(context.Background()); err != nil {
+		log.Printf("[bootstrap] failed to start dingtalk plugin: %v", err)
+	}
+
 	// 9. Cross-IM NotifyBroadcaster — sends verification codes to all
 	//    reachable channels (email + any already-bound IM platforms).
 	broadcaster := im.NewNotifyBroadcaster(imAdapter, mailer)
 	broadcaster.SetActiveUserProvider(deviceNotifier)
 	qqbotPlugin.SetBroadcaster(broadcaster)
 	feishuNotifier.SetBroadcaster(broadcaster)
+	wecomPlugin.SetBroadcaster(broadcaster)
+	dingtalkPlugin.SetBroadcaster(broadcaster)
 
 	// 10. Proactive message sender — allows MaClaw clients to push
 	//     non-request-based messages (e.g. scheduled task results) to users.
@@ -352,6 +398,17 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	)
 	imAdapter.SetContentAuditor(contentAuditor)
 
+	// ── Compute Power Management ────────────────────────────
+	computeEncKey, err := compute.LoadOrGenerateKey("./data")
+	if err != nil {
+		return nil, fmt.Errorf("compute encryption key: %w", err)
+	}
+	computeStore := compute.NewProviderStore(provider.Write, computeEncKey)
+	if err := computeStore.CreateTable(context.Background()); err != nil {
+		return nil, fmt.Errorf("compute tables: %w", err)
+	}
+	computeHandler := httpapi.NewComputeHandler(computeStore, nil)
+
 	router := httpapi.NewRouter(
 		adminService,
 		identityService,
@@ -367,6 +424,8 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		feishuPlugin,
 		openclawIMPlugin,
 		qqbotPlugin,
+		wecomPlugin,
+		dingtalkPlugin,
 		coordinator.GetLLMStatus,
 		coordinator.ConvContextStats,
 		chatStore,
@@ -379,6 +438,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		chatNotifier,
 		voiceprintSvc,
 		securitySvc,
+		computeHandler,
 		cfg,
 		configPath,
 		EnsureSelfSignedCert,
@@ -406,6 +466,8 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		FeishuPlugin:     feishuPlugin,
 		OpenclawIMPlugin: openclawIMPlugin,
 		QQBotPlugin:      qqbotPlugin,
+		WecomPlugin:      wecomPlugin,
+		DingTalkPlugin:   dingtalkPlugin,
 		QQRemotePlugin:   qqRemotePlugin,
 		TelegramPlugin:   telegramPlugin,
 		ChatNotifier:     chatNotifier,

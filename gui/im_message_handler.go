@@ -1586,7 +1586,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		DisableCompression:    true, // 禁止自动 gzip，避免 SSE 流式被压缩缓冲
 	}
 	// Separate transport for background tasks (scheduled tasks, auto-picked
-	// ClawNet tasks) so they never starve the chat connection pool.
+	// AgentNet tasks) so they never starve the chat connection pool.
 	taskTransport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -1785,8 +1785,8 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 		if cached != nil && time.Since(cacheTime) < toolsCacheTTL {
 			tools = cached
 		} else {
-			// Sync dynamic tools (ClawNet, SkillHub) only on cache rebuild, not every call.
-			h.syncClawNetTools()
+			// Sync dynamic tools (AgentNet, SkillHub) only on cache rebuild, not every call.
+				h.syncAgentNetTools()
 			h.syncSkillHubTools()
 
 			tools = h.toolBuilder.BuildAll()
@@ -2215,51 +2215,51 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 	return fmt.Sprintf("✅ 已自动安装并执行 Skill「%s」\n%s", skill.Name, execResult)
 }
 
-// syncClawNetTools dynamically registers or unregisters ClawNet tools
-// based on whether the ClawNet daemon is currently running.
-func (h *IMMessageHandler) syncClawNetTools() {
+// syncAgentNetTools dynamically registers or unregisters AgentNet tools
+// based on whether the AgentNet daemon is currently running.
+func (h *IMMessageHandler) syncAgentNetTools() {
 	if h.registry == nil {
 		return
 	}
-	running := h.app.clawNetClient != nil && h.app.clawNetClient.IsRunning()
-	_, hasSearch := h.registry.Get("clawnet_search")
+	running := h.app.agentNetClient != nil && h.app.agentNetClient.IsRunning()
+	_, hasSearch := h.registry.Get("agentnet_search")
 
 	if running && !hasSearch {
 		h.registry.Register(RegisteredTool{
-			Name:        "clawnet_search",
-			Description: "在智网（ClawNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
+			Name:        "agentnet_search",
+			Description: "在智网（AgentNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
 			Category:    ToolCategoryBuiltin,
-			Tags:        []string{"clawnet", "search", "knowledge", "p2p"},
+			Tags:        []string{"agentnet", "search", "knowledge", "p2p"},
 			Status:      RegToolAvailable,
 			InputSchema: map[string]interface{}{
 				"query": map[string]string{"type": "string", "description": "搜索关键词"},
 			},
 			Required: []string{"query"},
-			Source:   "clawnet",
-			Handler:  func(args map[string]interface{}) string { return h.toolClawNetSearch(args) },
+			Source:   "agentnet",
+			Handler:  func(args map[string]interface{}) string { return h.toolAgentNetSearch(args) },
 		})
 		h.registry.Register(RegisteredTool{
-			Name:        "clawnet_publish",
-			Description: "向智网（ClawNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
+			Name:        "agentnet_publish",
+			Description: "向智网（AgentNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
 			Category:    ToolCategoryBuiltin,
-			Tags:        []string{"clawnet", "publish", "knowledge", "p2p"},
+			Tags:        []string{"agentnet", "publish", "knowledge", "p2p"},
 			Status:      RegToolAvailable,
 			InputSchema: map[string]interface{}{
 				"title": map[string]string{"type": "string", "description": "知识标题"},
 				"body":  map[string]string{"type": "string", "description": "知识内容（Markdown 格式）"},
 			},
 			Required: []string{"title", "body"},
-			Source:   "clawnet",
-			Handler:  func(args map[string]interface{}) string { return h.toolClawNetPublish(args) },
+			Source:   "agentnet",
+			Handler:  func(args map[string]interface{}) string { return h.toolAgentNetPublish(args) },
 		})
 	} else if !running && hasSearch {
-		h.registry.Unregister("clawnet_search")
-		h.registry.Unregister("clawnet_publish")
+		h.registry.Unregister("agentnet_search")
+		h.registry.Unregister("agentnet_publish")
 	}
 }
 
 // WarmupTools pre-builds and caches the tool definitions so the first user
-// message does not pay the cost of syncClawNetTools + BuildAll.
+// message does not pay the cost of syncAgentNetTools + BuildAll.
 // Safe to call from a background goroutine.
 func (h *IMMessageHandler) WarmupTools() {
 	allTools := h.getTools()
@@ -2924,7 +2924,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			return buildConfirmationResponse(item)
 		}
 	}
-	if unfinishedSlot != nil && !msg.IsBackground && !freshTask && !isSlotActionCommand(trimmed) && !decision.StartNewTask && decision.ResumeSlotID == "" {
+	if unfinishedSlot != nil && unfinishedSlot.Source != "session_exit" && !msg.IsBackground && !freshTask && !isSlotActionCommand(trimmed) && !decision.StartNewTask && decision.ResumeSlotID == "" {
 		if hint := buildUnfinishedSlotHint(unfinishedSlot); hint != "" {
 			unfinishedTask := buildUnfinishedTaskPayload(unfinishedSlot)
 			recoverableSession := (*IMResponseRecoverableSession)(nil)
