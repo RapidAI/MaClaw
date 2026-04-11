@@ -35,6 +35,25 @@
     "auth": "Manage LDAP and local account authentication for workers.",
     "settings": "Manage email and login credentials."
   },
+  "usage": {
+    "title": "Usage Statistics",
+    "period": "Period",
+    "daily": "Daily",
+    "monthly": "Monthly",
+    "startDate": "Start",
+    "endDate": "End",
+    "query": "Query",
+    "selectDateRange": "Select date range and click Query",
+    "diworkerName": "DiWorker",
+    "inputTokens": "Input Tokens",
+    "outputTokens": "Output Tokens",
+    "totalTokens": "Total Tokens",
+    "inputCost": "Input Cost",
+    "outputCost": "Output Cost",
+    "totalCost": "Total Cost",
+    "requests": "Requests",
+    "totalRequests": "Total Requests"
+  },
   "login": {
     "title": "Login",
     "username": "Username",
@@ -72,7 +91,14 @@
     "enabled": "Enabled",
     "source": "Source",
     "test": "Test Connectivity",
-    "addProvider": "Add Provider"
+    "addProvider": "Add Provider",
+    "confirmDelete": "Delete this provider?",
+    "priority": "Priority",
+    "description": "Description",
+    "inputPrice": "Input Price (per MToken)",
+    "outputPrice": "Output Price (per MToken)",
+    "status": "Status",
+    "actions": "Actions"
   },
   "common": {
     "save": "Save",

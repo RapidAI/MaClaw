@@ -51,7 +51,7 @@ func (repo *CenterRepo) List(ctx context.Context) ([]*store.Center, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*store.Center
+	out := make([]*store.Center, 0)
 	for rows.Next() {
 		c, err := scanCenterRows(rows)
 		if err != nil {
@@ -133,7 +133,7 @@ func (repo *LicenseRepo) GetByCenterID(ctx context.Context, centerID string) ([]
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*store.License
+	out := make([]*store.License, 0)
 	for rows.Next() {
 		l, err := scanLicenseRows(rows)
 		if err != nil {
@@ -166,7 +166,7 @@ func (repo *LicenseRepo) List(ctx context.Context) ([]*store.License, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*store.License
+	out := make([]*store.License, 0)
 	for rows.Next() {
 		l, err := scanLicenseRows(rows)
 		if err != nil {

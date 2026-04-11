@@ -11,7 +11,6 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
 	chatpush "github.com/RapidAI/CodeClaw/hub/internal/chat/push"
-	"github.com/RapidAI/CodeClaw/hub/internal/compute"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
@@ -398,17 +397,6 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	)
 	imAdapter.SetContentAuditor(contentAuditor)
 
-	// ── Compute Power Management ────────────────────────────
-	computeEncKey, err := compute.LoadOrGenerateKey("./data")
-	if err != nil {
-		return nil, fmt.Errorf("compute encryption key: %w", err)
-	}
-	computeStore := compute.NewProviderStore(provider.Write, computeEncKey)
-	if err := computeStore.CreateTable(context.Background()); err != nil {
-		return nil, fmt.Errorf("compute tables: %w", err)
-	}
-	computeHandler := httpapi.NewComputeHandler(computeStore, nil)
-
 	router := httpapi.NewRouter(
 		adminService,
 		identityService,
@@ -438,7 +426,6 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		chatNotifier,
 		voiceprintSvc,
 		securitySvc,
-		computeHandler,
 		cfg,
 		configPath,
 		EnsureSelfSignedCert,

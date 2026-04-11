@@ -94,10 +94,10 @@ func TestImportMarkdownSkillDir_UsesScriptsAsBashSteps(t *testing.T) {
 	if len(entry.Steps) != 2 {
 		t.Fatalf("Steps len = %d, want 2", len(entry.Steps))
 	}
-	if got := entry.Steps[0].Params["command"]; got != "bash \""+strings.ReplaceAll(shPath, "\"", `\\"`)+"\"" {
+	if got := entry.Steps[0].Params["command"]; got != "bash \""+strings.ReplaceAll(filepath.ToSlash(shPath), "\"", `\\"`)+"\"" {
 		t.Fatalf("step 0 command = %#v", got)
 	}
-	wantNodeCommand := "node \"" + strings.ReplaceAll(jsPath, "\"", `\\"`) + "\""
+	wantNodeCommand := "node \"" + strings.ReplaceAll(filepath.ToSlash(jsPath), "\"", `\\"`) + "\""
 	if got := entry.Steps[1].Params["command"]; got != wantNodeCommand {
 		t.Fatalf("step 1 command = %#v, want %q", got, wantNodeCommand)
 	}

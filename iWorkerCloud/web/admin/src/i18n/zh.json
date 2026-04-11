@@ -22,7 +22,7 @@
     "empty": "暂无授权证书。",
     "centerId": "Center ID", "days": "授权天数", "modules": "授权模块"
   },
-  "common": { "save": "保存", "cancel": "取消", "confirm": "确认", "refresh": "刷新", "loading": "加载中...", "noData": "暂无数据", "success": "操作成功", "error": "操作失败", "logout": "退出" },
+  "common": { "save": "保存", "cancel": "取消", "confirm": "确认", "refresh": "刷新", "loading": "加载中...", "noData": "暂无数据", "success": "操作成功", "error": "操作失败", "logout": "退出", "edit": "编辑", "delete": "删除" },
   "compute": {
     "providers": "LLM 服务商",
     "centerPermissions": "Center 算力权限",
@@ -33,6 +33,33 @@
     "grantPermission": "授予自管理权限",
     "revokePermission": "收回自管理权限",
     "test": "测试连通性",
-    "addProvider": "添加服务商"
+    "addProvider": "添加服务商",
+    "name": "名称",
+    "protocol": "协议",
+    "computeType": "算力类型",
+    "model": "模型",
+    "priority": "优先级",
+    "description": "描述",
+    "inputPrice": "输入单价(每MToken)",
+    "outputPrice": "输出单价(每MToken)",
+    "status": "状态",
+    "actions": "操作",
+    "enable": "启用",
+    "disable": "禁用",
+    "confirmDelete": "确定删除此 Provider？",
+    "usageStats": "用量统计",
+    "period": "周期",
+    "daily": "每日",
+    "monthly": "每月",
+    "startDate": "开始",
+    "endDate": "结束",
+    "query": "查询",
+    "selectDateRange": "选择日期范围后点击查询",
+    "totalCost": "总费用",
+    "totalTokens": "总 Token",
+    "inputTokens": "输入 Token",
+    "outputTokens": "输出 Token",
+    "inputCost": "输入费用",
+    "outputCost": "输出费用"
   }
 }

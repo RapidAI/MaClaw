@@ -257,6 +257,45 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 			steps = append(steps, corelib.NLSkillStep{Action: "bash", Params: params, OnError: "stop"})
 		}
 	}
+
+	// [Bug #2 fix] If no script-based steps were found, check for direct
+	// executable bash code blocks in the markdown. Blocks marked as ```bash
+	// that contain valid commands (no unresolved placeholders, no script file
+	// references) should be executed directly via bash, not delegated to
+	// craft_tool which cannot run shell commands.
+	if len(steps) == 0 && strings.TrimSpace(parsed.markdown) != "" {
+		for _, block := range extractBashBlocksFromMarkdown(parsed.markdown) {
+			// Skip blocks that reference script files — those should have been
+			// handled above via the scripts/ directory scan.
+			hasScriptRef := false
+			for _, line := range strings.Split(block, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				for _, field := range strings.Fields(line) {
+					field = strings.Trim(field, "\"'`")
+					if isScriptFileName(filepath.Base(field)) {
+						hasScriptRef = true
+						break
+					}
+				}
+				if hasScriptRef {
+					break
+				}
+			}
+			if hasScriptRef {
+				continue
+			}
+			// This is a direct bash command block — create a bash step for it.
+			params := map[string]interface{}{"command": block}
+			if strings.TrimSpace(skillDir) != "" {
+				params["working_dir"] = skillDir
+			}
+			steps = append(steps, corelib.NLSkillStep{Action: "bash", Params: params, OnError: "stop"})
+		}
+	}
+
 	if len(steps) == 0 {
 		entry, err := ParseMarkdownSkill(parsed.markdown, MarkdownSkillOptions{
 			NameFallback:        parsed.name,
@@ -378,6 +417,11 @@ func scriptExecutionCommand(scriptPath string) (string, bool) {
 }
 
 func quoteScriptPath(path string) string {
+	// On Windows, convert backslashes to forward slashes to prevent
+	// bash from interpreting them as escape characters.
+	if strings.Contains(path, `\`) {
+		path = filepath.ToSlash(path)
+	}
 	return "\"" + strings.ReplaceAll(path, "\"", `\"`) + "\""
 }
 

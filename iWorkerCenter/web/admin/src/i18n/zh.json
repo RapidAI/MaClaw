@@ -35,6 +35,25 @@
     "auth": "管理数字员工的 LDAP 和本地账户认证方式。",
     "settings": "管理邮箱和登录密码。"
   },
+  "usage": {
+    "title": "用量统计",
+    "period": "周期",
+    "daily": "每日",
+    "monthly": "每月",
+    "startDate": "开始",
+    "endDate": "结束",
+    "query": "查询",
+    "selectDateRange": "选择日期范围后点击查询",
+    "diworkerName": "数字员工",
+    "inputTokens": "输入 Token",
+    "outputTokens": "输出 Token",
+    "totalTokens": "总 Token",
+    "inputCost": "输入费用",
+    "outputCost": "输出费用",
+    "totalCost": "总费用",
+    "requests": "请求数",
+    "totalRequests": "总请求数"
+  },
   "login": {
     "title": "登录",
     "username": "用户名",
@@ -72,7 +91,14 @@
     "enabled": "启用",
     "source": "来源",
     "test": "测试连通性",
-    "addProvider": "添加服务商"
+    "addProvider": "添加服务商",
+    "confirmDelete": "确定删除此 Provider？",
+    "priority": "优先级",
+    "description": "描述",
+    "inputPrice": "输入单价(每MToken)",
+    "outputPrice": "输出单价(每MToken)",
+    "status": "状态",
+    "actions": "操作"
   },
   "common": {
     "save": "保存",

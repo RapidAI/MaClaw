@@ -10,10 +10,12 @@ export function OverviewPage() {
   useEffect(() => {
     Promise.all([listCenters().catch(() => []), listLicenses().catch(() => [])])
       .then(([centers, licenses]) => {
+        const c = centers ?? [];
+        const l = licenses ?? [];
         setStats({
-          total: centers.length,
-          pending: centers.filter(c => c.status === 'pending').length,
-          activeLic: licenses.filter(l => !l.revoked_at).length,
+          total: c.length,
+          pending: c.filter(c => c.status === 'pending').length,
+          activeLic: l.filter(l => !l.revoked_at).length,
         });
       });
   }, []);

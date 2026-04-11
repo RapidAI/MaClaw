@@ -1111,9 +1111,12 @@ func (s *Store) DreamCycle() *DreamCycleResult {
 	// Phase 3: Content hash backfill.
 	result.HashesBackfilled = s.backfillContentHashes()
 
-	if result.StaleDetected > 0 || result.LinksDiscovered > 0 || result.HashesBackfilled > 0 {
-		log.Printf("[memory_dream] stale=%d links=%d hashes=%d",
-			result.StaleDetected, result.LinksDiscovered, result.HashesBackfilled)
+	// Phase 4: Tag backfill — enrich old entries that have poor tags.
+	result.TagsBackfilled = s.backfillTags()
+
+	if result.StaleDetected > 0 || result.LinksDiscovered > 0 || result.HashesBackfilled > 0 || result.TagsBackfilled > 0 {
+		log.Printf("[memory_dream] stale=%d links=%d hashes=%d tags=%d",
+			result.StaleDetected, result.LinksDiscovered, result.HashesBackfilled, result.TagsBackfilled)
 	}
 
 	return result
@@ -1231,6 +1234,107 @@ func (s *Store) backfillContentHashes() int {
 	}
 	if count > 0 {
 		s.dirty = true
+		s.signalSave()
+	}
+	return count
+}
+
+// backfillTags enriches entries that have poor tags (empty or only generic
+// tags like "extracted") by extracting entities from their content using
+// ExpandQuery. This ensures old entries benefit from the tag fast lane.
+// Processes up to 30 entries per cycle to avoid blocking.
+func (s *Store) backfillTags() int {
+	// Minimal tag sets that indicate the entry needs enrichment.
+	needsEnrichment := func(tags []string) bool {
+		if len(tags) == 0 {
+			return true
+		}
+		meaningful := 0
+		for _, t := range tags {
+			switch t {
+			case "extracted", "conversation_summary", "proactive":
+				continue // generic tags don't count
+			default:
+				// Date-like tags (e.g. "2026-04-12") don't count.
+				if len(t) == 10 && t[4] == '-' && t[7] == '-' {
+					continue
+				}
+				// UserID-like tags (contain "user" or "-") are often not meaningful.
+				if strings.Contains(strings.ToLower(t), "user") {
+					continue
+				}
+				meaningful++
+			}
+		}
+		return meaningful == 0
+	}
+
+	// Collect candidates outside the write lock. Store ID, not index.
+	s.mu.RLock()
+	type pending struct {
+		id      string
+		content string
+	}
+	var todo []pending
+	for _, e := range s.entries {
+		if !e.IsActive() || e.Category.IsProtected() {
+			continue
+		}
+		if len(e.Content) < 10 {
+			continue
+		}
+		if needsEnrichment(e.Tags) {
+			todo = append(todo, pending{id: e.ID, content: e.Content})
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(todo) == 0 {
+		return 0
+	}
+	if len(todo) > 30 {
+		todo = todo[:30]
+	}
+
+	// Extract tags (no lock needed — ExpandQuery is pure computation).
+	type enrichment struct {
+		id      string
+		newTags []string
+	}
+	var enrichments []enrichment
+	for _, p := range todo {
+		expanded := ExpandQuery(p.content)
+		if len(expanded.Entities) > 0 {
+			enrichments = append(enrichments, enrichment{id: p.id, newTags: expanded.Entities})
+		}
+	}
+
+	if len(enrichments) == 0 {
+		return 0
+	}
+
+	// Build lookup for fast ID matching.
+	enrichByID := make(map[string][]string, len(enrichments))
+	for _, e := range enrichments {
+		enrichByID[e.id] = e.newTags
+	}
+
+	// Apply enrichments under write lock, matching by ID.
+	s.mu.Lock()
+	count := 0
+	for i := range s.entries {
+		if newTags, ok := enrichByID[s.entries[i].ID]; ok {
+			s.entries[i].Tags = mergeTags(s.entries[i].Tags, newTags)
+			s.bm25.updateEntry(s.entries[i])
+			count++
+		}
+	}
+	if count > 0 {
+		s.dirty = true
+	}
+	s.mu.Unlock()
+
+	if count > 0 {
 		s.signalSave()
 	}
 	return count

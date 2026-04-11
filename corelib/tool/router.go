@@ -87,9 +87,13 @@ var documentDeliveryKeywords = []string{
 	"pdf", "报告", "综述", "附件", "发送文件", "文件发我", "发给我", "导出",
 }
 
-var browserIntentKeywords = []string{"浏览器", "browser"}
-var browserPageKeywords = []string{"页面", "网页", "网站", "url"}
-var browserActionKeywords = []string{"访问", "导航", "点击", "观察"}
+var browserIntentKeywords = []string{
+	"浏览器", "browser", "chrome", "chromium", "playwright",
+	"录制", "回放", "replay", "record",
+	"browser_", // tool name prefix in follow-up messages
+}
+var browserPageKeywords = []string{"页面", "网页", "网站", "url", "page", "site"}
+var browserActionKeywords = []string{"访问", "导航", "点击", "观察", "打开", "截图", "输入", "填写"}
 
 var conditionalKeepRules = []conditionalKeepRule{
 	{
@@ -111,7 +115,22 @@ var conditionalKeepRules = []conditionalKeepRule{
 		},
 	},
 	{
-		keepTools: []string{"browser_session_start", "browser_observe", "browser_navigate"},
+		keepTools: []string{
+			// Browser agent session tools.
+			"browser_session_start", "browser_session_stop", "browser_observe",
+			"browser_navigate", "browser_click", "browser_type",
+			"browser_wait", "browser_back", "browser_refresh", "browser_extract",
+			"browser_connect", "browser_screenshot", "browser_get_text",
+			"browser_get_html", "browser_eval", "browser_scroll",
+			"browser_select", "browser_list_pages", "browser_switch_page",
+			"browser_close", "browser_click_at", "browser_set_files",
+			"browser_info", "browser_ocr",
+			// Browser task/record/replay tools.
+			"browser_task_run", "browser_task_replay", "browser_task_verify", "browser_task_status",
+			"browser_record_start", "browser_record_stop", "browser_list_flows",
+			// GUI automation recording tools.
+			"gui_record_start", "gui_record_stop",
+		},
 		matches: func(msg string) bool {
 			return containsAnyKeyword(msg, browserIntentKeywords) ||
 				(containsAnyKeyword(msg, browserPageKeywords) && containsAnyKeyword(msg, browserActionKeywords))

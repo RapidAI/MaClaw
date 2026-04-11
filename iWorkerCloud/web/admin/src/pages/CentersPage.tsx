@@ -5,7 +5,7 @@ import { listCenters, confirmTrial, confirmManual, disableCenter, enableCenter, 
 export function CentersPage() {
   const { t } = useTranslation();
   const [centers, setCenters] = useState<Center[]>([]);
-  const load = () => { listCenters().then(setCenters).catch(() => {}); };
+  const load = () => { listCenters().then(d => setCenters(d ?? [])).catch(() => {}); };
   useEffect(load, []);
 
   const handleConfirmManual = async (id: string) => {

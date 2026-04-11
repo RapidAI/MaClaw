@@ -563,11 +563,13 @@ func (a *App) ensureContextBridge() {
 }
 
 func (a *App) buildTrajectoryRecorderFactory() func() *TrajectoryRecorder {
-	cfg, err := a.LoadConfig()
-	if err != nil || !cfg.LLMTrajectoryLogging {
-		return nil
-	}
+	// Return a factory that checks the config dynamically on each call,
+	// so toggling the setting at runtime takes effect immediately.
 	return func() *TrajectoryRecorder {
+		cfg, err := a.LoadConfig()
+		if err != nil || !cfg.LLMTrajectoryLogging {
+			return nil
+		}
 		return NewTrajectoryRecorder()
 	}
 }

@@ -22,7 +22,7 @@
     "empty": "No licenses.",
     "centerId": "Center ID", "days": "Days", "modules": "Modules"
   },
-  "common": { "save": "Save", "cancel": "Cancel", "confirm": "Confirm", "refresh": "Refresh", "loading": "Loading...", "noData": "No data", "success": "Success", "error": "Error", "logout": "Logout" },
+  "common": { "save": "Save", "cancel": "Cancel", "confirm": "Confirm", "refresh": "Refresh", "loading": "Loading...", "noData": "No data", "success": "Success", "error": "Error", "logout": "Logout", "edit": "Edit", "delete": "Delete" },
   "compute": {
     "providers": "LLM Providers",
     "centerPermissions": "Center Compute Permissions",
@@ -33,6 +33,33 @@
     "grantPermission": "Grant Self-management",
     "revokePermission": "Revoke Self-management",
     "test": "Test Connectivity",
-    "addProvider": "Add Provider"
+    "addProvider": "Add Provider",
+    "name": "Name",
+    "protocol": "Protocol",
+    "computeType": "Compute Type",
+    "model": "Model",
+    "priority": "Priority",
+    "description": "Description",
+    "inputPrice": "Input Price (per MToken)",
+    "outputPrice": "Output Price (per MToken)",
+    "status": "Status",
+    "actions": "Actions",
+    "enable": "Enable",
+    "disable": "Disable",
+    "confirmDelete": "Delete this provider?",
+    "usageStats": "Usage Statistics",
+    "period": "Period",
+    "daily": "Daily",
+    "monthly": "Monthly",
+    "startDate": "Start",
+    "endDate": "End",
+    "query": "Query",
+    "selectDateRange": "Select date range and click Query",
+    "totalCost": "Total Cost",
+    "totalTokens": "Total Tokens",
+    "inputTokens": "Input Tokens",
+    "outputTokens": "Output Tokens",
+    "inputCost": "Input Cost",
+    "outputCost": "Output Cost"
   }
 }

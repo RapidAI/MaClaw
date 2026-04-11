@@ -10,7 +10,7 @@ export function LicensesPage() {
   const [days, setDays] = useState('30');
   const [modules, setModules] = useState('compute');
 
-  const load = () => { listLicenses().then(setLicenses).catch(() => {}); };
+  const load = () => { listLicenses().then(d => setLicenses(d ?? [])).catch(() => {}); };
   useEffect(load, []);
 
   const handleIssue = async () => {

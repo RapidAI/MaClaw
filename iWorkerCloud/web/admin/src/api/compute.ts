@@ -22,15 +22,19 @@ export interface CenterPermission {
   compute_permission: boolean;
 }
 
-export interface CenterCostReport {
-  center_id: string;
-  center_name: string;
+export interface CenterCostRow {
+  center_id?: string;
+  center_name?: string;
+  provider_name?: string;
+  model?: string;
   total_input_tokens: number;
   total_output_tokens: number;
   total_tokens: number;
   input_cost: number;
   output_cost: number;
   total_cost: number;
+  request_count?: number;
+  period_start?: string;
 }
 
 export function listProviders(): Promise<LLMProvider[]> {
@@ -41,8 +45,16 @@ export function createProvider(data: Partial<LLMProvider> & { api_key?: string }
   return apiPost('/api/admin/compute/providers', data);
 }
 
+export function updateProvider(id: string, data: Partial<LLMProvider> & { api_key?: string }): Promise<LLMProvider> {
+  return apiPost(`/api/admin/compute/providers/${id}`, data); // PUT via POST
+}
+
 export function deleteProvider(id: string): Promise<void> {
   return apiDelete(`/api/admin/compute/providers/${id}`);
+}
+
+export function toggleProvider(id: string): Promise<LLMProvider> {
+  return apiPost(`/api/admin/compute/providers/${id}/toggle`);
 }
 
 export function testProvider(id: string): Promise<{ ok: boolean; latency_ms: number; error?: string }> {
@@ -57,6 +69,8 @@ export function toggleCenterPermission(centerId: string, enabled: boolean): Prom
   return apiPost(`/api/admin/compute/permissions/${centerId}`, { compute_permission: enabled });
 }
 
-export function listCenterCosts(period: string, start: string, end: string): Promise<CenterCostReport[]> {
-  return apiGet(`/api/stats/center-costs?period=${period}&start=${start}&end=${end}`);
+export function listCenterCosts(params: { period: string; start: string; end: string; center_id?: string }): Promise<CenterCostRow[]> {
+  const q = new URLSearchParams({ period: params.period, start: params.start, end: params.end });
+  if (params.center_id) q.set('center_id', params.center_id);
+  return apiGet(`/api/stats/center-costs?${q}`);
 }

@@ -762,6 +762,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 		r.mu.Unlock()
 
 		resolvedStep := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir)
+		log.Printf("[skill-runner] step %d/%d: action=%s command=%q", i+1, len(skill.Steps), resolvedStep.Action, resolveCommandForDisplay(resolvedStep))
 		result, stepErr := r.executeStepWithContext(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
 
 		r.mu.Lock()
@@ -1064,8 +1065,18 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	stepCtx, stepCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer stepCancel()
 
+	// [Bug #1 fix] On Windows, convert backslash paths to forward slashes
+	// before passing to bash. This prevents bash from interpreting
+	// backslashes as escape characters in `bash -c "..."` context.
+	// Note: only applied for bash path; cmd.exe handles backslashes natively.
+	bashCommand := command
+	if runtime.GOOS == "windows" {
+		bashCommand = convertWindowsPathsInCommand(command)
+	}
+
 	var shellName string
 	var shellArgs []string
+	var tmpScript string // temp script file for bash on Windows
 	if runtime.GOOS == "windows" {
 		// On Windows, prefer cmd.exe for direct script execution to avoid
 		// Git Bash subprocess restrictions that can block nested execFileSync.
@@ -1086,9 +1097,28 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 					return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤，且 app 实例为空")
 				}
 			}
-			shellArgs = []string{"-c", command}
+			// [Bug #1 fix] Use temp script file instead of bash -c on Windows.
+			// bash -c "..." with double quotes causes backslash escaping issues
+			// even after path conversion, because users may have other backslash
+			// paths. Writing to a script file avoids all escaping problems.
+			scriptFile, err := os.CreateTemp("", "skill-step-*.sh")
+			if err != nil {
+				return "", fmt.Errorf("创建临时脚本文件失败: %v", err)
+			}
+			tmpScript = scriptFile.Name()
+			scriptContent := "#!/bin/bash\n" + bashCommand + "\n"
+			if _, err := scriptFile.WriteString(scriptContent); err != nil {
+				scriptFile.Close()
+				os.Remove(tmpScript)
+				return "", fmt.Errorf("写入临时脚本文件失败: %v", err)
+			}
+			scriptFile.Close()
+			// Use script file path (convert to forward slashes for bash)
+			shellArgs = []string{filepath.ToSlash(tmpScript)}
+			log.Printf("[skill-runner] bash step: using temp script %s", tmpScript)
 		} else {
 			// Direct command — use cmd.exe for better subprocess nesting support.
+			// cmd.exe handles backslash paths natively, no conversion needed.
 			cmdPath := os.Getenv("ComSpec")
 			if cmdPath == "" {
 				cmdPath = "C:\\WINDOWS\\system32\\cmd.exe"
@@ -1102,6 +1132,9 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}
+	}
+	if tmpScript != "" {
+		defer os.Remove(tmpScript)
 	}
 
 	cmd := exec.CommandContext(stepCtx, shellName, shellArgs...)
@@ -1123,6 +1156,12 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	b.WriteString(fmt.Sprintf("🐚 shell: %s\n", filepath.Base(shellName)))
 	b.WriteString(fmt.Sprintf("⏱  %s\n", elapsed.Round(time.Millisecond)))
 	b.WriteString(fmt.Sprintf("📂 %s\n", workDir))
+	if tmpScript != "" {
+		// Show original command instead of temp script path for readability
+		b.WriteString(fmt.Sprintf("💻 %s (via script)\n", command))
+	} else {
+		b.WriteString(fmt.Sprintf("💻 %s %s\n", filepath.Base(shellName), strings.Join(shellArgs, " ")))
+	}
 	b.WriteString("───────────────\n")
 	if stdout.Len() > 0 {
 		out := stdout.String()
@@ -1152,10 +1191,17 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 		errMsg := err.Error()
 		stderrText := strings.TrimSpace(stderr.String())
 		if stderrText != "" {
-			if len(stderrText) > 512 {
-				stderrText = stderrText[:512] + "..."
+			if len(stderrText) > 2048 {
+				stderrText = stderrText[:2048] + "..."
 			}
 			errMsg = fmt.Sprintf("%s | stderr: %s", errMsg, stderrText)
+		}
+		stdoutText := strings.TrimSpace(stdout.String())
+		if stdoutText != "" && stderrText == "" {
+			if len(stdoutText) > 2048 {
+				stdoutText = stdoutText[:2048] + "..."
+			}
+			errMsg = fmt.Sprintf("%s | stdout: %s", errMsg, stdoutText)
 		}
 		return b.String(), &bashStepError{
 			message:   errMsg,
@@ -1249,6 +1295,32 @@ func needsBashShell(command string) bool {
 	}
 	// Default: prefer cmd.exe for Windows subprocess compatibility.
 	return false
+}
+
+// winPathInCommandRe matches Windows absolute paths (e.g. C:\Users\...)
+// in command strings. Used to convert backslashes to forward slashes for bash.
+var winPathInCommandRe = regexp.MustCompile(`([A-Za-z]):\\([^\s"'` + "`" + `<>|*?]+)`)
+
+// winPathInQuotesRe matches Windows absolute paths inside double quotes
+// (e.g. "C:\Program Files\Git\bin\bash.exe") where spaces are allowed.
+var winPathInQuotesRe = regexp.MustCompile(`"([A-Za-z]):\\([^"]+)"`)
+
+// convertWindowsPathsInCommand converts Windows backslash paths to forward
+// slashes in a command string. This is critical for bash execution on Windows
+// where backslashes are interpreted as escape characters.
+func convertWindowsPathsInCommand(command string) string {
+	if !strings.Contains(command, `\`) {
+		return command
+	}
+	// First pass: handle quoted paths (may contain spaces)
+	result := winPathInQuotesRe.ReplaceAllStringFunc(command, func(match string) string {
+		return strings.ReplaceAll(match, `\`, `/`)
+	})
+	// Second pass: handle unquoted paths
+	result = winPathInCommandRe.ReplaceAllStringFunc(result, func(match string) string {
+		return strings.ReplaceAll(match, `\`, `/`)
+	})
+	return result
 }
 
 // resolveCommandForDisplay returns the command string from a resolved step for display purposes.

@@ -52,7 +52,6 @@ func NewRouter(
 	chatNotifier *chat.Notifier,
 	voiceprintSvc *voiceprint.Service,
 	securitySvc *security.SecurityService,
-	computeHandler *ComputeHandler,
 	hubCfg *config.Config,
 	configPath string,
 	ensureTLSCert func(certFile, keyFile string) error,
@@ -191,25 +190,6 @@ func NewRouter(
 		// Public endpoint for enrollment group tree
 		mux.HandleFunc("GET /api/enroll/group-tree", EnrollGroupTreeHandler(securitySvc))
 	}
-	// Compute power management
-	if computeHandler != nil {
-		ch := computeHandler
-		mux.HandleFunc("POST /api/admin/compute/providers", RequireAdmin(admins, ch.CreateProvider()))
-		mux.HandleFunc("GET /api/admin/compute/providers", RequireAdmin(admins, ch.ListProviders()))
-		mux.HandleFunc("GET /api/admin/compute/providers/{id}", RequireAdmin(admins, ch.GetProvider()))
-		mux.HandleFunc("PUT /api/admin/compute/providers/{id}", RequireAdmin(admins, ch.UpdateProvider()))
-		mux.HandleFunc("DELETE /api/admin/compute/providers/{id}", RequireAdmin(admins, ch.DeleteProvider()))
-		mux.HandleFunc("POST /api/admin/compute/providers/{id}/test", RequireAdmin(admins, ch.TestProvider()))
-		mux.HandleFunc("POST /api/admin/compute/providers/{id}/toggle", RequireAdmin(admins, ch.ToggleProvider()))
-		mux.HandleFunc("GET /api/admin/compute/permissions", RequireAdmin(admins, ch.ListCenterPermissions()))
-		mux.HandleFunc("POST /api/admin/compute/permissions/{id}", RequireAdmin(admins, ch.ToggleCenterPermission()))
-		mux.HandleFunc("PUT /api/admin/centers/{id}/compute-permission", RequireAdmin(admins, ch.SetComputePermission()))
-		mux.HandleFunc("POST /api/admin/centers/{id}/compute-providers", RequireAdmin(admins, ch.AssignProviderToCenter()))
-		mux.HandleFunc("GET /api/admin/centers/{id}/compute-providers", RequireAdmin(admins, ch.ListCenterAssignments()))
-		mux.HandleFunc("DELETE /api/admin/centers/{id}/compute-providers/{provider_id}", RequireAdmin(admins, ch.UnassignProviderFromCenter()))
-		mux.HandleFunc("GET /api/centers/{id}/compute-providers", ch.CenterComputeProviders())
-	}
-
 	// Conversation stats
 	if convStatsFn != nil {
 		mux.HandleFunc("GET /api/admin/conversation_stats", RequireAdmin(admins, func(w http.ResponseWriter, r *http.Request) {
