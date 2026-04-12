@@ -573,7 +573,7 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 				b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
 			}
 			log.Printf("[proactive_recall] injected %d entries into system prompt", len(relevant))
-			b.WriteString("（以上记忆已自动注入，无需再用 memory recall 重复搜索相同内容。仅在需要更多细节时才手动召回。）\n")
+			b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。即使你在之前的对话中说过「没找到」或「记忆库为空」，现在已经找到了，请直接使用以上信息，不要重复之前的错误判断。）\n")
 		}
 	}
 

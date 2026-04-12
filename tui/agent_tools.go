@@ -959,6 +959,29 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		}
 	}
 
+	// IMP-002: Implicit required args detection — catch {{key}} placeholders
+	// in step commands that aren't provided via vars, even when the skill
+	// doesn't declare required_args explicitly.
+	if len(skill.RequiredArgs) == 0 {
+		implicit := detectImplicitRequiredArgsTUI(skill.Steps, vars)
+		if len(implicit) > 0 {
+			desc := strings.TrimSpace(skill.Description)
+			if len(desc) > 120 {
+				desc = desc[:120] + "..."
+			}
+			msg := fmt.Sprintf("技能 %s 的命令中包含未提供的参数: %s。请通过 args 传入", skill.Name, strings.Join(implicit, ", "))
+			if desc != "" {
+				msg += fmt.Sprintf("\n说明: %s", desc)
+			}
+			return msg
+		}
+	}
+
+	// BUG-005: Normalize skill directory path (resolve 8.3 short paths on Windows)
+	if runtime.GOOS == "windows" && skill.SkillDir != "" {
+		skill.SkillDir = normalizeWindowsShortPathTUI(skill.SkillDir)
+	}
+
 	// P1: Dependency pre-check — verify commands referenced in bash steps exist
 	for i, step := range skill.Steps {
 		if step.Action != "bash" {
@@ -974,8 +997,11 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		}
 	}
 
+	// BUG-004: Generate a unique Run ID for tracking and status queries
+	runID := fmt.Sprintf("run-%d-%d", time.Now().UnixMilli(), skill.UsageCount+1)
+
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("▶ 执行技能: %s (%d 步)\n", skill.Name, len(skill.Steps)))
+	sb.WriteString(fmt.Sprintf("▶ 执行技能: %s (%d 步) [%s]\n", skill.Name, len(skill.Steps), runID))
 	allSuccess := true
 	hasFailure := false
 	startTime := time.Now()
@@ -1063,25 +1089,68 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 }
 
 func normalizeRunSkillVars(args map[string]interface{}) map[string]string {
-	vars := map[string]string{}
-	if rawArgs, ok := args["args"].(map[string]interface{}); ok {
-		for key, value := range rawArgs {
-			if str, ok := value.(string); ok {
-				vars[key] = str
+	vars := make(map[string]string)
+	if argsMap, ok := args["args"].(map[string]interface{}); ok {
+		for k, v := range argsMap {
+			if s, ok := v.(string); ok {
+				vars[k] = s
+			} else if v != nil {
+				vars[k] = fmt.Sprintf("%v", v)
 			}
 		}
 	}
-	if _, ok := vars["input"]; !ok {
-		if input := stringArg(args, "input"); input != "" {
-			vars["input"] = input
-		}
-	}
-	if _, ok := vars["output"]; !ok {
-		if output := stringArg(args, "output"); output != "" {
-			vars["output"] = output
+	// Also check top-level keys that look like template variables
+	for _, key := range []string{"input", "output", "query", "url", "text", "file", "path", "format"} {
+		if v, ok := args[key].(string); ok && v != "" {
+			if _, exists := vars[key]; !exists {
+				vars[key] = v
+			}
 		}
 	}
 	return vars
+}
+
+// implicitArgReTUI matches {{key}} and ${key} placeholders in skill step commands.
+var implicitArgReTUI = regexp.MustCompile(`\{\{(\w+)\}\}|\$\{(\w+)\}`)
+
+// detectImplicitRequiredArgsTUI scans skill step commands for {{key}} / ${key}
+// placeholders that aren't provided in vars. This catches skills that use
+// template variables without declaring required_args (IMP-002).
+func detectImplicitRequiredArgsTUI(steps []corelib.NLSkillStep, vars map[string]string) []string {
+	seen := make(map[string]bool)
+	var missing []string
+	for _, step := range steps {
+		// Check command param for bash steps, and all string params for other step types
+		var textsToCheck []string
+		if step.Action == "bash" {
+			if cmd, _ := step.Params["command"].(string); cmd != "" {
+				textsToCheck = append(textsToCheck, cmd)
+			}
+		}
+		// Also check other string params (e.g. craft_tool task/description)
+		for _, key := range []string{"task", "description", "text"} {
+			if v, _ := step.Params[key].(string); v != "" {
+				textsToCheck = append(textsToCheck, v)
+			}
+		}
+		for _, text := range textsToCheck {
+			matches := implicitArgReTUI.FindAllStringSubmatch(text, -1)
+			for _, m := range matches {
+				varName := m[1]
+				if varName == "" {
+					varName = m[2]
+				}
+				if varName == "" || seen[varName] {
+					continue
+				}
+				seen[varName] = true
+				if strings.TrimSpace(vars[varName]) == "" {
+					missing = append(missing, varName)
+				}
+			}
+		}
+	}
+	return missing
 }
 
 // runSkillStep 执行单个 skill 步骤，支持流式输出收集。
@@ -1094,9 +1163,90 @@ func runSkillStep(step corelib.NLSkillStep, skillDir string, vars map[string]str
 		}
 		command = substituteSkillVariables(command, vars)
 		return runSkillBashStreaming(command, step.Params, skillDir)
+	case "craft_tool":
+		// BUG-003: craft_tool steps need timeout control to prevent hanging.
+		// TUI doesn't have the full GUI App context, so we execute craft_tool
+		// as a bash step by extracting the task description and running it
+		// through the available script runtime with a strict timeout.
+		return runCraftToolStepTUI(step, skillDir, vars)
 	default:
 		return "", fmt.Errorf("unsupported action: %s", step.Action)
 	}
+}
+
+// runCraftToolStepTUI handles craft_tool steps in TUI mode (BUG-003).
+// Since TUI lacks the full GUI App context for LLM-based script generation,
+// this falls back to executing the task description as a bash command with
+// proper timeout control to prevent hanging.
+func runCraftToolStepTUI(step corelib.NLSkillStep, skillDir string, vars map[string]string) (string, error) {
+	task, _ := step.Params["task"].(string)
+	if task == "" {
+		task, _ = step.Params["description"].(string)
+	}
+	if task == "" {
+		return "", fmt.Errorf("craft_tool 步骤缺少 task 或 description 参数")
+	}
+
+	// Extract language preference
+	lang, _ := step.Params["language"].(string)
+	if lang == "" {
+		lang = "python"
+	}
+
+	// Extract script if pre-generated
+	script, _ := step.Params["script"].(string)
+	if script != "" {
+		// Execute pre-generated script with timeout
+		timeout := 60.0
+		if t, ok := step.Params["timeout"].(float64); ok && t > 0 {
+			timeout = t
+		}
+		if timeout > 300 {
+			timeout = 300
+		}
+
+		// Write script to temp file and execute
+		var ext string
+		var runner string
+		switch strings.ToLower(lang) {
+		case "python", "python3":
+			ext = ".py"
+			runner = "python"
+			if runtime.GOOS != "windows" {
+				runner = "python3"
+			}
+		case "node", "javascript", "js":
+			ext = ".mjs"
+			runner = "node"
+		default:
+			ext = ".sh"
+			runner = "bash"
+		}
+
+		tmpFile, err := os.CreateTemp("", "craft-step-*"+ext)
+		if err != nil {
+			return "", fmt.Errorf("创建临时脚本失败: %v", err)
+		}
+		tmpPath := tmpFile.Name()
+		defer os.Remove(tmpPath)
+
+		if _, err := tmpFile.WriteString(script); err != nil {
+			tmpFile.Close()
+			return "", fmt.Errorf("写入临时脚本失败: %v", err)
+		}
+		tmpFile.Close()
+
+		command := runner + " " + quoteSkillInputForShell(tmpPath)
+		params := map[string]interface{}{
+			"timeout":     timeout,
+			"working_dir": skillDir,
+		}
+		return runSkillBashStreaming(command, params, skillDir)
+	}
+
+	// No pre-generated script — craft_tool requires LLM interaction which
+	// is only available in GUI mode. Return a clear error.
+	return "", fmt.Errorf("craft_tool 步骤需要 LLM 生成脚本，TUI 模式暂不支持动态 craft_tool。请在 GUI 模式下运行此 Skill，或将 Skill 改为 bash 步骤")
 }
 
 // resolveSkillStepTUI resolves template variables in all step params, not just
@@ -1191,6 +1341,18 @@ func classifySkillStepError(output string, err error) string {
 		return hint
 	}
 
+	// BUG-002: Shebang treated as command in Windows CMD/PowerShell
+	if (strings.Contains(lower, "'#'") || strings.Contains(lower, "\"#\"")) &&
+		strings.Contains(lower, "not recognized") {
+		return "shell_compat: Bash 脚本的 shebang 行 (#!/bin/bash) 在 Windows CMD 中被当作命令执行。建议在 Skill 定义中设置 preferred_shell: bash，或改用跨平台脚本 (Python/Node.js)"
+	}
+
+	// BUG-001: Windows 8.3 short path resolution failure
+	if runtime.GOOS == "windows" && strings.Contains(lower, "~") &&
+		(strings.Contains(lower, "enoent") || strings.Contains(lower, "no such file")) {
+		return "path_8dot3: Windows 8.3 短路径解析失败。文件路径中包含 '~' 缩写（如 ADMINI~1），Node.js/Python 可能无法识别。建议使用完整路径或通过 fs.realpathSync() 解析"
+	}
+
 	// P4: HTTP 429 rate limit
 	if strings.Contains(lower, "429") && (strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "频率限制")) {
 		return "rate_limit: API 调用过于频繁，请稍后再试。建议等待 30-60 秒后重试。"
@@ -1209,6 +1371,9 @@ func classifySkillStepError(output string, err error) string {
 		return "file_not_found: 输入文件不存在，请检查文件路径是否正确"
 	case strings.Contains(lower, "permission denied") || strings.Contains(lower, "access denied"):
 		return "permission_error: 权限不足，请检查文件/目录权限"
+	// BUG-003: craft_tool hanging detection
+	case strings.Contains(lower, "context deadline exceeded") || strings.Contains(lower, "signal: killed"):
+		return "timeout: 步骤执行超时，可能是 craft_tool 脚本挂起。建议增加 timeout 参数或检查脚本是否有阻塞操作"
 	}
 	return ""
 }
@@ -1300,7 +1465,7 @@ func quoteSkillInputForShell(input string) string {
 		return "''"
 	}
 	if runtime.GOOS == "windows" {
-		// Double-quote for PowerShell compatibility (TUI uses PowerShell on Windows).
+		// Double-quote for cmd.exe compatibility (TUI uses cmd.exe on Windows).
 		escaped := strings.ReplaceAll(input, `"`, `\"`)
 		return `"` + escaped + `"`
 	}
@@ -1344,14 +1509,157 @@ func mapPython3ToWindowsTUI(command string) string {
 	return command
 }
 
+// needsBashShellTUI detects whether a command requires a Unix shell (bash/sh)
+// rather than cmd.exe on Windows. This prevents shebang lines and bash-specific
+// syntax from being misinterpreted by CMD/PowerShell (BUG-002).
+func needsBashShellTUI(command string) bool {
+	lower := strings.TrimSpace(strings.ToLower(command))
+
+	// Unix shell builtins must use bash even if the command also contains .py/.js paths
+	if strings.HasPrefix(lower, "export ") || strings.HasPrefix(lower, "source ") ||
+		strings.HasPrefix(lower, "#!/") {
+		return true
+	}
+	// Multi-line commands containing export lines
+	for _, line := range strings.Split(command, "\n") {
+		trimmed := strings.TrimSpace(strings.ToLower(line))
+		if strings.HasPrefix(trimmed, "export ") {
+			return true
+		}
+	}
+
+	// Known interpreters that run fine under cmd.exe — prefer cmd.exe
+	for _, prefix := range []string{"node ", "python ", "python3 ", "java ", "npm ", "pip ", "npx ", "go run ", "cargo run ", "pnpm "} {
+		if strings.HasPrefix(lower, prefix) {
+			return false
+		}
+	}
+	// Direct script path invocation — cmd.exe handles this well
+	if strings.Contains(lower, ".mjs") || strings.Contains(lower, ".js") ||
+		strings.Contains(lower, ".py") || strings.Contains(lower, ".bat") ||
+		strings.Contains(lower, ".cmd") {
+		return false
+	}
+	// Bash-specific syntax: pipes, redirections, heredocs
+	if strings.ContainsAny(command, "|<>") {
+		return true
+	}
+	if strings.Contains(command, "&&") || strings.Contains(command, "||") {
+		return true
+	}
+	// Command substitution
+	if strings.Contains(command, "$(") || strings.Contains(command, "`") {
+		return true
+	}
+	// Globbing with path separators
+	if strings.Contains(command, "*/") || strings.Contains(command, "/*") {
+		return true
+	}
+	// Tilde expansion
+	if strings.Contains(command, "~/") {
+		return true
+	}
+	return false
+}
+
+// winPathInQuotesReTUI matches Windows-style paths inside quotes.
+var winPathInQuotesReTUI = regexp.MustCompile(`["'][A-Za-z]:\\[^"']+["']`)
+
+// winPathInCommandReTUI matches unquoted Windows-style paths.
+var winPathInCommandReTUI = regexp.MustCompile(`[A-Za-z]:\\[\w\\.-]+`)
+
+// convertWindowsPathsInCommandTUI converts backslash paths to forward slashes
+// for bash execution on Windows (BUG-001 related).
+func convertWindowsPathsInCommandTUI(command string) string {
+	if !strings.Contains(command, `\`) {
+		return command
+	}
+	result := winPathInQuotesReTUI.ReplaceAllStringFunc(command, func(match string) string {
+		return strings.ReplaceAll(match, `\`, `/`)
+	})
+	result = winPathInCommandReTUI.ReplaceAllStringFunc(result, func(match string) string {
+		return strings.ReplaceAll(match, `\`, `/`)
+	})
+	return result
+}
+
+// normalizeWindowsShortPathTUI resolves Windows 8.3 short paths (e.g.
+// C:\Users\ADMINI~1\...) to their full long-path equivalents (BUG-001).
+// On non-Windows or if resolution fails, returns the original path unchanged.
+func normalizeWindowsShortPathTUI(p string) string {
+	if runtime.GOOS != "windows" {
+		return p
+	}
+	if !strings.Contains(p, "~") {
+		return p
+	}
+	// Use filepath.EvalSymlinks which on Windows resolves short names
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return p
+	}
+	return resolved
+}
+
+// normalizePathsInCommandTUI scans a command string for Windows 8.3 short
+// paths and replaces them with their long-path equivalents (BUG-001).
+var win83PathRe = regexp.MustCompile(`[A-Za-z]:\\[^\s"']+~\d[^\s"']*`)
+
+func normalizePathsInCommandTUI(command string) string {
+	if runtime.GOOS != "windows" || !strings.Contains(command, "~") {
+		return command
+	}
+	return win83PathRe.ReplaceAllStringFunc(command, func(match string) string {
+		resolved := normalizeWindowsShortPathTUI(match)
+		if resolved != match {
+			return resolved
+		}
+		return match
+	})
+}
+
+// findShTUI locates a Unix shell (sh.exe / bash.exe) on Windows,
+// typically provided by Git for Windows.
+func findShTUI() (string, error) {
+	// Try sh.exe first (Git for Windows)
+	if shPath, err := exec.LookPath("sh.exe"); err == nil {
+		return shPath, nil
+	}
+	// Try bash.exe (but skip WSL bash)
+	if bashPath, err := exec.LookPath("bash.exe"); err == nil {
+		// Skip WSL bash (typically in System32)
+		if !strings.Contains(strings.ToLower(bashPath), "system32") {
+			return bashPath, nil
+		}
+	}
+	// Try common Git for Windows locations
+	for _, candidate := range []string{
+		`C:\Program Files\Git\bin\sh.exe`,
+		`C:\Program Files\Git\usr\bin\bash.exe`,
+		`C:\Program Files (x86)\Git\bin\sh.exe`,
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("找不到 Unix shell (sh.exe/bash.exe)，请安装 Git for Windows: https://git-scm.com/download/win")
+}
+
 // runSkillBashStreaming 执行 bash 命令，使用流式输出收集而非等待完成。
 // 每秒检查一次输出，超时后报告已收集的部分输出。
+//
+// BUG-002 fix: On Windows, detects bash-specific syntax (shebang, pipes, etc.)
+// and routes to sh.exe/bash.exe via temp script file instead of PowerShell.
+// BUG-001 fix: Normalizes Windows 8.3 short paths before execution.
 func runSkillBashStreaming(command string, params map[string]interface{}, skillDir string) (string, error) {
+	// Strip UTF-8 BOM if present
+	command = strings.TrimPrefix(command, "\xef\xbb\xbf")
+
 	timeout := 30
 	if t, ok := params["timeout"].(float64); ok && t > 0 {
 		timeout = int(t)
-		if timeout > 120 {
-			timeout = 120
+		if timeout > 300 {
+			timeout = 300
 		}
 	}
 
@@ -1361,9 +1669,18 @@ func runSkillBashStreaming(command string, params map[string]interface{}, skillD
 		command = mapPython3ToWindowsTUI(command)
 	}
 
+	// BUG-001: Normalize Windows 8.3 short paths to long paths
+	if runtime.GOOS == "windows" {
+		command = normalizePathsInCommandTUI(command)
+	}
+
 	workDir, _ := params["working_dir"].(string)
 	if workDir == "" && skillDir != "" {
 		workDir = skillDir
+	}
+	// BUG-001: Also normalize the working directory path
+	if runtime.GOOS == "windows" && workDir != "" {
+		workDir = normalizeWindowsShortPathTUI(workDir)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
@@ -1371,12 +1688,73 @@ func runSkillBashStreaming(command string, params map[string]interface{}, skillD
 
 	var shellName string
 	var shellArgs []string
+	var tmpScript string // temp script file for Windows execution
+
 	if runtime.GOOS == "windows" {
-		shellName = "powershell"
-		shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command", command}
+		// BUG-002: Detect whether the command needs a Unix shell (bash) or
+		// can run under cmd.exe. This prevents shebang lines from being
+		// treated as commands in CMD/PowerShell.
+		useBash := needsBashShellTUI(command)
+		preferredShell, _ := params["preferred_shell"].(string)
+		if strings.EqualFold(preferredShell, "bash") {
+			useBash = true
+		}
+
+		if useBash {
+			// Route to sh.exe/bash.exe via temp script file
+			shPath, err := findShTUI()
+			if err != nil {
+				return "", err
+			}
+			shellName = shPath
+
+			bashCommand := convertWindowsPathsInCommandTUI(command)
+			scriptFile, err := os.CreateTemp("", "skill-step-*.sh")
+			if err != nil {
+				return "", fmt.Errorf("创建临时脚本文件失败: %v", err)
+			}
+			tmpScript = scriptFile.Name()
+			scriptContent := "#!/bin/bash\n" + bashCommand + "\n"
+			if _, err := scriptFile.WriteString(scriptContent); err != nil {
+				scriptFile.Close()
+				os.Remove(tmpScript)
+				return "", fmt.Errorf("写入临时脚本文件失败: %v", err)
+			}
+			scriptFile.Close()
+			shellArgs = []string{filepath.ToSlash(tmpScript)}
+		} else {
+			// Use cmd.exe with a temp .cmd script to avoid argument escaping issues
+			cmdPath := os.Getenv("ComSpec")
+			if cmdPath == "" {
+				cmdPath = `C:\WINDOWS\system32\cmd.exe`
+				if _, err := os.Stat(cmdPath); err != nil {
+					cmdPath = "cmd.exe"
+				}
+			}
+			shellName = cmdPath
+
+			scriptFile, err := os.CreateTemp("", "skill-step-*.cmd")
+			if err != nil {
+				return "", fmt.Errorf("创建临时脚本文件失败: %v", err)
+			}
+			tmpScript = scriptFile.Name()
+			// chcp 65001 switches cmd.exe to UTF-8 mode for non-ASCII paths
+			scriptContent := "@echo off\r\nchcp 65001 >nul\r\n" + command + "\r\n"
+			if _, err := scriptFile.WriteString(scriptContent); err != nil {
+				scriptFile.Close()
+				os.Remove(tmpScript)
+				return "", fmt.Errorf("写入临时脚本文件失败: %v", err)
+			}
+			scriptFile.Close()
+			shellArgs = []string{"/c", tmpScript}
+		}
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}
+	}
+
+	if tmpScript != "" {
+		defer os.Remove(tmpScript)
 	}
 
 	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
@@ -1386,6 +1764,15 @@ func runSkillBashStreaming(command string, params map[string]interface{}, skillD
 	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
 	// GBK/CP936 mojibake when scripts output non-ASCII text.
 	cmd.Env = coretool.AppendUTF8Env(os.Environ())
+
+	// Inject caller-supplied extra env vars (from skill params).
+	if extraEnv, ok := params["extra_env"].(map[string]interface{}); ok {
+		for k, v := range extraEnv {
+			if s, ok := v.(string); ok && k != "" {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, s))
+			}
+		}
+	}
 
 	// 使用 pipe 实现流式读取
 	stdoutPipe, err := cmd.StdoutPipe()

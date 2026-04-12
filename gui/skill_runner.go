@@ -149,6 +149,11 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		return "", fmt.Errorf("skill %q not found or disabled", skillName)
 	}
 
+	// BUG-005: Normalize skill directory path (resolve 8.3 short paths on Windows)
+	if runtime.GOOS == "windows" && target.SkillDir != "" {
+		target.SkillDir = normalizeWindowsShortPathGUI(target.SkillDir)
+	}
+
 	// 平台检查
 	if err := checkPlatformCompat(target); err != nil {
 		return "", err
@@ -1344,7 +1349,24 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		if r.executor == nil || r.executor.app == nil {
 			return "", fmt.Errorf("app not initialized")
 		}
-		return executeCraftToolCore(r.executor.app, nil, step.Params, nil)
+		// BUG-003: Execute craft_tool with context awareness so it respects
+		// the global timeout and can be cancelled. We run it in a goroutine
+		// and select on context cancellation.
+		type craftResult struct {
+			output string
+			err    error
+		}
+		ch := make(chan craftResult, 1)
+		go func() {
+			out, err := executeCraftToolCore(r.executor.app, nil, step.Params, nil)
+			ch <- craftResult{out, err}
+		}()
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("craft_tool 步骤超时: %v", ctx.Err())
+		case result := <-ch:
+			return result.output, result.err
+		}
 
 	case "poll":
 		return r.executePollStep(ctx, step, skillDir)
@@ -1384,10 +1406,19 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 		command = mapPython3ToWindows(command)
 	}
 
+	// BUG-001: Normalize Windows 8.3 short paths to long paths
+	if runtime.GOOS == "windows" {
+		command = normalizePathsInCommandGUI(command)
+	}
+
 	workDir, _ := params["working_dir"].(string)
 	// 如果没有指定 working_dir，使用 skill 目录
 	if workDir == "" && skillDir != "" {
 		workDir = skillDir
+	}
+	// BUG-001: Also normalize the working directory path
+	if runtime.GOOS == "windows" && workDir != "" {
+		workDir = normalizeWindowsShortPathGUI(workDir)
 	}
 
 	stepCtx, stepCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
@@ -1658,6 +1689,16 @@ func classifyBashError(errMsg, command string, exitCode int) string {
 			return hint + " | " + errMsg
 		}
 	}
+	// BUG-002: Shebang treated as command in Windows CMD/PowerShell
+	if (strings.Contains(combined, "'#'") || strings.Contains(combined, "\"#\"")) &&
+		strings.Contains(combined, "not recognized") {
+		return fmt.Sprintf("Bash 脚本的 shebang 行在 Windows CMD 中被当作命令执行。建议设置 preferred_shell: bash 或改用跨平台脚本。%s", errMsg)
+	}
+	// BUG-001: Windows 8.3 short path resolution failure
+	if runtime.GOOS == "windows" && strings.Contains(combined, "~") &&
+		(strings.Contains(combined, "enoent") || strings.Contains(combined, "no such file")) {
+		return fmt.Sprintf("Windows 8.3 短路径解析失败，文件路径中的 '~' 缩写无法被识别。建议使用完整路径。%s", errMsg)
+	}
 	// Detect missing parameter patterns (usage text, "required", "missing argument")
 	if exitCode == 1 || exitCode == 2 {
 		if strings.Contains(combined, "usage:") || strings.Contains(combined, "usage：") ||
@@ -1680,6 +1721,10 @@ func classifyBashError(errMsg, command string, exitCode int) string {
 	// P3: File not found (ENOENT) — provide friendly hint
 	if strings.Contains(combined, "enoent") || (strings.Contains(combined, "no such file") && strings.Contains(combined, "directory")) {
 		return fmt.Sprintf("输入文件不存在，请检查文件路径是否正确。%s", errMsg)
+	}
+	// BUG-003: craft_tool hanging / timeout detection
+	if strings.Contains(combined, "context deadline exceeded") || strings.Contains(combined, "signal: killed") {
+		return fmt.Sprintf("步骤执行超时，可能是脚本挂起。建议增加 timeout 参数或检查脚本是否有阻塞操作。%s", errMsg)
 	}
 	return errMsg
 }
@@ -1987,6 +2032,41 @@ func stepLabelSelected(label string, selected []string) bool {
 // captureOutputVariables extracts variables from step output using regex patterns.
 // Each entry in captures maps a variable name to a regex pattern. The first
 // submatch group (if present) is used as the value; otherwise the full match.
+// normalizeWindowsShortPathGUI resolves Windows 8.3 short paths (e.g.
+// C:\Users\ADMINI~1\...) to their full long-path equivalents (BUG-001).
+// On non-Windows or if resolution fails, returns the original path unchanged.
+func normalizeWindowsShortPathGUI(p string) string {
+	if runtime.GOOS != "windows" {
+		return p
+	}
+	if !strings.Contains(p, "~") {
+		return p
+	}
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return p
+	}
+	return resolved
+}
+
+// win83PathReGUI matches Windows paths containing 8.3 short name notation.
+var win83PathReGUI = regexp.MustCompile(`[A-Za-z]:\\[^\s"']+~\d[^\s"']*`)
+
+// normalizePathsInCommandGUI scans a command string for Windows 8.3 short
+// paths and replaces them with their long-path equivalents (BUG-001).
+func normalizePathsInCommandGUI(command string) string {
+	if runtime.GOOS != "windows" || !strings.Contains(command, "~") {
+		return command
+	}
+	return win83PathReGUI.ReplaceAllStringFunc(command, func(match string) string {
+		resolved := normalizeWindowsShortPathGUI(match)
+		if resolved != match {
+			return resolved
+		}
+		return match
+	})
+}
+
 func captureOutputVariables(output string, captures map[string]string) map[string]string {
 	result := make(map[string]string)
 	for varName, pattern := range captures {
