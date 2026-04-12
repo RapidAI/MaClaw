@@ -57,8 +57,9 @@ func (c *SSHHostConfig) Defaults() {
 		} else if c.KeyPath != "" {
 			c.AuthMethod = "key"
 		} else {
-			// 都没指定时默认密码优先；buildAuthMethods 会自动 fallback 到 key/agent
-			c.AuthMethod = "password"
+			// 都没指定时用 key 作为默认（与 OpenSSH 行为一致）；
+			// buildAuthMethods 会自动 fallback 到 password/agent
+			c.AuthMethod = "key"
 		}
 	}
 }

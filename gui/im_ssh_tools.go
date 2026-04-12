@@ -147,7 +147,16 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 
 	session, err := mgr.Create(spec)
 	if err != nil {
-		return fmt.Sprintf("SSH 连接失败: %v", err)
+		errMsg := fmt.Sprintf("SSH 连接失败: %v", err)
+		errStr := err.Error()
+		// 认证失败时给出明确的重试提示
+		if strings.Contains(errStr, "unable to authenticate") || strings.Contains(errStr, "handshake failed") ||
+			strings.Contains(errStr, "permission denied") || strings.Contains(errStr, "no supported methods") {
+			if cfg.Password == "" {
+				errMsg += "\n\n💡 认证失败且未提供密码。请使用 password 参数重试，例如：\nssh connect host=... user=... port=... password=<密码> auth_method=password"
+			}
+		}
+		return errMsg
 	}
 
 	// Register as a background task for GUI monitoring.
