@@ -132,7 +132,7 @@ func nlskillRemove(args []string) error {
 
 	found := false
 	for i, s := range cfg.NLSkills {
-		if s.Name == name {
+		if s.MatchesName(name) {
 			cfg.NLSkills = append(cfg.NLSkills[:i], cfg.NLSkills[i+1:]...)
 			found = true
 			break
@@ -166,7 +166,7 @@ func nlskillToggle(args []string, status string) error {
 
 	found := false
 	for i, s := range cfg.NLSkills {
-		if s.Name == name {
+		if s.MatchesName(name) {
 			cfg.NLSkills[i].Status = status
 			found = true
 			break

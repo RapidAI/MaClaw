@@ -674,6 +674,7 @@ export function RemoteSessionList(props: Props) {
                         title: loop.description || `Agent Loop ${loop.id}`,
                         project_path: "",
                         status: loop.status === "running" ? "running" : loop.status,
+                        execution_mode: "sdk",
                         raw_output_lines: bgLoopOutputLines,
                     };
                 }

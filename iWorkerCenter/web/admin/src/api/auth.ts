@@ -21,6 +21,6 @@ export function login(username: string, password: string): Promise<LoginResult> 
   return apiPost('/auth/login', { username, password });
 }
 
-export function setupTenant(data: { tenant_name: string; admin_username: string; admin_password: string }): Promise<void> {
-  return apiPost('/auth/setup', data);
+export function setupTenant(data: { company_name: string; email: string; admin_username: string; admin_password: string }): Promise<void> {
+  return apiPost('/auth/setup-tenant', data);
 }

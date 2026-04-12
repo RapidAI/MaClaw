@@ -780,10 +780,6 @@ export function AgentNetGetTaskBoard() {
   return window['go']['main']['App']['AgentNetGetTaskBoard']();
 }
 
-export function AgentNetGetTransactions() {
-  return window['go']['main']['App']['AgentNetGetTransactions']();
-}
-
 export function AgentNetGetLeaderboard() {
   return window['go']['main']['App']['AgentNetGetLeaderboard']();
 }

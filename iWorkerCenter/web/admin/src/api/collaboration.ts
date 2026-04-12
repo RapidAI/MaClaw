@@ -10,7 +10,7 @@ export interface CollabTask {
 }
 
 export function listCollaborations(): Promise<CollabTask[]> {
-  return apiGet('/admin/collaborations');
+  return apiGet<{ tasks: CollabTask[] }>('/admin/collaborations').then(d => d.tasks || []);
 }
 
 export function createCollaboration(data: { title: string; from_colleague: string; to_colleague: string }): Promise<CollabTask> {

@@ -11,11 +11,11 @@
 // then reinterpret the int32 bits as float32.
 // This avoids float32 precision loss when representing B.
 
-// func siluMulASM(gate, up []float32)
-TEXT ·siluMulASM(SB), NOSPLIT, $0-48
-	MOVQ gate+0(FP), SI       // SI = &gate[0]
-	MOVQ gate+8(FP), CX       // CX = len(gate)
-	MOVQ up+24(FP), DI        // DI = &up[0]
+// func siluMulAVX2(gate, up []float32)
+TEXT ·siluMulAVX2(SB), NOSPLIT, $0-48
+	MOVQ gate_base+0(FP), SI       // SI = &gate[0]
+	MOVQ gate_len+8(FP), CX       // CX = len(gate)
+	MOVQ up_base+24(FP), DI        // DI = &up[0]
 
 	TESTQ CX, CX
 	JZ    silu_done

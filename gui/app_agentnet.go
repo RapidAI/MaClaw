@@ -625,15 +625,6 @@ func (a *App) AgentNetGetTaskBoard() map[string]interface{} {
 
 // ---------- Credits (extended) ----------
 
-func (a *App) AgentNetGetTransactions() map[string]interface{} {
-	c := a.initAgentNet()
-	txns, err := c.GetCreditsTransactions()
-	if err != nil {
-		return map[string]interface{}{"ok": false, "error": err.Error()}
-	}
-	return map[string]interface{}{"ok": true, "transactions": txns}
-}
-
 func (a *App) AgentNetGetLeaderboard() map[string]interface{} {
 	c := a.initAgentNet()
 	lb, err := c.GetLeaderboard()

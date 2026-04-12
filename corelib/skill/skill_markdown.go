@@ -2,6 +2,7 @@ package skill
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,8 +13,8 @@ import (
 )
 
 // bashBlockRe matches fenced bash code blocks in markdown.
-// Captures the content between ```bash and ```.
-var bashBlockRe = regexp.MustCompile("(?s)```bash\\s*\n(.*?)```")
+// Captures the content between ```bash (or ```bash.norun) and ```.
+var bashBlockRe = regexp.MustCompile("(?s)```bash(\\.norun)?\\s*\n(.*?)```")
 
 // hasUnresolvedPlaceholders checks if a line contains template-like
 // placeholders such as {{input}}, {baseDir}, etc. that were not resolved.
@@ -89,27 +90,87 @@ func isExecutableBashBlock(block string) bool {
 	return true
 }
 
-// extractBashBlocksFromMarkdown returns all bash code blocks found in the
-// given markdown content. This is used to determine the number of executable
-// steps for skills that define steps inline in skill.md.
-func extractBashBlocksFromMarkdown(content string) []string {
+// extractAllBashBlocksFromMarkdown returns all bash code blocks found in the
+// markdown content, including those with {baseDir} placeholders. Unlike
+// extractBashBlocksFromMarkdown, this does NOT filter out blocks with
+// unresolved placeholders or Chinese paths — the caller is responsible for
+// resolving {baseDir} and deciding which blocks are executable.
+func extractAllBashBlocksFromMarkdown(content string) []string {
 	matches := bashBlockRe.FindAllStringSubmatch(content, -1)
 	var blocks []string
 	for _, m := range matches {
-		if len(m) > 1 {
-			trimmed := strings.TrimSpace(m[1])
-			if trimmed == "" {
-				continue
+		// m[1] = ".norun" or "" (the optional suffix capture group)
+		// m[2] = block content
+		if len(m) > 2 && m[1] == "" {
+			trimmed := strings.TrimSpace(m[2])
+			if trimmed != "" {
+				blocks = append(blocks, trimmed)
 			}
-			// Skip blocks that look like usage examples with unresolved
-			// placeholders or Chinese path segments.
-			if !isExecutableBashBlock(trimmed) {
-				continue
-			}
-			blocks = append(blocks, trimmed)
 		}
 	}
 	return blocks
+}
+
+// resolveBaseDirInBlock replaces {baseDir} placeholders in a bash block
+// with the actual skill directory path (using forward slashes).
+func resolveBaseDirInBlock(block, skillDir string) string {
+	if skillDir == "" {
+		return block
+	}
+	slashDir := filepath.ToSlash(strings.TrimRight(skillDir, `/\`))
+	result := strings.ReplaceAll(block, "{baseDir}", slashDir)
+	result = strings.ReplaceAll(result, "{base_dir}", slashDir)
+	return result
+}
+
+// isResolvedBlockExecutable checks if a bash block (after {baseDir} resolution)
+// looks like an executable command. This is a lighter check than
+// isExecutableBashBlock — it only rejects blocks that still have unresolved
+// template placeholders like {{input}}.pdf or Chinese example paths that
+// are clearly NOT the {baseDir}-resolved skill directory.
+func isResolvedBlockExecutable(block, skillDir string) bool {
+	slashDir := ""
+	if skillDir != "" {
+		slashDir = filepath.ToSlash(strings.TrimRight(skillDir, `/\`))
+	}
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Still has unresolved {baseDir} — not executable
+		if strings.Contains(line, "{baseDir}") || strings.Contains(line, "{base_dir}") {
+			return false
+		}
+		// Check for Chinese path segments, but SKIP paths that are inside
+		// the resolved skill directory (those are real paths, not examples).
+		if hasChinesePathSegments(line) {
+			if slashDir == "" || !strings.Contains(line, slashDir) {
+				return false
+			}
+			// The Chinese path is within the skill directory — it's a real path
+		}
+		// Check for remaining template placeholders that look like file paths
+		if strings.Contains(line, "{{/") || strings.Contains(line, "{{\\") ||
+			strings.Contains(line, "}}.pdf") || strings.Contains(line, "}}.md") {
+			return false
+		}
+	}
+	return true
+}
+
+// extractBashBlocksFromMarkdown returns executable bash code blocks from
+// markdown, filtering out usage examples with unresolved placeholders.
+// This is the legacy API used by callers that don't have skill directory context.
+func extractBashBlocksFromMarkdown(content string) []string {
+	all := extractAllBashBlocksFromMarkdown(content)
+	var result []string
+	for _, block := range all {
+		if isExecutableBashBlock(block) {
+			result = append(result, block)
+		}
+	}
+	return result
 }
 
 type MarkdownSkillOptions struct {
@@ -183,6 +244,9 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		Platforms:     platforms,
 		RequiresGUI:   requiresGUI,
 		ProducesArtifact: producesArtifact,
+		RequiredArgs:   parsed.requiredArgs,
+		RequiredEnv:    parsed.requiredEnv,
+		PreferredShell: parsed.preferredShell,
 	}, nil
 }
 
@@ -213,43 +277,78 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	}
 	steps := make([]corelib.NLSkillStep, 0)
 	scriptsDir := filepath.Join(skillDir, "scripts")
-	// Collect script file names referenced in markdown bash blocks.
-	// Only scripts explicitly mentioned in the markdown are turned into steps,
-	// preventing stale scripts in the scripts/ directory from becoming phantom steps.
-	referencedScripts := make(map[string]bool)
+
+	// Build a set of script files that actually exist in the scripts/ directory.
+	localScripts := make(map[string]bool)
+	scriptEntries, _ := os.ReadDir(scriptsDir)
+	for _, e := range scriptEntries {
+		if !e.IsDir() && isScriptFileName(e.Name()) {
+			localScripts[e.Name()] = true
+		}
+	}
+
+	// Extract ALL bash blocks from markdown (including {baseDir} ones) and
+	// process them in document order. This ensures step execution order matches
+	// the SKILL.md definition order.
+	var allBlocks []string
 	if strings.TrimSpace(parsed.markdown) != "" {
-		for _, block := range extractBashBlocksFromMarkdown(parsed.markdown) {
-			for _, line := range strings.Split(block, "\n") {
+		allBlocks = extractAllBashBlocksFromMarkdown(parsed.markdown)
+	}
+
+	if len(allBlocks) > 0 {
+		log.Printf("[skill-parser] %s: found %d bash blocks in SKILL.md, %d scripts in scripts/",
+			parsed.name, len(allBlocks), len(localScripts))
+		for _, rawBlock := range allBlocks {
+			// Resolve {baseDir} placeholders so we can check if the block
+			// references real files in the skill directory.
+			resolved := resolveBaseDirInBlock(rawBlock, skillDir)
+
+			// Check if the resolved block is executable (not a usage example).
+			if !isResolvedBlockExecutable(resolved, skillDir) {
+				continue
+			}
+
+			// Check if this block references a local script in scripts/.
+			// If so, use the script-based command (with proper quoting etc.)
+			var localScriptPath string
+			for _, line := range strings.Split(resolved, "\n") {
 				line = strings.TrimSpace(line)
 				if line == "" || strings.HasPrefix(line, "#") {
 					continue
 				}
-				// Extract script file references from the command line.
 				for _, field := range strings.Fields(line) {
 					field = strings.Trim(field, "\"'`")
 					base := filepath.Base(field)
-					if isScriptFileName(base) {
-						referencedScripts[base] = true
+					if isScriptFileName(base) && localScripts[base] {
+						localScriptPath = filepath.Join(scriptsDir, base)
+						break
 					}
 				}
+				if localScriptPath != "" {
+					break
+				}
 			}
-		}
-	}
-	if entries, err := os.ReadDir(scriptsDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
+
+			var command string
+			if localScriptPath != "" {
+				// Block references a local script — use the resolved command
+				// from commandFromSkillMarkdown (handles quoting, {baseDir}, etc.)
+				cmd, ok := scriptExecutionCommandFromMarkdown(localScriptPath, parsed.markdown, skillDir)
+				if !ok {
+					continue
+				}
+				command = cmd
+				log.Printf("[skill-parser] %s: step from script ref: %s", parsed.name, filepath.Base(localScriptPath))
+			} else {
+				// Direct bash command block — use the resolved content.
+				command = resolved
+				snippet := resolved
+				if len(snippet) > 60 {
+					snippet = snippet[:60] + "..."
+				}
+				log.Printf("[skill-parser] %s: step from direct block: %s", parsed.name, snippet)
 			}
-			// If markdown references exist, only include scripts mentioned there.
-			// Otherwise, fall back to including all scripts (legacy behavior).
-			if len(referencedScripts) > 0 && !referencedScripts[e.Name()] {
-				continue
-			}
-			scriptPath := filepath.Join(scriptsDir, e.Name())
-			command, ok := scriptExecutionCommandFromMarkdown(scriptPath, parsed.markdown, skillDir)
-			if !ok {
-				continue
-			}
+
 			params := map[string]interface{}{"command": command}
 			if strings.TrimSpace(skillDir) != "" {
 				params["working_dir"] = skillDir
@@ -258,37 +357,22 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		}
 	}
 
-	// [Bug #2 fix] If no script-based steps were found, check for direct
-	// executable bash code blocks in the markdown. Blocks marked as ```bash
-	// that contain valid commands (no unresolved placeholders, no script file
-	// references) should be executed directly via bash, not delegated to
-	// craft_tool which cannot run shell commands.
-	if len(steps) == 0 && strings.TrimSpace(parsed.markdown) != "" {
-		for _, block := range extractBashBlocksFromMarkdown(parsed.markdown) {
-			// Skip blocks that reference script files — those should have been
-			// handled above via the scripts/ directory scan.
-			hasScriptRef := false
-			for _, line := range strings.Split(block, "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				for _, field := range strings.Fields(line) {
-					field = strings.Trim(field, "\"'`")
-					if isScriptFileName(filepath.Base(field)) {
-						hasScriptRef = true
-						break
-					}
-				}
-				if hasScriptRef {
-					break
-				}
-			}
-			if hasScriptRef {
+	// Fallback: if no bash blocks exist in markdown but scripts/ has files,
+	// include all scripts as steps (legacy behavior for skills without
+	// inline bash blocks in their SKILL.md).
+	if len(steps) == 0 && len(scriptEntries) > 0 {
+		log.Printf("[skill-parser] %s: no bash blocks produced steps, falling back to scripts/ scan (%d files)",
+			parsed.name, len(scriptEntries))
+		for _, e := range scriptEntries {
+			if e.IsDir() {
 				continue
 			}
-			// This is a direct bash command block — create a bash step for it.
-			params := map[string]interface{}{"command": block}
+			scriptPath := filepath.Join(scriptsDir, e.Name())
+			command, ok := scriptExecutionCommandFromMarkdown(scriptPath, parsed.markdown, skillDir)
+			if !ok {
+				continue
+			}
+			params := map[string]interface{}{"command": command}
 			if strings.TrimSpace(skillDir) != "" {
 				params["working_dir"] = skillDir
 			}
@@ -315,14 +399,44 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		entry.CreatedAt = fileModTime(mdPath)
 		return entry, nil
 	}
-	source := strings.TrimSpace(opts.Source)
-	if source == "" {
-		source = "file"
-	}
 	producesArtifact := true
 	if opts.ProducesArtifact != nil {
 		producesArtifact = *opts.ProducesArtifact
 	}
+	// Apply execMode: "first" — only keep the first bash step.
+	if parsed.execMode == "first" && len(steps) > 1 {
+		log.Printf("[skill-parser] %s: exec_mode=first, keeping only first step out of %d", parsed.name, len(steps))
+		steps = steps[:1]
+	}
+
+	// Apply operation labels from <!-- operation: xxx --> comments.
+	opBlocks := extractOperationLabeledBlocks(parsed.markdown)
+	if len(opBlocks) > 0 {
+		for i := range steps {
+			if steps[i].Action != "bash" {
+				continue
+			}
+			cmd, _ := steps[i].Params["command"].(string)
+			if cmd == "" {
+				continue
+			}
+			// Match step command to operation block by comparing the first
+			// non-comment, non-empty line of each. This is more reliable than
+			// substring matching which breaks when {baseDir} resolution changes
+			// the path prefix.
+			cmdFirstLine := firstSignificantLine(cmd)
+			for label, block := range opBlocks {
+				resolved := resolveBaseDirInBlock(block, skillDir)
+				blockFirstLine := firstSignificantLine(resolved)
+				if cmdFirstLine != "" && blockFirstLine != "" && cmdFirstLine == blockFirstLine {
+					steps[i].Label = label
+					log.Printf("[skill-parser] %s: step %d labeled as %q", parsed.name, i, label)
+					break
+				}
+			}
+		}
+	}
+
 	entry := &corelib.NLSkillEntry{
 		Name:          parsed.name,
 		Description:   parsed.description,
@@ -330,13 +444,18 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		Steps:         steps,
 		Status:        "active",
 		CreatedAt:     fileModTime(mdPath),
-		Source:        source,
+		Source:        firstNonEmpty(strings.TrimSpace(opts.Source), "file"),
 		SourceProject: firstNonEmpty(strings.TrimSpace(opts.SourceProject), parsed.compatibility),
 		TrustLevel:    strings.TrimSpace(opts.TrustLevel),
 		SkillDir:      firstNonEmpty(strings.TrimSpace(opts.SkillDir), skillDir),
 		Platforms:     platforms,
 		RequiresGUI:   requiresGUI,
+		ExecMode:      parsed.execMode,
+		GlobalTimeout: parsed.timeout,
 		ProducesArtifact: producesArtifact,
+		RequiredArgs:   parsed.requiredArgs,
+		RequiredEnv:    parsed.requiredEnv,
+		PreferredShell: parsed.preferredShell,
 	}
 	return entry, nil
 }
@@ -377,16 +496,32 @@ func commandFromSkillMarkdown(scriptPath, markdown, skillDir string) (string, bo
 	return "", false
 }
 
+// normalizeImportedScriptCommand replaces well-known placeholder arguments
+// in a SKILL.md command line with {{input}} / {{output}} template variables
+// so that the runner can substitute actual file paths at execution time.
 func normalizeImportedScriptCommand(command string) string {
+	// Static replacements for common placeholder patterns.
 	replacer := strings.NewReplacer(
 		`"/绝对路径/输入.md"`, "{{input}}",
 		`"/绝对路径/输出.pdf"`, "{{output}}",
+		`"/绝对路径/输入文件"`, "{{input}}",
+		`"/绝对路径/输出文件"`, "{{output}}",
 		`"/path/in.md"`, "{{input}}",
 		`"/path/out.pdf"`, "{{output}}",
+		`"/path/input"`, "{{input}}",
+		`"/path/output"`, "{{output}}",
+		`"/path/to/input.md"`, "{{input}}",
+		`"/path/to/output.pdf"`, "{{output}}",
 		`'/绝对路径/输入.md'`, "{{input}}",
 		`'/绝对路径/输出.pdf'`, "{{output}}",
+		`'/绝对路径/输入文件'`, "{{input}}",
+		`'/绝对路径/输出文件'`, "{{output}}",
 		`'/path/in.md'`, "{{input}}",
 		`'/path/out.pdf'`, "{{output}}",
+		`'/path/input'`, "{{input}}",
+		`'/path/output'`, "{{output}}",
+		`'/path/to/input.md'`, "{{input}}",
+		`'/path/to/output.pdf'`, "{{output}}",
 	)
 	return replacer.Replace(command)
 }
@@ -417,6 +552,13 @@ func scriptExecutionCommand(scriptPath string) (string, bool) {
 }
 
 func quoteScriptPath(path string) string {
+	// If the path is already quoted, return as-is to prevent double-quoting
+	// which causes cmd.exe/bash to treat quotes as literal path characters.
+	trimmed := strings.TrimSpace(path)
+	if (strings.HasPrefix(trimmed, `"`) && strings.HasSuffix(trimmed, `"`)) ||
+		(strings.HasPrefix(trimmed, "'") && strings.HasSuffix(trimmed, "'")) {
+		return path
+	}
 	// On Windows, convert backslashes to forward slashes to prevent
 	// bash from interpreting them as escape characters.
 	if strings.Contains(path, `\`) {
@@ -450,6 +592,11 @@ type parsedSkillMarkdown struct {
 	description    string
 	compatibility  string
 	frontmatter    map[string]string
+	requiredArgs   []string // from frontmatter required_args
+	requiredEnv    []string // from frontmatter requires.env
+	preferredShell string   // from frontmatter shell (e.g. "bash", "cmd")
+	execMode       string   // from frontmatter exec_mode: "all" (default), "first", "named"
+	timeout        int      // from frontmatter timeout (seconds), 0 = use default
 }
 
 func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback string) (*parsedSkillMarkdown, error) {
@@ -475,12 +622,26 @@ func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback strin
 	if description == "" {
 		description = firstMarkdownParagraph(body)
 	}
+
+	// Parse extended frontmatter fields for runner compatibility.
+	requiredArgs := splitCSV(strings.TrimSpace(frontmatter["required_args"]))
+	requiredEnv := splitCSV(strings.TrimSpace(frontmatter["requires_env"]))
+	preferredShell := strings.TrimSpace(frontmatter["shell"])
+	execMode := strings.TrimSpace(frontmatter["exec_mode"])
+	timeout := parseIntFrontmatter(frontmatter["timeout"])
+
 	return &parsedSkillMarkdown{
-		markdown:      skillMD,
-		body:          body,
-		name:          name,
-		description:   description,
-		compatibility: strings.TrimSpace(frontmatter["compatibility"]),
+		markdown:       skillMD,
+		body:           body,
+		name:           name,
+		description:    description,
+		compatibility:  strings.TrimSpace(frontmatter["compatibility"]),
+		frontmatter:    frontmatter,
+		requiredArgs:   requiredArgs,
+		requiredEnv:    requiredEnv,
+		preferredShell: preferredShell,
+		execMode:       execMode,
+		timeout:        timeout,
 	}, nil
 }
 
@@ -578,4 +739,97 @@ func isScriptFileName(name string) bool {
 		return true
 	}
 	return false
+}
+
+// splitCSV splits a comma-separated string into trimmed, non-empty parts.
+// Handles both "a, b, c" and "a,b,c" formats.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// parseIntFrontmatter parses an integer from a frontmatter string value.
+// Returns 0 if the value is empty or not a valid integer.
+func parseIntFrontmatter(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	var v int
+	if _, err := fmt.Sscanf(s, "%d", &v); err != nil {
+		return 0
+	}
+	return v
+}
+
+// operationCommentRe matches <!-- operation: xxx --> HTML comments in markdown.
+// Used to tag bash blocks with operation labels for selective execution.
+var operationCommentRe = regexp.MustCompile(`<!--\s*operation:\s*(\S+)\s*-->`)
+
+// firstSignificantLine returns the first non-empty, non-comment line from a
+// bash block. Used for matching operation-labeled blocks to parsed steps.
+func firstSignificantLine(block string) string {
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
+// extractOperationLabeledBlocks parses SKILL.md content and returns a map of
+// operation label → bash block content. An <!-- operation: xxx --> comment
+// tags the next ```bash block that follows it.
+func extractOperationLabeledBlocks(content string) map[string]string {
+	result := make(map[string]string)
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	var pendingLabel string
+	inBashBlock := false
+	var blockLines []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Check for operation comment
+		if m := operationCommentRe.FindStringSubmatch(trimmed); len(m) > 1 {
+			pendingLabel = m[1]
+			continue
+		}
+
+		// Check for bash block start (exclude .norun)
+		if strings.HasPrefix(trimmed, "```bash") && !strings.Contains(trimmed, ".norun") {
+			inBashBlock = true
+			blockLines = nil
+			continue
+		}
+
+		// Check for block end
+		if inBashBlock && strings.HasPrefix(trimmed, "```") {
+			inBashBlock = false
+			if pendingLabel != "" && len(blockLines) > 0 {
+				result[pendingLabel] = strings.TrimSpace(strings.Join(blockLines, "\n"))
+			}
+			pendingLabel = ""
+			continue
+		}
+
+		if inBashBlock {
+			blockLines = append(blockLines, line)
+		} else if pendingLabel != "" && trimmed != "" &&
+			!strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "<!--") {
+			// Non-empty, non-heading, non-comment line between operation comment
+			// and bash block — clear the pending label to avoid mis-association.
+			pendingLabel = ""
+		}
+	}
+	return result
 }

@@ -123,7 +123,7 @@ func NutshellLocalBinaryName() string {
 
 // NutshellInstallDir returns the directory where anet is installed.
 func NutshellInstallDir() (string, error) {
-	return installDir()
+	return InstallDir()
 }
 
 // NutshellBinaryPath returns the expected anet binary path.

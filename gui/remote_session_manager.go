@@ -861,7 +861,18 @@ func (m *RemoteSessionManager) writeSDKInput(s *RemoteSession, sessionID, text, 
 
 	s.mu.RLock()
 	pending := s.PendingUserQuestion
+	currentStatus := s.Status
 	s.mu.RUnlock()
+
+	// Reject new user messages while the session is busy (LLM thinking or
+	// tool executing). Sending messages during an active turn can corrupt
+	// the Claude Code SDK's internal state, causing it to stop responding.
+	// AskUserQuestion answers are exempt — they are tool_result messages
+	// that Claude Code expects while busy.
+	if pending == nil && currentStatus == SessionBusy {
+		m.app.log(fmt.Sprintf("[remote-write-%s] REJECTED session=%s: session is busy, cannot send new user message", tag, sessionID))
+		return fmt.Errorf("会话正忙，请等待当前操作完成后再发送新消息 (session is busy)")
+	}
 
 	markWaitingInputSubmitted := func(currentTask string) {
 		s.mu.Lock()
@@ -1360,6 +1371,10 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			// Always reset the stall timer — any output (even nudge echoes)
 			// proves the tool is alive.
 			m.stallDetector.ResetTimer(s.ID, len(text) > 0)
+			// Resume stall monitoring if it was paused during thinking —
+			// streaming output means the LLM has finished thinking and is
+			// now producing content, so stall detection should be active.
+			m.stallDetector.ResumeMonitoring(s.ID)
 
 			// Filter nudge echoes — when the stall detector sends a nudge,
 			// the tool may echo it back. Strip those lines to avoid clutter.
@@ -1603,6 +1618,12 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			case "assistant":
 				updateThinking(true)
 				m.stallDetector.StartMonitoring(s.ID, s.Exec, s.Tool)
+				// Pause stall detection during thinking phase — the LLM may
+				// take minutes to respond via slow API proxies, and no
+				// streaming output is expected during thinking. Without this
+				// pause, the stall detector fires an interrupt that kills
+				// the in-progress turn.
+				m.stallDetector.PauseMonitoring(s.ID)
 				// Start busy ticker if assistant message contained tool_use
 				// blocks, so the terminal shows periodic progress while
 				// tools execute (prevents blank screen during busy state).

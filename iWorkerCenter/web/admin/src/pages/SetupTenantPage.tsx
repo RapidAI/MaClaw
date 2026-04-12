@@ -4,15 +4,26 @@ import { setupTenant } from '../api/auth';
 
 export function SetupTenantPage({ onSetupComplete }: { onSetupComplete: () => void }) {
   const { t } = useTranslation();
-  const [tenantName, setTenantName] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [email, setEmail] = useState('');
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
+    if (password !== confirmPassword) {
+      setError(t('setup.passwordMismatch') || '两次输入的密码不一致');
+      return;
+    }
+    if (!password || password.length < 4) {
+      setError(t('setup.passwordTooShort') || '密码至少 4 位');
+      return;
+    }
     try {
-      await setupTenant({ tenant_name: tenantName, admin_username: username, admin_password: password });
+      await setupTenant({ company_name: companyName, email, admin_username: username, admin_password: password });
       onSetupComplete();
     } catch (err: any) {
       setError(err.message || t('common.error'));
@@ -25,10 +36,15 @@ export function SetupTenantPage({ onSetupComplete }: { onSetupComplete: () => vo
         <h2>{t('setup.title')}</h2>
         <p style={{ color: '#888', fontSize: 13 }}>{t('setup.description')}</p>
         <form onSubmit={handleSubmit}>
-          <input value={tenantName} onChange={e => setTenantName(e.target.value)} placeholder="Company name" style={inputStyle} />
-          <input value={username} onChange={e => setUsername(e.target.value)} placeholder={t('login.username')} style={inputStyle} />
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={t('login.password')} style={inputStyle} />
-          {error && <p style={{ color: '#c33', fontSize: 13 }}>{error}</p>}
+          <input value={companyName} onChange={e => setCompanyName(e.target.value)} placeholder={t('setup.companyName') || '企业名称'} style={inputStyle} required />
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder={t('setup.email') || '管理员邮箱'} style={inputStyle} required />
+          <input value={username} onChange={e => setUsername(e.target.value)} placeholder={t('login.username')} style={inputStyle} required />
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={t('setup.password') || '设置密码'} style={inputStyle} required />
+          <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder={t('setup.confirmPassword') || '再次输入密码'} style={{
+            ...inputStyle,
+            borderColor: confirmPassword && password !== confirmPassword ? '#c33' : '#d0d0d0',
+          }} required />
+          {error && <p style={{ color: '#c33', fontSize: 13, margin: '4px 0 8px' }}>{error}</p>}
           <button type="submit" style={btnStyle}>{t('common.confirm')}</button>
         </form>
       </div>

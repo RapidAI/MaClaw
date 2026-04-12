@@ -143,6 +143,14 @@ type SDKExecutionHandle struct {
 
 	// claudeSessionID is the session ID reported by Claude Code.
 	claudeSessionID atomic.Value
+
+	// hasStreamEvents tracks whether stream_event messages have been
+	// received. When true, tool_use blocks in assistant messages are
+	// skipped by sdkMessageToText to avoid duplication (they were
+	// already emitted by extractStreamEventText). When false (e.g.
+	// CodeBuddy/Cursor without --include-partial-messages), tool_use
+	// blocks are still rendered by sdkMessageToText.
+	hasStreamEvents atomic.Bool
 }
 
 func (h *SDKExecutionHandle) PID() int {
@@ -228,7 +236,7 @@ func (h *SDKExecutionHandle) Interrupt() error {
 		case acquired <- struct{}{}:
 			// Caller will unlock via defer.
 		default:
-			// Timeout already fired �?caller won't read from acquired,
+			// Timeout already fired — caller won't read from acquired,
 			// so we must release the mutex ourselves to avoid a leak.
 			h.mu.Unlock()
 		}
@@ -236,7 +244,7 @@ func (h *SDKExecutionHandle) Interrupt() error {
 
 	select {
 	case <-acquired:
-		// Got the lock �?try graceful interrupt via stdin.
+		// Got the lock — try graceful interrupt via stdin.
 		defer h.mu.Unlock()
 		if h.closed {
 			return fmt.Errorf("sdk session closed")
@@ -253,7 +261,7 @@ func (h *SDKExecutionHandle) Interrupt() error {
 		// If it later acquires the mutex, the default branch above
 		// will release it.
 
-		// Mutex blocked �?stdin pipe is likely stuck.  Fall back to
+		// Mutex blocked — stdin pipe is likely stuck.  Fall back to
 		// process kill so the user isn't left with a frozen session.
 		if h.cmd != nil && h.cmd.Process != nil {
 			return h.cmd.Process.Kill()
@@ -350,7 +358,7 @@ func (h *SDKExecutionHandle) Close() error {
 		case acquired <- struct{}{}:
 			// Caller will unlock via defer.
 		default:
-			// Timeout already fired �?release the mutex ourselves.
+			// Timeout already fired — release the mutex ourselves.
 			h.mu.Unlock()
 		}
 	}()
@@ -366,7 +374,7 @@ func (h *SDKExecutionHandle) Close() error {
 		return nil
 
 	case <-time.After(2 * time.Second):
-		// Mutex blocked �?force-close stdin without the lock.
+		// Mutex blocked — force-close stdin without the lock.
 		// This is safe because stdin.Close() will unblock any pending
 		// Write() call in the stuck goroutine, which will then release
 		// the mutex.
@@ -439,7 +447,7 @@ func (h *SDKExecutionHandle) readStdout() {
 		// Try to parse as JSON
 		var raw map[string]interface{}
 		if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
-			// Not JSON �?emit as raw output line
+			// Not JSON — emit as raw output line
 			h.outputCh <- []byte(trimmed + "\n")
 			continue
 		}
@@ -486,20 +494,21 @@ func (h *SDKExecutionHandle) readStdout() {
 
 				// Handle stream_event: extract streaming text and emit immediately
 				if msg.Type == "stream_event" && msg.Event != nil {
+					h.hasStreamEvents.Store(true)
 					text := extractStreamEventText(msg.Event)
 					if text != "" {
 						h.outputCh <- []byte(text)
 					}
-					// Don't send stream_events to msgCh �?they're too noisy
+					// Don't send stream_events to msgCh — they're too noisy
 					continue
 				}
 
-				// Send to structured channel reliably �?dropping assistant/user/result
+				// Send to structured channel reliably — dropping assistant/user/result
 				// messages can leave the session stuck in busy forever.
 				h.msgCh <- msg
 
 				// Also convert to human-readable text for the output pipeline
-				text := sdkMessageToText(msg)
+				text := sdkMessageToText(msg, h.hasStreamEvents.Load())
 				if text != "" {
 					h.outputCh <- []byte(text + "\n")
 				}
@@ -553,7 +562,7 @@ func (h *SDKExecutionHandle) waitProcess() {
 	// Distinguish between a real execution error (e.g. signal, crash)
 	// and a normal non-zero exit code.  Go's exec package returns an
 	// *exec.ExitError for any non-zero exit, but that is not necessarily
-	// an unexpected failure �?the tool may simply have rejected its
+	// an unexpected failure — the tool may simply have rejected its
 	// arguments or encountered a configuration issue.  By clearing err
 	// when we have a valid exit code, runExitLoop will set the status to
 	// SessionExited (with a "warn" severity for non-zero codes) instead
@@ -591,7 +600,7 @@ func (h *SDKExecutionHandle) handleControlRequest(data []byte) {
 	select {
 	case h.ctrlReqCh <- req:
 	default:
-		// Channel full �?auto-approve to avoid blocking Claude
+		// Channel full — auto-approve to avoid blocking Claude
 		_ = h.RespondToControlRequest(req.RequestID, true, req.Request.Input)
 		h.outputCh <- []byte(fmt.Sprintf("[auto-approved-overflow] Tool: %s", req.Request.ToolName))
 	}
@@ -602,13 +611,13 @@ func (h *SDKExecutionHandle) handleControlCancel(data []byte) {
 	if err := json.Unmarshal(data, &cancel); err != nil {
 		return
 	}
-	// Cancel request acknowledged �?currently no pending tracking needed
+	// Cancel request acknowledged — currently no pending tracking needed
 	// since we auto-approve or forward to the control request channel.
 }
 
 // sdkMessageToText converts an SDK message to human-readable text for
 // the output pipeline and preview display.
-func sdkMessageToText(msg SDKMessage) string {
+func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
 	switch msg.Type {
 	case "system":
 		if msg.Subtype == "init" {
@@ -620,6 +629,13 @@ func sdkMessageToText(msg SDKMessage) string {
 		// With --include-partial-messages, text is already streamed via
 		// stream_event messages. Only emit tool_use summaries from the
 		// complete assistant message to avoid duplicating text output.
+		//
+		// NOTE: When hasStreamEvents is true, tool_use block names were
+		// already emitted by extractStreamEventText on content_block_start,
+		// so we skip them to avoid duplicate lines like "⏺ Bash ⏺ Bash ls ...".
+		// When hasStreamEvents is false (e.g. CodeBuddy/Cursor without
+		// --include-partial-messages), we still render tool_use blocks here.
+		// Exception: AskUserQuestion always needs its full details rendered.
 		if msg.Message == nil {
 			return ""
 		}
@@ -627,7 +643,7 @@ func sdkMessageToText(msg SDKMessage) string {
 		for _, block := range msg.Message.Content {
 			switch block.Type {
 			case "text":
-				// Skip �?already streamed incrementally via stream_event
+				// Skip — already streamed incrementally via stream_event
 			case "tool_use":
 				if block.Name == "AskUserQuestion" {
 					if details := formatAskUserQuestionBlock(block); details != "" {
@@ -635,9 +651,13 @@ func sdkMessageToText(msg SDKMessage) string {
 						continue
 					}
 				}
+				if hasStreamEvents {
+					// Already shown by extractStreamEventText — skip.
+					continue
+				}
+				// No stream_events available — render tool_use here.
 				summary := block.Name
 				if input, ok := block.Input.(map[string]interface{}); ok {
-					// Show key details for common tools
 					if file, ok := input["file_path"].(string); ok {
 						summary += " " + file
 					} else if cmd, ok := input["command"].(string); ok {
@@ -647,7 +667,7 @@ func sdkMessageToText(msg SDKMessage) string {
 						summary += " " + cmd
 					}
 				}
-				parts = append(parts, fmt.Sprintf("�?%s", summary))
+				parts = append(parts, fmt.Sprintf("⏺ %s", summary))
 			case "image":
 				if block.Source != nil && block.Source.MediaType != "" {
 					parts = append(parts, fmt.Sprintf("🖼 Image (%s)", block.Source.MediaType))
@@ -669,9 +689,9 @@ func sdkMessageToText(msg SDKMessage) string {
 					if len(result) > 150 {
 						result = result[:150] + "..."
 					}
-					return fmt.Sprintf("�?%s", result)
+					return fmt.Sprintf("⏺ %s", result)
 				}
-				// Suppress successful tool results �?they're verbose
+				// Suppress successful tool results — they're verbose
 				return ""
 			}
 		}
@@ -690,9 +710,9 @@ func sdkMessageToText(msg SDKMessage) string {
 func formatAskUserQuestionBlock(block SDKContentBlock) string {
 	view := buildAskUserQuestionView(block.ID, block.Name, block.Input)
 	if view == nil {
-		return "�?AskUserQuestion"
+		return "⏺ AskUserQuestion"
 	}
-	parts := []string{"�?AskUserQuestion"}
+	parts := []string{"⏺ AskUserQuestion"}
 	if view.Header != "" {
 		parts = append(parts, view.Header)
 	}
@@ -717,12 +737,20 @@ func formatAskUserQuestionBlock(block SDKContentBlock) string {
 // --include-partial-messages is enabled).
 //
 // Supported event types:
-//   - content_block_delta with delta.type == "text_delta" �?streaming text
-//   - content_block_start with content_block.type == "tool_use" �?tool start indicator
+//   - content_block_delta with delta.type == "text_delta" — streaming text
+//   - content_block_start with content_block.type == "tool_use" — tool start indicator
 func extractStreamEventText(event map[string]interface{}) string {
 	eventType, _ := event["type"].(string)
 
 	switch eventType {
+	case "message_start":
+		// Emit a marker when the LLM starts generating a response.
+		// This ensures RawOutputLines grows immediately, preventing
+		// the session observer from timing out during the gap between
+		// message_start and the first content_block_start (which can
+		// be tens of seconds with slow API proxies like GLM).
+		return "\n⏳ LLM responding...\n"
+
 	case "content_block_delta":
 		delta, ok := event["delta"].(map[string]interface{})
 		if !ok {
@@ -731,9 +759,16 @@ func extractStreamEventText(event map[string]interface{}) string {
 		deltaType, _ := delta["type"].(string)
 		if deltaType == "text_delta" {
 			text, _ := delta["text"].(string)
-			return text // raw text chunk �?no newline, accumulates naturally
+			return text // raw text chunk — no newline, accumulates naturally
 		}
-		// input_json_delta for tool inputs �?skip (too noisy)
+		if deltaType == "thinking_delta" {
+			// Don't emit individual thinking tokens — they would flood
+			// RawOutputLines with hundreds of "💭" markers. The single
+			// "💭 Thinking..." line from content_block_start is enough
+			// to signal the session observer that the LLM is alive.
+			return ""
+		}
+		// input_json_delta for tool inputs — skip (too noisy)
 		return ""
 
 	case "content_block_start":
@@ -742,10 +777,13 @@ func extractStreamEventText(event map[string]interface{}) string {
 			return ""
 		}
 		blockType, _ := block["type"].(string)
+		if blockType == "thinking" {
+			return "\n💭 Thinking...\n"
+		}
 		if blockType == "tool_use" {
 			name, _ := block["name"].(string)
 			if name != "" {
-				return fmt.Sprintf("\n�?%s", name)
+				return fmt.Sprintf("\n⏺ %s", name)
 			}
 		}
 		if blockType == "image" {

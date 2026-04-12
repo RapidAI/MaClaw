@@ -346,3 +346,85 @@ func BenchmarkDequantRow_768(b *testing.B) {
 		q8.DequantRow(0, dst)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// AVX1 path direct correctness tests (amd64 only, but functions exist on all)
+// ---------------------------------------------------------------------------
+
+func TestDotQ8Row_AVX1vsScalar(t *testing.T) {
+	const cols = 768
+	nBlocks := cols / q8BlockSize
+	a := makeFloat32(cols)
+	data := makeQ8Data(1, cols)
+
+	got := dotQ8RowAVX1(a, data, 0, nBlocks)
+	want := dotQ8RowScalar(a, data, 0, nBlocks)
+
+	if diff := math.Abs(float64(got - want)); diff > 0.01*math.Abs(float64(want))+1e-6 {
+		t.Errorf("dotQ8RowAVX1 mismatch: AVX1=%f Scalar=%f diff=%f", got, want, diff)
+	}
+}
+
+func TestDequantRowInto_AVX1vsScalar(t *testing.T) {
+	const cols = 768
+	nBlocks := cols / q8BlockSize
+	data := makeQ8Data(1, cols)
+
+	dstAVX1 := make([]float32, cols)
+	dstScalar := make([]float32, cols)
+
+	dequantRowIntoAVX1(dstAVX1, data, 0, nBlocks)
+	dequantRowIntoScalar(dstScalar, data, 0, nBlocks)
+
+	for i := range dstAVX1 {
+		if diff := math.Abs(float64(dstAVX1[i] - dstScalar[i])); diff > 1e-5 {
+			t.Errorf("dequantRowIntoAVX1[%d] mismatch: AVX1=%f Scalar=%f", i, dstAVX1[i], dstScalar[i])
+			break
+		}
+	}
+}
+
+func TestSiLUMul_AVX1vsScalar(t *testing.T) {
+	n := 3072
+	gate := makeFloat32(n)
+	up := makeFloat32(n)
+
+	gateAVX1 := make([]float32, n)
+	gateScalar := make([]float32, n)
+	copy(gateAVX1, gate)
+	copy(gateScalar, gate)
+
+	siluMulAVX1(gateAVX1, up)
+	siluMulScalar(gateScalar, up)
+
+	for i := range gateAVX1 {
+		diff := math.Abs(float64(gateAVX1[i] - gateScalar[i]))
+		tol := 0.01*math.Abs(float64(gateScalar[i])) + 1e-5
+		if diff > tol {
+			t.Errorf("siluMulAVX1[%d] mismatch: AVX1=%f Scalar=%f diff=%f", i, gateAVX1[i], gateScalar[i], diff)
+			break
+		}
+	}
+}
+
+func BenchmarkDotQ8RowAVX1_768(b *testing.B) {
+	const cols = 768
+	nBlocks := cols / q8BlockSize
+	a := makeFloat32(cols)
+	data := makeQ8Data(1, cols)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dotQ8RowAVX1(a, data, 0, nBlocks)
+	}
+}
+
+func BenchmarkSiLUMulAVX1_3072(b *testing.B) {
+	gate := makeFloat32(3072)
+	up := makeFloat32(3072)
+	gateCopy := make([]float32, 3072)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(gateCopy, gate)
+		siluMulAVX1(gateCopy, up)
+	}
+}

@@ -20,7 +20,7 @@ export interface RoutingPolicy {
 }
 
 export function listEndpoints(): Promise<ModelEndpoint[]> {
-  return apiGet('/admin/model-endpoints');
+  return apiGet<{ endpoints: ModelEndpoint[] }>('/admin/model-endpoints').then(d => d.endpoints || []);
 }
 
 export function createEndpoint(data: Partial<ModelEndpoint>): Promise<ModelEndpoint> {
@@ -28,7 +28,7 @@ export function createEndpoint(data: Partial<ModelEndpoint>): Promise<ModelEndpo
 }
 
 export function listRoutingPolicies(): Promise<RoutingPolicy[]> {
-  return apiGet('/admin/model-routing-policies');
+  return apiGet<{ policies: RoutingPolicy[] }>('/admin/model-routing-policies').then(d => d.policies || []);
 }
 
 export function createRoutingPolicy(data: Partial<RoutingPolicy>): Promise<RoutingPolicy> {

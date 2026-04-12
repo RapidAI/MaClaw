@@ -87,6 +87,15 @@ var documentDeliveryKeywords = []string{
 	"pdf", "报告", "综述", "附件", "发送文件", "文件发我", "发给我", "导出",
 }
 
+var codingWorkflowDocKeywords = []string{
+	"需求文档", "设计文档", "任务文档", "任务拆分", "任务计划", "技术设计",
+	"需求分析", "架构设计", "模块设计", "接口设计",
+	"生成需求", "生成设计", "生成任务",
+	"开发游戏", "开发应用", "开发工具", "开发系统", "开发程序", "开发项目",
+	"写代码", "改代码", "编程", "实现功能", "新增功能", "添加功能",
+	"修 bug", "修bug", "修复bug", "重构代码",
+}
+
 var browserIntentKeywords = []string{
 	"浏览器", "browser", "chrome", "chromium", "playwright",
 	"录制", "回放", "replay", "record",
@@ -134,6 +143,12 @@ var conditionalKeepRules = []conditionalKeepRule{
 		matches: func(msg string) bool {
 			return containsAnyKeyword(msg, browserIntentKeywords) ||
 				(containsAnyKeyword(msg, browserPageKeywords) && containsAnyKeyword(msg, browserActionKeywords))
+		},
+	},
+	{
+		keepTools: []string{"generate_pdf"},
+		matches: func(msg string) bool {
+			return containsAnyKeyword(msg, codingWorkflowDocKeywords)
 		},
 	},
 }
@@ -479,6 +494,28 @@ func init() {
 			allConditionalKeepTools[name] = true
 		}
 	}
+}
+
+// IsConditionalTool returns true if the tool is governed by a conditional keep
+// rule. Such tools are only included when the user message matches certain
+// keywords. Once actually used in a session, callers should pin them via
+// ActivateSessionTool so they remain available for follow-up messages.
+func IsConditionalTool(name string) bool {
+	return allConditionalKeepTools[name]
+}
+
+// noPinConditionalTools lists conditional tools that should NOT be session-pinned
+// after use. These tools should only appear when the current message matches
+// their keywords, and should disappear when the conversation topic changes.
+var noPinConditionalTools = map[string]bool{
+	"generate_pdf": true,
+}
+
+// ShouldPinConditionalTool returns true if the conditional tool should be
+// session-pinned after successful use. Some conditional tools (like generate_pdf)
+// should NOT be pinned because they should only appear in specific contexts.
+func ShouldPinConditionalTool(name string) bool {
+	return allConditionalKeepTools[name] && !noPinConditionalTools[name]
 }
 
 // matchConditionalKeepRules returns the set of tool names to conditionally keep

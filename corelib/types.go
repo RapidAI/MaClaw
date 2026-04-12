@@ -2,6 +2,7 @@ package corelib
 
 import (
 	"net/http"
+	"path/filepath"
 	"strings"
 )
 
@@ -115,12 +116,15 @@ type NLSkillStep struct {
 	Params    map[string]interface{} `json:"params"`
 	OnError   string                 `json:"on_error"`   // "stop" (default), "continue"
 	Name      string                 `json:"name,omitempty"`      // optional descriptive name
-	Condition string                 `json:"condition,omitempty"` // "" (always), "on_failure"
+	Condition string                 `json:"condition,omitempty"` // "" (always), "on_failure", "on_success"
+	Label     string                 `json:"label,omitempty"`     // step selector label for api_workflow mode
+	Capture   map[string]string      `json:"capture,omitempty"`   // output capture: varName → regex pattern (first submatch group)
 }
 
 // NLSkillEntry 描述一个自然语言技能条目。
 type NLSkillEntry struct {
 	Name          string        `json:"name"`
+	DirName       string        `json:"dir_name,omitempty"`     // 目录名（当与 Name 不同时用于别名查找）
 	Description   string        `json:"description"`
 	Triggers      []string      `json:"triggers"`
 	Steps         []NLSkillStep `json:"steps"`
@@ -134,12 +138,43 @@ type NLSkillEntry struct {
 	Platforms        []string      `json:"platforms,omitempty"`    // "windows","linux","macos"; empty = universal
 	RequiresGUI      bool          `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
 	SkillDir         string        `json:"skill_dir,omitempty"`    // 自包含 skill 目录的绝对路径（运行时填充）
-	Mode             string        `json:"mode,omitempty"`         // "sequential" (default) | "interactive"
+	Mode             string        `json:"mode,omitempty"`         // "sequential" (default) | "interactive" | "api_workflow"
+	ExecMode         string        `json:"exec_mode,omitempty"`    // "all" (default) | "first" | "named"
+	GlobalTimeout    int           `json:"global_timeout,omitempty"` // per-skill global timeout in seconds (0 = use default 300s)
 	ProducesArtifact bool          `json:"produces_artifact"`      // true = expects file output (default); false = diagnostic/instruction only
+	RequiredArgs     []string      `json:"required_args,omitempty"`  // required template variables (e.g. "input", "output")
+	RequiredEnv      []string      `json:"required_env,omitempty"`   // required environment variables (e.g. "API_KEY")
+	PreferredShell   string        `json:"preferred_shell,omitempty"` // "bash" or "cmd"; empty = auto-detect
 	UsageCount       int           `json:"usage_count"`
 	SuccessCount     int           `json:"success_count"`
 	LastUsedAt       string        `json:"last_used_at,omitempty"`
 	LastError        string        `json:"last_error,omitempty"`
+}
+
+// MatchesName checks if the skill matches the given name by comparing against
+// the display name (Name), directory name (DirName), and the SkillDir basename.
+// This allows run_skill to find skills by any of their known identifiers.
+// Matching is case-insensitive to improve usability when skill names contain
+// mixed-case or CJK characters that may be normalised differently.
+func (e *NLSkillEntry) MatchesName(query string) bool {
+	if query == "" {
+		return false
+	}
+	if e.Name == query || strings.EqualFold(e.Name, query) {
+		return true
+	}
+	if e.DirName != "" && (e.DirName == query || strings.EqualFold(e.DirName, query)) {
+		return true
+	}
+	// Fallback: match by directory basename from SkillDir for skills
+	// that were loaded from config without DirName populated.
+	if e.SkillDir != "" && e.DirName == "" {
+		base := filepath.Base(e.SkillDir)
+		if base == query || strings.EqualFold(base, query) {
+			return true
+		}
+	}
+	return false
 }
 
 // MaclawLLMProvider 描述一个 MaClaw LLM 提供商配置。

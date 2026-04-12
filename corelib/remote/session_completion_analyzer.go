@@ -4,12 +4,18 @@ import "strings"
 
 var completionSignals = []string{
 	"✅", "i've completed", "已完成", "all done",
-	"successfully", "changes applied",
+	"changes applied", "task is complete",
+	"all tasks completed", "everything is done",
 }
 
 var incompletionSignals = []string{
 	"i'll continue", "接下来我会", "next, i'll",
 	"let me continue", "i need to", "还需要",
+	"left to do", "not yet finished",
+	"还没完成", "未完成", "待完成",
+	"to do next", "next step is",
+	"i'll now", "let me now", "now i'll",
+	"i will now", "let's continue",
 }
 
 // CompletionAnalyzerConfig holds configuration for the CompletionAnalyzer.
@@ -46,9 +52,10 @@ func (a *CompletionAnalyzer) Analyze(lines []string, tool string, sdkResult *SDK
 	completionCount := 0
 	incompletionCount := 0
 
-	if sdkResult != nil {
-		completionCount++
-	}
+	// NOTE: sdkResult != nil only means "a turn ended", NOT "the task is
+	// done". Claude Code sends a result message after every turn, even if
+	// the task is only partially complete. Do not count it as a completion
+	// signal — rely solely on output content analysis.
 
 	for _, line := range tail {
 		lower := strings.ToLower(line)

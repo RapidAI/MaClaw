@@ -42,6 +42,7 @@ import { AboutPanel } from './components/AboutPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { GossipPanel } from './components/gossip/GossipPanel';
 import { useDialog } from './components/CustomDialog';
+import { useToast } from './components/Toast';
 import { QRCodeSVG } from 'qrcode.react';
 
 const subscriptionUrls: { [key: string]: string } = {
@@ -1870,8 +1871,7 @@ function App() {
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
     );
     const t = translate;
-    const [toastMessage, setToastMessage] = useState<string>("");
-    const [showToast, setShowToast] = useState(false);
+    const { showToast: showToastGlobal } = useToast();
     const [skills, setSkills] = useState<main.Skill[]>([]);
     const [showAddSkillModal, setShowAddSkillModal] = useState(false);
     const [gossipAllowed, setGossipAllowed] = useState(true);
@@ -1910,11 +1910,7 @@ function App() {
     const [hoveredProvider, setHoveredProvider] = useState<{ provider: ProviderEndpoint, x: number, y: number } | null>(null);
 
     const showToastMessage = (message: string, duration: number = 3000) => {
-        setToastMessage(message);
-        setShowToast(true);
-        setTimeout(() => {
-            setShowToast(false);
-        }, duration);
+        showToastGlobal(message, 'info', duration);
     };
 
 
@@ -4846,7 +4842,7 @@ ${instruction}`;
                                                         LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                                                     }).catch((err: any) => {
                                                         setQQBotLocalModeState(prev);
-                                                        alert(err?.message || err || '切换失败');
+                                                        showToastMessage(err?.message || err || '切换失败');
                                                     });
                                                 }}
                                             >
@@ -4992,7 +4988,7 @@ ${instruction}`;
                                                         LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                                                     }).catch((err: any) => {
                                                         setTelegramLocalModeState(prev);
-                                                        alert(err?.message || err || '切换失败');
+                                                        showToastMessage(err?.message || err || '切换失败');
                                                     });
                                                 }}
                                             >
@@ -5104,7 +5100,7 @@ ${instruction}`;
                                                         LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                                                     }).catch((err: any) => {
                                                         setWeixinLocalModeState(prev);
-                                                        alert(err?.message || err || '切换失败');
+                                                        showToastMessage(err?.message || err || '切换失败');
                                                     });
                                                 }}
                                             >
@@ -5271,7 +5267,7 @@ ${instruction}`;
                                                     const s = await RestartLansenger();
                                                     setLansengerStatus(typeof s === 'string' ? s : 'disconnected');
                                                 } catch (e: any) {
-                                                    alert(e?.message || String(e));
+                                                    showToastMessage(e?.message || String(e));
                                                 }
                                             }}
                                         >
@@ -5310,7 +5306,7 @@ ${instruction}`;
                                                         LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
                                                     }).catch((err: any) => {
                                                         setLansengerLocalModeState(prev);
-                                                        alert(err?.message || err || '切换失败');
+                                                        showToastMessage(err?.message || err || '切换失败');
                                                     });
                                                 }}
                                             >
@@ -7748,11 +7744,7 @@ ${instruction}`;
                 </div>
             )}
 
-            {showToast && (
-                <div className="toast">
-                    {toastMessage}
-                </div>
-            )}
+            {/* Toast notifications are now handled by global ToastProvider */}
                 </div>
             </div>
         </div>

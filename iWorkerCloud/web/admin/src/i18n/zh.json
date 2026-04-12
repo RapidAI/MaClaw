@@ -60,6 +60,10 @@
     "inputTokens": "输入 Token",
     "outputTokens": "输出 Token",
     "inputCost": "输入费用",
-    "outputCost": "输出费用"
+    "outputCost": "输出费用",
+    "typeGeneral": "通用",
+    "typeCoding": "编程",
+    "typeDocument": "文档",
+    "typeAnalysis": "分析"
   }
 }

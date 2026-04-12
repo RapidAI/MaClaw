@@ -3,9 +3,6 @@ import {
     AgentNetGetKnowledgeFeed,
     AgentNetSearchKnowledge,
     AgentNetPublishKnowledgeFull,
-    AgentNetReactKnowledge,
-    AgentNetReplyKnowledge,
-    AgentNetGetKnowledgeReplies,
 } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 import { cnCard, cnLabel, cnInput, cnActionBtn, cnTabStyle } from "./agentnetStyles";
@@ -17,9 +14,16 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
 type Props = { lang: string; agentNetRunning: boolean };
 
 interface KnowledgeEntry {
-    id: string; title: string; body?: string; author?: string;
-    domains?: string[]; tags?: string[]; reactions?: Record<string, number>;
+    id: string; title?: string; intent?: string; body?: string; author?: string;
+    peer_id?: string; source_id?: string;
+    domains?: string[]; tags?: string[]; skills?: string;
+    node_type?: string; node_count?: number;
     created_at?: string;
+    // Wails uppercase variants
+    Title?: string; Intent?: string; Body?: string; Author?: string;
+    PeerID?: string; SourceID?: string; Skills?: string;
+    NodeType?: string; NodeCount?: number;
+    CreatedAt?: string; DisplayTitle?: string;
 }
 
 export function AgentNetKnowledgePanel({ lang, agentNetRunning }: Props) {
@@ -33,10 +37,6 @@ export function AgentNetKnowledgePanel({ lang, agentNetRunning }: Props) {
     const [pubTags, setPubTags] = useState("");
     const [pubBusy, setPubBusy] = useState(false);
     const [pubMsg, setPubMsg] = useState("");
-    const [expandedId, setExpandedId] = useState<string | null>(null);
-    const [replies, setReplies] = useState<any[]>([]);
-    const [replyText, setReplyText] = useState("");
-    const [replyBusy, setReplyBusy] = useState(false);
     const mountedRef = useRef(true);
     useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
@@ -76,35 +76,6 @@ export function AgentNetKnowledgePanel({ lang, agentNetRunning }: Props) {
         setPubBusy(false);
     };
 
-    // Fix: refresh current view (feed or search) after reacting, not always loadFeed
-    const refreshCurrentView = useCallback(() => {
-        if (tab === "search" && query.trim()) doSearch();
-        else loadFeed();
-    }, [tab, query, doSearch, loadFeed]);
-
-    const handleReact = async (id: string, reaction: string) => {
-        try { await AgentNetReactKnowledge(id, reaction); refreshCurrentView(); } catch {}
-    };
-
-    const toggleReplies = async (id: string) => {
-        if (expandedId === id) { setExpandedId(null); return; }
-        setExpandedId(id); setReplies([]); setReplyText("");
-        try {
-            const res = await AgentNetGetKnowledgeReplies(id);
-            if (res.ok) setReplies(res.replies as any[] || []);
-        } catch {}
-    };
-
-    const handleReply = async () => {
-        if (!expandedId || !replyText.trim()) return;
-        setReplyBusy(true);
-        try {
-            const res = await AgentNetReplyKnowledge(expandedId, replyText.trim());
-            if (res.ok) { setReplyText(""); toggleReplies(expandedId); }
-        } catch {}
-        setReplyBusy(false);
-    };
-
     if (!agentNetRunning) return <div style={cnLabel}>{localizeText(lang, "AgentNet not connected", "智网未连接")}</div>;
 
     return (
@@ -141,43 +112,25 @@ export function AgentNetKnowledgePanel({ lang, agentNetRunning }: Props) {
             {error && <div style={{ fontSize: "0.72rem", color: colors.danger, marginBottom: "8px" }}>{error}</div>}
             {(tab === "feed" || tab === "search") && loading && <div style={cnLabel}>{localizeText(lang, "Loading...", "加载中...")}</div>}
 
-            {(tab === "feed" || tab === "search") && entries.map(e => (
+            {(tab === "feed" || tab === "search") && entries.map(e => {
+                const title = e.DisplayTitle || e.title || e.Title || e.intent || e.Intent || e.id || "—";
+                const body = e.body || e.Body || "";
+                const author = e.author || e.Author || e.peer_id || e.PeerID || e.source_id || e.SourceID || "";
+                const skills = e.skills || e.Skills || "";
+                const createdAt = e.created_at || e.CreatedAt || "";
+                return (
                 <div key={e.id} style={cnCard}>
-                    <div style={{ fontSize: "0.76rem", fontWeight: 600, color: colors.text, marginBottom: "4px" }}>{e.title}</div>
-                    {e.body && <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginBottom: "6px", whiteSpace: "pre-wrap", maxHeight: "120px", overflow: "auto" }}>{e.body}</div>}
+                    <div style={{ fontSize: "0.76rem", fontWeight: 600, color: colors.text, marginBottom: "4px" }}>{title}</div>
+                    {body && <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginBottom: "6px", whiteSpace: "pre-wrap", maxHeight: "120px", overflow: "auto" }}>{body}</div>}
                     <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-                        {e.author && <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>{e.author.slice(0, 12)}…</span>}
+                        {author && <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>{author.slice(0, 20)}{author.length > 20 ? "…" : ""}</span>}
+                        {skills && skills.split(",").map(s => s.trim()).filter(Boolean).map(s => <span key={s} style={{ fontSize: "0.65rem", padding: "1px 6px", background: colors.accentBg, borderRadius: radius.pill, color: colors.textSecondary }}>{s}</span>)}
                         {e.domains?.map(d => <span key={d} style={{ fontSize: "0.65rem", padding: "1px 6px", background: colors.accentBg, borderRadius: radius.pill, color: colors.textSecondary }}>{d}</span>)}
-                        {e.created_at && <span style={{ fontSize: "0.65rem", color: colors.textMuted }}>{e.created_at}</span>}
+                        {createdAt && <span style={{ fontSize: "0.65rem", color: colors.textMuted }}>{createdAt}</span>}
                     </div>
-                    <div style={{ display: "flex", gap: "6px", marginTop: "6px", alignItems: "center" }}>
-                        {["👍", "🔥", "💡"].map(r => (
-                            <button key={r} onClick={() => handleReact(e.id, r)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.8rem", padding: "2px 4px" }}>
-                                {r} {e.reactions?.[r] || ""}
-                            </button>
-                        ))}
-                        <button onClick={() => toggleReplies(e.id)} style={{ ...cnActionBtn(), padding: "2px 8px", fontSize: "0.68rem" }}>
-                            {localizeText(lang, "Replies", "回复")}
-                        </button>
-                    </div>
-                    {expandedId === e.id && (
-                        <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: `1px solid ${colors.border}` }}>
-                            {replies.map((r: any, i: number) => (
-                                <div key={i} style={{ fontSize: "0.7rem", color: colors.textSecondary, marginBottom: "4px" }}>
-                                    <span style={{ color: colors.textMuted }}>{(r.author || "").slice(0, 10)}:</span> {r.body}
-                                </div>
-                            ))}
-                            <div style={{ display: "flex", gap: "4px", marginTop: "4px" }}>
-                                <input value={replyText} onChange={e => setReplyText(e.target.value)} placeholder={localizeText(lang, "Reply...", "回复...")}
-                                    style={{ ...cnInput, flex: 1 }} onKeyDown={e => e.key === "Enter" && handleReply()} />
-                                <button style={cnActionBtn(replyBusy || !replyText.trim())} onClick={handleReply} disabled={replyBusy}>
-                                    {localizeText(lang, "Send", "发送")}
-                                </button>
-                            </div>
-                        </div>
-                    )}
                 </div>
-            ))}
+                );
+            })}
             {(tab === "feed" || tab === "search") && !loading && entries.length === 0 && (
                 <div style={cnLabel}>{localizeText(lang, "No entries yet", "暂无内容")}</div>
             )}

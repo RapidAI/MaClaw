@@ -45,7 +45,7 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		},
 		Recent: []DashboardItem{
 			{Title: "最近活跃数字员工", Description: "小迪、阿宁、老陈在最近 1 小时内有任务处理记录。", Status: "活跃"},
-			{Title: "最近新增能力包", Description: "新增"周报汇总"和"异常归档"两个能力包。", Status: "新增"},
+			{Title: "最近新增能力包", Description: "新增「周报汇总」和「异常归档」两个能力包。", Status: "新增"},
 			{Title: "最近规则下发", Description: "安全规则已下发到 18 个客户端。", Status: "成功"},
 		},
 	}

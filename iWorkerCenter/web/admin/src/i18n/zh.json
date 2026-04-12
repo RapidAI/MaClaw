@@ -98,7 +98,11 @@
     "inputPrice": "输入单价(每MToken)",
     "outputPrice": "输出单价(每MToken)",
     "status": "状态",
-    "actions": "操作"
+    "actions": "操作",
+    "typeGeneral": "通用",
+    "typeCoding": "编程",
+    "typeDocument": "文档",
+    "typeAnalysis": "分析"
   },
   "common": {
     "save": "保存",

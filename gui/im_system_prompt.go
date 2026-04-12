@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -63,6 +64,7 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 - 永远不要说"我没有某某工具"或"我无法执行"——先检查你的工具列表，大部分操作都有对应工具。
 - 多步推理：复杂任务可以连续调用多个工具，逐步完成。
 - 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
+- ⚠️ 先查记忆再问用户：当用户提到服务器、环境、配置等信息时，先检查下方「用户记忆」和「相关记忆（自动召回）」section 中是否已有相关信息，有则直接使用，不要向用户索要已经记住的信息。
 `)
 
 	if isProMode {
@@ -92,6 +94,15 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 这些任务应该优先用 read_file/write_file/edit_file（读写/编辑文件）、bash（执行命令）、craft_tool（生成脚本）、send_file（发送文件）、open（打开文件/网址）等工具直接完成。
 只有真正需要启动 IDE/编程工具来修改项目代码的任务才是编程任务。
 
+### 🛑🛑🛑 硬性门控（HARD GATE — 违反此规则等于系统故障）🛑🛑🛑
+当判定为编程任务（Coding_Task）且用户消息中不包含跳过信号时：
+- 你的第一条回复必须是需求文档，不允许调用 create_session、bash、write_file、craft_tool 或任何编码工具
+- 你的第一条回复中不允许出现任何代码片段、CMakeLists.txt、源文件内容
+- 在用户确认需求文档之前，严禁进入技术设计阶段
+- 在用户确认技术设计之前，严禁进入任务分解阶段
+- 在用户确认任务分解之前，严禁调用 create_session 或开始编码
+- 违反以上任何一条 = 你没有遵守系统指令
+
 ### 第二步：检查跳过信号（Skip_Signal）
 如果用户消息中包含以下表达，跳过所有确认阶段，直接进入内部规划后执行：
 - 中文：直接做、不用问了、按你的想法来、直接开始、不用确认、马上做、赶紧做
@@ -100,7 +111,7 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 - 跳过时仍在内部生成需求理解和设计方案，但不生成 PDF、不等待用户确认
 
 ### 第三步：需求确认（Requirements Phase）
-对于编程任务且无跳过信号时，进入 Spec 驱动工作流：
+对于编程任务且无跳过信号时，你必须先生成需求文档并等待用户确认。这是强制步骤，不可跳过：
 
 **文档内容要求：**
 生成需求文档，包含：
@@ -112,10 +123,10 @@ d) 约束与假设
 **文档生成与发送：**
 1. 用 Markdown 格式编写需求文档内容
 2. 生成 PDF 文件（⚠️ 必须是 .pdf 格式，严禁发送 .html 文件到 IM 通道）：
-   - 优先方案：用 craft_tool 生成 Python 脚本，使用 markdown + pdfkit 或 reportlab 将 Markdown 转为 PDF
-   - 备选方案：用 bash 调用 pandoc（pandoc input.md -o output.pdf）或 wkhtmltopdf
+   - 优先方案：使用 generate_pdf 工具（传入 content、title、doc_type="requirements"），直接生成 PDF 并返回给用户
+   - 备选方案：用 craft_tool 生成 Python 脚本，使用 markdown + pdfkit 或 reportlab 将 Markdown 转为 PDF
    - ⚠️ 禁止将 HTML 文件直接作为文档发送到 IM——HTML 在飞书/微信/QQ 中显示效果极差
-3. 用 send_file（forward_to_im=true）将 PDF 发送给用户
+3. 用 send_file（forward_to_im=true）将 PDF 发送给用户（如果使用 generate_pdf 工具则自动发送，无需额外操作）
 4. PDF 文件命名：需求文档_<feature_name>.pdf
 5. ⚠️ 发送 PDF 后必须同时发送明确的行动提示，告知用户需要查看并确认或提出修改意见。格式："📄 已生成需求文档的 PDF 版本，请查看并确认需求是否准确，或提出修改意见。" 禁止只发 PDF 不说话——用户需要明确知道这个文档需要他看、需要他反馈。
 
@@ -139,7 +150,8 @@ b) 接口设计（关键函数/方法签名）
 c) 数据模型变更（如有）
 d) 实现方案概述
 
-**文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 文件，严禁发送 .html）
+**文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 格式，严禁发送 .html）
+- 优先使用 generate_pdf 工具（doc_type="design"）
 - PDF 文件命名：设计文档_<feature_name>.pdf
 - ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成技术设计文档的 PDF 版本，请查看设计方案并确认，或提出修改意见。"
 
@@ -157,7 +169,8 @@ a) 编号的任务列表（按执行顺序排列）
 b) 每个任务的描述和涉及的文件
 c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期结果）
 
-**文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 文件，严禁发送 .html）
+**文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 格式，严禁发送 .html）
+- 优先使用 generate_pdf 工具（doc_type="task_plan"）
 - PDF 文件命名：任务列表_<feature_name>.pdf
 - ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成任务列表的 PDF 版本，请查看任务拆分是否合理，确认后开始执行，或提出修改意见。"
 
@@ -167,7 +180,8 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - 告知用户回退信息
 
 ### 第六步：任务执行（Execution Phase）
-用户确认任务列表后（或跳过确认后），自动执行所有任务：
+用户确认任务列表后（或跳过确认后），自动执行所有任务。
+🛑 再次强调：只有在需求文档、技术设计、任务列表全部经用户确认后，才能进入此阶段。未经确认直接编码是严重违规。
 
 **执行规则：**
 1. 按任务列表顺序逐个执行，不再需要用户交互
@@ -522,6 +536,7 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 			projectPath, _ = h.contextResolver.ResolveProject()
 		}
 		recalled := h.memoryStore.RecallForProject(msg, projectPath)
+		log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, recalled=%d entries", len(msg), projectPath, len(recalled))
 
 		// Filter out user_fact and self_identity (already injected above).
 		var relevant []corememory.Entry
@@ -532,6 +547,7 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 			}
 			relevant = append(relevant, e)
 		}
+		log.Printf("[proactive_recall] relevant=%d after filter", len(relevant))
 
 		// Cap at 8 entries to control prompt size.
 		const maxProactiveRecall = 8
@@ -550,6 +566,7 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 				if len(runes) > 200 {
 					text = string(runes[:200]) + "…"
 				}
+				log.Printf("[proactive_recall] injecting: [%s] %s", e.Category, text[:min(60, len(text))])
 				b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
 			}
 			b.WriteString("（以上记忆已自动注入，无需再用 memory recall 重复搜索相同内容。仅在需要更多细节时才手动召回。）\n")

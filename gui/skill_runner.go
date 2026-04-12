@@ -15,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ── Run Status ──────────────────────────────────────────────────────────
@@ -49,20 +52,37 @@ type SkillRunSummary struct {
 
 // SkillRunStatus 表示一次 skill 执行的状态。
 type SkillRunStatus struct {
-	RunID          string               `json:"run_id"`
-	Skill          string               `json:"skill"`
-	Status         string               `json:"status"` // "running", "success", "failed", "cancelled"
-	Steps          []StepResult         `json:"steps"`
-	Session        *SkillRunSessionMeta `json:"session,omitempty"`
-	Summary        SkillRunSummary      `json:"summary,omitempty"`
-	ExpectedOutput string               `json:"expected_output,omitempty"`
-	StartedAt      string               `json:"started_at"`
-	EndedAt        string               `json:"ended_at,omitempty"`
-	Error          string               `json:"error,omitempty"`
-	DurationMs     int64                `json:"duration_ms,omitempty"`
-	TotalSteps     int                  `json:"total_steps,omitempty"`
-	FailedSteps    int                  `json:"failed_steps,omitempty"`
-	SkippedSteps   int                  `json:"skipped_steps,omitempty"`
+	RunID           string               `json:"run_id"`
+	Skill           string               `json:"skill"`
+	Status          string               `json:"status"` // "running", "success", "failed", "cancelled"
+	Steps           []StepResult         `json:"steps"`
+	Session         *SkillRunSessionMeta `json:"session,omitempty"`
+	SessionProgress *SessionProgressInfo `json:"session_progress,omitempty"`
+	Summary         SkillRunSummary      `json:"summary,omitempty"`
+	ExpectedOutput  string               `json:"expected_output,omitempty"`
+	StartedAt       string               `json:"started_at"`
+	EndedAt         string               `json:"ended_at,omitempty"`
+	Error           string               `json:"error,omitempty"`
+	DurationMs      int64                `json:"duration_ms,omitempty"`
+	TotalSteps      int                  `json:"total_steps,omitempty"`
+	FailedSteps     int                  `json:"failed_steps,omitempty"`
+	SkippedSteps    int                  `json:"skipped_steps,omitempty"`
+}
+
+// SessionProgressInfo captures the latest state from the session's internal
+// AI agent, polled in the background by the SkillRunner. This gives callers
+// visibility into what the session agent is doing without needing to call
+// query_session separately.
+type SessionProgressInfo struct {
+	SessionStatus   string   `json:"session_status"`             // "starting", "running", "busy", "completed", "failed"
+	CurrentTask     string   `json:"current_task,omitempty"`     // what the session agent is currently doing
+	ProgressSummary string   `json:"progress_summary,omitempty"` // human-readable progress
+	LastResult      string   `json:"last_result,omitempty"`      // last tool call result or output
+	LastCommand     string   `json:"last_command,omitempty"`     // last command executed
+	WaitingForUser  bool     `json:"waiting_for_user,omitempty"` // session agent is waiting for input
+	LastOutputLines []string `json:"last_output_lines,omitempty"` // last N raw output lines (max 10)
+	UpdatedAt       string   `json:"updated_at,omitempty"`       // when this snapshot was taken
+	PollCount       int      `json:"poll_count,omitempty"`       // how many times we've polled
 }
 
 // StepResult 记录单步执行结果。
@@ -95,9 +115,12 @@ type SkillRunner struct {
 }
 
 type skillRun struct {
-	status       SkillRunStatus
-	cancel       context.CancelFunc
-	templateVars map[string]string
+	status        SkillRunStatus
+	cancel        context.CancelFunc
+	monitorCancel context.CancelFunc  // cancels the session monitor goroutine
+	templateVars  map[string]string
+	selectedSteps []string            // api_workflow mode: only run steps with these labels
+	extraEnv      map[string]string   // env vars from run_skill caller, injected into subprocesses
 }
 
 // NewSkillRunner 创建 SkillRunner。
@@ -114,7 +137,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	r.executor.mu.RLock()
 	var target *NLSkillEntry
 	for _, s := range r.executor.loadSkills() {
-		if s.Name == skillName && s.Status == "active" {
+		if s.MatchesName(skillName) && s.Status == "active" {
 			cp := s
 			target = &cp
 			break
@@ -141,6 +164,84 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 
 	templateVars := normalizeSkillRunVars(runArgs)
 
+	// ── api_workflow mode: extract step selector from runArgs ──
+	var selectedSteps []string
+	if strings.EqualFold(target.Mode, "api_workflow") {
+		if stepsArg, ok := runArgs["steps"]; ok {
+			switch v := stepsArg.(type) {
+			case string:
+				for _, s := range strings.Split(v, ",") {
+					if t := strings.TrimSpace(s); t != "" {
+						selectedSteps = append(selectedSteps, t)
+					}
+				}
+			case []interface{}:
+				for _, item := range v {
+					if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+						selectedSteps = append(selectedSteps, strings.TrimSpace(s))
+					}
+				}
+			case []string:
+				selectedSteps = v
+			}
+		}
+	}
+
+	// ── Extract extra env vars from runArgs["env"] ──
+	var extraEnv map[string]string
+	if envRaw, ok := runArgs["env"].(map[string]interface{}); ok && len(envRaw) > 0 {
+		extraEnv = make(map[string]string, len(envRaw))
+		for k, v := range envRaw {
+			if s, ok := v.(string); ok {
+				extraEnv[k] = s
+			}
+		}
+	}
+
+	// ── P0: Validate required arguments before execution ──
+	if len(target.RequiredArgs) > 0 {
+		var missing []string
+		for _, arg := range target.RequiredArgs {
+			if templateVars == nil || strings.TrimSpace(templateVars[arg]) == "" {
+				missing = append(missing, arg)
+			}
+		}
+		if len(missing) > 0 {
+			return "", fmt.Errorf("skill %q 缺少必需参数: %s", skillName, strings.Join(missing, ", "))
+		}
+	}
+
+	// ── Implicit required args: detect {{key}} placeholders in step commands
+	// that aren't provided via templateVars. This catches skills like
+	// xh-md-to-pdf that use {{input}}/{{output}} without declaring required_args.
+	if len(target.RequiredArgs) == 0 {
+		implicit := detectImplicitRequiredArgs(target.Steps, templateVars)
+		if len(implicit) > 0 {
+			desc := strings.TrimSpace(target.Description)
+			if len(desc) > 120 {
+				desc = desc[:120] + "..."
+			}
+			msg := fmt.Sprintf("skill %q 的命令中包含未提供的参数: %s。请通过 args 传入", skillName, strings.Join(implicit, ", "))
+			if desc != "" {
+				msg += fmt.Sprintf("\n说明: %s", desc)
+			}
+			return "", fmt.Errorf("%s", msg)
+		}
+	}
+
+	// ── P2: Validate required environment variables before execution ──
+	if len(target.RequiredEnv) > 0 {
+		var missing []string
+		for _, env := range target.RequiredEnv {
+			if strings.TrimSpace(os.Getenv(env)) == "" {
+				missing = append(missing, env)
+			}
+		}
+		if len(missing) > 0 {
+			return "", fmt.Errorf("skill %q 缺少必需的环境变量: %s", skillName, strings.Join(missing, ", "))
+		}
+	}
+
 	// 生成 runID
 	r.mu.Lock()
 	r.counter++
@@ -156,8 +257,10 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 			StartedAt:      time.Now().Format(time.RFC3339),
 			Steps:          make([]StepResult, len(target.Steps)),
 		},
-		cancel:       cancel,
-		templateVars: templateVars,
+		cancel:        cancel,
+		templateVars:  templateVars,
+		selectedSteps: selectedSteps,
+		extraEnv:      extraEnv,
 	}
 	for i, step := range target.Steps {
 		run.status.Steps[i] = StepResult{
@@ -186,6 +289,16 @@ func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
 	cp := run.status
 	cp.Steps = make([]StepResult, len(run.status.Steps))
 	copy(cp.Steps, run.status.Steps)
+	// Deep copy SessionProgress to avoid the monitor goroutine mutating
+	// the returned snapshot's LastOutputLines slice.
+	if run.status.SessionProgress != nil {
+		spCopy := *run.status.SessionProgress
+		if len(run.status.SessionProgress.LastOutputLines) > 0 {
+			spCopy.LastOutputLines = make([]string, len(run.status.SessionProgress.LastOutputLines))
+			copy(spCopy.LastOutputLines, run.status.SessionProgress.LastOutputLines)
+		}
+		cp.SessionProgress = &spCopy
+	}
 	r.mu.RUnlock()
 
 	r.hydrateRunSessionMeta(&cp)
@@ -200,6 +313,9 @@ func (r *SkillRunner) CancelRun(runID string) error {
 	r.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("run %q not found", runID)
+	}
+	if run.monitorCancel != nil {
+		run.monitorCancel()
 	}
 	run.cancel()
 	return nil
@@ -260,13 +376,26 @@ func (r *SkillRunner) CleanupFinished(maxKeep int) {
 
 func (r *SkillRunner) SetRunSessionMeta(runID string, meta SkillRunSessionMeta) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	run, ok := r.runs[runID]
 	if !ok {
+		r.mu.Unlock()
 		return
 	}
 	metaCopy := meta
 	run.status.Session = &metaCopy
+
+	// Start session monitor if session_id is available and monitor not yet started.
+	// Check and set under the same lock hold to prevent double-start.
+	sessionID := strings.TrimSpace(meta.SessionID)
+	needsMonitor := sessionID != "" && run.monitorCancel == nil
+	if needsMonitor {
+		monitorCtx, monitorCancel := context.WithCancel(context.Background())
+		run.monitorCancel = monitorCancel
+		r.mu.Unlock()
+		r.startSessionMonitor(monitorCtx, run, sessionID)
+	} else {
+		r.mu.Unlock()
+	}
 }
 
 func (r *SkillRunner) hydrateRunSessionMeta(status *SkillRunStatus) {
@@ -461,6 +590,49 @@ func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
 	return vars
 }
 
+// detectImplicitRequiredArgs scans step commands for {{key}} placeholders
+// that are not provided in templateVars. Returns the list of missing keys.
+// This catches skills that use {{input}}/{{output}} without declaring
+// required_args in their frontmatter.
+func detectImplicitRequiredArgs(steps []NLSkillStep, vars map[string]string) []string {
+	seen := make(map[string]bool)
+	for _, step := range steps {
+		if step.Action != "bash" {
+			continue
+		}
+		cmd, _ := step.Params["command"].(string)
+		if cmd == "" {
+			continue
+		}
+		for _, m := range unresolvedSkillPlaceholderPattern.FindAllString(cmd, -1) {
+			// Extract key from {{key}} or ${key}
+			key := strings.TrimPrefix(m, "{{")
+			key = strings.TrimPrefix(key, "${")
+			key = strings.TrimSuffix(key, "}}")
+			key = strings.TrimSuffix(key, "}")
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			if vars != nil && strings.TrimSpace(vars[key]) != "" {
+				continue // provided
+			}
+			if !seen[key] {
+				seen[key] = true
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(seen))
+	for key := range seen {
+		result = append(result, key)
+	}
+	slices.Sort(result)
+	return result
+}
+
 func resolveSkillStep(step NLSkillStep, vars map[string]string, skillDir string) NLSkillStep {
 	resolved := step
 	if params, ok := resolveSkillValue(step.Params, vars).(map[string]interface{}); ok {
@@ -525,6 +697,11 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 			command = strings.ReplaceAll(command, "${"+key+"}", value)
 		}
 	}
+	// Log any remaining unresolved placeholders as warnings before stripping.
+	remaining := unresolvedSkillPlaceholderPattern.FindAllString(command, -1)
+	if len(remaining) > 0 {
+		log.Printf("[skill-runner] ⚠ unresolved placeholders (will be stripped): %v", remaining)
+	}
 	result := stripUnresolvedSkillPlaceholders(command)
 	// 记录变量替换结果，方便排查跨平台路径问题
 	if result != original {
@@ -542,12 +719,30 @@ func stripUnresolvedSkillPlaceholders(text string) string {
 	return unresolvedSkillPlaceholderPattern.ReplaceAllString(text, "")
 }
 
+// quoteSkillInputForShell wraps a user-supplied value for safe embedding
+// in a shell command string.
+//
+// On Windows the skill runner dispatches simple commands (node, python, …)
+// through cmd.exe, which does NOT recognise single-quotes as delimiters.
+// Using single-quotes caused the xh-md-to-pdf path-concatenation bug where
+// the trailing backslash of {baseDir} merged with the opening single-quote.
+// We therefore use double-quotes on Windows and single-quotes elsewhere.
 func quoteSkillInputForShell(input string) string {
 	if input == "" {
+		if runtime.GOOS == "windows" {
+			return `""`
+		}
 		return "''"
 	}
 	if runtime.GOOS == "windows" {
-		return "'" + strings.ReplaceAll(input, "'", "''") + "'"
+		// Double-quote for cmd.exe compatibility.
+		// Escape existing double-quotes with backslash (understood by C runtime
+		// argument parsing used by node, python, etc.).
+		// Also escape percent signs which cmd.exe interprets as variable expansion
+		// in .cmd batch files.
+		escaped := strings.ReplaceAll(input, `"`, `\"`)
+		escaped = strings.ReplaceAll(escaped, `%`, `%%`)
+		return `"` + escaped + `"`
 	}
 	return "'" + strings.ReplaceAll(input, "'", `'"'"'`) + "'"
 }
@@ -680,8 +875,13 @@ func (r *SkillRunner) resolveStepSessionID(runID string, step NLSkillStep) strin
 // ── 异步执行核心 ────────────────────────────────────────────────────────
 
 func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NLSkillEntry) {
-	// Global timeout: 5 minutes default for the entire skill execution.
+	execStart := time.Now()
+	// Global timeout: use skill-level setting if available, otherwise 5 minutes.
 	globalTimeout := 5 * time.Minute
+	if skill.GlobalTimeout > 0 {
+		globalTimeout = time.Duration(skill.GlobalTimeout) * time.Second
+		log.Printf("[skill-runner] using skill-level global timeout: %v", globalTimeout)
+	}
 	globalCtx, globalCancel := context.WithTimeout(ctx, globalTimeout)
 	defer globalCancel()
 
@@ -713,6 +913,21 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 
 	var execErr error
 	hasFailure := false
+	isAPIWorkflow := strings.EqualFold(skill.Mode, "api_workflow")
+	log.Printf("[skill-runner] ▶ starting skill %q (%d steps, mode=%s, dir=%s)",
+		skill.Name, len(skill.Steps), skill.Mode, skill.SkillDir)
+	if len(skill.RequiredArgs) > 0 {
+		log.Printf("[skill-runner]   required_args: %v", skill.RequiredArgs)
+	}
+	if len(skill.RequiredEnv) > 0 {
+		log.Printf("[skill-runner]   required_env: %v", skill.RequiredEnv)
+	}
+	if skill.PreferredShell != "" {
+		log.Printf("[skill-runner]   preferred_shell: %s", skill.PreferredShell)
+	}
+	if isAPIWorkflow && len(run.selectedSteps) > 0 {
+		log.Printf("[skill-runner]   selected_steps: %v", run.selectedSteps)
+	}
 	for i, step := range skill.Steps {
 		// Check for global timeout
 		select {
@@ -757,13 +972,87 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 			continue
 		}
 
+		// api_workflow mode: skip steps not in selectedSteps (by label)
+		if isAPIWorkflow && len(run.selectedSteps) > 0 && step.Label != "" {
+			if !stepLabelSelected(step.Label, run.selectedSteps) {
+				r.mu.Lock()
+				run.status.Steps[i].Status = "skipped"
+				r.mu.Unlock()
+				log.Printf("[skill-runner] step %d/%d: skipped (label %q not in selected steps)", i+1, len(skill.Steps), step.Label)
+				continue
+			}
+		}
+		// api_workflow mode: skip unlabeled steps when step selection is active
+		if isAPIWorkflow && len(run.selectedSteps) > 0 && step.Label == "" {
+			r.mu.Lock()
+			run.status.Steps[i].Status = "skipped"
+			r.mu.Unlock()
+			log.Printf("[skill-runner] step %d/%d: skipped (no label, step selection active)", i+1, len(skill.Steps))
+			continue
+		}
+
 		r.mu.Lock()
 		run.status.Steps[i].Status = "running"
 		r.mu.Unlock()
 
 		resolvedStep := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir)
+		// Propagate skill-level preferred_shell to bash steps so the shell
+		// selection logic can respect it.
+		if resolvedStep.Action == "bash" && skill.PreferredShell != "" {
+			if resolvedStep.Params == nil {
+				resolvedStep.Params = map[string]interface{}{}
+			}
+			if _, exists := resolvedStep.Params["preferred_shell"]; !exists {
+				resolvedStep.Params["preferred_shell"] = skill.PreferredShell
+			}
+		}
+		// Propagate skill-level required_env to bash steps for auto-injection.
+		if resolvedStep.Action == "bash" && len(skill.RequiredEnv) > 0 {
+			if resolvedStep.Params == nil {
+				resolvedStep.Params = map[string]interface{}{}
+			}
+			envList := make([]interface{}, len(skill.RequiredEnv))
+			for idx, e := range skill.RequiredEnv {
+				envList[idx] = e
+			}
+			resolvedStep.Params["required_env"] = envList
+		}
+		// Propagate caller-supplied extra env vars to subprocess steps.
+		// For bash steps, inject via params["extra_env"] (read by runBashStepWithContextFull).
+		// For craft_tool and other steps, temporarily set os env vars so child
+		// processes inherit them, then restore after step execution.
+		if resolvedStep.Action == "bash" && len(run.extraEnv) > 0 {
+			if resolvedStep.Params == nil {
+				resolvedStep.Params = map[string]interface{}{}
+			}
+			extra := make(map[string]interface{}, len(run.extraEnv))
+			for k, v := range run.extraEnv {
+				extra[k] = v
+			}
+			resolvedStep.Params["extra_env"] = extra
+		}
+		// For non-bash steps (craft_tool, call_mcp_tool, etc.), use os.Setenv
+		// so that any subprocess spawned during execution inherits the env vars.
+		var envRestore []func()
+		if resolvedStep.Action != "bash" && len(run.extraEnv) > 0 {
+			for k, v := range run.extraEnv {
+				prev, hadPrev := os.LookupEnv(k)
+				os.Setenv(k, v)
+				// Capture loop variables for the restore closure.
+				capturedK, capturedPrev, capturedHad := k, prev, hadPrev
+				if capturedHad {
+					envRestore = append(envRestore, func() { os.Setenv(capturedK, capturedPrev) })
+				} else {
+					envRestore = append(envRestore, func() { os.Unsetenv(capturedK) })
+				}
+			}
+		}
 		log.Printf("[skill-runner] step %d/%d: action=%s command=%q", i+1, len(skill.Steps), resolvedStep.Action, resolveCommandForDisplay(resolvedStep))
 		result, stepErr := r.executeStepWithContext(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
+		// Restore env vars after non-bash step execution.
+		for _, restore := range envRestore {
+			restore()
+		}
 
 		r.mu.Lock()
 		run.status.Steps[i].Name = resolvedStep.Name
@@ -772,6 +1061,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 			run.status.Steps[i].Status = "failed"
 			run.status.Steps[i].Error = stepErr.Error()
 			run.status.Steps[i].Output = result
+			log.Printf("[skill-runner] step %d/%d FAILED: %v", i+1, len(skill.Steps), stepErr)
 			// Extract error details if it's a bashStepError
 			if bErr, ok := stepErr.(*bashStepError); ok {
 				run.status.Steps[i].ExitCode = bErr.ExitCode()
@@ -798,6 +1088,20 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 		} else {
 			run.status.Steps[i].Status = "success"
 			run.status.Steps[i].Output = result
+			log.Printf("[skill-runner] step %d/%d OK (output %d bytes)", i+1, len(skill.Steps), len(result))
+			// Output capture: extract variables from step output via regex
+			if len(step.Capture) > 0 && result != "" {
+				captured := captureOutputVariables(result, step.Capture)
+				if len(captured) > 0 {
+					if run.templateVars == nil {
+						run.templateVars = make(map[string]string)
+					}
+					for k, v := range captured {
+						run.templateVars[k] = v
+						log.Printf("[skill-runner] captured %s=%q from step %d output", k, truncateSkillRunSnippet(v), i+1)
+					}
+				}
+			}
 		}
 		r.mu.Unlock()
 	}
@@ -814,6 +1118,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 		}
 	}
 	run.status.EndedAt = time.Now().Format(time.RFC3339)
+	// Stop session monitor if running.
+	if run.monitorCancel != nil {
+		run.monitorCancel()
+	}
+	log.Printf("[skill-runner] ◼ skill %q finished: status=%s steps=%d elapsed=%s",
+		skill.Name, run.status.Status, len(skill.Steps), time.Since(execStart).Truncate(time.Millisecond))
 	r.mu.Unlock()
 
 	// 更新 skill 使用统计
@@ -1036,6 +1346,9 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		}
 		return executeCraftToolCore(r.executor.app, nil, step.Params, nil)
 
+	case "poll":
+		return r.executePollStep(ctx, step, skillDir)
+
 	default:
 		return "", fmt.Errorf("unknown action: %s", step.Action)
 	}
@@ -1048,12 +1361,27 @@ func runBashStepWithContext(ctx context.Context, command string, params map[stri
 }
 
 func runBashStepWithContextFull(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App) (string, error) {
+	// Strip UTF-8 BOM if present — SKILL.md files saved with BOM can leak
+	// the BOM bytes into the command string, causing cmd.exe to fail with
+	// "'@echo' 不是内部或外部命令".
+	command = strings.TrimPrefix(command, "\xef\xbb\xbf")
+
 	timeout := 120 // default 120 seconds per step
 	if t, ok := params["timeout"].(float64); ok && t > 0 {
 		timeout = int(t)
-		if timeout > 300 {
-			timeout = 300
+		if timeout > 600 {
+			timeout = 600
 		}
+	}
+	// Allow skill-level global_timeout to raise the per-step cap.
+	if gt, ok := params["global_timeout"].(float64); ok && gt > 0 && int(gt) > timeout {
+		timeout = int(gt)
+	}
+
+	// [Fix] On Windows, map `python3` to `python` since Windows Python
+	// installs typically only provide `python.exe`, not `python3.exe`.
+	if runtime.GOOS == "windows" {
+		command = mapPython3ToWindows(command)
 	}
 
 	workDir, _ := params["working_dir"].(string)
@@ -1080,12 +1408,25 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	if runtime.GOOS == "windows" {
 		// On Windows, prefer cmd.exe for direct script execution to avoid
 		// Git Bash subprocess restrictions that can block nested execFileSync.
-		// Only use sh.exe when the command contains shell-specific features.
-		if needsBashShell(command) {
+		// Only use sh.exe when the command contains shell-specific features
+		// or when the skill explicitly requests bash via preferred_shell.
+		useBash := needsBashShell(command)
+		shellReason := "default (cmd.exe)"
+		if useBash {
+			shellReason = "detected Unix-specific syntax in command"
+		}
+		if !useBash {
+			// Check if preferred shell is set via skill metadata (passed in params)
+			if pref, _ := params["preferred_shell"].(string); strings.EqualFold(pref, "bash") {
+				useBash = true
+				shellReason = "skill metadata preferred_shell=bash"
+			}
+		}
+		if useBash {
 			if app != nil {
 				if shPath, err := app.findSh(); err == nil {
 					shellName = shPath
-					log.Printf("[skill-runner] bash step: using shell %s", shPath)
+					log.Printf("[skill-runner] shell selection: %s → reason: %s", filepath.Base(shPath), shellReason)
 				} else {
 					return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤\n%v\n请安装 Git for Windows: https://git-scm.com/download/win", err)
 				}
@@ -1117,8 +1458,12 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 			shellArgs = []string{filepath.ToSlash(tmpScript)}
 			log.Printf("[skill-runner] bash step: using temp script %s", tmpScript)
 		} else {
-			// Direct command — use cmd.exe for better subprocess nesting support.
-			// cmd.exe handles backslash paths natively, no conversion needed.
+			// Direct command — use cmd.exe with a temp .cmd script.
+			// We must NOT pass the command as exec.Command args because Go's
+			// syscall.EscapeArg escapes inner quotes with backslashes, turning
+			// node "C:/path/script.mjs" into node \"C:/path/script.mjs\" which
+			// causes cmd.exe to treat \" as literal characters in the path.
+			// Using a temp .cmd file avoids all argument escaping issues.
 			cmdPath := os.Getenv("ComSpec")
 			if cmdPath == "" {
 				cmdPath = "C:\\WINDOWS\\system32\\cmd.exe"
@@ -1127,7 +1472,29 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 				}
 			}
 			shellName = cmdPath
-			shellArgs = []string{"/c", command}
+			log.Printf("[skill-runner] shell selection: cmd.exe → reason: %s", shellReason)
+			scriptFile, err := os.CreateTemp("", "skill-step-*.cmd")
+			if err != nil {
+				return "", fmt.Errorf("创建临时脚本文件失败: %v", err)
+			}
+			tmpScript = scriptFile.Name()
+			// Write UTF-8 (no BOM) with `chcp 65001` to switch cmd.exe to
+			// UTF-8 mode before executing the command. This ensures non-ASCII
+			// paths (e.g. Chinese directory names like "脚本目录") are decoded
+			// correctly instead of being garbled by the system codepage (GBK).
+			//
+			// BOM-based approach does NOT work: cmd.exe on CP936 treats the
+			// BOM bytes as part of the first command, turning "@echo off" into
+			// "'@echo' 不是内部或外部命令".
+			scriptContent := "@echo off\r\nchcp 65001 >nul\r\n" + command + "\r\n"
+			if _, err := scriptFile.WriteString(scriptContent); err != nil {
+				scriptFile.Close()
+				os.Remove(tmpScript)
+				return "", fmt.Errorf("写入临时脚本文件失败: %v", err)
+			}
+			scriptFile.Close()
+			shellArgs = []string{"/c", tmpScript}
+			log.Printf("[skill-runner] bash step: using temp cmd script %s", tmpScript)
 		}
 	} else {
 		shellName = "bash"
@@ -1141,14 +1508,44 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
+	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
+	// GBK/CP936 mojibake when scripts output non-ASCII text.
+	cmd.Env = coretool.AppendUTF8Env(os.Environ())
+	// Auto-inject required environment variables declared in skill metadata.
+	// This replaces the need for `export VAR=value` in SKILL.md bash blocks.
+	if envList, ok := params["required_env"].([]interface{}); ok {
+		for _, item := range envList {
+			if envName, ok := item.(string); ok && envName != "" {
+				if val := os.Getenv(envName); val != "" {
+					cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", envName, val))
+				}
+			}
+		}
+	}
+	// Inject caller-supplied extra env vars (from run_skill env parameter).
+	// These take precedence over process-level env vars, allowing the agent
+	// to pass API keys etc. that were set in a previous bash tool call.
+	if extraEnv, ok := params["extra_env"].(map[string]interface{}); ok {
+		for k, v := range extraEnv {
+			if s, ok := v.(string); ok && k != "" {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, s))
+			}
+		}
+	}
 	hideCommandWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	startTime := time.Now()
+	log.Printf("[skill-runner] bash exec: shell=%s workDir=%s timeout=%ds", filepath.Base(shellName), workDir, timeout)
 	err := cmd.Run()
 	elapsed := time.Since(startTime)
+
+	// Sanitize invalid UTF-8 sequences (e.g. GBK remnants from cmd.exe on
+	// Chinese Windows) so garbled replacement characters don't leak to the UI.
+	sanitizeUTF8Buffer(&stdout)
+	sanitizeUTF8Buffer(&stderr)
 
 	isTimeout := stepCtx.Err() == context.DeadlineExceeded
 
@@ -1204,7 +1601,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 			errMsg = fmt.Sprintf("%s | stdout: %s", errMsg, stdoutText)
 		}
 		return b.String(), &bashStepError{
-			message:   errMsg,
+			message:   classifyBashError(errMsg, command, extractExitCode(err)),
 			exitCode:  extractExitCode(err),
 			isTimeout: isTimeout,
 			stdout:    stdout.String(),
@@ -1238,6 +1635,55 @@ func (e *bashStepError) IsTimeout() bool  { return e.isTimeout }
 func (e *bashStepError) Stdout() string   { return e.stdout }
 func (e *bashStepError) Stderr() string   { return e.stderr }
 
+// classifyBashError adds context to error messages by detecting common
+// failure patterns like missing parameters, missing commands, etc.
+func classifyBashError(errMsg, command string, exitCode int) string {
+	combined := strings.ToLower(errMsg)
+	// Detect "command not found" (exit code 9009 on Windows, 127 on Unix)
+	if exitCode == 9009 || exitCode == 127 {
+		cmdName := strings.Fields(strings.TrimSpace(command))
+		if len(cmdName) > 0 {
+			hint := fmt.Sprintf("命令 %q 未找到 (exit %d)。", cmdName[0], exitCode)
+			cmdLower := strings.ToLower(cmdName[0])
+			switch {
+			case cmdLower == "python3" || cmdLower == "python":
+				hint += " 请安装 Python 3.x 并确保在 PATH 中。Windows 用户请从 python.org 安装。"
+			case cmdLower == "pip" || cmdLower == "pip3":
+				hint += " 请运行: python -m ensurepip --upgrade"
+			case cmdLower == "node" || cmdLower == "npm" || cmdLower == "npx":
+				hint += " 请安装 Node.js: https://nodejs.org/"
+			default:
+				hint += " 请确认已安装并在 PATH 中。"
+			}
+			return hint + " | " + errMsg
+		}
+	}
+	// Detect missing parameter patterns (usage text, "required", "missing argument")
+	if exitCode == 1 || exitCode == 2 {
+		if strings.Contains(combined, "usage:") || strings.Contains(combined, "usage：") ||
+			strings.Contains(combined, "missing argument") || strings.Contains(combined, "required") ||
+			strings.Contains(combined, "no input") || strings.Contains(combined, "缺少") {
+			return fmt.Sprintf("Skill 可能缺少必需参数。%s", errMsg)
+		}
+	}
+	// Detect missing environment variable (common patterns from various languages)
+	if strings.Contains(combined, "environment variable") ||
+		strings.Contains(combined, "env var") ||
+		(strings.Contains(combined, "_key") && strings.Contains(combined, "not set")) ||
+		(strings.Contains(combined, "_token") && strings.Contains(combined, "not set")) {
+		return fmt.Sprintf("Skill 可能缺少必需的环境变量。%s", errMsg)
+	}
+	// P4: HTTP 429 rate limit detection
+	if strings.Contains(combined, "429") && (strings.Contains(combined, "rate limit") || strings.Contains(combined, "too many requests") || strings.Contains(combined, "频率限制")) {
+		return fmt.Sprintf("API 调用过于频繁 (HTTP 429)，请稍后再试。%s", errMsg)
+	}
+	// P3: File not found (ENOENT) — provide friendly hint
+	if strings.Contains(combined, "enoent") || (strings.Contains(combined, "no such file") && strings.Contains(combined, "directory")) {
+		return fmt.Sprintf("输入文件不存在，请检查文件路径是否正确。%s", errMsg)
+	}
+	return errMsg
+}
+
 // extractExitCode extracts the exit code from an error if possible.
 func extractExitCode(err error) int {
 	if err == nil {
@@ -1247,6 +1693,21 @@ func extractExitCode(err error) int {
 		return exitErr.ExitCode()
 	}
 	return 1
+}
+
+// sanitizeUTF8Buffer replaces invalid UTF-8 sequences in a bytes.Buffer
+// with empty strings. This handles GBK remnants from cmd.exe on Chinese
+// Windows systems where the code page is not UTF-8.
+func sanitizeUTF8Buffer(buf *bytes.Buffer) {
+	if buf.Len() == 0 {
+		return
+	}
+	raw := buf.String()
+	if utf8.ValidString(raw) {
+		return
+	}
+	buf.Reset()
+	buf.WriteString(strings.ToValidUTF8(raw, ""))
 }
 
 // lastNLines returns the last n non-empty lines of text.
@@ -1266,6 +1727,23 @@ func needsBashShell(command string) bool {
 	// If command starts with known interpreters that run fine under cmd.exe,
 	// prefer cmd.exe for better subprocess nesting.
 	lower := strings.TrimSpace(strings.ToLower(command))
+
+	// Check for Unix shell builtins FIRST — these must use bash even if the
+	// command also contains .py/.js paths (e.g. "export FOO=bar && python x.py").
+	if strings.HasPrefix(lower, "export ") || strings.HasPrefix(lower, "source ") ||
+		strings.HasPrefix(lower, "#!/") {
+		log.Printf("[skill-runner] shell detection: found Unix shell builtin (export/source/shebang), needs bash")
+		return true
+	}
+	// Multi-line commands containing export lines.
+	for _, line := range strings.Split(command, "\n") {
+		trimmed := strings.TrimSpace(strings.ToLower(line))
+		if strings.HasPrefix(trimmed, "export ") {
+			log.Printf("[skill-runner] shell detection: found export in multi-line command, needs bash")
+			return true
+		}
+	}
+
 	for _, prefix := range []string{"node ", "python ", "python3 ", "java ", "npm ", "pip ", "npx ", "go run ", "cargo run ", "pnpm "} {
 		if strings.HasPrefix(lower, prefix) {
 			return false
@@ -1280,17 +1758,26 @@ func needsBashShell(command string) bool {
 	// Only use bash for genuine bash-specific syntax.
 	// Pipes, redirections, heredocs.
 	if strings.ContainsAny(command, "|<>") {
+		log.Printf("[skill-runner] shell detection: found pipe/redirect in command, needs bash")
 		return true
 	}
 	if strings.Contains(command, "&&") || strings.Contains(command, "||") {
+		log.Printf("[skill-runner] shell detection: found && or || in command, needs bash")
 		return true
 	}
 	// Command substitution.
 	if strings.Contains(command, "$(") || strings.Contains(command, "`") {
+		log.Printf("[skill-runner] shell detection: found $() or backtick in command, needs bash")
 		return true
 	}
 	// Globbing with path separators.
 	if strings.Contains(command, "*/") || strings.Contains(command, "/*") {
+		log.Printf("[skill-runner] shell detection: found glob pattern in command, needs bash")
+		return true
+	}
+	// Tilde expansion (~/path).
+	if strings.Contains(command, "~/") {
+		log.Printf("[skill-runner] shell detection: found ~/ tilde expansion in command, needs bash")
 		return true
 	}
 	// Default: prefer cmd.exe for Windows subprocess compatibility.
@@ -1330,6 +1817,49 @@ func resolveCommandForDisplay(step NLSkillStep) string {
 }
 
 // ── 平台兼容性检查 ──────────────────────────────────────────────────────
+
+// mapPython3ToWindows replaces `python3` with `python` in commands on Windows,
+// since Windows Python installations typically only provide `python.exe`.
+// Only replaces when `python3` appears as a command (not inside a path).
+func mapPython3ToWindows(command string) string {
+	if !python3NeedsMapping() {
+		return command
+	}
+	lines := strings.Split(command, "\n")
+	changed := false
+	for i, line := range lines {
+		ltrimmed := strings.TrimSpace(line)
+		ll := strings.ToLower(ltrimmed)
+		if strings.HasPrefix(ll, "python3 ") || ll == "python3" {
+			lines[i] = strings.Replace(line, "python3", "python", 1)
+			changed = true
+		}
+	}
+	if changed {
+		return strings.Join(lines, "\n")
+	}
+	return command
+}
+
+// python3NeedsMapping returns true if `python3` is not available but `python` is.
+// Result is cached after first call to avoid repeated filesystem lookups.
+// On Windows, the Microsoft Store installs a stub `python3.exe` in
+// WindowsApps that opens the Store instead of running Python — we detect
+// this by checking if the resolved path contains "WindowsApps".
+var python3NeedsMapping = sync.OnceValue(func() bool {
+	p3, err := exec.LookPath("python3")
+	if err == nil {
+		// Check for Windows Store stub: the path typically contains
+		// "AppData\Local\Microsoft\WindowsApps" or "WindowsApps".
+		if runtime.GOOS == "windows" && strings.Contains(strings.ToLower(p3), "windowsapps") {
+			// This is the Store redirect, not a real python3
+		} else {
+			return false // real python3 exists, no mapping needed
+		}
+	}
+	_, err2 := exec.LookPath("python")
+	return err2 == nil // map only if python exists
+})
 
 // checkPlatformCompat 检查当前平台是否匹配 skill 的 platforms 声明。
 // platforms 为空视为 universal（兼容所有平台）。
@@ -1440,4 +1970,121 @@ func extractFileReferences(command string) []string {
 		}
 	}
 	return refs
+}
+
+// ── api_workflow helpers ─────────────────────────────────────────────────
+
+// stepLabelSelected checks if a step label matches any of the selected steps.
+func stepLabelSelected(label string, selected []string) bool {
+	for _, s := range selected {
+		if strings.EqualFold(label, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// captureOutputVariables extracts variables from step output using regex patterns.
+// Each entry in captures maps a variable name to a regex pattern. The first
+// submatch group (if present) is used as the value; otherwise the full match.
+func captureOutputVariables(output string, captures map[string]string) map[string]string {
+	result := make(map[string]string)
+	for varName, pattern := range captures {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			log.Printf("[skill-runner] capture: invalid regex for %s: %v", varName, err)
+			continue
+		}
+		m := re.FindStringSubmatch(output)
+		if len(m) > 1 {
+			result[varName] = m[1] // first submatch group
+		} else if len(m) == 1 {
+			result[varName] = m[0] // full match
+		}
+	}
+	return result
+}
+
+// ── poll action ─────────────────────────────────────────────────────────
+
+// executePollStep runs a command repeatedly at a fixed interval until a
+// success_pattern is matched in the output or a timeout is reached.
+//
+// Params:
+//   - command:          bash command to execute each poll cycle
+//   - interval_seconds: seconds between polls (default 8)
+//   - timeout_seconds:  max total wait time (default 180)
+//   - success_pattern:  regex that indicates success when matched in stdout
+//   - working_dir:      optional working directory
+//
+// The step succeeds when success_pattern matches. The matched output is
+// returned so that capture rules can extract variables from it.
+func (r *SkillRunner) executePollStep(ctx context.Context, step NLSkillStep, skillDir string) (string, error) {
+	command, _ := step.Params["command"].(string)
+	if command == "" {
+		return "", fmt.Errorf("poll step: missing command parameter")
+	}
+	successPattern, _ := step.Params["success_pattern"].(string)
+	if successPattern == "" {
+		return "", fmt.Errorf("poll step: missing success_pattern parameter")
+	}
+	successRe, err := regexp.Compile(successPattern)
+	if err != nil {
+		return "", fmt.Errorf("poll step: invalid success_pattern regex: %v", err)
+	}
+
+	interval := 8 * time.Second
+	if v, ok := step.Params["interval_seconds"].(float64); ok && v > 0 {
+		interval = time.Duration(v) * time.Second
+	}
+	timeout := 180 * time.Second
+	if v, ok := step.Params["timeout_seconds"].(float64); ok && v > 0 {
+		timeout = time.Duration(v) * time.Second
+	}
+
+	pollCtx, pollCancel := context.WithTimeout(ctx, timeout)
+	defer pollCancel()
+
+	log.Printf("[skill-runner] poll: command=%q interval=%v timeout=%v pattern=%q",
+		command, interval, timeout, successPattern)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	attempt := 0
+	var lastOutput string
+	var lastErr error
+
+	for {
+		select {
+		case <-pollCtx.Done():
+			return lastOutput, fmt.Errorf("poll timeout after %v (%d attempts), last error: %v", timeout, attempt, lastErr)
+		default:
+		}
+
+		attempt++
+		output, execErr := runBashStepWithContext(pollCtx, command, step.Params, skillDir, r.executor.app)
+		lastOutput = output
+		lastErr = execErr
+
+		if execErr == nil && successRe.MatchString(output) {
+			log.Printf("[skill-runner] poll: success after %d attempts", attempt)
+			return output, nil
+		}
+
+		log.Printf("[skill-runner] poll: attempt %d — no match yet (err=%v, output=%d bytes)",
+			attempt, execErr, len(output))
+
+		// Wait for next tick or context cancellation
+		select {
+		case <-pollCtx.Done():
+			errMsg := "none"
+			if lastErr != nil {
+				errMsg = lastErr.Error()
+			}
+			return lastOutput, fmt.Errorf("poll timeout after %v (%d attempts), last error: %s", timeout, attempt, errMsg)
+		case <-ticker.C:
+			// continue to next poll
+		}
+	}
 }

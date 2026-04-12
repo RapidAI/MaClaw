@@ -248,3 +248,360 @@ func TestScanSkillDir_FallsBackToMarkdownWhenYAMLHasNoSteps(t *testing.T) {
 		t.Fatalf("working_dir = %#v, want %q", got, skillDir)
 	}
 }
+
+// --- Bug #1: quoteScriptPath should not double-quote already-quoted paths ---
+
+func TestQuoteScriptPath_NoDoubleQuote(t *testing.T) {
+	// Already quoted path should be returned as-is.
+	input := `"C:/Users/test/.maclaw/data/skills/test-skill/scripts/diag.mjs"`
+	got := quoteScriptPath(input)
+	if got != input {
+		t.Fatalf("quoteScriptPath(%q) = %q, want unchanged", input, got)
+	}
+}
+
+func TestQuoteScriptPath_AddsQuotesWhenNeeded(t *testing.T) {
+	input := `C:\Users\test\.maclaw\data\skills\test-skill\scripts\diag.mjs`
+	got := quoteScriptPath(input)
+	// Should convert backslashes and add quotes.
+	if !strings.HasPrefix(got, `"`) || !strings.HasSuffix(got, `"`) {
+		t.Fatalf("quoteScriptPath(%q) = %q, expected quoted", input, got)
+	}
+	if strings.Contains(got, `\`) {
+		t.Fatalf("quoteScriptPath(%q) = %q, should not contain backslashes", input, got)
+	}
+}
+
+func TestQuoteScriptPath_SimplePath(t *testing.T) {
+	input := "scripts/diag.mjs"
+	got := quoteScriptPath(input)
+	if got != `"scripts/diag.mjs"` {
+		t.Fatalf("quoteScriptPath(%q) = %q, want %q", input, got, `"scripts/diag.mjs"`)
+	}
+}
+
+// --- Bug #1: commandFromSkillMarkdown should produce correct paths with {baseDir} ---
+
+func TestCommandFromSkillMarkdown_BaseDirSubstitution(t *testing.T) {
+	skillDir := filepath.Join("C:", "Users", "test", ".maclaw", "data", "skills", "test-runner")
+	scriptPath := filepath.Join(skillDir, "scripts", "diag.mjs")
+	markdown := "# Test\n\n```bash\nnode \"{baseDir}/scripts/diag.mjs\"\n```\n"
+
+	command, ok := commandFromSkillMarkdown(scriptPath, markdown, skillDir)
+	if !ok {
+		t.Fatalf("commandFromSkillMarkdown() returned false")
+	}
+	slashDir := filepath.ToSlash(skillDir)
+	expected := `node "` + slashDir + `/scripts/diag.mjs"`
+	if command != expected {
+		t.Fatalf("command = %q, want %q", command, expected)
+	}
+	// The command should NOT contain {baseDir} anymore.
+	if strings.Contains(command, "{baseDir}") {
+		t.Fatalf("command still contains {baseDir}: %q", command)
+	}
+	// The command should NOT have double skillDir.
+	count := strings.Count(command, slashDir)
+	if count != 1 {
+		t.Fatalf("command contains skillDir %d times (want 1): %q", count, command)
+	}
+}
+
+// --- Bug #2: absolute path commands without {baseDir} should be bash steps ---
+
+func TestImportMarkdownSkillDir_AbsolutePathBashBlock(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "test-nq")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	// Skill with an absolute path command (no {baseDir}), no scripts/ directory.
+	// This should be recognized as a bash step, not fall through to craft_tool.
+	content := "# test-nq\n\nDiagnostic skill.\n\n```bash\nnode /home/user/skills/test-nq/full-diag.mjs\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	if entry.Steps[0].Action != "bash" {
+		t.Fatalf("step action = %q, want %q (was incorrectly assigned to craft_tool)", entry.Steps[0].Action, "bash")
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if !strings.Contains(cmd, "full-diag.mjs") {
+		t.Fatalf("step command = %q, expected to contain full-diag.mjs", cmd)
+	}
+}
+
+func TestImportMarkdownSkillDir_AbsolutePathWindowsStyle(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "test-nq-win")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	// Windows-style absolute path without {baseDir}.
+	content := "# test-nq-win\n\n```bash\nnode C:/Users/test/skills/test-nq/full-diag.mjs\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1", len(entry.Steps))
+	}
+	if entry.Steps[0].Action != "bash" {
+		t.Fatalf("step action = %q, want bash", entry.Steps[0].Action)
+	}
+}
+
+// --- P0: Multi-step parsing — multiple bash blocks should all become steps ---
+
+func TestImportMarkdownSkillDir_MultipleBashBlocksAllBecomeSteps(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "multi-step")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Multi Step Test\n\n" +
+		"## 步骤1: 准备\n\n" +
+		"```bash\necho step1\n```\n\n" +
+		"## 步骤2: 执行\n\n" +
+		"```bash\necho step2\n```\n\n" +
+		"## 步骤3: 清理\n\n" +
+		"```bash\necho step3\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 3 {
+		t.Fatalf("Steps len = %d, want 3; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	for i, step := range entry.Steps {
+		if step.Action != "bash" {
+			t.Fatalf("step %d action = %q, want bash", i, step.Action)
+		}
+		cmd, _ := step.Params["command"].(string)
+		expected := "echo step" + string(rune('1'+i))
+		if !strings.Contains(cmd, expected) {
+			t.Fatalf("step %d command = %q, expected to contain %q", i, cmd, expected)
+		}
+	}
+}
+
+// --- P0: Mixed steps — scripts + direct bash blocks should all be included ---
+
+func TestImportMarkdownSkillDir_MixedScriptsAndDirectBlocks(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "mixed-skill")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	// Create one script file
+	scriptPath := filepath.Join(scriptsDir, "setup.mjs")
+	if err := os.WriteFile(scriptPath, []byte("console.log('setup')"), 0o755); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	// Markdown references the script AND has a direct bash block
+	content := "# Mixed Skill\n\n" +
+		"```bash\nnode \"{baseDir}/scripts/setup.mjs\"\n```\n\n" +
+		"```bash\necho direct-command\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	// Should have 2 steps: one from scripts/ and one direct bash block
+	if len(entry.Steps) != 2 {
+		t.Fatalf("Steps len = %d, want 2; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	// First step should reference setup.mjs
+	cmd0, _ := entry.Steps[0].Params["command"].(string)
+	if !strings.Contains(cmd0, "setup.mjs") {
+		t.Fatalf("step 0 command = %q, expected to contain setup.mjs", cmd0)
+	}
+	// Second step should be the direct echo command
+	cmd1, _ := entry.Steps[1].Params["command"].(string)
+	if !strings.Contains(cmd1, "echo direct-command") {
+		t.Fatalf("step 1 command = %q, expected to contain 'echo direct-command'", cmd1)
+	}
+}
+
+// --- Frontmatter: required_args and required_env parsing ---
+
+func TestParseSkillMarkdownDocument_ExtendedFrontmatter(t *testing.T) {
+	content := "---\nname: test-skill\nrequired_args: input, output\nrequires_env: API_KEY, SECRET\nshell: bash\n---\n\n# Test\n\nA test skill."
+	parsed, err := parseSkillMarkdownDocument(content, "", "")
+	if err != nil {
+		t.Fatalf("parseSkillMarkdownDocument() error = %v", err)
+	}
+	if len(parsed.requiredArgs) != 2 || parsed.requiredArgs[0] != "input" || parsed.requiredArgs[1] != "output" {
+		t.Fatalf("requiredArgs = %v, want [input output]", parsed.requiredArgs)
+	}
+	if len(parsed.requiredEnv) != 2 || parsed.requiredEnv[0] != "API_KEY" || parsed.requiredEnv[1] != "SECRET" {
+		t.Fatalf("requiredEnv = %v, want [API_KEY SECRET]", parsed.requiredEnv)
+	}
+	if parsed.preferredShell != "bash" {
+		t.Fatalf("preferredShell = %q, want %q", parsed.preferredShell, "bash")
+	}
+}
+
+func TestImportMarkdownSkillDir_PropagatesExtendedFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "args-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "---\nname: args-skill\nrequired_args: input, output\nrequires_env: MY_TOKEN\nshell: bash\n---\n\n# Args Skill\n\n```bash\necho hello\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.RequiredArgs) != 2 {
+		t.Fatalf("RequiredArgs = %v, want 2 items", entry.RequiredArgs)
+	}
+	if len(entry.RequiredEnv) != 1 || entry.RequiredEnv[0] != "MY_TOKEN" {
+		t.Fatalf("RequiredEnv = %v, want [MY_TOKEN]", entry.RequiredEnv)
+	}
+	if entry.PreferredShell != "bash" {
+		t.Fatalf("PreferredShell = %q, want %q", entry.PreferredShell, "bash")
+	}
+}
+
+// --- splitCSV helper ---
+
+func TestSplitCSV(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"a, b, c", []string{"a", "b", "c"}},
+		{"a,b,c", []string{"a", "b", "c"}},
+		{"  single  ", []string{"single"}},
+		{"", nil},
+		{" , , ", nil},
+	}
+	for _, tt := range tests {
+		got := splitCSV(tt.input)
+		if len(got) != len(tt.want) {
+			t.Errorf("splitCSV(%q) = %v, want %v", tt.input, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("splitCSV(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
+			}
+		}
+	}
+}
+
+
+// --- P0-3.1: Step ordering — blocks should execute in markdown order ---
+
+func TestImportMarkdownSkillDir_StepOrderMatchesMarkdown(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "order-test")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	// Create a script file
+	if err := os.WriteFile(filepath.Join(scriptsDir, "step2.mjs"), []byte("console.log('step2')"), 0o755); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	// Markdown: step1 (direct) → step2 (script ref) → step3 (direct)
+	content := "# Order Test\n\n" +
+		"## Step 1\n\n" +
+		"```bash\necho step1\n```\n\n" +
+		"## Step 2\n\n" +
+		"```bash\nnode \"{baseDir}/scripts/step2.mjs\"\n```\n\n" +
+		"## Step 3\n\n" +
+		"```bash\necho step3\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 3 {
+		t.Fatalf("Steps len = %d, want 3; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	// Step 1 should be "echo step1"
+	cmd0, _ := entry.Steps[0].Params["command"].(string)
+	if !strings.Contains(cmd0, "echo step1") {
+		t.Errorf("step 0 command = %q, expected 'echo step1'", cmd0)
+	}
+	// Step 2 should reference step2.mjs
+	cmd1, _ := entry.Steps[1].Params["command"].(string)
+	if !strings.Contains(cmd1, "step2.mjs") {
+		t.Errorf("step 1 command = %q, expected to contain 'step2.mjs'", cmd1)
+	}
+	// Step 3 should be "echo step3"
+	cmd2, _ := entry.Steps[2].Params["command"].(string)
+	if !strings.Contains(cmd2, "echo step3") {
+		t.Errorf("step 2 command = %q, expected 'echo step3'", cmd2)
+	}
+}
+
+// --- P0-3.2: Chinese path in {baseDir} should not be skipped ---
+
+func TestImportMarkdownSkillDir_ChineseSubdirNotSkipped(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "chinese-path")
+	chineseDir := filepath.Join(skillDir, "脚本目录")
+	if err := os.MkdirAll(chineseDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chineseDir, "test.mjs"), []byte("console.log('ok')"), 0o755); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	content := "# Chinese Path Test\n\n" +
+		"```bash\nnode \"{baseDir}/脚本目录/test.mjs\"\n```\n\n" +
+		"```bash\necho done\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 2 {
+		t.Fatalf("Steps len = %d, want 2; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	// First step should contain the Chinese path (resolved)
+	cmd0, _ := entry.Steps[0].Params["command"].(string)
+	if !strings.Contains(cmd0, "test.mjs") {
+		t.Errorf("step 0 command = %q, expected to contain 'test.mjs'", cmd0)
+	}
+	// Should NOT contain {baseDir} anymore
+	if strings.Contains(cmd0, "{baseDir}") {
+		t.Errorf("step 0 command still contains {baseDir}: %q", cmd0)
+	}
+	// Second step should be "echo done"
+	cmd1, _ := entry.Steps[1].Params["command"].(string)
+	if !strings.Contains(cmd1, "echo done") {
+		t.Errorf("step 1 command = %q, expected 'echo done'", cmd1)
+	}
+}

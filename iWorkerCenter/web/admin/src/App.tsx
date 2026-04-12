@@ -39,22 +39,7 @@ export default function App() {
     }).finally(() => setChecking(false));
   }, []);
 
-  if (checking) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>
-        {t('app.loading')}
-      </div>
-    );
-  }
-
-  if (needsSetup) {
-    return <SetupTenantPage onSetupComplete={() => setNeedsSetup(false)} />;
-  }
-
-  if (!authenticated) {
-    return <LoginPage onLogin={() => setAuthenticated(true)} />;
-  }
-
+  // useMemo MUST be called before any conditional returns (React hooks rules)
   const content = useMemo(() => {
     switch (activeTab) {
       case 'employees': return <EmployeesPage />;
@@ -74,6 +59,22 @@ export default function App() {
       default: return null;
     }
   }, [activeTab]);
+
+  if (checking) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>
+        {t('app.loading')}
+      </div>
+    );
+  }
+
+  if (needsSetup) {
+    return <SetupTenantPage onSetupComplete={() => setNeedsSetup(false)} />;
+  }
+
+  if (!authenticated) {
+    return <LoginPage onLogin={() => setAuthenticated(true)} />;
+  }
 
   return (
     <div className="center-shell">

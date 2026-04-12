@@ -63,7 +63,7 @@ func TestSdkMessageToText_ImageBlock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sdkMessageToText(tt.msg)
+			got := sdkMessageToText(tt.msg, false)
 			if got != tt.want {
 				t.Errorf("sdkMessageToText() = %q, want %q", got, tt.want)
 			}

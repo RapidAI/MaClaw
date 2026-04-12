@@ -22,6 +22,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // imHeartbeatMsg is the sentinel value sent as a progress update to keep the
@@ -3692,6 +3693,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 	}
 
+	// --- Coding Tool Gate: pre-compute gate decision before iteration loop ---
+	gateConfig := newCodingToolGateConfig(userText, ctx.Kind)
+
 	for iteration := 0; ; iteration++ {
 		ctx.SetIteration(iteration)
 
@@ -4082,6 +4086,65 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			handlerPostStreamHistoryAppendElapsed += time.Since(historyAppendStartedAt)
 		}
 
+		// --- Coding Tool Gate: strip coding tools on iteration 0 ---
+		if iteration == 0 && gateConfig.active && len(choice.Message.ToolCalls) > 0 {
+			gateResult := applyCodingToolGate(choice.Message.ToolCalls)
+			if gateResult.applied {
+				// Log stripped and preserved tool names.
+				strippedNames := make([]string, 0, len(gateResult.stripped))
+				for _, tc := range gateResult.stripped {
+					strippedNames = append(strippedNames, tc.Function.Name)
+				}
+				preservedNames := make([]string, 0, len(gateResult.remaining))
+				for _, tc := range gateResult.remaining {
+					preservedNames = append(preservedNames, tc.Function.Name)
+				}
+				log.Printf("[coding-gate] activated: stripped=%v preserved=%v reason=%s", strippedNames, preservedNames, gateConfig.reason)
+
+				// Trace event.
+				if h.traceService != nil && ctx.RunID != "" {
+					h.appendTraceEvent(ctx, "gate.coding_tool_stripped", "warn",
+						"Coding tool gate stripped tools",
+						fmt.Sprintf("stripped=%v preserved=%v", strippedNames, preservedNames), "", "")
+				}
+
+				// Update tool calls on the choice and assistantMsg.
+				choice.Message.ToolCalls = gateResult.remaining
+				if len(gateResult.remaining) == 0 {
+					delete(assistantMsg, "tool_calls")
+				} else {
+					assistantMsg["tool_calls"] = gateResult.remaining
+				}
+				// Also update the already-appended conversation and history entries.
+				if len(gateResult.remaining) == 0 {
+					if m, ok := conversation[len(conversation)-1].(map[string]interface{}); ok {
+						delete(m, "tool_calls")
+					}
+					history[len(history)-1] = conversationEntry{Role: "assistant", Content: msgContent, ReasoningContent: msgReasoning}
+				} else {
+					if m, ok := conversation[len(conversation)-1].(map[string]interface{}); ok {
+						m["tool_calls"] = gateResult.remaining
+					}
+					entry := history[len(history)-1]
+					entry.ToolCalls = gateResult.remaining
+					history[len(history)-1] = entry
+				}
+
+				// If all tools stripped and text is empty, inject system message to prompt requirements doc.
+				if len(gateResult.remaining) == 0 && strings.TrimSpace(msgContent) == "" {
+					systemMessagesStart := len(conversation)
+					conversation = append(conversation, map[string]string{
+						"role":    "system",
+						"content": "[编程工作流] 你刚才尝试直接调用编码工具，但当前处于需求确认阶段。请先生成需求文档（包含功能需求、非功能需求、边界情况、验收标准），等待用户确认后再开始编码。",
+					})
+					recordSystemMessages(systemMessagesStart, conversation)
+					continue
+				}
+			}
+		} else if !gateConfig.active && iteration == 0 && len(choice.Message.ToolCalls) > 0 {
+			log.Printf("[coding-gate] DEBUG: gate inactive: %s", gateConfig.reason)
+		}
+
 		if !streamDoneAt.IsZero() {
 			noToolBranchStartedAt := time.Now()
 			defer func() {
@@ -4241,6 +4304,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			toolExecStartedAt := time.Now()
 			recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 			result := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+
+			// Pin conditional tools (e.g. ssh, web_search) to the session
+			// after first successful use so they remain available for
+			// follow-up messages that may not contain the trigger keywords.
+			// Some tools (e.g. generate_pdf) are excluded from pinning
+			// because they should only appear in specific contexts.
+			if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) &&
+				!strings.HasPrefix(result, "未知工具") && !strings.HasPrefix(result, "工具执行异常") {
+				h.toolRouter.ActivateSessionTool(tc.Function.Name)
+				log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
+			}
+
 			traceResult := result
 			toolContent := result
 			if strings.HasPrefix(result, "[screenshot_base64]") {
@@ -4610,6 +4685,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				toolExecStartedAt := time.Now()
 				recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 				toolResult := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+
+				// Pin conditional tools to session (same as main loop).
+				if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) &&
+					!strings.HasPrefix(toolResult, "未知工具") && !strings.HasPrefix(toolResult, "工具执行异常") {
+					h.toolRouter.ActivateSessionTool(tc.Function.Name)
+					log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
+				}
+
 				if !streamDoneAt.IsZero() {
 					handlerPostStreamToolExecElapsed += time.Since(toolExecStartedAt)
 				}

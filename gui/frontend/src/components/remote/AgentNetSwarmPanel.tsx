@@ -165,7 +165,7 @@ export function AgentNetSwarmPanel({ lang, agentNetRunning }: Props) {
                             <div style={{ display: "flex", gap: "6px", marginBottom: "6px" }}>
                                 {STANCES.map(st => (
                                     <button key={st.value} onClick={() => setContribStance(st.value)}
-                                        style={{ background: contribStance === st.value ? st.color : "transparent", color: contribStance === st.value ? "var(--theme-text-primary)" : st.color,
+                                        style={{ background: contribStance === st.value ? st.color : "transparent", color: contribStance === st.value ? colors.onPrimary : st.color,
                                             border: `1px solid ${st.color}`, borderRadius: radius.md, padding: "2px 8px", fontSize: "0.68rem", cursor: "pointer" }}>
                                         {localizeText(lang, st.en, st.zh)}
                                     </button>

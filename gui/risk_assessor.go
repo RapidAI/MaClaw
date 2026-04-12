@@ -26,7 +26,21 @@ type RiskAssessor struct{}
 // PermissionMode is gui-local (not in corelib/security).
 
 // dangerousKeywords are parameter substrings that immediately trigger critical risk.
-var dangerousKeywords = []string{"rm -rf", "DROP TABLE", "format", "sudo"}
+// NOTE: "format" was removed because it causes false positives on legitimate
+// skills that use "format" in non-destructive contexts (e.g. PDF format
+// conversion, string formatting). Use dangerousFormatPatterns for context-aware checks.
+var dangerousKeywords = []string{"rm -rf", "DROP TABLE", "sudo"}
+
+// dangerousFormatPatterns are patterns where "format" IS dangerous (disk formatting).
+var dangerousFormatPatterns = []string{"format c:", "format d:", "format e:", "format f:", "diskpart", "mkfs"}
+
+// safeToolCategories are skill action/tool names that are inherently safe
+// utility operations and should not be escalated to critical risk.
+var safeToolCategories = []string{
+	"pdf", "qr", "qrcode", "pptx", "ppt", "image", "screenshot",
+	"generator", "converter", "formatter", "markdown",
+	"csv", "json", "xml", "yaml", "html", "any2pdf", "md-to-pdf",
+}
 
 // systemDirPrefixes are path prefixes considered system directories.
 var systemDirPrefixes = []string{
@@ -52,6 +66,15 @@ func (a *RiskAssessor) Assess(ctx RiskContext) RiskAssessment {
 		if containsIgnoreCase(argStr, kw) {
 			level = RiskCritical
 			factors = append(factors, fmt.Sprintf("dangerous keyword %q found in arguments", kw))
+		}
+	}
+
+	// Rule 1b: Context-aware "format" check: only flag disk-formatting patterns,
+	// not benign uses like "output format", "PDF format", etc.
+	for _, pat := range dangerousFormatPatterns {
+		if containsIgnoreCase(argStr, pat) {
+			level = RiskCritical
+			factors = append(factors, fmt.Sprintf("dangerous format pattern %q found in arguments", pat))
 		}
 	}
 
@@ -176,6 +199,9 @@ func buildReason(level RiskLevel, factors []string) string {
 // steps and taking the highest risk level. Trust level adjustments:
 // - official: medium → low
 // - unknown: low → medium
+// Safe-tool category: skills whose name matches a safe category (pdf, qr,
+// pptx, etc.) are downgraded from critical/high to medium at most, since
+// they perform common utility operations that are not inherently dangerous.
 func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskAssessment {
 	maxRisk := RiskLow
 	var factors []string
@@ -188,6 +214,20 @@ func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskA
 		if riskLevelOrder[stepAssessment.Level] > riskLevelOrder[maxRisk] {
 			maxRisk = stepAssessment.Level
 			factors = append(factors, stepAssessment.Factors...)
+		}
+	}
+
+	// Safe-tool category downgrade: if the skill name matches a known safe
+	// utility category, cap risk at medium. This prevents false-positive
+	// blocking of skills like "any2pdf", "QR Code Generator", "pptx-generator".
+	if maxRisk == RiskCritical || maxRisk == RiskHigh {
+		skillLower := strings.ToLower(skill.Name)
+		for _, cat := range safeToolCategories {
+			if strings.Contains(skillLower, cat) {
+				maxRisk = RiskMedium
+				factors = append(factors, fmt.Sprintf("safe-tool category %q matched: risk capped at medium", cat))
+				break
+			}
 		}
 	}
 

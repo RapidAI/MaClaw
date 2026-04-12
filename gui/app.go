@@ -122,6 +122,7 @@ type App struct {
 	interactionInfraDone       atomic.Bool
 	aiAssistantReadyAt         atomic.Int64
 	aiAssistantFirstChatLogged atomic.Bool
+	docGenerator               *swarm.SwarmDocGenerator // cached PDF doc generator
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -724,6 +725,13 @@ func (a *App) ensureAIConfirmationStore() *aiConfirmationStore {
 		a.aiConfirmationStore = newAIConfirmationStore(filepath.Join(a.GetDataDir(), "ai_assistant_confirmation.json"))
 	}
 	return a.aiConfirmationStore
+}
+
+func (a *App) ensureDocGenerator() {
+	if a.docGenerator != nil {
+		return
+	}
+	a.docGenerator = swarm.NewSwarmDocGenerator()
 }
 
 func (a *App) ensureAuditLog() {
@@ -4559,6 +4567,19 @@ func (a *App) ShowMessage(title, message string) {
 	runtime.EventsEmit(a.ctx, "show-message", map[string]string{
 		"title":   title,
 		"message": message,
+	})
+}
+
+// ShowToast emits a lightweight toast notification to the frontend.
+// typ can be "success", "error", "warning", or "info" (default).
+func (a *App) ShowToast(message, typ string) {
+	if typ == "" {
+		typ = "info"
+	}
+	a.emitEvent("show-toast", map[string]interface{}{
+		"message":  message,
+		"type":     typ,
+		"duration": 3500,
 	})
 }
 func (a *App) emitEvent(name string, data ...interface{}) {

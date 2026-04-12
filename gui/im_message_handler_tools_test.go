@@ -142,7 +142,7 @@ func TestClassifyToolOutcome_RunSkillAndStatusSnapshots(t *testing.T) {
 		{
 			name:     "run skill running is uncertain",
 			toolName: "run_skill",
-			result:   "✅ Skill 已启动\n## 运行信息\n- run_id: run-1\n- status: running\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。",
+			result:   "✅ Skill 已启动\n## 运行信息\n- run_id: run-1\n- status: running\n- session_ready: false\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度，等待 session_ready=true。",
 			want:     "uncertain",
 		},
 		{
@@ -832,7 +832,7 @@ func TestExecuteTool_TemplateToolsRouting(t *testing.T) {
 	}
 }
 
-func TestExecuteTool_GeneratePDF_IsNotExposed(t *testing.T) {
+func TestExecuteTool_GeneratePDF_IsRegistered(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -843,9 +843,11 @@ func TestExecuteTool_GeneratePDF_IsNotExposed(t *testing.T) {
 	registerBuiltinTools(handler.registry, handler)
 
 	result := handler.executeTool("generate_pdf", `{"content":"# 标题\n\n正文","title":"通用标题"}`, nil)
-	if !contains(result, "未知工具: generate_pdf") {
-		t.Fatalf("generate_pdf should not be exposed, got: %s", result)
+	if contains(result, "未知工具") {
+		t.Fatalf("generate_pdf should be registered as a builtin tool, got: %s", result)
 	}
+	// The tool is now registered; it may fail due to missing fonts in CI,
+	// but it must NOT return "未知工具".
 }
 
 // Regression coverage for the uploaded-image flow through the real tool dispatcher:

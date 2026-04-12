@@ -9,7 +9,7 @@ export interface Memory {
 }
 
 export function listMemories(): Promise<Memory[]> {
-  return apiGet('/admin/memories');
+  return apiGet<{ memories: Memory[] }>('/admin/memories').then(d => d.memories || []);
 }
 
 export function createMemory(data: { title: string; content: string; source?: string }): Promise<Memory> {

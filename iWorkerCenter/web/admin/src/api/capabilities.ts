@@ -9,7 +9,7 @@ export interface Capability {
 }
 
 export function listCapabilities(): Promise<Capability[]> {
-  return apiGet('/admin/capabilities');
+  return apiGet<{ capabilities: Capability[] }>('/admin/capabilities').then(d => d.capabilities || []);
 }
 
 export function createCapability(data: { name: string; description?: string }): Promise<Capability> {

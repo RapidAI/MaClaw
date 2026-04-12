@@ -73,7 +73,7 @@ const primaryButtonStyle = (disabled: boolean) => ({
     fontSize: '0.8rem',
     cursor: disabled ? 'default' : 'pointer',
     background: disabled ? colors.surfaceMuted : colors.primary,
-    color: disabled ? colors.textMuted : 'var(--theme-text-primary)',
+    color: disabled ? colors.textMuted : colors.onPrimary,
 });
 
 const postCardStyle = {
@@ -436,7 +436,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                                                     padding: '4px 12px', borderRadius: radius.md, border: `1px solid ${!(commentInputs[p.id] || '').trim() || (commentInputs[p.id] || '').length > 1000 ? colors.border : colors.primary}`,
                                                     fontSize: '0.75rem', cursor: (!(commentInputs[p.id] || '').trim() || (commentInputs[p.id] || '').length > 1000) ? 'default' : 'pointer',
                                                     background: (!(commentInputs[p.id] || '').trim() || (commentInputs[p.id] || '').length > 1000) ? colors.surfaceMuted : colors.primary,
-                                                    color: (!(commentInputs[p.id] || '').trim() || (commentInputs[p.id] || '').length > 1000) ? colors.textMuted : 'var(--theme-text-primary)',
+                                                    color: (!(commentInputs[p.id] || '').trim() || (commentInputs[p.id] || '').length > 1000) ? colors.textMuted : colors.onPrimary,
                                                 }}
                                             >
                                                 {localizeText(lang, 'Submit', '提交')}

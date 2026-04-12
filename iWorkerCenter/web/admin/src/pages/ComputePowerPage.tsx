@@ -33,14 +33,15 @@ export function ComputePowerPage() {
   };
   useEffect(load, []);
 
-  const isCloud = status?.compute_source === 'cloud';
+  const isCloud = !status || status.compute_source === 'cloud';
   const canLocal = status?.compute_permission === true;
-  const isLocal = !isCloud;
+  const isLocal = status != null && status.compute_source === 'local';
 
   const handleSync = async () => { await syncFromCloud().catch(() => {}); load(); };
   const handleSwitch = async (src: 'cloud' | 'local') => { await switchComputeSource(src).catch(() => {}); load(); };
   const handleTest = async (id: string) => {
-    const r = await testComputeProvider(id).catch(() => ({ ok: false, latency_ms: 0, error: 'failed' }));
+    const p = providers.find(x => x.id === id);
+    const r = await testComputeProvider(id, p).catch(() => ({ ok: false, latency_ms: 0, error: 'failed' }));
     alert(r.ok ? `OK (${r.latency_ms}ms)` : `Failed: ${r.error}`);
   };
 
@@ -109,7 +110,7 @@ export function ComputePowerPage() {
               <div><label>User-Agent</label><input value={form.user_agent} onChange={e => set('user_agent', e.target.value)} /></div>
               <div><label>{t('compute.computeType')}</label>
                 <select value={form.compute_type} onChange={e => set('compute_type', e.target.value)}>
-                  <option value="general">通用</option><option value="coding">编程</option><option value="document">文档</option><option value="analysis">分析</option>
+                  <option value="general">{t('compute.typeGeneral')}</option><option value="coding">{t('compute.typeCoding')}</option><option value="document">{t('compute.typeDocument')}</option><option value="analysis">{t('compute.typeAnalysis')}</option>
                 </select>
               </div>
               <div><label>{t('compute.model')}</label><input value={form.model} onChange={e => set('model', e.target.value)} placeholder="gpt-4" /></div>

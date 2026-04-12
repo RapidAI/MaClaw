@@ -13,7 +13,7 @@ import (
 // RunAgentNet executes AgentNet subcommands.
 func RunAgentNet(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui AgentNet <status|peers|tasks|credits|knowledge|dm|swarm|prediction|topic|overlay|resume|diagnostics|nutshell|identity|leaderboard|transactions|credits-audit|auto-picker|daemon|binary|profile|service|ans|poi|reputation|discover|search|transfer|init|bundle|split|dispute|dag|ontology>")
+		return NewUsageError("usage: maclaw-tui AgentNet <status|peers|tasks|credits|knowledge|dm|swarm|prediction|topic|overlay|resume|diagnostics|nutshell|identity|leaderboard|credits-audit|auto-picker|daemon|binary|profile|service|ans|poi|reputation|discover|search|transfer|init|bundle|split|dispute|dag|ontology>")
 	}
 
 	// Commands that don't require daemon running
@@ -59,8 +59,6 @@ func RunAgentNet(args []string) error {
 		return agentnetNutshell(client, args[1:])
 	case "leaderboard":
 		return agentnetLeaderboard(client, args[1:])
-	case "transactions":
-		return agentnetTransactions(client, args[1:])
 	case "credits-audit":
 		return agentnetCreditsAudit(client, args[1:])
 	case "auto-picker":
@@ -138,8 +136,10 @@ func agentnetPeers(client *agentnet.Client, args []string) error {
 	fmt.Printf("%-20s %-20s %-10s %s\n", "PEER ID", "ADDR", "LATENCY", "COUNTRY")
 	fmt.Println(strings.Repeat("-", 65))
 	for _, p := range peers {
+		addr := p.Addr
+		if addr == "" && len(p.Addrs) > 0 { addr = p.Addrs[0] }
 		fmt.Printf("%-20s %-20s %-10s %s\n",
-			TruncateDisplay(p.PeerID, 20), TruncateDisplay(p.Addr, 20), p.Latency, p.Country)
+			TruncateDisplay(p.PeerID, 20), TruncateDisplay(addr, 20), p.Latency, p.Country)
 	}
 	return nil
 }
@@ -454,7 +454,7 @@ func agentnetDM(client *agentnet.Client, args []string) error {
 			return nil
 		}
 		for _, m := range msgs {
-			fmt.Printf("[%s] %s: %s\n", m.SentAt, TruncateDisplay(m.PeerID, 16), TruncateDisplay(m.Body, 60))
+			fmt.Printf("[%s] %s: %s\n", m.Timestamp, TruncateDisplay(m.From, 16), TruncateDisplay(m.Body, 60))
 		}
 	case "thread":
 		if *peer == "" {
@@ -468,7 +468,9 @@ func agentnetDM(client *agentnet.Client, args []string) error {
 			return PrintJSON(msgs)
 		}
 		for _, m := range msgs {
-			fmt.Printf("[%s] %s: %s\n", m.SentAt, TruncateDisplay(m.PeerID, 16), m.Body)
+			ts := m.Timestamp; if ts == "" { ts = m.SentAt }
+			from := m.From; if from == "" { from = m.PeerID }
+			fmt.Printf("[%s] %s: %s\n", ts, TruncateDisplay(from, 16), m.Body)
 		}
 	case "send":
 		if *peer == "" || *body == "" {
@@ -665,7 +667,7 @@ func agentnetTopic(client *agentnet.Client, args []string) error {
 			return PrintJSON(msgs)
 		}
 		for _, m := range msgs {
-			fmt.Printf("[%s] %s: %s\n", m.SentAt, TruncateDisplay(m.PeerID, 16), m.Body)
+			fmt.Printf("[%s] %s: %s\n", m.Timestamp, TruncateDisplay(m.From, 16), m.Body)
 		}
 	case "post":
 		if *name == "" || *body == "" {
@@ -1094,26 +1096,6 @@ func agentnetLeaderboard(client *agentnet.Client, args []string) error {
 		return nil
 	}
 	return PrintJSON(lb)
-}
-
-// ---------- Transactions ----------
-
-func agentnetTransactions(client *agentnet.Client, args []string) error {
-	fs := flag.NewFlagSet("AgentNet transactions", flag.ExitOnError)
-	jsonOut := fs.Bool("json", false, "JSON output")
-	fs.Parse(args)
-	txns, err := client.GetCreditsTransactions()
-	if err != nil {
-		return err
-	}
-	if *jsonOut {
-		return PrintJSON(txns)
-	}
-	if len(txns) == 0 {
-		fmt.Println("No transactions.")
-		return nil
-	}
-	return PrintJSON(txns)
 }
 
 // ---------- Credits Audit ----------

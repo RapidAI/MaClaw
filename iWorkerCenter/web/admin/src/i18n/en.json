@@ -98,7 +98,11 @@
     "inputPrice": "Input Price (per MToken)",
     "outputPrice": "Output Price (per MToken)",
     "status": "Status",
-    "actions": "Actions"
+    "actions": "Actions",
+    "typeGeneral": "General",
+    "typeCoding": "Coding",
+    "typeDocument": "Document",
+    "typeAnalysis": "Analysis"
   },
   "common": {
     "save": "Save",

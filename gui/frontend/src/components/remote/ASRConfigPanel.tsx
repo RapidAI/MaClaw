@@ -125,7 +125,7 @@ export function ASRConfigPanel({ lang }: Props) {
                             <div style={{ fontSize: '0.78rem', color: colors.textSecondary, marginBottom: 8 }}>
                                 {t('Model file not found. Download required.', '模型文件未找到，需要下载。', '模型文件未找到，需要下載。')}
                             </div>
-                            <button onClick={startDownload} style={{ padding: '6px 16px', fontSize: '0.78rem', background: 'var(--theme-success)', color: 'var(--theme-text-primary)', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
+                            <button onClick={startDownload} style={{ padding: '6px 16px', fontSize: '0.78rem', background: 'var(--theme-success)', color: 'var(--theme-on-primary)', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
                                 {t('Download Model', '下载模型', '下載模型')}
                             </button>
                         </div>

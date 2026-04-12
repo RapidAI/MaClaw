@@ -2,11 +2,11 @@
 
 #include "textflag.h"
 
-// func dotQ8RowASM(a []float32, data []byte, rowOff, nBlocks int) float32
+// func dotQ8RowAVX2(a []float32, data []byte, rowOff, nBlocks int) float32
 //
 // Computes dot product of float32 vector a[] with a Q8_0 row.
 // Q8_0 block layout: [scale:f16(2 bytes)][d0..d31:int8(32 bytes)] = 34 bytes.
-// Uses AVX2: vpmovsxbd (int8→int32), vcvtdq2ps (int32→f32), vfmadd231ps.
+// Uses AVX2+FMA: vpmovsxbd (int8→int32), vcvtdq2ps (int32→f32), vfmadd231ps.
 //
 // Arguments (Go ABI internal):
 //   a.ptr      = +0(FP)   (pointer to float32 data)
@@ -18,7 +18,7 @@
 //   rowOff     = +48(FP)
 //   nBlocks    = +56(FP)
 //   ret        = +64(FP)
-TEXT ·dotQ8RowASM(SB), NOSPLIT, $0-72
+TEXT ·dotQ8RowAVX2(SB), NOSPLIT, $0-68
 	MOVQ a+0(FP), SI          // SI = &a[0]
 	MOVQ data+24(FP), DI      // DI = &data[0]
 	MOVQ rowOff+48(FP), R8    // R8 = rowOff (byte offset)
@@ -129,7 +129,7 @@ done:
 	VZEROUPPER
 	RET
 
-// func dequantRowIntoASM(dst []float32, data []byte, rowOff, nBlocks int)
+// func dequantRowIntoAVX2(dst []float32, data []byte, rowOff, nBlocks int)
 //
 // Dequantizes a Q8_0 row into float32 destination using AVX2.
 //
@@ -142,7 +142,7 @@ done:
 //   data.cap   = +40(FP)
 //   rowOff     = +48(FP)
 //   nBlocks    = +56(FP)
-TEXT ·dequantRowIntoASM(SB), NOSPLIT, $0-64
+TEXT ·dequantRowIntoAVX2(SB), NOSPLIT, $0-64
 	MOVQ dst+0(FP), SI        // SI = &dst[0]
 	MOVQ data+24(FP), DI      // DI = &data[0]
 	MOVQ rowOff+48(FP), R8    // R8 = rowOff
@@ -153,7 +153,7 @@ TEXT ·dequantRowIntoASM(SB), NOSPLIT, $0-64
 	JZ    dq_done
 
 dq_loop:
-	// Load and convert f16 scale (same as dotQ8RowASM)
+	// Load and convert f16 scale (same as dotQ8RowAVX2)
 	MOVWLZX (DI), AX
 	MOVL  AX, DX
 	SHRL  $15, DX

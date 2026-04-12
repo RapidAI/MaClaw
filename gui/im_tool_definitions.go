@@ -96,6 +96,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"name":         map[string]string{"type": "string", "description": "Skill 名称"},
 				"args":         map[string]string{"type": "object", "description": "可选：供 skill 内 {{key}} / ${key} 占位符替换使用的参数映射"},
+				"env":          map[string]string{"type": "object", "description": "可选：注入到 skill 子进程的环境变量（key-value 对），例如 {\"LIBTV_ACCESS_KEY\": \"xxx\"}"},
 				"input":        map[string]string{"type": "string", "description": "可选：兼容旧调用的输入参数"},
 				"output":       map[string]string{"type": "string", "description": "可选：兼容旧调用的输出参数"},
 				"wait_seconds": map[string]string{"type": "number", "description": "可选：启动后等待状态快照的秒数（默认 2，最大 30）。时间越长，初始返回越可能包含会话信息。"},
@@ -141,7 +142,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		toolDef("bash", "在本机直接执行 shell 命令（如创建目录、移动文件、运行脚本等）。命令在 MaClaw 所在设备上执行，不需要会话。",
 			map[string]interface{}{
 				"command":     map[string]string{"type": "string", "description": "要执行的 shell 命令"},
-				"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为用户主目录）"},
+				"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
 				"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
 			}, []string{"command"}),
 		toolDef("read_file", "读取本机文件内容",

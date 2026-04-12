@@ -45,7 +45,10 @@ const titleBarStyle: React.CSSProperties = {
     borderBottom: "1px solid #333",
     flexShrink: 0,
     gap: "6px",
-};
+    // @ts-ignore — Wails custom CSS property for native window dragging
+    "--wails-draggable": "drag",
+    cursor: "grab",
+} as React.CSSProperties;
 
 const titleLeftStyle: React.CSSProperties = {
     display: "flex",
@@ -53,6 +56,8 @@ const titleLeftStyle: React.CSSProperties = {
     gap: "8px",
     minWidth: 0,
     flex: 1,
+    // Allow dragging from the left side of the title bar too
+    cursor: "grab",
 };
 
 const trafficLightsStyle: React.CSSProperties = {
@@ -81,7 +86,11 @@ const titleRightStyle: React.CSSProperties = {
     display: "flex",
     gap: "4px",
     flexShrink: 0,
-};
+    // Exclude buttons from drag region so they remain clickable
+    // @ts-ignore — Wails custom CSS property
+    "--wails-draggable": "no-drag",
+    cursor: "default",
+} as React.CSSProperties;
 
 const outputAreaStyle: React.CSSProperties = {
     flex: 1,
@@ -91,7 +100,10 @@ const outputAreaStyle: React.CSSProperties = {
     fontSize: "12px",
     lineHeight: 1.45,
     overflowY: "auto",
-    overflowX: "auto",
+    overflowX: "hidden",
+    whiteSpace: "normal",
+    wordBreak: "normal",
+    overflowWrap: "break-word",
     textAlign: "left",
     color: "#d4d4d4",
     background: "#0c0c0c",
@@ -212,6 +224,58 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
         return (
             <div key={key} style={{ borderLeft: "2px solid #555", paddingLeft: "8px", color: "#9a9a9a", fontStyle: "italic", minHeight: "1.4em" }}>
                 {renderInlineMarkdown(trimmed.slice(2))}
+            </div>
+        );
+    }
+
+    // Tool action: ⏺ Write, ⏳ Write running...
+    if (/^⏺/.test(trimmed)) {
+        return (
+            <div key={key} style={{ color: "#569cd6", fontWeight: 700, marginTop: "0.3em", minHeight: "1.4em" }}>
+                {renderInlineMarkdown(trimmed)}
+            </div>
+        );
+    }
+    if (/^⏳/.test(trimmed)) {
+        return (
+            <div key={key} style={{ color: "#808080", minHeight: "1.4em" }}>
+                {renderInlineMarkdown(trimmed)}
+            </div>
+        );
+    }
+
+    // Lightning bolt: ⚡ text
+    if (/^⚡/.test(trimmed)) {
+        return (
+            <div key={key} style={{ color: "#4ec9b0", fontWeight: 700, marginTop: "0.4em", minHeight: "1.4em" }}>
+                {">"} {renderInlineMarkdown(trimmed)}
+            </div>
+        );
+    }
+
+    // Success: ✓ or ✅
+    if (/^✓|^✅/.test(trimmed)) {
+        return (
+            <div key={key} style={{ color: "#89d185", minHeight: "1.4em" }}>
+                {">"} {renderInlineMarkdown(trimmed)}
+            </div>
+        );
+    }
+
+    // Error/warning: ✗ ⚠ ❌
+    if (/^✗|^⚠|^❌/.test(trimmed)) {
+        return (
+            <div key={key} style={{ color: "#f48771", minHeight: "1.4em" }}>
+                {">"} {renderInlineMarkdown(trimmed)}
+            </div>
+        );
+    }
+
+    // Path line: C:\... or ~/... or /usr/...
+    if (/^[A-Z]:\\/.test(trimmed) || /^~\//.test(trimmed) || /^\/[a-z][\w.\-]*\//.test(trimmed)) {
+        return (
+            <div key={key} style={{ color: "#6a9955", minHeight: "1.4em" }}>
+                {">"} {trimmed}
             </div>
         );
     }
@@ -397,15 +461,26 @@ export function RemoteSessionConsole(props: Props) {
     }, [rawLines]);
 
     // Scroll to bottom on initial mount so the user sees the latest output.
+    // Use multiple delayed attempts to handle cases where content loads
+    // asynchronously or the DOM hasn't fully laid out yet.
     useEffect(() => {
         if (!didInitialScroll.current) {
             didInitialScroll.current = true;
-            // Use rAF + setTimeout to ensure DOM has fully laid out.
+            const scrollToEnd = () => {
+                const container = outputContainerRef.current;
+                if (container) {
+                    container.scrollTop = container.scrollHeight;
+                }
+                outputEndRef.current?.scrollIntoView();
+            };
+            // Immediate attempt
             requestAnimationFrame(() => {
-                setTimeout(() => {
-                    outputEndRef.current?.scrollIntoView();
-                }, 0);
+                setTimeout(scrollToEnd, 0);
             });
+            // Delayed attempts for async content
+            const t1 = setTimeout(scrollToEnd, 100);
+            const t2 = setTimeout(scrollToEnd, 300);
+            return () => { clearTimeout(t1); clearTimeout(t2); };
         }
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -414,13 +489,6 @@ export function RemoteSessionConsole(props: Props) {
         const timer = setTimeout(() => inputRef.current?.focus(), 100);
         return () => clearTimeout(timer);
     }, []);
-
-    // Close on Escape key
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-        window.addEventListener("keydown", handler);
-        return () => window.removeEventListener("keydown", handler);
-    }, [onClose]);
 
     const handleSend = useCallback(async () => {
         const text = inputValueRef.current.trim();
@@ -509,6 +577,24 @@ export function RemoteSessionConsole(props: Props) {
         setIsFullscreen(next);
         SetFullscreen(next).catch(() => {});
     }, [isFullscreen]);
+
+    // When fullscreen, the close button should first restore the window,
+    // then the user can close the terminal overlay normally.
+    const handleCloseOrRestore = useCallback(() => {
+        if (isFullscreen) {
+            setIsFullscreen(false);
+            SetFullscreen(false).catch(() => {});
+        } else {
+            onClose();
+        }
+    }, [isFullscreen, onClose]);
+
+    // Close on Escape key — respects fullscreen state (restore first, then close)
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => { if (e.key === "Escape") handleCloseOrRestore(); };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [handleCloseOrRestore]);
 
     const handleClear = useCallback(() => {
         setClearOffset(lineCacheRef.current.length);
@@ -761,7 +847,7 @@ export function RemoteSessionConsole(props: Props) {
                 } else {
                     // Check if this is a "special" line (heading, list, blockquote, etc.)
                     const trimmed = line.trimStart();
-                    const isSpecialLine = /^(#{1,4}\s|>\s|[-*]\s|\d+[.)]\s|⚡|✓|✅|✗|⚠|❌|[A-Z]:\\|~\/|\/[a-z][\w.\-]*\/)/.test(trimmed);
+                    const isSpecialLine = /^(#{1,4}\s|>\s|[-*]\s|\d+[.)]\s|⚡|⏺|⏳|✓|✅|✗|⚠|❌|[A-Z]:\\|~\/|\/[a-z][\w.\-]*\/)/.test(trimmed);
                     if (isSpecialLine) {
                         // Flush any accumulated plain text first
                         if (plainTextBuf.length > 0) {
@@ -782,7 +868,7 @@ export function RemoteSessionConsole(props: Props) {
                             while (i + 1 < merged.length) {
                                 const nextLine = merged[i + 1];
                                 const nextTrimmed = nextLine.trimStart();
-                                if (nextTrimmed === "" || /^(#{1,4}\s|>\s|[-*]\s|\d+[.)]\s|⚡|✓|✅|✗|⚠|❌|[A-Z]:\\|~\/|\/[a-z][\w.\-]*\/|```)/.test(nextTrimmed) || nextLine.startsWith("❯ ")) break;
+                                if (nextTrimmed === "" || /^(#{1,4}\s|>\s|[-*]\s|\d+[.)]\s|⚡|⏺|⏳|✓|✅|✗|⚠|❌|[A-Z]:\\|~\/|\/[a-z][\w.\-]*\/|```)/.test(nextTrimmed) || nextLine.startsWith("❯ ")) break;
                                 itemText += " " + nextTrimmed;
                                 i++;
                             }
@@ -876,10 +962,12 @@ export function RemoteSessionConsole(props: Props) {
                             Kill
                         </button>
                     )}
-                    <button onClick={onClose}
+                    <button onClick={handleCloseOrRestore}
                         style={{ ...actionBtnStyle, color: "#ccc", fontSize: "14px", padding: "0 8px" }}
-                        title={localizeText(currentLang, "Close", "关闭", "關閉")}>
-                        ✕
+                        title={isFullscreen
+                            ? localizeText(currentLang, "Restore window", "还原窗口", "還原視窗")
+                            : localizeText(currentLang, "Close", "关闭", "關閉")}>
+                        {isFullscreen ? "❐" : "✕"}
                     </button>
                 </div>
             </div>

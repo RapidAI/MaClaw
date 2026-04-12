@@ -122,7 +122,7 @@ export function EmbeddingConfigPanel({ lang }: Props) {
                             <div style={{ fontSize: '0.78rem', color: colors.textSecondary, marginBottom: 8 }}>
                                 {t('Model file not found. Download from Hub required.', '模型文件未找到，需要从 Hub 下载。', '模型文件未找到，需要從 Hub 下載。')}
                             </div>
-                            <button onClick={startDownload} style={{ padding: '6px 16px', fontSize: '0.78rem', background: 'var(--theme-primary)', color: 'var(--theme-text-primary)', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
+                            <button onClick={startDownload} style={{ padding: '6px 16px', fontSize: '0.78rem', background: 'var(--theme-primary)', color: 'var(--theme-on-primary)', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
                                 {t('Download Model', '下载模型', '下載模型')}
                             </button>
                         </div>

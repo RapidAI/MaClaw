@@ -47,9 +47,17 @@
     .logged-in-bar{display:flex;align-items:center;gap:12px;padding:8px 0;font-size:13px;color:var(--muted)}
     .logged-in-bar .email{font-weight:600;color:var(--text)}
     #auth-section .form-row input{flex:1}
+    .toast-stack{position:fixed;top:18px;right:18px;z-index:9999;display:grid;gap:10px;max-width:min(360px,calc(100vw - 36px))}
+    .toast-item{padding:10px 16px;border-radius:8px;color:#fff;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.15);opacity:0;transform:translateY(-8px);transition:opacity .2s,transform .2s}
+    .toast-item.show{opacity:1;transform:translateY(0)}
+    .toast-item.info{background:var(--primary)}
+    .toast-item.error{background:var(--danger)}
+    .toast-item.success{background:var(--success)}
+    .toast-item.warning{background:var(--warn);color:#1a202c}
   </style>
 </head>
 <body>
+<div id="toastStack" class="toast-stack"></div>
 <div class="container">
   <header>
     <h1>🦞 龙虾盛宴 SkillMarket</h1>
@@ -269,6 +277,18 @@ const API = '';
 let sessionToken = localStorage.getItem('sm_session') || '';
 let currentEmail = '';
 let currentUserID = '';
+
+function showToast(message, type) {
+  type = type || 'info';
+  var root = document.getElementById('toastStack');
+  var el = document.createElement('div');
+  el.className = 'toast-item ' + type;
+  el.textContent = message;
+  root.appendChild(el);
+  requestAnimationFrame(function() { el.classList.add('show'); });
+  setTimeout(function() { el.classList.remove('show'); setTimeout(function() { el.remove(); }, 200); }, 3200);
+  el.addEventListener('click', function() { el.classList.remove('show'); setTimeout(function() { el.remove(); }, 200); });
+}
 
 // ── i18n ──
 const LANG = (navigator.language || 'zh').startsWith('zh') ? 'zh' : 'en';
@@ -741,10 +761,10 @@ async function loadPendingReview() {
 }
 
 async function approveSkill(id) {
-  try { const r = await fetch(API+'/api/v1/admin/skillmarket/'+id+'/approve',{method:'POST',headers:authHeaders()}); if(!r.ok) throw await readErrorBody(r); loadPendingReview(); } catch(e){alert(parseApiError(e));}
+  try { const r = await fetch(API+'/api/v1/admin/skillmarket/'+id+'/approve',{method:'POST',headers:authHeaders()}); if(!r.ok) throw await readErrorBody(r); loadPendingReview(); } catch(e){showToast(parseApiError(e),'error');}
 }
 async function rejectSkill(id) {
-  try { const r = await fetch(API+'/api/v1/admin/skillmarket/'+id+'/reject',{method:'POST',headers:authHeaders()}); if(!r.ok) throw await readErrorBody(r); loadPendingReview(); } catch(e){alert(parseApiError(e));}
+  try { const r = await fetch(API+'/api/v1/admin/skillmarket/'+id+'/reject',{method:'POST',headers:authHeaders()}); if(!r.ok) throw await readErrorBody(r); loadPendingReview(); } catch(e){showToast(parseApiError(e),'error');}
 }
 
 // ── Purchases ──
@@ -771,9 +791,9 @@ async function refundPurchase(purchaseID) {
   try {
     const r = await fetch(API+'/api/v1/admin/refund',{method:'POST',headers:authHeaders(),body:JSON.stringify({purchase_record_id:purchaseID,reason})});
     if(!r.ok) throw await readErrorBody(r);
-    alert(t('msg.refund.ok'));
+    showToast(t('msg.refund.ok'), 'success');
     loadPurchases();
-  } catch(e){alert(parseApiError(e));}
+  } catch(e){showToast(parseApiError(e),'error');}
 }
 
 // ── API Key ──
@@ -805,8 +825,8 @@ async function withdrawSkill(id) {
   try {
     const r = await fetch(API+'/api/v1/skillmarket/'+id+'/withdraw',{method:'POST',headers:authHeaders(),body:JSON.stringify({email:currentEmail})});
     if(!r.ok) throw await readErrorBody(r);
-    alert(t('msg.withdrawn.ok'));
-  } catch(e){alert(parseApiError(e));}
+    showToast(t('msg.withdrawn.ok'), 'success');
+  } catch(e){showToast(parseApiError(e),'error');}
 }
 
 async function saveTrialConfig() {

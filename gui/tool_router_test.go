@@ -100,7 +100,7 @@ func TestToolRouter_ExactlyAtBudget(t *testing.T) {
 }
 
 func TestToolRouter_AboveBudget_KeepsCoreTools(t *testing.T) {
-	// 28 builtins + 20 dynamic = 48 total, above maxToolBudget.
+	// 29 builtins + 20 dynamic = 49 total, above maxToolBudget.
 	allTools := makeAllTools(20)
 	router := NewToolRouter(nil)
 	result := router.Route("some query", allTools)
@@ -122,7 +122,7 @@ func TestToolRouter_AboveBudget_KeepsCoreTools(t *testing.T) {
 }
 
 func TestToolRouter_AboveBudget_LimitsDynamic(t *testing.T) {
-	// 28 builtins + 25 dynamic = 53 total.
+	// 29 builtins + 25 dynamic = 54 total.
 	allTools := makeAllTools(25)
 	router := NewToolRouter(nil)
 	result := router.Route("some query", allTools)

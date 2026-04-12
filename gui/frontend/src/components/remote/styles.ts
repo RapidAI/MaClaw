@@ -5,6 +5,7 @@ export const colors = {
     primary: "var(--theme-primary)",
     primaryDark: "var(--theme-primary-strong)",
     primaryLight: "var(--theme-primary-soft)",
+    onPrimary: "var(--theme-on-primary)",
     accentBg: "var(--theme-surface-muted)",
     bg: "var(--theme-page-bg)",
     surface: "var(--theme-surface)",

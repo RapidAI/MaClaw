@@ -174,12 +174,12 @@ export function AgentNetChatPanel({ lang, agentNetRunning }: Props) {
                     </div>
                     {loading && <div style={cnLabel}>{localizeText(lang, "Loading...", "加载中...")}</div>}
                     {inbox.map((m: any, i: number) => (
-                        <div key={i} style={{ ...cnCard, cursor: "pointer" }} onClick={() => openPeer(m.peer_id || m.from || "")}>
+                        <div key={i} style={{ ...cnCard, cursor: "pointer" }} onClick={() => openPeer(m.peer_id || m.PeerID || m.from || m.From || "")}>
                             <div style={{ display: "flex", justifyContent: "space-between" }}>
-                                <span style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>{(m.peer_id || m.from || "").slice(0, 16)}…</span>
-                                <span style={{ fontSize: "0.65rem", color: colors.textMuted }}>{m.created_at || m.time || ""}</span>
+                                <span style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>{(m.peer_id || m.PeerID || m.from || m.From || "").slice(0, 16)}…</span>
+                                <span style={{ fontSize: "0.65rem", color: colors.textMuted }}>{m.Timestamp || m.timestamp || m.created_at || m.time || ""}</span>
                             </div>
-                            {m.body && <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.body}</div>}
+                            {(m.body || m.Body) && <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.body || m.Body}</div>}
                         </div>
                     ))}
                     {!loading && inbox.length === 0 && <div style={cnLabel}>{localizeText(lang, "No messages", "暂无私信")}</div>}
@@ -195,8 +195,8 @@ export function AgentNetChatPanel({ lang, agentNetRunning }: Props) {
                     <div style={msgListStyle}>
                         {thread.map((m: any, i: number) => (
                             <div key={i} style={{ marginBottom: "6px", fontSize: "0.72rem" }}>
-                                <span style={{ color: colors.textMuted, fontSize: "0.65rem" }}>{(m.from || "").slice(0, 10)} · {m.created_at || ""}</span>
-                                <div style={msgBodyStyle}>{m.body}</div>
+                                <span style={{ color: colors.textMuted, fontSize: "0.65rem" }}>{(m.From || m.from || "").slice(0, 16)} · {m.Timestamp || m.timestamp || m.created_at || ""}</span>
+                                <div style={msgBodyStyle}>{m.Body || m.body}</div>
                             </div>
                         ))}
                         {thread.length === 0 && <div style={cnLabel}>{localizeText(lang, "No messages yet", "暂无消息")}</div>}
@@ -237,8 +237,12 @@ export function AgentNetChatPanel({ lang, agentNetRunning }: Props) {
                         return (
                             <div key={i} style={{ ...cnCard, cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" }}>
                                 <div style={{ flex: 1, overflow: "hidden" }} onClick={() => loadTopicMsgs(topicKey)}>
-                                    <div style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>{t.name || t.id}</div>
-                                    {t.description && <div style={{ fontSize: "0.7rem", color: colors.textMuted }}>{t.description}</div>}
+                                    <div style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>{t.name || t.Name || t.id}</div>
+                                    <div style={{ fontSize: "0.68rem", color: colors.textMuted }}>
+                                        {t.description || t.Description || ""}
+                                        {(t.members || t.Members) ? ` · ${t.members || t.Members} ${localizeText(lang, "members", "成员")}` : ""}
+                                        {(t.messages || t.Messages) ? ` · ${t.messages || t.Messages} ${localizeText(lang, "msgs", "消息")}` : ""}
+                                    </div>
                                 </div>
                                 <button onClick={(e) => { e.stopPropagation(); toggleFav(topicKey); }}
                                     style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.85rem", padding: "2px 4px", flexShrink: 0, color: isFav ? "var(--theme-warning)" : colors.textMuted, lineHeight: 1 }}
@@ -261,8 +265,8 @@ export function AgentNetChatPanel({ lang, agentNetRunning }: Props) {
                     <div style={msgListStyle}>
                         {topicMsgs.map((m: any, i: number) => (
                             <div key={i} style={{ marginBottom: "6px", fontSize: "0.72rem" }}>
-                                <span style={{ color: colors.textMuted, fontSize: "0.65rem" }}>{(m.author || m.from || "").slice(0, 10)} · {m.created_at || ""}</span>
-                                <div style={msgBodyStyle}>{m.body}</div>
+                                <span style={{ color: colors.textMuted, fontSize: "0.65rem" }}>{(m.From || m.from || m.author || "").slice(0, 16)} · {m.Timestamp || m.timestamp || m.created_at || ""}</span>
+                                <div style={msgBodyStyle}>{m.Body || m.body}</div>
                             </div>
                         ))}
                         {topicMsgs.length === 0 && <div style={cnLabel}>{localizeText(lang, "No messages", "暂无消息")}</div>}

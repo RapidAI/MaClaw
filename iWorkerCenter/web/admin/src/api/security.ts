@@ -19,7 +19,7 @@ export interface SecurityHit {
 }
 
 export function listPolicies(): Promise<SecurityPolicy[]> {
-  return apiGet('/admin/security/policies');
+  return apiGet<{ policies: SecurityPolicy[] }>('/admin/security/policies').then(d => d.policies || []);
 }
 
 export function createPolicy(data: Partial<SecurityPolicy>): Promise<SecurityPolicy> {
@@ -27,5 +27,5 @@ export function createPolicy(data: Partial<SecurityPolicy>): Promise<SecurityPol
 }
 
 export function listHits(): Promise<SecurityHit[]> {
-  return apiGet('/admin/security/hits');
+  return apiGet<{ hits: SecurityHit[] }>('/admin/security/hits').then(d => d.hits || []);
 }

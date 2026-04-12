@@ -167,8 +167,7 @@ func resolveProjectDir(cfg corelib.AppConfig) string {
 	if len(cfg.Projects) > 0 {
 		return cfg.Projects[0].Path
 	}
-	home, _ := os.UserHomeDir()
-	return home
+	return corelib.WorkspaceDir()
 }
 
 // buildToolArgs 构建工具启动参数。

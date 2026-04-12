@@ -2,11 +2,12 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
     AgentNetListTasks, AgentNetGetCredits,
     AgentNetSubmitTaskResult, AgentNetApproveTask,
-    AgentNetRejectTask, AgentNetMatchTasks,
+    AgentNetRejectTask,
     AgentNetCreateTask, AgentNetBrowseNetworkTasks, AgentNetPublishTasksToHub,
     AgentNetManualPickTask,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
+import { useToast } from "../Toast";
 
 type Props = {
     lang: string;
@@ -25,9 +26,12 @@ interface AgentNetTask {
 }
 
 const STATUS_COLORS: Record<string, { bg: string; text: string; label_zh: string; label_en: string }> = {
+    created:   { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "开放", label_en: "Open" },
     open:      { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "开放", label_en: "Open" },
+    claimed:   { bg: "var(--theme-info-bg)", text: "var(--theme-primary)", label_zh: "已认领", label_en: "Claimed" },
     assigned:  { bg: "var(--theme-info-bg)", text: "var(--theme-primary)", label_zh: "已分配", label_en: "Assigned" },
     submitted: { bg: "var(--theme-warning-bg)", text: "var(--theme-warning)", label_zh: "已提交", label_en: "Submitted" },
+    accepted:  { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "已通过", label_en: "Accepted" },
     approved:  { bg: "var(--theme-success-bg)", text: "var(--theme-success)", label_zh: "已通过", label_en: "Approved" },
     rejected:  { bg: "var(--theme-danger-bg)", text: "var(--theme-danger)", label_zh: "已拒绝", label_en: "Rejected" },
     cancelled: { bg: "var(--theme-surface-muted)", text: "var(--theme-text-muted)", label_zh: "已取消", label_en: "Cancelled" },
@@ -37,7 +41,7 @@ const MAX_TASKS_LOCAL = 12;
 const MAX_TASKS_TOTAL = 24;
 const POLL_INTERVAL_MS = 30_000;
 
-type ViewMode = "all" | "matched" | "network";
+type ViewMode = "all" | "network";
 
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
@@ -50,9 +54,8 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
     const [credits, setCredits] = useState<{ balance: number; tier: string } | null>(null);
     const [viewMode, setViewMode] = useState<ViewMode>("all");
     const [actionBusy, setActionBusy] = useState<string | null>(null);
-    const [actionMsg, setActionMsg] = useState<{ text: string; type: "success" | "info" | "error" } | null>(null);
     const [manualPickId, setManualPickId] = useState<string | null>(null);
-    const msgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const { showToast, dismissToast } = useToast();
     const refreshRef = useRef(0); // guard stale responses
     // Create task form
     const [showCreate, setShowCreate] = useState(false);
@@ -66,9 +69,7 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
         setError("");
         try {
             // Fire primary fetch + credits in parallel
-            const primaryFetch = viewMode === "matched"
-                ? AgentNetMatchTasks()
-                : viewMode === "network"
+            const primaryFetch = viewMode === "network"
                     ? AgentNetBrowseNetworkTasks()
                     : AgentNetListTasks("");
 
@@ -127,71 +128,61 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
         return () => clearInterval(timer);
     }, [refresh, agentNetRunning]);
 
-    // Cleanup message timer on unmount
-    useEffect(() => {
-        return () => {
-            if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
-        };
-    }, []);
-
-    const showMsg = useCallback((text: string, type: "success" | "info" | "error", ms = 3000) => {
-        if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
-        setActionMsg({ text, type });
-        msgTimerRef.current = setTimeout(() => setActionMsg(null), ms);
-    }, []);
+    // (no cleanup needed — toast is global)
 
     const doAction = useCallback(async (label: string, fn: () => Promise<any>) => {
         setActionBusy(label);
-        setActionMsg(null);
         try {
             const res = await fn();
             if (res.ok) {
-                showMsg(localizeText(lang, "Success", "操作成功"), "success");
+                showToast(localizeText(lang, "Success", "操作成功"), "success");
                 refresh();
             } else {
-                showMsg(res.error || "Failed", "error");
+                showToast(res.error || "Failed", "error");
             }
         } catch (e) {
-            showMsg(String(e), "error");
+            showToast(String(e), "error");
         } finally {
             setActionBusy(null);
         }
-    }, [lang, showMsg, refresh]);
+    }, [lang, showToast, refresh]);
 
     const handleCreate = useCallback(async () => {
         if (!newTitle.trim()) return;
         const reward = Math.max(0, Math.floor(newReward));
         if (reward !== 0 && reward < 100) {
-            showMsg(localizeText(lang, "Minimum reward is 100 🐚 (or 0 for free collaboration)", "赏金最低 100 🐚（或 0 表示免费协作）"), "info", 4000);
+            showToast(localizeText(lang, "Minimum reward is 100 🐚 (or 0 for free collaboration)", "赏金最低 100 🐚（或 0 表示免费协作）"), "warning", 4000);
             return;
         }
         if (reward > 0 && credits && credits.balance < reward) {
-            showMsg(localizeText(lang, `Insufficient balance (have ${credits.balance} 🐚, need ${reward} 🐚)`, `余额不足（当前 ${credits.balance} 🐚，需要 ${reward} 🐚）`), "info", 4000);
+            showToast(localizeText(lang, `Insufficient balance (have ${credits.balance} 🐚, need ${reward} 🐚)`, `余额不足（当前 ${credits.balance} 🐚，需要 ${reward} 🐚）`), "warning", 4000);
             return;
         }
         await doAction("create", () => AgentNetCreateTask(newTitle.trim(), reward));
         setNewTitle("");
         setNewReward(100);
         setShowCreate(false);
-    }, [newTitle, newReward, credits, lang, showMsg, doAction]);
+    }, [newTitle, newReward, credits, lang, showToast, doAction]);
 
     const handleManualPick = useCallback(async (taskId: string) => {
         setManualPickId(taskId);
-        showMsg(localizeText(lang, "⏳ Picking up and executing task...", "⏳ 正在接单并执行任务..."), "info", 60000);
+        const pickingToastId = showToast(localizeText(lang, "⏳ Picking up and executing task...", "⏳ 正在接单并执行任务..."), "info", 60000);
         try {
             const res = await AgentNetManualPickTask(taskId);
+            dismissToast(pickingToastId);
             if (res.ok) {
-                showMsg(localizeText(lang, "✅ Task completed and submitted", "✅ 任务已完成并提交"), "success", 5000);
+                showToast(localizeText(lang, "✅ Task completed and submitted", "✅ 任务已完成并提交"), "success", 5000);
                 refresh();
             } else {
-                showMsg(res.error || localizeText(lang, "Failed to pick task", "接单失败"), "error", 6000);
+                showToast(res.error || localizeText(lang, "Failed to pick task", "接单失败"), "error", 6000);
             }
         } catch (e) {
-            showMsg(String(e), "error", 6000);
+            dismissToast(pickingToastId);
+            showToast(String(e), "error", 6000);
         } finally {
             setManualPickId(null);
         }
-    }, [lang, showMsg, refresh]);
+    }, [lang, showToast, dismissToast, refresh]);
 
     if (!agentNetRunning) {
         return (
@@ -209,7 +200,7 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
 
     const btnStyle = useMemo(() => (active?: boolean): React.CSSProperties => ({
         background: active ? colors.primary : "none",
-        color: active ? "var(--theme-text-primary)" : colors.textSecondary,
+        color: active ? colors.onPrimary : colors.textSecondary,
         border: active ? `1px solid ${colors.primary}` : `1px solid ${colors.border}`,
         borderRadius: "var(--radius-sm, 4px)",
         padding: "3px 10px",
@@ -252,9 +243,6 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
                     <button style={btnStyle(viewMode === "network")} onClick={() => setViewMode("network")}>
                         {localizeText(lang, "Network", "网络")}
                     </button>
-                    <button style={btnStyle(viewMode === "matched")} onClick={() => setViewMode("matched")}>
-                        {localizeText(lang, "Matched", "匹配")}
-                    </button>
                     <button style={btnStyle()} onClick={() => setShowCreate(!showCreate)}>
                         + {localizeText(lang, "Post", "发布")}
                     </button>
@@ -264,19 +252,7 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
                 </div>
             </div>
 
-            {/* Action feedback */}
-            {actionMsg && (
-                <div style={{
-                    fontSize: "0.75rem",
-                    color: actionMsg.type === "success" ? "var(--theme-success)" : actionMsg.type === "info" ? "var(--theme-primary)" : "var(--theme-danger)",
-                    background: actionMsg.type === "success" ? "var(--theme-success-bg)" : actionMsg.type === "info" ? "var(--theme-info-bg)" : "var(--theme-danger-bg)",
-                    padding: "5px 10px",
-                    borderRadius: "6px",
-                    marginBottom: "8px",
-                }}>
-                    {actionMsg.type === "info" && "💡 "}{actionMsg.text}
-                </div>
-            )}
+            {/* Action feedback is now shown via global toast */}
 
             {/* Create task form */}
             {showCreate && (
@@ -309,9 +285,7 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
 
             {tasks.length === 0 && !loading && !error && (
                 <div style={{ textAlign: "center", color: colors.textMuted, padding: "30px 0", fontSize: "0.85rem" }}>
-                    {viewMode === "matched"
-                        ? localizeText(lang, "No matched tasks", "暂无匹配任务")
-                        : viewMode === "network"
+                    {viewMode === "network"
                             ? localizeText(lang, "No network tasks (peers haven't published to Hub yet)", "暂无网络任务（其他节点尚未发布任务到 Hub）")
                             : localizeText(lang, "No tasks available", "暂无任务")}
                 </div>
@@ -333,8 +307,8 @@ export function AgentNetTaskBoard({ lang, agentNetRunning }: Props) {
                         created_at: rawTask.created_at || (rawTask as any).CreatedAt || (rawTask as any).created_at,
                     };
                     const normalizedStatus = (task.status || "").toLowerCase();
-                    const isOpen = normalizedStatus === "open" || normalizedStatus === "" || !normalizedStatus;
-                    const sc = STATUS_COLORS[normalizedStatus] || STATUS_COLORS.open;
+                    const isOpen = normalizedStatus === "open" || normalizedStatus === "created" || normalizedStatus === "" || !normalizedStatus;
+                    const sc = STATUS_COLORS[normalizedStatus] || STATUS_COLORS.created;
                     return (
                         <div key={task.id} style={{
                             background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "var(--radius-lg, 8px)",

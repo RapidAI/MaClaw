@@ -2,7 +2,7 @@
 
 #include "textflag.h"
 
-// func ropePrecomputedASM(x []float32, nHeads, headDim int, cosTable, sinTable []float32)
+// func ropePrecomputedAVX(x []float32, nHeads, headDim int, cosTable, sinTable []float32)
 //
 // Applies Rotary Position Embedding using pre-computed cos/sin tables.
 // For each head h in [0, nHeads):
@@ -11,7 +11,7 @@
 //     x[h*headDim + i + halfDim] = x0*sin[i] + x1*cos[i]
 // where x0 = x[h*headDim+i], x1 = x[h*headDim+i+halfDim]
 //
-// Uses AVX2 to process 8 pairs per iteration (8 cos/sin values at a time).
+// Uses AVX1 to process 8 pairs per iteration (8 cos/sin values at a time).
 // The tricky part: x0 and x1 are halfDim apart, so we load from two
 // non-contiguous regions and store back to the same two regions.
 //
@@ -27,7 +27,7 @@
 //   sinTable.ptr = +64(FP)
 //   sinTable.len = +72(FP)
 //   sinTable.cap = +80(FP)
-TEXT ·ropePrecomputedASM(SB), NOSPLIT, $0-88
+TEXT ·ropePrecomputedAVX(SB), NOSPLIT, $0-88
 	MOVQ x+0(FP), SI          // SI = &x[0]
 	MOVQ nHeads+24(FP), R8    // R8 = nHeads
 	MOVQ headDim+32(FP), R9   // R9 = headDim

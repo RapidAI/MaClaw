@@ -9,10 +9,11 @@ import (
 
 // StallDetectorConfig holds configuration for the StallDetector.
 type StallDetectorConfig struct {
-	StallTimeout  time.Duration     // default 90s
-	MaxNudgeCount int               // default 2
-	NudgeMessages map[string]string // per-tool nudge text; key = tool name (lowercase)
-	DefaultNudge  string            // default: concise action-oriented nudge
+	StallTimeout    time.Duration     // default 180s
+	MaxNudgeCount   int               // default 2
+	MaxPauseTimeout time.Duration     // default 300s — max time monitoring can stay paused before auto-resume
+	NudgeMessages   map[string]string // per-tool nudge text; key = tool name (lowercase)
+	DefaultNudge    string            // default: concise action-oriented nudge
 }
 
 // sessionStallState tracks stall monitoring state for a single session.
@@ -25,6 +26,8 @@ type sessionStallState struct {
 	exec          ExecutionHandle
 	tool          string
 	lastNudgeText string // for echo filtering
+	paused        bool   // true when session is in thinking state (no output expected)
+	pausedAt      time.Time // when pause started — used for MaxPauseTimeout
 }
 
 // StallDetector manages stall detection for all active sessions.
@@ -44,10 +47,13 @@ type StallDetector struct {
 // Zero-value fields are replaced with sensible defaults.
 func NewStallDetector(config StallDetectorConfig, logger func(string)) *StallDetector {
 	if config.StallTimeout <= 0 {
-		config.StallTimeout = 90 * time.Second
+		config.StallTimeout = 180 * time.Second
 	}
 	if config.MaxNudgeCount <= 0 {
 		config.MaxNudgeCount = 2
+	}
+	if config.MaxPauseTimeout <= 0 {
+		config.MaxPauseTimeout = 300 * time.Second
 	}
 	if config.DefaultNudge == "" {
 		config.DefaultNudge = "Continue working on the current task. Do not repeat or re-explain what was already stated."
@@ -118,7 +124,7 @@ func (d *StallDetector) ResetTimer(sessionID string, hasNewOutput bool) {
 		return
 	}
 
-	// Reset the timer.
+	// Reset the timer (even if paused — output proves the session is alive).
 	if !ss.timer.Stop() {
 		select {
 		case <-ss.timer.C:
@@ -135,6 +141,46 @@ func (d *StallDetector) ResetTimer(sessionID string, hasNewOutput bool) {
 			d.OnStallStateChanged(sessionID, StallStateNormal, 0)
 		}
 	}
+}
+
+// PauseMonitoring temporarily pauses stall detection for the given session.
+// Used when the session enters a thinking state where no streaming output is
+// expected for an extended period (e.g., LLM thinking via slow API proxies).
+// The stall timer is stopped so it won't fire during the pause.
+func (d *StallDetector) PauseMonitoring(sessionID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ss, ok := d.sessions[sessionID]
+	if !ok || ss.paused {
+		return
+	}
+	ss.paused = true
+	ss.pausedAt = time.Now()
+	ss.timer.Stop()
+	d.logger("[stall-detector] session=" + sessionID + " monitoring paused (thinking)")
+}
+
+// ResumeMonitoring resumes stall detection after a pause.
+// Resets the timer to the full StallTimeout duration.
+func (d *StallDetector) ResumeMonitoring(sessionID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ss, ok := d.sessions[sessionID]
+	if !ok || !ss.paused {
+		return
+	}
+	ss.paused = false
+	ss.lastOutput = time.Now()
+	if !ss.timer.Stop() {
+		select {
+		case <-ss.timer.C:
+		default:
+		}
+	}
+	ss.timer.Reset(d.config.StallTimeout)
+	d.logger("[stall-detector] session=" + sessionID + " monitoring resumed")
 }
 
 // GetState returns the current stall state for the given session.
@@ -219,6 +265,24 @@ func (d *StallDetector) monitorLoop(sessionID string, ss *sessionStallState) {
 			return
 		case <-ss.timer.C:
 			d.mu.Lock()
+
+			// If monitoring is paused (thinking state), check if we've
+			// exceeded MaxPauseTimeout. If so, auto-resume — the LLM may
+			// be stuck in thinking and will never produce streaming output
+			// to trigger ResumeMonitoring.
+			if ss.paused {
+				if time.Since(ss.pausedAt) >= d.config.MaxPauseTimeout {
+					ss.paused = false
+					d.logger("[stall-detector] session=" + sessionID + " auto-resumed after MaxPauseTimeout (" + d.config.MaxPauseTimeout.String() + ")")
+					// Fall through to normal stall detection below —
+					// immediately trigger nudge/interrupt since the session
+					// has been unresponsive for the entire pause duration.
+				} else {
+					ss.timer.Reset(d.config.StallTimeout)
+					d.mu.Unlock()
+					continue
+				}
+			}
 
 			// Check if we've exceeded the max nudge count.
 			if ss.nudgeCount >= d.config.MaxNudgeCount {

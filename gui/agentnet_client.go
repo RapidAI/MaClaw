@@ -53,21 +53,22 @@ type AgentNetStatus struct {
 }
 
 type AgentNetPeer struct {
-	PeerID  string `json:"peer_id"`
-	Addr    string `json:"addr,omitempty"`
-	Latency string `json:"latency,omitempty"`
-	Country string `json:"country,omitempty"`
-	City    string `json:"city,omitempty"`
+	PeerID  string   `json:"peer_id"`
+	Addrs   []string `json:"addrs,omitempty"`
+	Addr    string   `json:"addr,omitempty"`
+	Latency string   `json:"latency,omitempty"`
+	Country string   `json:"country,omitempty"`
+	City    string   `json:"city,omitempty"`
 }
 
 type AgentNetTask struct {
 	ID          string         `json:"id"`
 	Title       string         `json:"title"`
 	Description string         `json:"description,omitempty"`
-	Status      string         `json:"status"` // open, assigned, submitted, approved, rejected, cancelled
+	Status      string         `json:"state"` // created, accepted, rejected, cancelled
 	Reward      float64        `json:"reward"`
-	Creator     string         `json:"creator,omitempty"`
-	Assignee    string         `json:"assignee,omitempty"`
+	Creator     string         `json:"publisher,omitempty"`
+	Assignee    string         `json:"claimant,omitempty"`
 	TargetPeer  string         `json:"target_peer,omitempty"`
 	Tags        FlexStringList `json:"tags,omitempty"`
 	CreatedAt   string         `json:"created_at,omitempty"`
@@ -102,24 +103,51 @@ func (f *FlexStringList) UnmarshalJSON(data []byte) error {
 }
 
 type AgentNetCredits struct {
-	Balance      float64 `json:"balance"`
-	Tier         string  `json:"tier"`
-	TierRank     int     `json:"tier_rank,omitempty"`
-	Energy       float64 `json:"energy,omitempty"`
-	Currency     string  `json:"currency,omitempty"`
-	ExchangeRate float64 `json:"exchange_rate,omitempty"`
-	LocalValue   string  `json:"local_value,omitempty"`
+	Balance        float64 `json:"shell_balance"`
+	LifetimeEarned float64 `json:"lifetime_earned,omitempty"`
+	LifetimeSpent  float64 `json:"lifetime_spent,omitempty"`
+	LockedShell    float64 `json:"locked_shell,omitempty"`
+	DID            string  `json:"did,omitempty"`
+	Tier           string  `json:"tier,omitempty"`
+	TierRank       int     `json:"tier_rank,omitempty"`
+	Energy         float64 `json:"energy,omitempty"`
+	Currency       string  `json:"currency,omitempty"`
+	ExchangeRate   float64 `json:"exchange_rate,omitempty"`
+	LocalValue     string  `json:"local_value,omitempty"`
 }
 
 type AgentNetKnowledgeEntry struct {
 	ID        string   `json:"id"`
-	Title     string   `json:"title"`
+	Title     string   `json:"title,omitempty"`
+	Intent    string   `json:"intent,omitempty"`
 	Body      string   `json:"body,omitempty"`
 	Author    string   `json:"author,omitempty"`
+	PeerID    string   `json:"peer_id,omitempty"`
+	SourceID  string   `json:"source_id,omitempty"`
 	Domain    string   `json:"domain,omitempty"`
 	Domains   []string `json:"domains,omitempty"`
+	Skills    string   `json:"skills,omitempty"`
+	NodeType  string   `json:"node_type,omitempty"`
+	GraphID   string   `json:"graph_id,omitempty"`
 	Upvotes   int      `json:"upvotes,omitempty"`
+	NodeCount int      `json:"node_count,omitempty"`
+	EdgeCount int      `json:"edge_count,omitempty"`
 	CreatedAt string   `json:"created_at,omitempty"`
+	Metadata  string   `json:"metadata,omitempty"`
+}
+
+// DisplayTitle returns the best available title for display.
+func (e AgentNetKnowledgeEntry) DisplayTitle() string {
+	if e.Title != "" {
+		return e.Title
+	}
+	if e.Intent != "" {
+		return e.Intent
+	}
+	if e.ID != "" {
+		return e.ID[:min(len(e.ID), 16)]
+	}
+	return "—"
 }
 
 type AgentNetPrediction struct {
@@ -139,10 +167,12 @@ type AgentNetSwarmSession struct {
 }
 
 type AgentNetDM struct {
-	PeerID  string `json:"peer_id"`
-	Body    string `json:"body"`
-	Unread  int    `json:"unread,omitempty"`
-	SentAt  string `json:"sent_at,omitempty"`
+	PeerID    string `json:"peer_id,omitempty"`
+	From      string `json:"from,omitempty"`
+	Body      string `json:"body"`
+	Unread    int    `json:"unread,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+	SentAt    string `json:"sent_at,omitempty"`
 }
 
 type AgentNetResume struct {
@@ -525,6 +555,54 @@ func (c *AgentNetClient) put(path string, payload interface{}, out interface{}) 
 	return nil
 }
 
+// getList fetches a JSON endpoint and decodes into out (must be a pointer to a
+// slice). Handles both bare arrays and objects wrapping the array.
+func (c *AgentNetClient) getList(path string, out interface{}, extraKeys ...string) error {
+	var raw json.RawMessage
+	if err := c.get(path, &raw); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, out); err == nil {
+		return nil
+	}
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return fmt.Errorf("%s: unexpected response format", path)
+	}
+	keys := append(extraKeys, "data", "results", "items")
+	for _, key := range keys {
+		if v, ok := wrapper[key]; ok {
+			if err := json.Unmarshal(v, out); err == nil {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%s: cannot find array in response", path)
+}
+
+func (c *AgentNetClient) postList(path string, payload interface{}, out interface{}, extraKeys ...string) error {
+	var raw json.RawMessage
+	if err := c.post(path, payload, &raw); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, out); err == nil {
+		return nil
+	}
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return fmt.Errorf("%s: unexpected response format", path)
+	}
+	keys := append(extraKeys, "data", "results", "items")
+	for _, key := range keys {
+		if v, ok := wrapper[key]; ok {
+			if err := json.Unmarshal(v, out); err == nil {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%s: cannot find array in response", path)
+}
+
 // ---------- Status & Peers ----------
 
 func (c *AgentNetClient) GetStatus() (*AgentNetStatus, error) {
@@ -534,18 +612,18 @@ func (c *AgentNetClient) GetStatus() (*AgentNetStatus, error) {
 
 func (c *AgentNetClient) GetPeers() ([]AgentNetPeer, error) {
 	var peers []AgentNetPeer
-	return peers, c.get("/api/peers", &peers)
+	return peers, c.getList("/api/peers", &peers, "peers")
 }
 
 // ---------- Task Bazaar ----------
 
 func (c *AgentNetClient) ListTasks(status string) ([]AgentNetTask, error) {
-	path := "/api/tasks"
+	path := "/api/tasks/board"
 	if status != "" {
 		path += "?status=" + url.QueryEscape(status)
 	}
 	var tasks []AgentNetTask
-	return tasks, c.get(path, &tasks)
+	return tasks, c.getList(path, &tasks, "tasks", "value")
 }
 
 func (c *AgentNetClient) GetTaskBoard() (map[string]interface{}, error) {
@@ -602,7 +680,7 @@ func (c *AgentNetClient) ClaimTask(id string) error {
 }
 
 func (c *AgentNetClient) ApproveTask(id string) error {
-	return c.post("/api/tasks/"+id+"/approve", nil, nil)
+	return c.post("/api/tasks/"+id+"/accept", nil, nil)
 }
 
 func (c *AgentNetClient) RejectTask(id string) error {
@@ -640,12 +718,63 @@ func (c *AgentNetClient) GetKnowledgeFeed(domain string, limit int) ([]AgentNetK
 		path += "?" + params.Encode()
 	}
 	var entries []AgentNetKnowledgeEntry
-	return entries, c.get(path, &entries)
+	if err := c.getList(path, &entries, "entries", "feed", "graphs"); err != nil {
+		return nil, err
+	}
+	// The feed API returns graph-level metadata (id, node_count, etc.) without
+	// content fields (title/body/intent). Enrich each entry by fetching the
+	// graph detail and extracting the first node's intent as the title.
+	c.enrichKnowledgeEntries(entries)
+	return entries, nil
+}
+
+// enrichKnowledgeEntries fetches graph details for entries that lack a title
+// and populates Title/Intent/Skills from the first node.
+func (c *AgentNetClient) enrichKnowledgeEntries(entries []AgentNetKnowledgeEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5) // concurrency limit
+
+	for i := range entries {
+		if entries[i].Title != "" || entries[i].Intent != "" || entries[i].Body != "" {
+			continue // already has content
+		}
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			var detail struct {
+				Nodes []struct {
+					Intent   string `json:"intent"`
+					Skills   string `json:"skills"`
+					NodeType string `json:"node_type"`
+				} `json:"nodes"`
+			}
+			if err := c.get("/api/knowledge/"+entries[idx].ID, &detail); err != nil || len(detail.Nodes) == 0 {
+				return
+			}
+			n := detail.Nodes[0]
+			if n.Intent != "" {
+				entries[idx].Title = n.Intent
+				entries[idx].Intent = n.Intent
+			}
+			if n.Skills != "" {
+				entries[idx].Skills = n.Skills
+			}
+			if n.NodeType != "" {
+				entries[idx].NodeType = n.NodeType
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 func (c *AgentNetClient) SearchKnowledge(query string) ([]AgentNetKnowledgeEntry, error) {
 	var entries []AgentNetKnowledgeEntry
-	return entries, c.get("/api/knowledge/search?q="+url.QueryEscape(query), &entries)
+	return entries, c.postList("/api/knowledge/search", map[string]interface{}{"query": query}, &entries, "entries", "graphs")
 }
 
 func (c *AgentNetClient) PublishKnowledge(title, body string) (*AgentNetKnowledgeEntry, error) {
@@ -805,18 +934,22 @@ func (c *AgentNetClient) SetMotto(motto string) error {
 type AgentNetTopic struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	Access      string `json:"access,omitempty"`
 	Members     int    `json:"members,omitempty"`
+	Messages    int    `json:"messages,omitempty"`
+	JoinedAt    string `json:"joined_at,omitempty"`
 }
 
 type AgentNetTopicMessage struct {
-	PeerID string `json:"peer_id,omitempty"`
-	Body   string `json:"body"`
-	SentAt string `json:"sent_at,omitempty"`
+	ID        string `json:"id,omitempty"`
+	From      string `json:"from,omitempty"`
+	Body      string `json:"body"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 func (c *AgentNetClient) ListTopics() ([]AgentNetTopic, error) {
 	var topics []AgentNetTopic
-	return topics, c.get("/api/topics", &topics)
+	return topics, c.getList("/api/topics", &topics, "topics")
 }
 
 func (c *AgentNetClient) CreateTopic(name, description string) error {
@@ -827,11 +960,11 @@ func (c *AgentNetClient) CreateTopic(name, description string) error {
 
 func (c *AgentNetClient) GetTopicMessages(topicName string) ([]AgentNetTopicMessage, error) {
 	var msgs []AgentNetTopicMessage
-	return msgs, c.get("/api/topics/"+url.PathEscape(topicName)+"/messages", &msgs)
+	return msgs, c.getList("/api/topics/"+url.PathEscape(topicName)+"/messages", &msgs, "messages")
 }
 
 func (c *AgentNetClient) PostTopicMessage(topicName, body string) error {
-	return c.post("/api/topics/"+url.PathEscape(topicName)+"/messages", map[string]interface{}{
+	return c.post("/api/topics/"+url.PathEscape(topicName)+"/send", map[string]interface{}{
 		"body": body,
 	}, nil)
 }
@@ -860,11 +993,6 @@ func (c *AgentNetClient) MatchAgentsForTask(taskID string) ([]AgentNetResume, er
 }
 
 // ---------- Credits (extended) ----------
-
-func (c *AgentNetClient) GetCreditsTransactions() ([]map[string]interface{}, error) {
-	var txns []map[string]interface{}
-	return txns, c.get("/api/credits/transactions", &txns)
-}
 
 func (c *AgentNetClient) GetLeaderboard() ([]map[string]interface{}, error) {
 	var lb []map[string]interface{}
@@ -1360,7 +1488,7 @@ func (c *AgentNetClient) CrossDomainSearch(query string) ([]map[string]interface
 
 func (c *AgentNetClient) FindAgent(query string) ([]AgentNetKnowledgeEntry, error) {
 	var entries []AgentNetKnowledgeEntry
-	return entries, c.post("/api/knowledge/findclaw", map[string]interface{}{"query": query}, &entries)
+	return entries, c.postList("/api/knowledge/findclaw", map[string]interface{}{"query": query}, &entries, "entries", "graphs")
 }
 
 // ---------- Reputation ----------

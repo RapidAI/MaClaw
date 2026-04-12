@@ -17,7 +17,7 @@ export interface WorkflowInstance {
 }
 
 export function listWorkflows(): Promise<WorkflowDef[]> {
-  return apiGet('/admin/workflows');
+  return apiGet<{ workflows: WorkflowDef[] }>('/admin/workflows').then(d => d.workflows || []);
 }
 
 export function createWorkflow(data: { name: string; description?: string; steps?: unknown[] }): Promise<WorkflowDef> {
@@ -29,7 +29,7 @@ export function publishWorkflow(id: string): Promise<void> {
 }
 
 export function listWorkflowInstances(): Promise<WorkflowInstance[]> {
-  return apiGet('/admin/workflow-instances');
+  return apiGet<{ instances: WorkflowInstance[] }>('/admin/workflow-instances').then(d => d.instances || []);
 }
 
 export function startWorkflowInstance(data: { workflow_id: string; input?: unknown }): Promise<WorkflowInstance> {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ type SkillDiagEntry struct {
 // NLSkillDefinition is the Wails-facing view of a Skill.
 type NLSkillDefinition struct {
 	Name           string        `json:"name"`
+	DirName        string        `json:"dir_name,omitempty"`
 	Description    string        `json:"description"`
 	Triggers       []string      `json:"triggers"`
 	Steps          []NLSkillStep `json:"steps"`
@@ -438,6 +440,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 		}
 		d := NLSkillDefinition{
 			Name:           s.Name,
+			DirName:        s.DirName,
 			Description:    s.Description,
 			Triggers:       triggers,
 			Steps:          steps,
@@ -540,6 +543,10 @@ func (e *SkillExecutor) executeSkillSteps(skill *NLSkillEntry) (string, error) {
 	var results []string
 	var execErr error
 	lastSessionID := ""
+	// Maintain a vars map for output capture, mirroring the SkillRunner's
+	// templateVars. This allows bash steps that output sessionId (e.g. via
+	// Python scripts) to propagate state to subsequent steps.
+	vars := make(map[string]string)
 	for i, step := range skill.Steps {
 		stepCopy := step
 		if stepCopy.Action == "send_input" || stepCopy.Action == "send_and_observe" {
@@ -551,10 +558,44 @@ func (e *SkillExecutor) executeSkillSteps(skill *NLSkillEntry) (string, error) {
 				stepCopy.Params["session_id"] = resolvedSessionID
 			}
 		}
+		// Substitute captured variables into step params.
+		// The GUI's executeStep/executeBashStep does NOT perform variable
+		// substitution on the command string (unlike the TUI path), so we
+		// must substitute all params here including "command".
+		if len(vars) > 0 && stepCopy.Params != nil {
+			newParams := make(map[string]interface{}, len(stepCopy.Params))
+			for k, v := range stepCopy.Params {
+				if s, ok := v.(string); ok {
+					for vk, vv := range vars {
+						s = strings.ReplaceAll(s, "{{"+vk+"}}", vv)
+						s = strings.ReplaceAll(s, "${"+vk+"}", vv)
+					}
+					newParams[k] = s
+				} else {
+					newParams[k] = v
+				}
+			}
+			stepCopy.Params = newParams
+		}
 		result, err := e.executeStep(stepCopy, skill.Description)
 		if stepCopy.Action == "create_session" {
 			if sessionID := parseCreatedSessionID(result); sessionID != "" {
 				lastSessionID = sessionID
+			}
+		}
+		// Output capture: extract variables from step output via regex
+		if err == nil && len(step.Capture) > 0 && result != "" {
+			for varName, pattern := range step.Capture {
+				re, reErr := regexp.Compile(pattern)
+				if reErr != nil {
+					continue
+				}
+				m := re.FindStringSubmatch(result)
+				if len(m) > 1 {
+					vars[varName] = m[1]
+				} else if len(m) == 1 {
+					vars[varName] = m[0]
+				}
 			}
 		}
 		if err != nil {
@@ -592,7 +633,7 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 	e.mu.RLock()
 	var target *NLSkillEntry
 	for _, s := range e.loadSkills() {
-		if s.Name == name && s.Status == "active" {
+		if s.MatchesName(name) && s.Status == "active" {
 			cp := s
 			target = &cp
 			break

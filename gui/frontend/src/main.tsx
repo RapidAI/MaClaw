@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client'
 import './style.css'
 import App from './App'
 import { DialogProvider } from './components/CustomDialog'
+import { ToastProvider } from './components/Toast'
 
 function getStartupLang() {
     const lang = document.documentElement.lang || navigator.language || 'en'
@@ -39,9 +40,11 @@ const root = createRoot(container)
 try {
     root.render(
         <React.StrictMode>
-            <DialogProvider>
-                <App/>
-            </DialogProvider>
+            <ToastProvider>
+                <DialogProvider>
+                    <App/>
+                </DialogProvider>
+            </ToastProvider>
         </React.StrictMode>
     )
 } catch (error) {

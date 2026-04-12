@@ -9,7 +9,7 @@ export interface ConfigBundle {
 }
 
 export function listBundles(): Promise<ConfigBundle[]> {
-  return apiGet('/admin/config-bundles');
+  return apiGet<{ bundles: ConfigBundle[] }>('/admin/config-bundles').then(d => d.bundles || []);
 }
 
 export function createBundle(data: { name: string; version?: string }): Promise<ConfigBundle> {

@@ -197,6 +197,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		map[string]interface{}{
 			"name":         map[string]string{"type": "string", "description": "Skill 名称"},
 			"args":         map[string]string{"type": "object", "description": "可选：供 skill 内 {{key}} / ${key} 占位符替换使用的参数映射"},
+			"env":          map[string]string{"type": "object", "description": "可选：注入到 skill 子进程的环境变量（key-value 对），例如 {\"LIBTV_ACCESS_KEY\": \"xxx\"}"},
 			"input":        map[string]string{"type": "string", "description": "可选：兼容旧调用的输入参数"},
 			"output":       map[string]string{"type": "string", "description": "可选：兼容旧调用的输出参数"},
 			"wait_seconds": map[string]string{"type": "number", "description": "可选：启动后等待状态快照的秒数（默认 2，最大 30）。时间越长，初始返回越可能包含会话信息。"},
@@ -270,7 +271,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		ToolCategoryBuiltin, []string{"shell", "bash", "command", "execute"},
 		map[string]interface{}{
 			"command":     map[string]string{"type": "string", "description": "要执行的 shell 命令"},
-			"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为用户主目录）"},
+			"working_dir": map[string]string{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
 			"timeout":     map[string]string{"type": "integer", "description": "超时秒数（可选，默认 30，最大 120）"},
 		}, []string{"command"},
 		func(args map[string]interface{}, onProgress ProgressCallback) string {
@@ -509,6 +510,16 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"max_chars": map[string]string{"type": "integer", "description": "本次最多返回字符数（可选；不传表示返回全部提取内容）"},
 		}, []string{"url"},
 		func(args map[string]interface{}) string { return h.toolWebFetch(args) })
+
+	// --- PDF generation tool (coding workflow only) ---
+	reg("generate_pdf", "生成 PDF 文档并发送给用户。仅用于编程流程的需求文档、技术设计文档、任务拆分文档。严禁用于资料收集、翻译、内容整理等非编程流程任务的 Markdown 转 PDF。参数 doc_type 可选: requirements（需求文档）、design（设计文档）、task_plan（任务计划）。",
+		ToolCategoryBuiltin, []string{"pdf", "document", "generate"},
+		map[string]interface{}{
+			"content":  map[string]string{"type": "string", "description": "Markdown 格式的文档内容"},
+			"title":    map[string]string{"type": "string", "description": "项目名称或文档标题"},
+			"doc_type": map[string]string{"type": "string", "description": "文档类型: requirements（需求文档）、design（设计文档）、task_plan（任务计划）。不传则为通用文档"},
+		}, []string{"content"},
+		func(args map[string]interface{}) string { return h.toolGeneratePDF(args) })
 
 	// --- SSH remote server tools ---
 	reg("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）。长命令自动转后台模式，支持 SFTP 文件传输。",

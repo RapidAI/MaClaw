@@ -38,38 +38,57 @@ export interface DiWorkerUsage {
   request_count: number;
 }
 
+// Backend: GET /admin/compute/source → { source, compute_permission }
 export function getComputeStatus(): Promise<ComputeStatus> {
-  return apiGet('/admin/compute/status');
+  return apiGet<{ source: string; compute_permission: boolean }>('/admin/compute/source').then(d => ({
+    compute_source: d.source as 'cloud' | 'local',
+    compute_permission: d.compute_permission,
+  }));
 }
 
+// Backend: GET /admin/compute/providers → { providers, source }
 export function listComputeProviders(): Promise<ComputeProvider[]> {
-  return apiGet('/admin/compute/providers');
+  return apiGet<{ providers: ComputeProvider[] }>('/admin/compute/providers').then(d => d.providers || []);
 }
 
+// Backend: POST /admin/compute/local-providers
 export function createComputeProvider(data: Partial<ComputeProvider> & { api_key?: string }): Promise<ComputeProvider> {
-  return apiPost('/admin/compute/providers', data);
+  return apiPost('/admin/compute/local-providers', data);
 }
 
+// Backend: PUT /admin/compute/local-providers/{id}
 export function updateComputeProvider(id: string, data: Partial<ComputeProvider> & { api_key?: string }): Promise<ComputeProvider> {
-  return apiPut(`/admin/compute/providers/${id}`, data);
+  return apiPut(`/admin/compute/local-providers/${id}`, data);
 }
 
+// Backend: DELETE /admin/compute/local-providers/{id}
 export function deleteComputeProvider(id: string): Promise<void> {
-  return apiDelete(`/admin/compute/providers/${id}`);
+  return apiDelete(`/admin/compute/local-providers/${id}`);
 }
 
-export function testComputeProvider(id: string): Promise<{ ok: boolean; latency_ms: number; error?: string }> {
-  return apiPost(`/admin/compute/providers/${id}/test`);
+// Backend: POST /admin/compute/test (body = provider object)
+export function testComputeProvider(id: string, provider?: ComputeProvider): Promise<{ ok: boolean; latency_ms: number; error?: string }> {
+  return apiPost('/admin/compute/test', provider || { id });
 }
 
+// Backend: POST /admin/compute/sync
 export function syncFromCloud(): Promise<void> {
   return apiPost('/admin/compute/sync');
 }
 
+// Backend: PUT /admin/compute/source (not POST)
 export function switchComputeSource(source: 'cloud' | 'local'): Promise<void> {
-  return apiPost('/admin/compute/source', { source });
+  return apiPut('/admin/compute/source', { source });
 }
 
+// Backend: GET /admin/compute/sync-status
+export function getSyncStatus(): Promise<{ last_sync_at: string; status: string; error?: string; provider_count: number }> {
+  return apiGet('/admin/compute/sync-status');
+}
+
+// Usage stats - not yet implemented in backend, will gracefully fail
 export function listDiWorkerUsage(period: string, start: string, end: string): Promise<DiWorkerUsage[]> {
-  return apiGet(`/admin/compute/usage?period=${period}&start=${start}&end=${end}`);
+  return apiGet<{ summaries: DiWorkerUsage[] }>(`/admin/compute/usage?period=${period}&start=${start}&end=${end}`)
+    .then(d => d.summaries || [])
+    .catch(() => []);
 }

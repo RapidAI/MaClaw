@@ -60,6 +60,10 @@
     "inputTokens": "Input Tokens",
     "outputTokens": "Output Tokens",
     "inputCost": "Input Cost",
-    "outputCost": "Output Cost"
+    "outputCost": "Output Cost",
+    "typeGeneral": "General",
+    "typeCoding": "Coding",
+    "typeDocument": "Document",
+    "typeAnalysis": "Analysis"
   }
 }

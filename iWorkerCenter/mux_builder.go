@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -22,19 +23,30 @@ func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 	mux := http.NewServeMux()
 	var cleanups []func()
 	var centerMux *http.ServeMux
+	var bootstrapErr error
 
 	// --- 1. Bootstrap modular backend ---
 	center, err := app.Bootstrap()
 	if err != nil {
+		bootstrapErr = err
 		log.Printf("[iWorkerCenter] bootstrap failed (running without modules): %v", err)
 	} else {
 		cleanups = append(cleanups, center.Close)
 		centerMux = center.Mux
+	}
 
-		// Non-admin routes forward directly
-		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			center.Mux.ServeHTTP(w, r)
-		})
+	// /health — always available; reports bootstrap status
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if centerMux != nil {
+			centerMux.ServeHTTP(w, r)
+			return
+		}
+		writeBootstrapError(w, bootstrapErr)
+	})
+
+	// Non-admin routes forward directly (only when bootstrap succeeded)
+	if centerMux != nil {
 		mux.HandleFunc("/client/", func(w http.ResponseWriter, r *http.Request) {
 			center.Mux.ServeHTTP(w, r)
 		})
@@ -44,6 +56,14 @@ func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 		mux.HandleFunc("/auth/", func(w http.ResponseWriter, r *http.Request) {
 			center.Mux.ServeHTTP(w, r)
 		})
+	} else {
+		// When bootstrap failed, return JSON errors for API routes
+		unavailable := func(w http.ResponseWriter, _ *http.Request) {
+			writeBootstrapError(w, bootstrapErr)
+		}
+		mux.HandleFunc("/client/", unavailable)
+		mux.HandleFunc("/runtime/", unavailable)
+		mux.HandleFunc("/auth/", unavailable)
 	}
 
 	// --- 2. LLM proxy server ---
@@ -74,8 +94,13 @@ func buildMux(cfg *config.Config) (*http.ServeMux, func(), error) {
 	})
 	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
 		// Check if this is an API path (has a known admin API prefix)
-		if centerMux != nil && isAdminAPIPath(r.URL.Path) {
-			centerMux.ServeHTTP(w, r)
+		if isAdminAPIPath(r.URL.Path) {
+			if centerMux != nil {
+				centerMux.ServeHTTP(w, r)
+			} else {
+				// Bootstrap failed — return JSON error instead of SPA HTML
+				writeBootstrapError(w, bootstrapErr)
+			}
 			return
 		}
 		// Otherwise serve SPA
@@ -127,4 +152,19 @@ func isAdminAPIPath(path string) bool {
 		}
 	}
 	return false
+}
+
+// writeBootstrapError writes a JSON 503 response indicating bootstrap failure.
+func writeBootstrapError(w http.ResponseWriter, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	msg := "bootstrap failed"
+	if err != nil {
+		msg = err.Error()
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "error",
+		"code":    "BOOTSTRAP_FAILED",
+		"message": msg,
+	})
 }

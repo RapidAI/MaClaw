@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
@@ -113,7 +115,12 @@ func (h *IMMessageHandler) toolListSkills() string {
 	if len(skills) > 0 {
 		b.WriteString("=== 本地已注册 Skill ===\n")
 		for _, s := range skills {
-			line := fmt.Sprintf("- %s [%s]: %s", s.Name, s.Status, s.Description)
+			line := fmt.Sprintf("- %s", s.Name)
+			// Show directory name alias if different from display name
+			if s.DirName != "" && s.DirName != s.Name {
+				line += fmt.Sprintf(" (alias: %s)", s.DirName)
+			}
+			line += fmt.Sprintf(" [%s]: %s", s.Status, s.Description)
 			if s.Source == "hub" {
 				line += fmt.Sprintf(" (来源: Hub, trust: %s)", s.TrustLevel)
 			} else if s.Source == "file" {
@@ -294,6 +301,9 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	}
 	b.WriteString(fmt.Sprintf("- skill: %s\n", status.Skill))
 	b.WriteString(fmt.Sprintf("- status: %s\n", status.Status))
+	// session_ready: explicit signal for callers to know if session_id is available
+	sessionReady := status.Session != nil && strings.TrimSpace(status.Session.SessionID) != ""
+	b.WriteString(fmt.Sprintf("- session_ready: %v\n", sessionReady))
 	if status.Summary.CurrentStep != "" {
 		b.WriteString(fmt.Sprintf("- current_step: %s (%s)\n", status.Summary.CurrentStep, firstNonEmptySkillRunStatus(status.Summary.CurrentStepStatus, "running")))
 	}
@@ -326,10 +336,29 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	if status.Summary.LastErrorSnippet != "" {
 		b.WriteString(fmt.Sprintf("- last_error: %s\n", status.Summary.LastErrorSnippet))
 	}
+	// Step-level progress: show each step's status for visibility into
+	// intermediate execution stages (addresses P1-5 from LibTV report).
 	if len(status.Steps) > 0 {
-		b.WriteString(fmt.Sprintf("- steps: %d\n", len(status.Steps)))
-		lastStep := status.Steps[len(status.Steps)-1]
-		b.WriteString(fmt.Sprintf("- last_step: %s (%s)\n", lastStep.Action, lastStep.Status))
+		b.WriteString(fmt.Sprintf("- total_steps: %d\n", len(status.Steps)))
+		b.WriteString("## 步骤进度\n")
+		for i, step := range status.Steps {
+			label := step.Name
+			if label == "" {
+				label = step.Action
+			}
+			line := fmt.Sprintf("- step %d: %s → %s", i+1, label, step.Status)
+			if step.DurationMs > 0 {
+				line += fmt.Sprintf(" (%dms)", step.DurationMs)
+			}
+			if step.Error != "" {
+				errSnippet := step.Error
+				if len(errSnippet) > 80 {
+					errSnippet = errSnippet[:80] + "..."
+				}
+				line += fmt.Sprintf(" [error: %s]", errSnippet)
+			}
+			b.WriteString(line + "\n")
+		}
 	}
 	if status.Session != nil {
 		b.WriteString("## 会话信息\n")
@@ -349,10 +378,40 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 			b.WriteString(fmt.Sprintf("- resume_session_id: %s\n", status.Session.ResumeSessionID))
 		}
 	}
+	// Session progress: show what the session's internal AI agent is doing.
+	if status.SessionProgress != nil {
+		sp := status.SessionProgress
+		b.WriteString("## 会话内部进度\n")
+		b.WriteString(fmt.Sprintf("- session_status: %s\n", sp.SessionStatus))
+		if sp.CurrentTask != "" {
+			b.WriteString(fmt.Sprintf("- current_action: %s\n", sp.CurrentTask))
+		}
+		if sp.ProgressSummary != "" {
+			b.WriteString(fmt.Sprintf("- progress: %s\n", sp.ProgressSummary))
+		}
+		if sp.LastResult != "" {
+			b.WriteString(fmt.Sprintf("- last_result: %s\n", sp.LastResult))
+		}
+		if sp.LastCommand != "" {
+			b.WriteString(fmt.Sprintf("- last_command: %s\n", sp.LastCommand))
+		}
+		if sp.WaitingForUser {
+			b.WriteString("- ⚠️ 会话内部 agent 正在等待输入\n")
+		}
+		b.WriteString(fmt.Sprintf("- poll_count: %d\n", sp.PollCount))
+		if sp.UpdatedAt != "" {
+			b.WriteString(fmt.Sprintf("- updated_at: %s\n", sp.UpdatedAt))
+		}
+	}
 	b.WriteString("## 下一步\n")
-	b.WriteString("- 使用 get_skill_run(run_id) 继续观察执行进度。\n")
-	if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
-		b.WriteString("- 若需要继续驱动会话，可结合 session_id 使用 get_session_output / send_and_observe。\n")
+	if sessionReady && status.SessionProgress != nil {
+		b.WriteString("- session 内部进度已自动监控，继续调用 get_skill_run(run_id) 即可查看最新状态。\n")
+	} else if sessionReady {
+		b.WriteString("- session_id 已就绪，可直接使用 query_session / send_and_observe 观察会话输出。\n")
+	} else if status.Status == "running" {
+		b.WriteString("- 使用 get_skill_run(run_id) 继续观察执行进度，等待 session_ready=true。\n")
+	} else {
+		b.WriteString("- 使用 get_skill_run(run_id) 查看最终结果。\n")
 	}
 }
 
@@ -406,6 +465,9 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 		return nil, fmt.Errorf("skill runner not initialized")
 	}
 	deadline := time.Now().Add(timeout)
+	// Track whether we've seen any step progress to decide if we should
+	// extend the wait for session_id binding.
+	sawStepProgress := false
 	for {
 		status, err := runner.GetRunStatus(runID)
 		if err != nil {
@@ -423,7 +485,24 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 			}
 			for _, step := range status.Steps {
 				if step.Status == "success" || step.Status == "failed" {
-					return status, nil
+					// A step completed but session_id not yet bound — extend
+					// deadline by up to 10s to give create_session time to
+					// propagate the session meta. This addresses P0-1 where
+					// run_skill returns session_id=null because the snapshot
+					// was taken before SetRunSessionMeta completed.
+					if !sawStepProgress {
+						sawStepProgress = true
+						extended := time.Now().Add(10 * time.Second)
+						if extended.After(deadline) {
+							deadline = extended
+						}
+					}
+					// If session is still not bound after extension, return
+					// what we have so the caller can poll via get_skill_run.
+					if time.Now().After(deadline) {
+						return status, nil
+					}
+					break // check again after sleep
 				}
 			}
 		}
@@ -497,6 +576,14 @@ func buildRunSkillArgs(args map[string]interface{}) map[string]interface{} {
 	}
 	if output, ok := args["output"].(string); ok && output != "" {
 		runArgs["output"] = output
+	}
+	// Pass step selection for api_workflow mode skills.
+	if steps, ok := args["steps"]; ok {
+		runArgs["steps"] = steps
+	}
+	// Pass env vars for injection into skill subprocess.
+	if env, ok := args["env"].(map[string]interface{}); ok && len(env) > 0 {
+		runArgs["env"] = env
 	}
 	if len(runArgs) == 0 {
 		return nil
@@ -649,21 +736,62 @@ func resolveCraftToolTimeout(args map[string]interface{}, task string) int {
 }
 
 // resolvePath resolves a path, expanding ~ and making relative paths relative
-// to the user's home directory.
+// to ~/.maclaw/workspace. When p is empty, returns ~/.maclaw/workspace.
 func resolvePath(p string) string {
 	if p == "" {
-		home, _ := os.UserHomeDir()
-		return home
+		return corelib.WorkspaceDir()
 	}
 	if strings.HasPrefix(p, "~") {
 		home, _ := os.UserHomeDir()
 		p = filepath.Join(home, p[1:])
 	}
 	if !filepath.IsAbs(p) {
-		home, _ := os.UserHomeDir()
-		p = filepath.Join(home, p)
+		p = filepath.Join(corelib.WorkspaceDir(), p)
 	}
 	return filepath.Clean(p)
+}
+
+// toolGeneratePDF generates a PDF from Markdown content and returns it as a
+// base64-encoded file payload. Only intended for coding workflow documents
+// (requirements, design, task plan).
+func (h *IMMessageHandler) toolGeneratePDF(args map[string]interface{}) string {
+	content := stringVal(args, "content")
+	title := stringVal(args, "title")
+	docType := stringVal(args, "doc_type")
+
+	if strings.TrimSpace(content) == "" {
+		return "缺少 content 参数（Markdown 格式的文档内容）"
+	}
+	if strings.TrimSpace(title) == "" {
+		title = "文档"
+	}
+
+	// Lazily initialize and cache the doc generator on the App instance
+	// to avoid repeated font detection on every call.
+	h.app.ensureDocGenerator()
+	gen := h.app.docGenerator
+	if gen == nil || !gen.HasFont() {
+		return "未找到可用的中文字体，无法生成 PDF。请改用 write_file 写入 Markdown 文件后用 send_file 发送。"
+	}
+
+	var dt swarm.DocType
+	switch docType {
+	case "requirements":
+		dt = swarm.DocTypeRequirements
+	case "design":
+		dt = swarm.DocTypeDesign
+	case "task_plan":
+		dt = swarm.DocTypeTaskPlan
+	default:
+		dt = ""
+	}
+
+	b64Data, fileName, err := gen.GenerateAndEncode(dt, title, content)
+	if err != nil {
+		return fmt.Sprintf("PDF 生成失败: %s", err.Error())
+	}
+
+	return fmt.Sprintf("[file_base64|%s|application/pdf]%s", fileName, b64Data)
 }
 
 // toolMemory merges save/list/delete/recall memory operations into a single tool.

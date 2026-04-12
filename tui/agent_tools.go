@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
@@ -897,7 +899,7 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 
 	var skill *corelib.NLSkillEntry
 	for i := range cfg.NLSkills {
-		if cfg.NLSkills[i].Name == skillName {
+		if cfg.NLSkills[i].MatchesName(skillName) {
 			skill = &cfg.NLSkills[i]
 			break
 		}
@@ -912,26 +914,111 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		return fmt.Sprintf("技能 %s 没有定义步骤", skillName)
 	}
 
+	// P1: Platform compatibility check (mirrors GUI StartRun)
+	if len(skill.Platforms) > 0 {
+		currentOS := runtime.GOOS
+		platformName := currentOS
+		if platformName == "darwin" {
+			platformName = "macos"
+		}
+		matched := false
+		for _, p := range skill.Platforms {
+			if strings.EqualFold(strings.TrimSpace(p), platformName) || strings.EqualFold(strings.TrimSpace(p), "universal") {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Sprintf("技能 %s 不支持当前平台 %s（支持: %s）", skill.Name, platformName, strings.Join(skill.Platforms, ", "))
+		}
+	}
+
+	// P1: Required args validation
+	if len(skill.RequiredArgs) > 0 {
+		var missing []string
+		for _, arg := range skill.RequiredArgs {
+			if strings.TrimSpace(vars[arg]) == "" {
+				missing = append(missing, arg)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Sprintf("技能 %s 缺少必需参数: %s", skill.Name, strings.Join(missing, ", "))
+		}
+	}
+
+	// P1: Required env validation
+	if len(skill.RequiredEnv) > 0 {
+		var missing []string
+		for _, env := range skill.RequiredEnv {
+			if strings.TrimSpace(os.Getenv(env)) == "" {
+				missing = append(missing, env)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Sprintf("技能 %s 缺少必需的环境变量: %s", skill.Name, strings.Join(missing, ", "))
+		}
+	}
+
+	// P1: Dependency pre-check — verify commands referenced in bash steps exist
+	for i, step := range skill.Steps {
+		if step.Action != "bash" {
+			continue
+		}
+		command, _ := step.Params["command"].(string)
+		if command == "" || strings.Contains(command, "{{") || strings.Contains(command, "${") {
+			continue
+		}
+		depErr := checkCommandDependencyTUI(command)
+		if depErr != "" {
+			return fmt.Sprintf("技能 %s 步骤 %d 依赖检查失败: %s", skill.Name, i+1, depErr)
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("▶ 执行技能: %s (%d 步)\n", skill.Name, len(skill.Steps)))
 	allSuccess := true
+	hasFailure := false
 	startTime := time.Now()
 
 	for i, step := range skill.Steps {
+		// Handle condition: "on_failure" — skip if no prior failure
+		if step.Condition == "on_failure" && !hasFailure {
+			sb.WriteString(fmt.Sprintf("\n── 步骤 %d/%d: %s ── [skipped: no prior failure]\n", i+1, len(skill.Steps), step.Action))
+			continue
+		}
+		// Handle condition: "on_success" — skip if there was a failure
+		if step.Condition == "on_success" && hasFailure {
+			sb.WriteString(fmt.Sprintf("\n── 步骤 %d/%d: %s ── [skipped: prior failure]\n", i+1, len(skill.Steps), step.Action))
+			continue
+		}
+
 		stepStart := time.Now()
 		sb.WriteString(fmt.Sprintf("\n── 步骤 %d/%d: %s ──\n", i+1, len(skill.Steps), step.Action))
 
-		output, execErr := runSkillStep(step, skill.SkillDir, vars)
+		// Resolve step params with captured variables from previous steps
+		resolvedStep := resolveSkillStepTUI(step, vars, skill.SkillDir)
+
+		output, execErr := runSkillStep(resolvedStep, skill.SkillDir, vars)
 		elapsed := time.Since(stepStart).Truncate(time.Millisecond)
 
 		if execErr != nil {
+			// Detect 404 session-not-found errors and provide actionable hint
+			errClass := classifySkillStepError(output, execErr)
 			sb.WriteString(fmt.Sprintf("[FAIL] %s (耗时 %s)\n", execErr.Error(), elapsed))
+			if errClass != "" {
+				sb.WriteString(fmt.Sprintf("[错误分类] %s\n", errClass))
+			}
 			if output != "" {
 				appendTruncated(&sb, output, 2048)
 			}
 			allSuccess = false
+			hasFailure = true
 			if step.OnError != "continue" {
 				sb.WriteString("⛔ 步骤失败且 on_error!=continue，终止执行\n")
+				// Mark remaining steps as skipped
+				for j := i + 1; j < len(skill.Steps); j++ {
+					sb.WriteString(fmt.Sprintf("\n── 步骤 %d/%d: %s ── [skipped]\n", j+1, len(skill.Steps), skill.Steps[j].Action))
+				}
 				break
 			}
 			sb.WriteString("⚠️ 步骤失败但 on_error=continue，继续下一步\n")
@@ -939,6 +1026,17 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 			sb.WriteString(fmt.Sprintf("[OK] 耗时 %s\n", elapsed))
 			if output != "" {
 				appendTruncated(&sb, output, 2048)
+			}
+			// Output capture: extract variables from step output via regex
+			// This enables state passing between steps (e.g. sessionId from
+			// step 2 used in step 3), fixing the P1-2 issue where the TUI
+			// runner couldn't propagate context between skill steps.
+			if len(step.Capture) > 0 && output != "" {
+				captured := captureOutputVariablesTUI(output, step.Capture)
+				for k, v := range captured {
+					vars[k] = v
+					sb.WriteString(fmt.Sprintf("[capture] %s=%s\n", k, truncateForDisplay(v, 80)))
+				}
 			}
 		}
 	}
@@ -957,7 +1055,6 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		skill.SuccessCount++
 		skill.LastError = ""
 	} else {
-		// 记录最后一个错误到 skill 元数据
 		skill.LastError = "执行失败，详见输出"
 	}
 	_ = store.SaveConfig(cfg)
@@ -1002,6 +1099,182 @@ func runSkillStep(step corelib.NLSkillStep, skillDir string, vars map[string]str
 	}
 }
 
+// resolveSkillStepTUI resolves template variables in all step params, not just
+// the bash command string. This ensures captured variables (e.g. sessionId from
+// a previous step) are propagated into subsequent step params like working_dir
+// or any custom parameter.
+// NOTE: The "command" param is intentionally skipped here because runSkillStep
+// calls substituteSkillVariables() which applies proper shell quoting. Doing
+// raw substitution on command would bypass shell escaping for user input.
+func resolveSkillStepTUI(step corelib.NLSkillStep, vars map[string]string, skillDir string) corelib.NLSkillStep {
+	resolved := step
+	if resolved.Params == nil || len(vars) == 0 {
+		return resolved
+	}
+	// Deep-resolve all string values in params except "command" (handled by runSkillStep)
+	newParams := make(map[string]interface{}, len(resolved.Params))
+	for k, v := range resolved.Params {
+		if k == "command" {
+			newParams[k] = v
+			continue
+		}
+		if s, ok := v.(string); ok {
+			newParams[k] = substituteSkillVariablesRaw(s, vars)
+		} else {
+			newParams[k] = v
+		}
+	}
+	resolved.Params = newParams
+	// Resolve relative working_dir against skillDir
+	if workDir, _ := resolved.Params["working_dir"].(string); workDir != "" && !filepath.IsAbs(workDir) && skillDir != "" {
+		resolved.Params["working_dir"] = filepath.Clean(filepath.Join(skillDir, workDir))
+	}
+	return resolved
+}
+
+// substituteSkillVariablesRaw replaces {{key}} and ${key} placeholders without
+// shell quoting. Used for non-command params where quoting would be incorrect.
+func substituteSkillVariablesRaw(text string, vars map[string]string) string {
+	for key, value := range vars {
+		text = strings.ReplaceAll(text, "{{"+key+"}}", value)
+		text = strings.ReplaceAll(text, "${"+key+"}", value)
+	}
+	return text
+}
+
+// captureOutputVariablesTUI extracts named variables from step output using
+// regex patterns defined in step.Capture. Each capture maps a variable name
+// to a regex pattern; the first submatch group (or full match) becomes the
+// variable value. This mirrors the GUI skill_runner's captureOutputVariables.
+func captureOutputVariablesTUI(output string, captures map[string]string) map[string]string {
+	result := make(map[string]string)
+	for varName, pattern := range captures {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			continue
+		}
+		m := re.FindStringSubmatch(output)
+		if len(m) > 1 {
+			result[varName] = m[1] // first submatch group
+		} else if len(m) == 1 {
+			result[varName] = m[0] // full match
+		}
+	}
+	return result
+}
+
+// classifySkillStepError inspects the combined output and error to classify
+// the failure type. Returns a human-readable hint or empty string.
+func classifySkillStepError(output string, err error) string {
+	combined := output
+	if err != nil {
+		combined += " " + err.Error()
+	}
+	lower := strings.ToLower(combined)
+
+	// P1: exit status 9009 (Windows) / 127 (Unix) = command not found
+	if strings.Contains(lower, "exit status 9009") || strings.Contains(lower, "exit status 127") {
+		// Check specific tools first (more specific → less specific)
+		hint := "command_not_found: 命令未找到。"
+		switch {
+		case strings.Contains(lower, "pip3") || strings.Contains(lower, "pip"):
+			hint += " 请安装 pip: python -m ensurepip --upgrade"
+		case strings.Contains(lower, "npx") || strings.Contains(lower, "npm"):
+			hint += " 请安装 Node.js: https://nodejs.org/"
+		case strings.Contains(lower, "node"):
+			hint += " 请安装 Node.js: https://nodejs.org/"
+		case strings.Contains(lower, "python3") || strings.Contains(lower, "python"):
+			hint += " 请安装 Python 3.x 并确保在 PATH 中。Windows 用户请从 python.org 安装，不要使用 Microsoft Store 版本。"
+		default:
+			hint += " 请确认所需命令已安装并在 PATH 中。"
+		}
+		return hint
+	}
+
+	// P4: HTTP 429 rate limit
+	if strings.Contains(lower, "429") && (strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "频率限制")) {
+		return "rate_limit: API 调用过于频繁，请稍后再试。建议等待 30-60 秒后重试。"
+	}
+
+	switch {
+	case strings.Contains(lower, "404") && (strings.Contains(lower, "会话不存在") || strings.Contains(lower, "session") || strings.Contains(lower, "not found")):
+		return "session_not_found: 会话已过期或不存在，建议重新创建会话"
+	case strings.Contains(lower, "401") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "鉴权失败"):
+		return "auth_error: 认证失败，请检查 ACCESS_KEY 配置"
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "超时"):
+		return "timeout: 命令执行超时"
+	case strings.Contains(lower, "connection refused") || strings.Contains(lower, "连接被拒绝"):
+		return "network_error: 网络连接失败"
+	case strings.Contains(lower, "enoent") || strings.Contains(lower, "no such file"):
+		return "file_not_found: 输入文件不存在，请检查文件路径是否正确"
+	case strings.Contains(lower, "permission denied") || strings.Contains(lower, "access denied"):
+		return "permission_error: 权限不足，请检查文件/目录权限"
+	}
+	return ""
+}
+
+// checkCommandDependencyTUI checks if the primary command in a bash step
+// is available on the system. Returns a user-friendly error message if the
+// command is missing, or empty string if OK.
+// This pre-flight check prevents confusing "exit status 9009" errors by
+// detecting missing dependencies before execution.
+func checkCommandDependencyTUI(command string) string {
+	// Extract the first word (command name) from the command string.
+	// Skip shell builtins and common prefixes.
+	cmd := strings.TrimSpace(command)
+	// Handle multi-line: check only the first meaningful line
+	for _, line := range strings.Split(cmd, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+			continue
+		}
+		cmd = line
+		break
+	}
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return ""
+	}
+	cmdName := fields[0]
+	// Skip shell builtins, environment variable assignments, and path-based commands
+	if strings.Contains(cmdName, "=") || cmdName == "echo" || cmdName == "cd" ||
+		cmdName == "export" || cmdName == "set" || cmdName == "if" ||
+		cmdName == "for" || cmdName == "while" || cmdName == "test" ||
+		cmdName == "@echo" || cmdName == "chcp" ||
+		strings.HasPrefix(cmdName, "./") || strings.HasPrefix(cmdName, "../") ||
+		filepath.IsAbs(cmdName) {
+		return ""
+	}
+	// On Windows, map python3 → python for the check
+	checkName := cmdName
+	if runtime.GOOS == "windows" && strings.EqualFold(checkName, "python3") {
+		checkName = "python"
+	}
+	if _, err := exec.LookPath(checkName); err != nil {
+		switch strings.ToLower(cmdName) {
+		case "python", "python3":
+			return fmt.Sprintf("需要 Python 3 但未找到。请从 https://python.org 安装 Python 3.x")
+		case "pip", "pip3":
+			return fmt.Sprintf("需要 pip 但未找到。请运行: python -m ensurepip --upgrade")
+		case "node", "npm", "npx":
+			return fmt.Sprintf("需要 Node.js 但未找到。请从 https://nodejs.org 安装")
+		default:
+			return fmt.Sprintf("需要命令 %q 但未找到，请确认已安装并在 PATH 中", cmdName)
+		}
+	}
+	return ""
+}
+
+// truncateForDisplay truncates a string for display purposes.
+// Uses rune count to avoid cutting multi-byte characters (CJK, emoji, etc.).
+func truncateForDisplay(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "…"
+}
+
 func substituteSkillVariables(command string, vars map[string]string) string {
 	keys := make([]string, 0, len(vars))
 	for key := range vars {
@@ -1016,14 +1289,59 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 	return command
 }
 
+// quoteSkillInputForShell wraps a user-supplied value for safe embedding
+// in a shell command string.
+// On Windows we use double-quotes (cmd.exe does not recognise single-quotes).
 func quoteSkillInputForShell(input string) string {
 	if input == "" {
+		if runtime.GOOS == "windows" {
+			return `""`
+		}
 		return "''"
 	}
 	if runtime.GOOS == "windows" {
-		return "'" + strings.ReplaceAll(input, "'", "''") + "'"
+		// Double-quote for PowerShell compatibility (TUI uses PowerShell on Windows).
+		escaped := strings.ReplaceAll(input, `"`, `\"`)
+		return `"` + escaped + `"`
 	}
 	return "'" + strings.ReplaceAll(input, "'", `'"'"'`) + "'"
+}
+
+// mapPython3ToWindowsTUI replaces `python3` with `python` in commands on Windows.
+// Result of LookPath is cached to avoid repeated filesystem lookups.
+// On Windows, the Microsoft Store installs a stub `python3.exe` in
+// WindowsApps that opens the Store instead of running Python.
+var python3NeedsMappingTUI = sync.OnceValue(func() bool {
+	p3, err := exec.LookPath("python3")
+	if err == nil {
+		if runtime.GOOS == "windows" && strings.Contains(strings.ToLower(p3), "windowsapps") {
+			// Windows Store stub, not a real python3
+		} else {
+			return false
+		}
+	}
+	_, err2 := exec.LookPath("python")
+	return err2 == nil
+})
+
+func mapPython3ToWindowsTUI(command string) string {
+	if !python3NeedsMappingTUI() {
+		return command
+	}
+	lines := strings.Split(command, "\n")
+	changed := false
+	for i, line := range lines {
+		ltrimmed := strings.TrimSpace(line)
+		ll := strings.ToLower(ltrimmed)
+		if strings.HasPrefix(ll, "python3 ") || ll == "python3" {
+			lines[i] = strings.Replace(line, "python3", "python", 1)
+			changed = true
+		}
+	}
+	if changed {
+		return strings.Join(lines, "\n")
+	}
+	return command
 }
 
 // runSkillBashStreaming 执行 bash 命令，使用流式输出收集而非等待完成。
@@ -1035,6 +1353,12 @@ func runSkillBashStreaming(command string, params map[string]interface{}, skillD
 		if timeout > 120 {
 			timeout = 120
 		}
+	}
+
+	// [Fix] On Windows, map `python3` to `python` since Windows Python
+	// installs typically only provide `python.exe`, not `python3.exe`.
+	if runtime.GOOS == "windows" {
+		command = mapPython3ToWindowsTUI(command)
 	}
 
 	workDir, _ := params["working_dir"].(string)
@@ -1059,6 +1383,9 @@ func runSkillBashStreaming(command string, params map[string]interface{}, skillD
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
+	// Force UTF-8 encoding for subprocess I/O on Windows to prevent
+	// GBK/CP936 mojibake when scripts output non-ASCII text.
+	cmd.Env = coretool.AppendUTF8Env(os.Environ())
 
 	// 使用 pipe 实现流式读取
 	stdoutPipe, err := cmd.StdoutPipe()

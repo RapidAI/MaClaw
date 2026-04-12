@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, type CSSProperties } from "react";
 import { useDialog } from "../CustomDialog";
+import { useToast } from "../Toast";
 import {
     colors,
     remoteCardStyle,
@@ -170,6 +171,7 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
 
 export function SkillsManagementPanel({ localizeText }: Props) {
     const { showConfirm } = useDialog();
+    const { showToast } = useToast();
     const [activeTab, setActiveTab] = useState<"local" | "hub" | "learned" | "extdirs">("local");
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
     const [loading, setLoading] = useState(false);
@@ -204,9 +206,6 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     // Learned skill detail state
     const [detailSkill, setDetailSkill] = useState<NLSkillDefinition | null>(null);
-
-    // Toast message state (replaces system alert)
-    const [toastMsg, setToastMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
     // Learned skills tab state
     const [learnedSelected, setLearnedSelected] = useState<Set<string>>(new Set());
@@ -1192,10 +1191,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                             setUploadingSkill(s.name);
                                                             try {
                                                                 const sid = await UploadNLSkillToMarket(s.name);
-                                                                setToastMsg({ type: "success", text: `${localizeText("Submission ID", "提交ID", "提交ID")}: ${sid}` });
+                                                                showToast(`${localizeText("Submission ID", "提交ID", "提交ID")}: ${sid}`, "success");
                                                                 await loadData();
                                                             } catch (e: any) {
-                                                                setToastMsg({ type: "error", text: `${e?.message || e}` });
+                                                                showToast(`${e?.message || e}`, "error");
                                                             } finally {
                                                                 setUploadingSkill(null);
                                                             }
@@ -1351,26 +1350,6 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         </div>
                     )}
                 </>
-            )}
-
-            {/* Upload result toast dialog */}
-            {toastMsg && (
-                <div className="modal-backdrop" onClick={() => setToastMsg(null)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "320px" }}>
-                        <div className="modal-header">
-                            <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{toastMsg.type === "success" ? localizeText("Upload Succeeded", "上传成功", "上傳成功") : localizeText("Upload Failed", "上传失败", "上傳失敗")}</h3>
-                            <button className="btn-close" onClick={() => setToastMsg(null)}>×</button>
-                        </div>
-                        <div className="modal-body">
-                            <p style={{ fontSize: "0.8rem", color: toastMsg.type === "error" ? colors.danger : colors.textSecondary, margin: 0, wordBreak: "break-all" }}>
-                                {toastMsg.text}
-                            </p>
-                        </div>
-                        <div className="modal-footer">
-                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => setToastMsg(null)}>{localizeText("OK", "确定", "確定")}</button>
-                        </div>
-                    </div>
-                </div>
             )}
 
             {detailSkill && (

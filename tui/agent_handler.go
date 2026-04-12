@@ -210,6 +210,15 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 		// 执行工具调用
 		for _, tc := range choice.Message.ToolCalls {
 			result := h.executeTool(tc.Function.Name, tc.Function.Arguments)
+
+			// Pin conditional tools (e.g. ssh) to the session after first
+			// successful use so they remain available for follow-up messages.
+			if h.router != nil && tool.ShouldPinConditionalTool(tc.Function.Name) &&
+				!strings.HasPrefix(result, "未知工具") && !strings.HasPrefix(result, "工具执行异常") {
+				h.router.ActivateSessionTool(tc.Function.Name)
+				log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
+			}
+
 			// 截断过长结果（web_fetch 允许更长内容）
 			maxLen := 4000
 			if tc.Function.Name == "web_fetch" {
@@ -266,14 +275,17 @@ func buildTUIIdentityPrompt(memoryStore *memory.Store, roleTitle string, withToo
 func (h *TUIAgentHandler) buildSystemPromptWithFirstTurn(_ string, isFirstTurn bool) string {
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
+	workspaceDir := corelib.WorkspaceDir()
 	roleTitle := tuiRoleTitle()
 	identity := buildTUIIdentityPrompt(h.memoryStore, roleTitle, true)
 
 	prompt := fmt.Sprintf(`%s
 当前系统: %s/%s
 用户主目录: %s
+默认工作目录: %s
 当前工作目录: %s
-请用简洁的中文回答用户问题。当需要执行操作时，使用提供的工具。`, identity, runtime.GOOS, runtime.GOARCH, home, cwd)
+临时文件和脚本请放在默认工作目录下，不要在用户主目录下创建临时文件。
+请用简洁的中文回答用户问题。当需要执行操作时，使用提供的工具。`, identity, runtime.GOOS, runtime.GOARCH, home, workspaceDir, cwd)
 
 	// 注入编程工具不可用提示
 	if h.codingToolHealth != nil {
@@ -366,7 +378,8 @@ func (h *TUIAgentHandler) buildToolDefinitions() []map[string]interface{} {
 func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{} {
 	defs := []map[string]interface{}{
 		toolDef("bash", "在终端执行命令", map[string]interface{}{
-			"command": map[string]interface{}{"type": "string", "description": "要执行的命令"},
+			"command":     map[string]interface{}{"type": "string", "description": "要执行的命令"},
+			"working_dir": map[string]interface{}{"type": "string", "description": "工作目录（可选，默认为 ~/.maclaw/workspace）"},
 		}, []string{"command"}),
 		toolDef("read_file", "读取文件内容", map[string]interface{}{
 			"path": map[string]interface{}{"type": "string", "description": "文件路径"},
@@ -733,6 +746,13 @@ func (h *TUIAgentHandler) toolBash(args map[string]interface{}) string {
 		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", wrapped)
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
+	// Default working directory to ~/.maclaw/workspace to avoid polluting home dir.
+	workDir := stringArg(args, "working_dir")
+	if workDir == "" {
+		cmd.Dir = corelib.WorkspaceDir()
+	} else {
+		cmd.Dir = resolvePath(workDir)
 	}
 	// Force UTF-8 encoding for subprocess I/O (Python, Node, etc.).
 	cmd.Env = coretool.AppendUTF8Env(os.Environ())

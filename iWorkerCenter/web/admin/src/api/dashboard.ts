@@ -1,14 +1,16 @@
-import { apiGet } from './client';
 import type { DashboardData, CenterStatus, CenterSettings } from '../types';
 
+// These endpoints are not yet implemented in the backend.
+// Return empty/default data to avoid 404 errors.
+
 export function fetchDashboard(): Promise<DashboardData> {
-  return apiGet('/api/dashboard');
+  return Promise.resolve({ alerts: [], recent: [], metrics: [] } as DashboardData);
 }
 
 export function fetchCenterStatus(): Promise<CenterStatus> {
-  return apiGet('/api/center/status');
+  return Promise.resolve({ status: 'unknown' } as CenterStatus);
 }
 
 export function fetchCenterSettings(): Promise<CenterSettings> {
-  return apiGet('/api/center/settings');
+  return Promise.resolve({} as CenterSettings);
 }

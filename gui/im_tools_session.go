@@ -483,47 +483,88 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 	// When the session is busy (coding tool actively executing), hint the
 	// Agent based on the current stall detection state.
 	if status == string(SessionBusy) {
+		// Check if recent output contains API retry messages — this means
+		// the upstream API is rate-limiting or temporarily unavailable, and
+		// Claude Code is automatically retrying. The agent should wait
+		// patiently instead of giving up or sending new messages.
+		hasAPIRetry := false
+		for i := len(rawLines) - 1; i >= 0 && i >= len(rawLines)-10; i-- {
+			if strings.Contains(rawLines[i], "API retry") || strings.Contains(rawLines[i], "api_retry") {
+				hasAPIRetry = true
+				break
+			}
+		}
+
 		session.mu.RLock()
 		stallState := session.StallState
 		session.mu.RUnlock()
 
-		switch stallState {
-		case StallStateSuspected:
-			b.WriteString("\n⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查")
-		case StallStateStuck:
-			b.WriteString("\n⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话")
-		default: // StallStateNormal
-			b.WriteString("\n⏳ 编程工具正在工作中，请等待后再检查进度")
+		if hasAPIRetry {
+			b.WriteString("\n⏳ 上游 API 限流/暂时不可用，编程工具正在自动重试中。这是正常现象，请耐心等待（可能需要 30-60 秒）。")
+			b.WriteString("\n⚠️ 不要放弃或创建新会话——API 重试通常会成功。稍后再调用 get_session_output 检查进度。")
+		} else {
+			switch stallState {
+			case StallStateSuspected:
+				b.WriteString("\n⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查")
+			case StallStateStuck:
+				b.WriteString("\n⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话")
+			default: // StallStateNormal
+				b.WriteString("\n⏳ 编程工具正在工作中，请等待后再检查进度")
+			}
 		}
 	}
 
 	// When the session is waiting for input, hint the Agent based on the
 	// semantic completion analysis result.
 	if status == string(SessionWaitingInput) {
+		// Check if the session just recovered from an API error — the last
+		// few lines may contain error messages. If so, hint the agent to
+		// retry the instruction instead of giving up.
+		hasRecentAPIError := false
+		for i := len(rawLines) - 1; i >= 0 && i >= len(rawLines)-5; i-- {
+			if strings.Contains(rawLines[i], "API retry") || strings.Contains(rawLines[i], "❌") {
+				hasRecentAPIError = true
+				break
+			}
+		}
+
 		session.mu.RLock()
 		completionLevel := session.CompletionLevel
 		session.mu.RUnlock()
 
-		switch completionLevel {
-		case CompletionCompleted:
-			b.WriteString("\n✅ 任务似乎已完成，可以查看结果")
-		case CompletionIncomplete:
-			if session.isStructuredSession() {
-				session.mu.RLock()
-				continueCount := session.AutoContinueCount
-				session.mu.RUnlock()
+		if hasRecentAPIError && completionLevel != CompletionCompleted {
+			b.WriteString("\n⚠️ 编程工具遇到 API 错误后恢复，任务可能未完成。")
+			b.WriteString(fmt.Sprintf("\n📌 请重新发送指令让编程工具继续工作：send_and_observe(session_id=%q, text=\"继续完成之前的任务\")", sessionID))
+			b.WriteString("\n不要放弃——API 错误是暂时的，重试通常会成功。")
+		} else {
+			switch completionLevel {
+			case CompletionCompleted:
+				b.WriteString("\n✅ 任务似乎已完成，可以查看结果")
+			case CompletionIncomplete:
+				if session.isStructuredSession() {
+					session.mu.RLock()
+					continueCount := session.AutoContinueCount
+					session.mu.RUnlock()
 
-				if continueCount >= 10 {
-					b.WriteString("\n⚠️ 已自动续接 10 次，建议告知用户当前进度并询问是否继续。")
+					if continueCount >= 10 {
+						b.WriteString("\n⚠️ 已自动续接 10 次，建议告知用户当前进度并询问是否继续。")
+					} else {
+						b.WriteString("\n🔄 编程工具因 token/turn 限制暂停，任务未完成。")
+						b.WriteString(fmt.Sprintf("\n📌 立即调用 send_and_observe(session_id=%q, text=\"继续完成之前的任务\") 让编程工具继续工作。", sessionID))
+						b.WriteString("\n⚠️ 不要询问用户是否继续——直接发送续接指令。")
+					}
 				} else {
-					b.WriteString("\n🔄 编程工具因 token/turn 限制暂停，任务未完成。")
-					b.WriteString(fmt.Sprintf("\n📌 立即调用 send_and_observe(session_id=%q, text=\"继续完成之前的任务\") 让编程工具继续工作。", sessionID))
-					b.WriteString("\n⚠️ 不要询问用户是否继续——直接发送续接指令。")
+					b.WriteString("\n⚠️ 任务似乎未完成，建议发送「继续」让编程工具继续工作")
 				}
-			} else {
-				b.WriteString("\n⚠️ 任务似乎未完成，建议发送「继续」让编程工具继续工作")
+			default:
+				// CompletionUncertain: for structured sessions, default to
+				// suggesting continuation — it's better to send one extra
+				// "continue" than to leave the task half-done.
+				if session.isStructuredSession() {
+					b.WriteString(fmt.Sprintf("\n📌 编程工具已暂停。调用 send_and_observe(session_id=%q, text=\"继续\") 让编程工具继续工作，或查看输出判断任务是否已完成。", sessionID))
+				}
+				// Non-structured sessions: keep existing default hint ("⚠️ 会话正在等待用户输入")
 			}
-			// CompletionUncertain: 保持现有默认提示（"⚠️ 会话正在等待用户输入"）
 		}
 	}
 
@@ -551,24 +592,44 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 
 			writeAutoResumeHint(&b, rc, "编程工具因 token 耗尽正常退出，但任务可能未完成。")
 		} else if session.isStructuredSession() && *exitCodeVal > 1 {
-			// API error or unexpected crash — allow retry.
+			// Determine whether the error is fatal (unrecoverable) or
+			// transient (worth retrying). Fatal errors include missing API
+			// keys, authentication failures, and tool-not-found — retrying
+			// these will just waste iterations. Everything else (rate
+			// limits, network timeouts, server errors) is retryable.
 			session.mu.RLock()
 			rc := session.ResumeContext
 			session.mu.RUnlock()
 
-			if rc != nil && rc.ExitReason == "api_error" && rc.ResumeCount < 2 {
-				b.WriteString(fmt.Sprintf("\n⚠️ 编程工具异常退出（退出码 %d），可能是上游 API 不稳定。", *exitCodeVal))
-				b.WriteString(fmt.Sprintf("\n📌 自动重试（第 %d 次）：立即创建新会话重试，使用相同参数。", rc.ResumeCount+1))
-				b.WriteString("\n不要询问用户——直接重试。")
+			isFatal := isFatalSessionError(rawLines)
+			resumeCount := 0
+			if rc != nil {
+				resumeCount = rc.ResumeCount
+			}
+
+			if isFatal {
+				b.WriteString(fmt.Sprintf("\n🛑 编程工具遇到不可恢复的错误退出（退出码 %d）。", *exitCodeVal))
+				b.WriteString(fmt.Sprintf("\n请立即将错误信息告知用户，并建议检查 %s 的 API Key 配置和安装。", sessionTool))
+				b.WriteString("\n不要重试——这是配置问题，重试不会解决。")
+			} else if resumeCount < 3 {
+				b.WriteString(fmt.Sprintf("\n⚠️ 编程工具异常退出（退出码 %d），可能是 API 限流、网络波动或临时服务故障。", *exitCodeVal))
+				b.WriteString(fmt.Sprintf("\n📌 自动重试（第 %d/3 次）：立即创建新会话重试，使用相同参数。", resumeCount+1))
+				b.WriteString("\n不要询问用户——直接重试。这类错误通常是暂时的，重试大概率会成功。")
 			} else {
-				b.WriteString(fmt.Sprintf("\n🛑 会话已失败退出（退出码 %d）。不要再对此会话调用任何工具。", *exitCodeVal))
-				b.WriteString(fmt.Sprintf("\n请立即将错误信息告知用户，并建议检查 %s 的安装和配置。", sessionTool))
-				b.WriteString("\n不要重复创建新会话重试——同样的环境问题会导致同样的失败。")
+				b.WriteString(fmt.Sprintf("\n🛑 编程工具已连续失败 %d 次（退出码 %d）。", resumeCount, *exitCodeVal))
+				b.WriteString(fmt.Sprintf("\n请将错误信息告知用户，建议检查 %s 的上游 API 状态或稍后再试。", sessionTool))
 			}
 		} else {
-			b.WriteString(fmt.Sprintf("\n🛑 会话已失败退出（退出码 %d）。不要再对此会话调用任何工具。", *exitCodeVal))
-			b.WriteString(fmt.Sprintf("\n请立即将错误信息告知用户，并建议检查 %s 的安装和配置。", sessionTool))
-			b.WriteString("\n不要重复创建新会话重试——同样的环境问题会导致同样的失败。")
+			// Non-structured sessions (PTY mode) — also apply retry logic
+			// instead of immediately giving up.
+			isFatal := isFatalSessionError(rawLines)
+			if isFatal {
+				b.WriteString(fmt.Sprintf("\n🛑 会话遇到不可恢复的错误退出（退出码 %d）。", *exitCodeVal))
+				b.WriteString(fmt.Sprintf("\n请立即将错误信息告知用户，并建议检查 %s 的安装和配置。", sessionTool))
+			} else {
+				b.WriteString(fmt.Sprintf("\n⚠️ 会话异常退出（退出码 %d），可能是临时错误。", *exitCodeVal))
+				b.WriteString("\n📌 建议创建新会话重试。如果连续失败，请将错误信息告知用户。")
+			}
 		}
 	}
 
@@ -660,6 +721,49 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 	}, func(renderArgs map[string]interface{}) string {
 		return h.toolGetSessionOutput(renderArgs)
 	})
+}
+
+// isFatalSessionError scans the recent output lines for patterns that
+// indicate an unrecoverable configuration error (missing API key,
+// authentication failure, tool not installed, etc.). These errors will
+// not be fixed by retrying — the user must fix the configuration first.
+// Returns false for transient errors (rate limits, network timeouts,
+// server 5xx, etc.) which are worth retrying.
+func isFatalSessionError(lines []string) bool {
+	// Only scan the last 20 lines — error messages are near the end.
+	start := 0
+	if len(lines) > 20 {
+		start = len(lines) - 20
+	}
+	for _, line := range lines[start:] {
+		lower := strings.ToLower(line)
+		// API key / authentication issues
+		if strings.Contains(lower, "api key") && (strings.Contains(lower, "missing") || strings.Contains(lower, "invalid") || strings.Contains(lower, "not set") || strings.Contains(lower, "not found") || strings.Contains(lower, "not configured")) {
+			return true
+		}
+		if strings.Contains(lower, "authentication failed") {
+			return true
+		}
+		if strings.Contains(lower, "invalid_api_key") || strings.Contains(lower, "invalid api key") {
+			return true
+		}
+		// HTTP 401 — only match explicit status code patterns, not random numbers
+		if strings.Contains(lower, "status 401") || strings.Contains(lower, "http 401") || strings.Contains(lower, "error 401") || strings.Contains(lower, "code 401") || strings.Contains(lower, "401 unauthorized") {
+			return true
+		}
+		// Tool not installed
+		if strings.Contains(lower, "command not found") || strings.Contains(lower, "not recognized as") || strings.Contains(lower, "is not recognized") {
+			return true
+		}
+		if strings.Contains(lower, "no such file or directory") && (strings.Contains(lower, "claude") || strings.Contains(lower, "codex") || strings.Contains(lower, "gemini")) {
+			return true
+		}
+		// Permission denied at OS level (not API rate-limit "permission")
+		if strings.Contains(lower, "permission denied") && !strings.Contains(lower, "rate") && !strings.Contains(lower, "api") {
+			return true
+		}
+	}
+	return false
 }
 
 // toolControlSession merges interrupt_session and kill_session into one tool.

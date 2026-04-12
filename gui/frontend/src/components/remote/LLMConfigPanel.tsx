@@ -452,7 +452,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 </p>
                 <button onClick={openDialog} style={{
                     fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
-                    background: colors.primary, color: "var(--theme-text-primary)", border: "none", borderRadius: 4, flexShrink: 0, marginLeft: 12,
+                    background: colors.primary, color: colors.onPrimary, border: "none", borderRadius: 4, flexShrink: 0, marginLeft: 12,
                 }}>
                     {t("Configure", "配置")}
                 </button>
@@ -557,7 +557,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         <button key={i} onClick={() => dlgSelectProvider(i)} style={{
                                             fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                             background: active ? colors.primary : colors.surface,
-                                            color: active ? "var(--theme-text-primary)" : colors.text,
+                                            color: active ? colors.onPrimary : colors.text,
                                             border: `1px solid ${active ? colors.primary : colors.border}`,
                                             borderRadius: 4, transition: "all 0.15s",
                                             position: "relative" as const,
@@ -570,7 +570,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     fontSize: "0.56rem", lineHeight: 1, padding: "2px 5px",
                                                     borderRadius: 6, whiteSpace: "nowrap",
                                                     background: active ? "var(--theme-warning)" : colors.primary,
-                                                    color: "var(--theme-text-primary)", fontWeight: 600, pointerEvents: "none",
+                                                    color: colors.onPrimary, fontWeight: 600, pointerEvents: "none",
                                                 }}>{tag}</span>
                                             )}
                                         </button>
@@ -580,7 +580,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 <button onClick={() => dlgSelectProvider(null)} style={{
                                     fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                     background: dlgIsNone ? colors.primary : colors.surface,
-                                    color: dlgIsNone ? "var(--theme-text-primary)" : colors.text,
+                                    color: dlgIsNone ? colors.onPrimary : colors.text,
                                     border: `1px solid ${dlgIsNone ? colors.primary : colors.border}`,
                                     borderRadius: 4, transition: "all 0.15s",
                                 }}>
@@ -640,7 +640,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     <button key={proto} onClick={() => dlgUpdateField("protocol", proto)} style={{
                                                         fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
                                                         background: active ? colors.primary : colors.surface,
-                                                        color: active ? "var(--theme-text-primary)" : colors.text,
+                                                        color: active ? colors.onPrimary : colors.text,
                                                         border: `1px solid ${active ? colors.primary : colors.border}`,
                                                         borderRadius: 4, transition: "all 0.15s",
                                                     }}>
@@ -667,7 +667,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                 <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)} style={{
                                                     fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
                                                     background: active ? colors.primary : colors.surface,
-                                                    color: active ? "var(--theme-text-primary)" : colors.text,
+                                                    color: active ? colors.onPrimary : colors.text,
                                                     border: `1px solid ${active ? colors.primary : colors.border}`,
                                                     borderRadius: 4, transition: "all 0.15s",
                                                 }}>
@@ -770,7 +770,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                             <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                 width: "100%", padding: "10px 0", fontSize: "0.8rem",
                                                 cursor: oauthBusy ? "default" : "pointer",
-                                                background: colors.primary, color: "var(--theme-text-primary)",
+                                                background: colors.primary, color: colors.onPrimary,
                                                 border: "none", borderRadius: 4,
                                                 opacity: oauthBusy ? 0.6 : 1,
                                             }}>
@@ -852,7 +852,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                         </span>
                                                         <button onClick={() => window.open("https://www.google.com/chrome/", "_blank")} style={{
                                                             fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
-                                                            background: colors.primary, color: "var(--theme-text-primary)", border: "none", borderRadius: 4,
+                                                            background: colors.primary, color: colors.onPrimary, border: "none", borderRadius: 4,
                                                         }}>
                                                             {t("Download Chrome", "下载 Chrome")}
                                                         </button>
@@ -876,7 +876,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     style={{
                                                         width: "100%", padding: "10px 0", fontSize: "0.8rem",
                                                         cursor: loginBusy ? "default" : "pointer",
-                                                        background: colors.primary, color: "var(--theme-text-primary)",
+                                                        background: colors.primary, color: colors.onPrimary,
                                                         border: "none", borderRadius: 4,
                                                         opacity: (loginBusy || browserInfo?.found !== "true") ? 0.6 : 1,
                                                     }}
@@ -915,7 +915,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     style={{
                                                         width: "100%", padding: "10px 0", fontSize: "0.8rem",
                                                         cursor: loginBusy ? "default" : "pointer",
-                                                        background: colors.success, color: "var(--theme-text-primary)",
+                                                        background: colors.success, color: colors.onPrimary,
                                                         border: "none", borderRadius: 4,
                                                         opacity: loginBusy ? 0.6 : 1,
                                                     }}
@@ -955,7 +955,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     }} style={{
                                                         fontSize: "0.72rem", padding: "4px 10px", cursor: "pointer",
                                                         background: active ? colors.primary : colors.surface,
-                                                        color: active ? "var(--theme-text-primary)" : colors.text,
+                                                        color: active ? colors.onPrimary : colors.text,
                                                         border: `1px solid ${active ? colors.primary : colors.border}`,
                                                         borderRadius: 4, transition: "all 0.15s",
                                                     }}>
@@ -1001,7 +1001,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                 style={{
                                                     fontSize: "0.72rem", padding: "4px 12px", cursor: proxyBusy ? "default" : "pointer",
                                                     background: proxyRunning ? "transparent" : colors.primary,
-                                                    color: proxyRunning ? colors.danger : "var(--theme-text-primary)",
+                                                    color: proxyRunning ? colors.danger : colors.onPrimary,
                                                     border: `1px solid ${proxyRunning ? colors.danger : colors.primary}`,
                                                     borderRadius: 4, opacity: proxyBusy ? 0.5 : 1,
                                                 }}
@@ -1094,7 +1094,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             </button>
                             <button onClick={dlgHandleSave} disabled={dlgSaving || oauthBusy || (!dlgDirty && !dlgTested)} style={{
                                 fontSize: "0.76rem", padding: "6px 18px", cursor: (dlgDirty || dlgTested) ? "pointer" : "default",
-                                background: (dlgDirty || dlgTested) ? colors.primary : colors.bg, color: (dlgDirty || dlgTested) ? "var(--theme-text-primary)" : colors.textMuted,
+                                background: (dlgDirty || dlgTested) ? colors.primary : colors.bg, color: (dlgDirty || dlgTested) ? colors.onPrimary : colors.textMuted,
                                 border: "none", borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
                             }}>
                                 {dlgSaving ? t("Testing & Saving...", "检测并保存中...") : dlgTested ? t("Save Changes", "保存修改") : t("Test & Save", "检测并保存")}

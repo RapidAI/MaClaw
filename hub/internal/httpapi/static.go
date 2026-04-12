@@ -14,13 +14,6 @@ func registerPWAStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix s
 }
 
 func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
-    brandName := brand.Current().DisplayName
-    if brandName == "" || brandName == "MaClaw" {
-        // Default brand — serve files as-is, no replacement needed.
-        registerStaticRoutes(mux, staticDir, routePrefix)
-        return
-    }
-
     staticDir = strings.TrimSpace(staticDir)
     if staticDir == "" {
         return
@@ -32,44 +25,79 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
         routePrefix = "/" + routePrefix
     }
     routePrefix = strings.TrimRight(routePrefix, "/")
-    indexPath := filepath.Join(staticDir, "index.html")
+
+    brandName := brand.Current().DisplayName
 
     serve := func(w http.ResponseWriter, r *http.Request) {
-        serveAdminBranded(w, r, staticDir, indexPath, routePrefix, brandName)
-    }
-    mux.HandleFunc("GET "+routePrefix, serve)
-    mux.HandleFunc("GET "+routePrefix+"/{rest...}", serve)
-}
+        relPath := strings.TrimPrefix(r.URL.Path, routePrefix)
+        relPath = strings.TrimPrefix(relPath, "/")
 
-// serveAdminBranded serves admin static files, replacing "MaClaw" with the
-// current brand name in index.html responses.
-func serveAdminBranded(w http.ResponseWriter, r *http.Request, staticDir, indexPath, routePrefix, brandName string) {
-    relPath := strings.TrimPrefix(r.URL.Path, routePrefix)
-    relPath = strings.TrimPrefix(relPath, "/")
-
-    // For non-index static assets, serve directly.
-    if relPath != "" {
-        candidate := filepath.Join(staticDir, filepath.FromSlash(relPath))
-        if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-            http.ServeFile(w, r, candidate)
-            return
+        // Serve static assets directly.
+        if relPath != "" {
+            candidate := filepath.Join(staticDir, filepath.FromSlash(relPath))
+            if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+                if strings.ToLower(filepath.Ext(relPath)) == ".js" && brandName != "" && brandName != "MaClaw" {
+                    data, err := os.ReadFile(candidate)
+                    if err != nil {
+                        http.NotFound(w, r)
+                        return
+                    }
+                    replaced := strings.ReplaceAll(string(data), "MaClaw", brandName)
+                    w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+                    w.Header().Set("Cache-Control", "no-cache")
+                    w.Write([]byte(replaced))
+                    return
+                }
+                http.ServeFile(w, r, candidate)
+                return
+            }
+            ext := strings.ToLower(filepath.Ext(relPath))
+            if staticAssetExtensions[ext] {
+                http.NotFound(w, r)
+                return
+            }
         }
-        ext := strings.ToLower(filepath.Ext(relPath))
-        if staticAssetExtensions[ext] {
+
+        // Serve index.html with admin.js injected before </body>.
+        // This ensures the script loads even if the HTML has malformed tags
+        // that would prevent the browser from recognizing <script src="admin.js">.
+        indexPath := filepath.Join(staticDir, "index.html")
+        htmlData, err := os.ReadFile(indexPath)
+        if err != nil {
             http.NotFound(w, r)
             return
         }
+        html := string(htmlData)
+
+        // Read admin.js and inject it as an inline script before </body>.
+        jsPath := filepath.Join(staticDir, "admin.js")
+        if jsData, err := os.ReadFile(jsPath); err == nil {
+            js := string(jsData)
+            if brandName != "" && brandName != "MaClaw" {
+                html = strings.ReplaceAll(html, "MaClaw", brandName)
+                js = strings.ReplaceAll(js, "MaClaw", brandName)
+            }
+            // Remove any existing <script src="admin.js"> tag to avoid double-loading.
+            html = strings.Replace(html, `<script src="admin.js"></script>`, "", 1)
+            // Inject JS right before </body> as a standalone document.write approach
+            // that bypasses any broken HTML structure.
+            injection := "\n<script>\n" + js + "\n</script>\n"
+            if idx := strings.LastIndex(html, "</body>"); idx >= 0 {
+                html = html[:idx] + injection + html[idx:]
+            } else {
+                html += injection
+            }
+        } else if brandName != "" && brandName != "MaClaw" {
+            html = strings.ReplaceAll(html, "MaClaw", brandName)
+        }
+
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+        w.Write([]byte(html))
     }
 
-    // Serve index.html with brand replacement.
-    data, err := os.ReadFile(indexPath)
-    if err != nil {
-        http.NotFound(w, r)
-        return
-    }
-    replaced := strings.ReplaceAll(string(data), "MaClaw", brandName)
-    w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    w.Write([]byte(replaced))
+    mux.HandleFunc("GET "+routePrefix, serve)
+    mux.HandleFunc("GET "+routePrefix+"/{rest...}", serve)
 }
 
 func registerBindStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
@@ -147,6 +175,10 @@ func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir 
 
     candidate := filepath.Join(staticDir, filepath.FromSlash(relPath))
     if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+        // Disable caching for HTML files to ensure updates are picked up immediately.
+        if strings.ToLower(filepath.Ext(relPath)) == ".html" || relPath == "index.html" {
+            w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+        }
         http.ServeFile(w, r, candidate)
         return
     }
@@ -160,6 +192,7 @@ func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir 
     }
 
     if _, err := os.Stat(indexPath); err == nil {
+        w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
         http.ServeFile(w, r, indexPath)
         return
     }

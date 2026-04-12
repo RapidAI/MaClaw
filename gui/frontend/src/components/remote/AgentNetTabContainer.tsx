@@ -1,10 +1,7 @@
 import React, { useState, Component, ReactNode } from "react";
 import { AgentNetTaskBoard } from "./AgentNetTaskBoard";
 import { AgentNetKnowledgePanel } from "./AgentNetKnowledgePanel";
-import { AgentNetSwarmPanel } from "./AgentNetSwarmPanel";
 import { AgentNetChatPanel } from "./AgentNetChatPanel";
-import { AgentNetResumePanel } from "./AgentNetResumePanel";
-import { AgentNetPredictionPanel } from "./AgentNetPredictionPanel";
 import { AgentNetNutshellPanel } from "./AgentNetNutshellPanel";
 import { colors } from "./styles";
 import { cnTabBtn } from "./agentnetStyles";
@@ -15,16 +12,13 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
 
 type Props = { lang: string; agentNetRunning: boolean };
 
-type AgentNetSubTab = "tasks" | "knowledge" | "swarm" | "chat" | "prediction" | "nutshell" | "resume";
+type AgentNetSubTab = "tasks" | "knowledge" | "chat" | "nutshell";
 
 const tabDefs: { id: AgentNetSubTab; icon: string; label: (lang: string) => string }[] = [
     { id: "tasks", icon: "🏪", label: (lang) => localizeText(lang, "Tasks", "任务集市") },
     { id: "knowledge", icon: "📚", label: (lang) => localizeText(lang, "Knowledge", "知识网络") },
-    { id: "swarm", icon: "🧠", label: (lang) => localizeText(lang, "Swarm", "群体思考") },
     { id: "chat", icon: "💬", label: (lang) => localizeText(lang, "Chat", "聊天") },
-    { id: "prediction", icon: "🔮", label: (lang) => localizeText(lang, "Predict", "预测市场") },
     { id: "nutshell", icon: "📦", label: (lang) => localizeText(lang, "Nutshell", "任务包") },
-    { id: "resume", icon: "📋", label: (lang) => localizeText(lang, "Resume", "简历/搜索") },
 ];
 
 // ErrorBoundary to prevent a single panel crash from white-screening the entire view
@@ -73,11 +67,8 @@ function renderSubTab(subTab: AgentNetSubTab, lang: string, agentNetRunning: boo
     switch (subTab) {
         case "tasks": return <AgentNetTaskBoard lang={lang} agentNetRunning={agentNetRunning} />;
         case "knowledge": return <AgentNetKnowledgePanel lang={lang} agentNetRunning={agentNetRunning} />;
-        case "swarm": return <AgentNetSwarmPanel lang={lang} agentNetRunning={agentNetRunning} />;
         case "chat": return <AgentNetChatPanel lang={lang} agentNetRunning={agentNetRunning} />;
-        case "prediction": return <AgentNetPredictionPanel lang={lang} agentNetRunning={agentNetRunning} />;
         case "nutshell": return <AgentNetNutshellPanel lang={lang} agentNetRunning={agentNetRunning} />;
-        case "resume": return <AgentNetResumePanel lang={lang} agentNetRunning={agentNetRunning} />;
         default: return null;
     }
 }

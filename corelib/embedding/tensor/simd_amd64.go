@@ -2,9 +2,26 @@
 
 package tensor
 
-// siluMulASM computes SiLU(gate) * up in-place into gate using AVX2.
-// gate and up must have the same length. Length must be >= 0.
-// Uses the Schraudolph fast exp approximation in SIMD.
-//
+// --- AVX2 assembly (Haswell+) ---
+
 //go:noescape
-func siluMulASM(gate, up []float32)
+func siluMulAVX2(gate, up []float32)
+
+// --- AVX1 assembly (Sandy/Ivy Bridge) ---
+
+//go:noescape
+func siluMulAVX1(gate, up []float32)
+
+// --- Runtime dispatch ---
+
+func siluMulASM(gate, up []float32) {
+	if hasAVX2andFMA {
+		siluMulAVX2(gate, up)
+		return
+	}
+	if hasAVX {
+		siluMulAVX1(gate, up)
+		return
+	}
+	siluMulScalar(gate, up)
+}

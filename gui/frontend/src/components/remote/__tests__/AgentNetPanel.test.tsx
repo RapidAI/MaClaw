@@ -13,8 +13,6 @@ const AgentNetExportIdentityMock = vi.fn();
 const AgentNetImportIdentityMock = vi.fn();
 const AgentNetOnlineBackupKeyMock = vi.fn();
 const AgentNetOnlineRestoreKeyMock = vi.fn();
-const AgentNetGetTransactionsMock = vi.fn();
-const AgentNetGetCreditsAuditMock = vi.fn();
 const AgentNetGetLeaderboardMock = vi.fn();
 const AgentNetAutoPickerGetStatusMock = vi.fn();
 const AgentNetAutoPickerConfigureMock = vi.fn();
@@ -38,8 +36,6 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     AgentNetImportIdentity: (...args: unknown[]) => AgentNetImportIdentityMock(...args),
     AgentNetOnlineBackupKey: (...args: unknown[]) => AgentNetOnlineBackupKeyMock(...args),
     AgentNetOnlineRestoreKey: (...args: unknown[]) => AgentNetOnlineRestoreKeyMock(...args),
-    AgentNetGetTransactions: (...args: unknown[]) => AgentNetGetTransactionsMock(...args),
-    AgentNetGetCreditsAudit: (...args: unknown[]) => AgentNetGetCreditsAuditMock(...args),
     AgentNetGetLeaderboard: (...args: unknown[]) => AgentNetGetLeaderboardMock(...args),
     AgentNetAutoPickerGetStatus: (...args: unknown[]) => AgentNetAutoPickerGetStatusMock(...args),
     AgentNetAutoPickerConfigure: (...args: unknown[]) => AgentNetAutoPickerConfigureMock(...args),
@@ -90,8 +86,6 @@ describe('AgentNetPanel guard behavior', () => {
         AgentNetImportIdentityMock.mockResolvedValue({ ok: true, restarted: false });
         AgentNetOnlineBackupKeyMock.mockResolvedValue({ ok: true });
         AgentNetOnlineRestoreKeyMock.mockResolvedValue({ ok: true, restarted: false });
-        AgentNetGetTransactionsMock.mockResolvedValue({ ok: true, transactions: [] });
-        AgentNetGetCreditsAuditMock.mockResolvedValue({ ok: true, audit: [] });
         AgentNetGetLeaderboardMock.mockResolvedValue({ ok: true, leaderboard: [] });
         AgentNetGetStatusMock.mockResolvedValue({ ok: true, peers: 0, unread_dm: 0, version: '1.0.0' });
         AgentNetGetPeersMock.mockResolvedValue({ ok: true, peers: [] });

@@ -45,6 +45,7 @@
     --theme-danger-bg: #fff5f5;
     --theme-link-color: #6366f1;
     --theme-info-bg: #eef2ff;
+    --theme-on-primary: #ffffff;
 }
 
 .about-page {
@@ -790,8 +791,8 @@ body {
 }
 
 .settings-top-tab.active {
-    color: var(--theme-text-primary);
-    background: var(--theme-primary-strong);
+    color: var(--theme-on-primary);
+    background: var(--primary-dark);
     border-color: transparent;
     box-shadow: var(--shadow-sm);
 }
@@ -1534,6 +1535,11 @@ body {
     100% { opacity: 0; bottom: 20px; }
 }
 
+@keyframes toast-slide-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
 /* Tool Grid Styles */
 .sidebar[data-ai-theme='dark'] {
     background: linear-gradient(180deg, var(--theme-surface) 0%, var(--theme-page-bg) 100%);
@@ -1849,8 +1855,8 @@ body {
 }
 
 .main-container[data-ai-theme='dark'] .settings-top-tab.active {
-    color: var(--theme-text-primary);
-    background: var(--theme-primary-strong);
+    color: var(--theme-on-primary);
+    background: var(--primary-dark);
     border-color: var(--theme-primary);
 }
 

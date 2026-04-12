@@ -173,14 +173,14 @@ func (p *AutoTaskPicker) discoverTasks(client *Client, hubURL string) ([]Task, e
 	matched, err := client.MatchTasks()
 	if err == nil && len(matched) > 0 {
 		var open []Task
-		for _, t := range matched { if t.TaskStatus == "open" { open = append(open, t) } }
+		for _, t := range matched { s := strings.ToLower(t.TaskStatus); if s == "open" || s == "created" { open = append(open, t) } }
 		if len(open) > 0 { return open, nil }
 	}
 	if hubURL == "" { return nil, nil }
 	netTasks, err := client.BrowseHubTasks(hubURL)
 	if err != nil { return nil, err }
 	var open []Task
-	for _, t := range netTasks { if t.TaskStatus == "open" { open = append(open, t) } }
+	for _, t := range netTasks { s := strings.ToLower(t.TaskStatus); if s == "open" || s == "created" { open = append(open, t) } }
 	return open, nil
 }
 
@@ -303,8 +303,8 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 		return map[string]interface{}{"ok": false, "error": msg}
 	}
 	normalizedStatus := strings.ToLower(task.TaskStatus)
-	if normalizedStatus != "open" && normalizedStatus != "settled" && normalizedStatus != "" {
-		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("task status is '%s', only 'open' tasks can be picked", task.TaskStatus)}
+	if normalizedStatus != "open" && normalizedStatus != "created" && normalizedStatus != "settled" && normalizedStatus != "" {
+		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("task status is '%s', only 'open'/'created' tasks can be picked", task.TaskStatus)}
 	}
 
 	run := &autoTaskRun{

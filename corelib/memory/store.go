@@ -324,16 +324,30 @@ func (s *Store) recallForProjectLocked(bm25Scores map[string]float64, vecScores 
 		if !e.IsActive() {
 			continue
 		}
-		// Scope filtering: project-scoped entries only match their project.
+		// Scope filtering: project-scoped entries are only excluded when they
+		// are explicitly bound to a DIFFERENT project. An entry is considered
+		// bound to a project if it has a tag that looks like a directory path
+		// (starts with / or X:\). Entries without any path-like tags are
+		// treated as globally visible — they may be project_knowledge but
+		// not tied to a specific project (e.g. server credentials).
 		if e.Scope == ScopeProject && projectLower != "" {
-			matched := false
+			boundToOtherProject := false
 			for _, tag := range e.Tags {
-				if strings.ToLower(tag) == projectLower {
-					matched = true
-					break
+				tl := strings.ToLower(tag)
+				// Heuristic: a tag is a project path if it starts with / or drive letter
+				isPath := (len(tl) > 1 && tl[0] == '/') ||
+					(len(tl) > 2 && tl[1] == ':' && (tl[2] == '/' || tl[2] == '\\'))
+				if isPath {
+					if tl != projectLower && !strings.HasPrefix(projectLower, tl) {
+						boundToOtherProject = true
+					} else {
+						// Matches current project — not bound to other
+						boundToOtherProject = false
+						break
+					}
 				}
 			}
-			if !matched {
+			if boundToOtherProject {
 				continue
 			}
 		}

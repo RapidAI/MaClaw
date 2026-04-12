@@ -147,7 +147,12 @@ type SkillYAMLFile struct {
 	Platforms        []string        `yaml:"platforms"`
 	RequiresGUI      bool            `yaml:"requires_gui"`
 	ProducesArtifact *bool           `yaml:"produces_artifact,omitempty"` // false = diagnostic/instruction skill, no file output expected
-	Mode             string          `yaml:"mode,omitempty"`              // "sequential" (default) | "interactive"
+	Mode             string          `yaml:"mode,omitempty"`              // "sequential" (default) | "interactive" | "api_workflow"
+	ExecMode         string          `yaml:"exec_mode,omitempty"`         // "all" (default) | "first" | "named"
+	GlobalTimeout    int             `yaml:"global_timeout,omitempty"`    // per-skill global timeout in seconds
+	RequiredArgs     []string        `yaml:"required_args,omitempty"`     // required template variables
+	RequiredEnv      []string        `yaml:"required_env,omitempty"`      // required environment variables
+	PreferredShell   string          `yaml:"shell,omitempty"`             // "bash" or "cmd"; empty = auto-detect
 	Extra            map[string]any  `yaml:"-"`
 }
 
@@ -158,7 +163,9 @@ type SkillYAMLStep struct {
 	OnError        string                 `yaml:"on_error"`
 	Name           string                 `yaml:"name,omitempty"`
 	Condition      string                 `yaml:"condition,omitempty"`
-	TimeoutSeconds int                    `yaml:"timeout,omitempty"` // per-step timeout in seconds (0 = use default)
+	Label          string                 `yaml:"label,omitempty"`           // step selector label for api_workflow mode
+	Capture        map[string]string      `yaml:"capture,omitempty"`         // output capture: varName → regex pattern
+	TimeoutSeconds int                    `yaml:"timeout,omitempty"`         // per-step timeout in seconds (0 = use default)
 	ContinueOnErr  bool                   `yaml:"continue_on_error"`
 }
 
@@ -174,7 +181,8 @@ func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
 	knownKeys := map[string]bool{
 		"name": true, "description": true, "triggers": true, "steps": true,
 		"status": true, "platforms": true, "requires_gui": true,
-		"produces_artifact": true,
+		"produces_artifact": true, "required_args": true, "required_env": true,
+		"shell": true, "mode": true,
 	}
 	extra := make(map[string]any)
 	for k, v := range raw {
@@ -237,6 +245,9 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 		if name == "" {
 			name = fallbackName
 		}
+		// Preserve the directory name and skill.yaml name for alias lookup
+		// when SKILL.md may override the display name.
+		yamlName := name
 		status := sf.Status
 		if status == "" {
 			status = "active"
@@ -264,6 +275,8 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				OnError:   onError,
 				Name:      s.Name,
 				Condition: s.Condition,
+				Label:     s.Label,
+				Capture:   s.Capture,
 			})
 		}
 		if len(steps) == 0 {
@@ -282,6 +295,25 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				ProducesArtifact:    &producesArtifact,
 			})
 			if err == nil {
+				// If SKILL.md overrode the name (e.g. H1 heading "Python 测试"
+				// vs skill.yaml name "_test-python"), preserve the yaml/dir name
+				// as DirName so run_skill can find it by either name.
+				if parsed.Name != yamlName {
+					parsed.DirName = yamlName
+				}
+				if parsed.DirName == "" && fallbackName != parsed.Name {
+					parsed.DirName = fallbackName
+				}
+				// YAML fields take precedence over markdown frontmatter.
+				if len(sf.RequiredArgs) > 0 {
+					parsed.RequiredArgs = sf.RequiredArgs
+				}
+				if len(sf.RequiredEnv) > 0 {
+					parsed.RequiredEnv = sf.RequiredEnv
+				}
+				if sf.PreferredShell != "" {
+					parsed.PreferredShell = sf.PreferredShell
+				}
 				if mdPath, mdErr := skillMarkdownPath(skillDir); mdErr == nil {
 					return parsed, mdPath, nil
 				}
@@ -294,6 +326,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 		}
 		return &corelib.NLSkillEntry{
 			Name:        name,
+			DirName:     fallbackName, // directory name for alias lookup
 			Description: sf.Description,
 			Triggers:    sf.Triggers,
 			Steps:       steps,
@@ -302,9 +335,14 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			Platforms:   sf.Platforms,
 			RequiresGUI: sf.RequiresGUI,
 			Mode:        sf.Mode,
+			ExecMode:    sf.ExecMode,
+			GlobalTimeout: sf.GlobalTimeout,
 			SkillDir:    skillDir,
 			CreatedAt:   fileModTime(yamlPath),
 			ProducesArtifact: producesArtifact,
+			RequiredArgs:   sf.RequiredArgs,
+			RequiredEnv:    sf.RequiredEnv,
+			PreferredShell: sf.PreferredShell,
 		}, yamlPath, nil
 	}
 
@@ -315,6 +353,10 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 	})
 	if err != nil {
 		return nil, "", err
+	}
+	// Set DirName when SKILL.md name differs from directory name
+	if parsed.Name != fallbackName {
+		parsed.DirName = fallbackName
 	}
 	if mdPath, mdErr := skillMarkdownPath(skillDir); mdErr == nil {
 		return parsed, mdPath, nil

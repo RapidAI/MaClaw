@@ -11,7 +11,7 @@ export interface Colleague {
 }
 
 export function listColleagues(): Promise<Colleague[]> {
-  return apiGet('/admin/colleagues');
+  return apiGet<{ colleagues: Colleague[] }>('/admin/colleagues').then(d => d.colleagues || []);
 }
 
 export function createColleague(data: { name: string; code: string; role_id?: string }): Promise<Colleague> {

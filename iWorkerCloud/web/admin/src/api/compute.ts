@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiDelete } from './client';
+import { apiGet, apiPost, apiPut, apiDelete } from './client';
 
 export interface LLMProvider {
   id: string;
@@ -46,7 +46,7 @@ export function createProvider(data: Partial<LLMProvider> & { api_key?: string }
 }
 
 export function updateProvider(id: string, data: Partial<LLMProvider> & { api_key?: string }): Promise<LLMProvider> {
-  return apiPost(`/api/admin/compute/providers/${id}`, data); // PUT via POST
+  return apiPut(`/api/admin/compute/providers/${id}`, data);
 }
 
 export function deleteProvider(id: string): Promise<void> {

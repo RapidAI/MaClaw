@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 const (
@@ -816,6 +818,9 @@ func executeScript(scriptPath, language, workingDir string, timeout int, runtime
 	}
 	if strings.TrimSpace(workingDir) != "" {
 		cmd.Dir = workingDir
+	} else {
+		// Default to ~/.maclaw/workspace to avoid polluting home dir.
+		cmd.Dir = corelib.WorkspaceDir()
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

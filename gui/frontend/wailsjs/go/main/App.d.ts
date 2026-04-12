@@ -374,7 +374,6 @@ export function AgentNetCancelTask(arg1:string):Promise<any>;
 export function AgentNetGetTaskBids(arg1:string):Promise<any>;
 export function AgentNetMatchTasks():Promise<any>;
 export function AgentNetGetTaskBoard():Promise<any>;
-export function AgentNetGetTransactions():Promise<any>;
 export function AgentNetGetLeaderboard():Promise<any>;
 export function AgentNetGetDaemonInfo():Promise<any>;
 export function AgentNetGetDiagnostics():Promise<any>;

@@ -50,21 +50,22 @@ type Status struct {
 }
 
 type Peer struct {
-	PeerID  string `json:"peer_id"`
-	Addr    string `json:"addr,omitempty"`
-	Latency string `json:"latency,omitempty"`
-	Country string `json:"country,omitempty"`
-	City    string `json:"city,omitempty"`
+	PeerID  string   `json:"peer_id"`
+	Addrs   []string `json:"addrs,omitempty"`
+	Addr    string   `json:"addr,omitempty"`
+	Latency string   `json:"latency,omitempty"`
+	Country string   `json:"country,omitempty"`
+	City    string   `json:"city,omitempty"`
 }
 
 type Task struct {
 	ID          string         `json:"id"`
 	Title       string         `json:"title"`
 	Description string         `json:"description,omitempty"`
-	TaskStatus  string         `json:"status"`
+	TaskStatus  string         `json:"state"`
 	Reward      float64        `json:"reward"`
-	Creator     string         `json:"creator,omitempty"`
-	Assignee    string         `json:"assignee,omitempty"`
+	Creator     string         `json:"publisher,omitempty"`
+	Assignee    string         `json:"claimant,omitempty"`
 	TargetPeer  string         `json:"target_peer,omitempty"`
 	Tags        FlexStringList `json:"tags,omitempty"`
 	CreatedAt   string         `json:"created_at,omitempty"`
@@ -97,25 +98,38 @@ func (f *FlexStringList) UnmarshalJSON(data []byte) error {
 }
 
 type Credits struct {
-	Balance      float64 `json:"balance"`
-	Tier         string  `json:"tier"`
-	TierRank     int     `json:"tier_rank,omitempty"`
-	Energy       float64 `json:"energy,omitempty"`
-	Currency     string  `json:"currency,omitempty"`
-	ExchangeRate float64 `json:"exchange_rate,omitempty"`
-	LocalValue   string  `json:"local_value,omitempty"`
+	Balance        float64 `json:"shell_balance"`
+	LifetimeEarned float64 `json:"lifetime_earned,omitempty"`
+	LifetimeSpent  float64 `json:"lifetime_spent,omitempty"`
+	LockedShell    float64 `json:"locked_shell,omitempty"`
+	DID            string  `json:"did,omitempty"`
+	Tier           string  `json:"tier,omitempty"`
+	TierRank       int     `json:"tier_rank,omitempty"`
+	Energy         float64 `json:"energy,omitempty"`
+	Currency       string  `json:"currency,omitempty"`
+	ExchangeRate   float64 `json:"exchange_rate,omitempty"`
+	LocalValue     string  `json:"local_value,omitempty"`
 }
 
 type KnowledgeEntry struct {
 	ID        string   `json:"id"`
-	Title     string   `json:"title"`
+	Title     string   `json:"title,omitempty"`
+	Intent    string   `json:"intent,omitempty"`
 	Body      string   `json:"body,omitempty"`
 	Author    string   `json:"author,omitempty"`
+	PeerID    string   `json:"peer_id,omitempty"`
+	SourceID  string   `json:"source_id,omitempty"`
 	Domain    string   `json:"domain,omitempty"`
 	Domains   []string `json:"domains,omitempty"`
+	Skills    string   `json:"skills,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
+	NodeType  string   `json:"node_type,omitempty"`
+	GraphID   string   `json:"graph_id,omitempty"`
 	Upvotes   int      `json:"upvotes,omitempty"`
+	NodeCount int      `json:"node_count,omitempty"`
+	EdgeCount int      `json:"edge_count,omitempty"`
 	CreatedAt string   `json:"created_at,omitempty"`
+	Metadata  string   `json:"metadata,omitempty"`
 }
 
 type Prediction struct {
@@ -135,10 +149,12 @@ type SwarmSession struct {
 }
 
 type DM struct {
-	PeerID string `json:"peer_id"`
-	Body   string `json:"body"`
-	Unread int    `json:"unread,omitempty"`
-	SentAt string `json:"sent_at,omitempty"`
+	PeerID    string `json:"peer_id,omitempty"`
+	From      string `json:"from,omitempty"`
+	Body      string `json:"body"`
+	Unread    int    `json:"unread,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+	SentAt    string `json:"sent_at,omitempty"`
 }
 
 type Resume struct {
@@ -159,13 +175,17 @@ type Profile struct {
 type Topic struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	Access      string `json:"access,omitempty"`
 	Members     int    `json:"members,omitempty"`
+	Messages    int    `json:"messages,omitempty"`
+	JoinedAt    string `json:"joined_at,omitempty"`
 }
 
 type TopicMessage struct {
-	PeerID string `json:"peer_id,omitempty"`
-	Body   string `json:"body"`
-	SentAt string `json:"sent_at,omitempty"`
+	ID        string `json:"id,omitempty"`
+	From      string `json:"from,omitempty"`
+	Body      string `json:"body"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 // Service represents a P2P service registered on the network.
@@ -596,6 +616,59 @@ func (c *Client) put(path string, payload interface{}, out interface{}) error {
 	return nil
 }
 
+// getList fetches a JSON endpoint and decodes into out (must be a pointer to a
+// slice). The daemon may return a bare JSON array or an object wrapping the
+// array under one of the given keys. extraKeys are checked in addition to the
+// built-in fallbacks "data", "results", "items".
+func (c *Client) getList(path string, out interface{}, extraKeys ...string) error {
+	var raw json.RawMessage
+	if err := c.get(path, &raw); err != nil {
+		return err
+	}
+	// Fast path: bare array.
+	if err := json.Unmarshal(raw, out); err == nil {
+		return nil
+	}
+	// Slow path: wrapped object.
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return fmt.Errorf("%s: unexpected response format", path)
+	}
+	keys := append(extraKeys, "data", "results", "items")
+	for _, key := range keys {
+		if v, ok := wrapper[key]; ok {
+			if err := json.Unmarshal(v, out); err == nil {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%s: cannot find array in response", path)
+}
+
+// postList is like getList but uses POST with a JSON payload.
+func (c *Client) postList(path string, payload interface{}, out interface{}, extraKeys ...string) error {
+	var raw json.RawMessage
+	if err := c.post(path, payload, &raw); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, out); err == nil {
+		return nil
+	}
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return fmt.Errorf("%s: unexpected response format", path)
+	}
+	keys := append(extraKeys, "data", "results", "items")
+	for _, key := range keys {
+		if v, ok := wrapper[key]; ok {
+			if err := json.Unmarshal(v, out); err == nil {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%s: cannot find array in response", path)
+}
+
 // ---------- Status & Peers ----------
 
 func (c *Client) GetStatus() (*Status, error) {
@@ -605,18 +678,18 @@ func (c *Client) GetStatus() (*Status, error) {
 
 func (c *Client) GetPeers() ([]Peer, error) {
 	var peers []Peer
-	return peers, c.get("/api/peers", &peers)
+	return peers, c.getList("/api/peers", &peers, "peers")
 }
 
 // ---------- Task Bazaar ----------
 
 func (c *Client) ListTasks(status string) ([]Task, error) {
-	path := "/api/tasks"
+	path := "/api/tasks/board"
 	if status != "" {
 		path += "?status=" + url.QueryEscape(status)
 	}
 	var tasks []Task
-	return tasks, c.get(path, &tasks)
+	return tasks, c.getList(path, &tasks, "tasks", "value")
 }
 
 func (c *Client) GetTaskBoard() (map[string]interface{}, error) {
@@ -661,7 +734,7 @@ func (c *Client) AssignTask(id, peerID string) error {
 }
 
 func (c *Client) ClaimTask(id string) error  { return c.post("/api/tasks/"+id+"/claim", nil, nil) }
-func (c *Client) ApproveTask(id string) error { return c.post("/api/tasks/"+id+"/approve", nil, nil) }
+func (c *Client) ApproveTask(id string) error { return c.post("/api/tasks/"+id+"/accept", nil, nil) }
 func (c *Client) RejectTask(id string) error  { return c.post("/api/tasks/"+id+"/reject", nil, nil) }
 func (c *Client) CancelTask(id string) error  { return c.post("/api/tasks/"+id+"/cancel", nil, nil) }
 
@@ -709,11 +782,6 @@ func (c *Client) GetCreditsHistory() ([]map[string]interface{}, error) {
 	return history, c.get("/api/credits/history", &history)
 }
 
-func (c *Client) GetCreditsTransactions() ([]map[string]interface{}, error) {
-	var txns []map[string]interface{}
-	return txns, c.get("/api/credits/transactions", &txns)
-}
-
 func (c *Client) TransferCredits(toDID string, amount float64, reason string) error {
 	payload := map[string]interface{}{"to": toDID, "amount": amount}
 	if reason != "" {
@@ -747,17 +815,67 @@ func (c *Client) GetKnowledgeFeed(domain string, limit int) ([]KnowledgeEntry, e
 		path += "?" + params.Encode()
 	}
 	var entries []KnowledgeEntry
-	return entries, c.get(path, &entries)
+	if err := c.getList(path, &entries, "entries", "feed", "graphs"); err != nil {
+		return nil, err
+	}
+	// The feed API returns graph-level metadata without content fields.
+	// Enrich each entry by fetching graph detail and extracting node intent.
+	c.enrichKnowledgeEntries(entries)
+	return entries, nil
+}
+
+// enrichKnowledgeEntries fetches graph details for entries that lack a title
+// and populates Title/Intent/Skills from the first node.
+func (c *Client) enrichKnowledgeEntries(entries []KnowledgeEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5) // concurrency limit
+
+	for i := range entries {
+		if entries[i].Title != "" || entries[i].Intent != "" || entries[i].Body != "" {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			var detail struct {
+				Nodes []struct {
+					Intent   string `json:"intent"`
+					Skills   string `json:"skills"`
+					NodeType string `json:"node_type"`
+				} `json:"nodes"`
+			}
+			if err := c.get("/api/knowledge/"+entries[idx].ID, &detail); err != nil || len(detail.Nodes) == 0 {
+				return
+			}
+			n := detail.Nodes[0]
+			if n.Intent != "" {
+				entries[idx].Title = n.Intent
+				entries[idx].Intent = n.Intent
+			}
+			if n.Skills != "" {
+				entries[idx].Skills = n.Skills
+			}
+			if n.NodeType != "" {
+				entries[idx].NodeType = n.NodeType
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 func (c *Client) SearchKnowledge(query string) ([]KnowledgeEntry, error) {
 	var entries []KnowledgeEntry
-	return entries, c.get("/api/knowledge/search?q="+url.QueryEscape(query), &entries)
+	return entries, c.postList("/api/knowledge/search", map[string]interface{}{"query": query}, &entries, "entries", "graphs")
 }
 
 func (c *Client) FindClaw(query string) ([]KnowledgeEntry, error) {
 	var entries []KnowledgeEntry
-	return entries, c.post("/api/knowledge/findclaw", map[string]interface{}{"query": query}, &entries)
+	return entries, c.postList("/api/knowledge/findclaw", map[string]interface{}{"query": query}, &entries, "entries", "graphs")
 }
 
 func (c *Client) PublishKnowledge(title, body string) (*KnowledgeEntry, error) {
@@ -899,7 +1017,7 @@ func (c *Client) SetMotto(motto string) error {
 
 func (c *Client) ListTopics() ([]Topic, error) {
 	var topics []Topic
-	return topics, c.get("/api/topics", &topics)
+	return topics, c.getList("/api/topics", &topics, "topics")
 }
 
 func (c *Client) CreateTopic(name, description string) error {
@@ -908,7 +1026,7 @@ func (c *Client) CreateTopic(name, description string) error {
 
 func (c *Client) GetTopicMessages(topicName string) ([]TopicMessage, error) {
 	var msgs []TopicMessage
-	return msgs, c.get("/api/topics/"+url.PathEscape(topicName)+"/messages", &msgs)
+	return msgs, c.getList("/api/topics/"+url.PathEscape(topicName)+"/messages", &msgs, "messages")
 }
 
 func (c *Client) PostTopicMessage(topicName, body string) error {
@@ -1053,18 +1171,12 @@ func (c *Client) GetTraffic() (map[string]interface{}, error) {
 }
 
 func (c *Client) SelfUpdate() error {
-	bin := c.binPath
-	if bin == "" {
-		bin = c.findBinary()
-	}
-	if bin == "" {
-		return fmt.Errorf("anet binary not found")
-	}
-	cmd := exec.Command(bin, "update")
-	hideCommandWindow(cmd)
-	out, err := cmd.CombinedOutput()
+	info, err := SmartUpdate(nil)
 	if err != nil {
-		return fmt.Errorf("update failed: %w — %s", err, string(out))
+		return err
+	}
+	if info != nil && info.NeedsUpdate {
+		return fmt.Errorf("update check passed but update was not applied")
 	}
 	return nil
 }
@@ -1118,15 +1230,33 @@ func (c *Client) tryAutoUpdate(logFn func(string)) {
 	if logFn != nil {
 		logFn("AgentNet: auto-update check started")
 	}
-	if err := c.SelfUpdate(); err != nil {
+
+	// Smart update: compare versions before downloading.
+	info, err := SmartUpdate(func(stage string, pct int, msg string) {
+		if logFn != nil {
+			logFn(fmt.Sprintf("AgentNet: [%s] %d%% %s", stage, pct, msg))
+		}
+	})
+	if err != nil {
 		if logFn != nil {
 			logFn(fmt.Sprintf("AgentNet: auto-update failed (non-fatal): %v", err))
 		}
 		return
 	}
+
 	writeLastUpdateTime()
+	if info != nil && !info.NeedsUpdate {
+		if logFn != nil {
+			logFn(fmt.Sprintf("AgentNet: already up to date (%s)", info.LocalVersion))
+		}
+		return
+	}
 	if logFn != nil {
-		logFn("AgentNet: auto-update completed successfully")
+		if info != nil {
+			logFn(fmt.Sprintf("AgentNet: updated %s → %s", info.LocalVersion, info.RemoteVersion))
+		} else {
+			logFn("AgentNet: auto-update completed successfully")
+		}
 	}
 	if !c.ping() && logFn != nil {
 		logFn("AgentNet: daemon unreachable after update — it may need a manual restart")

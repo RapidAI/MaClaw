@@ -9,7 +9,7 @@ export interface Role {
 }
 
 export function listRoles(): Promise<Role[]> {
-  return apiGet('/admin/roles');
+  return apiGet<{ roles: Role[] }>('/admin/roles').then(d => d.roles || []);
 }
 
 export function createRole(data: { code: string; name: string; description?: string }): Promise<Role> {

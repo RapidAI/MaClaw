@@ -13,8 +13,6 @@ import {
     AgentNetImportIdentity,
     AgentNetOnlineBackupKey,
     AgentNetOnlineRestoreKey,
-    AgentNetGetTransactions,
-    AgentNetGetCreditsAudit,
     AgentNetGetLeaderboard,
     AgentNetAutoPickerGetStatus,
     AgentNetAutoPickerConfigure,
@@ -66,8 +64,8 @@ const mono = {
 } as const;
 
 const tabStyle = (active: boolean) => ({
-    background: active ? colors.primary : colors.bg,
-    color: active ? "var(--theme-text-primary)" : colors.textSecondary,
+    background: active ? "var(--primary-dark)" : colors.bg,
+    color: active ? colors.onPrimary : colors.textSecondary,
     border: "none",
     borderRadius: radius.md,
     padding: "4px 12px",
@@ -116,9 +114,6 @@ export function AgentNetPanel({ config, saveRemoteConfigField, lang, onRunningCh
     const [keyBusy, setKeyBusy] = useState(false);
     const [keyMsg, setKeyMsg] = useState("");
     // Finance
-    const [financeTab, setFinanceTab] = useState<"transactions" | "audit" | "leaderboard">("transactions");
-    const [transactions, setTransactions] = useState<any[]>([]);
-    const [auditLog, setAuditLog] = useState<any[]>([]);
     const [leaderboard, setLeaderboard] = useState<any[]>([]);
     const [financeLoading, setFinanceLoading] = useState(false);
     const [financeOpen, setFinanceOpen] = useState(false);
@@ -200,23 +195,13 @@ export function AgentNetPanel({ config, saveRemoteConfigField, lang, onRunningCh
         } catch {}
     }, []);
 
-    const refreshFinance = useCallback(async (tab: "transactions" | "audit" | "leaderboard") => {
+    const refreshFinance = useCallback(async () => {
         setFinanceLoading(true);
         setFinanceError("");
         try {
-            if (tab === "transactions") {
-                const res = await AgentNetGetTransactions();
-                if (res.ok) setTransactions((res.transactions || []).slice(0, 20));
-                else setFinanceError(res.error || "Failed to load transactions");
-            } else if (tab === "audit") {
-                const res = await AgentNetGetCreditsAudit();
-                if (res.ok) setAuditLog((res.audit || []).slice(0, 20));
-                else setFinanceError(res.error || "Failed to load audit");
-            } else if (tab === "leaderboard") {
-                const res = await AgentNetGetLeaderboard();
-                if (res.ok) setLeaderboard((res.leaderboard || []).slice(0, 20));
-                else setFinanceError(res.error || "Failed to load leaderboard");
-            }
+            const res = await AgentNetGetLeaderboard();
+            if (res.ok) setLeaderboard((res.leaderboard || []).slice(0, 20));
+            else setFinanceError(res.error || "Failed to load leaderboard");
         } catch (e) {
             setFinanceError(String(e));
         }
@@ -297,8 +282,6 @@ export function AgentNetPanel({ config, saveRemoteConfigField, lang, onRunningCh
             setCredits(null);
             setFinanceOpen(false);
             setFinanceError("");
-            setTransactions([]);
-            setAuditLog([]);
             setLeaderboard([]);
             setPickerStatus(null);
             setTriggerMsg("");
@@ -626,7 +609,7 @@ export function AgentNetPanel({ config, saveRemoteConfigField, lang, onRunningCh
                     onClick={() => {
                         if (!financeOpen) {
                             setFinanceOpen(true);
-                            if (running) refreshFinance(financeTab);
+                            if (running) refreshFinance();
                         } else {
                             setFinanceOpen(false);
                         }
@@ -654,56 +637,14 @@ export function AgentNetPanel({ config, saveRemoteConfigField, lang, onRunningCh
                 )}
                 {financeOpen && running && (
                     <div style={{ padding: "0 14px 10px 14px", borderTop: `1px solid ${colors.border}` }}>
-                        <div style={{ display: "flex", gap: "4px", margin: "10px 0" }}>
-                            {([
-                                { key: "transactions" as const, lbl: t("Transactions", "交易记录") },
-                                { key: "audit" as const, lbl: t("Audit", "审计日志") },
-                                { key: "leaderboard" as const, lbl: t("Leaderboard", "排行榜") },
-                            ]).map(t => (
-                                <button key={t.key} onClick={() => { setFinanceTab(t.key); refreshFinance(t.key); }} style={tabStyle(financeTab === t.key)}>
-                                    {t.lbl}
-                                </button>
-                            ))}
-                        </div>
+                        <div style={{ ...label, margin: "10px 0 6px 0", fontWeight: 500 }}>{t("Leaderboard", "排行榜")}</div>
                         {financeLoading && <div style={{ ...label, padding: "8px 0" }}>{t("Loading...", "加载中...")}</div>}
                         {!financeLoading && financeError && (
                             <div style={{ padding: "6px 0", fontSize: "0.72rem", color: colors.danger }}>
                                 {financeError}
                             </div>
                         )}
-                        {!financeLoading && !financeError && financeTab === "transactions" && (
-                            <div style={{ maxHeight: "180px", overflowY: "auto", fontSize: "0.72rem" }}>
-                                {transactions.length === 0 && <div style={{ ...label, padding: "6px 0" }}>{t("No transactions yet", "暂无交易记录")}</div>}
-                                {transactions.map((tx: any, i: number) => (
-                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: `1px solid ${colors.border}` }}>
-                                        <div>
-                                            <span style={{ color: colors.textSecondary }}>{tx.type || tx.description || "—"}</span>
-                                            {tx.created_at && <span style={{ marginLeft: "6px", color: colors.textMuted, fontSize: "0.65rem" }}>{tx.created_at}</span>}
-                                        </div>
-                                        <span style={{ fontWeight: 600, color: (tx.amount ?? 0) >= 0 ? colors.success : colors.danger, fontFamily: "monospace" }}>
-                                            {(tx.amount ?? 0) >= 0 ? "+" : ""}{tx.amount ?? 0}
-                                        </span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                        {!financeLoading && !financeError && financeTab === "audit" && (
-                            <div style={{ maxHeight: "180px", overflowY: "auto", fontSize: "0.72rem" }}>
-                                {auditLog.length === 0 && <div style={{ ...label, padding: "6px 0" }}>{t("No audit entries", "暂无审计记录")}</div>}
-                                {auditLog.map((entry: any, i: number) => (
-                                    <div key={i} style={{ padding: "4px 0", borderBottom: `1px solid ${colors.border}` }}>
-                                        <div style={{ display: "flex", justifyContent: "space-between" }}>
-                                            <span style={{ color: colors.textSecondary }}>{entry.action || entry.event || "—"}</span>
-                                            <span style={{ ...mono, color: colors.warning }}>{entry.amount ?? ""}</span>
-                                        </div>
-                                        {(entry.created_at || entry.timestamp) && (
-                                            <div style={{ fontSize: "0.65rem", color: colors.textMuted }}>{entry.created_at || entry.timestamp}</div>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                        {!financeLoading && !financeError && financeTab === "leaderboard" && (
+                        {!financeLoading && !financeError && (
                             <div style={{ maxHeight: "180px", overflowY: "auto", fontSize: "0.72rem" }}>
                                 {leaderboard.length === 0 && <div style={{ ...label, padding: "6px 0" }}>{t("No leaderboard data", "暂无排行数据")}</div>}
                                 {leaderboard.map((entry: any, i: number) => {

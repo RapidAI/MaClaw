@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  listProviders, createProvider, deleteProvider, toggleProvider, testProvider,
+  listProviders, createProvider, updateProvider, deleteProvider, toggleProvider, testProvider,
   listCenterPermissions, toggleCenterPermission, listCenterCosts,
   type LLMProvider, type CenterPermission, type CenterCostRow,
 } from '../api/compute';
@@ -46,7 +46,7 @@ export function ComputePowerPage() {
   };
   const handleSave = async () => {
     try {
-      if (editId) await createProvider({ ...form, id: editId } as any); // update
+      if (editId) await updateProvider(editId, form as any);
       else await createProvider(form as any);
       setShowForm(false); load();
     } catch (e: any) { alert(e.message); }
@@ -109,7 +109,7 @@ export function ComputePowerPage() {
                 <div><label>User-Agent</label><input value={form.user_agent} onChange={e => set('user_agent', e.target.value)} /></div>
                 <div><label>{t('compute.computeType')}</label>
                   <select value={form.compute_type} onChange={e => set('compute_type', e.target.value)}>
-                    <option value="general">通用</option><option value="coding">编程</option><option value="document">文档</option><option value="analysis">分析</option>
+                    <option value="general">{t('compute.typeGeneral')}</option><option value="coding">{t('compute.typeCoding')}</option><option value="document">{t('compute.typeDocument')}</option><option value="analysis">{t('compute.typeAnalysis')}</option>
                   </select>
                 </div>
                 <div><label>{t('compute.model')}</label><input value={form.model} onChange={e => set('model', e.target.value)} placeholder="gpt-4" /></div>
