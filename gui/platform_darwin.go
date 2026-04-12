@@ -651,3 +651,8 @@ func (a *App) isWindowsTerminalAvailable() bool {
 func (a *App) IsWindowsTerminalAvailable() bool {
 	return false
 }
+
+// findSh locates a Unix shell. On macOS, /bin/sh is always available.
+func (a *App) findSh() (string, error) {
+	return "/bin/sh", nil
+}
