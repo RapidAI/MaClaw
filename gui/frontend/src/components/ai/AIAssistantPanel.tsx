@@ -191,46 +191,46 @@ const lightTheme: Theme = {
 };
 
 const darkTheme: Theme = {
-    bg: "var(--theme-page-bg)",
-    titleBarBg: "var(--theme-surface)",
-    titleBarBorder: "var(--theme-border)",
+    bg: "#0b1220",
+    titleBarBg: "#111827",
+    titleBarBorder: "#334155",
     titleText: "#f1f5f9",
     text: "#f1f5f9",
     textMuted: "#cbd5e1",
-    inputBarBg: "var(--theme-surface-muted)",
-    inputBarBorder: "var(--theme-border)",
-    inputText: "var(--theme-text-primary)",
-    codeBg: "var(--theme-surface-muted)",
-    codeText: "var(--theme-danger)",
-    codeBlockBg: "var(--theme-surface)",
-    codeBlockBorder: "var(--theme-border)",
-    codeBlockLang: "var(--theme-text-muted)",
-    borderLeft: "var(--theme-border)",
-    responseBorderLeft: "var(--theme-primary-strong)",
-    headingColor: "var(--theme-primary-soft)",
-    linkColor: "var(--theme-primary-soft)",
-    pathColor: "var(--theme-success)",
-    promptColor: "var(--theme-primary-soft)",
-    userColor: "var(--theme-primary)",
-    divider: "var(--theme-border)",
-    fieldBg: "var(--theme-surface)",
+    inputBarBg: "#0f172a",
+    inputBarBorder: "#334155",
+    inputText: "#e5e7eb",
+    codeBg: "#0f172a",
+    codeText: "#f87171",
+    codeBlockBg: "#111827",
+    codeBlockBorder: "#334155",
+    codeBlockLang: "#94a3b8",
+    borderLeft: "#334155",
+    responseBorderLeft: "#6366f1",
+    headingColor: "#c4b5fd",
+    linkColor: "#c4b5fd",
+    pathColor: "#4ade80",
+    promptColor: "#c4b5fd",
+    userColor: "#818cf8",
+    divider: "#334155",
+    fieldBg: "#111827",
     fieldBorder: "rgba(148, 163, 184, 0.2)",
-    fieldLabel: "var(--theme-text-muted)",
-    errorText: "var(--theme-danger)",
-    errorBg: "var(--theme-danger-bg)",
-    errorBorder: "var(--theme-danger)",
-    emptyHint: "var(--theme-text-muted)",
-    boldColor: "var(--theme-text-primary)",
-    italicColor: "var(--theme-text-secondary)",
-    bulletColor: "var(--theme-text-muted)",
-    quoteBorder: "var(--theme-primary-strong)",
-    quoteText: "var(--theme-text-secondary)",
-    btnColor: "var(--theme-primary-soft)",
-    btnBorder: "var(--theme-primary-strong)",
-    actionBtnColor: "var(--theme-text-secondary)",
-    closeBtnColor: "var(--theme-text-secondary)",
-    sendBtnColor: "var(--theme-primary-soft)",
-    sendBtnBorder: "var(--theme-primary-strong)",
+    fieldLabel: "#94a3b8",
+    errorText: "#f87171",
+    errorBg: "rgba(239, 68, 68, 0.12)",
+    errorBorder: "#f87171",
+    emptyHint: "#94a3b8",
+    boldColor: "#f1f5f9",
+    italicColor: "#cbd5e1",
+    bulletColor: "#94a3b8",
+    quoteBorder: "#6366f1",
+    quoteText: "#cbd5e1",
+    btnColor: "#c4b5fd",
+    btnBorder: "#6366f1",
+    actionBtnColor: "#cbd5e1",
+    closeBtnColor: "#cbd5e1",
+    sendBtnColor: "#c4b5fd",
+    sendBtnBorder: "#6366f1",
 };
 
 /* ── Style constants ── */
@@ -451,7 +451,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
 
     if (/^[-*]\s/.test(trimmed)) {
         return (
-            <div key={key} style={{ paddingLeft: "1em", textIndent: "-0.7em", minHeight: "1.4em" }}>
+            <div key={key} style={{ paddingLeft: "1em", textIndent: "-0.7em", minHeight: "1.4em", color: t.text }}>
                 <span style={{ color: t.bulletColor }}>•</span>{" "}
                 {renderInlineMarkdown(trimmed.slice(2), t)}
             </div>
@@ -461,7 +461,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
     const numMatch = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
     if (numMatch) {
         return (
-            <div key={key} style={{ paddingLeft: "1.2em", textIndent: "-1.2em", minHeight: "1.4em" }}>
+            <div key={key} style={{ paddingLeft: "1.2em", textIndent: "-1.2em", minHeight: "1.4em", color: t.text }}>
                 <span style={{ color: t.bulletColor }}>{numMatch[1]}.</span>{" "}
                 {renderInlineMarkdown(numMatch[2], t)}
             </div>
@@ -469,7 +469,7 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
     }
 
     return (
-        <div key={key} style={{ minHeight: "1.4em" }}>
+        <div key={key} style={{ minHeight: "1.4em", color: t.text }}>
             {renderInlineMarkdown(text, t) || "\u00A0"}
         </div>
     );
