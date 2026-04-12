@@ -1019,6 +1019,20 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 	// BUG-004: Generate a unique Run ID for tracking and status queries
 	runID := fmt.Sprintf("run-%d-%d", time.Now().UnixMilli(), skill.UsageCount+1)
 
+	// Operation-based routing for api_workflow mode skills.
+	var selectedLabels []string
+	isAPIWorkflow := strings.EqualFold(skill.Mode, "api_workflow")
+	if isAPIWorkflow {
+		if opName := stringArg(args, "operation"); opName != "" {
+			for _, op := range skill.Operations {
+				if strings.EqualFold(op.Name, opName) {
+					selectedLabels = op.Labels
+					break
+				}
+			}
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("▶ 执行技能: %s (%d 步) [%s]\n", skill.Name, len(skill.Steps), runID))
 	allSuccess := true
@@ -1037,13 +1051,30 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 			continue
 		}
 
+		// api_workflow mode: skip steps not matching selected labels.
+		if isAPIWorkflow && len(selectedLabels) > 0 {
+			if step.Label == "" || !containsStringTUI(selectedLabels, step.Label) {
+				sb.WriteString(fmt.Sprintf("\n── 步骤 %d/%d: %s ── [skipped: label %q not selected]\n", i+1, len(skill.Steps), step.Action, step.Label))
+				continue
+			}
+		}
+
+		// Dynamic when condition: evaluate expression with template vars.
+		if step.When != "" {
+			resolved := substituteSkillVarsInStringTUI(step.When, vars)
+			if !evaluateSimpleConditionTUI(resolved) {
+				sb.WriteString(fmt.Sprintf("\n── 步骤 %d/%d: %s ── [skipped: when %q false]\n", i+1, len(skill.Steps), step.Action, step.When))
+				continue
+			}
+		}
+
 		stepStart := time.Now()
 		sb.WriteString(fmt.Sprintf("\n── 步骤 %d/%d: %s ──\n", i+1, len(skill.Steps), step.Action))
 
 		// Resolve step params with captured variables from previous steps
 		resolvedStep := resolveSkillStepTUI(step, vars, skill.SkillDir)
 
-		output, execErr := runSkillStep(resolvedStep, skill.SkillDir, vars)
+		output, execErr := runSkillStepWithPollTUI(resolvedStep, skill.SkillDir, vars)
 		elapsed := time.Since(stepStart).Truncate(time.Millisecond)
 
 		if execErr != nil {
@@ -1119,7 +1150,7 @@ func normalizeRunSkillVars(args map[string]interface{}) map[string]string {
 		}
 	}
 	// Also check top-level keys that look like template variables
-	for _, key := range []string{"input", "output", "query", "url", "text", "file", "path", "format"} {
+	for _, key := range []string{"input", "output", "query", "url", "text", "file", "path", "format", "operation"} {
 		if v, ok := args[key].(string); ok && v != "" {
 			if _, exists := vars[key]; !exists {
 				vars[key] = v
@@ -1395,6 +1426,95 @@ func classifySkillStepError(output string, err error) string {
 		return "timeout: 步骤执行超时，可能是 craft_tool 脚本挂起。建议增加 timeout 参数或检查脚本是否有阻塞操作"
 	}
 	return ""
+}
+
+// runSkillStepWithPollTUI wraps runSkillStep with optional poll loop.
+// When step.Poll is configured, the step is re-executed at intervals until
+// the output matches the termination condition or max attempts are exhausted.
+func runSkillStepWithPollTUI(step corelib.NLSkillStep, skillDir string, vars map[string]string) (string, error) {
+	if step.Poll == nil {
+		return runSkillStep(step, skillDir, vars)
+	}
+	poll := step.Poll
+	interval := time.Duration(poll.Interval) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	maxAttempts := poll.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 20
+	}
+	var matchRe *regexp.Regexp
+	if poll.UntilMatch != "" {
+		matchRe, _ = regexp.Compile(poll.UntilMatch)
+	}
+	var lastOutput string
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		output, err := runSkillStep(step, skillDir, vars)
+		lastOutput = output
+		if err != nil {
+			return output, err
+		}
+		if matchRe != nil && matchRe.MatchString(output) {
+			return output, nil
+		}
+		if poll.UntilStatus != "" && strings.Contains(output, poll.UntilStatus) {
+			return output, nil
+		}
+		if matchRe == nil && poll.UntilStatus == "" {
+			return output, nil
+		}
+		if attempt < maxAttempts {
+			time.Sleep(interval)
+		}
+	}
+	return lastOutput, fmt.Errorf("poll exhausted after %d attempts without matching condition", maxAttempts)
+}
+
+// containsStringTUI checks if a string slice contains a target string (case-insensitive).
+func containsStringTUI(slice []string, target string) bool {
+	for _, s := range slice {
+		if strings.EqualFold(s, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// substituteSkillVarsInStringTUI replaces {{key}} and ${key} placeholders.
+func substituteSkillVarsInStringTUI(s string, vars map[string]string) string {
+	for k, v := range vars {
+		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
+		s = strings.ReplaceAll(s, "${"+k+"}", v)
+	}
+	return s
+}
+
+// evaluateSimpleConditionTUI evaluates a simple condition expression.
+// Supported: "a == b", "a != b", "a contains b", bare truthy.
+func evaluateSimpleConditionTUI(expr string) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return false
+	}
+	// Space-delimited operators first for accuracy
+	if idx := strings.Index(expr, " contains "); idx > 0 {
+		return strings.Contains(strings.TrimSpace(expr[:idx]), strings.TrimSpace(expr[idx+len(" contains "):]))
+	}
+	if idx := strings.Index(expr, " != "); idx > 0 {
+		return strings.TrimSpace(expr[:idx]) != strings.TrimSpace(expr[idx+len(" != "):])
+	}
+	if idx := strings.Index(expr, " == "); idx > 0 {
+		return strings.TrimSpace(expr[:idx]) == strings.TrimSpace(expr[idx+len(" == "):])
+	}
+	// Fallback: compact form
+	if parts := strings.SplitN(expr, "!=", 2); len(parts) == 2 {
+		return strings.TrimSpace(parts[0]) != strings.TrimSpace(parts[1])
+	}
+	if parts := strings.SplitN(expr, "==", 2); len(parts) == 2 {
+		return strings.TrimSpace(parts[0]) == strings.TrimSpace(parts[1])
+	}
+	return true
 }
 
 // checkCommandDependencyTUI checks if the primary command in a bash step

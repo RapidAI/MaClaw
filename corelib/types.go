@@ -111,14 +111,35 @@ type LocalMCPServerEntry struct {
 }
 
 // NLSkillStep 描述自然语言技能中的单个操作步骤。
+// StepPollConfig configures repeated execution of a step until a condition is met.
+// Used for async tasks where the runner needs to poll for completion.
+type StepPollConfig struct {
+	Interval    int    `json:"interval"`              // poll interval in seconds (default 5)
+	MaxAttempts int    `json:"max_attempts"`           // max poll attempts (default 20)
+	UntilMatch  string `json:"until_match,omitempty"`  // regex: stop when output matches
+	UntilStatus string `json:"until_status,omitempty"` // shorthand: stop when output contains this string
+}
+
 type NLSkillStep struct {
 	Action    string                 `json:"action"`
 	Params    map[string]interface{} `json:"params"`
 	OnError   string                 `json:"on_error"`   // "stop" (default), "continue"
 	Name      string                 `json:"name,omitempty"`      // optional descriptive name
 	Condition string                 `json:"condition,omitempty"` // "" (always), "on_failure", "on_success"
+	When      string                 `json:"when,omitempty"`      // conditional expression, e.g. "{{operation}} == generate"
 	Label     string                 `json:"label,omitempty"`     // step selector label for api_workflow mode
 	Capture   map[string]string      `json:"capture,omitempty"`   // output capture: varName → regex pattern (first submatch group)
+	Poll      *StepPollConfig        `json:"poll,omitempty"`      // poll config for async steps
+}
+
+// NLSkillOperation describes a named operation within an api_workflow skill.
+// Operations map user intent to step labels, enabling the runner to execute
+// only the relevant subset of steps.
+type NLSkillOperation struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Params      []string `json:"params,omitempty"`
+	Labels      []string `json:"labels,omitempty"`
 }
 
 // NLSkillEntry 描述一个自然语言技能条目。
@@ -141,7 +162,8 @@ type NLSkillEntry struct {
 	Mode             string        `json:"mode,omitempty"`         // "sequential" (default) | "interactive" | "api_workflow"
 	ExecMode         string        `json:"exec_mode,omitempty"`    // "all" (default) | "first" | "named"
 	GlobalTimeout    int           `json:"global_timeout,omitempty"` // per-skill global timeout in seconds (0 = use default 300s)
-	ProducesArtifact bool          `json:"produces_artifact"`      // true = expects file output (default); false = diagnostic/instruction only
+	ProducesArtifact bool                `json:"produces_artifact"`          // true = expects file output (default); false = diagnostic/instruction only
+	Operations       []NLSkillOperation  `json:"operations,omitempty"`       // named operations for api_workflow mode
 	RequiredArgs     []string      `json:"required_args,omitempty"`  // required template variables (e.g. "input", "output")
 	RequiredEnv      []string      `json:"required_env,omitempty"`   // required environment variables (e.g. "API_KEY")
 	PreferredShell   string        `json:"preferred_shell,omitempty"` // "bash" or "cmd"; empty = auto-detect

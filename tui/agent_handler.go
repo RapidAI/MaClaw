@@ -324,7 +324,9 @@ func (h *TUIAgentHandler) buildSystemPromptWithFirstTurn(_ string, isFirstTurn b
 exec_background 通过 nohup 在服务器端后台运行，SSH 断连不影响执行。
 
 用法:
-1. ssh(action=connect, host=..., user=...) — 连接服务器
+1. ssh(action=connect, host=..., user=..., password=...) — 连接服务器（推荐使用密码认证）
+   - 当用户提供了密码时，必须传 password 参数，不要省略
+   - 密钥认证失败时，应询问用户密码并用 password 参数重试
 2. ssh(action=exec, session_id=..., command=...) — 执行短命令（ls、cat、echo 等）
 3. ssh(action=exec_background, session_id=..., command=...) — 执行长命令（安装、编译、下载等）
 4. ssh(action=check_task, task_id=...) — 查看后台任务进度和日志

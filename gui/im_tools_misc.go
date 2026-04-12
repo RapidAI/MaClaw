@@ -581,6 +581,10 @@ func buildRunSkillArgs(args map[string]interface{}) map[string]interface{} {
 	if steps, ok := args["steps"]; ok {
 		runArgs["steps"] = steps
 	}
+	// Pass operation name for api_workflow mode skills.
+	if op, ok := args["operation"].(string); ok && op != "" {
+		runArgs["operation"] = op
+	}
 	// Pass env vars for injection into skill subprocess.
 	if env, ok := args["env"].(map[string]interface{}); ok && len(env) > 0 {
 		runArgs["env"] = env

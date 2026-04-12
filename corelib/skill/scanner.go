@@ -139,21 +139,38 @@ func ScanAllSkillDirs() []corelib.NLSkillEntry {
 
 // SkillYAMLFile is the on-disk YAML format for a skill definition.
 type SkillYAMLFile struct {
-	Name             string          `yaml:"name"`
-	Description      string          `yaml:"description"`
-	Triggers         []string        `yaml:"triggers"`
-	Steps            []SkillYAMLStep `yaml:"steps"`
-	Status           string          `yaml:"status"`
-	Platforms        []string        `yaml:"platforms"`
-	RequiresGUI      bool            `yaml:"requires_gui"`
-	ProducesArtifact *bool           `yaml:"produces_artifact,omitempty"` // false = diagnostic/instruction skill, no file output expected
-	Mode             string          `yaml:"mode,omitempty"`              // "sequential" (default) | "interactive" | "api_workflow"
-	ExecMode         string          `yaml:"exec_mode,omitempty"`         // "all" (default) | "first" | "named"
-	GlobalTimeout    int             `yaml:"global_timeout,omitempty"`    // per-skill global timeout in seconds
-	RequiredArgs     []string        `yaml:"required_args,omitempty"`     // required template variables
-	RequiredEnv      []string        `yaml:"required_env,omitempty"`      // required environment variables
-	PreferredShell   string          `yaml:"shell,omitempty"`             // "bash" or "cmd"; empty = auto-detect
-	Extra            map[string]any  `yaml:"-"`
+	Name             string               `yaml:"name"`
+	Description      string               `yaml:"description"`
+	Triggers         []string             `yaml:"triggers"`
+	Steps            []SkillYAMLStep      `yaml:"steps"`
+	Status           string               `yaml:"status"`
+	Platforms        []string             `yaml:"platforms"`
+	RequiresGUI      bool                 `yaml:"requires_gui"`
+	ProducesArtifact *bool                `yaml:"produces_artifact,omitempty"` // false = diagnostic/instruction skill, no file output expected
+	Mode             string               `yaml:"mode,omitempty"`              // "sequential" (default) | "interactive" | "api_workflow"
+	ExecMode         string               `yaml:"exec_mode,omitempty"`         // "all" (default) | "first" | "named"
+	GlobalTimeout    int                  `yaml:"global_timeout,omitempty"`    // per-skill global timeout in seconds
+	RequiredArgs     []string             `yaml:"required_args,omitempty"`     // required template variables
+	RequiredEnv      []string             `yaml:"required_env,omitempty"`      // required environment variables
+	PreferredShell   string               `yaml:"shell,omitempty"`             // "bash" or "cmd"; empty = auto-detect
+	Operations       []SkillYAMLOperation `yaml:"operations,omitempty"`        // named operations for api_workflow mode
+	Extra            map[string]any       `yaml:"-"`
+}
+
+// SkillYAMLOperation describes a named operation in a skill definition.
+type SkillYAMLOperation struct {
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Params      []string `yaml:"params,omitempty"`
+	Labels      []string `yaml:"labels,omitempty"`
+}
+
+// SkillYAMLStepPoll configures repeated execution of a step until a condition is met.
+type SkillYAMLStepPoll struct {
+	Interval    int    `yaml:"interval"`
+	MaxAttempts int    `yaml:"max_attempts"`
+	UntilMatch  string `yaml:"until_match,omitempty"`
+	UntilStatus string `yaml:"until_status,omitempty"`
 }
 
 // SkillYAMLStep is a single step in a YAML skill definition.
@@ -163,10 +180,12 @@ type SkillYAMLStep struct {
 	OnError        string                 `yaml:"on_error"`
 	Name           string                 `yaml:"name,omitempty"`
 	Condition      string                 `yaml:"condition,omitempty"`
+	When           string                 `yaml:"when,omitempty"`            // conditional expression for dynamic routing
 	Label          string                 `yaml:"label,omitempty"`           // step selector label for api_workflow mode
 	Capture        map[string]string      `yaml:"capture,omitempty"`         // output capture: varName → regex pattern
 	TimeoutSeconds int                    `yaml:"timeout,omitempty"`         // per-step timeout in seconds (0 = use default)
 	ContinueOnErr  bool                   `yaml:"continue_on_error"`
+	Poll           *SkillYAMLStepPoll     `yaml:"poll,omitempty"`            // poll config for async steps
 }
 
 func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
@@ -182,7 +201,7 @@ func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
 		"name": true, "description": true, "triggers": true, "steps": true,
 		"status": true, "platforms": true, "requires_gui": true,
 		"produces_artifact": true, "required_args": true, "required_env": true,
-		"shell": true, "mode": true,
+		"shell": true, "mode": true, "operations": true,
 	}
 	extra := make(map[string]any)
 	for k, v := range raw {
@@ -269,15 +288,25 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 					onError = "stop"
 				}
 			}
-			steps = append(steps, corelib.NLSkillStep{
+			step := corelib.NLSkillStep{
 				Action:    s.Action,
 				Params:    params,
 				OnError:   onError,
 				Name:      s.Name,
 				Condition: s.Condition,
+				When:      s.When,
 				Label:     s.Label,
 				Capture:   s.Capture,
-			})
+			}
+			if s.Poll != nil {
+				step.Poll = &corelib.StepPollConfig{
+					Interval:    s.Poll.Interval,
+					MaxAttempts: s.Poll.MaxAttempts,
+					UntilMatch:  s.Poll.UntilMatch,
+					UntilStatus: s.Poll.UntilStatus,
+				}
+			}
+			steps = append(steps, step)
 		}
 		if len(steps) == 0 {
 			producesArtifact := true
@@ -320,6 +349,16 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				return parsed, yamlPath, nil
 			}
 		}
+		// Convert YAML operations to runtime operations.
+		var operations []corelib.NLSkillOperation
+		for _, op := range sf.Operations {
+			operations = append(operations, corelib.NLSkillOperation{
+				Name:        op.Name,
+				Description: op.Description,
+				Params:      op.Params,
+				Labels:      op.Labels,
+			})
+		}
 		producesArtifact := true
 		if sf.ProducesArtifact != nil && !*sf.ProducesArtifact {
 			producesArtifact = false
@@ -340,6 +379,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			SkillDir:    skillDir,
 			CreatedAt:   fileModTime(yamlPath),
 			ProducesArtifact: producesArtifact,
+			Operations:     operations,
 			RequiredArgs:   sf.RequiredArgs,
 			RequiredEnv:    sf.RequiredEnv,
 			PreferredShell: sf.PreferredShell,

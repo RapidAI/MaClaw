@@ -214,6 +214,18 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 				selectedSteps = v
 			}
 		}
+		// Operation-based routing: resolve operation name to step labels.
+		// This takes precedence over explicit step selection when both are provided.
+		if opName, ok := runArgs["operation"].(string); ok && strings.TrimSpace(opName) != "" {
+			opName = strings.TrimSpace(opName)
+			for _, op := range target.Operations {
+				if strings.EqualFold(op.Name, opName) {
+					selectedSteps = op.Labels
+					log.Printf("[skill-runner] operation %q resolved to labels: %v", opName, selectedSteps)
+					break
+				}
+			}
+		}
 	}
 
 	// ── Extract extra env vars from runArgs["env"] ──
@@ -611,6 +623,13 @@ func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
 	if _, ok := vars["output"]; !ok {
 		if output, _ := runArgs["output"].(string); output != "" {
 			vars["output"] = output
+		}
+	}
+	// Include operation name in vars so when conditions like
+	// "{{operation}} == generate" can reference it.
+	if _, ok := vars["operation"]; !ok {
+		if op, _ := runArgs["operation"].(string); op != "" {
+			vars["operation"] = op
 		}
 	}
 	if len(vars) == 0 {
@@ -1020,6 +1039,20 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 			continue
 		}
 
+		// Dynamic when condition: evaluate expression with template vars.
+		// Allows steps to be conditionally executed based on runtime parameters.
+		if step.When != "" {
+			vars := r.templateVarsForRun(run.status.RunID)
+			resolved := substituteSkillVarsInString(step.When, vars)
+			if !evaluateSimpleCondition(resolved) {
+				r.mu.Lock()
+				run.status.Steps[i].Status = "skipped"
+				r.mu.Unlock()
+				log.Printf("[skill-runner] step %d/%d: skipped (when %q evaluated false)", i+1, len(skill.Steps), step.When)
+				continue
+			}
+		}
+
 		r.mu.Lock()
 		run.status.Steps[i].Status = "running"
 		r.mu.Unlock()
@@ -1077,7 +1110,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 			}
 		}
 		log.Printf("[skill-runner] step %d/%d: action=%s command=%q", i+1, len(skill.Steps), resolvedStep.Action, resolveCommandForDisplay(resolvedStep))
-		result, stepErr := r.executeStepWithContext(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
+		result, stepErr := r.executeStepWithPoll(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
 		// Restore env vars after non-bash step execution.
 		for _, restore := range envRestore {
 			restore()
@@ -2039,6 +2072,115 @@ func extractFileReferences(command string) []string {
 		}
 	}
 	return refs
+}
+
+// ── poll / when / operation helpers ──────────────────────────────────────
+
+// executeStepWithPoll wraps executeStepWithContext with optional poll loop.
+// When step.Poll is configured, the step is re-executed at intervals until
+// the output matches the termination condition or max attempts are exhausted.
+func (r *SkillRunner) executeStepWithPoll(ctx context.Context, runID string, step NLSkillStep, skillDir string) (string, error) {
+	if step.Poll == nil {
+		return r.executeStepWithContext(ctx, runID, step, skillDir)
+	}
+	poll := step.Poll
+	interval := time.Duration(poll.Interval) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	maxAttempts := poll.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 20
+	}
+	var matchRe *regexp.Regexp
+	if poll.UntilMatch != "" {
+		var err error
+		matchRe, err = regexp.Compile(poll.UntilMatch)
+		if err != nil {
+			log.Printf("[skill-runner] poll: invalid until_match regex %q: %v", poll.UntilMatch, err)
+		}
+	}
+	var lastOutput string
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		output, err := r.executeStepWithContext(ctx, runID, step, skillDir)
+		lastOutput = output
+		if err != nil {
+			return output, err
+		}
+		// Check termination conditions.
+		if matchRe != nil && matchRe.MatchString(output) {
+			log.Printf("[skill-runner] poll: until_match hit on attempt %d/%d", attempt, maxAttempts)
+			return output, nil
+		}
+		if poll.UntilStatus != "" && strings.Contains(output, poll.UntilStatus) {
+			log.Printf("[skill-runner] poll: until_status %q found on attempt %d/%d", poll.UntilStatus, attempt, maxAttempts)
+			return output, nil
+		}
+		// No match condition configured — single execution is enough.
+		if matchRe == nil && poll.UntilStatus == "" {
+			return output, nil
+		}
+		if attempt < maxAttempts {
+			log.Printf("[skill-runner] poll: attempt %d/%d, waiting %v", attempt, maxAttempts, interval)
+			select {
+			case <-time.After(interval):
+			case <-ctx.Done():
+				return lastOutput, ctx.Err()
+			}
+		}
+	}
+	return lastOutput, fmt.Errorf("poll exhausted after %d attempts without matching condition", maxAttempts)
+}
+
+// substituteSkillVarsInString replaces {{key}} and ${key} placeholders in s
+// with values from vars.
+func substituteSkillVarsInString(s string, vars map[string]string) string {
+	for k, v := range vars {
+		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
+		s = strings.ReplaceAll(s, "${"+k+"}", v)
+	}
+	return s
+}
+
+// evaluateSimpleCondition evaluates a simple condition expression.
+// Supported forms:
+//   - "value == expected"  → true if equal (trimmed)
+//   - "value != expected"  → true if not equal
+//   - "value contains sub" → true if value contains sub
+//   - bare non-empty string → true
+//   - empty string → false
+func evaluateSimpleCondition(expr string) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return false
+	}
+	// Try "contains" operator (space-delimited)
+	if idx := strings.Index(expr, " contains "); idx > 0 {
+		left := strings.TrimSpace(expr[:idx])
+		right := strings.TrimSpace(expr[idx+len(" contains "):])
+		return strings.Contains(left, right)
+	}
+	// Try " != " operator (space-delimited to avoid matching inside values)
+	if idx := strings.Index(expr, " != "); idx > 0 {
+		left := strings.TrimSpace(expr[:idx])
+		right := strings.TrimSpace(expr[idx+len(" != "):])
+		return left != right
+	}
+	// Try " == " operator (space-delimited)
+	if idx := strings.Index(expr, " == "); idx > 0 {
+		left := strings.TrimSpace(expr[:idx])
+		right := strings.TrimSpace(expr[idx+len(" == "):])
+		return left == right
+	}
+	// Fallback: try without spaces for compact expressions like "a==b"
+	if parts := strings.SplitN(expr, "!=", 2); len(parts) == 2 {
+		return strings.TrimSpace(parts[0]) != strings.TrimSpace(parts[1])
+	}
+	if parts := strings.SplitN(expr, "==", 2); len(parts) == 2 {
+		return strings.TrimSpace(parts[0]) == strings.TrimSpace(parts[1])
+	}
+	// Bare truthy: non-empty = true
+	return true
 }
 
 // ── api_workflow helpers ─────────────────────────────────────────────────
