@@ -538,11 +538,15 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 		recalled := h.memoryStore.RecallForProject(msg, projectPath)
 		log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, recalled=%d entries", len(msg), projectPath, len(recalled))
 
-		// Filter out user_fact and self_identity (already injected above).
+		// Filter out user_fact, self_identity, and session_checkpoint
+		// (checkpoints are progress snapshots, not useful for answering user queries).
 		var relevant []corememory.Entry
 		for _, e := range recalled {
 			canonical := corememory.MapToCanonical(e.Category)
 			if canonical == corememory.CategoryUserFact || canonical == corememory.CategorySelfIdentity {
+				continue
+			}
+			if e.Category == corememory.CategorySessionCheckpoint || e.Category == corememory.CategoryConversationSummary {
 				continue
 			}
 			relevant = append(relevant, e)
@@ -566,9 +570,9 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 				if len(runes) > 200 {
 					text = string(runes[:200]) + "…"
 				}
-				log.Printf("[proactive_recall] injecting: [%s] %s", e.Category, text[:min(60, len(text))])
 				b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
 			}
+			log.Printf("[proactive_recall] injected %d entries into system prompt", len(relevant))
 			b.WriteString("（以上记忆已自动注入，无需再用 memory recall 重复搜索相同内容。仅在需要更多细节时才手动召回。）\n")
 		}
 	}
