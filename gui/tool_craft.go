@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -384,15 +385,37 @@ func generateScript(cfg MaclawLLMConfig, request craftToolRequest, runtimes craf
 		map[string]string{"role": "user", "content": userPrompt},
 	}
 	requestTimeout := time.Duration(cfg.EffectiveTimeoutSec()) * time.Second
-	result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, requestTimeout)
-	if err != nil {
-		return "", err
+
+	// Bug #2 fix: Retry with exponential backoff on HTTP 429 (rate limit).
+	// This prevents craft_tool from failing immediately when the LLM API
+	// returns a rate limit error, which is common when multiple skills
+	// are executed in quick succession.
+	const maxRetries = 3
+	backoff := 2 * time.Second
+	var lastErr error
+	for retry := 0; retry <= maxRetries; retry++ {
+		if retry > 0 {
+			log.Printf("[craft_tool] HTTP 429 rate limit, retrying in %v (attempt %d/%d)", backoff, retry+1, maxRetries+1)
+			time.Sleep(backoff)
+			backoff *= 2 // exponential backoff: 2s, 4s, 8s
+		}
+		result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, requestTimeout)
+		if err != nil {
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "429") || strings.Contains(strings.ToLower(errMsg), "rate limit") || strings.Contains(strings.ToLower(errMsg), "too many requests") {
+				lastErr = err
+				continue // retry on 429
+			}
+			return "", err // non-429 error, fail immediately
+		}
+		if result.Content == "" {
+			return "", fmt.Errorf("LLM 未返回内容")
+		}
+		script := stripScriptCodeFences(result.Content)
+		return script, nil
 	}
-	if result.Content == "" {
-		return "", fmt.Errorf("LLM 未返回内容")
-	}
-	script := stripScriptCodeFences(result.Content)
-	return script, nil
+	// All retries exhausted
+	return "", fmt.Errorf("API 调用过于频繁 (HTTP 429)，已重试 %d 次仍失败。请稍后再试。原始错误: %v", maxRetries, lastErr)
 }
 
 func buildCraftSystemPrompt(request craftToolRequest, runtimes craftRuntimeAvailability, previous craftAttemptResult) string {

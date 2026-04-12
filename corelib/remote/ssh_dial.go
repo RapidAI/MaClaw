@@ -51,49 +51,100 @@ func dialSSH(cfg SSHHostConfig) (*ssh.Client, error) {
 }
 
 // buildAuthMethods 根据配置构建 SSH 认证方法列表。
+// 优先级：用户指定的 AuthMethod 排第一，其他可用方法作为 fallback。
+// 这样即使首选方式失败，SSH 库会自动尝试下一个。
 func buildAuthMethods(cfg SSHHostConfig) ([]ssh.AuthMethod, error) {
 	var methods []ssh.AuthMethod
+	var primaryErr error
 
+	// 1. 首选认证方式
 	switch cfg.AuthMethod {
 	case "password":
-		if cfg.Password == "" {
-			return nil, fmt.Errorf("password auth requires password")
+		if cfg.Password != "" {
+			methods = append(methods, ssh.Password(cfg.Password))
+			// 同时支持 keyboard-interactive（某些服务器用这种方式要求密码）
+			methods = append(methods, ssh.KeyboardInteractive(
+				func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+					answers := make([]string, len(questions))
+					for i := range questions {
+						answers[i] = cfg.Password
+					}
+					return answers, nil
+				},
+			))
 		}
-		methods = append(methods, ssh.Password(cfg.Password))
+		// Password 为空时不报错，让 fallback 兜底（key/agent）
 
 	case "agent":
 		authMethod, err := sshAgentAuth()
 		if err != nil {
-			return nil, err
-		}
-		methods = append(methods, authMethod)
-
-	case "key", "":
-		keyPath := cfg.KeyPath
-		if keyPath == "" {
-			home, _ := os.UserHomeDir()
-			keyPath = home + "/.ssh/id_rsa"
-		}
-		keyData, err := os.ReadFile(keyPath)
-		if err != nil {
-			return nil, fmt.Errorf("read ssh key %s: %w", keyPath, err)
-		}
-		var signer ssh.Signer
-		if cfg.Passphrase != "" {
-			signer, err = ssh.ParsePrivateKeyWithPassphrase(keyData, []byte(cfg.Passphrase))
+			primaryErr = err
 		} else {
-			signer, err = ssh.ParsePrivateKey(keyData)
+			methods = append(methods, authMethod)
 		}
+
+	case "key":
+		keyMethod, err := buildKeyAuth(cfg)
 		if err != nil {
-			return nil, fmt.Errorf("parse ssh key: %w", err)
+			primaryErr = err
+		} else {
+			methods = append(methods, keyMethod)
 		}
-		methods = append(methods, ssh.PublicKeys(signer))
 
 	default:
 		return nil, fmt.Errorf("unsupported auth method: %s", cfg.AuthMethod)
 	}
 
+	// 2. Fallback：如果首选不是密码但有密码，加密码作为备选
+	if cfg.AuthMethod != "password" && cfg.Password != "" {
+		methods = append(methods, ssh.Password(cfg.Password))
+	}
+
+	// 3. Fallback：如果首选不是密钥，尝试加密钥作为备选（静默失败）
+	if cfg.AuthMethod != "key" {
+		if keyMethod, err := buildKeyAuth(cfg); err == nil {
+			methods = append(methods, keyMethod)
+		}
+	}
+
+	// 4. Fallback：如果首选不是 agent，尝试加 agent 作为备选（静默失败）
+	if cfg.AuthMethod != "agent" {
+		if agentMethod, err := sshAgentAuth(); err == nil {
+			methods = append(methods, agentMethod)
+		}
+	}
+
+	if len(methods) == 0 {
+		if primaryErr != nil {
+			return nil, primaryErr
+		}
+		return nil, fmt.Errorf("no ssh auth method available")
+	}
+
 	return methods, nil
+}
+
+// buildKeyAuth 构建密钥认证方法。
+func buildKeyAuth(cfg SSHHostConfig) (ssh.AuthMethod, error) {
+	keyPath := cfg.KeyPath
+	if keyPath == "" {
+		home, _ := os.UserHomeDir()
+		keyPath = home + "/.ssh/id_rsa"
+	}
+	keyData, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read ssh key %s: %w", keyPath, err)
+	}
+	var signer ssh.Signer
+	if cfg.Passphrase != "" {
+		signer, err = ssh.ParsePrivateKeyWithPassphrase(keyData, []byte(cfg.Passphrase))
+	} else {
+		signer, err = ssh.ParsePrivateKey(keyData)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("parse ssh key: %w", err)
+	}
+	return ssh.PublicKeys(signer), nil
 }
 
 // sshAgentAuth 连接 ssh-agent 并返回认证方法。

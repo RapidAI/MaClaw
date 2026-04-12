@@ -905,13 +905,32 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		}
 	}
 	if skill == nil {
-		return fmt.Sprintf("技能 %s 不存在", skillName)
+		return fmt.Sprintf("技能 %s 不存在。请使用 list_skills 查看已安装的技能", skillName)
 	}
 	if skill.Status == "disabled" {
-		return fmt.Sprintf("技能 %s 已禁用", skillName)
+		return fmt.Sprintf("技能 %s 已禁用。请使用 update_config 启用后再运行", skillName)
+	}
+	// Bug #3: Distinguish needs_setup from other states
+	if skill.Status == "needs_setup" {
+		return fmt.Sprintf("技能 %s 需要配置。安装时部分依赖或文件未就绪，请检查 Skill 目录 (%s) 并完成配置后重试", skill.Name, skill.SkillDir)
+	}
+	if skill.Status != "active" && skill.Status != "" {
+		return fmt.Sprintf("技能 %s 状态为 %q，无法运行", skill.Name, skill.Status)
 	}
 	if len(skill.Steps) == 0 {
-		return fmt.Sprintf("技能 %s 没有定义步骤", skillName)
+		// Bug #5: Better error for skills with no executable steps
+		desc := strings.TrimSpace(skill.Description)
+		if desc != "" && len(desc) > 150 {
+			desc = desc[:150] + "..."
+		}
+		msg := fmt.Sprintf("技能 %s 没有定义可执行步骤", skillName)
+		if len(skill.RequiredArgs) > 0 {
+			msg += fmt.Sprintf("。该技能需要参数: %s", strings.Join(skill.RequiredArgs, ", "))
+		}
+		if desc != "" {
+			msg += fmt.Sprintf("\n说明: %s", desc)
+		}
+		return msg
 	}
 
 	// P1: Platform compatibility check (mirrors GUI StartRun)

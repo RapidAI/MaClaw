@@ -52,7 +52,14 @@ func (c *SSHHostConfig) Defaults() {
 		c.KeepaliveInterval = 30 * time.Second
 	}
 	if c.AuthMethod == "" {
-		c.AuthMethod = "key"
+		if c.Password != "" {
+			c.AuthMethod = "password"
+		} else if c.KeyPath != "" {
+			c.AuthMethod = "key"
+		} else {
+			// 都没指定时默认密码优先；buildAuthMethods 会自动 fallback 到 key/agent
+			c.AuthMethod = "password"
+		}
 	}
 }
 

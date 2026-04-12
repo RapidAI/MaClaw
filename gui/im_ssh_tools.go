@@ -58,6 +58,8 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 		return h.sshListTasks()
 	case "kill_task":
 		return h.sshKillTask(args)
+	case "sudo_prepare":
+		return h.sshSudoPrepare(args)
 	case "upload":
 		return h.sshUpload(args)
 	case "download":
@@ -69,7 +71,7 @@ func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
 	case "close_all":
 		return h.sshCloseAll()
 	default:
-		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close/close_all）", action)
+		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/sudo_prepare/upload/download/list/close/close_all）", action)
 	}
 }
 
@@ -377,6 +379,24 @@ func (h *IMMessageHandler) sshKillTask(args map[string]interface{}) string {
 		return fmt.Sprintf("终止任务失败: %v", err)
 	}
 	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
+}
+
+// sshSudoPrepare 预先获取 sudo token，使后续后台任务可以使用 sudo。
+func (h *IMMessageHandler) sshSudoPrepare(args map[string]interface{}) string {
+	if h.bgTaskMgr == nil {
+		return "错误: 后台任务管理器未初始化"
+	}
+
+	sessionID, _ := args["session_id"].(string)
+	if sessionID == "" {
+		return "错误: sudo_prepare 需要 session_id 参数"
+	}
+
+	ok, msg := h.bgTaskMgr.EnsureSudoToken(sessionID)
+	if ok {
+		return fmt.Sprintf("✅ %s", msg)
+	}
+	return fmt.Sprintf("⚠️ %s", msg)
 }
 
 // sshUpload uploads a local file/directory to the remote server via SFTP.

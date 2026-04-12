@@ -133,11 +133,12 @@ func NewSkillRunner(executor *SkillExecutor) *SkillRunner {
 
 // StartRun 异步启动 skill 执行，返回 runID 供前端轮询。
 func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{}) (string, error) {
-	// 查找 skill
+	// 查找 skill — match by name regardless of status so we can provide
+	// specific error messages for disabled/needs_setup skills (Bug #3).
 	r.executor.mu.RLock()
 	var target *NLSkillEntry
 	for _, s := range r.executor.loadSkills() {
-		if s.MatchesName(skillName) && s.Status == "active" {
+		if s.MatchesName(skillName) {
 			cp := s
 			target = &cp
 			break
@@ -146,7 +147,18 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	r.executor.mu.RUnlock()
 
 	if target == nil {
-		return "", fmt.Errorf("skill %q not found or disabled", skillName)
+		return "", fmt.Errorf("skill %q not found. Use list_skills to see installed skills", skillName)
+	}
+
+	// Bug #3: Distinguish needs_setup / disabled from active
+	if target.Status == "needs_setup" {
+		return "", fmt.Errorf("skill %q needs setup. Installation was incomplete (missing dependencies or files). Please check the skill directory (%s) and complete configuration", skillName, target.SkillDir)
+	}
+	if target.Status == "disabled" {
+		return "", fmt.Errorf("skill %q is disabled. Please enable it first", skillName)
+	}
+	if target.Status != "active" && target.Status != "" {
+		return "", fmt.Errorf("skill %q status is %q, expected active", skillName, target.Status)
 	}
 
 	// BUG-005: Normalize skill directory path (resolve 8.3 short paths on Windows)
@@ -164,7 +176,19 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		return "", err
 	}
 	if len(target.Steps) == 0 {
-		return "", fmt.Errorf("skill %q has no executable steps", skillName)
+		// Bug #5: Better error for skills with no executable steps
+		msg := fmt.Sprintf("skill %q has no executable steps", skillName)
+		if len(target.RequiredArgs) > 0 {
+			msg += fmt.Sprintf(". This skill requires parameters: %s", strings.Join(target.RequiredArgs, ", "))
+		}
+		desc := strings.TrimSpace(target.Description)
+		if desc != "" {
+			if len(desc) > 150 {
+				desc = desc[:150] + "..."
+			}
+			msg += fmt.Sprintf("\nDescription: %s", desc)
+		}
+		return "", fmt.Errorf("%s", msg)
 	}
 
 	templateVars := normalizeSkillRunVars(runArgs)

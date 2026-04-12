@@ -14,8 +14,8 @@ import (
 // sshToolDefinitions 返回统一的 SSH 工具定义（单工具，action 分发）。
 func sshToolDefinitions() []map[string]interface{} {
 	return []map[string]interface{}{
-		toolDef("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）", map[string]interface{}{
-			"action":          map[string]interface{}{"type": "string", "description": "操作: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close"},
+		toolDef("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/list_tasks/kill_task/sudo_prepare/upload/download/list/close）", map[string]interface{}{
+			"action":          map[string]interface{}{"type": "string", "description": "操作: connect/exec/exec_background/check_task/list_tasks/kill_task/sudo_prepare/upload/download/list/close。sudo_prepare 用于在后台任务前预先获取 sudo 权限"},
 			"host":            map[string]interface{}{"type": "string", "description": "远程主机地址（connect 时必填）"},
 			"user":            map[string]interface{}{"type": "string", "description": "登录用户名（connect 时必填）"},
 			"port":            map[string]interface{}{"type": "integer", "description": "SSH 端口（默认 22）"},
@@ -51,6 +51,8 @@ func (h *TUIAgentHandler) toolSSH(args map[string]interface{}) string {
 		return h.sshListTasks()
 	case "kill_task":
 		return h.sshKillTask(args)
+	case "sudo_prepare":
+		return h.sshSudoPrepare(args)
 	case "upload":
 		return h.sshUpload(args)
 	case "download":
@@ -60,7 +62,7 @@ func (h *TUIAgentHandler) toolSSH(args map[string]interface{}) string {
 	case "close":
 		return h.sshClose(args)
 	default:
-		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）", action)
+		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/sudo_prepare/upload/download/list/close）", action)
 	}
 }
 
@@ -328,6 +330,25 @@ func (h *TUIAgentHandler) sshKillTask(args map[string]interface{}) string {
 		return fmt.Sprintf("终止任务失败: %v", err)
 	}
 	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
+}
+
+// sshSudoPrepare 预先获取 sudo token，使后续后台任务可以使用 sudo。
+// 通过 PTY 交互式输入密码完成 sudo 认证。
+func (h *TUIAgentHandler) sshSudoPrepare(args map[string]interface{}) string {
+	if h.bgTaskMgr == nil {
+		return "错误: 后台任务管理器未初始化"
+	}
+
+	sessionID := stringArg(args, "session_id")
+	if sessionID == "" {
+		return "错误: sudo_prepare 需要 session_id 参数"
+	}
+
+	ok, msg := h.bgTaskMgr.EnsureSudoToken(sessionID)
+	if ok {
+		return fmt.Sprintf("✅ %s", msg)
+	}
+	return fmt.Sprintf("⚠️ %s", msg)
 }
 
 // sshUpload 上传本地文件/目录到远程服务器。
