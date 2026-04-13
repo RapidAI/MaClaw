@@ -132,7 +132,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"task":               map[string]string{"type": "string", "description": "需要完成的任务描述（越详细越好）"},
 				"language":           map[string]string{"type": "string", "description": "脚本语言: python/bash/powershell/node（可选，优先按运行时自动选择）"},
 				"working_dir":        map[string]string{"type": "string", "description": "脚本执行工作目录（可选）"},
-				"expected_artifacts": map[string]string{"type": "array", "description": "期望生成的文件路径列表（可选，用于验收）"},
+				"expected_artifacts": map[string]interface{}{"type": "array", "description": "期望生成的文件路径列表（可选，用于验收）", "items": map[string]string{"type": "string"}},
 				"verification_mode":  map[string]string{"type": "string", "description": "验收模式（可选，如 artifact_required）"},
 				"register_policy":    map[string]string{"type": "string", "description": "注册策略（可选，auto/manual）"},
 				"max_attempts":       map[string]string{"type": "integer", "description": "最大自动修复尝试次数（默认 2，最大 3）"},

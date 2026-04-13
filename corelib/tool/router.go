@@ -518,6 +518,14 @@ func ShouldPinConditionalTool(name string) bool {
 	return allConditionalKeepTools[name] && !noPinConditionalTools[name]
 }
 
+// MatchConditionalTools returns the set of conditional tool names that match
+// the given text. This is used to pin tools based on recalled memory content
+// (e.g. when memory mentions "服务器" or "SSH", the ssh tool should be pinned).
+func MatchConditionalTools(text string) map[string]bool {
+	keep, _ := matchConditionalKeepRules(text)
+	return keep
+}
+
 // matchConditionalKeepRules returns the set of tool names to conditionally keep
 // and the set to penalize for the given user message.
 // Tools that have a conditional keep rule but did NOT match the current message
@@ -556,6 +564,16 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	}
 
 	condKeep, condFilterOut := matchConditionalKeepRules(userMessage)
+
+	// Eager pin: when a conditional tool matches the current message,
+	// pin it to the session immediately so it survives follow-up messages
+	// that lack the triggering keywords (e.g. user says "回忆下" after
+	// asking about a server — ssh should stay available).
+	for name := range condKeep {
+		if ShouldPinConditionalTool(name) {
+			r.ActivateSessionTool(name)
+		}
+	}
 
 	var core, candidates []map[string]interface{}
 	var candidateNames []string

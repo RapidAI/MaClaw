@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -89,7 +90,8 @@ type AnthropicContentBlock struct {
 func ParseNonStreamAnthropicResponse(resp *http.Response) (*Response, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llm error: status=%d body=%s", resp.StatusCode, string(body))
+		sanitized := sanitizeHTMLBody(body, 300)
+		return nil, fmt.Errorf("llm error: status=%d body=%s", resp.StatusCode, sanitized)
 	}
 
 	var anthropicResp struct {
@@ -222,7 +224,27 @@ func ParseNonStreamOpenAIResponseBody(body []byte) (*Response, error) {
 func ParseNonStreamOpenAIResponse(resp *http.Response) (*Response, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llm error: status=%d body=%s", resp.StatusCode, string(body))
+		sanitized := sanitizeHTMLBody(body, 300)
+		return nil, fmt.Errorf("llm error: status=%d body=%s", resp.StatusCode, sanitized)
 	}
 	return ParseNonStreamOpenAIResponseBody(body)
+}
+
+// htmlStripRe matches HTML tags for sanitization.
+var htmlStripRe = regexp.MustCompile(`<[^>]*>`)
+
+// sanitizeHTMLBody strips HTML tags from body if it looks like HTML, then truncates.
+func sanitizeHTMLBody(body []byte, maxLen int) string {
+	s := string(body)
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") ||
+		strings.Contains(lower, "<center>") || strings.Contains(lower, "<head>") {
+		s = htmlStripRe.ReplaceAllString(s, " ")
+		s = strings.Join(strings.Fields(s), " ")
+		s = strings.TrimSpace(s)
+	}
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }

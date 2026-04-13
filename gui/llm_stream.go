@@ -65,18 +65,43 @@ func classifyOpenAIHTTPError(statusCode int, body []byte) string {
 		return "OpenAI 认证失败，API Key 无效或已过期，请重新登录 (HTTP 401)"
 	case statusCode == http.StatusForbidden:
 		return "OpenAI 拒绝访问，账号可能被限制或无权使用该模型 (HTTP 403)"
+	case statusCode == http.StatusBadGateway:
+		return "API 网关错误，上游服务不可用，请稍后再试 (HTTP 502)"
+	case statusCode == http.StatusServiceUnavailable:
+		return "API 服务暂时不可用，请稍后再试 (HTTP 503)"
+	case statusCode == http.StatusGatewayTimeout:
+		return "API 网关超时，上游服务响应过慢，请稍后再试 (HTTP 504)"
+	case statusCode >= 500:
+		return fmt.Sprintf("API 服务端错误，请稍后再试 (HTTP %d)", statusCode)
 	default:
 		return fmt.Sprintf("OpenAI API 错误 (HTTP %d): %s", statusCode, truncateLLMBody(body, 200))
 	}
 }
 
 // truncateLLMBody 截断错误 body 用于日志显示。
+// 如果 body 包含 HTML 标签，先剥离标签再截断，避免原始 HTML 透传到用户界面。
 func truncateLLMBody(body []byte, maxLen int) string {
 	s := string(body)
+	if looksLikeHTML(s) {
+		s = htmlTagStripRe.ReplaceAllString(s, " ")
+		s = strings.Join(strings.Fields(s), " ") // collapse whitespace
+		s = strings.TrimSpace(s)
+	}
 	if len(s) > maxLen {
 		return s[:maxLen] + "..."
 	}
 	return s
+}
+
+var htmlTagStripRe = regexp.MustCompile(`<[^>]*>`)
+
+// looksLikeHTML returns true if the string appears to contain HTML markup.
+func looksLikeHTML(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "<html") ||
+		strings.Contains(lower, "<!doctype") ||
+		strings.Contains(lower, "<center>") ||
+		strings.Contains(lower, "<head>")
 }
 
 func partialSuffixLen(s, tag string) int {
@@ -460,11 +485,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("HTTP 404: %s (endpoint=%s, model=%s, protocol=%s)", string(body), endpoint, cfg.Model, cfg.Protocol)
+		return nil, fmt.Errorf("HTTP 404: %s (endpoint=%s, model=%s, protocol=%s)", truncateLLMBody(body, 200), endpoint, cfg.Model, cfg.Protocol)
 	}
 
-	// 对 429 / 401 / 403 等常见错误提供友好提示，避免原始 JSON body 直接透传给用户
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	// 对已知 HTTP 错误提供友好提示，避免原始 HTML/JSON body 直接透传给用户。
+	// 覆盖 4xx（客户端错误，404 已单独处理）和 5xx（网关/服务端错误）。
+	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body)
 		return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, cfg.Model)
@@ -715,6 +741,13 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	// 对 HTTP 错误提供友好提示，避免 HTML 错误页面透传到聊天界面。
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body)
+		return nil, fmt.Errorf("%s [url=%s model=%s protocol=anthropic]", friendlyMsg, endpoint, cfg.Model)
+	}
 
 	// Fallback: if provider doesn't return SSE
 	contentType := resp.Header.Get("Content-Type")

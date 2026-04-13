@@ -870,8 +870,8 @@ body {
 
 /* Buttons */
 .btn-primary {
-    background: var(--theme-primary-strong);
-    color: var(--theme-text-primary);
+    background: var(--primary-dark);
+    color: #ffffff;
     padding: 5px 14px;
     border: none;
     border-radius: var(--radius-sm);
@@ -883,7 +883,7 @@ body {
 }
 
 .btn-primary:hover {
-    background: var(--theme-primary);
+    background: var(--primary-color);
     box-shadow: var(--shadow-md);
 }
 
@@ -1157,8 +1157,8 @@ body {
 
 /* Launch Button */
 .btn-launch {
-    background: var(--theme-primary-strong);
-    color: var(--theme-text-primary);
+    background: var(--primary-dark);
+    color: #ffffff;
     padding: 6px 20px;
     border: none;
     border-radius: var(--radius-md);
@@ -1175,7 +1175,7 @@ body {
 }
 
 .btn-launch:hover {
-    background: var(--theme-primary);
+    background: var(--primary-color);
     box-shadow: var(--shadow-md);
 }
 
@@ -1670,7 +1670,7 @@ body {
 .main-container[data-ai-theme='dark'] .btn-launch,
 .main-container[data-ai-theme='dark'] .model-btn.selected {
     background: var(--theme-primary-strong);
-    color: var(--theme-text-primary);
+    color: #ffffff;
     border-color: var(--theme-primary);
     box-shadow: 0 0 0 1px var(--theme-primary-soft);
 }
@@ -1872,7 +1872,7 @@ body {
 
 .global-action-bar[data-ai-theme='dark'] .btn-launch {
     background: var(--theme-primary-strong);
-    color: var(--theme-text-primary);
+    color: #ffffff;
     border-color: var(--theme-primary);
     box-shadow: 0 0 0 1px var(--theme-primary-soft);
 }

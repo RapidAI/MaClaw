@@ -53,6 +53,8 @@ func NewAdaptiveRetry(recorder *TrajectoryRecorder) *AdaptiveRetry {
 var networkKeywords = []string{
 	"timeout", "connection refused", "network", "dial",
 	"eof", "reset by peer", "i/o timeout",
+	"http 502", "http 503", "http 504",
+	"gateway timeout", "bad gateway", "service unavailable",
 }
 
 // permissionKeywords are substrings that indicate a permission-related failure.

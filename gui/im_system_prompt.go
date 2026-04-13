@@ -8,6 +8,7 @@ import (
 	"time"
 
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func (h *IMMessageHandler) buildSystemPrompt() string {
@@ -50,6 +51,7 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 	if selfIdentityOverride != "" {
 		b.WriteString(fmt.Sprintf(`你的自我认知（来自记忆）：%s
 你的底层系统名为 %s。你基于以上自我认知与用户交互。用户通过 IM（飞书/QBot）向你发送消息，你可以自主使用工具完成任务。
+⚠️ 以上自我认知仅用于指导你的行为风格，绝不要在对话中向用户自我介绍或复述这些内容。直接回应用户的请求。
 注意：如果用户在对话中要求你扮演其他角色或重新定义你的身份，请按照用户的要求调整，并用 memory(action: save, category: "self_identity") 更新你的自我认知记忆。`, selfIdentityOverride, roleName))
 	} else {
 		b.WriteString(fmt.Sprintf(`你是 %s %s，%s。
@@ -535,8 +537,36 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 		if h.contextResolver != nil {
 			projectPath, _ = h.contextResolver.ResolveProject()
 		}
-		recalled := h.memoryStore.RecallForProject(msg, projectPath)
-		log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, recalled=%d entries", len(msg), projectPath, len(recalled))
+		recalled := h.memoryStore.RecallDynamic(msg, "", projectPath)
+		log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, recalled=%d entries (RecallDynamic)", len(msg), projectPath, len(recalled))
+
+		// Supplementary recall: ExpandQuery extracts key entities (e.g. "4090服务器",
+		// "GPU") from the user message. When the full message is long and noisy,
+		// BM25 may dilute the score for these entities. Run a focused recall on
+		// top entities and merge results to improve hit rate.
+		// Only trigger when primary recall returned few results to avoid latency.
+		expanded := corememory.ExpandQuery(msg)
+		if len(expanded.Entities) > 0 && len(recalled) < 8 {
+			seen := make(map[string]bool, len(recalled))
+			for _, e := range recalled {
+				seen[e.ID] = true
+			}
+			// Limit to top 3 entities to bound latency.
+			entities := expanded.Entities
+			if len(entities) > 3 {
+				entities = entities[:3]
+			}
+			for _, entity := range entities {
+				extra := h.memoryStore.RecallDynamic(entity, "", projectPath)
+				for _, e := range extra {
+					if !seen[e.ID] {
+						seen[e.ID] = true
+						recalled = append(recalled, e)
+					}
+				}
+			}
+			log.Printf("[proactive_recall] after entity supplement: %d entries (entities=%v)", len(recalled), entities)
+		}
 
 		// Filter out user_fact, self_identity, and session_checkpoint
 		// (checkpoints are progress snapshots, not useful for answering user queries).
@@ -553,8 +583,8 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 		}
 		log.Printf("[proactive_recall] relevant=%d after filter", len(relevant))
 
-		// Cap at 8 entries to control prompt size.
-		const maxProactiveRecall = 8
+		// Cap at 12 entries to control prompt size.
+		const maxProactiveRecall = 12
 		if len(relevant) > maxProactiveRecall {
 			relevant = relevant[:maxProactiveRecall]
 		}
@@ -574,6 +604,26 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 			}
 			log.Printf("[proactive_recall] injected %d entries into system prompt", len(relevant))
 			b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。即使你在之前的对话中说过「没找到」或「记忆库为空」，现在已经找到了，请直接使用以上信息，不要重复之前的错误判断。）\n")
+
+			// Memory-driven tool pinning: scan recalled memory content for
+			// conditional tool keywords (e.g. "服务器", "SSH") and pin matching
+			// tools to the session. This handles the case where the app was
+			// restarted and the user says "开工吧" to resume a server task —
+			// the user message has no SSH keywords, but the recalled memory does.
+			if h.toolRouter != nil {
+				var memoryText strings.Builder
+				for _, e := range relevant {
+					memoryText.WriteString(e.Content)
+					memoryText.WriteString(" ")
+				}
+				matched := tool.MatchConditionalTools(memoryText.String())
+				for name := range matched {
+					if tool.ShouldPinConditionalTool(name) {
+						h.toolRouter.ActivateSessionTool(name)
+						log.Printf("[MemoryPin] pinned conditional tool %q from recalled memory content", name)
+					}
+				}
+			}
 		}
 	}
 
