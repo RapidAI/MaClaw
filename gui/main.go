@@ -21,6 +21,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// version is set at build time via -ldflags "-X main.version=..."
+var version = "dev"
+
 func main() {
 	// --- Log to file: ~/.maclaw/logs/maclaw.log ---
 	corelib.SyncLogDetailEnabledFromDefaultConfig()

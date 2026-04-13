@@ -100,6 +100,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"operation":    map[string]string{"type": "string", "description": "可选：执行指定的 operation（api_workflow 模式 Skill 定义的操作名称，如 generate/query）。指定后自动选择对应的步骤标签"},
 				"input":        map[string]string{"type": "string", "description": "可选：兼容旧调用的输入参数"},
 				"output":       map[string]string{"type": "string", "description": "可选：兼容旧调用的输出参数"},
+				"user_prompt":  map[string]string{"type": "string", "description": "可选：用户的原始请求文本，供 craft_tool 类型 Skill 生成脚本时使用。对于 craft_tool Skill 建议传入"},
 				"wait_seconds": map[string]string{"type": "number", "description": "可选：启动后等待状态快照的秒数（默认 2，最大 30）。时间越长，初始返回越可能包含会话信息。"},
 			}, []string{"name"}),
 		toolDef("get_skill_run", "查询指定 Skill 运行的当前状态。适合在 run_skill 返回 run_id 后继续观察进度；若结果含 session_id，可继续使用会话工具观察输出。",

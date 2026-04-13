@@ -162,6 +162,39 @@ func ExtractEmailFromJWT(token string) (string, error) {
 }
 
 // AllowedSSODomains 是 QR_Extractor 允许请求的域名白名单。
+
+// ExtractAccountIDFromJWT extracts the chatgpt_account_id from an OpenAI OAuth
+// access_token JWT. The claim is nested under "https://api.openai.com/auth".
+func ExtractAccountIDFromJWT(token string) (string, error) {
+	parts := strings.SplitN(token, ".", 4)
+	if len(parts) < 3 {
+		return "", fmt.Errorf("ExtractAccountIDFromJWT: invalid JWT format")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("ExtractAccountIDFromJWT: base64 decode failed: %w", err)
+	}
+	var claims map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", fmt.Errorf("ExtractAccountIDFromJWT: JSON parse failed: %w", err)
+	}
+	authRaw, ok := claims["https://api.openai.com/auth"]
+	if !ok {
+		return "", fmt.Errorf("ExtractAccountIDFromJWT: missing auth claim")
+	}
+	var auth struct {
+		AccountID string `json:"chatgpt_account_id"`
+	}
+	if err := json.Unmarshal(authRaw, &auth); err != nil {
+		return "", fmt.Errorf("ExtractAccountIDFromJWT: parse auth claim failed: %w", err)
+	}
+	if auth.AccountID == "" {
+		return "", fmt.Errorf("ExtractAccountIDFromJWT: chatgpt_account_id is empty")
+	}
+	return auth.AccountID, nil
+}
+
+// AllowedSSODomains 是 QR_Extractor 允许请求的域名白名单。
 // 仅允许重定向到这些域名，防止 SSRF。
 var AllowedSSODomains = []string{
 	"codegen.qianxin-inc.cn",

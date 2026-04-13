@@ -1,11 +1,12 @@
 package oauth
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -25,36 +26,16 @@ func NeedsRefresh(provider corelib.MaclawLLMProvider) bool {
 	return time.Now().Unix()+int64(TokenRefreshMargin.Seconds()) >= provider.TokenExpiresAt
 }
 
-// refreshRequest 是发送给 OpenAI token endpoint 的 JSON 刷新请求。
-// 与 Codex CLI 保持一致，使用 JSON 格式而非 form-encoded。
-type refreshRequest struct {
-	ClientID     string `json:"client_id"`
-	GrantType    string `json:"grant_type"`
-	RefreshToken string `json:"refresh_token"`
-}
-
 // RefreshAccessToken 使用 refresh_token 获取新的 access_token。
-// 使用 JSON POST 请求（与 Codex CLI 保持一致）。
-// 如果响应包含 id_token，会自动通过 token exchange 获取 API key。
+// 直接返回 access_token 用于 Responses API，不做 token exchange。
 func RefreshAccessToken(cfg Config, refreshToken string) (*TokenResult, error) {
-	reqBody := refreshRequest{
-		ClientID:     cfg.ClientID,
-		GrantType:    "refresh_token",
-		RefreshToken: refreshToken,
-	}
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("token refresh: failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, cfg.TokenEndpoint, bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("token refresh: failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+	data := url.Values{}
+	data.Set("grant_type", "refresh_token")
+	data.Set("refresh_token", refreshToken)
+	data.Set("client_id", cfg.ClientID)
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.PostForm(cfg.TokenEndpoint, data)
 	if err != nil {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
@@ -84,32 +65,48 @@ func RefreshAccessToken(cfg Config, refreshToken string) (*TokenResult, error) {
 		return nil, fmt.Errorf("token refresh: response missing access_token")
 	}
 
-	// 如果响应包含 id_token，尝试通过 token exchange 获取 API key
+	// 尝试 token exchange 获取 sk-... API key
 	apiKey := tok.AccessToken
 	if tok.IDToken != "" {
-		if key, err := ExchangeForAPIKey(cfg, tok.IDToken); err == nil {
+		key, err := ExchangeForAPIKey(cfg, tok.IDToken)
+		if err == nil {
 			apiKey = key
+			log.Printf("[oauth] token refresh: exchange succeeded, got API key")
 		} else {
-			fmt.Printf("[oauth] warning: API key exchange failed during refresh, falling back to access_token: %v\n", err)
+			log.Printf("[oauth] token refresh: exchange failed (will use access_token): %v", err)
 		}
+	} else {
+		log.Printf("[oauth] token refresh: no id_token, using access_token directly")
 	}
 
 	return &TokenResult{
-		AccessToken:  apiKey,
-		RefreshToken: tok.RefreshToken,
-		ExpiresIn:    tok.ExpiresIn,
+		AccessToken:    apiKey,
+		RawAccessToken: tok.AccessToken,
+		RefreshToken:   tok.RefreshToken,
+		ExpiresIn:      tok.ExpiresIn,
 	}, nil
 }
 
 // ApplyTokenResult 将 TokenResult 应用到 provider 并返回更新后的副本。
-// Key 设为 AccessToken，RefreshToken 仅在非空时更新（保留旧值），
-// TokenExpiresAt 设为 now + ExpiresIn。
+// Key 和 OAuthAccessToken 都设为 access_token（Codex 订阅模式不区分）。
+// RefreshToken 仅在非空时更新（保留旧值），TokenExpiresAt 设为 now + ExpiresIn。
 func ApplyTokenResult(provider corelib.MaclawLLMProvider, result *TokenResult) corelib.MaclawLLMProvider {
 	provider.Key = result.AccessToken
+	if result.RawAccessToken != "" {
+		provider.OAuthAccessToken = result.RawAccessToken
+	}
 	if result.RefreshToken != "" {
 		provider.RefreshToken = result.RefreshToken
 	}
 	provider.TokenExpiresAt = time.Now().Unix() + int64(result.ExpiresIn)
+
+	keyPrefix := result.AccessToken
+	if len(keyPrefix) > 15 {
+		keyPrefix = keyPrefix[:15] + "..."
+	}
+	log.Printf("[oauth] ApplyTokenResult: token_prefix=%q expires_in=%d",
+		keyPrefix, result.ExpiresIn)
+
 	return provider
 }
 

@@ -389,8 +389,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if openAI.Name != "OpenAI" {
 		t.Errorf("providers[1].Name = %q, want %q", openAI.Name, "OpenAI")
 	}
-	if openAI.URL != "https://api.openai.com/v1" {
-		t.Errorf("OpenAI URL = %q, want %q", openAI.URL, "https://api.openai.com/v1")
+	if openAI.URL != "https://chatgpt.com/backend-api" {
+		t.Errorf("OpenAI URL = %q, want %q", openAI.URL, "https://chatgpt.com/backend-api")
 	}
 	if openAI.Model != "gpt-5.4" {
 		t.Errorf("OpenAI Model = %q, want %q", openAI.Model, "gpt-5.4")

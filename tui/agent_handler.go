@@ -584,7 +584,11 @@ func toolDef(name, desc string, props map[string]interface{}, required []string)
 func (h *TUIAgentHandler) executeTool(name, argsJSON string) string {
 	var args map[string]interface{}
 	if argsJSON != "" {
-		_ = json.Unmarshal([]byte(argsJSON), &args)
+		// Sanitize LLM-returned JSON: strip code fences, fix over-escaped
+		// quotes, remove single-quote wrappers. Small models frequently
+		// return malformed JSON that fails json.Unmarshal.
+		cleaned := coretool.CleanToolArguments(argsJSON)
+		_ = json.Unmarshal([]byte(cleaned), &args)
 	}
 
 	// Firewall 安全检查

@@ -88,6 +88,18 @@ func (s *CallbackServer) WaitForCode(timeout time.Duration) (string, error) {
 	}
 }
 
+// WaitForCodeCtx 阻塞等待授权码，支持 context 取消。
+func (s *CallbackServer) WaitForCodeCtx(ctx context.Context) (string, error) {
+	select {
+	case code := <-s.codeCh:
+		return code, nil
+	case err := <-s.errCh:
+		return "", err
+	case <-ctx.Done():
+		return "", fmt.Errorf("oauth cancelled")
+	}
+}
+
 // Stop 关闭 HTTP 服务器并释放端口。
 func (s *CallbackServer) Stop() {
 	if s.server != nil {

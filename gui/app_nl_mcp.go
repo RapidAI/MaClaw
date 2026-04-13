@@ -80,13 +80,38 @@ func (r *MCPRegistry) saveServers(servers []MCPServerEntry) error {
 	return r.app.SaveConfig(cfg)
 }
 
+// sanitizeMCPID converts a name to a safe ID slug.
+func sanitizeMCPID(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	var buf strings.Builder
+	prevDash := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			buf.WriteRune(r)
+			prevDash = false
+		} else if !prevDash && buf.Len() > 0 {
+			buf.WriteByte('-')
+			prevDash = true
+		}
+	}
+	result := strings.TrimRight(buf.String(), "-")
+	if result == "" {
+		return "mcp"
+	}
+	return result
+}
+
 // Register adds a new MCP Server.
 func (r *MCPRegistry) Register(entry MCPServerEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if entry.ID == "" || entry.Name == "" || entry.EndpointURL == "" {
-		return fmt.Errorf("id, name, and endpoint_url are required")
+	if entry.Name == "" || entry.EndpointURL == "" {
+		return fmt.Errorf("name and endpoint_url are required")
+	}
+	// Auto-generate ID from name if not provided
+	if entry.ID == "" {
+		entry.ID = fmt.Sprintf("%s-%d", sanitizeMCPID(entry.Name), time.Now().UnixMilli())
 	}
 	servers := r.loadServers()
 	for _, s := range servers {

@@ -605,3 +605,127 @@ func TestImportMarkdownSkillDir_ChineseSubdirNotSkipped(t *testing.T) {
 		t.Errorf("step 1 command = %q, expected 'echo done'", cmd1)
 	}
 }
+
+func TestExtractCaptureDirectives_BasicCapture(t *testing.T) {
+	content := `# Test Skill
+
+<!-- extract: SESSION_ID=sessionId[":]\s*([a-f0-9-]+) -->
+` + "```bash\npython3 create_session.py\n```" + `
+
+` + "```bash\npython3 query_session.py {{SESSION_ID}}\n```" + `
+`
+	directives := extractCaptureDirectives(content)
+	if len(directives) != 2 {
+		t.Fatalf("extractCaptureDirectives() returned %d entries, want 2", len(directives))
+	}
+	if directives[0] == nil {
+		t.Fatal("directives[0] is nil, expected capture map")
+	}
+	if directives[0]["SESSION_ID"] == "" {
+		t.Error("directives[0] missing SESSION_ID key")
+	}
+	if directives[1] != nil {
+		t.Errorf("directives[1] = %v, want nil (no capture for second block)", directives[1])
+	}
+}
+
+func TestExtractCaptureDirectives_NoCaptures(t *testing.T) {
+	content := "```bash\necho hello\n```\n\n```bash\necho world\n```\n"
+	directives := extractCaptureDirectives(content)
+	if len(directives) != 2 {
+		t.Fatalf("extractCaptureDirectives() returned %d entries, want 2", len(directives))
+	}
+	if directives[0] != nil || directives[1] != nil {
+		t.Errorf("expected nil directives, got %v", directives)
+	}
+}
+
+func TestExtractCaptureDirectives_SkipsNorunBlocks(t *testing.T) {
+	content := `<!-- extract: VAR=pattern -->
+` + "```bash.norun\necho example\n```" + `
+
+` + "```bash\necho real\n```" + `
+`
+	directives := extractCaptureDirectives(content)
+	// The .norun block should be skipped, and the extract comment should be
+	// cleared (not attached to the next non-norun block).
+	if len(directives) != 1 {
+		t.Fatalf("extractCaptureDirectives() returned %d entries, want 1", len(directives))
+	}
+	if directives[0] != nil {
+		t.Errorf("directives[0] = %v, want nil (capture was before .norun block)", directives[0])
+	}
+}
+
+func TestExtractCaptureDirectives_SkipsEmptyBlocks(t *testing.T) {
+	content := "```bash\n\n```\n\n```bash\necho hello\n```\n"
+	directives := extractCaptureDirectives(content)
+	// Empty block should be skipped (matching extractAllBashBlocksFromMarkdown behavior)
+	if len(directives) != 1 {
+		t.Fatalf("extractCaptureDirectives() returned %d entries, want 1", len(directives))
+	}
+}
+
+func TestExtractCaptureDirectives_MultipleCaptures(t *testing.T) {
+	content := `<!-- extract: ID=id:\s*(\w+) -->
+<!-- extract: TOKEN=token:\s*(\w+) -->
+` + "```bash\npython3 auth.py\n```" + `
+`
+	directives := extractCaptureDirectives(content)
+	if len(directives) != 1 {
+		t.Fatalf("extractCaptureDirectives() returned %d entries, want 1", len(directives))
+	}
+	if directives[0] == nil {
+		t.Fatal("directives[0] is nil")
+	}
+	if directives[0]["ID"] == "" || directives[0]["TOKEN"] == "" {
+		t.Errorf("expected both ID and TOKEN captures, got %v", directives[0])
+	}
+}
+
+func TestStripBashCommentLines(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "strips comment lines",
+			input: "# Text extraction\npython -m markitdown presentation.pptx",
+			want:  "python -m markitdown presentation.pptx",
+		},
+		{
+			name:  "preserves non-comment lines",
+			input: "echo hello\necho world",
+			want:  "echo hello\necho world",
+		},
+		{
+			name:  "strips shebang",
+			input: "#!/bin/bash\necho hello",
+			want:  "echo hello",
+		},
+		{
+			name:  "handles empty input",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "strips all comment lines",
+			input: "# comment 1\n# comment 2",
+			want:  "",
+		},
+		{
+			name:  "preserves indented non-comment lines",
+			input: "# header\n  python script.py\n# footer",
+			want:  "  python script.py",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripBashCommentLines(tt.input)
+			if got != tt.want {
+				t.Errorf("StripBashCommentLines(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

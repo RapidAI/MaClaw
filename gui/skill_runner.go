@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // ── Run Status ──────────────────────────────────────────────────────────
@@ -147,6 +148,11 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	r.executor.mu.RUnlock()
 
 	if target == nil {
+		// Fuzzy match fallback: suggest the closest skill when exact match fails.
+		if similar, score := cskill.FindSimilarSkill(skillName, 0.3); similar != nil {
+			return "", fmt.Errorf("skill %q not found. Did you mean %q? (%.0f%% match)\nUse list_skills to see installed skills",
+				skillName, similar.Name, score*100)
+		}
 		return "", fmt.Errorf("skill %q not found. Use list_skills to see installed skills", skillName)
 	}
 
@@ -165,6 +171,10 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	if runtime.GOOS == "windows" && target.SkillDir != "" {
 		target.SkillDir = normalizeWindowsShortPathGUI(target.SkillDir)
 	}
+
+	// Migrate legacy .cceasy paths to .maclaw — crafted skills from older
+	// versions may reference scripts in the old directory structure.
+	migrateLegacyCceasyPaths(target)
 
 	// 平台检查
 	if err := checkPlatformCompat(target); err != nil {
@@ -632,6 +642,13 @@ func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
 			vars["operation"] = op
 		}
 	}
+	// Include user_prompt for craft_tool skills that need user context
+	// to generate appropriate scripts.
+	if _, ok := vars["user_prompt"]; !ok {
+		if prompt, _ := runArgs["user_prompt"].(string); prompt != "" {
+			vars["user_prompt"] = prompt
+		}
+	}
 	if len(vars) == 0 {
 		return nil
 	}
@@ -1066,6 +1083,20 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 			}
 			if _, exists := resolvedStep.Params["preferred_shell"]; !exists {
 				resolvedStep.Params["preferred_shell"] = skill.PreferredShell
+			}
+		}
+		// Inject user_prompt into craft_tool steps so the LLM has context
+		// about what the user wants. Without this, craft_tool generates
+		// scripts blindly from just the skill description, often failing.
+		if resolvedStep.Action == "craft_tool" {
+			if resolvedStep.Params == nil {
+				resolvedStep.Params = map[string]interface{}{}
+			}
+			if _, exists := resolvedStep.Params["user_prompt"]; !exists {
+				vars := r.templateVarsForRun(run.status.RunID)
+				if prompt := vars["user_prompt"]; prompt != "" {
+					resolvedStep.Params["user_prompt"] = prompt
+				}
 			}
 		}
 		// Propagate skill-level required_env to bash steps for auto-injection.
@@ -1566,6 +1597,10 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 				return "", fmt.Errorf("创建临时脚本文件失败: %v", err)
 			}
 			tmpScript = scriptFile.Name()
+			// Strip # comment lines from the command before writing to .cmd script.
+			// cmd.exe treats # as a command, not a comment, causing
+			// "'#' is not recognized as an internal or external command" errors.
+			cmdSafeCommand := cskill.StripBashCommentLines(command)
 			// Write UTF-8 (no BOM) with `chcp 65001` to switch cmd.exe to
 			// UTF-8 mode before executing the command. This ensures non-ASCII
 			// paths (e.g. Chinese directory names like "脚本目录") are decoded
@@ -1574,7 +1609,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 			// BOM-based approach does NOT work: cmd.exe on CP936 treats the
 			// BOM bytes as part of the first command, turning "@echo off" into
 			// "'@echo' 不是内部或外部命令".
-			scriptContent := "@echo off\r\nchcp 65001 >nul\r\n" + command + "\r\n"
+			scriptContent := "@echo off\r\nchcp 65001 >nul\r\n" + cmdSafeCommand + "\r\n"
 			if _, err := scriptFile.WriteString(scriptContent); err != nil {
 				scriptFile.Close()
 				os.Remove(tmpScript)
@@ -1837,11 +1872,17 @@ func needsBashShell(command string) bool {
 		log.Printf("[skill-runner] shell detection: found Unix shell builtin (export/source/shebang), needs bash")
 		return true
 	}
-	// Multi-line commands containing export lines.
+	// Multi-line commands containing export lines or # comment lines.
+	// On Windows, cmd.exe treats # as a command, not a comment — so any
+	// script with # comments must be routed to bash.
 	for _, line := range strings.Split(command, "\n") {
 		trimmed := strings.TrimSpace(strings.ToLower(line))
 		if strings.HasPrefix(trimmed, "export ") {
 			log.Printf("[skill-runner] shell detection: found export in multi-line command, needs bash")
+			return true
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			log.Printf("[skill-runner] shell detection: found # comment line in command, needs bash")
 			return true
 		}
 	}
@@ -1961,6 +2002,70 @@ var python3NeedsMapping = sync.OnceValue(func() bool {
 	}
 	_, err2 := exec.LookPath("python")
 	return err2 == nil // map only if python exists
+})
+
+// migrateLegacyCceasyPaths replaces references to the old .cceasy directory
+// with the current .maclaw directory in skill step commands. This fixes
+// crafted skills from older versions that hardcode paths like
+// C:\Users\xxx\.cceasy\crafted_tools\... which no longer exist.
+func migrateLegacyCceasyPaths(skill *NLSkillEntry) {
+	paths := cceasyMigrationPaths()
+	if paths.oldDir == "" {
+		return
+	}
+	oldSlash := filepath.ToSlash(paths.oldDir)
+	newSlash := filepath.ToSlash(paths.newDir)
+
+	// Migrate SkillDir itself
+	if strings.Contains(skill.SkillDir, paths.oldDir) {
+		skill.SkillDir = strings.ReplaceAll(skill.SkillDir, paths.oldDir, paths.newDir)
+	} else if strings.Contains(skill.SkillDir, oldSlash) {
+		skill.SkillDir = strings.ReplaceAll(skill.SkillDir, oldSlash, newSlash)
+	}
+
+	for i, step := range skill.Steps {
+		if step.Params == nil {
+			continue
+		}
+		cmd, _ := step.Params["command"].(string)
+		if cmd == "" {
+			continue
+		}
+		changed := false
+		if strings.Contains(cmd, oldSlash) {
+			cmd = strings.ReplaceAll(cmd, oldSlash, newSlash)
+			changed = true
+		}
+		if strings.Contains(cmd, paths.oldDir) {
+			cmd = strings.ReplaceAll(cmd, paths.oldDir, paths.newDir)
+			changed = true
+		}
+		if changed {
+			skill.Steps[i].Params["command"] = cmd
+			log.Printf("[skill-runner] migrated .cceasy path to .maclaw in step %d of %s", i+1, skill.Name)
+		}
+	}
+}
+
+type cceasyPaths struct{ oldDir, newDir string }
+
+// cceasyMigrationPaths returns the old/new directory pair if .cceasy→.maclaw
+// migration is needed. Result is cached after first call to avoid repeated
+// syscalls on every skill run.
+var cceasyMigrationPaths = sync.OnceValue(func() cceasyPaths {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return cceasyPaths{}
+	}
+	oldDir := filepath.Join(home, ".cceasy")
+	newDir := filepath.Join(home, ".maclaw")
+	if _, err := os.Stat(oldDir); err == nil {
+		return cceasyPaths{} // old dir still exists, no migration needed
+	}
+	if _, err := os.Stat(newDir); err != nil {
+		return cceasyPaths{} // new dir doesn't exist either
+	}
+	return cceasyPaths{oldDir, newDir}
 })
 
 // checkPlatformCompat 检查当前平台是否匹配 skill 的 platforms 声明。

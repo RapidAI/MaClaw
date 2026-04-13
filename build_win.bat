@@ -105,7 +105,7 @@ if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate amd64 resources.
     goto :error
 )
-go build -tags desktop,production -ldflags "-s -w -H windowsgui" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./gui/
+go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for GUI amd64 failed.
     goto :error
@@ -119,7 +119,7 @@ if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate arm64 resources.
     goto :error
 )
-go build -tags desktop,production -ldflags "-s -w -H windowsgui" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
+go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for GUI arm64 failed.
     goto :error

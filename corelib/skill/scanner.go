@@ -392,6 +392,38 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 		SkillDir:     skillDir,
 	})
 	if err != nil {
+		// Fallback: try Claude SKILL.md format (YAML frontmatter with
+		// allowed-tools / tools definitions). This enables skills from
+		// awesome-claude-skills and similar community repos.
+		mdPath, mdErr := skillMarkdownPath(skillDir)
+		if mdErr == nil {
+			data, readErr := os.ReadFile(mdPath)
+			if readErr == nil {
+				if IsClaudeSKILLMD(data) {
+					claudeEntry, claudeErr := ParseClaudeSKILLMD(skillDir, data)
+					if claudeErr == nil {
+						if claudeEntry.Name != fallbackName {
+							claudeEntry.DirName = fallbackName
+						}
+						claudeEntry.CreatedAt = fileModTime(mdPath)
+						return claudeEntry, mdPath, nil
+					}
+				}
+
+				// Ultimate fallback: when all structured parsers fail, feed
+				// the raw markdown to LLM via craft_tool. This gives unknown
+				// skill formats (OpenAI skill.md, third-party formats, etc.)
+				// a chance to work — the LLM reads the instructions and
+				// decides how to execute. Deterministic execution is lost,
+				// but the skill doesn't silently disappear.
+				entry := buildCraftToolFallback(skillDir, fallbackName, data)
+				if entry != nil {
+					entry.CreatedAt = fileModTime(mdPath)
+					log.Printf("[skill-scanner] %s: all parsers failed, using craft_tool LLM fallback", fallbackName)
+					return entry, mdPath, nil
+				}
+			}
+		}
 		return nil, "", err
 	}
 	// Set DirName when SKILL.md name differs from directory name
@@ -402,6 +434,71 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 		return parsed, mdPath, nil
 	}
 	return parsed, "", nil
+}
+
+// buildCraftToolFallback creates an NLSkillEntry that delegates the entire
+// skill markdown to LLM via a single craft_tool step. This is the last-resort
+// fallback when no structured parser (skill.yaml, our markdown, Claude SKILL.md)
+// can handle the format. The LLM reads the raw instructions and figures out
+// what to do — like goskills' approach, but only as a fallback.
+func buildCraftToolFallback(skillDir, fallbackName string, data []byte) *corelib.NLSkillEntry {
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return nil
+	}
+
+	// Try to extract name/description from frontmatter or headings.
+	fm, body := ParseMarkdownFrontmatter(content)
+	name := strings.TrimSpace(fm["name"])
+	if name == "" {
+		name = firstMarkdownHeading(body)
+	}
+	if name == "" {
+		name = fallbackName
+	}
+	desc := strings.TrimSpace(fm["description"])
+	if desc == "" {
+		desc = firstMarkdownParagraph(body)
+	}
+	if desc == "" {
+		desc = name
+	}
+
+	// Replace Claude-specific paths for broader compatibility.
+	content = replaceClaudePaths(content)
+
+	// Extract extended frontmatter fields so the fallback skill still
+	// respects required_args, required_env, shell, timeout etc.
+	requiredArgs := splitCSV(strings.TrimSpace(fm["required_args"]))
+	requiredEnv := splitCSV(strings.TrimSpace(fm["requires_env"]))
+	preferredShell := strings.TrimSpace(fm["shell"])
+	timeout := parseIntFrontmatter(fm["timeout"])
+
+	params := map[string]interface{}{
+		"instructions":      content,
+		"verification_mode": "artifact_optional",
+		"register_policy":   "manual",
+	}
+	if skillDir != "" {
+		params["working_dir"] = skillDir
+	}
+
+	return &corelib.NLSkillEntry{
+		Name:           name,
+		DirName:        fallbackName,
+		Description:    desc,
+		Triggers:       []string{name},
+		Steps: []corelib.NLSkillStep{
+			{Action: "craft_tool", Params: params},
+		},
+		Status:         "active",
+		Source:         "file",
+		SkillDir:       skillDir,
+		RequiredArgs:   requiredArgs,
+		RequiredEnv:    requiredEnv,
+		PreferredShell: preferredShell,
+		GlobalTimeout:  timeout,
+	}
 }
 
 // uploadStatusFile mirrors the GUI-side upload_status.json format.

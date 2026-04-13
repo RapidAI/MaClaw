@@ -2163,6 +2163,9 @@ func TestLooksLikePromiseOnlyDeliverableReply(t *testing.T) {
 		{name: "english future send promise", text: "I will prepare the document and send you the PDF shortly.", want: true},
 		{name: "continuation fragment chinese", text: "继续添加第7-8节和参考文献：", want: true},
 		{name: "explicit failure chinese", text: "无法继续添加第7-8节，原因是源文件缺失。", want: false},
+		{name: "self intro chinese", text: "我是安妮，平时我会帮你查资料、写文档、做整理、跑工具、处理文件和各种电脑任务。", want: false},
+		{name: "self intro english", text: "I'm Annie, your AI assistant. I can help you write documents, organize files, and run tools.", want: false},
+		{name: "capability listing chinese", text: "我可以帮你整理文档、生成报告、处理文件等任务。", want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

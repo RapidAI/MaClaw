@@ -14,6 +14,7 @@ import {
     ListRemoteSessions,
     ListRemoteToolMetadata,
     ListValidProviders,
+    LoadConfig,
     ProbeRemoteHub,
     ReconnectRemoteHub,
     RunRemoteToolSmoke,
@@ -491,8 +492,17 @@ export function useRemotePanel(params: UseRemotePanelParams) {
     };
 
     const saveRemoteConfigField = async (patch: Partial<main.AppConfig>) => {
-        if (!config) return;
-        const newConfig = new main.AppConfig({ ...config, ...patch });
+        // Always reload config from backend before merging to avoid overwriting
+        // concurrent backend changes (e.g. SSO login sets maclaw_llm_current_provider
+        // but the frontend config state is stale).
+        let base: main.AppConfig;
+        try {
+            base = await LoadConfig();
+        } catch {
+            if (!config) return;
+            base = config;
+        }
+        const newConfig = new main.AppConfig({ ...base, ...patch });
         setConfig(newConfig);
         try {
             await SaveConfig(newConfig);

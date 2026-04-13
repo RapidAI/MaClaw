@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -90,6 +91,7 @@ func (gs *GitHubSearcher) SearchGitHub(query string) ([]GitHubSkillCandidate, er
 
 	targets := []githubSearchTarget{
 		{filename: "skill.md", definitionType: githubDefinitionSkillMD},
+		{filename: "SKILL.md", definitionType: githubDefinitionSkillMD},
 		{filename: "skill.yaml", definitionType: githubDefinitionYAML},
 	}
 	var candidates []GitHubSkillCandidate
@@ -272,7 +274,7 @@ func definitionTypeForPath(filePath, fallback string) string {
 	switch path.Base(filePath) {
 	case "skill.yaml":
 		return githubDefinitionYAML
-	case "skill.md":
+	case "skill.md", "SKILL.md":
 		return githubDefinitionSkillMD
 	default:
 		return fallback
@@ -334,6 +336,19 @@ func (gs *GitHubSearcher) parseSkillYAML(data []byte, c GitHubSkillCandidate) (*
 }
 
 func (gs *GitHubSearcher) parseSkillMarkdown(data []byte, c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
+	// Try Claude SKILL.md format first (YAML frontmatter with allowed-tools/tools).
+	// This enables importing skills from awesome-claude-skills and similar repos.
+	if IsClaudeSKILLMD(data) {
+		// For GitHub imports we don't have a local skillDir, so scripts/ won't
+		// resolve. Use the markdown body as craft_tool instructions instead,
+		// but preserve the structured name/description from frontmatter.
+		entry, err := parseClaudeSKILLMDForGitHub(data, c)
+		if err == nil {
+			return entry, nil
+		}
+		// Fall through to standard markdown parsing on error.
+	}
+
 	parsed, err := parseSkillMarkdownDocument(string(data), inferSkillName(c), strings.TrimSpace(c.Description))
 	if err != nil {
 		return nil, err
@@ -496,4 +511,67 @@ func (gs *GitHubSearcher) httpGet(reqURL string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, reqURL)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+}
+
+// parseClaudeSKILLMDForGitHub parses a Claude-format SKILL.md from a GitHub
+// import. Since we don't have local scripts/ directory, the skill body is
+// used as craft_tool instructions while preserving the structured metadata
+// from the YAML frontmatter.
+func parseClaudeSKILLMDForGitHub(data []byte, c GitHubSkillCandidate) (*corelib.NLSkillEntry, error) {
+	marker := []byte("---")
+	parts := bytes.SplitN(data, marker, 3)
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("no YAML frontmatter")
+	}
+
+	var meta claudeSkillMeta
+	if err := yaml.Unmarshal(parts[1], &meta); err != nil {
+		return nil, err
+	}
+
+	body := strings.TrimSpace(string(parts[2]))
+
+	name := meta.Name
+	if name == "" {
+		name = inferSkillName(c)
+	}
+	desc := meta.Description
+	if desc == "" {
+		desc = firstMarkdownParagraph(body)
+	}
+
+	// Replace Claude-specific paths so the skill body works in our environment.
+	body = replaceClaudePaths(body)
+
+	return &corelib.NLSkillEntry{
+		Name:        name,
+		Description: desc,
+		Triggers:    inferSkillTriggers(name, c),
+		Steps: []corelib.NLSkillStep{
+			{
+				Action: "craft_tool",
+				Params: map[string]interface{}{
+					"instructions":      body,
+					"verification_mode": "artifact_required",
+					"register_policy":   "manual",
+				},
+			},
+		},
+		Status:        "active",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		Source:        "github",
+		SourceProject: c.RepoURL,
+		TrustLevel:    "community",
+	}, nil
+}
+
+// replaceClaudePaths replaces Claude-specific path references in skill content
+// with paths appropriate for this project. This is inspired by goskills'
+// download command which replaces ~/.claude/skills with its own path.
+func replaceClaudePaths(content string) string {
+	replacer := strings.NewReplacer(
+		"~/.claude/skills", "~/.maclaw/data/skills",
+		"~/.claude/", "~/.maclaw/data/",
+	)
+	return replacer.Replace(content)
 }

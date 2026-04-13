@@ -450,6 +450,14 @@ export function StartOpenAIOAuth() {
   return window['go']['main']['App']['StartOpenAIOAuth']();
 }
 
+export function CancelOpenAIOAuth() {
+  return window['go']['main']['App']['CancelOpenAIOAuth']();
+}
+
+export function ImportCodexAuth() {
+  return window['go']['main']['App']['ImportCodexAuth']();
+}
+
 export function StartCodeGenSSO() {
   return window['go']['main']['App']['StartCodeGenSSO']();
 }
@@ -1261,4 +1269,8 @@ export function CheckASRModel() {
 
 export function DownloadASRModel() {
   return window['go']['main']['App']['DownloadASRModel']();
+}
+
+export function QuerySecurityEvents(arg1) {
+  return window['go']['main']['App']['QuerySecurityEvents'](arg1);
 }

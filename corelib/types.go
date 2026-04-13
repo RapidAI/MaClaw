@@ -212,9 +212,11 @@ type MaclawLLMProvider struct {
 	SupportsVision bool   `json:"supports_vision"`
 	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
-	AuthType       string `json:"auth_type,omitempty"`
-	RefreshToken   string `json:"refresh_token,omitempty"`
-	TokenExpiresAt int64  `json:"token_expires_at,omitempty"`
+	AuthType         string `json:"auth_type,omitempty"`
+	RefreshToken     string `json:"refresh_token,omitempty"`
+	TokenExpiresAt   int64  `json:"token_expires_at,omitempty"`
+	OAuthAccessToken string `json:"oauth_access_token,omitempty"` // 原始 access_token，仅用于 Costs/Usage API 查询
+	WireAPI          string `json:"wire_api,omitempty"`           // "chat" or "responses"; empty defaults to "chat"
 }
 
 // UserAgent returns the User-Agent header value for LLM API requests.
@@ -235,6 +237,21 @@ type MaclawLLMConfig struct {
 	TimeoutSec     int    `json:"timeout_sec,omitempty"`
 	SupportsVision bool   `json:"supports_vision"`
 	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
+	WireAPI        string `json:"wire_api,omitempty"`   // "chat" or "responses"; empty defaults to "chat"
+}
+
+// IsResponsesAPI reports whether this config targets the OpenAI Responses API.
+// This matches both "responses" (HTTP+SSE) and "responses-ws" (WebSocket) so
+// that non-streaming fallback paths work for WebSocket providers.
+func (c MaclawLLMConfig) IsResponsesAPI() bool {
+	w := strings.ToLower(strings.TrimSpace(c.WireAPI))
+	return w == "responses" || w == "responses-ws"
+}
+
+// IsResponsesWebSocket reports whether this config targets the OpenAI
+// Responses API over WebSocket transport.
+func (c MaclawLLMConfig) IsResponsesWebSocket() bool {
+	return strings.EqualFold(strings.TrimSpace(c.WireAPI), "responses-ws")
 }
 
 type MaclawLLMTestResult struct {

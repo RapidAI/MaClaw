@@ -6,6 +6,7 @@ import rehypeRaw from 'rehype-raw';
 import { BrowserOpenURL } from '../../wailsjs/runtime';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
 import { MemoryHealthDialog } from './MemoryHealthDialog';
+import { SecurityEventsDialog } from './SecurityEventsDialog';
 
 type BrandInfo = {
     id: string;
@@ -68,6 +69,7 @@ export function AboutPanel({
         : t("aboutProductName");
 
     const [showHealthDialog, setShowHealthDialog] = useState(false);
+    const [showSecurityEvents, setShowSecurityEvents] = useState(false);
 
     return (
         <div className="about-page">
@@ -105,6 +107,7 @@ export function AboutPanel({
                         <button className="btn-link about-action-button" onClick={onCheckUpdate}>{t("onlineUpdate")}</button>
                         <button className="btn-link about-action-button" onClick={onShowInstallLog}>{t("installLog")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowHealthDialog(true)}>{t("memoryHealth")}</button>
+                        <button className="btn-link about-action-button" onClick={() => setShowSecurityEvents(true)}>{t("securityEvents")}</button>
                         {showGithubActions && (
                             <>
                                 <button className="btn-link about-action-button" onClick={onOpenBugReport}>{t("bugReport")}</button>
@@ -137,6 +140,11 @@ export function AboutPanel({
             <MemoryHealthDialog
                 open={showHealthDialog}
                 onClose={() => setShowHealthDialog(false)}
+                t={t}
+            />
+            <SecurityEventsDialog
+                open={showSecurityEvents}
+                onClose={() => setShowSecurityEvents(false)}
                 t={t}
             />
         </div>

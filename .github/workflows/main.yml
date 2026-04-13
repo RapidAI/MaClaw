@@ -199,13 +199,13 @@ jobs:
           & $goversioninfo -64 -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o gui/resource_windows_amd64.syso build/windows/versioninfo.json.tmp
           $env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='1'
           $env:CC='gcc'
-          go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui" -o "dist/${outName}_amd64.exe" ./gui/
+          go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_amd64.exe" ./gui/
           Remove-Item gui/resource_windows_amd64.syso -ErrorAction SilentlyContinue
 
           # --- arm64 (no CGO, NoopEmbedder — cross-compile CGO not supported) ---
           & $goversioninfo -64 -arm -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o gui/resource_windows_arm64.syso build/windows/versioninfo.json.tmp
           $env:GOARCH='arm64'; $env:CGO_ENABLED='0'
-          go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui" -o "dist/${outName}_arm64.exe" ./gui/
+          go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_arm64.exe" ./gui/
           Remove-Item gui/resource_windows_arm64.syso -ErrorAction SilentlyContinue
 
           Remove-Item build/windows/wails.exe.manifest.tmp, build/windows/versioninfo.json.tmp
@@ -369,11 +369,11 @@ jobs:
           # amd64
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=amd64 \
-            go build -tags "${GUI_TAGS}" -o "build/bin/${OUT_NAME}_amd64" ./gui/
+            go build -tags "${GUI_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_amd64" ./gui/
           # arm64
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=arm64 \
-            go build -tags "${GUI_TAGS}" -o "build/bin/${OUT_NAME}_arm64" ./gui/
+            go build -tags "${GUI_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64" ./gui/
 
       - name: Build TUI & maclaw-tool (darwin)
         run: |
@@ -570,7 +570,7 @@ jobs:
           mkdir -p dist build/bin
           OUT_NAME="${BRAND_APP_NAME}"
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-            go build -tags "${WEBKIT_TAGS}" -o "build/bin/${OUT_NAME}_amd64_linux" ./gui/
+            go build -tags "${WEBKIT_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_amd64_linux" ./gui/
 
       - name: Build TUI & maclaw-tool (linux)
         run: |
@@ -758,7 +758,7 @@ jobs:
           mkdir -p dist build/bin
           OUT_NAME="${BRAND_APP_NAME}"
           CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
-            go build -tags "${WEBKIT_TAGS}" -o "build/bin/${OUT_NAME}_arm64_linux" ./gui/
+            go build -tags "${WEBKIT_TAGS}" -ldflags "-X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64_linux" ./gui/
 
       - name: Create AppImage (arm64)
         run: |

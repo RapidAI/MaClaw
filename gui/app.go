@@ -78,6 +78,8 @@ type App struct {
 	skillHubClient        *SkillHubClient
 	capabilityGapDetector *CapabilityGapDetector
 	stopHubTicker         chan struct{} // signals the 24h recommendation refresh goroutine to stop
+	oauthMu               sync.Mutex
+	oauthCancel           context.CancelFunc
 	// Smart session components
 	memoryStore                *MemoryStore
 	configManager              *ConfigManager
@@ -1091,6 +1093,25 @@ func (a *App) domReady(ctx context.Context) {
 	// Trigger environment check on startup
 	// IsInitMode and PauseEnvCheck logic is handled inside CheckEnvironment
 	a.CheckEnvironment(false)
+
+	// Background update check — non-blocking, toast notification if new version available.
+	go func() {
+		// Wait for startup to settle — avoid competing with other network
+		// requests and ensure the UI is fully interactive before showing toast.
+		time.Sleep(60 * time.Second)
+		result, err := a.CheckUpdate(remoteAppVersion())
+		if err != nil {
+			a.log(fmt.Sprintf("[update-check] background check failed: %v", err))
+			return
+		}
+		if result.HasUpdate {
+			a.emitEvent("show-toast", map[string]interface{}{
+				"message":  fmt.Sprintf("发现新版本 %s，可通过 关于 → 在线更新 升级", result.LatestVersion),
+				"type":     "info",
+				"duration": 8000,
+			})
+		}
+	}()
 }
 
 // GetUIZoomFactor returns the saved UI zoom factor (default 1.0).
@@ -1771,9 +1792,9 @@ func (a *App) WindowHide() {
 }
 func (a *App) SetFullscreen(fullscreen bool) {
 	if fullscreen {
-		runtime.WindowFullscreen(a.ctx)
+		runtime.WindowMaximise(a.ctx)
 	} else {
-		runtime.WindowUnfullscreen(a.ctx)
+		runtime.WindowUnmaximise(a.ctx)
 	}
 }
 func (a *App) SelectProjectDir() string {

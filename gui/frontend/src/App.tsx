@@ -15,7 +15,7 @@ import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/clawnet.svg';
 import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops } from "../wailsjs/go/main/App";
-import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
+import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowMaximise, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -356,6 +356,7 @@ const translations: any = {
         "showLess": "Show Less",
         "installLog": "View Log",
         "memoryHealth": "Memory Health",
+        "securityEvents": "Security Events",
         "memoryHealthTitle": "Memory Health Dashboard",
         "memHealthCapacity": "Capacity",
         "memHealthArchived": "Archived",
@@ -842,6 +843,7 @@ const translations: any = {
         "showLess": "收起",
         "installLog": "查看日志",
         "memoryHealth": "记忆健康",
+        "securityEvents": "安全事件",
         "memoryHealthTitle": "记忆健康仪表盘",
         "memHealthCapacity": "容量",
         "memHealthArchived": "已归档",
@@ -1306,6 +1308,7 @@ const translations: any = {
         "showLess": "收起",
         "installLog": "查看日誌",
         "memoryHealth": "記憶健康",
+        "securityEvents": "安全事件",
         "memoryHealthTitle": "記憶健康儀表盤",
         "memHealthCapacity": "容量",
         "memHealthArchived": "已歸檔",
@@ -1979,11 +1982,11 @@ function App() {
 
     const handleAIPanelMaximizeToggle = () => {
         if (aiPanelMaximized) {
-            WindowUnfullscreen();
+            WindowUnmaximise();
             setAiPanelMaximized(false);
             return;
         }
-        WindowFullscreen();
+        WindowMaximise();
         setAiPanelMaximized(true);
     };
 
@@ -7220,11 +7223,12 @@ ${instruction}`;
                     }}
                     onSaveField={(patch) => {
                         saveRemoteConfigField(patch as any);
-                        // If ui_mode changed, update config immediately for reactivity
+                        // If ui_mode changed, update local state immediately for reactivity.
+                        // The actual persist is handled by saveRemoteConfigField (which
+                        // reloads config from backend first to avoid overwriting concurrent
+                        // backend changes like SSO provider switch).
                         if (patch.ui_mode && config) {
-                            const c = new main.AppConfig({ ...config, ...patch });
-                            setConfig(c);
-                            SaveConfig(c);
+                            setConfig(new main.AppConfig({ ...config, ...patch }));
                         }
                     }}
                 />

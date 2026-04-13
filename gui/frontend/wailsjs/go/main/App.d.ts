@@ -228,6 +228,10 @@ export function TestMaclawLLM(arg1:any):Promise<main.MaclawLLMTestResult>;
 
 export function StartOpenAIOAuth():Promise<string>;
 
+export function CancelOpenAIOAuth():Promise<void>;
+
+export function ImportCodexAuth():Promise<string>;
+
 export function StartCodeGenSSO():Promise<any>;
 
 export function StartCodeGenSSOEmbedded():Promise<any>;
@@ -580,3 +584,5 @@ export function SetASREnabled(arg1:boolean):Promise<void>;
 export function CheckASRModel():Promise<{[key:string]:any}>;
 
 export function DownloadASRModel():Promise<void>;
+
+export function QuerySecurityEvents(arg1:number):Promise<Array<any>>;

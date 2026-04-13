@@ -611,7 +611,14 @@ function RemoteMCPPanel({ translate }: Props) {
             if (editingServer) {
                 await UpdateMCPServer(formData);
             } else {
-                await RegisterMCPServer(formData);
+                // Auto-generate id from name for new registrations
+                const payload = { ...formData };
+                if (!payload.id) {
+                    const slug = formData.name.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-").replace(/^-|-$/g, "");
+                    const suffix = Date.now().toString(36);
+                    payload.id = slug ? `${slug}-${suffix}` : `mcp-${suffix}`;
+                }
+                await RegisterMCPServer(payload);
             }
             closeForm();
             await loadData();

@@ -7,6 +7,8 @@ import {
     GetMaclawAgentMaxIterations,
     SetMaclawAgentMaxIterations,
     StartOpenAIOAuth,
+    CancelOpenAIOAuth,
+    ImportCodexAuth,
     StartFreeProxy,
     StopFreeProxy,
     IsFreeProxyRunning,
@@ -17,6 +19,8 @@ import {
     GetFreeProxyModels,
     GetFreeProxyModel,
     SetFreeProxyModel,
+    FetchCodeGenModels,
+    SaveCodeGenModelChoice,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
 import { UsageDisplay } from "./UsageDisplay";
@@ -121,6 +125,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [authChecking, setAuthChecking] = useState(false);
     const [freeModels, setFreeModels] = useState<{id: string; name: string}[]>([]);
     const [freeSelectedModel, setFreeSelectedModel] = useState("");
+    const [codegenModels, setCodegenModels] = useState<{id: string; name: string}[]>([]);
+    const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const loadSeqRef = useRef(0);
 
@@ -250,6 +256,26 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         return () => { cancelled = true; clearInterval(id); };
     }, [dlgOpen, dlgAuthType]);
 
+    // Fetch CodeGen models when dialog opens with an SSO provider (CodeGen)
+    useEffect(() => {
+        if (!dlgOpen || dlgAuthType !== "sso") {
+            setCodegenModels([]);
+            setCodegenModelsFetching(false);
+            return;
+        }
+        let cancelled = false;
+        setCodegenModelsFetching(true);
+        FetchCodeGenModels().then(models => {
+            if (cancelled) return;
+            setCodegenModels(models || []);
+        }).catch(() => {
+            if (!cancelled) setCodegenModels([]);
+        }).finally(() => {
+            if (!cancelled) setCodegenModelsFetching(false);
+        });
+        return () => { cancelled = true; };
+    }, [dlgOpen, dlgAuthType]);
+
     // Detect browser and check dangbei login when dialog opens with free provider.
     // If cookie is valid, auto-start proxy so user doesn't need to do anything.
     useEffect(() => {
@@ -350,6 +376,10 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             try {
                 const saveName = sp.name;
                 await SaveMaclawLLMProviders(dlgProviders, saveName);
+                // For SSO (CodeGen), sync model choice to Claude Code and other tool configs
+                if (sp.auth_type === "sso" && sp.model) {
+                    await SaveCodeGenModelChoice(sp.model, sp.model).catch(() => {});
+                }
                 setDlgDirty(false);
                 setProviders(dlgProviders.map(p => ({ ...p })));
                 setCurrentName(saveName);
@@ -718,7 +748,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
                                         {t("Model Name", "模型名称")}
-                                        {!dlgProvider.is_custom && dlgProvider.auth_type !== "oauth" && (
+                                        {!dlgProvider.is_custom && dlgProvider.auth_type !== "oauth" && dlgProvider.auth_type !== "sso" && (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {t("(preset)", "（预设，无需修改）")}
                                             </span>
@@ -726,6 +756,11 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         {dlgProvider.auth_type === "oauth" && (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {t("(editable)", "（可修改）")}
+                                            </span>
+                                        )}
+                                        {dlgProvider.auth_type === "sso" && (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {codegenModelsFetching ? t("(loading models...)", "（加载模型列表...）") : t("(select model)", "（选择模型）")}
                                             </span>
                                         )}
                                     </label>
@@ -739,6 +774,23 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                             onChange={e => dlgUpdateField("model", e.target.value)}
                                             placeholder="gpt-5.4"
                                             autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                    ) : dlgProvider.auth_type === "sso" ? (
+                                        codegenModels.length > 0 ? (
+                                            <select style={inputStyle} value={dlgProvider.model}
+                                                onChange={e => dlgUpdateField("model", e.target.value)}>
+                                                {!codegenModels.some(m => m.id === dlgProvider.model) && dlgProvider.model && (
+                                                    <option value={dlgProvider.model}>{dlgProvider.model}</option>
+                                                )}
+                                                {codegenModels.map(m => (
+                                                    <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
+                                                ))}
+                                            </select>
+                                        ) : (
+                                            <input style={inputStyle} value={dlgProvider.model}
+                                                onChange={e => dlgUpdateField("model", e.target.value)}
+                                                placeholder={codegenModelsFetching ? t("Loading...", "加载中...") : t("Enter model name", "输入模型名称")}
+                                                autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                        )
                                     ) : (
                                         <input style={readonlyStyle} value={dlgProvider.model} readOnly tabIndex={-1} />
                                     )}
@@ -767,6 +819,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                 </button>
                                             </div>
                                         ) : (
+                                            <>
                                             <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                 width: "100%", padding: "10px 0", fontSize: "0.8rem",
                                                 cursor: oauthBusy ? "default" : "pointer",
@@ -778,6 +831,43 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     ? `⏳ ${t("Waiting for browser authorization...", "等待浏览器授权...")}`
                                                     : t("Sign in with OpenAI", "使用 OpenAI 账号登录")}
                                             </button>
+                                            {oauthBusy && (
+                                                <button onClick={() => { CancelOpenAIOAuth(); setOauthBusy(false); }} style={{
+                                                    width: "100%", padding: "8px 0", fontSize: "0.76rem",
+                                                    cursor: "pointer", marginTop: 6,
+                                                    background: "transparent", color: colors.textMuted,
+                                                    border: `1px solid ${colors.border}`, borderRadius: 4,
+                                                }}>
+                                                    {t("Cancel", "取消")}
+                                                </button>
+                                            )}
+                                            {dlgTestResult && !dlgTestResult.ok && !oauthBusy && (
+                                                <button onClick={async () => {
+                                                    try {
+                                                        const msg = await ImportCodexAuth();
+                                                        const data = await GetMaclawLLMProviders();
+                                                        if (data?.providers) {
+                                                            const fresh = data.providers.map((p: LLMProvider) => ({ ...p }));
+                                                            setDlgProviders(fresh);
+                                                            setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
+                                                            setCurrentName(data.current || NONE_PROVIDER);
+                                                            setDlgDirty(false);
+                                                            onStatusChange?.(true, true);
+                                                        }
+                                                        setDlgTestResult({ ok: true, msg: msg || "已从 Codex 导入" });
+                                                    } catch (e) {
+                                                        setDlgTestResult({ ok: false, msg: String(e) });
+                                                    }
+                                                }} style={{
+                                                    width: "100%", padding: "8px 0", fontSize: "0.76rem",
+                                                    cursor: "pointer", marginTop: 6,
+                                                    background: "transparent", color: colors.primary,
+                                                    border: `1px dashed ${colors.primary}`, borderRadius: 4,
+                                                }}>
+                                                    {t("Import from Codex CLI (if already logged in)", "从 Codex CLI 导入（如已在 Codex 中登录）")}
+                                                </button>
+                                            )}
+                                            </>
                                         )}
                                     </div>
                                 ) : dlgProvider.auth_type === "none" ? (

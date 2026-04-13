@@ -23,6 +23,9 @@ type ChatCompletionMessageToolCall = llm.ToolCall
 // Supports both OpenAI-compatible and Anthropic Messages API protocols.
 // The httpClient parameter selects which connection pool to use (chat vs background).
 func (h *IMMessageHandler) doLLMRequest(cfg MaclawLLMConfig, messages []interface{}, tools []map[string]interface{}, httpClient *http.Client) (*llmResponse, error) {
+	if cfg.IsResponsesAPI() {
+		return h.doResponsesAPILLMRequest(cfg, messages, tools, httpClient)
+	}
 	if cfg.Protocol == "anthropic" {
 		return h.doAnthropicLLMRequest(cfg, messages, tools, httpClient)
 	}

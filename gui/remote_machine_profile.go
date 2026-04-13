@@ -29,6 +29,9 @@ func normalizeRemoteHeartbeatIntervalSec(value int) int {
 }
 
 func remoteAppVersion() string {
+	if version != "" && version != "dev" {
+		return version
+	}
 	return "1.0.0"
 }
 

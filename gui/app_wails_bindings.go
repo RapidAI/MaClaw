@@ -109,6 +109,104 @@ func (a *App) QueryAuditLog(filter AuditFilter) ([]AuditEntry, error) {
 	return a.auditLog.Query(filter)
 }
 
+// SecurityEventItem is a frontend-friendly representation of a denied audit entry.
+type SecurityEventItem struct {
+	Time      string `json:"time"`
+	ToolName  string `json:"tool_name"`
+	Target    string `json:"target"`
+	RemoteIP  string `json:"remote_ip"`
+	RiskLevel string `json:"risk_level"`
+	Reason    string `json:"reason"`
+}
+
+// QuerySecurityEvents returns denied/rejected security events from the last N days (Wails binding).
+func (a *App) QuerySecurityEvents(days int) ([]SecurityEventItem, error) {
+	a.ensureAuditLog()
+	if a.auditLog == nil {
+		return nil, fmt.Errorf("audit log not initialized")
+	}
+	if days <= 0 {
+		days = 7
+	}
+	start := time.Now().AddDate(0, 0, -days)
+	entries, err := a.auditLog.Query(AuditFilter{StartTime: &start})
+	if err != nil {
+		return nil, err
+	}
+	var items []SecurityEventItem
+	for _, e := range entries {
+		if e.PolicyAction != PolicyDeny && !isDeniedResult(e.Result) {
+			continue
+		}
+		items = append(items, SecurityEventItem{
+			Time:      e.Timestamp.Format("2006-01-02 15:04:05"),
+			ToolName:  e.ToolName,
+			Target:    extractTarget(e.Arguments),
+			RemoteIP:  extractRemoteIP(e.Arguments, e.SessionID),
+			RiskLevel: string(e.RiskLevel),
+			Reason:    formatDenyReason(e),
+		})
+	}
+	// Reverse so newest events appear first.
+	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+		items[i], items[j] = items[j], items[i]
+	}
+	return items, nil
+}
+
+func isDeniedResult(result string) bool {
+	r := strings.ToLower(result)
+	return strings.Contains(r, "denied") || strings.Contains(r, "rejected") || strings.Contains(r, "拒绝")
+}
+
+// formatDenyReason produces a human-readable reason from an AuditEntry.
+// If Result already contains a descriptive message (e.g. "rejected skill X: critical risk"),
+// use it directly. Otherwise fall back to a generic label based on PolicyAction + RiskLevel.
+func formatDenyReason(e AuditEntry) string {
+	r := e.Result
+	if r != "" && r != "deny" && r != "denied" && r != string(PolicyDeny) {
+		return r
+	}
+	// Generic fallback
+	return fmt.Sprintf("policy_deny (risk: %s)", e.RiskLevel)
+}
+
+func extractTarget(args map[string]interface{}) string {
+	if len(args) == 0 {
+		return "-"
+	}
+	for _, key := range []string{"path", "file", "url", "filepath"} {
+		if v, ok := args[key]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	if cmd, ok := args["command"]; ok {
+		if s, ok := cmd.(string); ok && s != "" {
+			if len(s) > 80 {
+				return s[:80] + "..."
+			}
+			return s
+		}
+	}
+	return "-"
+}
+
+func extractRemoteIP(args map[string]interface{}, sessionID string) string {
+	if len(args) == 0 {
+		return "-"
+	}
+	for _, key := range []string{"remote_ip", "ip", "host"} {
+		if v, ok := args[key]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return "-"
+}
+
 // RecommendTool suggests the best programming tool for a task (Wails binding).
 func (a *App) RecommendTool(taskDescription string) (string, string) {
 	a.ensureRemoteInfra()

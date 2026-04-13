@@ -56,11 +56,11 @@ echo "[2/4] Compiling Go Binaries..."
 
 # Build AMD64
 echo "  - Building for amd64..."
-CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" GOOS=darwin GOARCH=amd64 go build -tags desktop,production -o "${BIN_DIR}/${APP_NAME}_amd64" ./gui/
+CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" GOOS=darwin GOARCH=amd64 go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_amd64" ./gui/
 
 # Build ARM64
 echo "  - Building for arm64..."
-CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" GOOS=darwin GOARCH=arm64 go build -tags desktop,production -o "${BIN_DIR}/${APP_NAME}_arm64" ./gui/
+CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" GOOS=darwin GOARCH=arm64 go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_arm64" ./gui/
 
 # Generate Windows Resources
 echo "  - Generating Windows Resources..."
@@ -86,11 +86,11 @@ fi
 
 # Build Windows AMD64
 echo "  - Building for Windows amd64..."
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags desktop,production -ldflags "-s -w -H windowsgui" -o "${BIN_DIR}/${APP_NAME}_amd64.exe" ./gui/
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_amd64.exe" ./gui/
 
 # Build Windows ARM64
 echo "  - Building for Windows arm64..."
-CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags desktop,production -ldflags "-s -w -H windowsgui" -o "${BIN_DIR}/${APP_NAME}_arm64.exe" ./gui/
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_arm64.exe" ./gui/
 
 # Cleanup Windows Resources
 rm -f gui/resource_windows_amd64.syso gui/resource_windows_arm64.syso
@@ -143,9 +143,9 @@ build_linux() {
     # Build binary
     # Note: On Linux/macOS cross-compile, CGO is required for Wails.
     if [ -n "$CC_CMD" ]; then
-        eval $CC_CMD CGO_ENABLED=1 GOOS=linux GOARCH=$ARCH go build -tags desktop,production -o "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" ./gui/
+        eval $CC_CMD CGO_ENABLED=1 GOOS=linux GOARCH=$ARCH go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" ./gui/
     elif [ "$(uname)" == "Linux" ]; then
-        CGO_ENABLED=1 GOOS=linux GOARCH=$ARCH go build -tags desktop,production -o "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" ./gui/
+        CGO_ENABLED=1 GOOS=linux GOARCH=$ARCH go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" ./gui/
     fi
     
     # Package

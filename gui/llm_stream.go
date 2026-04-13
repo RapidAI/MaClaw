@@ -39,6 +39,46 @@ const (
 	guiMaxToolArgumentsBytes = 180 * 1024
 )
 
+// classifyOpenAIHTTPError 解析 OpenAI API 错误响应，返回友好的中文提示。
+func classifyOpenAIHTTPError(statusCode int, body []byte) string {
+	// 尝试解析 OpenAI 标准错误格式
+	var errBody struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &errBody)
+	code := errBody.Error.Code
+	typ := errBody.Error.Type
+
+	switch {
+	case code == "insufficient_quota" || typ == "insufficient_quota":
+		return "OpenAI 账号额度不足，请检查账单和付费计划 (insufficient_quota)"
+	case statusCode == http.StatusTooManyRequests:
+		if strings.Contains(string(body), "rate_limit") {
+			return "OpenAI API 请求频率超限，请稍后再试 (rate_limit)"
+		}
+		return "OpenAI API 请求过于频繁，请稍后再试 (HTTP 429)"
+	case statusCode == http.StatusUnauthorized:
+		return "OpenAI 认证失败，API Key 无效或已过期，请重新登录 (HTTP 401)"
+	case statusCode == http.StatusForbidden:
+		return "OpenAI 拒绝访问，账号可能被限制或无权使用该模型 (HTTP 403)"
+	default:
+		return fmt.Sprintf("OpenAI API 错误 (HTTP %d): %s", statusCode, truncateLLMBody(body, 200))
+	}
+}
+
+// truncateLLMBody 截断错误 body 用于日志显示。
+func truncateLLMBody(body []byte, maxLen int) string {
+	s := string(body)
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
+}
+
 func partialSuffixLen(s, tag string) int {
 	for i := 1; i < len(tag); i++ {
 		if strings.HasSuffix(s, tag[:i]) {
@@ -341,6 +381,12 @@ func (h *IMMessageHandler) doLLMRequestStream(
 	if onToken == nil {
 		onToken = func(string) {}
 	}
+	if cfg.IsResponsesWebSocket() {
+		return h.doResponsesWSLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, withFirstTokenMetrics(onToken, metrics), metrics)
+	}
+	if cfg.IsResponsesAPI() {
+		return h.doResponsesAPILLMRequestStream(reqCtx, cfg, messages, tools, httpClient, withFirstTokenMetrics(onToken, metrics), metrics)
+	}
 	if cfg.Protocol == "anthropic" {
 		return h.doAnthropicLLMRequestStream(reqCtx, cfg, messages, tools, httpClient, withFirstTokenMetrics(onToken, metrics), metrics)
 	}
@@ -415,6 +461,13 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("HTTP 404: %s (endpoint=%s, model=%s, protocol=%s)", string(body), endpoint, cfg.Model, cfg.Protocol)
+	}
+
+	// 对 429 / 401 / 403 等常见错误提供友好提示，避免原始 JSON body 直接透传给用户
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body)
+		return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, cfg.Model)
 	}
 
 	// Detect SSE: check Content-Type first, then sniff the body prefix.

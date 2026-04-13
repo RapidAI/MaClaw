@@ -295,10 +295,21 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		allBlocks = extractAllBashBlocksFromMarkdown(parsed.markdown)
 	}
 
+	// Extract capture directives (<!-- extract: VAR=regex -->) for each bash block.
+	// This enables step-to-step variable passing for SKILL.md-defined skills.
+	var captureDirectives []map[string]string
+	if strings.TrimSpace(parsed.markdown) != "" {
+		captureDirectives = extractCaptureDirectives(parsed.markdown)
+	}
+
 	if len(allBlocks) > 0 {
 		log.Printf("[skill-parser] %s: found %d bash blocks in SKILL.md, %d scripts in scripts/",
 			parsed.name, len(allBlocks), len(localScripts))
+		blockIdx := 0 // tracks position in captureDirectives (which includes skipped blocks)
 		for _, rawBlock := range allBlocks {
+			currentBlockIdx := blockIdx
+			blockIdx++
+
 			// Resolve {baseDir} placeholders so we can check if the block
 			// references real files in the skill directory.
 			resolved := resolveBaseDirInBlock(rawBlock, skillDir)
@@ -353,7 +364,14 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 			if strings.TrimSpace(skillDir) != "" {
 				params["working_dir"] = skillDir
 			}
-			steps = append(steps, corelib.NLSkillStep{Action: "bash", Params: params, OnError: "stop"})
+			// Attach capture directives from <!-- extract: VAR=regex --> comments
+			// preceding this bash block, enabling step-to-step variable passing.
+			var capture map[string]string
+			if currentBlockIdx < len(captureDirectives) && captureDirectives[currentBlockIdx] != nil {
+				capture = captureDirectives[currentBlockIdx]
+				log.Printf("[skill-parser] %s: step %d has capture directives: %v", parsed.name, len(steps)+1, capture)
+			}
+			steps = append(steps, corelib.NLSkillStep{Action: "bash", Params: params, OnError: "stop", Capture: capture})
 		}
 	}
 
@@ -773,6 +791,11 @@ func parseIntFrontmatter(s string) int {
 // Used to tag bash blocks with operation labels for selective execution.
 var operationCommentRe = regexp.MustCompile(`<!--\s*operation:\s*(\S+)\s*-->`)
 
+// extractCommentRe matches <!-- extract: VAR=regex --> HTML comments in markdown.
+// Used to define output variable capture rules for the preceding or following bash block.
+// Example: <!-- extract: SESSION_ID=sessionId[":]\s*([a-f0-9-]+) -->
+var extractCommentRe = regexp.MustCompile(`<!--\s*extract:\s*(\w+)\s*=\s*(.+?)\s*-->`)
+
 // firstSignificantLine returns the first non-empty, non-comment line from a
 // bash block. Used for matching operation-labeled blocks to parsed steps.
 func firstSignificantLine(block string) string {
@@ -832,4 +855,98 @@ func extractOperationLabeledBlocks(content string) map[string]string {
 		}
 	}
 	return result
+}
+
+// extractCaptureDirectives parses SKILL.md content and returns a slice of
+// capture maps, one per bash block (in document order). Each map contains
+// varName → regex entries from <!-- extract: VAR=regex --> comments that
+// precede the bash block.
+//
+// Example SKILL.md:
+//
+//	<!-- extract: SESSION_ID=sessionId[":]\s*([a-f0-9-]+) -->
+//	```bash
+//	python3 create_session.py "hello"
+//	```
+//
+// This returns [{SESSION_ID: `sessionId[":]\s*([a-f0-9-]+)`}] for the first
+// bash block, enabling the runner to capture SESSION_ID from its output.
+func extractCaptureDirectives(content string) []map[string]string {
+	var result []map[string]string
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	pendingCaptures := make(map[string]string)
+	inBashBlock := false
+	var blockContent strings.Builder
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Check for extract comment — accumulate captures for the next bash block
+		if m := extractCommentRe.FindStringSubmatch(trimmed); len(m) > 2 {
+			pendingCaptures[m[1]] = m[2]
+			continue
+		}
+
+		// Check for bash block start (exclude .norun)
+		if strings.HasPrefix(trimmed, "```bash") && !strings.Contains(trimmed, ".norun") {
+			inBashBlock = true
+			blockContent.Reset()
+			continue
+		}
+
+		// .norun blocks: consume them without emitting, and clear pending captures
+		if strings.HasPrefix(trimmed, "```bash") && strings.Contains(trimmed, ".norun") {
+			pendingCaptures = make(map[string]string)
+			continue
+		}
+
+		// Check for block end
+		if inBashBlock && strings.HasPrefix(trimmed, "```") {
+			inBashBlock = false
+			// Only emit an entry if the block has non-empty content,
+			// matching extractAllBashBlocksFromMarkdown which skips empty blocks.
+			if strings.TrimSpace(blockContent.String()) != "" {
+				if len(pendingCaptures) > 0 {
+					cp := make(map[string]string, len(pendingCaptures))
+					for k, v := range pendingCaptures {
+						cp[k] = v
+					}
+					result = append(result, cp)
+				} else {
+					result = append(result, nil)
+				}
+			}
+			pendingCaptures = make(map[string]string)
+			continue
+		}
+
+		if inBashBlock {
+			blockContent.WriteString(line)
+			blockContent.WriteByte('\n')
+		}
+
+		// Non-comment, non-block line clears pending captures to avoid
+		// mis-association with a distant bash block.
+		if !inBashBlock && len(pendingCaptures) > 0 && trimmed != "" &&
+			!strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "<!--") {
+			pendingCaptures = make(map[string]string)
+		}
+	}
+	return result
+}
+
+// StripBashCommentLines removes lines starting with # from a bash command
+// string. This is needed when executing via cmd.exe on Windows, where #
+// is not a valid comment character and causes "'#' is not recognized" errors.
+func StripBashCommentLines(command string) string {
+	lines := strings.Split(command, "\n")
+	var filtered []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return strings.Join(filtered, "\n")
 }

@@ -8,6 +8,7 @@ import {
     ActivateRemote,
     ProbeRemoteHub,
     StartOpenAIOAuth,
+    CancelOpenAIOAuth,
     StartCodeGenSSO,
     StartCodeGenSSOEmbedded,
     WaitCodeGenSSOResult,
@@ -1051,6 +1052,15 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                             }}>
                                                 {oauthBusy ? t("等待浏览器授权...", "Waiting for browser auth...") : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
                                             </button>
+                                            {oauthBusy && (
+                                                <button onClick={() => { CancelOpenAIOAuth(); setOauthBusy(false); }} style={{
+                                                    width: "100%", padding: "8px 0", fontSize: "0.76rem", marginTop: 6,
+                                                    cursor: "pointer", background: "transparent", color: colors.textMuted,
+                                                    border: `1px solid ${colors.border}`, borderRadius: 6,
+                                                }}>
+                                                    {t("取消", "Cancel")}
+                                                </button>
+                                            )}
                                         </>
                                     ) : (
                                         <>

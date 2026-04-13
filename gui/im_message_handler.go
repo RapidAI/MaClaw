@@ -999,6 +999,26 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
+
+	// Negative patterns: self-introduction / capability-listing context.
+	// When the model describes what it *can* do (e.g. "帮你写文档、做整理"),
+	// the deliverable keywords appear in a descriptive context, not as an
+	// actual promise to deliver a specific file. Skip these.
+	selfIntroHints := []string{
+		"我叫", "你好，我是", "我的名字", "平时我会", "我可以帮你", "我能帮你",
+		"i'm ", "my name is", "i can help you", "nice to meet",
+	}
+	for _, hint := range selfIntroHints {
+		if strings.Contains(lower, hint) {
+			return false
+		}
+	}
+	// "我是" is very common in Chinese; only treat it as self-intro when it
+	// appears at the very beginning of the response (first 10 chars).
+	if len([]rune(lower)) >= 2 && strings.HasPrefix(lower, "我是") {
+		return false
+	}
+
 	deliverableHints := []string{
 		"pdf", "生成pdf", "生成 pdf", "报告", "文档", "文件", "综述", "发送给你", "发你",
 		"report", "document", "file", "send you", "deliver", "summary",
@@ -3544,7 +3564,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	defer close(heartbeatDone)
 
 	configStartedAt := time.Now()
+	// Ensure OAuth token is fresh before reading config — the token may have
+	// expired since the last request. ensureOAuthToken refreshes and persists
+	// the new token so GetMaclawLLMConfig picks up the updated Key.
+	if err := h.app.ensureOAuthToken(); err != nil {
+		log.Printf("[LLM] OAuth token refresh failed: %v", err)
+	}
 	cfg := h.app.GetMaclawLLMConfig()
+	if cfg.IsResponsesAPI() {
+		keyPrefix := cfg.Key
+		if len(keyPrefix) > 20 {
+			keyPrefix = keyPrefix[:20] + "..."
+		}
+		log.Printf("[LLM] WARNING Responses API config: wire_api=%s key_prefix=%q key_len=%d url=%s", cfg.WireAPI, keyPrefix, len(cfg.Key), cfg.URL)
+	}
 	trialReflectEnabled := false
 	if appCfg, err := h.app.LoadConfig(); err == nil {
 		trialReflectEnabled = appCfg.UIMode == "pro" && appCfg.TrialReflectEnabled
@@ -4154,7 +4187,25 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if len(choice.Message.ToolCalls) == 0 {
 			phase.Stage = agentStageConverge
 			phase.ConsecutiveNoTool++
+
+			// Hard cap: if the model has returned text without tool calls for
+			// too many consecutive iterations, force-return the latest response.
+			// This prevents infinite loops caused by false-positive stall/deliverable
+			// detection (e.g. self-introduction text matching "文档"/"写" keywords).
+			const maxConsecutiveNoTool = 5
 			trimmedVisibleContent := strings.TrimSpace(stripThinkingTags(msgContent))
+			if phase.ConsecutiveNoTool > maxConsecutiveNoTool && trimmedVisibleContent != "" {
+				log.Printf("[agent-loop] hard cap: %d consecutive no-tool iterations, force-returning response", phase.ConsecutiveNoTool)
+				phase.Stage = agentStageFinalize
+				finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+				if !streamDoneAt.IsZero() {
+					postStreamLastReturnPrepAt = time.Now()
+				}
+				attachLLMTelemetry(finalResp)
+				h.saveConversationHistoryTimed(userID, history, finalResp)
+				return finalResp
+			}
+
 			emptyVisibleResult := trimmedVisibleContent == ""
 			promiseOnlyDeliverable := shouldForceAnotherRoundForDeliverable(msgContent, len(choice.Message.ToolCalls), 0)
 			noToolStall := looksLikeNoToolStallReply(msgContent) || emptyVisibleResult || promiseOnlyDeliverable

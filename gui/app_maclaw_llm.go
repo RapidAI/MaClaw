@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -43,7 +45,7 @@ func normalizeMaclawLLMProvider(provider MaclawLLMProvider) MaclawLLMProvider {
 func defaultMaclawLLMProviders() []MaclawLLMProvider {
 	return []MaclawLLMProvider{
 		{Name: "免费", URL: "http://localhost:18099/v1", Model: "free-proxy", ContextLength: 10000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "none"},
-		{Name: "OpenAI", URL: "https://api.openai.com/v1", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
 		{Name: zhipuLobsterProviderName, URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
@@ -311,15 +313,41 @@ func (a *App) GetMaclawLLMConfig() MaclawLLMConfig {
 	data := a.GetMaclawLLMProviders()
 	for _, p := range data.Providers {
 		if p.Name == data.Current {
+			wireAPI := p.WireAPI
+			if wireAPI == "" && p.AuthType == "oauth" {
+				wireAPI = "responses-ws"
+			}
+			// For OAuth providers: if token exchange succeeded, Key contains sk-... API key;
+			// otherwise fall back to OAuthAccessToken (raw access_token).
+			key := p.Key
+			if p.AuthType == "oauth" && p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
+				key = p.OAuthAccessToken
+			}
+			// Diagnostic log for OAuth token debugging
+			if p.AuthType == "oauth" {
+				oatLen := len(p.OAuthAccessToken)
+				keyLen := len(p.Key)
+				keyPfx := p.Key
+				if len(keyPfx) > 10 {
+					keyPfx = keyPfx[:10]
+				}
+				oatPfx := p.OAuthAccessToken
+				if len(oatPfx) > 10 {
+					oatPfx = oatPfx[:10]
+				}
+				log.Printf("[LLM] GetMaclawLLMConfig oauth: wire_api=%s key_pfx=%s(%d) oat_pfx=%s(%d) auth=%s",
+					wireAPI, keyPfx, keyLen, oatPfx, oatLen, p.AuthType)
+			}
 			return MaclawLLMConfig{
 				URL:            p.URL,
-				Key:            p.Key,
+				Key:            key,
 				Model:          p.Model,
 				Protocol:       p.Protocol,
 				ContextLength:  p.ContextLength,
 				TimeoutSec:     normalizeLLMTimeoutSec(p.TimeoutSec),
 				SupportsVision: p.SupportsVision,
 				AgentType:      p.AgentType,
+				WireAPI:        wireAPI,
 			}
 		}
 	}
@@ -365,22 +393,110 @@ func (a *App) SaveMaclawLLMConfig(llm MaclawLLMConfig) error {
 
 // StartOpenAIOAuth starts the OpenAI OAuth PKCE flow. On success, it updates
 // the OpenAI provider config with the obtained tokens and persists the change.
+// The flow can be cancelled via CancelOpenAIOAuth.
 func (a *App) StartOpenAIOAuth() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	a.oauthMu.Lock()
+	a.oauthCancel = cancel
+	a.oauthMu.Unlock()
+	defer func() {
+		cancel()
+		a.oauthMu.Lock()
+		a.oauthCancel = nil
+		a.oauthMu.Unlock()
+	}()
+
 	cfg := oauth.DefaultConfig()
-	result, err := oauth.RunOAuthFlow(cfg)
+	result, err := oauth.RunOAuthFlowCtx(ctx, cfg)
 	if err != nil {
 		return "", fmt.Errorf("OAuth 登录失败: %w", err)
 	}
 
-	// Update the OpenAI provider with the obtained tokens
+	// Update the OpenAI provider with the obtained tokens and sync config
 	data := a.GetMaclawLLMProviders()
+	defaults := defaultMaclawLLMProviders()
+	var defaultOpenAI *MaclawLLMProvider
+	for i := range defaults {
+		if defaults[i].Name == "OpenAI" && defaults[i].AuthType == "oauth" {
+			defaultOpenAI = &defaults[i]
+			break
+		}
+	}
 	for i, p := range data.Providers {
 		if p.Name == "OpenAI" && p.AuthType == "oauth" {
 			data.Providers[i] = oauth.ApplyTokenResult(p, result)
+			// Sync URL, Model, WireAPI to latest defaults so stale config doesn't linger
+			if defaultOpenAI != nil {
+				data.Providers[i].URL = defaultOpenAI.URL
+				data.Providers[i].Model = defaultOpenAI.Model
+				data.Providers[i].WireAPI = defaultOpenAI.WireAPI
+			}
 			if err := a.SaveMaclawLLMProviders(data.Providers, "OpenAI"); err != nil {
 				return "", fmt.Errorf("保存 OAuth 配置失败: %w", err)
 			}
 			return "OpenAI OAuth 登录成功", nil
+		}
+	}
+	return "", fmt.Errorf("未找到 OpenAI provider")
+}
+
+// CancelOpenAIOAuth cancels an in-progress OAuth flow, unblocking StartOpenAIOAuth.
+func (a *App) CancelOpenAIOAuth() {
+	a.oauthMu.Lock()
+	defer a.oauthMu.Unlock()
+	if a.oauthCancel != nil {
+		a.oauthCancel()
+	}
+}
+
+// ImportCodexAuth imports credentials from Codex CLI's ~/.codex/auth.json.
+// It supports two modes:
+//  1. Direct API key: reads OPENAI_API_KEY field
+//  2. ChatGPT OAuth tokens: reads tokens.id_token and exchanges it for an API key
+//     via OpenAI's token exchange endpoint (same as Codex CLI's obtain_api_key)
+//
+// This is a fallback for users who can login via Codex but not via maclaw's OAuth
+// (e.g. due to network/proxy issues with auth.openai.com).
+func (a *App) ImportCodexAuth() (string, error) {
+	auth, err := configfile.ReadCodexAuth()
+	if err != nil {
+		return "", fmt.Errorf("读取 Codex 认证信息失败: %w", err)
+	}
+	if auth == nil {
+		return "", fmt.Errorf("未找到 Codex 认证信息，请先在 Codex CLI 中执行 codex login")
+	}
+
+	var apiKey string
+	var source string
+
+	// Strategy 1: Direct API key
+	if key, _ := auth["OPENAI_API_KEY"].(string); key != "" {
+		apiKey = key
+		source = "API Key"
+	}
+
+	// Strategy 2: ChatGPT OAuth tokens → 直接使用 access_token（Responses API 接受 OAuth token）
+	if apiKey == "" {
+		if tokens, ok := auth["tokens"].(map[string]interface{}); ok {
+			if accessToken, _ := tokens["access_token"].(string); accessToken != "" {
+				apiKey = accessToken
+				source = "ChatGPT access_token"
+			}
+		}
+	}
+
+	if apiKey == "" {
+		return "", fmt.Errorf("Codex auth.json 中未找到可用的认证信息（无 API Key 也无 OAuth tokens）")
+	}
+
+	data := a.GetMaclawLLMProviders()
+	for i, p := range data.Providers {
+		if p.Name == "OpenAI" && p.AuthType == "oauth" {
+			data.Providers[i].Key = apiKey
+			if err := a.SaveMaclawLLMProviders(data.Providers, "OpenAI"); err != nil {
+				return "", fmt.Errorf("保存配置失败: %w", err)
+			}
+			return fmt.Sprintf("已从 Codex CLI 导入（%s）", source), nil
 		}
 	}
 	return "", fmt.Errorf("未找到 OpenAI provider")
@@ -447,7 +563,9 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (MaclawLLMTestResult, error) {
 	protocol := strings.TrimSpace(llm.Protocol)
 	var textResult string
 	var err error
-	if protocol == "anthropic" {
+	if llm.IsResponsesAPI() {
+		textResult, err = a.testResponsesAPILLM(url, key, model, llm.UserAgent())
+	} else if protocol == "anthropic" {
 		textResult, err = a.testAnthropicLLM(url, key, model, llm.UserAgent())
 	} else {
 		textResult, err = a.testOpenAILLM(url, key, model, llm.UserAgent())
@@ -457,7 +575,12 @@ func (a *App) TestMaclawLLM(llm MaclawLLMConfig) (MaclawLLMTestResult, error) {
 	}
 
 	log.Printf("[LLM] TestMaclawLLM text_test_ok model=%s protocol=%s", model, protocol)
-	vision := probeVisionSupport(url, key, model, protocol, llm.UserAgent())
+	vision := false
+	if llm.IsResponsesAPI() {
+		vision = probeVisionResponsesAPI(url, key, model, llm.UserAgent())
+	} else {
+		vision = probeVisionSupport(url, key, model, protocol, llm.UserAgent())
+	}
 	log.Printf("[LLM] vision probe for %s: supports_vision=%v", model, vision)
 
 	return MaclawLLMTestResult{
@@ -509,6 +632,45 @@ func (a *App) testAnthropicLLM(url, key, model, userAgent string) (string, error
 		return "", fmt.Errorf("no response from model")
 	}
 	return stripFunctionCalls(stripThinkTags(resp.Content)), nil
+}
+
+// testResponsesAPILLM tests an OpenAI Responses API endpoint.
+func (a *App) testResponsesAPILLM(url, key, model, userAgent string) (string, error) {
+	cfg := corelib.MaclawLLMConfig{URL: url, Key: key, Model: model, AgentType: userAgent, WireAPI: "responses"}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, _, endpoint, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{
+		Stream: false,
+	})
+	if err != nil {
+		return "", err
+	}
+	log.Printf("[LLM] TestResponsesAPI POST %s model=%s", endpoint, model)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("[%s] %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, model)
+		return "", fmt.Errorf("%s", msg)
+	}
+
+	parsed, err := llm.ParseNonStreamResponsesAPIResponse(resp)
+	if err != nil {
+		return "", err
+	}
+	if len(parsed.Choices) == 0 || parsed.Choices[0].Message.Content == "" {
+		return "", fmt.Errorf("no response from model")
+	}
+	return stripFunctionCalls(stripThinkTags(parsed.Choices[0].Message.Content)), nil
 }
 
 // probeVisionSupport sends a tiny 1x1 red PNG as an image_url message to the
@@ -581,6 +743,70 @@ func probeVisionAnthropic(baseURL, key, model, imgB64, userAgent string) bool {
 		return false
 	}
 	return resp.Content != "" && looksLikeVisionResponse(resp.Content)
+}
+
+// probeVisionResponsesAPI sends a tiny 1x1 PNG via the Responses API format
+// and returns true if the model responds with a vision-aware answer.
+func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
+	const tinyPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	endpoint := strings.TrimRight(baseURL, "/")
+	if strings.Contains(endpoint, "chatgpt.com") {
+		endpoint += "/codex/responses"
+	} else {
+		endpoint += "/responses"
+	}
+	reqBody := map[string]interface{}{
+		"model": model,
+		"input": []interface{}{
+			map[string]interface{}{
+				"type": "message",
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{"type": "input_text", "text": "What is in this image? Reply in one word."},
+					map[string]interface{}{"type": "input_image", "image_url": "data:image/png;base64," + tinyPNG},
+				},
+			},
+		},
+		"stream": false,
+	}
+	data, _ := json.Marshal(reqBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("originator", "codex_cli_rs")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	if strings.Contains(baseURL, "chatgpt.com") {
+		req.Header.Set("OpenAI-Beta", "responses=experimental")
+		if accountID, _ := oauth.ExtractAccountIDFromJWT(key); accountID != "" {
+			req.Header.Set("chatgpt-account-id", accountID)
+		}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	parsed, err := llm.ParseNonStreamResponsesAPIResponse(resp)
+	if err != nil || len(parsed.Choices) == 0 {
+		return false
+	}
+	return looksLikeVisionResponse(parsed.Choices[0].Message.Content)
 }
 
 // saveVisionProbeResult persists the vision probe result into the matching

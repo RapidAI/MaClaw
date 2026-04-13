@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress ProgressCallback) (result string) {
@@ -17,7 +19,11 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 
 	var args map[string]interface{}
 	if argsJSON != "" {
-		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		// Sanitize LLM-returned JSON: strip code fences, fix over-escaped
+		// quotes, remove single-quote wrappers. Small models (DeepSeek, Qwen)
+		// frequently return malformed JSON that fails json.Unmarshal.
+		cleaned := coretool.CleanToolArguments(argsJSON)
+		if err := json.Unmarshal([]byte(cleaned), &args); err != nil {
 			return fmt.Sprintf("参数解析失败: %s", err.Error())
 		}
 	}
