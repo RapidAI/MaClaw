@@ -51,6 +51,7 @@ const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; contex
     { name: "智谱龙虾", url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-5-turbo", context_length: 180000 },
     { name: "智谱编程", url: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.1", context_length: 180000, protocol: "anthropic", agent_type: "claude-code/2.0.0" },
     { name: "Kimi (月之暗面)", url: "https://api.kimi.com/coding/v1", model: "kimi-k2-thinking", context_length: 128000 },
+    { name: "讯飞星辰", url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", model: "astron-code-latest", context_length: 128000 },
     { name: "Doubao (豆包)", url: "https://ark.cn-beijing.volces.com/api/coding", model: "doubao-seed-code-preview-latest", context_length: 128000 },
     { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
     { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/v3", model: "glm-5", context_length: 128000 },
@@ -581,7 +582,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                 {dlgProviders.map((p, i) => {
                                     const active = dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = { "免费": "白嫖党", "OpenAI": "富家小子", "智谱龙虾": "聪明伶俐", "智谱编程": "写码飞快", "MiniMax": "憨厚老实" };
+                                    const badge: Record<string, string> = { "免费": "白嫖党", "OpenAI": "富家小子", "智谱龙虾": "聪明伶俐", "智谱编程": "写码飞快", "MiniMax": "憨厚老实", "讯飞星辰": "星辰大海" };
                                     const tag = badge[p.name];
                                     return (
                                         <button key={i} onClick={() => dlgSelectProvider(i)} style={{

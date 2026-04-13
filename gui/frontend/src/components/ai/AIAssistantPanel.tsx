@@ -1212,6 +1212,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     borderBottom: `1px solid ${t.titleBarBorder}`,
                     flexShrink: 0,
                     gap: "8px",
+                    position: "relative",
+                    zIndex: 1000,
                     ...(inline && !maximized ? { '--wails-draggable': 'drag' } as any : {}),
                 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0, flex: 1, overflow: "hidden" }}>

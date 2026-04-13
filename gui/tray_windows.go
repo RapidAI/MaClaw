@@ -9,12 +9,21 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/energye/systray"
+	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 func setupTray(app *App, appOptions *options.App) {
 	_ = appOptions
+
+	// Provide a standard Edit menu so that Ctrl+A / Ctrl+C / Ctrl+V / Ctrl+X
+	// work correctly inside WebView2 input fields.  Without this, Ctrl+A in a
+	// modal input can cause the webview to select all page content and
+	// inadvertently dismiss the dialog.
+	editMenu := menu.NewMenu()
+	editMenu.Append(menu.EditMenu())
+	appOptions.Menu = editMenu
 
 	// Start the systray immediately (before wails.Run) so the tray icon
 	// appears as soon as the process launches, instead of waiting for the

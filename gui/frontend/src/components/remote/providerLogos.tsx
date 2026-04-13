@@ -37,4 +37,11 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
             <path d="M6 20c0-3.314 2.686-6 6-6s6 2.686 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/>
         </svg>
     ),
+    "讯飞星辰": (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" strokeWidth="1.8" fill="none"/>
+            <circle cx="12" cy="12" r="3" fill="currentColor"/>
+            <path d="M12 5v3M12 16v3M5.5 8.5l2.6 1.5M15.9 14l2.6 1.5M5.5 15.5l2.6-1.5M15.9 10l2.6-1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+    ),
 };

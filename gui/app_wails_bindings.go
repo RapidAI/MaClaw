@@ -821,8 +821,6 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	var ensureInteractionInfraElapsed time.Duration
 	var ensureIMHandlerElapsed time.Duration
 	var agentLoopElapsed time.Duration
-	var traceEnrichElapsed time.Duration
-	var gossipSetupElapsed time.Duration
 	var finalizeTraceElapsed time.Duration
 	var memorySaveElapsed time.Duration
 	var capabilityGapElapsed time.Duration
@@ -864,11 +862,11 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		if readyAt > 0 {
 			readyElapsed = sendStartedAt.Sub(time.Unix(0, readyAt))
 		}
-		postResponseElapsed := time.Since(sendStartedAt) - ensureInteractionInfraElapsed - ensureIMHandlerElapsed - agentLoopElapsed - traceEnrichElapsed - gossipSetupElapsed
+		postResponseElapsed := time.Since(sendStartedAt) - ensureInteractionInfraElapsed - ensureIMHandlerElapsed - agentLoopElapsed
 		if postResponseElapsed < 0 {
 			postResponseElapsed = 0
 		}
-		log.Printf("[AI assistant] first desktop chat after ready: since_ready=%v total=%v ensure_interaction_infra=%v ensure_im_handler=%v agent_loop=%v first_token=%v pre_llm_prep=%v pre_llm_config=%v pre_llm_tools=%v pre_llm_conversation=%v pre_llm_iteration_prep=%v first_token_wait=%v llm_request_build=%v llm_http_do=%v llm_first_sse_wait=%v llm_retry_wait=%v llm_stream_max_token_gap=%v llm_retry_count=%d llm_idle_timeout_count=%d llm_idle_timeout_after_token=%v stream_visible=%v stream_tail=%v handler_tail=%v handler_blackhole_after_usage=%v handler_blackhole_before_return=%v handler_post_stream_usage=%v handler_post_stream_response=%v handler_post_stream_tool_exec=%v handler_post_stream_choice=%v handler_post_stream_assistant_msg=%v handler_post_stream_history_append=%v handler_post_stream_no_tool_branch=%v memory_save=%v capability_gap=%v file_materialize=%v finalize_trace=%v trace_enrich=%v gossip_setup=%v post_response=%v interaction_infra_ready=%v warmup_done=%v", readyElapsed, time.Since(sendStartedAt), ensureInteractionInfraElapsed, ensureIMHandlerElapsed, agentLoopElapsed, firstTokenElapsed, preLLMPrepElapsed, preLLMConfigElapsed, preLLMToolsElapsed, preLLMConversationElapsed, preLLMIterationPrepElapsed, firstTokenWaitElapsed, llmRequestBuildElapsed, llmHTTPDoElapsed, llmFirstSSEWaitElapsed, llmRetryWaitElapsed, llmStreamMaxTokenGapElapsed, llmRetryCount, llmIdleTimeoutCount, llmIdleTimeoutAfterToken, streamVisibleElapsed, streamTailElapsed, handlerTailElapsed, handlerBlackholeAfterUsageElapsed, handlerBlackholeBeforeReturnElapsed, handlerPostStreamUsageElapsed, handlerPostStreamResponseElapsed, handlerPostStreamToolExecElapsed, handlerPostStreamChoiceElapsed, handlerPostStreamAssistantMsgElapsed, handlerPostStreamHistoryAppendElapsed, handlerPostStreamNoToolBranchElapsed, memorySaveElapsed, capabilityGapElapsed, fileMaterializeElapsed, finalizeTraceElapsed, traceEnrichElapsed, gossipSetupElapsed, postResponseElapsed, a.interactionInfraReady(), a.warmupDone.Load())
+		log.Printf("[AI assistant] first desktop chat after ready: since_ready=%v total=%v ensure_interaction_infra=%v ensure_im_handler=%v agent_loop=%v first_token=%v pre_llm_prep=%v pre_llm_config=%v pre_llm_tools=%v pre_llm_conversation=%v pre_llm_iteration_prep=%v first_token_wait=%v llm_request_build=%v llm_http_do=%v llm_first_sse_wait=%v llm_retry_wait=%v llm_stream_max_token_gap=%v llm_retry_count=%d llm_idle_timeout_count=%d llm_idle_timeout_after_token=%v stream_visible=%v stream_tail=%v handler_tail=%v handler_blackhole_after_usage=%v handler_blackhole_before_return=%v handler_post_stream_usage=%v handler_post_stream_response=%v handler_post_stream_tool_exec=%v handler_post_stream_choice=%v handler_post_stream_assistant_msg=%v handler_post_stream_history_append=%v handler_post_stream_no_tool_branch=%v memory_save=%v capability_gap=%v file_materialize=%v finalize_trace=%v post_response=%v interaction_infra_ready=%v warmup_done=%v (trace_enrich+gossip_setup=async)", readyElapsed, time.Since(sendStartedAt), ensureInteractionInfraElapsed, ensureIMHandlerElapsed, agentLoopElapsed, firstTokenElapsed, preLLMPrepElapsed, preLLMConfigElapsed, preLLMToolsElapsed, preLLMConversationElapsed, preLLMIterationPrepElapsed, firstTokenWaitElapsed, llmRequestBuildElapsed, llmHTTPDoElapsed, llmFirstSSEWaitElapsed, llmRetryWaitElapsed, llmStreamMaxTokenGapElapsed, llmRetryCount, llmIdleTimeoutCount, llmIdleTimeoutAfterToken, streamVisibleElapsed, streamTailElapsed, handlerTailElapsed, handlerBlackholeAfterUsageElapsed, handlerBlackholeBeforeReturnElapsed, handlerPostStreamUsageElapsed, handlerPostStreamResponseElapsed, handlerPostStreamToolExecElapsed, handlerPostStreamChoiceElapsed, handlerPostStreamAssistantMsgElapsed, handlerPostStreamHistoryAppendElapsed, handlerPostStreamNoToolBranchElapsed, memorySaveElapsed, capabilityGapElapsed, fileMaterializeElapsed, finalizeTraceElapsed, postResponseElapsed, a.interactionInfraReady(), a.warmupDone.Load())
 	}()
 
 	t0 := time.Now()
@@ -1039,25 +1037,31 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	if resp != nil && resp.FinalizeTraceNanos > 0 {
 		finalizeTraceElapsed = time.Duration(resp.FinalizeTraceNanos)
 	}
+	// Trace enrichment and gossip detection are non-critical post-processing.
+	// Run them asynchronously so the Wails binding returns immediately after
+	// the agent loop completes — this unblocks the frontend input box which
+	// was locked while awaiting this synchronous call.
+	// Note: resp.TraceSummary/TraceEventCount/EvidenceCount are already
+	// populated by finalizeTraceResult inside the agent loop. The async
+	// GetAIAssistantTrace here is purely for background cache warming.
 	if resp != nil && resp.RunID != "" {
-		traceStartedAt := time.Now()
-		if traceView, err := a.GetAIAssistantTrace(resp.RunID); err == nil && traceView != nil {
-			resp.TraceSummary = traceView.Summary
-			resp.TraceEventCount = traceView.EventCount
-			resp.EvidenceCount = traceView.EvidenceCount
-		}
-		traceEnrichElapsed = time.Since(traceStartedAt)
+		asyncRunID := resp.RunID
+		go func() {
+			_, _ = a.GetAIAssistantTrace(asyncRunID)
+		}()
 	}
-	// 触发聊天八卦检测
 	if resp != nil && resp.Text != "" {
-		gossipStartedAt := time.Now()
+		// ensureGossipAutoPublish is not goroutine-safe (no mutex), so call
+		// it on the current goroutine. Only OnChatCompleted (which has its
+		// own mutex) runs in the background.
 		a.ensureGossipAutoPublish()
 		if a.gossipAutoPublish != nil {
-			go a.gossipAutoPublish.OnChatCompleted(text, resp.Text)
+			asyncUserText := text
+			asyncRespText := resp.Text
+			go a.gossipAutoPublish.OnChatCompleted(asyncUserText, asyncRespText)
 		}
-		gossipSetupElapsed = time.Since(gossipStartedAt)
 	}
-	streamTailElapsed = handlerTailElapsed + memorySaveElapsed + capabilityGapElapsed + fileMaterializeElapsed + finalizeTraceElapsed + traceEnrichElapsed + gossipSetupElapsed
+	streamTailElapsed = handlerTailElapsed + memorySaveElapsed + capabilityGapElapsed + fileMaterializeElapsed + finalizeTraceElapsed
 	return resp, nil
 }
 

@@ -1784,6 +1784,16 @@ func (a *App) ResizeWindow(width, height int) {
 	runtime.WindowSetSize(a.ctx, width, height)
 	runtime.WindowCenter(a.ctx)
 }
+
+// RestoreWindowGeometry is no longer used — kept as no-op for binding compatibility.
+func (a *App) RestoreWindowGeometry() {
+}
+
+// MaximiseAndSaveGeometry is no longer used — kept as no-op for binding compatibility.
+func (a *App) MaximiseAndSaveGeometry() bool {
+	return false
+}
+
 func (a *App) WindowHide() {
 	runtime.WindowHide(a.ctx)
 	if UpdateTrayVisibility != nil {

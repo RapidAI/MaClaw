@@ -190,6 +190,10 @@ export function LoadConfig() {
   return window['go']['main']['App']['LoadConfig']();
 }
 
+export function MaximiseAndSaveGeometry() {
+  return window['go']['main']['App']['MaximiseAndSaveGeometry']();
+}
+
 export function OpenSystemUrl(arg1) {
   return window['go']['main']['App']['OpenSystemUrl'](arg1);
 }
@@ -228,6 +232,10 @@ export function RecoverCC() {
 
 export function ResizeWindow(arg1, arg2) {
   return window['go']['main']['App']['ResizeWindow'](arg1, arg2);
+}
+
+export function RestoreWindowGeometry() {
+  return window['go']['main']['App']['RestoreWindowGeometry']();
 }
 
 export function RunEnvironmentCheckCLI() {

@@ -80,6 +80,11 @@ func classifyTaskIntent(text string) taskIntentResult {
 		}
 		return taskIntentResult{Intent: intentAmbiguous, Matched: firstMatch(nonCodingHits, codingHits), Evidence: combineEvidence(nonCodingHits, codingHits), Source: "rules"}
 	case hasCoding && !hasSSH && !hasAmbiguous:
+		// Weak coding evidence alone (e.g. "测试" appearing in a file name)
+		// should not trigger coding classification — treat as non-coding.
+		if hasOnlyWeakCodingEvidence(codingHits) {
+			return taskIntentResult{Intent: intentNonCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
+		}
 		return taskIntentResult{Intent: intentCoding, Matched: codingHits[0], Evidence: codingHits, Source: "rules"}
 	case hasSSH && !hasCoding && !hasNonCoding:
 		return taskIntentResult{Intent: intentSSH, Matched: sshHits[0], Evidence: sshHits, Source: "rules"}
@@ -385,9 +390,11 @@ func hasOnlyWeakCodingEvidence(hits []string) bool {
 		return false
 	}
 	weak := map[string]struct{}{
-		"编程": {},
-		"代码": {},
-		"测试": {},
+		"编程":  {},
+		"代码":  {},
+		"测试":  {},
+		"源码":  {},
+		"源代码": {},
 	}
 	for _, hit := range hits {
 		if _, ok := weak[hit]; !ok {

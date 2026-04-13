@@ -35,6 +35,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         open: false, title: '', message: '', mode: 'alert', lang: 'en',
     });
     const resolveRef = useRef<((value: boolean) => void) | null>(null);
+    const backdropMouseDownRef = useRef(false);
 
     const close = useCallback((result: boolean) => {
         resolveRef.current?.(result);
@@ -80,7 +81,10 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         <DialogContext.Provider value={{ showAlert, showConfirm }}>
             {children}
             {state.open && (
-                <div className="modal-backdrop" onClick={() => close(state.mode === 'alert')}>
+                <div className="modal-backdrop"
+                    onMouseDown={e => { backdropMouseDownRef.current = e.target === e.currentTarget; }}
+                    onClick={e => { if (e.target === e.currentTarget && backdropMouseDownRef.current) close(state.mode === 'alert'); backdropMouseDownRef.current = false; }}
+                >
                     <div className="modal-content" onClick={e => e.stopPropagation()} style={{ width: '320px' }}>
                         {state.title && (
                             <div className="modal-header">

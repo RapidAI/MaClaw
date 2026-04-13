@@ -227,7 +227,15 @@ func mcpHealthCheck(args []string) error {
 	client := &http.Client{Timeout: 5 * time.Second}
 	for _, s := range cfg.MCPServers {
 		start := time.Now()
-		req, _ := http.NewRequest(http.MethodGet, s.EndpointURL, nil)
+		// Send a JSON-RPC tools/list request (POST) per MCP Streamable HTTP spec.
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/list",
+			"params":  map[string]interface{}{},
+		})
+		req, _ := http.NewRequest(http.MethodPost, s.EndpointURL, bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
 		if s.AuthType == "bearer" && s.AuthSecret != "" {
 			req.Header.Set("Authorization", "Bearer "+s.AuthSecret)
 		} else if s.AuthType == "api_key" && s.AuthSecret != "" {
@@ -241,7 +249,11 @@ func mcpHealthCheck(args []string) error {
 			r.Error = err.Error()
 		} else {
 			resp.Body.Close()
-			r.Status = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			if resp.StatusCode == http.StatusOK {
+				r.Status = "healthy"
+			} else {
+				r.Status = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			}
 			r.Latency = elapsed.Round(time.Millisecond).String()
 		}
 		results = append(results, r)
@@ -305,14 +317,20 @@ func mcpTools(args []string) error {
 
 	var tools []toolInfo
 
-	// For remote MCP servers, try to fetch tool list from /tools endpoint
+	// For remote MCP servers, fetch tool list via JSON-RPC tools/list.
 	client := &http.Client{Timeout: 10 * time.Second}
 	for _, s := range cfg.MCPServers {
 		if *server != "" && s.Name != *server {
 			continue
 		}
-		endpoint := strings.TrimRight(s.EndpointURL, "/") + "/tools"
-		req, _ := http.NewRequest(http.MethodGet, endpoint, nil)
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/list",
+			"params":  map[string]interface{}{},
+		})
+		req, _ := http.NewRequest(http.MethodPost, s.EndpointURL, bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
 		if s.AuthType == "bearer" && s.AuthSecret != "" {
 			req.Header.Set("Authorization", "Bearer "+s.AuthSecret)
 		} else if s.AuthType == "api_key" && s.AuthSecret != "" {
@@ -328,17 +346,21 @@ func mcpTools(args []string) error {
 			tools = append(tools, toolInfo{Server: s.Name, Name: "(error)", Desc: fmt.Sprintf("HTTP %d", resp.StatusCode)})
 			continue
 		}
-		var toolList []struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+		var rpcResp struct {
+			Result struct {
+				Tools []struct {
+					Name        string `json:"name"`
+					Description string `json:"description"`
+				} `json:"tools"`
+			} `json:"result"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&toolList); err != nil {
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
 			resp.Body.Close()
 			tools = append(tools, toolInfo{Server: s.Name, Name: "(parse error)", Desc: err.Error()})
 			continue
 		}
 		resp.Body.Close()
-		for _, t := range toolList {
+		for _, t := range rpcResp.Result.Tools {
 			tools = append(tools, toolInfo{Server: s.Name, Name: t.Name, Desc: t.Description})
 		}
 	}
@@ -400,12 +422,20 @@ func mcpCallTool(args []string) error {
 		return fmt.Errorf("解析工具参数失败: %w", err)
 	}
 
-	// Call the tool
-	callURL := strings.TrimRight(endpoint, "/") + "/tools/" + *tool + "/call"
-	body, _ := json.Marshal(parsedArgs)
+	// Call the tool via JSON-RPC
+	reqBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name":      *tool,
+			"arguments": parsedArgs,
+		},
+	}
+	body, _ := json.Marshal(reqBody)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, callURL, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

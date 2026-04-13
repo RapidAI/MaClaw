@@ -82,6 +82,47 @@ func TestClassifyTaskIntent_PresentationCodingTasksDoNotBecomeNonCoding(t *testi
 	}
 }
 
+func TestClassifyTaskIntent_WeakCodingEvidenceAloneIsNonCoding(t *testing.T) {
+	// File names containing "测试" should not trigger coding classification
+	// when there is no other coding evidence.
+	tests := []struct {
+		name string
+		text string
+	}{
+		{name: "xmind test case file", text: "参考: 微补丁丁终端功能测试用例_完整版.xmind，这个格式是正常的"},
+		{name: "test case document", text: "微补丁丁终端功能测试用例_v4.xmind 文件打开失败"},
+		{name: "bare test keyword", text: "这个测试文件打不开"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifyTaskIntent(tt.text)
+			if result.Intent == intentCoding {
+				t.Fatalf("weak coding evidence %q should not classify as coding, got %q with evidence %#v", tt.text, result.Intent, result.Evidence)
+			}
+		})
+	}
+}
+
+func TestClassifyTaskIntent_StrongCodingEvidenceStillWorks(t *testing.T) {
+	// "测试" combined with strong coding keywords should still be coding.
+	tests := []struct {
+		name string
+		text string
+	}{
+		{name: "write unit test", text: "帮我写单元测试"},
+		{name: "fix test bug", text: "修复测试中的 bug"},
+		{name: "run test", text: "帮我跑一下这个项目的测试并修改代码"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifyTaskIntent(tt.text)
+			if result.Intent == intentNonCoding {
+				t.Fatalf("strong coding task %q should not be non-coding, got %q with evidence %#v", tt.text, result.Intent, result.Evidence)
+			}
+		})
+	}
+}
+
 func TestNormalizeIntentClassification(t *testing.T) {
 	result, err := normalizeIntentClassification(llmIntentClassification{
 		Intent:     "non_coding",

@@ -2922,6 +2922,17 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if pending != nil {
 		switch {
 		case isConfirmationCancel(trimmed):
+			// Preserve the cancelled task's original text as context so
+			// subsequent messages don't lose the conversation thread.
+			if pending.OriginalText != "" {
+				entries := h.memory.load(msg.UserID)
+				cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
+				entries = append(entries,
+					conversationEntry{Role: "user", Content: pending.OriginalText},
+					conversationEntry{Role: "assistant", Content: cancelNote},
+				)
+				h.memory.save(msg.UserID, entries)
+			}
 			h.confirmationStore.clear(msg.UserID)
 			return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
 		case isConfirmationApproval(trimmed):

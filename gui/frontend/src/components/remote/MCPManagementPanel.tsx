@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { colors, radius } from "./styles";
 import {
     ListMCPServers,
@@ -98,6 +98,26 @@ const tabActiveStyle: CSSProperties = {
     borderBottom: "2px solid var(--theme-primary)",
 };
 
+/**
+ * Returns onMouseDown + onClick props for a modal backdrop.
+ * Only fires `onClose` when the mousedown *started* on the backdrop itself,
+ * preventing Ctrl+A (select-all) or drag-selections from accidentally
+ * dismissing the dialog.
+ */
+function makeBackdropProps(onClose: () => void, ref: React.MutableRefObject<boolean>) {
+    return {
+        onMouseDown: (e: ReactMouseEvent<HTMLDivElement>) => {
+            ref.current = e.target === e.currentTarget;
+        },
+        onClick: (e: ReactMouseEvent<HTMLDivElement>) => {
+            if (e.target === e.currentTarget && ref.current) {
+                onClose();
+            }
+            ref.current = false;
+        },
+    };
+}
+
 export function MCPManagementPanel({ translate }: Props) {
     const [activeTab, setActiveTab] = useState<MCPTab>("remote");
 
@@ -143,6 +163,7 @@ function LocalMCPPanel({ translate }: Props) {
     const [showJsonImport, setShowJsonImport] = useState(false);
     const [jsonText, setJsonText] = useState("");
     const [jsonError, setJsonError] = useState("");
+    const backdropRef = useRef(false);
 
     const fetchStatuses = useCallback(async () => {
         try {
@@ -394,7 +415,7 @@ function LocalMCPPanel({ translate }: Props) {
             )}
 
             {deleteTarget && (
-                <div className="modal-backdrop" onClick={() => setDeleteTarget(null)}>
+                <div className="modal-backdrop" {...makeBackdropProps(() => setDeleteTarget(null), backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "280px" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpConfirmDelete")}</h3>
@@ -416,7 +437,7 @@ function LocalMCPPanel({ translate }: Props) {
             )}
 
             {showJsonImport && (
-                <div className="modal-backdrop" onClick={() => setShowJsonImport(false)}>
+                <div className="modal-backdrop" {...makeBackdropProps(() => setShowJsonImport(false), backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "480px", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpImportJsonTitle")}</h3>
@@ -460,7 +481,7 @@ function LocalMCPPanel({ translate }: Props) {
             )}
 
             {showForm && (
-                <div className="modal-backdrop" onClick={closeForm}>
+                <div className="modal-backdrop" {...makeBackdropProps(closeForm, backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "440px", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingServer ? translate("mcpEditLocalServer") : translate("mcpAddLocalServer")}</h3>
@@ -566,6 +587,7 @@ function RemoteMCPPanel({ translate }: Props) {
     const [expandedTools, setExpandedTools] = useState<MCPToolView[]>([]);
     const [toolsLoading, setToolsLoading] = useState(false);
     const [healthDetailID, setHealthDetailID] = useState<string | null>(null);
+    const backdropRef = useRef(false);
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -773,7 +795,7 @@ function RemoteMCPPanel({ translate }: Props) {
             )}
 
             {deleteTarget && (
-                <div className="modal-backdrop" onClick={() => setDeleteTarget(null)}>
+                <div className="modal-backdrop" {...makeBackdropProps(() => setDeleteTarget(null), backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "280px" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpConfirmDelete")}</h3>
@@ -795,7 +817,7 @@ function RemoteMCPPanel({ translate }: Props) {
             )}
 
             {showForm && (
-                <div className="modal-backdrop" onClick={closeForm}>
+                <div className="modal-backdrop" {...makeBackdropProps(closeForm, backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "420px", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingServer ? translate("mcpEditServer") : translate("mcpRegisterServerTitle")}</h3>

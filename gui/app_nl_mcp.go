@@ -318,6 +318,7 @@ func (r *MCPRegistry) HealthCheck(serverID string) error {
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tools/list",
+		"params":  map[string]interface{}{},
 	}
 	data, _ := json.Marshal(reqBody)
 
@@ -326,9 +327,8 @@ func (r *MCPRegistry) HealthCheck(serverID string) error {
 		return err
 	}
 
-	healthClient := &http.Client{Timeout: 10 * time.Second}
 	start := time.Now()
-	resp, err := healthClient.Do(req)
+	resp, err := r.client.Do(req)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -336,11 +336,11 @@ func (r *MCPRegistry) HealthCheck(serverID string) error {
 		return fmt.Errorf("health check failed: %w", err)
 	}
 	defer resp.Body.Close()
-	_, _ = io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 
 	if resp.StatusCode != http.StatusOK {
 		r.recordFailure(serverID)
-		return fmt.Errorf("health check HTTP %d", resp.StatusCode)
+		return fmt.Errorf("health check HTTP %d: %s", resp.StatusCode, truncateMCPBody(body))
 	}
 
 	r.mu.Lock()
@@ -385,6 +385,15 @@ func (r *MCPRegistry) getOrCreateHealth(serverID string) *mcpHealthState {
 		r.health[serverID] = h
 	}
 	return h
+}
+
+// truncateMCPBody returns a short preview of a response body for error messages.
+func truncateMCPBody(body []byte) string {
+	s := strings.TrimSpace(string(body))
+	if len(s) > 200 {
+		return s[:200] + "..."
+	}
+	return s
 }
 
 // RegisterAutoDiscovered registers an auto-discovered MCP Server.
@@ -485,6 +494,7 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tools/list",
+		"params":  map[string]interface{}{},
 	}
 	data, _ := json.Marshal(reqBody)
 
@@ -493,8 +503,7 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 		return nil
 	}
 
-	healthClient := &http.Client{Timeout: 10 * time.Second}
-	resp, err := healthClient.Do(req)
+	resp, err := r.client.Do(req)
 	if err != nil {
 		return nil
 	}

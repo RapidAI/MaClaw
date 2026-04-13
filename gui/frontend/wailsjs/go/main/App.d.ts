@@ -96,6 +96,8 @@ export function ListSkillsWithInstallStatus(arg1:string,arg2:string,arg3:string)
 
 export function LoadConfig():Promise<main.AppConfig>;
 
+export function MaximiseAndSaveGeometry():Promise<boolean>;
+
 export function OpenSystemUrl(arg1:string):Promise<void>;
 
 export function PackLog(arg1:string):Promise<string>;
@@ -115,6 +117,8 @@ export function RunRemoteToolSmoke(arg1:string,arg2:string,arg3:boolean):Promise
 export function RecoverCC():Promise<void>;
 
 export function ResizeWindow(arg1:number,arg2:number):Promise<void>;
+
+export function RestoreWindowGeometry():Promise<void>;
 
 export function RunEnvironmentCheckCLI():Promise<void>;
 
