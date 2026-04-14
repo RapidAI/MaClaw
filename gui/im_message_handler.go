@@ -3198,7 +3198,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	// --- Workflow doc capture: store phase output and emit to frontend ---
-	if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && resp.Text != "" {
+	// Only capture substantive output (>200 chars). Short replies, confirmation
+	// questions, and intent understanding responses are filtered out.
+	// The actual phase detection is done by detectPhaseFromContent inside
+	// EmitDocUpdate, which will correct any wrong phaseID.
+	if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && len(resp.Text) > 200 {
 		if phaseID := h.app.workflowEngine.SavePhaseOutput(msg.UserID, resp.Text); phaseID != "" {
 			if cb := h.app.workflowEngine.GetCallbacks(); cb != nil {
 				_ = cb.EmitDocUpdate(msg.UserID, phaseID, resp.Text)

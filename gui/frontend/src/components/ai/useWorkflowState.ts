@@ -38,7 +38,7 @@ export interface WorkflowUIState {
     workingDir: string;
 }
 
-const DEFAULT_SPLIT_RATIO = 0.5;
+const DEFAULT_SPLIT_RATIO = 0.42;
 
 /**
  * useWorkflowState manages the workflow UI state for the split-pane

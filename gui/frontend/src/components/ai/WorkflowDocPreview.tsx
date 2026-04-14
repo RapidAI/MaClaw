@@ -461,6 +461,7 @@ export function WorkflowDocPreview({
                     minHeight: 0,
                     boxSizing: "border-box",
                     wordBreak: "break-word",
+                    textAlign: "left",
                 }}>
                     {content
                         ? renderMarkdown(content, theme)

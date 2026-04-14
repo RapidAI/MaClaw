@@ -155,6 +155,8 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 	// 1. Check for skip words.
 	if containsAny(trimmed, skipWords) {
 		if phase.CanSkip {
+			// Only allow skip if the phase has output or is explicitly skippable
+			// without output (CanSkip is already checked above).
 			resp := e.advancePhase(userID, ws, tmpl)
 			return resp, nil
 		}
@@ -166,8 +168,15 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 
 	// 2. Check for confirm words (only meaningful when NeedsConfirm=true).
 	if phase.NeedsConfirm && containsAny(trimmed, confirmWords) {
-		resp := e.advancePhase(userID, ws, tmpl)
-		return resp, nil
+		// Only allow confirmation if the current phase has produced output.
+		// Without this guard, a user saying "好的" (acknowledging the workflow
+		// start message) would prematurely advance past the requirements phase
+		// before any document has been generated.
+		if _, hasOutput := ws.PhaseOutputs[ws.CurrentPhase]; hasOutput {
+			resp := e.advancePhase(userID, ws, tmpl)
+			return resp, nil
+		}
+		// No output yet — treat as normal input to generate the phase document.
 	}
 
 	// 3. Check for modify indicators.
@@ -370,9 +379,23 @@ func (e *WorkflowEngine) RestoreFromStore() error {
 
 	e.mu.Lock()
 	for _, ws := range states {
-		if ws != nil && ws.Status == WorkflowActive && ws.UserID != "" {
-			e.workflows[ws.UserID] = ws
+		if ws == nil || ws.Status != WorkflowActive || ws.UserID == "" {
+			continue
 		}
+		// Validate phase consistency: if the workflow has advanced past
+		// requirements but has no output for earlier phases, it was
+		// corrupted by the premature-advance bug. Reset to phase 0.
+		if ws.PhaseIndex > 0 && len(ws.PhaseOutputs) == 0 {
+			tmpl := e.registry.Match(ws.Type)
+			if tmpl != nil && len(tmpl.Phases) > 0 {
+				ws.PhaseIndex = 0
+				ws.CurrentPhase = tmpl.Phases[0].ID
+				if e.store != nil {
+					_ = e.store.SaveWorkflowState(ws)
+				}
+			}
+		}
+		e.workflows[ws.UserID] = ws
 	}
 	e.mu.Unlock()
 

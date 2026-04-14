@@ -58,6 +58,14 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAg
 
 // handleActiveWorkflow processes input for a user with an active workflow.
 func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine, userID, text string) *IMAgentResponse {
+	// Ensure the fullscreen suggestion banner is shown whenever a workflow
+	// is active. This covers the case where the workflow was restored from
+	// persistence (RestoreFromStore) and the frontend missed the original
+	// suggest_maximize event from a previous app session.
+	if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+		adapter.EmitSuggestMaximize(userID, "coding")
+	}
+
 	resp, err := engine.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] HandleInput error for user %s: %v", userID, err)

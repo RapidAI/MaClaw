@@ -65,9 +65,28 @@ var normalizePhaseIDMap = map[string]string{
 
 // EmitDocUpdate notifies the frontend of document content changes and
 // persists the document to the project's .maclaw/workflow/ directory.
+// The content sent to the frontend is read back from the persisted file
+// to ensure the preview panel always shows the clean document.
 func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) error {
 	if canonical, ok := normalizePhaseIDMap[phaseID]; ok {
 		phaseID = canonical
+	}
+	// Strip conversational preamble before persisting.
+	content = stripDocPreamble(content)
+	// Content-based phase correction: detect the actual phase from the
+	// document content and override the phaseID if it doesn't match.
+	// This is the final safety net against all upstream phase tracking bugs.
+	if detected := detectPhaseFromContent(content); detected != "" && detected != phaseID {
+		log.Printf("[WorkflowAdapter] phase correction: %s → %s (content-based)", phaseID, detected)
+		phaseID = detected
+	}
+	// Persist first.
+	a.persistWorkflowDoc(phaseID, content)
+	// Read back the persisted file — this is the single source of truth
+	// for the preview panel. If the file can't be read, fall back to
+	// the in-memory content.
+	if fileContent := a.readPersistedDoc(phaseID); fileContent != "" {
+		content = fileContent
 	}
 	if a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:doc_update", map[string]string{
@@ -76,9 +95,82 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 			"content":  content,
 		})
 	}
-	// Persist to project directory: {projectPath}/.maclaw/workflow/{phaseID}.md
-	a.persistWorkflowDoc(phaseID, content)
 	return nil
+}
+
+// detectPhaseFromContent scans the first 500 chars of document content
+// to determine which workflow phase it belongs to. Returns empty string
+// if no phase can be determined.
+func detectPhaseFromContent(content string) string {
+	heading := strings.ToLower(content)
+	if len(heading) > 500 {
+		heading = heading[:500]
+	}
+	switch {
+	case strings.Contains(heading, "需求文档") ||
+		strings.Contains(heading, "需求分析") ||
+		strings.Contains(heading, "功能需求") ||
+		strings.Contains(heading, "需求背景") ||
+		strings.Contains(heading, "requirements"):
+		return "requirements"
+	case strings.Contains(heading, "技术设计") ||
+		strings.Contains(heading, "设计文档") ||
+		strings.Contains(heading, "架构设计") ||
+		strings.Contains(heading, "技术方案") ||
+		strings.Contains(heading, "design"):
+		return "design"
+	case strings.Contains(heading, "任务拆分") ||
+		strings.Contains(heading, "任务列表") ||
+		strings.Contains(heading, "任务分解") ||
+		strings.Contains(heading, "开发任务") ||
+		strings.Contains(heading, "tasks"):
+		return "tasks"
+	}
+	return ""
+}
+
+// readPersistedDoc reads the persisted markdown file for a phase.
+// Returns empty string if the file doesn't exist or can't be read.
+func (a *GUIWorkflowAdapter) readPersistedDoc(phaseID string) string {
+	if a.app == nil {
+		return ""
+	}
+	a.mu.RLock()
+	projectPath := a.workingDir
+	a.mu.RUnlock()
+	if projectPath == "" {
+		projectPath = strings.TrimSpace(a.app.GetCurrentProjectPath())
+	}
+	if projectPath == "" {
+		return ""
+	}
+	fileName := phaseFileName[phaseID]
+	if fileName == "" {
+		fileName = phaseID + ".md"
+	}
+	filePath := filepath.Join(projectPath, ".maclaw", "workflow", fileName)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// stripDocPreamble removes conversational text before the first Markdown
+// heading (#). LLM output often starts with a sentence like "好的，以下是
+// 需求文档：" before the actual document heading.
+func stripDocPreamble(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			stripped := strings.TrimSpace(strings.Join(lines[i:], "\n"))
+			if len(stripped) > 100 {
+				return stripped
+			}
+			break
+		}
+	}
+	return text
 }
 
 // phaseFileName maps a phase ID to a human-readable file name.
