@@ -3940,12 +3940,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// steering rules (coding-workflow.md) and emit frontend events that
 	// would normally come from the WorkflowEngine path. Only activate when:
 	// 1. Not a background task (ctx.Kind != LoopKindBackground)
-	// 2. The message is a coding task (keyword match)
+	// 2. The message or conversation context indicates a coding workflow
 	// 3. No active workflow engine workflow exists for this user
 	var steeringDetector *SteeringWorkflowDetector
 	if ctx.Kind != LoopKindBackground {
 		detector := NewSteeringWorkflowDetector(userID)
-		if detector.isCodingTask(userText) {
+		// Activate the detector when:
+		// a) The message itself is a coding task (keyword match), OR
+		// b) The coding tool gate is active (intent already classified as coding), OR
+		// c) Conversation history has coding context (user is in a follow-up
+		//    round like "确认" after a coding task was discussed).
+		shouldActivate := detector.isCodingTask(userText) || gateConfig.active || h.conversationHasCodingContext()
+		if shouldActivate {
 			hasEngineWorkflow := false
 			if h.app != nil && h.app.workflowEngine != nil {
 				hasEngineWorkflow = h.app.workflowEngine.HasActiveWorkflow(userID)
@@ -4735,53 +4741,66 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Handle ask_user: pause the loop and present the question to the user.
 			// The question text becomes the visible response; the agent loop will
 			// resume when the user replies in the next message.
+			//
+			// HARD GUARD: When the coding tool gate is active (three-phase workflow),
+			// ask_user is NOT allowed for phase confirmations. Convert it to a plain
+			// text tool result so the LLM's question text flows into msgContent
+			// naturally, and the loop can force-return for user confirmation via the
+			// NeedsConfirm gate instead of popping a button UI.
 			if askReq, ok := ParseAskUserResult(result); ok {
-				displayText := FormatAskUserForDisplay(askReq)
-				// Return the question as the agent's response, ending this loop iteration.
-				// The user's answer will come as the next user message, and the agent
-				// can continue from where it left off.
-				toolResults = append(toolResults, fmt.Sprintf("用户被提问: %s（等待回答）", askReq.Question))
-				recordToolResult(tc.ID, toolResults[len(toolResults)-1])
-
-				// FIX: Append tool result to conversation/history and persist,
-				// so the next message sees the full context (including the
-				// requirement document and ask_user question).
-				conversation = append(conversation, map[string]interface{}{
-					"role":         "tool",
-					"tool_call_id": tc.ID,
-					"content":      toolResults[len(toolResults)-1],
-				})
-				history = append(history, conversationEntry{
-					Role: "tool", Content: toolResults[len(toolResults)-1], ToolCallID: tc.ID,
-				})
-				h.saveConversationHistoryTimed(userID, history, nil)
-
-				// FIX: Store pending ask_user state so the next message can
-				// be identified as a response to this question.
-				h.pendingAskUser.Store(userID, &pendingAskUserState{
-					Question:  askReq.Question,
-					Options:   askReq.Options,
-					InputType: askReq.InputType,
-					Timestamp: time.Now(),
-				})
-
-				resp := &IMAgentResponse{
-					Text:           displayText,
-					ResponseSource: "ask_user",
-				}
-				if askReq.InputType == "choice" && len(askReq.Options) > 0 {
-					actions := make([]IMResponseAction, len(askReq.Options))
-					for i, opt := range askReq.Options {
-						actions[i] = IMResponseAction{Label: opt, Command: opt}
+				if gateConfig.active {
+					// Coding workflow active: convert ask_user to plain tool result.
+					// The LLM's question becomes part of the normal text flow.
+					plainText := askReq.Question
+					if len(askReq.Options) > 0 {
+						plainText += "\n"
+						for i, opt := range askReq.Options {
+							plainText += fmt.Sprintf("\n%d. %s", i+1, opt)
+						}
 					}
-					resp.Actions = actions
-				} else if askReq.InputType == "confirm" {
-					resp.Actions = []IMResponseAction{
-						{Label: "✅ 确认", Command: "确认"},
-						{Label: "❌ 取消", Command: "取消"},
+					result = fmt.Sprintf("编码工作流中不使用 ask_user 弹窗确认。请将确认提示直接写在回复文本中，用户会直接在输入框回复。你的问题是: %s", plainText)
+					log.Printf("[coding-gate] ask_user intercepted: converted to plain text (question=%q)", askReq.Question)
+					// Fall through to normal tool result handling below.
+				} else {
+					displayText := FormatAskUserForDisplay(askReq)
+					toolResults = append(toolResults, fmt.Sprintf("用户被提问: %s（等待回答）", askReq.Question))
+					recordToolResult(tc.ID, toolResults[len(toolResults)-1])
+
+					conversation = append(conversation, map[string]interface{}{
+						"role":         "tool",
+						"tool_call_id": tc.ID,
+						"content":      toolResults[len(toolResults)-1],
+					})
+					history = append(history, conversationEntry{
+						Role: "tool", Content: toolResults[len(toolResults)-1], ToolCallID: tc.ID,
+					})
+					h.saveConversationHistoryTimed(userID, history, nil)
+
+					h.pendingAskUser.Store(userID, &pendingAskUserState{
+						Question:  askReq.Question,
+						Options:   askReq.Options,
+						InputType: askReq.InputType,
+						Timestamp: time.Now(),
+					})
+
+					resp := &IMAgentResponse{
+						Text:           displayText,
+						ResponseSource: "ask_user",
 					}
+					if askReq.InputType == "choice" && len(askReq.Options) > 0 {
+						actions := make([]IMResponseAction, len(askReq.Options))
+						for i, opt := range askReq.Options {
+							actions[i] = IMResponseAction{Label: opt, Command: opt}
+						}
+						resp.Actions = actions
+					} else if askReq.InputType == "confirm" {
+						resp.Actions = []IMResponseAction{
+							{Label: "✅ 确认", Command: "确认"},
+							{Label: "❌ 取消", Command: "取消"},
+						}
+					}
+					return resp
 				}
-				return resp
 			}
 
 			// Handle delegate_task: inject sub-agent context into the tool result.
@@ -5124,6 +5143,37 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			resp.FileName = last.name
 			resp.FileMimeType = last.mimeType
 			return resp
+		}
+
+		// --- NeedsConfirm gate (tool branch) ---
+		// When the coding tool gate is active and the LLM has already produced
+		// substantive text (the requirements/design doc), force-return after
+		// executing delivery tools (open, memory, task, etc.) instead of
+		// continuing to the next iteration. Without this, the loop keeps
+		// spinning (calling more tools, showing progress bar) when it should
+		// be waiting for user confirmation.
+		if gateConfig.active && iteration > 0 {
+			trimmedAfterTools := strings.TrimSpace(stripThinkingTags(msgContent))
+			if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) {
+				log.Printf("[coding-gate] NeedsConfirm (tool branch): force-returning after tool execution for user confirmation (iteration=%d len=%d)", iteration, len(trimmedAfterTools))
+				phase.Stage = agentStageFinalize
+				finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+				// Desktop: intercept text output for the doc preview panel.
+				// This emits workflow:doc_update so the right-side preview opens.
+				if steeringDetector != nil && platform == "desktop" {
+					steeringDetector.interceptTextOutput(trimmedAfterTools, func(phaseID, content string) {
+						if h.app != nil && h.app.workflowEngine != nil {
+							if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+								_ = adapter.EmitDocUpdate(userID, phaseID, content)
+								log.Printf("[SteeringWorkflow] emitted doc_update from tool-branch gate for user=%s phase=%s len=%d", userID, phaseID, len(content))
+							}
+						}
+					})
+				}
+				attachLLMTelemetry(finalResp)
+				h.saveConversationHistoryTimed(userID, history, finalResp)
+				return finalResp
+			}
 		}
 	}
 

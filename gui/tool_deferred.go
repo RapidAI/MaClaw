@@ -43,4 +43,8 @@ var DeferredToolNames = []string{
 	"recommend_tool",
 	// LLM provider switch
 	"switch_llm_provider",
+	// Structured question tool — deferred because LLM tends to misuse it
+	// for coding workflow phase confirmations (popping button UI instead of
+	// plain text). Available via discover_tool if genuinely needed.
+	"ask_user",
 }

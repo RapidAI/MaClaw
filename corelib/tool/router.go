@@ -50,7 +50,6 @@ var CoreToolNames = map[string]bool{
 	"web_fetch":  true,
 	"set_nickname": true,
 	"discover_tool": true,
-	"ask_user":      true,
 	"task":          true,
 }
 

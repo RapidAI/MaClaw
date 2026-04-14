@@ -61,7 +61,6 @@ var deliveryToolAllowlist = map[string]bool{
 	"open":          true,
 	"set_nickname":  true,
 	"manage_config": true,
-	"ask_user":      true,
 	"task":          true,
 }
 

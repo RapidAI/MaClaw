@@ -597,12 +597,6 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"task_description": map[string]interface{}{"type": "string", "description": "任务描述"},
 		}, []string{"task_description"}),
 		toolDef("screenshot", "截取屏幕截图。仅在用户明确要求截屏、或需要确认操作结果时使用。最小间隔 30 秒。", map[string]interface{}{}, nil),
-		// --- 结构化提问 ---
-		toolDef("ask_user", "向用户提出结构化问题并等待回答。适用于需要用户从多个选项中选择、或提供缺失信息的场景。编码工作流的阶段确认不要使用此工具，直接在文本中提示用户确认即可。", map[string]interface{}{
-			"question":   map[string]interface{}{"type": "string", "description": "要问用户的问题"},
-			"options":    map[string]interface{}{"type": "array", "description": "可选：预设选项列表", "items": map[string]interface{}{"type": "string"}},
-			"input_type": map[string]interface{}{"type": "string", "description": "回答类型: choice/text/confirm（默认 text）"},
-		}, []string{"question"}),
 		// --- 任务管理 ---
 		toolDef("task", "管理任务（action: create/update/complete/fail/list/delegate/delete）。用于跟踪复杂任务的进度和依赖关系。", map[string]interface{}{
 			"action":      map[string]interface{}{"type": "string", "description": "操作: create/update/complete/fail/list/delegate/delete"},
