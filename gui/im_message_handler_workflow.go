@@ -34,6 +34,12 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAg
 		return h.handleActiveUnderstanding(engine, userID, text)
 
 	case workflow.FilterNeedsUnderstanding:
+		// Emit suggest_maximize early so the user sees the fullscreen
+		// banner while intent understanding is in progress, rather than
+		// waiting until StartWorkflow completes.
+		if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+			adapter.EmitSuggestMaximize(userID, "coding")
+		}
 		return h.handleNeedsUnderstanding(engine, userID, text)
 
 	case workflow.FilterSmallTalk:
@@ -109,6 +115,8 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 			return &IMAgentResponse{Error: fmt.Sprintf("启动工作流失败: %v", err)}
 		}
 		// Suggest maximizing the AI panel for workflow experience.
+		// (May have been emitted earlier when FilterNeedsUnderstanding
+		// was first triggered; the frontend handles duplicates gracefully.)
 		if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
 			adapter.EmitSuggestMaximize(userID, string(state.Type))
 		}

@@ -1173,9 +1173,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     }, [progressMessages, executeAction, t, lang, savedFileLabel]);
 
     const containerStyle: React.CSSProperties = inline
-        ? (maximized
-            ? maximizedInlineStyle
-            : {
+        ? {
                 display: "flex",
                 flex: "1 1 0%",
                 flexDirection: "column",
@@ -1188,11 +1186,11 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 boxSizing: "border-box",
                 position: "relative",
                 overflow: "hidden",
-            })
+            }
         : overlayStyle;
 
     return (
-        <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden" }}>
+        <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden", ...(maximized ? { position: "fixed" as const, inset: 0, zIndex: 12000, background: t.bg, boxShadow: "0 0 40px rgba(0,0,0,0.12)" } : {}) }}>
         <div data-testid="ai-panel-root" style={{...containerStyle, width: workflowState.splitMode ? `${workflowState.splitRatio * 100}%` : "100%", flex: workflowState.splitMode ? "none" : 1}}>
             {/* ── Drag overlay (inline mode) ── */}
             {inline && !maximized && (
