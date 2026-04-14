@@ -954,27 +954,46 @@ function hasVisibleTerminalPayload(response: any): boolean {
     return !!text || !!thumbnailBase64 || !!localFilePaths?.length;
 }
 
-function resolveFinalRoundContent(message: ChatMessage, response: any): string {
+/** Sources whose response.text is semantically unrelated to streamed content. */
+const SPECIAL_RESPONSE_SOURCES: ReadonlySet<string> = new Set([
+    'ask_user', 'cancel', 'file_delivery', 'screenshot',
+]);
+
+export function resolveFinalRoundContent(message: ChatMessage, response: any): string {
     const finalText = typeof response?.text === 'string' ? response.text : '';
     const streamedContent = message.content || '';
+    const responseSource: string = typeof response?.response_source === 'string' ? response.response_source : '';
 
-    // When the message already has substantial streamed content (accumulated
-    // across multiple agent-loop iterations via onToken), prefer it over
-    // response.text which only contains the *last* iteration's assistant
-    // reply. Replacing the full streamed output with the tail fragment
-    // causes the user-visible requirements/design documents to disappear.
-    //
-    // Detection: if the streamed content ends with the response text, the
-    // response text is just the final iteration's fragment — keep the full
-    // streamed content. If the response text is NOT a suffix of the streamed
-    // content, it was set by a special handler (ask_user, cancel, file
-    // delivery, etc.) and should be used as-is.
+    // --- Layer 1: Source check ---
+    // Special handler paths produce text semantically unrelated to streamed
+    // content (e.g. ask_user structured questions, cancel messages, file
+    // delivery notices, screenshot captions). Always use finalText for these.
+    if (SPECIAL_RESPONSE_SOURCES.has(responseSource)) {
+        return finalText;
+    }
+
+    // --- Layer 2: Length comparison ---
+    // When streamed content is significantly longer than finalText (>= 2×),
+    // the response text is just the last iteration's fragment from a
+    // multi-round agent loop. Preserve the complete accumulated output.
+    const finalTextLen = finalText.trim().length;
+    if (streamedContent && finalText && finalTextLen > 0
+        && streamedContent.length >= finalTextLen * 2
+        && (!responseSource || responseSource === 'agent_loop')) {
+        return streamedContent;
+    }
+
+    // --- Layer 3: endsWith fallback ---
+    // Original improvement #19: if streamed content ends with the response
+    // text, the response text is the final iteration's tail — keep the full
+    // streamed content.
     if (streamedContent && finalText && streamedContent.length > finalText.length) {
         if (streamedContent.endsWith(finalText)) {
             return streamedContent;
         }
     }
 
+    // --- Subsequent fallbacks (unchanged) ---
     if (finalText) {
         return finalText;
     }

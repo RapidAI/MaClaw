@@ -32,7 +32,7 @@ import (
 const imHeartbeatMsg = "__heartbeat__"
 
 // ---------------------------------------------------------------------------
-// IMMessageHandler — handles IM messages forwarded from Hub via WebSocket
+// IMMessageHandler 鈥?handles IM messages forwarded from Hub via WebSocket
 // ---------------------------------------------------------------------------
 
 // MessageAttachment represents a file/image/audio attachment from IM.
@@ -53,7 +53,7 @@ type IMUserMessage struct {
 	Attachments                 []MessageAttachment `json:"attachments,omitempty"`          // File/image attachments from user
 	MinIterations               int                 `json:"min_iterations,omitempty"`       // floor for agent loop iterations (used by scheduled tasks)
 	IsBackground                bool                `json:"is_background,omitempty"`        // true for scheduled tasks / auto-picked tasks (uses separate HTTP client)
-	BackgroundSlotKind          string              `json:"background_slot_kind,omitempty"` // "coding", "scheduled", "auto" — determines concurrency slot (default: "scheduled")
+	BackgroundSlotKind          string              `json:"background_slot_kind,omitempty"` // "coding", "scheduled", "auto" 鈥?determines concurrency slot (default: "scheduled")
 	ResumeSlotID                string              `json:"resume_slot_id,omitempty"`
 	StartNewTask                bool                `json:"start_new_task,omitempty"`
 	DismissSlotID               string              `json:"dismiss_slot_id,omitempty"`
@@ -78,6 +78,7 @@ type IMAgentResponse struct {
 	LocalFilePaths                      []string                      `json:"local_file_paths,omitempty"`
 	ThumbnailBase64                     string                        `json:"thumbnail_base64,omitempty"`
 	Error                               string                        `json:"error,omitempty"`
+	ResponseSource                      string                        `json:"response_source,omitempty"`
 	Deferred                            bool                          `json:"deferred,omitempty"`
 	ConfirmedResume                     bool                          `json:"confirmed_resume,omitempty"`
 	JobID                               string                        `json:"job_id,omitempty"`
@@ -171,8 +172,8 @@ func shouldPreferSkillForTask(text string) bool {
 		return false
 	}
 	hints := []string{
-		"pdf", "报告", "文档", "综述", "markdown", "导出", "转换",
-		"生成文件", "发送文件", "daily papers", "paper", "report",
+		"pdf", "鎶ュ憡", "鏂囨。", "缁艰堪", "markdown", "瀵煎嚭", "杞崲",
+		"鐢熸垚鏂囦欢", "鍙戦€佹枃浠?, "daily papers", "paper", "report",
 	}
 	for _, hint := range hints {
 		if strings.Contains(lower, hint) {
@@ -209,7 +210,7 @@ func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, str
 		}
 		desc := strings.ToLower(strings.TrimSpace(skill.Description))
 		if desc != "" {
-			for _, token := range []string{"pdf", "报告", "文档", "综述", "markdown", "daily papers", "report"} {
+			for _, token := range []string{"pdf", "鎶ュ憡", "鏂囨。", "缁艰堪", "markdown", "daily papers", "report"} {
 				if strings.Contains(lower, token) && strings.Contains(desc, token) {
 					score += 2
 				}
@@ -314,12 +315,12 @@ func buildSkillProgressGuidance(skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
 	if runID != "" {
-		return fmt.Sprintf("若已拿到 run_id，请优先调用 get_skill_run(run_id=\"%s\") 继续观察状态；仅在明确失败后再切换到其他真实工具。", runID)
+		return fmt.Sprintf("鑻ュ凡鎷垮埌 run_id锛岃浼樺厛璋冪敤 get_skill_run(run_id=\"%s\") 缁х画瑙傚療鐘舵€侊紱浠呭湪鏄庣‘澶辫触鍚庡啀鍒囨崲鍒板叾浠栫湡瀹炲伐鍏枫€?, runID)
 	}
 	if skillName != "" {
-		return fmt.Sprintf("若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；否则先调用 run_skill(name=\"%s\") 开始执行。", skillName)
+		return fmt.Sprintf("鑻ュ凡鎷垮埌 run_id 涓斿皻鏈鏄庣‘鎴愬姛/澶辫触锛岃浼樺厛璋冪敤 get_skill_run(run_id=...) 缁х画瑙傚療鐘舵€侊紱鍚﹀垯鍏堣皟鐢?run_skill(name=\"%s\") 寮€濮嬫墽琛屻€?, skillName)
 	}
-	return "若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态。"
+	return "鑻ュ凡鎷垮埌 run_id 涓斿皻鏈鏄庣‘鎴愬姛/澶辫触锛岃浼樺厛璋冪敤 get_skill_run(run_id=...) 缁х画瑙傚療鐘舵€併€?
 }
 
 func extractSkillRunID(toolCalls []llmToolCall, toolResults []string) string {
@@ -337,7 +338,7 @@ func extractSkillRunID(toolCalls []llmToolCall, toolResults []string) string {
 		if matches := regexp.MustCompile(`run_id[:=]\s*([A-Za-z0-9._-]+)`).FindStringSubmatch(result); len(matches) == 2 {
 			return strings.TrimSpace(matches[1])
 		}
-		if matches := regexp.MustCompile(`（run_id=([A-Za-z0-9._-]+)）`).FindStringSubmatch(result); len(matches) == 2 {
+		if matches := regexp.MustCompile(`锛坮un_id=([A-Za-z0-9._-]+)锛塦).FindStringSubmatch(result); len(matches) == 2 {
 			return strings.TrimSpace(matches[1])
 		}
 	}
@@ -348,78 +349,78 @@ func buildSkillRecoverPrompt(skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	guidance := buildSkillProgressGuidance(skillName, runID)
 	if skillName == "" {
-		return "[Recover 阶段]\n本地 Skill 已尝试且失败，当前进入 Recover 阶段。不要重复同一个失败 Skill。请基于已知失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n" + guidance + "\n[/Recover 阶段]"
+		return "[Recover 闃舵]\n鏈湴 Skill 宸插皾璇曚笖澶辫触锛屽綋鍓嶈繘鍏?Recover 闃舵銆備笉瑕侀噸澶嶅悓涓€涓け璐?Skill銆傝鍩轰簬宸茬煡澶辫触鍘熷洜閲嶆柊瑙勫垝锛屾敼鐢ㄥ叾浠栫湡瀹炲伐鍏凤紙濡?send_file / craft_tool / bash锛夎蛋鏈€鐭氦浠樿矾寰勶紝骞剁户缁畬鎴愪换鍔°€俓n" + guidance + "\n[/Recover 闃舵]"
 	}
-	return fmt.Sprintf("[Recover 阶段]\n本地 Skill「%s」已尝试且失败，当前进入 Recover 阶段。不要再次调用同一个 Skill。请基于失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n%s\n[/Recover 阶段]", skillName, guidance)
+	return fmt.Sprintf("[Recover 闃舵]\n鏈湴 Skill銆?s銆嶅凡灏濊瘯涓斿け璐ワ紝褰撳墠杩涘叆 Recover 闃舵銆備笉瑕佸啀娆¤皟鐢ㄥ悓涓€涓?Skill銆傝鍩轰簬澶辫触鍘熷洜閲嶆柊瑙勫垝锛屾敼鐢ㄥ叾浠栫湡瀹炲伐鍏凤紙濡?send_file / craft_tool / bash锛夎蛋鏈€鐭氦浠樿矾寰勶紝骞剁户缁畬鎴愪换鍔°€俓n%s\n[/Recover 闃舵]", skillName, guidance)
 }
 
 func buildDriftRecoverPrompt(drift DriftResult) string {
 	detail := strings.TrimSpace(drift.ReplanPrompt)
 	if detail == "" {
-		detail = "检测到执行路径出现漂移或循环，请停止重复同一做法，回到原始目标并改用不同路径继续完成任务。"
+		detail = "妫€娴嬪埌鎵ц璺緞鍑虹幇婕傜Щ鎴栧惊鐜紝璇峰仠姝㈤噸澶嶅悓涓€鍋氭硶锛屽洖鍒板師濮嬬洰鏍囧苟鏀圭敤涓嶅悓璺緞缁х画瀹屾垚浠诲姟銆?
 	}
-	return "[Recover 阶段]\n检测到执行路径出现漂移或循环，当前进入 Recover 阶段。请先暂停重复操作，回到原始目标，基于已知结果改用不同路径继续完成任务。\n" + detail + "\n[/Recover 阶段]"
+	return "[Recover 闃舵]\n妫€娴嬪埌鎵ц璺緞鍑虹幇婕傜Щ鎴栧惊鐜紝褰撳墠杩涘叆 Recover 闃舵銆傝鍏堟殏鍋滈噸澶嶆搷浣滐紝鍥炲埌鍘熷鐩爣锛屽熀浜庡凡鐭ョ粨鏋滄敼鐢ㄤ笉鍚岃矾寰勭户缁畬鎴愪换鍔°€俓n" + detail + "\n[/Recover 闃舵]"
 }
 
 func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
 	if runID != "" {
-		return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上。" + buildSkillProgressGuidance(skillName, runID) + " 若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
+		return "[Recover 闃舵]\n妫€娴嬪埌涓婁竴杞彧鎵胯灏嗚鐢熸垚銆佹暣鐞嗘垨鍙戦€佺粨鏋滐紝浣嗚繕娌℃湁鐪熸浜や粯锛屽綋鍓嶈繘鍏?Recover 闃舵銆備笉瑕佺户缁仠鐣欏湪鎵胯鎴栬В閲婁笂銆? + buildSkillProgressGuidance(skillName, runID) + " 鑻ヤ粛鏃犳硶瀹屾垚锛屽繀椤荤洿鎺ヨ鏄庡け璐ュ師鍥犲拰褰撳墠鍙缁撴灉銆俓n[/Recover 闃舵]"
 	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，优先直接调用 run_skill(name=\"%s\") 完成交付；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 明确失败，再切换到其他真实工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]", skillName)
+		return fmt.Sprintf("[Recover 闃舵]\n妫€娴嬪埌涓婁竴杞彧鎵胯灏嗚鐢熸垚銆佹暣鐞嗘垨鍙戦€佺粨鏋滐紝浣嗚繕娌℃湁鐪熸浜や粯锛屽綋鍓嶈繘鍏?Recover 闃舵銆備笉瑕佺户缁仠鐣欏湪鎵胯鎴栬В閲婁笂锛屼紭鍏堢洿鎺ヨ皟鐢?run_skill(name=\"%s\") 瀹屾垚浜や粯锛涜嫢宸叉嬁鍒?run_id 涓斿皻鏈鏄庣‘鎴愬姛/澶辫触锛岃浼樺厛璋冪敤 get_skill_run(run_id=...) 缁х画瑙傚療鐘舵€侊紱鑻ヨ Skill 鏄庣‘澶辫触锛屽啀鍒囨崲鍒板叾浠栫湡瀹炲伐鍏枫€傝嫢浠嶆棤娉曞畬鎴愶紝蹇呴』鐩存帴璇存槑澶辫触鍘熷洜鍜屽綋鍓嶅彲瑙佺粨鏋溿€俓n[/Recover 闃舵]", skillName)
 	}
-	return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，请立即调用真实工具完成交付；若目标是文档，优先选择当前可用的文档/文件交付工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
+	return "[Recover 闃舵]\n妫€娴嬪埌涓婁竴杞彧鎵胯灏嗚鐢熸垚銆佹暣鐞嗘垨鍙戦€佺粨鏋滐紝浣嗚繕娌℃湁鐪熸浜や粯锛屽綋鍓嶈繘鍏?Recover 闃舵銆備笉瑕佺户缁仠鐣欏湪鎵胯鎴栬В閲婁笂锛岃绔嬪嵆璋冪敤鐪熷疄宸ュ叿瀹屾垚浜や粯锛涜嫢鐩爣鏄枃妗ｏ紝浼樺厛閫夋嫨褰撳墠鍙敤鐨勬枃妗?鏂囦欢浜や粯宸ュ叿銆傝嫢浠嶆棤娉曞畬鎴愶紝蹇呴』鐩存帴璇存槑澶辫触鍘熷洜鍜屽綋鍓嶅彲瑙佺粨鏋溿€俓n[/Recover 闃舵]"
 }
 
 func buildEmptyResultRecoverPrompt() string {
-	return "[Recover 阶段]\n检测到上一轮没有返回任何可展示结果，当前进入 Recover 阶段。不要空结束，也不要只重复解释。请立即二选一：1) 直接给出可展示结果；2) 明确说明失败原因和当前状态。若还需要继续执行，必须立即调用真实工具。\n[/Recover 阶段]"
+	return "[Recover 闃舵]\n妫€娴嬪埌涓婁竴杞病鏈夎繑鍥炰换浣曞彲灞曠ず缁撴灉锛屽綋鍓嶈繘鍏?Recover 闃舵銆備笉瑕佺┖缁撴潫锛屼篃涓嶈鍙噸澶嶈В閲娿€傝绔嬪嵆浜岄€変竴锛?) 鐩存帴缁欏嚭鍙睍绀虹粨鏋滐紱2) 鏄庣‘璇存槑澶辫触鍘熷洜鍜屽綋鍓嶇姸鎬併€傝嫢杩橀渶瑕佺户缁墽琛岋紝蹇呴』绔嬪嵆璋冪敤鐪熷疄宸ュ叿銆俓n[/Recover 闃舵]"
 }
 
 func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []string) string {
 	var b strings.Builder
-	b.WriteString("[Recover 阶段]\n上一轮真实工具执行已出现失败，当前进入 Recover 阶段。请先根据失败结果调整计划，不要原样重复已经失败的尝试。")
+	b.WriteString("[Recover 闃舵]\n涓婁竴杞湡瀹炲伐鍏锋墽琛屽凡鍑虹幇澶辫触锛屽綋鍓嶈繘鍏?Recover 闃舵銆傝鍏堟牴鎹け璐ョ粨鏋滆皟鏁磋鍒掞紝涓嶈鍘熸牱閲嶅宸茬粡澶辫触鐨勫皾璇曘€?)
 	if obs := strings.TrimSpace(observation); obs != "" {
-		b.WriteString("\n失败观察: ")
+		b.WriteString("\n澶辫触瑙傚療: ")
 		b.WriteString(obs)
 	}
 	if len(repeatedFailures) > 0 {
 		items := append([]string(nil), repeatedFailures...)
 		sort.Strings(items)
-		b.WriteString("\n避免重复: ")
+		b.WriteString("\n閬垮厤閲嶅: ")
 		b.WriteString(strings.Join(items, ", "))
 	}
-	b.WriteString("\n下一步：优先改用不同路径或修正参数后继续完成任务；若仍无法完成，直接说明失败原因和当前状态。\n[/Recover 阶段]")
+	b.WriteString("\n涓嬩竴姝ワ細浼樺厛鏀圭敤涓嶅悓璺緞鎴栦慨姝ｅ弬鏁板悗缁х画瀹屾垚浠诲姟锛涜嫢浠嶆棤娉曞畬鎴愶紝鐩存帴璇存槑澶辫触鍘熷洜鍜屽綋鍓嶇姸鎬併€俓n[/Recover 闃舵]")
 	return b.String()
 }
 
 func buildRemoteSkillSearchPrompt() string {
-	return "[执行要求]\n当前任务属于 Skill 优先路径，但本地未命中合适 Skill。不要继续解释、承诺或直接 craft_tool；请立即先调用 search_and_install_skill（或其他 skill 搜索/安装工具）查找并安装可复用 Skill。只有在确认远程 Skill 路径无解后，才切换到 craft_tool 或 bash。\n[/执行要求]"
+	return "[鎵ц瑕佹眰]\n褰撳墠浠诲姟灞炰簬 Skill 浼樺厛璺緞锛屼絾鏈湴鏈懡涓悎閫?Skill銆備笉瑕佺户缁В閲娿€佹壙璇烘垨鐩存帴 craft_tool锛涜绔嬪嵆鍏堣皟鐢?search_and_install_skill锛堟垨鍏朵粬 skill 鎼滅储/瀹夎宸ュ叿锛夋煡鎵惧苟瀹夎鍙鐢?Skill銆傚彧鏈夊湪纭杩滅▼ Skill 璺緞鏃犺В鍚庯紝鎵嶅垏鎹㈠埌 craft_tool 鎴?bash銆俓n[/鎵ц瑕佹眰]"
 }
 
 func buildNoToolActionPrompt(preferSkill bool, skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
 	if runID != "" {
-		return "[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。" + buildSkillProgressGuidance(skillName, runID) + "\n[/执行要求]"
+		return "[鎵ц瑕佹眰]\n褰撳墠浠诲姟闇€瑕佺湡瀹炴墽琛岋紝涓嶈缁х画鍋滅暀鍦ㄨВ閲娿€佹壙璇烘垨鍒楁楠や笂銆? + buildSkillProgressGuidance(skillName, runID) + "\n[/鎵ц瑕佹眰]"
 	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。优先立即调用 run_skill(name=\"%s\") 开始执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具。\n[/执行要求]", skillName)
+		return fmt.Sprintf("[鎵ц瑕佹眰]\n褰撳墠浠诲姟闇€瑕佺湡瀹炴墽琛岋紝涓嶈缁х画鍋滅暀鍦ㄨВ閲娿€佹壙璇烘垨鍒楁楠や笂銆備紭鍏堢珛鍗宠皟鐢?run_skill(name=\"%s\") 寮€濮嬫墽琛岋紱鑻ュ凡鎷垮埌 run_id 涓斿皻鏈鏄庣‘鎴愬姛/澶辫触锛岃浼樺厛璋冪敤 get_skill_run(run_id=...) 缁х画瑙傚療鐘舵€侊紱鑻ヨ Skill 涓嶉€傜敤鎴栧け璐ワ紝鍐嶅垏鎹㈠埌鍏朵粬鐪熷疄宸ュ叿銆俓n[/鎵ц瑕佹眰]", skillName)
 	}
-	return "[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成、编辑或发送相关工具。\n[/执行要求]"
+	return "[鎵ц瑕佹眰]\n褰撳墠浠诲姟闇€瑕佺湡瀹炴墽琛岋紝涓嶈缁х画鍋滅暀鍦ㄨВ閲娿€佹壙璇烘垨鍒楁楠や笂銆傝绔嬪嵆閫夋嫨涓€涓渶鍚堥€傜殑鐪熷疄宸ュ叿寮€濮嬫墽琛岋紱鑻ョ洰鏍囨槸鏂囨。/鏂囦欢浜や粯锛屼紭鍏堜娇鐢ㄦ枃浠剁敓鎴愩€佺紪杈戞垨鍙戦€佺浉鍏冲伐鍏枫€俓n[/鎵ц瑕佹眰]"
 }
 
 func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
 	if runID != "" {
-		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。%s\n[/Recover 阶段]", consecutive, buildSkillProgressGuidance(skillName, runID))
+		return fmt.Sprintf("[Recover 闃舵]\n杩炵画 %d 杞兘娌℃湁鐪熸璋冪敤宸ュ叿锛屼换鍔″凡杩涘叆鍋滄粸鐘舵€侊紝褰撳墠杩涘叆 Recover 闃舵銆備笉瑕佺户缁В閲娿€佹壙璇烘垨绌鸿浆銆?s\n[/Recover 闃舵]", consecutive, buildSkillProgressGuidance(skillName, runID))
 	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。优先立即调用 run_skill(name=\"%s\") 启动实际执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具完成任务。\n[/Recover 阶段]", consecutive, skillName)
+		return fmt.Sprintf("[Recover 闃舵]\n杩炵画 %d 杞兘娌℃湁鐪熸璋冪敤宸ュ叿锛屼换鍔″凡杩涘叆鍋滄粸鐘舵€侊紝褰撳墠杩涘叆 Recover 闃舵銆備笉瑕佺户缁В閲娿€佹壙璇烘垨绌鸿浆銆備紭鍏堢珛鍗宠皟鐢?run_skill(name=\"%s\") 鍚姩瀹為檯鎵ц锛涜嫢宸叉嬁鍒?run_id 涓斿皻鏈鏄庣‘鎴愬姛/澶辫触锛岃浼樺厛璋冪敤 get_skill_run(run_id=...) 缁х画瑙傚療鐘舵€侊紱鑻ヨ Skill 涓嶉€傜敤鎴栧け璐ワ紝鍐嶅垏鎹㈠埌鍏朵粬鐪熷疄宸ュ叿瀹屾垚浠诲姟銆俓n[/Recover 闃舵]", consecutive, skillName)
 	}
-	return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成或发送相关工具。\n[/Recover 阶段]", consecutive)
+	return fmt.Sprintf("[Recover 闃舵]\n杩炵画 %d 杞兘娌℃湁鐪熸璋冪敤宸ュ叿锛屼换鍔″凡杩涘叆鍋滄粸鐘舵€侊紝褰撳墠杩涘叆 Recover 闃舵銆備笉瑕佺户缁В閲娿€佹壙璇烘垨绌鸿浆銆傝绔嬪嵆閫夋嫨涓€涓渶鍚堥€傜殑鐪熷疄宸ュ叿寮€濮嬫墽琛岋紱鑻ョ洰鏍囨槸鏂囨。/鏂囦欢浜や粯锛屼紭鍏堜娇鐢ㄦ枃浠剁敓鎴愭垨鍙戦€佺浉鍏冲伐鍏枫€俓n[/Recover 闃舵]", consecutive)
 }
 
 func didSkillToolFail(toolCalls []llmToolCall, toolResults []string) bool {
@@ -440,17 +441,17 @@ func didSkillToolFail(toolCalls []llmToolCall, toolResults []string) bool {
 func userFacingToolProgressText(toolName string) string {
 	switch toolName {
 	case "craft_tool":
-		return "🛠️ 正在生成并执行脚本，准备继续完成交付..."
+		return "馃洜锔?姝ｅ湪鐢熸垚骞舵墽琛岃剼鏈紝鍑嗗缁х画瀹屾垚浜や粯..."
 	case "bash":
-		return "🖥️ 正在执行命令处理文件，请稍候..."
+		return "馃枼锔?姝ｅ湪鎵ц鍛戒护澶勭悊鏂囦欢锛岃绋嶅€?.."
 	case "run_skill":
-		return "🚀 正在启动 Skill 并等待状态快照..."
+		return "馃殌 姝ｅ湪鍚姩 Skill 骞剁瓑寰呯姸鎬佸揩鐓?.."
 	case "send_file":
-		return "📤 正在整理并发送生成的文件..."
+		return "馃摛 姝ｅ湪鏁寸悊骞跺彂閫佺敓鎴愮殑鏂囦欢..."
 	case "generate_pdf":
-		return "📄 正在生成 PDF 文件..."
+		return "馃搫 姝ｅ湪鐢熸垚 PDF 鏂囦欢..."
 	default:
-		return "⚙️ 正在执行工具，请稍候..."
+		return "鈿欙笍 姝ｅ湪鎵ц宸ュ叿锛岃绋嶅€?.."
 	}
 }
 
@@ -471,7 +472,7 @@ func filterUserFacingToolProgress(toolName, msg string) string {
 	if shouldExposeToolInternalProgress(toolName) {
 		switch toolName {
 		case "craft_tool":
-			allowedPrefixes := []string{"🧠 ", "💾 ", "🚀 ", "📦 ", "⏳ "}
+			allowedPrefixes := []string{"馃 ", "馃捑 ", "馃殌 ", "馃摝 ", "鈴?"}
 			for _, prefix := range allowedPrefixes {
 				if strings.HasPrefix(trimmed, prefix) {
 					return trimmed
@@ -479,12 +480,12 @@ func filterUserFacingToolProgress(toolName, msg string) string {
 			}
 			return ""
 		case "bash":
-			if strings.HasPrefix(trimmed, "⏳ ") {
+			if strings.HasPrefix(trimmed, "鈴?") {
 				return trimmed
 			}
 			return ""
 		case "run_skill":
-			allowedPrefixes := []string{"🚀 ", "⏳ ", "✅ ", "❌ "}
+			allowedPrefixes := []string{"馃殌 ", "鈴?", "鉁?", "鉂?"}
 			for _, prefix := range allowedPrefixes {
 				if strings.HasPrefix(trimmed, prefix) {
 					return trimmed
@@ -502,7 +503,7 @@ func shouldResumeIncompleteTask(text string) bool {
 		return false
 	}
 	resumePhrases := []string{
-		"继续", "继续呀", "继续做", "继续完成", "继续上次", "接着做", "接着完成", "接着上次", "恢复上次", "做完上次",
+		"缁х画", "缁х画鍛€", "缁х画鍋?, "缁х画瀹屾垚", "缁х画涓婃", "鎺ョ潃鍋?, "鎺ョ潃瀹屾垚", "鎺ョ潃涓婃", "鎭㈠涓婃", "鍋氬畬涓婃",
 		"continue", "continue it", "continue this", "resume", "resume it", "resume this", "pick up where you left off",
 	}
 	for _, phrase := range resumePhrases {
@@ -523,7 +524,7 @@ func looksLikeFreshTaskRequest(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	freshTaskHints := []string{
-		"帮我", "请你", "请帮我", "现在去", "把", "整理", "分析", "搜索", "生成", "写", "修", "移动", "复制", "放入", "导入",
+		"甯垜", "璇蜂綘", "璇峰府鎴?, "鐜板湪鍘?, "鎶?, "鏁寸悊", "鍒嗘瀽", "鎼滅储", "鐢熸垚", "鍐?, "淇?, "绉诲姩", "澶嶅埗", "鏀惧叆", "瀵煎叆",
 		"please", "help me", "can you", "now", "move", "copy", "write", "generate", "summarize", "analyze", "search", "import",
 	}
 	for _, hint := range freshTaskHints {
@@ -561,13 +562,13 @@ func hasIncompleteTaskMarker(entries []conversationEntry) bool {
 		if trimmed == "" {
 			continue
 		}
-		if strings.Contains(trimmed, "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。") {
+		if strings.Contains(trimmed, "馃敂 缂栫▼浼氳瘽杩樺湪杩愯涓€傚洖澶嶃€岀户缁€嶅彲浠ョ户缁湅鎶わ紝鍥炲鍏跺畠鍐呭姝ｅ父瀵硅瘽銆?) {
 			return true
 		}
-		if strings.Contains(trimmed, "(已达到最大推理轮次，请继续发送消息以完成任务)") {
+		if strings.Contains(trimmed, "(宸茶揪鍒版渶澶ф帹鐞嗚疆娆★紝璇风户缁彂閫佹秷鎭互瀹屾垚浠诲姟)") {
 			return true
 		}
-		if strings.Contains(trimmed, "已接近最大推理轮次") {
+		if strings.Contains(trimmed, "宸叉帴杩戞渶澶ф帹鐞嗚疆娆?) {
 			return true
 		}
 	}
@@ -623,7 +624,7 @@ func extractProgressSummary(history []conversationEntry) string {
 			continue
 		}
 		// Skip the max-rounds marker itself.
-		if strings.Contains(trimmed, "已达到最大推理轮次") || strings.Contains(trimmed, "已接近最大推理轮次") {
+		if strings.Contains(trimmed, "宸茶揪鍒版渶澶ф帹鐞嗚疆娆?) || strings.Contains(trimmed, "宸叉帴杩戞渶澶ф帹鐞嗚疆娆?) {
 			continue
 		}
 		lastAssistantTexts = append(lastAssistantTexts, truncateRunes(trimmed, 150))
@@ -635,7 +636,7 @@ func extractProgressSummary(history []conversationEntry) string {
 	for i, j := 0, len(lastAssistantTexts)-1; i < j; i, j = i+1, j-1 {
 		lastAssistantTexts[i], lastAssistantTexts[j] = lastAssistantTexts[j], lastAssistantTexts[i]
 	}
-	return strings.Join(lastAssistantTexts, " → ")
+	return strings.Join(lastAssistantTexts, " 鈫?")
 }
 
 type explicitTaskSlotDecision struct {
@@ -665,14 +666,14 @@ func buildUnfinishedSlotResumeContext(slot *unfinishedTaskSlot) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n## 显式恢复未完成任务\n")
+	b.WriteString("\n## 鏄惧紡鎭㈠鏈畬鎴愪换鍔n")
 	if slot.LastTask != "" {
-		b.WriteString("- 任务: ")
+		b.WriteString("- 浠诲姟: ")
 		b.WriteString(slot.LastTask)
 		b.WriteString("\n")
 	}
 	if slot.Summary != "" {
-		b.WriteString("- 当前进度: ")
+		b.WriteString("- 褰撳墠杩涘害: ")
 		b.WriteString(slot.Summary)
 		b.WriteString("\n")
 	}
@@ -682,7 +683,7 @@ func buildUnfinishedSlotResumeContext(slot *unfinishedTaskSlot) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("用户已显式选择继续这个未完成任务。请仅围绕该任务继续，不要混入其他旧任务。\n")
+	b.WriteString("鐢ㄦ埛宸叉樉寮忛€夋嫨缁х画杩欎釜鏈畬鎴愪换鍔°€傝浠呭洿缁曡浠诲姟缁х画锛屼笉瑕佹贩鍏ュ叾浠栨棫浠诲姟銆俓n")
 	return b.String()
 }
 
@@ -690,14 +691,14 @@ func buildResumeSlotActions(slot *unfinishedTaskSlot) []IMResponseAction {
 	if slot == nil || strings.TrimSpace(slot.SlotID) == "" {
 		return nil
 	}
-	resumeLabel := "继续上次任务"
+	resumeLabel := "缁х画涓婃浠诲姟"
 	if title := strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary)); title != "" {
-		resumeLabel = "继续：" + truncateRunes(title, 20)
+		resumeLabel = "缁х画锛? + truncateRunes(title, 20)
 	}
 	return []IMResponseAction{
 		{Label: resumeLabel, Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
-		{Label: "开始新任务", Command: "__start_new_task__", Style: "default"},
-		{Label: "放弃旧任务", Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "danger"},
+		{Label: "寮€濮嬫柊浠诲姟", Command: "__start_new_task__", Style: "default"},
+		{Label: "鏀惧純鏃т换鍔?, Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "danger"},
 	}
 }
 
@@ -707,9 +708,9 @@ func buildUnfinishedSlotHint(slot *unfinishedTaskSlot) string {
 	}
 	title := strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary, slot.ProjectPath))
 	if title == "" {
-		title = "上次未完成任务"
+		title = "涓婃鏈畬鎴愪换鍔?
 	}
-	return "检测到一个未完成任务：" + truncateRunes(title, 60) + "。如需继续，请显式选择“继续上次任务”。"
+	return "妫€娴嬪埌涓€涓湭瀹屾垚浠诲姟锛? + truncateRunes(title, 60) + "銆傚闇€缁х画锛岃鏄惧紡閫夋嫨鈥滅户缁笂娆′换鍔♀€濄€?
 }
 
 func isSlotActionCommand(text string) bool {
@@ -723,7 +724,7 @@ func isConfirmationApproval(text string) bool {
 		return false
 	}
 	phrases := []string{
-		"确认", "确认了", "可以", "可以开始", "开始吧", "继续", "继续吧", "没问题", "好的开始", "就这样", "按这个来",
+		"纭", "纭浜?, "鍙互", "鍙互寮€濮?, "寮€濮嬪惂", "缁х画", "缁х画鍚?, "娌￠棶棰?, "濂界殑寮€濮?, "灏辫繖鏍?, "鎸夎繖涓潵",
 		"ok", "okay", "confirmed", "confirm", "go ahead", "looks good", "start", "continue",
 	}
 	for _, phrase := range phrases {
@@ -739,7 +740,7 @@ func isConfirmationCancel(text string) bool {
 	if lower == "" {
 		return false
 	}
-	phrases := []string{"取消", "先别做", "不用做了", "停止", "算了", "cancel", "stop", "never mind"}
+	phrases := []string{"鍙栨秷", "鍏堝埆鍋?, "涓嶇敤鍋氫簡", "鍋滄", "绠椾簡", "cancel", "stop", "never mind"}
 	for _, phrase := range phrases {
 		if lower == phrase || strings.Contains(lower, phrase) {
 			return true
@@ -752,10 +753,10 @@ func isShortChitChatMessage(text string) bool {
 	return normalizeShortChitChatToken(text) != ""
 }
 
-var shortChitChatEdgePunctuationPattern = regexp.MustCompile(`^[\s"'“”‘’` + "`" + `()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+|[\s"'“”‘’` + "`" + `()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+$`)
-var shortChitChatChineseIdlePattern = regexp.MustCompile(`^(没事|没事了|没有)(啊|呀|啦|呢|吧|哦|喔|哈|哇|嘛|的)?$`)
-var shortChitChatChineseThanksPattern = regexp.MustCompile(`^(谢谢)(啊|呀|啦|呢|吧|哦|喔|哈)?$`)
-var shortChitChatChineseGreetingPattern = regexp.MustCompile(`^(你好|你好呀|你好啊|嗨|哈喽)(啊|呀|啦|呢|吧|哦|喔|哈)?$`)
+var shortChitChatEdgePunctuationPattern = regexp.MustCompile(`^[\s"'鈥溾€濃€樷€檂 + "`" + `()锛堬級\[\]銆愩€?>銆娿€?锛?銆?锛?锛焴锝炩€?锛?锛涖€乗-鈥擾]+|[\s"'鈥溾€濃€樷€檂 + "`" + `()锛堬級\[\]銆愩€?>銆娿€?锛?銆?锛?锛焴锝炩€?锛?锛涖€乗-鈥擾]+$`)
+var shortChitChatChineseIdlePattern = regexp.MustCompile(`^(娌′簨|娌′簨浜唡娌℃湁)(鍟妡鍛€|鍟鍛鍚鍝鍠攟鍝坾鍝噟鍢泑鐨??$`)
+var shortChitChatChineseThanksPattern = regexp.MustCompile(`^(璋㈣阿)(鍟妡鍛€|鍟鍛鍚鍝鍠攟鍝??$`)
+var shortChitChatChineseGreetingPattern = regexp.MustCompile(`^(浣犲ソ|浣犲ソ鍛€|浣犲ソ鍟妡鍡▅鍝堝柦)(鍟妡鍛€|鍟鍛鍚鍝鍠攟鍝??$`)
 
 func normalizeShortChitChatToken(text string) string {
 	cleaned := strings.ToLower(strings.TrimSpace(text))
@@ -775,25 +776,25 @@ func normalizeShortChitChatToken(text string) string {
 	}
 	switch {
 	case shortChitChatChineseIdlePattern.MatchString(cleaned):
-		return "没事"
+		return "娌′簨"
 	case shortChitChatChineseThanksPattern.MatchString(cleaned):
-		return "谢谢"
+		return "璋㈣阿"
 	case shortChitChatChineseGreetingPattern.MatchString(cleaned):
-		return "你好"
+		return "浣犲ソ"
 	}
 	shortPhrases := map[string]struct{}{
 		"hi":        {},
 		"hello":     {},
 		"hey":       {},
-		"你好":        {},
-		"没事":        {},
+		"浣犲ソ":        {},
+		"娌′簨":        {},
 		"nothing":   {},
 		"none":      {},
 		"ok":        {},
 		"okay":      {},
 		"thanks":    {},
 		"thank you": {},
-		"谢谢":        {},
+		"璋㈣阿":        {},
 	}
 	if _, ok := shortPhrases[cleaned]; ok {
 		return cleaned
@@ -828,14 +829,14 @@ func buildShortChitChatResponse(text, lang string) string {
 		}
 	}
 	switch normalized {
-	case "谢谢":
-		return "不客气。我在这，有需要随时说。"
-	case "没事", "nothing", "none":
-		return "好，没问题。我在这，有需要随时叫我。"
+	case "璋㈣阿":
+		return "涓嶅姘斻€傛垜鍦ㄨ繖锛屾湁闇€瑕侀殢鏃惰銆?
+	case "娌′簨", "nothing", "none":
+		return "濂斤紝娌￠棶棰樸€傛垜鍦ㄨ繖锛屾湁闇€瑕侀殢鏃跺彨鎴戙€?
 	case "ok", "okay":
-		return "好的，我在这。有需要随时说。"
+		return "濂界殑锛屾垜鍦ㄨ繖銆傛湁闇€瑕侀殢鏃惰銆?
 	default:
-		return "你好，我在这。有需要随时说。"
+		return "浣犲ソ锛屾垜鍦ㄨ繖銆傛湁闇€瑕侀殢鏃惰銆?
 	}
 }
 
@@ -859,24 +860,24 @@ func confirmationTaskLabel(intent taskIntent) string {
 func confirmationPlannedActions(intent taskIntent) []string {
 	switch intent {
 	case intentCoding:
-		return []string{"确认项目目录", "确认任务目标", "确认后开始修改代码"}
+		return []string{"纭椤圭洰鐩綍", "纭浠诲姟鐩爣", "纭鍚庡紑濮嬩慨鏀逛唬鐮?}
 	case intentSSH:
-		return []string{"确认目标服务器/目录", "确认排查目标", "确认后执行远程操作"}
+		return []string{"纭鐩爣鏈嶅姟鍣?鐩綍", "纭鎺掓煡鐩爣", "纭鍚庢墽琛岃繙绋嬫搷浣?}
 	case intentAmbiguous:
-		return []string{"确认这是改代码还是远程处理", "确认工作目录/目标环境", "确认后再执行"}
+		return []string{"纭杩欐槸鏀逛唬鐮佽繕鏄繙绋嬪鐞?, "纭宸ヤ綔鐩綍/鐩爣鐜", "纭鍚庡啀鎵ц"}
 	default:
-		return []string{"确认任务理解", "确认后开始执行"}
+		return []string{"纭浠诲姟鐞嗚В", "纭鍚庡紑濮嬫墽琛?}
 	}
 }
 
 func confirmationRiskFlags(intent taskIntent) []string {
 	switch intent {
 	case intentCoding:
-		return []string{"未经确认直接执行可能在错误目录修改代码"}
+		return []string{"鏈粡纭鐩存帴鎵ц鍙兘鍦ㄩ敊璇洰褰曚慨鏀逛唬鐮?}
 	case intentSSH:
-		return []string{"未经确认直接执行可能连错服务器或操作错环境"}
+		return []string{"鏈粡纭鐩存帴鎵ц鍙兘杩為敊鏈嶅姟鍣ㄦ垨鎿嶄綔閿欑幆澧?}
 	case intentAmbiguous:
-		return []string{"当前请求同时包含多种执行路径，直接执行容易跑偏"}
+		return []string{"褰撳墠璇锋眰鍚屾椂鍖呭惈澶氱鎵ц璺緞锛岀洿鎺ユ墽琛屽鏄撹窇鍋?}
 	default:
 		return nil
 	}
@@ -885,9 +886,9 @@ func confirmationRiskFlags(intent taskIntent) []string {
 func confirmationRevisionHints(intent taskIntent) []string {
 	switch intent {
 	case intentAmbiguous:
-		return []string{"补充这是改代码还是 SSH/服务器操作", "补充正确的项目目录或主机信息"}
+		return []string{"琛ュ厖杩欐槸鏀逛唬鐮佽繕鏄?SSH/鏈嶅姟鍣ㄦ搷浣?, "琛ュ厖姝ｇ‘鐨勯」鐩洰褰曟垨涓绘満淇℃伅"}
 	default:
-		return []string{"如果目录不对，请直接回复正确目录", "如果任务理解不对，请直接回复要修正的点"}
+		return []string{"濡傛灉鐩綍涓嶅锛岃鐩存帴鍥炲姝ｇ‘鐩綍", "濡傛灉浠诲姟鐞嗚В涓嶅锛岃鐩存帴鍥炲瑕佷慨姝ｇ殑鐐?}
 	}
 }
 
@@ -901,17 +902,17 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 	if projectPath != "" {
 		targetPaths = append(targetPaths, projectPath)
 	}
-	summary := fmt.Sprintf("我理解你想让我处理这项任务：%s", strings.TrimSpace(text))
+	summary := fmt.Sprintf("鎴戠悊瑙ｄ綘鎯宠鎴戝鐞嗚繖椤逛换鍔★細%s", strings.TrimSpace(text))
 	if projectPath != "" {
-		summary += fmt.Sprintf("\n默认工作目录：%s", projectPath)
+		summary += fmt.Sprintf("\n榛樿宸ヤ綔鐩綍锛?s", projectPath)
 	}
 	if label := strings.TrimSpace(confirmationTaskLabel(result.Intent)); label != "" {
-		summary += fmt.Sprintf("\n识别到的任务类型：%s", label)
+		summary += fmt.Sprintf("\n璇嗗埆鍒扮殑浠诲姟绫诲瀷锛?s", label)
 	}
 	if reason := strings.TrimSpace(result.Reason); reason != "" {
-		summary += fmt.Sprintf("（原因：%s）", reason)
-	} else if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "未命中特征词" {
-		summary += fmt.Sprintf("（依据：%s）", ev)
+		summary += fmt.Sprintf("锛堝師鍥狅細%s锛?, reason)
+	} else if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "鏈懡涓壒寰佽瘝" {
+		summary += fmt.Sprintf("锛堜緷鎹細%s锛?, ev)
 	}
 	return &pendingConfirmation{
 		ID:              fmt.Sprintf("confirm-%d", now.UnixNano()),
@@ -949,15 +950,15 @@ func buildConfirmationPayload(item *pendingConfirmation) *IMResponseConfirmation
 
 func buildConfirmationResponse(item *pendingConfirmation) *IMAgentResponse {
 	if item == nil {
-		return &IMAgentResponse{Text: "请确认后再继续。"}
+		return &IMAgentResponse{Text: "璇风‘璁ゅ悗鍐嶇户缁€?}
 	}
-	text := item.Summary + "\n\n请先确认我的理解是否正确。确认后我再开始执行；如果有偏差，直接回复要修改的目录、目标或前提。"
+	text := item.Summary + "\n\n璇峰厛纭鎴戠殑鐞嗚В鏄惁姝ｇ‘銆傜‘璁ゅ悗鎴戝啀寮€濮嬫墽琛岋紱濡傛灉鏈夊亸宸紝鐩存帴鍥炲瑕佷慨鏀圭殑鐩綍銆佺洰鏍囨垨鍓嶆彁銆?
 	return &IMAgentResponse{
 		Text:         text,
 		Confirmation: buildConfirmationPayload(item),
 		Actions: []IMResponseAction{
-			{Label: "确认并开始", Command: "确认，按这个开始", Style: "primary"},
-			{Label: "取消", Command: "取消这个任务", Style: "secondary"},
+			{Label: "纭骞跺紑濮?, Command: "纭锛屾寜杩欎釜寮€濮?, Style: "primary"},
+			{Label: "鍙栨秷", Command: "鍙栨秷杩欎釜浠诲姟", Style: "secondary"},
 		},
 	}
 }
@@ -971,8 +972,8 @@ func applyConfirmationRevision(item *pendingConfirmation, revision string) *pend
 		return item
 	}
 	clone := *item
-	clone.ResumeText = strings.TrimSpace(item.OriginalText + "\n\n用户补充/修正：" + revision)
-	clone.Summary = item.Summary + "\n用户补充/修正：" + revision
+	clone.ResumeText = strings.TrimSpace(item.OriginalText + "\n\n鐢ㄦ埛琛ュ厖/淇锛? + revision)
+	clone.Summary = item.Summary + "\n鐢ㄦ埛琛ュ厖/淇锛? + revision
 	clone.RevisionHints = append([]string(nil), item.RevisionHints...)
 	clone.UpdatedAt = time.Now()
 	return &clone
@@ -986,7 +987,7 @@ func confirmationApprovedText(item *pendingConfirmation) string {
 	if base == "" {
 		return ""
 	}
-	return strings.TrimSpace(base + "\n\n[执行上下文]\n用户已确认当前方案，请直接开始执行，不要再次请求确认。\n如果暂时还没有最终交付，请先说明正在执行的动作或下一步。")
+	return strings.TrimSpace(base + "\n\n[鎵ц涓婁笅鏂嘳\n鐢ㄦ埛宸茬‘璁ゅ綋鍓嶆柟妗堬紝璇风洿鎺ュ紑濮嬫墽琛岋紝涓嶈鍐嶆璇锋眰纭銆俓n濡傛灉鏆傛椂杩樻病鏈夋渶缁堜氦浠橈紝璇峰厛璇存槑姝ｅ湪鎵ц鐨勫姩浣滄垨涓嬩竴姝ャ€?)
 }
 
 func looksLikeNoToolStallReply(text string) bool {
@@ -996,7 +997,7 @@ func looksLikeNoToolStallReply(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	stallHints := []string{
-		"我先想想", "先想想", "再想想", "整理一下步骤", "整理步骤", "先整理", "先分析", "先看看", "先确认", "先梳理",
+		"鎴戝厛鎯虫兂", "鍏堟兂鎯?, "鍐嶆兂鎯?, "鏁寸悊涓€涓嬫楠?, "鏁寸悊姝ラ", "鍏堟暣鐞?, "鍏堝垎鏋?, "鍏堢湅鐪?, "鍏堢‘璁?, "鍏堟⒊鐞?,
 		"let me think", "i'll think", "think first", "organize the steps", "plan this out", "analyze first", "check first",
 	}
 	for _, hint := range stallHints {
@@ -1014,7 +1015,7 @@ func hasFutureDeliveryPromise(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	futureDeliveryHints := []string{
-		"马上发你", "稍后发送", "接下来发送", "继续发送", "继续发你", "继续生成", "继续整理",
+		"椹笂鍙戜綘", "绋嶅悗鍙戦€?, "鎺ヤ笅鏉ュ彂閫?, "缁х画鍙戦€?, "缁х画鍙戜綘", "缁х画鐢熸垚", "缁х画鏁寸悊",
 		"will send", "send it to you shortly", "send you shortly", "about to send", "going to send",
 	}
 	for _, hint := range futureDeliveryHints {
@@ -1032,8 +1033,8 @@ func looksLikeCompletedOrSummaryDeliverableReply(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	completedHints := []string{
-		"已完成", "已经完成", "完成了", "已整理", "已经整理", "整理好了", "已为你", "已经为你",
-		"结果如下", "总结如下", "以下是", "结论如下", "报告如下", "文档如下", "文字版如下", "这里是",
+		"宸插畬鎴?, "宸茬粡瀹屾垚", "瀹屾垚浜?, "宸叉暣鐞?, "宸茬粡鏁寸悊", "鏁寸悊濂戒簡", "宸蹭负浣?, "宸茬粡涓轰綘",
+		"缁撴灉濡備笅", "鎬荤粨濡備笅", "浠ヤ笅鏄?, "缁撹濡備笅", "鎶ュ憡濡備笅", "鏂囨。濡備笅", "鏂囧瓧鐗堝涓?, "杩欓噷鏄?,
 		"completed", "done", "here is", "here's", "results below", "summary below", "below is",
 	}
 	hasCompletedHint := false
@@ -1060,11 +1061,11 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	lower := strings.ToLower(trimmed)
 
 	// Negative patterns: self-introduction / capability-listing context.
-	// When the model describes what it *can* do (e.g. "帮你写文档、做整理"),
+	// When the model describes what it *can* do (e.g. "甯綘鍐欐枃妗ｃ€佸仛鏁寸悊"),
 	// the deliverable keywords appear in a descriptive context, not as an
 	// actual promise to deliver a specific file. Skip these.
 	selfIntroHints := []string{
-		"我叫", "你好，我是", "我的名字", "平时我会", "我可以帮你", "我能帮你",
+		"鎴戝彨", "浣犲ソ锛屾垜鏄?, "鎴戠殑鍚嶅瓧", "骞虫椂鎴戜細", "鎴戝彲浠ュ府浣?, "鎴戣兘甯綘",
 		"i'm ", "my name is", "i can help you", "nice to meet",
 	}
 	for _, hint := range selfIntroHints {
@@ -1072,14 +1073,14 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 			return false
 		}
 	}
-	// "我是" is very common in Chinese; only treat it as self-intro when it
+	// "鎴戞槸" is very common in Chinese; only treat it as self-intro when it
 	// appears at the very beginning of the response (first 10 chars).
-	if len([]rune(lower)) >= 2 && strings.HasPrefix(lower, "我是") {
+	if len([]rune(lower)) >= 2 && strings.HasPrefix(lower, "鎴戞槸") {
 		return false
 	}
 
 	deliverableHints := []string{
-		"pdf", "生成pdf", "生成 pdf", "报告", "文档", "文件", "综述", "发送给你", "发你",
+		"pdf", "鐢熸垚pdf", "鐢熸垚 pdf", "鎶ュ憡", "鏂囨。", "鏂囦欢", "缁艰堪", "鍙戦€佺粰浣?, "鍙戜綘",
 		"report", "document", "file", "send you", "deliver", "summary",
 	}
 	hasDeliverableIntent := false
@@ -1090,7 +1091,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 		}
 	}
 	if !hasDeliverableIntent {
-		if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+		if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "锛?) {
 			hasDeliverableIntent = true
 		}
 	}
@@ -1098,7 +1099,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 		return false
 	}
 	promiseHints := []string{
-		"我来", "我会", "马上", "立刻", "直接", "继续", "执行", "生成", "发送", "整理", "添加", "补充", "写",
+		"鎴戞潵", "鎴戜細", "椹笂", "绔嬪埢", "鐩存帴", "缁х画", "鎵ц", "鐢熸垚", "鍙戦€?, "鏁寸悊", "娣诲姞", "琛ュ厖", "鍐?,
 		"i will", "i'll", "let me", "going to", "about to", "right away", "prepare", "generate", "send", "continue", "append",
 	}
 	hasPromiseHint := false
@@ -1114,7 +1115,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	if looksLikeCompletedOrSummaryDeliverableReply(trimmed) {
 		return false
 	}
-	failureHints := []string{"失败", "无法", "出错", "报错", "error", "failed", "unable", "cannot"}
+	failureHints := []string{"澶辫触", "鏃犳硶", "鍑洪敊", "鎶ラ敊", "error", "failed", "unable", "cannot"}
 	for _, hint := range failureHints {
 		if strings.Contains(lower, hint) {
 			return false
@@ -1122,8 +1123,8 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	}
 	futureDeliveryPromise := hasFutureDeliveryPromise(trimmed)
 	completionHints := []string{
-		"已生成", "已保存", "文件已保存", "将发送给用户", "已准备好，将发送给用户", "失败原因", "无法生成", "localfile", "[file_base64|",
-		"已完成", "已经完成", "结果如下", "总结如下", "以下是", "here is", "here's", "results below", "summary below",
+		"宸茬敓鎴?, "宸蹭繚瀛?, "鏂囦欢宸蹭繚瀛?, "灏嗗彂閫佺粰鐢ㄦ埛", "宸插噯澶囧ソ锛屽皢鍙戦€佺粰鐢ㄦ埛", "澶辫触鍘熷洜", "鏃犳硶鐢熸垚", "localfile", "[file_base64|",
+		"宸插畬鎴?, "宸茬粡瀹屾垚", "缁撴灉濡備笅", "鎬荤粨濡備笅", "浠ヤ笅鏄?, "here is", "here's", "results below", "summary below",
 	}
 	for _, hint := range completionHints {
 		if strings.Contains(lower, hint) {
@@ -1133,7 +1134,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 			return false
 		}
 	}
-	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "锛?) {
 		return true
 	}
 	return true
@@ -1152,7 +1153,7 @@ func shouldRecoverForPendingSkillRunNoToolReply(text string, runID string) bool 
 		return false
 	}
 	lower := strings.ToLower(trimmed)
-	failureHints := []string{"失败", "无法", "出错", "报错", "error", "failed", "unable", "cannot"}
+	failureHints := []string{"澶辫触", "鏃犳硶", "鍑洪敊", "鎶ラ敊", "error", "failed", "unable", "cannot"}
 	for _, hint := range failureHints {
 		if strings.Contains(lower, hint) {
 			return false
@@ -1162,7 +1163,7 @@ func shouldRecoverForPendingSkillRunNoToolReply(text string, runID string) bool 
 		return true
 	}
 	pendingRunContinuationHints := []string{
-		"继续添加", "继续补充", "继续整理", "继续写", "继续生成",
+		"缁х画娣诲姞", "缁х画琛ュ厖", "缁х画鏁寸悊", "缁х画鍐?, "缁х画鐢熸垚",
 		"append more", "continue writing", "continue generating",
 	}
 	for _, hint := range pendingRunContinuationHints {
@@ -1170,7 +1171,7 @@ func shouldRecoverForPendingSkillRunNoToolReply(text string, runID string) bool 
 			return true
 		}
 	}
-	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "锛?) {
 		return true
 	}
 	return false
@@ -1182,7 +1183,7 @@ func looksLikePromiseOnlyPDFReply(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
-	hasPDFIntent := strings.Contains(lower, "pdf") || strings.Contains(lower, "生成pdf") || strings.Contains(lower, "生成 pdf")
+	hasPDFIntent := strings.Contains(lower, "pdf") || strings.Contains(lower, "鐢熸垚pdf") || strings.Contains(lower, "鐢熸垚 pdf")
 	if !hasPDFIntent {
 		return false
 	}
@@ -1253,12 +1254,12 @@ func isVisibleEmptyResultSummary(summary string) bool {
 		return false
 	}
 	lower := strings.ToLower(summary)
-	normalizedEcho := normalizeShortChitChatToken(regexp.MustCompile(`^(summary|result|trace summary|结果|摘要)\s*[:：-]?\s*`).ReplaceAllString(lower, ""))
+	normalizedEcho := normalizeShortChitChatToken(regexp.MustCompile(`^(summary|result|trace summary|缁撴灉|鎽樿)\s*[:锛?]?\s*`).ReplaceAllString(lower, ""))
 	if normalizedEcho != "" {
 		return false
 	}
 	promptLikeMarkers := []string{
-		"当前工作目录",
+		"褰撳墠宸ヤ綔鐩綍",
 		"primary working directory",
 		"current working directory",
 		"project directory",
@@ -1268,12 +1269,12 @@ func isVisibleEmptyResultSummary(summary string) bool {
 		"user:",
 		"assistant:",
 		"task:",
-		"任务：",
-		"请帮我",
-		"帮我",
-		"请实现",
-		"请修复",
-		"请重建",
+		"浠诲姟锛?,
+		"璇峰府鎴?,
+		"甯垜",
+		"璇峰疄鐜?,
+		"璇蜂慨澶?,
+		"璇烽噸寤?,
 		"you are",
 	}
 	for _, marker := range promptLikeMarkers {
@@ -1303,24 +1304,24 @@ func isVisibleEmptyResultSummary(summary string) bool {
 		"delivered",
 		"found",
 		"produced",
-		"执行",
-		"失败",
-		"错误",
-		"超时",
-		"取消",
-		"停止",
-		"重试",
-		"恢复",
-		"生成",
-		"创建",
-		"保存",
-		"写入",
-		"导出",
-		"上传",
-		"下载",
-		"准备",
-		"找到",
-		"文件",
+		"鎵ц",
+		"澶辫触",
+		"閿欒",
+		"瓒呮椂",
+		"鍙栨秷",
+		"鍋滄",
+		"閲嶈瘯",
+		"鎭㈠",
+		"鐢熸垚",
+		"鍒涘缓",
+		"淇濆瓨",
+		"鍐欏叆",
+		"瀵煎嚭",
+		"涓婁紶",
+		"涓嬭浇",
+		"鍑嗗",
+		"鎵惧埌",
+		"鏂囦欢",
 	}
 	for _, signal := range executionSignals {
 		if strings.Contains(lower, signal) {
@@ -1335,19 +1336,19 @@ func buildEmptyResultFallback(status TraceRunStatus, traceSummary string) string
 	switch status {
 	case TraceRunStatusFailed, TraceRunStatusTimeout, TraceRunStatusCancelled, TraceRunStatusStopped:
 		if summary != "" {
-			return fmt.Sprintf("任务未完成可交付结果。%s", summary)
+			return fmt.Sprintf("浠诲姟鏈畬鎴愬彲浜や粯缁撴灉銆?s", summary)
 		}
-		return "任务未完成可交付结果。可查看 Trace 了解失败位置。"
+		return "浠诲姟鏈畬鎴愬彲浜や粯缁撴灉銆傚彲鏌ョ湅 Trace 浜嗚В澶辫触浣嶇疆銆?
 	case TraceRunStatusCompleted, TraceRunStatusExited:
 		if summary != "" {
-			return fmt.Sprintf("任务已结束，但没有生成可展示的结果。%s", summary)
+			return fmt.Sprintf("浠诲姟宸茬粨鏉燂紝浣嗘病鏈夌敓鎴愬彲灞曠ず鐨勭粨鏋溿€?s", summary)
 		}
-		return "任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。"
+		return "浠诲姟宸茬粨鏉燂紝浣嗘病鏈夌敓鎴愬彲灞曠ず鐨勭粨鏋溿€傚彲鏌ョ湅 Trace 浜嗚В璇︽儏銆?
 	default:
 		if summary != "" {
-			return fmt.Sprintf("任务已停止，但没有返回可显示的结果。%s", summary)
+			return fmt.Sprintf("浠诲姟宸插仠姝紝浣嗘病鏈夎繑鍥炲彲鏄剧ず鐨勭粨鏋溿€?s", summary)
 		}
-		return "任务已停止，但没有返回可显示的结果。可查看 Trace 了解详情。"
+		return "浠诲姟宸插仠姝紝浣嗘病鏈夎繑鍥炲彲鏄剧ず鐨勭粨鏋溿€傚彲鏌ョ湅 Trace 浜嗚В璇︽儏銆?
 	}
 }
 
@@ -1356,19 +1357,19 @@ func buildConfirmedResumeEmptyResultFallback(status TraceRunStatus, traceSummary
 	switch status {
 	case TraceRunStatusFailed, TraceRunStatusTimeout, TraceRunStatusCancelled, TraceRunStatusStopped:
 		if summary != "" {
-			return fmt.Sprintf("任务已确认并开始执行，但未完成可交付结果。%s", summary)
+			return fmt.Sprintf("浠诲姟宸茬‘璁ゅ苟寮€濮嬫墽琛岋紝浣嗘湭瀹屾垚鍙氦浠樼粨鏋溿€?s", summary)
 		}
-		return "任务已确认并开始执行，但未完成可交付结果。可查看 Trace 了解失败位置。"
+		return "浠诲姟宸茬‘璁ゅ苟寮€濮嬫墽琛岋紝浣嗘湭瀹屾垚鍙氦浠樼粨鏋溿€傚彲鏌ョ湅 Trace 浜嗚В澶辫触浣嶇疆銆?
 	case TraceRunStatusCompleted, TraceRunStatusExited:
 		if summary != "" {
-			return fmt.Sprintf("已确认并开始执行任务。当前暂无可展示结果。%s", summary)
+			return fmt.Sprintf("宸茬‘璁ゅ苟寮€濮嬫墽琛屼换鍔°€傚綋鍓嶆殏鏃犲彲灞曠ず缁撴灉銆?s", summary)
 		}
-		return "已确认并开始执行任务。当前暂无可展示结果，可查看 Trace 了解进展。"
+		return "宸茬‘璁ゅ苟寮€濮嬫墽琛屼换鍔°€傚綋鍓嶆殏鏃犲彲灞曠ず缁撴灉锛屽彲鏌ョ湅 Trace 浜嗚В杩涘睍銆?
 	default:
 		if summary != "" {
-			return fmt.Sprintf("任务已确认并开始执行，但暂未返回可显示结果。%s", summary)
+			return fmt.Sprintf("浠诲姟宸茬‘璁ゅ苟寮€濮嬫墽琛岋紝浣嗘殏鏈繑鍥炲彲鏄剧ず缁撴灉銆?s", summary)
 		}
-		return "任务已确认并开始执行，但暂未返回可显示结果。可查看 Trace 了解进展。"
+		return "浠诲姟宸茬‘璁ゅ苟寮€濮嬫墽琛岋紝浣嗘殏鏈繑鍥炲彲鏄剧ず缁撴灉銆傚彲鏌ョ湅 Trace 浜嗚В杩涘睍銆?
 	}
 }
 
@@ -1425,8 +1426,8 @@ func buildRecoverableSessionActions(sessionID string) []IMResponseAction {
 		return nil
 	}
 	return []IMResponseAction{
-		{Label: "恢复会话", Command: "__resume_session__ " + sessionID, Style: "default"},
-		{Label: "忽略此会话", Command: "__dismiss_recoverable_session__ " + sessionID, Style: "danger"},
+		{Label: "鎭㈠浼氳瘽", Command: "__resume_session__ " + sessionID, Style: "default"},
+		{Label: "蹇界暐姝や細璇?, Command: "__dismiss_recoverable_session__ " + sessionID, Style: "danger"},
 	}
 }
 
@@ -1527,7 +1528,7 @@ func mergeIMResponseFields(base []IMResponseField, extra []IMResponseField) []IM
 const toolsCacheTTL = 5 * time.Second
 
 // ProgressCallback is called by the agent loop to send intermediate progress
-// ProgressCallback — see corelib_aliases.go
+// ProgressCallback 鈥?see corelib_aliases.go
 
 // IMMessageHandler processes IM messages using the local LLM Agent.
 // It accesses mcpRegistry and skillExecutor via h.app at call time
@@ -1580,7 +1581,7 @@ type IMMessageHandler struct {
 	// Configuration manager (lazily initialized via setter).
 	configManager *ConfigManager
 
-	// Dynamic loop limit — set by the "set_max_iterations" tool during an
+	// Dynamic loop limit 鈥?set by the "set_max_iterations" tool during an
 	// active agent loop. Reset to 0 at the start of each runAgentLoop call.
 	// A positive value overrides the configured maxIter for the current loop.
 	// NOTE: This field is kept as a legacy bridge alongside currentLoopCtx.
@@ -1667,7 +1668,7 @@ type IMMessageHandler struct {
 func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
 	llmCfg := app.GetMaclawLLMConfig()
 	responseHeaderTimeout := time.Duration(llmCfg.EffectiveTimeoutSec()) * time.Second
-	// Optimised transport for interactive chat — larger connection pool
+	// Optimised transport for interactive chat 鈥?larger connection pool
 	// so concurrent requests don't queue behind each other.
 	chatTransport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -1681,8 +1682,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		MaxIdleConnsPerHost:   20,
 		MaxConnsPerHost:       20,
 		IdleConnTimeout:       90 * time.Second,
-		DisableCompression:    true, // 禁止自动 gzip，避免 SSE 流式被压缩缓冲
-	}
+		DisableCompression:    true, // 绂佹鑷姩 gzip锛岄伩鍏?SSE 娴佸紡琚帇缂╃紦鍐?	}
 	// Separate transport for background tasks (scheduled tasks, auto-picked
 	// AgentNet tasks) so they never starve the chat connection pool.
 	taskTransport := &http.Transport{
@@ -1878,7 +1878,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 	var tools []map[string]interface{}
 
 	// --- Phase 1 upgrade: prefer DynamicToolBuilder from ToolRegistry ---
-	// Note: We use BuildAll() here intentionally — context-aware filtering
+	// Note: We use BuildAll() here intentionally 鈥?context-aware filtering
 	// is handled downstream by routeTools() / ToolRouter which uses TF-IDF.
 	// DynamicToolBuilder.Build(msg) is an alternative path for simpler setups
 	// without ToolRouter.
@@ -1910,7 +1910,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 		cacheTime := h.toolsCacheTime
 		h.toolsMu.RUnlock()
 
-		// Fallback: no generator configured — use hardcoded definitions.
+		// Fallback: no generator configured 鈥?use hardcoded definitions.
 		if gen == nil {
 			tools = h.buildToolDefinitions()
 		} else if cached != nil && time.Since(cacheTime) < toolsCacheTTL {
@@ -1965,14 +1965,14 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 	if hasApp && !hasSearchTool {
 		h.registry.Register(RegisteredTool{
 			Name: "search_and_install_skill",
-			Description: "在 SkillMarket 技能市场中搜索并安装技能。当你发现现有工具无法满足用户需求时，" +
-				"主动调用此工具搜索可用的 Skill，找到后自动安装并执行。" +
+			Description: "鍦?SkillMarket 鎶€鑳藉競鍦轰腑鎼滅储骞跺畨瑁呮妧鑳姐€傚綋浣犲彂鐜扮幇鏈夊伐鍏锋棤娉曟弧瓒崇敤鎴烽渶姹傛椂锛? +
+				"涓诲姩璋冪敤姝ゅ伐鍏锋悳绱㈠彲鐢ㄧ殑 Skill锛屾壘鍒板悗鑷姩瀹夎骞舵墽琛屻€? +
 				"Search and install a skill from SkillMarket when existing tools cannot fulfill the request.",
 			Category: ToolCategoryBuiltin,
 			Tags:     []string{"skill", "skillmarket", "install", "search", "capability"},
 			Status:   RegToolAvailable,
 			InputSchema: map[string]interface{}{
-				"query": map[string]string{"type": "string", "description": "搜索关键词，描述你需要的能力（如 '生成PDF'、'发送邮件'、'图片处理'）"},
+				"query": map[string]string{"type": "string", "description": "鎼滅储鍏抽敭璇嶏紝鎻忚堪浣犻渶瑕佺殑鑳藉姏锛堝 '鐢熸垚PDF'銆?鍙戦€侀偖浠?銆?鍥剧墖澶勭悊'锛?},
 			},
 			Required: []string{"query"},
 			HandlerProg: func(args map[string]interface{}, onProgress ProgressCallback) string {
@@ -1985,12 +1985,12 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 }
 
 // toolSearchAndInstallSkill handles the search_and_install_skill tool call.
-// Search order: SkillMarket (HubCenter) → ClawHub mirror → GitHub.
+// Search order: SkillMarket (HubCenter) 鈫?ClawHub mirror 鈫?GitHub.
 // If a match is found, it downloads and registers the skill locally.
 func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}, onProgress ProgressCallback) string {
 	query, _ := args["query"].(string)
 	if query == "" {
-		return "错误: 缺少 query 参数"
+		return "閿欒: 缂哄皯 query 鍙傛暟"
 	}
 
 	sendStatus := func(msg string) {
@@ -2004,16 +2004,16 @@ func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}
 	smClient := NewSkillMarketClient(h.app)
 	searcher := NewSkillSearcher(smClient)
 
-	sendStatus("🔍 正在搜索 SkillMarket...")
+	sendStatus("馃攳 姝ｅ湪鎼滅储 SkillMarket...")
 	best, err := searcher.SearchAndInstall(ctx, query)
 	if err != nil {
-		return fmt.Sprintf("搜索 SkillMarket 失败: %v", err)
+		return fmt.Sprintf("鎼滅储 SkillMarket 澶辫触: %v", err)
 	}
 	if best == nil {
-		return fmt.Sprintf("在 SkillMarket、ClawHub 和 GitHub 上均未找到与 %q 匹配的 Skill", query)
+		return fmt.Sprintf("鍦?SkillMarket銆丆lawHub 鍜?GitHub 涓婂潎鏈壘鍒颁笌 %q 鍖归厤鐨?Skill", query)
 	}
 
-	sendStatus(fmt.Sprintf("📦 找到 Skill: %s — %s (来源: %s)", best.Name, best.Description, best.Status))
+	sendStatus(fmt.Sprintf("馃摝 鎵惧埌 Skill: %s 鈥?%s (鏉ユ簮: %s)", best.Name, best.Description, best.Status))
 
 	return h.installAndExecuteSkill(ctx, best, query, sendStatus)
 }
@@ -2022,7 +2022,7 @@ func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}
 // and execution of a found skill. Shared by both active (tool call) and
 // passive (capability gap) paths.
 func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *SkillSearchResult, query string, sendStatus func(string)) string {
-	// GitHub result → import via a stable install ref when available.
+	// GitHub result 鈫?import via a stable install ref when available.
 	if best.Status == "github" {
 		var imported *NLSkillEntry
 		if strings.TrimSpace(best.InstallRef) != "" {
@@ -2035,39 +2035,39 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 			gs := cskill.NewGitHubSearcher("")
 			candidates, err := gs.SearchGitHub(best.ID)
 			if err != nil || len(candidates) == 0 {
-				return fmt.Sprintf("找到 GitHub Skill「%s」但导入失败", best.Name)
+				return fmt.Sprintf("鎵惧埌 GitHub Skill銆?s銆嶄絾瀵煎叆澶辫触", best.Name)
 			}
 			imported, err = gs.ImportFromCandidate(candidates[0])
 			if err != nil {
-				return fmt.Sprintf("GitHub Skill 导入失败: %v", err)
+				return fmt.Sprintf("GitHub Skill 瀵煎叆澶辫触: %v", err)
 			}
 		}
 		return h.registerAndExecuteSkill(ctx, imported, best.Name, "github", sendStatus)
 	}
 
-	// SkillMarket or ClawHub result → download and register locally.
-	sendStatus(fmt.Sprintf("⬇️ 正在安装: %s ...", best.Name))
+	// SkillMarket or ClawHub result 鈫?download and register locally.
+	sendStatus(fmt.Sprintf("猬囷笍 姝ｅ湪瀹夎: %s ...", best.Name))
 
 	if best.Status == "clawhub" {
 		// ClawHub skills are SKILL.md-based knowledge guides, not step-based
 		// automation. Download the SKILL.md content and register as a local skill.
 		skill, dlErr := downloadClawHubSkill(ctx, best.ID)
 		if dlErr != nil {
-			return fmt.Sprintf("🔎 找到 ClawHub Skill「%s」但下载失败: %v", best.Name, dlErr)
+			return fmt.Sprintf("馃攷 鎵惧埌 ClawHub Skill銆?s銆嶄絾涓嬭浇澶辫触: %v", best.Name, dlErr)
 		}
 		return h.registerAndExecuteSkill(ctx, skill, best.Name, "clawhub", sendStatus)
 	}
 
-	// SkillMarket result → download via HubCenter API.
+	// SkillMarket result 鈫?download via HubCenter API.
 	smClient := NewSkillMarketClient(h.app)
 	base := smClient.baseURL()
 	if base == "" {
-		return fmt.Sprintf("🔎 找到 Skill「%s」但 HubCenter URL 未配置，无法下载", best.Name)
+		return fmt.Sprintf("馃攷 鎵惧埌 Skill銆?s銆嶄絾 HubCenter URL 鏈厤缃紝鏃犳硶涓嬭浇", best.Name)
 	}
 	downloadURL := base + "/api/v1/skills/" + url.PathEscape(best.ID) + "/download"
 	skill, dlErr := downloadSkillJSON(ctx, downloadURL)
 	if dlErr != nil {
-		return fmt.Sprintf("🔎 找到 Skill「%s」: %s\n下载失败: %v\n请在设置面板的 Hub 市场中手动安装。",
+		return fmt.Sprintf("馃攷 鎵惧埌 Skill銆?s銆? %s\n涓嬭浇澶辫触: %v\n璇峰湪璁剧疆闈㈡澘鐨?Hub 甯傚満涓墜鍔ㄥ畨瑁呫€?,
 			best.Name, best.Description, dlErr)
 	}
 	return h.registerAndExecuteSkill(ctx, skill, best.Name, best.Status, sendStatus)
@@ -2173,7 +2173,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*NLSkillEntry, err
 		TrustLevel  string            `json:"trust_level"`
 		Version     string            `json:"version"`
 		Steps       []json.RawMessage `json:"steps"`
-		Files       map[string]string `json:"files"` // path → base64 content
+		Files       map[string]string `json:"files"` // path 鈫?base64 content
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 5<<20)).Decode(&full); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -2246,7 +2246,7 @@ func extractSkillFiles(skillName string, files map[string]string) {
 			continue
 		}
 
-		// Sanitize path — prevent directory traversal.
+		// Sanitize path 鈥?prevent directory traversal.
 		clean := filepath.ToSlash(filepath.Clean(relPath))
 		if strings.Contains(clean, "..") || filepath.IsAbs(relPath) || strings.HasPrefix(clean, "/") {
 			log.Printf("[skill-install] skipping unsafe path: %s", relPath)
@@ -2271,12 +2271,12 @@ func extractSkillFiles(skillName string, files map[string]string) {
 // executes it, and returns the result string.
 func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *NLSkillEntry, displayName, source string, sendStatus func(string)) string {
 	if h.app.skillExecutor == nil {
-		return fmt.Sprintf("找到 Skill「%s」但 SkillExecutor 未初始化", displayName)
+		return fmt.Sprintf("鎵惧埌 Skill銆?s銆嶄絾 SkillExecutor 鏈垵濮嬪寲", displayName)
 	}
 
 	// Security review via RiskAssessor if available.
 	if h.app.riskAssessor != nil {
-		sendStatus("🔒 正在进行安全审查...")
+		sendStatus("馃敀 姝ｅ湪杩涜瀹夊叏瀹℃煡...")
 		assessment := h.app.riskAssessor.AssessSkill(skill, skill.TrustLevel)
 		if assessment.Level == RiskCritical {
 			h.app.ensureAuditLog()
@@ -2290,13 +2290,13 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 					Result:       fmt.Sprintf("rejected skill %s: critical risk", displayName),
 				})
 			}
-			return fmt.Sprintf("⚠️ Skill「%s」包含高风险操作，已拒绝自动安装", displayName)
+			return fmt.Sprintf("鈿狅笍 Skill銆?s銆嶅寘鍚珮椋庨櫓鎿嶄綔锛屽凡鎷掔粷鑷姩瀹夎", displayName)
 		}
 	}
 
-	sendStatus(fmt.Sprintf("📝 正在注册 Skill: %s ...", skill.Name))
+	sendStatus(fmt.Sprintf("馃摑 姝ｅ湪娉ㄥ唽 Skill: %s ...", skill.Name))
 	if err := h.app.skillExecutor.Register(*skill); err != nil {
-		return fmt.Sprintf("注册 Skill「%s」失败: %v", displayName, err)
+		return fmt.Sprintf("娉ㄥ唽 Skill銆?s銆嶅け璐? %v", displayName, err)
 	}
 
 	// Audit log.
@@ -2312,13 +2312,13 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *N
 		})
 	}
 
-	sendStatus(fmt.Sprintf("▶️ 正在执行 Skill: %s ...", skill.Name))
+	sendStatus(fmt.Sprintf("鈻讹笍 姝ｅ湪鎵ц Skill: %s ...", skill.Name))
 	execResult, execErr := h.app.skillExecutor.Execute(skill.Name)
 	if execErr != nil {
 		log.Printf("[skill-auto] execute skill %s failed: %v", skill.Name, execErr)
-		return fmt.Sprintf("⚠️ Skill「%s」已安装，但执行失败: %v", skill.Name, execErr)
+		return fmt.Sprintf("鈿狅笍 Skill銆?s銆嶅凡瀹夎锛屼絾鎵ц澶辫触: %v", skill.Name, execErr)
 	}
-	return fmt.Sprintf("✅ 已自动安装并执行 Skill「%s」\n%s", skill.Name, execResult)
+	return fmt.Sprintf("鉁?宸茶嚜鍔ㄥ畨瑁呭苟鎵ц Skill銆?s銆峔n%s", skill.Name, execResult)
 }
 
 // syncAgentNetTools dynamically registers or unregisters AgentNet tools
@@ -2333,12 +2333,12 @@ func (h *IMMessageHandler) syncAgentNetTools() {
 	if running && !hasSearch {
 		h.registry.Register(RegisteredTool{
 			Name:        "agentnet_search",
-			Description: "在智网（AgentNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
+			Description: "鍦ㄦ櫤缃戯紙AgentNet P2P 鐭ヨ瘑缃戠粶锛変腑鎼滅储鐭ヨ瘑鏉＄洰銆傝繑鍥炲尮閰嶇殑鐭ヨ瘑鍒楄〃锛屽寘鍚爣棰樸€佸唴瀹广€佷綔鑰呯瓑銆?,
 			Category:    ToolCategoryBuiltin,
 			Tags:        []string{"agentnet", "search", "knowledge", "p2p"},
 			Status:      RegToolAvailable,
 			InputSchema: map[string]interface{}{
-				"query": map[string]string{"type": "string", "description": "搜索关键词"},
+				"query": map[string]string{"type": "string", "description": "鎼滅储鍏抽敭璇?},
 			},
 			Required: []string{"query"},
 			Source:   "agentnet",
@@ -2346,13 +2346,13 @@ func (h *IMMessageHandler) syncAgentNetTools() {
 		})
 		h.registry.Register(RegisteredTool{
 			Name:        "agentnet_publish",
-			Description: "向智网（AgentNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
+			Description: "鍚戞櫤缃戯紙AgentNet P2P 鐭ヨ瘑缃戠粶锛夊彂甯冧竴鏉＄煡璇嗘潯鐩€傚彂甯冨悗鍏朵粬鑺傜偣鍙互鎼滅储鍒般€?,
 			Category:    ToolCategoryBuiltin,
 			Tags:        []string{"agentnet", "publish", "knowledge", "p2p"},
 			Status:      RegToolAvailable,
 			InputSchema: map[string]interface{}{
-				"title": map[string]string{"type": "string", "description": "知识标题"},
-				"body":  map[string]string{"type": "string", "description": "知识内容（Markdown 格式）"},
+				"title": map[string]string{"type": "string", "description": "鐭ヨ瘑鏍囬"},
+				"body":  map[string]string{"type": "string", "description": "鐭ヨ瘑鍐呭锛圡arkdown 鏍煎紡锛?},
 			},
 			Required: []string{"title", "body"},
 			Source:   "agentnet",
@@ -2474,7 +2474,7 @@ func extractBrowserRootCause(text string) string {
 		return ""
 	}
 	lower := strings.ToLower(text)
-	if !strings.Contains(lower, "浏览器") && !strings.Contains(lower, "cdp") && !strings.Contains(lower, "debug") {
+	if !strings.Contains(lower, "娴忚鍣?) && !strings.Contains(lower, "cdp") && !strings.Contains(lower, "debug") {
 		return ""
 	}
 	lines := strings.Split(text, "\n")
@@ -2569,7 +2569,7 @@ func (h *IMMessageHandler) buildTraceEvidencePrompt(userID, userMessage string) 
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n## 最近执行证据\n")
+	b.WriteString("\n## 鏈€杩戞墽琛岃瘉鎹甛n")
 	for _, item := range evidence {
 		line := ""
 		if item.SourceKind == "trial_reflect_summary" {
@@ -2603,11 +2603,11 @@ func (h *IMMessageHandler) buildResumeTraceContext(userID, fallbackTask string) 
 func traceCategoryForToolResult(toolName, result string) string {
 	lower := strings.ToLower(result)
 	switch {
-	case strings.Contains(lower, "失败") || strings.Contains(lower, "error") || strings.Contains(lower, "failed"):
+	case strings.Contains(lower, "澶辫触") || strings.Contains(lower, "error") || strings.Contains(lower, "failed"):
 		return "error"
 	case toolName == "create_session":
 		return "result"
-	case strings.Contains(lower, "文件") || strings.Contains(lower, "saved"):
+	case strings.Contains(lower, "鏂囦欢") || strings.Contains(lower, "saved"):
 		return "file"
 	default:
 		return "event"
@@ -2642,8 +2642,8 @@ func (h *IMMessageHandler) HandleIMMessage(msg IMUserMessage) *IMAgentResponse {
 
 // HandleIMMessageWithProgress processes an IM message with an optional progress
 // callback. When onProgress is non-nil, the agent loop sends intermediate status
-// updates (e.g. "正在执行 bash 命令…") so the Hub can relay them to the user
-// and reset the response timeout — preventing 504 on long-running tasks.
+// updates (e.g. "姝ｅ湪鎵ц bash 鍛戒护鈥?) so the Hub can relay them to the user
+// and reset the response timeout 鈥?preventing 504 on long-running tasks.
 func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProgress ProgressCallback) *IMAgentResponse {
 	return h.HandleIMMessageWithProgressAndStream(msg, onProgress, nil, nil, nil)
 }
@@ -2672,7 +2672,7 @@ func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) 
 		loopCtx.JobID = job.JobID
 		loopCtx.RunID = run.RunID
 		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
-		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 后台任务已接收", truncateTraceText(trimmedText, 180), "", "")
+		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 鍚庡彴浠诲姟宸叉帴鏀?, truncateTraceText(trimmedText, 180), "", "")
 	}
 	title := truncateRunes(trimmedText, 72)
 	session := h.manager.CreateAIBackgroundSession(title, projectPath, loopCtx)
@@ -2741,7 +2741,7 @@ func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *L
 			s.Summary.Status = string(SessionExited)
 			s.Summary.Severity = "warn"
 			s.Summary.LastResult = "Canceled"
-			s.Summary.ProgressSummary = "任务已取消"
+			s.Summary.ProgressSummary = "浠诲姟宸插彇娑?
 		})
 		h.manager.AddBackgroundAIEvent(sessionID, ImportantEvent{
 			Type:     "ai.background.canceled",
@@ -2760,7 +2760,7 @@ func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *L
 		s.Summary.Status = string(SessionExited)
 		s.Summary.Severity = "info"
 		s.Summary.WaitingForUser = false
-		s.Summary.ProgressSummary = firstNonEmptyTraceText(resultText, "任务已完成")
+		s.Summary.ProgressSummary = firstNonEmptyTraceText(resultText, "浠诲姟宸插畬鎴?)
 		s.Summary.LastResult = resultText
 	})
 	if resultText != "" {
@@ -2785,7 +2785,7 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) *IMAgentResponse {
 	trimmed := strings.TrimSpace(msg.Text)
 
-	// Slash commands are processed before the LLM config check — they don't
+	// Slash commands are processed before the LLM config check 鈥?they don't
 	// need LLM and must always work so users can manage state even when LLM
 	// is misconfigured.
 	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
@@ -2795,14 +2795,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 		// Clean up workflow and understanding state.
 		h.cancelWorkflowForUser(msg.UserID)
-		resp := &IMAgentResponse{Text: "对话已重置。"}
+		resp := &IMAgentResponse{ResponseSource: "conversation_reset", Text: "瀵硅瘽宸查噸缃€?}
 		if h.currentLoopCtx != nil {
 			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, "")
 		}
 		return resp
 	}
 	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) {
-		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang)}
+		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang), ResponseSource: "short_chat"}
 	}
 	if trimmed == "/exit" || trimmed == "/quit" {
 		return h.handleExitCommand(msg.UserID)
@@ -2811,35 +2811,35 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return h.handleSessionsCommand()
 	}
 	if trimmed == "/help" {
-		return &IMAgentResponse{Text: "📖 可用命令:\n" +
-			"/new /reset — 重置对话\n" +
-			"/cancel /取消 — 取消当前正在执行的任务\n" +
-			"/exit /quit — 终止所有会话，退出编程模式\n" +
-			"/sessions — 查看当前会话状态\n" +
-			"/help — 显示此帮助"}
+		return &IMAgentResponse{Text: "馃摉 鍙敤鍛戒护:\n" +
+			"/new /reset 鈥?閲嶇疆瀵硅瘽\n" +
+			"/cancel /鍙栨秷 鈥?鍙栨秷褰撳墠姝ｅ湪鎵ц鐨勪换鍔n" +
+			"/exit /quit 鈥?缁堟鎵€鏈変細璇濓紝閫€鍑虹紪绋嬫ā寮廫n" +
+			"/sessions 鈥?鏌ョ湅褰撳墠浼氳瘽鐘舵€乗n" +
+			"/help 鈥?鏄剧ず姝ゅ府鍔?}
 	}
-	if trimmed == "/cancel" || trimmed == "/取消" {
+	if trimmed == "/cancel" || trimmed == "/鍙栨秷" {
 		// Cancel active workflow if any.
 		h.cancelWorkflowForUser(msg.UserID)
 		if h.confirmationStore != nil {
 			if pending := h.confirmationStore.get(msg.UserID); pending != nil {
 				h.confirmationStore.clear(msg.UserID)
-				return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
+				return &IMAgentResponse{ResponseSource: "cancel", Text: "鈴癸笍 宸插彇娑堝緟纭浠诲姟銆?}
 			}
 		}
 		ctx := h.currentLoopCtx
 		if ctx == nil {
-			return &IMAgentResponse{Text: "ℹ️ 当前没有正在执行的任务。"}
+			return &IMAgentResponse{Text: "鈩癸笍 褰撳墠娌℃湁姝ｅ湪鎵ц鐨勪换鍔°€?}
 		}
 		taskText := h.lastUserText
 		ctx.Cancel()
-		// Don't wait for the loop to exit — the IM caller shouldn't block.
+		// Don't wait for the loop to exit 鈥?the IM caller shouldn't block.
 		// The loop will detect cancellation and clean up on its own.
-		cancelMsg := "⏹️ 任务已取消。"
+		cancelMsg := "鈴癸笍 浠诲姟宸插彇娑堛€?
 		if preview := truncateRunes(taskText, 30); preview != "" {
-			cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", preview)
+			cancelMsg = fmt.Sprintf("鈴癸笍 宸插彇娑堜换鍔°€?s銆嶃€?, preview)
 		}
-		return &IMAgentResponse{Text: cancelMsg}
+		return &IMAgentResponse{Text: cancelMsg, ResponseSource: "cancel"}
 	}
 
 	// Select HTTP client: background tasks use a separate connection pool
@@ -2869,7 +2869,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.manager.SuppressResumeForSession(decision.DismissRecoverableSessionID)
 		decision.ResumeRecoverableSessionID = ""
 		freshTask = true
-		return &IMAgentResponse{Text: "已忽略该恢复会话。"}
+		return &IMAgentResponse{Text: "宸插拷鐣ヨ鎭㈠浼氳瘽銆?}
 	}
 	if decision.ResumeRecoverableSessionID != "" && h.manager != nil {
 		session, ok := h.manager.Get(decision.ResumeRecoverableSessionID)
@@ -2891,18 +2891,18 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 					InjectResumePrompt: false,
 				})
 				if err != nil {
-					return &IMAgentResponse{Error: fmt.Sprintf("恢复会话失败: %v", err)}
+					return &IMAgentResponse{Error: fmt.Sprintf("鎭㈠浼氳瘽澶辫触: %v", err)}
 				}
 				h.manager.SuppressResumeForSession(decision.ResumeRecoverableSessionID)
-				return &IMAgentResponse{Text: "已启动恢复会话。请到远程会话列表继续查看执行状态。"}
+				return &IMAgentResponse{Text: "宸插惎鍔ㄦ仮澶嶄細璇濄€傝鍒拌繙绋嬩細璇濆垪琛ㄧ户缁煡鐪嬫墽琛岀姸鎬併€?}
 			}
 		}
-		return &IMAgentResponse{Error: "当前没有可恢复的会话，或该会话不支持恢复。"}
+		return &IMAgentResponse{Error: "褰撳墠娌℃湁鍙仮澶嶇殑浼氳瘽锛屾垨璇ヤ細璇濅笉鏀寔鎭㈠銆?}
 	}
 
 	if !h.app.isMaclawLLMConfigured() {
 		return &IMAgentResponse{
-			Error: "MaClaw LLM 未配置，无法处理请求。请在 MaClaw 客户端的设置中配置 LLM。",
+			Error: "MaClaw LLM 鏈厤缃紝鏃犳硶澶勭悊璇锋眰銆傝鍦?MaClaw 瀹㈡埛绔殑璁剧疆涓厤缃?LLM銆?,
 		}
 	}
 
@@ -2964,11 +2964,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 		loopCtx, waitC := h.bgManager.SpawnOrQueue(slotKind, msg.UserID, msg.Text, maxIter)
 		if loopCtx == nil && waitC != nil {
-			// Slot full — block until a slot opens.
+			// Slot full 鈥?block until a slot opens.
 			loopCtx = <-waitC
 		}
 		if loopCtx == nil {
-			return &IMAgentResponse{Error: "后台任务启动失败：无法获取执行槽位"}
+			return &IMAgentResponse{Error: "鍚庡彴浠诲姟鍚姩澶辫触锛氭棤娉曡幏鍙栨墽琛屾Ы浣?}
 		}
 		loopCtx.HTTPClient = httpClient
 		if h.traceService != nil && loopCtx.RunID == "" {
@@ -2976,7 +2976,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			loopCtx.JobID = job.JobID
 			loopCtx.RunID = run.RunID
 			h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
-			h.appendTraceEvent(loopCtx, "request.accepted", "info", "后台任务已接收", truncateTraceText(msg.Text, 180), "", "")
+			h.appendTraceEvent(loopCtx, "request.accepted", "info", "鍚庡彴浠诲姟宸叉帴鏀?, truncateTraceText(msg.Text, 180), "", "")
 		}
 
 		var systemPrompt string
@@ -3025,7 +3025,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			// subsequent messages don't lose the conversation thread.
 			if pending.OriginalText != "" {
 				entries := h.memory.load(msg.UserID)
-				cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
+				cancelNote := fmt.Sprintf("锛堢敤鎴峰彇娑堜簡璇ヤ换鍔＄殑鎵ц纭锛屽師濮嬭姹傦細%s锛?, truncateRunes(pending.OriginalText, 200))
 				entries = append(entries,
 					conversationEntry{Role: "user", Content: pending.OriginalText},
 					conversationEntry{Role: "assistant", Content: cancelNote},
@@ -3033,7 +3033,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				h.memory.save(msg.UserID, entries)
 			}
 			h.confirmationStore.clear(msg.UserID)
-			return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
+			return &IMAgentResponse{ResponseSource: "cancel", Text: "鈴癸笍 宸插彇娑堝緟纭浠诲姟銆?}
 		case isConfirmationApproval(trimmed):
 			h.confirmationStore.clear(msg.UserID)
 			msg.Text = confirmationApprovedText(pending)
@@ -3114,7 +3114,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		loopCtx.JobID = job.JobID
 		loopCtx.RunID = run.RunID
 		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
-		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 请求已接收", truncateTraceText(msg.Text, 180), "", "")
+		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 璇锋眰宸叉帴鏀?, truncateTraceText(msg.Text, 180), "", "")
 	}
 	// Wire the bgManager's statusC so the chat loop can drain background events.
 	if h.bgManager != nil && loopCtx.StatusC == nil {
@@ -3176,46 +3176,46 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 
 	var b strings.Builder
 	if len(killed) > 0 {
-		b.WriteString(fmt.Sprintf("已退出编程模式。终止了 %d 个会话: %s", len(killed), strings.Join(killed, ", ")))
+		b.WriteString(fmt.Sprintf("宸查€€鍑虹紪绋嬫ā寮忋€傜粓姝簡 %d 涓細璇? %s", len(killed), strings.Join(killed, ", ")))
 	} else {
-		b.WriteString("已退出编程模式。")
+		b.WriteString("宸查€€鍑虹紪绋嬫ā寮忋€?)
 	}
 	if failCount > 0 {
-		b.WriteString(fmt.Sprintf("\n⚠️ %d 个会话终止失败，可能需要手动处理。", failCount))
+		b.WriteString(fmt.Sprintf("\n鈿狅笍 %d 涓細璇濈粓姝㈠け璐ワ紝鍙兘闇€瑕佹墜鍔ㄥ鐞嗐€?, failCount))
 	}
-	b.WriteString("\n对话已重置，后续消息将正常对话。")
-	return &IMAgentResponse{Text: b.String()}
+	b.WriteString("\n瀵硅瘽宸查噸缃紝鍚庣画娑堟伅灏嗘甯稿璇濄€?)
+	return &IMAgentResponse{Text: b.String(), ResponseSource: "conversation_reset"}
 }
 
 // handleSessionsCommand returns a quick status summary of active sessions.
 func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 	if h.manager == nil {
-		return &IMAgentResponse{Text: "会话管理器未初始化。"}
+		return &IMAgentResponse{Text: "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖栥€?}
 	}
 	sessions := h.manager.List()
 	if len(sessions) == 0 {
 		return &IMAgentResponse{
-			Text: "当前没有活跃会话。\n\n💡 提示: 发送 /exit 可退出编程模式回到普通对话。",
+			Text: "褰撳墠娌℃湁娲昏穬浼氳瘽銆俓n\n馃挕 鎻愮ず: 鍙戦€?/exit 鍙€€鍑虹紪绋嬫ā寮忓洖鍒版櫘閫氬璇濄€?,
 		}
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("📋 当前 %d 个会话:\n", len(sessions)))
+	b.WriteString(fmt.Sprintf("馃搵 褰撳墠 %d 涓細璇?\n", len(sessions)))
 	for _, s := range sessions {
 		s.mu.RLock()
 		status := string(s.Status)
 		task := s.Summary.CurrentTask
 		waiting := s.Summary.WaitingForUser
 		s.mu.RUnlock()
-		b.WriteString(fmt.Sprintf("• [%s] %s — %s", s.ID, s.Tool, status))
+		b.WriteString(fmt.Sprintf("鈥?[%s] %s 鈥?%s", s.ID, s.Tool, status))
 		if task != "" {
 			b.WriteString(fmt.Sprintf(" | %s", task))
 		}
 		if waiting {
-			b.WriteString(" ⏳等待输入")
+			b.WriteString(" 鈴崇瓑寰呰緭鍏?)
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n💡 发送 /exit 可终止所有会话并退出编程模式。")
+	b.WriteString("\n馃挕 鍙戦€?/exit 鍙粓姝㈡墍鏈変細璇濆苟閫€鍑虹紪绋嬫ā寮忋€?)
 	return &IMAgentResponse{Text: b.String()}
 }
 
@@ -3232,7 +3232,7 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 		split++
 	}
 	if split >= len(entries) {
-		// Degenerate case: everything is tool messages — just return as-is.
+		// Degenerate case: everything is tool messages 鈥?just return as-is.
 		return entries
 	}
 	recent := entries[split:]
@@ -3250,7 +3250,7 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 
 	cfg := h.app.GetMaclawLLMConfig()
 	msgs := []map[string]string{
-		{"role": "user", "content": "请简洁总结以下对话历史，保留关键事实、决策和待办事项：\n\n" + summaryText},
+		{"role": "user", "content": "璇风畝娲佹€荤粨浠ヤ笅瀵硅瘽鍘嗗彶锛屼繚鐣欏叧閿簨瀹炪€佸喅绛栧拰寰呭姙浜嬮」锛歕n\n" + summaryText},
 	}
 	conv := make([]interface{}, len(msgs))
 	for i, m := range msgs {
@@ -3262,8 +3262,8 @@ func (h *IMMessageHandler) compactHistory(entries []conversationEntry, httpClien
 	}
 
 	compacted := []conversationEntry{
-		{Role: "user", Content: "[对话历史摘要]\n" + resp.Choices[0].Message.Content},
-		{Role: "assistant", Content: "好的，我已了解之前的对话上下文。"},
+		{Role: "user", Content: "[瀵硅瘽鍘嗗彶鎽樿]\n" + resp.Choices[0].Message.Content},
+		{Role: "assistant", Content: "濂界殑锛屾垜宸蹭簡瑙ｄ箣鍓嶇殑瀵硅瘽涓婁笅鏂囥€?},
 	}
 	return append(compacted, recent...)
 }
@@ -3315,11 +3315,11 @@ func drainStatusEvents(ctx *LoopContext, conversation *[]interface{}, sendProgre
 	for {
 		select {
 		case evt := <-ctx.StatusC:
-			statusMsg := fmt.Sprintf("[后台事件] %s", evt.Message)
+			statusMsg := fmt.Sprintf("[鍚庡彴浜嬩欢] %s", evt.Message)
 			*conversation = append(*conversation, map[string]string{
 				"role": "system", "content": statusMsg,
 			})
-			sendProgress(fmt.Sprintf("📡 %s", evt.Message))
+			sendProgress(fmt.Sprintf("馃摗 %s", evt.Message))
 		default:
 			return
 		}
@@ -3348,7 +3348,7 @@ func classifyTrialOutcome(result string) string {
 	failureHints := []string{
 		"error", "failed", "not found", "timeout", "timed out", "denied", "invalid",
 		"panic", "exception", "unable", "cannot", "can't", "permission", "no such file",
-		"不存在", "失败", "错误", "超时", "拒绝", "无权限", "未找到", "异常",
+		"涓嶅瓨鍦?, "澶辫触", "閿欒", "瓒呮椂", "鎷掔粷", "鏃犳潈闄?, "鏈壘鍒?, "寮傚父",
 	}
 	for _, hint := range failureHints {
 		if strings.Contains(lower, hint) {
@@ -3357,7 +3357,7 @@ func classifyTrialOutcome(result string) string {
 	}
 	successHints := []string{
 		"success", "completed", "done", "saved", "created", "updated", "ok", "ready",
-		"成功", "已完成", "完成", "已保存", "已创建", "已更新", "就绪",
+		"鎴愬姛", "宸插畬鎴?, "瀹屾垚", "宸蹭繚瀛?, "宸插垱寤?, "宸叉洿鏂?, "灏辩华",
 	}
 	for _, hint := range successHints {
 		if strings.Contains(lower, hint) {
@@ -3393,9 +3393,9 @@ func classifyToolOutcome(toolName, result string) string {
 	}
 	switch name {
 	case "list_skills":
-		if strings.Contains(trimmed, "=== 本地已注册 Skill ===") ||
-			strings.Contains(trimmed, "本地没有已注册的 Skill") ||
-			strings.Contains(trimmed, "推荐 Skill") ||
+		if strings.Contains(trimmed, "=== 鏈湴宸叉敞鍐?Skill ===") ||
+			strings.Contains(trimmed, "鏈湴娌℃湁宸叉敞鍐岀殑 Skill") ||
+			strings.Contains(trimmed, "鎺ㄨ崘 Skill") ||
 			strings.Contains(trimmed, "search_skill_hub") {
 			return "succeeded"
 		}
@@ -3403,13 +3403,13 @@ func classifyToolOutcome(toolName, result string) string {
 	case "run_skill", "get_skill_run":
 		return classifySkillRunOutcome(result)
 	case "search_and_install_skill":
-		if strings.Contains(trimmed, "✅") || strings.Contains(trimmed, "已自动安装并执行 Skill") {
+		if strings.Contains(trimmed, "鉁?) || strings.Contains(trimmed, "宸茶嚜鍔ㄥ畨瑁呭苟鎵ц Skill") {
 			return "succeeded"
 		}
-		if strings.Contains(trimmed, "均未找到") || strings.Contains(trimmed, "未找到") {
+		if strings.Contains(trimmed, "鍧囨湭鎵惧埌") || strings.Contains(trimmed, "鏈壘鍒?) {
 			return "uncertain"
 		}
-		if strings.Contains(lower, "搜索 skillmarket 失败") || strings.Contains(lower, "导入失败") || strings.Contains(lower, "下载失败") || strings.Contains(lower, "执行失败") || strings.Contains(lower, "已拒绝自动安装") {
+		if strings.Contains(lower, "鎼滅储 skillmarket 澶辫触") || strings.Contains(lower, "瀵煎叆澶辫触") || strings.Contains(lower, "涓嬭浇澶辫触") || strings.Contains(lower, "鎵ц澶辫触") || strings.Contains(lower, "宸叉嫆缁濊嚜鍔ㄥ畨瑁?) {
 			return "failed"
 		}
 		return classifyTrialOutcome(result)
@@ -3428,19 +3428,19 @@ func buildTrialReflectNote(toolNames []string, observations []string, repeatedFa
 		return ""
 	}
 	toolSummary := strings.Join(toolNames, ", ")
-	observation := strings.Join(observations, "；")
+	observation := strings.Join(observations, "锛?)
 	var b strings.Builder
-	b.WriteString("[试错反思]\n")
-	b.WriteString("上一轮尝试：")
+	b.WriteString("[璇曢敊鍙嶆€漖\n")
+	b.WriteString("涓婁竴杞皾璇曪細")
 	b.WriteString(toolSummary)
 	b.WriteString("\n")
-	b.WriteString("观察结果：")
+	b.WriteString("瑙傚療缁撴灉锛?)
 	b.WriteString(observation)
 	b.WriteString("\n")
-	b.WriteString("下一轮要求：先根据这些结果调整方法，再继续动作；不要原样重复已经失败的尝试。")
+	b.WriteString("涓嬩竴杞姹傦細鍏堟牴鎹繖浜涚粨鏋滆皟鏁存柟娉曪紝鍐嶇户缁姩浣滐紱涓嶈鍘熸牱閲嶅宸茬粡澶辫触鐨勫皾璇曘€?)
 	if len(repeatedFailures) > 0 {
 		sort.Strings(repeatedFailures)
-		b.WriteString("\n避免重复：")
+		b.WriteString("\n閬垮厤閲嶅锛?)
 		b.WriteString(strings.Join(repeatedFailures, ", "))
 	}
 	return b.String()
@@ -3460,9 +3460,9 @@ func (s *trialReflectState) observeIteration(toolCalls []llmToolCall, toolResult
 		outcome := classifyToolOutcome(name, toolResults[i])
 		summary := truncateTraceText(strings.TrimSpace(toolResults[i]), 120)
 		if summary == "" {
-			summary = "无明确输出"
+			summary = "鏃犳槑纭緭鍑?
 		}
-		observations = append(observations, fmt.Sprintf("%s=%s（%s）", name, outcome, summary))
+		observations = append(observations, fmt.Sprintf("%s=%s锛?s锛?, name, outcome, summary))
 		sig := trialActionSignature(name, tc.Function.Arguments)
 		switch outcome {
 		case "failed":
@@ -3481,15 +3481,15 @@ func (s *trialReflectState) observeIteration(toolCalls []llmToolCall, toolResult
 	}
 	note := buildTrialReflectNote(toolNames, observations, repeatedFailures)
 	s.pendingNote = note
-	s.lastObservation = strings.Join(observations, "；")
+	s.lastObservation = strings.Join(observations, "锛?)
 	return overall, s.lastObservation, repeatedFailures
 }
 
 func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []conversationEntry, userText string, attachments []MessageAttachment, onProgress ProgressCallback, onToken TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback, minIterations int, platform string) (result *IMAgentResponse) {
-	// panic recovery — 防止工具执行异常导致 goroutine 崩溃
+	// panic recovery 鈥?闃叉宸ュ叿鎵ц寮傚父瀵艰嚧 goroutine 宕╂簝
 	defer func() {
 		if r := recover(); r != nil {
-			result = &IMAgentResponse{Error: fmt.Sprintf("Agent 内部错误: %v", r)}
+			result = &IMAgentResponse{Error: fmt.Sprintf("Agent 鍐呴儴閿欒: %v", r)}
 		}
 	}()
 
@@ -3627,7 +3627,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	// isDebug reads the debug toggle live from config so changes take effect
-	// immediately — even mid-loop when the user flips the switch.
+	// immediately 鈥?even mid-loop when the user flips the switch.
 	// Cached for up to 2 seconds to avoid excessive disk reads in the hot loop.
 	var cachedDebug bool
 	var cachedDebugTime time.Time
@@ -3653,11 +3653,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	// Delayed acknowledgment: when debug is off and streaming is not active,
 	// schedule a brief receipt after a short grace period. If the agent loop
-	// finishes quickly (e.g. simple greetings), the receipt is suppressed —
-	// the user sees only the final card, avoiding the redundant "收到，正在处理中" message.
+	// finishes quickly (e.g. simple greetings), the receipt is suppressed 鈥?	// the user sees only the final card, avoiding the redundant "鏀跺埌锛屾鍦ㄥ鐞嗕腑" message.
 	// When streaming (onToken != nil), the user already sees real-time output,
 	// so the acknowledgment is unnecessary.
-	// Use a shorter delay (1.5s) so IM users get faster feedback — the desktop
+	// Use a shorter delay (1.5s) so IM users get faster feedback 鈥?the desktop
 	// AI assistant has streaming and never hits this path anyway.
 	const ackDelay = 1500 * time.Millisecond
 	ackDone := make(chan struct{})
@@ -3666,7 +3665,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		go func() {
 			select {
 			case <-ackTimer.C:
-				sendProgress("📨 收到，正在处理中，稍后发你结果…")
+				sendProgress("馃摠 鏀跺埌锛屾鍦ㄥ鐞嗕腑锛岀◢鍚庡彂浣犵粨鏋溾€?)
 			case <-ackDone:
 				ackTimer.Stop()
 			}
@@ -3696,7 +3695,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	defer close(heartbeatDone)
 
 	configStartedAt := time.Now()
-	// Ensure OAuth token is fresh before reading config — the token may have
+	// Ensure OAuth token is fresh before reading config 鈥?the token may have
 	// expired since the last request. ensureOAuthToken refreshes and persists
 	// the new token so GetMaclawLLMConfig picks up the updated Key.
 	if err := h.app.ensureOAuthToken(); err != nil {
@@ -3829,7 +3828,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		conversation = append(conversation, entry.toMessage())
 	}
 
-	// Build user message — multimodal if attachments contain images.
+	// Build user message 鈥?multimodal if attachments contain images.
 	userContent := buildUserContent(userText, attachments, cfg.Protocol, cfg.SupportsVision)
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 
@@ -3924,7 +3923,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if autoExtended > effectiveMax {
 						effectiveMax = autoExtended
 						ctx.SetMaxIterations(effectiveMax)
-						sendProgress(fmt.Sprintf("⏳ 当前任务较长，已自动扩展推理轮次到 %d 轮，继续完成最终结果…", effectiveMax))
+						sendProgress(fmt.Sprintf("鈴?褰撳墠浠诲姟杈冮暱锛屽凡鑷姩鎵╁睍鎺ㄧ悊杞鍒?%d 杞紝缁х画瀹屾垚鏈€缁堢粨鏋溾€?, effectiveMax))
 						log.Printf("[AgentLoop] auto-extended: iteration=%d new_max=%d cap=%d loop=%s", iteration, effectiveMax, autoExtendCap, ctx.ID)
 						if h.traceService != nil && ctx.RunID != "" {
 							h.appendTraceEvent(ctx, "loop.extended", "info", "Auto-extended iteration limit", truncateTraceText(fmt.Sprintf("remaining=%d new_max=%d", remaining, effectiveMax), 220), "", "")
@@ -3934,7 +3933,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 		}
 
-		// --- Background loop: pause near limit, wait for 续命 ---
+		// --- Background loop: pause near limit, wait for 缁懡 ---
 		// Only pause if: (a) background loop, (b) effectiveMax > 4 to ensure
 		// meaningful work before first pause, (c) iteration is at the pause
 		// threshold. The threshold is effectiveMax-2 to give 2 remaining rounds
@@ -3948,7 +3947,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					Type:      StatusEventApproachingLimit,
 					LoopID:    ctx.ID,
 					SessionID: ctx.SessionID,
-					Message:   fmt.Sprintf("后台任务 %s 即将达到最大轮数 (%d/%d)", ctx.ID, iteration, effectiveMax),
+					Message:   fmt.Sprintf("鍚庡彴浠诲姟 %s 鍗冲皢杈惧埌鏈€澶ц疆鏁?(%d/%d)", ctx.ID, iteration, effectiveMax),
 					Remaining: effectiveMax - iteration,
 				}:
 				default:
@@ -3962,10 +3961,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				ctx.SetState("running")
 			case <-ctx.CancelC:
 				ctx.SetState("stopped")
-				return &IMAgentResponse{Text: fmt.Sprintf("后台任务 %s 已被停止。", ctx.ID)}
+				return &IMAgentResponse{ResponseSource: "cancel", Text: fmt.Sprintf("鍚庡彴浠诲姟 %s 宸茶鍋滄銆?, ctx.ID)}
 			case <-time.After(5 * time.Minute):
 				ctx.SetState("timeout")
-				return &IMAgentResponse{Text: fmt.Sprintf("后台任务 %s 等待续命超时，已自动结束。", ctx.ID)}
+				return &IMAgentResponse{ResponseSource: "cancel", Text: fmt.Sprintf("鍚庡彴浠诲姟 %s 绛夊緟缁懡瓒呮椂锛屽凡鑷姩缁撴潫銆?, ctx.ID)}
 			}
 		}
 
@@ -3992,23 +3991,23 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		if iteration > 0 {
 			if iteration >= effectiveMax && ctx.Kind == LoopKindChat {
-				sendProgress("⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…")
+				sendProgress("鈴?宸叉帴杩戞渶澶ф帹鐞嗚疆娆★紝姝ｅ湪鍩轰簬鐜版湁淇℃伅鏀跺熬骞剁敓鎴愭渶缁堢粨鏋溾€?)
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": "[收尾要求]\n你已接近最大推理轮次。禁止继续扩展搜索范围；优先基于当前已有信息直接收尾并交付最终结果。若已有文档内容，请立即生成并发送 PDF；若仍无法生成 PDF，请明确说明当前已完成部分、缺少什么，并给出可见终态。[/收尾要求]",
+					"content": "[鏀跺熬瑕佹眰]\n浣犲凡鎺ヨ繎鏈€澶ф帹鐞嗚疆娆°€傜姝㈢户缁墿灞曟悳绱㈣寖鍥达紱浼樺厛鍩轰簬褰撳墠宸叉湁淇℃伅鐩存帴鏀跺熬骞朵氦浠樻渶缁堢粨鏋溿€傝嫢宸叉湁鏂囨。鍐呭锛岃绔嬪嵆鐢熸垚骞跺彂閫?PDF锛涜嫢浠嶆棤娉曠敓鎴?PDF锛岃鏄庣‘璇存槑褰撳墠宸插畬鎴愰儴鍒嗐€佺己灏戜粈涔堬紝骞剁粰鍑哄彲瑙佺粓鎬併€俒/鏀跺熬瑕佹眰]",
 				})
 			}
 			if isDebug() {
 				if maxIter > 0 || h.loopMaxOverride > 0 {
-					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d/%d 轮）…", iteration+1, effectiveMax))
+					sendProgress(fmt.Sprintf("馃攧 Agent 鎺ㄧ悊涓紙绗?%d/%d 杞級鈥?, iteration+1, effectiveMax))
 				} else {
-					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d 轮）…", iteration+1))
+					sendProgress(fmt.Sprintf("馃攧 Agent 鎺ㄧ悊涓紙绗?%d 杞級鈥?, iteration+1))
 				}
 			} else if onToken == nil && (iteration == 3 || (iteration > 3 && iteration%5 == 0)) {
 				// Non-debug, non-streaming mode: send a patience hint at iteration 4,
 				// then every 5 rounds so the user knows a long task is still alive.
 				// When streaming, the user already sees real-time output.
-				sendProgress("⏳ 任务较复杂，正在耐心处理中，稍后发你结果…")
+				sendProgress("鈴?浠诲姟杈冨鏉傦紝姝ｅ湪鑰愬績澶勭悊涓紝绋嶅悗鍙戜綘缁撴灉鈥?)
 			}
 		}
 		iterationPrepStartedAt := time.Now()
@@ -4021,7 +4020,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if loopProgressTracker != nil {
 				progressSummary = loopProgressTracker.Summary()
 			} else {
-				progressSummary = fmt.Sprintf("迭代 %d/%d", iteration, effectiveMax)
+				progressSummary = fmt.Sprintf("杩唬 %d/%d", iteration, effectiveMax)
 			}
 			anchorContent := loopGoalAnchor.BuildAnchorContent(progressSummary)
 			conversation = append(conversation, map[string]string{
@@ -4033,7 +4032,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if loopProgressTracker != nil {
 			if checklist := loopProgressTracker.BuildChecklistContent(); checklist != "" {
 				conversation = append(conversation, map[string]string{
-					"role": "system", "content": "[📋 任务清单]\n" + checklist + "\n[/任务清单]",
+					"role": "system", "content": "[馃搵 浠诲姟娓呭崟]\n" + checklist + "\n[/浠诲姟娓呭崟]",
 				})
 			}
 		}
@@ -4086,14 +4085,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if phase.Stage == agentStageOrient && phase.ForceSkillPreference {
 			convergePrompt := ""
 			if shouldRestrictToSkillSearch(phase) {
-				convergePrompt = "[Skill 优先要求]\n当前任务属于 Skill 优先路径，但本地未命中合适 Skill。本轮必须先调用 search_and_install_skill（或其他 skill 搜索/安装工具）查找可复用 Skill；在确认远程 Skill 路径无解之前，不要直接使用 craft_tool 或 bash。\n[/Skill 优先要求]"
+				convergePrompt = "[Skill 浼樺厛瑕佹眰]\n褰撳墠浠诲姟灞炰簬 Skill 浼樺厛璺緞锛屼絾鏈湴鏈懡涓悎閫?Skill銆傛湰杞繀椤诲厛璋冪敤 search_and_install_skill锛堟垨鍏朵粬 skill 鎼滅储/瀹夎宸ュ叿锛夋煡鎵惧彲澶嶇敤 Skill锛涘湪纭杩滅▼ Skill 璺緞鏃犺В涔嬪墠锛屼笉瑕佺洿鎺ヤ娇鐢?craft_tool 鎴?bash銆俓n[/Skill 浼樺厛瑕佹眰]"
 			} else if phase.PreferredSkillName != "" {
 				guidance := buildSkillProgressGuidance(phase.PreferredSkillName, phase.PreferredSkillRunID)
-				convergePrompt = fmt.Sprintf("[Skill 优先要求]\n检测到本地已有可复用 Skill「%s」。本轮优先调用 run_skill(name=\"%s\") 完成任务，不要先使用 craft_tool 或 bash 自建脚本。%s 若该 Skill 失败，再基于失败原因切换到其他工具路径。", phase.PreferredSkillName, phase.PreferredSkillName, guidance)
+				convergePrompt = fmt.Sprintf("[Skill 浼樺厛瑕佹眰]\n妫€娴嬪埌鏈湴宸叉湁鍙鐢?Skill銆?s銆嶃€傛湰杞紭鍏堣皟鐢?run_skill(name=\"%s\") 瀹屾垚浠诲姟锛屼笉瑕佸厛浣跨敤 craft_tool 鎴?bash 鑷缓鑴氭湰銆?s 鑻ヨ Skill 澶辫触锛屽啀鍩轰簬澶辫触鍘熷洜鍒囨崲鍒板叾浠栧伐鍏疯矾寰勩€?, phase.PreferredSkillName, phase.PreferredSkillName, guidance)
 				if phase.PreferredSkillReason != "" {
-					convergePrompt += fmt.Sprintf("\n匹配依据: %s", truncateTraceText(phase.PreferredSkillReason, 160))
+					convergePrompt += fmt.Sprintf("\n鍖归厤渚濇嵁: %s", truncateTraceText(phase.PreferredSkillReason, 160))
 				}
-				convergePrompt += "\n[/Skill 优先要求]"
+				convergePrompt += "\n[/Skill 浼樺厛瑕佹眰]"
 			}
 			if convergePrompt != "" {
 				conversation = append(conversation, map[string]string{"role": "system", "content": convergePrompt})
@@ -4104,7 +4103,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			preLLMIterationPrepElapsed += time.Since(iterationPrepStartedAt)
 		}
 
-		// Notify frontend of new round (for streaming UI) — skip first iteration
+		// Notify frontend of new round (for streaming UI) 鈥?skip first iteration
 		// since the frontend already created a placeholder message.
 		if onNewRound != nil && iteration > 0 {
 			onNewRound()
@@ -4138,7 +4137,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// When AdaptiveRetry is available, use it for smarter classification;
 		// otherwise fall back to the existing isRetryableLLMError logic.
 		if err != nil {
-			// If cancelled, don't retry — exit immediately.
+			// If cancelled, don't retry 鈥?exit immediately.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
 				break
@@ -4150,7 +4149,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				h.appendTraceEvent(ctx, "trial.retry_decided", "warn", "Adaptive retry decision", truncateTraceText(fmt.Sprintf("llm_request category=%s action=%s attempt=%d", category, decision.Action, decision.Attempt), 220), "", "")
 				h.appendTraceEvidence(ctx, "adaptive_retry", string(category), "retry decision", truncateTraceText(firstNonEmptyTraceText(decision.ErrorContext, err.Error()), 400), "", "llm_request")
 				if decision.Action == "retry" && !ctx.IsCancelled() {
-					log.Printf("[LLM] AdaptiveRetry: %s 错误，%v 后重试: %v", string(category), decision.Delay, err)
+					log.Printf("[LLM] AdaptiveRetry: %s 閿欒锛?v 鍚庨噸璇? %v", string(category), decision.Delay, err)
 					firstLLMRetryWaitElapsed += decision.Delay
 					firstLLMRetryCount++
 					// Cancellation-aware sleep: abort wait if user cancels.
@@ -4183,7 +4182,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					}
 				}
 			} else if isRetryableLLMError(err) && !ctx.IsCancelled() {
-				log.Printf("[LLM] 首次请求超时/网络错误，2s 后重试: %v", err)
+				log.Printf("[LLM] 棣栨璇锋眰瓒呮椂/缃戠粶閿欒锛?s 鍚庨噸璇? %v", err)
 				firstLLMRetryWaitElapsed += 2 * time.Second
 				firstLLMRetryCount++
 				select {
@@ -4232,20 +4231,19 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// instead of an LLM error.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
-				// Don't save the cancelled task's conversation history —
-				// otherwise the next message will inherit the stale context
+				// Don't save the cancelled task's conversation history 鈥?				// otherwise the next message will inherit the stale context
 				// and the LLM will continue executing the cancelled task.
 				h.memory.clear(userID)
-				cancelMsg := "⏹️ 任务已取消。"
+				cancelMsg := "鈴癸笍 浠诲姟宸插彇娑堛€?
 				if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
-					cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
+					cancelMsg = fmt.Sprintf("鈴癸笍 宸插彇娑堜换鍔°€?s銆嶃€?, taskPreview)
 				}
-				return &IMAgentResponse{Text: cancelMsg}
+				return &IMAgentResponse{Text: cancelMsg, ResponseSource: "cancel"}
 			}
-			return &IMAgentResponse{Error: fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol)}
+			return &IMAgentResponse{Error: fmt.Sprintf("LLM 璋冪敤澶辫触: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol)}
 		}
 		if len(resp.Choices) == 0 {
-			return &IMAgentResponse{Error: "LLM 未返回有效回复"}
+			return &IMAgentResponse{Error: "LLM 鏈繑鍥炴湁鏁堝洖澶?}
 		}
 
 		choiceStartedAt := time.Now()
@@ -4348,7 +4346,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					systemMessagesStart := len(conversation)
 					conversation = append(conversation, map[string]string{
 						"role":    "system",
-						"content": "[编程工作流] 你刚才尝试直接调用编码工具，但当前处于需求确认阶段。请先生成需求文档（包含功能需求、非功能需求、边界情况、验收标准），等待用户确认后再开始编码。",
+						"content": "[缂栫▼宸ヤ綔娴乚 浣犲垰鎵嶅皾璇曠洿鎺ヨ皟鐢ㄧ紪鐮佸伐鍏凤紝浣嗗綋鍓嶅浜庨渶姹傜‘璁ら樁娈点€傝鍏堢敓鎴愰渶姹傛枃妗ｏ紙鍖呭惈鍔熻兘闇€姹傘€侀潪鍔熻兘闇€姹傘€佽竟鐣屾儏鍐点€侀獙鏀舵爣鍑嗭級锛岀瓑寰呯敤鎴风‘璁ゅ悗鍐嶅紑濮嬬紪鐮併€?,
 					})
 					recordSystemMessages(systemMessagesStart, conversation)
 					continue
@@ -4373,7 +4371,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// (e.g. requirements, tech design, task breakdown), and the LLM
 			// has produced a substantive deliverable (not a stall/thinking
 			// reply), return immediately. This prevents stall/deliverable
-			// heuristics (which match keywords like "文档", "写", "生成")
+			// heuristics (which match keywords like "鏂囨。", "鍐?, "鐢熸垚")
 			// from misclassifying the confirmation prompt as a "promise to
 			// deliver" and forcing another round that re-outputs the content.
 			if h.app != nil && h.app.workflowEngine != nil {
@@ -4384,11 +4382,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					log.Printf("[agent-loop] workflow NeedsConfirm gate: returning response for user confirmation (iteration=%d len=%d)", iteration, len(trimmedForGate))
 					if h.traceService != nil && ctx.RunID != "" {
 						h.appendTraceEvent(ctx, "gate.needs_confirm", "info",
-							"NeedsConfirm phase gate — pausing for user confirmation",
+							"NeedsConfirm phase gate 鈥?pausing for user confirmation",
 							truncateTraceText(trimmedForGate, 220), "", "")
 					}
 					phase.Stage = agentStageFinalize
-					finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+					finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent), ResponseSource: "agent_loop"}
 					if !streamDoneAt.IsZero() {
 						postStreamLastReturnPrepAt = time.Now()
 					}
@@ -4401,13 +4399,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Hard cap: if the model has returned text without tool calls for
 			// too many consecutive iterations, force-return the latest response.
 			// This prevents infinite loops caused by false-positive stall/deliverable
-			// detection (e.g. self-introduction text matching "文档"/"写" keywords).
+			// detection (e.g. self-introduction text matching "鏂囨。"/"鍐? keywords).
 			const maxConsecutiveNoTool = 5
 			trimmedVisibleContent := strings.TrimSpace(stripThinkingTags(msgContent))
 			if phase.ConsecutiveNoTool > maxConsecutiveNoTool && trimmedVisibleContent != "" {
 				log.Printf("[agent-loop] hard cap: %d consecutive no-tool iterations, force-returning response", phase.ConsecutiveNoTool)
 				phase.Stage = agentStageFinalize
-				finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+				finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent), ResponseSource: "agent_loop"}
 				if !streamDoneAt.IsZero() {
 					postStreamLastReturnPrepAt = time.Now()
 				}
@@ -4475,9 +4473,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				continue
 			}
 			// Check for capability gap before returning.
-			// Uses SkillSearcher (SkillMarket → ClawHub mirror → GitHub) for
+			// Uses SkillSearcher (SkillMarket 鈫?ClawHub mirror 鈫?GitHub) for
 			// unified search order, then installAndExecuteSkill for the install
-			// path — no duplicate searches.
+			// path 鈥?no duplicate searches.
 			if h.capabilityGapDetector != nil && h.capabilityGapDetector.Detect(msgContent) {
 				capabilityGapStartedAt := time.Now()
 				goCtx, goCancel := ctx.Context()
@@ -4491,8 +4489,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							log.Printf("[skill-auto] %s", status)
 						})
 					goCancel()
-					if strings.HasPrefix(installResult, "✅") {
-						resp := &IMAgentResponse{Text: stripThinkingTags(installResult)}
+					if strings.HasPrefix(installResult, "鉁?) {
+						resp := &IMAgentResponse{Text: stripThinkingTags(installResult), ResponseSource: "agent_loop"}
 						if !streamDoneAt.IsZero() {
 							postStreamLastReturnPrepAt = time.Now()
 						}
@@ -4507,7 +4505,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 			}
 			phase.Stage = agentStageFinalize
-			finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+			finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent), ResponseSource: "agent_loop"}
 			if !streamDoneAt.IsZero() {
 				postStreamLastReturnPrepAt = time.Now()
 				handlerPostStreamResponseStartedAt := time.Now()
@@ -4553,11 +4551,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
 				h.memory.clear(userID)
-				cancelMsg := "⏹️ 任务已取消。"
+				cancelMsg := "鈴癸笍 浠诲姟宸插彇娑堛€?
 				if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
-					cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
+					cancelMsg = fmt.Sprintf("鈴癸笍 宸插彇娑堜换鍔°€?s銆嶃€?, taskPreview)
 				}
-				return &IMAgentResponse{Text: cancelMsg}
+				return &IMAgentResponse{Text: cancelMsg, ResponseSource: "cancel"}
 			}
 			toolLabel := userFacingToolProgressText(tc.Function.Name)
 			sendToolProgress(toolLabel)
@@ -4586,9 +4584,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// Return the question as the agent's response, ending this loop iteration.
 				// The user's answer will come as the next user message, and the agent
 				// can continue from where it left off.
-				toolResults = append(toolResults, fmt.Sprintf("用户被提问: %s（等待回答）", askReq.Question))
+				toolResults = append(toolResults, fmt.Sprintf("鐢ㄦ埛琚彁闂? %s锛堢瓑寰呭洖绛旓級", askReq.Question))
 				recordToolResult(tc.ID, toolResults[len(toolResults)-1])
 				resp := &IMAgentResponse{
+					ResponseSource: "ask_user",
 					Text: displayText,
 				}
 				if askReq.InputType == "choice" && len(askReq.Options) > 0 {
@@ -4599,8 +4598,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					resp.Actions = actions
 				} else if askReq.InputType == "confirm" {
 					resp.Actions = []IMResponseAction{
-						{Label: "✅ 确认", Command: "确认"},
-						{Label: "❌ 取消", Command: "取消"},
+						{Label: "鉁?纭", Command: "纭"},
+						{Label: "鉂?鍙栨秷", Command: "鍙栨秷"},
 					}
 				}
 				return resp
@@ -4619,7 +4618,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Some tools (e.g. generate_pdf) are excluded from pinning
 			// because they should only appear in specific contexts.
 			if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) &&
-				!strings.HasPrefix(result, "未知工具") && !strings.HasPrefix(result, "工具执行异常") {
+				!strings.HasPrefix(result, "鏈煡宸ュ叿") && !strings.HasPrefix(result, "宸ュ叿鎵ц寮傚父") {
 				h.toolRouter.ActivateSessionTool(tc.Function.Name)
 				log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
 			}
@@ -4627,15 +4626,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			traceResult := result
 			toolContent := result
 			if strings.HasPrefix(result, "[screenshot_base64]") {
-				traceResult = "截图已成功捕获，将作为图片发送给用户。"
+				traceResult = "鎴浘宸叉垚鍔熸崟鑾凤紝灏嗕綔涓哄浘鐗囧彂閫佺粰鐢ㄦ埛銆?
 				toolContent = traceResult
 			}
 			if result == "[screenshot_sent]" {
-				traceResult = "截图已成功捕获并发送给用户。"
+				traceResult = "鎴浘宸叉垚鍔熸崟鑾峰苟鍙戦€佺粰鐢ㄦ埛銆?
 				toolContent = traceResult
 			}
 			if strings.HasPrefix(result, "[file_base64|") {
-				traceResult = "文件已生成，等待解析发送结果。"
+				traceResult = "鏂囦欢宸茬敓鎴愶紝绛夊緟瑙ｆ瀽鍙戦€佺粨鏋溿€?
 			}
 			if !streamDoneAt.IsZero() {
 				handlerPostStreamToolExecElapsed += time.Since(toolExecStartedAt)
@@ -4650,7 +4649,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 			// Intercept session-based screenshot: image was already pushed
 			// via session.image WebSocket channel, so we just need to stop
-			// the agent loop — no image data to carry in the response.
+			// the agent loop 鈥?no image data to carry in the response.
 			if result == "[screenshot_sent]" {
 				screenshotAlreadySent = true
 			}
@@ -4658,7 +4657,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Intercept file send results: collect ALL files (not just the last one).
 			// Format: [file_base64|filename|mimetype]data
 			//     or: [file_base64|filename|mimetype|im]data  (forward to IM)
-			//     or: [file_base64|filename|mimetype|im|msg:提示信息]data
+			//     or: [file_base64|filename|mimetype|im|msg:鎻愮ず淇℃伅]data
 			if strings.HasPrefix(result, "[file_base64|") {
 				rest := strings.TrimPrefix(result, "[file_base64|")
 				if closeBracket := strings.Index(rest, "]"); closeBracket > 0 {
@@ -4676,7 +4675,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							} else if strings.HasPrefix(seg, "msg:") {
 								fileMsg = strings.TrimPrefix(seg, "msg:")
 							} else {
-								// Unknown segment — append to mimeType for safety.
+								// Unknown segment 鈥?append to mimeType for safety.
 								mType += "|" + seg
 							}
 						}
@@ -4692,9 +4691,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							message:   fileMsg,
 						})
 						if fwd {
-							toolContent = fmt.Sprintf("文件 %s 已准备好，将通过 IM 通道发送给用户。", parts[0])
+							toolContent = fmt.Sprintf("鏂囦欢 %s 宸插噯澶囧ソ锛屽皢閫氳繃 IM 閫氶亾鍙戦€佺粰鐢ㄦ埛銆?, parts[0])
 						} else {
-							toolContent = fmt.Sprintf("文件 %s 已准备好，将发送给用户。", parts[0])
+							toolContent = fmt.Sprintf("鏂囦欢 %s 宸插噯澶囧ソ锛屽皢鍙戦€佺粰鐢ㄦ埛銆?, parts[0])
 						}
 						traceResult = toolContent
 					}
@@ -4735,7 +4734,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				Role: "tool", Content: truncated, ToolCallID: tc.ID,
 			})
 
-			// --- Harness: DriftDetector — record tool_call and check for drift ---
+			// --- Harness: DriftDetector 鈥?record tool_call and check for drift ---
 			if loopDriftDetector != nil {
 				argsHash := fmt.Sprintf("%x", sha256.Sum256([]byte(tc.Function.Arguments)))
 				loopDriftDetector.Record(ToolCallRecord{
@@ -4745,15 +4744,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				})
 				driftResult := loopDriftDetector.DetectDrift()
 				if driftResult.Drifted {
-					log.Printf("[Harness] 漂移检测触发: pattern=%s needHuman=%v", driftResult.Pattern, driftResult.NeedHumanHelp)
+					log.Printf("[Harness] 婕傜Щ妫€娴嬭Е鍙? pattern=%s needHuman=%v", driftResult.Pattern, driftResult.NeedHumanHelp)
 					conversation = append(conversation, map[string]string{
 						"role": "system", "content": driftResult.ReplanPrompt,
 					})
 					recordSystemMessages(len(conversation)-1, conversation)
 					loopDriftDetector.ResetWindow()
 					if driftResult.NeedHumanHelp {
-						resp := &IMAgentResponse{
-							Text: "⚠️ Agent 检测到重复漂移模式，需要人工介入。请检查当前任务状态并提供新的指示。",
+						resp := &IMAgentResponse{ResponseSource: "agent_loop",
+							Text: "鈿狅笍 Agent 妫€娴嬪埌閲嶅婕傜Щ妯″紡锛岄渶瑕佷汉宸ヤ粙鍏ャ€傝妫€鏌ュ綋鍓嶄换鍔＄姸鎬佸苟鎻愪緵鏂扮殑鎸囩ず銆?,
 						}
 						h.saveConversationHistoryTimed(userID, history, resp)
 						return resp
@@ -4847,7 +4846,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		// If a direct screenshot was captured, return it immediately as an image response.
 		if pendingImageKey != "" {
-			resp := &IMAgentResponse{}
+			resp := &IMAgentResponse{ResponseSource: "screenshot"}
 			if !streamDoneAt.IsZero() {
 				postStreamLastReturnPrepAt = time.Now()
 			}
@@ -4857,7 +4856,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if platform == "desktop" {
 				filePath, err := h.saveScreenshotToFile(pendingImageKey)
 				if err != nil {
-					return &IMAgentResponse{Text: fmt.Sprintf("📷 截图已捕获，但保存文件失败: %s", err.Error())}
+					return &IMAgentResponse{ResponseSource: "screenshot", Text: fmt.Sprintf("馃摲 鎴浘宸叉崟鑾凤紝浣嗕繚瀛樻枃浠跺け璐? %s", err.Error())}
 				}
 				// Generate a small thumbnail (reuse the base64 data, frontend will size it)
 				thumb := pendingImageKey
@@ -4867,7 +4866,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						thumb = downsized
 					}
 				}
-				resp.Text = "📷 截图已保存"
+				resp.Text = "馃摲 鎴浘宸蹭繚瀛?
 				resp.LocalFilePath = filePath
 				resp.ThumbnailBase64 = thumb
 				return resp
@@ -4878,9 +4877,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		// If screenshot was already delivered via session.image channel,
-		// stop the loop immediately — no further agent reasoning needed.
+		// stop the loop immediately 鈥?no further agent reasoning needed.
 		if screenshotAlreadySent {
-			resp := &IMAgentResponse{Text: "📷 截图已发送"}
+			resp := &IMAgentResponse{ResponseSource: "screenshot", Text: "馃摲 鎴浘宸插彂閫?}
 			attachLLMTelemetry(resp)
 			h.saveConversationHistoryTimed(userID, history, resp)
 			return resp
@@ -4888,7 +4887,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		// If file(s) were prepared, return them for delivery.
 		if len(pendingFiles) > 0 {
-			resp := &IMAgentResponse{}
+			resp := &IMAgentResponse{ResponseSource: "file_delivery"}
 			if !streamDoneAt.IsZero() {
 				postStreamLastReturnPrepAt = time.Now()
 			}
@@ -4902,7 +4901,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				for _, pf := range pendingFiles {
 					filePath, err := h.saveFileDataToLocal(pf.name, pf.data)
 					if err != nil {
-						failLines = append(failLines, fmt.Sprintf("📄 %s 保存失败: %s", pf.name, err.Error()))
+						failLines = append(failLines, fmt.Sprintf("馃搫 %s 淇濆瓨澶辫触: %s", pf.name, err.Error()))
 						continue
 					}
 					savedPaths = append(savedPaths, filePath)
@@ -4910,10 +4909,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					// Forward to IM channels if requested and sender is configured.
 					if pf.forwardIM {
 						if h.imFileSender == nil {
-							failLines = append(failLines, fmt.Sprintf("📄 %s 已保存到本地，但未连接到 Hub，无法转发到 IM", pf.name))
+							failLines = append(failLines, fmt.Sprintf("馃搫 %s 宸蹭繚瀛樺埌鏈湴锛屼絾鏈繛鎺ュ埌 Hub锛屾棤娉曡浆鍙戝埌 IM", pf.name))
 						} else if err := h.imFileSender(pf.data, pf.name, pf.mimeType, pf.message); err != nil {
 							log.Printf("[IMMessageHandler] IM forward failed for %s: %v", pf.name, err)
-							failLines = append(failLines, fmt.Sprintf("📄 %s 已保存到本地，但发送到 IM 失败: %s", pf.name, err.Error()))
+							failLines = append(failLines, fmt.Sprintf("馃搫 %s 宸蹭繚瀛樺埌鏈湴锛屼絾鍙戦€佸埌 IM 澶辫触: %s", pf.name, err.Error()))
 						} else {
 							imForwardedCount++
 						}
@@ -4923,7 +4922,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// so the frontend can render clickable links without duplication.
 				text := strings.Join(failLines, "\n")
 				if imForwardedCount > 0 {
-					imNote := fmt.Sprintf("📨 已将 %d 个文件发送到 IM 通道", imForwardedCount)
+					imNote := fmt.Sprintf("馃摠 宸插皢 %d 涓枃浠跺彂閫佸埌 IM 閫氶亾", imForwardedCount)
 					if text != "" {
 						text = imNote + "\n" + text
 					} else {
@@ -4953,18 +4952,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// and skip the bonus round / max-iterations logic.
 	if ctx.IsCancelled() {
 		h.memory.clear(userID)
-		cancelMsg := "⏹️ 任务已取消。"
+		cancelMsg := "鈴癸笍 浠诲姟宸插彇娑堛€?
 		if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
-			cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
+			cancelMsg = fmt.Sprintf("鈴癸笍 宸插彇娑堜换鍔°€?s銆嶃€?, taskPreview)
 		}
-		return &IMAgentResponse{Text: cancelMsg}
+		return &IMAgentResponse{Text: cancelMsg, ResponseSource: "cancel"}
 	}
 
 	// When rounds are exhausted but coding sessions are still active,
 	// auto-continue one extra round so the agent can check session status,
 	// then ask the user whether to keep watching.
 	if h.manager != nil && h.manager.HasActiveSessions() {
-		sendProgress("⏳ 推理轮次已用完，但编程会话仍在运行，正在检查状态…")
+		sendProgress("鈴?鎺ㄧ悊杞宸茬敤瀹岋紝浣嗙紪绋嬩細璇濅粛鍦ㄨ繍琛岋紝姝ｅ湪妫€鏌ョ姸鎬佲€?)
 
 		// Run one bonus iteration to let the agent observe current session state.
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
@@ -5042,7 +5041,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 				// Handle ask_user in background loop: skip (background tasks shouldn't ask questions).
 				if IsAskUserResult(toolResult) {
-					toolResult = "ask_user 在后台任务中不可用，请直接做出决定。"
+					toolResult = "ask_user 鍦ㄥ悗鍙颁换鍔′腑涓嶅彲鐢紝璇风洿鎺ュ仛鍑哄喅瀹氥€?
 				}
 
 				// Handle delegate_task: inject sub-agent context.
@@ -5052,7 +5051,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 				// Pin conditional tools to session (same as main loop).
 				if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) &&
-					!strings.HasPrefix(toolResult, "未知工具") && !strings.HasPrefix(toolResult, "工具执行异常") {
+					!strings.HasPrefix(toolResult, "鏈煡宸ュ叿") && !strings.HasPrefix(toolResult, "宸ュ叿鎵ц寮傚父") {
 					h.toolRouter.ActivateSessionTool(tc.Function.Name)
 					log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
 				}
@@ -5074,14 +5073,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		h.saveConversationHistoryTimed(userID, history, &IMAgentResponse{})
-		resp := &IMAgentResponse{Text: "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。", Deferred: true}
+		resp := &IMAgentResponse{ResponseSource: "deferred", Text: "馃敂 缂栫▼浼氳瘽杩樺湪杩愯涓€傚洖澶嶃€岀户缁€嶅彲浠ョ户缁湅鎶わ紝鍥炲鍏跺畠鍐呭姝ｅ父瀵硅瘽銆?, Deferred: true}
 		attachLLMTelemetry(resp)
 		return resp
 	}
 
-	// --- Create unfinished task slot so "继续" can resume with context ---
+	// --- Create unfinished task slot so "缁х画" can resume with context ---
 	finalIteration := ctx.Iteration()
-	log.Printf("[AgentLoop] ⚠️ MAX ROUNDS EXHAUSTED loop=%s iteration=%d effectiveMax=%d configMax=%d loopOverride=%d grace=%d kind=%d user=%q task=%q elapsed=%s",
+	log.Printf("[AgentLoop] 鈿狅笍 MAX ROUNDS EXHAUSTED loop=%s iteration=%d effectiveMax=%d configMax=%d loopOverride=%d grace=%d kind=%d user=%q task=%q elapsed=%s",
 		ctx.ID, finalIteration, effectiveMax, maxIter, h.loopMaxOverride, chatFinalizeGrace, ctx.Kind, userID, truncateRunes(userText, 80), time.Since(conversationStartedAt))
 	originalTask := extractOriginalUserTask(history)
 	progressSummary := extractProgressSummary(history)
@@ -5093,14 +5092,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			Status:       "max_rounds_reached",
 			LastTask:     originalTask,
 			Summary:      progressSummary,
-			ResumePrompt: "用户发送「继续」以恢复此任务。请基于对话历史中已完成的工作，继续完成剩余部分。不要重复已完成的步骤。\n",
+			ResumePrompt: "鐢ㄦ埛鍙戦€併€岀户缁€嶄互鎭㈠姝や换鍔°€傝鍩轰簬瀵硅瘽鍘嗗彶涓凡瀹屾垚鐨勫伐浣滐紝缁х画瀹屾垚鍓╀綑閮ㄥ垎銆備笉瑕侀噸澶嶅凡瀹屾垚鐨勬楠ゃ€俓n",
 			Source:       "max_rounds",
 		})
 		h.memory.bindUnfinishedSlot(userID, slotID)
 		log.Printf("[MaxRounds] created unfinished slot %s for user %s, task=%q", slotID, userID, truncateRunes(originalTask, 80))
 	}
 
-	resp := &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
+	resp := &IMAgentResponse{ResponseSource: "empty_fallback", Text: "(宸茶揪鍒版渶澶ф帹鐞嗚疆娆★紝璇风户缁彂閫佹秷鎭互瀹屾垚浠诲姟)"}
 	attachLLMTelemetry(resp)
 	h.saveConversationHistoryTimed(userID, history, resp)
 	return resp
@@ -5160,11 +5159,11 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 }
 
 // ---------------------------------------------------------------------------
-// Attachment → LLM Content Builder
+// Attachment 鈫?LLM Content Builder
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// SteeringWorkflowDetector — lightweight detector for steering-driven coding
+// SteeringWorkflowDetector 鈥?lightweight detector for steering-driven coding
 // workflows. When the workflow engine has no active workflow for the user but
 // the LLM is executing a coding task via steering rules (coding-workflow.md),
 // this detector identifies phase documents from tool calls and emits the same
@@ -5177,7 +5176,7 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 type SteeringWorkflowDetector struct {
 	detected              bool              // whether a coding workflow has been detected
 	suggestMaximizeEmitted bool             // whether suggest_maximize event has been emitted
-	phaseDocuments        map[string]string // detected phase documents (phaseID → content)
+	phaseDocuments        map[string]string // detected phase documents (phaseID 鈫?content)
 	userID                string            // current user ID
 }
 
@@ -5200,8 +5199,8 @@ func (d *SteeringWorkflowDetector) isCodingTask(message string) bool {
 	}
 	// Keywords aligned with coding-workflow.md steering rules.
 	keywords := []string{
-		"开发", "编写", "实现", "创建", "修改代码", "重构",
-		"修 bug", "设计架构", "添加功能", "新增功能",
+		"寮€鍙?, "缂栧啓", "瀹炵幇", "鍒涘缓", "淇敼浠ｇ爜", "閲嶆瀯",
+		"淇?bug", "璁捐鏋舵瀯", "娣诲姞鍔熻兘", "鏂板鍔熻兘",
 	}
 	for _, kw := range keywords {
 		if strings.Contains(lower, kw) {
@@ -5220,17 +5219,17 @@ func (d *SteeringWorkflowDetector) matchPhaseID(fileName string) string {
 		return ""
 	}
 	switch {
-	case strings.Contains(lower, "需求文档") ||
-		strings.Contains(lower, "需求分析") ||
+	case strings.Contains(lower, "闇€姹傛枃妗?) ||
+		strings.Contains(lower, "闇€姹傚垎鏋?) ||
 		strings.Contains(lower, "requirements"):
 		return "requirements"
-	case strings.Contains(lower, "技术设计") ||
-		strings.Contains(lower, "设计文档") ||
+	case strings.Contains(lower, "鎶€鏈璁?) ||
+		strings.Contains(lower, "璁捐鏂囨。") ||
 		strings.Contains(lower, "design") ||
-		strings.Contains(lower, "架构设计"):
+		strings.Contains(lower, "鏋舵瀯璁捐"):
 		return "design"
-	case strings.Contains(lower, "任务拆分") ||
-		strings.Contains(lower, "任务列表") ||
+	case strings.Contains(lower, "浠诲姟鎷嗗垎") ||
+		strings.Contains(lower, "浠诲姟鍒楄〃") ||
 		strings.Contains(lower, "tasks") ||
 		strings.Contains(lower, "task_breakdown"):
 		return "tasks"
