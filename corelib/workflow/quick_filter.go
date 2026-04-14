@@ -153,7 +153,9 @@ var actionVerbs = []string{
 	"编写", "重构", "优化", "部署", "迁移", "升级",
 	"打造", "建设", "制定", "规划", "策划",
 	"写一个", "做一个", "搞一个", "弄一个", "建一个",
+	"写个", "做个", "搞个", "弄个", "建个",
 	"帮我做", "帮我开发", "帮我设计", "帮我搭建", "帮我实现", "帮我创建",
+	"帮我写", "帮我编写",
 }
 
 var targetObjects = []string{
@@ -180,7 +182,38 @@ func isComplexTask(text string) bool {
 	hasVerb := containsAny(text, actionVerbs)
 	hasTarget := containsAny(text, targetObjects)
 	hasConstraint := containsAny(text, constraintIndicators)
-	return hasVerb && hasTarget && hasConstraint
+
+	// Full complex task: verb + target + constraint (e.g., "开发一个支持多租户的CRM系统")
+	if hasVerb && hasTarget && hasConstraint {
+		return true
+	}
+
+	// Coding task shortcut: verb + coding-specific target is enough to
+	// trigger the workflow engine. Simple coding requests like "开发贪吃蛇游戏"
+	// or "写个飞机大战" don't have constraint indicators but still need the
+	// three-phase workflow (requirements → design → tasks).
+	if hasVerb && containsAny(text, codingTargets) {
+		return true
+	}
+
+	return false
+}
+
+// codingTargets are target words that, combined with an action verb, indicate
+// a coding task that should go through the workflow engine. These are broader
+// than targetObjects and include game/app types that users commonly request.
+var codingTargets = []string{
+	// From targetObjects (coding-relevant subset)
+	"系统", "平台", "应用", "网站", "服务", "模块", "功能",
+	"工具", "项目", "程序", "软件", "接口", "API",
+	"页面", "组件", "插件", "脚本", "数据库",
+	"小程序", "APP", "app", "后端", "前端", "微服务",
+	// Games and interactive apps
+	"游戏", "小游戏", "game",
+	// Common app types
+	"爬虫", "机器人", "bot", "聊天", "计算器", "编辑器",
+	"管理器", "浏览器", "播放器", "转换器", "生成器",
+	"看板", "仪表盘", "dashboard",
 }
 
 // containsAny returns true if text contains any of the given substrings.

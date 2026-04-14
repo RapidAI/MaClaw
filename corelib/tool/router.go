@@ -275,6 +275,7 @@ type Router struct {
 	tracker       *UsageTracker
 	reranker      Reranker // nil when reranking is disabled
 	sessionTools  map[string]bool
+	intentClassifier *IntentClassifier // hybrid intent classifier (Layer 1+2+3)
 }
 
 func NewRouter(generator *DefinitionGenerator) *Router {
@@ -396,6 +397,17 @@ func (r *Router) SetUsageTracker(tracker *UsageTracker) {
 // SetReranker configures the LLM listwise reranker. Pass nil to disable.
 func (r *Router) SetReranker(rr Reranker) {
 	r.reranker = rr
+}
+
+// SetIntentClassifier sets the hybrid intent classifier used for semantic
+// intent detection in conditional tool matching and routing decisions.
+func (r *Router) SetIntentClassifier(ic *IntentClassifier) {
+	r.intentClassifier = ic
+}
+
+// IntentClassifier returns the configured IntentClassifier, or nil.
+func (r *Router) IntentClassifier() *IntentClassifier {
+	return r.intentClassifier
 }
 
 // ActivateSessionTool adds a tool to the current session's always-include set.
@@ -568,6 +580,35 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	}
 
 	condKeep, condFilterOut := matchConditionalKeepRules(userMessage)
+
+	// Semantic intent enhancement: when keyword matching misses but the
+	// IntentClassifier detects a specific intent, activate the corresponding
+	// conditional tools. This catches cases like "帮我搞个能自动抢票的东西"
+	// where no SSH/browser keywords appear but embedding detects the intent.
+	if r.intentClassifier != nil {
+		icResult := r.intentClassifier.Classify(userMessage)
+		if icResult.Intent != IntentQuery && icResult.Intent != IntentShortCommand &&
+			icResult.Intent != IntentUnknown && icResult.Confidence >= 0.50 {
+			var intentTools []string
+			switch icResult.Intent {
+			case IntentSSH:
+				intentTools = []string{"ssh"}
+			case IntentBrowser:
+				// Activate all browser-related conditional tools.
+				for name := range allConditionalKeepTools {
+					if strings.HasPrefix(name, "browser_") || name == "gui_record_start" || name == "gui_record_stop" {
+						intentTools = append(intentTools, name)
+					}
+				}
+			}
+			for _, name := range intentTools {
+				if !condKeep[name] {
+					condKeep[name] = true
+					delete(condFilterOut, name)
+				}
+			}
+		}
+	}
 
 	// Eager pin: when a conditional tool matches the current message,
 	// pin it to the session immediately so it survives follow-up messages

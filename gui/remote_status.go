@@ -47,6 +47,7 @@ type RemoteSessionView struct {
 	WorkspaceMode  WorkspaceMode        `json:"workspace_mode"`
 	WorkspaceIsGit bool                 `json:"workspace_is_git"`
 	ModelID        string               `json:"model_id"`
+	Provider       string               `json:"provider,omitempty"`
 	JobID          string               `json:"job_id,omitempty"`
 	RunID          string               `json:"run_id,omitempty"`
 	CurrentURL     string               `json:"current_url,omitempty"`
@@ -122,6 +123,7 @@ func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
 		WorkspaceMode:  s.WorkspaceMode,
 		WorkspaceIsGit: s.WorkspaceIsGit,
 		ModelID:        s.ModelID,
+		Provider:       s.ModelName,
 		JobID:          jobID,
 		RunID:          runID,
 		ExecutionMode:  execMode,

@@ -353,6 +353,34 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 	}
 
 	if isProMode && h.manager != nil {
+		// Inject current coding tool provider info so the LLM knows which
+		// provider to use when calling create_session without an explicit
+		// provider parameter.
+		if provCfg, provErr := h.app.LoadConfig(); provErr == nil {
+			type toolProviderInfo struct {
+				tool     string
+				provider string
+			}
+			var provInfos []toolProviderInfo
+			for toolName, meta := range remoteToolCatalog {
+				if meta.ConfigSelector == nil {
+					continue
+				}
+				tc := meta.ConfigSelector(provCfg)
+				cur := strings.TrimSpace(tc.CurrentModel)
+				if cur != "" && len(tc.Models) > 0 {
+					provInfos = append(provInfos, toolProviderInfo{tool: toolName, provider: cur})
+				}
+			}
+			if len(provInfos) > 0 {
+				b.WriteString("\n## 编程工具当前服务商\n")
+				for _, pi := range provInfos {
+					b.WriteString(fmt.Sprintf("- %s: %s\n", pi.tool, pi.provider))
+				}
+				b.WriteString("创建编程会话时，如果用户没有指定服务商，使用上述当前选中的服务商。\n")
+			}
+		}
+
 		sessions := h.manager.List()
 		b.WriteString(fmt.Sprintf("- 活跃会话: %d 个\n", len(sessions)))
 		if len(sessions) > 0 {
@@ -495,6 +523,27 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 	h.appendMemorySection(&b, includeMemoryGuide, msg)
 
 	return b.String()
+}
+
+// desktopWorkflowDocOverride returns a system prompt section that overrides
+// the PDF generation instructions for the desktop AI assistant panel.
+// In the desktop panel, workflow documents (requirements, design, tasks) are
+// displayed as Markdown in the right-side preview panel — no PDF needed.
+// PDF generation is only needed for IM channels (飞书/微信/QQ/Telegram).
+func desktopWorkflowDocOverride() string {
+	return `
+
+### ⚠️ 文档交付方式覆盖（桌面 AI 助手面板专用）
+你当前运行在桌面 AI 助手面板中（非 IM 通道）。以下规则覆盖上述 PDF 生成相关的所有指令：
+
+1. **不要使用 generate_pdf 工具**——桌面面板不需要 PDF，直接输出 Markdown 文本即可
+2. **不要使用 send_file 发送文档**——文档内容直接作为你的回复文本输出
+3. 需求文档、技术设计文档、任务列表文档：直接用 Markdown 格式写在回复中
+4. 系统会自动将你输出的 Markdown 文档显示在聊天区右侧的预览面板中
+5. 输出文档后，仍然需要附带确认提示（如"请查看并确认需求是否准确，或提出修改意见"）
+6. **不要使用 ask_user 工具做阶段确认**——直接在回复文本末尾用文字提示用户确认或修改即可，用户可以直接在输入框打字回复
+7. 其他规则不变：仍需等待用户确认后才能进入下一阶段
+`
 }
 
 // buildSystemPromptWithMemory builds the system prompt with the lightweight

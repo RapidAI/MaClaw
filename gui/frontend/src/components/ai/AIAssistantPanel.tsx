@@ -5,7 +5,7 @@ import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus, ChatConfirmation, ChatUnfinishedSlot } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage } from "./useAIAssistant";
 import { useWorkflowState } from "./useWorkflowState";
-import { WorkflowDocPreview } from "./WorkflowDocPreview";
+import { WorkflowDocPreview, type DocPreviewTheme } from "./WorkflowDocPreview";
 
 interface AIAssistantPanelStateProps {
     messages: ChatMessage[];
@@ -1629,6 +1629,60 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 <div ref={outputEndRef} />
             </div>
 
+            {/* ── Workflow document links bar ── */}
+            {workflowState.phaseDocuments.size > 0 && (
+                <div data-testid="ai-workflow-docs-bar" style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "6px 14px",
+                    borderTop: `1px solid ${t.divider}`,
+                    background: t.bg,
+                    flexShrink: 0,
+                    flexWrap: "wrap",
+                }}>
+                    <span style={{ fontSize: "11px", color: t.textMuted, flexShrink: 0 }}>📋</span>
+                    {Array.from(workflowState.phaseDocuments.keys()).map(pid => {
+                        const fileNames: Record<string, string> = {
+                            requirements: "requirements.md",
+                            design: "design.md",
+                            tasks: "tasks.md",
+                        };
+                        const labels: Record<string, string> = {
+                            requirements: "需求文档",
+                            design: "设计文档",
+                            tasks: "任务列表",
+                        };
+                        const isActive = workflowState.splitMode && workflowState.currentPhaseID === pid;
+                        return (
+                            <button
+                                key={pid}
+                                onClick={() => openDocPreview(pid)}
+                                style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                    padding: "3px 8px",
+                                    fontSize: "12px",
+                                    fontFamily: "'Cascadia Code', 'Fira Code', Consolas, monospace",
+                                    border: `1px solid ${isActive ? t.headingColor : t.divider}`,
+                                    borderRadius: "4px",
+                                    background: isActive ? (t === darkTheme ? "rgba(99,102,241,0.15)" : "rgba(99,102,241,0.08)") : "transparent",
+                                    color: isActive ? t.headingColor : t.linkColor,
+                                    cursor: "pointer",
+                                    textDecoration: "none",
+                                    lineHeight: 1.3,
+                                }}
+                                title={labels[pid] || pid}
+                            >
+                                <span style={{ fontSize: "13px" }}>📄</span>
+                                {fileNames[pid] || `${pid}.md`}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+
             {/* ── Input bar ── */}
             <div data-testid="ai-input-bar" style={{
                 display: "flex",
@@ -1841,6 +1895,43 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     currentPhaseID={workflowState.currentPhaseID}
                     gateResults={workflowState.gateResults}
                     onClose={closeDocPreview}
+                    theme={{
+                        bg: t.bg,
+                        text: t.text,
+                        textMuted: t.textMuted,
+                        border: t.divider,
+                        headerBg: t.titleBarBg,
+                        accentColor: t.headingColor,
+                        accentBg: t === darkTheme ? "rgba(99,102,241,0.15)" : "rgba(99,102,241,0.08)",
+                        codeBg: t.codeBg,
+                        codeText: t.codeText,
+                        codeBlockBg: t.codeBlockBg,
+                        codeBlockBorder: t.codeBlockBorder,
+                        headingColor: t.headingColor,
+                        linkColor: t.linkColor,
+                        quoteBorder: t.quoteBorder,
+                        quoteText: t.quoteText,
+                        quoteBg: t === darkTheme ? "rgba(99,102,241,0.08)" : "rgba(99,102,241,0.04)",
+                    }}
+                    onResizeStart={() => {
+                        const container = document.querySelector('[data-testid="ai-panel-root"]')?.parentElement;
+                        if (!container) return;
+                        const onMouseMove = (e: MouseEvent) => {
+                            const rect = container.getBoundingClientRect();
+                            const newRatio = Math.max(0.2, Math.min(0.8, (e.clientX - rect.left) / rect.width));
+                            setWorkflowSplitRatio(newRatio);
+                        };
+                        const onMouseUp = () => {
+                            document.removeEventListener("mousemove", onMouseMove);
+                            document.removeEventListener("mouseup", onMouseUp);
+                            document.body.style.cursor = "";
+                            document.body.style.userSelect = "";
+                        };
+                        document.body.style.cursor = "col-resize";
+                        document.body.style.userSelect = "none";
+                        document.addEventListener("mousemove", onMouseMove);
+                        document.addEventListener("mouseup", onMouseUp);
+                    }}
                 />
             </div>
         )}

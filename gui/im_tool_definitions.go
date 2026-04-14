@@ -180,7 +180,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"target": map[string]string{"type": "string", "description": "要打开的文件路径、目录路径或 URL（如 C:\\Users\\test\\doc.pdf、https://example.com、mailto:test@example.com）"},
 			}, []string{"target"}),
 		// --- 结构化提问工具 ---
-		toolDef("ask_user", "向用户提出结构化问题并等待回答。当你需要用户确认方案、选择选项、或提供缺失信息时使用此工具，而不是在文本中直接提问。用户回答后结果会作为 tool_result 返回。",
+		toolDef("ask_user", "向用户提出结构化问题并等待回答。适用于需要用户从多个选项中选择、或提供缺失信息的场景。注意：编码工作流的阶段确认（需求/设计/任务确认）不要使用此工具，直接在回复文本中提示用户确认即可。",
 			map[string]interface{}{
 				"question":   map[string]string{"type": "string", "description": "要问用户的问题"},
 				"options":    map[string]interface{}{"type": "array", "description": "可选：预设选项列表，用户可从中选择", "items": map[string]string{"type": "string"}},

@@ -71,6 +71,16 @@ func (r *ToolRouter) SetReranker(rr tool.Reranker) {
 	r.inner.SetReranker(rr)
 }
 
+// SetIntentClassifier delegates to corelib/tool.Router.SetIntentClassifier.
+func (r *ToolRouter) SetIntentClassifier(ic *tool.IntentClassifier) {
+	r.inner.SetIntentClassifier(ic)
+}
+
+// IntentClassifier returns the configured IntentClassifier from the inner router.
+func (r *ToolRouter) IntentClassifier() *tool.IntentClassifier {
+	return r.inner.IntentClassifier()
+}
+
 // SetSkillProvider delegates to corelib/tool.Router.SetSkillProvider.
 func (r *ToolRouter) SetSkillProvider(provider tool.SkillProvider) {
 	r.inner.SetSkillProvider(provider)

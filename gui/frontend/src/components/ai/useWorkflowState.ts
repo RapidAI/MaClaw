@@ -101,6 +101,11 @@ export function useWorkflowState() {
                 next.set(data.phase_id, data.content);
                 return next;
             });
+            // Auto-set currentPhaseID to the latest document's phase. This
+            // ensures the preview panel shows the most recent document,
+            // especially in the steering-based flow where doc_update events
+            // arrive without prior phase_update events.
+            setCurrentPhaseID(data.phase_id);
             // Auto-open split mode when new doc content arrives
             if (!userClosedRef.current) {
                 setSplitMode(true);

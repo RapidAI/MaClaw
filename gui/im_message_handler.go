@@ -3042,6 +3042,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		} else {
 			systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, msg.Text)
 		}
+		// Desktop AI assistant panel: override PDF instructions with Markdown preview.
+		if msg.Platform == "desktop" {
+			systemPrompt += desktopWorkflowDocOverride()
+		}
 
 		result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, nil, nil, nil, msg.MinIterations, msg.Platform)
 
@@ -3154,6 +3158,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// answering a previous confirmation question, not starting a new task.
 	if askUserContext != "" {
 		systemPrompt += "\n\n" + askUserContext
+	}
+
+	// Desktop AI assistant panel: override PDF instructions with Markdown preview.
+	if msg.Platform == "desktop" {
+		systemPrompt += desktopWorkflowDocOverride()
 	}
 
 	// Create a LoopContext for this chat loop.
@@ -3921,7 +3930,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		ctx.ID, ctx.Kind, maxIter, effectiveMax, minIterations, maxAgentIterationsCap, chatFinalizeGrace, userID, truncateRunes(userText, 80))
 
 	// --- Coding Tool Gate: pre-compute gate decision before iteration loop ---
-	gateConfig := newCodingToolGateConfig(userText, ctx.Kind)
+	var ic *tool.IntentClassifier
+	if h.app != nil && h.app.toolRouter != nil {
+		ic = h.app.toolRouter.IntentClassifier()
+	}
+	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, ic)
 
 	// --- Steering Workflow Detector: detect coding workflows driven by
 	// steering rules (coding-workflow.md) and emit frontend events that
@@ -3940,6 +3953,19 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if !hasEngineWorkflow {
 				steeringDetector = detector
 				log.Printf("[SteeringWorkflow] detector activated for user=%s task=%q", userID, truncateRunes(userText, 60))
+				// Emit suggest_maximize immediately when a coding task is
+				// detected, so the user sees the "全屏" suggestion banner
+				// before the LLM starts generating the requirements doc.
+				// Previously this was deferred to the first tool call, but
+				// in desktop mode the LLM may output text directly without
+				// calling any tools.
+				if platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
+					if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+						adapter.EmitSuggestMaximize(userID, "coding")
+						steeringDetector.suggestMaximizeEmitted = true
+						log.Printf("[SteeringWorkflow] emitted early suggest_maximize for desktop user=%s", userID)
+					}
+				}
 			}
 		}
 	}
@@ -4355,8 +4381,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			handlerPostStreamHistoryAppendElapsed += time.Since(historyAppendStartedAt)
 		}
 
-		// --- Coding Tool Gate: strip coding tools on iteration 0 ---
-		if iteration == 0 && gateConfig.active && len(choice.Message.ToolCalls) > 0 {
+		// --- Coding Tool Gate: strip coding tools on ALL iterations ---
+		// The gate must remain active for the entire agent loop (not just
+		// iteration 0). Within a single user message → agent loop, if the
+		// intent is coding and no skip signal, coding tools should never be
+		// allowed. The user's confirmation ("确认") arrives as a separate
+		// message triggering a new loop where the gate is re-evaluated.
+		// Previously this only fired on iteration == 0, so the LLM could
+		// output the requirements doc on iteration 1 and then immediately
+		// call create_session on iteration 2+ without any enforcement.
+		if gateConfig.active && len(choice.Message.ToolCalls) > 0 {
 			gateResult := applyCodingToolGate(choice.Message.ToolCalls)
 			if gateResult.applied {
 				// Log stripped and preserved tool names.
@@ -4368,13 +4402,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				for _, tc := range gateResult.remaining {
 					preservedNames = append(preservedNames, tc.Function.Name)
 				}
-				log.Printf("[coding-gate] activated: stripped=%v preserved=%v reason=%s", strippedNames, preservedNames, gateConfig.reason)
+				log.Printf("[coding-gate] activated (iter=%d): stripped=%v preserved=%v reason=%s", iteration, strippedNames, preservedNames, gateConfig.reason)
 
 				// Trace event.
 				if h.traceService != nil && ctx.RunID != "" {
 					h.appendTraceEvent(ctx, "gate.coding_tool_stripped", "warn",
 						"Coding tool gate stripped tools",
-						fmt.Sprintf("stripped=%v preserved=%v", strippedNames, preservedNames), "", "")
+						fmt.Sprintf("iteration=%d stripped=%v preserved=%v", iteration, strippedNames, preservedNames), "", "")
 				}
 
 				// Update tool calls on the choice and assistantMsg.
@@ -4399,12 +4433,51 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					history[len(history)-1] = entry
 				}
 
-				// If all tools stripped and text is empty, inject system message to prompt requirements doc.
-				if len(gateResult.remaining) == 0 && strings.TrimSpace(msgContent) == "" {
+				// If all tools stripped, inject system message and force return.
+				// On iteration 0: inject prompt to generate requirements doc.
+				// On iteration 1+: the LLM has already produced the doc, so
+				// force-return the accumulated text to the user for confirmation
+				// instead of continuing the loop (which would let the LLM
+				// attempt coding tools again on the next iteration).
+				if len(gateResult.remaining) == 0 {
+					if iteration == 0 && strings.TrimSpace(msgContent) == "" {
+						// First iteration, no text yet — prompt for requirements doc.
+						systemMessagesStart := len(conversation)
+						conversation = append(conversation, map[string]string{
+							"role":    "system",
+							"content": "[编程工作流] 你刚才尝试直接调用编码工具，但当前处于需求确认阶段。请先生成需求文档（包含功能需求、非功能需求、边界情况、验收标准），等待用户确认后再开始编码。",
+						})
+						recordSystemMessages(systemMessagesStart, conversation)
+						continue
+					}
+					// Iteration 1+: LLM already produced text (requirements doc)
+					// but is now trying to call coding tools. Force-return the
+					// response so the user can review and confirm.
+					if strings.TrimSpace(msgContent) != "" {
+						log.Printf("[coding-gate] iter=%d: coding tools stripped after doc output, force-returning for user confirmation", iteration)
+						phase.Stage = agentStageFinalize
+						strippedContent := stripThinkingTags(msgContent)
+						finalResp := &IMAgentResponse{Text: strippedContent}
+						// Desktop: intercept text output for the doc preview panel.
+						if steeringDetector != nil && platform == "desktop" {
+							steeringDetector.interceptTextOutput(strings.TrimSpace(strippedContent), func(phaseID, content string) {
+								if h.app != nil && h.app.workflowEngine != nil {
+									if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+										_ = adapter.EmitDocUpdate(userID, phaseID, content)
+										log.Printf("[SteeringWorkflow] emitted doc_update from gate force-return for user=%s phase=%s len=%d", userID, phaseID, len(content))
+									}
+								}
+							})
+						}
+						attachLLMTelemetry(finalResp)
+						h.saveConversationHistoryTimed(userID, history, finalResp)
+						return finalResp
+					}
+					// No text and not iteration 0 — inject reminder and continue.
 					systemMessagesStart := len(conversation)
 					conversation = append(conversation, map[string]string{
 						"role":    "system",
-						"content": "[编程工作流] 你刚才尝试直接调用编码工具，但当前处于需求确认阶段。请先生成需求文档（包含功能需求、非功能需求、边界情况、验收标准），等待用户确认后再开始编码。",
+						"content": "[编程工作流] 编码工具已被拦截。请先完成需求文档并等待用户确认，不要尝试调用编码工具。",
 					})
 					recordSystemMessages(systemMessagesStart, conversation)
 					continue
@@ -4432,21 +4505,46 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// heuristics (which match keywords like "文档", "写", "生成")
 			// from misclassifying the confirmation prompt as a "promise to
 			// deliver" and forcing another round that re-outputs the content.
+			needsConfirmFromEngine := false
 			if h.app != nil && h.app.workflowEngine != nil {
+				needsConfirmFromEngine = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+			}
+			// Steering-based coding workflow: when the coding tool gate is
+			// active (intentCoding, no skip signal) and the LLM has produced
+			// substantive text (likely the requirements doc), treat it as a
+			// NeedsConfirm phase. This covers the case where no workflow
+			// engine workflow is active but the steering rules enforce the
+			// three-phase flow.
+			needsConfirmFromSteering := gateConfig.active && iteration > 0
+			if needsConfirmFromEngine || needsConfirmFromSteering {
 				trimmedForGate := strings.TrimSpace(stripThinkingTags(msgContent))
 				if trimmedForGate != "" &&
-					!looksLikeNoToolStallReply(msgContent) &&
-					h.app.workflowEngine.IsPhaseNeedsConfirm(userID) {
-					log.Printf("[agent-loop] workflow NeedsConfirm gate: returning response for user confirmation (iteration=%d len=%d)", iteration, len(trimmedForGate))
+					!looksLikeNoToolStallReply(msgContent) {
+					gateSource := "workflow"
+					if needsConfirmFromSteering && !needsConfirmFromEngine {
+						gateSource = "steering"
+					}
+					log.Printf("[agent-loop] NeedsConfirm gate (%s): returning response for user confirmation (iteration=%d len=%d)", gateSource, iteration, len(trimmedForGate))
 					if h.traceService != nil && ctx.RunID != "" {
 						h.appendTraceEvent(ctx, "gate.needs_confirm", "info",
-							"NeedsConfirm phase gate — pausing for user confirmation",
+							fmt.Sprintf("NeedsConfirm phase gate (%s) — pausing for user confirmation", gateSource),
 							truncateTraceText(trimmedForGate, 220), "", "")
 					}
 					phase.Stage = agentStageFinalize
 					finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
 					if !streamDoneAt.IsZero() {
 						postStreamLastReturnPrepAt = time.Now()
+					}
+					// Desktop: intercept text output for the doc preview panel.
+					if steeringDetector != nil && platform == "desktop" {
+						steeringDetector.interceptTextOutput(trimmedForGate, func(phaseID, content string) {
+							if h.app != nil && h.app.workflowEngine != nil {
+								if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+									_ = adapter.EmitDocUpdate(userID, phaseID, content)
+									log.Printf("[SteeringWorkflow] emitted doc_update from text output for user=%s phase=%s len=%d", userID, phaseID, len(content))
+								}
+							}
+						})
 					}
 					attachLLMTelemetry(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
@@ -5302,17 +5400,26 @@ func (d *SteeringWorkflowDetector) matchPhaseID(fileName string) string {
 	switch {
 	case strings.Contains(lower, "需求文档") ||
 		strings.Contains(lower, "需求分析") ||
+		strings.Contains(lower, "功能需求") ||
+		strings.Contains(lower, "项目需求") ||
+		strings.Contains(lower, "需求背景") ||
+		strings.Contains(lower, "需求概述") ||
 		strings.Contains(lower, "requirements"):
 		return "requirements"
 	case strings.Contains(lower, "技术设计") ||
 		strings.Contains(lower, "设计文档") ||
-		strings.Contains(lower, "design") ||
-		strings.Contains(lower, "架构设计"):
+		strings.Contains(lower, "架构设计") ||
+		strings.Contains(lower, "接口设计") ||
+		strings.Contains(lower, "技术方案") ||
+		strings.Contains(lower, "design"):
 		return "design"
 	case strings.Contains(lower, "任务拆分") ||
 		strings.Contains(lower, "任务列表") ||
+		strings.Contains(lower, "任务分解") ||
+		strings.Contains(lower, "开发任务") ||
 		strings.Contains(lower, "tasks") ||
-		strings.Contains(lower, "task_breakdown"):
+		strings.Contains(lower, "task_breakdown") ||
+		strings.Contains(lower, "task breakdown"):
 		return "tasks"
 	default:
 		return ""
@@ -5362,4 +5469,41 @@ func (d *SteeringWorkflowDetector) interceptToolCall(toolName, argsJSON string, 
 		d.phaseDocuments[phaseID] = args.MarkdownContent
 		emit(phaseID, args.MarkdownContent)
 	}
+}
+
+// interceptTextOutput checks the LLM's plain text output for workflow phase
+// documents. This is used in desktop mode where the LLM outputs Markdown
+// directly instead of calling generate_pdf. The heading area (first ~500
+// chars) is matched against phase keywords to determine the document type.
+func (d *SteeringWorkflowDetector) interceptTextOutput(text string, emit func(phaseID, content string)) {
+	if !d.detected || emit == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	// Only match substantive text (likely a document, not a short reply).
+	if len(text) < 200 {
+		return
+	}
+	// Match against the heading area to avoid false positives from keywords
+	// appearing in the body (e.g., "design" mentioned in a requirements doc).
+	headingArea := text
+	if len(headingArea) > 500 {
+		headingArea = headingArea[:500]
+	}
+	phaseID := d.matchPhaseID(headingArea)
+	if phaseID == "" {
+		// Fallback: if no phase keyword matched but this is the first
+		// document in the workflow, assume it's the requirements doc
+		// (the three-phase flow always starts with requirements).
+		if len(d.phaseDocuments) == 0 {
+			phaseID = "requirements"
+		} else {
+			return
+		}
+	}
+	// Avoid re-emitting the same phase document.
+	if existing, ok := d.phaseDocuments[phaseID]; ok && existing == text {
+		return
+	}
+	d.phaseDocuments[phaseID] = text
+	emit(phaseID, text)
 }

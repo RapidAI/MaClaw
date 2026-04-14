@@ -77,6 +77,7 @@ type RemoteSessionView struct {
 	WorkspaceMode  WorkspaceMode        `json:"workspace_mode"`
 	WorkspaceIsGit bool                 `json:"workspace_is_git"`
 	ModelID        string               `json:"model_id"`
+	Provider       string               `json:"provider,omitempty"`
 	ExecutionMode  string               `json:"execution_mode"`
 	Status         SessionStatus        `json:"status"`
 	Thinking       bool                 `json:"thinking"`

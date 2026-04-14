@@ -37,11 +37,11 @@ func TestCodingGate_BlocklistContainsAllCodingTools(t *testing.T) {
 	}
 }
 
-// 4.3 Test allowlist contains all 6 specified delivery tools.
+// 4.3 Test allowlist contains all specified delivery tools.
 func TestCodingGate_AllowlistContainsAllDeliveryTools(t *testing.T) {
 	expected := []string{
 		"generate_pdf", "send_file", "memory", "open",
-		"set_nickname", "manage_config",
+		"set_nickname", "manage_config", "ask_user", "task",
 	}
 	for _, name := range expected {
 		if !deliveryToolAllowlist[name] {

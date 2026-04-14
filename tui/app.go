@@ -324,6 +324,15 @@ func (a *TUIApp) initKernel() tea.Msg {
 	a.defGenerator = defGen
 	a.router = tool.NewRouter(defGen)
 
+	// --- IntentClassifier (hybrid intent detection) ---
+	if memStore != nil {
+		emb := memStore.Embedder()
+		if emb != nil {
+			ic := tool.NewIntentClassifier(emb)
+			a.router.SetIntentClassifier(ic)
+		}
+	}
+
 	// --- 新增：UsageTracker (Tool Outcome Learning) ---
 	trackerPath := tool.DefaultUsageTrackerPath()
 	if trackerPath != "" {

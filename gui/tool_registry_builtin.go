@@ -248,7 +248,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolDiscoverTool(args) })
 
 	// --- Structured question tool ---
-	reg("ask_user", "向用户提出结构化问题并等待回答。当你需要用户确认方案、选择选项、或提供缺失信息时使用此工具，而不是在文本中直接提问。",
+	reg("ask_user", "向用户提出结构化问题并等待回答。适用于需要用户从多个选项中选择、或提供缺失信息的场景。编码工作流的阶段确认不要使用此工具。",
 		ToolCategoryBuiltin, []string{"ask", "question", "confirm", "clarify", "input"},
 		map[string]interface{}{
 			"question":   map[string]string{"type": "string", "description": "要问用户的问题"},

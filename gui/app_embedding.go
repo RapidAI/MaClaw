@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -470,6 +472,15 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		a.toolRouter.SetEmbedder(emb)
 	}
 
+	// Create and wire IntentClassifier (uses the same embedder for Layer 2).
+	if a.toolRouter != nil {
+		ic := tool.NewIntentClassifier(emb)
+		// Wire Layer 3 LLM callback using the app's LLM config.
+		ic.SetLLMFunc(a.buildIntentLLMFunc())
+		a.toolRouter.SetIntentClassifier(ic)
+		log.Println("[embedding] IntentClassifier created and wired to tool router")
+	}
+
 	// Wire embedder into tool builder.
 	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
 		if handler := a.remoteSessions.hubClient.imHandler; handler != nil && handler.toolBuilder != nil {
@@ -490,4 +501,24 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 
 	a.logMemorySnapshot("activateEmbedderAsync:done")
 	fmt.Printf("[embedding] async activation complete in %v\n", time.Since(t0))
+}
+
+// buildIntentLLMFunc creates a LLMClassifyFunc callback that uses the app's
+// current LLM config to make a lightweight classification request.
+func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
+	return func(prompt string) (string, error) {
+		cfg := a.GetMaclawLLMConfig()
+		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+			return "", fmt.Errorf("LLM not configured")
+		}
+		messages := []interface{}{
+			map[string]string{"role": "user", "content": prompt},
+		}
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, 5*time.Second)
+		if err != nil {
+			return "", err
+		}
+		return resp.Content, nil
+	}
 }

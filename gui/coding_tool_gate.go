@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -12,8 +13,15 @@ import (
 //
 // When the intent classifier returns intentCoding and the user has not sent a
 // skip signal, the gate strips coding tool calls (create_session, bash, etc.)
-// from the LLM's first-iteration response, preserving text content and
+// from ALL iterations of the LLM response loop, preserving text content and
 // delivery tools (generate_pdf, send_file, etc.).
+//
+// The gate remains active for the entire agent loop (all iterations within a
+// single user message). The user's confirmation arrives as a separate message,
+// triggering a new loop where the gate is re-evaluated. On iteration 1+, if
+// all coding tools are stripped and the LLM has already produced text (the
+// requirements doc), the loop force-returns the response for user confirmation
+// instead of continuing.
 //
 // This acts as a hard backstop for the system-prompt HARD GATE constraint
 // that the LLM sometimes ignores.
@@ -34,7 +42,7 @@ type codingToolGateResult struct {
 	applied   bool           // true if any tools were actually stripped
 }
 
-// codingToolBlocklist lists tool names subject to stripping in iteration 0.
+// codingToolBlocklist lists tool names subject to stripping when the gate is active.
 var codingToolBlocklist = map[string]bool{
 	"create_session":  true,
 	"bash":            true,
@@ -53,11 +61,13 @@ var deliveryToolAllowlist = map[string]bool{
 	"open":          true,
 	"set_nickname":  true,
 	"manage_config": true,
+	"ask_user":      true,
+	"task":          true,
 }
 
 // skipSignalsChinese contains Chinese phrases that bypass the gate.
 var skipSignalsChinese = []string{
-	"直接做", "不用问了", "按你的想法来", "直接开始",
+	"直接做", "直接用", "不用问了", "按你的想法来", "直接开始",
 	"不用确认", "马上做", "赶紧做", "跳过文档", "不需要文档",
 	// Action/continuation phrases — user wants to start working on an
 	// already-discussed task, not go through the three-phase workflow again.
@@ -98,8 +108,25 @@ func containsSkipSignal(text string) bool {
 // newCodingToolGateConfig computes the gate decision once before the iteration
 // loop begins. The result is immutable for the duration of the loop.
 func newCodingToolGateConfig(userText string, loopKind LoopKind) codingToolGateConfig {
+	return newCodingToolGateConfigWithClassifier(userText, loopKind, nil)
+}
+
+// newCodingToolGateConfigWithClassifier is like newCodingToolGateConfig but
+// accepts an optional IntentClassifier for semantic refinement.
+func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, ic *tool.IntentClassifier) codingToolGateConfig {
 	result := classifyTaskIntent(userText)
 	skip := containsSkipSignal(userText)
+
+	// Semantic refinement: when keyword-based classification says "coding" but
+	// the IntentClassifier says "query" (knowledge question), override to
+	// non-coding so the gate doesn't strip tools for a conceptual question.
+	// Only invoke the classifier when it's ready (anchors warmed up).
+	if result.Intent == intentCoding && !skip && ic != nil && ic.Ready() {
+		icResult := ic.Classify(userText)
+		if icResult.Intent == tool.IntentQuery {
+			result.Intent = intentUnknown
+		}
+	}
 
 	cfg := codingToolGateConfig{
 		intent:     result.Intent,

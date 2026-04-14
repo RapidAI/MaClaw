@@ -50,6 +50,7 @@ func compactRemoteSmokeSessionView(view RemoteSessionView) RemoteSessionView {
 	view.WorkspacePath = sanitizeRemoteText(view.WorkspacePath)
 	view.WorkspaceRoot = sanitizeRemoteText(view.WorkspaceRoot)
 	view.ModelID = sanitizeRemoteText(view.ModelID)
+	view.Provider = sanitizeRemoteText(view.Provider)
 
 	summary := view.Summary
 	sanitizeSessionSummary(&summary)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/project"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // nonCodingKeywords are phrases that strongly indicate a non-coding task.
@@ -47,6 +48,14 @@ var codingKeywords = []string{
 	"pull request", "merge request",
 	"git commit", "git push",
 	"create_session", // explicit tool name = intentional
+	// Creation-oriented keywords: user wants to build something.
+	// "游戏" alone is strong enough — "做一个打飞机游戏" hits this.
+	"游戏", "game",
+	// Longer creation phrases that imply coding (short ones like "做个" are
+	// too ambiguous — "做个总结" is not coding).
+	"开发一个", "开发个", "实现一个", "实现个",
+	"创建一个", "创建个",
+	"前端", "后端", "frontend", "backend",
 }
 
 // codingActionPhrases are short action/continuation phrases that indicate
@@ -78,6 +87,26 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 	if result.Intent == intentAmbiguous || result.Intent == intentUnknown {
 		if hasCodingActionPhrase(h.lastUserText) && h.conversationHasCodingContext() {
 			return ""
+		}
+
+		// Hybrid intent classifier: use embedding + LLM for semantic classification
+		// when keyword-based classification is ambiguous.
+		if h.app != nil && h.app.toolRouter != nil {
+			if ic := h.app.toolRouter.IntentClassifier(); ic != nil {
+				icResult := ic.Classify(h.lastUserText)
+				switch icResult.Intent {
+				case tool.IntentCoding:
+					return "" // semantic classifier says coding → allow
+				case tool.IntentQuery:
+					// Knowledge question, not an action → block session creation
+					return "⚠️ 当前请求看起来是知识问答，不需要创建编程会话。请直接回答用户的问题。"
+				case tool.IntentSSH:
+					// Fall through to the SSH hint below
+					result.Intent = intentSSH
+				case tool.IntentContent:
+					result.Intent = intentNonCoding
+				}
+			}
 		}
 	}
 
@@ -294,7 +323,7 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		Tool:               tool,
 		ProjectID:          projectID,
 		ProjectPath:        projectPath,
-		Provider:           provider,
+		Provider:           resolvedProvider,
 		ResumeSessionID:    resumeSessionID,
 		InjectResumePrompt: false,
 		LaunchSource:       RemoteLaunchSourceAI,

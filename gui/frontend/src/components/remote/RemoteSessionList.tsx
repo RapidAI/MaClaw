@@ -276,11 +276,12 @@ export function RemoteSessionList(props: Props) {
     const renderTable = (sessions: RemoteSessionView[], muted = false, isAITab = false) => (
         <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
             <colgroup>
-                <col style={{ width: "24%" }} />
-                <col style={{ width: "18%" }} />
-                <col style={{ width: "14%" }} />
-                <col style={{ width: "12%" }} />
-                <col style={{ width: "32%" }} />
+                <col style={{ width: isAITab ? "20%" : "24%" }} />
+                <col style={{ width: isAITab ? "16%" : "18%" }} />
+                <col style={{ width: isAITab ? "12%" : "14%" }} />
+                <col style={{ width: isAITab ? "12%" : "12%" }} />
+                {isAITab && <col style={{ width: "12%" }} />}
+                <col style={{ width: isAITab ? "28%" : "32%" }} />
             </colgroup>
             <thead>
                 <tr style={{ background: colors.bg }}>
@@ -288,6 +289,7 @@ export function RemoteSessionList(props: Props) {
                     <th style={thStyle}>{localizeText("Tool / session", "工具 / 实例", "工具 / 實例")}</th>
                     <th style={thStyle}>{localizeText("Status", "状态", "狀態")}</th>
                     <th style={thStyle}>{localizeText("Source", "来源", "來源")}</th>
+                    {isAITab && <th style={thStyle}>{localizeText("Provider", "服务商", "服務商")}</th>}
                     <th style={{ ...thStyle, textAlign: "right" }}>{localizeText("Actions", "操作", "操作")}</th>
                 </tr>
             </thead>
@@ -332,6 +334,13 @@ export function RemoteSessionList(props: Props) {
                                 <td style={tdStyle}>
                                     <span style={badgeStyle(sourceInfo.bg, sourceInfo.color)}>{sourceInfo.label}</span>
                                 </td>
+                                {isAITab && (
+                                    <td style={tdStyle}>
+                                        <div style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={session.provider || ""}>
+                                            {session.provider || "-"}
+                                        </div>
+                                    </td>
+                                )}
                                 <td style={{ ...tdStyle, textAlign: "right" }}>
                                     <div style={{ display: "inline-flex", gap: "4px", alignItems: "center", flexWrap: "nowrap" }}>
                                         <button
@@ -386,7 +395,7 @@ export function RemoteSessionList(props: Props) {
                             {isPreviewOpen && (
                                 <tr>
                                     <td
-                                        colSpan={5}
+                                        colSpan={isAITab ? 6 : 5}
                                         style={{
                                             padding: 0,
                                             borderBottom: `1px solid ${colors.border}`,
