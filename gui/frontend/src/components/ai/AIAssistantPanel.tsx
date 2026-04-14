@@ -1192,7 +1192,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         : overlayStyle;
 
     return (
-        <div style={{ display: "flex", width: "100%", height: "100%" }}>
+        <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden" }}>
         <div data-testid="ai-panel-root" style={{...containerStyle, width: workflowState.splitMode ? `${workflowState.splitRatio * 100}%` : "100%", flex: workflowState.splitMode ? "none" : 1}}>
             {/* ── Drag overlay (inline mode) ── */}
             {inline && !maximized && (
@@ -1687,12 +1687,16 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         const fileNames: Record<string, string> = {
                             requirements: "requirements.md",
                             design: "design.md",
+                            tech_design: "design.md",
                             tasks: "tasks.md",
+                            task_breakdown: "tasks.md",
                         };
                         const labels: Record<string, string> = {
                             requirements: "需求文档",
                             design: "设计文档",
+                            tech_design: "设计文档",
                             tasks: "任务列表",
+                            task_breakdown: "任务列表",
                         };
                         const isActive = workflowState.splitMode && workflowState.currentPhaseID === pid;
                         return (

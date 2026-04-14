@@ -5618,6 +5618,19 @@ func extractFencedDocument(text string) string {
 			return inner
 		}
 	}
+	// No valid --- fences found. Strip any conversational preamble before
+	// the first Markdown heading so the preview only shows the document.
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			stripped := strings.Join(lines[i:], "\n")
+			stripped = strings.TrimSpace(stripped)
+			if len(stripped) > 100 {
+				return stripped
+			}
+			break
+		}
+	}
 	return text
 }
 

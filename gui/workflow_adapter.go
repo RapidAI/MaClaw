@@ -39,14 +39,36 @@ func (a *GUIWorkflowAdapter) SendTextToUser(userID, text string) error {
 // EmitPhaseUpdate notifies the frontend of a phase change.
 func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
 	if a.app.ctx != nil {
-		runtime.EventsEmit(a.app.ctx, "workflow:phase_update", state)
+		// Normalize the current phase ID for the frontend.
+		emitState := state
+		if state != nil {
+			if canonical, ok := normalizePhaseIDMap[state.CurrentPhase]; ok {
+				// Shallow copy to avoid mutating the engine's state.
+				cp := *state
+				cp.CurrentPhase = canonical
+				emitState = &cp
+			}
+		}
+		runtime.EventsEmit(a.app.ctx, "workflow:phase_update", emitState)
 	}
 	return nil
+}
+
+// normalizePhaseID maps engine-internal phase IDs to the canonical IDs
+// used by the frontend. The workflow engine templates use IDs like
+// "tech_design" and "task_breakdown", while the frontend expects
+// "design" and "tasks".
+var normalizePhaseIDMap = map[string]string{
+	"tech_design":    "design",
+	"task_breakdown": "tasks",
 }
 
 // EmitDocUpdate notifies the frontend of document content changes and
 // persists the document to the project's .maclaw/workflow/ directory.
 func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) error {
+	if canonical, ok := normalizePhaseIDMap[phaseID]; ok {
+		phaseID = canonical
+	}
 	if a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:doc_update", map[string]string{
 			"user_id":  userID,
@@ -145,6 +167,9 @@ func (a *GUIWorkflowAdapter) EmitSuggestMaximize(userID, workflowType string) {
 
 // EmitGateResult notifies the frontend of a quality gate result.
 func (a *GUIWorkflowAdapter) EmitGateResult(userID, phaseID string, result *workflow.QualityGateResult) error {
+	if canonical, ok := normalizePhaseIDMap[phaseID]; ok {
+		phaseID = canonical
+	}
 	if a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:gate_result", map[string]interface{}{
 			"user_id":  userID,

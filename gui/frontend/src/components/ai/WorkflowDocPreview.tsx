@@ -105,7 +105,9 @@ interface WorkflowDocPreviewProps {
 const phaseLabels: Record<string, string> = {
     requirements: "需求",
     design: "设计",
+    tech_design: "设计",
     tasks: "任务",
+    task_breakdown: "任务",
 };
 
 // ── Lightweight Markdown renderer (no external deps) ──
@@ -361,7 +363,7 @@ export function WorkflowDocPreview({
                     onResizeStart?.();
                 }}
                 style={{
-                    width: "5px",
+                    width: "6px",
                     cursor: "col-resize",
                     background: theme.border,
                     flexShrink: 0,
@@ -452,7 +454,7 @@ export function WorkflowDocPreview({
                     flex: 1,
                     overflowY: "auto",
                     overflowX: "hidden",
-                    padding: "16px 20px",
+                    padding: "16px 20px 16px 24px",
                     fontSize: "14px",
                     lineHeight: "1.6",
                     fontFamily: "inherit",
