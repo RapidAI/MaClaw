@@ -552,6 +552,15 @@ func shouldClearHistoryForIncompleteTask(text string) bool {
 	return true
 }
 
+// pendingAskUserState tracks an ask_user question that is waiting for the
+// user's response. Stored in IMMessageHandler.pendingAskUser keyed by userID.
+type pendingAskUserState struct {
+	Question  string
+	Options   []string
+	InputType string
+	Timestamp time.Time
+}
+
 func hasIncompleteTaskMarker(entries []conversationEntry) bool {
 	for i := len(entries) - 1; i >= 0; i-- {
 		text, ok := entries[i].Content.(string)
@@ -1656,6 +1665,13 @@ type IMMessageHandler struct {
 	// (e.g. modify requests) so the system-prompt builder can use it
 	// instead of rebuilding a generic one. Keyed by userID.
 	stashedPhasePrompt sync.Map
+
+	// pendingAskUser tracks ask_user questions that are waiting for user
+	// responses. When the agent loop returns early due to ask_user, the
+	// question is stored here so the next user message can be identified
+	// as a response (not a new request) and the context is preserved.
+	// Keyed by userID, value is *pendingAskUserState.
+	pendingAskUser sync.Map
 
 	// taskOrchestrator manages per-task execution during the coding
 	// workflow's Execution Phase. When active, it injects per-task system
@@ -2791,6 +2807,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// is misconfigured.
 	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
 		h.memory.clear(msg.UserID)
+		h.pendingAskUser.Delete(msg.UserID)
 		if h.confirmationStore != nil {
 			h.confirmationStore.clear(msg.UserID)
 		}
@@ -2802,7 +2819,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 		return resp
 	}
-	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) {
+	// Skip chit-chat interception when there's a pending ask_user question,
+	// because short responses like "ok"/"好的" are valid answers to ask_user.
+	hasPendingAskUser := false
+	if _, loaded := h.pendingAskUser.Load(msg.UserID); loaded {
+		hasPendingAskUser = true
+	}
+	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) && !hasPendingAskUser {
 		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang)}
 	}
 	if trimmed == "/exit" || trimmed == "/quit" {
@@ -2912,12 +2935,17 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// This handles active workflows, intent understanding, and complex task detection.
 	if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground {
 		if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
+			// Consume any pending ask_user state so it doesn't leak into
+			// the next message when the workflow engine handles this one
+			// (e.g., user clicks "确认" which matches confirmWords).
+			h.pendingAskUser.Delete(msg.UserID)
 			return wfResp
 		}
 	}
 
 	if decision.StartNewTask {
 		h.memory.clearConversationAndDismissSlot(msg.UserID)
+		h.pendingAskUser.Delete(msg.UserID)
 		EntriesBeforeClear = nil
 		unfinishedSlot = nil
 		freshTask = true
@@ -2928,6 +2956,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	} else {
 		if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, EntriesBeforeClear) {
 			h.memory.clearConversationAndDismissSlot(msg.UserID)
+			h.pendingAskUser.Delete(msg.UserID)
 			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
 			EntriesBeforeClear = nil
 			unfinishedSlot = nil
@@ -2935,10 +2964,28 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 
+	// --- Pending ask_user response detection ---
+	// If the previous assistant message was an ask_user question, the current
+	// user message is a response to that question (not a new request).
+	// Consume the pending state and build context for the system prompt.
+	var askUserContext string
+	if raw, ok := h.pendingAskUser.LoadAndDelete(msg.UserID); ok {
+		pending := raw.(*pendingAskUserState)
+		// Expire after 30 minutes to avoid stale state.
+		if time.Since(pending.Timestamp) < 30*time.Minute {
+			askUserContext = fmt.Sprintf(
+				"【上下文提示】用户正在回答你之前提出的确认问题，而非发起新请求。\n你的问题：%s\n用户回答：%s\n请基于当前任务上下文理解用户意图，将其视为补充或修改意见。",
+				pending.Question, trimmed,
+			)
+			log.Printf("[AskUser] consumed pending ask_user for user %s, question=%q, answer=%q", msg.UserID, truncateRunes(pending.Question, 50), truncateRunes(trimmed, 50))
+		}
+	}
+
 	// --- Automatic topic switch detection ---
 	// For interactive (non-background) messages, detect if the user has
 	// switched topics and auto-clear stale conversation context.
-	if !msg.IsBackground && h.topicDetector != nil && len(EntriesBeforeClear) > 0 && !hasIncompleteTaskMarker(EntriesBeforeClear) && decision.ResumeSlotID == "" && !decision.StartNewTask {
+	// Skip detection when the user is responding to an ask_user question.
+	if !msg.IsBackground && h.topicDetector != nil && len(EntriesBeforeClear) > 0 && !hasIncompleteTaskMarker(EntriesBeforeClear) && decision.ResumeSlotID == "" && !decision.StartNewTask && askUserContext == "" {
 		if h.topicDetector.detect(trimmed, msg.UserID, h.memory) == TopicNew {
 			// Archive a one-line summary before clearing.
 			if h.memoryStore != nil {
@@ -2951,6 +2998,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				}
 			}
 			h.memory.clear(msg.UserID)
+			h.pendingAskUser.Delete(msg.UserID)
 			log.Printf("[TopicDetector] auto-cleared context for user %s", msg.UserID)
 		}
 	}
@@ -3102,6 +3150,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 
+	// Inject ask_user response context so the LLM knows the user is
+	// answering a previous confirmation question, not starting a new task.
+	if askUserContext != "" {
+		systemPrompt += "\n\n" + askUserContext
+	}
+
 	// Create a LoopContext for this chat loop.
 	loopCtx := providedLoopCtx
 	if loopCtx == nil {
@@ -3174,6 +3228,7 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 		}
 	}
 	h.memory.clear(userID)
+	h.pendingAskUser.Delete(userID)
 
 	var b strings.Builder
 	if len(killed) > 0 {
@@ -4589,8 +4644,32 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// can continue from where it left off.
 				toolResults = append(toolResults, fmt.Sprintf("用户被提问: %s（等待回答）", askReq.Question))
 				recordToolResult(tc.ID, toolResults[len(toolResults)-1])
+
+				// FIX: Append tool result to conversation/history and persist,
+				// so the next message sees the full context (including the
+				// requirement document and ask_user question).
+				conversation = append(conversation, map[string]interface{}{
+					"role":         "tool",
+					"tool_call_id": tc.ID,
+					"content":      toolResults[len(toolResults)-1],
+				})
+				history = append(history, conversationEntry{
+					Role: "tool", Content: toolResults[len(toolResults)-1], ToolCallID: tc.ID,
+				})
+				h.saveConversationHistoryTimed(userID, history, nil)
+
+				// FIX: Store pending ask_user state so the next message can
+				// be identified as a response to this question.
+				h.pendingAskUser.Store(userID, &pendingAskUserState{
+					Question:  askReq.Question,
+					Options:   askReq.Options,
+					InputType: askReq.InputType,
+					Timestamp: time.Now(),
+				})
+
 				resp := &IMAgentResponse{
-					Text: displayText,
+					Text:           displayText,
+					ResponseSource: "ask_user",
 				}
 				if askReq.InputType == "choice" && len(askReq.Options) > 0 {
 					actions := make([]IMResponseAction, len(askReq.Options))

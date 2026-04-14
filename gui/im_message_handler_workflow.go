@@ -151,6 +151,8 @@ func (h *IMMessageHandler) cancelWorkflowForUser(userID string) {
 			_, _, _, _, _ = understanding.HandleInput(userID, "取消")
 		}
 	}
+	// Clear any pending ask_user state.
+	h.pendingAskUser.Delete(userID)
 }
 
 // docOnlyAllowedTools is the set of tool names allowed during doc_only phases.
