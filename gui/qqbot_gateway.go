@@ -210,6 +210,9 @@ func (m *qqBotGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	if a.toolRouter != nil {
 		h.SetToolRouter(a.toolRouter)
 	}
+	if a.usageTracker != nil {
+		h.SetUsageTracker(a.usageTracker)
+	}
 	if a.memoryStore != nil {
 		h.SetMemoryStore(a.memoryStore)
 	}

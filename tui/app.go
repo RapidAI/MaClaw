@@ -23,6 +23,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
 	tea "github.com/charmbracelet/bubbletea"
@@ -60,6 +61,12 @@ type TUIApp struct {
 
 	// Gossip 聊天八卦自动发帖
 	gossipDetector *TUIGossipDetector
+
+	// Workflow engine (corelib/workflow)
+	workflowEngine *workflow.WorkflowEngine
+
+	// Tool usage tracker (outcome learning)
+	usageTracker *tool.UsageTracker
 
 	root  views.RootModel
 	ready bool
@@ -153,6 +160,9 @@ func (a *TUIApp) shutdown() {
 	}
 	if a.auditLog != nil {
 		_ = a.auditLog.Close()
+	}
+	if a.usageTracker != nil {
+		_ = a.usageTracker.Save()
 	}
 	if a.kernel != nil {
 		ctx := context.Background()
@@ -314,6 +324,18 @@ func (a *TUIApp) initKernel() tea.Msg {
 	a.defGenerator = defGen
 	a.router = tool.NewRouter(defGen)
 
+	// --- 新增：UsageTracker (Tool Outcome Learning) ---
+	trackerPath := tool.DefaultUsageTrackerPath()
+	if trackerPath != "" {
+		tracker, trackerErr := tool.NewUsageTracker(trackerPath)
+		if trackerErr != nil {
+			logger.Error("usage tracker init failed: %v", trackerErr)
+		} else {
+			a.usageTracker = tracker
+			a.router.SetUsageTracker(tracker)
+		}
+	}
+
 	// 启动 SessionMonitor 状态通知转发
 	go func() {
 		for evt := range statusCh {
@@ -336,6 +358,9 @@ func (a *TUIApp) initKernel() tea.Msg {
 			logger.Info("restored %d messages from memoryshot", len(snap.ChatHistory))
 		}
 	}
+
+	// --- 新增：WorkflowEngine ---
+	a.initTUIWorkflowEngine()
 
 	return kernelStartedMsg{}
 }
@@ -641,6 +666,8 @@ func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 			WithSchedulerMgr(a.schedulerMgr),
 			WithAgentNetClient(a.AgentNetClient),
 			WithAuditLog(a.auditLog),
+			WithWorkflowEngine(a.workflowEngine),
+			WithUsageTracker(a.usageTracker),
 		)
 		resp := handler.RunAgentLoop(text, conversation)
 		if resp.Error != "" {

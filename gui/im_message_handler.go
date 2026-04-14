@@ -20,8 +20,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -577,6 +579,63 @@ func shouldAutoClearIncompleteTaskContext(newMessage string, entries []conversat
 		return false
 	}
 	return shouldClearHistoryForIncompleteTask(newMessage)
+}
+
+// extractOriginalUserTask scans conversation history to find the first
+// substantive user message (the original task request). This is used to
+// populate the unfinished task slot when max rounds are reached.
+func extractOriginalUserTask(history []conversationEntry) string {
+	for _, e := range history {
+		if e.Role != "user" {
+			continue
+		}
+		text, ok := e.Content.(string)
+		if !ok {
+			continue
+		}
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" || shouldResumeIncompleteTask(trimmed) {
+			continue
+		}
+		// Skip very short messages that are likely confirmations.
+		if len([]rune(trimmed)) < 4 {
+			continue
+		}
+		return truncateRunes(trimmed, 300)
+	}
+	return ""
+}
+
+// extractProgressSummary builds a brief summary of what the agent accomplished
+// by scanning the last few assistant messages in the conversation history.
+func extractProgressSummary(history []conversationEntry) string {
+	var lastAssistantTexts []string
+	for i := len(history) - 1; i >= 0 && len(lastAssistantTexts) < 3; i-- {
+		if history[i].Role != "assistant" {
+			continue
+		}
+		text, ok := history[i].Content.(string)
+		if !ok {
+			continue
+		}
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			continue
+		}
+		// Skip the max-rounds marker itself.
+		if strings.Contains(trimmed, "已达到最大推理轮次") || strings.Contains(trimmed, "已接近最大推理轮次") {
+			continue
+		}
+		lastAssistantTexts = append(lastAssistantTexts, truncateRunes(trimmed, 150))
+	}
+	if len(lastAssistantTexts) == 0 {
+		return ""
+	}
+	// Reverse to chronological order.
+	for i, j := 0, len(lastAssistantTexts)-1; i < j; i, j = i+1, j-1 {
+		lastAssistantTexts[i], lastAssistantTexts[j] = lastAssistantTexts[j], lastAssistantTexts[i]
+	}
+	return strings.Join(lastAssistantTexts, " → ")
 }
 
 type explicitTaskSlotDecision struct {
@@ -1490,6 +1549,8 @@ type IMMessageHandler struct {
 	// Dynamic tool generation and routing (lazily initialized via setters).
 	toolDefGen     *ToolDefinitionGenerator
 	toolRouter     *ToolRouter
+	usageTracker   *tool.UsageTracker
+	taskStore      *task.Store
 	cachedTools    []map[string]interface{}
 	toolsCacheTime time.Time
 	toolsMu        sync.RWMutex
@@ -1547,6 +1608,11 @@ type IMMessageHandler struct {
 	// prevent unnecessary session creation.
 	lastUserText string
 
+	// lastUserID stores the user ID for the current agent loop. Used by
+	// context-aware guards (e.g. conversationHasCodingContext) to load the
+	// correct conversation history shard.
+	lastUserID string
+
 	// imFileSender is an optional callback that forwards a file to the user's
 	// IM channels (Feishu/WeChat/etc.) via the Hub WebSocket. Set by the
 	// desktop GUI after connecting to the Hub. When nil, IM forwarding is
@@ -1584,6 +1650,17 @@ type IMMessageHandler struct {
 	adaptiveRetry *AdaptiveRetry
 
 	trajectoryRecorderFactory func() *TrajectoryRecorder
+
+	// stashedPhasePrompt holds the custom PhasePrompt from HandleInput
+	// (e.g. modify requests) so the system-prompt builder can use it
+	// instead of rebuilding a generic one. Keyed by userID.
+	stashedPhasePrompt sync.Map
+
+	// taskOrchestrator manages per-task execution during the coding
+	// workflow's Execution Phase. When active, it injects per-task system
+	// messages and constructs focused prompts for send_and_observe instead
+	// of letting the LLM dump the entire project description at once.
+	taskOrchestrator *TaskExecutionOrchestrator
 }
 
 // NewIMMessageHandler creates a new handler.
@@ -1649,6 +1726,9 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		return h.client, h.app.GetMaclawLLMConfig()
 	})
 
+	// Initialize task execution orchestrator for per-task coding workflow.
+	h.taskOrchestrator = NewTaskExecutionOrchestrator()
+
 	return h
 }
 
@@ -1695,6 +1775,11 @@ func (h *IMMessageHandler) SetToolRouter(router *ToolRouter) {
 // project paths and recommending tools.
 func (h *IMMessageHandler) SetContextResolver(resolver *SessionContextResolver) {
 	h.contextResolver = resolver
+}
+
+// SetUsageTracker configures the tool usage tracker for outcome recording.
+func (h *IMMessageHandler) SetUsageTracker(tracker *tool.UsageTracker) {
+	h.usageTracker = tracker
 }
 
 // SetSessionPrecheck configures the session precheck for environment validation.
@@ -2708,6 +2793,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if h.confirmationStore != nil {
 			h.confirmationStore.clear(msg.UserID)
 		}
+		// Clean up workflow and understanding state.
+		h.cancelWorkflowForUser(msg.UserID)
 		resp := &IMAgentResponse{Text: "对话已重置。"}
 		if h.currentLoopCtx != nil {
 			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, "")
@@ -2732,6 +2819,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			"/help — 显示此帮助"}
 	}
 	if trimmed == "/cancel" || trimmed == "/取消" {
+		// Cancel active workflow if any.
+		h.cancelWorkflowForUser(msg.UserID)
 		if h.confirmationStore != nil {
 			if pending := h.confirmationStore.get(msg.UserID); pending != nil {
 				h.confirmationStore.clear(msg.UserID)
@@ -2816,6 +2905,16 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			Error: "MaClaw LLM 未配置，无法处理请求。请在 MaClaw 客户端的设置中配置 LLM。",
 		}
 	}
+
+	// --- Workflow engine interception ---
+	// Route messages through the workflow engine before the main agent loop.
+	// This handles active workflows, intent understanding, and complex task detection.
+	if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground {
+		if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
+			return wfResp
+		}
+	}
+
 	if decision.StartNewTask {
 		h.memory.clearConversationAndDismissSlot(msg.UserID)
 		EntriesBeforeClear = nil
@@ -2991,6 +3090,17 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 	systemPrompt += h.buildResumeTraceContext(msg.UserID, msg.Text)
 
+	// Inject workflow phase prompt if user has an active workflow.
+	// Prefer the stashed prompt from HandleInput (includes modify context)
+	// over the generic BuildPhasePrompt.
+	if h.app != nil && h.app.workflowEngine != nil {
+		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(msg.UserID); ok {
+			systemPrompt += "\n" + stashed.(string)
+		} else if phasePrompt := h.app.workflowEngine.BuildPhasePrompt(msg.UserID); phasePrompt != "" {
+			systemPrompt += "\n" + phasePrompt
+		}
+	}
+
 	// Create a LoopContext for this chat loop.
 	loopCtx := providedLoopCtx
 	if loopCtx == nil {
@@ -3022,6 +3132,16 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if resp == nil {
 		resp = &IMAgentResponse{}
 	}
+
+	// --- Workflow doc capture: store phase output and emit to frontend ---
+	if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && resp.Text != "" {
+		if phaseID := h.app.workflowEngine.SavePhaseOutput(msg.UserID, resp.Text); phaseID != "" {
+			if cb := h.app.workflowEngine.GetCallbacks(); cb != nil {
+				_ = cb.EmitDocUpdate(msg.UserID, phaseID, resp.Text)
+			}
+		}
+	}
+
 	if confirmedResume {
 		resp.ConfirmedResume = true
 	}
@@ -3452,12 +3572,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 	h.currentLoopCtx = ctx
 	h.lastUserText = userText
+	h.lastUserID = userID
 	ctx.Platform = platform
 	if h.traceService != nil && ctx.RunID != "" {
 		h.traceService.SetRunLoopID(ctx.RunID, ctx.ID)
 		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", truncateTraceText(userText, 180), "", "")
 	}
-	defer func() { h.currentLoopCtx = nil; h.lastUserText = ""; ctx.Done() }()
+	defer func() { h.currentLoopCtx = nil; h.lastUserText = ""; h.lastUserID = ""; ctx.Done() }()
 
 	// Derive a context.Context from the LoopContext's CancelC so that
 	// in-flight HTTP requests (LLM streaming) are aborted on cancel.
@@ -3623,6 +3744,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			tools = filterToolsForSkillPreference(baseTools)
 		}
 	}
+	// Workflow tool filtering: restrict tools during doc_only phases.
+	if h.app != nil && h.app.workflowEngine != nil {
+		tools = h.applyWorkflowToolFilter(userID, tools)
+	}
 	toolsTokenBudget := estimateToolsTokens(tools)
 	preLLMToolsElapsed = time.Since(toolsStartedAt)
 	httpClient := ctx.HTTPClient
@@ -3736,9 +3861,32 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			effectiveMax = maxAgentIterationsCap
 		}
 	}
+	log.Printf("[AgentLoop] start loop=%s kind=%d maxIter=%d effectiveMax=%d minIterations=%d configCap=%d grace=%d user=%q task=%q",
+		ctx.ID, ctx.Kind, maxIter, effectiveMax, minIterations, maxAgentIterationsCap, chatFinalizeGrace, userID, truncateRunes(userText, 80))
 
 	// --- Coding Tool Gate: pre-compute gate decision before iteration loop ---
 	gateConfig := newCodingToolGateConfig(userText, ctx.Kind)
+
+	// --- Steering Workflow Detector: detect coding workflows driven by
+	// steering rules (coding-workflow.md) and emit frontend events that
+	// would normally come from the WorkflowEngine path. Only activate when:
+	// 1. Not a background task (ctx.Kind != LoopKindBackground)
+	// 2. The message is a coding task (keyword match)
+	// 3. No active workflow engine workflow exists for this user
+	var steeringDetector *SteeringWorkflowDetector
+	if ctx.Kind != LoopKindBackground {
+		detector := NewSteeringWorkflowDetector(userID)
+		if detector.isCodingTask(userText) {
+			hasEngineWorkflow := false
+			if h.app != nil && h.app.workflowEngine != nil {
+				hasEngineWorkflow = h.app.workflowEngine.HasActiveWorkflow(userID)
+			}
+			if !hasEngineWorkflow {
+				steeringDetector = detector
+				log.Printf("[SteeringWorkflow] detector activated for user=%s task=%q", userID, truncateRunes(userText, 60))
+			}
+		}
+	}
 
 	for iteration := 0; ; iteration++ {
 		ctx.SetIteration(iteration)
@@ -3765,14 +3913,19 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if remaining <= 2 {
 				driftPreview := loopDriftDetector.PreviewDrift()
 				if !driftPreview.Drifted || !driftPreview.NeedHumanHelp {
+					// Auto-extend cap is 2x the config cap (e.g. 600 when cap=300).
+					// This ensures auto-extension works even when effectiveMax
+					// already equals maxAgentIterationsCap.
+					autoExtendCap := maxAgentIterationsCap * 2
 					autoExtended := effectiveMax + 30
-					if autoExtended > maxAgentIterationsCap {
-						autoExtended = maxAgentIterationsCap
+					if autoExtended > autoExtendCap {
+						autoExtended = autoExtendCap
 					}
 					if autoExtended > effectiveMax {
 						effectiveMax = autoExtended
 						ctx.SetMaxIterations(effectiveMax)
 						sendProgress(fmt.Sprintf("⏳ 当前任务较长，已自动扩展推理轮次到 %d 轮，继续完成最终结果…", effectiveMax))
+						log.Printf("[AgentLoop] auto-extended: iteration=%d new_max=%d cap=%d loop=%s", iteration, effectiveMax, autoExtendCap, ctx.ID)
 						if h.traceService != nil && ctx.RunID != "" {
 							h.appendTraceEvent(ctx, "loop.extended", "info", "Auto-extended iteration limit", truncateTraceText(fmt.Sprintf("remaining=%d new_max=%d", remaining, effectiveMax), 220), "", "")
 						}
@@ -3818,6 +3971,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		// --- Normal iteration limit check ---
 		if iteration >= effectiveMax+chatFinalizeGrace {
+			log.Printf("[AgentLoop] iteration limit reached: iteration=%d effectiveMax=%d grace=%d loop=%s", iteration, effectiveMax, chatFinalizeGrace, ctx.ID)
 			break
 		}
 
@@ -3913,6 +4067,21 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			phase.RecoverReason = ""
 			phase.Stage = agentStageConverge
 		}
+
+		// --- Task Execution Orchestrator: inject per-task guidance ---
+		if h.taskOrchestrator != nil && h.taskOrchestrator.IsActive() {
+			if taskInjection := h.taskOrchestrator.BuildSystemInjection(); taskInjection != "" {
+				conversation = append(conversation, map[string]string{
+					"role":    "system",
+					"content": taskInjection,
+				})
+				if h.traceService != nil && ctx.RunID != "" {
+					h.appendTraceEvent(ctx, "task_orchestrator.injection", "info",
+						"Injected per-task guidance", truncateTraceText(taskInjection, 220), "", "")
+				}
+			}
+		}
+
 		recordSystemMessages(systemMessagesStart, conversation)
 		if phase.Stage == agentStageOrient && phase.ForceSkillPreference {
 			convergePrompt := ""
@@ -4199,6 +4368,36 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			phase.Stage = agentStageConverge
 			phase.ConsecutiveNoTool++
 
+			// --- Workflow NeedsConfirm hard gate ---
+			// When the current workflow phase requires user confirmation
+			// (e.g. requirements, tech design, task breakdown), and the LLM
+			// has produced a substantive deliverable (not a stall/thinking
+			// reply), return immediately. This prevents stall/deliverable
+			// heuristics (which match keywords like "文档", "写", "生成")
+			// from misclassifying the confirmation prompt as a "promise to
+			// deliver" and forcing another round that re-outputs the content.
+			if h.app != nil && h.app.workflowEngine != nil {
+				trimmedForGate := strings.TrimSpace(stripThinkingTags(msgContent))
+				if trimmedForGate != "" &&
+					!looksLikeNoToolStallReply(msgContent) &&
+					h.app.workflowEngine.IsPhaseNeedsConfirm(userID) {
+					log.Printf("[agent-loop] workflow NeedsConfirm gate: returning response for user confirmation (iteration=%d len=%d)", iteration, len(trimmedForGate))
+					if h.traceService != nil && ctx.RunID != "" {
+						h.appendTraceEvent(ctx, "gate.needs_confirm", "info",
+							"NeedsConfirm phase gate — pausing for user confirmation",
+							truncateTraceText(trimmedForGate, 220), "", "")
+					}
+					phase.Stage = agentStageFinalize
+					finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
+					if !streamDoneAt.IsZero() {
+						postStreamLastReturnPrepAt = time.Now()
+					}
+					attachLLMTelemetry(finalResp)
+					h.saveConversationHistoryTimed(userID, history, finalResp)
+					return finalResp
+				}
+			}
+
 			// Hard cap: if the model has returned text without tool calls for
 			// too many consecutive iterations, force-return the latest response.
 			// This prevents infinite loops caused by false-positive stall/deliverable
@@ -4323,6 +4522,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		phase.Stage = agentStageExecute
 		phase.ConsecutiveNoTool = 0
+
+		// --- Steering Workflow: emit suggest_maximize on first tool call ---
+		if steeringDetector != nil && !steeringDetector.suggestMaximizeEmitted {
+			steeringDetector.suggestMaximizeEmitted = true
+			if h.app != nil && h.app.workflowEngine != nil {
+				if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+					adapter.EmitSuggestMaximize(userID, "coding")
+					log.Printf("[SteeringWorkflow] emitted suggest_maximize for user=%s", userID)
+				}
+			}
+		}
+
 		// Execute tool calls and feed results back.
 		if trialState.enabled && h.traceService != nil && ctx.RunID != "" {
 			h.appendTraceEvent(ctx, "trial.started", "info", "Trial iteration started", fmt.Sprintf("iteration=%d tool_calls=%d", iteration+1, len(choice.Message.ToolCalls)), "", "")
@@ -4366,6 +4577,41 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			toolExecStartedAt := time.Now()
 			recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 			result := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
+
+			// Handle ask_user: pause the loop and present the question to the user.
+			// The question text becomes the visible response; the agent loop will
+			// resume when the user replies in the next message.
+			if askReq, ok := ParseAskUserResult(result); ok {
+				displayText := FormatAskUserForDisplay(askReq)
+				// Return the question as the agent's response, ending this loop iteration.
+				// The user's answer will come as the next user message, and the agent
+				// can continue from where it left off.
+				toolResults = append(toolResults, fmt.Sprintf("用户被提问: %s（等待回答）", askReq.Question))
+				recordToolResult(tc.ID, toolResults[len(toolResults)-1])
+				resp := &IMAgentResponse{
+					Text: displayText,
+				}
+				if askReq.InputType == "choice" && len(askReq.Options) > 0 {
+					actions := make([]IMResponseAction, len(askReq.Options))
+					for i, opt := range askReq.Options {
+						actions[i] = IMResponseAction{Label: opt, Command: opt}
+					}
+					resp.Actions = actions
+				} else if askReq.InputType == "confirm" {
+					resp.Actions = []IMResponseAction{
+						{Label: "✅ 确认", Command: "确认"},
+						{Label: "❌ 取消", Command: "取消"},
+					}
+				}
+				return resp
+			}
+
+			// Handle delegate_task: inject sub-agent context into the tool result.
+			// The sub-agent's specialized prompt becomes part of the conversation,
+			// guiding the main agent's behavior for the delegated task.
+			if IsSubAgentContext(result) {
+				result = ExtractSubAgentContext(result)
+			}
 
 			// Pin conditional tools (e.g. ssh, web_search) to the session
 			// after first successful use so they remain available for
@@ -4464,6 +4710,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 			}
 
+			// --- Steering Workflow: intercept write_file and generate_pdf ---
+			// Detect workflow phase documents and emit doc_update events so
+			// the frontend doc preview panel works for steering-driven workflows.
+			if steeringDetector != nil {
+				steeringDetector.interceptToolCall(tc.Function.Name, tc.Function.Arguments, func(phaseID, content string) {
+					if h.app != nil && h.app.workflowEngine != nil {
+						if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+							_ = adapter.EmitDocUpdate(userID, phaseID, content)
+							log.Printf("[SteeringWorkflow] emitted doc_update for user=%s phase=%s len=%d", userID, phaseID, len(content))
+						}
+					}
+				})
+			}
+
 			truncated := truncateToolResultForTool(tc.Function.Name, toolContent)
 			recordToolResult(tc.ID, truncated)
 			conversation = append(conversation, map[string]interface{}{
@@ -4531,6 +4791,38 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		if trialState.enabled {
 			outcome, observation, repeatedFailures := trialState.observeIteration(choice.Message.ToolCalls, toolResults)
+
+			// Record tool outcomes to UsageTracker for routing feedback.
+			if h.usageTracker != nil {
+				// Tokenize user message once for all tool outcome records.
+				var msgTokens []string
+				if userText != "" {
+					msgTokens = bm25.Tokenize(userText)
+					if len(msgTokens) > 5 {
+						msgTokens = msgTokens[:5]
+					}
+				}
+				for i, tc := range choice.Message.ToolCalls {
+					name := strings.TrimSpace(tc.Function.Name)
+					toolOutcome := classifyToolOutcome(name, toolResults[i])
+					success := toolOutcome == "succeeded"
+					followUp := "continue"
+					if toolOutcome == "failed" {
+						// Check if this tool was retried (same name appears again in this batch)
+						for j := i + 1; j < len(choice.Message.ToolCalls); j++ {
+							if strings.TrimSpace(choice.Message.ToolCalls[j].Function.Name) == name {
+								followUp = "retry"
+								break
+							}
+						}
+						if followUp == "continue" && outcome == "failed" {
+							followUp = "abandon"
+						}
+					}
+					h.usageTracker.RecordOutcome(name, msgTokens, success, followUp)
+				}
+			}
+
 			if outcome == "failed" && phase.Stage != agentStageRecover {
 				enterRecoverPhase(&phase, "trial_failed", buildTrialFailureRecoverPrompt(observation, repeatedFailures))
 			}
@@ -4748,6 +5040,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				recordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 				toolResult := h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
 
+				// Handle ask_user in background loop: skip (background tasks shouldn't ask questions).
+				if IsAskUserResult(toolResult) {
+					toolResult = "ask_user 在后台任务中不可用，请直接做出决定。"
+				}
+
+				// Handle delegate_task: inject sub-agent context.
+				if IsSubAgentContext(toolResult) {
+					toolResult = ExtractSubAgentContext(toolResult)
+				}
+
 				// Pin conditional tools to session (same as main loop).
 				if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) &&
 					!strings.HasPrefix(toolResult, "未知工具") && !strings.HasPrefix(toolResult, "工具执行异常") {
@@ -4775,6 +5077,27 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		resp := &IMAgentResponse{Text: "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。", Deferred: true}
 		attachLLMTelemetry(resp)
 		return resp
+	}
+
+	// --- Create unfinished task slot so "继续" can resume with context ---
+	finalIteration := ctx.Iteration()
+	log.Printf("[AgentLoop] ⚠️ MAX ROUNDS EXHAUSTED loop=%s iteration=%d effectiveMax=%d configMax=%d loopOverride=%d grace=%d kind=%d user=%q task=%q elapsed=%s",
+		ctx.ID, finalIteration, effectiveMax, maxIter, h.loopMaxOverride, chatFinalizeGrace, ctx.Kind, userID, truncateRunes(userText, 80), time.Since(conversationStartedAt))
+	originalTask := extractOriginalUserTask(history)
+	progressSummary := extractProgressSummary(history)
+	if originalTask != "" {
+		slotID := fmt.Sprintf("maxround-%d", time.Now().UnixMilli())
+		h.memory.upsertUnfinishedSlot(userID, &unfinishedTaskSlot{
+			SlotID:       slotID,
+			UserID:       userID,
+			Status:       "max_rounds_reached",
+			LastTask:     originalTask,
+			Summary:      progressSummary,
+			ResumePrompt: "用户发送「继续」以恢复此任务。请基于对话历史中已完成的工作，继续完成剩余部分。不要重复已完成的步骤。\n",
+			Source:       "max_rounds",
+		})
+		h.memory.bindUnfinishedSlot(userID, slotID)
+		log.Printf("[MaxRounds] created unfinished slot %s for user %s, task=%q", slotID, userID, truncateRunes(originalTask, 80))
 	}
 
 	resp := &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
@@ -4839,3 +5162,124 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 // ---------------------------------------------------------------------------
 // Attachment → LLM Content Builder
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// SteeringWorkflowDetector — lightweight detector for steering-driven coding
+// workflows. When the workflow engine has no active workflow for the user but
+// the LLM is executing a coding task via steering rules (coding-workflow.md),
+// this detector identifies phase documents from tool calls and emits the same
+// frontend events (workflow:suggest_maximize, workflow:doc_update) that the
+// workflow engine path would emit.
+// ---------------------------------------------------------------------------
+
+// SteeringWorkflowDetector tracks steering-driven coding workflow state
+// within a single agent loop invocation.
+type SteeringWorkflowDetector struct {
+	detected              bool              // whether a coding workflow has been detected
+	suggestMaximizeEmitted bool             // whether suggest_maximize event has been emitted
+	phaseDocuments        map[string]string // detected phase documents (phaseID → content)
+	userID                string            // current user ID
+}
+
+// NewSteeringWorkflowDetector creates a new detector for the given user.
+func NewSteeringWorkflowDetector(userID string) *SteeringWorkflowDetector {
+	return &SteeringWorkflowDetector{
+		detected:       true,
+		phaseDocuments: make(map[string]string),
+		userID:         userID,
+	}
+}
+
+// isCodingTask checks whether the message text matches coding task keywords
+// from the steering workflow rules. This uses a focused keyword list aligned
+// with the coding-workflow.md steering file.
+func (d *SteeringWorkflowDetector) isCodingTask(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return false
+	}
+	// Keywords aligned with coding-workflow.md steering rules.
+	keywords := []string{
+		"开发", "编写", "实现", "创建", "修改代码", "重构",
+		"修 bug", "设计架构", "添加功能", "新增功能",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchPhaseID extracts a workflow phase ID from a file name by matching
+// known patterns for requirements, design, and tasks documents.
+// Returns empty string if the file name does not match any workflow phase.
+func (d *SteeringWorkflowDetector) matchPhaseID(fileName string) string {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	if lower == "" {
+		return ""
+	}
+	switch {
+	case strings.Contains(lower, "需求文档") ||
+		strings.Contains(lower, "需求分析") ||
+		strings.Contains(lower, "requirements"):
+		return "requirements"
+	case strings.Contains(lower, "技术设计") ||
+		strings.Contains(lower, "设计文档") ||
+		strings.Contains(lower, "design") ||
+		strings.Contains(lower, "架构设计"):
+		return "design"
+	case strings.Contains(lower, "任务拆分") ||
+		strings.Contains(lower, "任务列表") ||
+		strings.Contains(lower, "tasks") ||
+		strings.Contains(lower, "task_breakdown"):
+		return "tasks"
+	default:
+		return ""
+	}
+}
+
+// interceptToolCall checks a tool call for workflow phase documents and
+// invokes the emit callback with (phaseID, content) when a match is found.
+// Supports write_file (path + content args) and generate_pdf (markdown_content arg).
+func (d *SteeringWorkflowDetector) interceptToolCall(toolName, argsJSON string, emit func(phaseID, content string)) {
+	if !d.detected || emit == nil {
+		return
+	}
+	toolName = strings.TrimSpace(toolName)
+	switch toolName {
+	case "write_file":
+		var args struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return
+		}
+		phaseID := d.matchPhaseID(args.Path)
+		if phaseID == "" || args.Content == "" {
+			return
+		}
+		d.phaseDocuments[phaseID] = args.Content
+		emit(phaseID, args.Content)
+
+	case "generate_pdf":
+		var args struct {
+			MarkdownContent string `json:"markdown_content"`
+		}
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return
+		}
+		if args.MarkdownContent == "" {
+			return
+		}
+		// Infer phase from the markdown content itself since generate_pdf
+		// doesn't have a file path argument.
+		phaseID := d.matchPhaseID(args.MarkdownContent)
+		if phaseID == "" {
+			return
+		}
+		d.phaseDocuments[phaseID] = args.MarkdownContent
+		emit(phaseID, args.MarkdownContent)
+	}
+}

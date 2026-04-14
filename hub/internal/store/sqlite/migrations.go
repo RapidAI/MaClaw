@@ -193,6 +193,30 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+
+		`CREATE TABLE IF NOT EXISTS understanding_sessions (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			intent_json TEXT NOT NULL DEFAULT '{}',
+			rounds_json TEXT NOT NULL DEFAULT '[]',
+			state TEXT NOT NULL DEFAULT 'active',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_understanding_sessions_user_state ON understanding_sessions(user_id, state);`,
+
+		`CREATE TABLE IF NOT EXISTS workflow_states (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			type TEXT NOT NULL,
+			template_type TEXT NOT NULL,
+			intent_json TEXT NOT NULL DEFAULT '{}',
+			current_phase TEXT NOT NULL DEFAULT '',
+			phase_outputs_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_states_user ON workflow_states(user_id);`,
 	}
 
 	for _, stmt := range stmts {

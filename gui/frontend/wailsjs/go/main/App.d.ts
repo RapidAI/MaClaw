@@ -470,6 +470,10 @@ export function StopBackgroundLoop(arg1:string):Promise<void>;
 
 export function StopAllBackgroundLoops():Promise<Array<string>>;
 
+export function StopAllBackgroundTasks():Promise<number>;
+
+export function DismissRemoteSession(arg1:string):Promise<void>;
+
 export function ContinueBackgroundLoop(arg1:string, arg2:number):Promise<void>;
 
 export function GetBackgroundLoopOutput(arg1:string):Promise<Array<string>>;

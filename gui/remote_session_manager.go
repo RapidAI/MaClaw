@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -33,14 +34,19 @@ type RemoteSessionManager struct {
 	failureLearner   *remote.FailureLearner
 	harnessGate      *security.HarnessGate
 
+	// Per-project FailureLearner cache (keyed by project path).
+	failureLearners   map[string]*remote.FailureLearner
+	failureLearnersMu sync.Mutex
+
 	mu       sync.RWMutex
 	sessions map[string]*RemoteSession
 }
 
 func NewRemoteSessionManager(app *App) *RemoteSessionManager {
 	m := &RemoteSessionManager{
-		app:      app,
-		sessions: map[string]*RemoteSession{},
+		app:             app,
+		sessions:        map[string]*RemoteSession{},
+		failureLearners: make(map[string]*remote.FailureLearner),
 		executionFactory: func(spec LaunchSpec) (ExecutionStrategy, error) {
 			return NewLocalPTYExecutionStrategy(nil), nil
 		},
@@ -70,6 +76,14 @@ func NewRemoteSessionManager(app *App) *RemoteSessionManager {
 			s.Summary.SuggestedAction = "编程工具输出暂停，系统正在尝试恢复"
 		case StallStateStuck:
 			s.Summary.SuggestedAction = "编程工具可能已卡住，建议发送具体指令或终止会话"
+			// Auto-degrade from busy to waiting_input so the user can send
+			// new instructions or kill the session. Without this, the session
+			// stays busy forever and blocks all interaction.
+			if s.Status == SessionBusy {
+				s.Status = SessionWaitingInput
+				s.Summary.Status = string(SessionWaitingInput)
+				s.Summary.WaitingForUser = true
+			}
 		case StallStateNormal:
 			s.Summary.SuggestedAction = ""
 		}
@@ -429,6 +443,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 		WorkspaceMode:  workspace.Mode,
 		WorkspaceIsGit: workspace.IsGitRepo,
 		ModelID:        spec.ModelID,
+		ModelName:      spec.ModelName,
 		Status:         SessionStarting,
 		PID:            execHandle.PID(),
 		CreatedAt:      now,
@@ -540,6 +555,7 @@ func (m *RemoteSessionManager) newFailedSession(
 		LaunchSource: normalizeRemoteLaunchSource(spec.LaunchSource),
 		ProjectPath:  spec.ProjectPath,
 		ModelID:      spec.ModelID,
+		ModelName:    spec.ModelName,
 		Status:       SessionError,
 		PID:          0,
 		CreatedAt:    now,
@@ -1054,6 +1070,55 @@ func (m *RemoteSessionManager) Kill(sessionID string) error {
 	return s.Exec.Kill()
 }
 
+// RemoveTerminated removes a session from the manager only if it is in a
+// terminal (non-active) state. Returns true if the session was removed.
+func (m *RemoteSessionManager) RemoveTerminated(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return false
+	}
+	s.mu.RLock()
+	active := isActiveRemoteSessionStatus(s.Status)
+	s.mu.RUnlock()
+	if active {
+		return false // refuse to remove a live session
+	}
+	delete(m.sessions, sessionID)
+	return true
+}
+
+// KillAllActive kills all sessions that are currently in an active state.
+// Returns the list of session IDs that were killed.
+func (m *RemoteSessionManager) KillAllActive() []string {
+	m.mu.RLock()
+	var targets []*RemoteSession
+	for _, s := range m.sessions {
+		if s == nil {
+			continue
+		}
+		s.mu.RLock()
+		active := isActiveRemoteSessionStatus(s.Status)
+		s.mu.RUnlock()
+		if active {
+			targets = append(targets, s)
+		}
+	}
+	m.mu.RUnlock()
+
+	var killed []string
+	for _, s := range targets {
+		if s.Exec != nil {
+			_ = s.Exec.Kill()
+		} else {
+			_ = m.cancelAgentLoopSession(s.ID)
+		}
+		killed = append(killed, s.ID)
+	}
+	return killed
+}
+
 func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1156,6 +1221,17 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 	initTimer := time.NewTimer(5 * time.Second)
 	defer initTimer.Stop()
 	initTimeoutCh := initTimer.C // nil-able so we can disable after firing
+
+	// busyIdleTimer fires when the session has been in busy state for too
+	// long without receiving a result message. This catches the case where
+	// Claude Code finishes a task but the result message is lost or never
+	// sent (e.g. API timeout, interrupted turn). Without this, the session
+	// stays busy forever and blocks all user interaction.
+	busyIdleTimeout := 90 * time.Second
+	busyIdleTimer := time.NewTimer(busyIdleTimeout)
+	busyIdleTimer.Stop() // start stopped; armed when entering busy state
+	defer busyIdleTimer.Stop()
+	var busyIdleTimerCh <-chan time.Time // nil when disarmed
 
 	// updateThinking transitions the session's thinking state and syncs
 	// the summary to Hub when the state actually changes. Inspired by
@@ -1371,6 +1447,17 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			// Always reset the stall timer — any output (even nudge echoes)
 			// proves the tool is alive.
 			m.stallDetector.ResetTimer(s.ID, len(text) > 0)
+			// Reset the busy idle timer too — streaming output means the
+			// tool is actively working, not stuck.
+			if busyIdleTimerCh != nil {
+				if !busyIdleTimer.Stop() {
+					select {
+					case <-busyIdleTimer.C:
+					default:
+					}
+				}
+				busyIdleTimer.Reset(busyIdleTimeout)
+			}
 			// Resume stall monitoring if it was paused during thinking —
 			// streaming output means the LLM has finished thinking and is
 			// now producing content, so stall detection should be active.
@@ -1630,14 +1717,43 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				if lastToolName != "" {
 					startBusyTicker(lastToolName)
 				}
+				// Arm the busy idle timer — if no result message arrives
+				// within busyIdleTimeout, auto-degrade to waiting_input.
+				if !busyIdleTimer.Stop() {
+					select {
+					case <-busyIdleTimer.C:
+					default:
+					}
+				}
+				busyIdleTimer.Reset(busyIdleTimeout)
+				busyIdleTimerCh = busyIdleTimer.C
 			case "user":
 				// Tool result arrived — stop the busy progress ticker.
 				stopBusyTicker()
+				// Reset the busy idle timer — tool_result means the session
+				// is actively processing (tool completed, next step coming).
+				if busyIdleTimerCh != nil {
+					if !busyIdleTimer.Stop() {
+						select {
+						case <-busyIdleTimer.C:
+						default:
+						}
+					}
+					busyIdleTimer.Reset(busyIdleTimeout)
+				}
 			case "result":
 				// Thinking state already cleared inline under s.mu above;
 				// updateThinking is a no-op here but kept for symmetry.
 				stopBusyTicker()
 				m.stallDetector.StopMonitoring(s.ID)
+				// Disarm the busy idle timer — result received normally.
+				if !busyIdleTimer.Stop() {
+					select {
+					case <-busyIdleTimer.C:
+					default:
+					}
+				}
+				busyIdleTimerCh = nil
 			}
 
 			m.app.refreshPowerOptimizationState()
@@ -1667,6 +1783,30 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			s.mu.Lock()
 			s.UpdatedAt = time.Now()
 			s.mu.Unlock()
+			m.app.emitRemoteStateChanged()
+
+		case <-busyIdleTimerCh:
+			// Busy idle timeout: session has been busy for too long without
+			// a result message. Auto-degrade to waiting_input so the user
+			// can send new instructions or kill the session.
+			busyIdleTimerCh = nil
+			s.mu.Lock()
+			if s.Status == SessionBusy {
+				m.app.log(fmt.Sprintf("[sdk-busy-idle-timeout] session=%s: no result after %v, forcing SessionWaitingInput", s.ID, busyIdleTimeout))
+				s.Status = SessionWaitingInput
+				s.Summary.Status = string(SessionWaitingInput)
+				s.Summary.WaitingForUser = true
+				s.Summary.SuggestedAction = "编程工具长时间无响应，已自动解锁。可发送新指令或终止会话"
+				s.Summary.UpdatedAt = time.Now().Unix()
+				snap := s.Summary
+				s.mu.Unlock()
+				if m.hubClient != nil {
+					_ = m.hubClient.SendSessionSummary(snap)
+				}
+				m.updateTraceFromSummary(s, snap)
+			} else {
+				s.mu.Unlock()
+			}
 			m.app.emitRemoteStateChanged()
 
 		case <-initTimeoutCh:
@@ -2191,6 +2331,39 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 		_ = m.hubClient.SendImportantEvent(closedEvent)
 		_ = m.hubClient.SendSessionClosed(s)
 	}
+
+	// --- Harness: FeedbackInjector — consume session events for next-session feedback ---
+	// Note: feedbackInjector uses corelib/remote.ImportantEvent which differs
+	// from the GUI's local ImportantEvent type. Integration deferred until
+	// the types are unified or an adapter is added.
+
+	// --- Harness: FailureLearner — record errors for constraint generation ---
+	if s.ProjectPath != "" && (exit.Err != nil || exitStatus == SessionError) {
+		errDetail := firstNonEmptyTraceText(summarySnap.LastResult, summarySnap.ProgressSummary)
+		if errDetail != "" {
+			m.failureLearnersMu.Lock()
+			learner, ok := m.failureLearners[s.ProjectPath]
+			if !ok {
+				learner = remote.NewFailureLearner(s.ProjectPath)
+				m.failureLearners[s.ProjectPath] = learner
+			}
+			m.failureLearnersMu.Unlock()
+			learner.RecordError(errDetail, errDetail)
+		}
+	}
+
+	// --- Harness: HarnessGate — validate changed files against project constraints ---
+	if exitStatus == SessionExited && s.ProjectPath != "" && len(summarySnap.ImportantFiles) > 0 {
+		gate := security.NewHarnessGate(nil, s.ProjectPath)
+		if err := gate.LoadConstraints(s.ProjectPath); err == nil {
+			violations := gate.CheckOutput(s.ID, summarySnap.ImportantFiles)
+			if len(violations) > 0 {
+				report := gate.BuildViolationReport(violations)
+				log.Printf("[HarnessGate] session %s: %d violations\n%s", s.ID, len(violations), report)
+			}
+		}
+	}
+
 	// Trigger experience extraction for successfully completed sessions
 	// (exited with code 0). Failed sessions are poor candidates for
 	// reusable patterns.

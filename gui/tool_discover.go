@@ -43,9 +43,22 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 		for _, tag := range t.Tags {
 			text += " " + tag
 		}
-		// Use enrichment if available via corelib store.
 		docs = append(docs, bm25.Doc{ID: t.Name, Text: text})
 		toolMap[t.Name] = t
+	}
+
+	// Also include deferred tool definitions from the generator.
+	if h.toolDefGen != nil {
+		deferred := h.toolDefGen.GenerateDeferred()
+		for _, def := range deferred {
+			name := extractToolName(def)
+			if name == "" || toolMap[name].Name != "" {
+				continue // already in registry
+			}
+			desc := extractToolDescription(def)
+			docs = append(docs, bm25.Doc{ID: name, Text: name + " " + desc})
+			toolMap[name] = RegisteredTool{Name: name, Description: desc}
+		}
 	}
 
 	if len(docs) == 0 {

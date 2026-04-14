@@ -179,6 +179,32 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"target": map[string]string{"type": "string", "description": "要打开的文件路径、目录路径或 URL（如 C:\\Users\\test\\doc.pdf、https://example.com、mailto:test@example.com）"},
 			}, []string{"target"}),
+		// --- 结构化提问工具 ---
+		toolDef("ask_user", "向用户提出结构化问题并等待回答。当你需要用户确认方案、选择选项、或提供缺失信息时使用此工具，而不是在文本中直接提问。用户回答后结果会作为 tool_result 返回。",
+			map[string]interface{}{
+				"question":   map[string]string{"type": "string", "description": "要问用户的问题"},
+				"options":    map[string]interface{}{"type": "array", "description": "可选：预设选项列表，用户可从中选择", "items": map[string]string{"type": "string"}},
+				"context":    map[string]string{"type": "string", "description": "可选：问题的背景说明，帮助用户理解为什么需要这个信息"},
+				"input_type": map[string]string{"type": "string", "description": "期望的回答类型: choice（从选项中选择）/text（自由文本）/confirm（是/否确认）。默认 text"},
+			}, []string{"question"}),
+		// --- 任务管理工具 ---
+		toolDef("task", "管理任务（action: create/update/complete/fail/list/delegate/delete）。用于跟踪复杂任务的进度、依赖关系和子任务分配。当任务涉及多个步骤时，先用 create 拆分任务，再逐个执行并用 complete/fail 更新状态。",
+			map[string]interface{}{
+				"action":      map[string]string{"type": "string", "description": "操作: create/update/complete/fail/list/delegate/delete"},
+				"task_id":     map[string]string{"type": "string", "description": "任务 ID（update/complete/fail/delegate/delete 时必填）"},
+				"title":       map[string]string{"type": "string", "description": "任务标题（create 时必填）"},
+				"description": map[string]string{"type": "string", "description": "任务描述（create 时可选）"},
+				"depends_on":  map[string]interface{}{"type": "array", "description": "依赖的任务 ID 列表（create 时可选）", "items": map[string]string{"type": "string"}},
+				"status":      map[string]string{"type": "string", "description": "新状态（update 时使用）: pending/in_progress/completed/failed/blocked"},
+				"status_note": map[string]string{"type": "string", "description": "状态更新说明（update 时可选）"},
+				"delegate_to": map[string]string{"type": "string", "description": "委派给哪个会话或 Agent（delegate 时必填）"},
+			}, []string{"action"}),
+		// --- 子 Agent 委派工具 ---
+		toolDef("delegate_task", "将任务委派给专业子 Agent 处理。不传 agent 参数时列出可用的子 Agent。可用子 Agent: coding_workflow（编码工作流：需求→设计→任务拆分）、help（MaClaw 使用帮助）。",
+			map[string]interface{}{
+				"agent":   map[string]string{"type": "string", "description": "子 Agent 名称: coding_workflow / help。不传则列出所有可用子 Agent"},
+				"request": map[string]string{"type": "string", "description": "要委派的任务描述（用户的原始需求）"},
+			}, nil),
 		// --- 长期记忆工具（合并） ---
 		toolDef("memory", "管理长期记忆（action: recall/save/list/delete）。recall 按需检索相关记忆，save 保存新记忆。",
 			map[string]interface{}{
@@ -194,79 +220,47 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"keyword": map[string]string{"type": "string", "description": "按关键词搜索（list 时可选）"},
 				"id":      map[string]string{"type": "string", "description": "记忆条目 ID（delete 时必填）"},
 			}, []string{"action"}),
-		// --- 会话模板工具 ---
-		toolDef("create_template", "创建会话模板（快捷启动配置）",
+		// --- 合并工具：模板管理 (create/list/launch) ---
+		toolDef("manage_template", "会话模板管理（action: create/list/launch）。create 创建模板，list 列出所有模板，launch 使用模板启动会话。",
 			map[string]interface{}{
-				"name":         map[string]string{"type": "string", "description": "模板名称"},
-				"tool":         map[string]string{"type": "string", "description": "工具名称"},
-				"project_path": map[string]string{"type": "string", "description": "项目路径"},
-				"model_config": map[string]string{"type": "string", "description": "模型配置"},
-				"yolo_mode":    map[string]string{"type": "boolean", "description": "是否开启 Yolo 模式"},
-			}, []string{"name", "tool"}),
-		toolDef("list_templates", "列出所有会话模板", nil, nil),
-		toolDef("launch_template", "使用模板启动会话",
+				"action":        map[string]string{"type": "string", "description": "操作: create/list/launch"},
+				"name":          map[string]string{"type": "string", "description": "模板名称（create/launch 时必填）"},
+				"tool":          map[string]string{"type": "string", "description": "工具名称（create 时必填）"},
+				"project_path":  map[string]string{"type": "string", "description": "项目路径（create 时可选）"},
+				"model_config":  map[string]string{"type": "string", "description": "模型配置（create 时可选）"},
+				"yolo_mode":     map[string]string{"type": "boolean", "description": "是否开启 Yolo 模式（create 时可选）"},
+			}, []string{"action"}),
+		// --- 合并工具：配置管理 (get/set/batch/schema/export/import) ---
+		toolDef("manage_config", "配置管理（action: get/set/batch/schema/export/import）。get 获取配置，set 修改单项，batch 批量修改，schema 列出可配置项，export 导出，import 导入。",
 			map[string]interface{}{
-				"template_name": map[string]string{"type": "string", "description": "模板名称"},
-			}, []string{"template_name"}),
-		// --- 配置管理工具 ---
-		toolDef("get_config", "获取指定配置区域的当前值",
-			map[string]interface{}{
-				"section": map[string]string{"type": "string", "description": "配置区域名称（如 claude/gemini/remote/projects/maclaw_llm/proxy/general），为空或 all 返回概览"},
-			}, []string{"section"}),
-		toolDef("update_config", "修改单个配置项",
-			map[string]interface{}{
-				"section": map[string]string{"type": "string", "description": "配置区域名称"},
-				"key":     map[string]string{"type": "string", "description": "配置项名称"},
-				"value":   map[string]string{"type": "string", "description": "新值"},
-			}, []string{"section", "key", "value"}),
-		toolDef("batch_update_config", "批量修改配置（原子性，任一项失败则全部回滚）",
-			map[string]interface{}{
-				"changes": map[string]string{"type": "string", "description": "JSON 数组，每项包含 section/key/value，例如 [{\"section\":\"general\",\"key\":\"language\",\"value\":\"en\"}]"},
-			}, []string{"changes"}),
-		toolDef("list_config_schema", "列出所有可配置项的 schema 信息", nil, nil),
-		toolDef("export_config", "导出当前配置（敏感字段已脱敏）", nil, nil),
-		toolDef("import_config", "导入配置（JSON 格式，保留本机特有字段）",
-			map[string]interface{}{
-				"json_data": map[string]string{"type": "string", "description": "要导入的配置 JSON 字符串"},
-			}, []string{"json_data"}),
+				"action":    map[string]string{"type": "string", "description": "操作: get/set/batch/schema/export/import"},
+				"section":   map[string]string{"type": "string", "description": "配置区域（get/set 时使用，如 claude/gemini/remote/projects/maclaw_llm/proxy/general）"},
+				"key":       map[string]string{"type": "string", "description": "配置项名称（set 时必填）"},
+				"value":     map[string]string{"type": "string", "description": "新值（set 时必填）"},
+				"changes":   map[string]string{"type": "string", "description": "JSON 数组（batch 时必填），每项含 section/key/value"},
+				"json_data": map[string]string{"type": "string", "description": "配置 JSON 字符串（import 时必填）"},
+			}, []string{"action"}),
 		// --- Agent 自管理工具 ---
 		toolDef("set_max_iterations", fmt.Sprintf("调整当前任务的最大推理轮数。仅影响当前推理循环，不会修改设置页中的持久化配置。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。范围 %d-%d。", minAgentIterations, maxAgentIterationsCap),
 			map[string]interface{}{
 				"max_iterations": map[string]string{"type": "integer", "description": fmt.Sprintf("新的最大轮数（%d-%d）", minAgentIterations, maxAgentIterationsCap)},
 				"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},
 			}, []string{"max_iterations"}),
-		// --- 定时任务工具 ---
-		toolDef("create_scheduled_task", "创建定时任务。用户说 每天9点做XX、每周一下午3点做YY、从3月1号到15号每天上午10点做ZZ 时，解析出时间参数并调用此工具。用户说 每隔N小时/N分钟做XX 时，使用 interval_minutes 参数（如每4小时=240）。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31=每月几号。重要：如果用户说的是一次性任务（如'今天中午提醒我'、'明天下午3点做XX'），必须将 start_date 和 end_date 都设为目标日期，确保只执行一次。",
+		// --- 合并工具：定时任务 (create/list/delete/update) ---
+		toolDef("manage_schedule", "定时任务管理（action: create/list/delete/update）。create 创建定时任务，list 列出所有任务，delete 删除任务，update 修改任务。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31。一次性任务请将 start_date 和 end_date 都设为目标日期。",
 			map[string]interface{}{
-				"name":             map[string]string{"type": "string", "description": "任务名称（简短描述）"},
-				"action":           map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，会发送给 agent 执行）"},
-				"hour":             map[string]string{"type": "integer", "description": "执行时间-小时（0-23），间隔模式下为首次执行时间"},
-				"minute":           map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0），间隔模式下为首次执行时间"},
-				"day_of_week":      map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日, 1=周一...6=周六，默认-1）"},
+				"action":           map[string]string{"type": "string", "description": "操作: create/list/delete/update"},
+				"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
+				"name":             map[string]string{"type": "string", "description": "任务名称（create 时必填，update/delete 时可选）"},
+				"task_action":      map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，create/update 时使用）"},
+				"hour":             map[string]string{"type": "integer", "description": "执行时间-小时（0-23）"},
+				"minute":           map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0）"},
+				"day_of_week":      map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日...6=周六，默认-1）"},
 				"day_of_month":     map[string]string{"type": "integer", "description": "每月几号（-1=不限, 1-31，默认-1）"},
-				"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔（分钟），>0 时启用间隔模式。如每4小时=240，每30分钟=30，每2天=2880"},
-				"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02，可选）"},
-				"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02，可选）"},
-			}, []string{"name", "action", "hour"}),
-		toolDef("list_scheduled_tasks", "列出所有定时任务及其状态、下次执行时间", nil, nil),
-		toolDef("delete_scheduled_task", "删除定时任务（按 ID 或名称）",
-			map[string]interface{}{
-				"id":   map[string]string{"type": "string", "description": "任务 ID（优先）"},
-				"name": map[string]string{"type": "string", "description": "任务名称（ID 为空时按名称匹配）"},
-			}, nil),
-		toolDef("update_scheduled_task", "修改定时任务的时间或内容",
-			map[string]interface{}{
-				"id":               map[string]string{"type": "string", "description": "任务 ID（必填）"},
-				"name":             map[string]string{"type": "string", "description": "新名称（可选）"},
-				"action":           map[string]string{"type": "string", "description": "新的执行内容（可选）"},
-				"hour":             map[string]string{"type": "integer", "description": "新的小时（可选）"},
-				"minute":           map[string]string{"type": "integer", "description": "新的分钟（可选）"},
-				"day_of_week":      map[string]string{"type": "integer", "description": "新的星期几（可选）"},
-				"day_of_month":     map[string]string{"type": "integer", "description": "新的每月几号（可选）"},
-				"interval_minutes": map[string]string{"type": "integer", "description": "新的重复间隔分钟数（可选，0=关闭间隔模式）"},
-				"start_date":       map[string]string{"type": "string", "description": "新的开始日期（可选）"},
-				"end_date":         map[string]string{"type": "string", "description": "新的结束日期（可选）"},
-			}, []string{"id"}),
+				"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔分钟数（>0 启用间隔模式）"},
+				"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02）"},
+				"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02）"},
+			}, []string{"action"}),
 	}
 
 	// ---------- AgentNet tools (dynamic — only when daemon is running) ----------

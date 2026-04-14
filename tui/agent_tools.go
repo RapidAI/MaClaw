@@ -69,7 +69,12 @@ func (h *TUIAgentHandler) toolCreateSession(args map[string]interface{}) string 
 	if err != nil {
 		return fmt.Sprintf("创建会话失败: %v", err)
 	}
-	return fmt.Sprintf("会话已创建: ID=%s, 工具=%s", sess.ID, toolName)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("🚀 编程会话已创建\n"))
+	b.WriteString(fmt.Sprintf("   🔧 编程工具: %s\n", toolName))
+	b.WriteString(fmt.Sprintf("   📁 工作目录: %s\n", projectPath))
+	b.WriteString(fmt.Sprintf("   🆔 会话 ID: %s\n", sess.ID))
+	return b.String()
 }
 
 func (h *TUIAgentHandler) toolGetSessionOutput(args map[string]interface{}) string {
@@ -459,6 +464,74 @@ func (h *TUIAgentHandler) getConfigMgr() *configPkg.Manager {
 	return configPkg.NewManager(store)
 }
 
+// ===================== 合并工具调度器 =====================
+
+// toolManageConfig dispatches the merged manage_config tool to individual handlers.
+func (h *TUIAgentHandler) toolManageConfig(args map[string]interface{}) string {
+	action := stringArg(args, "action")
+	switch action {
+	case "get":
+		return h.toolGetConfig(args)
+	case "set":
+		// Map merged params to legacy params
+		return h.toolUpdateConfig(args)
+	case "batch":
+		return h.toolBatchUpdateConfig(args)
+	case "schema":
+		return h.toolListConfigSchema()
+	case "export":
+		return h.toolExportConfig()
+	case "import":
+		return h.toolImportConfig(args)
+	default:
+		return fmt.Sprintf("未知 manage_config action: %s（支持: get/set/batch/schema/export/import）", action)
+	}
+}
+
+// toolManageTemplate dispatches the merged manage_template tool to individual handlers.
+func (h *TUIAgentHandler) toolManageTemplate(args map[string]interface{}) string {
+	action := stringArg(args, "action")
+	switch action {
+	case "create":
+		return h.toolCreateTemplate(args)
+	case "list":
+		return h.toolListTemplates()
+	case "launch":
+		// Map "name" to "template_name" for backward compat
+		if _, ok := args["template_name"]; !ok {
+			if name, ok := args["name"]; ok {
+				args["template_name"] = name
+			}
+		}
+		return h.toolLaunchTemplate(args)
+	default:
+		return fmt.Sprintf("未知 manage_template action: %s（支持: create/list/launch）", action)
+	}
+}
+
+// toolManageSchedule dispatches the merged manage_schedule tool to individual handlers.
+func (h *TUIAgentHandler) toolManageSchedule(args map[string]interface{}) string {
+	action := stringArg(args, "action")
+	// Map "task_action" to "action" for create/update (the merged tool uses
+	// "task_action" for the scheduled task's action description to avoid
+	// conflict with the dispatch "action" field).
+	if ta, ok := args["task_action"]; ok {
+		args["action"] = ta
+	}
+	switch action {
+	case "create":
+		return h.toolCreateScheduledTask(args)
+	case "list":
+		return h.toolListScheduledTasks()
+	case "delete":
+		return h.toolDeleteScheduledTask(args)
+	case "update":
+		return h.toolUpdateScheduledTask(args)
+	default:
+		return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/delete/update）", action)
+	}
+}
+
 // ===================== 模板 =====================
 
 func (h *TUIAgentHandler) toolCreateTemplate(args map[string]interface{}) string {
@@ -611,6 +684,59 @@ func (h *TUIAgentHandler) toolUpdateScheduledTask(args map[string]interface{}) s
 		return fmt.Sprintf("更新失败: %v", err)
 	}
 	return "定时任务已更新"
+}
+
+// ===================== 结构化提问 =====================
+
+func (h *TUIAgentHandler) toolAskUser(args map[string]interface{}) string {
+	question := stringArg(args, "question")
+	if question == "" {
+		return "错误: 缺少 question 参数"
+	}
+
+	inputType := stringArg(args, "input_type")
+	if inputType == "" {
+		inputType = "text"
+	}
+
+	var options []string
+	if rawOpts, ok := args["options"]; ok {
+		if arr, ok := rawOpts.([]interface{}); ok {
+			for _, opt := range arr {
+				if s, ok := opt.(string); ok {
+					options = append(options, s)
+				}
+			}
+		}
+	}
+
+	if inputType == "confirm" && len(options) == 0 {
+		options = []string{"确认", "取消"}
+	}
+
+	ctx := stringArg(args, "context")
+
+	// Build display text for TUI
+	var sb strings.Builder
+	if ctx != "" {
+		sb.WriteString(ctx)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("❓ ")
+	sb.WriteString(question)
+	if len(options) > 0 {
+		sb.WriteString("\n")
+		for i, opt := range options {
+			sb.WriteString(fmt.Sprintf("\n  %d. %s", i+1, opt))
+		}
+	}
+	if inputType == "confirm" {
+		sb.WriteString("\n\n请回复「确认」或「取消」")
+	}
+
+	// Return the formatted question as the tool result.
+	// The TUI agent loop will display this and pause for user input.
+	return fmt.Sprintf("__ASK_USER__%s", sb.String())
 }
 
 // ===================== 记忆 =====================

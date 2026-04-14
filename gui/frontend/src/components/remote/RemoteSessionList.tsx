@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect, useCallback, type Dispatch, type S
 import { colors, radius } from "./styles";
 import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
 import { RemoteSessionConsole } from "./RemoteSessionConsole";
-import { ListBackgroundLoops, StopBackgroundLoop, StopAllBackgroundLoops, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
+import { ListBackgroundLoops, StopBackgroundLoop, StopAllBackgroundLoops, StopAllBackgroundTasks, DismissRemoteSession, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 // Strip ANSI escape sequences and non-printable control characters from terminal output
@@ -159,6 +159,8 @@ export function RemoteSessionList(props: Props) {
     });
 
     const hideSession = (id: string) => {
+        // Remove terminated session from backend so it doesn't reappear on reopen
+        DismissRemoteSession(id).catch(() => { /* ignore if still active or not found */ });
         setHiddenSessionIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
         if (consoleSessionId === id) setConsoleSessionId(null);
     };
@@ -202,13 +204,14 @@ export function RemoteSessionList(props: Props) {
 
     const handleStopAllLoops = async () => {
         try {
-            const stopped = await StopAllBackgroundLoops();
-            if (stopped && stopped.length > 0) {
-                showToastMessage(localizeText("Stopped {count} tasks", "已停止 {count} 个任务", "已停止 {count} 個任務").replace("{count}", String(stopped.length)), 2500);
+            const stopped = await StopAllBackgroundTasks();
+            if (stopped > 0) {
+                showToastMessage(localizeText("Stopped {count} tasks", "已停止 {count} 个任务", "已停止 {count} 個任務").replace("{count}", String(stopped)), 2500);
             } else {
                 showToastMessage(localizeText("No running tasks to stop", "没有运行中的任务可停止", "沒有執行中的任務可停止"), 1500);
             }
             refreshBgLoops();
+            refreshSessionsOnly();
         } catch (err) {
             showToastMessage(localizeText("Stop all failed: {error}", "停止全部失败: {error}", "停止全部失敗: {error}").replace("{error}", String(err)), 4000);
         }

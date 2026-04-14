@@ -78,6 +78,7 @@ func NewStore(p *Provider) *store.Store {
 		Sessions:     &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Voiceprints:  &voiceprintRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		EmailInvites: &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		WorkflowRepo: &workflowRepo{db: p.Write, readDB: p.Read},
 	}
 }
 

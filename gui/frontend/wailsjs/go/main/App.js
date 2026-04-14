@@ -1052,6 +1052,14 @@ export function StopAllBackgroundLoops() {
   return window['go']['main']['App']['StopAllBackgroundLoops']();
 }
 
+export function StopAllBackgroundTasks() {
+  return window['go']['main']['App']['StopAllBackgroundTasks']();
+}
+
+export function DismissRemoteSession(arg1) {
+  return window['go']['main']['App']['DismissRemoteSession'](arg1);
+}
+
 export function ContinueBackgroundLoop(arg1, arg2) {
   return window['go']['main']['App']['ContinueBackgroundLoop'](arg1, arg2);
 }

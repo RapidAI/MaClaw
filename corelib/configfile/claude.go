@@ -118,6 +118,17 @@ func writeAnthropicSettings(settingsPath, apiKey, baseURL, modelID string) error
 	env["ANTHROPIC_AUTH_TOKEN"] = apiKey
 	if baseURL != "" {
 		env["ANTHROPIC_BASE_URL"] = baseURL
+		// Third-party providers (non-empty baseURL) typically have stricter rate
+		// limits. Disable nonessential traffic (telemetry, model checks) and
+		// increase timeout so Claude Code's internal retries have breathing room.
+		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+		env["API_TIMEOUT_MS"] = "600000"
+	} else {
+		// Builtin / Anthropic native: clean up third-party rate-limit settings
+		// that may have been written by a previous provider switch.
+		delete(env, "ANTHROPIC_BASE_URL")
+		delete(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+		delete(env, "API_TIMEOUT_MS")
 	}
 	if modelID != "" {
 		env["ANTHROPIC_MODEL"] = modelID

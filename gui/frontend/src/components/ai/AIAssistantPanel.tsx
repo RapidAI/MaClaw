@@ -4,6 +4,8 @@ import { OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus, ChatConfirmation, ChatUnfinishedSlot } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage } from "./useAIAssistant";
+import { useWorkflowState } from "./useWorkflowState";
+import { WorkflowDocPreview } from "./WorkflowDocPreview";
 
 interface AIAssistantPanelStateProps {
     messages: ChatMessage[];
@@ -902,6 +904,9 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
 
+    // Workflow split-pane state
+    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
+
     const title = localizeText(lang, "AI Assistant", "AI 助手");
     const thinkingText = localizeText(lang, "Thinking...", "正在思考...");
     const processingText = localizeText(lang, "Executing tools and finishing task...", "正在执行工具并完成任务...");
@@ -1187,7 +1192,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         : overlayStyle;
 
     return (
-        <div data-testid="ai-panel-root" style={containerStyle}>
+        <div style={{ display: "flex", width: "100%", height: "100%" }}>
+        <div data-testid="ai-panel-root" style={{...containerStyle, width: workflowState.splitMode ? `${workflowState.splitRatio * 100}%` : "100%", flex: workflowState.splitMode ? "none" : 1}}>
             {/* ── Drag overlay (inline mode) ── */}
             {inline && !maximized && (
                 <div style={{
@@ -1432,6 +1438,70 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 overflow: "hidden",
                 background: t.bg,
             }}>
+
+            {/* Workflow maximize suggestion banner */}
+            {workflowState.suggestMaximize && !maximized && inline && onToggleMaximize && (
+                <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "8px 14px",
+                    background: "linear-gradient(90deg, rgba(99,102,241,0.08), rgba(59,130,246,0.08))",
+                    borderBottom: `1px solid ${t.titleBarBorder}`,
+                    fontSize: "13px",
+                    gap: "10px",
+                    flexShrink: 0,
+                }}>
+                    <span style={{ color: t.text }}>
+                        🚀 即将进入「{workflowState.suggestMaximizeType}」流程，全屏模式体验更佳
+                    </span>
+                    <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                        <button
+                            onClick={() => { onToggleMaximize(); dismissMaximizeSuggestion(); }}
+                            style={{
+                                padding: "4px 12px",
+                                fontSize: "12px",
+                                border: "1px solid rgba(99,102,241,0.3)",
+                                borderRadius: "4px",
+                                background: "rgba(99,102,241,0.1)",
+                                color: "rgb(99,102,241)",
+                                cursor: "pointer",
+                                fontWeight: 500,
+                            }}
+                        >
+                            全屏
+                        </button>
+                        <button
+                            onClick={dismissMaximizeSuggestion}
+                            style={{
+                                padding: "4px 8px",
+                                fontSize: "12px",
+                                border: "none",
+                                borderRadius: "4px",
+                                background: "transparent",
+                                color: t.textMuted,
+                                cursor: "pointer",
+                            }}
+                        >
+                            稍后
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Workflow phase transition notification */}
+            {workflowState.transientText && (
+                <div style={{
+                    padding: "6px 14px",
+                    background: "rgba(16,185,129,0.08)",
+                    borderBottom: `1px solid ${t.titleBarBorder}`,
+                    fontSize: "13px",
+                    color: t.text,
+                    flexShrink: 0,
+                }}>
+                    {workflowState.transientText}
+                </div>
+            )}
             {/* ── Chat area ── */}
             <div
                 ref={outputContainerRef}
@@ -1763,6 +1833,17 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 </div>
             </div>
         </div>
+        </div>
+        {workflowState.splitMode && (
+            <div style={{ flex: 1, minWidth: 0, height: "100%" }}>
+                <WorkflowDocPreview
+                    phaseDocuments={workflowState.phaseDocuments}
+                    currentPhaseID={workflowState.currentPhaseID}
+                    gateResults={workflowState.gateResults}
+                    onClose={closeDocPreview}
+                />
+            </div>
+        )}
         </div>
     );
 }

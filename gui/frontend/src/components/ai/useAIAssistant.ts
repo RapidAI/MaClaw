@@ -208,6 +208,10 @@ export interface ChatMessage {
     thumbnailBase64?: string;
     requestId?: string;
     timestamp: number;
+    /** Workflow document link — phase ID for opening doc preview. */
+    workflowPhaseID?: string;
+    /** Workflow document link label (e.g. "📄 需求文档"). */
+    workflowDocLabel?: string;
 }
 
 // Auto-incrementing ID to avoid collisions from rapid messages / progress events.
@@ -952,17 +956,36 @@ function hasVisibleTerminalPayload(response: any): boolean {
 
 function resolveFinalRoundContent(message: ChatMessage, response: any): string {
     const finalText = typeof response?.text === 'string' ? response.text : '';
+    const streamedContent = message.content || '';
+
+    // When the message already has substantial streamed content (accumulated
+    // across multiple agent-loop iterations via onToken), prefer it over
+    // response.text which only contains the *last* iteration's assistant
+    // reply. Replacing the full streamed output with the tail fragment
+    // causes the user-visible requirements/design documents to disappear.
+    //
+    // Detection: if the streamed content ends with the response text, the
+    // response text is just the final iteration's fragment — keep the full
+    // streamed content. If the response text is NOT a suffix of the streamed
+    // content, it was set by a special handler (ask_user, cancel, file
+    // delivery, etc.) and should be used as-is.
+    if (streamedContent && finalText && streamedContent.length > finalText.length) {
+        if (streamedContent.endsWith(finalText)) {
+            return streamedContent;
+        }
+    }
+
     if (finalText) {
         return finalText;
     }
     if (hasVisibleTerminalPayload(response)) {
-        return message.content;
+        return streamedContent;
     }
     if (isFailedTerminalTraceStatus(response?.trace_status)) {
         return buildEmptyTerminalFallback(response);
     }
-    if (message.content) {
-        return message.content;
+    if (streamedContent) {
+        return streamedContent;
     }
     return buildEmptyTerminalFallback(response);
 }
@@ -1778,14 +1801,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             persistTimerRef.current = null;
         }
         latestMessagesRef.current = [];
-        latestPromptsRef.current = [];
         lastPersistedPayloadRef.current = null;
-        lastPersistedPromptsPayloadRef.current = null;
         persistOnUnmountRef.current = false;
         localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
-        localStorage.removeItem(AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY);
         setMessages([]);
-        setSubmittedPrompts([]);
         setDraftInputValue("");
         progressTailRef.current = null;
         setProgressMessages([]);

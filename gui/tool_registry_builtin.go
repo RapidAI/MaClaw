@@ -240,12 +240,47 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"task_description"},
 		func(args map[string]interface{}) string { return h.toolRecommendTool(args) })
 
-	reg("discover_tool", "Search for additional tools not in the current tool list. Use when you need a capability that none of the available tools provide.",
-		ToolCategoryBuiltin, []string{"discover", "find", "search", "tool"},
+	reg("discover_tool", "发现更多可用工具。当你需要以下能力但找不到对应工具时调用：配置管理、定时任务、会话模板、AgentNet 知识网络、MCP 扩展工具、Skill 市场搜索安装、审计日志查询。传入你需要的能力描述，返回匹配的工具定义。",
+		ToolCategoryBuiltin, []string{"discover", "find", "search", "tool", "config", "schedule", "template", "agentnet", "mcp", "audit"},
 		map[string]interface{}{
-			"need": map[string]string{"type": "string", "description": "Describe the capability you need, e.g. 'query PostgreSQL database' or 'send Slack notification'"},
+			"need": map[string]string{"type": "string", "description": "描述你需要的能力（如'修改配置'、'定时执行'、'搜索知识网络'、'查询审计日志'）"},
 		}, []string{"need"},
 		func(args map[string]interface{}) string { return h.toolDiscoverTool(args) })
+
+	// --- Structured question tool ---
+	reg("ask_user", "向用户提出结构化问题并等待回答。当你需要用户确认方案、选择选项、或提供缺失信息时使用此工具，而不是在文本中直接提问。",
+		ToolCategoryBuiltin, []string{"ask", "question", "confirm", "clarify", "input"},
+		map[string]interface{}{
+			"question":   map[string]string{"type": "string", "description": "要问用户的问题"},
+			"options":    map[string]interface{}{"type": "array", "description": "可选：预设选项列表", "items": map[string]string{"type": "string"}},
+			"context":    map[string]string{"type": "string", "description": "可选：问题的背景说明"},
+			"input_type": map[string]string{"type": "string", "description": "期望的回答类型: choice/text/confirm（默认 text）"},
+		}, []string{"question"},
+		func(args map[string]interface{}) string { return h.toolAskUser(args) })
+
+	// --- Task management tool ---
+	reg("task", "管理任务（action: create/update/complete/fail/list/delegate/delete）。用于跟踪复杂任务的进度、依赖关系和子任务分配。",
+		ToolCategoryBuiltin, []string{"task", "todo", "plan", "track", "progress"},
+		map[string]interface{}{
+			"action":      map[string]string{"type": "string", "description": "操作: create/update/complete/fail/list/delegate/delete"},
+			"task_id":     map[string]string{"type": "string", "description": "任务 ID"},
+			"title":       map[string]string{"type": "string", "description": "任务标题（create 时必填）"},
+			"description": map[string]string{"type": "string", "description": "任务描述"},
+			"depends_on":  map[string]interface{}{"type": "array", "description": "依赖的任务 ID 列表", "items": map[string]string{"type": "string"}},
+			"status":      map[string]string{"type": "string", "description": "新状态: pending/in_progress/completed/failed/blocked"},
+			"status_note": map[string]string{"type": "string", "description": "状态更新说明"},
+			"delegate_to": map[string]string{"type": "string", "description": "委派目标"},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolTask(args) })
+
+	// --- Sub-agent delegation tool ---
+	reg("delegate_task", "将任务委派给专业子 Agent 处理。可用: coding_workflow（编码工作流）、help（使用帮助）。",
+		ToolCategoryBuiltin, []string{"delegate", "subagent", "workflow", "help"},
+		map[string]interface{}{
+			"agent":   map[string]string{"type": "string", "description": "子 Agent 名称: coding_workflow / help"},
+			"request": map[string]string{"type": "string", "description": "要委派的任务描述"},
+		}, nil,
+		func(args map[string]interface{}) string { return h.toolDelegateTask(args) })
 
 	// --- Craft tool (needs progress callback) ---
 	regP("craft_tool", "当现有工具、Skill 或会话式编程都不合适时，生成并执行单脚本来完成一次性自动化任务。更适合本机数据处理、API 调用、文件转换和小型系统自动化；不适合复杂代码库改造或长链路编程任务。",
@@ -345,70 +380,31 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolMemory(args) })
 
-	// --- Session template tools ---
-	reg("create_template", "创建会话模板（快捷启动配置）",
-		ToolCategoryBuiltin, []string{"template", "create"},
+	// --- Merged tool: manage_template (create/list/launch) ---
+	reg("manage_template", "会话模板管理（action: create/list/launch）。create 创建模板，list 列出所有模板，launch 使用模板启动会话。",
+		ToolCategoryBuiltin, []string{"template", "create", "list", "launch"},
 		map[string]interface{}{
-			"name":         map[string]string{"type": "string", "description": "模板名称"},
-			"tool":         map[string]string{"type": "string", "description": "工具名称"},
-			"project_path": map[string]string{"type": "string", "description": "项目路径"},
-			"model_config": map[string]string{"type": "string", "description": "模型配置"},
-			"yolo_mode":    map[string]string{"type": "boolean", "description": "是否开启 Yolo 模式"},
-		}, []string{"name", "tool"},
-		func(args map[string]interface{}) string { return h.toolCreateTemplate(args) })
+			"action":       map[string]string{"type": "string", "description": "操作: create/list/launch"},
+			"name":         map[string]string{"type": "string", "description": "模板名称（create/launch 时必填）"},
+			"tool":         map[string]string{"type": "string", "description": "工具名称（create 时必填）"},
+			"project_path": map[string]string{"type": "string", "description": "项目路径（create 时可选）"},
+			"model_config": map[string]string{"type": "string", "description": "模型配置（create 时可选）"},
+			"yolo_mode":    map[string]string{"type": "boolean", "description": "是否开启 Yolo 模式（create 时可选）"},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolManageTemplate(args) })
 
-	reg("list_templates", "列出所有会话模板",
-		ToolCategoryBuiltin, []string{"template", "list"},
-		nil, nil,
-		func(args map[string]interface{}) string { return h.toolListTemplates() })
-
-	reg("launch_template", "使用模板启动会话",
-		ToolCategoryBuiltin, []string{"template", "launch"},
+	// --- Merged tool: manage_config (get/set/batch/schema/export/import) ---
+	reg("manage_config", "配置管理（action: get/set/batch/schema/export/import）。get 获取配置，set 修改单项，batch 批量修改，schema 列出可配置项，export 导出，import 导入。",
+		ToolCategoryBuiltin, []string{"config", "get", "set", "settings", "batch", "schema", "export", "import"},
 		map[string]interface{}{
-			"template_name": map[string]string{"type": "string", "description": "模板名称"},
-		}, []string{"template_name"},
-		func(args map[string]interface{}) string { return h.toolLaunchTemplate(args) })
-
-	// --- Config management tools ---
-	reg("get_config", "获取指定配置区域的当前值",
-		ToolCategoryBuiltin, []string{"config", "get", "settings"},
-		map[string]interface{}{
-			"section": map[string]string{"type": "string", "description": "配置区域名称（如 claude/gemini/remote/projects/maclaw_llm/proxy/general），为空或 all 返回概览"},
-		}, []string{"section"},
-		func(args map[string]interface{}) string { return h.toolGetConfig(args) })
-
-	reg("update_config", "修改单个配置项",
-		ToolCategoryBuiltin, []string{"config", "update", "settings"},
-		map[string]interface{}{
-			"section": map[string]string{"type": "string", "description": "配置区域名称"},
-			"key":     map[string]string{"type": "string", "description": "配置项名称"},
-			"value":   map[string]string{"type": "string", "description": "新值"},
-		}, []string{"section", "key", "value"},
-		func(args map[string]interface{}) string { return h.toolUpdateConfig(args) })
-
-	reg("batch_update_config", "批量修改配置（原子性，任一项失败则全部回滚）",
-		ToolCategoryBuiltin, []string{"config", "batch", "settings"},
-		map[string]interface{}{
-			"changes": map[string]string{"type": "string", "description": "JSON 数组，每项包含 section/key/value"},
-		}, []string{"changes"},
-		func(args map[string]interface{}) string { return h.toolBatchUpdateConfig(args) })
-
-	reg("list_config_schema", "列出所有可配置项的 schema 信息",
-		ToolCategoryBuiltin, []string{"config", "schema"},
-		nil, nil,
-		func(args map[string]interface{}) string { return h.toolListConfigSchema() })
-
-	reg("export_config", "导出当前配置（敏感字段已脱敏）",
-		ToolCategoryBuiltin, []string{"config", "export"},
-		nil, nil,
-		func(args map[string]interface{}) string { return h.toolExportConfig() })
-
-	reg("import_config", "导入配置（JSON 格式，保留本机特有字段）",
-		ToolCategoryBuiltin, []string{"config", "import"},
-		map[string]interface{}{
-			"json_data": map[string]string{"type": "string", "description": "要导入的配置 JSON 字符串"},
-		}, []string{"json_data"},
-		func(args map[string]interface{}) string { return h.toolImportConfig(args) })
+			"action":    map[string]string{"type": "string", "description": "操作: get/set/batch/schema/export/import"},
+			"section":   map[string]string{"type": "string", "description": "配置区域（get/set 时使用）"},
+			"key":       map[string]string{"type": "string", "description": "配置项名称（set 时必填）"},
+			"value":     map[string]string{"type": "string", "description": "新值（set 时必填）"},
+			"changes":   map[string]string{"type": "string", "description": "JSON 数组（batch 时必填），每项含 section/key/value"},
+			"json_data": map[string]string{"type": "string", "description": "配置 JSON 字符串（import 时必填）"},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolManageConfig(args) })
 
 	// --- LLM provider switch ---
 	reg("switch_llm_provider", "换脑子：查看或切换 MaClaw 自身使用的 LLM 服务商。当用户说'换智谱'、'换minimax'、'用智谱想一下'、'换个模型'时切换；当用户问'现在用的什么模型'、'当前脑子是啥'、'你现在用的哪个服务商'时查询。不传 provider 返回当前服务商和可选列表；传入名称则立即切换。",
@@ -434,49 +430,23 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"max_iterations"},
 		func(args map[string]interface{}) string { return h.toolSetMaxIterations(args) })
 
-	// --- Scheduled task tools ---
-	reg("create_scheduled_task", "创建定时任务。用户说 每天9点做XX、每周一下午3点做YY、从3月1号到15号每天上午10点做ZZ 时，解析出时间参数并调用此工具。用户说 每隔N小时/N分钟做XX 时，使用 interval_minutes 参数（如每4小时=240）。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31=每月几号。重要：如果用户说的是一次性任务（如'今天中午提醒我'、'明天下午3点做XX'），必须将 start_date 和 end_date 都设为目标日期，确保只执行一次。",
-		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer", "interval"},
+	// --- Merged tool: manage_schedule (create/list/delete/update) ---
+	reg("manage_schedule", "定时任务管理（action: create/list/delete/update）。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31。一次性任务请将 start_date 和 end_date 都设为目标日期。",
+		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer", "interval", "create", "list", "delete", "update"},
 		map[string]interface{}{
-			"name":             map[string]string{"type": "string", "description": "任务名称（简短描述）"},
-			"action":           map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，会发送给 agent 执行）"},
-			"hour":             map[string]string{"type": "integer", "description": "执行时间-小时（0-23），间隔模式下为首次执行时间"},
-			"minute":           map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0），间隔模式下为首次执行时间"},
-			"day_of_week":      map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日, 1=周一...6=周六，默认-1）"},
+			"action":           map[string]string{"type": "string", "description": "操作: create/list/delete/update"},
+			"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
+			"name":             map[string]string{"type": "string", "description": "任务名称（create 时必填，update/delete 时可选）"},
+			"task_action":      map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，create/update 时使用）"},
+			"hour":             map[string]string{"type": "integer", "description": "执行时间-小时（0-23）"},
+			"minute":           map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0）"},
+			"day_of_week":      map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日...6=周六，默认-1）"},
 			"day_of_month":     map[string]string{"type": "integer", "description": "每月几号（-1=不限, 1-31，默认-1）"},
-			"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔（分钟），>0 时启用间隔模式。如每4小时=240，每30分钟=30，每2天=2880"},
-			"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02，可选）"},
-			"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02，可选）"},
-		}, []string{"name", "action", "hour"},
-		func(args map[string]interface{}) string { return h.toolCreateScheduledTask(args) })
-
-	reg("list_scheduled_tasks", "列出所有定时任务及其状态、下次执行时间",
-		ToolCategoryBuiltin, []string{"schedule", "task", "list"},
-		nil, nil,
-		func(args map[string]interface{}) string { return h.toolListScheduledTasks() })
-
-	reg("delete_scheduled_task", "删除定时任务（按 ID 或名称）",
-		ToolCategoryBuiltin, []string{"schedule", "task", "delete"},
-		map[string]interface{}{
-			"id":   map[string]string{"type": "string", "description": "任务 ID（优先）"},
-			"name": map[string]string{"type": "string", "description": "任务名称（ID 为空时按名称匹配）"},
-		}, nil,
-		func(args map[string]interface{}) string { return h.toolDeleteScheduledTask(args) })
-
-	reg("update_scheduled_task", "修改定时任务的时间或内容",
-		ToolCategoryBuiltin, []string{"schedule", "task", "update"},
-		map[string]interface{}{
-			"id":           map[string]string{"type": "string", "description": "任务 ID（必填）"},
-			"name":         map[string]string{"type": "string", "description": "新名称（可选）"},
-			"action":       map[string]string{"type": "string", "description": "新的执行内容（可选）"},
-			"hour":         map[string]string{"type": "integer", "description": "新的小时（可选）"},
-			"minute":       map[string]string{"type": "integer", "description": "新的分钟（可选）"},
-			"day_of_week":  map[string]string{"type": "integer", "description": "新的星期几（可选）"},
-			"day_of_month": map[string]string{"type": "integer", "description": "新的每月几号（可选）"},
-			"start_date":   map[string]string{"type": "string", "description": "新的开始日期（可选）"},
-			"end_date":     map[string]string{"type": "string", "description": "新的结束日期（可选）"},
-		}, []string{"id"},
-		func(args map[string]interface{}) string { return h.toolUpdateScheduledTask(args) })
+			"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔分钟数（>0 启用间隔模式）"},
+			"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02）"},
+			"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02）"},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolManageSchedule(args) })
 
 	// --- Audit log query tool (Phase 2 upgrade) ---
 	reg("query_audit_log", "查询安全审计日志，可按时间范围、工具名、风险等级筛选",
@@ -543,4 +513,31 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"remote_path":     map[string]string{"type": "string", "description": "远程文件/目录路径（upload/download 时必填）"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolSSH(args) })
+
+	// --- Backward compatibility aliases for merged tools ---
+	// These allow old tool names to still work if the LLM uses them.
+	alias := func(oldName string, handler ToolHandler) {
+		registry.Register(RegisteredTool{
+			Name:    oldName,
+			Status:  RegToolAvailable,
+			Source:  "builtin-alias",
+			Handler: handler,
+		})
+	}
+	// Config aliases
+	alias("get_config", func(args map[string]interface{}) string { return h.toolGetConfig(args) })
+	alias("update_config", func(args map[string]interface{}) string { return h.toolUpdateConfig(args) })
+	alias("batch_update_config", func(args map[string]interface{}) string { return h.toolBatchUpdateConfig(args) })
+	alias("list_config_schema", func(args map[string]interface{}) string { return h.toolListConfigSchema() })
+	alias("export_config", func(args map[string]interface{}) string { return h.toolExportConfig() })
+	alias("import_config", func(args map[string]interface{}) string { return h.toolImportConfig(args) })
+	// Template aliases
+	alias("create_template", func(args map[string]interface{}) string { return h.toolCreateTemplate(args) })
+	alias("list_templates", func(args map[string]interface{}) string { return h.toolListTemplates() })
+	alias("launch_template", func(args map[string]interface{}) string { return h.toolLaunchTemplate(args) })
+	// Schedule aliases
+	alias("create_scheduled_task", func(args map[string]interface{}) string { return h.toolCreateScheduledTask(args) })
+	alias("list_scheduled_tasks", func(args map[string]interface{}) string { return h.toolListScheduledTasks() })
+	alias("delete_scheduled_task", func(args map[string]interface{}) string { return h.toolDeleteScheduledTask(args) })
+	alias("update_scheduled_task", func(args map[string]interface{}) string { return h.toolUpdateScheduledTask(args) })
 }

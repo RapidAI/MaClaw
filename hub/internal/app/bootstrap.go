@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
@@ -120,6 +121,47 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	}
 	coordinator := im.NewCoordinator(messageRouter, deviceFinder, llmConfigProvider)
 	imAdapter.SetCoordinator(coordinator)
+
+	// ── Workflow Engine ─────────────────────────────────────
+	// Create WorkflowRegistry (auto-registers builtin templates).
+	workflowRegistry := im.NewWorkflowRegistry()
+
+	// Create UnderstandingManager for multi-round intent clarification.
+	understandingMgr := im.NewUnderstandingManager(
+		llmConfigProvider,
+		coordinator.Breaker(),
+		messageRouter.LLMSemaphore(),
+		st.WorkflowRepo,
+	)
+
+	// Create WorkflowEngine with all dependencies.
+	workflowEngine := im.NewWorkflowEngine(
+		workflowRegistry,
+		understandingMgr,
+		st.WorkflowRepo,
+		llmConfigProvider,
+		coordinator.Breaker(),
+		messageRouter.LLMSemaphore(),
+		messageRouter,
+		coordinator.SpaceStateStore(),
+	)
+
+	// Wire WorkflowEngine into Coordinator and Adapter.
+	coordinator.SetWorkflowEngine(workflowEngine)
+	imAdapter.SetWorkflowEngine(workflowEngine)
+
+	// Start background goroutine for periodic cleanup of expired sessions
+	// and workflow states.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			understandingMgr.CleanupExpiredSessions()
+			if st.WorkflowRepo != nil {
+				_ = st.WorkflowRepo.CleanupExpired(context.Background(), 7*24*time.Hour)
+			}
+		}
+	}()
 
 	// Initialize background task dispatcher — enables non-blocking IM:
 	// simple queries (direct_answer) are answered immediately, while

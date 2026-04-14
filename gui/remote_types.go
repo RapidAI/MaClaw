@@ -203,6 +203,7 @@ type RemoteSession struct {
 	WorkspaceMode  WorkspaceMode
 	WorkspaceIsGit bool
 	ModelID        string
+	ModelName      string
 	JobID          string
 	RunID          string
 

@@ -49,14 +49,39 @@ var codingKeywords = []string{
 	"create_session", // explicit tool name = intentional
 }
 
+// codingActionPhrases are short action/continuation phrases that indicate
+// the user wants to start or continue a coding task. These are NOT added to
+// codingKeywords because they are too generic on their own — they only
+// indicate coding intent when conversation history already contains coding
+// context. Used by checkSessionTaskGuard for context-aware gating.
+var codingActionPhrases = []string{
+	"开工", "开干", "动手", "搞起来", "搞起", "干吧", "做吧",
+	"开始吧", "开始做", "开始干", "开始搞",
+	"let's go", "let's do it", "let's start", "let's begin",
+}
+
 // checkSessionTaskGuard returns a non-empty hint string when the current
 // user message should NOT create a coding session. Returns "" only for
 // explicit coding tasks.
 func (h *IMMessageHandler) checkSessionTaskGuard() string {
 	result := classifyTaskIntent(h.lastUserText)
-	switch result.Intent {
-	case intentCoding:
+
+	// If the current message is clearly a coding task, allow immediately.
+	if result.Intent == intentCoding {
 		return ""
+	}
+
+	// Context-aware gating: when the current message is ambiguous/unknown but
+	// contains an action phrase (e.g. "开工", "动手", "start"), check whether
+	// the conversation history already established coding context. If so,
+	// treat the action phrase as a continuation signal and allow session creation.
+	if result.Intent == intentAmbiguous || result.Intent == intentUnknown {
+		if hasCodingActionPhrase(h.lastUserText) && h.conversationHasCodingContext() {
+			return ""
+		}
+	}
+
+	switch result.Intent {
 	case intentSSH:
 		return fmt.Sprintf(`⚠️ 任务类型检测：当前请求更像 SSH/服务器操作任务（检测到特征：%s），不要创建编程会话。
 
@@ -90,6 +115,57 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 	default:
 		return ""
 	}
+}
+
+// hasCodingActionPhrase checks whether the user message contains a short
+// action/continuation phrase that signals "start working" (e.g. "开工",
+// "动手", "start"). These phrases are too generic to classify as coding
+// on their own, but combined with conversation context they indicate the
+// user wants to proceed with a previously discussed coding task.
+func hasCodingActionPhrase(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	for _, phrase := range codingActionPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// conversationHasCodingContext checks whether the recent conversation history
+// contains evidence of a coding task (e.g. previous messages discussed
+// development, code, projects). This allows short follow-up messages like
+// "开工" to pass through the session guard when context is established.
+func (h *IMMessageHandler) conversationHasCodingContext() bool {
+	if h.memory == nil {
+		return false
+	}
+	userID := h.lastUserID
+	if userID == "" {
+		userID = "desktop-user" // fallback for desktop mode
+	}
+	entries := h.memory.load(userID)
+	if len(entries) == 0 {
+		return false
+	}
+	// Scan the last few entries (up to 10) for coding keywords.
+	start := 0
+	if len(entries) > 10 {
+		start = len(entries) - 10
+	}
+	for i := start; i < len(entries); i++ {
+		text, ok := entries[i].Content.(string)
+		if !ok {
+			continue
+		}
+		lower := strings.ToLower(text)
+		for _, kw := range codingKeywords {
+			if strings.Contains(lower, kw) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string {
@@ -195,6 +271,11 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 	}
 	resolvedProvider := resolveResult.Provider.ModelName
 
+	// Pre-launch banner: show the user what tool/provider/project will be used
+	// before the session is actually created. This helps users verify the
+	// configuration at a glance.
+	hints = append(hints, fmt.Sprintf("🚀 即将启动编程会话：\n   🔧 编程工具: %s\n   📦 服务商: %s\n   📁 工作目录: %s", tool, resolvedProvider, projectPath))
+
 	resumeSessionID, _ := args["resume_session_id"].(string)
 
 	starter := h.app.sessionStarter
@@ -249,7 +330,6 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		b.WriteString("\n")
 	}
 	b.WriteString(fmt.Sprintf("✅ 会话已创建 [%s]\n", view.ID))
-	b.WriteString(fmt.Sprintf("🔧 工具: %s | 📦 服务商: %s | 📁 项目: %s\n", view.Tool, resolvedProvider, projectPath))
 	b.WriteString(fmt.Sprintf("\n📋 下一步操作："))
 	b.WriteString(fmt.Sprintf("\n1. 调用 get_session_output(session_id=%q) 确认会话已启动（状态为 running）", view.ID))
 	b.WriteString(fmt.Sprintf("\n2. 立即调用 send_and_observe(session_id=%q, text=\"编程指令\") 将需求发送给编程工具", view.ID))
@@ -711,10 +791,45 @@ func (h *IMMessageHandler) toolKillSession(args map[string]interface{}) string {
 // toolSendAndObserve combines send_input + get_session_output into a single
 // tool call. It sends text to a session, waits briefly for output to
 // accumulate, then returns the session output — saving one LLM round-trip.
+//
+// When the TaskExecutionOrchestrator is active, the text is automatically
+// enriched with per-task context (task description, acceptance criteria,
+// dependency outputs) to prevent the LLM from dumping the entire project
+// description into a single session.
 func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
 	text, _ := args["text"].(string)
 	timeoutSeconds, _ := args["timeout_seconds"].(float64)
+
+	// Task orchestrator enrichment: when active, prepend per-task context
+	// to the text being sent to the coding session.
+	if h.taskOrchestrator != nil && h.taskOrchestrator.IsActive() {
+		task := h.taskOrchestrator.CurrentTask()
+		if task != nil {
+			// Record which session is handling this task.
+			h.taskOrchestrator.SetCurrentSessionID(sessionID)
+
+			// If the task is pending, this is the initial send — use the
+			// orchestrator's focused prompt instead of the LLM's text.
+			if task.Status == TaskExecPending {
+				taskPrompt := h.taskOrchestrator.BuildTaskPrompt()
+				if taskPrompt != "" {
+					// Prepend the structured task prompt; append the LLM's
+					// original text as supplementary context (it may contain
+					// useful details the orchestrator doesn't know about).
+					if strings.TrimSpace(text) != "" {
+						text = taskPrompt + "\n\n---\n补充说明：\n" + text
+					} else {
+						text = taskPrompt
+					}
+					log.Printf("[task-orchestrator] enriched send_and_observe for task %d: %s",
+						task.Index+1, task.Title)
+				}
+				h.taskOrchestrator.MarkCurrentStatus(TaskExecInProgress, "")
+			}
+		}
+	}
+
 	return SendAndObserveSession(h.manager, sessionID, text, SessionObserveOptions{
 		TimeoutSeconds: timeoutSeconds,
 		Lines:          40,
@@ -793,26 +908,6 @@ func (h *IMMessageHandler) toolControlSession(args map[string]interface{}) strin
 }
 
 // toolManageConfig merges all config operations into a single tool.
-func (h *IMMessageHandler) toolManageConfig(args map[string]interface{}) string {
-	action, _ := args["action"].(string)
-	switch action {
-	case "get":
-		return h.toolGetConfig(args)
-	case "update":
-		return h.toolUpdateConfig(args)
-	case "batch_update":
-		return h.toolBatchUpdateConfig(args)
-	case "list_schema":
-		return h.toolListConfigSchema()
-	case "export":
-		return h.toolExportConfig()
-	case "import":
-		return h.toolImportConfig(args)
-	default:
-		return "action 参数无效，可选值: get, update, batch_update, list_schema, export, import"
-	}
-}
-
 // screenshotCooldown is the minimum interval between consecutive screenshots
 // to prevent accidental rapid-fire captures by the LLM.
 const screenshotCooldown = 30 * time.Second

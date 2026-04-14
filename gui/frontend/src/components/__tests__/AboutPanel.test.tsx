@@ -17,7 +17,7 @@ const baseProps = {
     buildNumber: '10001',
     thanksContent: '',
     t: (key: string) => ({
-        aboutProductName: 'MaClaw Phoenix',
+        aboutProductName: 'MaClaw Dawn',
         slogan: 'Master your code, seize the machine.',
         version: 'Version',
         buildLabel: 'Build',

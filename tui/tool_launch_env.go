@@ -146,12 +146,8 @@ func buildClaudeEnv(cfg corelib.AppConfig, m *corelib.ModelConfig, projectDir st
 			env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = m.ModelId
 			env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = m.ModelId
 		}
-		// Write settings.json unless 百度千帆 (handled below with different URL)
-		lowerName := strings.ToLower(m.ModelName)
-		if lowerName != "百度千帆" && lowerName != "qianfan" {
-			if err := configfile.WriteClaudeProviderSettings(m.ModelName, m.ApiKey, m.ModelUrl, m.ModelId); err != nil {
-				fmt.Fprintf(os.Stderr, "[claude-config] failed to write settings.json: %v\n", err)
-			}
+		if err := configfile.WriteClaudeProviderSettings(m.ModelName, m.ApiKey, m.ModelUrl, m.ModelId); err != nil {
+			fmt.Fprintf(os.Stderr, "[claude-config] failed to write settings.json: %v\n", err)
 		}
 	}
 	// 百度千帆特殊处理
@@ -165,13 +161,20 @@ func buildClaudeEnv(cfg corelib.AppConfig, m *corelib.ModelConfig, projectDir st
 		env["ANTHROPIC_BASE_URL"] = "https://qianfan.baidubce.com/anthropic/coding"
 		env["ANTHROPIC_MODEL"] = modelID
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = modelID
-		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-		env["API_TIMEOUT_MS"] = "600000"
-		// Also write settings.json for 百度千帆
 		if err := configfile.WriteClaudeProviderSettings(m.ModelName, m.ApiKey, "https://qianfan.baidubce.com/anthropic/coding", modelID); err != nil {
 			fmt.Fprintf(os.Stderr, "[claude-config] failed to write settings.json: %v\n", err)
 		}
 	}
+
+	// For all non-builtin (third-party) providers: disable nonessential traffic
+	// and increase API timeout to reduce rate limit pressure.
+	if !m.IsBuiltin {
+		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+		if _, ok := env["API_TIMEOUT_MS"]; !ok {
+			env["API_TIMEOUT_MS"] = "600000"
+		}
+	}
+
 	// TeamMode
 	for _, proj := range cfg.Projects {
 		if proj.Path == projectDir || proj.Id == cfg.CurrentProject {

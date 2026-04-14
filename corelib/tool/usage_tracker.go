@@ -17,6 +17,7 @@ type UsageRecord struct {
 	ToolName    string    `json:"tool_name"`
 	QueryTokens []string  `json:"query_tokens"`
 	Success     bool      `json:"success"`
+	FollowUp    string    `json:"follow_up,omitempty"` // "continue", "retry", "abandon"
 	Timestamp   time.Time `json:"timestamp"`
 }
 
@@ -81,6 +82,74 @@ func (t *UsageTracker) Record(toolName string, queryTokens []string, success boo
 
 	// Persist asynchronously to avoid blocking the hot path.
 	go t.saveSnapshot(snapshot)
+}
+
+// RecordOutcome records a tool invocation with richer outcome information.
+// followUp indicates what the model did next: "continue" (moved on), "retry"
+// (called same tool again), or "abandon" (gave up on the approach).
+func (t *UsageTracker) RecordOutcome(toolName string, queryTokens []string, success bool, followUp string) {
+	tokens := make([]string, 0, 5)
+	for i, tok := range queryTokens {
+		if i >= 5 {
+			break
+		}
+		tokens = append(tokens, tok)
+	}
+	r := UsageRecord{
+		ToolName:    toolName,
+		QueryTokens: tokens,
+		Timestamp:   time.Now(),
+		Success:     success,
+		FollowUp:    followUp,
+	}
+	t.mu.Lock()
+	t.records = append(t.records, r)
+	if len(t.records) > t.maxItems {
+		excess := len(t.records) - t.maxItems
+		t.records = t.records[excess:]
+	}
+	snapshot := make([]UsageRecord, len(t.records))
+	copy(snapshot, t.records)
+	t.mu.Unlock()
+	go t.saveSnapshot(snapshot)
+}
+
+// OutcomeScore returns a [0,1] quality score for a tool based on recent outcomes.
+// Considers success rate, retry frequency, and abandon rate over the last 7 days.
+// A tool with high success and low retry/abandon rates scores close to 1.0.
+func (t *UsageTracker) OutcomeScore(toolName string) float64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	cutoff := time.Now().AddDate(0, 0, -7)
+	var total, successes, retries, abandons int
+
+	for _, r := range t.records {
+		if r.ToolName != toolName || r.Timestamp.Before(cutoff) {
+			continue
+		}
+		total++
+		if r.Success {
+			successes++
+		}
+		switch r.FollowUp {
+		case "retry":
+			retries++
+		case "abandon":
+			abandons++
+		}
+	}
+
+	if total == 0 {
+		return 0 // no data for this tool — neutral, consistent with ExperienceScore
+	}
+
+	successRate := float64(successes) / float64(total)
+	retryPenalty := float64(retries) / float64(total) * 0.3
+	abandonPenalty := float64(abandons) / float64(total) * 0.5
+
+	score := successRate - retryPenalty - abandonPenalty
+	return clampFloat(score, 0, 1)
 }
 
 // ExperienceScore returns a [0,1] score for a tool given the current query tokens.
@@ -201,25 +270,34 @@ func (t *UsageTracker) save() {
 	snapshot := make([]UsageRecord, len(t.records))
 	copy(snapshot, t.records)
 	t.mu.RUnlock()
-	t.saveSnapshot(snapshot)
+	_ = t.saveSnapshot(snapshot)
 }
 
-func (t *UsageTracker) saveSnapshot(records []UsageRecord) {
+// Save persists the current usage records to disk. Safe for concurrent use.
+func (t *UsageTracker) Save() error {
+	t.mu.RLock()
+	snapshot := make([]UsageRecord, len(t.records))
+	copy(snapshot, t.records)
+	t.mu.RUnlock()
+	return t.saveSnapshot(snapshot)
+}
+
+func (t *UsageTracker) saveSnapshot(records []UsageRecord) error {
 	if t.path == "" {
-		return
+		return nil
 	}
 	data, err := json.Marshal(records)
 	if err != nil {
-		return
+		return err
 	}
 	dir := filepath.Dir(t.path)
 	os.MkdirAll(dir, 0755)
 	// Atomic write: temp file + rename.
 	tmp := t.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return
+		return err
 	}
-	os.Rename(tmp, t.path)
+	return os.Rename(tmp, t.path)
 }
 
 // UsagePattern describes a high-frequency successful tool usage pattern.

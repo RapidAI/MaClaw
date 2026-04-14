@@ -29,6 +29,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 // App struct
@@ -71,6 +73,7 @@ type App struct {
 	projectScanner        *ProjectScanner
 	toolDefGenerator      *ToolDefinitionGenerator
 	toolRouter            *ToolRouter
+	usageTracker          *tool.UsageTracker
 	experienceExtractor   *ExperienceExtractor
 	orchestrator          *Orchestrator
 	sharedContext         *SharedContextStore
@@ -125,6 +128,7 @@ type App struct {
 	aiAssistantReadyAt         atomic.Int64
 	aiAssistantFirstChatLogged atomic.Bool
 	docGenerator               *swarm.SwarmDocGenerator // cached PDF doc generator
+	workflowEngine             *workflow.WorkflowEngine // maclaw agent workflow engine (corelib/workflow)
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -227,9 +231,24 @@ func (a *App) initCoreInfra() {
 		builtins := (&IMMessageHandler{}).buildToolDefinitions()
 		a.toolDefGenerator = NewToolDefinitionGenerator(a.mcpRegistry, builtins)
 		a.toolDefGenerator.SetLocalMCPManager(a.localMCPManager)
+		// Progressive tool discovery: defer low-frequency tools so they don't
+		// bloat the initial prompt. The LLM can discover them via discover_tool.
+		a.toolDefGenerator.SetDeferredTools(DeferredToolNames)
 	}
 	if a.toolRouter == nil {
 		a.toolRouter = NewToolRouter(a.toolDefGenerator)
+	}
+	if a.usageTracker == nil {
+		trackerPath := tool.DefaultUsageTrackerPath()
+		if trackerPath != "" {
+			tracker, err := tool.NewUsageTracker(trackerPath)
+			if err != nil {
+				log.Printf("[App] failed to load usage tracker: %v", err)
+			} else {
+				a.usageTracker = tracker
+				a.toolRouter.SetUsageTracker(tracker)
+			}
+		}
 	}
 	if a.sharedContext == nil {
 		a.sharedContext = NewSharedContextStore()
@@ -316,6 +335,7 @@ func (a *App) initOnDemandInfra() {
 	a.ensureMCPAutoDiscovery()
 	a.ensureTemplateManager()
 	a.ensureMDNSScanner()
+	a.ensureTaskOrchestrator2()
 }
 
 // ensureFullInfra initializes all layers. Alias for initRemoteInfra
@@ -769,6 +789,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		if a.toolRouter != nil {
 			handler.SetToolRouter(a.toolRouter)
 		}
+		if a.usageTracker != nil {
+			handler.SetUsageTracker(a.usageTracker)
+		}
 		if a.memoryStore == nil {
 			a.ensureMemoryStore()
 		}
@@ -851,6 +874,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 
 		sm := NewSessionMonitor(a.remoteSessions, statusC, 20*time.Second)
 		handler.SetSessionMonitor(sm)
+
 		a.ensureConversationArchiver()
 		if a.conversationArchiver != nil {
 			handler.memory.archiver = a.conversationArchiver
@@ -1083,6 +1107,8 @@ func (a *App) startup(ctx context.Context) {
 				}
 			}()
 		}
+		// Initialize workflow engine (SQLite store + registry + cleanup goroutine).
+		go a.initWorkflowEngine()
 		return
 	}
 	a.setPowerOptimizationEnabled(false)
@@ -1309,8 +1335,22 @@ func (a *App) buildClaudeLaunchEnv(
 		env["ANTHROPIC_BASE_URL"] = "https://qianfan.baidubce.com/anthropic/coding"
 		env["ANTHROPIC_MODEL"] = modelID
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = modelID
+	}
+
+	// For all non-builtin (third-party) providers: disable nonessential traffic
+	// and increase API timeout. Third-party Anthropic-compatible APIs (智谱, 百度千帆,
+	// DeepSeek, etc.) typically have stricter rate limits than Anthropic's own API.
+	// Claude Code's internal agent loop sends requests very rapidly without human
+	// interaction pauses, which easily triggers 429 rate limits on these providers.
+	// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 prevents background telemetry,
+	// model availability checks, and other non-essential API calls.
+	// API_TIMEOUT_MS=600000 (10 min) gives the provider's rate limiter time to
+	// recover between retries instead of failing fast.
+	if !selectedModel.IsBuiltin {
 		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-		env["API_TIMEOUT_MS"] = "600000"
+		if _, ok := env["API_TIMEOUT_MS"]; !ok {
+			env["API_TIMEOUT_MS"] = "600000"
+		}
 	}
 
 	for _, proj := range config.Projects {
@@ -4356,9 +4396,10 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	if !strings.HasPrefix(strings.ToUpper(displayVersion), "V") {
 		displayVersion = "V" + displayVersion
 	}
-	// Clean version strings for comparison (lowercase, no V prefix)
-	latestVersionForComparison := strings.TrimPrefix(strings.ToLower(tagName), "v")
-	cleanCurrent := strings.TrimPrefix(strings.ToLower(currentVersion), "v")
+	// Clean version strings for comparison (lowercase, no V prefix, no extra text)
+	latestVersionForComparison := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(tagName)), "v")
+	latestVersionForComparison = strings.Split(latestVersionForComparison, " ")[0]
+	cleanCurrent := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(currentVersion)), "v")
 	cleanCurrent = strings.Split(cleanCurrent, " ")[0]
 	// Log for debugging
 	a.log(a.tr("CheckUpdate: Latest version: %s, Current version: %s, Display version: %s", latestVersionForComparison, cleanCurrent, displayVersion))

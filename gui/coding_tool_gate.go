@@ -59,11 +59,16 @@ var deliveryToolAllowlist = map[string]bool{
 var skipSignalsChinese = []string{
 	"直接做", "不用问了", "按你的想法来", "直接开始",
 	"不用确认", "马上做", "赶紧做", "跳过文档", "不需要文档",
+	// Action/continuation phrases — user wants to start working on an
+	// already-discussed task, not go through the three-phase workflow again.
+	"开工", "开干", "动手", "搞起来", "搞起", "干吧", "做吧",
+	"开始吧", "开始做", "开始干", "开始搞",
 }
 
 // skipSignalsEnglish contains English phrases that bypass the gate.
 var skipSignalsEnglish = []string{
 	"just do it", "skip confirmation", "go ahead", "do it now",
+	"let's go", "let's do it", "let's start", "let's begin",
 }
 
 // isCodingTool returns true iff name is in the blocklist and not in the allowlist.

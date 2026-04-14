@@ -321,7 +321,7 @@ func TestSpecWorkflowProperty8_ExecutionTDDAndRetry(t *testing.T) {
 		}
 
 		// (b) Max 3 retry attempts
-		hasRetry := strings.Contains(prompt, "最多 3 次") || strings.Contains(prompt, "最多3次")
+		hasRetry := strings.Contains(prompt, "最多 3 次") || strings.Contains(prompt, "最多3次") || strings.Contains(prompt, "最多重试 3 次")
 		if !hasRetry {
 			t.Logf("missing 3 retry limit")
 			return false

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 )
 
 // ToolDefinitionGenerator dynamically generates the Agent's tool definition
@@ -13,15 +14,66 @@ type ToolDefinitionGenerator struct {
 	registry        *MCPRegistry
 	localMCPManager *LocalMCPManager
 	builtinDefs     []map[string]interface{} // the 12 builtin tool definitions
+	deferredTools   map[string]bool          // tool names excluded from Generate(), discoverable via SearchDeferred()
 }
 
 // NewToolDefinitionGenerator creates a new generator.
 // builtinDefs are the static tool definitions (e.g. from buildToolDefinitions).
 func NewToolDefinitionGenerator(registry *MCPRegistry, builtinDefs []map[string]interface{}) *ToolDefinitionGenerator {
 	return &ToolDefinitionGenerator{
-		registry:    registry,
-		builtinDefs: builtinDefs,
+		registry:      registry,
+		builtinDefs:   builtinDefs,
+		deferredTools: make(map[string]bool),
 	}
+}
+
+// SetDeferredTools marks tool names that should be excluded from Generate()
+// output. These tools are still available via SearchDeferred().
+func (g *ToolDefinitionGenerator) SetDeferredTools(names []string) {
+	g.deferredTools = make(map[string]bool, len(names))
+	for _, n := range names {
+		g.deferredTools[n] = true
+	}
+}
+
+// SearchDeferred returns deferred tool definitions matching the query.
+func (g *ToolDefinitionGenerator) SearchDeferred(query string, maxResults int) []map[string]interface{} {
+	all := g.GenerateDeferred()
+	if query == "" {
+		if maxResults > 0 && len(all) > maxResults {
+			return all[:maxResults]
+		}
+		return all
+	}
+	queryLower := strings.ToLower(query)
+	var matches []map[string]interface{}
+	for _, def := range all {
+		name := strings.ToLower(extractToolName(def))
+		desc := ""
+		if fn, ok := def["function"].(map[string]interface{}); ok {
+			desc, _ = fn["description"].(string)
+		}
+		descLower := strings.ToLower(desc)
+		if strings.Contains(name, queryLower) || strings.Contains(descLower, queryLower) {
+			matches = append(matches, def)
+			if maxResults > 0 && len(matches) >= maxResults {
+				break
+			}
+		}
+	}
+	return matches
+}
+
+// GenerateDeferred returns only the deferred tool definitions.
+func (g *ToolDefinitionGenerator) GenerateDeferred() []map[string]interface{} {
+	var result []map[string]interface{}
+	for _, def := range g.builtinDefs {
+		name := extractToolName(def)
+		if name != "" && g.deferredTools[name] {
+			result = append(result, def)
+		}
+	}
+	return result
 }
 
 // SetLocalMCPManager sets the local MCP manager for stdio-based tool discovery.
@@ -33,9 +85,15 @@ func (g *ToolDefinitionGenerator) SetLocalMCPManager(mgr *LocalMCPManager) {
 // Dynamic tool names that conflict with builtin names get a server_id prefix.
 // Only tools from healthy remote MCP Servers and running local MCP Servers are included.
 func (g *ToolDefinitionGenerator) Generate() []map[string]interface{} {
-	// Start with a copy of builtin definitions.
-	result := make([]map[string]interface{}, len(g.builtinDefs))
-	copy(result, g.builtinDefs)
+	// Start with a copy of builtin definitions, excluding deferred tools.
+	result := make([]map[string]interface{}, 0, len(g.builtinDefs))
+	for _, def := range g.builtinDefs {
+		name := extractToolName(def)
+		if name != "" && g.deferredTools[name] {
+			continue
+		}
+		result = append(result, def)
+	}
 
 	// Build a set of builtin tool names for conflict detection.
 	builtinNames := make(map[string]bool, len(g.builtinDefs))

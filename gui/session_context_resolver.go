@@ -4,16 +4,26 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/reposcanner"
 )
 
 // SessionContextResolver 自动推断会话启动参数
 type SessionContextResolver struct {
 	app *App
+
+	// Cached repo overviews keyed by project path.
+	overviewCache map[string]string
+	overviewMu    sync.Mutex
 }
 
 // NewSessionContextResolver creates a new SessionContextResolver.
 func NewSessionContextResolver(app *App) *SessionContextResolver {
-	return &SessionContextResolver{app: app}
+	return &SessionContextResolver{
+		app:           app,
+		overviewCache: make(map[string]string),
+	}
 }
 
 // ResolveProject 按优先级推断项目路径:
@@ -107,6 +117,42 @@ func (r *SessionContextResolver) ResolveTool(projectPath, taskDescription string
 	}
 
 	return "", ""
+}
+
+// ResolveRepoOverview returns a compressed markdown overview of the project
+// at the given path, suitable for LLM context injection. Results are cached
+// per project path. Returns empty string if the path is empty or scanning fails.
+func (r *SessionContextResolver) ResolveRepoOverview(projectPath string, tokenBudget int) string {
+	if projectPath == "" {
+		return ""
+	}
+	if tokenBudget <= 0 {
+		tokenBudget = 3000
+	}
+
+	// Fast path: check cache without blocking.
+	r.overviewMu.Lock()
+	if cached, ok := r.overviewCache[projectPath]; ok {
+		r.overviewMu.Unlock()
+		return cached
+	}
+	// Hold lock during scan to prevent duplicate work for the same path.
+	// Scan is I/O-bound but typically completes in <1s for most projects.
+	defer r.overviewMu.Unlock()
+
+	cfg := reposcanner.DefaultScanConfig()
+	cfg.TokenBudget = tokenBudget
+	cfg.DeepMode = false
+
+	result, err := reposcanner.Scan(projectPath, cfg, nil)
+	if err != nil || result == nil {
+		// Cache empty string to avoid re-scanning on every call.
+		r.overviewCache[projectPath] = ""
+		return ""
+	}
+
+	r.overviewCache[projectPath] = result.CompressedMD
+	return result.CompressedMD
 }
 
 // fileExists returns true if the path exists and is not a directory.

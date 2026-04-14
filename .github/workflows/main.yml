@@ -90,12 +90,26 @@ jobs:
           cache: npm
           cache-dependency-path: gui/frontend/package-lock.json
 
-      - name: Extract version from wails.json
+      - name: Extract version (prefer git tag, fallback to wails.json)
         shell: pwsh
         run: |
-          $cfg = Get-Content wails.json -Raw | ConvertFrom-Json
-          $version = $cfg.info.productVersion
-          echo "VERSION=$version" >> $env:GITHUB_ENV
+          # Prefer git tag as the authoritative version source
+          $tag = "${{ github.ref_name }}"
+          if ($tag -match '^[Vv](\d+\.\d+\.\d+(\.\d+)?)') {
+            $version = $Matches[1]
+            echo "VERSION=$version" >> $env:GITHUB_ENV
+            echo "Version from git tag: $version"
+          } else {
+            $cfg = Get-Content wails.json -Raw | ConvertFrom-Json
+            $version = $cfg.info.productVersion
+            echo "VERSION=$version" >> $env:GITHUB_ENV
+            echo "Version from wails.json: $version"
+          }
+          # Sync version.ts so frontend version matches backend
+          $parts = $version.Split('.')
+          $buildNum = if ($parts.Length -ge 4) { $parts[3] } else { '0' }
+          $content = "export const buildNumber = '${buildNum}';`nexport const appVersion = '${version}';"
+          Set-Content -Path 'gui/frontend/src/version.ts' -Value $content -Encoding Utf8
 
       - name: Build frontend
         shell: pwsh
@@ -347,10 +361,20 @@ jobs:
           cache: npm
           cache-dependency-path: gui/frontend/package-lock.json
 
-      - name: Extract version from wails.json
+      - name: Extract version (prefer git tag, fallback to wails.json)
         run: |
-          VERSION=$(python3 -c "import json; print(json.load(open('wails.json'))['info']['productVersion'])")
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" =~ ^[Vv]([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            echo "Version from git tag: $VERSION"
+          else
+            VERSION=$(python3 -c "import json; print(json.load(open('wails.json'))['info']['productVersion'])")
+            echo "Version from wails.json: $VERSION"
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          # Sync version.ts so frontend version matches backend
+          BUILD_NUM=$(echo "$VERSION" | awk -F. '{print ($4 != "" ? $4 : "0")}')
+          printf "export const buildNumber = '%s';\nexport const appVersion = '%s';\n" "$BUILD_NUM" "$VERSION" > gui/frontend/src/version.ts
 
       - name: Build frontend
         run: |
@@ -554,16 +578,27 @@ jobs:
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
 
-      - name: Extract version from wails.json
+      - name: Extract version (prefer git tag, fallback to wails.json)
         run: |
-          VERSION=$(python3 -c "import json; print(json.load(open('wails.json'))['info']['productVersion'])")
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" =~ ^[Vv]([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            echo "Version from git tag: $VERSION"
+          else
+            VERSION=$(python3 -c "import json; print(json.load(open('wails.json'))['info']['productVersion'])")
+            echo "Version from wails.json: $VERSION"
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          # Sync version.ts so frontend version matches backend
+          BUILD_NUM=$(echo "$VERSION" | awk -F. '{print ($4 != "" ? $4 : "0")}')
+          printf "export const buildNumber = '%s';\nexport const appVersion = '%s';\n" "$BUILD_NUM" "$VERSION" > gui/frontend/src/version.ts
 
       - name: Build frontend
         run: |
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
+
 
       - name: Build Linux GUI (amd64)
         run: |
@@ -746,6 +781,21 @@ jobs:
           fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
+
+      - name: Extract version (prefer git tag, fallback to wails.json)
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" =~ ^[Vv]([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            echo "Version from git tag: $VERSION"
+          else
+            VERSION=$(python3 -c "import json; print(json.load(open('wails.json'))['info']['productVersion'])")
+            echo "Version from wails.json: $VERSION"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          # Sync version.ts so frontend version matches backend
+          BUILD_NUM=$(echo "$VERSION" | awk -F. '{print ($4 != "" ? $4 : "0")}')
+          printf "export const buildNumber = '%s';\nexport const appVersion = '%s';\n" "$BUILD_NUM" "$VERSION" > gui/frontend/src/version.ts
 
       - name: Build frontend
         run: |

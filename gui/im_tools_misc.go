@@ -1098,6 +1098,69 @@ func (h *IMMessageHandler) toolImportConfig(args map[string]interface{}) string 
 	return b.String()
 }
 
+// ===================== Merged tool dispatchers =====================
+
+// toolManageConfig dispatches the merged manage_config tool to individual handlers.
+func (h *IMMessageHandler) toolManageConfig(args map[string]interface{}) string {
+	action := stringVal(args, "action")
+	switch action {
+	case "get":
+		return h.toolGetConfig(args)
+	case "set":
+		return h.toolUpdateConfig(args)
+	case "batch":
+		return h.toolBatchUpdateConfig(args)
+	case "schema":
+		return h.toolListConfigSchema()
+	case "export":
+		return h.toolExportConfig()
+	case "import":
+		return h.toolImportConfig(args)
+	default:
+		return fmt.Sprintf("未知 manage_config action: %s（支持: get/set/batch/schema/export/import）", action)
+	}
+}
+
+// toolManageTemplate dispatches the merged manage_template tool to individual handlers.
+func (h *IMMessageHandler) toolManageTemplate(args map[string]interface{}) string {
+	action := stringVal(args, "action")
+	switch action {
+	case "create":
+		return h.toolCreateTemplate(args)
+	case "list":
+		return h.toolListTemplates()
+	case "launch":
+		if _, ok := args["template_name"]; !ok {
+			if name, ok := args["name"]; ok {
+				args["template_name"] = name
+			}
+		}
+		return h.toolLaunchTemplate(args)
+	default:
+		return fmt.Sprintf("未知 manage_template action: %s（支持: create/list/launch）", action)
+	}
+}
+
+// toolManageSchedule dispatches the merged manage_schedule tool to individual handlers.
+func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) string {
+	action := stringVal(args, "action")
+	if ta, ok := args["task_action"]; ok {
+		args["action"] = ta
+	}
+	switch action {
+	case "create":
+		return h.toolCreateScheduledTask(args)
+	case "list":
+		return h.toolListScheduledTasks()
+	case "delete":
+		return h.toolDeleteScheduledTask(args)
+	case "update":
+		return h.toolUpdateScheduledTask(args)
+	default:
+		return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/delete/update）", action)
+	}
+}
+
 // toolSetMaxIterations allows the agent to dynamically adjust the max
 // iterations for the current conversation loop. This does NOT change the
 // persisted config — it only affects the in-flight loop.

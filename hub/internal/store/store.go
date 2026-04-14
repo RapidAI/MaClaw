@@ -265,6 +265,47 @@ type VoiceprintRepository interface {
 	DeleteByUserID(ctx context.Context, userID string) (int64, error)
 }
 
+// WorkflowRepository persists intent-understanding sessions and workflow
+// states for the workflow engine.
+type WorkflowRepository interface {
+	SaveUnderstandingSession(ctx context.Context, s *UnderstandingSessionRow) error
+	GetActiveUnderstandingSession(ctx context.Context, userID string) (*UnderstandingSessionRow, error)
+	DeleteUnderstandingSession(ctx context.Context, id string) error
+
+	SaveWorkflowState(ctx context.Context, ws *WorkflowStateRow) error
+	GetActiveWorkflowState(ctx context.Context, userID string) (*WorkflowStateRow, error)
+	DeleteWorkflowState(ctx context.Context, id string) error
+
+	CleanupExpired(ctx context.Context, olderThan time.Duration) error
+}
+
+// UnderstandingSessionRow is the persistence-level representation of an
+// understanding session. JSON fields are stored as opaque strings to avoid
+// import cycles with the im package.
+type UnderstandingSessionRow struct {
+	ID         string
+	UserID     string
+	IntentJSON string
+	RoundsJSON string
+	State      string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// WorkflowStateRow is the persistence-level representation of a workflow
+// state. JSON fields are stored as opaque strings.
+type WorkflowStateRow struct {
+	ID               string
+	UserID           string
+	Type             string
+	TemplateType     string
+	IntentJSON       string
+	CurrentPhase     string
+	PhaseOutputsJSON string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type Store struct {
 	Admins          AdminUserRepository
 	System          SystemSettingsRepository
@@ -279,4 +320,5 @@ type Store struct {
 	LoginTokens     LoginTokenRepository
 	Sessions        SessionRepository
 	Voiceprints     VoiceprintRepository
+	WorkflowRepo    WorkflowRepository
 }

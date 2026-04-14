@@ -81,8 +81,12 @@ func (h *IMMessageHandler) toolListSessions() string {
 		status := string(s.Status)
 		task := s.Summary.CurrentTask
 		waiting := s.Summary.WaitingForUser
+		modelName := s.ModelName
 		s.mu.RUnlock()
 		b.WriteString(fmt.Sprintf("- [%s] 工具=%s 标题=%s 状态=%s", s.ID, s.Tool, s.Title, status))
+		if modelName != "" {
+			b.WriteString(fmt.Sprintf(" 服务商=%s", modelName))
+		}
 		if task != "" {
 			b.WriteString(fmt.Sprintf(" 任务=%s", task))
 		}

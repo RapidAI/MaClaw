@@ -187,12 +187,13 @@ func TestToolRouter_RelevanceRanking_AboveBudget(t *testing.T) {
 func TestToolRouter_NonCoreBuiltinCompetes(t *testing.T) {
 	// Non-core builtins like config tools should be included when relevant.
 	builtins := makeBuiltinDefs()
-	// Add config tools (non-core builtins).
+	// Add config tools (non-core builtins) — both merged and legacy names.
 	builtins = append(builtins,
+		toolDef("manage_config", "配置管理（get/set/batch/schema/export/import）", nil, nil),
 		toolDef("get_config", "获取配置", nil, nil),
 		toolDef("update_config", "修改配置", nil, nil),
 		toolDef("craft_tool", "自动生成脚本", nil, nil),
-		toolDef("create_scheduled_task", "创建定时任务", nil, nil),
+		toolDef("manage_schedule", "定时任务管理", nil, nil),
 	)
 	// Add enough dynamic tools to exceed budget regardless of builtin count.
 	for i := 0; i < maxToolBudget+5; i++ {
@@ -205,16 +206,12 @@ func TestToolRouter_NonCoreBuiltinCompetes(t *testing.T) {
 	router := NewToolRouter(nil)
 	result := router.Route("帮我修改配置", builtins)
 
-	// update_config should rank high due to "配置" match, and at least one
-	// complementary config-reading/management tool should remain in budget.
+	// At least one config-related tool should rank high due to "配置" match.
 	resultNames := make(map[string]bool)
 	for _, tool := range result {
 		resultNames[extractToolName(tool)] = true
 	}
-	if !resultNames["update_config"] {
-		t.Error("update_config should be included when user mentions 配置")
-	}
-	if !resultNames["update_config"] && !resultNames["get_config"] && !resultNames["manage_config"] {
+	if !resultNames["manage_config"] && !resultNames["update_config"] && !resultNames["get_config"] {
 		t.Error("expected at least one config-related tool to remain in the routed result")
 	}
 }

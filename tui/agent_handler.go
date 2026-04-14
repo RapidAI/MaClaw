@@ -25,7 +25,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
@@ -56,6 +58,14 @@ type TUIAgentHandler struct {
 	bgTaskMgr        *remote.SSHBackgroundTaskManager
 	maxIterations    int
 	codingToolHealth *codingToolHealthCache // 编程工具健康状态缓存
+	workflowEngine   *workflow.WorkflowEngine // maclaw agent workflow engine
+	taskStore        *task.Store              // lightweight task tracker
+	usageTracker     *tool.UsageTracker       // tool outcome learning tracker
+
+	// stashedPhasePrompt holds the custom PhasePrompt from HandleInput
+	// (e.g. modify requests) for the current agent loop iteration.
+	// Consumed and cleared by buildSystemPromptWithFirstTurn.
+	stashedPhasePrompt string
 
 	// lastScreenshotAt records the time of the last successful screenshot
 	// to enforce a cooldown period and prevent accidental rapid-fire captures.
@@ -122,6 +132,12 @@ func WithAgentNetClient(cc *agentnet.Client) AgentHandlerOption {
 func WithAuditLog(al *security.AuditLog) AgentHandlerOption {
 	return func(h *TUIAgentHandler) { h.auditLog = al }
 }
+func WithWorkflowEngine(we *workflow.WorkflowEngine) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.workflowEngine = we }
+}
+func WithUsageTracker(ut *tool.UsageTracker) AgentHandlerOption {
+	return func(h *TUIAgentHandler) { h.usageTracker = ut }
+}
 func WithSSHManager(sm *remote.SSHSessionManager) AgentHandlerOption {
 	return func(h *TUIAgentHandler) {
 		h.sshMgr = sm
@@ -158,8 +174,31 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 		return AgentResponse{Error: i18n.T(i18n.MsgTUILLMNotConfiguredHint, i18n.NormalizeLang(""))}
 	}
 
+	// --- Workflow engine interception ---
+	if h.workflowEngine != nil {
+		if wfResp := h.handleTUIWorkflowInterception(userText); wfResp != nil {
+			return *wfResp
+		}
+	}
+
 	systemPrompt := h.buildSystemPromptWithHistory(userText, history)
+
+	// Inject workflow phase prompt if user has an active workflow.
+	if h.workflowEngine != nil {
+		if h.stashedPhasePrompt != "" {
+			systemPrompt += "\n" + h.stashedPhasePrompt
+			h.stashedPhasePrompt = ""
+		} else if phasePrompt := h.workflowEngine.BuildPhasePrompt("tui-user"); phasePrompt != "" {
+			systemPrompt += "\n" + phasePrompt
+		}
+	}
+
 	tools := h.buildToolDefinitions()
+
+	// Workflow tool filtering: restrict tools during doc_only phases.
+	if h.workflowEngine != nil {
+		tools = h.applyTUIWorkflowToolFilter(tools)
+	}
 
 	// Router: 当工具总数 > MaxToolBudget 时裁剪
 	if h.router != nil && len(tools) > tool.MaxToolBudget {
@@ -204,12 +243,22 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 
 		// 无工具调用 → 最终回复
 		if len(choice.Message.ToolCalls) == 0 {
-			return AgentResponse{Text: agent.StripThinkingTags(tuiContent)}
+			finalText := agent.StripThinkingTags(tuiContent)
+			h.captureWorkflowOutput(finalText)
+			h.ensureUsageTrackerSaved()
+			return AgentResponse{Text: finalText}
 		}
 
 		// 执行工具调用
 		for _, tc := range choice.Message.ToolCalls {
 			result := h.executeTool(tc.Function.Name, tc.Function.Arguments)
+
+			// Record tool outcome for usage tracking (Tool Outcome Learning).
+			toolSuccess := !strings.HasPrefix(result, "未知工具") &&
+				!strings.HasPrefix(result, "工具执行异常") &&
+				!strings.HasPrefix(result, "错误:") &&
+				!strings.HasPrefix(result, "缺少 ")
+			h.recordToolOutcome(tc.Function.Name, userText, toolSuccess, "continue")
 
 			// Pin conditional tools (e.g. ssh) to the session after first
 			// successful use so they remain available for follow-up messages.
@@ -235,8 +284,10 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 		}
 	}
 
+	h.ensureUsageTrackerSaved()
 	return AgentResponse{Text: i18n.T(i18n.MsgTUIAgentMaxRoundsReached, i18n.NormalizeLang(""))}
 }
+
 
 func (h *TUIAgentHandler) buildSystemPrompt() string {
 	return h.buildSystemPromptWithHistory("", nil)
@@ -546,6 +597,51 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"task_description": map[string]interface{}{"type": "string", "description": "任务描述"},
 		}, []string{"task_description"}),
 		toolDef("screenshot", "截取屏幕截图。仅在用户明确要求截屏、或需要确认操作结果时使用。最小间隔 30 秒。", map[string]interface{}{}, nil),
+		// --- 结构化提问 ---
+		toolDef("ask_user", "向用户提出结构化问题并等待回答。当你需要用户确认方案、选择选项、或提供缺失信息时使用此工具。", map[string]interface{}{
+			"question":   map[string]interface{}{"type": "string", "description": "要问用户的问题"},
+			"options":    map[string]interface{}{"type": "array", "description": "可选：预设选项列表", "items": map[string]interface{}{"type": "string"}},
+			"input_type": map[string]interface{}{"type": "string", "description": "回答类型: choice/text/confirm（默认 text）"},
+		}, []string{"question"}),
+		// --- 任务管理 ---
+		toolDef("task", "管理任务（action: create/update/complete/fail/list/delegate/delete）。用于跟踪复杂任务的进度和依赖关系。", map[string]interface{}{
+			"action":      map[string]interface{}{"type": "string", "description": "操作: create/update/complete/fail/list/delegate/delete"},
+			"task_id":     map[string]interface{}{"type": "string", "description": "任务 ID"},
+			"title":       map[string]interface{}{"type": "string", "description": "任务标题（create 时必填）"},
+			"description": map[string]interface{}{"type": "string", "description": "任务描述"},
+			"depends_on":  map[string]interface{}{"type": "array", "description": "依赖的任务 ID 列表", "items": map[string]interface{}{"type": "string"}},
+			"status":      map[string]interface{}{"type": "string", "description": "新状态: pending/in_progress/completed/failed/blocked"},
+			"status_note": map[string]interface{}{"type": "string", "description": "状态更新说明"},
+			"delegate_to": map[string]interface{}{"type": "string", "description": "委派目标"},
+		}, []string{"action"}),
+		// --- 子 Agent 委派 ---
+		toolDef("delegate_task", "将任务委派给专业子 Agent。可用: coding_workflow（编码工作流）、help（使用帮助）。", map[string]interface{}{
+			"agent":   map[string]interface{}{"type": "string", "description": "子 Agent 名称: coding_workflow / help"},
+			"request": map[string]interface{}{"type": "string", "description": "要委派的任务描述"},
+		}, nil),
+		// --- 合并工具 ---
+		toolDef("manage_config", "配置管理（action: get/set/batch/schema/export/import）", map[string]interface{}{
+			"action":  map[string]interface{}{"type": "string", "description": "操作: get/set/batch/schema/export/import"},
+			"section": map[string]interface{}{"type": "string", "description": "配置区域"},
+			"key":     map[string]interface{}{"type": "string", "description": "配置项名称（set 时必填）"},
+			"value":   map[string]interface{}{"type": "string", "description": "新值（set 时必填）"},
+		}, []string{"action"}),
+		toolDef("manage_template", "会话模板管理（action: create/list/launch）", map[string]interface{}{
+			"action": map[string]interface{}{"type": "string", "description": "操作: create/list/launch"},
+			"name":   map[string]interface{}{"type": "string", "description": "模板名称"},
+			"tool":   map[string]interface{}{"type": "string", "description": "工具名称（create 时必填）"},
+		}, []string{"action"}),
+		toolDef("manage_schedule", "定时任务管理（action: create/list/delete/update）", map[string]interface{}{
+			"action":      map[string]interface{}{"type": "string", "description": "操作: create/list/delete/update"},
+			"id":          map[string]interface{}{"type": "string", "description": "任务 ID（delete/update 时必填）"},
+			"name":        map[string]interface{}{"type": "string", "description": "任务名称（create 时必填）"},
+			"task_action": map[string]interface{}{"type": "string", "description": "到时要执行的操作"},
+			"hour":        map[string]interface{}{"type": "integer", "description": "执行时间-小时（0-23）"},
+		}, []string{"action"}),
+		// --- 工具发现 ---
+		toolDef("discover_tool", "发现更多可用工具。当你需要配置管理、定时任务、模板等能力时调用。", map[string]interface{}{
+			"need": map[string]interface{}{"type": "string", "description": "描述你需要的能力"},
+		}, []string{"need"}),
 		// --- Web search & fetch ---
 		toolDef("web_search", "搜索互联网内容，返回搜索结果列表（标题、URL、摘要）", map[string]interface{}{
 			"query":       map[string]interface{}{"type": "string", "description": "搜索关键词"},
@@ -557,6 +653,31 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"save_path": map[string]interface{}{"type": "string", "description": "保存文件路径（可选，下载文件用）"},
 			"timeout":   map[string]interface{}{"type": "integer", "description": "超时秒数（可选，默认 30）"},
 		}, []string{"url"}),
+		// --- 缺失工具补定义 ---
+		toolDef("craft_tool", "当现有工具不合适时，生成并执行单脚本来完成一次性自动化任务", map[string]interface{}{
+			"task":        map[string]interface{}{"type": "string", "description": "需要完成的任务描述"},
+			"language":    map[string]interface{}{"type": "string", "description": "脚本语言: python/bash/powershell/node（可选）"},
+			"working_dir": map[string]interface{}{"type": "string", "description": "脚本执行工作目录（可选）"},
+			"timeout":     map[string]interface{}{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
+		}, []string{"task"}),
+		toolDef("generate_pdf", "生成 PDF 文档。仅用于编程流程的需求/设计/任务文档", map[string]interface{}{
+			"content":  map[string]interface{}{"type": "string", "description": "Markdown 格式的文档内容"},
+			"title":    map[string]interface{}{"type": "string", "description": "文档标题"},
+			"doc_type": map[string]interface{}{"type": "string", "description": "文档类型: requirements/design/task_plan"},
+		}, []string{"content"}),
+		toolDef("open", "用操作系统默认程序打开文件或网址", map[string]interface{}{
+			"target": map[string]interface{}{"type": "string", "description": "要打开的文件路径、目录路径或 URL"},
+		}, []string{"target"}),
+		toolDef("set_nickname", "设置本机在 Hub 群聊中的昵称", map[string]interface{}{
+			"nickname": map[string]interface{}{"type": "string", "description": "新昵称"},
+		}, []string{"nickname"}),
+		toolDef("list_providers", "列出指定编程工具的所有可用服务商", map[string]interface{}{
+			"tool": map[string]interface{}{"type": "string", "description": "工具名称，如 claude, codex, gemini"},
+		}, []string{"tool"}),
+		toolDef("get_skill_run", "查询指定 Skill 运行的当前状态", map[string]interface{}{
+			"run_id":       map[string]interface{}{"type": "string", "description": "run_skill 返回的运行 ID"},
+			"wait_seconds": map[string]interface{}{"type": "number", "description": "查询前等待秒数（可选，默认 2）"},
+		}, []string{"run_id"}),
 	}
 	// SSH 工具
 	defs = append(defs, sshToolDefinitions()...)
@@ -646,7 +767,10 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 		return h.toolSendAndObserve(args)
 	case "control_session":
 		return h.toolControlSession(args)
-	// --- 配置管理 ---
+	// --- 合并工具：配置管理 ---
+	case "manage_config":
+		return h.toolManageConfig(args)
+	// 向后兼容旧工具名
 	case "get_config":
 		return h.toolGetConfig(args)
 	case "update_config":
@@ -659,14 +783,20 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 		return h.toolExportConfig()
 	case "import_config":
 		return h.toolImportConfig(args)
-	// --- 模板 ---
+	// --- 合并工具：模板管理 ---
+	case "manage_template":
+		return h.toolManageTemplate(args)
+	// 向后兼容旧工具名
 	case "create_template":
 		return h.toolCreateTemplate(args)
 	case "list_templates":
 		return h.toolListTemplates()
 	case "launch_template":
 		return h.toolLaunchTemplate(args)
-	// --- 定时任务 ---
+	// --- 合并工具：定时任务 ---
+	case "manage_schedule":
+		return h.toolManageSchedule(args)
+	// 向后兼容旧工具名
 	case "create_scheduled_task":
 		return h.toolCreateScheduledTask(args)
 	case "list_scheduled_tasks":
@@ -678,6 +808,18 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 	// --- 记忆 ---
 	case "memory":
 		return h.toolMemory(args)
+	// --- 结构化提问 ---
+	case "ask_user":
+		return h.toolAskUser(args)
+	// --- 任务管理 ---
+	case "task":
+		return h.toolTask(args)
+	// --- 子 Agent 委派 ---
+	case "delegate_task":
+		return h.toolDelegateTask(args)
+	// --- 工具发现 ---
+	case "discover_tool":
+		return h.toolDiscoverTool(args)
 	// --- MCP ---
 	case "list_mcp_tools":
 		return h.toolListMCPTools()
@@ -724,6 +866,19 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 	// --- SSH ---
 	case "ssh":
 		return h.toolSSH(args)
+	// --- 缺失工具补接线 ---
+	case "craft_tool":
+		return h.toolCraftTool(args)
+	case "generate_pdf":
+		return h.toolGeneratePDF(args)
+	case "open":
+		return h.toolOpen(args)
+	case "set_nickname":
+		return h.toolSetNickname(args)
+	case "list_providers":
+		return h.toolListProviders(args)
+	case "get_skill_run":
+		return h.toolGetSkillRun(args)
 	default:
 		return fmt.Sprintf("未知工具: %s", name)
 	}
@@ -880,7 +1035,11 @@ func (h *TUIAgentHandler) toolListSessions() string {
 	var sb strings.Builder
 	for _, s := range sessions {
 		s.mu.Lock()
-		sb.WriteString(fmt.Sprintf("ID: %s  工具: %s  状态: %s  标题: %s\n", s.ID, s.Spec.Tool, s.Status, s.Spec.Title))
+		sb.WriteString(fmt.Sprintf("ID: %s  工具: %s  状态: %s  标题: %s", s.ID, s.Spec.Tool, s.Status, s.Spec.Title))
+		if s.Spec.ModelName != "" {
+			sb.WriteString(fmt.Sprintf("  服务商: %s", s.Spec.ModelName))
+		}
+		sb.WriteString("\n")
 		s.mu.Unlock()
 	}
 	return sb.String()

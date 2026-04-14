@@ -50,6 +50,8 @@ var CoreToolNames = map[string]bool{
 	"web_fetch":  true,
 	"set_nickname": true,
 	"discover_tool": true,
+	"ask_user":      true,
+	"task":          true,
 }
 
 type conditionalKeepRule struct {
@@ -211,6 +213,8 @@ var BuiltinToolNames = map[string]bool{
 	"search_and_install_skill": true,
 	"switch_llm_provider":      true,
 	"manage_config":            true,
+	"manage_template":          true,
+	"manage_schedule":          true,
 	"query_audit_log":          true,
 	// Browser automation tools (browser agent session + legacy CDP helpers).
 	"browser_session_start": true, "browser_session_stop": true, "browser_observe": true,
@@ -657,6 +661,10 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		if r.tracker != nil {
 			expScore = r.tracker.ExperienceScore(name, queryTokens)
 		}
+		var outcomeScore float64
+		if r.tracker != nil {
+			outcomeScore = r.tracker.OutcomeScore(name)
+		}
 		var priorityBonus float64
 		if r.registry != nil {
 			if t, ok := r.registry.Get(name); ok {
@@ -672,11 +680,11 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 
 		var finalScore float64
 		if r.skillProvider != nil && r.tracker != nil {
-			// Four signals: α=0.5 retrieval + β=0.25 experience + γ=0.15 skill_match + δ=0.1 priority
-			finalScore = 0.5*retrievalScore + 0.25*expScore + 0.15*skillBonus + 0.1*priorityBonus
+			// Five signals: α=0.45 retrieval + β=0.20 experience + γ=0.15 skill_match + δ=0.10 outcome + ε=0.10 priority
+			finalScore = 0.45*retrievalScore + 0.20*expScore + 0.15*skillBonus + 0.10*outcomeScore + 0.10*priorityBonus
 		} else if r.tracker != nil {
-			// α=0.6 retrieval + β=0.3 experience + γ=0.1 priority
-			finalScore = 0.6*retrievalScore + 0.3*expScore + 0.1*priorityBonus
+			// α=0.50 retrieval + β=0.25 experience + γ=0.15 outcome + δ=0.10 priority
+			finalScore = 0.50*retrievalScore + 0.25*expScore + 0.15*outcomeScore + 0.10*priorityBonus
 		} else {
 			// No tracker: α=0.9 retrieval + γ=0.1 priority
 			finalScore = 0.9*retrievalScore + 0.1*priorityBonus

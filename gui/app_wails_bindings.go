@@ -1168,6 +1168,37 @@ func (a *App) StopAllBackgroundLoops() []string {
 	return ids
 }
 
+// StopAllBackgroundTasks stops all background loops AND all active remote
+// sessions (AI coding sessions). Returns the total number of items stopped.
+func (a *App) StopAllBackgroundTasks() int {
+	stopped := 0
+
+	// 1. Stop background loops
+	loopIDs := a.StopAllBackgroundLoops()
+	stopped += len(loopIDs)
+
+	// 2. Kill all active remote sessions
+	if a.remoteSessions != nil {
+		killed := a.remoteSessions.KillAllActive()
+		stopped += len(killed)
+	}
+
+	return stopped
+}
+
+// DismissRemoteSession removes a terminated session from the session manager
+// so it no longer appears in the session list. Returns an error if the session
+// is still active.
+func (a *App) DismissRemoteSession(sessionID string) error {
+	if a.remoteSessions == nil {
+		return fmt.Errorf("session manager not initialized")
+	}
+	if ok := a.remoteSessions.RemoveTerminated(sessionID); !ok {
+		return fmt.Errorf("session %s not found or still active", sessionID)
+	}
+	return nil
+}
+
 // StopBackgroundLoop gracefully stops a background loop by ID.
 func (a *App) StopBackgroundLoop(loopID string) error {
 	hubClient := a.hubClient()
