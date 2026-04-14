@@ -126,6 +126,10 @@ export function SaveConfig(arg1:main.AppConfig):Promise<void>;
 
 export function SelectProjectDir():Promise<string>;
 
+export function SetWorkflowWorkingDir(arg1:string):Promise<void>;
+
+export function GetWorkflowWorkingDir():Promise<string>;
+
 export function SelectSkillFile():Promise<string>;
 
 export function SendRemoteSessionImage(arg1:string,arg2:string,arg3:string):Promise<void>;

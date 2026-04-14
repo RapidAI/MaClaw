@@ -91,7 +91,12 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] understanding HandleInput error for user %s: %v", userID, err)
-		return &IMAgentResponse{Error: fmt.Sprintf("意图理解出错: %v", err)}
+		// On LLM timeout or transient error, clean up the understanding session
+		// and fall through to the normal agent loop instead of showing a raw error.
+		if understanding.HasActiveSession(userID) {
+			_, _, _, _, _ = understanding.HandleInput(userID, "取消")
+		}
+		return nil // fall through to normal agent loop
 	}
 	if cancelled {
 		return &IMAgentResponse{Text: "已取消。有什么其他需要帮助的吗？"}

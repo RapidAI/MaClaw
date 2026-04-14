@@ -16,7 +16,7 @@ var tuiSubAgents = map[string]subAgentSpec{
 	"coding_workflow": {
 		Name:        "coding_workflow",
 		Description: "编码工作流专家：引导完成需求分析→技术设计→任务拆分",
-		Prompt:      "你是编码工作流专家。引导用户完成需求分析→技术设计→任务拆分。每个阶段在文档末尾用文字提示用户确认或修改。使用 task 工具创建任务列表。",
+		Prompt:      "你是编码工作流专家。引导用户完成需求分析→技术设计→任务拆分。不要先问澄清问题，直接基于已有信息生成需求文档，不确定的部分标记为「⚠️ 待确认」。每个阶段在文档末尾用文字提示用户确认或修改。使用 task 工具创建任务列表。",
 	},
 	"help": {
 		Name:        "help",

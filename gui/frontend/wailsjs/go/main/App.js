@@ -250,6 +250,14 @@ export function SelectProjectDir() {
   return window['go']['main']['App']['SelectProjectDir']();
 }
 
+export function SetWorkflowWorkingDir(arg1) {
+  return window['go']['main']['App']['SetWorkflowWorkingDir'](arg1);
+}
+
+export function GetWorkflowWorkingDir() {
+  return window['go']['main']['App']['GetWorkflowWorkingDir']();
+}
+
 export function SelectSkillFile() {
   return window['go']['main']['App']['SelectSkillFile']();
 }

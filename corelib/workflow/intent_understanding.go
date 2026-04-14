@@ -17,7 +17,9 @@ var cancelWords = []string{"算了", "取消", "不做了"}
 const sessionExpiryDuration = 30 * time.Minute
 
 // llmIntentTimeout is the timeout for LLM calls during intent understanding.
-const llmIntentTimeout = 10 * time.Second
+// Set to 30s to accommodate third-party API providers (e.g. Zhipu GLM at
+// open.bigmodel.cn) which can be significantly slower than direct Anthropic.
+const llmIntentTimeout = 30 * time.Second
 
 // IntentUnderstandingManager manages multi-round intent clarification sessions.
 // It uses an independent LLM conversation (no tools) to understand user intent

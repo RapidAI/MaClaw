@@ -21,12 +21,28 @@ func makeToolCall(name string) llm.ToolCall {
 	}
 }
 
-// 4.2 Test blocklist contains all 7 specified coding tools.
+// 4.2 Test blocklist contains all specified coding and browser tools.
 func TestCodingGate_BlocklistContainsAllCodingTools(t *testing.T) {
-	expected := []string{
+	// Coding session tools.
+	codingTools := []string{
 		"create_session", "bash", "write_file", "edit_file",
 		"craft_tool", "send_and_observe", "control_session",
 	}
+	// Browser automation tools.
+	browserTools := []string{
+		"browser_session_start", "browser_session_stop", "browser_observe",
+		"browser_navigate", "browser_click", "browser_type",
+		"browser_wait", "browser_back", "browser_refresh", "browser_extract",
+		"browser_connect", "browser_screenshot", "browser_get_text",
+		"browser_get_html", "browser_eval", "browser_scroll",
+		"browser_select", "browser_list_pages", "browser_switch_page",
+		"browser_close", "browser_click_at", "browser_set_files",
+		"browser_info", "browser_ocr",
+		"browser_task_run", "browser_task_replay", "browser_task_verify", "browser_task_status",
+		"browser_record_start", "browser_record_stop", "browser_list_flows",
+		"gui_record_start", "gui_record_stop",
+	}
+	expected := append(codingTools, browserTools...)
 	for _, name := range expected {
 		if !codingToolBlocklist[name] {
 			t.Errorf("codingToolBlocklist missing %q", name)

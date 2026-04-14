@@ -35,6 +35,7 @@ export interface WorkflowUIState {
     suggestMaximize: boolean;
     suggestMaximizeType: string;
     transientText: string;
+    workingDir: string;
 }
 
 const DEFAULT_SPLIT_RATIO = 0.5;
@@ -59,16 +60,19 @@ export function useWorkflowState() {
     const [suggestMaximize, setSuggestMaximize] = useState(false);
     const [suggestMaximizeType, setSuggestMaximizeType] = useState("");
     const [transientText, setTransientText] = useState("");
+    const [workingDir, setWorkingDir] = useState("");
     const userClosedRef = useRef(false);
 
     // Listen for phase updates
     useEffect(() => {
         const unsub = EventsOn("workflow:phase_update", (state: any) => {
             if (!state) {
+                // Workflow fully reset — clear everything.
                 setActive(false);
                 setSplitMode(false);
                 setPhaseDocuments(new Map());
                 setGateResults(new Map());
+                setWorkingDir("");
                 return;
             }
             setActive(state.status === "active");
@@ -82,8 +86,10 @@ export function useWorkflowState() {
             if (state.status !== "active") {
                 setSplitMode(false);
                 userClosedRef.current = false;
-                setPhaseDocuments(new Map());
-                setGateResults(new Map());
+                // Don't clear phaseDocuments here — preserve documents so
+                // the user can still view them (e.g. task decomposition)
+                // after the workflow phase ends. Documents are only cleared
+                // on full workflow reset (null state above).
             }
         });
         return () => {
@@ -160,6 +166,18 @@ export function useWorkflowState() {
         };
     }, []);
 
+    // Listen for working directory changes
+    useEffect(() => {
+        const unsub = EventsOn("workflow:workdir_set", (data: any) => {
+            if (!data?.path) return;
+            setWorkingDir(data.path);
+        });
+        return () => {
+            if (typeof unsub === "function") unsub();
+            else EventsOff("workflow:workdir_set");
+        };
+    }, []);
+
     const openDocPreview = useCallback((phaseID?: string) => {
         userClosedRef.current = false;
         setSplitMode(true);
@@ -192,6 +210,7 @@ export function useWorkflowState() {
             suggestMaximize,
             suggestMaximizeType,
             transientText,
+            workingDir,
         } as WorkflowUIState,
         openDocPreview,
         closeDocPreview,

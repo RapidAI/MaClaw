@@ -33,7 +33,10 @@ func (a *App) initWorkflowEngineWithStore(store workflow.PersistenceStore) {
 	registry := workflow.NewWorkflowRegistry()
 
 	// 3. Create LLM caller adapter.
-	llmCaller := &workflowLLMCaller{app: a}
+	llmCaller := &workflowLLMCaller{
+		app:    a,
+		client: &http.Client{Timeout: 35 * time.Second}, // slightly above max LLM timeout to let context cancel first
+	}
 
 	// 4. Create IntentUnderstandingManager.
 	understanding := workflow.NewIntentUnderstandingManager(store, llmCaller, registry)
@@ -73,13 +76,15 @@ func workflowCleanupLoop(engine *workflow.WorkflowEngine, understanding *workflo
 // workflowLLMCaller adapts the App's LLM infrastructure to the
 // workflow.LLMCaller interface used by IntentUnderstandingManager.
 type workflowLLMCaller struct {
-	app *App
+	app    *App
+	client *http.Client
 }
 
 func (c *workflowLLMCaller) DoSimpleLLMRequest(messages []interface{}, timeout time.Duration) (string, error) {
 	cfg := c.app.GetMaclawLLMConfig()
-	client := &http.Client{Timeout: timeout}
-	result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	result, err := doSimpleLLMRequest(ctx, cfg, messages, c.client, timeout)
 	if err != nil {
 		return "", err
 	}

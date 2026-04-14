@@ -1,6 +1,78 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { QualityGateResult } from "./useWorkflowState";
 
+// ── Mermaid (local npm package, no network required) ──
+
+let mermaidMod: any = null;
+let mermaidInitPromise: Promise<any> | null = null;
+
+function getMermaid(): Promise<any> {
+    if (mermaidMod) return Promise.resolve(mermaidMod);
+    if (mermaidInitPromise) return mermaidInitPromise;
+    mermaidInitPromise = import("mermaid").then((m) => {
+        const mermaid = m.default || m;
+        mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
+        mermaidMod = mermaid;
+        return mermaid;
+    });
+    return mermaidInitPromise;
+}
+
+/** Renders a mermaid diagram from source code. */
+function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme }) {
+    const [svg, setSvg] = useState<string>("");
+    const [error, setError] = useState<string>("");
+    const idRef = useRef(`mermaid-${Math.random().toString(36).slice(2, 10)}`);
+
+    useEffect(() => {
+        let cancelled = false;
+        getMermaid().then(async (m) => {
+            if (cancelled) return;
+            try {
+                const { svg: rendered } = await m.render(idRef.current, code.trim());
+                if (!cancelled) setSvg(rendered);
+            } catch (e: any) {
+                if (!cancelled) setError(e?.message || "Mermaid render error");
+            }
+        }).catch((e) => {
+            if (!cancelled) setError(e?.message || "Failed to load mermaid");
+        });
+        return () => { cancelled = true; };
+    }, [code]);
+
+    if (error) {
+        return (
+            <pre style={{
+                background: theme.codeBlockBg,
+                border: `1px solid ${theme.codeBlockBorder}`,
+                borderRadius: "6px",
+                padding: "12px",
+                margin: "8px 0",
+                fontSize: "12px",
+                color: theme.textMuted,
+            }}>
+                <div style={{ marginBottom: "4px", color: theme.textMuted }}>⚠️ Mermaid render failed: {error}</div>
+                <code style={{ color: theme.codeText }}>{code}</code>
+            </pre>
+        );
+    }
+
+    if (svg) {
+        return (
+            <div
+                style={{ margin: "8px 0", overflow: "auto" }}
+                dangerouslySetInnerHTML={{ __html: svg }}
+            />
+        );
+    }
+
+    return (
+        <div style={{ margin: "8px 0", padding: "12px", color: theme.textMuted, fontSize: "12px" }}>
+            ⏳ Rendering diagram...
+        </div>
+    );
+}
+
 /** Theme colors passed from the parent AIAssistantPanel. */
 export interface DocPreviewTheme {
     bg: string;
@@ -60,6 +132,16 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
     };
 
     const flushCode = () => {
+        // Mermaid diagram: render as interactive SVG instead of code block
+        if (codeLang.toLowerCase() === "mermaid") {
+            const mermaidCode = codeLines.join("\n");
+            nodes.push(
+                <MermaidBlock key={`mermaid-${nodes.length}`} code={mermaidCode} theme={theme} />
+            );
+            codeLines = [];
+            codeLang = "";
+            return;
+        }
         nodes.push(
             <pre key={`code-${nodes.length}`} style={{
                 background: theme.codeBlockBg,

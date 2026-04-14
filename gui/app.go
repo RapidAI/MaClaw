@@ -1856,6 +1856,30 @@ func (a *App) SelectProjectDir() string {
 	}
 	return selection
 }
+
+// SetWorkflowWorkingDir sets the working directory for the current coding
+// workflow session. Called from the frontend when the user confirms or
+// changes the working directory via the workflow banner.
+func (a *App) SetWorkflowWorkingDir(dir string) {
+	if a.workflowEngine == nil {
+		return
+	}
+	if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+		adapter.SetWorkingDir("desktop-user", dir)
+	}
+}
+
+// GetWorkflowWorkingDir returns the current workflow working directory.
+func (a *App) GetWorkflowWorkingDir() string {
+	if a.workflowEngine == nil {
+		return ""
+	}
+	if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+		return adapter.GetWorkingDir()
+	}
+	return ""
+}
+
 func (a *App) GetUserHomeDir() string {
 	if a.testHomeDir != "" {
 		return a.testHomeDir

@@ -55,7 +55,12 @@ func (h *TUIAgentHandler) handleTUIWorkflowInterception(text string) *AgentRespo
 		reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 		if err != nil {
 			log.Printf("[TUIWorkflow] understanding HandleInput error: %v", err)
-			return &AgentResponse{Error: fmt.Sprintf("意图理解出错: %v", err)}
+			// On LLM timeout or transient error, clean up the understanding session
+			// and fall through to the normal agent loop.
+			if understanding.HasActiveSession(userID) {
+				_, _, _, _, _ = understanding.HandleInput(userID, "取消")
+			}
+			return nil // fall through to normal agent loop
 		}
 		if cancelled {
 			return &AgentResponse{Text: "已取消。"}

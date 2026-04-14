@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { colors } from "../remote/styles";
-import { OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
+import { OpenFileOrShowInFolder, SelectProjectDir, SetWorkflowWorkingDir } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus, ChatConfirmation, ChatUnfinishedSlot } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage } from "./useAIAssistant";
@@ -1486,6 +1486,47 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             稍后
                         </button>
                     </div>
+                </div>
+            )}
+
+            {/* Workflow working directory banner */}
+            {workflowState.workingDir && (workflowState.suggestMaximize || workflowState.active) && (
+                <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "6px 14px",
+                    background: "rgba(59,130,246,0.06)",
+                    borderBottom: `1px solid ${t.titleBarBorder}`,
+                    fontSize: "12px",
+                    gap: "8px",
+                    flexShrink: 0,
+                }}>
+                    <span style={{ color: t.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        📁 工作目录：{workflowState.workingDir}
+                    </span>
+                    <button
+                        onClick={async () => {
+                            try {
+                                const dir = await SelectProjectDir();
+                                if (dir) {
+                                    await SetWorkflowWorkingDir(dir);
+                                }
+                            } catch (_) { /* user cancelled */ }
+                        }}
+                        style={{
+                            padding: "2px 8px",
+                            fontSize: "11px",
+                            border: `1px solid ${t.titleBarBorder}`,
+                            borderRadius: "3px",
+                            background: "transparent",
+                            color: t.textMuted,
+                            cursor: "pointer",
+                            flexShrink: 0,
+                        }}
+                    >
+                        更改
+                    </button>
                 </div>
             )}
 

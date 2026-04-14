@@ -3238,6 +3238,12 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 	}
 	h.memory.clear(userID)
 	h.pendingAskUser.Delete(userID)
+	// Reset workflow working directory.
+	if h.app != nil && h.app.workflowEngine != nil {
+		if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+			adapter.ResetWorkingDir()
+		}
+	}
 
 	var b strings.Builder
 	if len(killed) > 0 {
@@ -3936,6 +3942,26 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, ic)
 
+	// --- Coding Tool Gate: filter blocked tool DEFINITIONS from the tool list ---
+	// When the gate is active, remove browser/coding tool definitions from the
+	// list sent to the LLM. This prevents the LLM from seeing 25+ browser tool
+	// definitions during the three-phase coding workflow, which wastes context
+	// tokens and causes hallucinated "Browser:" role prefixes in output.
+	if gateConfig.active {
+		filtered := make([]map[string]interface{}, 0, len(tools))
+		for _, t := range tools {
+			name := tool.ExtractToolName(t)
+			if !codingToolBlocklist[name] || deliveryToolAllowlist[name] {
+				filtered = append(filtered, t)
+			}
+		}
+		if len(filtered) < len(tools) {
+			log.Printf("[coding-gate] filtered %d blocked tool definitions from tool list", len(tools)-len(filtered))
+			tools = filtered
+			toolsTokenBudget = estimateToolsTokens(tools)
+		}
+	}
+
 	// --- Steering Workflow Detector: detect coding workflows driven by
 	// steering rules (coding-workflow.md) and emit frontend events that
 	// would normally come from the WorkflowEngine path. Only activate when:
@@ -3967,6 +3993,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// calling any tools.
 				if platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
 					if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+						// Auto-set working directory to the current project path.
+						// The frontend will show a banner allowing the user to
+						// confirm or change it before documents are generated.
+						if adapter.GetWorkingDir() == "" {
+							projectPath := strings.TrimSpace(h.app.GetCurrentProjectPath())
+							if projectPath != "" {
+								adapter.SetWorkingDir(userID, projectPath)
+							}
+						}
 						adapter.EmitSuggestMaximize(userID, "coding")
 						steeringDetector.suggestMaximizeEmitted = true
 						log.Printf("[SteeringWorkflow] emitted early suggest_maximize for desktop user=%s", userID)
@@ -4145,6 +4180,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				phase.SkillMode = skillPreferenceFallbackAllowed
 				phase.RemoteSearchExhausted = true
 				tools = baseTools
+				// Re-apply coding gate definition filter after restoring baseTools.
+				if gateConfig.active {
+					gateFiltered := make([]map[string]interface{}, 0, len(tools))
+					for _, t := range tools {
+						name := tool.ExtractToolName(t)
+						if !codingToolBlocklist[name] || deliveryToolAllowlist[name] {
+							gateFiltered = append(gateFiltered, t)
+						}
+					}
+					tools = gateFiltered
+				}
 				toolsTokenBudget = estimateToolsTokens(tools)
 			}
 			recoverReason := firstNonEmptyTraceText(phase.RecoverReason, "recover")
@@ -5521,10 +5567,66 @@ func (d *SteeringWorkflowDetector) interceptToolCall(toolName, argsJSON string, 
 	}
 }
 
+// extractFencedDocument extracts the document content between `---`
+// delimiters in the text. LLM typically outputs:
+//
+//	Here's the requirements document:
+//	---
+//	# Requirements
+//	...
+//	---
+//	Please review and confirm.
+//
+// Only the content between the delimiters should be shown in the preview.
+// Returns the extracted content, or the original text if no delimiters found.
+//
+// To avoid false positives with Markdown heading underlines (e.g.
+// "# Title\n---"), the first `---` must appear within the first 5 lines
+// of the text and must NOT be immediately preceded by a heading line.
+func extractFencedDocument(text string) string {
+	lines := strings.Split(text, "\n")
+	firstIdx := -1
+	secondIdx := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) < 3 || strings.Trim(trimmed, "-") != "" {
+			continue
+		}
+		// This line is a `---` separator.
+		if firstIdx < 0 {
+			// Only accept the opening fence within the first 5 lines.
+			if i > 4 {
+				break
+			}
+			// Skip if preceded by a Markdown heading (e.g. "# Title\n---").
+			if i > 0 {
+				prev := strings.TrimSpace(lines[i-1])
+				if strings.HasPrefix(prev, "#") {
+					continue
+				}
+			}
+			firstIdx = i
+		} else {
+			secondIdx = i
+			break
+		}
+	}
+	if firstIdx >= 0 && secondIdx > firstIdx+1 {
+		inner := strings.Join(lines[firstIdx+1:secondIdx], "\n")
+		inner = strings.TrimSpace(inner)
+		if len(inner) > 100 {
+			return inner
+		}
+	}
+	return text
+}
+
 // interceptTextOutput checks the LLM's plain text output for workflow phase
 // documents. This is used in desktop mode where the LLM outputs Markdown
 // directly instead of calling generate_pdf. The heading area (first ~500
 // chars) is matched against phase keywords to determine the document type.
+// Content between `---` delimiters is extracted so the preview panel only
+// shows the document body, not the surrounding conversational text.
 func (d *SteeringWorkflowDetector) interceptTextOutput(text string, emit func(phaseID, content string)) {
 	if !d.detected || emit == nil || strings.TrimSpace(text) == "" {
 		return
@@ -5550,10 +5652,12 @@ func (d *SteeringWorkflowDetector) interceptTextOutput(text string, emit func(ph
 			return
 		}
 	}
+	// Extract only the fenced document content (between --- delimiters).
+	docContent := extractFencedDocument(text)
 	// Avoid re-emitting the same phase document.
-	if existing, ok := d.phaseDocuments[phaseID]; ok && existing == text {
+	if existing, ok := d.phaseDocuments[phaseID]; ok && existing == docContent {
 		return
 	}
-	d.phaseDocuments[phaseID] = text
-	emit(phaseID, text)
+	d.phaseDocuments[phaseID] = docContent
+	emit(phaseID, docContent)
 }
