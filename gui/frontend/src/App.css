@@ -2162,6 +2162,7 @@ body {
     overflow-x: auto;
     white-space: pre-wrap;
     word-break: normal;
+    text-align: left;
     scrollbar-width: thin;
     scrollbar-color: var(--theme-border) var(--theme-surface-muted);
 }

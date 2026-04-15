@@ -438,6 +438,7 @@ export function RemoteSessionList(props: Props) {
                                                 fontFamily: "Consolas, 'Courier New', monospace",
                                                 color: "#d4d4d4",
                                                 lineHeight: 1.5,
+                                                textAlign: "left",
                                             }}>
                                                 {previewLines.length === 0 ? (
                                                     <span style={{ color: "#555" }}>$ _</span>

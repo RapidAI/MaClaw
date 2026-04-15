@@ -59,6 +59,15 @@ var knownRuntimeCommands = []string{
 	"pip", "pip3", "java", "go", "cargo", "ruby", "perl",
 }
 
+// knownRuntimeSet is a set version of knownRuntimeCommands for O(1) lookup.
+var knownRuntimeSet = func() map[string]bool {
+	m := make(map[string]bool, len(knownRuntimeCommands))
+	for _, cmd := range knownRuntimeCommands {
+		m[cmd] = true
+	}
+	return m
+}()
+
 // commandSource pairs a bash command string with the file it came from.
 type commandSource struct {
 	command string
@@ -310,8 +319,8 @@ func checkPlatformCompat(issues *[]PortabilityIssue, commands []commandSource, s
 	platforms := sf.Platforms
 
 	for _, cs := range commands {
-		// python3 without fallback → info
-		if strings.Contains(cs.command, "python3") {
+		// python3 without fallback → info (only relevant when targeting non-Windows)
+		if strings.Contains(cs.command, "python3") && platformIncludesWindows(platforms) {
 			*issues = append(*issues, PortabilityIssue{
 				Severity:   SeverityInfo,
 				Category:   "platform_compat",
@@ -457,6 +466,10 @@ func checkDependencies(issues *[]PortabilityIssue, commands []commandSource, sf 
 			})
 		}
 
+		// Track which runtime commands we've already reported for this command source
+		// to avoid duplicate issues when the same command appears on multiple lines.
+		reportedCmds := make(map[string]bool)
+
 		// Extract first word of each line as the command name.
 		for _, line := range strings.Split(cs.command, "\n") {
 			line = strings.TrimSpace(line)
@@ -470,7 +483,12 @@ func checkDependencies(issues *[]PortabilityIssue, commands []commandSource, sf 
 			firstWordLower := strings.ToLower(firstWord)
 
 			// Check if it's a known runtime command.
-			if !isKnownRuntimeCommand(firstWordLower) {
+			if !knownRuntimeSet[firstWordLower] {
+				continue
+			}
+
+			// Skip if already reported for this command source.
+			if reportedCmds[firstWordLower] {
 				continue
 			}
 
@@ -479,6 +497,7 @@ func checkDependencies(issues *[]PortabilityIssue, commands []commandSource, sf 
 				continue
 			}
 
+			reportedCmds[firstWordLower] = true
 			*issues = append(*issues, PortabilityIssue{
 				Severity:   SeverityWarning,
 				Category:   "undeclared_dependency",
@@ -773,10 +792,5 @@ func splitCommandSegments(line string) []string {
 
 // isKnownRuntimeCommand checks if a command name is in the known runtime list.
 func isKnownRuntimeCommand(cmd string) bool {
-	for _, known := range knownRuntimeCommands {
-		if cmd == known {
-			return true
-		}
-	}
-	return false
+	return knownRuntimeSet[cmd]
 }

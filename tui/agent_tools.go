@@ -2266,9 +2266,77 @@ func (h *TUIAgentHandler) toolManageSkill(args map[string]interface{}) string {
 		return h.toolGetSkillRun(args)
 	case "upload":
 		return h.toolUploadSkill(args)
+	case "validate":
+		return h.toolValidateSkill(args)
 	default:
-		return fmt.Sprintf("未知 manage_skill action: %s（支持: list/search/install/run/status/upload）", action)
+		return fmt.Sprintf("未知 manage_skill action: %s（支持: list/search/install/run/status/upload/validate）", action)
 	}
+}
+
+// toolValidateSkill validates a skill for portability issues and optionally auto-fixes them.
+func (h *TUIAgentHandler) toolValidateSkill(args map[string]interface{}) string {
+	name := stringArg(args, "name")
+	if name == "" {
+		return "缺少 name 参数（要验证的 Skill 名称）"
+	}
+
+	autoFix, _ := args["auto_fix"].(bool)
+
+	// Resolve skill directory from name using config store (same pattern as toolRunSkill).
+	skillDir := ""
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err == nil {
+		for i := range cfg.NLSkills {
+			if cfg.NLSkills[i].MatchesName(name) {
+				skillDir = cfg.NLSkills[i].SkillDir
+				break
+			}
+		}
+	}
+
+	// Fallback: check PrimarySkillsDir/<name> if config didn't find it or SkillDir was empty.
+	if skillDir == "" {
+		primaryDir, pdErr := cskill.PrimarySkillsDir()
+		if pdErr == nil {
+			candidate := filepath.Join(primaryDir, name)
+			if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
+				skillDir = candidate
+			}
+		}
+	}
+
+	if skillDir == "" {
+		return fmt.Sprintf("skill %q not found. Use manage_skill(action=\"list\") to see installed skills", name)
+	}
+
+	// Initial validation.
+	report, err := cskill.ValidateSkillPortability(skillDir)
+	if err != nil {
+		return fmt.Sprintf("验证失败: %s", err.Error())
+	}
+
+	if !autoFix {
+		return cskill.FormatPortabilityReport(report)
+	}
+
+	// Auto-fix flow: fix → re-validate.
+	changes, fixErr := cskill.AutoFixPortability(skillDir)
+	if fixErr != nil {
+		return fmt.Sprintf("自动修复失败: %s\n\n%s", fixErr.Error(), cskill.FormatPortabilityReport(report))
+	}
+
+	// Re-validate after fixes.
+	finalReport, revalidateErr := cskill.ValidateSkillPortability(skillDir)
+	if revalidateErr != nil {
+		return fmt.Sprintf("修复后重新验证失败: %s\n\n%s", revalidateErr.Error(), cskill.FormatPortabilityChanges(changes))
+	}
+
+	var b strings.Builder
+	b.WriteString(cskill.FormatPortabilityChanges(changes))
+	b.WriteByte('\n')
+	b.WriteString(cskill.FormatPortabilityReport(finalReport))
+	return b.String()
 }
 
 // toolUploadSkill packages and uploads a local skill to SkillMarket.

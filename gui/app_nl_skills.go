@@ -1636,12 +1636,23 @@ func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
 		return "", fmt.Errorf("skill market client not initialized")
 	}
 
-	// 打包 skill
-	zipPath, err := a.packageSkillForMarket(skillName)
+	// 打包 skill（获取 tmpDir 用于验证）
+	zipPath, tmpDir, err := a.packageSkillForMarketWithDir(skillName)
 	if err != nil {
 		return "", fmt.Errorf("打包失败: %w", err)
 	}
 	defer os.Remove(zipPath)
+	defer os.RemoveAll(tmpDir)
+
+	// Pre-upload portability validation on the packaged copy
+	report, err := skill.ValidateSkillPortability(tmpDir)
+	if err != nil {
+		return "", fmt.Errorf("portability validation failed: %w", err)
+	}
+	if report.Summary.Errors > 0 {
+		return "", fmt.Errorf("upload blocked: %d portability error(s) found.\n%s\n\n💡 Run manage_skill(action=\"validate\", name=\"%s\", auto_fix=true) to attempt automatic fixes",
+			report.Summary.Errors, skill.FormatPortabilityReport(report), skillName)
+	}
 
 	// 获取用户 email
 	cfg, err := a.LoadConfig()
@@ -1669,6 +1680,18 @@ func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
 // 对于 file-based skill，直接打包 skill 目录。
 // 对于 config-based skill，仅生成 skill.yaml 到临时目录后打包。
 func (a *App) packageSkillForMarket(skillName string) (string, error) {
+	zipPath, tmpDir, err := a.packageSkillForMarketWithDir(skillName)
+	if err != nil {
+		return "", err
+	}
+	os.RemoveAll(tmpDir)
+	return zipPath, nil
+}
+
+// packageSkillForMarketWithDir packages a skill into a zip file and also returns
+// the temporary directory containing the packaged copy. The caller is responsible
+// for cleaning up both the zip file and the tmpDir.
+func (a *App) packageSkillForMarketWithDir(skillName string) (string, string, error) {
 	a.skillExecutor.mu.RLock()
 	var target *NLSkillEntry
 	for _, s := range a.skillExecutor.loadSkills() {
@@ -1681,7 +1704,7 @@ func (a *App) packageSkillForMarket(skillName string) (string, error) {
 	a.skillExecutor.mu.RUnlock()
 
 	if target == nil {
-		return "", fmt.Errorf("skill %q not found", skillName)
+		return "", "", fmt.Errorf("skill %q not found", skillName)
 	}
 
 	// 验证平台字段
@@ -1691,14 +1714,14 @@ func (a *App) packageSkillForMarket(skillName string) (string, error) {
 
 	tmpDir, err := os.MkdirTemp("", "skill-package-*")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	defer os.RemoveAll(tmpDir)
 
 	// 如果是 file-based skill，复制整个 skill 目录内容
 	if target.SkillDir != "" {
 		if err := copyDirContents(target.SkillDir, tmpDir); err != nil {
-			return "", fmt.Errorf("复制 skill 目录失败: %w", err)
+			os.RemoveAll(tmpDir)
+			return "", "", fmt.Errorf("复制 skill 目录失败: %w", err)
 		}
 	}
 
@@ -1729,19 +1752,22 @@ func (a *App) packageSkillForMarket(skillName string) (string, error) {
 		}
 		yamlData, err := skill.FormatSkillYAMLFile(skillYAML)
 		if err != nil {
-			return "", fmt.Errorf("生成 skill.yaml 失败: %w", err)
+			os.RemoveAll(tmpDir)
+			return "", "", fmt.Errorf("生成 skill.yaml 失败: %w", err)
 		}
 		if err := os.WriteFile(yamlPath, yamlData, 0644); err != nil {
-			return "", err
+			os.RemoveAll(tmpDir)
+			return "", "", err
 		}
 	}
 
 	// 打包为 zip
 	zipPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("skill-%s-%d.zip", toKebabCase(skillName), time.Now().UnixMilli()))
 	if err := zipDirectory(tmpDir, zipPath); err != nil {
-		return "", err
+		os.RemoveAll(tmpDir)
+		return "", "", err
 	}
-	return zipPath, nil
+	return zipPath, tmpDir, nil
 }
 
 // executeBashStep runs a shell command as a skill step.

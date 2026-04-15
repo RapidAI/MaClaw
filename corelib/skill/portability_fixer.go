@@ -183,12 +183,9 @@ func fixHardcodedHomePaths(sf *SkillYAMLFile) []PortabilityChange {
 			normalizedPath := filepath.ToSlash(p)
 			// Check if this path starts with the user's home directory.
 			if strings.HasPrefix(normalizedPath, homeSlash+"/") || normalizedPath == homeSlash {
-				// Skip paths already handled by fixMissingBaseDir (they contain {baseDir}).
-				if strings.Contains(newCmd, "{baseDir}") {
-					// Check if this specific path was already replaced.
-					if !strings.Contains(newCmd, p) {
-						continue
-					}
+				// Skip paths already replaced by fixMissingBaseDir (no longer in the command).
+				if !strings.Contains(newCmd, p) {
+					continue
 				}
 				// Skip system binary paths.
 				if isSystemBinaryPath(p) {

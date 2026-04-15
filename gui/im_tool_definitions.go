@@ -80,9 +80,9 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"tool_name": map[string]string{"type": "string", "description": "工具名称"},
 				"arguments": map[string]string{"type": "object", "description": "工具参数（JSON 对象）"},
 			}, []string{"server_id", "tool_name"}),
-		toolDef("manage_skill", "Skill 管理（action: list/search/install/run/status/upload）。list 列出本地已注册 Skill（无 Skill 时展示 Hub 推荐）；search 在 SkillHub 搜索可用 Skill；install 从 Hub 安装 Skill 到本地；run 执行指定 Skill；status 查询运行状态（run 返回 run_id 后继续观察进度）；upload 上传本地 Skill 到 SkillMarket。",
+		toolDef("manage_skill", "Skill 管理（action: list/search/install/run/status/upload/validate）。list 列出本地已注册 Skill（无 Skill 时展示 Hub 推荐）；search 在 SkillHub 搜索可用 Skill；install 从 Hub 安装 Skill 到本地；run 执行指定 Skill；status 查询运行状态（run 返回 run_id 后继续观察进度）；upload 上传本地 Skill 到 SkillMarket；validate 检查 Skill 的跨平台可移植性并可选自动修复。",
 			map[string]interface{}{
-				"action":       map[string]string{"type": "string", "description": "操作: list/search/install/run/status/upload"},
+				"action":       map[string]string{"type": "string", "description": "操作: list/search/install/run/status/upload/validate"},
 				"query":        map[string]string{"type": "string", "description": "搜索关键词（search 时必填，如 'git commit'、'代码审查'、'部署'）"},
 				"skill_id":     map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
 				"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（install 时必填，从 search 结果中获取）"},
@@ -96,6 +96,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"user_prompt":  map[string]string{"type": "string", "description": "用户的原始请求文本（run 时可选，供 craft_tool 类型 Skill 生成脚本时使用）"},
 				"wait_seconds": map[string]string{"type": "number", "description": "等待状态快照的秒数（install/run/status 时可选，默认 2，最大 30）"},
 				"run_id":       map[string]string{"type": "string", "description": "运行 ID（status 时必填，从 run 返回值中获取）"},
+				"auto_fix":     map[string]string{"type": "boolean", "description": "与 action=validate 配合使用，为 true 时自动修复检测到的可移植性问题（可选，默认 false）"},
 			}, []string{"action"}),
 		toolDef("parallel_execute", "并行执行多个编程任务，每个任务在独立会话中运行（最多5个）",
 			map[string]interface{}{
