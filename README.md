@@ -130,11 +130,11 @@ MaClaw 独创的浏览器运行监管系统，为自动化测试与业务流程�
 - **开源用途**：用于开源软件项目时，无需额外授权，可自由使用。
 - **商业用途**：用于商业软件或商业目的时，需获得商业授权许可。
 
-如需商业授权，请联系：**znsoft@163.com**
+如需商业使用，请联系：**znsoft@163.com** 获取授权许可。
 
 ## 关于
 
-*   **版本**：V5.3.0.9800
+
 *   **作者**：Dr. Daniel
 *   **GitHub**：[RapidAI/MaClaw](https://github.com/rapidai/maclaw)
 *   **产品网站**：[maclaw.top](https://maclaw.top)
