@@ -113,7 +113,7 @@ MaClaw 独创的浏览器运行监管系统，为自动化测试与业务流程�
 > 四步完成，你的编程小龙虾就绑好了——电脑上用界面操作，手机上用微信指挥，随时随地都在线。
 
 ### 运行程序
-直接运行 `MaClaw.exe` (Windows) 或 `MaClaw.app` (macOS)。
+直接运行 `MaClaw.exe` (Windows) 、 `MaClaw.app` (macOS) 或 `MaClaw.AppImage` (Linux)。
 
 ### 环境检测
 程序首次启动会自动检测运行环境（如 Node.js），缺少的组件会自动安装/更新。
