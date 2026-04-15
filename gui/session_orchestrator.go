@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -85,8 +86,27 @@ func (s *CodingSessionStarter) Start(req CodingSessionStartRequest) (CodingSessi
 	if err != nil {
 		return CodingSessionStartResult{}, fmt.Errorf("获取工具配置失败: %w", err)
 	}
+	// Default provider injection: if no explicit provider was given, and the
+	// resolved tool matches the user's configured default tool, use the
+	// configured default provider as the providerOverride for ProviderResolver.
+	isDefaultProviderOverride := false
+	if req.Provider == "" && cfg.DefaultTool != "" {
+		defaultNorm := strings.ToLower(strings.TrimSpace(cfg.DefaultTool))
+		if strings.ToLower(toolName) == defaultNorm && strings.TrimSpace(cfg.DefaultToolProvider) != "" {
+			req.Provider = cfg.DefaultToolProvider
+			isDefaultProviderOverride = true
+		}
+	}
+
 	resolver := &ProviderResolver{}
 	resolveResult, err := resolver.Resolve(toolCfg, req.Provider)
+	if err != nil && isDefaultProviderOverride {
+		// Default provider invalid (not found or no API key), retry without
+		// override so ProviderResolver falls back to auto-resolution.
+		log.Printf("default provider override %q failed (%v), retrying with auto-resolution", req.Provider, err)
+		req.Provider = ""
+		resolveResult, err = resolver.Resolve(toolCfg, "")
+	}
 	if err != nil {
 		return CodingSessionStartResult{}, err
 	}

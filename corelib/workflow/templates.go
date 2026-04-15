@@ -47,7 +47,7 @@ func codingTemplate() *WorkflowTemplate {
 				ID:           "tech_design",
 				Name:         "技术设计",
 				Description:  "基于需求文档进行架构设计和技术选型，输出技术设计文档。",
-				Prompt:       "你现在处于【技术设计】阶段。请基于已确认的需求文档，输出技术设计文档，包含：架构设计、技术选型及理由、模块划分、接口设计、数据结构定义。使用 Markdown 格式，必要时用 Mermaid 图表辅助说明。不要开始编码。",
+				Prompt:       "你现在处于【技术设计】阶段。请基于已确认的需求文档，输出技术设计文档，包含：架构设计、技术选型及理由、模块划分、接口设计、数据结构定义。使用 Markdown 格式，必要时用 Mermaid 图表辅助说明（注意：Mermaid 关键词必须全小写，如 graph/subgraph/end，严禁使用 Graph/Subgraph/End）。不要开始编码。",
 				Deliverable:  "技术设计文档（Markdown 格式，含架构图、技术选型、模块划分、接口定义、数据结构）",
 				Checklist:    []string{"架构设计是否满足需求文档中的所有功能需求", "技术选型是否有明确理由", "模块划分是否职责清晰、耦合度低", "接口设计是否完整且一致"},
 				NeedsConfirm: true,

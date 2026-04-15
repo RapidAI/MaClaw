@@ -158,3 +158,72 @@ func writeAnthropicSettings(settingsPath, apiKey, baseURL, modelID string) error
 func UpdateClaudeCodeConfig(apiKey, baseURL, modelID string) error {
 	return WriteClaudeSettings(apiKey, baseURL, modelID)
 }
+
+// thirdPartyEnvKeys lists the env keys that are managed by maclaw for
+// third-party provider configuration. ClearClaudeThirdPartySettings removes
+// exactly these keys when switching back to the builtin provider.
+var thirdPartyEnvKeys = []string{
+	"ANTHROPIC_AUTH_TOKEN",
+	"ANTHROPIC_BASE_URL",
+	"ANTHROPIC_MODEL",
+	"ANTHROPIC_DEFAULT_HAIKU_MODEL",
+	"ANTHROPIC_DEFAULT_SONNET_MODEL",
+	"ANTHROPIC_DEFAULT_OPUS_MODEL",
+	"ANTHROPIC_SMALL_FAST_MODEL",
+	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+	"API_TIMEOUT_MS",
+}
+
+// ClearClaudeThirdPartySettings surgically removes third-party provider env
+// keys from ~/.claude/settings.json, preserving all other fields (permissions,
+// theme, hooks, user-defined env vars, etc.).
+//
+// This is the inverse of WriteClaudeSettings: instead of adding/updating env
+// keys for a third-party provider, it removes them when switching back to the
+// builtin provider. If settings.json doesn't exist, this is a no-op.
+func ClearClaudeThirdPartySettings() error {
+	settingsPath := ClaudeSettingsPath()
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // no settings file, nothing to clear
+		}
+		return fmt.Errorf("read claude settings: %w", err)
+	}
+
+	var existing map[string]interface{}
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return fmt.Errorf("parse claude settings: %w", err)
+	}
+
+	env, _ := existing["env"].(map[string]interface{})
+	if env == nil {
+		return nil // no env map, nothing to clear
+	}
+
+	// Remove only the third-party keys; leave user-defined env vars intact.
+	for _, key := range thirdPartyEnvKeys {
+		delete(env, key)
+	}
+
+	// If env map is now empty, remove it entirely to keep the file clean.
+	if len(env) == 0 {
+		delete(existing, "env")
+	} else {
+		existing["env"] = env
+	}
+
+	out, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal settings json: %w", err)
+	}
+	out = append(out, '\n')
+
+	// Skip write if content hasn't changed.
+	if string(data) == string(out) {
+		return nil
+	}
+
+	return AtomicWrite(settingsPath, out)
+}

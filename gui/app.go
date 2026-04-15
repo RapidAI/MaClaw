@@ -1366,16 +1366,27 @@ func (a *App) buildClaudeLaunchEnv(
 	a.injectProxyEnv(env, config, projectDir, useProxy)
 
 	if !selectedModel.IsBuiltin {
-		// Clear native config BEFORE writing provider settings, so the
-		// backup captures the pre-provider state and WriteClaudeProviderSettings
-		// output is not immediately deleted.
-		a.clearClaudeConfig()
+		// Surgical update: write only provider-specific env fields into
+		// ~/.claude/settings.json, preserving all user state (conversations,
+		// plugins, hooks, etc.).
 		if err := configfile.WriteClaudeProviderSettings(selectedModel.ModelName, selectedModel.ApiKey, env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_MODEL"]); err != nil {
 			return nil, fmt.Errorf("write claude provider settings: %w", err)
 		}
 	} else {
-		// Restore native config so Claude can use its own Anthropic auth.
-		a.restoreToolNativeConfig("claude")
+		// Surgical cleanup: remove only third-party env fields from settings.json,
+		// preserving all other user state (conversations, plugins, hooks, etc.).
+		if err := configfile.ClearClaudeThirdPartySettings(); err != nil {
+			log.Printf("[LaunchTool] Claude: ClearClaudeThirdPartySettings error: %v", err)
+		}
+
+		// Backward-compat migration: if a pre-fix backup directory exists
+		// (created by the old clearClaudeConfig → backupToolNativeConfig flow),
+		// restore it one last time so users don't lose their old state.
+		backupDir := filepath.Join(a.configBackupDir("claude"), ".claude")
+		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
+			log.Printf("[LaunchTool] Claude: pre-fix backup found at %s — running one-time migration restore", backupDir)
+			a.restoreToolNativeConfig("claude")
+		}
 	}
 	return env, nil
 }
@@ -1410,9 +1421,27 @@ func (a *App) buildCodexLaunchEnv(
 		if selectedModel.ModelUrl != "" {
 			env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
 		}
+		// Surgical update: persist provider config to ~/.codex/auth.json and
+		// ~/.codex/config.toml so Codex subprocesses pick up the settings.
+		// Preserves user's MCP servers, profiles, and other config.
+		if err := configfile.WriteCodexConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, "responses"); err != nil {
+			log.Printf("[buildCodexLaunchEnv] Codex: failed to write provider config: %v", err)
+		}
 	} else {
-		// Restore native config so Codex can use its own auth.
-		a.restoreToolNativeConfig("codex")
+		// Surgical cleanup: remove only third-party auth/provider entries,
+		// preserving all other user state (MCP servers, profiles, etc.).
+		if err := configfile.ClearCodexThirdPartySettings(); err != nil {
+			log.Printf("[LaunchTool] Codex: ClearCodexThirdPartySettings error: %v", err)
+		}
+
+		// Backward-compat migration: if a pre-fix backup directory exists
+		// (created by the old clearCodexConfig → backupToolNativeConfig flow),
+		// restore it one last time so users don't lose their old state.
+		backupDir := filepath.Join(a.configBackupDir("codex"), ".codex")
+		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
+			log.Printf("[LaunchTool] Codex: pre-fix backup found at %s — running one-time migration restore", backupDir)
+			a.restoreToolNativeConfig("codex")
+		}
 	}
 
 	a.injectProxyEnv(env, config, projectDir, useProxy)
@@ -1546,9 +1575,27 @@ func (a *App) buildGeminiLaunchEnv(
 		if selectedModel.ModelId != "" {
 			env["GEMINI_MODEL"] = selectedModel.ModelId
 		}
+		// Surgical update: persist provider config to ~/.gemini/.env and
+		// ~/.gemini/settings.json so Gemini subprocesses pick up the settings.
+		// Preserves user's custom env vars, session data, and other config.
+		if err := configfile.WriteGeminiConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+			log.Printf("[buildGeminiLaunchEnv] Gemini: failed to write provider config: %v", err)
+		}
 	} else {
-		// Restore native config so Gemini CLI can use its own Google OAuth.
-		a.restoreToolNativeConfig("gemini")
+		// Surgical cleanup: remove only third-party env/settings entries,
+		// preserving all other user state (sessions, custom .env vars, etc.).
+		if err := configfile.ClearGeminiThirdPartySettings(); err != nil {
+			log.Printf("[LaunchTool] Gemini: ClearGeminiThirdPartySettings error: %v", err)
+		}
+
+		// Backward-compat migration: if a pre-fix backup directory exists
+		// (created by the old clearGeminiConfig → backupToolNativeConfig flow),
+		// restore it one last time so users don't lose their old state.
+		backupDir := filepath.Join(a.configBackupDir("gemini"), ".gemini")
+		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
+			log.Printf("[LaunchTool] Gemini: pre-fix backup found at %s — running one-time migration restore", backupDir)
+			a.restoreToolNativeConfig("gemini")
+		}
 	}
 
 	a.injectProxyEnv(env, config, projectDir, useProxy)
@@ -2228,20 +2275,6 @@ func (a *App) copyDir(src, dst string) {
 	})
 }
 
-func (a *App) clearClaudeConfig() {
-	// Backup native config before clearing so it can be restored when
-	// switching back to the original provider.
-	a.backupToolNativeConfig("claude")
-	a.log("Cleared Claude configuration files (backed up)")
-}
-func (a *App) clearGeminiConfig() {
-	a.backupToolNativeConfig("gemini")
-	a.log("Cleared Gemini configuration files (backed up)")
-}
-func (a *App) clearCodexConfig() {
-	a.backupToolNativeConfig("codex")
-	a.log("Cleared Codex configuration directory (backed up)")
-}
 func (a *App) clearOpencodeConfig() {
 	a.backupToolNativeConfig("opencode")
 	a.log("Cleared Opencode configuration directory (backed up)")
@@ -2314,7 +2347,11 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 	}
 	dir, settingsPath, legacyPath := a.getClaudeConfigPaths(projectDir, instanceID)
 	if selectedModel.IsBuiltin {
-		a.clearClaudeConfig()
+		// Surgical cleanup: remove third-party env fields from settings.json,
+		// preserving all other user state (conversations, plugins, hooks, etc.).
+		if err := configfile.ClearClaudeThirdPartySettings(); err != nil {
+			log.Printf("[syncToClaudeSettings] Claude: ClearClaudeThirdPartySettings error: %v", err)
+		}
 		return nil
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -2494,7 +2531,11 @@ func (a *App) syncToCodexSettings(config AppConfig, projectDir string, instanceI
 	}
 	dir, authPath := a.getCodexConfigPaths(projectDir, instanceID)
 	if selectedModel.IsBuiltin {
-		a.clearCodexConfig()
+		// Surgical cleanup: remove third-party auth and provider config,
+		// preserving MCP servers, profiles, and other user settings.
+		if err := configfile.ClearCodexThirdPartySettings(); err != nil {
+			log.Printf("[syncToCodexSettings] Codex: ClearCodexThirdPartySettings error: %v", err)
+		}
 		return nil
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -3181,15 +3222,19 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		// Tools that need config files: use instanceID for isolation
 		switch strings.ToLower(toolName) {
 		case "claude":
-			// Claude Code reads env vars directly, no config file needed
-			// Clear old config to prevent interference with env vars
-			a.clearClaudeConfig()
-			a.log("Claude: Using environment variables only (cleared old config)")
+			// Surgically update only the provider settings in ~/.claude/settings.json,
+			// preserving conversation history, MCP plugins, hooks, and other user state.
+			if err := configfile.WriteClaudeProviderSettings(selectedModel.ModelName, selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+				log.Printf("Claude: failed to write provider settings: %v", err)
+			}
+			a.log("Claude: Updated settings.json with provider config (preserving user state)")
 		case "gemini":
-			// Gemini reads env vars directly, no config file needed
-			// Clear old config to prevent interference with env vars
-			a.clearGeminiConfig()
-			a.log("Gemini: Using environment variables only (cleared old config)")
+			// Surgically update ~/.gemini/.env and ~/.gemini/settings.json with provider config,
+			// preserving user's custom env vars, session data, and other settings.
+			if err := configfile.WriteGeminiConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+				log.Printf("Gemini: failed to write provider config: %v", err)
+			}
+			a.log("Gemini: Updated config with provider settings (preserving user state)")
 		case "codex":
 			env["WIRE_API"] = "responses"
 			// Ensure OpenAI standard vars for Codex
@@ -3197,10 +3242,12 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			if selectedModel.ModelUrl != "" {
 				env["OPENAI_BASE_URL"] = selectedModel.ModelUrl
 			}
-			// Clear old config to prevent interference with env vars
-			// (this branch only runs for non-original providers)
-			a.clearCodexConfig()
-			a.log("Codex: Using environment variables only (cleared old config)")
+			// Surgically update ~/.codex/auth.json and ~/.codex/config.toml with provider config,
+			// preserving user's MCP servers, profiles, and other settings.
+			if err := configfile.WriteCodexConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, "responses"); err != nil {
+				log.Printf("Codex: failed to write provider config: %v", err)
+			}
+			a.log("Codex: Updated config with provider settings (preserving user state)")
 		case "opencode":
 			// Opencode needs config file - use instanceID for isolation
 			a.backupToolNativeConfig("opencode")
@@ -3232,10 +3279,45 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 	} else {
 		// --- ORIGINAL MODE: RESTORE NATIVE CONFIG ---
-		// Restore previously backed-up native config so the tool can use
-		// its own login / auth without forcing the user to re-authenticate.
+		// For Claude/Gemini/Codex: use surgical cleanup to remove only
+		// third-party config entries, preserving user state (conversations,
+		// plugins, hooks, MCP servers, etc.). Fall back to full directory
+		// restore only for backward-compat migration of pre-fix backups.
+		// For other tools (opencode, iflow, kilo): use the existing
+		// full-directory restore since they use instance-specific config.
 		tool := strings.ToLower(toolName)
-		a.restoreToolNativeConfig(tool)
+		switch tool {
+		case "claude":
+			if err := configfile.ClearClaudeThirdPartySettings(); err != nil {
+				log.Printf("[LaunchTool-desktop] Claude: ClearClaudeThirdPartySettings error: %v", err)
+			}
+			// Backward-compat: restore pre-fix backup if it exists (one-time migration).
+			backupDir := filepath.Join(a.configBackupDir("claude"), ".claude")
+			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
+				log.Printf("[LaunchTool-desktop] Claude: pre-fix backup found — running one-time migration restore")
+				a.restoreToolNativeConfig("claude")
+			}
+		case "gemini":
+			if err := configfile.ClearGeminiThirdPartySettings(); err != nil {
+				log.Printf("[LaunchTool-desktop] Gemini: ClearGeminiThirdPartySettings error: %v", err)
+			}
+			backupDir := filepath.Join(a.configBackupDir("gemini"), ".gemini")
+			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
+				log.Printf("[LaunchTool-desktop] Gemini: pre-fix backup found — running one-time migration restore")
+				a.restoreToolNativeConfig("gemini")
+			}
+		case "codex":
+			if err := configfile.ClearCodexThirdPartySettings(); err != nil {
+				log.Printf("[LaunchTool-desktop] Codex: ClearCodexThirdPartySettings error: %v", err)
+			}
+			backupDir := filepath.Join(a.configBackupDir("codex"), ".codex")
+			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
+				log.Printf("[LaunchTool-desktop] Codex: pre-fix backup found — running one-time migration restore")
+				a.restoreToolNativeConfig("codex")
+			}
+		default:
+			a.restoreToolNativeConfig(tool)
+		}
 		a.log(fmt.Sprintf("Running %s in Original mode: native config restored.", toolName))
 	}
 
@@ -4414,7 +4496,7 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	}
 	// Fallback: construct URL manually if not found in assets
 	if downloadUrl == "" {
-		downloadUrl = fmt.Sprintf("https://github.com/RapidAI/CodeClaw/releases/download/%s/%s", tagName, targetFileName)
+		downloadUrl = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
 		a.log(a.tr("CheckUpdate: Assets not found, using constructed URL: %s", downloadUrl))
 
 		// Validate fallback URL with a HEAD request to avoid download hanging on non-existent files

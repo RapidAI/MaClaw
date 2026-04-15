@@ -313,6 +313,9 @@ func (c *LocalMCPClient) DiscoverTools() ([]MCPToolView, error) {
 
 // CallTool invokes a tool on the local MCP server.
 func (c *LocalMCPClient) CallTool(toolName string, args map[string]interface{}) (string, error) {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
 	params := map[string]interface{}{
 		"name":      toolName,
 		"arguments": args,

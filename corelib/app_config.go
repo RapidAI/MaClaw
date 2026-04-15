@@ -18,6 +18,8 @@ type AppConfig struct {
 	Projects             []ProjectConfig `json:"projects"`
 	CurrentProject       string          `json:"current_project"`
 	ActiveTool           string          `json:"active_tool"`
+	DefaultTool          string          `json:"default_tool"`
+	DefaultToolProvider  string          `json:"default_tool_provider"`
 	HideStartupPopup     bool            `json:"hide_startup_popup"`
 	HideMaclawLLMPopup   bool            `json:"hide_maclaw_llm_popup"`
 	ShowGemini           bool            `json:"show_gemini"`

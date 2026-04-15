@@ -19,5 +19,7 @@ func init() {
 		IcoPath:         "build/windows/icon.ico",
 		MobileAppName:   "MaClaw Chat",
 		ExtraTools:      []ExtraToolDef{},
+		DefaultTool:         "claude",
+		DefaultToolProvider: "",
 	}
 }

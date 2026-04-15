@@ -275,6 +275,146 @@ func ReadCodexConfigToml() (string, error) {
 	return string(data), nil
 }
 
+// ClearCodexThirdPartySettings removes third-party provider configuration
+// from ~/.codex/auth.json and ~/.codex/config.toml when switching back to
+// the builtin provider. auth.json is removed entirely (it only contains the
+// API key). In config.toml, the model_provider and model top-level fields
+// and the [model_providers.xxx] section are removed, preserving MCP servers,
+// profiles, features, and other user settings.
+// If files don't exist, this is a no-op.
+func ClearCodexThirdPartySettings() error {
+	var firstErr error
+	if err := clearCodexAuth(); err != nil {
+		firstErr = fmt.Errorf("clear codex auth: %w", err)
+	}
+	if err := clearCodexConfigProvider(); err != nil {
+		if firstErr != nil {
+			return firstErr
+		}
+		return fmt.Errorf("clear codex config: %w", err)
+	}
+	return firstErr
+}
+
+// clearCodexAuth removes ~/.codex/auth.json. No-op if it doesn't exist.
+func clearCodexAuth() error {
+	authPath := CodexAuthPath()
+	if err := os.Remove(authPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// clearCodexConfigProvider reads ~/.codex/config.toml, removes the
+// model_provider and model top-level fields and any [model_providers.xxx]
+// section, then writes back preserving all other content.
+// No-op if the file doesn't exist.
+func clearCodexConfigProvider() error {
+	configPath := CodexConfigPath()
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read config.toml: %w", err)
+	}
+
+	content := string(data)
+	if strings.TrimSpace(content) == "" {
+		return nil // empty file, nothing to clear
+	}
+
+	lines := strings.Split(content, "\n")
+	result := stripCodexProviderLines(lines)
+	out := strings.Join(result, "\n")
+
+	// Skip write if content hasn't changed.
+	if content == out {
+		return nil
+	}
+
+	return AtomicWrite(configPath, []byte(out))
+}
+
+// stripCodexProviderLines removes provider-related lines from config.toml:
+// - top-level model_provider = "..." line
+// - top-level model = "..." line (only when not inside a section)
+// - entire [model_providers.xxx] sections (header + all fields until next section)
+// Everything else (MCP servers, profiles, features, comments) is preserved.
+func stripCodexProviderLines(lines []string) []string {
+	var result []string
+	inModelProvidersSection := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect [model_providers.xxx] section headers
+		if strings.HasPrefix(trimmed, "[model_providers.") {
+			inModelProvidersSection = true
+			continue // skip the section header
+		}
+
+		// Detect any other section header — exits model_providers section
+		if strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "[model_providers.") {
+			inModelProvidersSection = false
+		}
+
+		// Skip all lines inside a [model_providers.xxx] section
+		if inModelProvidersSection {
+			continue
+		}
+
+		// Skip top-level model_provider = "..."
+		if strings.HasPrefix(trimmed, "model_provider") && strings.Contains(trimmed, "=") && !isInsideSection(result) {
+			continue
+		}
+
+		// Skip top-level model = "..." (but not inside a section)
+		if (strings.HasPrefix(trimmed, "model =") || strings.HasPrefix(trimmed, "model=")) && !isInsideSection(result) {
+			continue
+		}
+
+		result = append(result, line)
+	}
+
+	// Clean up leading/trailing blank lines that may result from removal
+	result = trimConsecutiveBlankLines(result)
+
+	return result
+}
+
+// trimConsecutiveBlankLines collapses runs of 3+ consecutive blank lines
+// down to 2 (one visual separator), and trims trailing blank lines.
+func trimConsecutiveBlankLines(lines []string) []string {
+	var result []string
+	consecutiveBlanks := 0
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			consecutiveBlanks++
+			if consecutiveBlanks > 2 {
+				continue // collapse excessive blank lines
+			}
+		} else {
+			consecutiveBlanks = 0
+		}
+		result = append(result, line)
+	}
+
+	// Trim trailing blank lines
+	for len(result) > 0 && strings.TrimSpace(result[len(result)-1]) == "" {
+		result = result[:len(result)-1]
+	}
+
+	// Ensure file ends with a newline
+	if len(result) > 0 {
+		result = append(result, "")
+	}
+
+	return result
+}
+
 func rollbackFile(path string, oldData []byte) {
 	if oldData != nil {
 		_ = AtomicWrite(path, oldData)

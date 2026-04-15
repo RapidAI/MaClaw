@@ -21,12 +21,13 @@ const globalMCPFile = "mcp-servers.json"
 
 // MCPDeclServer is a single server entry in a .mcp.json declaration file.
 type MCPDeclServer struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	EndpointURL string   `json:"endpoint_url"`
-	AuthType    string   `json:"auth_type"`
-	AuthSecret  string   `json:"auth_secret"`
-	Tags        []string `json:"tags"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	EndpointURL string            `json:"endpoint_url"`
+	AuthType    string            `json:"auth_type"`
+	AuthSecret  string            `json:"auth_secret"`
+	Headers     map[string]string `json:"headers,omitempty"` // custom HTTP headers
+	Tags        []string          `json:"tags"`
 }
 
 // MCPDeclFile is the top-level structure of a .mcp.json file.
@@ -104,6 +105,7 @@ func (d *MCPAutoDiscovery) registerServer(srv MCPDeclServer, source MCPServerSou
 		EndpointURL: srv.EndpointURL,
 		AuthType:    srv.AuthType,
 		AuthSecret:  srv.AuthSecret,
+		Headers:     srv.Headers,
 		Source:      source,
 		CreatedAt:   time.Now().Format(time.RFC3339),
 	}

@@ -5,12 +5,38 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
+
+// applyMCPAuth sets authentication and custom headers on an MCP HTTP request.
+// Custom headers are applied first (lower precedence), then AuthType/AuthSecret
+// (higher precedence). Protocol-level headers (Content-Type, Accept) are protected.
+func applyMCPAuth(req *http.Request, entry corelib.MCPServerEntry) {
+	for k, v := range entry.Headers {
+		if k == "" || v == "" {
+			continue
+		}
+		lk := strings.ToLower(k)
+		if lk == "content-type" || lk == "accept" {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	if entry.AuthSecret == "" {
+		return
+	}
+	switch entry.AuthType {
+	case "bearer":
+		req.Header.Set("Authorization", "Bearer "+entry.AuthSecret)
+	case "api_key":
+		req.Header.Set("X-API-Key", entry.AuthSecret)
+	}
+}
 
 // RunMCP 执行 mcp 子命令。
 func RunMCP(args []string) error {
@@ -236,11 +262,8 @@ func mcpHealthCheck(args []string) error {
 		})
 		req, _ := http.NewRequest(http.MethodPost, s.EndpointURL, bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
-		if s.AuthType == "bearer" && s.AuthSecret != "" {
-			req.Header.Set("Authorization", "Bearer "+s.AuthSecret)
-		} else if s.AuthType == "api_key" && s.AuthSecret != "" {
-			req.Header.Set("X-API-Key", s.AuthSecret)
-		}
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		applyMCPAuth(req, s)
 		resp, err := client.Do(req)
 		elapsed := time.Since(start)
 		r := healthResult{Name: s.Name, Type: "remote", Endpoint: s.EndpointURL}
@@ -248,11 +271,29 @@ func mcpHealthCheck(args []string) error {
 			r.Status = "unreachable"
 			r.Error = err.Error()
 		} else {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				r.Status = "healthy"
-			} else {
+			// Check HTTP status first, then validate response is parseable.
+			if resp.StatusCode != http.StatusOK {
+				errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+				resp.Body.Close()
 				r.Status = fmt.Sprintf("HTTP %d", resp.StatusCode)
+				if len(errBody) > 0 {
+					detail := string(errBody)
+					if len(detail) > 200 {
+						detail = detail[:200] + "..."
+					}
+					r.Error = detail
+				}
+			} else {
+				// Validate response is parseable (handles SSE / Streamable HTTP).
+				ct := resp.Header.Get("Content-Type")
+				_, parseErr := corelib.ParseMCPResponse(resp.Body, ct, 64*1024)
+				resp.Body.Close()
+				if parseErr != nil {
+					r.Status = "parse_error"
+					r.Error = parseErr.Error()
+				} else {
+					r.Status = "healthy"
+				}
 			}
 			r.Latency = elapsed.Round(time.Millisecond).String()
 		}
@@ -331,11 +372,8 @@ func mcpTools(args []string) error {
 		})
 		req, _ := http.NewRequest(http.MethodPost, s.EndpointURL, bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
-		if s.AuthType == "bearer" && s.AuthSecret != "" {
-			req.Header.Set("Authorization", "Bearer "+s.AuthSecret)
-		} else if s.AuthType == "api_key" && s.AuthSecret != "" {
-			req.Header.Set("X-API-Key", s.AuthSecret)
-		}
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		applyMCPAuth(req, s)
 		resp, err := client.Do(req)
 		if err != nil {
 			tools = append(tools, toolInfo{Server: s.Name, Name: "(unreachable)", Desc: err.Error()})
@@ -346,6 +384,14 @@ func mcpTools(args []string) error {
 			tools = append(tools, toolInfo{Server: s.Name, Name: "(error)", Desc: fmt.Sprintf("HTTP %d", resp.StatusCode)})
 			continue
 		}
+		// Parse response — handles both plain JSON and SSE (Streamable HTTP).
+		ct := resp.Header.Get("Content-Type")
+		parsed, parseErr := corelib.ParseMCPResponse(resp.Body, ct, 256*1024)
+		resp.Body.Close()
+		if parseErr != nil {
+			tools = append(tools, toolInfo{Server: s.Name, Name: "(parse error)", Desc: parseErr.Error()})
+			continue
+		}
 		var rpcResp struct {
 			Result struct {
 				Tools []struct {
@@ -354,12 +400,10 @@ func mcpTools(args []string) error {
 				} `json:"tools"`
 			} `json:"result"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
-			resp.Body.Close()
+		if err := json.Unmarshal(parsed, &rpcResp); err != nil {
 			tools = append(tools, toolInfo{Server: s.Name, Name: "(parse error)", Desc: err.Error()})
 			continue
 		}
-		resp.Body.Close()
 		for _, t := range rpcResp.Result.Tools {
 			tools = append(tools, toolInfo{Server: s.Name, Name: t.Name, Desc: t.Description})
 		}
@@ -403,16 +447,16 @@ func mcpCallTool(args []string) error {
 	}
 
 	// Find the server
-	var endpoint, authType, authSecret string
+	var serverEntry corelib.MCPServerEntry
+	found := false
 	for _, s := range cfg.MCPServers {
 		if s.Name == *server {
-			endpoint = s.EndpointURL
-			authType = s.AuthType
-			authSecret = s.AuthSecret
+			serverEntry = s
+			found = true
 			break
 		}
 	}
-	if endpoint == "" {
+	if !found {
 		return fmt.Errorf("MCP 服务器 '%s' 不存在或不是远程服务器", *server)
 	}
 
@@ -435,16 +479,13 @@ func mcpCallTool(args []string) error {
 	body, _ := json.Marshal(reqBody)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, serverEntry.EndpointURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if authType == "bearer" && authSecret != "" {
-		req.Header.Set("Authorization", "Bearer "+authSecret)
-	} else if authType == "api_key" && authSecret != "" {
-		req.Header.Set("X-API-Key", authSecret)
-	}
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	applyMCPAuth(req, serverEntry)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -452,9 +493,21 @@ func mcpCallTool(args []string) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return fmt.Errorf("MCP HTTP %d: %s", resp.StatusCode, string(errBody))
+	}
+
+	// Parse response — handles both plain JSON and SSE (Streamable HTTP).
+	ct := resp.Header.Get("Content-Type")
+	parsed, parseErr := corelib.ParseMCPResponse(resp.Body, ct, 256*1024)
+	if parseErr != nil {
+		return fmt.Errorf("解析响应失败: %w", parseErr)
+	}
+
 	var result interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("解析响应失败: %w", err)
+	if err := json.Unmarshal(parsed, &result); err != nil {
+		return fmt.Errorf("解析 JSON 失败: %w", err)
 	}
 	return PrintJSON(result)
 }

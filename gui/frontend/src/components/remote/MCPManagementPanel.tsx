@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
+import JSON5 from "json5";
 import { colors, radius } from "./styles";
 import {
     ListMCPServers,
@@ -29,6 +30,7 @@ interface MCPServerView {
     endpoint_url: string;
     auth_type: "none" | "api_key" | "bearer";
     auth_secret: string;
+    headers?: Record<string, string>; // custom HTTP headers
     tools: MCPToolView[];
     health_status: "healthy" | "slow" | "unavailable";
     fail_count: number;
@@ -116,6 +118,36 @@ function makeBackdropProps(onClose: () => void, ref: React.MutableRefObject<bool
             ref.current = false;
         },
     };
+}
+
+/**
+ * Strip BOM and zero-width invisible characters that can sneak in from
+ * copy-paste, then replace fullwidth CJK punctuation with ASCII equivalents.
+ * This pre-processing runs before JSON5.parse() to handle characters that
+ * even JSON5 doesn't accept.
+ */
+function preCleanJsonText(raw: string): string {
+    return raw
+        .replace(/[\uFEFF\u200B\u200C\u200D\u2060]/g, "")
+        .replace(/\uff0c/g, ",")   // ，→ ,
+        .replace(/\uff1a/g, ":")   // ：→ :
+        .replace(/\uff1b/g, ";")   // ；→ ;
+        .replace(/\u201c/g, '"')   // " → "
+        .replace(/\u201d/g, '"')   // " → "
+        .replace(/\uff5b/g, "{")   // ｛→ {
+        .replace(/\uff5d/g, "}")   // ｝→ }
+        .replace(/\uff3b/g, "[")   // ［→ [
+        .replace(/\uff3d/g, "]");  // ］→ ]
+}
+
+/**
+ * Parse a relaxed JSON/JSONC/JSON5 string into an object.
+ * Handles comments, trailing commas, single quotes, unquoted keys,
+ * fullwidth CJK punctuation, and BOM — all common when users paste
+ * config snippets from editors or Chinese IME.
+ */
+function parseRelaxedJson(raw: string): any {
+    return JSON5.parse(preCleanJsonText(raw));
 }
 
 export function MCPManagementPanel({ translate }: Props) {
@@ -302,9 +334,10 @@ function LocalMCPPanel({ translate }: Props) {
         setJsonError("");
         let parsed: any;
         try {
-            parsed = JSON.parse(jsonText);
-        } catch {
-            setJsonError(translate("mcpJsonFormatError")); return;
+            parsed = parseRelaxedJson(jsonText);
+        } catch (e: any) {
+            const detail = e?.message ? `: ${e.message}` : "";
+            setJsonError(translate("mcpJsonFormatError") + detail); return;
         }
         const mcpServers = parsed.mcpServers || parsed;
         if (typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
@@ -587,6 +620,9 @@ function RemoteMCPPanel({ translate }: Props) {
     const [expandedTools, setExpandedTools] = useState<MCPToolView[]>([]);
     const [toolsLoading, setToolsLoading] = useState(false);
     const [healthDetailID, setHealthDetailID] = useState<string | null>(null);
+    const [showJsonImport, setShowJsonImport] = useState(false);
+    const [jsonText, setJsonText] = useState("");
+    const [jsonError, setJsonError] = useState("");
     const backdropRef = useRef(false);
 
     const loadData = useCallback(async () => {
@@ -699,6 +735,85 @@ function RemoteMCPPanel({ translate }: Props) {
         setHealthDetailID(healthDetailID === serverID ? null : serverID);
     };
 
+    const handleJsonImport = async () => {
+        setJsonError("");
+        let parsed: any;
+        try {
+            parsed = parseRelaxedJson(jsonText);
+        } catch (e: any) {
+            const detail = e?.message ? `: ${e.message}` : "";
+            setJsonError(translate("mcpJsonFormatError") + detail); return;
+        }
+        const mcpServers = parsed.mcpServers || parsed;
+        if (typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+            setJsonError(translate("mcpRemoteJsonStructureError"));
+            return;
+        }
+        const entries = Object.entries(mcpServers) as [string, any][];
+        if (entries.length === 0) {
+            setJsonError(translate("mcpRemoteJsonStructureError"));
+            return;
+        }
+        setBusy(true);
+        try {
+            const baseTime = Date.now().toString(36);
+            for (let i = 0; i < entries.length; i++) {
+                const [name, cfg] = entries[i];
+                // Detect auth from headers or explicit fields
+                let authType: MCPServerView["auth_type"] = "none";
+                let authSecret = "";
+                const headers = typeof cfg.headers === "object" && cfg.headers ? cfg.headers : {};
+                const authHeader: string = headers["Authorization"] || headers["authorization"] || "";
+                if (cfg.auth_type && cfg.auth_secret) {
+                    // Explicit auth fields (MaCLaw native format)
+                    authType = cfg.auth_type;
+                    authSecret = cfg.auth_secret;
+                } else if (authHeader) {
+                    // Extract from Authorization header (Kiro / Cursor / Claude Desktop format)
+                    if (authHeader.toLowerCase().startsWith("bearer ")) {
+                        authType = "bearer";
+                        authSecret = authHeader.slice(7).trim();
+                    } else {
+                        authType = "api_key";
+                        authSecret = authHeader;
+                    }
+                }
+                // Support both "url" and "endpoint_url"
+                const endpointUrl = cfg.endpoint_url || cfg.url || "";
+                if (!endpointUrl) {
+                    throw new Error(translate("mcpRemoteJsonMissingUrl").replace("{name}", name));
+                }
+                // Pass through custom headers (exclude Authorization if already extracted into auth fields).
+                const customHeaders: Record<string, string> = {};
+                for (const [hk, hv] of Object.entries(headers)) {
+                    if (typeof hv === "string" && hv) {
+                        if (hk.toLowerCase() === "authorization" && authSecret) continue;
+                        customHeaders[hk] = hv;
+                    }
+                }
+                const slug = name.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-").replace(/^-|-$/g, "");
+                const suffix = i === 0 ? baseTime : `${baseTime}${i}`;
+                const payload: MCPServerView = {
+                    ...emptyServer,
+                    id: slug ? `${slug}-${suffix}` : `mcp-${suffix}`,
+                    name,
+                    endpoint_url: endpointUrl,
+                    auth_type: authType,
+                    auth_secret: authSecret,
+                    ...(Object.keys(customHeaders).length > 0 ? { headers: customHeaders } : {}),
+                };
+                await RegisterMCPServer(payload);
+            }
+            setShowJsonImport(false);
+            setJsonText("");
+            await loadData();
+        } catch (err) {
+            setJsonError(String(err));
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const healthColor = (status: string): string => {
         switch (status) {
             case "healthy": return "var(--theme-success)";
@@ -741,9 +856,14 @@ function RemoteMCPPanel({ translate }: Props) {
                 <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
                     {servers.length} {translate("mcpServersRegistered")}
                 </span>
-                <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
-                    {translate("mcpRegisterServer")}
-                </button>
+                <div style={{ display: "flex", gap: "6px" }}>
+                    <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "3px 10px" }} onClick={() => { setShowJsonImport(true); setJsonText(""); setJsonError(""); }} disabled={busy}>
+                        {translate("mcpImportJson")}
+                    </button>
+                    <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={openCreateForm} disabled={busy}>
+                        {translate("mcpRegisterServer")}
+                    </button>
+                </div>
             </div>
 
             {loading && <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: colors.textMuted }}>{translate("mcpLoading")}</div>}
@@ -755,7 +875,6 @@ function RemoteMCPPanel({ translate }: Props) {
                         <thead>
                             <tr style={{ background: colors.surfaceMuted }}>
                                 <th style={thStyle}>{translate("mcpColName")}</th>
-                                <th style={thStyle}>{translate("mcpColEndpoint")}</th>
                                 <th style={thStyle}>{translate("mcpColHealth")}</th>
                                 <th style={thStyle}>{translate("mcpColTools")}</th>
                                 <th style={{ ...thStyle, width: "140px" }}>{translate("mcpColActions")}</th>
@@ -859,6 +978,53 @@ function RemoteMCPPanel({ translate }: Props) {
                     </div>
                 </div>
             )}
+
+            {showJsonImport && (
+                <div className="modal-backdrop" {...makeBackdropProps(() => setShowJsonImport(false), backdropRef)}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "500px", textAlign: "left" }}>
+                        <div className="modal-header">
+                            <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpRemoteImportJsonTitle")}</h3>
+                            <button className="btn-close" onClick={() => setShowJsonImport(false)}>×</button>
+                        </div>
+                        <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                            <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
+                                {translate("mcpRemoteImportJsonDesc")}
+                            </div>
+                            <pre style={{ fontSize: "0.68rem", background: colors.surfaceMuted, padding: "6px 8px", borderRadius: "4px", margin: 0, whiteSpace: "pre-wrap", color: colors.textSecondary }}>
+{`{
+  "mcpServers": {
+    "server-name": {
+      "type": "streamableHttp",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer sk-xxx"
+      }
+    }
+  }
+}`}
+                            </pre>
+                            <textarea
+                                className="form-input"
+                                rows={10}
+                                value={jsonText}
+                                onChange={(e) => setJsonText(e.target.value)}
+                                placeholder={translate("mcpImportJsonPlaceholder")}
+                                spellCheck={false}
+                                style={{ fontFamily: "monospace", fontSize: "0.74rem", resize: "vertical" }}
+                            />
+                            {jsonError && (
+                                <div style={{ fontSize: "0.76rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "4px 8px", borderRadius: "4px" }}>{jsonError}</div>
+                            )}
+                        </div>
+                        <div className="modal-footer">
+                            <button className="btn-secondary" onClick={() => setShowJsonImport(false)} disabled={busy}>{translate("cancel")}</button>
+                            <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={handleJsonImport} disabled={busy || !jsonText.trim()}>
+                                {busy ? translate("mcpImporting") : translate("mcpImport")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -905,11 +1071,8 @@ function ServerRow({
     return (
         <>
             <tr style={{ borderTop: `1px solid ${colors.border}` }}>
-                <td style={tdStyle}>{server.name}</td>
-                <td style={tdStyle}>
-                    <span style={{ fontFamily: "monospace", fontSize: "0.72rem", color: colors.textSecondary, wordBreak: "break-all" }}>
-                        {server.endpoint_url}
-                    </span>
+                <td style={tdStyle} title={server.endpoint_url}>
+                    <span style={{ cursor: "default", borderBottom: `1px dashed ${colors.textMuted}`, paddingBottom: "1px" }}>{server.name}</span>
                 </td>
                 <td style={tdStyle}>
                     <span
@@ -940,7 +1103,7 @@ function ServerRow({
 
             {showHealthDetail && (
                 <tr>
-                    <td colSpan={5} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
+                    <td colSpan={4} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
                         <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
                             <div style={{ fontWeight: 600, marginBottom: "4px" }}>{translate("mcpHealthRecord")}</div>
                             <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
@@ -960,7 +1123,7 @@ function ServerRow({
 
             {isExpanded && (
                 <tr>
-                    <td colSpan={5} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
+                    <td colSpan={4} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
                         {toolsLoading ? (
                             <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "4px 0" }}>{translate("mcpLoadingTools")}</div>
                         ) : expandedTools.length > 0 ? (

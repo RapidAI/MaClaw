@@ -3300,10 +3300,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// engine (RunAgentLoop=true). This prevents unrelated messages (weather
 	// queries, Q&A, etc.) from being captured as phase output when a stale
 	// workflow happens to be active in memory.
-	if workflowAgentLoop && h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && len(resp.Text) > 200 {
+	// Use a lower threshold (50 chars) — the engine already confirmed this is
+	// a workflow phase, so even shorter text is a valid deliverable. The old
+	// 200-char threshold could miss cases where the LLM used tools (write_file)
+	// to produce the document and only output a short confirmation message.
+	if workflowAgentLoop && h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && len(resp.Text) > 50 {
 		if phaseID := h.app.workflowEngine.SavePhaseOutput(msg.UserID, resp.Text); phaseID != "" {
 			if cb := h.app.workflowEngine.GetCallbacks(); cb != nil {
 				_ = cb.EmitDocUpdate(msg.UserID, phaseID, resp.Text)
+				log.Printf("[WorkflowEngine] post-loop doc capture: emitted doc_update for user=%s phase=%s len=%d", msg.UserID, phaseID, len(resp.Text))
 			}
 		}
 	}
@@ -4124,7 +4129,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						log.Printf("[SteeringWorkflow] emitted early suggest_maximize for desktop user=%s (classifier confirmed new_project)", userID)
 					}
 				}
+			} else {
+				log.Printf("[SteeringWorkflow] detector NOT activated: engine has active workflow for user=%s gateActive=%v", userID, gateConfig.active)
 			}
+		} else {
+			log.Printf("[SteeringWorkflow] detector NOT activated: shouldActivate=false gateActive=%v gateReason=%q user=%s", gateConfig.active, gateConfig.reason, userID)
 		}
 	}
 
@@ -4628,15 +4637,27 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						strippedContent := stripThinkingTags(msgContent)
 						finalResp := &IMAgentResponse{Text: strippedContent}
 						// Desktop: intercept text output for the doc preview panel.
-						if steeringDetector != nil && platform == "desktop" {
-							steeringDetector.interceptTextOutput(strings.TrimSpace(strippedContent), func(phaseID, content string) {
-								if h.app != nil && h.app.workflowEngine != nil {
+						if platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
+							trimmedStripped := strings.TrimSpace(strippedContent)
+							emitted := false
+							if steeringDetector != nil {
+								steeringDetector.interceptTextOutput(trimmedStripped, func(phaseID, content string) {
 									if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
 										_ = adapter.EmitDocUpdate(userID, phaseID, content)
 										log.Printf("[SteeringWorkflow] emitted doc_update from gate force-return for user=%s phase=%s len=%d", userID, phaseID, len(content))
+										emitted = true
+									}
+								})
+							}
+							// Fallback: WorkflowEngine active but steering detector not activated.
+							if !emitted && len(trimmedStripped) >= 50 {
+								if ws := h.app.workflowEngine.GetActiveWorkflow(userID); ws != nil {
+									if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+										_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedStripped)
+										log.Printf("[WorkflowEngine] emitted doc_update from gate force-return for user=%s phase=%s len=%d", userID, ws.CurrentPhase, len(trimmedStripped))
 									}
 								}
-							})
+							}
 						}
 						attachLLMTelemetry(finalResp)
 						h.saveConversationHistoryTimed(userID, history, finalResp)
@@ -4685,6 +4706,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// engine workflow is active but the steering rules enforce the
 			// three-phase flow.
 			needsConfirmFromSteering := gateConfig.active && iteration > 0
+			if platform == "desktop" && (needsConfirmFromEngine || needsConfirmFromSteering) {
+				log.Printf("[agent-loop] NeedsConfirm check: engine=%v steering=%v iteration=%d msgLen=%d steeringDetector=%v user=%s",
+					needsConfirmFromEngine, needsConfirmFromSteering, iteration, len(strings.TrimSpace(stripThinkingTags(msgContent))), steeringDetector != nil, userID)
+			}
 			if needsConfirmFromEngine || needsConfirmFromSteering {
 				trimmedForGate := strings.TrimSpace(stripThinkingTags(msgContent))
 				if trimmedForGate != "" &&
@@ -4717,16 +4742,23 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 								})
 							}
 							// Path 2: WorkflowEngine active — use the engine's current phase directly.
-							// This covers all non-coding workflow templates (product_design, innovation, etc.)
-							// where the steering detector is not activated.
-							if !emitted && needsConfirmFromEngine && len(trimmedForGate) >= 200 {
+							// This covers all workflow templates (coding, product_design, innovation, etc.)
+							// where the steering detector is not activated (because the engine owns the workflow).
+							// Use a lower threshold (50 chars) than the old 200 — the engine already confirmed
+							// this is a NeedsConfirm phase, so even shorter text is a valid deliverable.
+							// Also emit suggest_maximize in case it wasn't emitted yet (e.g. dedup cleared).
+							if !emitted && needsConfirmFromEngine && len(trimmedForGate) >= 50 {
 								if ws := h.app.workflowEngine.GetActiveWorkflow(userID); ws != nil {
 									_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedForGate)
 									adapter.EmitSuggestMaximize(userID, string(ws.Type))
 									log.Printf("[WorkflowEngine] emitted doc_update for user=%s phase=%s type=%s len=%d", userID, ws.CurrentPhase, ws.Type, len(trimmedForGate))
+								} else {
+									log.Printf("[WorkflowEngine] WARNING: needsConfirmFromEngine=true but GetActiveWorkflow returned nil for user=%s", userID)
 								}
 							}
 						}
+					} else if platform == "desktop" {
+						log.Printf("[agent-loop] NeedsConfirm gate: skipped doc preview emission (workflowEngine=%v)", h.app != nil && h.app.workflowEngine != nil)
 					}
 					attachLLMTelemetry(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
@@ -5377,11 +5409,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 								emitted = true
 							})
 						}
-						if !emitted && len(trimmedAfterTools) >= 200 {
+						if !emitted && len(trimmedAfterTools) >= 50 {
 							if ws := h.app.workflowEngine.GetActiveWorkflow(userID); ws != nil {
 								_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedAfterTools)
 								adapter.EmitSuggestMaximize(userID, string(ws.Type))
 								log.Printf("[WorkflowEngine] emitted doc_update from tool-branch for user=%s phase=%s type=%s len=%d", userID, ws.CurrentPhase, ws.Type, len(trimmedAfterTools))
+							} else {
+								log.Printf("[WorkflowEngine] WARNING: NeedsConfirm tool-branch but GetActiveWorkflow returned nil for user=%s", userID)
 							}
 						}
 					}

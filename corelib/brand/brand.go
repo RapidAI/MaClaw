@@ -19,6 +19,8 @@ type BrandConfig struct {
 	IcoPath         string         // Windows ico 路径
 	MobileAppName   string         // 移动端应用名称
 	ExtraTools      []ExtraToolDef // 额外工具列表
+	DefaultTool     string         // 品牌默认编程工具 (e.g., "claude")
+	DefaultToolProvider string     // 品牌默认服务商 (e.g., "" for MaClaw, "codegen" for TigerClaw)
 }
 
 // ExtraToolDef 描述一个 OEM 额外工具。

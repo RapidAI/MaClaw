@@ -25,5 +25,7 @@ func init() {
 				ConfigKey:   "tigerclaw",
 			},
 		},
+		DefaultTool:         "claude",
+		DefaultToolProvider: "codegen",
 	}
 }

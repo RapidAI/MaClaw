@@ -89,13 +89,14 @@ const (
 
 // MCPServerEntry 描述一个 MCP 服务器注册条目。
 type MCPServerEntry struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	EndpointURL string          `json:"endpoint_url"`
-	AuthType    string          `json:"auth_type"` // "none", "api_key", "bearer"
-	AuthSecret  string          `json:"auth_secret"`
-	CreatedAt   string          `json:"created_at"`
-	Source      MCPServerSource `json:"source"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	EndpointURL string            `json:"endpoint_url"`
+	AuthType    string            `json:"auth_type"` // "none", "api_key", "bearer"
+	AuthSecret  string            `json:"auth_secret"`
+	Headers     map[string]string `json:"headers,omitempty"` // custom HTTP headers (e.g. Authorization, X-Custom-Key)
+	CreatedAt   string            `json:"created_at"`
+	Source      MCPServerSource   `json:"source"`
 }
 
 // LocalMCPServerEntry 描述一个本地 MCP 服务器配置（通过命令启动，如 npx）。

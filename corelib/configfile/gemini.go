@@ -215,6 +215,120 @@ func ReadGeminiSettings() (map[string]interface{}, error) {
 	return result, nil
 }
 
+// geminiManagedEnvKeys lists the env keys that are managed by maclaw for
+// Gemini third-party provider configuration. ClearGeminiThirdPartySettings
+// removes exactly these keys when switching back to the builtin provider.
+var geminiManagedEnvKeys = []string{
+	"GEMINI_API_KEY",
+	"GOOGLE_API_KEY",
+	"GOOGLE_GEMINI_BASE_URL",
+	"GEMINI_MODEL",
+}
+
+// ClearGeminiThirdPartySettings surgically removes third-party provider
+// configuration from ~/.gemini/.env and ~/.gemini/settings.json, preserving
+// all other user state (custom env vars, UI preferences, etc.).
+//
+// For .env: removes only the managed keys (GEMINI_API_KEY, GOOGLE_API_KEY,
+// GOOGLE_GEMINI_BASE_URL, GEMINI_MODEL), preserving any user-defined vars.
+//
+// For settings.json: resets security.auth.selectedType to "oauth-personal"
+// (the default auth mode), preserving all other fields.
+//
+// If either file doesn't exist, that part is a no-op. Both operations are
+// independent — a failure in one does not prevent the other from executing.
+func ClearGeminiThirdPartySettings() error {
+	var firstErr error
+	if err := clearGeminiEnvThirdPartyKeys(); err != nil {
+		firstErr = fmt.Errorf("clear gemini .env: %w", err)
+	}
+	if err := clearGeminiSettingsAuthType(); err != nil {
+		if firstErr != nil {
+			return firstErr // return the first error
+		}
+		return fmt.Errorf("clear gemini settings: %w", err)
+	}
+	return firstErr
+}
+
+// clearGeminiEnvThirdPartyKeys reads ~/.gemini/.env, removes managed keys,
+// and writes back preserving user's custom vars. No-op if file doesn't exist.
+func clearGeminiEnvThirdPartyKeys() error {
+	envPath := GeminiEnvPath()
+
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read .env: %w", err)
+	}
+
+	vars := parseEnvFile(string(data))
+
+	// Remove only the managed keys; leave user-defined vars intact.
+	for _, key := range geminiManagedEnvKeys {
+		delete(vars, key)
+	}
+
+	// If no vars remain, write an empty file rather than deleting it.
+	content := buildEnvFileContent(vars)
+
+	// Skip write if content hasn't changed.
+	if string(data) == content {
+		return nil
+	}
+
+	if err := AtomicWrite(envPath, []byte(content)); err != nil {
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.Chmod(envPath, 0600)
+	}
+	return nil
+}
+
+// clearGeminiSettingsAuthType reads ~/.gemini/settings.json, resets
+// security.auth.selectedType to "oauth-personal", and writes back
+// preserving all other fields. No-op if file doesn't exist.
+func clearGeminiSettingsAuthType() error {
+	settingsPath := GeminiSettingsPath()
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read settings: %w", err)
+	}
+
+	var existing map[string]interface{}
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return fmt.Errorf("parse settings: %w", err)
+	}
+
+	// Navigate to security.auth.selectedType and reset it.
+	security, _ := existing["security"].(map[string]interface{})
+	if security == nil {
+		return nil // no security section, nothing to reset
+	}
+	auth, _ := security["auth"].(map[string]interface{})
+	if auth == nil {
+		return nil // no auth section, nothing to reset
+	}
+
+	// Only write if the value actually needs changing.
+	if auth["selectedType"] == "oauth-personal" {
+		return nil
+	}
+
+	auth["selectedType"] = "oauth-personal"
+	security["auth"] = auth
+	existing["security"] = security
+
+	return AtomicWriteJSON(settingsPath, existing)
+}
+
 // EnsureGeminiOnboarding ensures that Gemini CLI's user-level settings file
 // (~/.gemini/settings.json) contains a theme setting and other flags so
 // first-run interactive prompts (theme picker, auth selection, etc.) are skipped.

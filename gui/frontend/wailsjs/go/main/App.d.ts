@@ -90,6 +90,8 @@ export function ListRemoteSessions():Promise<Array<any>>;
 
 export function ListRemoteToolMetadata():Promise<Array<any>>;
 
+export function ListToolProviders(arg1:string):Promise<Array<any>>;
+
 export function ListSkills(arg1:string):Promise<Array<main.Skill>>;
 
 export function ListSkillsWithInstallStatus(arg1:string,arg2:string,arg3:string):Promise<Array<main.Skill>>;

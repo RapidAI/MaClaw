@@ -69,7 +69,22 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	if serverRef == "" || toolName == "" {
 		return "缺少 server_id 或 tool_name 参数；server_id 支持 MCP Server 的 ID 或 Name"
 	}
-	toolArgs, _ := args["arguments"].(map[string]interface{})
+
+	// Extract tool arguments — handle both map and JSON string from LLM.
+	var toolArgs map[string]interface{}
+	switch v := args["arguments"].(type) {
+	case map[string]interface{}:
+		toolArgs = v
+	case string:
+		if v = strings.TrimSpace(v); v != "" {
+			if err := json.Unmarshal([]byte(v), &toolArgs); err != nil {
+				return fmt.Sprintf("arguments JSON 解析失败: %s", err.Error())
+			}
+		}
+	}
+	if toolArgs == nil {
+		toolArgs = map[string]interface{}{}
+	}
 
 	if h.app.localMCPManager == nil {
 		h.app.ensureLocalMCPManager()

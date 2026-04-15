@@ -18,6 +18,51 @@ function getMermaid(): Promise<any> {
     return mermaidInitPromise;
 }
 
+/**
+ * Auto-fix common Mermaid syntax issues produced by LLMs.
+ * Mermaid keywords are case-sensitive and must be lowercase.
+ * LLMs frequently produce "Subgraph", "End", "Graph TD", etc.
+ */
+function sanitizeMermaidCode(raw: string): string {
+    // Diagram type declarations that must be lowercase (line start)
+    const diagramTypeRe = /^(\s*)(Graph|Flowchart|SequenceDiagram|StateDiagram|StateDiagram-v2|ClassDiagram|ErDiagram|Gantt|Pie|Gitgraph|Journey|Mindmap|Timeline|Quadrantchart|Sankey-beta|Xychart-beta)\b/i;
+    // Keywords that appear at line start and must be lowercase
+    const keywordRe = /^(\s*)(Subgraph|ClassDef|Style|Click|Note|Loop|Alt|Else|Opt|Par|Critical|Break|Rect|Activate|Deactivate)\b/i;
+    // "end" on its own line
+    const endRe = /^(\s*)End\s*$/;
+
+    return raw
+        .split("\n")
+        .map((line) => {
+            // Diagram type declaration: "Graph TB" → "graph TB"
+            const dtMatch = line.match(diagramTypeRe);
+            if (dtMatch) {
+                const kw = dtMatch[2];
+                const lower = kw.toLowerCase();
+                if (kw !== lower) {
+                    return line.replace(dtMatch[2], lower);
+                }
+                return line;
+            }
+            // "End" on its own line → "end"
+            if (endRe.test(line)) {
+                return line.replace(/End/i, "end");
+            }
+            // Other keywords at line start
+            const kwMatch = line.match(keywordRe);
+            if (kwMatch) {
+                const kw = kwMatch[2];
+                // classDef is camelCase, not all-lowercase
+                const fixed = kw.toLowerCase() === "classdef" ? "classDef" : kw.toLowerCase();
+                if (kw !== fixed) {
+                    return `${kwMatch[1]}${fixed}${line.slice(kwMatch[0].length)}`;
+                }
+            }
+            return line;
+        })
+        .join("\n");
+}
+
 /** Renders a mermaid diagram from source code. */
 function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme }) {
     const [svg, setSvg] = useState<string>("");
@@ -26,10 +71,11 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
 
     useEffect(() => {
         let cancelled = false;
+        const sanitized = sanitizeMermaidCode(code);
         getMermaid().then(async (m) => {
             if (cancelled) return;
             try {
-                const { svg: rendered } = await m.render(idRef.current, code.trim());
+                const { svg: rendered } = await m.render(idRef.current, sanitized.trim());
                 if (!cancelled) setSvg(rendered);
             } catch (e: any) {
                 if (!cancelled) setError(e?.message || "Mermaid render error");

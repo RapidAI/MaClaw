@@ -75,7 +75,20 @@ func BuildPhaseSystemPrompt(state *WorkflowState, phase *PhaseTemplate, registry
 	}
 	b.WriteString("\n")
 
-	// 4. Previous phase outputs summary
+	// 4. Previous phase outputs summary (truncated to avoid overwhelming the LLM)
+	//
+	// Including the full text of previous phase outputs causes the LLM to
+	// repeat/regenerate earlier documents instead of producing the current
+	// phase's deliverable. For example, when generating the task_breakdown
+	// document, the full tech_design document in the system prompt (combined
+	// with the same document in conversation history) creates such a strong
+	// signal that the LLM "continues" the tech_design instead of starting
+	// the task_breakdown.
+	//
+	// We truncate each previous output to a summary length. The most recent
+	// previous phase (immediately preceding the current one) gets a larger
+	// budget since it's the most relevant context. Earlier phases get a
+	// smaller budget.
 	if state.PhaseIndex > 0 && registry != nil {
 		tmpl := registry.Match(state.Type)
 		if tmpl != nil && len(tmpl.Phases) > 0 {
@@ -83,11 +96,18 @@ func BuildPhaseSystemPrompt(state *WorkflowState, phase *PhaseTemplate, registry
 			for i := 0; i < state.PhaseIndex && i < len(tmpl.Phases); i++ {
 				pid := tmpl.Phases[i].ID
 				if output, ok := state.PhaseOutputs[pid]; ok && output != "" {
-					prevOutputs = append(prevOutputs, fmt.Sprintf("### %s\n\n%s", tmpl.Phases[i].Name, output))
+					// The immediately preceding phase gets more context;
+					// earlier phases get a shorter summary.
+					limit := 600
+					if i == state.PhaseIndex-1 {
+						limit = 1200
+					}
+					summary := truncateRunesSmart(output, limit)
+					prevOutputs = append(prevOutputs, fmt.Sprintf("### %s（摘要）\n\n%s", tmpl.Phases[i].Name, summary))
 				}
 			}
 			if len(prevOutputs) > 0 {
-				b.WriteString("## 前序阶段产出物\n\n")
+				b.WriteString("## 前序阶段产出物（摘要，完整内容已在对话历史中）\n\n")
 				b.WriteString(strings.Join(prevOutputs, "\n\n"))
 				b.WriteString("\n\n")
 			}
@@ -150,4 +170,43 @@ func GetToolFilterForPhase(phase *PhaseTemplate) ToolFilterPolicy {
 		return ToolFilterNone
 	}
 	return phase.ToolPolicy
+}
+
+// truncateRunesSmart truncates a string to at most maxRunes runes, trying
+// to break at a paragraph boundary ("\n\n") or line boundary ("\n") rather
+// than mid-sentence. Falls back to a hard rune cut with "…" if no good
+// break point is found within the last 20% of the budget.
+func truncateRunesSmart(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+
+	// Search for a good break point in the last 20% of the budget.
+	searchStart := maxRunes - maxRunes/5 // last 20%
+	if searchStart < 0 {
+		searchStart = 0
+	}
+
+	// Scan backwards from maxRunes looking for paragraph or line breaks.
+	bestBreak := -1
+	for i := maxRunes - 1; i >= searchStart; i-- {
+		if runes[i] == '\n' {
+			// Check for paragraph break ("\n\n").
+			if i > 0 && runes[i-1] == '\n' {
+				return string(runes[:i-1]) + "\n\n…（已截断）"
+			}
+			if bestBreak < 0 {
+				bestBreak = i // remember the first (rightmost) line break
+			}
+		}
+	}
+
+	// Fall back to a line break.
+	if bestBreak >= 0 {
+		return string(runes[:bestBreak]) + "\n…（已截断）"
+	}
+
+	// Hard cut.
+	return string(runes[:maxRunes]) + "…（已截断）"
 }

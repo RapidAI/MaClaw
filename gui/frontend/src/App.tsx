@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -658,6 +658,10 @@ const translations: any = {
         "mcpJsonStructureError": "Invalid format, expected { mcpServers: { name: { command, args, env } } }",
         "mcpImporting": "Importing...",
         "mcpImport": "Import",
+        "mcpRemoteImportJsonTitle": "Import Remote MCP Config",
+        "mcpRemoteImportJsonDesc": "Paste MCP JSON config (supports Kiro / Cursor / Claude Desktop format):",
+        "mcpRemoteJsonStructureError": "Invalid format, expected { mcpServers: { name: { url, headers } } } or { name: { endpoint_url } }",
+        "mcpRemoteJsonMissingUrl": "Server \"{name}\" is missing url or endpoint_url",
         "mcpEditLocalServer": "Edit Local MCP Server",
         "mcpAddLocalServer": "Add Local MCP Server",
         "mcpNameLabel": "Name",
@@ -1127,6 +1131,10 @@ const translations: any = {
         "mcpJsonStructureError": "格式不正确，需要 { mcpServers: { name: { command, args, env } } }",
         "mcpImporting": "导入中...",
         "mcpImport": "导入",
+        "mcpRemoteImportJsonTitle": "导入远程 MCP 配置",
+        "mcpRemoteImportJsonDesc": "粘贴 MCP JSON 配置代码（支持 Kiro / Cursor / Claude Desktop 格式）：",
+        "mcpRemoteJsonStructureError": "格式不正确，需要 { mcpServers: { name: { url, headers } } } 或 { name: { endpoint_url } }",
+        "mcpRemoteJsonMissingUrl": "服务器「{name}」缺少 url 或 endpoint_url 字段",
         "mcpEditLocalServer": "编辑本地 MCP Server",
         "mcpAddLocalServer": "添加本地 MCP Server",
         "mcpNameLabel": "名称",
@@ -1590,6 +1598,10 @@ const translations: any = {
         "mcpJsonStructureError": "格式不正確，需要 { mcpServers: { name: { command, args, env } } }",
         "mcpImporting": "匯入中...",
         "mcpImport": "匯入",
+        "mcpRemoteImportJsonTitle": "匯入遠端 MCP 設定",
+        "mcpRemoteImportJsonDesc": "貼上 MCP JSON 設定代碼（支援 Kiro / Cursor / Claude Desktop 格式）：",
+        "mcpRemoteJsonStructureError": "格式不正確，需要 { mcpServers: { name: { url, headers } } } 或 { name: { endpoint_url } }",
+        "mcpRemoteJsonMissingUrl": "伺服器「{name}」缺少 url 或 endpoint_url 欄位",
         "mcpEditLocalServer": "編輯本機 MCP Server",
         "mcpAddLocalServer": "新增本機 MCP Server",
         "mcpNameLabel": "名稱",
@@ -1768,6 +1780,22 @@ function App() {
     const [isMarketplaceInstalling, setIsMarketplaceInstalling] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [isManualCheck, setIsManualCheck] = useState(false);
+    const [toolProviders, setToolProviders] = useState<Array<{ name: string; valid: boolean; builtin: boolean }>>([]);
+
+    // Fetch provider list when the default tool selection changes
+    useEffect(() => {
+        const selectedTool = config?.default_tool || '';
+        if (!selectedTool) {
+            setToolProviders([]);
+            return;
+        }
+        ListToolProviders(selectedTool).then((providers) => {
+            setToolProviders(providers || []);
+        }).catch(() => {
+            setToolProviders([]);
+        });
+    }, [config?.default_tool]);
+
     const [showStartupPopup, setShowStartupPopup] = useState(false);
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
@@ -5473,6 +5501,84 @@ ${instruction}`;
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
+
+                            {/* Default Coding Tool + Default Provider — same row */}
+                            <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
+                                <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                                    {/* Default Coding Tool */}
+                                    <div style={{ flex: '1 1 0', minWidth: '180px', maxWidth: config?.default_tool ? undefined : '320px' }}>
+                                        <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '8px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '默认编程工具' : lang === 'zh-Hant' ? '預設編程工具' : 'Default Coding Tool'}</h4>
+                                        <select
+                                            className="form-input"
+                                            value={config?.default_tool || ''}
+                                            onChange={(e) => {
+                                                if (config) {
+                                                    const newConfig = new main.AppConfig({
+                                                        ...config,
+                                                        default_tool: e.target.value,
+                                                        default_tool_provider: '',
+                                                    });
+                                                    setConfig(newConfig);
+                                                    SaveConfig(newConfig);
+                                                }
+                                            }}
+                                            style={{ width: '100%', fontSize: '0.8rem', padding: '4px 8px', height: '30px' }}
+                                        >
+                                            <option value="">{lang === 'zh-Hans' ? 'Auto (品牌默认)' : lang === 'zh-Hant' ? 'Auto (品牌預設)' : 'Auto (Brand Default)'}</option>
+                                            {remoteToolMetadata.map((tool) => (
+                                                <option
+                                                    key={tool.name}
+                                                    value={tool.name}
+                                                    disabled={!tool.installed}
+                                                >
+                                                    {tool.display_name}{!tool.installed ? (lang === 'zh-Hans' ? ' (未安装)' : lang === 'zh-Hant' ? ' (未安裝)' : ' (Not Installed)') : ''}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginTop: '6px' }}>
+                                            {lang === 'zh-Hans' ? '选择 AI 编程会话默认使用的工具。Auto 将使用品牌默认工具。' :
+                                                lang === 'zh-Hant' ? '選擇 AI 編程會話預設使用的工具。Auto 將使用品牌預設工具。' :
+                                                    'Choose the default tool for AI coding sessions. Auto uses the brand default.'}
+                                        </p>
+                                    </div>
+                                    {/* Default Provider — only visible when a specific tool is selected */}
+                                    {config?.default_tool ? (
+                                    <div style={{ flex: '1 1 0', minWidth: '180px' }}>
+                                        <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '8px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '默认服务商' : lang === 'zh-Hant' ? '預設服務商' : 'Default Provider'}</h4>
+                                        <select
+                                            className="form-input"
+                                            value={config?.default_tool_provider || ''}
+                                            onChange={(e) => {
+                                                if (config) {
+                                                    const newConfig = new main.AppConfig({
+                                                        ...config,
+                                                        default_tool_provider: e.target.value,
+                                                    });
+                                                    setConfig(newConfig);
+                                                    SaveConfig(newConfig);
+                                                }
+                                            }}
+                                            style={{ width: '100%', fontSize: '0.8rem', padding: '4px 8px', height: '30px' }}
+                                        >
+                                            <option value="">{lang === 'zh-Hans' ? 'Auto (自动选择)' : lang === 'zh-Hant' ? 'Auto (自動選擇)' : 'Auto (Auto Select)'}</option>
+                                            {toolProviders.map((provider) => (
+                                                <option
+                                                    key={provider.name}
+                                                    value={provider.name}
+                                                >
+                                                    {provider.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginTop: '6px' }}>
+                                            {lang === 'zh-Hans' ? '选择默认工具使用的服务商。Auto 将自动选择第一个可用的服务商。' :
+                                                lang === 'zh-Hant' ? '選擇預設工具使用的服務商。Auto 將自動選擇第一個可用的服務商。' :
+                                                    'Choose the default provider for the selected tool. Auto picks the first available provider.'}
+                                        </p>
+                                    </div>
+                                    ) : null}
+                                </div>
+                            </div>
 
                             <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
                                 <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '工具显示' : lang === 'zh-Hant' ? '工具顯示' : 'Tool Visibility'}</h4>

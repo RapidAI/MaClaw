@@ -339,8 +339,29 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		return fmt.Sprintf("获取工具配置失败: %s", tcErr.Error())
 	}
 
+	// Default provider injection: if no explicit provider was given, and the
+	// resolved tool matches the user's configured default tool, use the
+	// configured default provider as the providerOverride for ProviderResolver.
+	isDefaultProviderOverride := false
+	if provider == "" && cfg.DefaultTool != "" {
+		resolvedNorm := strings.ToLower(strings.TrimSpace(tool))
+		defaultNorm := strings.ToLower(strings.TrimSpace(cfg.DefaultTool))
+		if resolvedNorm == defaultNorm && strings.TrimSpace(cfg.DefaultToolProvider) != "" {
+			provider = cfg.DefaultToolProvider
+			isDefaultProviderOverride = true
+		}
+	}
+
 	resolver := &ProviderResolver{}
 	resolveResult, resolveErr := resolver.Resolve(toolCfg, provider)
+	if resolveErr != nil && isDefaultProviderOverride {
+		// Default provider invalid (not found or no API key), retry without
+		// override so ProviderResolver falls back to auto-resolution.
+		log.Printf("default provider override %q failed (%v), retrying with auto-resolution", provider, resolveErr)
+		provider = ""
+		isDefaultProviderOverride = false
+		resolveResult, resolveErr = resolver.Resolve(toolCfg, "")
+	}
 	if resolveErr != nil {
 		errMsg := fmt.Sprintf("❌ 无法创建会话：%s\n请在桌面端为 %s 配置至少一个有效的服务商。", resolveErr.Error(), tool)
 		return errMsg

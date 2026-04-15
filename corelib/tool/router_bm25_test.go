@@ -2,8 +2,37 @@ package tool
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
+
+// loadTestEmbedder loads the Gemma embedding model for tests that need
+// semantic classification. Returns nil if the model is not available.
+func loadTestEmbedder(t *testing.T) embedding.Embedder {
+	t.Helper()
+	modelPath := ""
+	if p := os.Getenv("GEMMA_EMB_MODEL"); p != "" {
+		modelPath = p
+	} else {
+		home, _ := os.UserHomeDir()
+		p := filepath.Join(home, ".maclaw", "models", "embeddinggemma-300M-Q8_0.gguf")
+		if _, err := os.Stat(p); err == nil {
+			modelPath = p
+		}
+	}
+	if modelPath == "" {
+		return nil
+	}
+	emb, err := embedding.NewGemmaEmbedder(modelPath, 256)
+	if err != nil {
+		t.Logf("failed to load embedding model: %v", err)
+		return nil
+	}
+	return emb
+}
 
 func makeToolDef(name, description string) map[string]interface{} {
 	return map[string]interface{}{
@@ -258,6 +287,135 @@ func TestRouter_BM25_ConditionalKeep_NoFalseTriggers(t *testing.T) {
 	}
 }
 
+// TestRouter_BrowserSemanticConfirm_RejectsFalsePositive verifies that browser
+// tools are NOT activated when keywords like "打开"+"页面" match but the
+// IntentClassifier determines the actual intent is coding (not browser).
+// This is the core fix for the "Browser:" prefix hallucination bug.
+func TestRouter_BrowserSemanticConfirm_RejectsFalsePositive(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	// Set up IntentClassifier with embedding model.
+	emb := loadTestEmbedder(t)
+	if emb == nil {
+		t.Skip("embedding model not available")
+	}
+	ic := NewIntentClassifier(emb)
+	router.SetIntentClassifier(ic)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("browser_session_start", "启动浏览器会话"),
+		makeToolDef("browser_observe", "观察当前页面内容"),
+		makeToolDef("browser_navigate", "导航到指定URL"),
+		makeToolDef("browser_click", "点击页面元素"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	// "开发一个打飞机游戏，页面上直接打开即玩" — weak keywords "打开"+"页面"
+	// match the browser rule, but the intent is clearly coding, not browser.
+	// Note: no strong keyword like "浏览器" — only the weak page+action combo.
+	result := router.Route("开发一个打飞机游戏，页面上直接打开即玩，有飞机和子弹", tools)
+	resultNames := make(map[string]bool)
+	for _, r := range result {
+		resultNames[ExtractToolName(r)] = true
+	}
+
+	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate", "browser_click"} {
+		if resultNames[name] {
+			names := make([]string, len(result))
+			for i, r := range result {
+				names[i] = ExtractToolName(r)
+			}
+			t.Errorf("browser tool %q should NOT be in result for coding intent (game dev), got: %v", name, names)
+		}
+	}
+}
+
+// TestRouter_BrowserSemanticConfirm_AcceptsTruePositive verifies that browser
+// tools ARE activated when both keywords and IntentClassifier agree on browser intent.
+func TestRouter_BrowserSemanticConfirm_AcceptsTruePositive(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	emb := loadTestEmbedder(t)
+	if emb == nil {
+		t.Skip("embedding model not available")
+	}
+	ic := NewIntentClassifier(emb)
+	router.SetIntentClassifier(ic)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("browser_session_start", "启动浏览器会话"),
+		makeToolDef("browser_observe", "观察当前页面内容"),
+		makeToolDef("browser_navigate", "导航到指定URL"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	// Genuine browser intent — strong keyword "浏览器" directly matches.
+	result := router.Route("打开浏览器帮我在网页上点击购买按钮", tools)
+	resultNames := make(map[string]bool)
+	for _, r := range result {
+		resultNames[ExtractToolName(r)] = true
+	}
+
+	for _, name := range []string{"browser_session_start", "browser_observe", "browser_navigate"} {
+		if !resultNames[name] {
+			names := make([]string, len(result))
+			for i, r := range result {
+				names[i] = ExtractToolName(r)
+			}
+			t.Errorf("browser tool %q should be in result for genuine browser intent, got: %v", name, names)
+		}
+	}
+}
+
+// TestRouter_BrowserSemanticConfirm_FallbackWithoutClassifier verifies that
+// when no IntentClassifier is available, browser tools fall back to keyword
+// matching (backward compatible behavior).
+func TestRouter_BrowserSemanticConfirm_FallbackWithoutClassifier(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen) // No IntentClassifier set.
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("browser_session_start", "启动浏览器会话"),
+		makeToolDef("browser_observe", "观察当前页面内容"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	// Without IntentClassifier, keyword match should still work (fallback).
+	result := router.Route("打开浏览器访问百度网站", tools)
+	resultNames := make(map[string]bool)
+	for _, r := range result {
+		resultNames[ExtractToolName(r)] = true
+	}
+
+	if !resultNames["browser_session_start"] {
+		names := make([]string, len(result))
+		for i, r := range result {
+			names[i] = ExtractToolName(r)
+		}
+		t.Errorf("browser_session_start should be in result when no classifier (fallback), got: %v", names)
+	}
+}
+
 func TestRouter_Route_ConditionallyKeepsSSHForSSHIntent(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
@@ -294,6 +452,7 @@ func TestRouter_Route_ConditionallyKeepsSSHForSSHIntent(t *testing.T) {
 	}
 
 	runCase("登录 4090 服务器，host home.rapidai.tech 端口 33", true)
+	router.ResetSession() // Clear session-pinned tools between independent test cases.
 	runCase("我要查询数据库", false)
 }
 

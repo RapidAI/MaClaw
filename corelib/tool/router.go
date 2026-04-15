@@ -55,8 +55,10 @@ var CoreToolNames = map[string]bool{
 }
 
 type conditionalKeepRule struct {
-	keepTools []string
-	matches   func(string) bool
+	keepTools              []string
+	matches                func(string) bool
+	needsSemanticConfirm   bool   // when true, keyword match is tentative; requires IntentClassifier confirmation
+	confirmIntent          string // the Intent* constant that confirms this rule (e.g. IntentBrowser)
 }
 
 var sshIntentIPv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
@@ -106,6 +108,26 @@ var browserIntentKeywords = []string{
 var browserPageKeywords = []string{"页面", "网页", "网站", "url", "page", "site"}
 var browserActionKeywords = []string{"访问", "导航", "点击", "观察", "打开", "截图", "输入", "填写"}
 
+// allBrowserToolNames is the complete list of browser automation tools used
+// by both the strong and weak conditional keep rules. Extracted as a variable
+// to avoid maintaining two identical lists.
+var allBrowserToolNames = []string{
+	// Browser agent session tools.
+	"browser_session_start", "browser_session_stop", "browser_observe",
+	"browser_navigate", "browser_click", "browser_type",
+	"browser_wait", "browser_back", "browser_refresh", "browser_extract",
+	"browser_connect", "browser_screenshot", "browser_get_text",
+	"browser_get_html", "browser_eval", "browser_scroll",
+	"browser_select", "browser_list_pages", "browser_switch_page",
+	"browser_close", "browser_click_at", "browser_set_files",
+	"browser_info", "browser_ocr",
+	// Browser task/record/replay tools.
+	"browser_task_run", "browser_task_replay", "browser_task_verify", "browser_task_status",
+	"browser_record_start", "browser_record_stop", "browser_list_flows",
+	// GUI automation recording tools.
+	"gui_record_start", "gui_record_stop",
+}
+
 var conditionalKeepRules = []conditionalKeepRule{
 	{
 		keepTools: []string{"ssh"},
@@ -125,26 +147,30 @@ var conditionalKeepRules = []conditionalKeepRule{
 			return containsAnyKeyword(msg, documentDeliveryKeywords)
 		},
 	},
+	// Browser tools — strong intent keywords (user explicitly mentions browser/chrome/playwright).
+	// These are high-confidence signals that don't need semantic confirmation.
 	{
-		keepTools: []string{
-			// Browser agent session tools.
-			"browser_session_start", "browser_session_stop", "browser_observe",
-			"browser_navigate", "browser_click", "browser_type",
-			"browser_wait", "browser_back", "browser_refresh", "browser_extract",
-			"browser_connect", "browser_screenshot", "browser_get_text",
-			"browser_get_html", "browser_eval", "browser_scroll",
-			"browser_select", "browser_list_pages", "browser_switch_page",
-			"browser_close", "browser_click_at", "browser_set_files",
-			"browser_info", "browser_ocr",
-			// Browser task/record/replay tools.
-			"browser_task_run", "browser_task_replay", "browser_task_verify", "browser_task_status",
-			"browser_record_start", "browser_record_stop", "browser_list_flows",
-			// GUI automation recording tools.
-			"gui_record_start", "gui_record_stop",
-		},
+		keepTools: allBrowserToolNames,
 		matches: func(msg string) bool {
-			return containsAnyKeyword(msg, browserIntentKeywords) ||
-				(containsAnyKeyword(msg, browserPageKeywords) && containsAnyKeyword(msg, browserActionKeywords))
+			return containsAnyKeyword(msg, browserIntentKeywords)
+		},
+	},
+	// Browser tools — weak keyword combination (page + action words).
+	// These are ambiguous signals prone to false positives (e.g. "页面上直接
+	// 打开即玩" in a game description). Requires IntentClassifier confirmation.
+	{
+		keepTools:            allBrowserToolNames,
+		needsSemanticConfirm: true,
+		confirmIntent:        IntentBrowser,
+		matches: func(msg string) bool {
+			// Weak signal: generic page + action words that often appear in
+			// non-browser contexts (e.g. game descriptions mentioning "页面"
+			// and "打开"). Only activate if IntentClassifier confirms browser intent.
+			// Skip if strong keywords already matched (handled by the rule above).
+			if containsAnyKeyword(msg, browserIntentKeywords) {
+				return false
+			}
+			return containsAnyKeyword(msg, browserPageKeywords) && containsAnyKeyword(msg, browserActionKeywords)
 		},
 	},
 	{
@@ -529,6 +555,22 @@ var noPinConditionalTools = map[string]bool{
 	"generate_pdf": true,
 }
 
+// noEagerPinTools lists conditional tools that should NOT be eagerly pinned
+// during Route() keyword matching, but SHOULD be pinned after actual successful
+// use (via ActivateSessionTool in the tool execution path).
+// Browser tools are included because their keyword matching is prone to false
+// positives (e.g. "打开"+"页面" in a game description), and eagerly pinning
+// 25+ tools from a false match would pollute the session permanently.
+// Once a browser tool is actually called and succeeds, it gets pinned normally.
+var noEagerPinTools map[string]bool
+
+func init() {
+	noEagerPinTools = make(map[string]bool, len(allBrowserToolNames))
+	for _, name := range allBrowserToolNames {
+		noEagerPinTools[name] = true
+	}
+}
+
 // ShouldPinConditionalTool returns true if the conditional tool should be
 // session-pinned after successful use. Some conditional tools (like generate_pdf)
 // should NOT be pinned because they should only appear in specific contexts.
@@ -539,40 +581,60 @@ func ShouldPinConditionalTool(name string) bool {
 // MatchConditionalTools returns the set of conditional tool names that match
 // the given text. This is used to pin tools based on recalled memory content
 // (e.g. when memory mentions "服务器" or "SSH", the ssh tool should be pinned).
+// Note: tools requiring semantic confirmation are included here because memory
+// content is already a strong signal (the tool was previously used in context).
 func MatchConditionalTools(text string) map[string]bool {
-	keep, _ := matchConditionalKeepRules(text)
+	keep, _, needsConfirm := matchConditionalKeepRules(text)
+	// For memory-driven pinning, promote needsConfirm tools too — if the
+	// memory mentions browser/SSH context, the tool was previously relevant.
+	for name := range needsConfirm {
+		keep[name] = true
+	}
 	return keep
 }
 
-// matchConditionalKeepRules returns the set of tool names to conditionally keep
-// and the set to penalize for the given user message.
-// Tools that have a conditional keep rule but did NOT match the current message
-// are filtered out entirely so they don't sneak in via tie-breaking at the score tail.
-func matchConditionalKeepRules(userMessage string) (keep map[string]bool, filterOut map[string]bool) {
+// matchConditionalKeepRules returns the set of tool names to conditionally keep,
+// the set to filter out, and the set that matched keywords but need semantic
+// confirmation before being activated (needsSemanticConfirm rules).
+//
+// Tools in needsConfirm are NOT added to keep — the caller must verify them
+// with the IntentClassifier before promoting to keep.
+func matchConditionalKeepRules(userMessage string) (keep map[string]bool, filterOut map[string]bool, needsConfirm map[string]string) {
 	keep = make(map[string]bool)
 	filterOut = make(map[string]bool)
+	needsConfirm = make(map[string]string) // tool name → required intent
 	msg := strings.ToLower(strings.TrimSpace(userMessage))
 	if msg == "" {
 		// Empty message: filter out ALL conditionally-kept tools.
 		for name := range allConditionalKeepTools {
 			filterOut[name] = true
 		}
-		return keep, filterOut
+		return keep, filterOut, needsConfirm
 	}
 	for _, rule := range conditionalKeepRules {
 		if rule.matches(msg) {
-			for _, name := range rule.keepTools {
-				keep[name] = true
+			if rule.needsSemanticConfirm {
+				// Keyword matched but this rule requires semantic confirmation.
+				// Park tools in needsConfirm instead of keep.
+				for _, name := range rule.keepTools {
+					needsConfirm[name] = rule.confirmIntent
+				}
+			} else {
+				for _, name := range rule.keepTools {
+					keep[name] = true
+				}
 			}
 		}
 	}
 	// Filter out tools that are conditionally kept but NOT matched this time.
+	// Tools in needsConfirm are also filtered out for now — they'll be promoted
+	// to keep only after semantic confirmation succeeds.
 	for name := range allConditionalKeepTools {
 		if !keep[name] {
 			filterOut[name] = true
 		}
 	}
-	return keep, filterOut
+	return keep, filterOut, needsConfirm
 }
 
 // Route selects the most relevant tools for userMessage from allTools.
@@ -581,18 +643,64 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		return allTools
 	}
 
-	condKeep, condFilterOut := matchConditionalKeepRules(userMessage)
+	condKeep, condFilterOut, condNeedsConfirm := matchConditionalKeepRules(userMessage)
+
+	// Semantic intent confirmation: when a conditional rule matched keywords
+	// but requires semantic confirmation (needsSemanticConfirm=true), use the
+	// IntentClassifier to verify the user's actual intent before activating
+	// those tools. This prevents false positives like "浏览器直接打开即玩"
+	// (describing a game's runtime) from activating 25+ browser tools.
+	//
+	// When the IntentClassifier is unavailable, fall back to keyword match
+	// (promote all needsConfirm tools to keep) to maintain existing behavior.
+	//
+	// The classification result is cached and reused by the semantic intent
+	// enhancement below to avoid double classification.
+	var cachedICResult *IntentResult
+	if r.intentClassifier != nil {
+		result := r.intentClassifier.Classify(userMessage)
+		cachedICResult = &result
+	}
+
+	if len(condNeedsConfirm) > 0 {
+		if cachedICResult != nil {
+			// Group needsConfirm tools by their required intent.
+			for name, requiredIntent := range condNeedsConfirm {
+				if cachedICResult.Intent == requiredIntent && cachedICResult.Confidence >= 0.50 {
+					// Semantic confirmation passed — promote to keep.
+					condKeep[name] = true
+					delete(condFilterOut, name)
+				}
+				// Otherwise: tool stays in filterOut (keyword was a false positive).
+			}
+			if logDetailEnabled.Load() {
+				promoted := 0
+				for name := range condNeedsConfirm {
+					if condKeep[name] {
+						promoted++
+					}
+				}
+				log.Printf("[Router] semantic confirm: intent=%s conf=%.2f, %d/%d tools promoted",
+					cachedICResult.Intent, cachedICResult.Confidence, promoted, len(condNeedsConfirm))
+			}
+		} else {
+			// No IntentClassifier available — fall back to keyword match.
+			for name := range condNeedsConfirm {
+				condKeep[name] = true
+				delete(condFilterOut, name)
+			}
+		}
+	}
 
 	// Semantic intent enhancement: when keyword matching misses but the
 	// IntentClassifier detects a specific intent, activate the corresponding
 	// conditional tools. This catches cases like "帮我搞个能自动抢票的东西"
 	// where no SSH/browser keywords appear but embedding detects the intent.
-	if r.intentClassifier != nil {
-		icResult := r.intentClassifier.Classify(userMessage)
-		if icResult.Intent != IntentQuery && icResult.Intent != IntentShortCommand &&
-			icResult.Intent != IntentUnknown && icResult.Confidence >= 0.50 {
+	if cachedICResult != nil {
+		if cachedICResult.Intent != IntentQuery && cachedICResult.Intent != IntentShortCommand &&
+			cachedICResult.Intent != IntentUnknown && cachedICResult.Confidence >= 0.50 {
 			var intentTools []string
-			switch icResult.Intent {
+			switch cachedICResult.Intent {
 			case IntentSSH:
 				intentTools = []string{"ssh"}
 			case IntentBrowser:
@@ -616,8 +724,11 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	// pin it to the session immediately so it survives follow-up messages
 	// that lack the triggering keywords (e.g. user says "回忆下" after
 	// asking about a server — ssh should stay available).
+	// Browser tools are excluded from eager pin (noEagerPinTools) because
+	// keyword matching is prone to false positives. They get pinned after
+	// actual successful use via ActivateSessionTool in the tool execution path.
 	for name := range condKeep {
-		if ShouldPinConditionalTool(name) {
+		if ShouldPinConditionalTool(name) && !noEagerPinTools[name] {
 			r.ActivateSessionTool(name)
 		}
 	}

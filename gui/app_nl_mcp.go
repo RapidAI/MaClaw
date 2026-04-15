@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // MCPServerSource, MCPServerEntry — see corelib_aliases.go
@@ -24,17 +26,18 @@ type MCPToolView struct {
 
 // MCPServerView is the Wails-facing view of an MCP Server including runtime state.
 type MCPServerView struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	EndpointURL  string          `json:"endpoint_url"`
-	AuthType     string          `json:"auth_type"`
-	AuthSecret   string          `json:"auth_secret"`
-	Source       MCPServerSource `json:"source"`
-	Tools        []MCPToolView   `json:"tools"`
-	HealthStatus string          `json:"health_status"` // "healthy", "slow", "unavailable", "unknown"
-	FailCount    int             `json:"fail_count"`
-	LastCheckAt  time.Time       `json:"last_check_at"`
-	CreatedAt    time.Time       `json:"created_at"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	EndpointURL  string            `json:"endpoint_url"`
+	AuthType     string            `json:"auth_type"`
+	AuthSecret   string            `json:"auth_secret"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	Source       MCPServerSource   `json:"source"`
+	Tools        []MCPToolView     `json:"tools"`
+	HealthStatus string            `json:"health_status"` // "healthy", "slow", "unavailable", "unknown"
+	FailCount    int               `json:"fail_count"`
+	LastCheckAt  time.Time         `json:"last_check_at"`
+	CreatedAt    time.Time         `json:"created_at"`
 }
 
 // MCPRegistry manages locally-registered MCP Servers on the MaClaw client.
@@ -44,6 +47,14 @@ type MCPRegistry struct {
 	client *http.Client // shared HTTP client for MCP calls
 	// Runtime health tracking (not persisted).
 	health map[string]*mcpHealthState
+	// MCP session tracking (per-server Streamable HTTP sessions).
+	sessions map[string]*mcpSession
+}
+
+// mcpSession tracks an active MCP Streamable HTTP session for a server.
+type mcpSession struct {
+	SessionID string
+	CreatedAt time.Time
 }
 
 type mcpHealthState struct {
@@ -55,9 +66,10 @@ type mcpHealthState struct {
 // NewMCPRegistry creates a new client-side MCP registry.
 func NewMCPRegistry(app *App) *MCPRegistry {
 	return &MCPRegistry{
-		app:    app,
-		client: &http.Client{Timeout: 30 * time.Second},
-		health: make(map[string]*mcpHealthState),
+		app:      app,
+		client:   &http.Client{Timeout: 30 * time.Second},
+		health:   make(map[string]*mcpHealthState),
+		sessions: make(map[string]*mcpSession),
 	}
 }
 
@@ -145,6 +157,7 @@ func (r *MCPRegistry) Update(entry MCPServerEntry) error {
 			}
 			servers[i].AuthType = entry.AuthType
 			servers[i].AuthSecret = entry.AuthSecret
+			servers[i].Headers = entry.Headers
 			return r.saveServers(servers)
 		}
 	}
@@ -181,6 +194,7 @@ func (r *MCPRegistry) ListServers() []MCPServerView {
 			EndpointURL:  s.EndpointURL,
 			AuthType:     s.AuthType,
 			AuthSecret:   s.AuthSecret,
+			Headers:      s.Headers,
 			Source:       s.Source,
 			HealthStatus: "unknown",
 		}
@@ -243,19 +257,37 @@ func (r *MCPRegistry) ResolveServerID(serverRef string) (string, error) {
 }
 
 // setAuthHeader sets the appropriate auth header on the request.
-func setAuthHeader(req *http.Request, authType, authSecret string) {
-	if authSecret == "" {
+// It first applies any custom headers from the entry, then applies
+// AuthType/AuthSecret (which take precedence over custom headers).
+// Content-Type and Accept are protocol-level headers set by newMCPJSONRequest
+// and are not overridable via custom headers.
+func setAuthHeader(req *http.Request, target *MCPServerEntry) {
+	// Apply custom headers first (lower precedence).
+	for k, v := range target.Headers {
+		if k == "" || v == "" {
+			continue
+		}
+		// Protect protocol-level headers from being overridden.
+		lk := strings.ToLower(k)
+		if lk == "content-type" || lk == "accept" {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	// Apply AuthType/AuthSecret (higher precedence, overwrites custom Authorization if both set).
+	if target.AuthSecret == "" {
 		return
 	}
-	switch authType {
+	switch target.AuthType {
 	case "bearer":
-		req.Header.Set("Authorization", "Bearer "+authSecret)
+		req.Header.Set("Authorization", "Bearer "+target.AuthSecret)
 	case "api_key":
-		req.Header.Set("X-API-Key", authSecret)
+		req.Header.Set("X-API-Key", target.AuthSecret)
 	}
 }
 
 // newMCPJSONRequest creates a JSON-RPC request to the given MCP server endpoint.
+// If a session ID is known for this server, it is included via the Mcp-Session-Id header.
 func (r *MCPRegistry) newMCPJSONRequest(target *MCPServerEntry, body []byte) (*http.Request, error) {
 	url := strings.TrimRight(target.EndpointURL, "/")
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
@@ -263,8 +295,87 @@ func (r *MCPRegistry) newMCPJSONRequest(target *MCPServerEntry, body []byte) (*h
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	setAuthHeader(req, target.AuthType, target.AuthSecret)
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	setAuthHeader(req, target)
+	// Attach MCP session ID if available (required by Streamable HTTP servers).
+	if sess, ok := r.sessions[target.ID]; ok && sess.SessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sess.SessionID)
+	}
 	return req, nil
+}
+
+// doMCPRoundTrip executes an MCP JSON-RPC request and extracts the session ID
+// from the response. Returns the parsed JSON-RPC payload.
+func (r *MCPRegistry) doMCPRoundTrip(target *MCPServerEntry, reqBody map[string]interface{}) ([]byte, error) {
+	data, _ := json.Marshal(reqBody)
+	req, err := r.newMCPJSONRequest(target, data)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("MCP HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Capture session ID from response header (Streamable HTTP servers).
+	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		r.sessions[target.ID] = &mcpSession{
+			SessionID: sid,
+			CreatedAt: time.Now(),
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return nil, fmt.Errorf("MCP HTTP %d: %s", resp.StatusCode, truncateMCPBody(errBody))
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	parsed, err := corelib.ParseMCPResponse(resp.Body, ct, 256*1024)
+	if err != nil {
+		return nil, fmt.Errorf("parse MCP response: %w", err)
+	}
+	return parsed, nil
+}
+
+// ensureSession sends an MCP "initialize" handshake if no session exists for
+// the given server. Streamable HTTP servers (e.g. 智谱 BigModel) require this
+// handshake before tools/call will accept the API key.
+func (r *MCPRegistry) ensureSession(target *MCPServerEntry) error {
+	if sess, ok := r.sessions[target.ID]; ok && sess.SessionID != "" {
+		// Session already established; check if it's stale (>30 min).
+		if time.Since(sess.CreatedAt) < 30*time.Minute {
+			return nil
+		}
+		// Stale session — re-initialize.
+		delete(r.sessions, target.ID)
+	}
+
+	initBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": "2025-03-26",
+			"capabilities":   map[string]interface{}{},
+			"clientInfo": map[string]interface{}{
+				"name":    "maclaw",
+				"version": "1.0.0",
+			},
+		},
+	}
+
+	_, err := r.doMCPRoundTrip(target, initBody)
+	if err != nil {
+		// Some servers don't support initialize (e.g. simple REST-based MCP).
+		// Log and continue — the session will be empty and requests will
+		// proceed without Mcp-Session-Id (backward compatible).
+		log.Printf("[MCPRegistry] initialize handshake failed for %s: %v (proceeding without session)", target.ID, err)
+		return nil
+	}
+	return nil
 }
 
 // CallTool calls a tool on the specified MCP Server with a 30-second timeout.
@@ -272,6 +383,15 @@ func (r *MCPRegistry) CallTool(serverID, toolName string, args map[string]interf
 	target, err := r.findServer(serverID)
 	if err != nil {
 		return "", err
+	}
+
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+
+	// Ensure MCP session is established (Streamable HTTP handshake).
+	if err := r.ensureSession(target); err != nil {
+		return "", fmt.Errorf("MCP session init failed: %w", err)
 	}
 
 	reqBody := map[string]interface{}{
@@ -283,28 +403,26 @@ func (r *MCPRegistry) CallTool(serverID, toolName string, args map[string]interf
 			"arguments": args,
 		},
 	}
-	data, _ := json.Marshal(reqBody)
 
-	req, err := r.newMCPJSONRequest(target, data)
+	parsed, err := r.doMCPRoundTrip(target, reqBody)
 	if err != nil {
-		return "", err
-	}
-
-	resp, err := r.client.Do(req)
-	if err != nil {
-		r.recordFailure(serverID)
-		return "", fmt.Errorf("MCP call failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if resp.StatusCode != http.StatusOK {
-		r.recordFailure(serverID)
-		return "", fmt.Errorf("MCP HTTP %d: %s", resp.StatusCode, string(body))
+		// If we get an auth error and have a session, the session may be stale.
+		// Clear it and retry once with a fresh session.
+		if r.sessions[target.ID] != nil && isAuthError(err) {
+			log.Printf("[MCPRegistry] auth error with session for %s, retrying with fresh session", serverID)
+			delete(r.sessions, target.ID)
+			if initErr := r.ensureSession(target); initErr == nil {
+				parsed, err = r.doMCPRoundTrip(target, reqBody)
+			}
+		}
+		if err != nil {
+			r.recordFailure(serverID)
+			return "", err
+		}
 	}
 
 	r.recordSuccess(serverID)
-	return string(body), nil
+	return string(parsed), nil
 }
 
 // HealthCheck pings the MCP Server and updates health state.
@@ -314,33 +432,23 @@ func (r *MCPRegistry) HealthCheck(serverID string) error {
 		return err
 	}
 
+	// Ensure session for Streamable HTTP servers.
+	_ = r.ensureSession(target)
+
 	reqBody := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tools/list",
 		"params":  map[string]interface{}{},
 	}
-	data, _ := json.Marshal(reqBody)
-
-	req, err := r.newMCPJSONRequest(target, data)
-	if err != nil {
-		return err
-	}
 
 	start := time.Now()
-	resp, err := r.client.Do(req)
+	_, err = r.doMCPRoundTrip(target, reqBody)
 	elapsed := time.Since(start)
 
 	if err != nil {
 		r.recordFailure(serverID)
 		return fmt.Errorf("health check failed: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-
-	if resp.StatusCode != http.StatusOK {
-		r.recordFailure(serverID)
-		return fmt.Errorf("health check HTTP %d: %s", resp.StatusCode, truncateMCPBody(body))
 	}
 
 	r.mu.Lock()
@@ -354,6 +462,18 @@ func (r *MCPRegistry) HealthCheck(serverID string) error {
 	}
 	r.mu.Unlock()
 	return nil
+}
+
+// isAuthError checks if an error message indicates an authentication failure.
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "api key") ||
+		strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "401") ||
+		strings.Contains(msg, "auth")
 }
 
 func (r *MCPRegistry) recordFailure(serverID string) {
@@ -490,27 +610,19 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 		return nil
 	}
 
+	// Ensure session for Streamable HTTP servers.
+	_ = r.ensureSession(target)
+
 	reqBody := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tools/list",
 		"params":  map[string]interface{}{},
 	}
-	data, _ := json.Marshal(reqBody)
 
-	req, err := r.newMCPJSONRequest(target, data)
+	parsed, err := r.doMCPRoundTrip(target, reqBody)
 	if err != nil {
-		return nil
-	}
-
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if resp.StatusCode != http.StatusOK {
+		log.Printf("[MCPRegistry] GetServerTools failed for %s: %v", serverID, err)
 		return nil
 	}
 
@@ -519,7 +631,8 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 			Tools []MCPToolView `json:"tools"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := json.Unmarshal(parsed, &result); err != nil {
+		log.Printf("[MCPRegistry] GetServerTools JSON unmarshal error for %s: %v", serverID, err)
 		return nil
 	}
 	return result.Result.Tools

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/reposcanner"
 )
 
@@ -61,10 +63,37 @@ func (r *SessionContextResolver) ResolveProject() (projectPath string, reason st
 	return "", ""
 }
 
-// ResolveTool 根据项目语言/框架推荐工具。
-// 检查项目目录中的语言指示文件，结合工具目录的安装和健康状态进行推荐。
+// ResolveTool 根据三层优先级推荐工具：
+// 1. 用户配置的默认工具 (AppConfig.DefaultTool)
+// 2. 品牌默认工具 (BrandConfig.DefaultTool)
+// 3. 项目语言/框架启发式推荐
+// 检查工具目录的安装和健康状态进行推荐。
 // 无法推荐时返回空字符串。
 func (r *SessionContextResolver) ResolveTool(projectPath, taskDescription string) (toolName string, reason string) {
+	toolManager := NewToolManager(r.app)
+
+	// --- Tier 1: User-configured default tool ---
+	cfg, err := r.app.LoadConfig()
+	if err == nil {
+		userDefault := strings.ToLower(strings.TrimSpace(cfg.DefaultTool))
+		if userDefault != "" {
+			if r.isToolAvailable(userDefault, toolManager) {
+				return userDefault, "用户配置的默认工具"
+			}
+			r.app.log(fmt.Sprintf("[ResolveTool] user default tool %q not available, falling through", userDefault))
+		}
+	}
+
+	// --- Tier 2: Brand default tool ---
+	brandDefault := strings.ToLower(strings.TrimSpace(brand.Current().DefaultTool))
+	if brandDefault != "" {
+		if r.isToolAvailable(brandDefault, toolManager) {
+			return brandDefault, "品牌默认工具"
+		}
+		r.app.log(fmt.Sprintf("[ResolveTool] brand default tool %q not available, falling through to heuristics", brandDefault))
+	}
+
+	// --- Tier 3: Existing heuristic logic ---
 	type recommendation struct {
 		tool   string
 		reason string
@@ -99,7 +128,6 @@ func (r *SessionContextResolver) ResolveTool(projectPath, taskDescription string
 	}
 
 	// Check if the recommended tool is installed and healthy
-	toolManager := NewToolManager(r.app)
 	for _, c := range candidates {
 		status := toolManager.GetToolStatus(c.tool)
 		if status.Installed && strings.TrimSpace(status.Path) != "" {
@@ -117,6 +145,18 @@ func (r *SessionContextResolver) ResolveTool(projectPath, taskDescription string
 	}
 
 	return "", ""
+}
+
+// isToolAvailable checks whether a tool exists in the catalog (including extra tools)
+// and is installed and healthy.
+func (r *SessionContextResolver) isToolAvailable(toolName string, toolManager *ToolManager) bool {
+	// Check if tool exists in catalog (includes extra tools via brand.Current().ExtraTools)
+	if _, ok := lookupRemoteToolMetadata(toolName); !ok {
+		return false
+	}
+	// Check if tool is installed and healthy
+	status := toolManager.GetToolStatus(toolName)
+	return status.Installed && strings.TrimSpace(status.Path) != ""
 }
 
 // ResolveRepoOverview returns a compressed markdown overview of the project

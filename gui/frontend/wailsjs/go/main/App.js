@@ -178,6 +178,10 @@ export function ListRemoteToolMetadata() {
   return window['go']['main']['App']['ListRemoteToolMetadata']();
 }
 
+export function ListToolProviders(arg1) {
+  return window['go']['main']['App']['ListToolProviders'](arg1);
+}
+
 export function ListSkills(arg1) {
   return window['go']['main']['App']['ListSkills'](arg1);
 }

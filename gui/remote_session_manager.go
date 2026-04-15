@@ -885,7 +885,14 @@ func (m *RemoteSessionManager) writeSDKInput(s *RemoteSession, sessionID, text, 
 	// the Claude Code SDK's internal state, causing it to stop responding.
 	// AskUserQuestion answers are exempt — they are tool_result messages
 	// that Claude Code expects while busy.
-	if pending == nil && currentStatus == SessionBusy {
+	//
+	// Codex exec sessions are exempt from the busy check: Codex reads the
+	// prompt from stdin on startup, so the process may appear "busy" (due
+	// to the summary reducer matching "reading" in stderr output) when it
+	// is actually waiting for input. Blocking writes here would deadlock
+	// the session.
+	_, isCodexSession := s.Exec.(*CodexSDKExecutionHandle)
+	if pending == nil && currentStatus == SessionBusy && !isCodexSession {
 		m.app.log(fmt.Sprintf("[remote-write-%s] REJECTED session=%s: session is busy, cannot send new user message", tag, sessionID))
 		return fmt.Errorf("会话正忙，请等待当前操作完成后再发送新消息 (session is busy)")
 	}
@@ -1879,6 +1886,27 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 				_ = m.hubClient.SendSessionSummary(snap)
 			}
 			m.updateTraceFromSummary(s, snap)
+		}
+
+		// Detect Codex waiting for stdin input — this means the process
+		// is ready to receive a prompt, NOT that it's busy working.
+		// Without this, the summary reducer's "reading" keyword match
+		// would set the status to SessionBusy, blocking WriteInput.
+		if strings.Contains(text, "Reading prompt from stdin") {
+			s.mu.Lock()
+			s.Status = SessionWaitingInput
+			s.Summary.Status = string(SessionWaitingInput)
+			s.Summary.WaitingForUser = true
+			s.Summary.CurrentTask = "Codex ready — waiting for prompt"
+			s.Summary.SuggestedAction = "Send the task instruction to start working"
+			s.Summary.UpdatedAt = time.Now().Unix()
+			snap := s.Summary
+			s.mu.Unlock()
+			if m.hubClient != nil {
+				_ = m.hubClient.SendSessionSummary(snap)
+			}
+			m.updateTraceFromSummary(s, snap)
+			m.app.emitRemoteStateChanged()
 		}
 
 		// Track whether we got any real (non-diagnostic) output from codex.

@@ -119,7 +119,10 @@ func (r *ClaudeSummaryReducer) Apply(current SessionSummary, events []ImportantE
 		// waiting_input, error, or exited, raw output should NOT reset it back
 		// to running/busy — only a recognized event can change the status.
 		if next.Status != string(SessionWaitingInput) && next.Status != string(SessionError) && next.Status != string(SessionExited) {
-			if strings.Contains(joined, "running") || strings.Contains(joined, "reading") || strings.Contains(joined, "editing") {
+			// "reading" can appear in "Reading prompt from stdin" which means
+			// the tool is WAITING for input, not busy. Exclude that pattern.
+			isReading := strings.Contains(joined, "reading") && !strings.Contains(joined, "reading prompt from stdin")
+			if strings.Contains(joined, "running") || isReading || strings.Contains(joined, "editing") {
 				next.Status = string(SessionBusy)
 			}
 			// Otherwise keep the current status (don't force it to "running")
@@ -139,6 +142,7 @@ func (r *ClaudeSummaryReducer) Apply(current SessionSummary, events []ImportantE
 				"enter a command",
 				"type a message",
 				"send a message",
+				"reading prompt from stdin",
 			}
 			for _, hint := range waitingHints {
 				if strings.Contains(joined, hint) {

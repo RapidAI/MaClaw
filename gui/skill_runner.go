@@ -1430,7 +1430,18 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 	case "call_mcp_tool":
 		serverRef, _ := step.Params["server_id"].(string)
 		toolName, _ := step.Params["tool_name"].(string)
-		args, _ := step.Params["arguments"].(map[string]interface{})
+		var args map[string]interface{}
+		switch v := step.Params["arguments"].(type) {
+		case map[string]interface{}:
+			args = v
+		case string:
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				_ = json.Unmarshal([]byte(trimmed), &args)
+			}
+		}
+		if args == nil {
+			args = map[string]interface{}{}
+		}
 		if serverRef == "" || toolName == "" {
 			return "", fmt.Errorf("missing server_id or tool_name parameter")
 		}

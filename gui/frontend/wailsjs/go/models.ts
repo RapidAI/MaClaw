@@ -203,6 +203,8 @@
 	    llm_token_usage: Record<string, any>;
 	    onboarding_done: boolean;
 	    vector_search_enabled: boolean;
+	    default_tool: string;
+	    default_tool_provider: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -322,6 +324,8 @@
 	        this.llm_token_usage = source["llm_token_usage"];
 	        this.onboarding_done = source["onboarding_done"];
 	        this.vector_search_enabled = source["vector_search_enabled"];
+	        this.default_tool = source["default_tool"];
+	        this.default_tool_provider = source["default_tool_provider"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
