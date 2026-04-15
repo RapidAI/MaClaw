@@ -44,7 +44,8 @@ var CoreToolNames = map[string]bool{
 	"send_and_observe": true, "get_session_output": true, "get_session_events": true,
 	"control_session": true,
 	"bash":            true, "read_file": true, "write_file": true, "edit_file": true, "list_directory": true,
-	"call_mcp_tool": true, "list_skills": true, "run_skill": true,
+	"call_mcp_tool":  true,
+	"manage_skill":   true,
 	"screenshot": true,
 	"memory":     true,
 	"web_fetch":  true,
@@ -199,6 +200,8 @@ var BuiltinToolNames = map[string]bool{
 	"send_input":        true,
 	"interrupt_session": true, "kill_session": true,
 	"list_mcp_tools":   true,
+	"manage_skill":     true,
+	"list_skills": true, "run_skill": true, "get_skill_run": true,
 	"search_skill_hub": true, "install_skill_hub": true,
 	"parallel_execute": true, "recommend_tool": true, "craft_tool": true,
 	"open":            true,
@@ -712,9 +715,9 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			}
 		}
 
-		// Skill match bonus: only applies to run_skill tool.
+		// Skill match bonus: only applies to manage_skill tool.
 		var skillBonus float64
-		if r.skillProvider != nil && name == "run_skill" {
+		if r.skillProvider != nil && name == "manage_skill" {
 			skillBonus = skillScore
 		}
 
@@ -803,10 +806,10 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	result := make([]map[string]interface{}, len(core), MaxToolBudget+2)
 	copy(result, core)
 
-	// Enhance run_skill description with matched skill names.
+	// Enhance manage_skill description with matched skill names.
 	if len(matchedSkills) > 0 && skillScore > 0.3 {
 		for i, t := range result {
-			if ExtractToolName(t) == "run_skill" {
+			if ExtractToolName(t) == "manage_skill" {
 				result[i] = enrichRunSkillDescription(t, matchedSkills)
 				break
 			}

@@ -96,7 +96,9 @@ func TestProperty2_ClassificationCorrectness(t *testing.T) {
 		t.Errorf("Property 2a (small talk) failed: %v", err)
 	}
 
-	// 2b: simple directive prefixes → simple_directive
+	// 2b: In the new architecture, ALL non-small-talk messages go to LLM
+	// (FilterNeedsUnderstanding). Simple directives are no longer classified
+	// at the QuickFilter level — the LLM decides.
 	directiveSamples := []string{
 		"翻译这段话", "帮我翻译一下", "总结这篇文章", "格式化代码",
 		"帮我搜一下", "计算123+456",
@@ -105,10 +107,10 @@ func TestProperty2_ClassificationCorrectness(t *testing.T) {
 		i := int(idx) % len(directiveSamples)
 		msg := directiveSamples[i]
 		result := qf.Classify("user1", msg)
-		return result == FilterSimpleDirective
+		return result == FilterNeedsUnderstanding
 	}
 	if err := quick.Check(f2, quickConfig()); err != nil {
-		t.Errorf("Property 2b (simple directive) failed: %v", err)
+		t.Errorf("Property 2b (non-small-talk → LLM) failed: %v", err)
 	}
 
 	// 2c: complex task (verb + target + constraint) → needs_understanding

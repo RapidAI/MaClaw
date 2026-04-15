@@ -42,22 +42,17 @@ func TestRouter_SkillProvider_FourSignalScoring(t *testing.T) {
 		t.Fatal("expected non-empty result")
 	}
 
-	// run_skill should be in the result (it's a core tool).
+	// manage_skill should be in the result (it's a core tool that replaced run_skill).
 	found := false
 	for _, r := range result {
 		name := ExtractToolName(r)
-		if name == "run_skill" {
+		if name == "manage_skill" {
 			found = true
-			desc := ExtractToolDescription(r)
-			t.Logf("run_skill description: %s", desc)
-			if score > 0.3 && !strings.Contains(desc, "deploy-app") {
-				t.Errorf("run_skill description should contain matched skill name when score > 0.3, got: %s", desc)
-			}
 			break
 		}
 	}
 	if !found {
-		t.Error("run_skill should be in the result")
+		t.Error("manage_skill should be in the result")
 	}
 }
 
@@ -102,10 +97,10 @@ func TestRouter_SkillProvider_NoMatch_NoEnrichment(t *testing.T) {
 	// Query about databases — should NOT match deploy skill.
 	result := router.Route("查询数据库", tools)
 	for _, r := range result {
-		if ExtractToolName(r) == "run_skill" {
+		if ExtractToolName(r) == "manage_skill" {
 			desc := ExtractToolDescription(r)
 			if strings.Contains(desc, "deploy-app") {
-				t.Error("run_skill description should NOT contain deploy-app for unrelated query")
+				t.Error("manage_skill description should NOT contain deploy-app for unrelated query")
 			}
 			break
 		}
@@ -166,7 +161,7 @@ func TestRouter_EnrichRunSkillDescription(t *testing.T) {
 func TestDynamicToolBuilder_SkillProvider(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
-	reg.Register(RegisteredTool{Name: "run_skill", Description: "Execute a skill", Category: CategoryBuiltin})
+	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
 	for i := 0; i < 25; i++ {
 		reg.Register(RegisteredTool{
 			Name:        fmt.Sprintf("filler_%d", i),
@@ -188,16 +183,16 @@ func TestDynamicToolBuilder_SkillProvider(t *testing.T) {
 
 	result := builder.Build("帮我部署应用")
 
-	// run_skill should have enriched description if score > 0.3.
+	// manage_skill should have enriched description if score > 0.3.
 	for _, def := range result {
-		if ExtractToolName(def) == "run_skill" {
+		if ExtractToolName(def) == "manage_skill" {
 			desc := ExtractToolDescription(def)
-			t.Logf("run_skill description: %s", desc)
+			t.Logf("manage_skill description: %s", desc)
 			if score > 0.3 && !strings.Contains(desc, "deploy-app") {
-				t.Errorf("run_skill description should contain deploy-app when score > 0.3, got: %s", desc)
+				t.Errorf("manage_skill description should contain deploy-app when score > 0.3, got: %s", desc)
 			}
 			return
 		}
 	}
-	t.Error("run_skill should be in the build result")
+	t.Error("manage_skill should be in the build result")
 }

@@ -65,17 +65,24 @@ func (s *SkillStore) Search(query string, tags []string, page int) SkillSearchRe
 }
 
 func (s *SkillStore) ListAll(page int) SkillSearchResult {
+	return s.ListAllPaged(page, pageSize)
+}
+
+func (s *SkillStore) ListAllPaged(page, perPage int) SkillSearchResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if page < 1 {
 		page = 1
 	}
+	if perPage < 1 || perPage > 200 {
+		perPage = pageSize
+	}
 	total := len(s.index)
-	start := (page - 1) * pageSize
+	start := (page - 1) * perPage
 	if start >= total {
 		return SkillSearchResult{Skills: []HubSkillMeta{}, Total: total, Page: page}
 	}
-	end := start + pageSize
+	end := start + perPage
 	if end > total {
 		end = total
 	}

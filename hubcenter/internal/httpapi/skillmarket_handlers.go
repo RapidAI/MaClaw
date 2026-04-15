@@ -695,8 +695,9 @@ func (h *SkillMarketHandlers) AdminRejectSkill(w http.ResponseWriter, r *http.Re
 // UpdateTrialConfig handles PUT /api/v1/admin/config/trial.
 func (h *SkillMarketHandlers) UpdateTrialConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TrialDuration       *int `json:"trial_duration_days,omitempty"`
+		TrialDuration        *int `json:"trial_duration_days,omitempty"`
 		AutoPublishThreshold *int `json:"auto_publish_threshold,omitempty"`
+		MaxUploadsPerHour    *int `json:"max_uploads_per_hour,omitempty"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
 		smError(w, http.StatusBadRequest, "invalid JSON")
@@ -711,6 +712,12 @@ func (h *SkillMarketHandlers) UpdateTrialConfig(w http.ResponseWriter, r *http.R
 	}
 	if req.AutoPublishThreshold != nil {
 		if err := h.store.SetConfig(ctx, "auto_publish_threshold", strconv.Itoa(*req.AutoPublishThreshold)); err != nil {
+			smError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if req.MaxUploadsPerHour != nil {
+		if err := h.store.SetConfig(ctx, "max_skill_uploads_per_hour", strconv.Itoa(*req.MaxUploadsPerHour)); err != nil {
 			smError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

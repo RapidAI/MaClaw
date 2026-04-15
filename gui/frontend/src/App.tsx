@@ -32,7 +32,6 @@ import { EmbeddingConfigPanel } from './components/remote/EmbeddingConfigPanel';
 import { ASRConfigPanel } from './components/remote/ASRConfigPanel';
 import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
-import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
 import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
 import { AgentNetPanel } from './components/remote/AgentNetPanel';
 import { AgentNetTabContainer } from './components/remote/AgentNetTabContainer';
@@ -1743,7 +1742,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'search' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'agentnet' | 'security' | 'im' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'search' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'security' | 'im' | 'system'>('general');
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
@@ -3558,11 +3557,6 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '向量搜索与嵌入模型管理' : lang === 'zh-Hant' ? '向量搜索與嵌入模型管理' : 'Vector search and embedding model management',
         },
         {
-            id: 'scheduler' as const,
-            label: lang === 'zh-Hans' ? '计划任务' : lang === 'zh-Hant' ? '計劃任務' : 'Scheduler',
-            desc: lang === 'zh-Hans' ? '定时让 MaClaw 自动执行任务' : lang === 'zh-Hant' ? '定時讓 MaClaw 自動執行任務' : 'Schedule MaClaw to run tasks automatically',
-        },
-        {
             id: 'agentnet' as const,
             label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet',
             desc: lang === 'zh-Hans' ? 'AgentNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'AgentNet P2P 去中心化 Agent 網路' : 'AgentNet decentralized P2P agent network',
@@ -4180,6 +4174,7 @@ ${instruction}`;
                                     translate={translate}
                                     formatText={formatText}
                                     localizeText={localizeText}
+                                    lang={lang}
                                 />
 
                             </div>
@@ -4687,10 +4682,6 @@ ${instruction}`;
                             <div className="settings-panel" style={{ display: settingsTab === 'embedding' ? 'block' : 'none' }}>
                                 <EmbeddingConfigPanel lang={lang} />
                                 <ASRConfigPanel lang={lang} />
-                            </div>
-
-                            <div className="settings-panel" style={{ display: settingsTab === 'scheduler' ? 'block' : 'none' }}>
-                                <ScheduledTasksPanel lang={lang} />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'agentnet' ? 'block' : 'none' }}>

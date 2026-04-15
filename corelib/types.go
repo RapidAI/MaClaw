@@ -151,7 +151,7 @@ type NLSkillEntry struct {
 	Steps         []NLSkillStep `json:"steps"`
 	Status        string        `json:"status"` // "active", "disabled"
 	CreatedAt     string        `json:"created_at"`
-	Source        string        `json:"source"` // "manual" | "learned" | "hub" | "crafted" | "file" | "zip_import"
+	Source        string        `json:"source"` // "manual" | "learned" | "hub" | "crafted" | "file" | "zip_import" | "github" | "clawhub" | "auto_hub" | "auto_github" | "auto_clawhub"
 	SourceProject string        `json:"source_project"`
 	HubSkillID    string        `json:"hub_skill_id,omitempty"`
 	HubVersion    string        `json:"hub_version,omitempty"`
@@ -197,6 +197,22 @@ func (e *NLSkillEntry) MatchesName(query string) bool {
 		}
 	}
 	return false
+}
+
+// learnedSources is the set of Source values that classify a skill as
+// "learned" (autonomously acquired by Maclaw).
+var learnedSources = map[string]bool{
+	"learned":      true,
+	"crafted":      true,
+	"auto_hub":     true,
+	"auto_github":  true,
+	"auto_clawhub": true,
+}
+
+// IsLearnedSource returns true if the given source value indicates a skill
+// that was autonomously acquired by Maclaw (learned, crafted, or auto-installed).
+func IsLearnedSource(source string) bool {
+	return learnedSources[source]
 }
 
 // MaclawLLMProvider 描述一个 MaClaw LLM 提供商配置。

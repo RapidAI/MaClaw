@@ -602,6 +602,40 @@ func stringVal(m map[string]interface{}, key string) string {
 	return v
 }
 
+// toolManageSkill dispatches the merged manage_skill tool to individual handlers.
+func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgress ProgressCallback) string {
+	action := stringVal(args, "action")
+	switch action {
+	case "list":
+		return h.toolListSkills()
+	case "search":
+		return h.toolSearchSkillHub(args)
+	case "install":
+		return h.toolInstallSkillHub(args)
+	case "run":
+		return h.toolRunSkill(args, onProgress)
+	case "status":
+		return h.toolGetSkillRun(args)
+	case "upload":
+		return h.toolUploadSkill(args)
+	default:
+		return fmt.Sprintf("未知 manage_skill action: %s（支持: list/search/install/run/status/upload）", action)
+	}
+}
+
+// toolUploadSkill uploads a local skill to SkillMarket.
+func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
+	name := stringVal(args, "name")
+	if name == "" {
+		return "缺少 name 参数（要上传的 Skill 名称）"
+	}
+	submissionID, err := h.app.UploadNLSkillToMarket(name)
+	if err != nil {
+		return fmt.Sprintf("上传失败: %s", err.Error())
+	}
+	return fmt.Sprintf("✅ Skill「%s」已上传到 SkillMarket，提交 ID: %s", name, submissionID)
+}
+
 func (h *IMMessageHandler) toolParallelExecute(args map[string]interface{}) string {
 	h.app.ensureOrchestrator()
 	orch := h.app.orchestrator

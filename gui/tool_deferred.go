@@ -47,4 +47,10 @@ var DeferredToolNames = []string{
 	// for coding workflow phase confirmations (popping button UI instead of
 	// plain text). Available via discover_tool if genuinely needed.
 	"ask_user",
+	// Skill (legacy names, kept for backward compat dispatch only)
+	"list_skills",
+	"search_skill_hub",
+	"install_skill_hub",
+	"run_skill",
+	"get_skill_run",
 }

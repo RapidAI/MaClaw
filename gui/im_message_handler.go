@@ -561,6 +561,18 @@ type pendingAskUserState struct {
 	Timestamp time.Time
 }
 
+// pendingCapabilityGapResult stores the outcome of an async capability gap
+// resolution that ran in the background after the response was returned.
+// If a skill was found and installed, the result is injected into the next
+// conversation turn's system prompt so the LLM knows a new capability is
+// available.
+type pendingCapabilityGapResult struct {
+	SkillName string
+	Result    string // install/execute result text
+	Success   bool   // true if skill was installed and executed successfully
+	Timestamp time.Time
+}
+
 func hasIncompleteTaskMarker(entries []conversationEntry) bool {
 	for i := len(entries) - 1; i >= 0; i-- {
 		text, ok := entries[i].Content.(string)
@@ -961,7 +973,9 @@ func buildConfirmationResponse(item *pendingConfirmation) *IMAgentResponse {
 	if item == nil {
 		return &IMAgentResponse{Text: "请确认后再继续。"}
 	}
-	text := item.Summary + "\n\n请先确认我的理解是否正确。确认后我再开始执行；如果有偏差，直接回复要修改的目录、目标或前提。"
+	// Summary is already shown inside the Confirmation card — only keep the
+	// action prompt here to avoid repeating the same content twice.
+	text := "请先确认我的理解是否正确。确认后我再开始执行；如果有偏差，直接回复要修改的目录、目标或前提。"
 	return &IMAgentResponse{
 		Text:         text,
 		Confirmation: buildConfirmationPayload(item),
@@ -1666,12 +1680,26 @@ type IMMessageHandler struct {
 	// instead of rebuilding a generic one. Keyed by userID.
 	stashedPhasePrompt sync.Map
 
+	// workflowAgentLoopMarker is set by handleActiveWorkflow when the
+	// workflow engine returns RunAgentLoop=true. Consumed (LoadAndDelete)
+	// by handleIMMessageWithLoop to enable doc capture only when the agent
+	// loop is running on behalf of the workflow — not for unrelated messages
+	// that happen to coexist with a stale active workflow.
+	workflowAgentLoopMarker sync.Map
+
 	// pendingAskUser tracks ask_user questions that are waiting for user
 	// responses. When the agent loop returns early due to ask_user, the
 	// question is stored here so the next user message can be identified
 	// as a response (not a new request) and the context is preserved.
 	// Keyed by userID, value is *pendingAskUserState.
 	pendingAskUser sync.Map
+
+	// pendingCapabilityGap stores the result of an async capability gap
+	// resolution (skill search + install) that completed after the response
+	// was already returned to the user. The result is injected into the
+	// system prompt of the next conversation turn.
+	// Keyed by userID, value is *pendingCapabilityGapResult.
+	pendingCapabilityGap sync.Map
 
 	// taskOrchestrator manages per-task execution during the coding
 	// workflow's Execution Phase. When active, it injects per-task system
@@ -2059,7 +2087,8 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 				return fmt.Sprintf("GitHub Skill 导入失败: %v", err)
 			}
 		}
-		return h.registerAndExecuteSkill(ctx, imported, best.Name, "github", sendStatus)
+		imported.Source = "auto_github"
+		return h.registerAndExecuteSkill(ctx, imported, best.Name, "auto_github", sendStatus)
 	}
 
 	// SkillMarket or ClawHub result → download and register locally.
@@ -2072,7 +2101,8 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 		if dlErr != nil {
 			return fmt.Sprintf("🔎 找到 ClawHub Skill「%s」但下载失败: %v", best.Name, dlErr)
 		}
-		return h.registerAndExecuteSkill(ctx, skill, best.Name, "clawhub", sendStatus)
+		skill.Source = "auto_clawhub"
+		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", sendStatus)
 	}
 
 	// SkillMarket result → download via HubCenter API.
@@ -2087,7 +2117,8 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 		return fmt.Sprintf("🔎 找到 Skill「%s」: %s\n下载失败: %v\n请在设置面板的 Hub 市场中手动安装。",
 			best.Name, best.Description, dlErr)
 	}
-	return h.registerAndExecuteSkill(ctx, skill, best.Name, best.Status, sendStatus)
+	skill.Source = "auto_hub"
+	return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_hub", sendStatus)
 }
 
 // downloadClawHubSkill fetches a skill from the ClawHub mirror and converts
@@ -2808,6 +2839,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
 		h.memory.clear(msg.UserID)
 		h.pendingAskUser.Delete(msg.UserID)
+		h.pendingCapabilityGap.Delete(msg.UserID)
 		if h.confirmationStore != nil {
 			h.confirmationStore.clear(msg.UserID)
 		}
@@ -2933,6 +2965,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// --- Workflow engine interception ---
 	// Route messages through the workflow engine before the main agent loop.
 	// This handles active workflows, intent understanding, and complex task detection.
+	//
+	// workflowAgentLoop tracks whether the workflow engine explicitly routed
+	// this message to the agent loop (RunAgentLoop=true). When true, the
+	// agent loop is running ON BEHALF of the workflow and its output should
+	// be captured as phase output. When false, the agent loop is running for
+	// a normal (non-workflow) message and doc capture must be skipped — even
+	// if a stale workflow happens to be active in memory.
+	workflowAgentLoop := false
 	if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground {
 		if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
 			// Consume any pending ask_user state so it doesn't leak into
@@ -2941,11 +2981,18 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			h.pendingAskUser.Delete(msg.UserID)
 			return wfResp
 		}
+		// handleWorkflowInterception returned nil — either the message is not
+		// a workflow message, or the workflow engine set RunAgentLoop=true.
+		// Check the marker set by handleActiveWorkflow.
+		if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
+			workflowAgentLoop = true
+		}
 	}
 
 	if decision.StartNewTask {
 		h.memory.clearConversationAndDismissSlot(msg.UserID)
 		h.pendingAskUser.Delete(msg.UserID)
+		h.pendingCapabilityGap.Delete(msg.UserID)
 		EntriesBeforeClear = nil
 		unfinishedSlot = nil
 		freshTask = true
@@ -2957,6 +3004,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if !msg.IsBackground && shouldAutoClearIncompleteTaskContext(trimmed, EntriesBeforeClear) {
 			h.memory.clearConversationAndDismissSlot(msg.UserID)
 			h.pendingAskUser.Delete(msg.UserID)
+			h.pendingCapabilityGap.Delete(msg.UserID)
 			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
 			EntriesBeforeClear = nil
 			unfinishedSlot = nil
@@ -2981,6 +3029,27 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 	}
 
+	// --- Pending capability gap result injection ---
+	// If a background skill search/install completed since the last turn,
+	// inject the result into the system prompt so the LLM knows about the
+	// newly available capability.
+	var capabilityGapContext string
+	if raw, ok := h.pendingCapabilityGap.LoadAndDelete(msg.UserID); ok {
+		pending := raw.(*pendingCapabilityGapResult)
+		// Expire after 10 minutes to avoid stale state.
+		if time.Since(pending.Timestamp) < 10*time.Minute {
+			if pending.Success {
+				capabilityGapContext = fmt.Sprintf(
+					"[系统通知] 上一轮对话后，系统在后台自动搜索并安装了 Skill「%s」。你现在可以使用这个新能力来帮助用户。安装结果：%s",
+					pending.SkillName, pending.Result,
+				)
+				log.Printf("[CapabilityGap] injecting async skill install result for user %s: skill=%s", msg.UserID, pending.SkillName)
+			} else {
+				log.Printf("[CapabilityGap] discarding failed async skill install for user %s: skill=%s result=%s", msg.UserID, pending.SkillName, truncateRunes(pending.Result, 100))
+			}
+		}
+	}
+
 	// --- Automatic topic switch detection ---
 	// For interactive (non-background) messages, detect if the user has
 	// switched topics and auto-clear stale conversation context.
@@ -2999,6 +3068,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			}
 			h.memory.clear(msg.UserID)
 			h.pendingAskUser.Delete(msg.UserID)
+			h.pendingCapabilityGap.Delete(msg.UserID)
 			log.Printf("[TopicDetector] auto-cleared context for user %s", msg.UserID)
 		}
 	}
@@ -3092,6 +3162,21 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			msg.Text = confirmationApprovedText(pending)
 			trimmed = strings.TrimSpace(msg.Text)
 			confirmedResume = true
+			// Re-route through workflow engine with the restored original text.
+			// The first workflow interception (above) ran with the confirmation
+			// message ("确认并开始"), not the original task text. Now that we've
+			// restored the original text, give the workflow engine another chance
+			// to classify and intercept it.
+			if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground {
+				if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
+					h.pendingAskUser.Delete(msg.UserID)
+					return wfResp
+				}
+				// Check marker from the re-routed workflow interception.
+				if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
+					workflowAgentLoop = true
+				}
+			}
 		case !msg.IsBackground:
 			updated := applyConfirmationRevision(pending, trimmed)
 			h.confirmationStore.set(updated)
@@ -3143,21 +3228,34 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 	systemPrompt += h.buildResumeTraceContext(msg.UserID, msg.Text)
 
-	// Inject workflow phase prompt if user has an active workflow.
+	// Inject workflow phase prompt only when the agent loop is running on
+	// behalf of the workflow engine (RunAgentLoop=true). This prevents stale
+	// workflow prompts from leaking into unrelated messages (e.g., weather
+	// queries) when a previous workflow wasn't properly cleaned up.
 	// Prefer the stashed prompt from HandleInput (includes modify context)
 	// over the generic BuildPhasePrompt.
-	if h.app != nil && h.app.workflowEngine != nil {
+	if workflowAgentLoop && h.app != nil && h.app.workflowEngine != nil {
 		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(msg.UserID); ok {
 			systemPrompt += "\n" + stashed.(string)
 		} else if phasePrompt := h.app.workflowEngine.BuildPhasePrompt(msg.UserID); phasePrompt != "" {
 			systemPrompt += "\n" + phasePrompt
 		}
+	} else {
+		// Not a workflow agent loop — clean up any stashed prompt to prevent
+		// it from leaking into a future message.
+		h.stashedPhasePrompt.Delete(msg.UserID)
 	}
 
 	// Inject ask_user response context so the LLM knows the user is
 	// answering a previous confirmation question, not starting a new task.
 	if askUserContext != "" {
 		systemPrompt += "\n\n" + askUserContext
+	}
+
+	// Inject async capability gap result so the LLM knows about newly
+	// installed skills from the background search.
+	if capabilityGapContext != "" {
+		systemPrompt += "\n\n" + capabilityGapContext
 	}
 
 	// Desktop AI assistant panel: override PDF instructions with Markdown preview.
@@ -3198,11 +3296,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	// --- Workflow doc capture: store phase output and emit to frontend ---
-	// Only capture substantive output (>200 chars). Short replies, confirmation
-	// questions, and intent understanding responses are filtered out.
-	// The actual phase detection is done by detectPhaseFromContent inside
-	// EmitDocUpdate, which will correct any wrong phaseID.
-	if h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && len(resp.Text) > 200 {
+	// Only capture when the agent loop was explicitly triggered by the workflow
+	// engine (RunAgentLoop=true). This prevents unrelated messages (weather
+	// queries, Q&A, etc.) from being captured as phase output when a stale
+	// workflow happens to be active in memory.
+	if workflowAgentLoop && h.app != nil && h.app.workflowEngine != nil && !msg.IsBackground && len(resp.Text) > 200 {
 		if phaseID := h.app.workflowEngine.SavePhaseOutput(msg.UserID, resp.Text); phaseID != "" {
 			if cb := h.app.workflowEngine.GetCallbacks(); cb != nil {
 				_ = cb.EmitDocUpdate(msg.UserID, phaseID, resp.Text)
@@ -3242,10 +3340,12 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 	}
 	h.memory.clear(userID)
 	h.pendingAskUser.Delete(userID)
-	// Reset workflow working directory.
+	h.pendingCapabilityGap.Delete(userID)
+	// Reset workflow working directory and suggest_maximize dedup flag.
 	if h.app != nil && h.app.workflowEngine != nil {
 		if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
 			adapter.ResetWorkingDir()
+			adapter.ResetSuggestMaximize(userID)
 		}
 	}
 
@@ -3940,11 +4040,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		ctx.ID, ctx.Kind, maxIter, effectiveMax, minIterations, maxAgentIterationsCap, chatFinalizeGrace, userID, truncateRunes(userText, 80))
 
 	// --- Coding Tool Gate: pre-compute gate decision before iteration loop ---
-	var ic *tool.IntentClassifier
-	if h.app != nil && h.app.toolRouter != nil {
-		ic = h.app.toolRouter.IntentClassifier()
+	var gic *GateIntentClassifier
+	if h.app != nil {
+		gic = h.app.gateIntentClassifier
 	}
-	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, ic)
+	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, gic, h.lastUserID)
 
 	// --- Coding Tool Gate: filter blocked tool DEFINITIONS from the tool list ---
 	// When the gate is active, remove browser/coding tool definitions from the
@@ -3970,17 +4070,31 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// steering rules (coding-workflow.md) and emit frontend events that
 	// would normally come from the WorkflowEngine path. Only activate when:
 	// 1. Not a background task (ctx.Kind != LoopKindBackground)
-	// 2. The message or conversation context indicates a coding workflow
+	// 2. The GateIntentClassifier confirms coding intent, or conversation
+	//    history has coding context (for follow-up messages like "确认")
 	// 3. No active workflow engine workflow exists for this user
+	//
+	// IMPORTANT: We rely on gateConfig (from the three-layer GateIntentClassifier)
+	// as the authoritative signal for whether the CURRENT message is a coding
+	// task. The old isCodingTask() keyword list was redundant and less accurate.
+	// conversationHasCodingContext() is only used for pre-activation (preparing
+	// the detector to intercept coding tools), NOT for emitting the fullscreen
+	// suggestion banner. The banner is only emitted when gateConfig.active=true,
+	// meaning the classifier is confident this is a new_project coding task.
+	// This prevents non-coding messages (skill invocations, weather queries, etc.)
+	// from triggering the "编程" banner just because the conversation history
+	// contains coding context.
 	var steeringDetector *SteeringWorkflowDetector
 	if ctx.Kind != LoopKindBackground {
 		detector := NewSteeringWorkflowDetector(userID)
-		// Activate the detector when:
-		// a) The message itself is a coding task (keyword match), OR
-		// b) The coding tool gate is active (intent already classified as coding), OR
-		// c) Conversation history has coding context (user is in a follow-up
-		//    round like "确认" after a coding task was discussed).
-		shouldActivate := detector.isCodingTask(userText) || gateConfig.active || h.conversationHasCodingContext()
+		// Two-tier activation:
+		// Tier 1 (strong): gateConfig.active — classifier confirmed new_project
+		//   → activate detector + emit fullscreen banner immediately
+		// Tier 2 (weak): conversation history has coding context
+		//   → activate detector (prepare to intercept coding tools) but
+		//     do NOT emit fullscreen banner yet; defer to first actual
+		//     coding tool interception
+		shouldActivate := gateConfig.active || h.conversationHasCodingContext()
 		if shouldActivate {
 			hasEngineWorkflow := false
 			if h.app != nil && h.app.workflowEngine != nil {
@@ -3988,14 +4102,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 			if !hasEngineWorkflow {
 				steeringDetector = detector
-				log.Printf("[SteeringWorkflow] detector activated for user=%s task=%q", userID, truncateRunes(userText, 60))
-				// Emit suggest_maximize immediately when a coding task is
-				// detected, so the user sees the "全屏" suggestion banner
-				// before the LLM starts generating the requirements doc.
-				// Previously this was deferred to the first tool call, but
-				// in desktop mode the LLM may output text directly without
-				// calling any tools.
-				if platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
+				log.Printf("[SteeringWorkflow] detector activated for user=%s task=%q gateActive=%v", userID, truncateRunes(userText, 60), gateConfig.active)
+				// Only emit suggest_maximize immediately when the classifier
+				// is confident this is a new coding project (gateConfig.active).
+				// When activation is only from conversation history context,
+				// defer the banner to the first actual coding tool interception
+				// (handled in the iteration loop below).
+				if gateConfig.active && platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
 					if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
 						// Auto-set working directory to the current project path.
 						// The frontend will show a banner allowing the user to
@@ -4008,7 +4121,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						}
 						adapter.EmitSuggestMaximize(userID, "coding")
 						steeringDetector.suggestMaximizeEmitted = true
-						log.Printf("[SteeringWorkflow] emitted early suggest_maximize for desktop user=%s", userID)
+						log.Printf("[SteeringWorkflow] emitted early suggest_maximize for desktop user=%s (classifier confirmed new_project)", userID)
 					}
 				}
 			}
@@ -4592,15 +4705,28 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						postStreamLastReturnPrepAt = time.Now()
 					}
 					// Desktop: intercept text output for the doc preview panel.
-					if steeringDetector != nil && platform == "desktop" {
-						steeringDetector.interceptTextOutput(trimmedForGate, func(phaseID, content string) {
-							if h.app != nil && h.app.workflowEngine != nil {
-								if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+					if platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
+						if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+							emitted := false
+							// Path 1: steering detector (coding workflow without engine)
+							if steeringDetector != nil {
+								steeringDetector.interceptTextOutput(trimmedForGate, func(phaseID, content string) {
 									_ = adapter.EmitDocUpdate(userID, phaseID, content)
 									log.Printf("[SteeringWorkflow] emitted doc_update from text output for user=%s phase=%s len=%d", userID, phaseID, len(content))
+									emitted = true
+								})
+							}
+							// Path 2: WorkflowEngine active — use the engine's current phase directly.
+							// This covers all non-coding workflow templates (product_design, innovation, etc.)
+							// where the steering detector is not activated.
+							if !emitted && needsConfirmFromEngine && len(trimmedForGate) >= 200 {
+								if ws := h.app.workflowEngine.GetActiveWorkflow(userID); ws != nil {
+									_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedForGate)
+									adapter.EmitSuggestMaximize(userID, string(ws.Type))
+									log.Printf("[WorkflowEngine] emitted doc_update for user=%s phase=%s type=%s len=%d", userID, ws.CurrentPhase, ws.Type, len(trimmedForGate))
 								}
 							}
-						})
+						}
 					}
 					attachLLMTelemetry(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
@@ -4684,37 +4810,58 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				enterRecoverPhase(&phase, "no_tool_stall", buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
 				continue
 			}
-			// Check for capability gap before returning.
+			// Check for capability gap in the background (async).
 			// Uses SkillSearcher (SkillMarket → ClawHub mirror → GitHub) for
 			// unified search order, then installAndExecuteSkill for the install
 			// path — no duplicate searches.
-			if h.capabilityGapDetector != nil && h.capabilityGapDetector.Detect(msgContent) {
-				capabilityGapStartedAt := time.Now()
-				goCtx, goCancel := ctx.Context()
-				smClient := NewSkillMarketClient(h.app)
-				searcher := NewSkillSearcher(smClient)
-				best, searchErr := searcher.SearchAndInstall(goCtx, userText)
-				if searchErr == nil && best != nil {
-					log.Printf("[skill-auto] found skill: %s (%s)", best.Name, best.Status)
-					installResult := h.installAndExecuteSkill(goCtx, best, userText,
-						func(status string) {
-							log.Printf("[skill-auto] %s", status)
-						})
-					goCancel()
-					if strings.HasPrefix(installResult, "✅") {
-						resp := &IMAgentResponse{Text: stripThinkingTags(installResult)}
-						if !streamDoneAt.IsZero() {
-							postStreamLastReturnPrepAt = time.Now()
-						}
-						attachLLMTelemetry(resp)
-						resp.CapabilityGapNanos = time.Since(capabilityGapStartedAt).Nanoseconds()
-						h.saveConversationHistoryTimed(userID, history, resp)
-						return resp
+			//
+			// IMPORTANT: This runs as a goroutine AFTER the response is returned
+			// to the user, so the input box is unlocked immediately. If a skill
+			// is found and installed, the result is stored in pendingCapabilityGap
+			// and injected into the next conversation turn's system prompt.
+			//
+			// Skip when the LLM has been actively working (many tool-call
+			// iterations) or the response is long — these are summaries/reports,
+			// not "I can't do this" signals.
+			skipCapabilityGap := iteration >= 3 || len(trimmedVisibleContent) > 500
+			if !skipCapabilityGap && h.capabilityGapDetector != nil && h.capabilityGapDetector.Detect(msgContent) {
+				// Capture values for the goroutine closure.
+				capturedUserText := userText
+				capturedUserID := userID
+				go func() {
+					goCtx, goCancel := context.WithTimeout(context.Background(), 60*time.Second)
+					defer goCancel()
+					smClient := NewSkillMarketClient(h.app)
+					searcher := NewSkillSearcher(smClient)
+					best, searchErr := searcher.SearchAndInstall(goCtx, capturedUserText)
+					if searchErr != nil || best == nil {
+						return
 					}
-					log.Printf("[skill-auto] skill install/execute finished without user-visible adoption: %s", installResult)
-				} else {
-					goCancel()
-				}
+					log.Printf("[skill-auto-async] found skill: %s (%s)", best.Name, best.Status)
+					installResult := h.installAndExecuteSkill(goCtx, best, capturedUserText,
+						func(status string) {
+							log.Printf("[skill-auto-async] %s", status)
+						})
+					success := strings.HasPrefix(installResult, "✅")
+					h.pendingCapabilityGap.Store(capturedUserID, &pendingCapabilityGapResult{
+						SkillName: best.Name,
+						Result:    installResult,
+						Success:   success,
+						Timestamp: time.Now(),
+					})
+					if success {
+						log.Printf("[skill-auto-async] skill %q installed successfully, result pending for next turn", best.Name)
+						// Notify frontend so user sees a toast notification.
+						if h.app != nil && h.app.ctx != nil {
+							h.app.emitEvent("skill-auto-installed", map[string]string{
+								"name":   best.Name,
+								"result": installResult,
+							})
+						}
+					} else {
+						log.Printf("[skill-auto-async] skill install/execute finished without success: %s", installResult)
+					}
+				}()
 			}
 			phase.Stage = agentStageFinalize
 			finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
@@ -4734,12 +4881,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		phase.ConsecutiveNoTool = 0
 
 		// --- Steering Workflow: emit suggest_maximize on first tool call ---
-		if steeringDetector != nil && !steeringDetector.suggestMaximizeEmitted {
+		// Only emit when the gate actually intercepted coding tools in this
+		// iteration. If the detector was activated only from conversation
+		// history context (Tier 2), we should NOT emit the banner just
+		// because the LLM called a non-coding tool (e.g. run_skill for
+		// weather). The banner should only appear when the LLM genuinely
+		// attempts coding work.
+		if steeringDetector != nil && !steeringDetector.suggestMaximizeEmitted && gateConfig.active {
 			steeringDetector.suggestMaximizeEmitted = true
 			if h.app != nil && h.app.workflowEngine != nil {
 				if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
 					adapter.EmitSuggestMaximize(userID, "coding")
-					log.Printf("[SteeringWorkflow] emitted suggest_maximize for user=%s", userID)
+					log.Printf("[SteeringWorkflow] emitted suggest_maximize for user=%s (gate active, first tool call)", userID)
 				}
 			}
 		}
@@ -5196,29 +5349,42 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		// --- NeedsConfirm gate (tool branch) ---
-		// When the coding tool gate is active and the LLM has already produced
-		// substantive text (the requirements/design doc), force-return after
-		// executing delivery tools (open, memory, task, etc.) instead of
-		// continuing to the next iteration. Without this, the loop keeps
-		// spinning (calling more tools, showing progress bar) when it should
-		// be waiting for user confirmation.
+		// When the current workflow phase requires user confirmation and the
+		// LLM has already produced substantive text (the requirements/design
+		// doc), force-return after executing delivery tools (open, memory,
+		// task, etc.) instead of continuing to the next iteration.
+		needsConfirmToolBranch := false
 		if gateConfig.active && iteration > 0 {
+			needsConfirmToolBranch = true
+		}
+		if !needsConfirmToolBranch && iteration > 0 && h.app != nil && h.app.workflowEngine != nil {
+			needsConfirmToolBranch = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+		}
+		if needsConfirmToolBranch {
 			trimmedAfterTools := strings.TrimSpace(stripThinkingTags(msgContent))
 			if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) {
-				log.Printf("[coding-gate] NeedsConfirm (tool branch): force-returning after tool execution for user confirmation (iteration=%d len=%d)", iteration, len(trimmedAfterTools))
+				log.Printf("[workflow-gate] NeedsConfirm (tool branch): force-returning after tool execution for user confirmation (iteration=%d len=%d)", iteration, len(trimmedAfterTools))
 				phase.Stage = agentStageFinalize
 				finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
 				// Desktop: intercept text output for the doc preview panel.
-				// This emits workflow:doc_update so the right-side preview opens.
-				if steeringDetector != nil && platform == "desktop" {
-					steeringDetector.interceptTextOutput(trimmedAfterTools, func(phaseID, content string) {
-						if h.app != nil && h.app.workflowEngine != nil {
-							if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+				if platform == "desktop" && h.app != nil && h.app.workflowEngine != nil {
+					if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
+						emitted := false
+						if steeringDetector != nil {
+							steeringDetector.interceptTextOutput(trimmedAfterTools, func(phaseID, content string) {
 								_ = adapter.EmitDocUpdate(userID, phaseID, content)
 								log.Printf("[SteeringWorkflow] emitted doc_update from tool-branch gate for user=%s phase=%s len=%d", userID, phaseID, len(content))
+								emitted = true
+							})
+						}
+						if !emitted && len(trimmedAfterTools) >= 200 {
+							if ws := h.app.workflowEngine.GetActiveWorkflow(userID); ws != nil {
+								_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedAfterTools)
+								adapter.EmitSuggestMaximize(userID, string(ws.Type))
+								log.Printf("[WorkflowEngine] emitted doc_update from tool-branch for user=%s phase=%s type=%s len=%d", userID, ws.CurrentPhase, ws.Type, len(trimmedAfterTools))
 							}
 						}
-					})
+					}
 				}
 				attachLLMTelemetry(finalResp)
 				h.saveConversationHistoryTimed(userID, history, finalResp)
@@ -5497,7 +5663,17 @@ func (d *SteeringWorkflowDetector) matchPhaseID(fileName string) string {
 	if lower == "" {
 		return ""
 	}
+	// Check tasks BEFORE design — task documents often reference "技术设计"
+	// in their body, which would cause a false match on the design case.
 	switch {
+	case strings.Contains(lower, "任务拆分") ||
+		strings.Contains(lower, "任务列表") ||
+		strings.Contains(lower, "任务分解") ||
+		strings.Contains(lower, "开发任务") ||
+		strings.Contains(lower, "tasks") ||
+		strings.Contains(lower, "task_breakdown") ||
+		strings.Contains(lower, "task breakdown"):
+		return "tasks"
 	case strings.Contains(lower, "需求文档") ||
 		strings.Contains(lower, "需求分析") ||
 		strings.Contains(lower, "功能需求") ||
@@ -5513,14 +5689,6 @@ func (d *SteeringWorkflowDetector) matchPhaseID(fileName string) string {
 		strings.Contains(lower, "技术方案") ||
 		strings.Contains(lower, "design"):
 		return "design"
-	case strings.Contains(lower, "任务拆分") ||
-		strings.Contains(lower, "任务列表") ||
-		strings.Contains(lower, "任务分解") ||
-		strings.Contains(lower, "开发任务") ||
-		strings.Contains(lower, "tasks") ||
-		strings.Contains(lower, "task_breakdown") ||
-		strings.Contains(lower, "task breakdown"):
-		return "tasks"
 	default:
 		return ""
 	}

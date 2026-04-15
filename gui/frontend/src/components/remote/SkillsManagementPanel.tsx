@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, type CSSProperties } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from "react";
 import { useDialog } from "../CustomDialog";
 import { useToast } from "../Toast";
 import {
@@ -169,9 +169,22 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
     };
 }
 
+const LEARNED_SOURCES = new Set(["learned", "crafted", "auto_hub", "auto_github", "auto_clawhub"]);
+function isLearnedSource(source: string): boolean {
+    return LEARNED_SOURCES.has(source);
+}
+
+function learnedSourceIcon(source: string): string {
+    if (source === "learned") return "📖";
+    if (source === "crafted") return "🔧";
+    if (source.startsWith("auto_")) return "🤖";
+    return "📁";
+}
+
 export function SkillsManagementPanel({ localizeText }: Props) {
     const { showConfirm } = useDialog();
     const { showToast } = useToast();
+    const backdropMouseDownRef = useRef(false);
     const [activeTab, setActiveTab] = useState<"local" | "hub" | "learned" | "extdirs">("local");
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
     const [loading, setLoading] = useState(false);
@@ -187,6 +200,15 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     // Localize backend error messages
     const localizeHubError = useMemo(() => makeLocalizeHubError(localizeText), [localizeText]);
+
+    const learnedSourceTooltip = (source: string): string => {
+        if (source === "learned") return localizeText("Experience learned", "经验学习", "經驗學習");
+        if (source === "crafted") return localizeText("Tool crafted", "工具制作", "工具製作");
+        if (source === "auto_hub") return localizeText("Auto-installed from SkillHub", "自动安装自 SkillHub", "自動安裝自 SkillHub");
+        if (source === "auto_github") return localizeText("Auto-installed from GitHub", "自动安装自 GitHub", "自動安裝自 GitHub");
+        if (source === "auto_clawhub") return localizeText("Auto-installed from ClawHub", "自动安装自 ClawHub", "自動安裝自 ClawHub");
+        return source;
+    };
 
     // Install/update state
     const [installingSkills, setInstallingSkills] = useState<Set<string>>(new Set());
@@ -226,7 +248,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [extDirError, setExtDirError] = useState("");
     const [extDirRemoving, setExtDirRemoving] = useState(false);
 
-    const loadData = useCallback(async () => {
+    const loadData = useCallback(async (): Promise<NLSkillDefinition[]> => {
         setLoading(true);
         setError("");
         try {
@@ -241,15 +263,17 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             setSkills(list);
             // Clean up learned selection: remove names no longer present
             const learnedNames = new Set(
-                list.filter((s: NLSkillDefinition) => s.source === "learned" || s.source === "crafted").map((s: NLSkillDefinition) => s.name)
+                list.filter((s: NLSkillDefinition) => isLearnedSource(s.source ?? "")).map((s: NLSkillDefinition) => s.name)
             );
             setLearnedSelected((prev) => {
                 const next = new Set<string>();
                 prev.forEach((n) => { if (learnedNames.has(n)) next.add(n); });
                 return next.size === prev.size ? prev : next;
             });
+            return list;
         } catch (err) {
             setError(localizeHubError(String(err)));
+            return [];
         } finally {
             setLoading(false);
         }
@@ -501,11 +525,26 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         setShowForm(true);
     };
 
-    const openEditForm = (skill: NLSkillDefinition) => {
-        setEditingSkill(skill);
-        setFormData({ ...skill });
-        setTriggerInput("");
-        setStepsYaml(stepsToYaml(skill.steps));
+    const openEditForm = async (skill: NLSkillDefinition) => {
+        // Re-fetch skills from backend to pick up any on-disk changes
+        setBusy(true);
+        try {
+            const list = await loadData();
+            const fresh = list.find((s) => s.name === skill.name);
+            const target = fresh || skill;
+            setEditingSkill(target);
+            setFormData({ ...target });
+            setTriggerInput("");
+            setStepsYaml(stepsToYaml(target.steps));
+        } catch {
+            // Fallback to stale state if refresh fails
+            setEditingSkill(skill);
+            setFormData({ ...skill });
+            setTriggerInput("");
+            setStepsYaml(stepsToYaml(skill.steps));
+        } finally {
+            setBusy(false);
+        }
         setFormError("");
         setShowForm(true);
     };
@@ -618,14 +657,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     // --- Learned skills tab helpers ---
 
-    // Installed skills: exclude auto-generated (learned/crafted) skills
+    // Installed skills: exclude auto-generated (learned/crafted/auto-installed) skills
     const installedSkills = useMemo(
-        () => skills.filter((s) => s.source !== "learned" && s.source !== "crafted"),
+        () => skills.filter((s) => !isLearnedSource(s.source ?? "")),
         [skills]
     );
 
     const learnedSkills = useMemo(
-        () => skills.filter((s) => s.source === "learned" || s.source === "crafted"),
+        () => skills.filter((s) => isLearnedSource(s.source ?? "")),
         [skills]
     );
 
@@ -1144,10 +1183,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             </td>
                                             <td style={tdStyle}>
                                                 <span
-                                                    title={s.source === "learned" ? localizeText("Experience learned", "经验学习", "經驗學習") : s.source === "file" ? localizeText("File import", "文件导入", "檔案匯入") : localizeText("Tool crafted", "工具制作", "工具製作")}
+                                                    title={learnedSourceTooltip(s.source ?? "")}
                                                     style={{ cursor: "default" }}
                                                 >
-                                                    {s.source === "learned" ? "📖" : s.source === "file" ? "📁" : "🔧"}
+                                                    {learnedSourceIcon(s.source ?? "")}
                                                 </span>
                                             </td>
                                             <td style={tdStyle}>
@@ -1353,7 +1392,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             )}
 
             {detailSkill && (
-                <div className="modal-backdrop" onClick={() => setDetailSkill(null)}>
+                <div className="modal-backdrop" onMouseDown={(e) => {
+                    backdropMouseDownRef.current = e.target === e.currentTarget;
+                }} onClick={(e) => {
+                    if (backdropMouseDownRef.current && e.target === e.currentTarget) {
+                        setDetailSkill(null);
+                    }
+                    backdropMouseDownRef.current = false;
+                }}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "560px", maxWidth: "92vw", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{localizeText("Skill Details", "技能详情", "技能詳情")}</h3>
@@ -1400,7 +1446,14 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
             {/* Create/Edit form dialog */}
             {showForm && (
-                <div className="modal-backdrop" onClick={closeForm}>
+                <div className="modal-backdrop" onMouseDown={(e) => {
+                    backdropMouseDownRef.current = e.target === e.currentTarget;
+                }} onClick={(e) => {
+                    if (backdropMouseDownRef.current && e.target === e.currentTarget) {
+                        closeForm();
+                    }
+                    backdropMouseDownRef.current = false;
+                }}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "420px", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingSkill ? localizeText("Edit Skill", "编辑 Skill", "編輯 Skill") : localizeText("New Skill", "新建 Skill", "新建 Skill")}</h3>

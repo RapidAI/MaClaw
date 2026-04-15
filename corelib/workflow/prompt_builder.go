@@ -26,6 +26,33 @@ func BuildPhaseSystemPrompt(state *WorkflowState, phase *PhaseTemplate, registry
 		fmt.Fprintf(&b, "## 阶段指令\n\n%s\n\n", phase.Prompt)
 	}
 
+	// 2.5 Input document guidance (for document-driven workflows)
+	// When the template requires an input document, inject contextual
+	// guidance into the phase prompt. This is handled uniformly by the
+	// engine rather than hardcoded in individual template Prompts.
+	if registry != nil {
+		tmpl := registry.Match(state.Type)
+		if tmpl != nil && tmpl.NeedsInputDocument() {
+			req := tmpl.RequiresInput
+			if state.IsWaitingForInput(tmpl) {
+				// Input not yet received — tell LLM to ask user for upload
+				b.WriteString("## ⚠️ 需要用户提供输入文档\n\n")
+				fmt.Fprintf(&b, "%s\n\n", req.Description)
+				if len(req.FileTypes) > 0 {
+					fmt.Fprintf(&b, "支持的文件格式：%s\n", strings.Join(req.FileTypes, "、"))
+				}
+				if req.AcceptText {
+					b.WriteString("用户也可以直接粘贴文档内容文本，或提供网址由系统自动抓取。\n")
+				}
+				b.WriteString("\n请提示用户上传文档后再开始分析。在收到文档之前，不要生成本阶段的产出物。\n\n")
+			} else if state.PhaseIndex == 0 && req.AnalysisHint != "" {
+				// Input received, first phase — inject analysis guidance
+				b.WriteString("## 输入文档分析指引\n\n")
+				fmt.Fprintf(&b, "%s\n\n", req.AnalysisHint)
+			}
+		}
+	}
+
 	// 3. StructuredIntent summary
 	b.WriteString("## 用户意图摘要\n\n")
 	if state.Intent.Category != "" {

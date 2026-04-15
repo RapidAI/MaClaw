@@ -152,6 +152,37 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 
 	trimmed := strings.TrimSpace(text)
 
+	// 0. Handle document-required workflows waiting for user input.
+	// When the template declares RequiresInput and the user hasn't provided
+	// the document yet, we gate phase execution until we detect that the
+	// user has supplied content (file attachment or substantial text).
+	if ws.IsWaitingForInput(tmpl) {
+		if isSubstantialInput(trimmed) {
+			// User has provided the document content — mark as received and
+			// proceed to run the first phase with the content as context.
+			ws.InputReceived = true
+			ws.UpdatedAt = time.Now()
+			if err := e.store.SaveWorkflowState(ws); err != nil {
+				return nil, fmt.Errorf("保存工作流状态失败: %w", err)
+			}
+			// Fall through to normal phase execution below.
+		} else {
+			// Still waiting — remind the user to upload the document.
+			req := tmpl.RequiresInput
+			hint := req.Description
+			if len(req.FileTypes) > 0 {
+				hint += fmt.Sprintf("（支持格式：%s）", strings.Join(req.FileTypes, "、"))
+			}
+			if req.AcceptText {
+				hint += "\n\n也可以直接将文档内容粘贴到对话框中，或提供网址由系统自动抓取。"
+			}
+			return &WorkflowResponse{
+				Text:         "📎 " + hint,
+				RunAgentLoop: false,
+			}, nil
+		}
+	}
+
 	// 1. Check for skip words.
 	if containsAny(trimmed, skipWords) {
 		if phase.CanSkip {
@@ -193,11 +224,23 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 
 	// 4. Default: normal phase input — run agent loop with phase prompt.
 	phasePrompt := BuildPhaseSystemPrompt(ws, phase, e.registry)
+
+	// Determine if this is likely an unrelated message (e.g. "查询天气"
+	// while a coding workflow is active). When the current phase already
+	// has output AND the message didn't match confirm/skip/modify, the
+	// user is probably asking something unrelated to the workflow.
+	// When the phase has NO output yet, this is the first execution
+	// request (e.g. user said "开工" and the system needs to generate
+	// the requirements document) — treat it as genuine workflow input.
+	_, hasOutput := ws.PhaseOutputs[ws.CurrentPhase]
+	isDefault := hasOutput // only mark as default when phase already has output
+
 	return &WorkflowResponse{
 		Text:         "",
 		PhasePrompt:  phasePrompt,
 		ToolFilter:   phase.ToolPolicy,
 		RunAgentLoop: true,
+		DefaultInput: isDefault,
 	}, nil
 }
 
@@ -442,6 +485,11 @@ func (e *WorkflowEngine) GetUnderstanding() *IntentUnderstandingManager {
 	return e.understanding
 }
 
+// GetRegistry returns the WorkflowRegistry owned by this engine.
+func (e *WorkflowEngine) GetRegistry() *WorkflowRegistry {
+	return e.registry
+}
+
 // ---------------------------------------------------------------------------
 // Phase output capture
 // ---------------------------------------------------------------------------
@@ -468,14 +516,24 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 	ws.UpdatedAt = time.Now()
 
 	// Run quality gate check against the phase's checklist.
+	// Look up the phase by ID (not by index) to ensure the correct
+	// checklist is used even when PhaseIndex and CurrentPhase diverge.
 	tmpl := e.registry.Match(ws.Type)
-	if tmpl != nil && ws.PhaseIndex < len(tmpl.Phases) {
-		phase := &tmpl.Phases[ws.PhaseIndex]
-		if gateResult := RunQualityGate(phase, content); gateResult != nil {
-			ws.GateResults[phaseID] = gateResult
-			// Emit gate result to frontend (best-effort, non-blocking).
-			if e.callbacks != nil {
-				_ = e.callbacks.EmitGateResult(userID, phaseID, gateResult)
+	if tmpl != nil {
+		var phase *PhaseTemplate
+		for i := range tmpl.Phases {
+			if tmpl.Phases[i].ID == phaseID {
+				phase = &tmpl.Phases[i]
+				break
+			}
+		}
+		if phase != nil {
+			if gateResult := RunQualityGate(phase, content); gateResult != nil {
+				ws.GateResults[phaseID] = gateResult
+				// Emit gate result to frontend (best-effort, non-blocking).
+				if e.callbacks != nil {
+					_ = e.callbacks.EmitGateResult(userID, phaseID, gateResult)
+				}
 			}
 		}
 	}
@@ -491,4 +549,24 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// GetInputRequirement returns the InputRequirement for the given user's
+// active workflow, or nil if the workflow doesn't require input documents.
+// Used by callers (e.g., handleActiveUnderstanding) to append the upload
+// prompt to the workflow startup message.
+func (e *WorkflowEngine) GetInputRequirement(userID string) *InputRequirement {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 
+	ws := e.workflows[userID]
+	if ws == nil {
+		return nil
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil {
+		return nil
+	}
+	if !tmpl.NeedsInputDocument() {
+		return nil
+	}
+	return tmpl.RequiresInput
+}

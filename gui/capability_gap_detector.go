@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -63,7 +64,16 @@ var gapKeywords = []string{
 // Detect returns true if the LLM response indicates a capability gap.
 // When an LLM is configured it asks the model to judge; otherwise it falls
 // back to simple keyword matching.
+//
+// Short-circuit: very long responses (>500 chars) are almost certainly
+// detailed summaries or reports, not "I can't do this" signals. Skip
+// detection entirely to avoid false positives from informational uses of
+// keywords like "无法" or "不支持".
 func (d *CapabilityGapDetector) Detect(llmResponse string) bool {
+	trimmed := strings.TrimSpace(llmResponse)
+	if utf8.RuneCountInString(trimmed) > 500 {
+		return false
+	}
 	if d.isLLMConfigured() {
 		return d.llmDetectGap(llmResponse)
 	}
@@ -139,6 +149,8 @@ func (d *CapabilityGapDetector) Resolve(
 			}
 		}
 
+		// Override source to indicate auto-installation by CapabilityGapDetector.
+		imported.Source = "auto_github"
 		sendStatus(fmt.Sprintf("正在从 GitHub 安装 Skill: %s ...", imported.Name))
 		if err := d.skillExecutor.Register(*imported); err != nil {
 			return "", "", fmt.Errorf("register github skill: %w", err)
@@ -201,6 +213,8 @@ func (d *CapabilityGapDetector) Resolve(
 	}
 
 	// Step 6: Register to local SkillExecutor.
+	// Override source to indicate auto-installation by CapabilityGapDetector.
+	skill.Source = "auto_hub"
 	sendStatus("正在注册 Skill...")
 	if err := d.skillExecutor.Register(*skill); err != nil {
 		return "", "", fmt.Errorf("register skill: %w", err)

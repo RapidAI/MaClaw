@@ -18,6 +18,12 @@ type GUIWorkflowAdapter struct {
 	engine     *workflow.WorkflowEngine
 	mu         sync.RWMutex
 	workingDir string // locked working directory for the current workflow session
+
+	// suggestMaximizeSent tracks whether the fullscreen suggestion banner
+	// has already been emitted for each user in the current app session.
+	// Key: userID, Value: true. This prevents the banner from firing on
+	// every single message while a workflow is active.
+	suggestMaximizeSent sync.Map
 }
 
 // NewGUIWorkflowAdapter creates a new adapter wiring the App and WorkflowEngine.
@@ -98,33 +104,100 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 	return nil
 }
 
-// detectPhaseFromContent scans the first 500 chars of document content
-// to determine which workflow phase it belongs to. Returns empty string
-// if no phase can be determined.
+// detectPhaseFromContent determines which workflow phase a document belongs
+// to by inspecting its primary heading. It first checks only the first
+// Markdown heading line (# ...) for a high-confidence match. If no heading
+// is found, it falls back to scanning the first 300 chars but requires the
+// match to be unambiguous (task keywords are checked before design keywords
+// to avoid false positives from cross-references like "基于技术设计").
+//
+// Returns empty string if no phase can be determined with confidence.
 func detectPhaseFromContent(content string) string {
-	heading := strings.ToLower(content)
-	if len(heading) > 500 {
-		heading = heading[:500]
+	// --- Pass 1: match against the first heading line only ---
+	// This is the highest-confidence signal since the heading is the
+	// document's own title, not a reference to another phase.
+	firstHeading := extractFirstHeading(content)
+	if firstHeading != "" {
+		h := strings.ToLower(firstHeading)
+		// Task-related headings (check first — task docs often reference "设计")
+		if strings.Contains(h, "任务拆分") ||
+			strings.Contains(h, "任务列表") ||
+			strings.Contains(h, "任务分解") ||
+			strings.Contains(h, "开发任务") ||
+			strings.Contains(h, "tasks") {
+			return "tasks"
+		}
+		// Requirements headings
+		if strings.Contains(h, "需求文档") ||
+			strings.Contains(h, "需求分析") ||
+			strings.Contains(h, "功能需求") ||
+			strings.Contains(h, "需求背景") ||
+			strings.Contains(h, "requirements") {
+			return "requirements"
+		}
+		// Design headings
+		if strings.Contains(h, "技术设计") ||
+			strings.Contains(h, "设计文档") ||
+			strings.Contains(h, "架构设计") ||
+			strings.Contains(h, "技术方案") ||
+			strings.Contains(h, "design") {
+			return "design"
+		}
 	}
-	switch {
-	case strings.Contains(heading, "需求文档") ||
-		strings.Contains(heading, "需求分析") ||
-		strings.Contains(heading, "功能需求") ||
-		strings.Contains(heading, "需求背景") ||
-		strings.Contains(heading, "requirements"):
-		return "requirements"
-	case strings.Contains(heading, "技术设计") ||
-		strings.Contains(heading, "设计文档") ||
-		strings.Contains(heading, "架构设计") ||
-		strings.Contains(heading, "技术方案") ||
-		strings.Contains(heading, "design"):
-		return "design"
-	case strings.Contains(heading, "任务拆分") ||
-		strings.Contains(heading, "任务列表") ||
-		strings.Contains(heading, "任务分解") ||
-		strings.Contains(heading, "开发任务") ||
-		strings.Contains(heading, "tasks"):
+
+	// --- Pass 2: fallback scan of the first 300 chars ---
+	// Only used when there's no heading. Check task keywords first to
+	// avoid false positives from cross-phase references.
+	// Use rune-based truncation to avoid splitting multi-byte UTF-8 chars.
+	snippet := strings.ToLower(content)
+	if len(snippet) > 500 {
+		runes := []rune(snippet)
+		if len(runes) > 300 {
+			runes = runes[:300]
+		}
+		snippet = string(runes)
+	}
+	// Tasks (must check before design)
+	if strings.Contains(snippet, "任务拆分") ||
+		strings.Contains(snippet, "任务列表") ||
+		strings.Contains(snippet, "任务分解") {
 		return "tasks"
+	}
+	if strings.Contains(snippet, "需求文档") ||
+		strings.Contains(snippet, "需求分析") {
+		return "requirements"
+	}
+	if strings.Contains(snippet, "技术设计文档") ||
+		strings.Contains(snippet, "设计文档") {
+		return "design"
+	}
+	return ""
+}
+
+// extractFirstHeading returns the text of the first Markdown heading
+// (any level: #, ##, ###, etc.) found in the content. Returns empty
+// string if no heading is found within the first ~1000 characters.
+func extractFirstHeading(content string) string {
+	// Limit scan range to avoid processing huge documents.
+	// Use rune-based truncation to avoid splitting multi-byte UTF-8 chars.
+	scan := content
+	if len(scan) > 1500 {
+		runes := []rune(scan)
+		if len(runes) > 1000 {
+			runes = runes[:1000]
+		}
+		scan = string(runes)
+	}
+	for _, line := range strings.Split(scan, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			// Strip the leading '#' characters and return the heading text.
+			text := strings.TrimLeft(trimmed, "#")
+			text = strings.TrimSpace(text)
+			if text != "" {
+				return text
+			}
+		}
 	}
 	return ""
 }
@@ -248,11 +321,30 @@ func (a *GUIWorkflowAdapter) ResetWorkingDir() {
 
 // EmitSuggestMaximize notifies the frontend that a workflow is starting
 // and suggests maximizing the AI panel for a better experience.
+// Deduplicates per user: only emits once per app session per user.
+// Call ResetSuggestMaximize when a workflow is cancelled or completed
+// so the next workflow can trigger the banner again.
 func (a *GUIWorkflowAdapter) EmitSuggestMaximize(userID, workflowType string) {
+	// Only emit once per user per app session.
+	if _, already := a.suggestMaximizeSent.LoadOrStore(userID, true); already {
+		return
+	}
 	if a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:suggest_maximize", map[string]string{
 			"user_id":       userID,
 			"workflow_type": workflowType,
+		})
+	}
+}
+
+// ResetSuggestMaximize clears the dedup flag so the next workflow for this
+// user can trigger the fullscreen suggestion banner again.
+// Also notifies the frontend to dismiss the banner.
+func (a *GUIWorkflowAdapter) ResetSuggestMaximize(userID string) {
+	a.suggestMaximizeSent.Delete(userID)
+	if a.app.ctx != nil {
+		runtime.EventsEmit(a.app.ctx, "workflow:suggest_maximize_dismiss", map[string]string{
+			"user_id": userID,
 		})
 	}
 }

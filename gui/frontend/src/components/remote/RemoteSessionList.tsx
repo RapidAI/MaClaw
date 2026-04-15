@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect, useCallback, type Dispatch, type S
 import { colors, radius } from "./styles";
 import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
 import { RemoteSessionConsole } from "./RemoteSessionConsole";
+import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
 import { ListBackgroundLoops, StopBackgroundLoop, StopAllBackgroundLoops, StopAllBackgroundTasks, DismissRemoteSession, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
@@ -34,6 +35,7 @@ type Props = {
     translate: (key: string) => string;
     formatText: (key: string, values?: Record<string, string>) => string;
     localizeText: (en: string, zhHans: string, zhHant: string) => string;
+    lang: string;
 };
 
 const terminalStatuses = TERMINAL_SESSION_STATUSES;
@@ -85,9 +87,10 @@ export function RemoteSessionList(props: Props) {
         translate,
         formatText,
         localizeText,
+        lang,
     } = props;
 
-    const [sessionTab, setSessionTab] = useState<"remote" | "background">("remote");
+    const [sessionTab, setSessionTab] = useState<"remote" | "background" | "scheduled">("remote");
     const [showHistory, setShowHistory] = useState(false);
     const [hiddenSessionIds, setHiddenSessionIds] = useState<string[]>([]);
     const [consoleSessionId, setConsoleSessionId] = useState<string | null>(null);
@@ -552,6 +555,8 @@ export function RemoteSessionList(props: Props) {
     };
 
     const isBackgroundTab = sessionTab === "background";
+    const isScheduledTab = sessionTab === "scheduled";
+    const isRemoteTab = sessionTab === "remote";
     const remoteLiveCount = useMemo(() => remoteSess.filter(isLiveSession).length, [remoteSess]);
     const bgTotalCount = bgLoops.filter(l => l.status === "running" || l.status === "paused").length + aiSessions.filter(isLiveSession).length;
 
@@ -602,6 +607,22 @@ export function RemoteSessionList(props: Props) {
                             </span>
                         )}
                     </button>
+                    <button
+                        onClick={() => { setSessionTab("scheduled"); setShowHistory(false); }}
+                        style={{
+                            border: "none",
+                            background: sessionTab === "scheduled" ? colors.surface : "transparent",
+                            borderBottom: sessionTab === "scheduled" ? `2px solid #059669` : "2px solid transparent",
+                            padding: "8px 16px",
+                            fontSize: "0.8rem",
+                            fontWeight: sessionTab === "scheduled" ? 700 : 500,
+                            color: sessionTab === "scheduled" ? "#059669" : colors.textMuted,
+                            cursor: "pointer",
+                            transition: "all 0.15s",
+                        }}
+                    >
+                        ⏰ {localizeText("Scheduled", "计划任务", "計劃任務")}
+                    </button>
                     <div style={{ flex: 1 }} />
                     {isBackgroundTab && bgTotalCount > 0 && (
                         <button
@@ -612,7 +633,7 @@ export function RemoteSessionList(props: Props) {
                             {localizeText("Stop all ({count})", "停止全部 ({count})", "停止全部 ({count})").replace("{count}", String(bgTotalCount))}
                         </button>
                     )}
-                    {!isBackgroundTab && historySessions.length > 0 && (
+                    {isRemoteTab && historySessions.length > 0 && (
                         <button
                             className="btn-link"
                             style={{ fontSize: "0.72rem", marginBottom: "4px" }}
@@ -625,7 +646,7 @@ export function RemoteSessionList(props: Props) {
             </div>
 
             {/* Remote tab content */}
-            {!isBackgroundTab && (
+            {isRemoteTab && (
                 <>
                     {liveSessions.length === 0 && !showHistory ? (
                         <div style={{ padding: "20px 14px", textAlign: "center", fontSize: "0.76rem", color: colors.textMuted }}>
@@ -669,6 +690,13 @@ export function RemoteSessionList(props: Props) {
                         )}
                     </div>
                 </>
+            )}
+
+            {/* Scheduled tab content */}
+            {isScheduledTab && (
+                <div style={{ padding: "8px 14px" }}>
+                    <ScheduledTasksPanel lang={lang} />
+                </div>
             )}
 
             {/* Console modal */}

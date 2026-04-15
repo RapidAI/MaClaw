@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // SkillManifest is the metadata stored in manifest.json inside a skill backup zip.
@@ -96,7 +98,7 @@ func (e *SkillExecutor) BackupSkills(outputPath string) error {
 }
 
 // ExportLearnedSkillsZip exports the specified learned/crafted skills (by name)
-// to a zip archive at outputPath. Only skills with source "learned" or "crafted"
+// to a zip archive at outputPath. Only skills where IsLearnedSource returns true
 // are eligible; names that don't match are silently skipped.
 func (e *SkillExecutor) ExportLearnedSkillsZip(names []string, outputPath string) error {
 	if len(names) == 0 {
@@ -116,7 +118,7 @@ func (e *SkillExecutor) ExportLearnedSkillsZip(names []string, outputPath string
 	// Filter to learned/crafted skills that match the requested names.
 	var selected []NLSkillEntry
 	for _, s := range allSkills {
-		if (s.Source == "learned" || s.Source == "crafted") && wanted[s.Name] {
+		if corelib.IsLearnedSource(s.Source) && wanted[s.Name] {
 			selected = append(selected, s)
 		}
 	}

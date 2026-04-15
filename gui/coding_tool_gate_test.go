@@ -200,3 +200,88 @@ func TestCodingGate_OnlyCodingTools(t *testing.T) {
 		t.Errorf("expected 0 remaining, got %d", len(result.remaining))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Bug-fix bypass tests — gate should NOT activate for bug-fix/debug tasks.
+// ---------------------------------------------------------------------------
+
+// Test isBugFixOnly returns true for pure bug-fix messages.
+func TestCodingGate_IsBugFixOnly_PureBugFix(t *testing.T) {
+	cases := []string{
+		"有bug，一直显示加载中",
+		"修复加载错误",
+		"修bug",
+		"修复 bug",
+		"页面白屏了",
+		"程序崩溃了",
+		"调试一下这个问题",
+		"排查一下报错",
+		"fix the loading issue",
+		"debug this crash",
+		"这个功能不显示",
+		"加载中卡住了",
+	}
+	for _, text := range cases {
+		if !isBugFixOnly(text) {
+			t.Errorf("isBugFixOnly(%q) = false, want true", text)
+		}
+	}
+}
+
+// Test isBugFixOnly returns false when creation keywords are also present.
+func TestCodingGate_IsBugFixOnly_MixedWithCreation(t *testing.T) {
+	cases := []string{
+		"开发一个游戏，修复之前的bug",
+		"写代码实现登录功能，顺便修复报错",
+		"开发前端页面，有个bug要修",
+	}
+	for _, text := range cases {
+		if isBugFixOnly(text) {
+			t.Errorf("isBugFixOnly(%q) = true, want false (has creation keywords)", text)
+		}
+	}
+}
+
+// Test isBugFixOnly returns false for non-bug-fix messages.
+func TestCodingGate_IsBugFixOnly_NoBugFixKeywords(t *testing.T) {
+	cases := []string{
+		"帮我写代码",
+		"开发一个贪吃蛇游戏",
+		"翻译这段话",
+		"",
+	}
+	for _, text := range cases {
+		if isBugFixOnly(text) {
+			t.Errorf("isBugFixOnly(%q) = true, want false", text)
+		}
+	}
+}
+
+// Test gate is inactive for bug-fix tasks.
+func TestCodingGate_InactiveForBugFix(t *testing.T) {
+	cases := []string{
+		"有bug，一直显示加载中",
+		"修复加载错误",
+		"调试一下这个崩溃",
+		"排查报错原因",
+	}
+	for _, text := range cases {
+		cfg := newCodingToolGateConfig(text, LoopKindChat)
+		if cfg.active {
+			t.Errorf("text=%q: expected active=false for bug-fix task, got true; reason=%s", text, cfg.reason)
+		}
+		if !cfg.bugFix {
+			t.Errorf("text=%q: expected bugFix=true", text)
+		}
+	}
+}
+
+// Test gate remains active for new project tasks that mention bugs.
+func TestCodingGate_ActiveForNewProjectWithBugMention(t *testing.T) {
+	// "开发" is a creation keyword, so even though "bug" is present,
+	// this is a new project task and should go through three-phase workflow.
+	cfg := newCodingToolGateConfig("开发一个bug追踪系统", LoopKindChat)
+	if !cfg.active {
+		t.Errorf("expected active=true for new project task, got false; reason=%s", cfg.reason)
+	}
+}

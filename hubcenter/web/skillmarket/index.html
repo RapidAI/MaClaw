@@ -94,6 +94,8 @@
       <span>⭐ <span id="detail-rating">-</span></span>
       <span>📥 <span id="detail-downloads">0</span></span>
       <span>💰 <span id="detail-price">-</span></span>
+      <span id="detail-version-wrap">版本: <span id="detail-version">-</span></span>
+      <span id="detail-date-wrap">上传: <span id="detail-date">-</span></span>
       <span id="detail-status-wrap" style="display:none">状态: <span id="detail-status"></span></span>
     </div>
     <div style="border-top:1px solid var(--border);padding-top:12px">
@@ -195,6 +197,11 @@ async function loadTop(sortBy) {
   } catch(e) {}
 }
 
+function fmtDateShort(d) {
+  if (!d) return '';
+  try { const dt = new Date(d); if (isNaN(dt)) return d; return dt.toLocaleDateString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit'}); } catch(e) { return d; }
+}
+
 function renderCards(containerId, emptyId, items) {
   const container = document.getElementById(containerId);
   const empty = document.getElementById(emptyId);
@@ -208,17 +215,20 @@ function renderCards(containerId, emptyId, items) {
     const tags = (s.tags || []).map(tag => `<span class="tag">${esc(tag)}</span>`).join('');
     const rating = (s.avg_rating || 0).toFixed(1);
     const price = s.price ? s.price + ' Credits' : t('price.free');
+    const verText = s.version ? `<span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:4px">v${esc(s.version)}</span>` : '';
+    const dateText = s.created_at ? fmtDateShort(s.created_at) : '';
     const card = document.createElement('div');
     card.className = 'card';
     card.style.cursor = 'pointer';
     card.innerHTML = `
-      <div class="card-name">${esc(s.name)}</div>
+      <div class="card-name">${esc(s.name)}${verText}</div>
       <div class="card-desc">${esc(s.description || '')}</div>
       <div class="card-tags">${tags}</div>
       <div class="card-meta">
         <span class="star">⭐ ${rating}</span>
         <span>📥 ${s.download_count || 0}</span>
         <span>💰 ${esc(price)}</span>
+        ${dateText ? `<span>📅 ${dateText}</span>` : ''}
       </div>`;
     card.onclick = () => showDetail(s);
     container.appendChild(card);
@@ -235,6 +245,8 @@ function showDetail(s) {
   document.getElementById('detail-rating').textContent = (s.avg_rating || 0).toFixed(1);
   document.getElementById('detail-downloads').textContent = s.download_count || 0;
   document.getElementById('detail-price').textContent = s.price ? s.price + ' Credits' : t('price.free');
+  document.getElementById('detail-version').textContent = s.version || '-';
+  document.getElementById('detail-date').textContent = s.created_at ? fmtDateShort(s.created_at) : '-';
   if (s.status) {
     document.getElementById('detail-status-wrap').style.display = '';
     document.getElementById('detail-status').textContent = s.status;

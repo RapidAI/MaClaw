@@ -147,6 +147,14 @@ func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 	tools := b.registry.ListAvailable()
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
+		// Skip backward-compat aliases that have handler only, no definition.
+		// These tools have empty descriptions and are not meant to be exposed
+		// to the LLM as tool definitions (e.g. legacy "run_skill" replaced by
+		// "manage_skill"). Including them causes the LLM to call them with
+		// empty parameters since it has no schema to follow.
+		if t.Description == "" {
+			continue
+		}
 		out = append(out, RegisteredToolToDef(t))
 	}
 	return out
@@ -160,6 +168,9 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	if len(tools) <= b.maxDirectTools {
 		out := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
+			if t.Description == "" {
+				continue // skip backward-compat aliases
+			}
 			out = append(out, RegisteredToolToDef(t))
 		}
 		return out
@@ -171,6 +182,10 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	// Split into builtin (always included), group-activated, and dynamic (scored).
 	var builtins, groupActivated, dynamic []RegisteredTool
 	for _, t := range tools {
+		// Skip backward-compat aliases (handler only, no definition).
+		if t.Description == "" {
+			continue
+		}
 		if t.Category == CategoryBuiltin {
 			builtins = append(builtins, t)
 			continue
@@ -241,9 +256,9 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		}
 		priorityBonus := clampFloat(float64(t.Priority)*0.1, 0, 1)
 
-		// Skill match bonus: only applies to run_skill tool.
+		// Skill match bonus: only applies to manage_skill tool.
 		var skillBonus float64
-		if b.skillProvider != nil && t.Name == "run_skill" {
+		if b.skillProvider != nil && t.Name == "manage_skill" {
 			skillBonus = skillScore
 		}
 
@@ -320,8 +335,8 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	out := make([]map[string]interface{}, 0, len(builtins)+len(groupActivated)+limit)
 	for _, t := range builtins {
 		def := RegisteredToolToDef(t)
-		// Enhance run_skill description with matched skill names.
-		if t.Name == "run_skill" && len(matchedSkills) > 0 && skillScore > 0.3 {
+		// Enhance manage_skill description with matched skill names.
+		if t.Name == "manage_skill" && len(matchedSkills) > 0 && skillScore > 0.3 {
 			def = enrichRunSkillDescription(def, matchedSkills)
 		}
 		out = append(out, def)

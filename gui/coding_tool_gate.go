@@ -5,16 +5,21 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ---------------------------------------------------------------------------
 // Coding Tool Gate — code-level enforcement of the three-phase coding workflow.
 //
 // When the intent classifier returns intentCoding and the user has not sent a
-// skip signal, the gate strips coding tool calls (create_session, bash, etc.)
-// from ALL iterations of the LLM response loop, preserving text content and
-// delivery tools (generate_pdf, send_file, etc.).
+// skip signal AND the task is not a bug-fix/debug task, the gate strips coding
+// tool calls (create_session, bash, etc.) from ALL iterations of the LLM
+// response loop, preserving text content and delivery tools (generate_pdf,
+// send_file, etc.).
+//
+// Bug-fix/debug tasks (e.g. "有bug，一直显示加载中", "修复加载错误") are
+// detected by isBugFixOnly() and bypass the gate entirely, because they should
+// be executed directly without the three-phase workflow (requirements → design
+// → task breakdown).
 //
 // The gate remains active for the entire agent loop (all iterations within a
 // single user message). The user's confirmation arrives as a separate message,
@@ -29,9 +34,10 @@ import (
 
 // codingToolGateConfig holds the pre-computed gate decision for the loop.
 type codingToolGateConfig struct {
-	active     bool       // gate is active (intentCoding && !skip && !background)
+	active     bool       // gate is active (intentCoding && !skip && !background && !bugfix)
 	intent     taskIntent // cached intent classification result
 	skipSignal bool       // user message contains a skip signal
+	bugFix     bool       // true when intent is coding but task is bug-fix/debug (no three-phase needed)
 	reason     string     // human-readable gate decision reason (for logging)
 }
 
@@ -99,6 +105,61 @@ var skipSignalsEnglish = []string{
 	"let's go", "let's do it", "let's start", "let's begin",
 }
 
+// bugFixKeywords are phrases that indicate a bug-fix, debugging, or
+// maintenance task rather than a new-project creation task. When the user
+// message ONLY matches these keywords (and none of the "creation" keywords
+// like "开发一个", "游戏", "前端" etc.), the gate is NOT activated because
+// bug fixes should be executed directly without the three-phase workflow.
+var bugFixKeywords = map[string]bool{
+	"修bug": true, "修 bug": true, "修复bug": true, "修复 bug": true,
+	"bug": true, "fix": true, "修复": true, "修正": true,
+	"调试": true, "debug": true, "排查": true, "排错": true,
+	"报错": true, "出错": true, "错误": true, "异常": true,
+	"加载中": true, "卡住": true, "崩溃": true, "crash": true,
+	"白屏": true, "闪退": true, "不工作": true, "不生效": true,
+	"失败": true, "不显示": true, "显示异常": true,
+}
+
+// creationCodingKeywords are phrases that indicate a new project/feature
+// creation task that SHOULD go through the three-phase workflow. When any
+// of these appear alongside bugFixKeywords, the gate remains active.
+var creationCodingKeywords = []string{
+	"开发", "开发一个", "开发个", "实现一个", "实现个",
+	"创建一个", "创建个", "写代码", "编程",
+	"添加功能", "新增功能", "写脚本", "写一个脚本", "写个脚本",
+	"写函数", "写方法", "写接口", "写api", "写 api",
+	"游戏", "game", "前端", "后端", "frontend", "backend",
+}
+
+// isBugFixOnly returns true when the user message matches bug-fix keywords
+// but does NOT match any creation-oriented coding keywords. This means the
+// task is a direct fix/debug that should skip the three-phase workflow.
+func isBugFixOnly(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	// Check if any bug-fix keyword matches.
+	hasBugFix := false
+	for kw := range bugFixKeywords {
+		if strings.Contains(lower, kw) {
+			hasBugFix = true
+			break
+		}
+	}
+	if !hasBugFix {
+		return false
+	}
+	// If any creation keyword also matches, this is a new project that
+	// happens to mention bugs — not a pure bug-fix task.
+	for _, kw := range creationCodingKeywords {
+		if strings.Contains(lower, kw) {
+			return false
+		}
+	}
+	return true
+}
+
 // isCodingTool returns true iff name is in the blocklist and not in the allowlist.
 func isCodingTool(name string) bool {
 	return codingToolBlocklist[name] && !deliveryToolAllowlist[name]
@@ -123,41 +184,106 @@ func containsSkipSignal(text string) bool {
 	return false
 }
 
+// mapGateIntentToConfig maps a GateIntentResult from the semantic classifier
+// to a codingToolGateConfig. This is the bridge between the five-category
+// semantic classification and the gate's active/bugFix decision.
+//
+// Mapping rules:
+//   - new_project + confidence ≥ 0.70 → active=true, intent=intentCoding
+//   - bug_fix → active=false, bugFix=true, intent=intentCoding
+//   - maintenance → active=false, intent=intentCoding
+//   - non_coding → active=false, intent=intentNonCoding
+//   - continuation → active=false, intent=intentUnknown
+//   - unknown or low confidence → active=false, intent=intentUnknown
+func mapGateIntentToConfig(result GateIntentResult, skip bool) codingToolGateConfig {
+	cfg := codingToolGateConfig{
+		skipSignal: skip,
+	}
+
+	if skip {
+		cfg.reason = "gate inactive: skip signal detected"
+		return cfg
+	}
+
+	switch result.Intent {
+	case GateIntentNewProject:
+		if result.Confidence >= 0.70 {
+			cfg.active = true
+			cfg.intent = intentCoding
+			cfg.reason = fmt.Sprintf("gate active: semantic new_project (conf=%.2f, layer=%d)", result.Confidence, result.Layer)
+		} else {
+			cfg.intent = intentUnknown
+			cfg.reason = fmt.Sprintf("gate inactive: new_project but low confidence (%.2f)", result.Confidence)
+		}
+	case GateIntentBugFix:
+		cfg.bugFix = true
+		cfg.intent = intentCoding
+		cfg.reason = fmt.Sprintf("gate inactive: semantic bug_fix (conf=%.2f)", result.Confidence)
+	case GateIntentMaintenance:
+		cfg.intent = intentCoding
+		cfg.reason = fmt.Sprintf("gate inactive: semantic maintenance (conf=%.2f)", result.Confidence)
+	case GateIntentNonCoding:
+		cfg.intent = intentNonCoding
+		cfg.reason = fmt.Sprintf("gate inactive: semantic non_coding (conf=%.2f)", result.Confidence)
+	case GateIntentContinuation:
+		cfg.intent = intentUnknown
+		cfg.reason = fmt.Sprintf("gate inactive: semantic continuation (conf=%.2f)", result.Confidence)
+	default:
+		cfg.intent = intentUnknown
+		cfg.reason = fmt.Sprintf("gate inactive: semantic unknown/low confidence (conf=%.2f)", result.Confidence)
+	}
+
+	return cfg
+}
+
 // newCodingToolGateConfig computes the gate decision once before the iteration
 // loop begins. The result is immutable for the duration of the loop.
 func newCodingToolGateConfig(userText string, loopKind LoopKind) codingToolGateConfig {
-	return newCodingToolGateConfigWithClassifier(userText, loopKind, nil)
+	return newCodingToolGateConfigWithClassifier(userText, loopKind, nil, "")
 }
 
 // newCodingToolGateConfigWithClassifier is like newCodingToolGateConfig but
-// accepts an optional IntentClassifier for semantic refinement.
-func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, ic *tool.IntentClassifier) codingToolGateConfig {
-	result := classifyTaskIntent(userText)
+// accepts an optional GateIntentClassifier for semantic classification and
+// a userID for conversation context lookup.
+//
+// When the classifier is available and ready, semantic classification is tried
+// first. When unavailable, falls back to keyword-based classifyTaskIntent() +
+// isBugFixOnly() logic.
+func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, gic *GateIntentClassifier, userID string) codingToolGateConfig {
 	skip := containsSkipSignal(userText)
 
-	// Semantic refinement: when keyword-based classification says "coding" but
-	// the IntentClassifier says "query" (knowledge question), override to
-	// non-coding so the gate doesn't strip tools for a conceptual question.
-	// Only invoke the classifier when it's ready (anchors warmed up).
-	if result.Intent == intentCoding && !skip && ic != nil && ic.Ready() {
-		icResult := ic.Classify(userText)
-		if icResult.Intent == tool.IntentQuery {
-			result.Intent = intentUnknown
+	// Background loop always bypasses the gate, regardless of classification.
+	if loopKind == LoopKindBackground {
+		return codingToolGateConfig{
+			skipSignal: skip,
+			reason:     "gate inactive: background loop",
 		}
 	}
+
+	// Try semantic classification first when classifier is available and ready.
+	if gic != nil && gic.Ready() {
+		result := gic.Classify(userText, userID)
+		cfg := mapGateIntentToConfig(result, skip)
+		return cfg
+	}
+
+	// Fallback to keyword-based classification when classifier unavailable.
+	result := classifyTaskIntent(userText)
+	bugfix := isBugFixOnly(userText)
 
 	cfg := codingToolGateConfig{
 		intent:     result.Intent,
 		skipSignal: skip,
+		bugFix:     bugfix,
 	}
 
 	switch {
-	case loopKind == LoopKindBackground:
-		cfg.reason = "gate inactive: background loop"
 	case result.Intent != intentCoding:
 		cfg.reason = fmt.Sprintf("gate inactive: intent=%s", result.Intent)
 	case skip:
 		cfg.reason = "gate inactive: skip signal detected"
+	case bugfix:
+		cfg.reason = "gate inactive: bug-fix/debug task (no three-phase needed)"
 	default:
 		cfg.active = true
 		cfg.reason = "gate active: intentCoding, no skip signal, chat loop"

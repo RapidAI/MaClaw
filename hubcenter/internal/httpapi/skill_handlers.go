@@ -222,12 +222,24 @@ func (h *SkillHandlers) AdminImportFromURL(w http.ResponseWriter, r *http.Reques
 
 func (h *SkillHandlers) AdminListSkills(w http.ResponseWriter, r *http.Request) {
 	pageStr := r.URL.Query().Get("page")
+	pageSizeStr := r.URL.Query().Get("page_size")
 	page := 1
 	if pageStr != "" {
 		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
 			page = p
 		}
 	}
-	result := h.store.ListAll(page)
+	perPage := 0
+	if pageSizeStr != "" {
+		if ps, err := strconv.Atoi(pageSizeStr); err == nil && ps > 0 {
+			perPage = ps
+		}
+	}
+	var result skill.SkillSearchResult
+	if perPage > 0 {
+		result = h.store.ListAllPaged(page, perPage)
+	} else {
+		result = h.store.ListAll(page)
+	}
 	writeJSON(w, http.StatusOK, result)
 }

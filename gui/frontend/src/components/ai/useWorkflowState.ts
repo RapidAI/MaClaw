@@ -152,6 +152,18 @@ export function useWorkflowState() {
         };
     }, []);
 
+    // Listen for maximize suggestion dismissal (workflow cancelled/completed/reset)
+    useEffect(() => {
+        const unsub = EventsOn("workflow:suggest_maximize_dismiss", () => {
+            setSuggestMaximize(false);
+            setSuggestMaximizeType("");
+        });
+        return () => {
+            if (typeof unsub === "function") unsub();
+            else EventsOff("workflow:suggest_maximize_dismiss");
+        };
+    }, []);
+
     // Listen for transient text messages (e.g. phase transition notifications)
     useEffect(() => {
         const unsub = EventsOn("workflow:text", (data: any) => {

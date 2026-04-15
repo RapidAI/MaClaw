@@ -380,9 +380,36 @@ func (o *TaskExecutionOrchestrator) BuildSystemInjection() string {
 		b.WriteString("📌 操作：用 send_and_observe 发送 TDD 测试指令，验证任务完成质量。\n")
 	}
 
+	// Full task list with status
+	b.WriteString("\n📋 任务清单：\n")
+	for _, t := range o.Tasks {
+		switch t.Status {
+		case TaskExecPassed:
+			b.WriteString(fmt.Sprintf("T%d: %s ✓\n", t.Index+1, t.Title))
+		case TaskExecFailed:
+			b.WriteString(fmt.Sprintf("T%d: %s ✗", t.Index+1, t.Title))
+			if t.ErrorSummary != "" {
+				b.WriteString(fmt.Sprintf(" — %s", t.ErrorSummary))
+			}
+			b.WriteString("\n")
+		case TaskExecSkipped:
+			b.WriteString(fmt.Sprintf("T%d: %s (跳过)\n", t.Index+1, t.Title))
+		case TaskExecInProgress, TaskExecTesting:
+			b.WriteString(fmt.Sprintf("T%d: %s ⟳\n", t.Index+1, t.Title))
+		default:
+			b.WriteString(fmt.Sprintf("T%d: %s\n", t.Index+1, t.Title))
+		}
+	}
+
 	// Progress summary
 	passed, failed, remaining := o.countStatusLocked()
-	b.WriteString(fmt.Sprintf("📊 进度：✅ %d 通过 | ❌ %d 失败 | ⏳ %d 剩余\n", passed, failed, remaining))
+	b.WriteString(fmt.Sprintf("\n📊 进度：✅ %d 通过 | ❌ %d 失败 | ⏳ %d 剩余\n", passed, failed, remaining))
+
+	b.WriteString("\n📝 向用户汇报进度时，请严格按以下格式输出（每个任务独占一行）：\n")
+	b.WriteString("T1: 任务描述 ✓\n")
+	b.WriteString("T2: 任务描述 ⟳\n")
+	b.WriteString("T3: 任务描述\n")
+	b.WriteString("已完成的任务后面加 ✓，正在执行的加 ⟳，未开始的不加标记。不要把多个任务写在同一行。\n")
 
 	return b.String()
 }
@@ -393,22 +420,20 @@ func (o *TaskExecutionOrchestrator) ProgressSummary() string {
 	defer o.mu.Unlock()
 
 	var b strings.Builder
-	b.WriteString("## 任务执行进度\n\n")
 	for _, t := range o.Tasks {
-		icon := "⏳"
+		b.WriteString(fmt.Sprintf("T%d: %s", t.Index+1, t.Title))
 		switch t.Status {
 		case TaskExecPassed:
-			icon = "✅"
+			b.WriteString(" ✓")
 		case TaskExecFailed:
-			icon = "❌"
+			b.WriteString(" ✗")
+			if t.ErrorSummary != "" {
+				b.WriteString(fmt.Sprintf(" — %s", t.ErrorSummary))
+			}
 		case TaskExecSkipped:
-			icon = "⏭️"
+			b.WriteString(" (跳过)")
 		case TaskExecInProgress, TaskExecTesting:
-			icon = "🔄"
-		}
-		b.WriteString(fmt.Sprintf("%s 任务 %d: %s", icon, t.Index+1, t.Title))
-		if t.ErrorSummary != "" {
-			b.WriteString(fmt.Sprintf(" — %s", t.ErrorSummary))
+			b.WriteString(" ⟳")
 		}
 		b.WriteString("\n")
 	}

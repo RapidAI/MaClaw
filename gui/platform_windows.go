@@ -1697,15 +1697,20 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 
 	a.log(fmt.Sprintf("Created launch script: %s", tempBatchPath))
 
-	go func() {
-		time.Sleep(10 * time.Second)
-		os.Remove(tempBatchPath)
-	}()
-
-	// Check if user prefers Windows Terminal
+	// Delay cleanup: Windows Terminal may take longer to start and read the batch file.
+	// Use 60s when WT is active (cold start can be slow), 10s for plain cmd.
 	config, _ := a.LoadConfig()
 	useWT := config.UseWindowsTerminal && a.isWindowsTerminalAvailable()
 	a.log(fmt.Sprintf("UseWindowsTerminal config: %v, isAvailable: %v, useWT: %v", config.UseWindowsTerminal, a.isWindowsTerminalAvailable(), useWT))
+
+	cleanupDelay := 10 * time.Second
+	if useWT {
+		cleanupDelay = 60 * time.Second
+	}
+	go func() {
+		time.Sleep(cleanupDelay)
+		os.Remove(tempBatchPath)
+	}()
 
 	if adminMode {
 		shell32 := syscall.NewLazyDLL("shell32.dll")
@@ -1721,7 +1726,8 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				params = syscall.StringToUTF16Ptr(fmt.Sprintf("/c \"%s\"", tempBatchPath))
 			} else {
 				file = syscall.StringToUTF16Ptr(wtPath)
-				params = syscall.StringToUTF16Ptr(fmt.Sprintf("-w new -d \"%s\" cmd /k \"%s\"", projectDir, tempBatchPath))
+				// Use call to ensure .bat is executed as a script, not parsed as a command name.
+				params = syscall.StringToUTF16Ptr(fmt.Sprintf("-w new -d \"%s\" cmd /k call \"%s\"", projectDir, tempBatchPath))
 			}
 		} else {
 			file = syscall.StringToUTF16Ptr("cmd.exe")
@@ -1793,7 +1799,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			a.log(fmt.Sprintf("Launching %s with TTY batch mode", binaryName))
 
 			go func() {
-				time.Sleep(10 * time.Second)
+				time.Sleep(cleanupDelay)
 				os.Remove(codexBatchPath)
 			}()
 
@@ -1805,8 +1811,10 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 					cmdLine = fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`,
 						binaryName, projectDir, codexBatchPath)
 				} else {
-					// Use start command to properly handle paths with spaces
-					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "MaClaw - %s" cmd /k "%s"`,
+					// "call" ensures CMD treats the .bat path as a script to execute,
+					// not as a command name — fixes paths with dots (e.g. .maclaw) being
+					// misinterpreted when Windows Terminal is the default terminal.
+					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "MaClaw - %s" cmd /k call "%s"`,
 						wtPath, projectDir, binaryName, codexBatchPath)
 				}
 			} else {
@@ -1832,8 +1840,10 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 					a.log("Windows Terminal path not found, falling back to cmd")
 					cmdLine = fmt.Sprintf(`cmd /c start "MaClaw - %s" /d "%s" cmd /k "%s"`, binaryName, projectDir, tempBatchPath)
 				} else {
-					// Use start command to properly handle paths with spaces
-					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "MaClaw - %s" cmd /k "%s"`,
+					// "call" ensures CMD treats the .bat path as a script to execute,
+					// not as a command name — fixes paths with dots (e.g. .maclaw) being
+					// misinterpreted when Windows Terminal is the default terminal.
+					cmdLine = fmt.Sprintf(`cmd /c start "" "%s" -w new -d "%s" --title "MaClaw - %s" cmd /k call "%s"`,
 						wtPath, projectDir, binaryName, tempBatchPath)
 				}
 			} else {

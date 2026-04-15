@@ -1,11 +1,15 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1007,7 +1011,11 @@ func (h *TUIAgentHandler) toolSearchSkillHub(args map[string]interface{}) string
 func (h *TUIAgentHandler) toolInstallSkillHub(args map[string]interface{}) string {
 	skillName := stringArg(args, "skill_name")
 	if skillName == "" {
-		return "错误: 缺少 skill_name"
+		// Fallback: unified manage_skill schema uses "skill_id" instead of "skill_name"
+		skillName = stringArg(args, "skill_id")
+	}
+	if skillName == "" {
+		return "错误: 缺少 skill_name 或 skill_id 参数"
 	}
 	return fmt.Sprintf("请使用 CLI: maclaw-tui skillhub install %s", skillName)
 }
@@ -1015,7 +1023,11 @@ func (h *TUIAgentHandler) toolInstallSkillHub(args map[string]interface{}) strin
 func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 	skillName := stringArg(args, "skill_name")
 	if skillName == "" {
-		return "错误: 缺少 skill_name"
+		// Fallback: unified manage_skill schema uses "name" instead of "skill_name"
+		skillName = stringArg(args, "name")
+	}
+	if skillName == "" {
+		return "错误: 缺少 skill_name 或 name 参数"
 	}
 	vars := normalizeRunSkillVars(args)
 	store := commands.NewFileConfigStore(commands.ResolveDataDir())
@@ -1122,7 +1134,7 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 			if len(desc) > 120 {
 				desc = desc[:120] + "..."
 			}
-			msg := fmt.Sprintf("技能 %s 的命令中包含未提供的参数: %s。请通过 args 传入", skill.Name, strings.Join(implicit, ", "))
+			msg := fmt.Sprintf("技能 %s 的命令中包含未提供的参数: %s。请在 args 中传入，例如: args={%s}", skill.Name, strings.Join(implicit, ", "), buildArgsExampleTUI(implicit))
 			if desc != "" {
 				msg += fmt.Sprintf("\n说明: %s", desc)
 			}
@@ -1291,6 +1303,19 @@ func normalizeRunSkillVars(args map[string]interface{}) map[string]string {
 	for _, key := range []string{"input", "output", "query", "url", "text", "file", "path", "format", "operation", "user_prompt"} {
 		if v, ok := args[key].(string); ok && v != "" {
 			if _, exists := vars[key]; !exists {
+				// LLM fallback: when args is empty and input/output looks like
+				// a JSON object, parse it and merge into vars so that {{key}}
+				// placeholders get resolved.
+				if (key == "input" || key == "output") && len(vars) == 0 && len(v) > 2 && v[0] == '{' {
+					var parsed map[string]interface{}
+					if json.Unmarshal([]byte(v), &parsed) == nil && len(parsed) > 0 {
+						for pk, pv := range parsed {
+							if s, ok := pv.(string); ok {
+								vars[pk] = s
+							}
+						}
+					}
+				}
 				vars[key] = v
 			}
 		}
@@ -1339,6 +1364,15 @@ func detectImplicitRequiredArgsTUI(steps []corelib.NLSkillStep, vars map[string]
 		}
 	}
 	return missing
+}
+
+// buildArgsExampleTUI generates a JSON-like example string for missing args.
+func buildArgsExampleTUI(keys []string) string {
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%q: \"<%s 值>\"", k, k)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // runSkillStep 执行单个 skill 步骤，支持流式输出收集。
@@ -2214,6 +2248,156 @@ func appendTruncated(sb *strings.Builder, text string, maxLen int) {
 			sb.WriteString("\n")
 		}
 	}
+}
+
+// toolManageSkill dispatches the merged manage_skill tool to individual handlers.
+func (h *TUIAgentHandler) toolManageSkill(args map[string]interface{}) string {
+	action := stringArg(args, "action")
+	switch action {
+	case "list":
+		return h.toolListSkills()
+	case "search":
+		return h.toolSearchSkillHub(args)
+	case "install":
+		return h.toolInstallSkillHub(args)
+	case "run":
+		return h.toolRunSkill(args)
+	case "status":
+		return h.toolGetSkillRun(args)
+	case "upload":
+		return h.toolUploadSkill(args)
+	default:
+		return fmt.Sprintf("未知 manage_skill action: %s（支持: list/search/install/run/status/upload）", action)
+	}
+}
+
+// toolUploadSkill packages and uploads a local skill to SkillMarket.
+// Adapted for TUI infrastructure: uses config store for email/hub URL,
+// packages the skill directory into a zip, and uploads via HTTP.
+func (h *TUIAgentHandler) toolUploadSkill(args map[string]interface{}) string {
+	name := stringArg(args, "name")
+	if name == "" {
+		return "缺少 name 参数（要上传的 Skill 名称）"
+	}
+
+	// Locate the skill directory
+	skillsDir, err := cskill.PrimarySkillsDir()
+	if err != nil {
+		return fmt.Sprintf("上传失败: 无法获取 Skill 目录: %v", err)
+	}
+	srcDir := filepath.Join(skillsDir, name)
+	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
+		return fmt.Sprintf("上传失败: Skill %q 不存在于 %s", name, skillsDir)
+	}
+
+	// Resolve email from config
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Sprintf("上传失败: 加载配置失败: %v", err)
+	}
+	email := strings.TrimSpace(cfg.RemoteEmail)
+	if email == "" {
+		return "上传失败: 未配置 remote_email，无法上传到 SkillMarket"
+	}
+
+	// Resolve HubCenter URL
+	hubURL := strings.TrimSpace(cfg.RemoteHubCenterURL)
+	if hubURL == "" {
+		hubURL = remote.DefaultRemoteHubCenterURL
+	}
+	hubURL = strings.TrimRight(hubURL, "/")
+
+	// Package skill into a temporary zip
+	tmpFile, err := os.CreateTemp("", "skill-upload-*.zip")
+	if err != nil {
+		return fmt.Sprintf("上传失败: 创建临时文件失败: %v", err)
+	}
+	zipPath := tmpFile.Name()
+	defer os.Remove(zipPath)
+
+	zw := zip.NewWriter(tmpFile)
+	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil || info.IsDir() {
+			return walkErr
+		}
+		rel, _ := filepath.Rel(srcDir, path)
+		header, hErr := zip.FileInfoHeader(info)
+		if hErr != nil {
+			return hErr
+		}
+		header.Name = filepath.ToSlash(filepath.Join(name, rel))
+		header.Method = zip.Deflate
+		writer, wErr := zw.CreateHeader(header)
+		if wErr != nil {
+			return wErr
+		}
+		file, fErr := os.Open(path)
+		if fErr != nil {
+			return fErr
+		}
+		defer file.Close()
+		_, cErr := io.Copy(writer, file)
+		return cErr
+	})
+	if closeErr := zw.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	if closeErr := tmpFile.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Sprintf("上传失败: 打包 Skill 失败: %v", err)
+	}
+
+	// Upload zip to HubCenter SkillMarket API
+	f, err := os.Open(zipPath)
+	if err != nil {
+		return fmt.Sprintf("上传失败: 打开 zip 文件失败: %v", err)
+	}
+	defer f.Close()
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	fw, err := w.CreateFormFile("zip", filepath.Base(zipPath))
+	if err != nil {
+		return fmt.Sprintf("上传失败: 构建上传请求失败: %v", err)
+	}
+	if _, err := io.Copy(fw, f); err != nil {
+		return fmt.Sprintf("上传失败: 读取 zip 文件失败: %v", err)
+	}
+	_ = w.WriteField("email", email)
+	w.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hubURL+"/api/v1/skills/submit", &buf)
+	if err != nil {
+		return fmt.Sprintf("上传失败: 创建请求失败: %v", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Sprintf("上传失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Sprintf("上传失败 (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		SubmissionID string `json:"submission_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Sprintf("上传失败: 解析响应失败: %v", err)
+	}
+
+	return fmt.Sprintf("✅ Skill「%s」已上传到 SkillMarket，提交 ID: %s", name, result.SubmissionID)
 }
 
 // ===================== AgentNet =====================

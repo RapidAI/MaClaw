@@ -134,18 +134,6 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"session_id", "action"},
 		func(args map[string]interface{}) string { return h.toolControlSession(args) })
 
-	reg("manage_config", "管理 MaClaw 配置。action 可选: get（读取配置）、update（修改单项）、batch_update（批量修改）、list_schema（查看所有可配置项）、export（导出）、import（导入）",
-		ToolCategoryBuiltin, []string{"config", "settings", "get", "update", "export", "import"},
-		map[string]interface{}{
-			"action":    map[string]string{"type": "string", "description": "操作类型: get/update/batch_update/list_schema/export/import"},
-			"section":   map[string]string{"type": "string", "description": "配置区域（get/update 时使用，如 claude/gemini/remote/maclaw_llm）"},
-			"key":       map[string]string{"type": "string", "description": "配置项名称（update 时必填）"},
-			"value":     map[string]string{"type": "string", "description": "新值（update 时必填）"},
-			"changes":   map[string]string{"type": "string", "description": "JSON 数组（batch_update 时必填）"},
-			"json_data": map[string]string{"type": "string", "description": "配置 JSON（import 时必填）"},
-		}, []string{"action"},
-		func(args map[string]interface{}) string { return h.toolManageConfig(args) })
-
 	reg("screenshot", "截取屏幕截图并发送给用户。仅在以下情况使用：(1) 用户明确要求截屏；(2) 用户通过 IM 远程监督，需要确认操作结果。不要在用户未要求时主动截屏。最小间隔 30 秒。支持 display 参数指定显示器（0=主屏，1=第二屏，不传=所有屏幕拼图）。",
 		ToolCategoryBuiltin, []string{"session", "screenshot", "capture"},
 		map[string]interface{}{
@@ -169,49 +157,41 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"server_id", "tool_name"},
 		func(args map[string]interface{}) string { return h.toolCallMCPTool(args) })
 
-	// --- Skill tools ---
-	reg("list_skills", "列出已注册的本地 Skill。如果本地没有 Skill，会同时展示 SkillHub 上的推荐 Skill 供安装。",
-		ToolCategoryBuiltin, []string{"skill", "list"},
-		nil, nil,
+	// --- Merged skill management tool (progress-aware for run action) ---
+	regP("manage_skill", "Skill 管理（action: list/search/install/run/status/upload）。list 列出本地已注册 Skill（无 Skill 时展示 Hub 推荐）；search 在 SkillHub 搜索可用 Skill；install 从 Hub 安装 Skill 到本地；run 执行指定 Skill；status 查询运行状态（run 返回 run_id 后继续观察进度）；upload 上传本地 Skill 到 SkillMarket。",
+		ToolCategoryBuiltin, []string{"skill", "list", "search", "install", "run", "status", "upload"},
+		map[string]interface{}{
+			"action":       map[string]string{"type": "string", "description": "操作: list/search/install/run/status/upload"},
+			"query":        map[string]string{"type": "string", "description": "搜索关键词（search 时必填，如 'git commit'、'代码审查'、'部署'）"},
+			"skill_id":     map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
+			"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（install 时必填，从 search 结果中获取）"},
+			"auto_run":     map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（install 时可选，默认 true）"},
+			"name":         map[string]string{"type": "string", "description": "Skill 名称（run/upload 时必填）"},
+			"args":         map[string]string{"type": "object", "description": "Skill 运行参数（run 时按需传入）。Skill 命令中的 {{key}} 占位符会被替换为 args 中对应的值。例如 Skill 命令含 {{city}} 则传 args={\"city\":\"北京\"}，含 {{input}} 则传 args={\"input\":\"文件路径\"}。如果首次调用因缺少参数而失败，错误信息会提示需要哪些 key。"},
+			"env":          map[string]string{"type": "object", "description": "注入到 skill 子进程的环境变量（run 时可选），例如 {\"LIBTV_ACCESS_KEY\": \"xxx\"}"},
+			"operation":    map[string]string{"type": "string", "description": "执行指定的 operation（run 时可选，api_workflow 模式 Skill 的操作名称，如 generate/query）"},
+			"input":        map[string]string{"type": "string", "description": "兼容旧调用的输入参数（run 时可选）"},
+			"output":       map[string]string{"type": "string", "description": "兼容旧调用的输出参数（run 时可选）"},
+			"user_prompt":  map[string]string{"type": "string", "description": "用户的原始请求文本（run 时可选，供 craft_tool 类型 Skill 生成脚本时使用）"},
+			"wait_seconds": map[string]string{"type": "number", "description": "等待状态快照的秒数（install/run/status 时可选，默认 2，最大 30）"},
+			"run_id":       map[string]string{"type": "string", "description": "运行 ID（status 时必填，从 run 返回值中获取）"},
+		}, []string{"action"},
+		func(args map[string]interface{}, onProgress ProgressCallback) string {
+			return h.toolManageSkill(args, onProgress)
+		})
+
+	// Legacy backward-compat aliases (handler only, no definition generation)
+	reg("list_skills", "", ToolCategoryBuiltin, nil, nil, nil,
 		func(args map[string]interface{}) string { return h.toolListSkills() })
-
-	reg("search_skill_hub", "在已配置的 SkillHub（如 openclaw、tencent 等）上搜索可用的 Skill",
-		ToolCategoryBuiltin, []string{"skill", "search", "hub"},
-		map[string]interface{}{
-			"query": map[string]string{"type": "string", "description": "搜索关键词（如 'git commit'、'代码审查'、'部署'）"},
-		}, []string{"query"},
+	reg("search_skill_hub", "", ToolCategoryBuiltin, nil, nil, nil,
 		func(args map[string]interface{}) string { return h.toolSearchSkillHub(args) })
-
-	reg("install_skill_hub", "从 SkillHub 安装指定的 Skill 到本地。设置 auto_run=true 可安装后立即执行。",
-		ToolCategoryBuiltin, []string{"skill", "install", "hub"},
-		map[string]interface{}{
-			"skill_id":     map[string]string{"type": "string", "description": "Skill ID（从 search_skill_hub 结果中获取）"},
-			"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（从 search_skill_hub 结果中获取）"},
-			"auto_run":     map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（默认 true）"},
-			"wait_seconds": map[string]string{"type": "number", "description": "可选：auto_run=true 时等待状态快照的秒数（默认 2，最大 30）。时间越长，初始返回越可能包含会话信息。"},
-		}, []string{"skill_id", "hub_url"},
+	reg("install_skill_hub", "", ToolCategoryBuiltin, nil, nil, nil,
 		func(args map[string]interface{}) string { return h.toolInstallSkillHub(args) })
-
-	regP("run_skill", "执行指定的 Skill",
-		ToolCategoryBuiltin, []string{"skill", "run", "execute"},
-		map[string]interface{}{
-			"name":         map[string]string{"type": "string", "description": "Skill 名称"},
-			"args":         map[string]string{"type": "object", "description": "可选：供 skill 内 {{key}} / ${key} 占位符替换使用的参数映射"},
-			"env":          map[string]string{"type": "object", "description": "可选：注入到 skill 子进程的环境变量（key-value 对），例如 {\"LIBTV_ACCESS_KEY\": \"xxx\"}"},
-			"input":        map[string]string{"type": "string", "description": "可选：兼容旧调用的输入参数"},
-			"output":       map[string]string{"type": "string", "description": "可选：兼容旧调用的输出参数"},
-			"wait_seconds": map[string]string{"type": "number", "description": "可选：启动后等待状态快照的秒数（默认 2，最大 30）。时间越长，初始返回越可能包含会话信息。"},
-		}, []string{"name"},
+	regP("run_skill", "", ToolCategoryBuiltin, nil, nil, nil,
 		func(args map[string]interface{}, onProgress ProgressCallback) string {
 			return h.toolRunSkill(args, onProgress)
 		})
-
-	reg("get_skill_run", "查询指定 Skill 运行的当前状态。适合在 run_skill 返回 run_id 后继续观察进度；若结果含 session_id，可继续使用会话工具观察输出。",
-		ToolCategoryBuiltin, []string{"skill", "run", "status"},
-		map[string]interface{}{
-			"run_id":       map[string]string{"type": "string", "description": "run_skill 返回的运行 ID"},
-			"wait_seconds": map[string]string{"type": "number", "description": "可选：查询前等待状态快照的秒数（默认 2，最大 30）。时间越长，返回越可能包含会话信息或终态。"},
-		}, []string{"run_id"},
+	reg("get_skill_run", "", ToolCategoryBuiltin, nil, nil, nil,
 		func(args map[string]interface{}) string { return h.toolGetSkillRun(args) })
 
 	// --- Orchestration tools ---

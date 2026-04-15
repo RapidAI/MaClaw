@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 type WorkspaceMode string
@@ -45,6 +47,16 @@ func (p *DefaultWorkspacePreparer) Prepare(sessionID string, spec LaunchSpec) (*
 	projectPath, err := canonicalWorkspacePath(spec.ProjectPath)
 	if err != nil {
 		return nil, err
+	}
+
+	// Skill directories (under ~/.maclaw/data/skills/) must always use direct
+	// mode. Creating a git worktree would move the working directory away from
+	// the actual skill files, causing Claude Code to operate in the wrong
+	// location (e.g. D:\workprj\test instead of the skill directory).
+	// Lock on the skill directory itself (not the git root) so that sessions
+	// for different skills don't block each other.
+	if skill.IsUnderSkillsRoot(projectPath) {
+		return p.prepareLockedDirect(sessionID, projectPath, "", false)
 	}
 
 	gitRoot, isGitRepo := detectGitWorkspaceRoot(projectPath)

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -41,6 +42,47 @@ func PrimarySkillsDir() (string, error) {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
 	return filepath.Join(home, ".maclaw", "data", "skills"), nil
+}
+
+// IsUnderSkillsRoot reports whether the given path is a subdirectory of any
+// known skill scan root (e.g. ~/.maclaw/data/skills/<name>). This is used to
+// detect skill directories so that workspace preparation can skip git worktree
+// creation and use the directory directly.
+func IsUnderSkillsRoot(path string) bool {
+	cleaned := filepath.Clean(path)
+	if abs, err := filepath.Abs(cleaned); err == nil {
+		cleaned = abs
+	}
+	// Normalize via EvalSymlinks to handle 8.3 short paths on Windows.
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		cleaned = resolved
+	}
+	for _, root := range SkillScanRoots() {
+		rootAbs := root
+		if abs, err := filepath.Abs(root); err == nil {
+			rootAbs = abs
+		}
+		if resolved, err := filepath.EvalSymlinks(rootAbs); err == nil {
+			rootAbs = resolved
+		}
+		// On Windows, paths are case-insensitive but filepath.Rel does
+		// pure string comparison. Normalize case before comparing.
+		c, r := cleaned, rootAbs
+		if runtime.GOOS == "windows" {
+			c = strings.ToLower(c)
+			r = strings.ToLower(r)
+		}
+		// Check if cleaned is rootAbs itself or a child of rootAbs.
+		rel, err := filepath.Rel(r, c)
+		if err != nil {
+			continue
+		}
+		// rel must not start with ".." — that would mean cleaned is outside rootAbs.
+		if !strings.HasPrefix(rel, "..") {
+			return true
+		}
+	}
+	return false
 }
 
 // SkillScanRootsWithExternal returns SkillScanRoots() plus the given

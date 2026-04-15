@@ -123,6 +123,15 @@ On first launch, MaClaw performs an environment self-check and auto-installs mis
 *   **Remote Programming**: Access remotely via MaClaw Hub in your browser
 *   **Auto Orchestration**: Configure Swarm orchestrator to let AI split and execute tasks automatically
 
+## License (Dual License)
+
+This project is released under a **Dual License** model:
+
+- **Open Source Use**: Free to use in open source software projects without additional authorization.
+- **Commercial Use**: A commercial license is required for use in commercial software or for commercial purposes.
+
+For commercial licensing inquiries, please contact: **znsoft@163.com**
+
 ## About
 
 *   **Version**: V5.3.0.9800

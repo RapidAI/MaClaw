@@ -103,11 +103,122 @@ interface WorkflowDocPreviewProps {
 }
 
 const phaseLabels: Record<string, string> = {
+    // Coding workflow
     requirements: "需求",
-    design: "设计",
     tech_design: "设计",
-    tasks: "任务",
     task_breakdown: "任务",
+    implementation: "实现",
+    review: "审查",
+    // Product design workflow
+    problem_discovery: "问题发现",
+    solution_design: "方案设计",
+    prd: "PRD",
+    prototype: "原型设计",
+    // Innovation workflow
+    opportunity: "机会识别",
+    ideation: "创意发散",
+    validation: "可行性验证",
+    roadmap: "路线图",
+    action_plan: "行动计划",
+    // Business plan workflow
+    bp_requirement: "需求定位",
+    bp_content: "内容撰写",
+    bp_structure: "结构优化",
+    bp_visual_design: "PPT设计",
+    bp_doc_generation: "文档生成",
+    // Testing workflow
+    test_strategy: "测试策略",
+    test_design: "用例设计",
+    test_environment: "环境规划",
+    test_execution: "测试执行",
+    defect_report: "缺陷报告",
+    // Literature review workflow
+    topic_definition: "选题定义",
+    literature_search: "文献检索",
+    screening_classification: "筛选分类",
+    content_extraction: "内容提取",
+    review_writing: "综述撰写",
+    // Research report workflow
+    requirement_scoping: "需求定义",
+    source_mapping: "信息源梳理",
+    report_collection: "研报收集",
+    insight_extraction: "观点提炼",
+    synthesis_report: "整合报告",
+    // Experiment design workflow
+    hypothesis_formulation: "假设提出",
+    experiment_design: "实验设计",
+    variable_control: "变量控制",
+    data_collection: "数据采集",
+    analysis_plan: "分析计划",
+    // Grant proposal workflow
+    topic_justification: "选题论证",
+    research_status: "研究现状",
+    research_plan: "研究方案",
+    expected_outcomes: "预期成果",
+    budget_plan: "经费预算",
+    // Paper writing workflow
+    outline_design: "大纲构思",
+    methodology: "方法论",
+    results_presentation: "结果呈现",
+    discussion_analysis: "讨论分析",
+    submission_prep: "投稿准备",
+    // Project proposal workflow
+    background_analysis: "背景分析",
+    goal_definition: "目标定义",
+    // solution_design already mapped above
+    resource_assessment: "资源评估",
+    risk_contingency: "风险预案",
+    // Event planning workflow
+    requirement_confirm: "需求确认",
+    scheme_planning: "方案策划",
+    process_design: "流程设计",
+    material_checklist: "物料清单",
+    execution_manual: "执行手册",
+    // Competitive analysis workflow
+    target_definition: "分析目标",
+    competitor_identification: "竞品识别",
+    dimension_comparison: "多维对比",
+    gap_analysis: "差异分析",
+    strategy_recommendation: "策略建议",
+    // Presentation design workflow
+    audience_goal: "受众目标",
+    content_outline: "内容大纲",
+    style_specification: "风格规范",
+    slide_scripting: "逐页脚本",
+    ppt_generation: "PPT生成",
+    // Bid response workflow
+    tender_analysis: "招标解析",
+    qualification_response: "资质响应",
+    technical_proposal: "技术方案",
+    commercial_proposal: "商务报价",
+    bid_document_assembly: "文件组装",
+    // Contract review workflow
+    contract_parsing: "合同解析",
+    clause_risk_analysis: "条款风险",
+    compliance_check: "合规审查",
+    modification_suggestions: "修改建议",
+    review_summary: "审查意见",
+    // Due diligence workflow
+    target_profiling: "公司画像",
+    business_dd: "商业尽调",
+    financial_dd: "财务尽调",
+    legal_dd: "法律尽调",
+    dd_conclusion: "尽调结论",
+    // Compliance audit workflow
+    audit_scope: "审计范围",
+    compliance_assessment: "合规评估",
+    risk_rating: "风险评级",
+    remediation_plan: "整改计划",
+    audit_report: "审计报告",
+    // Patent analysis workflow
+    tech_disclosure: "技术解析",
+    prior_art_search: "现有技术",
+    infringement_assessment: "侵权评估",
+    // strategy_recommendation already defined in competitive analysis (same label)
+    patent_report: "分析报告",
+    // Legacy aliases
+    design: "设计",
+    tasks: "任务",
 };
 
 // ── Lightweight Markdown renderer (no external deps) ──
@@ -382,7 +493,7 @@ export function WorkflowDocPreview({
                 background: theme.bg,
                 color: theme.text,
             }}>
-                {/* Header: phase tabs + close button */}
+                {/* Header: phase tabs + close button — draggable for window move */}
                 <div style={{
                     display: "flex",
                     alignItems: "center",
@@ -392,7 +503,8 @@ export function WorkflowDocPreview({
                     gap: "4px",
                     flexWrap: "wrap",
                     flexShrink: 0,
-                }}>
+                    '--wails-draggable': 'drag',
+                } as any}>
                     {phaseIDs.map(pid => (
                         <button
                             key={pid}
@@ -406,7 +518,8 @@ export function WorkflowDocPreview({
                                 background: pid === activePhaseID ? theme.accentBg : "transparent",
                                 cursor: "pointer",
                                 color: pid === activePhaseID ? theme.accentColor : theme.textMuted,
-                            }}
+                                '--wails-draggable': 'no-drag',
+                            } as any}
                         >
                             {phaseLabels[pid] || pid}
                         </button>
@@ -423,7 +536,8 @@ export function WorkflowDocPreview({
                             borderRadius: "4px",
                             color: theme.textMuted,
                             lineHeight: 1,
-                        }}
+                            '--wails-draggable': 'no-drag',
+                        } as any}
                         title="关闭文档预览"
                     >
                         ×

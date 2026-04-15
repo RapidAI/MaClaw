@@ -84,12 +84,16 @@ func (h *TUIAgentHandler) handleTUIWorkflowInterception(text string) *AgentRespo
 		if understanding == nil {
 			return nil
 		}
-		reply, err := understanding.Start(userID, text)
+		result, err := understanding.Start(userID, text)
 		if err != nil {
 			log.Printf("[TUIWorkflow] understanding Start error: %v", err)
 			return nil // fallback to normal agent loop
 		}
-		return &AgentResponse{Text: reply}
+		// LLM determined this is NOT a workflow task — fall through.
+		if result.Rejected {
+			return nil
+		}
+		return &AgentResponse{Text: result.Reply}
 
 	case workflow.FilterSmallTalk, workflow.FilterSimpleDirective:
 		return nil // pass through to normal agent loop
@@ -124,14 +128,17 @@ func (h *TUIAgentHandler) captureWorkflowOutput(text string) {
 
 // tuiDocOnlyAllowedTools is the set of tool names allowed during doc_only phases.
 var tuiDocOnlyAllowedTools = map[string]bool{
-	"bash":       true,
-	"write_file": true,
-	"read_file":  true,
-	"edit_file":  true,
-	"memory":     true,
-	"web_search": true,
-	"web_fetch":  true,
-	"open":       true,
+	"bash":         true,
+	"write_file":   true,
+	"read_file":    true,
+	"edit_file":    true,
+	"memory":       true,
+	"generate_pdf": true,
+	"send_file":    true,
+	"web_search":   true,
+	"web_fetch":    true,
+	"open":         true,
+	"set_nickname": true,
 }
 
 // applyTUIWorkflowToolFilter restricts the tool list based on the current

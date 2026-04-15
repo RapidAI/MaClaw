@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -201,6 +202,15 @@ func resolveRemoteProject(cfg AppConfig, projectID string, projectPath string) (
 				project.Path = cleanTarget
 				return project, nil
 			}
+		}
+		// The provided path doesn't match any configured project. If it's a
+		// valid directory (e.g. a skill directory under ~/.maclaw/data/skills/),
+		// use it directly instead of falling back to the current project.
+		if info, err := os.Stat(cleanTarget); err == nil && info.IsDir() {
+			return ProjectConfig{
+				Path: cleanTarget,
+				Name: filepath.Base(cleanTarget),
+			}, nil
 		}
 	}
 

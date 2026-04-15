@@ -73,6 +73,7 @@ type App struct {
 	projectScanner        *ProjectScanner
 	toolDefGenerator      *ToolDefinitionGenerator
 	toolRouter            *ToolRouter
+	gateIntentClassifier  *GateIntentClassifier // semantic gate classifier (wired in Task 12.1)
 	usageTracker          *tool.UsageTracker
 	experienceExtractor   *ExperienceExtractor
 	orchestrator          *Orchestrator

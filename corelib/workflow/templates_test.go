@@ -44,7 +44,7 @@ func TestBuiltinTemplates_PhaseIDsAndOrder(t *testing.T) {
 		{WorkflowCoding, []string{"requirements", "tech_design", "task_breakdown", "implementation", "review"}},
 		{WorkflowProductDesign, []string{"problem_discovery", "solution_design", "prd", "prototype"}},
 		{WorkflowInnovation, []string{"opportunity", "ideation", "validation", "roadmap", "action_plan"}},
-		{WorkflowBusinessPlan, []string{"executive_summary", "market_analysis", "product_strategy", "operations", "financial_projection"}},
+		{WorkflowBusinessPlan, []string{"bp_requirement", "bp_content", "bp_structure", "bp_visual_design", "bp_doc_generation"}},
 		{WorkflowTesting, []string{"test_strategy", "test_design", "test_environment", "test_execution", "defect_report"}},
 		{WorkflowLiteratureReview, []string{"topic_definition", "literature_search", "screening_classification", "content_extraction", "review_writing"}},
 		{WorkflowResearchReport, []string{"requirement_scoping", "source_mapping", "report_collection", "insight_extraction", "synthesis_report"}},
@@ -158,5 +158,23 @@ func TestBuiltinTemplates_PresentationGenerationToolPolicyFull(t *testing.T) {
 	}
 	if lastPhase.ToolPolicy != ToolFilterFull {
 		t.Errorf("ppt_generation phase: expected ToolPolicy=full, got %s", lastPhase.ToolPolicy)
+	}
+}
+
+func TestBuiltinTemplates_BusinessPlanDocGenerationToolPolicyFull(t *testing.T) {
+	r := NewWorkflowRegistry()
+	tmpl := r.Match(WorkflowBusinessPlan)
+	if tmpl == nil {
+		t.Fatal("business_plan template not found")
+	}
+	lastPhase := tmpl.Phases[len(tmpl.Phases)-1]
+	if lastPhase.ID != "bp_doc_generation" {
+		t.Fatalf("expected last phase to be bp_doc_generation, got %s", lastPhase.ID)
+	}
+	if lastPhase.ToolPolicy != ToolFilterFull {
+		t.Errorf("bp_doc_generation phase: expected ToolPolicy=full, got %s", lastPhase.ToolPolicy)
+	}
+	if lastPhase.NeedsConfirm {
+		t.Error("bp_doc_generation phase: expected NeedsConfirm=false for execution phase")
 	}
 }

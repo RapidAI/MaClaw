@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -272,7 +273,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 			if len(desc) > 120 {
 				desc = desc[:120] + "..."
 			}
-			msg := fmt.Sprintf("skill %q 的命令中包含未提供的参数: %s。请通过 args 传入", skillName, strings.Join(implicit, ", "))
+			msg := fmt.Sprintf("skill %q 的命令中包含未提供的参数: %s。请在 args 中传入，例如: args={%s}", skillName, strings.Join(implicit, ", "), buildArgsExample(implicit))
 			if desc != "" {
 				msg += fmt.Sprintf("\n说明: %s", desc)
 			}
@@ -625,13 +626,33 @@ func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
 			}
 		}
 	}
+
+	// tryParseJSONIntoVars: when args is empty and a string value looks like
+	// a JSON object (e.g. "{\"city\":\"新加坡\"}"), parse it and merge into
+	// vars so that {{key}} placeholders get resolved. This handles the common
+	// case where the LLM puts structured params in input/output instead of args.
+	tryParseJSONIntoVars := func(s string) {
+		if len(vars) == 0 && len(s) > 2 && s[0] == '{' {
+			var parsed map[string]interface{}
+			if json.Unmarshal([]byte(s), &parsed) == nil && len(parsed) > 0 {
+				for k, v := range parsed {
+					if str, ok := v.(string); ok {
+						vars[k] = str
+					}
+				}
+			}
+		}
+	}
+
 	if _, ok := vars["input"]; !ok {
 		if input, _ := runArgs["input"].(string); input != "" {
+			tryParseJSONIntoVars(input)
 			vars["input"] = input
 		}
 	}
 	if _, ok := vars["output"]; !ok {
 		if output, _ := runArgs["output"].(string); output != "" {
+			tryParseJSONIntoVars(output)
 			vars["output"] = output
 		}
 	}
@@ -696,6 +717,16 @@ func detectImplicitRequiredArgs(steps []NLSkillStep, vars map[string]string) []s
 	}
 	slices.Sort(result)
 	return result
+}
+
+// buildArgsExample generates a JSON-like example string for missing args,
+// e.g. `"city": "<city 值>"` — helps the LLM understand the expected format.
+func buildArgsExample(keys []string) string {
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%q: \"<%s 值>\"", k, k)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func resolveSkillStep(step NLSkillStep, vars map[string]string, skillDir string) NLSkillStep {

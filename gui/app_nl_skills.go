@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -115,21 +116,18 @@ func (e *SkillExecutor) loadSkills() []NLSkillEntry {
 	return skills
 }
 
-func shouldHydrateSkillFromFile(configSkill, fileSkill NLSkillEntry, primaryDir string) bool {
+// shouldHydrateSkillFromFile decides whether a config-based skill's steps
+// should be replaced with the on-disk file version during loadSkills() merge.
+// The on-disk skill.yaml is the source of truth for steps whenever the file
+// has valid steps and names match.
+//
+// The primaryDir parameter is retained for call-site compatibility but is
+// no longer used after the stale-cache fix (see skill-edit-stale-cache spec).
+func shouldHydrateSkillFromFile(configSkill, fileSkill NLSkillEntry, _ string) bool {
 	if fileSkill.Name == "" || configSkill.Name != fileSkill.Name || len(fileSkill.Steps) == 0 {
 		return false
 	}
-	if len(configSkill.Steps) == 0 {
-		return true
-	}
-	if configSkill.Source != "hub" {
-		return false
-	}
-	if strings.TrimSpace(primaryDir) == "" || strings.TrimSpace(fileSkill.SkillDir) == "" {
-		return false
-	}
-	expectedDir := filepath.Clean(filepath.Join(primaryDir, configSkill.Name))
-	return filepath.Clean(fileSkill.SkillDir) == expectedDir
+	return true
 }
 
 // scanSkillYAMLFiles discovers skill definitions from all known skill
@@ -1559,8 +1557,8 @@ func (e *SkillExecutor) CleanupStaleSkills() []string {
 		if s.Status != "active" {
 			continue
 		}
-		// Only auto-cleanup learned and crafted skills; manual and hub skills are user-managed.
-		if s.Source != "learned" && s.Source != "crafted" {
+		// Only auto-cleanup learned/auto-installed skills; manual and hub skills are user-managed.
+		if !corelib.IsLearnedSource(s.Source) {
 			continue
 		}
 		// Never used and older than 30 days.

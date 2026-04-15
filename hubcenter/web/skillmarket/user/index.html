@@ -378,9 +378,11 @@ const I18N = {
   'purchase.status':    { zh: '状态', en: 'Status' },
   'purchase.refund':    { zh: '退款', en: 'Refund' },
   'purchase.refunded':  { zh: '已退款', en: 'Refunded' },
-  'config.trial.title': { zh: '试用期配置', en: 'Trial Configuration' },
+  'config.trial.title': { zh: 'SkillMarket 参数设置', en: 'Trial Configuration' },
   'config.trial.days':  { zh: '试用天数', en: 'Trial Days' },
   'config.threshold':   { zh: '自动上架阈值', en: 'Auto-publish Threshold' },
+  'config.maxuploads':  { zh: '每小时上传限制', en: 'Max Uploads/Hour' },
+  'config.maxuploads.hint': { zh: '0 = 使用等级默认值', en: '0 = use tier default' },
   'config.save':        { zh: '保存', en: 'Save' },
   'msg.topup.ok':       { zh: '充值成功', en: 'Top-up successful.' },
   'msg.withdraw.ok':    { zh: '提现成功', en: 'Withdrawal successful.' },
@@ -832,8 +834,9 @@ async function withdrawSkill(id) {
 async function saveTrialConfig() {
   const days = parseInt(document.getElementById('cfg-trial-days').value);
   const threshold = parseInt(document.getElementById('cfg-threshold').value);
+  const maxUploads = parseInt(document.getElementById('cfg-max-uploads').value) || 0;
   try {
-    const r = await fetch(API+'/api/v1/admin/config/trial',{method:'PUT',headers:authHeaders(),body:JSON.stringify({trial_duration_days:days,auto_publish_threshold:threshold})});
+    const r = await fetch(API+'/api/v1/admin/config/trial',{method:'PUT',headers:authHeaders(),body:JSON.stringify({trial_duration_days:days,auto_publish_threshold:threshold,max_uploads_per_hour:maxUploads})});
     if(!r.ok) throw await readErrorBody(r);
     showMsg('config-msg',t('msg.config.ok'),false);
   } catch(e){showMsg('config-msg',parseApiError(e),true);}

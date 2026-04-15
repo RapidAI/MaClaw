@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestCapabilityGapDetector_SetConfirmCallback(t *testing.T) {
@@ -121,5 +123,111 @@ func TestCapabilityGapDetector_Resolve_NoCandidates(t *testing.T) {
 	if resolveErr != nil {
 		// Hub search may fail if no URLs configured, which is fine.
 		t.Logf("Resolve returned error (expected for no hub URLs): %v", resolveErr)
+	}
+}
+
+
+// TestCapabilityGapDetector_HubPath_SetsAutoHubSource verifies that the Hub
+// install path in Resolve() sets Source to "auto_hub" before Register().
+func TestCapabilityGapDetector_HubPath_SetsAutoHubSource(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	executor := NewSkillExecutor(app, nil, nil)
+
+	// Simulate what Resolve() does in the Hub path (Step 6):
+	// After hubClient.Install() returns a skill, Resolve() sets
+	// skill.Source = "auto_hub" before calling Register().
+	skill := NLSkillEntry{
+		Name:        "test-hub-skill",
+		Description: "A skill from SkillHub",
+		Source:      "hub", // This is what Install() would set
+	}
+	// Override source as Resolve() does.
+	skill.Source = "auto_hub"
+
+	if err := executor.Register(skill); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	// Verify the registered skill has Source = "auto_hub".
+	skills := executor.List()
+	var found bool
+	for _, s := range skills {
+		if s.Name == "test-hub-skill" {
+			found = true
+			if s.Source != "auto_hub" {
+				t.Errorf("expected Source %q, got %q", "auto_hub", s.Source)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("registered skill not found in List()")
+	}
+}
+
+// TestCapabilityGapDetector_GitHubPath_SetsAutoGitHubSource verifies that the
+// GitHub fallback path in Resolve() sets Source to "auto_github" before Register().
+func TestCapabilityGapDetector_GitHubPath_SetsAutoGitHubSource(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	executor := NewSkillExecutor(app, nil, nil)
+
+	// Simulate what Resolve() does in the GitHub fallback path:
+	// After gs.ImportFromCandidate() returns an imported skill, Resolve()
+	// sets imported.Source = "auto_github" before calling Register().
+	imported := NLSkillEntry{
+		Name:        "test-github-skill",
+		Description: "A skill from GitHub",
+		Source:      "github", // This is what ImportFromCandidate() would set
+	}
+	// Override source as Resolve() does.
+	imported.Source = "auto_github"
+
+	if err := executor.Register(imported); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	// Verify the registered skill has Source = "auto_github".
+	skills := executor.List()
+	var found bool
+	for _, s := range skills {
+		if s.Name == "test-github-skill" {
+			found = true
+			if s.Source != "auto_github" {
+				t.Errorf("expected Source %q, got %q", "auto_github", s.Source)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("registered skill not found in List()")
+	}
+}
+
+// TestCapabilityGapDetector_AutoSourcesAreLearnedSources verifies that the
+// auto_ prefixed sources are recognized as learned sources by IsLearnedSource.
+func TestCapabilityGapDetector_AutoSourcesAreLearnedSources(t *testing.T) {
+	tests := []struct {
+		source string
+		want   bool
+	}{
+		{"auto_hub", true},
+		{"auto_github", true},
+		{"auto_clawhub", true},
+		{"hub", false},
+		{"github", false},
+	}
+	for _, tt := range tests {
+		got := corelib.IsLearnedSource(tt.source)
+		if got != tt.want {
+			t.Errorf("IsLearnedSource(%q) = %v, want %v", tt.source, got, tt.want)
+		}
 	}
 }

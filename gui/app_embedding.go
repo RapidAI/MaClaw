@@ -144,6 +144,9 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 				handler.toolBuilder.SetEmbedder(noop)
 			}
 		}
+		// Clear the GateIntentClassifier so it falls back to keyword-only
+		// classification when vector search is disabled.
+		a.gateIntentClassifier = nil
 	}
 	return nil
 }
@@ -480,6 +483,12 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		a.toolRouter.SetIntentClassifier(ic)
 		log.Println("[embedding] IntentClassifier created and wired to tool router")
 	}
+
+	// Create and wire GateIntentClassifier (five-category gate classification).
+	gic := NewGateIntentClassifier(emb)
+	gic.SetLLMConfig(func() MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 5 * time.Second})
+	a.gateIntentClassifier = gic
+	log.Println("[embedding] GateIntentClassifier created and warming up anchors")
 
 	// Wire embedder into tool builder.
 	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {

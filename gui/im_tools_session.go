@@ -89,6 +89,24 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 			return ""
 		}
 
+		// GateIntentClassifier: five-category semantic classification for the
+		// session guard. Consulted before the generic IntentClassifier because
+		// it produces gate-specific categories (new_project, bug_fix,
+		// maintenance, non_coding, continuation) that map directly to
+		// allow/block decisions.
+		if gic := h.getGateIntentClassifier(); gic != nil && gic.Ready() {
+			gResult := gic.Classify(h.lastUserText, h.lastUserID)
+			switch gResult.Intent {
+			case GateIntentNewProject, GateIntentBugFix, GateIntentMaintenance:
+				return "" // coding-related → allow session
+			case GateIntentContinuation:
+				return "" // continuation → allow session
+			case GateIntentNonCoding:
+				return nonCodingSessionHint(gResult)
+			}
+			// GateIntentUnknown — fall through to generic IntentClassifier below.
+		}
+
 		// Hybrid intent classifier: use embedding + LLM for semantic classification
 		// when keyword-based classification is ambiguous.
 		if h.app != nil && h.app.toolRouter != nil {
@@ -195,6 +213,38 @@ func (h *IMMessageHandler) conversationHasCodingContext() bool {
 		}
 	}
 	return false
+}
+
+// getGateIntentClassifier returns the GateIntentClassifier from the App, if
+// available. Returns nil when the classifier has not been wired up yet.
+// The actual wiring happens in the App initialization (Task 12.1).
+func (h *IMMessageHandler) getGateIntentClassifier() *GateIntentClassifier {
+	if h.app == nil {
+		return nil
+	}
+	return h.app.gateIntentClassifier
+}
+
+// nonCodingSessionHint returns a user-facing hint message when the
+// GateIntentClassifier determines the user's request is a non-coding task.
+// The hint includes the classifier's reason to help the user understand why
+// session creation was blocked.
+func nonCodingSessionHint(result GateIntentResult) string {
+	reason := strings.TrimSpace(result.Reason)
+	if reason == "" {
+		reason = "non-coding task detected"
+	}
+	return fmt.Sprintf(`⚠️ 任务类型检测：当前请求看起来不是编程任务（%s），不需要创建编程会话。
+
+请直接使用以下工具完成任务：
+- bash：执行命令行操作（如 curl 下载、脚本执行）
+- craft_tool：自动生成并执行脚本（适合数据处理、API 调用、文件转换）
+- read_file / write_file / edit_file：读写和局部编辑本地文件
+- send_file：将文件发送给用户
+- open：打开文件或网址
+- memory：保存/检索信息
+
+如果确实需要编程会话，请在下一轮重新调用 create_session。`, reason)
 }
 
 func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string {

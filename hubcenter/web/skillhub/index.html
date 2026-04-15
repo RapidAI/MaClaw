@@ -105,6 +105,8 @@ function renderCard(s) {
   var trustLabel = s.trust_level === 'official' ? '官方' : s.trust_level === 'community' ? '社区' : '未知';
   var stars = renderStars(s.avg_rating || 0);
   var ratingText = s.rating_count > 0 ? ' (' + (s.avg_rating || 0).toFixed(1) + ', ' + s.rating_count + '评)' : '';
+  var verText = s.version ? ' <span style="font-size:11px;color:#64748b;font-weight:400">v' + escapeHtml(s.version) + '</span>' : '';
+  var dateText = s.created_at ? fmtDateShort(s.created_at) : '';
   var tags = '';
   if (s.tags && s.tags.length > 0) {
     tags = '<div class="card-tags">';
@@ -114,10 +116,10 @@ function renderCard(s) {
     tags += '</div>';
   }
   return '<div class="card">' +
-    '<div class="card-name">' + escapeHtml(s.name) + ' <span class="trust-badge ' + trustClass + '">' + trustLabel + '</span></div>' +
+    '<div class="card-name">' + escapeHtml(s.name) + verText + ' <span class="trust-badge ' + trustClass + '">' + trustLabel + '</span></div>' +
     '<div class="card-desc">' + escapeHtml(s.description || '暂无描述') + '</div>' +
     tags +
-    '<div class="card-footer"><span class="stars">' + stars + ratingText + '</span><span>⬇ ' + formatDL(s.downloads || 0) + '</span></div>' +
+    '<div class="card-footer"><span class="stars">' + stars + ratingText + '</span><span>' + (dateText ? '📅 ' + dateText + ' · ' : '') + '⬇ ' + formatDL(s.downloads || 0) + '</span></div>' +
     '</div>';
 }
 
@@ -132,6 +134,11 @@ function formatDL(n) {
   if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + 'w';
   if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
   return String(n);
+}
+
+function fmtDateShort(d) {
+  if (!d) return '';
+  try { var t = new Date(d); if (isNaN(t)) return d; return t.toLocaleDateString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit'}); } catch(e) { return d; }
 }
 
 function escapeHtml(s) {

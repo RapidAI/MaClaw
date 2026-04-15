@@ -3,6 +3,14 @@ package skillmarket
 import (
 	"context"
 	"fmt"
+	"strconv"
+)
+
+const (
+	// configMaxUploadsPerHour 是管理员可配置的全局每小时上传 Skill 数限制。
+	// 当设置为 >0 时，覆盖等级默认的 MaxPerHour 限制（取两者中较小值）。
+	// 设置为 0 或未设置时，仅使用等级默认限制。
+	configMaxUploadsPerHour = "max_skill_uploads_per_hour"
 )
 
 // RateLimiter 检查上传频率限制。
@@ -28,13 +36,19 @@ func (rl *RateLimiter) CheckRateLimit(ctx context.Context, email, userID string)
 	}
 	limits := rl.tierSvc.GetLimits(tier.Tier)
 
+	// 管理员配置的全局每小时限制（取等级限制和全局限制中较小值）
+	maxPerHour := limits.MaxPerHour
+	if globalLimit := rl.getGlobalMaxUploadsPerHour(ctx); globalLimit > 0 && globalLimit < maxPerHour {
+		maxPerHour = globalLimit
+	}
+
 	// 检查每小时限制
 	hourly, err := rl.store.CountRecentSubmissions(ctx, email, 1)
 	if err != nil {
 		return fmt.Errorf("count hourly: %w", err)
 	}
-	if hourly >= limits.MaxPerHour {
-		return fmt.Errorf("rate limit exceeded: %d submissions in last hour (max %d), retry later", hourly, limits.MaxPerHour)
+	if hourly >= maxPerHour {
+		return fmt.Errorf("rate limit exceeded: %d submissions in last hour (max %d), retry later", hourly, maxPerHour)
 	}
 
 	// 检查每天限制
@@ -47,6 +61,17 @@ func (rl *RateLimiter) CheckRateLimit(ctx context.Context, email, userID string)
 	}
 
 	return nil
+}
+
+// getGlobalMaxUploadsPerHour 从管理员配置中读取全局每小时上传限制。
+// 返回 0 表示未设置或无效。
+func (rl *RateLimiter) getGlobalMaxUploadsPerHour(ctx context.Context) int {
+	val := rl.store.GetConfigWithDefault(ctx, configMaxUploadsPerHour, "0")
+	n, err := strconv.Atoi(val)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // CheckSizeLimit 检查 zip 大小是否超过等级限制。

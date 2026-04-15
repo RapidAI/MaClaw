@@ -61,6 +61,35 @@ const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHa
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
+/** Map raw workflow_type strings to user-friendly display labels. */
+const workflowTypeLabelMap: Record<string, { en: string; zh: string }> = {
+    coding: { en: "Coding", zh: "编程" },
+    product_design: { en: "Product Design", zh: "产品设计" },
+    innovation: { en: "Innovation", zh: "创新方案" },
+    business_plan: { en: "Business Plan", zh: "商业计划" },
+    testing: { en: "Testing", zh: "测试" },
+    literature_review: { en: "Literature Review", zh: "文献综述" },
+    research_report: { en: "Research Report", zh: "研究报告" },
+    experiment_design: { en: "Experiment Design", zh: "实验设计" },
+    grant_proposal: { en: "Grant Proposal", zh: "基金申请" },
+    paper_writing: { en: "Paper Writing", zh: "论文写作" },
+    project_proposal: { en: "Project Proposal", zh: "项目提案" },
+    event_planning: { en: "Event Planning", zh: "活动策划" },
+    competitive_analysis: { en: "Competitive Analysis", zh: "竞品分析" },
+    presentation_design: { en: "Presentation Design", zh: "演示设计" },
+    bid_response: { en: "Bid Response", zh: "招投标" },
+    contract_review: { en: "Contract Review", zh: "合同审查" },
+    due_diligence: { en: "Due Diligence", zh: "尽职调查" },
+    compliance_audit: { en: "Compliance Audit", zh: "合规审计" },
+    patent_analysis: { en: "Patent Analysis", zh: "专利分析" },
+    workflow: { en: "Workflow", zh: "工作流" },
+};
+const workflowTypeLabel = (type: string, lang?: string): string => {
+    const entry = workflowTypeLabelMap[type];
+    if (!entry) return type; // fallback: show raw string
+    return lang === 'zh-Hans' || lang === 'zh-Hant' ? entry.zh : entry.en;
+};
+
 /* ── Theme definitions ── */
 
 interface Theme {
@@ -884,6 +913,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const [draftBeforeHistory, setDraftBeforeHistory] = useState<string | null>(null);
     const [historyEdits, setHistoryEdits] = useState<Record<number, string>>({});
     const [cancelPending, setCancelPending] = useState(false);
+    const [dismissedProgressIds, setDismissedProgressIds] = useState<Set<string>>(new Set());
     const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => {
         if (typeof window === 'undefined') return 'light';
         try {
@@ -1168,9 +1198,49 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         return otherMessages.map((msg, idx) => renderMessage(msg, executeAction, t, lang, idx === lastAssistantIdx, savedFileLabel));
     }, [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel]);
 
+    // Clear dismissed progress IDs when progress messages reset (new request)
+    useEffect(() => {
+        if (progressMessages.length === 0 && dismissedProgressIds.size > 0) {
+            setDismissedProgressIds(new Set());
+        }
+    }, [progressMessages.length]);
+
     const renderedProgressMessages = useMemo(() => {
-        return progressMessages.map(msg => renderMessage(msg, executeAction, t, lang, false, savedFileLabel));
-    }, [progressMessages, executeAction, t, lang, savedFileLabel]);
+        const dismissProgress = (id: string) => {
+            setDismissedProgressIds(prev => {
+                const next = new Set(prev);
+                next.add(id);
+                return next;
+            });
+        };
+        return progressMessages
+            .filter(msg => !dismissedProgressIds.has(msg.id))
+            .map(msg => (
+                <div key={msg.id} style={{ display: "flex", alignItems: "center", gap: "4px", color: t.textMuted, fontSize: "11px", padding: "1px 0", fontStyle: "italic" }}>
+                    <span style={{ flex: 1 }}>{msg.content}</span>
+                    <button
+                        onClick={() => dismissProgress(msg.id)}
+                        style={{
+                            background: "none",
+                            border: "none",
+                            color: t.textMuted,
+                            cursor: "pointer",
+                            padding: "0 2px",
+                            fontSize: "11px",
+                            lineHeight: 1,
+                            opacity: 0.6,
+                            flexShrink: 0,
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.opacity = "1"; }}
+                        onMouseLeave={e => { e.currentTarget.style.opacity = "0.6"; }}
+                        title={localizeText(lang, "Dismiss", "关闭")}
+                        aria-label={localizeText(lang, "Dismiss progress message", "关闭提示信息")}
+                    >
+                        ✕
+                    </button>
+                </div>
+            ));
+    }, [progressMessages, dismissedProgressIds, t, lang]);
 
     const containerStyle: React.CSSProperties = inline
         ? {
@@ -1451,7 +1521,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     flexShrink: 0,
                 }}>
                     <span style={{ color: t.text }}>
-                        🚀 即将进入「{workflowState.suggestMaximizeType}」流程，全屏模式体验更佳
+                        🚀 即将进入「{workflowTypeLabel(workflowState.suggestMaximizeType, lang)}」流程，全屏模式体验更佳
                     </span>
                     <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
                         <button

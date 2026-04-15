@@ -20,6 +20,11 @@ const (
 	WorkflowEventPlanning      WorkflowType = "event_planning"
 	WorkflowCompetitiveAnalysis WorkflowType = "competitive_analysis"
 	WorkflowPresentationDesign  WorkflowType = "presentation_design"
+	WorkflowBidResponse         WorkflowType = "bid_response"
+	WorkflowContractReview      WorkflowType = "contract_review"
+	WorkflowDueDiligence        WorkflowType = "due_diligence"
+	WorkflowComplianceAudit     WorkflowType = "compliance_audit"
+	WorkflowPatentAnalysis      WorkflowType = "patent_analysis"
 )
 
 // StructuredIntent is the output of the intent understanding phase.
@@ -42,6 +47,34 @@ const (
 	ToolFilterFull    ToolFilterPolicy = "full"      // full tool list
 )
 
+// InputRequirement describes a document/file that the user must provide
+// before a workflow can begin its first phase. This is a template-level
+// declaration — the engine uses it to prompt the user for upload and to
+// gate phase execution until the input is received.
+//
+// Workflow types that need input documents (bid response, contract review,
+// compliance audit, patent analysis, etc.) declare this field. The engine
+// handles the upload prompt, waiting state, and transition uniformly.
+type InputRequirement struct {
+	// Description is a user-facing explanation of what document is needed.
+	// Example: "请上传发包方的招标文件（PDF/Word/图片均可）"
+	Description string `json:"description"`
+
+	// FileTypes lists accepted file extensions for display purposes.
+	// Example: ["pdf", "docx", "doc", "png", "jpg"]
+	FileTypes []string `json:"file_types,omitempty"`
+
+	// AcceptText indicates the user can also paste text content directly
+	// instead of uploading a file.
+	AcceptText bool `json:"accept_text,omitempty"`
+
+	// AnalysisHint is an optional instruction appended to the first phase
+	// prompt, guiding the LLM on how to analyze the uploaded document.
+	// If empty, the first phase's Prompt is used as-is after the document
+	// is received.
+	AnalysisHint string `json:"analysis_hint,omitempty"`
+}
+
 // PhaseTemplate defines a single phase within a workflow template.
 type PhaseTemplate struct {
 	ID           string           `json:"id"`
@@ -62,6 +95,13 @@ type WorkflowTemplate struct {
 	Description string          `json:"description"`
 	Keywords    []string        `json:"keywords"`
 	Phases      []PhaseTemplate `json:"phases"`
+
+	// RequiresInput declares that this workflow needs the user to provide
+	// an input document before the first phase can execute. When set, the
+	// engine will prompt the user for upload and wait until the document
+	// is received. Nil means no input document is required (the default
+	// for most workflow types).
+	RequiresInput *InputRequirement `json:"requires_input,omitempty"`
 }
 
 // WorkflowResponse is the engine's response to a user input during a workflow.
@@ -74,6 +114,13 @@ type WorkflowResponse struct {
 	Complete     bool               // whether the workflow is complete
 	DocContent   string             // document content for frontend preview
 	GateResult   *QualityGateResult // quality gate check result, if any
+
+	// DefaultInput is true when the engine's HandleInput fell through to
+	// the default branch (no confirm/skip/modify match). The caller can
+	// use this to decide whether to capture the agent loop output as
+	// workflow phase content. When true, the message may be unrelated to
+	// the workflow (e.g. a weather query while a coding workflow is active).
+	DefaultInput bool
 }
 
 // WorkflowStatus tracks the lifecycle state of a workflow.
@@ -98,6 +145,12 @@ type WorkflowState struct {
 	Status       WorkflowStatus               `json:"status"`
 	CreatedAt    time.Time                    `json:"created_at"`
 	UpdatedAt    time.Time                    `json:"updated_at"`
+
+	// InputReceived is true when the user has provided the required input
+	// document (for workflows with RequiresInput). The engine sets this
+	// when it detects a document upload or substantial text input during
+	// the waiting-for-input state.
+	InputReceived bool `json:"input_received,omitempty"`
 }
 
 // QualityGateResult records the outcome of a phase quality gate check.
@@ -187,4 +240,20 @@ type PersistenceStore interface {
 
 	// Cleanup
 	CleanupExpired(olderThan time.Duration) error
+}
+
+// NeedsInputDocument returns true if the workflow template requires the user
+// to provide an input document before the first phase can execute.
+func (t *WorkflowTemplate) NeedsInputDocument() bool {
+	return t != nil && t.RequiresInput != nil && t.RequiresInput.Description != ""
+}
+
+// IsWaitingForInput returns true if the workflow is in the "waiting for user
+// to upload input document" state: the template requires input, but the user
+// hasn't provided it yet, and we're still on the first phase.
+func (ws *WorkflowState) IsWaitingForInput(tmpl *WorkflowTemplate) bool {
+	if ws == nil || tmpl == nil {
+		return false
+	}
+	return tmpl.NeedsInputDocument() && !ws.InputReceived && ws.PhaseIndex == 0
 }

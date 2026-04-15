@@ -251,14 +251,21 @@ func TestProgressSummary(t *testing.T) {
 	o.Tasks = tasks
 
 	summary := o.ProgressSummary()
-	if !strings.Contains(summary, "✅") {
-		t.Error("summary should contain passed icon")
+	if !strings.Contains(summary, "✓") {
+		t.Error("summary should contain passed checkmark ✓")
 	}
-	if !strings.Contains(summary, "🔄") {
-		t.Error("summary should contain in-progress icon")
+	if !strings.Contains(summary, "⟳") {
+		t.Error("summary should contain in-progress icon ⟳")
 	}
-	if !strings.Contains(summary, "⏳") {
-		t.Error("summary should contain pending icon")
+	if !strings.Contains(summary, "T1: Task A ✓") {
+		t.Error("summary should contain 'T1: Task A ✓'")
+	}
+	if !strings.Contains(summary, "T2: Task B ⟳") {
+		t.Error("summary should contain 'T2: Task B ⟳'")
+	}
+	// Pending tasks have no suffix marker
+	if !strings.Contains(summary, "T3: Task C\n") {
+		t.Error("summary should contain 'T3: Task C' on its own line without marker")
 	}
 }
 

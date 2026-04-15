@@ -553,7 +553,7 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 		}, []string{"skill_name"}),
 		toolDef("run_skill", "执行本地技能", map[string]interface{}{
 			"skill_name": map[string]interface{}{"type": "string", "description": "技能名称"},
-			"args":       map[string]interface{}{"type": "object", "description": "通用参数映射，供 skill 内 {{key}} / ${key} 占位符替换使用"},
+			"args":       map[string]interface{}{"type": "object", "description": "Skill 运行参数（按需传入）。Skill 命令中的 {{key}} 占位符会被替换为 args 中对应的值。例如含 {{city}} 则传 args={\"city\":\"北京\"}，含 {{input}} 则传 args={\"input\":\"文件路径\"}。缺少参数时错误信息会提示需要哪些 key。"},
 			"input":      map[string]interface{}{"type": "string", "description": "兼容旧调用的输入参数"},
 			"output":     map[string]interface{}{"type": "string", "description": "兼容旧调用的输出参数"},
 		}, []string{"skill_name"}),
@@ -819,7 +819,10 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 		return h.toolListMCPTools()
 	case "call_mcp_tool":
 		return h.toolCallMCPTool(args)
-	// --- 技能 ---
+	// --- 合并工具：技能管理 ---
+	case "manage_skill":
+		return h.toolManageSkill(args)
+	// 向后兼容旧工具名
 	case "list_skills":
 		return h.toolListSkills()
 	case "search_skill_hub":

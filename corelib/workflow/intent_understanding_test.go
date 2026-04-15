@@ -14,11 +14,14 @@ func TestIntentUnderstanding_StartAndHandleInput(t *testing.T) {
 	mgr := NewIntentUnderstandingManager(NullStore{}, llm, registry)
 
 	// Start a session
-	reply, err := mgr.Start("u1", "帮我做一个CRM系统")
+	startResult, err := mgr.Start("u1", "帮我做一个CRM系统")
 	if err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	if reply == "" {
+	if startResult.Rejected {
+		t.Error("Start should not reject a workflow task")
+	}
+	if startResult.Reply == "" {
 		t.Error("Start returned empty reply")
 	}
 	if !mgr.HasActiveSession("u1") {
@@ -116,19 +119,20 @@ func TestIntentUnderstanding_SessionExpiry(t *testing.T) {
 }
 
 func TestIntentUnderstanding_LLMResponseFormatError(t *testing.T) {
-	// LLM returns non-JSON response
+	// LLM returns non-JSON response — parseLLMIntentResponse falls back to
+	// raw text with empty category, which means Rejected=true (category="")
 	llm := &MockLLMCaller{
 		Response: "这不是JSON格式的回复，我来帮你分析一下需求",
 	}
 	mgr := NewIntentUnderstandingManager(NullStore{}, llm, nil)
 
-	reply, err := mgr.Start("u1", "做个系统")
+	result, err := mgr.Start("u1", "做个系统")
 	if err != nil {
 		t.Fatalf("Start should not fail on bad JSON: %v", err)
 	}
-	// Should fallback to raw text as reply
-	if reply == "" {
-		t.Error("should return raw text as fallback reply")
+	// Non-JSON response → empty category → Rejected
+	if !result.Rejected {
+		t.Error("non-JSON LLM response should result in Rejected=true (empty category)")
 	}
 }
 
