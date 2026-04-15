@@ -1288,6 +1288,10 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 	return sb.String()
 }
 
+// skillRunVarFallbackKeysTUI re-exports the shared list from corelib/skill
+// so that normalizeRunSkillVars stays in sync with the GUI.
+var skillRunVarFallbackKeysTUI = cskill.RunVarFallbackKeys
+
 func normalizeRunSkillVars(args map[string]interface{}) map[string]string {
 	vars := make(map[string]string)
 	if argsMap, ok := args["args"].(map[string]interface{}); ok {
@@ -1299,25 +1303,26 @@ func normalizeRunSkillVars(args map[string]interface{}) map[string]string {
 			}
 		}
 	}
-	// Also check top-level keys that look like template variables
-	for _, key := range []string{"input", "output", "query", "url", "text", "file", "path", "format", "operation", "user_prompt"} {
+	// Also check top-level keys that look like template variables.
+	for _, key := range skillRunVarFallbackKeysTUI {
+		if _, exists := vars[key]; exists {
+			continue
+		}
 		if v, ok := args[key].(string); ok && v != "" {
-			if _, exists := vars[key]; !exists {
-				// LLM fallback: when args is empty and input/output looks like
-				// a JSON object, parse it and merge into vars so that {{key}}
-				// placeholders get resolved.
-				if (key == "input" || key == "output") && len(vars) == 0 && len(v) > 2 && v[0] == '{' {
-					var parsed map[string]interface{}
-					if json.Unmarshal([]byte(v), &parsed) == nil && len(parsed) > 0 {
-						for pk, pv := range parsed {
-							if s, ok := pv.(string); ok {
-								vars[pk] = s
-							}
+			// LLM fallback: when args is empty and input/output looks like
+			// a JSON object, parse it and merge into vars so that {{key}}
+			// placeholders get resolved.
+			if (key == "input" || key == "output") && len(vars) == 0 && len(v) > 2 && v[0] == '{' {
+				var parsed map[string]interface{}
+				if json.Unmarshal([]byte(v), &parsed) == nil && len(parsed) > 0 {
+					for pk, pv := range parsed {
+						if s, ok := pv.(string); ok {
+							vars[pk] = s
 						}
 					}
 				}
-				vars[key] = v
 			}
+			vars[key] = v
 		}
 	}
 	return vars
@@ -2376,7 +2381,81 @@ func (h *TUIAgentHandler) toolUploadSkill(args map[string]interface{}) string {
 	}
 	hubURL = strings.TrimRight(hubURL, "/")
 
-	// Package skill into a temporary zip
+	// Copy skill to a temporary directory for packaging (mirrors GUI packageSkillForMarketWithDir).
+	tmpDir, err := os.MkdirTemp("", "skill-package-*")
+	if err != nil {
+		return fmt.Sprintf("上传失败: 创建临时目录失败: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Copy source directory contents to tmpDir.
+	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, _ := filepath.Rel(srcDir, path)
+		dest := filepath.Join(tmpDir, rel)
+		if info.IsDir() {
+			return os.MkdirAll(dest, 0755)
+		}
+		data, rErr := os.ReadFile(path)
+		if rErr != nil {
+			return rErr
+		}
+		return os.WriteFile(dest, data, info.Mode())
+	})
+	if err != nil {
+		return fmt.Sprintf("上传失败: 复制 Skill 目录失败: %v", err)
+	}
+
+	// Ensure skill.yaml exists in tmpDir (for config-based skills).
+	yamlPath := filepath.Join(tmpDir, "skill.yaml")
+	if _, statErr := os.Stat(yamlPath); statErr != nil {
+		// Read from config to generate skill.yaml (mirrors GUI packageSkillForMarketWithDir).
+		for i := range cfg.NLSkills {
+			if cfg.NLSkills[i].MatchesName(name) {
+				target := &cfg.NLSkills[i]
+				sf := &cskill.SkillYAMLFile{
+					Name:        target.Name,
+					Description: target.Description,
+					Triggers:    target.Triggers,
+					Status:      target.Status,
+					Platforms:   target.Platforms,
+					RequiresGUI: target.RequiresGUI,
+				}
+				if sf.Status == "" {
+					sf.Status = "active"
+				}
+				if len(sf.Platforms) == 0 {
+					sf.Platforms = []string{"universal"}
+				}
+				for _, step := range target.Steps {
+					sf.Steps = append(sf.Steps, cskill.SkillYAMLStep{
+						Action:  step.Action,
+						Params:  step.Params,
+						OnError: step.OnError,
+					})
+				}
+				yamlData, fmtErr := cskill.FormatSkillYAMLFile(sf)
+				if fmtErr == nil {
+					_ = os.WriteFile(yamlPath, yamlData, 0644)
+				}
+				break
+			}
+		}
+	}
+
+	// Pre-upload portability validation on the packaged copy (consistent with GUI).
+	report, valErr := cskill.ValidateSkillPortability(tmpDir)
+	if valErr != nil {
+		return fmt.Sprintf("portability validation failed: %v", valErr)
+	}
+	if report.Summary.Errors > 0 {
+		return fmt.Sprintf("upload blocked: %d portability error(s) found.\n%s\n\n💡 Run manage_skill(action=\"validate\", name=\"%s\", auto_fix=true) to attempt automatic fixes",
+			report.Summary.Errors, cskill.FormatPortabilityReport(report), name)
+	}
+
+	// Package tmpDir into a temporary zip
 	tmpFile, err := os.CreateTemp("", "skill-upload-*.zip")
 	if err != nil {
 		return fmt.Sprintf("上传失败: 创建临时文件失败: %v", err)
@@ -2385,11 +2464,11 @@ func (h *TUIAgentHandler) toolUploadSkill(args map[string]interface{}) string {
 	defer os.Remove(zipPath)
 
 	zw := zip.NewWriter(tmpFile)
-	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, walkErr error) error {
+	err = filepath.Walk(tmpDir, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil || info.IsDir() {
 			return walkErr
 		}
-		rel, _ := filepath.Rel(srcDir, path)
+		rel, _ := filepath.Rel(tmpDir, path)
 		header, hErr := zip.FileInfoHeader(info)
 		if hErr != nil {
 			return hErr

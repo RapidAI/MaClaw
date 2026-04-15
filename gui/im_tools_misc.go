@@ -567,28 +567,29 @@ func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// buildRunSkillArgsExcludeKeys lists manage_skill parameters that are NOT
+// passed to the skill runner. Everything else is transparently forwarded,
+// so new run-time parameters (user_prompt, future additions) work without
+// touching this function.
+var buildRunSkillArgsExcludeKeys = map[string]bool{
+	"action":       true, // manage_skill dispatch key
+	"query":        true, // search action
+	"skill_id":     true, // install action
+	"hub_url":      true, // install action
+	"auto_run":     true, // install action
+	"wait_seconds": true, // handled by caller before StartRun
+	"run_id":       true, // status action
+	"auto_fix":     true, // validate action
+	"name":         true, // consumed by caller to resolve skill
+}
+
 func buildRunSkillArgs(args map[string]interface{}) map[string]interface{} {
 	runArgs := map[string]interface{}{}
-	if raw, ok := args["args"].(map[string]interface{}); ok && len(raw) > 0 {
-		runArgs["args"] = raw
-	}
-	if input, ok := args["input"].(string); ok && input != "" {
-		runArgs["input"] = input
-	}
-	if output, ok := args["output"].(string); ok && output != "" {
-		runArgs["output"] = output
-	}
-	// Pass step selection for api_workflow mode skills.
-	if steps, ok := args["steps"]; ok {
-		runArgs["steps"] = steps
-	}
-	// Pass operation name for api_workflow mode skills.
-	if op, ok := args["operation"].(string); ok && op != "" {
-		runArgs["operation"] = op
-	}
-	// Pass env vars for injection into skill subprocess.
-	if env, ok := args["env"].(map[string]interface{}); ok && len(env) > 0 {
-		runArgs["env"] = env
+	for k, v := range args {
+		if buildRunSkillArgsExcludeKeys[k] {
+			continue
+		}
+		runArgs[k] = v
 	}
 	if len(runArgs) == 0 {
 		return nil

@@ -63,12 +63,13 @@ func TestNormalizeRunSkillVars_LegacyFillsMissingKeys(t *testing.T) {
 	}
 }
 
-func TestNormalizeRunSkillVars_IgnoresNonStringArgs(t *testing.T) {
+func TestNormalizeRunSkillVars_CoercesNonStringArgs(t *testing.T) {
 	got := normalizeRunSkillVars(map[string]interface{}{
 		"args": map[string]interface{}{"count": 3, "enabled": true, "format": "pdf"},
 	})
-	if len(got) != 1 || got["format"] != "pdf" {
-		t.Fatalf("normalizeRunSkillVars() = %#v, want only string args preserved", got)
+	// Non-string values are coerced via fmt.Sprintf (aligned with GUI behavior).
+	if len(got) != 3 || got["format"] != "pdf" || got["count"] != "3" || got["enabled"] != "true" {
+		t.Fatalf("normalizeRunSkillVars() = %#v, want all args coerced to strings", got)
 	}
 }
 

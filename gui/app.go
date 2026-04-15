@@ -4277,11 +4277,12 @@ func (a *App) saveToPath(path string, config AppConfig) error {
 }
 
 type UpdateResult struct {
-	HasUpdate     bool   `json:"has_update"`
-	LatestVersion string `json:"latest_version"`
-	ReleaseUrl    string `json:"release_url"`
-	TagName       string `json:"tag_name"`
-	DownloadUrl   string `json:"download_url"`
+	HasUpdate           bool   `json:"has_update"`
+	LatestVersion       string `json:"latest_version"`
+	ReleaseUrl          string `json:"release_url"`
+	TagName             string `json:"tag_name"`
+	DownloadUrl         string `json:"download_url"`
+	DownloadUnavailable bool   `json:"download_unavailable"` // true when new version exists but installer package is not yet available
 }
 
 func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
@@ -4415,6 +4416,34 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	if downloadUrl == "" {
 		downloadUrl = fmt.Sprintf("https://github.com/RapidAI/CodeClaw/releases/download/%s/%s", tagName, targetFileName)
 		a.log(a.tr("CheckUpdate: Assets not found, using constructed URL: %s", downloadUrl))
+
+		// Validate fallback URL with a HEAD request to avoid download hanging on non-existent files
+		headReq, err := http.NewRequest("HEAD", downloadUrl, nil)
+		if err == nil {
+			headReq.Header.Set("User-Agent", brand.Current().DisplayName)
+			headClient := &http.Client{
+				Timeout: 15 * time.Second,
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					if len(via) >= 10 {
+						return fmt.Errorf("too many redirects")
+					}
+					return nil
+				},
+			}
+			headResp, headErr := headClient.Do(headReq)
+			if headErr != nil {
+				a.log(a.tr("CheckUpdate: HEAD request failed for fallback URL: %v", headErr))
+				downloadUrl = ""
+			} else {
+				headResp.Body.Close()
+				if headResp.StatusCode == 404 || headResp.StatusCode == 403 {
+					a.log(a.tr("CheckUpdate: Fallback URL returned %d, installer package not available", headResp.StatusCode))
+					downloadUrl = ""
+				} else {
+					a.log(a.tr("CheckUpdate: Fallback URL returned %d, proceeding", headResp.StatusCode))
+				}
+			}
+		}
 	}
 	// Keep original version with V prefix for display
 	displayVersion := strings.TrimSpace(tagName)
@@ -4432,11 +4461,12 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	if compareVersions(latestVersionForComparison, cleanCurrent) > 0 {
 		a.log(a.tr("CheckUpdate: Update available! %s > %s", latestVersionForComparison, cleanCurrent))
 		return UpdateResult{
-			HasUpdate:     true,
-			LatestVersion: displayVersion,
-			ReleaseUrl:    htmlURL,
-			TagName:       tagName,
-			DownloadUrl:   downloadUrl,
+			HasUpdate:           true,
+			LatestVersion:       displayVersion,
+			ReleaseUrl:          htmlURL,
+			TagName:             tagName,
+			DownloadUrl:         downloadUrl,
+			DownloadUnavailable: downloadUrl == "",
 		}, nil
 	}
 	a.log(a.tr("CheckUpdate: Already on latest version"))
@@ -4494,14 +4524,25 @@ func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "MaClaw-App")
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 10 * time.Minute, // prevent hanging on unresponsive servers
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("安装包不存在，该版本的安装包可能尚未发布 (HTTP 404)")
+	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("bad status: %s", resp.Status)
+		return "", fmt.Errorf("下载失败: %s", resp.Status)
 	}
 	// Validation Logic
 	// 1. Check Content-Type

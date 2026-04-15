@@ -617,12 +617,18 @@ func artifactExists(path string) bool {
 	return info.Size() > 0
 }
 
+// skillRunVarFallbackKeys re-exports the shared list from corelib/skill
+// so that normalizeSkillRunVars stays in sync with the TUI.
+var skillRunVarFallbackKeys = cskill.RunVarFallbackKeys
+
 func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
 	vars := map[string]string{}
 	if rawArgs, ok := runArgs["args"].(map[string]interface{}); ok {
 		for key, value := range rawArgs {
 			if str, ok := value.(string); ok {
 				vars[key] = str
+			} else if value != nil {
+				vars[key] = fmt.Sprintf("%v", value)
 			}
 		}
 	}
@@ -644,30 +650,16 @@ func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
 		}
 	}
 
-	if _, ok := vars["input"]; !ok {
-		if input, _ := runArgs["input"].(string); input != "" {
-			tryParseJSONIntoVars(input)
-			vars["input"] = input
+	for _, key := range skillRunVarFallbackKeys {
+		if _, exists := vars[key]; exists {
+			continue
 		}
-	}
-	if _, ok := vars["output"]; !ok {
-		if output, _ := runArgs["output"].(string); output != "" {
-			tryParseJSONIntoVars(output)
-			vars["output"] = output
-		}
-	}
-	// Include operation name in vars so when conditions like
-	// "{{operation}} == generate" can reference it.
-	if _, ok := vars["operation"]; !ok {
-		if op, _ := runArgs["operation"].(string); op != "" {
-			vars["operation"] = op
-		}
-	}
-	// Include user_prompt for craft_tool skills that need user context
-	// to generate appropriate scripts.
-	if _, ok := vars["user_prompt"]; !ok {
-		if prompt, _ := runArgs["user_prompt"].(string); prompt != "" {
-			vars["user_prompt"] = prompt
+		if v, ok := runArgs[key].(string); ok && v != "" {
+			// JSON parsing fallback only for input/output — same as TUI.
+			if key == "input" || key == "output" {
+				tryParseJSONIntoVars(v)
+			}
+			vars[key] = v
 		}
 	}
 	if len(vars) == 0 {

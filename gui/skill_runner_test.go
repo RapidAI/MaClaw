@@ -135,12 +135,13 @@ func TestNormalizeSkillRunVars_ArgsOverrideLegacy(t *testing.T) {
 	}
 }
 
-func TestNormalizeSkillRunVars_IgnoresNonStringArgs(t *testing.T) {
+func TestNormalizeSkillRunVars_CoercesNonStringArgs(t *testing.T) {
 	got := normalizeSkillRunVars(map[string]interface{}{
 		"args": map[string]interface{}{"count": 3, "enabled": true, "format": "pdf"},
 	})
-	if len(got) != 1 || got["format"] != "pdf" {
-		t.Fatalf("normalizeSkillRunVars() = %#v, want only string args preserved", got)
+	// Non-string values are coerced via fmt.Sprintf (aligned with TUI behavior).
+	if len(got) != 3 || got["format"] != "pdf" || got["count"] != "3" || got["enabled"] != "true" {
+		t.Fatalf("normalizeSkillRunVars() = %#v, want all args coerced to strings", got)
 	}
 }
 

@@ -598,6 +598,8 @@ const translations: any = {
         "currentVersion": "Current Version",
         "latestVersion": "Latest Version",
         "foundNewVersionMsg": "New version found. Download and update now?",
+        "packageUnavailable": "The installer package for this version has not been published yet. Please visit the release page to check, or try again later.",
+        "visitReleasePage": "Visit Release Page",
         "isLatestVersion": "Already up to date",
         "billing": "Billing",
         "placeholderName": "e.g., Frontend Design",
@@ -1065,6 +1067,8 @@ const translations: any = {
         "currentVersion": "当前版本",
         "latestVersion": "最新版本",
         "foundNewVersionMsg": "检查到新版本，是否立即下载更新？",
+        "packageUnavailable": "该版本的安装包尚未发布，请前往发布页面查看，或稍后再试。",
+        "visitReleasePage": "前往发布页面",
         "isLatestVersion": "已是最新版本",
         "billing": "计费",
         "placeholderName": "例如：前端设计",
@@ -1530,6 +1534,8 @@ const translations: any = {
         "currentVersion": "當前版本",
         "latestVersion": "最新版本",
         "foundNewVersionMsg": "檢查到新版本，是否立即下載更新？",
+        "packageUnavailable": "該版本的安裝包尚未發佈，請前往發佈頁面查看，或稍後再試。",
+        "visitReleasePage": "前往發佈頁面",
         "isLatestVersion": "已是最新版本",
         "billing": "計費",
         "placeholderName": "例如：前端設計",
@@ -6547,7 +6553,16 @@ ${instruction}`;
                                 </div>
 
                                 <div style={{ marginTop: '15px' }}>
-                                    {isDownloading ? (
+                                    {updateResult.download_unavailable ? (
+                                        <div>
+                                            <p style={{ margin: '10px 0', fontSize: '0.9rem', color: 'var(--theme-warning, #e6a23c)' }}>⚠️ {t("packageUnavailable")}</p>
+                                            {updateResult.release_url && (
+                                                <button className="btn-primary" style={{ width: '100%' }} onClick={() => BrowserOpenURL(updateResult.release_url)}>
+                                                    {t("visitReleasePage")}
+                                                </button>
+                                            )}
+                                        </div>
+                                    ) : isDownloading ? (
                                         <div style={{ width: '100%' }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
                                                 <span>{t("downloading")}</span>
