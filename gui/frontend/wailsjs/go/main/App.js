@@ -408,6 +408,10 @@ export function CheckMCPServerHealth(arg1) {
   return window['go']['main']['App']['CheckMCPServerHealth'](arg1);
 }
 
+export function ProbeMCPServers() {
+  return window['go']['main']['App']['ProbeMCPServers']();
+}
+
 // Local MCP server management bindings
 export function ListLocalMCPServers() {
   return window['go']['main']['App']['ListLocalMCPServers']();

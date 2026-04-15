@@ -9,6 +9,7 @@ import {
     UnregisterMCPServer,
     GetMCPServerTools,
     CheckMCPServerHealth,
+    ProbeMCPServers,
     ListLocalMCPServers,
     RegisterLocalMCPServer,
     UpdateLocalMCPServer,
@@ -32,7 +33,7 @@ interface MCPServerView {
     auth_secret: string;
     headers?: Record<string, string>; // custom HTTP headers
     tools: MCPToolView[];
-    health_status: "healthy" | "slow" | "unavailable";
+    health_status: "healthy" | "slow" | "unavailable" | "unknown" | "checking";
     fail_count: number;
     last_check_at: string;
     created_at: string;
@@ -638,7 +639,55 @@ function RemoteMCPPanel({ translate }: Props) {
         }
     }, []);
 
-    useEffect(() => { loadData(); }, [loadData]);
+    // On mount: load servers, then auto-probe any with "unknown" status.
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            // Step 1: Load server list.
+            let list: MCPServerView[] = [];
+            try {
+                const raw = await ListMCPServers();
+                list = Array.isArray(raw) ? raw : [];
+            } catch (err) {
+                if (!cancelled) setError(String(err));
+                return;
+            }
+            if (cancelled) return;
+            setServers(list);
+            setLoading(false);
+
+            // Step 2: Find servers that need probing.
+            const unknowns = list.filter((s) => !s.health_status || s.health_status === "unknown");
+            if (unknowns.length === 0) return;
+
+            // Mark them as "checking" in the UI.
+            setServers((prev) =>
+                prev.map((s) =>
+                    !s.health_status || s.health_status === "unknown"
+                        ? { ...s, health_status: "checking" as MCPServerView["health_status"] }
+                        : s
+                )
+            );
+
+            // Step 3: Check each server (same call as manual "Check Now").
+            for (const s of unknowns) {
+                if (cancelled) return;
+                try {
+                    await CheckMCPServerHealth(s.id);
+                } catch {
+                    // Backend records the failure; we'll pick it up below.
+                }
+            }
+
+            // Step 4: Reload the full list with updated statuses + tools.
+            if (cancelled) return;
+            try {
+                const updated = await ListMCPServers();
+                if (!cancelled) setServers(Array.isArray(updated) ? updated : []);
+            } catch {}
+        })();
+        return () => { cancelled = true; };
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     const openCreateForm = () => {
         setEditingServer(null);
@@ -707,6 +756,13 @@ function RemoteMCPPanel({ translate }: Props) {
             return;
         }
         setExpandedServerID(serverID);
+        // Use cached tools from the server view if available (populated by probe).
+        const cached = servers.find((s) => s.id === serverID);
+        if (cached?.tools && cached.tools.length > 0) {
+            setExpandedTools(cached.tools);
+            return;
+        }
+        // No cache — fetch from backend.
         setToolsLoading(true);
         try {
             const tools = await GetMCPServerTools(serverID);
@@ -724,6 +780,12 @@ function RemoteMCPPanel({ translate }: Props) {
         try {
             await CheckMCPServerHealth(serverID);
             await loadData();
+            // If this server's tools are currently expanded, refresh them
+            // since the health check also refreshes the backend tools cache.
+            if (expandedServerID === serverID) {
+                const tools = await GetMCPServerTools(serverID);
+                setExpandedTools(Array.isArray(tools) ? tools : []);
+            }
         } catch (err) {
             setError(String(err));
         } finally {
@@ -819,7 +881,8 @@ function RemoteMCPPanel({ translate }: Props) {
             case "healthy": return "var(--theme-success)";
             case "slow": return "var(--theme-warning)";
             case "unavailable": return "var(--theme-danger)";
-            default: return colors.textMuted;
+            case "checking": return colors.textMuted;
+            default: return colors.textMuted; // "unknown"
         }
     };
 
@@ -828,6 +891,7 @@ function RemoteMCPPanel({ translate }: Props) {
             case "healthy": return "var(--theme-success-bg)";
             case "slow": return "var(--theme-warning-bg)";
             case "unavailable": return "var(--theme-danger-bg)";
+            case "checking": return colors.surfaceMuted;
             default: return colors.surfaceMuted;
         }
     };
@@ -837,6 +901,7 @@ function RemoteMCPPanel({ translate }: Props) {
             case "healthy": return "var(--theme-success)";
             case "slow": return "var(--theme-warning)";
             case "unavailable": return "var(--theme-danger)";
+            case "checking": return colors.border;
             default: return colors.border;
         }
     };
@@ -846,7 +911,8 @@ function RemoteMCPPanel({ translate }: Props) {
             case "healthy": return translate("mcpHealthy");
             case "slow": return translate("mcpSlow");
             case "unavailable": return translate("mcpUnavailable");
-            default: return status;
+            case "checking": return translate("mcpChecking");
+            default: return translate("mcpNotChecked"); // "unknown" → 未检测
         }
     };
 
@@ -875,8 +941,8 @@ function RemoteMCPPanel({ translate }: Props) {
                         <thead>
                             <tr style={{ background: colors.surfaceMuted }}>
                                 <th style={thStyle}>{translate("mcpColName")}</th>
-                                <th style={thStyle}>{translate("mcpColHealth")}</th>
-                                <th style={thStyle}>{translate("mcpColTools")}</th>
+                                <th style={{ ...thStyle, textAlign: "right" }}>{translate("mcpColHealth")}</th>
+                                <th style={{ ...thStyle, textAlign: "center" }}>{translate("mcpColTools")}</th>
                                 <th style={{ ...thStyle, width: "140px" }}>{translate("mcpColActions")}</th>
                             </tr>
                         </thead>
@@ -1067,6 +1133,7 @@ function ServerRow({
     const isExpanded = expandedServerID === server.id;
     const showHealthDetail = healthDetailID === server.id;
     const toolCount = server.tools ? server.tools.length : 0;
+    const toolCountDisplay = server.health_status === "checking" ? "…" : String(toolCount);
 
     return (
         <>
@@ -1074,7 +1141,7 @@ function ServerRow({
                 <td style={tdStyle} title={server.endpoint_url}>
                     <span style={{ cursor: "default", borderBottom: `1px dashed ${colors.textMuted}`, paddingBottom: "1px" }}>{server.name}</span>
                 </td>
-                <td style={tdStyle}>
+                <td style={{ ...tdStyle, textAlign: "right" }}>
                     <span
                         style={{
                             ...statusBadgeStyle,
@@ -1086,10 +1153,10 @@ function ServerRow({
                         onClick={onToggleHealthDetail}
                         title={translate("mcpHealthRecord")}
                     >
-                        ● {healthLabel(server.health_status)}
+                        {server.health_status === "checking" ? "◌" : "●"} {healthLabel(server.health_status)}
                     </span>
                 </td>
-                <td style={tdStyle}>{toolCount}</td>
+                <td style={{ ...tdStyle, textAlign: "center" }}>{toolCountDisplay}</td>
                 <td style={tdStyle}>
                     <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
                         <button className="btn-secondary" style={smallBtnStyle} onClick={onToggleTools} disabled={busy}>

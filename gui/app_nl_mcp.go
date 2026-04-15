@@ -47,6 +47,8 @@ type MCPRegistry struct {
 	client *http.Client // shared HTTP client for MCP calls
 	// Runtime health tracking (not persisted).
 	health map[string]*mcpHealthState
+	// Cached tool lists from the last successful tools/list call.
+	toolsCache map[string][]MCPToolView
 	// MCP session tracking (per-server Streamable HTTP sessions).
 	sessions map[string]*mcpSession
 }
@@ -66,10 +68,11 @@ type mcpHealthState struct {
 // NewMCPRegistry creates a new client-side MCP registry.
 func NewMCPRegistry(app *App) *MCPRegistry {
 	return &MCPRegistry{
-		app:      app,
-		client:   &http.Client{Timeout: 30 * time.Second},
-		health:   make(map[string]*mcpHealthState),
-		sessions: make(map[string]*mcpSession),
+		app:        app,
+		client:     &http.Client{Timeout: 30 * time.Second},
+		health:     make(map[string]*mcpHealthState),
+		toolsCache: make(map[string][]MCPToolView),
+		sessions:   make(map[string]*mcpSession),
 	}
 }
 
@@ -138,7 +141,16 @@ func (r *MCPRegistry) Register(entry MCPServerEntry) error {
 		entry.Source = MCPSourceManual
 	}
 	servers = append(servers, entry)
-	return r.saveServers(servers)
+	if err := r.saveServers(servers); err != nil {
+		return err
+	}
+	// Trigger async health check for the newly registered server.
+	go func() {
+		if err := r.HealthCheck(entry.ID); err != nil {
+			log.Printf("[MCPRegistry] initial health check for %s failed: %v", entry.ID, err)
+		}
+	}()
+	return nil
 }
 
 // Update modifies an existing MCP Server.
@@ -149,6 +161,7 @@ func (r *MCPRegistry) Update(entry MCPServerEntry) error {
 	servers := r.loadServers()
 	for i, s := range servers {
 		if s.ID == entry.ID {
+			endpointChanged := entry.EndpointURL != "" && entry.EndpointURL != s.EndpointURL
 			if entry.Name != "" {
 				servers[i].Name = entry.Name
 			}
@@ -158,6 +171,12 @@ func (r *MCPRegistry) Update(entry MCPServerEntry) error {
 			servers[i].AuthType = entry.AuthType
 			servers[i].AuthSecret = entry.AuthSecret
 			servers[i].Headers = entry.Headers
+			// Invalidate cached tools and health when endpoint or auth changes —
+			// the old cache is from a different server configuration.
+			if endpointChanged || entry.AuthType != s.AuthType || entry.AuthSecret != s.AuthSecret {
+				delete(r.toolsCache, entry.ID)
+				delete(r.health, entry.ID)
+			}
 			return r.saveServers(servers)
 		}
 	}
@@ -174,6 +193,7 @@ func (r *MCPRegistry) Unregister(serverID string) error {
 		if s.ID == serverID {
 			servers = append(servers[:i], servers[i+1:]...)
 			delete(r.health, serverID)
+			delete(r.toolsCache, serverID)
 			return r.saveServers(servers)
 		}
 	}
@@ -205,6 +225,9 @@ func (r *MCPRegistry) ListServers() []MCPServerView {
 			v.HealthStatus = h.Status
 			v.FailCount = h.FailCount
 			v.LastCheckAt = h.LastCheck
+		}
+		if tools, ok := r.toolsCache[s.ID]; ok {
+			v.Tools = tools
 		}
 		views = append(views, v)
 	}
@@ -443,12 +466,26 @@ func (r *MCPRegistry) HealthCheck(serverID string) error {
 	}
 
 	start := time.Now()
-	_, err = r.doMCPRoundTrip(target, reqBody)
+	parsed, err := r.doMCPRoundTrip(target, reqBody)
 	elapsed := time.Since(start)
 
 	if err != nil {
 		r.recordFailure(serverID)
 		return fmt.Errorf("health check failed: %w", err)
+	}
+
+	// Parse and cache the tool list from the response (tools/list returns
+	// the same data GetServerTools needs, so we cache it here to avoid a
+	// redundant round-trip when the management panel displays tool counts).
+	var toolsResult struct {
+		Result struct {
+			Tools []MCPToolView `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(parsed, &toolsResult); err == nil {
+		r.mu.Lock()
+		r.toolsCache[serverID] = toolsResult.Result.Tools
+		r.mu.Unlock()
 	}
 
 	r.mu.Lock()
@@ -548,6 +585,45 @@ func (r *MCPRegistry) RegisterAutoDiscovered(entry MCPServerEntry, source MCPSer
 	return r.saveServers(servers)
 }
 
+// ProbeAllUnknownAsync kicks off background health checks for every registered
+// server whose health status is still "unknown". Each check runs in its own
+// goroutine with a 15-second timeout. The method returns immediately — callers
+// should poll ListServers to pick up results.
+func (r *MCPRegistry) ProbeAllUnknownAsync() {
+	r.mu.RLock()
+	servers := r.loadServers()
+	var toCheck []string
+	for _, s := range servers {
+		h, ok := r.health[s.ID]
+		if !ok || h.Status == "unknown" {
+			toCheck = append(toCheck, s.ID)
+		}
+	}
+	r.mu.RUnlock()
+
+	if len(toCheck) == 0 {
+		return
+	}
+
+	for _, id := range toCheck {
+		go func(sid string) {
+			done := make(chan struct{})
+			go func() {
+				if err := r.HealthCheck(sid); err != nil {
+					log.Printf("[MCPRegistry] probe failed for %s: %v", sid, err)
+				}
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(15 * time.Second):
+				log.Printf("[MCPRegistry] probe timed out for %s", sid)
+				r.recordFailure(sid)
+			}
+		}(id)
+	}
+}
+
 // StartHealthLoop starts a background goroutine that performs a health check
 // on every registered MCP Server every 60 seconds. It also calls
 // RemoveUnhealthy after each round to prune auto-discovered servers that have
@@ -592,6 +668,7 @@ func (r *MCPRegistry) RemoveUnhealthy() {
 		if ok && h.FailCount >= 3 && s.Source != MCPSourceManual && s.Source != "" {
 			// Auto-discovered server with >= 3 consecutive failures — remove it.
 			delete(r.health, s.ID)
+			delete(r.toolsCache, s.ID)
 			log.Printf("[MCPRegistry] removed unhealthy auto-discovered server %s (%s)", s.ID, s.Source)
 			continue
 		}
@@ -604,7 +681,17 @@ func (r *MCPRegistry) RemoveUnhealthy() {
 }
 
 // GetServerTools fetches the tool list from an MCP Server.
+// Returns cached tools if available from a prior health check; otherwise
+// fetches fresh and updates the cache.
 func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
+	// Check cache first.
+	r.mu.RLock()
+	if cached, ok := r.toolsCache[serverID]; ok && len(cached) > 0 {
+		r.mu.RUnlock()
+		return cached
+	}
+	r.mu.RUnlock()
+
 	target, err := r.findServer(serverID)
 	if err != nil {
 		return nil
@@ -635,6 +722,12 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 		log.Printf("[MCPRegistry] GetServerTools JSON unmarshal error for %s: %v", serverID, err)
 		return nil
 	}
+
+	// Update cache.
+	r.mu.Lock()
+	r.toolsCache[serverID] = result.Result.Tools
+	r.mu.Unlock()
+
 	return result.Result.Tools
 }
 
@@ -686,6 +779,18 @@ func (a *App) CheckMCPServerHealth(serverID string) error {
 		return fmt.Errorf("MCP registry not initialized")
 	}
 	return a.mcpRegistry.HealthCheck(serverID)
+}
+
+// ProbeMCPServers kicks off background health probes for all remote MCP
+// servers that have "unknown" status, then immediately returns the current
+// server list (status may still be "unknown" at this point). The frontend
+// should poll ListMCPServers to pick up the results as they arrive.
+func (a *App) ProbeMCPServers() []MCPServerView {
+	if a.mcpRegistry == nil {
+		return nil
+	}
+	a.mcpRegistry.ProbeAllUnknownAsync()
+	return a.mcpRegistry.ListServers()
 }
 
 // ─── Local (stdio) MCP Server support ───────────────────────────────────────

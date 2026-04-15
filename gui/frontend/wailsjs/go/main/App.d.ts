@@ -206,6 +206,8 @@ export function GetMCPServerTools(arg1:string):Promise<Array<any>>;
 
 export function CheckMCPServerHealth(arg1:string):Promise<void>;
 
+export function ProbeMCPServers():Promise<Array<any>>;
+
 // Local MCP server management bindings
 export function ListLocalMCPServers():Promise<Array<any>>;
 
