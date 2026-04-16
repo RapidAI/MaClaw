@@ -327,6 +327,20 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- 分析项目：竞品分析、尽职调查、合规审计、专利分析等需要系统性分析的任务\n")
 	b.WriteString("- 策划项目：活动策划、创新方案、项目立项等需要多维度规划的任务\n\n")
 
+	b.WriteString("## 内容处理任务 vs 工作流任务\n\n")
+	b.WriteString("这是最容易混淆的区分。请用以下语义测试判断：**用户是要「处理已有内容」还是「创建新的结构化产物」？**\n\n")
+	b.WriteString("**内容处理任务（category=\"none\"）**：一次性读取、加工、转换已有内容的任务。输入内容已经存在，任务是将其处理成另一种形式。\n")
+	b.WriteString("- 典型动作：翻译、摘要、解读、整理、格式转换、字幕处理、文档梳理、资料收集\n")
+	b.WriteString("- 关键特征：输入已存在 → 单次处理 → 输出结果\n")
+	b.WriteString("- 例：\"看HF论文做摘要\" = 读取已有论文 → 生成摘要（内容处理）\n")
+	b.WriteString("- 例：\"把报告翻译成英文\" = 读取已有报告 → 翻译输出（内容处理）\n\n")
+	b.WriteString("**工作流任务（需要工作流）**：多阶段项目，创建全新的结构化文档，需要经过规划、起草、迭代修改等多个阶段。\n")
+	b.WriteString("- 典型动作：写文献综述、开发系统、做商业计划书、写研究报告\n")
+	b.WriteString("- 关键特征：从零创建 → 多阶段迭代 → 产出新的结构化文档\n")
+	b.WriteString("- 例：\"帮我写一篇文献综述\" = 从零创建学术文档 → 多阶段迭代（工作流）\n")
+	b.WriteString("- 例：\"开发一个贪吃蛇游戏\" = 从零创建软件 → 需求→设计→编码（工作流）\n\n")
+	b.WriteString("**判断口诀**：\"看/读/翻译/整理/摘要/解读\" 已有内容 → category=\"none\"；\"写/做/开发/创建\" 新产物 → 对应工作流类型\n\n")
+
 	// Include all registered template descriptions
 	if m.registry != nil {
 		descs := m.registry.AllDescriptions()
@@ -392,7 +406,14 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- \"审查一下这个合同\" → category=\"contract_review\"（需要上传合同的审查任务）\n")
 	b.WriteString("- \"对这家公司做个尽调\" → category=\"due_diligence\"（需要提供公司资料的尽职调查）\n")
 	b.WriteString("- \"检查一下我们的数据合规情况\" → category=\"compliance_audit\"（需要提供审计资料的合规审计）\n")
-	b.WriteString("- \"分析一下这个专利的侵权风险\" → category=\"patent_analysis\"（需要上传专利/技术方案的专利分析）\n\n")
+	b.WriteString("- \"分析一下这个专利的侵权风险\" → category=\"patent_analysis\"（需要上传专利/技术方案的专利分析）\n")
+	b.WriteString("- \"看HF论文做摘要\" → category=\"none\"（读取已有论文并生成摘要 = 内容处理）\n")
+	b.WriteString("- \"帮我写一篇文献综述\" → category=\"literature_review\"（从零创建学术文档 = 工作流）\n")
+	b.WriteString("- \"把这份报告翻译成英文\" → category=\"none\"（翻译已有内容 = 内容处理）\n")
+	b.WriteString("- \"帮我写一份研究报告\" → category=\"research_report\"（从零创建研究报告 = 工作流）\n")
+	b.WriteString("- \"整理这些会议纪要\" → category=\"none\"（整理已有内容 = 内容处理）\n")
+	b.WriteString("- \"解读这篇论文的核心观点\" → category=\"none\"（解读已有内容 = 内容处理）\n")
+	b.WriteString("- \"帮我写一篇论文\" → category=\"paper_writing\"（从零创建学术论文 = 工作流）\n\n")
 
 	b.WriteString("## ready 判断规则\n\n")
 	b.WriteString("- ready=true：用户明确表示可以开始了（如\"开工\"、\"开始吧\"、\"可以了\"、\"没问题了\"、\"就这样\"），且你对意图的理解已经足够清晰\n")

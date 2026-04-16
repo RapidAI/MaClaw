@@ -121,6 +121,16 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 		return &IMAgentResponse{Text: "已取消。有什么其他需要帮助的吗？"}
 	}
 	if ready && intent != nil {
+		// Guard: if the LLM returned category="none" or empty with ready=true,
+		// it means the task is NOT a workflow task (e.g., content processing).
+		// Do NOT call StartWorkflow — fall through to the normal agent loop.
+		// The understanding session has already been cleaned up by HandleInput
+		// when isReady=true, so no additional cleanup is needed.
+		if intent.Category == "none" || intent.Category == "" {
+			log.Printf("[WorkflowInterception] understanding returned ready=true with category=%q for user %s, falling through to agent loop", intent.Category, userID)
+			return nil
+		}
+
 		// Intent understanding is complete — start the workflow.
 		state, err := engine.StartWorkflow(userID, *intent)
 		if err != nil {

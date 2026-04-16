@@ -409,15 +409,38 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 
 	if resp.Text != "" {
 		text := textutil.StripMarkdown(resp.Text)
+		// Lanxin (蓝信) does not support interactive buttons/cards.
+		// Degrade resp.Actions to numbered text options appended to the message.
+		if len(resp.Actions) > 0 {
+			// FormatAskUserForDisplay already appends "请回复「确认」或「取消」"
+			// for confirm type. Replace that generic hint with the concrete
+			// numbered options so the user sees one clear instruction.
+			text = strings.TrimSuffix(strings.TrimSpace(text), "请回复「确认」或「取消」")
+			text = strings.TrimSpace(text)
+			text += "\n\n请回复对应选项："
+			for i, action := range resp.Actions {
+				text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
+			}
+		}
 		if err := gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: toUserID,
 			Text:     text,
 		}); err != nil {
 			log.Printf("[lansenger-mgr] SendText error: %v", err)
 		}
+	} else if len(resp.Actions) > 0 {
+		// Actions without text body — send as standalone options message.
+		text := "请回复对应选项："
+		for i, action := range resp.Actions {
+			text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
+		}
+		_ = gw.SendText(ctx, lansenger.OutgoingText{
+			ToUserID: toUserID,
+			Text:     text,
+		})
 	}
 
-	if resp.Error != "" && resp.Text == "" {
+	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 {
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: toUserID,
 			Text:     "❌ " + textutil.StripMarkdown(resp.Error),

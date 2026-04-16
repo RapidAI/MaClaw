@@ -4998,6 +4998,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					// Fall through to normal tool result handling below.
 				} else {
 					displayText := FormatAskUserForDisplay(askReq)
+					// Prepend any LLM text output from this iteration (e.g. a
+					// requirements document) that would otherwise be lost when
+					// we return early for ask_user. This is critical for IM
+					// channels like Lanxin (蓝信) that don't support interactive
+					// cards — the document content must be in resp.Text.
+					// Skip for desktop: the user already sees msgContent via
+					// streaming tokens, and the frontend's SPECIAL_RESPONSE_SOURCES
+					// logic would replace the streamed content with resp.Text,
+					// causing a duplicate display.
+					if platform != "desktop" {
+						if trimmedMsg := strings.TrimSpace(stripThinkingTags(msgContent)); trimmedMsg != "" {
+							displayText = trimmedMsg + "\n\n---\n\n" + displayText
+						}
+					}
 					toolResults = append(toolResults, fmt.Sprintf("用户被提问: %s（等待回答）", askReq.Question))
 					recordToolResult(tc.ID, toolResults[len(toolResults)-1])
 
