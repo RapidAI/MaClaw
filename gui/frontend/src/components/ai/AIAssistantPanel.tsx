@@ -995,11 +995,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         setLocalDraftInputValue(nextValue);
         setDraftInputValue?.(nextValue);
     }, [setDraftInputValue]);
-    const canSend = ready && (
-        submitLocked
-            ? (!!inputValue.trim() || pendingAttachments.length > 0 || !!selectedFilePath.trim())
-            : (!submitLocked && (!!inputValue.trim() || !!selectedFilePath.trim()))
-    );
+    const canSend = ready && (!!inputValue.trim() || pendingAttachments.length > 0 || !!selectedFilePath.trim());
     const selectedFileName = selectedFilePath ? selectedFilePath.split(/[/\\]/).pop() || selectedFilePath : "";
     const { pinnedNews, otherMessages } = useMemo(() => {
         const pinned: ChatMessage[] = [];
@@ -1147,7 +1143,17 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
             return;
         }
         // Normal mode
-        if (!text && !selectedFilePath.trim()) return;
+        if (!text && !selectedFilePath.trim() && pendingAttachments.length === 0) return;
+        // Collect all file paths: selectedFilePath + pasted image attachments
+        const allFilePaths: string[] = [];
+        if (selectedFilePath.trim()) {
+            allFilePaths.push(selectedFilePath.trim());
+        }
+        for (const att of pendingAttachments) {
+            if (att.filePath.trim()) {
+                allFilePaths.push(att.filePath.trim());
+            }
+        }
         recordSubmittedPrompt?.(text);
         setHistoryIndex(-1);
         setDraftBeforeHistory(null);
@@ -1156,8 +1162,13 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         if (inputRef.current) {
             inputRef.current.style.height = "auto";
         }
+        setPendingAttachments([]);
+        clearSelectedFile?.();
         userScrolledUpRef.current = false;
-        await sendMessage(text);
+        const outgoing = allFilePaths.length > 0
+            ? buildOutgoingMessageMulti(text, allFilePaths)
+            : text;
+        await sendMessage(outgoing);
     }, [inputValue, selectedFilePath, submitLocked, pendingAttachments, addEntry, updateInputValue, clearSelectedFile, recordSubmittedPrompt, sendMessage]);
 
     const applyInputValue = useCallback((nextValue: string) => {
