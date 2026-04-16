@@ -134,7 +134,6 @@ For commercial licensing inquiries, please contact: **znsoft@163.com**
 
 ## About
 
-*   **Version**: V5.3.0.9800
 *   **Author**: Dr. Daniel
 *   **GitHub**: [RapidAI/MaClaw](https://github.com/rapidai/maclaw)
 *   **Website**: [maclaw.top](https://maclaw.top)
