@@ -3,9 +3,12 @@ import { colors } from "../remote/styles";
 import { OpenFileOrShowInFolder, SelectProjectDir, SetWorkflowWorkingDir } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitStatus, ChatConfirmation, ChatUnfinishedSlot } from "./useAIAssistant";
-import { findLastIndex, isPinnedNewsMessage } from "./useAIAssistant";
+import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti } from "./useAIAssistant";
 import { useWorkflowState } from "./useWorkflowState";
 import { WorkflowDocPreview, type DocPreviewTheme } from "./WorkflowDocPreview";
+import { useBufferQueue } from "./useBufferQueue";
+import type { AttachmentInfo } from "./useBufferQueue";
+import { BufferQueuePanel } from "./BufferQueuePanel";
 
 interface AIAssistantPanelStateProps {
     messages: ChatMessage[];
@@ -869,6 +872,19 @@ if (typeof document !== "undefined" && !document.getElementById(AI_PANEL_STATIC_
     document.head.appendChild(style);
 }
 
+// ---------------------------------------------------------------------------
+// Wails binding helper for pasting images
+// ---------------------------------------------------------------------------
+
+async function savePastedImage(base64: string, ext: string): Promise<string> {
+    // @ts-ignore — Wails runtime binding
+    if (typeof window !== 'undefined' && window.go?.main?.App?.SavePastedImage) {
+        // @ts-ignore
+        return window.go.main.App.SavePastedImage(base64, ext);
+    }
+    throw new Error("SavePastedImage binding not available");
+}
+
 /* ── Main component ── */
 
 export function AIAssistantPanel({ onClose, lang, state, actions, window: panelWindow, onThemeModeChange }: AIAssistantPanelProps) {
@@ -914,6 +930,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const [historyEdits, setHistoryEdits] = useState<Record<number, string>>({});
     const [cancelPending, setCancelPending] = useState(false);
     const [dismissedProgressIds, setDismissedProgressIds] = useState<Set<string>>(new Set());
+    const [pendingAttachments, setPendingAttachments] = useState<AttachmentInfo[]>([]);
+    const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
     const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => {
         if (typeof window === 'undefined') return 'light';
         try {
@@ -931,6 +949,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const prevReadyRef = useRef(ready);
 
+    const { queue, addEntry, removeEntry, updateEntry, reorderEntry, mergeAndFire, clearQueue, restoreQueue } = useBufferQueue();
+
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
 
@@ -938,12 +958,15 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
 
     const title = localizeText(lang, "AI Assistant", "AI 助手");
-    const thinkingText = localizeText(lang, "Thinking...", "正在思考...");
-    const processingText = localizeText(lang, "Executing tools and finishing task...", "正在执行工具并完成任务...");
+    const thinkingText = localizeText(lang, "Thinking... (you can type ahead)", "正在思考...（可预输入）");
+    const processingText = localizeText(lang, "Running tools... (you can type ahead)", "执行中...（可预输入）");
     const idlePlaceholderText = localizeText(lang, "Type a message...", "输入消息...");
     const savedFileLabel = localizeText(lang, "Saved file", "文件已保存");
     const isBusy = sending;
-    const inputLocked = isBusy || cancelPending;
+    // submitLocked: prevent sending messages while agent is working;
+    // the textarea itself stays editable so users can type ahead.
+    const submitLocked = isBusy || cancelPending;
+    const prevSubmitLockedRef = useRef(submitLocked);
     const showThinkingState = streaming;
     const showProcessingState = isBusy && !streaming;
     const showBusySpinner = isBusy;
@@ -957,19 +980,26 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const statusKey = initStatus ?? "connecting";
     const initLabel = localizeText(lang, initStatusLabels[statusKey].en, initStatusLabels[statusKey].zhHans, initStatusLabels[statusKey].zhHant);
 
+    const queuePlaceholder = localizeText(lang, "Press Enter to queue...", "输入后按回车缓存...", "輸入後按 Enter 緩存...");
     const placeholderText = !ready
         ? initLabel
         : showThinkingState
             ? thinkingText
             : showProcessingState
                 ? processingText
-                : idlePlaceholderText;
+                : submitLocked
+                    ? queuePlaceholder
+                    : idlePlaceholderText;
     const inputValue = localDraftInputValue;
     const updateInputValue = useCallback((nextValue: string) => {
         setLocalDraftInputValue(nextValue);
         setDraftInputValue?.(nextValue);
     }, [setDraftInputValue]);
-    const canSend = ready && !inputLocked && (!!inputValue.trim() || !!selectedFilePath.trim());
+    const canSend = ready && (
+        submitLocked
+            ? (!!inputValue.trim() || pendingAttachments.length > 0 || !!selectedFilePath.trim())
+            : (!submitLocked && (!!inputValue.trim() || !!selectedFilePath.trim()))
+    );
     const selectedFileName = selectedFilePath ? selectedFilePath.split(/[/\\]/).pop() || selectedFilePath : "";
     const { pinnedNews, otherMessages } = useMemo(() => {
         const pinned: ChatMessage[] = [];
@@ -1088,7 +1118,36 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
 
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
-        if ((!text && !selectedFilePath.trim()) || isBusy) return;
+        if (submitLocked) {
+            // Queue mode: create BufferEntry
+            if (!text && pendingAttachments.length === 0 && !selectedFilePath.trim()) return;
+            const attachments: AttachmentInfo[] = [...pendingAttachments];
+            if (selectedFilePath.trim()) {
+                const fileName = selectedFilePath.split(/[/\\]/).pop() || selectedFilePath;
+                const ext = '.' + (fileName.split('.').pop() || '').toLowerCase();
+                attachments.push({
+                    filePath: selectedFilePath,
+                    isImage: isImageFilePath(selectedFilePath),
+                    fileName,
+                    extension: ext,
+                });
+            }
+            addEntry(inputValue, attachments);
+            recordSubmittedPrompt?.(inputValue);
+            setHistoryIndex(-1);
+            setDraftBeforeHistory(null);
+            setHistoryEdits({});
+            updateInputValue("");
+            if (inputRef.current) {
+                inputRef.current.style.height = "auto";
+            }
+            setPendingAttachments([]);
+            clearSelectedFile?.();
+            requestAnimationFrame(() => inputRef.current?.focus());
+            return;
+        }
+        // Normal mode
+        if (!text && !selectedFilePath.trim()) return;
         recordSubmittedPrompt?.(text);
         setHistoryIndex(-1);
         setDraftBeforeHistory(null);
@@ -1099,7 +1158,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         }
         userScrolledUpRef.current = false;
         await sendMessage(text);
-    }, [inputValue, selectedFilePath, isBusy, recordSubmittedPrompt, sendMessage, updateInputValue]);
+    }, [inputValue, selectedFilePath, submitLocked, pendingAttachments, addEntry, updateInputValue, clearSelectedFile, recordSubmittedPrompt, sendMessage]);
 
     const applyInputValue = useCallback((nextValue: string) => {
         updateInputValue(nextValue);
@@ -1169,6 +1228,70 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
         setDraftBeforeHistory(null);
         return true;
     }, [historyIndex, draftBeforeHistory, applyInputValue]);
+
+    // ── Paste image handler (Task 7.1) ──
+    const handlePaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        for (const item of Array.from(items)) {
+            if (item.type.startsWith('image/')) {
+                e.preventDefault();
+                const blob = item.getAsFile();
+                if (!blob) continue;
+                const ext = blob.type === 'image/png' ? 'png' : 'jpg';
+                try {
+                    const base64 = await new Promise<string>((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                            const result = reader.result as string;
+                            const base64Data = result.split(',')[1] || '';
+                            resolve(base64Data);
+                        };
+                        reader.onerror = reject;
+                        reader.readAsDataURL(blob);
+                    });
+                    const filePath = await savePastedImage(base64, ext);
+                    const thumbnailDataUrl = URL.createObjectURL(blob);
+                    const fileName = filePath.split(/[/\\]/).pop() || `paste.${ext}`;
+                    setPendingAttachments(prev => [...prev, {
+                        filePath,
+                        thumbnailDataUrl,
+                        isImage: true,
+                        fileName,
+                        extension: `.${ext}`,
+                    }]);
+                } catch (err) {
+                    console.error("Failed to save pasted image:", err);
+                }
+                return;
+            }
+        }
+        // Non-image paste: allow default behavior
+    }, []);
+
+    // ── submitLocked true→false transition: merge and fire (Task 9.1) ──
+    useEffect(() => {
+        if (prevSubmitLockedRef.current && !submitLocked && queue.length > 0) {
+            const result = mergeAndFire();
+            if (result) {
+                const outgoing = buildOutgoingMessageMulti(result.mergedText, result.allFilePaths);
+                recordSubmittedPrompt?.(result.mergedText);
+                sendMessage(outgoing).catch(() => {
+                    // On failure, queue is already cleared by mergeAndFire
+                    // This is acceptable for MVP
+                });
+            }
+        }
+        prevSubmitLockedRef.current = submitLocked;
+    }, [submitLocked, queue.length, mergeAndFire, sendMessage, recordSubmittedPrompt]);
+
+    // ── BufferQueuePanel edit handlers (Task 12.1) ──
+    const handleEditEntry = useCallback((id: string) => setEditingEntryId(id), []);
+    const handleCancelEdit = useCallback(() => setEditingEntryId(null), []);
+    const handleSaveEdit = useCallback((id: string, text: string, attachments: AttachmentInfo[]) => {
+        updateEntry(id, text, attachments);
+        setEditingEntryId(null);
+    }, [updateEntry]);
 
     const handleCancel = useCallback(async () => {
         if (!cancelSession || cancelPending) return;
@@ -1796,6 +1919,29 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 </div>
             )}
 
+            {/* ── Buffer Queue Panel ── */}
+            <BufferQueuePanel
+                queue={queue}
+                lang={lang}
+                theme={{
+                    bg: t.bg,
+                    text: t.text,
+                    textMuted: t.textMuted,
+                    headingColor: t.headingColor,
+                    inputBarBg: t.inputBarBg,
+                    inputBarBorder: t.inputBarBorder,
+                    codeBlockBg: t.codeBlockBg,
+                    codeBlockBorder: t.codeBlockBorder,
+                    divider: t.divider,
+                }}
+                editingEntryId={editingEntryId}
+                onEdit={handleEditEntry}
+                onCancelEdit={handleCancelEdit}
+                onSaveEdit={handleSaveEdit}
+                onDelete={removeEntry}
+                onReorder={reorderEntry}
+            />
+
             {/* ── Input bar ── */}
             <div data-testid="ai-input-bar" style={{
                 display: "flex",
@@ -1835,13 +1981,12 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         <button
                             type="button"
                             onClick={clearSelectedFile}
-                            disabled={inputLocked}
+                            disabled={false}
                             style={{
                                 ...baseActionBtnStyle,
                                 color: t.errorText,
                                 border: `1px solid ${t.errorBorder}`,
                                 background: "transparent",
-                                opacity: inputLocked ? 0.5 : 1,
                             }}
                             title={localizeText(lang, "Clear selected file", "清除已选文件")}
                         >
@@ -1857,12 +2002,11 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         fontSize: "13px", flexShrink: 0, userSelect: "none",
                         paddingBottom: "8px",
                     }}>❯</span>
+                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
                     <textarea
                         ref={inputRef}
                         data-testid="ai-input"
-                        disabled={!ready || inputLocked}
-                        readOnly={inputLocked}
-                        aria-readonly={inputLocked}
+                        disabled={!ready}
                         style={{
                             flex: 1, minWidth: 0, background: "transparent",
                             border: "none", outline: "none", color: t.inputText,
@@ -1871,8 +2015,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             resize: "none", overflow: "auto",
                             minHeight: "36px", maxHeight: "120px",
                             lineHeight: 1.4,
-                            opacity: (!ready || inputLocked) ? 0.5 : 1,
-                            cursor: inputLocked ? "default" : "text",
+                            opacity: !ready ? 0.5 : 1,
+                            cursor: !ready ? "default" : "text",
                         }}
                         rows={1}
                         value={inputValue}
@@ -1885,6 +2029,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         }}
                         onCompositionStart={() => setComposing(true)}
                         onCompositionEnd={() => setComposing(false)}
+                        onPaste={handlePaste}
                         onKeyDown={(e) => {
                             if (composing) return;
                             if (e.key === "ArrowUp" && isSelectionCollapsedAtBoundary('up')) {
@@ -1915,15 +2060,30 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         autoCorrect="off"
                         spellCheck={false}
                     />
+                    {pendingAttachments.length > 0 && (
+                        <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", padding: "4px 0" }}>
+                            {pendingAttachments.map((att, idx) => (
+                                <div key={att.filePath} style={{ position: "relative", display: "inline-block" }}>
+                                    {att.thumbnailDataUrl ? (
+                                        <img src={att.thumbnailDataUrl} alt={att.fileName} style={{ width: "40px", height: "40px", objectFit: "cover", borderRadius: "4px", border: `1px solid ${t.codeBlockBorder}` }} />
+                                    ) : (
+                                        <span style={{ fontSize: "24px" }}>🖼️</span>
+                                    )}
+                                    <button onClick={() => setPendingAttachments(prev => prev.filter((_, i) => i !== idx))} style={{ position: "absolute", top: "-4px", right: "-4px", background: t.bg, border: `1px solid ${t.codeBlockBorder}`, borderRadius: "50%", width: "16px", height: "16px", fontSize: "10px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, padding: 0, lineHeight: 1 }} aria-label="Remove attachment">✕</button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    </div>
                     <button
                         type="button"
                         onClick={browseFile}
-                        disabled={!ready || inputLocked}
+                        disabled={!ready}
                         style={{
                             ...baseInputBtnStyle,
                             color: t.pathColor,
                             borderColor: t.pathColor,
-                            opacity: (!ready || inputLocked) ? 0.5 : 1,
+                            opacity: !ready ? 0.5 : 1,
                             marginBottom: "4px",
                         }}
                         title={localizeText(lang, "Choose file", "选择文件")}

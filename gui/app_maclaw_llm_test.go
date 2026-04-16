@@ -409,8 +409,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if zhipuLobster.Name != "智谱龙虾" {
 		t.Errorf("providers[2].Name = %q, want %q", zhipuLobster.Name, "智谱龙虾")
 	}
-	if zhipuLobster.URL != "https://open.bigmodel.cn/api/paas/v4" {
-		t.Errorf("智谱龙虾 URL = %q, want %q", zhipuLobster.URL, "https://open.bigmodel.cn/api/paas/v4")
+	if zhipuLobster.URL != "https://open.bigmodel.cn/api/coding/paas/v4" {
+		t.Errorf("智谱龙虾 URL = %q, want %q", zhipuLobster.URL, "https://open.bigmodel.cn/api/coding/paas/v4")
 	}
 	if zhipuLobster.Model != "glm-5-turbo" {
 		t.Errorf("智谱龙虾 Model = %q, want %q", zhipuLobster.Model, "glm-5-turbo")

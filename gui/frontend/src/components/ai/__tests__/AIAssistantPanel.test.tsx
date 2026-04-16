@@ -355,14 +355,14 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
-    it('disables the textarea while a foreground request is still sending even after streaming stops', () => {
+    it('allows typing in the textarea while a foreground request is still sending even after streaming stops', () => {
         const { getByTestId } = renderPanel({
             state: { messages: [], sending: true, streaming: false, ready: true },
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.disabled).toBe(true);
-        expect(input.readOnly).toBe(true);
+        expect(input.disabled).toBe(false);
+        expect(input.readOnly).toBe(false);
     });
 
     it('shows thinking placeholder while the assistant is actively streaming', () => {
@@ -371,7 +371,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Thinking...');
+        expect(input.placeholder).toBe('Thinking... (you can type ahead)');
     });
 
     it('shows processing placeholder and visible busy hint after streaming stops but the request is still active', () => {
@@ -380,8 +380,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Executing tools and finishing task...');
-        expect(getByText('Executing tools and finishing task...')).toBeTruthy();
+        expect(input.placeholder).toBe('Running tools... (you can type ahead)');
+        expect(getByText('Running tools... (you can type ahead)')).toBeTruthy();
     });
 
     it('hides background launch control even if a background handler exists', () => {
@@ -934,16 +934,15 @@ describe('AIAssistantPanel property tests', () => {
         expect(queryByTitle('Send')).toBeNull();
     });
 
-    it('keeps the textarea disabled while the request is still in flight', () => {
+    it('allows typing in the textarea while the request is still in flight', () => {
         const { getByTestId } = renderPanel({
             state: { messages: [], sending: true, streaming: false, visualBusy: false, ready: true },
             actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.disabled).toBe(true);
-        expect(input.readOnly).toBe(true);
-        expect(input.getAttribute('aria-readonly')).toBe('true');
+        expect(input.disabled).toBe(false);
+        expect(input.readOnly).toBe(false);
     });
 
     it('keeps the textarea disabled while initialization is not ready', () => {

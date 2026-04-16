@@ -17,6 +17,7 @@ type MCPToolView struct {
 // MCPServerView is the runtime view of an MCP Server.
 type MCPServerView struct {
 	ID           string `json:"id"`
+	Name         string `json:"name"`
 	HealthStatus string `json:"health_status"`
 }
 
@@ -31,11 +32,13 @@ type MCPToolSet struct {
 type MCPServerProvider interface {
 	ListServers() []MCPServerView
 	GetServerTools(serverID string) []MCPToolView
+	CallTool(serverID, toolName string, args map[string]interface{}) (string, error)
 }
 
 // LocalMCPToolProvider abstracts access to local (stdio) MCP servers (decouples from LocalMCPManager).
 type LocalMCPToolProvider interface {
 	GetAllTools() []MCPToolSet
+	CallTool(serverID, toolName string, args map[string]interface{}) (string, error)
 }
 
 // DefinitionGenerator dynamically generates the Agent's tool definition
@@ -79,6 +82,12 @@ func (g *DefinitionGenerator) IsDeferredTool(name string) bool {
 func (g *DefinitionGenerator) SetLocalMCPProvider(provider LocalMCPToolProvider) {
 	g.localMCPProvider = provider
 }
+
+// MCPProvider returns the remote MCP server provider (may be nil).
+func (g *DefinitionGenerator) MCPProvider() MCPServerProvider { return g.mcpProvider }
+
+// LocalMCPProvider returns the local MCP tool provider (may be nil).
+func (g *DefinitionGenerator) LocalMCPProvider() LocalMCPToolProvider { return g.localMCPProvider }
 
 // Generate produces the complete tool definition list: builtin + dynamic MCP tools.
 // Dynamic tool names that conflict with builtin names get a server_id prefix.

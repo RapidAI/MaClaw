@@ -309,6 +309,25 @@ export function buildOutgoingMessage(text: string, selectedFilePath: string): st
     return trimmedText ? `${trimmedText}\n\n${fileBlock}` : fileBlock;
 }
 
+export function buildOutgoingMessageMulti(text: string, filePaths: string[]): string {
+    const trimmedText = text.trim();
+    const validPaths = filePaths.map(p => p.trim()).filter(Boolean);
+    if (validPaths.length === 0) return trimmedText;
+
+    const hasImages = validPaths.some(isImageFilePath);
+    const pathInstructions = hasImages
+        ? "这是用户已经提供的本地文件。图片文件不要调用 screenshot 或重新截图；请直接使用这些路径。"
+        : "请直接使用这些路径；如需查看内容可调用 read_file、open 等工具。";
+
+    const fileBlock = [
+        FILE_PATH_PROMPT_PREFIX,
+        ...validPaths,
+        pathInstructions,
+    ].join("\n");
+
+    return trimmedText ? `${trimmedText}\n\n${fileBlock}` : fileBlock;
+}
+
 function normalizeSelectedFilePath(filePath: string): string {
     return filePath.trim();
 }

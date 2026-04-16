@@ -146,7 +146,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("list_mcp_tools", "列出已注册的 MCP Server 及其工具",
 		ToolCategoryBuiltin, []string{"mcp", "list", "tools"},
 		nil, nil,
-		func(args map[string]interface{}) string { return h.toolListMCPTools() })
+		func(args map[string]interface{}) string { return h.toolListMCPTools(args) })
 
 	reg("call_mcp_tool", "调用指定 MCP Server 上的工具（server_id 支持 ID 或 Name，重名时请传 ID）",
 		ToolCategoryBuiltin, []string{"mcp", "call", "execute"},

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -1291,4 +1293,66 @@ func (a *App) ExportAgentSkillDir(skillName string, outputDir string) error {
 		}
 	}
 	return fmt.Errorf("skill %q not found", skillName)
+}
+
+// ---------------------------------------------------------------------------
+// Pasted image save Wails binding
+// ---------------------------------------------------------------------------
+
+// SavePastedImage saves a base64-encoded image to a temporary file and returns
+// the absolute file path. The image is stored in os.TempDir()/maclaw-paste/
+// with a timestamped filename.
+func (a *App) SavePastedImage(base64Data string, extension string) (string, error) {
+	// Normalize extension: lowercase, strip leading dot.
+	ext := strings.ToLower(strings.TrimSpace(extension))
+	ext = strings.TrimPrefix(ext, ".")
+
+	// Validate extension against whitelist.
+	allowedExts := map[string]bool{
+		"png": true, "jpg": true, "jpeg": true,
+		"gif": true, "webp": true, "bmp": true,
+	}
+	if !allowedExts[ext] {
+		return "", fmt.Errorf("unsupported image extension: %s", ext)
+	}
+
+	// Validate base64 data size (≤ 50MB before decoding).
+	const maxBase64Size = 50 * 1024 * 1024 // 50MB
+	if len(base64Data) > maxBase64Size {
+		return "", fmt.Errorf("image data too large (max 50MB)")
+	}
+
+	// Create temp directory.
+	tempDir := filepath.Join(os.TempDir(), "maclaw-paste")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+
+	// Generate timestamped filename with random suffix.
+	now := time.Now()
+	randBytes := make([]byte, 2)
+	if _, err := rand.Read(randBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random suffix: %w", err)
+	}
+	randHex := fmt.Sprintf("%x", randBytes)
+	fileName := fmt.Sprintf("paste_%s_%s.%s", now.Format("20060102_150405"), randHex, ext)
+
+	// Decode base64 data.
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", fmt.Errorf("invalid base64 data: %w", err)
+	}
+
+	// Write to file.
+	filePath := filepath.Join(tempDir, fileName)
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return "", fmt.Errorf("failed to write image file: %w", err)
+	}
+
+	// Return absolute path.
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return filePath, nil // fallback to non-absolute path
+	}
+	return absPath, nil
 }

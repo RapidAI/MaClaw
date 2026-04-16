@@ -225,10 +225,25 @@ func buildParametersFromSchema(schema map[string]interface{}) map[string]interfa
 	// Try to detect if it looks like a properties map (keys are property names
 	// with object values describing types).
 	if looksLikePropertiesMap(schema) {
-		return map[string]interface{}{
-			"type":       "object",
-			"properties": schema,
+		// Separate property definitions (maps with "type" key) from
+		// non-property top-level keys (e.g., "required" array,
+		// "additionalProperties" bool, "description" string).
+		properties := make(map[string]interface{}, len(schema))
+		result := map[string]interface{}{
+			"type": "object",
 		}
+		for k, v := range schema {
+			if vm, isObj := v.(map[string]interface{}); isObj {
+				if _, hasType := vm["type"]; hasType {
+					properties[k] = v
+					continue
+				}
+			}
+			// Non-property entry — promote to result map directly.
+			result[k] = v
+		}
+		result["properties"] = properties
+		return result
 	}
 
 	// Fallback: marshal and re-parse to ensure clean copy, then use as-is.
@@ -251,19 +266,23 @@ func buildParametersFromSchema(schema map[string]interface{}) map[string]interfa
 }
 
 // looksLikePropertiesMap heuristically checks if a map looks like a JSON Schema
-// properties map (each value is a map with a "type" key).
+// properties map (at least one value is a map with a "type" key).
+// It tolerates non-object entries (e.g., "required" array, "additionalProperties"
+// bool) that may be mixed in alongside property definitions.
 func looksLikePropertiesMap(m map[string]interface{}) bool {
 	if len(m) == 0 {
 		return false
 	}
+	propertyCount := 0
 	for _, v := range m {
 		vm, ok := v.(map[string]interface{})
 		if !ok {
-			return false
+			// Non-object value — could be "required" array, "additionalProperties" bool, etc.
+			continue
 		}
-		if _, hasType := vm["type"]; !hasType {
-			return false
+		if _, hasType := vm["type"]; hasType {
+			propertyCount++
 		}
 	}
-	return true
+	return propertyCount > 0
 }

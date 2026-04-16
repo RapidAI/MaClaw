@@ -30,6 +30,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
+	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
@@ -857,35 +858,174 @@ func (h *TUIAgentHandler) toolMemory(args map[string]interface{}) string {
 
 // ===================== MCP =====================
 
-func (h *TUIAgentHandler) toolListMCPTools() string {
+func (h *TUIAgentHandler) toolListMCPTools(args map[string]interface{}) string {
 	if h.defGenerator == nil {
 		return "MCP 工具提供者未初始化"
 	}
-	// 通过 DefinitionGenerator 获取所有工具，过滤出非 builtin 的
-	allDefs := h.defGenerator.Generate()
-	var mcpTools []string
-	for _, def := range allDefs {
-		name := toolExtractName(def)
-		if name != "" && !isOriginalBuiltin(name) {
-			desc := toolExtractDesc(def)
-			mcpTools = append(mcpTools, fmt.Sprintf("  %s: %s", name, desc))
+
+	query := stringArg(args, "query")
+	serverID := stringArg(args, "server_id")
+
+	// Build []mcputil.ToolEntry from both local and remote MCP sources.
+	var entries []mcputil.ToolEntry
+
+	// Local (stdio) MCP servers.
+	if localProv := h.defGenerator.LocalMCPProvider(); localProv != nil {
+		for _, ts := range localProv.GetAllTools() {
+			for _, t := range ts.Tools {
+				entries = append(entries, mcputil.ToolEntry{
+					ServerName:   ts.ServerName,
+					ServerID:     ts.ServerID,
+					SourceType:   "local/stdio",
+					HealthStatus: "running",
+					ToolName:     t.Name,
+					Description:  t.Description,
+					InputSchema:  t.InputSchema,
+				})
+			}
 		}
 	}
-	if len(mcpTools) == 0 {
+
+	// Remote (HTTP) MCP servers.
+	if mcpProv := h.defGenerator.MCPProvider(); mcpProv != nil {
+		for _, srv := range mcpProv.ListServers() {
+			if srv.HealthStatus != "healthy" {
+				continue
+			}
+			serverName := srv.Name
+			if serverName == "" {
+				serverName = srv.ID
+			}
+			tools := mcpProv.GetServerTools(srv.ID)
+			for _, t := range tools {
+				entries = append(entries, mcputil.ToolEntry{
+					ServerName:   serverName,
+					ServerID:     srv.ID,
+					SourceType:   "remote/HTTP",
+					HealthStatus: srv.HealthStatus,
+					ToolName:     t.Name,
+					Description:  t.Description,
+					InputSchema:  t.InputSchema,
+				})
+			}
+		}
+	}
+
+	if len(entries) == 0 {
 		return "无 MCP 工具（未配置或服务器不健康）"
 	}
-	return "MCP 工具列表:\n" + strings.Join(mcpTools, "\n")
+
+	filtered := mcputil.FilterTools(entries, query, serverID)
+	if len(filtered) == 0 {
+		return fmt.Sprintf("没有匹配的工具（共 %d 个工具已注册）", len(entries))
+	}
+
+	return mcputil.FormatToolList(filtered, query, serverID)
 }
 
 func (h *TUIAgentHandler) toolCallMCPTool(args map[string]interface{}) string {
-	// MCP 工具调用通过 DefinitionGenerator 动态注册的工具名直接路由
-	// 这里作为显式调用入口
 	serverID := stringArg(args, "server_id")
 	toolName := stringArg(args, "tool_name")
 	if serverID == "" || toolName == "" {
 		return "错误: 缺少 server_id 或 tool_name"
 	}
-	return fmt.Sprintf("MCP 工具调用: server=%s, tool=%s (需要通过 MCP 协议转发，当前 TUI 暂不支持直接调用)", serverID, toolName)
+
+	// Extract tool arguments — handle both map and JSON string from LLM.
+	var toolArgs map[string]interface{}
+	switch v := args["arguments"].(type) {
+	case map[string]interface{}:
+		toolArgs = v
+	case string:
+		if v = strings.TrimSpace(v); v != "" {
+			if err := json.Unmarshal([]byte(v), &toolArgs); err != nil {
+				return fmt.Sprintf("arguments JSON 解析失败: %s", err.Error())
+			}
+		}
+	}
+	if toolArgs == nil {
+		toolArgs = map[string]interface{}{}
+	}
+
+	if h.defGenerator == nil {
+		return "MCP 工具提供者未初始化"
+	}
+
+	// Resolve the server: try local first, then remote.
+	var inputSchema map[string]interface{}
+	isLocal := false
+
+	if localProv := h.defGenerator.LocalMCPProvider(); localProv != nil {
+		for _, ts := range localProv.GetAllTools() {
+			if ts.ServerID == serverID {
+				isLocal = true
+				for _, t := range ts.Tools {
+					if t.Name == toolName {
+						inputSchema = t.InputSchema
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+
+	if !isLocal {
+		if mcpProv := h.defGenerator.MCPProvider(); mcpProv != nil {
+			for _, t := range mcpProv.GetServerTools(serverID) {
+				if t.Name == toolName {
+					inputSchema = t.InputSchema
+					break
+				}
+			}
+		}
+	}
+
+	// Validate arguments against the InputSchema before making the RPC call.
+	if inputSchema != nil {
+		if validationErrs := mcputil.ValidateArgs(inputSchema, toolArgs); len(validationErrs) > 0 {
+			var msgs []string
+			for _, ve := range validationErrs {
+				msgs = append(msgs, ve.Message)
+			}
+			stdErr := mcputil.NewStandardError(serverID, toolName, mcputil.ErrValidation, strings.Join(msgs, "; "))
+			return mcputil.FormatForLLM(nil, stdErr)
+		}
+	}
+
+	// Call the tool via the appropriate provider.
+	if isLocal {
+		localProv := h.defGenerator.LocalMCPProvider()
+		if localProv == nil {
+			return "本地 MCP Manager 未初始化"
+		}
+		result, err := localProv.CallTool(serverID, toolName, toolArgs)
+		if err != nil {
+			code, msg := mcputil.ClassifyError(err, 0, "")
+			stdErr := mcputil.NewStandardError(serverID, toolName, code, msg)
+			return mcputil.FormatForLLM(nil, stdErr)
+		}
+		resp, stdErr := mcputil.NormalizeResponse(serverID, toolName, result)
+		if stdErr != nil {
+			return mcputil.FormatForLLM(nil, stdErr)
+		}
+		return mcputil.FormatForLLM(resp, nil)
+	}
+
+	mcpProv := h.defGenerator.MCPProvider()
+	if mcpProv == nil {
+		return "MCP Registry 未初始化"
+	}
+	result, err := mcpProv.CallTool(serverID, toolName, toolArgs)
+	if err != nil {
+		code, msg := mcputil.ClassifyError(err, 0, "")
+		stdErr := mcputil.NewStandardError(serverID, toolName, code, msg)
+		return mcputil.FormatForLLM(nil, stdErr)
+	}
+	resp, stdErr := mcputil.NormalizeResponse(serverID, toolName, result)
+	if stdErr != nil {
+		return mcputil.FormatForLLM(nil, stdErr)
+	}
+	return mcputil.FormatForLLM(resp, nil)
 }
 
 func toolExtractName(def map[string]interface{}) string {

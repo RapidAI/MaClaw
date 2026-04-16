@@ -73,7 +73,11 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"session_id": map[string]string{"type": "string", "description": "会话 ID（可选，只有一个会话时自动选择）"},
 			}, nil),
-		toolDef("list_mcp_tools", "列出已注册的 MCP Server 及其工具", nil, nil),
+		toolDef("list_mcp_tools", "列出已注册的 MCP Server 及其工具（含参数详情）。支持按关键词搜索或按服务器过滤",
+			map[string]interface{}{
+				"query":     map[string]string{"type": "string", "description": "搜索关键词（匹配工具名、描述、服务器名，大小写不敏感）"},
+				"server_id": map[string]string{"type": "string", "description": "按服务器 ID 过滤"},
+			}, nil),
 		toolDef("call_mcp_tool", "调用指定 MCP Server 上的工具（server_id 支持 ID 或 Name，重名时请传 ID）",
 			map[string]interface{}{
 				"server_id": map[string]string{"type": "string", "description": "MCP Server ID 或 Name"},

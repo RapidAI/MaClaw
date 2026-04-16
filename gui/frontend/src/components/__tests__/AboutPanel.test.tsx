@@ -22,7 +22,7 @@ const baseProps = {
         version: 'Version',
         buildLabel: 'Build',
         author: 'Author',
-        businessCooperation: 'Business: WeChat znsoft',
+        businessCooperation: 'Contact: WeChat znsoft',
         quickActionsTitle: 'Quick Actions',
         quickActionsDesc: 'Open official resources, check updates, or report issues.',
         officialWebsite: 'Official Website',

@@ -11,7 +11,7 @@ func init() {
 		TrayTooltip:     "TigerClaw Dashboard",
 		Slogan:          "像虎一样灵巧勇猛。",
 		Author:          "Dr. Daniel",
-		BusinessContact: "商业合作：QianXin",
+		BusinessContact: "联系信息：QianXin",
 		WebsiteURL:      "https://www.qianxin.com",
 		GitHubURL:       "",
 		IconPath:        "assets/qianxin.png",

@@ -1,5 +1,7 @@
 package im
 
+import "strings"
+
 // AgentResponse is the structured reply from the MaClaw Agent (LLM).
 // It is sent from the MaClaw client to Hub via the "im.agent_response"
 // WebSocket message, then converted to GenericResponse for IM delivery.
@@ -53,7 +55,7 @@ func (r *AgentResponse) ToGenericResponse() *GenericResponse {
 		StatusIcon:   "🤖",
 		Title:        "",
 		Body:         r.Text,
-		Fields:       r.Fields,
+		Fields:       filterOutTokenFields(r.Fields),
 		Actions:      r.Actions,
 		ImageKey:     r.ImageKey,
 		FileData:     r.FileData,
@@ -62,4 +64,22 @@ func (r *AgentResponse) ToGenericResponse() *GenericResponse {
 	}
 
 	return resp
+}
+
+// filterOutTokenFields removes internal token usage fields from the
+// response fields list. These are telemetry data (Input/Output/Total tokens)
+// that should not be shown to end users on IM channels.
+func filterOutTokenFields(fields []ResponseField) []ResponseField {
+	if len(fields) == 0 {
+		return fields
+	}
+	filtered := make([]ResponseField, 0, len(fields))
+	for _, f := range fields {
+		lower := strings.ToLower(f.Label)
+		if strings.Contains(lower, "tokens") {
+			continue
+		}
+		filtered = append(filtered, f)
+	}
+	return filtered
 }

@@ -46,7 +46,7 @@ func defaultMaclawLLMProviders() []MaclawLLMProvider {
 	return []MaclawLLMProvider{
 		{Name: "免费", URL: "http://localhost:18099/v1", Model: "free-proxy", ContextLength: 10000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "none"},
 		{Name: "OpenAI", URL: "https://chatgpt.com/backend-api", Model: "gpt-5.4", AuthType: "oauth", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses-ws"},
-		{Name: zhipuLobsterProviderName, URL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: zhipuLobsterProviderName, URL: "https://open.bigmodel.cn/api/coding/paas/v4", Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude-code/2.0.0"},
@@ -106,7 +106,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 		if providers[i].Name == legacyZhipuProviderName {
 			providers[i].Name = zhipuLobsterProviderName
 			if strings.TrimSpace(providers[i].URL) == "" || providers[i].URL == "https://open.bigmodel.cn/api/paas/v4" {
-				providers[i].URL = "https://open.bigmodel.cn/api/paas/v4"
+				providers[i].URL = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
 			if strings.TrimSpace(providers[i].Model) == "" || providers[i].Model == "glm-5-turbo" {
 				providers[i].Model = "glm-5-turbo"

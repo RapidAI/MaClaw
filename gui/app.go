@@ -2605,7 +2605,7 @@ func (a *App) syncToOpencodeSettings(config AppConfig, projectDir string, instan
 		case "glm":
 			modelId = "glm-4.7"
 			if baseUrl == "" {
-				baseUrl = "https://open.bigmodel.cn/api/paas/v4"
+				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
 		case "doubao":
 			modelId = "doubao-seed-code-preview-latest"
@@ -2772,7 +2772,7 @@ func (a *App) syncToIFlowSettings(config AppConfig, projectDir string, instanceI
 		case "glm":
 			modelId = "glm-4.7"
 			if baseUrl == "" {
-				baseUrl = "https://open.bigmodel.cn/api/paas/v4"
+				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
 		case "doubao":
 			modelId = "doubao-seed-code-preview-latest"
@@ -2863,7 +2863,7 @@ func (a *App) syncToKiloSettings(config AppConfig, projectDir string, instanceID
 		case "glm":
 			modelId = "glm-4.7"
 			if baseUrl == "" {
-				baseUrl = "https://open.bigmodel.cn/api/paas/v4"
+				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
 		case "doubao":
 			modelId = "doubao-seed-code-preview-latest"
@@ -3475,7 +3475,7 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "ChatFire", ModelId: "gpt-5.1-codex-mini", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: "", WireApi: "responses"},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/paas/v4", ApiKey: ""},
+		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
 		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
@@ -3911,7 +3911,7 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 	ensureModel(&config.Gemini.Models, "ChatFire", "https://api.chatfire.cn/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro", "")
 	ensureModel(&config.Codex.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
 	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-5-turbo", "")
+	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5-turbo", "")
 	ensureModel(&config.Codex.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
 	ensureModel(&config.Codex.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
 	ensureModel(&config.Codex.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")

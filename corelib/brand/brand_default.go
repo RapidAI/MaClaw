@@ -11,7 +11,7 @@ func init() {
 		TrayTooltip:     "MaClaw Dashboard",
 		Slogan:          "你的数智时代伙伴。",
 		Author:          "Dr. Daniel",
-		BusinessContact: "商业合作：微信 znsoft",
+		BusinessContact: "联系信息：微信 znsoft",
 		WebsiteURL:      "https://maclaw.top",
 		GitHubURL:       "https://github.com/nicedoc/maclaw",
 		IconPath:        "build/appicon.png",

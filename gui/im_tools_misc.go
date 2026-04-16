@@ -16,51 +16,67 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
+	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
-func (h *IMMessageHandler) toolListMCPTools() string {
-	var b strings.Builder
-	hasAny := false
+func (h *IMMessageHandler) toolListMCPTools(args map[string]interface{}) string {
+	query, _ := args["query"].(string)
+	serverID, _ := args["server_id"].(string)
 
-	// List local (stdio) MCP servers
+	// Build []mcputil.ToolEntry from both local and remote MCP sources.
+	var entries []mcputil.ToolEntry
+
+	// Local (stdio) MCP servers.
 	if h.app.localMCPManager == nil {
 		h.app.ensureLocalMCPManager()
 	}
 	if mgr := h.app.localMCPManager; mgr != nil {
 		for _, ts := range mgr.GetAllTools() {
-			hasAny = true
-			b.WriteString(fmt.Sprintf("## %s (%s) [本地/stdio]\n", ts.ServerName, ts.ServerID))
 			for _, t := range ts.Tools {
-				b.WriteString(fmt.Sprintf("  - %s: %s\n", t.Name, t.Description))
+				entries = append(entries, mcputil.ToolEntry{
+					ServerName:   ts.ServerName,
+					ServerID:     ts.ServerID,
+					SourceType:   "local/stdio",
+					HealthStatus: "running",
+					ToolName:     t.Name,
+					Description:  t.Description,
+					InputSchema:  t.InputSchema,
+				})
 			}
 		}
 	}
 
-	// List remote (HTTP) MCP servers
-	registry := h.app.mcpRegistry
-	if registry != nil {
-		servers := registry.ListServers()
-		for _, s := range servers {
-			hasAny = true
-			b.WriteString(fmt.Sprintf("## %s (%s) [远程/HTTP] 状态=%s\n", s.Name, s.ID, s.HealthStatus))
+	// Remote (HTTP) MCP servers.
+	if registry := h.app.mcpRegistry; registry != nil {
+		for _, s := range registry.ListServers() {
 			tools := registry.GetServerTools(s.ID)
-			if len(tools) == 0 {
-				b.WriteString("  (无工具或无法获取)\n")
-				continue
-			}
 			for _, t := range tools {
-				b.WriteString(fmt.Sprintf("  - %s: %s\n", t.Name, t.Description))
+				entries = append(entries, mcputil.ToolEntry{
+					ServerName:   s.Name,
+					ServerID:     s.ID,
+					SourceType:   "remote/HTTP",
+					HealthStatus: s.HealthStatus,
+					ToolName:     t.Name,
+					Description:  t.Description,
+					InputSchema:  t.InputSchema,
+				})
 			}
 		}
 	}
 
-	if !hasAny {
+	if len(entries) == 0 {
 		return "没有已注册的 MCP Server"
 	}
-	return b.String()
+
+	filtered := mcputil.FilterTools(entries, query, serverID)
+	if len(filtered) == 0 {
+		return fmt.Sprintf("没有匹配的工具（共 %d 个工具已注册）", len(entries))
+	}
+
+	return mcputil.FormatToolList(filtered, query, serverID)
 }
 
 func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
@@ -95,6 +111,47 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		return fmt.Sprintf("MCP 调用失败: %s。可先用 list_mcp_tools 查看 Name (ID)", err.Error())
 	}
 
+	// Look up the target tool's InputSchema from the tools cache for local
+	// validation. If the tool is not in the cache, skip validation (graceful
+	// degradation per Req 3.7).
+	var inputSchema map[string]interface{}
+	if isLocal {
+		if mgr := h.app.localMCPManager; mgr != nil {
+			for _, ts := range mgr.GetAllTools() {
+				if ts.ServerID == resolvedID {
+					for _, t := range ts.Tools {
+						if t.Name == toolName {
+							inputSchema = t.InputSchema
+							break
+						}
+					}
+					break
+				}
+			}
+		}
+	} else {
+		if registry := h.app.mcpRegistry; registry != nil {
+			for _, t := range registry.GetServerTools(resolvedID) {
+				if t.Name == toolName {
+					inputSchema = t.InputSchema
+					break
+				}
+			}
+		}
+	}
+
+	// Validate arguments against the InputSchema before making the RPC call.
+	if inputSchema != nil {
+		if validationErrs := mcputil.ValidateArgs(inputSchema, toolArgs); len(validationErrs) > 0 {
+			var msgs []string
+			for _, ve := range validationErrs {
+				msgs = append(msgs, ve.Message)
+			}
+			stdErr := mcputil.NewStandardError(resolvedID, toolName, mcputil.ErrValidation, strings.Join(msgs, "; "))
+			return mcputil.FormatForLLM(nil, stdErr)
+		}
+	}
+
 	if isLocal {
 		mgr := h.app.localMCPManager
 		if mgr == nil {
@@ -102,9 +159,15 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		}
 		result, err := mgr.CallTool(resolvedID, toolName, toolArgs)
 		if err != nil {
-			return fmt.Sprintf("本地 MCP 调用失败: %s", err.Error())
+			code, msg := mcputil.ClassifyError(err, 0, "")
+			stdErr := mcputil.NewStandardError(resolvedID, toolName, code, msg)
+			return mcputil.FormatForLLM(nil, stdErr)
 		}
-		return result
+		resp, stdErr := mcputil.NormalizeResponse(resolvedID, toolName, result)
+		if stdErr != nil {
+			return mcputil.FormatForLLM(nil, stdErr)
+		}
+		return mcputil.FormatForLLM(resp, nil)
 	}
 
 	registry := h.app.mcpRegistry
@@ -113,9 +176,15 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	}
 	result, err := registry.CallTool(resolvedID, toolName, toolArgs)
 	if err != nil {
-		return fmt.Sprintf("MCP 调用失败: %s", err.Error())
+		code, msg := mcputil.ClassifyError(err, 0, "")
+		stdErr := mcputil.NewStandardError(resolvedID, toolName, code, msg)
+		return mcputil.FormatForLLM(nil, stdErr)
 	}
-	return result
+	resp, stdErr := mcputil.NormalizeResponse(resolvedID, toolName, result)
+	if stdErr != nil {
+		return mcputil.FormatForLLM(nil, stdErr)
+	}
+	return mcputil.FormatForLLM(resp, nil)
 }
 
 func (h *IMMessageHandler) toolListSkills() string {

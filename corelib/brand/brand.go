@@ -11,7 +11,7 @@ type BrandConfig struct {
 	TrayTooltip     string         // 系统托盘提示文字
 	Slogan          string         // 产品标语
 	Author          string         // 作者信息
-	BusinessContact string         // 商业合作联系方式
+	BusinessContact string         // 联系信息
 	WebsiteURL      string         // 官方网站
 	GitHubURL       string         // GitHub 地址
 	IconPath        string         // 桌面图标资源路径

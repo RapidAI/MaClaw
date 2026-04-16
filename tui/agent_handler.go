@@ -537,7 +537,10 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"id":       map[string]interface{}{"type": "string", "description": "记忆 ID（delete 时必填）"},
 		}, []string{"action"}),
 		// --- MCP ---
-		toolDef("list_mcp_tools", "列出所有 MCP 服务器及其工具", map[string]interface{}{}, nil),
+		toolDef("list_mcp_tools", "列出已注册的 MCP Server 及其工具（含参数详情）。支持按关键词搜索或按服务器过滤", map[string]interface{}{
+			"query":     map[string]interface{}{"type": "string", "description": "搜索关键词（匹配工具名、描述、服务器名，大小写不敏感）"},
+			"server_id": map[string]interface{}{"type": "string", "description": "按服务器 ID 过滤"},
+		}, nil),
 		toolDef("call_mcp_tool", "调用 MCP 工具", map[string]interface{}{
 			"server_id": map[string]interface{}{"type": "string", "description": "MCP 服务器 ID"},
 			"tool_name": map[string]interface{}{"type": "string", "description": "工具名称"},
@@ -816,7 +819,7 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 		return h.toolDiscoverTool(args)
 	// --- MCP ---
 	case "list_mcp_tools":
-		return h.toolListMCPTools()
+		return h.toolListMCPTools(args)
 	case "call_mcp_tool":
 		return h.toolCallMCPTool(args)
 	// --- 合并工具：技能管理 ---

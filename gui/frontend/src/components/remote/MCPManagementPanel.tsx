@@ -615,6 +615,7 @@ function RemoteMCPPanel({ translate }: Props) {
     const [editingServer, setEditingServer] = useState<MCPServerView | null>(null);
     const [formData, setFormData] = useState<MCPServerView>({ ...emptyServer });
     const [formError, setFormError] = useState("");
+    const [headerPairs, setHeaderPairs] = useState<{ key: string; value: string }[]>([]);
 
     const [deleteTarget, setDeleteTarget] = useState<MCPServerView | null>(null);
     const [expandedServerID, setExpandedServerID] = useState<string | null>(null);
@@ -692,6 +693,7 @@ function RemoteMCPPanel({ translate }: Props) {
     const openCreateForm = () => {
         setEditingServer(null);
         setFormData({ ...emptyServer });
+        setHeaderPairs([]);
         setFormError("");
         setShowForm(true);
     };
@@ -699,6 +701,7 @@ function RemoteMCPPanel({ translate }: Props) {
     const openEditForm = (server: MCPServerView) => {
         setEditingServer(server);
         setFormData({ ...server });
+        setHeaderPairs(Object.entries(server.headers || {}).map(([key, value]) => ({ key, value })));
         setFormError("");
         setShowForm(true);
     };
@@ -714,14 +717,20 @@ function RemoteMCPPanel({ translate }: Props) {
         if (!formData.endpoint_url.trim()) { setFormError(translate("mcpEndpointRequired")); return; }
         setBusy(true);
         setFormError("");
+        // Build headers from headerPairs, skipping empty keys
+        const headers: Record<string, string> = {};
+        for (const p of headerPairs) {
+            if (p.key.trim()) headers[p.key.trim()] = p.value;
+        }
+        const cleanedData = { ...formData, headers: Object.keys(headers).length > 0 ? headers : undefined };
         try {
             if (editingServer) {
-                await UpdateMCPServer(formData);
+                await UpdateMCPServer(cleanedData);
             } else {
                 // Auto-generate id from name for new registrations
-                const payload = { ...formData };
+                const payload = { ...cleanedData };
                 if (!payload.id) {
-                    const slug = formData.name.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-").replace(/^-|-$/g, "");
+                    const slug = cleanedData.name.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-").replace(/^-|-$/g, "");
                     const suffix = Date.now().toString(36);
                     payload.id = slug ? `${slug}-${suffix}` : `mcp-${suffix}`;
                 }
@@ -1031,6 +1040,64 @@ function RemoteMCPPanel({ translate }: Props) {
                                     <input className="form-input" type="password" value={formData.auth_secret} onChange={(e) => setFormData({ ...formData, auth_secret: e.target.value })} placeholder={formData.auth_type === "api_key" ? translate("mcpEnterApiKey") : translate("mcpEnterBearer")} spellCheck={false} />
                                 </div>
                             )}
+                            {/* Custom Headers editor */}
+                            <div className="form-group" style={{ marginBottom: 0 }}>
+                                <label className="form-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                    <span>{translate("mcpCustomHeaders")}</span>
+                                    <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        style={{ fontSize: "0.68rem", padding: "1px 8px", lineHeight: "1.6" }}
+                                        onClick={() => setHeaderPairs([...headerPairs, { key: "", value: "" }])}
+                                    >
+                                        + {translate("mcpAddHeader")}
+                                    </button>
+                                </label>
+                                {headerPairs.length > 0 ? (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                        {headerPairs.map((pair, idx) => (
+                                            <div key={idx} style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+                                                <input
+                                                    className="form-input"
+                                                    style={{ flex: 1, fontSize: "0.74rem" }}
+                                                    value={pair.key}
+                                                    onChange={(e) => {
+                                                        const next = [...headerPairs];
+                                                        next[idx] = { ...next[idx], key: e.target.value };
+                                                        setHeaderPairs(next);
+                                                    }}
+                                                    placeholder="Header-Name"
+                                                    spellCheck={false}
+                                                />
+                                                <input
+                                                    className="form-input"
+                                                    style={{ flex: 1.5, fontSize: "0.74rem" }}
+                                                    value={pair.value}
+                                                    onChange={(e) => {
+                                                        const next = [...headerPairs];
+                                                        next[idx] = { ...next[idx], value: e.target.value };
+                                                        setHeaderPairs(next);
+                                                    }}
+                                                    placeholder="value"
+                                                    spellCheck={false}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    className="btn-secondary btn-danger"
+                                                    style={{ fontSize: "0.68rem", padding: "2px 6px", lineHeight: "1.4", flexShrink: 0 }}
+                                                    onClick={() => setHeaderPairs(headerPairs.filter((_, i) => i !== idx))}
+                                                >
+                                                    ×
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div style={{ fontSize: "0.72rem", color: colors.textMuted, padding: "4px 0" }}>
+                                        {translate("mcpNoCustomHeaders")}
+                                    </div>
+                                )}
+                            </div>
                             {formError && (
                                 <div style={{ fontSize: "0.76rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "4px 8px", borderRadius: "4px" }}>{formError}</div>
                             )}
