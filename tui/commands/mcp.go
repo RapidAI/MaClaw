@@ -1,13 +1,19 @@
 package commands
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -354,6 +360,7 @@ func mcpTools(args []string) error {
 		Server string `json:"server"`
 		Name   string `json:"name"`
 		Desc   string `json:"description,omitempty"`
+		Params string `json:"params,omitempty"`
 	}
 
 	var tools []toolInfo
@@ -395,8 +402,9 @@ func mcpTools(args []string) error {
 		var rpcResp struct {
 			Result struct {
 				Tools []struct {
-					Name        string `json:"name"`
-					Description string `json:"description"`
+					Name        string                 `json:"name"`
+					Description string                 `json:"description"`
+					InputSchema map[string]interface{} `json:"inputSchema"`
 				} `json:"tools"`
 			} `json:"result"`
 		}
@@ -405,7 +413,27 @@ func mcpTools(args []string) error {
 			continue
 		}
 		for _, t := range rpcResp.Result.Tools {
-			tools = append(tools, toolInfo{Server: s.Name, Name: t.Name, Desc: t.Description})
+			params := formatMCPToolParams(t.InputSchema)
+			tools = append(tools, toolInfo{Server: s.Name, Name: t.Name, Desc: t.Description, Params: params})
+		}
+	}
+
+	// For local MCP servers, start the process briefly to discover tools.
+	for _, s := range cfg.LocalMCPServers {
+		if s.Disabled {
+			continue
+		}
+		if *server != "" && s.Name != *server {
+			continue
+		}
+		discovered, err := discoverLocalMCPTools(s)
+		if err != nil {
+			tools = append(tools, toolInfo{Server: s.Name + " (local)", Name: "(error)", Desc: err.Error()})
+			continue
+		}
+		for _, t := range discovered {
+			params := formatMCPToolParams(t.InputSchema)
+			tools = append(tools, toolInfo{Server: s.Name + " (local)", Name: t.Name, Desc: t.Description, Params: params})
 		}
 	}
 
@@ -418,13 +446,202 @@ func mcpTools(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%-20s %-30s %s\n", "SERVER", "TOOL", "DESCRIPTION")
-	fmt.Println(strings.Repeat("-", 80))
+	fmt.Printf("%-20s %-30s %-40s %s\n", "SERVER", "TOOL", "DESCRIPTION", "PARAMS")
+	fmt.Println(strings.Repeat("-", 100))
 	for _, t := range tools {
-		fmt.Printf("%-20s %-30s %s\n",
-			TruncateDisplay(t.Server, 20), TruncateDisplay(t.Name, 30), TruncateDisplay(t.Desc, 40))
+		params := t.Params
+		if params == "" {
+			params = "(no parameters)"
+		}
+		fmt.Printf("%-20s %-30s %-40s %s\n",
+			TruncateDisplay(t.Server, 20), TruncateDisplay(t.Name, 30), TruncateDisplay(t.Desc, 40), params)
 	}
 	return nil
+}
+
+// formatMCPToolParams extracts parameter names from an MCP inputSchema and
+// returns a compact summary string like "search_query*, content_size".
+// Required parameters are marked with "*".
+func formatMCPToolParams(schema map[string]interface{}) string {
+	if schema == nil {
+		return ""
+	}
+	props, _ := schema["properties"].(map[string]interface{})
+	if len(props) == 0 {
+		return ""
+	}
+
+	// Collect required parameter names into a set for quick lookup.
+	requiredSet := map[string]bool{}
+	if reqList, ok := schema["required"].([]interface{}); ok {
+		for _, r := range reqList {
+			if s, ok := r.(string); ok {
+				requiredSet[s] = true
+			}
+		}
+	}
+
+	// Sort parameter names for stable output.
+	names := make([]string, 0, len(props))
+	for k := range props {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		if requiredSet[name] {
+			parts = append(parts, name+"*")
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// localMCPToolInfo holds a tool discovered from a local MCP server.
+type localMCPToolInfo struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	InputSchema map[string]interface{} `json:"inputSchema"`
+}
+
+// discoverLocalMCPTools starts a local MCP server process, performs the
+// initialize handshake, calls tools/list, and shuts down. The entire
+// operation is bounded by a 15-second timeout.
+func discoverLocalMCPTools(entry corelib.LocalMCPServerEntry) ([]localMCPToolInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, entry.Command, entry.Args...)
+	cmd.Env = os.Environ()
+	for k, v := range entry.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	cmd.Stderr = io.Discard
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start %q: %w", entry.Command, err)
+	}
+	defer func() {
+		stdinPipe.Close()
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		cmd.Wait() //nolint:errcheck
+	}()
+
+	reader := bufio.NewReaderSize(stdoutPipe, 64*1024)
+	var nextID atomic.Int64
+
+	// Single goroutine reads lines from stdout; shared across all sendRPC calls.
+	type rpcLine struct {
+		line string
+		err  error
+	}
+	lineCh := make(chan rpcLine, 4)
+	go func() {
+		for {
+			line, err := reader.ReadString('\n')
+			lineCh <- rpcLine{strings.TrimSpace(line), err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	sendRPC := func(method string, params interface{}) (json.RawMessage, error) {
+		id := nextID.Add(1)
+		req := struct {
+			JSONRPC string      `json:"jsonrpc"`
+			ID      int64       `json:"id"`
+			Method  string      `json:"method"`
+			Params  interface{} `json:"params,omitempty"`
+		}{"2.0", id, method, params}
+
+		data, _ := json.Marshal(req)
+		data = append(data, '\n')
+		if _, err := stdinPipe.Write(data); err != nil {
+			return nil, fmt.Errorf("write: %w", err)
+		}
+
+		deadline := time.After(10 * time.Second)
+		for {
+			select {
+			case <-deadline:
+				return nil, fmt.Errorf("timeout waiting for %s response", method)
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case r := <-lineCh:
+				if r.err != nil {
+					return nil, fmt.Errorf("read: %w", r.err)
+				}
+				if r.line == "" {
+					continue
+				}
+				var resp struct {
+					ID     *int64          `json:"id"`
+					Result json.RawMessage `json:"result,omitempty"`
+					Error  *struct {
+						Code    int    `json:"code"`
+						Message string `json:"message"`
+					} `json:"error,omitempty"`
+				}
+				if err := json.Unmarshal([]byte(r.line), &resp); err != nil {
+					continue // skip non-JSON lines (server logs)
+				}
+				if resp.ID == nil || *resp.ID != id {
+					continue // skip notifications or mismatched IDs
+				}
+				if resp.Error != nil {
+					return nil, fmt.Errorf("RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+				}
+				return resp.Result, nil
+			}
+		}
+	}
+
+	// 1. Initialize handshake.
+	_, err = sendRPC("initialize", map[string]interface{}{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]interface{}{},
+		"clientInfo":      map[string]interface{}{"name": "maclaw-cli", "version": "1.0.0"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize: %w", err)
+	}
+
+	// Send initialized notification (fire-and-forget).
+	notif, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+	})
+	notif = append(notif, '\n')
+	stdinPipe.Write(notif) //nolint:errcheck
+
+	// 2. Discover tools.
+	result, err := sendRPC("tools/list", map[string]interface{}{})
+	if err != nil {
+		return nil, fmt.Errorf("tools/list: %w", err)
+	}
+
+	var listResult struct {
+		Tools []localMCPToolInfo `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &listResult); err != nil {
+		return nil, fmt.Errorf("parse tools: %w", err)
+	}
+
+	return listResult.Tools, nil
 }
 
 // ---------- Call Tool ----------

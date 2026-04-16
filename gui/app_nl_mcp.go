@@ -18,10 +18,39 @@ import (
 // MCPServerSource, MCPServerEntry — see corelib_aliases.go
 
 // MCPToolView is a tool exposed by an MCP Server.
+// The JSON tag uses snake_case ("input_schema") for internal serialization and
+// Wails bindings. MCP wire format uses camelCase ("inputSchema"); use
+// mcpWireToolView for deserializing tools/list responses.
 type MCPToolView struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"input_schema"`
+}
+
+// mcpWireToolView mirrors MCPToolView but uses the MCP protocol's camelCase
+// field names for JSON deserialization of tools/list responses.
+type mcpWireToolView struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	InputSchema map[string]interface{} `json:"inputSchema"`
+}
+
+// toView converts a wire-format tool to the internal MCPToolView.
+func (w mcpWireToolView) toView() MCPToolView {
+	return MCPToolView{
+		Name:        w.Name,
+		Description: w.Description,
+		InputSchema: w.InputSchema,
+	}
+}
+
+// mcpWireToolsToViews converts a slice of wire-format tools to MCPToolViews.
+func mcpWireToolsToViews(wire []mcpWireToolView) []MCPToolView {
+	views := make([]MCPToolView, len(wire))
+	for i := range wire {
+		views[i] = wire[i].toView()
+	}
+	return views
 }
 
 // MCPServerView is the Wails-facing view of an MCP Server including runtime state.
@@ -477,14 +506,17 @@ func (r *MCPRegistry) HealthCheck(serverID string) error {
 	// Parse and cache the tool list from the response (tools/list returns
 	// the same data GetServerTools needs, so we cache it here to avoid a
 	// redundant round-trip when the management panel displays tool counts).
+	// NOTE: MCP protocol uses camelCase "inputSchema" in the wire format,
+	// but MCPToolView uses snake_case "input_schema" for internal/Wails
+	// serialization. We use mcpWireToolView to bridge the mismatch.
 	var toolsResult struct {
 		Result struct {
-			Tools []MCPToolView `json:"tools"`
+			Tools []mcpWireToolView `json:"tools"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(parsed, &toolsResult); err == nil {
 		r.mu.Lock()
-		r.toolsCache[serverID] = toolsResult.Result.Tools
+		r.toolsCache[serverID] = mcpWireToolsToViews(toolsResult.Result.Tools)
 		r.mu.Unlock()
 	}
 
@@ -713,9 +745,10 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 		return nil
 	}
 
+	// Use mcpWireToolView with camelCase "inputSchema" to match MCP wire format.
 	var result struct {
 		Result struct {
-			Tools []MCPToolView `json:"tools"`
+			Tools []mcpWireToolView `json:"tools"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(parsed, &result); err != nil {
@@ -723,12 +756,14 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 		return nil
 	}
 
+	views := mcpWireToolsToViews(result.Result.Tools)
+
 	// Update cache.
 	r.mu.Lock()
-	r.toolsCache[serverID] = result.Result.Tools
+	r.toolsCache[serverID] = views
 	r.mu.Unlock()
 
-	return result.Result.Tools
+	return views
 }
 
 // --- Wails binding functions ---
