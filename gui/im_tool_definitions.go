@@ -69,9 +69,10 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
 			}, []string{"session_id"}),
-		toolDef("screenshot", "截取屏幕截图并发送给用户。仅在以下情况使用：(1) 用户明确要求截屏；(2) 用户通过 IM 远程监督，需要确认操作结果。不要在用户未要求时主动截屏。最小间隔 30 秒。",
+		toolDef("screenshot", "截取屏幕截图并发送给用户。这是截屏的唯一正确方式，禁止用 bash 编写 PowerShell/Python/scrot 等截屏脚本替代此工具。使用场景：(1) 用户明确要求截屏；(2) 用户通过 IM 远程监督，需要确认操作结果。不要在用户未要求时主动截屏。最小间隔 30 秒。",
 			map[string]interface{}{
 				"session_id": map[string]string{"type": "string", "description": "会话 ID（可选，只有一个会话时自动选择）"},
+				"display":    map[string]string{"type": "integer", "description": "显示器编号（可选，0=主屏，1=第二屏/扩展屏，不传则截取所有屏幕拼图）"},
 			}, nil),
 		toolDef("list_mcp_tools", "列出已注册的 MCP Server 及其工具（含参数详情）。支持按关键词搜索或按服务器过滤",
 			map[string]interface{}{

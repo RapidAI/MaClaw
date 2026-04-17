@@ -518,7 +518,8 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		return parseNonStreamOpenAIResponse(resp)
 	}
 
-	tcf := newToolCallFilter(onToken)
+	repf := newRepetitionFilter(onToken)
+	tcf := newToolCallFilter(repf.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
 	tf := newThinkFilter(fcf.Callback())
 	var contentBuf strings.Builder
@@ -593,6 +594,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		if delta.Content != "" {
 			contentBuf.WriteString(delta.Content)
 			tf.Write(delta.Content)
+			// Early-terminate if the repetition filter detected degeneration.
+			if repf.Halted() {
+				log.Printf("[LLM Stream] repetition filter halted output (suppressed %d runes)", repf.SuppressedRunes())
+				finishReason = "stop"
+				break
+			}
 		}
 		for _, tc := range delta.ToolCalls {
 			acc, ok := toolAccums[tc.Index]
@@ -636,6 +643,10 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	tf.Flush()
 	fcf.Flush()
 	tcf.Flush()
+	repf.Flush()
+	if repf.Halted() {
+		log.Printf("[LLM Stream] repetition filter halted: suppressed %d runes", repf.SuppressedRunes())
+	}
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))
 	reasoning := reasoningBuf.String()
 	if content == "" && reasoning != "" {
@@ -767,7 +778,8 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	var stopReason string
 	var usage *llmUsage
 
-	fcf := newFuncCallFilter(onToken)
+	repfAnth := newRepetitionFilter(onToken)
+	fcf := newFuncCallFilter(repfAnth.Write)
 	tf := newThinkFilter(func(s string) { fcf.Write(s) })
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -858,6 +870,12 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 			if evt.Delta.Type == "text_delta" && evt.Delta.Text != "" {
 				acc.text.WriteString(evt.Delta.Text)
 				tf.Write(evt.Delta.Text)
+				// Early-terminate if the repetition filter detected degeneration.
+				if repfAnth.Halted() {
+					log.Printf("[LLM Stream Anthropic] repetition filter halted output (suppressed %d runes)", repfAnth.SuppressedRunes())
+					stopReason = "end_turn"
+					goto anthDone
+				}
 			}
 			if evt.Delta.Type == "input_json_delta" && evt.Delta.PartialJSON != "" {
 				acc.toolArgs.WriteString(evt.Delta.PartialJSON)
@@ -897,6 +915,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 			}
 		}
 	}
+anthDone:
 	// Check for scanner errors (network interruption, etc.)
 	if err := scanner.Err(); err != nil {
 		if len(blocks) == 0 {
@@ -912,6 +931,10 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	}
 	tf.Flush()
 	fcf.Flush()
+	repfAnth.Flush()
+	if repfAnth.Halted() {
+		log.Printf("[LLM Stream Anthropic] repetition filter halted: suppressed %d runes", repfAnth.SuppressedRunes())
+	}
 
 	// Assemble llmResponse
 	msg := llmMessage{Role: "assistant"}

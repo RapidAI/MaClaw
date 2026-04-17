@@ -1,9 +1,10 @@
 import ReactMarkdown from 'react-markdown';
 import type { MouseEvent } from 'react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { BrowserOpenURL } from '../../wailsjs/runtime';
+import { ReadErrorLog } from '../../wailsjs/go/main/App';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
 import { MemoryHealthDialog } from './MemoryHealthDialog';
 import { SecurityEventsDialog } from './SecurityEventsDialog';
@@ -70,6 +71,22 @@ export function AboutPanel({
 
     const [showHealthDialog, setShowHealthDialog] = useState(false);
     const [showSecurityEvents, setShowSecurityEvents] = useState(false);
+    const [showErrorLog, setShowErrorLog] = useState(false);
+    const [errorLogLines, setErrorLogLines] = useState<string[]>([]);
+    const [errorLogLoading, setErrorLogLoading] = useState(false);
+
+    useEffect(() => {
+        if (!showErrorLog) return;
+        setErrorLogLines([]);
+        setErrorLogLoading(true);
+        ReadErrorLog()
+            .then((lines: string[]) => setErrorLogLines(lines || []))
+            .catch((err: unknown) => {
+                console.error('ReadErrorLog failed:', err);
+                setErrorLogLines([`Error loading log: ${err}`]);
+            })
+            .finally(() => setErrorLogLoading(false));
+    }, [showErrorLog]);
 
     return (
         <div className="about-page">
@@ -108,6 +125,7 @@ export function AboutPanel({
                         <button className="btn-link about-action-button" onClick={onShowInstallLog}>{t("installLog")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowHealthDialog(true)}>{t("memoryHealth")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowSecurityEvents(true)}>{t("securityEvents")}</button>
+                        <button className="btn-link about-action-button" onClick={() => setShowErrorLog(true)}>{t("errorLog")}</button>
                         {showGithubActions && (
                             <>
                                 <button className="btn-link about-action-button" onClick={onOpenBugReport}>{t("bugReport")}</button>
@@ -147,6 +165,70 @@ export function AboutPanel({
                 onClose={() => setShowSecurityEvents(false)}
                 t={t}
             />
+            {showErrorLog && (
+                <div className="modal-overlay" onClick={() => setShowErrorLog(false)}>
+                    <div className="modal-content" style={{ width: '700px', maxWidth: '90vw' }} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <h3 style={{ margin: 0, color: 'var(--theme-primary)' }}>{t("errorLogTitle")}</h3>
+                                {!errorLogLoading && errorLogLines.length > 0 && (
+                                    <span style={{
+                                        fontSize: '0.75rem',
+                                        color: 'var(--theme-danger)',
+                                        backgroundColor: 'var(--theme-surface-muted)',
+                                        padding: '2px 8px',
+                                        borderRadius: '10px',
+                                        fontWeight: 600
+                                    }}>
+                                        {errorLogLines.length}
+                                    </span>
+                                )}
+                            </div>
+                            <button className="modal-close" onClick={() => setShowErrorLog(false)}>&times;</button>
+                        </div>
+                        <div
+                            className="elegant-scrollbar"
+                            style={{
+                                backgroundColor: 'var(--theme-surface-muted)',
+                                color: 'var(--theme-text-primary)',
+                                padding: '15px',
+                                borderRadius: '8px',
+                                height: '400px',
+                                overflowY: 'auto',
+                                fontFamily: 'monospace',
+                                fontSize: '0.8rem',
+                                whiteSpace: 'pre-wrap',
+                                textAlign: 'left',
+                                marginBottom: '15px'
+                            }}>
+                            {errorLogLoading ? (
+                                <div style={{ color: 'var(--theme-text-muted)', fontStyle: 'italic' }}>
+                                    {t("loading")}...
+                                </div>
+                            ) : errorLogLines.length === 0 ? (
+                                <div style={{ color: 'var(--theme-text-muted)', fontStyle: 'italic' }}>
+                                    {t("errorLogEmpty")}
+                                </div>
+                            ) : (
+                                errorLogLines.map((line, index) => {
+                                    const isFatal = /fatal|panic/i.test(line);
+                                    return (
+                                        <div key={index} style={{
+                                            color: isFatal ? '#ef4444' : 'var(--theme-danger)',
+                                            fontWeight: isFatal ? 600 : 'normal',
+                                            marginBottom: '2px',
+                                            borderBottom: '1px solid var(--theme-border)',
+                                            paddingBottom: '2px'
+                                        }}>
+                                            {line}
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

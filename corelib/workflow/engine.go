@@ -398,6 +398,22 @@ func (e *WorkflowEngine) GetPhaseToolFilter(userID string) ToolFilterPolicy {
 	return GetToolFilterForPhase(&tmpl.Phases[ws.PhaseIndex])
 }
 
+// HasPhaseOutput returns true if the user's active workflow has
+// output stored for the current phase. The agent loop uses this
+// to distinguish first execution (no output yet — let the loop
+// continue) from post-output confirmation (output exists — gate
+// should force-return).
+func (e *WorkflowEngine) HasPhaseOutput(userID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		return false
+	}
+	output, ok := ws.PhaseOutputs[ws.CurrentPhase]
+	return ok && output != ""
+}
+
 // IsPhaseNeedsConfirm returns true if the user has an active workflow whose
 // current phase requires user confirmation before advancing. The agent loop
 // uses this to hard-stop after the LLM produces its deliverable, preventing

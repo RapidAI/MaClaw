@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -1355,4 +1356,55 @@ func (a *App) SavePastedImage(base64Data string, extension string) (string, erro
 		return filePath, nil // fallback to non-absolute path
 	}
 	return absPath, nil
+}
+
+// ReadErrorLog reads ~/.maclaw/logs/maclaw.log and returns only lines
+// containing error-level keywords. Returns the most recent 500 error lines
+// in reverse chronological order (newest first).
+func (a *App) ReadErrorLog() ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	logPath := filepath.Join(home, ".maclaw", "logs", "maclaw.log")
+
+	f, err := os.Open(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("cannot open log file: %w", err)
+	}
+	defer f.Close()
+
+	var errors []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, " error") ||
+			strings.Contains(lower, "[error]") ||
+			strings.Contains(lower, "fatal") ||
+			strings.Contains(lower, "panic:") ||
+			strings.Contains(lower, "panic(") {
+			errors = append(errors, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading log file: %w", err)
+	}
+
+	// Keep only the most recent 500 lines.
+	const maxLines = 500
+	if len(errors) > maxLines {
+		errors = errors[len(errors)-maxLines:]
+	}
+
+	// Reverse so newest errors appear first.
+	for i, j := 0, len(errors)-1; i < j; i, j = i+1, j-1 {
+		errors[i], errors[j] = errors[j], errors[i]
+	}
+
+	return errors, nil
 }

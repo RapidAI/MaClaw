@@ -8,6 +8,10 @@ vi.mock('../../../wailsjs/runtime', () => ({
     BrowserOpenURL: (...args: unknown[]) => BrowserOpenURLMock(...args),
 }));
 
+vi.mock('../../../wailsjs/go/main/App', () => ({
+    ReadErrorLog: vi.fn().mockResolvedValue([]),
+}));
+
 import { AboutPanel } from '../AboutPanel';
 
 const baseProps = {
@@ -28,6 +32,12 @@ const baseProps = {
         officialWebsite: 'Official Website',
         onlineUpdate: 'Online Update',
         installLog: 'View Log',
+        memoryHealth: 'Memory Health',
+        securityEvents: 'Security Events',
+        errorLog: 'Error Log',
+        errorLogTitle: 'Error Log',
+        errorLogEmpty: 'No errors found in the log.',
+        loading: 'Loading',
         bugReport: 'Problem Feedback',
         codeRepository: 'Code Repository',
         thanks: 'Thanks',

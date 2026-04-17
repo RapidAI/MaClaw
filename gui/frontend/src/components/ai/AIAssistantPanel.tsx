@@ -955,7 +955,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     const showMaximizeToggle = inline && !!onToggleMaximize;
 
     // Workflow split-pane state
-    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
+    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, dismissDocsBar } = useWorkflowState();
 
     const title = localizeText(lang, "AI Assistant", "AI 助手");
     const thinkingText = localizeText(lang, "Thinking... (you can type ahead)", "正在思考...（可预输入）");
@@ -1873,7 +1873,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
             </div>
 
             {/* ── Workflow document links bar ── */}
-            {workflowState.phaseDocuments.size > 0 && (
+            {workflowState.phaseDocuments.size > 0 && !workflowState.docsBarDismissed && (
                 <div data-testid="ai-workflow-docs-bar" style={{
                     display: "flex",
                     alignItems: "center",
@@ -1927,6 +1927,30 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             </button>
                         );
                     })}
+                    <button
+                        data-testid="ai-workflow-docs-bar-close"
+                        onClick={dismissDocsBar}
+                        style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: "20px",
+                            height: "20px",
+                            padding: 0,
+                            marginLeft: "auto",
+                            fontSize: "14px",
+                            lineHeight: 1,
+                            border: `1px solid ${t.divider}`,
+                            borderRadius: "4px",
+                            background: "transparent",
+                            color: t.textMuted,
+                            cursor: "pointer",
+                            flexShrink: 0,
+                        }}
+                        title={localizeText(lang, "Close", "关闭")}
+                    >
+                        ×
+                    </button>
                 </div>
             )}
 

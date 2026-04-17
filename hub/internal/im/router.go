@@ -643,6 +643,14 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 
 			progressTexts = append(progressTexts, progressText)
 
+			// Intermediate status messages (e.g. "正在耐心处理中", "正在执行工具")
+			// are never delivered to IM users. They only serve to reset the
+			// timeout timer above. Delivering them floods the chat with
+			// repetitive noise that adds no value.
+			if isIntermediateStatusProgress(progressText) {
+				continue
+			}
+
 			isDup := progressText == lastProgressText
 			lastProgressText = progressText
 
@@ -901,6 +909,35 @@ func (r *MessageRouter) deliverProgress(ctx context.Context, userID, platformNam
 	if r.progressDelivery != nil {
 		r.progressDelivery(ctx, userID, platformName, platformUID, text)
 	}
+}
+
+// intermediateStatusMarkers are substrings that identify intermediate status
+// progress messages (e.g. "正在耐心处理中", "正在执行工具"). These messages
+// are suppressed in IM delivery — they only reset the timeout timer.
+// The initial acknowledgment ("收到，正在处理中") is NOT matched here
+// because it provides valuable first-response feedback to the user.
+var intermediateStatusMarkers = []string{
+	"正在耐心处理中",
+	"正在执行工具",
+	"正在执行命令",
+	"正在生成 PDF",
+	"正在启动 Skill",
+	"正在整理并发送",
+	"正在生成并执行脚本",
+}
+
+// isIntermediateStatusProgress returns true if the progress text is an
+// intermediate status message that should be suppressed in IM delivery.
+func isIntermediateStatusProgress(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, marker := range intermediateStatusMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // CancelPendingForUser cancels all pending IM requests for the given user

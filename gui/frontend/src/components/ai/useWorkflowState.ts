@@ -36,6 +36,7 @@ export interface WorkflowUIState {
     suggestMaximizeType: string;
     transientText: string;
     workingDir: string;
+    docsBarDismissed: boolean;
 }
 
 const DEFAULT_SPLIT_RATIO = 0.42;
@@ -62,6 +63,7 @@ export function useWorkflowState() {
     const [transientText, setTransientText] = useState("");
     const [workingDir, setWorkingDir] = useState("");
     const userClosedRef = useRef(false);
+    const [docsBarDismissed, setDocsBarDismissed] = useState(false);
 
     // Listen for phase updates
     useEffect(() => {
@@ -73,6 +75,7 @@ export function useWorkflowState() {
                 setPhaseDocuments(new Map());
                 setGateResults(new Map());
                 setWorkingDir("");
+                setDocsBarDismissed(false);
                 return;
             }
             setActive(state.status === "active");
@@ -116,6 +119,10 @@ export function useWorkflowState() {
             if (!userClosedRef.current) {
                 setSplitMode(true);
             }
+            // Re-show docs bar when a new document arrives (user may have
+            // dismissed it for the previous phase, but a new phase document
+            // is worth surfacing again).
+            setDocsBarDismissed(false);
         });
         return () => {
             if (typeof unsub === "function") unsub();
@@ -210,6 +217,10 @@ export function useWorkflowState() {
         setSuggestMaximizeType("");
     }, []);
 
+    const dismissDocsBar = useCallback(() => {
+        setDocsBarDismissed(true);
+    }, []);
+
     return {
         state: {
             active,
@@ -223,10 +234,12 @@ export function useWorkflowState() {
             suggestMaximizeType,
             transientText,
             workingDir,
+            docsBarDismissed,
         } as WorkflowUIState,
         openDocPreview,
         closeDocPreview,
         setSplitRatio,
         dismissMaximizeSuggestion,
+        dismissDocsBar,
     };
 }

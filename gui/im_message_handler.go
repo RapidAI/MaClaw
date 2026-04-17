@@ -359,7 +359,11 @@ func buildDriftRecoverPrompt(drift DriftResult) string {
 	if detail == "" {
 		detail = "检测到执行路径出现漂移或循环，请停止重复同一做法，回到原始目标并改用不同路径继续完成任务。"
 	}
-	return "[Recover 阶段]\n检测到执行路径出现漂移或循环，当前进入 Recover 阶段。请先暂停重复操作，回到原始目标，基于已知结果改用不同路径继续完成任务。\n" + detail + "\n[/Recover 阶段]"
+	toolWarning := ""
+	if drift.DriftedTool != "" {
+		toolWarning = fmt.Sprintf("\n禁止再次调用 %s（已连续失败）。如果没有替代方案，直接向用户说明限制。", drift.DriftedTool)
+	}
+	return "[Recover 阶段]\n检测到执行路径出现漂移或循环，当前进入 Recover 阶段。请先暂停重复操作，回到原始目标，基于已知结果改用不同路径继续完成任务。\n" + detail + toolWarning + "\n[/Recover 阶段]"
 }
 
 func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID string) string {
@@ -1695,6 +1699,20 @@ type IMMessageHandler struct {
 	// patterns and trigger re-planning when the agent is stuck.
 	driftDetector *DriftDetector
 
+	// sessionDriftReplanCount tracks the cumulative drift replan count
+	// across agent loops for each user. When a loop exits due to drift
+	// (NeedHumanHelp), the replan count is saved here so the next loop
+	// inherits it — preventing the detector from re-walking the full
+	// "first drift → recover → second drift → human help" cycle.
+	// Keyed by userID, value is int.
+	sessionDriftReplanCount sync.Map
+
+	// sessionDriftTool tracks the tool name that caused the last drift
+	// exit for each user. Injected into the next loop's system prompt
+	// so the LLM knows not to repeat the same tool.
+	// Keyed by userID, value is string.
+	sessionDriftTool sync.Map
+
 	// harnessProgressTracker maintains a structured task checklist that is
 	// injected into the LLM context before each iteration.
 	harnessProgressTracker *HarnessProgressTracker
@@ -2870,6 +2888,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.memory.clear(msg.UserID)
 		h.pendingAskUser.Delete(msg.UserID)
 		h.pendingCapabilityGap.Delete(msg.UserID)
+		h.sessionDriftReplanCount.Delete(msg.UserID)
+		h.sessionDriftTool.Delete(msg.UserID)
 		if h.confirmationStore != nil {
 			h.confirmationStore.clear(msg.UserID)
 		}
@@ -3023,6 +3043,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.memory.clearConversationAndDismissSlot(msg.UserID)
 		h.pendingAskUser.Delete(msg.UserID)
 		h.pendingCapabilityGap.Delete(msg.UserID)
+		h.sessionDriftReplanCount.Delete(msg.UserID)
+		h.sessionDriftTool.Delete(msg.UserID)
 		EntriesBeforeClear = nil
 		unfinishedSlot = nil
 		freshTask = true
@@ -3035,6 +3057,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			h.memory.clearConversationAndDismissSlot(msg.UserID)
 			h.pendingAskUser.Delete(msg.UserID)
 			h.pendingCapabilityGap.Delete(msg.UserID)
+			h.sessionDriftReplanCount.Delete(msg.UserID)
+			h.sessionDriftTool.Delete(msg.UserID)
 			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
 			EntriesBeforeClear = nil
 			unfinishedSlot = nil
@@ -3099,6 +3123,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			h.memory.clear(msg.UserID)
 			h.pendingAskUser.Delete(msg.UserID)
 			h.pendingCapabilityGap.Delete(msg.UserID)
+			h.sessionDriftReplanCount.Delete(msg.UserID)
+			h.sessionDriftTool.Delete(msg.UserID)
 			log.Printf("[TopicDetector] auto-cleared context for user %s", msg.UserID)
 		}
 	}
@@ -3376,6 +3402,8 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 	h.memory.clear(userID)
 	h.pendingAskUser.Delete(userID)
 	h.pendingCapabilityGap.Delete(userID)
+	h.sessionDriftReplanCount.Delete(userID)
+	h.sessionDriftTool.Delete(userID)
 	// Reset workflow working directory and suggest_maximize dedup flag.
 	if h.app != nil && h.app.workflowEngine != nil {
 		if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
@@ -3804,10 +3832,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	var loopDriftDetector *DriftDetector
+	// Inherit the session-level replan count so that after a drift exit +
+	// user confirmation, the new loop immediately escalates to NeedHumanHelp
+	// on the very first repeated drift instead of re-walking the full cycle.
+	priorReplanCount := 0
+	if v, ok := h.sessionDriftReplanCount.Load(userID); ok {
+		priorReplanCount = v.(int)
+	}
 	if h.driftDetector != nil {
-		loopDriftDetector = NewDriftDetector(h.driftDetector.windowSize, h.driftDetector.similarityThresh)
+		loopDriftDetector = NewDriftDetectorWithHistory(h.driftDetector.windowSize, h.driftDetector.similarityThresh, priorReplanCount)
 	} else {
-		loopDriftDetector = NewDriftDetector(0, 0)
+		loopDriftDetector = NewDriftDetectorWithHistory(0, 0, priorReplanCount)
 	}
 
 	var loopProgressTracker *HarnessProgressTracker
@@ -4045,6 +4080,26 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	history = append(history, conversationEntry{Role: "user", Content: userContent})
 	preLLMConversationElapsed = time.Since(conversationStartedAt)
+
+	// --- Inject drift context from previous loop ---
+	// When the previous agent loop exited due to drift (NeedHumanHelp),
+	// inject a system message warning the LLM not to repeat the same tool.
+	// Also clear the session drift state so it doesn't leak into unrelated
+	// future conversations.
+	if driftTool, ok := h.sessionDriftTool.LoadAndDelete(userID); ok {
+		toolName := driftTool.(string)
+		driftCtx := fmt.Sprintf(
+			"[系统提示] 上一轮对话因反复调用 %s 失败而停止。"+
+				"禁止再次使用相同的方法。"+
+				"如果没有其他可行方案，直接告诉用户当前的限制和建议。",
+			toolName,
+		)
+		conversation = append(conversation, map[string]string{
+			"role": "system", "content": driftCtx,
+		})
+		log.Printf("[DriftContext] injected drift warning for user=%s tool=%s priorReplanCount=%d", userID, toolName, priorReplanCount)
+	}
+
 	if recorder != nil {
 		recorder.StartSession(ctx.ID, h.app.GetMaclawLLMProviders().Current, cfg.Model, cfg.Protocol, userID, platform, tools)
 		recorder.Record("system", systemPrompt, nil, "", "")
@@ -4287,7 +4342,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// Non-debug, non-streaming mode: send a patience hint at iteration 4,
 				// then every 5 rounds so the user knows a long task is still alive.
 				// When streaming, the user already sees real-time output.
-				sendProgress("⏳ 任务较复杂，正在耐心处理中，稍后发你结果…")
+				// Suppress during recover phase — the user already knows something
+				// went wrong, sending "正在耐心处理中" is misleading.
+				if phase.Stage != agentStageRecover {
+					sendProgress("⏳ 任务较复杂，正在耐心处理中，稍后发你结果…")
+				}
 			}
 		}
 		iterationPrepStartedAt := time.Now()
@@ -4756,17 +4815,24 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					needsConfirmFromSteering = true
 				}
 			}
-			if platform == "desktop" && (needsConfirmFromEngine || needsConfirmFromSteering) {
+			engineGateActive := needsConfirmFromEngine
+			if engineGateActive && h.app != nil && h.app.workflowEngine != nil {
+				if !h.app.workflowEngine.HasPhaseOutput(userID) {
+					engineGateActive = false
+					log.Printf("[agent-loop] NeedsConfirm gate: first execution (hasOutput=false), allowing loop to continue (iter=%d)", iteration)
+				}
+			}
+			if platform == "desktop" && (engineGateActive || needsConfirmFromSteering) {
 				log.Printf("[agent-loop] NeedsConfirm check: engine=%v steering=%v iteration=%d msgLen=%d steeringDetector=%v user=%s",
 					needsConfirmFromEngine, needsConfirmFromSteering, iteration, len(strings.TrimSpace(stripThinkingTags(msgContent))), steeringDetector != nil, userID)
 			}
-			if needsConfirmFromEngine || needsConfirmFromSteering {
+			if engineGateActive || needsConfirmFromSteering {
 				trimmedForGate := strings.TrimSpace(stripThinkingTags(msgContent))
 				if trimmedForGate != "" &&
 					!looksLikeNoToolStallReply(msgContent) &&
 					isSubstantivePhaseDocument(trimmedForGate) {
 					gateSource := "workflow"
-					if needsConfirmFromSteering && !needsConfirmFromEngine {
+					if needsConfirmFromSteering && !engineGateActive {
 						gateSource = "steering"
 					}
 					log.Printf("[agent-loop] NeedsConfirm gate (%s): returning response for user confirmation (iteration=%d len=%d)", gateSource, iteration, len(trimmedForGate))
@@ -4798,13 +4864,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							// Use a lower threshold (50 chars) than the old 200 — the engine already confirmed
 							// this is a NeedsConfirm phase, so even shorter text is a valid deliverable.
 							// Also emit suggest_maximize in case it wasn't emitted yet (e.g. dedup cleared).
-							if !emitted && needsConfirmFromEngine && len(trimmedForGate) >= 50 {
+							if !emitted && engineGateActive && len(trimmedForGate) >= 50 {
 								if ws := h.app.workflowEngine.GetActiveWorkflow(userID); ws != nil {
 									_ = adapter.EmitDocUpdate(userID, ws.CurrentPhase, trimmedForGate)
 									adapter.EmitSuggestMaximize(userID, string(ws.Type))
 									log.Printf("[WorkflowEngine] emitted doc_update for user=%s phase=%s type=%s len=%d", userID, ws.CurrentPhase, ws.Type, len(trimmedForGate))
 								} else {
-									log.Printf("[WorkflowEngine] WARNING: needsConfirmFromEngine=true but GetActiveWorkflow returned nil for user=%s", userID)
+									log.Printf("[WorkflowEngine] WARNING: engineGateActive=true but GetActiveWorkflow returned nil for user=%s", userID)
 								}
 							}
 						}
@@ -5245,15 +5311,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				})
 				driftResult := loopDriftDetector.DetectDrift()
 				if driftResult.Drifted {
-					log.Printf("[Harness] 漂移检测触发: pattern=%s needHuman=%v", driftResult.Pattern, driftResult.NeedHumanHelp)
+					log.Printf("[Harness] 漂移检测触发: pattern=%s needHuman=%v replanCount=%d tool=%s", driftResult.Pattern, driftResult.NeedHumanHelp, loopDriftDetector.ReplanCount(), driftResult.DriftedTool)
 					conversation = append(conversation, map[string]string{
 						"role": "system", "content": driftResult.ReplanPrompt,
 					})
 					recordSystemMessages(len(conversation)-1, conversation)
 					loopDriftDetector.ResetWindow()
 					if driftResult.NeedHumanHelp {
+						// Persist replan count and drifted tool to session level
+						// so the next loop (after user responds) inherits the state.
+						h.sessionDriftReplanCount.Store(userID, loopDriftDetector.ReplanCount())
+						h.sessionDriftTool.Store(userID, driftResult.DriftedTool)
+
 						resp := &IMAgentResponse{
-							Text: "⚠️ Agent 检测到重复漂移模式，需要人工介入。请检查当前任务状态并提供新的指示。",
+							Text: fmt.Sprintf("⚠️ Agent 在执行过程中反复调用 %s 未能成功，已停止尝试。请检查任务要求或提供新的指示。", driftResult.DriftedTool),
 						}
 						h.saveConversationHistoryTimed(userID, history, resp)
 						return resp
@@ -5471,8 +5542,24 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				needsConfirmToolBranch = true
 			}
 		}
+		// Fallback for non-coding workflows: when gateConfig is not active
+		// (no coding intent) but the engine has a NeedsConfirm phase, still
+		// activate the gate. IsPhaseNeedsConfirm internally checks ws != nil
+		// && ws.Status == WorkflowActive, so if it returns true here,
+		// GetActiveWorkflow below will also return non-nil.
 		if !needsConfirmToolBranch && iteration > 0 && h.app != nil && h.app.workflowEngine != nil {
 			needsConfirmToolBranch = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+		}
+		// Engine-State-Aware Gate: when the engine path sets needsConfirmToolBranch=true,
+		// additionally check HasPhaseOutput. On first execution (hasOutput=false), skip
+		// the engine gate so the agent loop continues generating the full phase document.
+		// The steering-driven path (gateConfig.active without engine workflow) is unchanged.
+		if needsConfirmToolBranch && h.app != nil && h.app.workflowEngine != nil &&
+			h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
+			if !h.app.workflowEngine.HasPhaseOutput(userID) {
+				needsConfirmToolBranch = false
+				log.Printf("[agent-loop] NeedsConfirm tool branch: first execution (hasOutput=false), skipping engine gate (iter=%d)", iteration)
+			}
 		}
 		if needsConfirmToolBranch {
 			trimmedAfterTools := strings.TrimSpace(stripThinkingTags(msgContent))

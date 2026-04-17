@@ -1306,3 +1306,7 @@ export function DownloadASRModel() {
 export function QuerySecurityEvents(arg1) {
   return window['go']['main']['App']['QuerySecurityEvents'](arg1);
 }
+
+export function ReadErrorLog() {
+  return window['go']['main']['App']['ReadErrorLog']();
+}

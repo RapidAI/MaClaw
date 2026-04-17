@@ -602,3 +602,5 @@ export function CheckASRModel():Promise<{[key:string]:any}>;
 export function DownloadASRModel():Promise<void>;
 
 export function QuerySecurityEvents(arg1:number):Promise<Array<any>>;
+
+export function ReadErrorLog():Promise<Array<string>>;

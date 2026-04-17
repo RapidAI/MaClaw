@@ -129,7 +129,8 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	// -----------------------------------------------------------------------
 	// Token stream filters (same chain as OpenAI path)
 	// -----------------------------------------------------------------------
-	tcf := newToolCallFilter(onToken)
+	repfResp := newRepetitionFilter(onToken)
+	tcf := newToolCallFilter(repfResp.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
 	tf := newThinkFilter(fcf.Callback())
 
@@ -346,6 +347,10 @@ postLoop:
 	tf.Flush()
 	fcf.Flush()
 	tcf.Flush()
+	repfResp.Flush()
+	if repfResp.Halted() {
+		log.Printf("[LLM Stream Responses] repetition filter halted: suppressed %d runes", repfResp.SuppressedRunes())
+	}
 
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))
 	msg := llmMessage{

@@ -141,7 +141,8 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	// -------------------------------------------------------------------
 	// 6. Token stream filters (same chain as SSE path)
 	// -------------------------------------------------------------------
-	tcf := newToolCallFilter(onToken)
+	repfWS := newRepetitionFilter(onToken)
+	tcf := newToolCallFilter(repfWS.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
 	tf := newThinkFilter(fcf.Callback())
 
@@ -411,6 +412,10 @@ postLoop:
 	tf.Flush()
 	fcf.Flush()
 	tcf.Flush()
+	repfWS.Flush()
+	if repfWS.Halted() {
+		log.Printf("[LLM Stream WS] repetition filter halted: suppressed %d runes", repfWS.SuppressedRunes())
+	}
 
 	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))
 	msg := llmMessage{

@@ -52,7 +52,7 @@ func TestRouteToAgent_ProgressResetsTimeout(t *testing.T) {
 
 	// Send a progress update after 100ms (before timeout).
 	time.Sleep(100 * time.Millisecond)
-	router.HandleAgentProgress(reqID, "⚙️ 正在执行工具: bash")
+	router.HandleAgentProgress(reqID, "📊 正在分析搜索结果并生成报告")
 
 	// Wait another 100ms — without progress, this would have timed out.
 	// But progress reset the timer, so we have another 200ms.
@@ -83,7 +83,7 @@ func TestRouteToAgent_ProgressResetsTimeout(t *testing.T) {
 	if len(progressTexts) != 1 {
 		t.Fatalf("expected 1 progress text, got %d", len(progressTexts))
 	}
-	if progressTexts[0] != "⚙️ 正在执行工具: bash" {
+	if progressTexts[0] != "📊 正在分析搜索结果并生成报告" {
 		t.Fatalf("unexpected progress text: %s", progressTexts[0])
 	}
 }
@@ -244,7 +244,8 @@ func TestRouteToAgent_ProgressDedup(t *testing.T) {
 	pending.Timeout = 5 * time.Second
 
 	// All messages arrive within the 10s throttle window.
-	// bash (delivered) → read_file (throttled) → read_file (throttled + dup)
+	// Intermediate status messages are suppressed entirely — they only
+	// reset the timeout timer but are never delivered to IM users.
 	router.HandleAgentProgress(reqID, "⚙️ 正在执行工具: bash")
 	time.Sleep(50 * time.Millisecond)
 	router.HandleAgentProgress(reqID, "⚙️ 正在执行工具: read_file")
@@ -266,12 +267,9 @@ func TestRouteToAgent_ProgressDedup(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Only the first progress ("bash") is delivered; the rest are throttled.
-	if len(deliveredTexts) != 1 {
-		t.Fatalf("expected 1 delivered progress, got %d: %v", len(deliveredTexts), deliveredTexts)
-	}
-	if deliveredTexts[0] != "⚙️ 正在执行工具: bash" {
-		t.Fatalf("unexpected delivered text: %s", deliveredTexts[0])
+	// Intermediate status messages ("正在执行工具") are suppressed — none delivered.
+	if len(deliveredTexts) != 0 {
+		t.Fatalf("expected 0 delivered progress (intermediate status suppressed), got %d: %v", len(deliveredTexts), deliveredTexts)
 	}
 }
 
@@ -326,9 +324,9 @@ func TestBroadcastProgressDedup(t *testing.T) {
 		t.Fatalf("expected at least 2 pending requests for broadcast, got %d", len(reqIDs))
 	}
 
-	// Both devices send the same progress text.
+	// Both devices send the same progress text (non-intermediate, so it gets delivered).
 	for _, id := range reqIDs {
-		router.HandleAgentProgress(id, "⏳ 需要一点时间处理，请稍候...")
+		router.HandleAgentProgress(id, "📊 正在分析数据并生成报告")
 	}
 
 	// Give progress delivery goroutines time to run.
@@ -404,15 +402,15 @@ func TestBroadcastProgressDedup_DifferentTextsPass(t *testing.T) {
 		t.Fatalf("expected at least 2 pending requests, got %d", len(reqMap))
 	}
 
-	// Each device sends a DIFFERENT progress text.
+	// Each device sends a DIFFERENT progress text (non-intermediate).
 	i := 0
 	var reqIDs []string
 	for id := range reqMap {
 		reqIDs = append(reqIDs, id)
 		if i == 0 {
-			router.HandleAgentProgress(id, "⚙️ 正在执行工具: bash")
+			router.HandleAgentProgress(id, "📊 正在分析搜索结果")
 		} else {
-			router.HandleAgentProgress(id, "⚙️ 正在执行工具: read_file")
+			router.HandleAgentProgress(id, "📄 正在整合文档内容")
 		}
 		i++
 	}
