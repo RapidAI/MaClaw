@@ -162,8 +162,16 @@ func TestProperty10_SkipBehaviorFollowsCanSkipFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
-	// Advance to phase 2 (task_breakdown) by confirming twice
+	// Advance to phase 2 (task_breakdown) by confirming twice.
+	// HandleInput requires PhaseOutputs to exist before confirm can advance,
+	// so inject mock outputs before each confirm.
+	engine2.mu.Lock()
+	engine2.workflows["u_skip_yes"].PhaseOutputs["requirements"] = "mock output"
+	engine2.mu.Unlock()
 	engine2.HandleInput("u_skip_yes", "确认")
+	engine2.mu.Lock()
+	engine2.workflows["u_skip_yes"].PhaseOutputs["tech_design"] = "mock output"
+	engine2.mu.Unlock()
 	engine2.HandleInput("u_skip_yes", "确认")
 	state2 := engine2.GetActiveWorkflow("u_skip_yes")
 	if state2 == nil || state2.PhaseIndex != 2 {
@@ -218,6 +226,12 @@ func TestProperty11_LastPhaseAdvanceMarksCompleted(t *testing.T) {
 		lastPhase := tmpl.Phases[lastIdx]
 
 		if lastPhase.NeedsConfirm {
+			// HandleInput requires PhaseOutputs to exist before confirm can advance,
+			// so inject a mock output for the last phase.
+			engine.mu.Lock()
+			ws.PhaseOutputs[ws.CurrentPhase] = "mock output for last phase"
+			engine.mu.Unlock()
+
 			// Confirm to advance past the last phase → should complete
 			resp, err := engine.HandleInput(userID, "确认")
 			if err != nil {

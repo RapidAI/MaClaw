@@ -6,6 +6,9 @@ import "time"
 type WorkflowType string
 
 const (
+	// WorkflowNone indicates the task is NOT a workflow (e.g., content processing).
+	WorkflowNone WorkflowType = "none"
+
 	WorkflowCoding          WorkflowType = "coding"
 	WorkflowProductDesign   WorkflowType = "product_design"
 	WorkflowInnovation      WorkflowType = "innovation"

@@ -84,7 +84,7 @@ func (m *IntentUnderstandingManager) Start(userID, text string) (*StartResult, e
 
 	// One-shot rejection: if LLM says category="none", this is not a workflow.
 	// Don't create a session — let the caller fall through to normal agent loop.
-	if intent.Category == "none" {
+	if intent.Category == WorkflowNone {
 		return &StartResult{Rejected: true}, nil
 	}
 
@@ -312,6 +312,7 @@ func (m *IntentUnderstandingManager) buildConversationMessages(sess *Understandi
 //   2. If yes, which workflow template? (category=template type)
 func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	var b strings.Builder
+	b.Grow(4096) // pre-allocate to avoid repeated buffer growth
 
 	b.WriteString("你是一个智能助手的意图理解模块。你的任务是判断用户消息是否需要启动一个多阶段工作流，如果需要，将其分类到合适的工作流类型。\n\n")
 
@@ -401,7 +402,6 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- \"生成网络安全产品的PRD文档\" → category=\"product_design\"（多阶段文档任务）\n")
 	b.WriteString("- \"帮我做一份商业计划书\" → category=\"business_plan\"（多阶段文档任务）\n")
 	b.WriteString("- \"做一份竞品分析\" → category=\"competitive_analysis\"（系统性分析任务）\n")
-	b.WriteString("- \"帮我写一篇文献综述\" → category=\"literature_review\"（多阶段学术任务）\n")
 	b.WriteString("- \"帮我分析这个招标文件，准备投标\" → category=\"bid_response\"（需要上传招标文件的投标响应任务）\n")
 	b.WriteString("- \"审查一下这个合同\" → category=\"contract_review\"（需要上传合同的审查任务）\n")
 	b.WriteString("- \"对这家公司做个尽调\" → category=\"due_diligence\"（需要提供公司资料的尽职调查）\n")
@@ -450,6 +450,10 @@ func parseLLMIntentResponse(raw string) (reply string, intent StructuredIntent, 
 		// Parse failed — return raw text as reply but signal failure
 		return strings.TrimSpace(raw), StructuredIntent{}, false, false
 	}
+
+	// Normalize category: trim whitespace and lowercase to prevent LLM
+	// output variations like "None", " none ", "NONE" from bypassing guards.
+	result.Intent.Category = WorkflowType(strings.ToLower(strings.TrimSpace(string(result.Intent.Category))))
 
 	return result.Reply, result.Intent, result.Ready, true
 }

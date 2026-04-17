@@ -104,6 +104,12 @@ func TestEngine_CompleteWorkflowLifecycle(t *testing.T) {
 				t.Errorf("phase %d: non-confirm input should not advance NeedsConfirm phase", i)
 			}
 
+			// HandleInput requires PhaseOutputs to exist before confirm can advance,
+			// so inject a mock output for the current phase.
+			engine.mu.Lock()
+			engine.workflows["u1"].PhaseOutputs[phase.ID] = "mock output for " + phase.ID
+			engine.mu.Unlock()
+
 			// Now confirm to advance
 			resp, err = engine.HandleInput("u1", "确认")
 			if err != nil {
@@ -170,7 +176,11 @@ func TestEngine_SQLiteUnavailableDegradation(t *testing.T) {
 		t.Errorf("expected active, got %s", state.Status)
 	}
 
-	// HandleInput should work
+	// HandleInput should work — inject phase output before confirming
+	engine.mu.Lock()
+	engine.workflows["u1"].PhaseOutputs["requirements"] = "mock output"
+	engine.mu.Unlock()
+
 	resp, err := engine.HandleInput("u1", "确认")
 	if err != nil {
 		t.Fatalf("HandleInput with NullStore failed: %v", err)

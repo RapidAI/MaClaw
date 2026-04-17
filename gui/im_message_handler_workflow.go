@@ -126,7 +126,7 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 		// Do NOT call StartWorkflow — fall through to the normal agent loop.
 		// The understanding session has already been cleaned up by HandleInput
 		// when isReady=true, so no additional cleanup is needed.
-		if intent.Category == "none" || intent.Category == "" {
+		if intent.Category == workflow.WorkflowNone || intent.Category == "" {
 			log.Printf("[WorkflowInterception] understanding returned ready=true with category=%q for user %s, falling through to agent loop", intent.Category, userID)
 			return nil
 		}

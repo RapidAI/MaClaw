@@ -1031,6 +1031,36 @@ func looksLikeNoToolStallReply(text string) bool {
 	return false
 }
 
+// Compiled regexes for isSubstantivePhaseDocument — package-level for performance.
+var (
+	substantiveHeadingRe     = regexp.MustCompile(`(?m)^#{1,6}\s+\S`)
+	substantiveNumberedRe    = regexp.MustCompile(`(?m)^(?:\d+[.、])\s*\S`)
+	substantiveBulletLineRe  = regexp.MustCompile(`(?m)^[-*]\s+\S`)
+)
+
+// isSubstantivePhaseDocument checks whether the LLM output constitutes a
+// substantive phase document (vs a short transitional preamble).
+// It returns true if ANY of the following conditions hold:
+// 1. Text is 200+ runes long (sufficient length for a document)
+// 2. Text contains Markdown heading markers (# , ## , ### , etc.)
+// 3. Text contains numbered list patterns (1. , 2. , 1、, etc.)
+// 4. Text contains 3+ bullet list lines (- item or * item)
+func isSubstantivePhaseDocument(text string) bool {
+	if len([]rune(text)) >= 200 {
+		return true
+	}
+	if substantiveHeadingRe.MatchString(text) {
+		return true
+	}
+	if substantiveNumberedRe.MatchString(text) {
+		return true
+	}
+	if len(substantiveBulletLineRe.FindAllStringIndex(text, 3)) >= 3 {
+		return true
+	}
+	return false
+}
+
 func hasFutureDeliveryPromise(text string) bool {
 	trimmed := strings.TrimSpace(stripThinkingTags(text))
 	if trimmed == "" {
@@ -4713,7 +4743,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if needsConfirmFromEngine || needsConfirmFromSteering {
 				trimmedForGate := strings.TrimSpace(stripThinkingTags(msgContent))
 				if trimmedForGate != "" &&
-					!looksLikeNoToolStallReply(msgContent) {
+					!looksLikeNoToolStallReply(msgContent) &&
+					isSubstantivePhaseDocument(trimmedForGate) {
 					gateSource := "workflow"
 					if needsConfirmFromSteering && !needsConfirmFromEngine {
 						gateSource = "steering"
@@ -4763,6 +4794,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					attachLLMTelemetry(finalResp)
 					h.saveConversationHistoryTimed(userID, history, finalResp)
 					return finalResp
+				} else if trimmedForGate != "" && !looksLikeNoToolStallReply(msgContent) {
+					// isSubstantivePhaseDocument was false — short preamble, let the loop continue.
+					log.Printf("[agent-loop] NeedsConfirm gate: skipping non-substantive preamble (len=%d), allowing loop to continue", len([]rune(trimmedForGate)))
 				}
 			}
 
@@ -5408,7 +5442,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		if needsConfirmToolBranch {
 			trimmedAfterTools := strings.TrimSpace(stripThinkingTags(msgContent))
-			if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) {
+			if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) && isSubstantivePhaseDocument(trimmedAfterTools) {
 				log.Printf("[workflow-gate] NeedsConfirm (tool branch): force-returning after tool execution for user confirmation (iteration=%d len=%d)", iteration, len(trimmedAfterTools))
 				phase.Stage = agentStageFinalize
 				finalResp := &IMAgentResponse{Text: stripThinkingTags(msgContent)}
@@ -5437,6 +5471,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				attachLLMTelemetry(finalResp)
 				h.saveConversationHistoryTimed(userID, history, finalResp)
 				return finalResp
+			} else if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) {
+				// isSubstantivePhaseDocument was false — short preamble after tool execution, let the loop continue.
+				log.Printf("[workflow-gate] NeedsConfirm (tool branch): skipping non-substantive preamble (len=%d), allowing loop to continue", len([]rune(trimmedAfterTools)))
 			}
 		}
 	}
