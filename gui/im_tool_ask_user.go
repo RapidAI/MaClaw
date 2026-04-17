@@ -108,8 +108,16 @@ func FormatAskUserForDisplay(req *AskUserRequest) string {
 			b.WriteString(fmt.Sprintf("\n  %d. %s", i+1, opt))
 		}
 	}
-	if req.InputType == "confirm" {
-		b.WriteString("\n\n请回复「确认」或「取消」")
+	switch req.InputType {
+	case "confirm":
+		b.WriteString("\n\n请输入：确认 或 取消")
+	case "choice":
+		if len(req.Options) > 0 {
+			b.WriteString("\n\n请输入：选项编号或内容")
+		}
+	default:
+		// text type or unspecified — guide the user to reply directly.
+		b.WriteString("\n\n请直接输入您的回复")
 	}
 	return b.String()
 }

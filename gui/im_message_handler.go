@@ -917,7 +917,7 @@ func confirmationRevisionHints(intent taskIntent) []string {
 	}
 }
 
-func buildPendingConfirmation(app *App, userID, text string, result taskIntentResult) *pendingConfirmation {
+func buildPendingConfirmation(app *App, userID, text string, result taskIntentResult, understanding *taskUnderstandingResult) *pendingConfirmation {
 	now := time.Now()
 	projectPath := ""
 	if app != nil {
@@ -927,33 +927,56 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 	if projectPath != "" {
 		targetPaths = append(targetPaths, projectPath)
 	}
-	summary := fmt.Sprintf("我理解你想让我处理这项任务：%s", strings.TrimSpace(text))
-	if projectPath != "" {
-		summary += fmt.Sprintf("\n默认工作目录：%s", projectPath)
+
+	// --- Summary generation ---
+	// If LLM understanding is available, use the structured summary.
+	// Otherwise fall back to raw-text echo (previous behavior).
+	var summary string
+	var enhancedSummary string
+	var enhancedInstruction string
+
+	if understanding != nil && strings.TrimSpace(understanding.Summary) != "" {
+		enhancedSummary = formatTaskUnderstandingSummary(understanding, projectPath)
+		enhancedInstruction = formatEnhancedInstruction(understanding)
+		summary = enhancedSummary
+	} else {
+		// Fallback: raw-text echo (previous behavior).
+		summary = fmt.Sprintf("我理解你想让我处理这项任务：%s", strings.TrimSpace(text))
+		if projectPath != "" {
+			summary += fmt.Sprintf("\n默认工作目录：%s", projectPath)
+		}
+		if label := strings.TrimSpace(confirmationTaskLabel(result.Intent)); label != "" {
+			summary += fmt.Sprintf("\n识别到的任务类型：%s", label)
+		}
+		if reason := strings.TrimSpace(result.Reason); reason != "" {
+			summary += fmt.Sprintf("（原因：%s）", reason)
+		} else if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "未命中特征词" {
+			summary += fmt.Sprintf("（依据：%s）", ev)
+		}
 	}
-	if label := strings.TrimSpace(confirmationTaskLabel(result.Intent)); label != "" {
-		summary += fmt.Sprintf("\n识别到的任务类型：%s", label)
+
+	plannedActions := confirmationPlannedActions(result.Intent)
+	if understanding != nil && len(understanding.ExecutionPlan) > 0 {
+		plannedActions = understanding.ExecutionPlan
 	}
-	if reason := strings.TrimSpace(result.Reason); reason != "" {
-		summary += fmt.Sprintf("（原因：%s）", reason)
-	} else if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "未命中特征词" {
-		summary += fmt.Sprintf("（依据：%s）", ev)
-	}
+
 	return &pendingConfirmation{
-		ID:              fmt.Sprintf("confirm-%d", now.UnixNano()),
-		UserID:          userID,
-		OriginalText:    strings.TrimSpace(text),
-		ResumeText:      strings.TrimSpace(text),
-		Summary:         summary,
-		TaskType:        confirmationTaskLabel(result.Intent),
-		TargetPaths:     targetPaths,
-		PlannedActions:  confirmationPlannedActions(result.Intent),
-		RiskFlags:       confirmationRiskFlags(result.Intent),
-		RevisionHints:   confirmationRevisionHints(result.Intent),
-		Status:          "pending",
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		LastProjectPath: projectPath,
+		ID:                  fmt.Sprintf("confirm-%d", now.UnixNano()),
+		UserID:              userID,
+		OriginalText:        strings.TrimSpace(text),
+		ResumeText:          strings.TrimSpace(text),
+		Summary:             summary,
+		TaskType:            confirmationTaskLabel(result.Intent),
+		TargetPaths:         targetPaths,
+		PlannedActions:      plannedActions,
+		RiskFlags:           confirmationRiskFlags(result.Intent),
+		RevisionHints:       confirmationRevisionHints(result.Intent),
+		Status:              "pending",
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		LastProjectPath:     projectPath,
+		EnhancedSummary:     enhancedSummary,
+		EnhancedInstruction: enhancedInstruction,
 	}
 }
 
@@ -979,7 +1002,7 @@ func buildConfirmationResponse(item *pendingConfirmation) *IMAgentResponse {
 	}
 	// Summary is already shown inside the Confirmation card — only keep the
 	// action prompt here to avoid repeating the same content twice.
-	text := "请先确认我的理解是否正确。确认后我再开始执行；如果有偏差，直接回复要修改的目录、目标或前提。"
+	text := "请先确认我的理解是否正确。确认后我再开始执行；如果有偏差，直接回复要修改的目录、目标或前提。\n\n请输入：确认 或 修改意见"
 	return &IMAgentResponse{
 		Text:         text,
 		Confirmation: buildConfirmationPayload(item),
@@ -1003,6 +1026,11 @@ func applyConfirmationRevision(item *pendingConfirmation, revision string) *pend
 	clone.Summary = item.Summary + "\n用户补充/修正：" + revision
 	clone.RevisionHints = append([]string(nil), item.RevisionHints...)
 	clone.UpdatedAt = time.Now()
+	// Clear enhanced fields — the revision changes the task, so the LLM
+	// understanding is stale. confirmationApprovedText will fall back to
+	// ResumeText (which includes the revision).
+	clone.EnhancedSummary = ""
+	clone.EnhancedInstruction = ""
 	return &clone
 }
 
@@ -1010,7 +1038,21 @@ func confirmationApprovedText(item *pendingConfirmation) string {
 	if item == nil {
 		return ""
 	}
-	base := strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
+	// Prefer the LLM-generated enhanced instruction over the raw user text.
+	// The enhanced instruction is a structured, actionable rewrite that gives
+	// the agent a clearer directive than the user's conversational input.
+	// When using the enhanced instruction, append the original text as
+	// reference so the agent can cross-check if the LLM missed any details.
+	base := ""
+	if ei := strings.TrimSpace(item.EnhancedInstruction); ei != "" {
+		original := strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
+		base = ei
+		if original != "" && original != ei {
+			base += "\n\n[用户原始请求]\n" + original
+		}
+	} else {
+		base = strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
+	}
 	if base == "" {
 		return ""
 	}
@@ -3242,7 +3284,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if shouldRequireExecutionConfirmation(msg, pending) {
 		intent := h.classifyTaskIntentForExecution(trimmed, msg.Attachments, httpClient)
 		if shouldRequireExecutionConfirmationForIntent(msg, pending, intent) {
-			item := buildPendingConfirmation(h.app, msg.UserID, trimmed, intent)
+			// Attempt LLM-based task understanding for a structured summary.
+			// On failure (timeout, LLM not configured, etc.), understanding
+			// will be nil and buildPendingConfirmation falls back to raw-text echo.
+			understanding := h.understandTaskWithLLM(msg.UserID, trimmed, intent)
+			item := buildPendingConfirmation(h.app, msg.UserID, trimmed, intent, understanding)
 			if h.confirmationStore != nil {
 				h.confirmationStore.set(item)
 			}

@@ -128,7 +128,7 @@ func BuildPhaseSystemPrompt(state *WorkflowState, phase *PhaseTemplate, registry
 		b.WriteString("## ⚠️ 重要：等待用户确认\n\n")
 		b.WriteString("本阶段需要用户确认后才能进入下一阶段。请严格遵守以下规则：\n")
 		b.WriteString("1. 输出本阶段的产出物后，**立即停止**，不要继续生成下一阶段的内容\n")
-		b.WriteString("2. 在产出物末尾明确提示用户：\"请确认以上内容，或提出修改意见。确认后我将进入下一阶段。\"\n")
+		b.WriteString("2. 在产出物末尾明确提示用户：\"请确认以上内容，或提出修改意见。确认后我将进入下一阶段。\n\n请输入：确认 或 修改意见\"\n")
 		b.WriteString("3. **绝对不要**在同一次回复中既输出产出物又开始下一阶段的工作\n")
 		b.WriteString("4. 如果用户的需求信息不足，先追问澄清，不要假设默认值直接生成完整文档\n\n")
 	}

@@ -412,10 +412,19 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 		// Lanxin (蓝信) does not support interactive buttons/cards.
 		// Degrade resp.Actions to numbered text options appended to the message.
 		if len(resp.Actions) > 0 {
-			// FormatAskUserForDisplay already appends "请回复「确认」或「取消」"
-			// for confirm type. Replace that generic hint with the concrete
-			// numbered options so the user sees one clear instruction.
-			text = strings.TrimSuffix(strings.TrimSpace(text), "请回复「确认」或「取消」")
+			// FormatAskUserForDisplay appends input hints like "请输入：确认 或 取消"
+			// or "请输入：选项编号或内容" or "请输入：确认 或 修改意见".
+			// Strip these generic hints and replace with the concrete numbered
+			// options so the user sees one clear instruction.
+			for _, hint := range []string{
+				"请输入：确认 或 取消",
+				"请输入：选项编号或内容",
+				"请输入：确认 或 修改意见",
+				"请直接输入您的回复",
+				"请回复「确认」或「取消」", // legacy
+			} {
+				text = strings.TrimSuffix(strings.TrimSpace(text), hint)
+			}
 			text = strings.TrimSpace(text)
 			text += "\n\n请回复对应选项："
 			for i, action := range resp.Actions {

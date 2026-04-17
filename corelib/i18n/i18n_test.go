@@ -68,7 +68,7 @@ func TestTf_SingleArg(t *testing.T) {
 
 func TestTf_FileGeneric(t *testing.T) {
 	got := Tf(MsgFileGeneric, "zh", "design.pdf")
-	want := "📄 已生成文件 design.pdf，请查看并确认，或提出修改意见。"
+	want := "📄 已生成文件 design.pdf，请查看并确认，或提出修改意见。\n\n请输入：确认 或 修改意见"
 	if got != want {
 		t.Errorf("Tf(%q, zh, design.pdf) = %q, want %q", MsgFileGeneric, got, want)
 	}

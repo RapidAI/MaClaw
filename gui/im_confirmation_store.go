@@ -26,6 +26,17 @@ type pendingConfirmation struct {
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	LastProjectPath string    `json:"last_project_path,omitempty"`
+
+	// EnhancedSummary is the LLM-generated structured understanding of the
+	// user's request. When non-empty, it replaces the raw-text Summary in
+	// the confirmation card shown to the user.
+	EnhancedSummary string `json:"enhanced_summary,omitempty"`
+
+	// EnhancedInstruction is the LLM-generated structured instruction that
+	// replaces OriginalText as the agent loop input after user confirms.
+	// This gives the agent a clearer, more actionable directive than the
+	// user's raw conversational input.
+	EnhancedInstruction string `json:"enhanced_instruction,omitempty"`
 }
 
 type confirmationSnapshot struct {
