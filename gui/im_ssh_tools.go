@@ -118,13 +118,35 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	if !forceNew {
 		targetID := fmt.Sprintf("%s@%s:%d", user, host, port)
 		if existing := h.findRunningSSHSession(mgr, targetID, label); existing != nil {
-			summary := existing.GetSummary()
-			result := fmt.Sprintf("♻️ 复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
-				existing.ID, summary.HostID, summary.Status)
-			if summary.LastOutput != "" {
-				result += "\n\n最近输出: " + summary.LastOutput
+			// Verify the connection is actually alive before reusing.
+			// The session status may say "running" but the underlying TCP
+			// connection could be dead (e.g. network interruption, server
+			// restart, docker compose down).
+			if existing.Handle != nil && existing.Handle.IsAlive() {
+				summary := existing.GetSummary()
+				result := fmt.Sprintf("♻️ 复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
+					existing.ID, summary.HostID, summary.Status)
+				if summary.LastOutput != "" {
+					result += "\n\n最近输出: " + summary.LastOutput
+				}
+				return result
 			}
-			return result
+			// Connection is dead. Try to reconnect the existing session.
+			if err := mgr.ReconnectByID(existing.ID); err == nil {
+				// Wait for shell init after reconnect.
+				time.Sleep(2 * time.Second)
+				preview := strings.Join(existing.PreviewTail(10), "\n")
+				result := fmt.Sprintf("♻️ 复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
+					existing.ID, targetID)
+				if preview != "" {
+					result += "\n\n--- 重连后输出 ---\n" + preview
+				}
+				return result
+			}
+			// Reconnection failed. Close the dead session so we can create
+			// a fresh one below instead of looping on the same dead session.
+			mgr.RemoveSession(existing.ID)
+			h.completeSSHBackgroundLoop(existing.ID)
 		}
 	}
 

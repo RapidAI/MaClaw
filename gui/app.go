@@ -5353,32 +5353,17 @@ func (a *App) OpenFileOrShowInFolder(path string) error {
 		return fmt.Errorf("empty path")
 	}
 	path = filepath.Clean(path)
-	info, err := os.Stat(path)
-	if err != nil {
+	if _, err := os.Stat(path); err != nil {
 		return err
 	}
 
 	switch goruntime.GOOS {
 	case "windows":
 		winPath := filepath.FromSlash(path)
-		if info.IsDir() {
-			// For directories, use explorer.exe directly.
-			// rundll32 url.dll,FileProtocolHandler is unreliable for directories
-			// on some Windows versions — it starts successfully but does nothing.
-			openCmd := exec.Command("explorer", winPath)
-			hideCommandWindow(openCmd)
-			if err := openCmd.Start(); err == nil {
-				go openCmd.Wait()
-				return nil
-			}
-		} else {
-			// For files, use rundll32 to open with the associated application.
-			openCmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", winPath)
-			hideCommandWindow(openCmd)
-			if err := openCmd.Start(); err == nil {
-				go openCmd.Wait()
-				return nil
-			}
+		openCmd := exec.Command("explorer", winPath)
+		if err := openCmd.Start(); err == nil {
+			go openCmd.Wait()
+			return nil
 		}
 		return a.ShowItemInFolder(path)
 	case "darwin":

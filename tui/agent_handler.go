@@ -599,7 +599,7 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 		toolDef("recommend_tool", "推荐最佳编程工具", map[string]interface{}{
 			"task_description": map[string]interface{}{"type": "string", "description": "任务描述"},
 		}, []string{"task_description"}),
-		toolDef("screenshot", "截取屏幕截图。仅在用户明确要求截屏、或需要确认操作结果时使用。最小间隔 30 秒。", map[string]interface{}{}, nil),
+		toolDef("screenshot", "截取屏幕截图。这是截屏的唯一正确方式，禁止用 bash 编写截屏脚本替代。仅在用户明确要求截屏、或需要确认操作结果时使用。最小间隔 30 秒。", map[string]interface{}{}, nil),
 		// --- 任务管理 ---
 		toolDef("task", "管理任务（action: create/update/complete/fail/list/delegate/delete）。用于跟踪复杂任务的进度和依赖关系。", map[string]interface{}{
 			"action":      map[string]interface{}{"type": "string", "description": "操作: create/update/complete/fail/list/delegate/delete"},

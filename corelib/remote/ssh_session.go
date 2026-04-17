@@ -118,6 +118,7 @@ func (s *SSHPTYSession) Start(spec SSHSessionSpec) error {
 func (s *SSHPTYSession) PID() int { return 0 }
 
 // IsAlive 检查 SSH 会话是否仍然存活。
+// 带 5 秒超时保护，避免半开 TCP 连接导致 SendRequest 长时间阻塞。
 func (s *SSHPTYSession) IsAlive() bool {
 	s.mu.Lock()
 	if !s.started || s.closed || s.client == nil {
@@ -126,9 +127,20 @@ func (s *SSHPTYSession) IsAlive() bool {
 	}
 	client := s.client
 	s.mu.Unlock()
-	// 在锁外做网络 I/O，避免阻塞其他操作
-	_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-	return err == nil
+
+	// 在 goroutine 中做网络 I/O，带超时保护。
+	// 半开 TCP 连接场景下 SendRequest 可能阻塞 30-120 秒。
+	ch := make(chan bool, 1)
+	go func() {
+		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+		ch <- (err == nil)
+	}()
+	select {
+	case alive := <-ch:
+		return alive
+	case <-time.After(5 * time.Second):
+		return false
+	}
 }
 
 // Write 向远程 shell 写入数据。

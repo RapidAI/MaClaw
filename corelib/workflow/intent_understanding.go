@@ -321,7 +321,8 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- 简单指令：翻译、格式化、总结、搜索、计算、纠错、润色等一步完成的任务\n")
 	b.WriteString("- 知识查询：什么是X、怎么理解X、X和Y的区别、推荐/建议类问题\n")
 	b.WriteString("- 闲聊/确认：打招呼、感谢、确认、简短回复\n")
-	b.WriteString("- 单文件操作：写一段代码片段、生成一个配置文件、写一封邮件\n\n")
+	b.WriteString("- 单文件操作：写一段代码片段、生成一个配置文件、写一封邮件\n")
+	b.WriteString("- 文件操作：打开、查看、预览、截图、转换、导出文件（即使文件类型是PPT/PDF/Word，操作已有文件不是创建新内容）\n\n")
 	b.WriteString("以下情况 **需要** 工作流：\n")
 	b.WriteString("- 软件开发：开发系统/应用/游戏/工具，需要需求→设计→编码的完整流程\n")
 	b.WriteString("- 文档创作：PRD、商业计划书、论文、研报、测试方案等需要多阶段迭代的文档\n")
@@ -340,7 +341,8 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- 关键特征：从零创建 → 多阶段迭代 → 产出新的结构化文档\n")
 	b.WriteString("- 例：\"帮我写一篇文献综述\" = 从零创建学术文档 → 多阶段迭代（工作流）\n")
 	b.WriteString("- 例：\"开发一个贪吃蛇游戏\" = 从零创建软件 → 需求→设计→编码（工作流）\n\n")
-	b.WriteString("**判断口诀**：\"看/读/翻译/整理/摘要/解读\" 已有内容 → category=\"none\"；\"写/做/开发/创建\" 新产物 → 对应工作流类型\n\n")
+	b.WriteString("**判断口诀**：\"看/读/翻译/整理/摘要/解读\" 已有内容 → category=\"none\"；\"写/做/开发/创建\" 新产物 → 对应工作流类型\n")
+	b.WriteString("**PPT 特别注意**：\"打开/查看/转换/截图 PPT\" → category=\"none\"（文件操作）；\"设计/制作/生成 PPT\" → category=\"presentation_design\"（创建新PPT）\n\n")
 
 	// Include all registered template descriptions
 	if m.registry != nil {
@@ -396,6 +398,11 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- \"帮我写一段Python排序代码\" → category=\"none\"（单文件代码片段，不需要完整开发流程）\n")
 	b.WriteString("- \"怎么配置nginx\" → category=\"none\"（操作指导类问题）\n")
 	b.WriteString("- \"生成一个UUID\" → category=\"none\"（简单生成任务）\n")
+	b.WriteString("- \"打开桌面上的PPT文件并截图\" → category=\"none\"（文件操作，不是创建PPT）\n")
+	b.WriteString("- \"打开这个PPT\" → category=\"none\"（文件操作）\n")
+	b.WriteString("- \"把PPT转换成PDF\" → category=\"none\"（文件格式转换，不是创建PPT）\n")
+	b.WriteString("- \"查看这个PPT的内容\" → category=\"none\"（文件查看操作）\n")
+	b.WriteString("- \"截图当前PPT页面\" → category=\"none\"（截图操作）\n")
 	b.WriteString("- \"开发一个贪吃蛇游戏\" → category=\"coding\"（需要完整开发流程）\n")
 	b.WriteString("- \"帮我做一个CRM系统\" → category=\"coding\"（需要完整开发流程）\n")
 	b.WriteString("- \"怎么做一个电商系统\" → category=\"coding\"（虽然用了疑问句式，但实际是开发请求）\n")

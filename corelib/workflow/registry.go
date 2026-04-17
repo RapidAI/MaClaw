@@ -124,8 +124,9 @@ func (r *WorkflowRegistry) MatchTemplateByKeywords(text string) (WorkflowType, b
 
 // MatchTemplateByStrongKeyword returns the WorkflowType of a template that
 // has a strong keyword match (uppercase abbreviation or ≥3 Chinese char phrase).
-// This is stricter than MatchTemplateByKeywords and is used when overriding
-// an explicit LLM rejection — we only override if the evidence is very strong.
+// This is stricter than MatchTemplateByKeywords and is used as a fallback
+// when the LLM intent understanding call FAILS (timeout, network error).
+// It should NOT be used to override an explicit LLM rejection.
 func (r *WorkflowRegistry) MatchTemplateByStrongKeyword(text string) (WorkflowType, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

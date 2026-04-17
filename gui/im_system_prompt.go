@@ -275,8 +275,9 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - 中断或终止会话用 control_session（action: interrupt/kill）
 - 配置管理用 manage_config（action: get/update/batch_update/list_schema/export/import）
 - 简单文件/命令操作直接用 bash/read_file/write_file/edit_file/list_directory，不要绕道创建会话
-- 截屏直接调用 screenshot（仅在用户明确要求或需要确认操作结果时使用，最小间隔 30 秒），无需活跃会话也能截取本机桌面
+- 截屏**必须**调用 screenshot 工具（仅在用户明确要求或需要确认操作结果时使用，最小间隔 30 秒），无需活跃会话也能截取本机桌面
 - ⚠️ 截屏规则：仅在用户明确要求截屏、或用户通过 IM 远程监督需要确认操作结果时才调用 screenshot。不要在用户没有要求时主动截屏。连续截屏最小间隔 30 秒。
+- 🚫 严禁用 bash 工具编写 PowerShell 截屏脚本、调用 screencapture/scrot/import 等命令来截屏——screenshot 工具已处理所有平台的截屏逻辑，手写脚本是多余且不可靠的。
 - 用 send_file 通过 IM 通道直接发送文件给用户（支持图片、文档等任意文件类型）。在桌面端默认只保存到本地；如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
 - ⚠️ 发送本地磁盘上的文件/图片给用户时，必须用 send_file 工具——会话内的工具无法直接投递文件到 IM。SDK 会话中产生的截图会自动推送给用户，无需额外操作。
 - ⚠️ 桌面端用户说"发到飞书"、"发到微信"、"发到QQ"、"发到 IM"时，必须在 send_file 中设置 forward_to_im=true，否则文件只会保存到本地而不会发送到 IM 平台。
@@ -311,7 +312,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 ## 工具使用要点
 - 配置管理用 manage_config（action: get/update/batch_update/list_schema/export/import）
 - 简单文件/命令操作直接用 bash/read_file/write_file/edit_file/list_directory
-- 截屏直接调用 screenshot
+- 截屏**必须**调用 screenshot 工具，禁止用 bash 编写截屏脚本
 - 用 send_file 通过 IM 通道直接发送文件给用户。如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
 

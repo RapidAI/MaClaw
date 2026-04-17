@@ -376,6 +376,31 @@ func (m *SSHSessionManager) GetSessionStatus(sessionID string) (SessionStatus, b
 	return s.Status, true
 }
 
+// RemoveSession 从管理器中移除指定会话并关闭其 handle。
+// 用于清理底层连接已死但状态仍为 running 的僵尸会话。
+//
+// 不直接调用 pool.Release —— 连接池引用由 runExitLoop 在 handle 关闭后
+// 自然释放。如果 reconnectSession 已经失败过，旧连接已被 pool.Reconnect
+// 清理，runExitLoop 的 Release 调用是安全的 no-op。
+func (m *SSHSessionManager) RemoveSession(sessionID string) {
+	m.mu.Lock()
+	s, ok := m.sessions[sessionID]
+	if ok {
+		delete(m.sessions, sessionID)
+	}
+	m.mu.Unlock()
+
+	if ok && s != nil {
+		if s.Handle != nil {
+			_ = s.Handle.Close()
+		}
+		s.mu.Lock()
+		s.Status = SessionExited
+		s.Summary.Status = string(SessionExited)
+		s.mu.Unlock()
+	}
+}
+
 // Close 关闭所有会话和连接池。
 func (m *SSHSessionManager) Close() {
 	m.mu.Lock()

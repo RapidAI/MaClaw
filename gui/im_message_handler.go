@@ -4735,7 +4735,27 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// NeedsConfirm phase. This covers the case where no workflow
 			// engine workflow is active but the steering rules enforce the
 			// three-phase flow.
-			needsConfirmFromSteering := gateConfig.active && iteration > 0
+			//
+			// IMPORTANT: When the WorkflowEngine has an active workflow, we
+			// defer to IsPhaseNeedsConfirm() instead of blindly using
+			// gateConfig.active. The implementation phase has NeedsConfirm=false,
+			// so the steering gate must NOT trigger during code execution.
+			// Only fall back to gateConfig.active when there is NO engine
+			// workflow (pure steering-driven flow).
+			needsConfirmFromSteering := false
+			if gateConfig.active && iteration > 0 {
+				if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
+					// Engine owns the workflow — delegate to phase-aware check.
+					// IsPhaseNeedsConfirm returns false for implementation/execution phases.
+					needsConfirmFromSteering = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+					if !needsConfirmFromSteering && platform == "desktop" {
+						log.Printf("[agent-loop] NeedsConfirm steering bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
+					}
+				} else {
+					// No engine workflow — pure steering-driven flow, use gate as before.
+					needsConfirmFromSteering = true
+				}
+			}
 			if platform == "desktop" && (needsConfirmFromEngine || needsConfirmFromSteering) {
 				log.Printf("[agent-loop] NeedsConfirm check: engine=%v steering=%v iteration=%d msgLen=%d steeringDetector=%v user=%s",
 					needsConfirmFromEngine, needsConfirmFromSteering, iteration, len(strings.TrimSpace(stripThinkingTags(msgContent))), steeringDetector != nil, userID)
@@ -5433,9 +5453,23 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// LLM has already produced substantive text (the requirements/design
 		// doc), force-return after executing delivery tools (open, memory,
 		// task, etc.) instead of continuing to the next iteration.
+		//
+		// IMPORTANT: Same phase-awareness as the no-tool branch — when the
+		// WorkflowEngine has an active workflow, defer to IsPhaseNeedsConfirm()
+		// instead of blindly using gateConfig.active. This prevents premature
+		// exit during the implementation phase where NeedsConfirm=false.
 		needsConfirmToolBranch := false
 		if gateConfig.active && iteration > 0 {
-			needsConfirmToolBranch = true
+			if h.app != nil && h.app.workflowEngine != nil && h.app.workflowEngine.GetActiveWorkflow(userID) != nil {
+				// Engine owns the workflow — delegate to phase-aware check.
+				needsConfirmToolBranch = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+				if !needsConfirmToolBranch {
+					log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
+				}
+			} else {
+				// No engine workflow — pure steering-driven flow.
+				needsConfirmToolBranch = true
+			}
 		}
 		if !needsConfirmToolBranch && iteration > 0 && h.app != nil && h.app.workflowEngine != nil {
 			needsConfirmToolBranch = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)

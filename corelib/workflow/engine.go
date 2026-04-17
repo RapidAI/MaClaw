@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -198,50 +199,65 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 	}
 
 	// 2. Check for confirm words (only meaningful when NeedsConfirm=true).
+	_, hasOutput := ws.PhaseOutputs[ws.CurrentPhase]
 	if phase.NeedsConfirm && containsAny(trimmed, confirmWords) {
-		// Only allow confirmation if the current phase has produced output.
-		// Without this guard, a user saying "好的" (acknowledging the workflow
-		// start message) would prematurely advance past the requirements phase
-		// before any document has been generated.
-		if _, hasOutput := ws.PhaseOutputs[ws.CurrentPhase]; hasOutput {
+		if hasOutput {
 			resp := e.advancePhase(userID, ws, tmpl)
 			return resp, nil
 		}
 		// No output yet — treat as normal input to generate the phase document.
 	}
 
-	// 3. Check for modify indicators.
-	if containsAny(trimmed, modifyIndicators) {
-		phasePrompt := BuildPhaseSystemPrompt(ws, phase, e.registry)
-		modifyPrompt := fmt.Sprintf("%s\n\n## 用户修改请求\n\n用户要求修改当前阶段产出物：%s\n请根据修改意见更新产出物。", phasePrompt, trimmed)
+	// 3. LLM-delegated confirm/modify (Kiro-style).
+	//
+	// When the phase requires confirmation and already has output, we do NOT
+	// try to classify the user's intent with keyword matching. Instead, we
+	// return PendingConfirm=true so the caller can make a lightweight LLM
+	// call (~200 tokens) to classify the intent as confirm/modify/other.
+	//
+	// The caller (handleActiveWorkflow) uses LLMClassify() with a minimal
+	// system prompt — no tools, no conversation history, no streaming.
+	// Based on the result:
+	//   - "confirm" → caller calls AdvancePhase()
+	//   - "modify"  → caller runs agent loop with modify prompt
+	//   - "other"   → caller lets the message fall through to normal handling
+	if phase.NeedsConfirm && hasOutput {
+		log.Printf("[WorkflowEngine] pending confirm: user=%s phase=%s msg=%q",
+			userID, ws.CurrentPhase, truncateForLog(trimmed, 50))
 		return &WorkflowResponse{
-			Text:         "",
-			PhasePrompt:  modifyPrompt,
-			ToolFilter:   phase.ToolPolicy,
-			RunAgentLoop: true,
+			PendingConfirm: true,
 		}, nil
 	}
 
 	// 4. Default: normal phase input — run agent loop with phase prompt.
 	phasePrompt := BuildPhaseSystemPrompt(ws, phase, e.registry)
 
-	// Determine if this is likely an unrelated message (e.g. "查询天气"
-	// while a coding workflow is active). When the current phase already
-	// has output AND the message didn't match confirm/skip/modify, the
-	// user is probably asking something unrelated to the workflow.
-	// When the phase has NO output yet, this is the first execution
-	// request (e.g. user said "开工" and the system needs to generate
-	// the requirements document) — treat it as genuine workflow input.
-	_, hasOutput := ws.PhaseOutputs[ws.CurrentPhase]
-	isDefault := hasOutput // only mark as default when phase already has output
-
+	// When the phase has no output yet, this is the first execution request
+	// (e.g. user said "开工" and the system needs to generate the document).
 	return &WorkflowResponse{
 		Text:         "",
 		PhasePrompt:  phasePrompt,
 		ToolFilter:   phase.ToolPolicy,
 		RunAgentLoop: true,
-		DefaultInput: isDefault,
 	}, nil
+}
+
+// AdvancePhase is the public entry point for advancing the workflow to the
+// next phase. Called by the GUI layer after the agent loop completes when
+// PendingConfirm was set (LLM-delegated confirm: no new doc = confirm).
+func (e *WorkflowEngine) AdvancePhase(userID string) (*WorkflowResponse, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		return nil, fmt.Errorf("no active workflow for user %s", userID)
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil {
+		return nil, fmt.Errorf("workflow template not found for type %s", ws.Type)
+	}
+	return e.advancePhase(userID, ws, tmpl), nil
 }
 
 // advancePhase moves the workflow to the next phase, or marks it completed
@@ -569,4 +585,13 @@ func (e *WorkflowEngine) GetInputRequirement(userID string) *InputRequirement {
 		return nil
 	}
 	return tmpl.RequiresInput
+}
+
+// truncateForLog truncates a string to maxRunes for log output.
+func truncateForLog(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
 }

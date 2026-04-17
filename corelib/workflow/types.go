@@ -124,6 +124,14 @@ type WorkflowResponse struct {
 	// workflow phase content. When true, the message may be unrelated to
 	// the workflow (e.g. a weather query while a coding workflow is active).
 	DefaultInput bool
+
+	// PendingConfirm is true when the phase has output and the user's
+	// message is being delegated to the LLM for intent classification
+	// (confirm vs modify). After the agent loop completes, the caller
+	// should check whether the LLM produced a new phase document:
+	//   - No new document → treat as confirmation, call AdvancePhase()
+	//   - New document    → treat as modification, wait for next confirm
+	PendingConfirm bool
 }
 
 // WorkflowStatus tracks the lifecycle state of a workflow.
