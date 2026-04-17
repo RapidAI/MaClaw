@@ -205,7 +205,7 @@ func (w *detailAwareLogWriter) Write(p []byte) (int, error) {
 func isImportantLogLine(line string) bool {
 	lower := strings.ToLower(line)
 	keywords := []string{"error", "err=", "failed", "fatal", "panic", "warn", "warning",
-		"[skill-runner]", "[skill-scanner]"}
+		"[skill-runner]", "[skill-scanner]", "[lansenger]"}
 	for _, kw := range keywords {
 		if strings.Contains(lower, kw) {
 			return true
