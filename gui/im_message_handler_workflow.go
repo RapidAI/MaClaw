@@ -273,6 +273,7 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 		}
 		// For document-required workflows, append the upload prompt to the
 		// startup message so the user knows to provide the input document.
+		// These workflows wait for user input before generating phase content.
 		if req := engine.GetInputRequirement(userID); req != nil {
 			overview += "\n\n📎 " + req.Description
 			if len(req.FileTypes) > 0 {
@@ -281,8 +282,33 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 			if req.AcceptText {
 				overview += "\n也可以直接将文档内容粘贴到对话框中，或提供网址由系统自动抓取。"
 			}
+			return &IMAgentResponse{Text: overview}
 		}
-		return &IMAgentResponse{Text: overview}
+
+		// Non-input-driven workflows: automatically trigger the agent loop
+		// to generate the first phase document, instead of requiring the
+		// user to send a second message (e.g. "开工").
+		//
+		// Send the overview as an intermediate message, then set up the
+		// agent loop markers so the caller runs the phase generation.
+		// This mirrors the pattern in handleActiveWorkflow() when
+		// engine.HandleInput() returns RunAgentLoop=true.
+		log.Printf("[WorkflowInterception] auto-triggering agent loop for first phase: user=%s type=%s phase=%s",
+			userID, state.Type, state.CurrentPhase)
+		if cb := engine.GetCallbacks(); cb != nil {
+			_ = cb.SendTextToUser(userID, overview)
+		}
+		// Build the phase prompt for the first phase.
+		tmpl := engine.GetRegistry().Match(state.Type)
+		if tmpl != nil && len(tmpl.Phases) > 0 {
+			firstPhase := &tmpl.Phases[0]
+			phasePrompt := workflow.BuildPhaseSystemPrompt(state, firstPhase, engine.GetRegistry())
+			if phasePrompt != "" {
+				h.stashedPhasePrompt.Store(userID, phasePrompt)
+			}
+		}
+		h.workflowAgentLoopMarker.Store(userID, true)
+		return nil // fall through to agent loop
 	}
 	return &IMAgentResponse{Text: reply}
 }
@@ -417,24 +443,8 @@ func (h *IMMessageHandler) cancelWorkflowForUser(userID string) {
 	h.pendingAskUser.Delete(userID)
 }
 
-// docOnlyAllowedTools is the set of tool names allowed during doc_only phases.
-// These are documentation/communication tools that don't execute code or
-// modify the project.
-var docOnlyAllowedTools = map[string]bool{
-	"write_file":    true,
-	"read_file":     true,
-	"edit_file":     true,
-	"memory":        true,
-	"generate_pdf":  true,
-	"send_file":     true,
-	"web_search":    true,
-	"web_fetch":     true,
-	"open":          true,
-	"set_nickname":  true,
-}
-
-// filterToolsForDocOnly filters the tool list to only include documentation
-// tools. Used during workflow phases with ToolFilterDocOnly policy.
+// filterToolsForDocOnly filters the tool list to only include tools permitted
+// during doc_only workflow phases, as defined by workflow.DocOnlyAllowedTools.
 func filterToolsForDocOnly(tools []map[string]interface{}) []map[string]interface{} {
 	if len(tools) == 0 {
 		return tools
@@ -442,7 +452,7 @@ func filterToolsForDocOnly(tools []map[string]interface{}) []map[string]interfac
 	filtered := make([]map[string]interface{}, 0, len(tools))
 	for _, def := range tools {
 		name := extractToolName(def)
-		if docOnlyAllowedTools[name] {
+		if workflow.DocOnlyAllowedTools[name] {
 			filtered = append(filtered, def)
 		}
 	}

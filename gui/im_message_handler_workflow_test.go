@@ -36,9 +36,15 @@ func (m *mockLLMCallerGUI) DoSimpleLLMRequest(messages []interface{}, timeout ti
 }
 
 // mockEngineCallbacksGUI is a no-op implementation of workflow.EngineCallbacks.
-type mockEngineCallbacksGUI struct{}
+type mockEngineCallbacksGUI struct {
+	// SentTexts captures messages sent via SendTextToUser for test assertions.
+	SentTexts []string
+}
 
-func (m *mockEngineCallbacksGUI) SendTextToUser(userID, text string) error                          { return nil }
+func (m *mockEngineCallbacksGUI) SendTextToUser(userID, text string) error {
+	m.SentTexts = append(m.SentTexts, text)
+	return nil
+}
 func (m *mockEngineCallbacksGUI) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error { return nil }
 func (m *mockEngineCallbacksGUI) EmitDocUpdate(userID, phaseID, content string) error                { return nil }
 func (m *mockEngineCallbacksGUI) EmitGateResult(userID, phaseID string, result *workflow.QualityGateResult) error {
@@ -47,7 +53,7 @@ func (m *mockEngineCallbacksGUI) EmitGateResult(userID, phaseID string, result *
 
 // setupWorkflowTestHandler creates a minimal IMMessageHandler with a workflow
 // engine configured to use the given LLM mock for intent understanding.
-func setupWorkflowTestHandler(llm workflow.LLMCaller) *IMMessageHandler {
+func setupWorkflowTestHandler(llm workflow.LLMCaller) (*IMMessageHandler, *mockEngineCallbacksGUI) {
 	registry := workflow.NewWorkflowRegistry()
 	cb := &mockEngineCallbacksGUI{}
 	understanding := workflow.NewIntentUnderstandingManager(workflow.NullStore{}, llm, registry)
@@ -59,7 +65,7 @@ func setupWorkflowTestHandler(llm workflow.LLMCaller) *IMMessageHandler {
 	handler := &IMMessageHandler{
 		app: app,
 	}
-	return handler
+	return handler, cb
 }
 
 // TestBugCondition_CategoryNoneReadyTrue_ShouldNotCallStartWorkflow verifies
@@ -74,7 +80,7 @@ func TestBugCondition_CategoryNoneReadyTrue_ShouldNotCallStartWorkflow(t *testin
 	llm := &mockLLMCallerGUI{
 		Response: `{"intent":{"category":"coding","summary":"做一个系统","confidence":0.7,"ready":false},"reply":"我理解你想做一个系统","ready":false}`,
 	}
-	handler := setupWorkflowTestHandler(llm)
+	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine
 	understanding := engine.GetUnderstanding()
 
@@ -132,7 +138,7 @@ func TestBugCondition_CategoryEmptyReadyTrue_ShouldNotCallStartWorkflow(t *testi
 	llm := &mockLLMCallerGUI{
 		Response: `{"intent":{"category":"coding","summary":"做一个系统","confidence":0.7,"ready":false},"reply":"我理解你想做一个系统","ready":false}`,
 	}
-	handler := setupWorkflowTestHandler(llm)
+	handler, _ := setupWorkflowTestHandler(llm)
 	engine := handler.app.workflowEngine
 	understanding := engine.GetUnderstanding()
 
@@ -224,6 +230,16 @@ func TestPreservation_ValidWorkflowCategories_StartWorkflow(t *testing.T) {
 		{workflow.WorkflowPatentAnalysis, "专利分析"},
 	}
 
+	// Input-driven workflow types that still return IMAgentResponse directly
+	// (they need to wait for user to upload a document before generating content).
+	inputDrivenTypes := map[workflow.WorkflowType]bool{
+		workflow.WorkflowBidResponse:     true,
+		workflow.WorkflowContractReview:  true,
+		workflow.WorkflowDueDiligence:    true,
+		workflow.WorkflowComplianceAudit: true,
+		workflow.WorkflowPatentAnalysis:  true,
+	}
+
 	for _, tc := range validCategories {
 		tc := tc // capture range variable
 		t.Run(string(tc.category), func(t *testing.T) {
@@ -231,7 +247,7 @@ func TestPreservation_ValidWorkflowCategories_StartWorkflow(t *testing.T) {
 			llm := &mockLLMCallerGUI{
 				Response: `{"intent":{"category":"coding","summary":"做一个系统","confidence":0.7,"ready":false},"reply":"我理解你想做一个系统","ready":false}`,
 			}
-			handler := setupWorkflowTestHandler(llm)
+			handler, cb := setupWorkflowTestHandler(llm)
 			engine := handler.app.workflowEngine
 			understanding := engine.GetUnderstanding()
 
@@ -253,39 +269,65 @@ func TestPreservation_ValidWorkflowCategories_StartWorkflow(t *testing.T) {
 			)
 			llm.Response = readyResponse
 
-			// Call handleActiveUnderstanding — should call StartWorkflow
-			// and return the startup message.
+			// Call handleActiveUnderstanding — should call StartWorkflow.
 			resp := handler.handleActiveUnderstanding(engine, userID, "开工")
 
-			// Verify: response should NOT be nil (workflow was started)
-			if resp == nil {
-				t.Fatalf("Preservation FAILED for category %q: "+
-					"handleActiveUnderstanding returned nil.\n"+
-					"Expected: non-nil response with workflow startup message",
-					tc.category)
-			}
-
-			// Verify: response should contain the startup message
-			if !strings.Contains(resp.Text, "🚀 工作流已启动") {
-				t.Errorf("Preservation FAILED for category %q: "+
-					"response does not contain '🚀 工作流已启动'.\n"+
-					"Response: Text=%q, Error=%q",
-					tc.category, resp.Text, resp.Error)
-			}
-
-			// Verify: response should mention the workflow type
-			if !strings.Contains(resp.Text, string(tc.category)) {
-				t.Errorf("Preservation FAILED for category %q: "+
-					"response does not mention the workflow type.\n"+
-					"Response: Text=%q",
-					tc.category, resp.Text)
-			}
-
-			// Verify: no error in response
-			if resp.Error != "" {
-				t.Errorf("Preservation FAILED for category %q: "+
-					"response contains error: %s",
-					tc.category, resp.Error)
+			if inputDrivenTypes[tc.category] {
+				// Input-driven workflows: return IMAgentResponse with overview text
+				// (user needs to upload a document before phase generation starts).
+				if resp == nil {
+					t.Fatalf("Preservation FAILED for input-driven category %q: "+
+						"handleActiveUnderstanding returned nil.\n"+
+						"Expected: non-nil response with workflow startup message",
+						tc.category)
+				}
+				if !strings.Contains(resp.Text, "🚀 工作流已启动") {
+					t.Errorf("Preservation FAILED for input-driven category %q: "+
+						"response does not contain '🚀 工作流已启动'.\n"+
+						"Response: Text=%q, Error=%q",
+						tc.category, resp.Text, resp.Error)
+				}
+				if !strings.Contains(resp.Text, string(tc.category)) {
+					t.Errorf("Preservation FAILED for input-driven category %q: "+
+						"response does not mention the workflow type.\n"+
+						"Response: Text=%q",
+						tc.category, resp.Text)
+				}
+				if resp.Error != "" {
+					t.Errorf("Preservation FAILED for input-driven category %q: "+
+						"response contains error: %s",
+						tc.category, resp.Error)
+				}
+			} else {
+				// Non-input-driven workflows: return nil (fall through to agent loop)
+				// and send overview via SendTextToUser callback.
+				if resp != nil {
+					t.Fatalf("Preservation FAILED for non-input-driven category %q: "+
+						"handleActiveUnderstanding returned non-nil.\n"+
+						"Expected: nil (fall through to agent loop) with overview sent via callback.\n"+
+						"Response: Text=%q, Error=%q",
+						tc.category, resp.Text, resp.Error)
+				}
+				// Verify overview was sent via callback
+				found := false
+				for _, sent := range cb.SentTexts {
+					if strings.Contains(sent, "🚀 工作流已启动") && strings.Contains(sent, string(tc.category)) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Preservation FAILED for non-input-driven category %q: "+
+						"overview message not sent via SendTextToUser callback.\n"+
+						"SentTexts: %v",
+						tc.category, cb.SentTexts)
+				}
+				// Verify agent loop markers were set
+				if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
+					t.Errorf("Preservation FAILED for non-input-driven category %q: "+
+						"workflowAgentLoopMarker not set",
+						tc.category)
+				}
 			}
 		})
 	}

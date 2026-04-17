@@ -50,6 +50,25 @@ const (
 	ToolFilterFull    ToolFilterPolicy = "full"      // full tool list
 )
 
+// DocOnlyAllowedTools is the canonical set of tool names permitted during
+// doc_only workflow phases. It includes basic I/O tools (bash, write_file,
+// edit_file, read_file) needed for document generation and delivery, plus
+// communication/utility tools. Both GUI and TUI should reference this set
+// instead of maintaining separate copies.
+var DocOnlyAllowedTools = map[string]bool{
+	"bash":         true,
+	"write_file":   true,
+	"read_file":    true,
+	"edit_file":    true,
+	"memory":       true,
+	"generate_pdf": true,
+	"send_file":    true,
+	"web_search":   true,
+	"web_fetch":    true,
+	"open":         true,
+	"set_nickname": true,
+}
+
 // InputRequirement describes a document/file that the user must provide
 // before a workflow can begin its first phase. This is a template-level
 // declaration — the engine uses it to prompt the user for upload and to

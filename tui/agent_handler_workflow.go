@@ -126,21 +126,6 @@ func (h *TUIAgentHandler) captureWorkflowOutput(text string) {
 	h.workflowEngine.SavePhaseOutput("tui-user", text)
 }
 
-// tuiDocOnlyAllowedTools is the set of tool names allowed during doc_only phases.
-var tuiDocOnlyAllowedTools = map[string]bool{
-	"bash":         true,
-	"write_file":   true,
-	"read_file":    true,
-	"edit_file":    true,
-	"memory":       true,
-	"generate_pdf": true,
-	"send_file":    true,
-	"web_search":   true,
-	"web_fetch":    true,
-	"open":         true,
-	"set_nickname": true,
-}
-
 // applyTUIWorkflowToolFilter restricts the tool list based on the current
 // workflow phase's ToolFilterPolicy.
 func (h *TUIAgentHandler) applyTUIWorkflowToolFilter(tools []map[string]interface{}) []map[string]interface{} {
@@ -157,7 +142,7 @@ func (h *TUIAgentHandler) applyTUIWorkflowToolFilter(tools []map[string]interfac
 		if fn, ok := def["function"].(map[string]interface{}); ok {
 			name, _ = fn["name"].(string)
 		}
-		if tuiDocOnlyAllowedTools[name] {
+		if workflow.DocOnlyAllowedTools[name] {
 			filtered = append(filtered, def)
 		}
 	}
