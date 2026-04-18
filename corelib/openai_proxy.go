@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -102,15 +104,147 @@ func NeedsOpenAIProxy(requiredEnv []string, extraEnv map[string]string) bool {
 		return false
 	}
 
-	// Check if user has provided OPENAI_API_KEY or OPENAI_BASE_URL via extraEnv
-	if v, ok := extraEnv["OPENAI_API_KEY"]; ok && v != "" {
-		return false
-	}
-	if v, ok := extraEnv["OPENAI_BASE_URL"]; ok && v != "" {
+	return !hasUserProvidedOpenAIEnv(extraEnv)
+}
+
+// NeedsOpenAIProxyAuto is like NeedsOpenAIProxy but also auto-detects
+// OpenAI env var usage from skill step commands and script files when
+// RequiredEnv is not explicitly declared. This handles skills downloaded
+// from ClawHub or other sources that use OPENAI_API_KEY in their scripts
+// but don't declare requires_env in their metadata.
+//
+// Detection order:
+//  1. RequiredEnv explicitly declares OPENAI_API_KEY → use proxy
+//  2. Step commands reference OPENAI_API_KEY/OPENAI_BASE_URL → use proxy
+//  3. Script files (.py, .js, .ts, .sh) in skillDir reference them → use proxy
+//
+// In all cases, if the user has already provided the env vars via extraEnv
+// or the process environment, the proxy is not started.
+func NeedsOpenAIProxyAuto(requiredEnv []string, extraEnv map[string]string, steps []NLSkillStep, skillDir string) bool {
+	// Fast path: user already provided credentials via extraEnv
+	if hasUserProvidedOpenAIEnv(extraEnv) {
 		return false
 	}
 
-	return true
+	// Check process-level env: if OPENAI_API_KEY is set globally and
+	// extraEnv doesn't explicitly override it (e.g. with empty string),
+	// the skill can use the existing key directly — no proxy needed.
+	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		if _, explicitlyCleared := extraEnv["OPENAI_API_KEY"]; !explicitlyCleared {
+			return false
+		}
+	}
+
+	// Layer 1: explicit RequiredEnv declaration
+	for _, env := range requiredEnv {
+		if env == "OPENAI_API_KEY" {
+			return true
+		}
+	}
+
+	// Layer 2: scan step commands for env var references
+	for _, step := range steps {
+		if step.Action != "bash" {
+			continue
+		}
+		cmd, _ := step.Params["command"].(string)
+		if cmd != "" && containsOpenAIEnvRef(cmd) {
+			log.Printf("[openai-proxy] auto-detected OPENAI env usage in step command")
+			return true
+		}
+	}
+
+	// Layer 3: scan script files in skillDir
+	if skillDir != "" && scanSkillDirForOpenAIEnv(skillDir) {
+		log.Printf("[openai-proxy] auto-detected OPENAI env usage in skill scripts at %s", skillDir)
+		return true
+	}
+
+	return false
+}
+
+// hasUserProvidedOpenAIEnv checks if the user has provided OPENAI_API_KEY
+// or OPENAI_BASE_URL via extraEnv with non-empty values.
+func hasUserProvidedOpenAIEnv(extraEnv map[string]string) bool {
+	if v, ok := extraEnv["OPENAI_API_KEY"]; ok && v != "" {
+		return true
+	}
+	if v, ok := extraEnv["OPENAI_BASE_URL"]; ok && v != "" {
+		return true
+	}
+	return false
+}
+
+// openaiEnvPatterns are the env var names we look for in script content.
+var openaiEnvPatterns = []string{
+	"OPENAI_API_KEY",
+	"OPENAI_BASE_URL",
+}
+
+// containsOpenAIEnvRef checks if text contains references to OpenAI env vars.
+func containsOpenAIEnvRef(text string) bool {
+	for _, pat := range openaiEnvPatterns {
+		if strings.Contains(text, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// scriptExtensions are file extensions that may contain env var references.
+var scriptExtensions = map[string]bool{
+	".py": true, ".js": true, ".ts": true, ".sh": true,
+	".rb": true, ".pl": true, ".php": true, ".go": true,
+}
+
+// scanSkillDirForOpenAIEnv scans script files in skillDir for OPENAI_API_KEY
+// or OPENAI_BASE_URL references. Scans the top-level directory and one level
+// of common subdirectories (scripts/, src/, lib/). Safety limits: max 30 files,
+// max 64KB each.
+func scanSkillDirForOpenAIEnv(skillDir string) bool {
+	// Directories to scan: top-level + common script subdirectories
+	dirsToScan := []string{skillDir}
+	for _, sub := range []string{"scripts", "src", "lib"} {
+		subDir := filepath.Join(skillDir, sub)
+		if info, err := os.Stat(subDir); err == nil && info.IsDir() {
+			dirsToScan = append(dirsToScan, subDir)
+		}
+	}
+
+	scanned := 0
+	for _, dir := range dirsToScan {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			ext := strings.ToLower(filepath.Ext(entry.Name()))
+			if !scriptExtensions[ext] {
+				continue
+			}
+			scanned++
+			if scanned > 30 {
+				return false // safety limit
+			}
+
+			info, err := entry.Info()
+			if err != nil || info.Size() > 64*1024 {
+				continue // skip large files
+			}
+
+			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			if containsOpenAIEnvRef(string(data)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // routeProtocol determines which upstream protocol to use based on config.

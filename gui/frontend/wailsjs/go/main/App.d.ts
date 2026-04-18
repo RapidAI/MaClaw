@@ -321,6 +321,24 @@ export function GetAutoCompressStatus():Promise<any>;
 
 export function GetMemoryHealth():Promise<any>;
 
+export function ListArchiveMemories(arg1:string, arg2:string):Promise<Array<any>>;
+
+export function RestoreArchiveMemory(arg1:string):Promise<void>;
+
+export function PinMemory(arg1:string):Promise<void>;
+
+export function UnpinMemory(arg1:string):Promise<void>;
+
+export function ListSessionHistory(arg1:number):Promise<Array<any>>;
+
+export function SearchSessionHistory(arg1:string, arg2:number):Promise<Array<any>>;
+
+export function GetSessionFullText(arg1:string):Promise<string>;
+
+export function DeleteSession(arg1:string):Promise<void>;
+
+export function GetSessionCount():Promise<number>;
+
 export function GetMemoryMaxBackups():Promise<number>;
 
 export function SetMemoryMaxBackups(arg1:number):Promise<void>;

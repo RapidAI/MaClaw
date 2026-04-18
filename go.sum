@@ -1,7 +1,11 @@
 github.com/UserExistsError/conpty v0.1.4 h1:+3FhJhiqhyEJa+K5qaK3/w6w+sN3Nh9O9VbJyBS02to=
 github.com/UserExistsError/conpty v0.1.4/go.mod h1:PDglKIkX3O/2xVk0MV9a6bCWxRmPVfxqZoTG/5sSd9I=
+github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06 h1:TijKfWVUM0qBuy+T6L7+WJPicLBasxgRYweEc83D7ss=
+github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06/go.mod h1:7JSbDlEu3YX6CiGlNMWBgCYiK2xzvVIDPRKKeHwdezw=
 github.com/VantageDataChat/GoPDF2 v0.0.0-20260403061807-87cb97c2bda2 h1:0CKHpQYnhRWovpEk4fk46CynDbu/4C1fDizz0xlvx98=
 github.com/VantageDataChat/GoPDF2 v0.0.0-20260403061807-87cb97c2bda2/go.mod h1:CeOlebFomt072IbNsPGa8Ys1WgNiag15q3q9McuKXB8=
+github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c h1:G0VZsxZgNIUm/f8hmGokKmgbF6SwilY6viTvhwi/azI=
+github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c/go.mod h1:clmfETR4bGOcP22SXTZ9wqwIalTGqnea4rmTiVmkppk=
 github.com/andybalholm/brotli v1.0.6 h1:Yf9fFpf49Zrxb9NlQaluyE92/+X7UVHlhMNJN2sxfOI=
 github.com/andybalholm/brotli v1.0.6/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=

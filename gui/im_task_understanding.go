@@ -19,7 +19,7 @@ import (
 // After user confirms, the structured instruction replaces the raw text as
 // the agent loop input, giving the LLM a clearer directive.
 //
-// Token budget: ~400 input + ~200 output. Timeout: 12s.
+// Token budget: ~400 input + ~200 output. Timeout: 20s (attempt 1) + 15s (retry).
 // On failure: falls back to raw-text summary (current behavior).
 // ---------------------------------------------------------------------------
 
@@ -68,9 +68,21 @@ const taskUnderstandingSystemPrompt = `你是一个任务理解助手。用户�
 - 如果用户意图模糊，在 constraints 中标注"⚠️ 待确认：xxx"
 - 只输出 JSON，不要输出其他内容`
 
+// taskUnderstandingSimplifiedPrompt is a shorter, more forgiving prompt used
+// as a retry when the first attempt fails (timeout or parse error). It asks
+// for fewer fields and uses a simpler instruction to maximize the chance of
+// getting a valid JSON response from slower or less capable models.
+const taskUnderstandingSimplifiedPrompt = `理解用户任务，输出 JSON：
+{"task_type":"类别","summary":"一句话摘要","execution_plan":["步骤1","步骤2"],"enhanced_instruction":"清晰执行指令"}
+只输出 JSON。`
+
 // understandTaskWithLLM calls the LLM to generate a structured understanding
 // of the user's task request. Returns nil on any failure (caller should
 // fall back to raw-text summary).
+//
+// On first failure (timeout, parse error, etc.), retries once with a
+// simplified prompt. Total worst-case latency is capped at ~35s to avoid
+// blocking the confirmation panel for too long.
 func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent taskIntentResult) *taskUnderstandingResult {
 	if h == nil || h.app == nil {
 		return nil
@@ -87,29 +99,54 @@ func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent tas
 		userMsg += fmt.Sprintf("\n初步分类：%s", label)
 	}
 
+	// --- Attempt 1: full prompt, 20s timeout ---
 	ctx := context.Background()
 	result, err := h.LLMClassify(ctx, LLMClassifyRequest{
 		SystemPrompt: taskUnderstandingSystemPrompt,
 		UserMessage:  userMsg,
-		TimeoutSec:   12,
+		TimeoutSec:   20,
 		Tag:          "task-understanding",
 	})
-	if err != nil {
-		log.Printf("[task-understanding] LLM call failed for user %s: %v", userID, err)
+	if err == nil {
+		if parsed, parseErr := parseTaskUnderstandingResponse(result.Text); parseErr == nil {
+			log.Printf("[task-understanding] user=%s type=%q summary=%q plan=%d steps input=%d output=%d latency=%.1fs",
+				userID, parsed.TaskType, truncateForLogGUI(parsed.Summary, 40),
+				len(parsed.ExecutionPlan), result.InputTokens, result.OutputTokens, result.Latency.Seconds())
+			return parsed
+		} else {
+			log.Printf("[task-understanding] attempt 1 parse failed for user %s: %v (raw=%q)", userID, parseErr, truncateForLogGUI(result.Text, 200))
+		}
+	} else {
+		log.Printf("[task-understanding] attempt 1 LLM call failed for user %s: %v", userID, err)
+	}
+
+	// --- Attempt 2: simplified prompt, 15s timeout ---
+	// Simplified prompt is much shorter (~100 chars vs ~600 chars), so the
+	// model needs less time to process it. If the API is genuinely down,
+	// 15s is enough to confirm that without making the user wait 45s.
+	log.Printf("[task-understanding] retrying with simplified prompt for user %s", userID)
+	result2, err2 := h.LLMClassify(ctx, LLMClassifyRequest{
+		SystemPrompt: taskUnderstandingSimplifiedPrompt,
+		UserMessage:  userMsg,
+		TimeoutSec:   15,
+		Tag:          "task-understanding-retry",
+	})
+	if err2 != nil {
+		log.Printf("[task-understanding] attempt 2 LLM call failed for user %s: %v", userID, err2)
 		return nil
 	}
 
-	parsed, err := parseTaskUnderstandingResponse(result.Text)
-	if err != nil {
-		log.Printf("[task-understanding] parse failed for user %s: %v (raw=%q)", userID, err, truncateForLogGUI(result.Text, 100))
+	parsed2, parseErr2 := parseTaskUnderstandingResponse(result2.Text)
+	if parseErr2 != nil {
+		log.Printf("[task-understanding] attempt 2 parse failed for user %s: %v (raw=%q)", userID, parseErr2, truncateForLogGUI(result2.Text, 200))
 		return nil
 	}
 
-	log.Printf("[task-understanding] user=%s type=%q summary=%q plan=%d steps input=%d output=%d latency=%.1fs",
-		userID, parsed.TaskType, truncateForLogGUI(parsed.Summary, 40),
-		len(parsed.ExecutionPlan), result.InputTokens, result.OutputTokens, result.Latency.Seconds())
+	log.Printf("[task-understanding] user=%s type=%q summary=%q plan=%d steps input=%d output=%d latency=%.1fs (retry)",
+		userID, parsed2.TaskType, truncateForLogGUI(parsed2.Summary, 40),
+		len(parsed2.ExecutionPlan), result2.InputTokens, result2.OutputTokens, result2.Latency.Seconds())
 
-	return parsed
+	return parsed2
 }
 
 // parseTaskUnderstandingResponse extracts the structured understanding from

@@ -12,6 +12,11 @@ import {
     GetAutoCompressStatus,
     GetMemoryMaxBackups,
     SetMemoryMaxBackups,
+    ListSessionHistory,
+    SearchSessionHistory,
+    GetSessionFullText,
+    DeleteSession,
+    GetSessionCount,
 } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 
@@ -143,7 +148,7 @@ const dangerBtnStyle: React.CSSProperties = {
 };
 
 export function MemoryManagementPanel({ lang }: Props) {
-    const [tab, setTab] = useState<"edit" | "timemachine">("edit");
+    const [tab, setTab] = useState<"edit" | "timemachine" | "history">("edit");
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
     // Revision counter — bumped by TimeMachine after restore/compress so
@@ -159,6 +164,9 @@ export function MemoryManagementPanel({ lang }: Props) {
                 <button role="tab" aria-selected={tab === "edit"} style={tabBtnStyle(tab === "edit")} onClick={() => setTab("edit")}>
                     📝 {t("Memory Edit", "记忆编辑")}
                 </button>
+                <button role="tab" aria-selected={tab === "history"} style={tabBtnStyle(tab === "history")} onClick={() => setTab("history")}>
+                    💬 {t("Session History", "会话历史")}
+                </button>
                 <button role="tab" aria-selected={tab === "timemachine"} style={tabBtnStyle(tab === "timemachine")} onClick={() => setTab("timemachine")}>
                     ⏳ {t("Time Machine", "时光机")}
                 </button>
@@ -173,6 +181,8 @@ export function MemoryManagementPanel({ lang }: Props) {
             </div>
             {tab === "edit"
                 ? <MemoryEditTab t={t} lang={lang} revision={revision} onCountChange={setEntryCount} createRef={createRef} />
+                : tab === "history"
+                ? <SessionHistoryTab t={t} lang={lang} />
                 : <TimeMachineTab t={t} lang={lang} onDataChanged={bumpRevision} />}
         </div>
     );
@@ -334,6 +344,209 @@ function MemoryEditTab({ t, lang, revision, onCountChange, createRef }: EditTabP
                 </ModalOverlay>
             )}
         </>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tab 1.5: Session History (SQLite FTS5 full-text search)
+// ---------------------------------------------------------------------------
+
+interface SessionSummaryItem {
+    session_id: string;
+    timestamp: string;
+    platform: string;
+    topic: string;
+    text_len: number;
+}
+
+interface SessionSearchHit {
+    session_id: string;
+    timestamp: string;
+    platform: string;
+    topic: string;
+    snippet: string;
+    rank: number;
+}
+
+const PLATFORM_ICONS: Record<string, string> = {
+    gui: "🖥️", tui: "⌨️", im: "💬", desktop: "🖥️",
+};
+
+type SessionHistoryTabProps = {
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    lang: string;
+};
+
+function SessionHistoryTab({ t, lang }: SessionHistoryTabProps) {
+    const [sessions, setSessions] = useState<SessionSummaryItem[]>([]);
+    const [searchResults, setSearchResults] = useState<SessionSearchHit[] | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState("");
+    const [query, setQuery] = useState("");
+    const [totalCount, setTotalCount] = useState(0);
+    const [viewSession, setViewSession] = useState<{ id: string; topic: string; platform: string; timestamp: string } | null>(null);
+    const [fullText, setFullText] = useState<string>("");
+    const [fullTextLoading, setFullTextLoading] = useState(false);
+    const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+
+    const loadSessions = useCallback(async () => {
+        setLoading(true); setError("");
+        try {
+            const [list, count] = await Promise.all([ListSessionHistory(100), GetSessionCount()]);
+            setSessions(Array.isArray(list) ? list : []);
+            setTotalCount(count ?? 0);
+        } catch (e) { setError(String(e)); }
+        setLoading(false);
+    }, []);
+
+    useEffect(() => { loadSessions(); }, [loadSessions]);
+
+    const handleSearch = useCallback(async () => {
+        const q = query.trim();
+        if (!q) { setSearchResults(null); return; }
+        setLoading(true); setError("");
+        try {
+            const results = await SearchSessionHistory(q, 30);
+            const hits = Array.isArray(results) ? results : [];
+            setSearchResults(hits.filter((r: any) => r.session_id || r.snippet !== "no results found"));
+        } catch (e) { setError(String(e)); }
+        setLoading(false);
+    }, [query]);
+
+    const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === "Enter") handleSearch(); };
+
+    const handleView = async (sessionId: string, topic: string, platform: string, timestamp: string) => {
+        setViewSession({ id: sessionId, topic, platform, timestamp });
+        setFullText(""); setFullTextLoading(true);
+        try { const text = await GetSessionFullText(sessionId); setFullText(text || ""); }
+        catch (e) { setFullText(`Error: ${e}`); }
+        setFullTextLoading(false);
+    };
+
+    const handleDelete = async (sessionId: string) => {
+        setError("");
+        try {
+            await DeleteSession(sessionId); setDeleteTarget(null);
+            setSessions(prev => prev.filter(s => s.session_id !== sessionId));
+            if (searchResults) setSearchResults(prev => prev ? prev.filter(s => s.session_id !== sessionId) : null);
+            if (viewSession?.id === sessionId) setViewSession(null);
+            setTotalCount(prev => Math.max(0, prev - 1));
+        } catch (e) { setError(String(e)); }
+    };
+
+    /** Render FTS5 snippet with <b> tags as bold spans. */
+    const renderSnippet = (snippet: string) => {
+        const parts = snippet.split(/(<b>[^<]*<\/b>)/g);
+        return parts.filter(Boolean).map((part, i) => {
+            const m = part.match(/^<b>([^<]*)<\/b>$/);
+            if (m) return <strong key={i} style={{ color: colors.primary }}>{m[1]}</strong>;
+            return <span key={i}>{part}</span>;
+        });
+    };
+
+    const displayList = searchResults !== null ? searchResults : sessions;
+
+    return (
+        <div>
+            {/* Search bar */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+                <input placeholder={t("Full-text search (Enter)…", "全文检索（回车搜索）…")} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKeyDown} aria-label={t("Search sessions", "搜索会话")} style={{ ...inputStyle, flex: 1, padding: "6px 10px", fontSize: "0.78rem" }} />
+                <button onClick={handleSearch} disabled={loading} style={{ padding: "6px 14px", fontSize: "0.74rem", fontWeight: 600, border: "none", borderRadius: radius.md, background: colors.primary, color: colors.onPrimary, cursor: loading ? "wait" : "pointer", opacity: loading ? 0.6 : 1, whiteSpace: "nowrap" }}>🔍 {t("Search", "搜索")}</button>
+                {searchResults !== null && (
+                    <button onClick={() => { setQuery(""); setSearchResults(null); }} style={{ padding: "6px 10px", fontSize: "0.72rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, cursor: "pointer", color: colors.textSecondary, whiteSpace: "nowrap" }}>✕ {t("Clear", "清除")}</button>
+                )}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
+                    {searchResults !== null ? `${searchResults.length} ${t("results", "条结果")}` : `${totalCount} ${t("sessions total", "条会话记录")}`}
+                </span>
+            </div>
+            {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.76rem", marginBottom: 8 }}>{error}</div>}
+
+            {loading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("Loading…", "加载中…")}</div>}
+            {/* Session list */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "calc(100vh - 340px)", overflowY: "auto", border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 6 }}>
+                {displayList.length === 0 && !loading && (
+                    <div style={{ fontSize: "0.78rem", color: colors.textMuted, textAlign: "center", padding: "20px 0" }}>
+                        {searchResults !== null ? t("No matching sessions", "未找到匹配的会话") : t("No session history yet", "暂无会话历史")}
+                    </div>
+                )}
+                {displayList.map(item => {
+                    const sid = (item as any).session_id;
+                    const ts = (item as any).timestamp;
+                    const platform = (item as any).platform || "";
+                    const topic = (item as any).topic || "";
+                    const snippet = (item as SessionSearchHit).snippet;
+                    const textLen = (item as SessionSummaryItem).text_len;
+                    return (
+                        <div key={sid} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "8px 10px", background: colors.surface }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                                <div style={{ flex: 1, minWidth: 0, overflow: "hidden", cursor: "pointer" }} onClick={() => handleView(sid, topic, platform, ts)}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                                        <span style={{ fontSize: "0.72rem" }}>{PLATFORM_ICONS[platform] || "📄"}</span>
+                                        <span style={{ fontSize: "0.62rem", fontWeight: 600, padding: "1px 6px", borderRadius: radius.sm, background: colors.bg, color: colors.textSecondary, border: `1px solid ${colors.border}` }}>{platform || "unknown"}</span>
+                                        {topic && <span style={{ fontSize: "0.76rem", color: colors.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{topic}</span>}
+                                    </div>
+                                    {snippet ? (
+                                        <div style={{ fontSize: "0.74rem", color: colors.textSecondary, maxHeight: 48, overflowY: "hidden", textAlign: "left", lineHeight: 1.4 }}>{renderSnippet(snippet)}</div>
+                                    ) : (
+                                        !topic && <div style={{ fontSize: "0.72rem", color: colors.textMuted, fontStyle: "italic" }}>{t("(no topic)", "(无主题)")}</div>
+                                    )}
+                                    <div style={{ fontSize: "0.64rem", color: colors.textMuted, marginTop: 3, textAlign: "left" }}>
+                                        {fmtDate(ts, lang)}
+                                        {textLen > 0 && <> · {textLen > 1000 ? `${(textLen / 1000).toFixed(1)}K` : textLen} {t("chars", "字符")}</>}
+                                    </div>
+                                </div>
+                                <div style={{ display: "flex", gap: 4, flexShrink: 0, alignSelf: "flex-start" }}>
+                                    <button onClick={() => handleView(sid, topic, platform, ts)} title={t("View", "查看")} style={{ padding: "3px 8px", fontSize: "0.68rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.textSecondary }}>👁️</button>
+                                    <button onClick={() => setDeleteTarget(sid)} title={t("Delete", "删除")} style={{ padding: "3px 8px", fontSize: "0.68rem", cursor: "pointer", background: "none", border: `1px solid ${colors.border}`, borderRadius: radius.sm, color: colors.danger }}>🗑️</button>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+            {/* Session viewer modal */}
+            {viewSession && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }} onClick={() => setViewSession(null)}>
+                    <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{
+                        background: colors.surface, borderRadius: radius.lg, boxShadow: "0 12px 40px rgba(0,0,0,0.2)",
+                        width: "90vw", maxWidth: 700, maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden",
+                    }}>
+                        {/* Header */}
+                        <div style={{ padding: "14px 18px 10px", borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+                                    <span style={{ fontSize: "0.82rem" }}>{PLATFORM_ICONS[viewSession.platform] || "📄"}</span>
+                                    <span style={{ fontSize: "0.62rem", fontWeight: 600, padding: "1px 6px", borderRadius: radius.sm, background: colors.bg, color: colors.textSecondary, border: `1px solid ${colors.border}` }}>{viewSession.platform || "unknown"}</span>
+                                    <span style={{ fontSize: "0.82rem", fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{viewSession.topic || t("(no topic)", "(无主题)")}</span>
+                                </div>
+                                <button onClick={() => setViewSession(null)} style={{ padding: "4px 10px", fontSize: "0.76rem", border: `1px solid ${colors.border}`, borderRadius: radius.md, background: colors.surface, cursor: "pointer", color: colors.textSecondary, flexShrink: 0 }}>✕</button>
+                            </div>
+                            <div style={{ fontSize: "0.66rem", color: colors.textMuted, marginTop: 4 }}>
+                                {fmtDate(viewSession.timestamp, lang)} · ID: {viewSession.id}
+                            </div>
+                        </div>
+                        {/* Body */}
+                        <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px" }}>
+                            {fullTextLoading
+                                ? <div style={{ fontSize: "0.76rem", color: colors.textMuted, padding: "20px 0", textAlign: "center" }}>{t("Loading…", "加载中…")}</div>
+                                : <pre style={{ fontSize: "0.74rem", color: colors.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, fontFamily: "inherit", lineHeight: 1.6, textAlign: "left" }}>{fullText || t("(empty)", "(空)")}</pre>
+                            }
+                        </div>
+                    </div>
+                </div>
+            )}
+            {deleteTarget && (
+                <ModalOverlay onClose={() => setDeleteTarget(null)}>
+                    <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this session? This cannot be undone.", "确定删除这条会话记录？此操作不可撤销。")}</p>
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                        <button onClick={() => setDeleteTarget(null)} style={cancelBtnStyle}>{t("Cancel", "取消")}</button>
+                        <button onClick={() => handleDelete(deleteTarget)} style={dangerBtnStyle}>{t("Delete", "删除")}</button>
+                    </div>
+                </ModalOverlay>
+            )}
+        </div>
     );
 }
 

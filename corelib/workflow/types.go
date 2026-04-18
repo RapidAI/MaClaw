@@ -62,6 +62,7 @@ var DocOnlyAllowedTools = map[string]bool{
 	"edit_file":    true,
 	"memory":       true,
 	"generate_pdf": true,
+	"office":       true,
 	"send_file":    true,
 	"web_search":   true,
 	"web_fetch":    true,

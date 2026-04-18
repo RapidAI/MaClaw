@@ -178,6 +178,67 @@ func (s *Store) Prune(olderThan time.Duration) (int, error) {
 	return int(n), nil
 }
 
+// SessionSummary is a lightweight view of a session (no full_text).
+type SessionSummary struct {
+	SessionID string `json:"session_id"`
+	Timestamp string `json:"timestamp"`
+	Platform  string `json:"platform"`
+	Topic     string `json:"topic"`
+	TextLen   int    `json:"text_len"` // length of full_text in runes
+}
+
+// ListRecent returns the most recent sessions ordered by timestamp descending.
+// It does NOT load full_text to keep the response lightweight.
+func (s *Store) ListRecent(limit int) ([]SessionSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT session_id, timestamp, platform, topic, length(full_text)
+		 FROM sessions ORDER BY timestamp DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("session store: list recent: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SessionSummary
+	for rows.Next() {
+		var r SessionSummary
+		if err := rows.Scan(&r.SessionID, &r.Timestamp, &r.Platform, &r.Topic, &r.TextLen); err != nil {
+			return nil, fmt.Errorf("session store: scan summary: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+// GetFullText returns the full transcript text for a given session ID.
+func (s *Store) GetFullText(sessionID string) (string, error) {
+	var text string
+	err := s.db.QueryRow(
+		`SELECT full_text FROM sessions WHERE session_id = ?`, sessionID).Scan(&text)
+	if err != nil {
+		return "", fmt.Errorf("session store: get full text: %w", err)
+	}
+	return text, nil
+}
+
+// Delete removes a single session by ID.
+func (s *Store) Delete(sessionID string) error {
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE session_id = ?`, sessionID)
+	if err != nil {
+		return fmt.Errorf("session store: delete: %w", err)
+	}
+	return nil
+}
+
+// Count returns the total number of stored sessions.
+func (s *Store) Count() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n)
+	return n, err
+}
+
 // Close closes the database connection.
 func (s *Store) Close() error {
 	if s.db != nil {

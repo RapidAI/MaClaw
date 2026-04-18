@@ -641,6 +641,42 @@ export function SetMemoryMaxBackups(arg1) {
   return window['go']['main']['App']['SetMemoryMaxBackups'](arg1);
 }
 
+export function ListArchiveMemories(arg1, arg2) {
+  return window['go']['main']['App']['ListArchiveMemories'](arg1, arg2);
+}
+
+export function RestoreArchiveMemory(arg1) {
+  return window['go']['main']['App']['RestoreArchiveMemory'](arg1);
+}
+
+export function PinMemory(arg1) {
+  return window['go']['main']['App']['PinMemory'](arg1);
+}
+
+export function UnpinMemory(arg1) {
+  return window['go']['main']['App']['UnpinMemory'](arg1);
+}
+
+export function ListSessionHistory(arg1) {
+  return window['go']['main']['App']['ListSessionHistory'](arg1);
+}
+
+export function SearchSessionHistory(arg1, arg2) {
+  return window['go']['main']['App']['SearchSessionHistory'](arg1, arg2);
+}
+
+export function GetSessionFullText(arg1) {
+  return window['go']['main']['App']['GetSessionFullText'](arg1);
+}
+
+export function DeleteSession(arg1) {
+  return window['go']['main']['App']['DeleteSession'](arg1);
+}
+
+export function GetSessionCount() {
+  return window['go']['main']['App']['GetSessionCount']();
+}
+
 // Scheduled task management bindings
 export function ListScheduledTasks() {
   return window['go']['main']['App']['ListScheduledTasks']();

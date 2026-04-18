@@ -16,8 +16,6 @@ type Props = {
 
 type WorkMode = 'code' | 'office';
 
-const hasWails = () => typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
-
 const skillChips = [
   { icon: '📄', label: '文档处理' },
   { icon: '🎬', label: '视频生成' },
@@ -35,8 +33,21 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const chipScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!hasWails()) return;
-    (window as any).go.main.App.GetWelcomeData()
+    const welcomeLoader = (window as Window & {
+      go?: {
+        main?: {
+          App?: {
+            GetWelcomeData?: () => Promise<{ quick_tasks?: string[] }>;
+          };
+        };
+      };
+    }).go?.main?.App?.GetWelcomeData;
+
+    if (!welcomeLoader) {
+      return;
+    }
+
+    welcomeLoader()
       .then((data: { quick_tasks?: string[] }) => {
         if (data?.quick_tasks && data.quick_tasks.length > 0) {
           setQuickTasks(data.quick_tasks);

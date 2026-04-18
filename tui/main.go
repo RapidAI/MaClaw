@@ -253,6 +253,7 @@ func runDaemon() {
 	daemonFlags.Parse(os.Args[2:])
 
 	logger := NewTUILogger()
+	logger.allowStderr = true // daemon 模式无 alt-screen，可安全写 stderr
 	if *logFile != "" {
 		if err := logger.SetLogFile(*logFile); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to open log file: %v\n", err)

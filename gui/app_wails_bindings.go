@@ -16,6 +16,7 @@ import (
 	"time"
 
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/session"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -584,6 +585,123 @@ func (a *App) SetMemoryMaxBackups(n int) error {
 	mc := a.getOrCreateCompressor()
 	mc.SetMaxBackups(n)
 	return nil
+}
+
+// ListArchiveMemories returns archived (cold storage) entries filtered by category and keyword (Wails binding).
+func (a *App) ListArchiveMemories(category, keyword string) []MemoryEntry {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		return nil
+	}
+	return a.memoryStore.ListArchive(MemoryCategory(category), keyword)
+}
+
+// RestoreArchiveMemory moves an archived entry back to active memory (Wails binding).
+func (a *App) RestoreArchiveMemory(id string) error {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	return a.memoryStore.RestoreFromArchive(id)
+}
+
+// PinMemory marks a memory entry as pinned (protected from eviction) (Wails binding).
+func (a *App) PinMemory(id string) error {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	return a.memoryStore.PinEntry(id)
+}
+
+// UnpinMemory removes the pinned flag from a memory entry (Wails binding).
+func (a *App) UnpinMemory(id string) error {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store not initialized")
+	}
+	return a.memoryStore.UnpinEntry(id)
+}
+
+// ---------------------------------------------------------------------------
+// Session history Wails bindings (SQLite FTS5 full-text search)
+// ---------------------------------------------------------------------------
+
+// ensureSessionStore lazily initializes the session search store.
+func (a *App) ensureSessionStore() {
+	a.sessionStoreMu.Do(func() {
+		dbPath := a.sessionSearchDBPath()
+		store, err := session.NewStore(dbPath)
+		if err != nil {
+			log.Printf("[session_history] failed to open store: %v", err)
+			return
+		}
+		a.sessionSearchStore = store
+	})
+}
+
+// ListSessionHistory returns the most recent session summaries (Wails binding).
+func (a *App) ListSessionHistory(limit int) []SessionHistorySummary {
+	a.ensureSessionStore()
+	if a.sessionSearchStore == nil {
+		return nil
+	}
+	results, err := a.sessionSearchStore.ListRecent(limit)
+	if err != nil {
+		log.Printf("[session_history] list recent: %v", err)
+		return nil
+	}
+	return results
+}
+
+// SearchSessionHistory performs FTS5 full-text search across session transcripts (Wails binding).
+func (a *App) SearchSessionHistory(query string, maxResults int) []SessionHistorySearchResult {
+	a.ensureSessionStore()
+	if a.sessionSearchStore == nil {
+		return nil
+	}
+	results, err := a.sessionSearchStore.Search(query, maxResults)
+	if err != nil {
+		log.Printf("[session_history] search: %v", err)
+		return nil
+	}
+	return results
+}
+
+// GetSessionFullText returns the full transcript for a session ID (Wails binding).
+func (a *App) GetSessionFullText(sessionID string) string {
+	a.ensureSessionStore()
+	if a.sessionSearchStore == nil {
+		return ""
+	}
+	text, err := a.sessionSearchStore.GetFullText(sessionID)
+	if err != nil {
+		log.Printf("[session_history] get full text: %v", err)
+		return ""
+	}
+	return text
+}
+
+// DeleteSession removes a session from the history (Wails binding).
+func (a *App) DeleteSession(sessionID string) error {
+	a.ensureSessionStore()
+	if a.sessionSearchStore == nil {
+		return fmt.Errorf("session store not initialized")
+	}
+	return a.sessionSearchStore.Delete(sessionID)
+}
+
+// GetSessionCount returns the total number of stored sessions (Wails binding).
+func (a *App) GetSessionCount() int {
+	a.ensureSessionStore()
+	if a.sessionSearchStore == nil {
+		return 0
+	}
+	n, err := a.sessionSearchStore.Count()
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // getOrCreateCompressor returns the singleton MemoryCompressor, creating it if needed.

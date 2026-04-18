@@ -480,7 +480,22 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"url"},
 		func(args map[string]interface{}) string { return h.toolWebFetch(args) })
 
-	// --- PDF generation tool (coding workflow only) ---
+	// --- Unified office document tool ---
+	reg("office", "Office 文档操作工具。action 参数：generate_pdf（生成PDF文档）、read_excel（读取XLSX/CSV表格）、write_excel（写入XLSX表格）、read_pptx（读取PPT演示文稿）。Office document tool: generate PDF, read/write Excel (XLSX/CSV), read PowerPoint (PPTX).",
+		ToolCategoryBuiltin, []string{"office", "pdf", "excel", "xlsx", "csv", "pptx", "document", "spreadsheet", "presentation"},
+		map[string]interface{}{
+			"action":    map[string]string{"type": "string", "description": "操作类型: generate_pdf/read_excel/write_excel/read_pptx"},
+			"content":   map[string]string{"type": "string", "description": "Markdown 格式的文档内容（generate_pdf 时必填）"},
+			"title":     map[string]string{"type": "string", "description": "文档标题（generate_pdf 时可选）"},
+			"doc_type":  map[string]string{"type": "string", "description": "文档类型: requirements/design/task_plan（generate_pdf 时可选）"},
+			"file_path": map[string]string{"type": "string", "description": "文件路径（read_excel/write_excel/read_pptx 时必填）"},
+			"sheet":     map[string]string{"type": "string", "description": "工作表名称（read_excel 时可选，默认第一个工作表）"},
+			"range":     map[string]string{"type": "string", "description": "A1 表示法的单元格范围，如 A1:D10（read_excel 时可选）"},
+			"data":      map[string]string{"type": "object", "description": "写入数据（write_excel 时必填），格式: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolOffice(args) })
+
+	// --- PDF generation tool (coding workflow only) - backward-compatible alias ---
 	reg("generate_pdf", "生成 PDF 文档并发送给用户。仅用于编程流程的需求文档、技术设计文档、任务拆分文档。严禁用于资料收集、翻译、内容整理等非编程流程任务的 Markdown 转 PDF。参数 doc_type 可选: requirements（需求文档）、design（设计文档）、task_plan（任务计划）。",
 		ToolCategoryBuiltin, []string{"pdf", "document", "generate"},
 		map[string]interface{}{
@@ -488,7 +503,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"title":    map[string]string{"type": "string", "description": "项目名称或文档标题"},
 			"doc_type": map[string]string{"type": "string", "description": "文档类型: requirements（需求文档）、design（设计文档）、task_plan（任务计划）。不传则为通用文档"},
 		}, []string{"content"},
-		func(args map[string]interface{}) string { return h.toolGeneratePDF(args) })
+		func(args map[string]interface{}) string {
+			args["action"] = "generate_pdf"
+			return h.toolOffice(args)
+		})
 
 	// --- SSH remote server tools ---
 	reg("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）。长命令自动转后台模式，支持 SFTP 文件传输。",

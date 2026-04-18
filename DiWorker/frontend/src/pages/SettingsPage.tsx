@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { CenterHealthStatus, DiWorkerSettings, UpstreamProvider } from '../types';
 
 type Props = {
@@ -31,25 +31,25 @@ const SectionIcon = ({ children }: { children: string }) => <span className="dw-
 
 const healthBadgeLabel = (healthStatus: CenterHealthStatus | null, healthError: string) => {
   if (healthError) {
-    return '鎺㈡祴寮傚父';
+    return '探测异常';
   }
   if (!healthStatus) {
-    return '鏈娴?;
+    return '未检测';
   }
-  return healthStatus.reachable ? '杩炴帴姝ｅ父' : '杩炴帴涓嶅彲杈?;
+  return healthStatus.reachable ? '连接正常' : '连接不可达';
 };
 
 const healthSummaryTitle = (healthStatus: CenterHealthStatus | null, healthError: string) => {
   if (healthError) {
-    return '妫€娴嬭繑鍥炲紓甯?;
+    return '检测返回异常';
   }
   if (!healthStatus) {
-    return '灏氭湭鑾峰彇涓績蹇収';
+    return '尚未获取中心快照';
   }
-  return healthStatus.reachable ? '涓績杩炴帴姝ｅ父' : '涓績鏆備笉鍙揪';
+  return healthStatus.reachable ? '中心连接正常' : '中心暂不可达';
 };
 
-const healthSourceLabel = (source: CenterHealthStatus['source']) => source === 'manual' ? '鎵嬪姩妫€娴? : '淇濆瓨鍚庤嚜鍔ㄦ娴?;
+const healthSourceLabel = (source: CenterHealthStatus['source']) => source === 'manual' ? '手动检测' : '保存后自动检测';
 
 export function SettingsPage({
   settings,
@@ -89,57 +89,58 @@ export function SettingsPage({
       <section className="card dw-page-panel">
         <div className="dw-panel-header dw-panel-header-compact">
           <div>
-            <span className="eyebrow">閰嶇疆</span>
-            <h2>鏁板瓧鍛樺伐涓績閰嶇疆</h2>
+            <span className="eyebrow">配置</span>
+            <h2>数字员工中心配置</h2>
           </div>
           <div className="dw-settings-header-meta">
-            {dirty ? <span className="dw-settings-dirty-badge">鏈夋湭淇濆瓨鏇存敼</span> : <span className="dw-settings-clean-badge">褰撳墠宸蹭繚瀛?/span>}
-            <small>绠＄悊宸︿笅瑙掕鑹蹭俊鎭€佷腑蹇冨湴鍧€涓庡涓婃父鏈嶅姟璋冨害绛栫暐銆?/small>
+            {dirty ? <span className="dw-settings-dirty-badge">有未保存更改</span> : <span className="dw-settings-clean-badge">当前已保存</span>}
+            <small>管理左下角角色信息、中心地址与多上游服务调度策略。</small>
           </div>
         </div>
         <div className="dw-task-layout dw-settings-layout">
           <div className="dw-task-main dw-editor-main">
             <section className="card-subtle dw-editor-section dw-settings-section dw-settings-section-compact">
               <div className="dw-pane-head">
-                <strong><SectionIcon>鈼?/SectionIcon>瑙掕壊淇℃伅</strong>
-                <span>鐢ㄤ簬宸︿笅瑙掑睍绀?/span>
+                <strong><SectionIcon>①</SectionIcon>角色信息</strong>
+                <span>用于左下角展示</span>
               </div>
               <div className="dw-form-grid">
                 <label>
-                  瑙掕壊鍚?                  <input value={settings.roleProfile.name} onChange={(event) => onRoleNameChange(event.target.value)} placeholder="渚嬪锛氬皬杩? />
+                  角色名
+                  <input value={settings.roleProfile.name} onChange={(event) => onRoleNameChange(event.target.value)} placeholder="例如：小迪" />
                 </label>
                 <label>
-                  鐗圭偣鎻忚堪
-                  <input value={settings.roleProfile.description} onChange={(event) => onRoleDescriptionChange(event.target.value)} placeholder="渚嬪锛氭搮闀跨邯瑕併€侀€氱煡涓庢眹鎶ユ暣鐞? />
+                  特点描述
+                  <input value={settings.roleProfile.description} onChange={(event) => onRoleDescriptionChange(event.target.value)} placeholder="例如：擅长纪要、通知与汇报整理" />
                 </label>
               </div>
             </section>
 
             <section className="card-subtle dw-editor-section dw-settings-section dw-settings-section-compact">
               <div className="dw-pane-head">
-                <strong><SectionIcon>鈱?/SectionIcon>涓績杩炴帴</strong>
-                <span>Wails 鎻愪氦浠诲姟浼樺厛璧拌繖閲?/span>
+                <strong><SectionIcon>②</SectionIcon>中心连接</strong>
+                <span>Wails 提交任务优先走这里</span>
               </div>
               <div className="dw-settings-group-list">
                 <section className="dw-settings-group">
                   <div className="dw-settings-group-head">
-                    <strong>鍩虹杩炴帴</strong>
-                    <span>涓績鍦板潃涓庤姹傝秴鏃?/span>
+                    <strong>基础连接</strong>
+                    <span>中心地址与请求超时</span>
                   </div>
                   <div className="dw-form-grid">
                     <label>
-                      鍚敤涓績
+                      启用中心
                       <select value={settings.center.enabled ? 'enabled' : 'disabled'} onChange={(event) => onCenterEnabledChange(event.target.value === 'enabled')}>
-                        <option value="enabled">鍚敤</option>
-                        <option value="disabled">鍏抽棴</option>
+                        <option value="enabled">启用</option>
+                        <option value="disabled">关闭</option>
                       </select>
                     </label>
                     <label>
-                      鍦板潃
+                      地址
                       <input value={settings.center.host} onChange={(event) => onCenterHostChange(event.target.value)} placeholder="127.0.0.1" />
                     </label>
                     <label>
-                      绔彛
+                      端口
                       <input value={String(settings.center.port)} onChange={(event) => onCenterPortChange(event.target.value)} placeholder="9377" />
                     </label>
                     <label>
@@ -147,33 +148,34 @@ export function SettingsPage({
                       <input value={settings.center.baseUrl} onChange={(event) => onCenterBaseUrlChange(event.target.value)} placeholder="http://127.0.0.1:9377" />
                     </label>
                     <label className="dw-settings-field-span-2">
-                      瓒呮椂锛堢锛?                      <input value={String(settings.center.timeoutSec)} onChange={(event) => onCenterTimeoutChange(event.target.value)} placeholder="60" />
+                      超时（秒）
+                      <input value={String(settings.center.timeoutSec)} onChange={(event) => onCenterTimeoutChange(event.target.value)} placeholder="60" />
                     </label>
                   </div>
                 </section>
                 <section className="dw-settings-group">
                   <div className="dw-settings-group-head">
-                    <strong>璺敱绛栫暐</strong>
-                    <span>鎺у埗榛樿涓婃父涓庡け璐ュ洖閫€</span>
+                    <strong>路由策略</strong>
+                    <span>控制默认上游与失败回退</span>
                   </div>
                   <div className="dw-form-grid">
                     <label>
-                      璺敱妯″紡
+                      路由模式
                       <select value={settings.routing.mode} onChange={(event) => onRoutingModeChange(event.target.value as DiWorkerSettings['routing']['mode'])}>
-                        <option value="smart">鏅鸿兘璋冨害</option>
-                        <option value="priority">浼樺厛绾т紭鍏?/option>
-                        <option value="manual">鎵嬪姩榛樿</option>
+                        <option value="smart">智能调度</option>
+                        <option value="priority">优先级优选</option>
+                        <option value="manual">手动默认</option>
                       </select>
                     </label>
                     <label>
-                      榛樿鏈嶅姟
+                      默认服务
                       <input value={settings.routing.defaultProvider} onChange={(event) => onRoutingDefaultProviderChange(event.target.value)} placeholder="office-openai" />
                     </label>
                     <label className="dw-settings-field-span-2">
-                      澶辫触鍥為€€
+                      失败回退
                       <select value={settings.routing.allowFallback ? 'enabled' : 'disabled'} onChange={(event) => onRoutingAllowFallbackChange(event.target.value === 'enabled')}>
-                        <option value="enabled">鍏佽</option>
-                        <option value="disabled">鍏抽棴</option>
+                        <option value="enabled">允许</option>
+                        <option value="disabled">关闭</option>
                       </select>
                     </label>
                   </div>
@@ -183,8 +185,8 @@ export function SettingsPage({
 
             <section className="card-subtle dw-editor-section dw-settings-section dw-settings-section-compact">
               <div className="dw-pane-head">
-                <strong><SectionIcon>鈬?/SectionIcon>涓婃父鏈嶅姟</strong>
-                <span>{settings.providers.length} 涓湇鍔?/span>
+                <strong><SectionIcon>③</SectionIcon>上游服务</strong>
+                <span>{settings.providers.length} 个服务</span>
               </div>
               <div className="dw-provider-list">
                 {settings.providers.map((provider) => {
@@ -197,25 +199,25 @@ export function SettingsPage({
                         <div className="dw-provider-card-head">
                           <div className="dw-provider-card-title">
                             <strong>{provider.name}</strong>
-                            <p>{provider.description || '鏈缃鏄?}</p>
+                            <p>{provider.description || '未设置说明'}</p>
                           </div>
                           <div className="dw-provider-card-badges">
                             <span>{provider.protocol.toUpperCase()}</span>
-                            <span>{provider.enabled ? '宸插惎鐢? : '宸插叧闂?}</span>
+                            <span>{provider.enabled ? '已启用' : '已关闭'}</span>
                           </div>
                         </div>
                         <div className="dw-provider-meta-row">
-                          <span>妯″瀷锛歿provider.model || '鏈缃?}</span>
-                          <span>浼樺厛绾э細{provider.priority}</span>
-                          <span>涓婁笅鏂囷細{provider.capabilities.maxContext || 0}</span>
+                          <span>模型：{provider.model || '未设置'}</span>
+                          <span>优先级：{provider.priority}</span>
+                          <span>上下文：{provider.capabilities.maxContext || 0}</span>
                         </div>
                         <div className="dw-provider-feature-row">
-                          <span>{provider.capabilities.supportsStream ? '娴佸紡杈撳嚭' : '闈炴祦寮?}</span>
-                          <span>{provider.capabilities.supportsVision ? '鏀寔瑙嗚' : '绾枃鏈?}</span>
-                          <span>{provider.features.length ? provider.features.join(' / ') : '鏈缃壒鐐?}</span>
+                          <span>{provider.capabilities.supportsStream ? '流式输出' : '非流式'}</span>
+                          <span>{provider.capabilities.supportsVision ? '支持视觉' : '纯文本'}</span>
+                          <span>{provider.features.length ? provider.features.join(' / ') : '未设置特点'}</span>
                         </div>
                         <div className="dw-provider-summary-foot">
-                          <span>{isExpanded ? '姝ｅ湪缂栬緫褰撳墠鏈嶅姟' : '榛樿浠呮樉绀烘憳瑕?}</span>
+                          <span>{isExpanded ? '正在编辑当前服务' : '默认仅显示摘要'}</span>
                           <button
                             type="button"
                             className="secondary dw-provider-toggle"
@@ -223,7 +225,7 @@ export function SettingsPage({
                             aria-controls={detailsId}
                             onClick={() => setExpandedProviderId((current) => current === provider.id ? null : provider.id)}
                           >
-                            {isExpanded ? `鏀惰捣缂栬緫 ${provider.name}` : `灞曞紑缂栬緫 ${provider.name}`}
+                            {isExpanded ? `收起编辑 ${provider.name}` : `展开编辑 ${provider.name}`}
                           </button>
                         </div>
                       </div>
@@ -231,18 +233,18 @@ export function SettingsPage({
                         <div id={detailsId} className="dw-provider-details">
                           <div className="dw-form-grid dw-provider-grid">
                             <label>
-                              鍚敤
+                              启用
                               <select value={provider.enabled ? 'enabled' : 'disabled'} onChange={(event) => onProviderChange(provider.id, { enabled: event.target.value === 'enabled' })}>
-                                <option value="enabled">鍚敤</option>
-                                <option value="disabled">鍏抽棴</option>
+                                <option value="enabled">启用</option>
+                                <option value="disabled">关闭</option>
                               </select>
                             </label>
                             <label>
-                              鍚嶇О
+                              名称
                               <input value={provider.name} onChange={(event) => onProviderChange(provider.id, { name: event.target.value })} />
                             </label>
                             <label>
-                              鍗忚
+                              协议
                               <select value={provider.protocol} onChange={(event) => onProviderChange(provider.id, { protocol: event.target.value as UpstreamProvider['protocol'] })}>
                                 <option value="openai">openai</option>
                                 <option value="anthropic">anthropic</option>
@@ -260,36 +262,37 @@ export function SettingsPage({
                           <div className="dw-provider-form-divider" />
                           <div className="dw-form-grid dw-provider-grid dw-provider-grid-secondary">
                             <label>
-                              妯″瀷
+                              模型
                               <input value={provider.model} onChange={(event) => onProviderChange(provider.id, { model: event.target.value })} />
                             </label>
                             <label>
-                              浼樺厛绾?                              <input value={String(provider.priority)} onChange={(event) => onProviderChange(provider.id, { priority: Number(event.target.value) || 0 })} />
+                              优先级
+                              <input value={String(provider.priority)} onChange={(event) => onProviderChange(provider.id, { priority: Number(event.target.value) || 0 })} />
                             </label>
                             <label>
-                              鏈€澶т笂涓嬫枃
+                              最大上下文
                               <input value={String(provider.capabilities.maxContext)} onChange={(event) => onProviderChange(provider.id, { capabilities: { ...provider.capabilities, maxContext: Number(event.target.value) || 0 } })} />
                             </label>
                             <label className="dw-provider-field-span-3">
-                              鏈嶅姟鐗圭偣
-                              <input value={provider.features.join('锛?)} onChange={(event) => onProviderFeaturesChange(provider.id, event.target.value)} placeholder="鍏枃锛屼腑鏂囷紝缁撴瀯鍖? />
+                              服务特点
+                              <input value={provider.features.join('，')} onChange={(event) => onProviderFeaturesChange(provider.id, event.target.value)} placeholder="公文，中文，结构化" />
                             </label>
                             <label>
-                              鏀寔娴佸紡
+                              支持流式
                               <select value={provider.capabilities.supportsStream ? 'enabled' : 'disabled'} onChange={(event) => onProviderChange(provider.id, { capabilities: { ...provider.capabilities, supportsStream: event.target.value === 'enabled' } })}>
-                                <option value="enabled">鏀寔</option>
-                                <option value="disabled">鍏抽棴</option>
+                                <option value="enabled">支持</option>
+                                <option value="disabled">关闭</option>
                               </select>
                             </label>
                             <label>
-                              鏀寔瑙嗚
+                              支持视觉
                               <select value={provider.capabilities.supportsVision ? 'enabled' : 'disabled'} onChange={(event) => onProviderChange(provider.id, { capabilities: { ...provider.capabilities, supportsVision: event.target.value === 'enabled' } })}>
-                                <option value="enabled">鏀寔</option>
-                                <option value="disabled">鍏抽棴</option>
+                                <option value="enabled">支持</option>
+                                <option value="disabled">关闭</option>
                               </select>
                             </label>
                             <label>
-                              璇存槑
+                              说明
                               <input value={provider.description} onChange={(event) => onProviderChange(provider.id, { description: event.target.value })} />
                             </label>
                           </div>
@@ -306,40 +309,40 @@ export function SettingsPage({
             <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
               <div className="dw-settings-summary-head">
                 <div>
-                  <label>杩炴帴涓庣姸鎬?/label>
+                  <label>连接与状态</label>
                   <strong>{healthBadgeLabel(healthStatus, healthError)}</strong>
                 </div>
                 <button type="button" className="secondary" onClick={onCheckCenterHealth} disabled={loading || healthChecking}>
-                  {healthChecking ? '妫€娴嬩腑...' : '娴嬭瘯涓績杩炴帴'}
+                  {healthChecking ? '检测中...' : '测试中心连接'}
                 </button>
               </div>
-              <p>{loading ? '姝ｅ湪鍔犺浇閰嶇疆鈥? : settings.center.enabled ? '涓績璺敱宸插惎鐢? : '褰撳墠浣跨敤鏈湴鐩磋繛閾捐矾'}</p>
+              <p>{loading ? '正在加载配置…' : settings.center.enabled ? '中心路由已启用' : '当前使用本地直连链路'}</p>
               <div className="dw-settings-kv-list">
                 <div className="dw-settings-kv-item">
-                  <span>鐘舵€?/span>
+                  <span>状态</span>
                   <strong>{healthSummaryTitle(healthStatus, healthError)}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>鍦板潃</span>
-                  <strong>{healthStatus?.resolvedBaseUrl || settings.center.baseUrl || '鏈缃腑蹇冨湴鍧€'}</strong>
+                  <span>地址</span>
+                  <strong>{healthStatus?.resolvedBaseUrl || settings.center.baseUrl || '未设置中心地址'}</strong>
                 </div>
                 {healthStatus ? (
                   <>
                     <div className="dw-settings-kv-item">
-                      <span>鏉ユ簮</span>
+                      <span>来源</span>
                       <strong>{healthSourceLabel(healthStatus.source)}</strong>
                     </div>
                     <div className="dw-settings-kv-item">
-                      <span>鏈€杩戞娴?/span>
+                      <span>最近检测</span>
                       <strong>{healthStatus.checkedAt}</strong>
                     </div>
                     <div className="dw-settings-kv-item">
-                      <span>Provider 鏁伴噺</span>
+                      <span>Provider 数量</span>
                       <strong>{healthStatus.providerCount}</strong>
                     </div>
                     {healthStatus.configPath ? (
                       <div className="dw-settings-kv-item">
-                        <span>閰嶇疆鏂囦欢</span>
+                        <span>配置文件</span>
                         <strong>{healthStatus.configPath}</strong>
                       </div>
                     ) : null}
@@ -350,32 +353,32 @@ export function SettingsPage({
               {healthError ? <p>{healthError}</p> : null}
             </div>
             <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
-              <label>褰撳墠閰嶇疆</label>
+              <label>当前配置</label>
               <div className="dw-settings-kv-list">
                 <div className="dw-settings-kv-item">
-                  <span>淇濆瓨鐘舵€?/span>
-                  <strong>{dirty ? '鏈夋湭淇濆瓨鏇存敼' : '褰撳墠宸蹭繚瀛?}</strong>
+                  <span>保存状态</span>
+                  <strong>{dirty ? '有未保存更改' : '当前已保存'}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>瑙掕壊</span>
-                  <strong>{settings.roleProfile.name || '鏈缃鑹插悕'}</strong>
+                  <span>角色</span>
+                  <strong>{settings.roleProfile.name || '未设置角色名'}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>鐗圭偣</span>
-                  <strong>{settings.roleProfile.description || '鏈缃壒鐐规弿杩?}</strong>
+                  <span>特点</span>
+                  <strong>{settings.roleProfile.description || '未设置特点描述'}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>榛樿鏈嶅姟</span>
-                  <strong>{settings.routing.defaultProvider || '鏈缃?}</strong>
+                  <span>默认服务</span>
+                  <strong>{settings.routing.defaultProvider || '未设置'}</strong>
                 </div>
                 <div className="dw-settings-kv-item">
-                  <span>涓婃父鏁伴噺</span>
-                  <strong>{settings.providers.length} 涓?/strong>
+                  <span>上游数量</span>
+                  <strong>{settings.providers.length} 个</strong>
                 </div>
               </div>
               <div className="dw-settings-save-row">
-                <button type="button" className="primary" onClick={onSave} disabled={loading || saving || !dirty}>{saving ? '淇濆瓨涓?..' : dirty ? '淇濆瓨閰嶇疆' : '宸蹭繚瀛?}</button>
-                <p>{saveMessage || error || (dirty ? '褰撳墠淇敼灏氭湭淇濆瓨銆? : '褰撳墠閰嶇疆涓庡凡淇濆瓨鐗堟湰涓€鑷淬€?)}</p>
+                <button type="button" className="primary" onClick={onSave} disabled={loading || saving || !dirty}>{saving ? '保存中...' : dirty ? '保存配置' : '已保存'}</button>
+                <p>{saveMessage || error || (dirty ? '当前修改尚未保存。' : '当前配置与已保存版本一致。')}</p>
               </div>
             </div>
           </aside>

@@ -58,6 +58,7 @@ func TestCodingGate_AllowlistContainsAllDeliveryTools(t *testing.T) {
 	expected := []string{
 		"generate_pdf", "send_file", "memory", "open",
 		"set_nickname", "manage_config", "ask_user", "task",
+		"office",
 	}
 	for _, name := range expected {
 		if !deliveryToolAllowlist[name] {

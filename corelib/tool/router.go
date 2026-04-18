@@ -128,6 +128,14 @@ var allBrowserToolNames = []string{
 	"gui_record_start", "gui_record_stop",
 }
 
+var excelKeywords = []string{
+	"xlsx", "csv", "spreadsheet", "表格", "电子表格", "excel",
+}
+
+var pptxReadKeywords = []string{
+	"pptx", "幻灯片", "演示文稿", "powerpoint", "ppt", "读取ppt",
+}
+
 var conditionalKeepRules = []conditionalKeepRule{
 	{
 		keepTools: []string{"ssh"},
@@ -174,7 +182,19 @@ var conditionalKeepRules = []conditionalKeepRule{
 		},
 	},
 	{
-		keepTools: []string{"generate_pdf"},
+		keepTools: []string{"office"},
+		matches: func(msg string) bool {
+			return containsAnyKeyword(msg, excelKeywords)
+		},
+	},
+	{
+		keepTools: []string{"office"},
+		matches: func(msg string) bool {
+			return containsAnyKeyword(msg, pptxReadKeywords)
+		},
+	},
+	{
+		keepTools: []string{"generate_pdf", "office"},
 		matches: func(msg string) bool {
 			return containsAnyKeyword(msg, codingWorkflowDocKeywords)
 		},
@@ -245,6 +265,7 @@ var BuiltinToolNames = map[string]bool{
 	"manage_schedule":          true,
 	"query_audit_log":          true,
 	"session_search":           true,
+	"office":                   true,
 	// Browser automation tools (browser agent session + legacy CDP helpers).
 	"browser_session_start": true, "browser_session_stop": true, "browser_observe": true,
 	"browser_navigate": true, "browser_click": true, "browser_type": true,
@@ -606,6 +627,7 @@ func IsConditionalTool(name string) bool {
 // their keywords, and should disappear when the conversation topic changes.
 var noPinConditionalTools = map[string]bool{
 	"generate_pdf": true,
+	"office":       true,
 }
 
 // noEagerPinTools lists conditional tools that should NOT be eagerly pinned

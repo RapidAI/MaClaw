@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from "react";
 import { useDialog } from "../CustomDialog";
 import { useToast } from "../Toast";
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import {
     colors,
     remoteCardStyle,
@@ -279,6 +280,16 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     useEffect(() => {
         loadData();
+    }, [loadData]);
+
+    // Refresh skill list when usage stats are updated from the agent.
+    useEffect(() => {
+        EventsOn("skill:usage_updated", () => {
+            loadData();
+        });
+        return () => {
+            EventsOff("skill:usage_updated");
+        };
     }, [loadData]);
 
     const handleHubSearch = useCallback(async () => {

@@ -235,3 +235,52 @@ func TestApplyConfirmationRevision_ClearsEnhancedFields(t *testing.T) {
 		t.Errorf("ResumeText should include revision: %s", revised.ResumeText)
 	}
 }
+
+
+func TestParseTaskUnderstandingResponse_SimplifiedFormat(t *testing.T) {
+	// Simplified prompt produces minimal JSON without goals/constraints.
+	raw := `{"task_type":"代码优化","summary":"对项目进行全面优化修复","execution_plan":["分析现有代码","识别问题","逐一修复"],"enhanced_instruction":"对当前项目进行全面的代码优化和 bug 修复"}`
+	result, err := parseTaskUnderstandingResponse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.TaskType != "代码优化" {
+		t.Errorf("TaskType = %q, want %q", result.TaskType, "代码优化")
+	}
+	if result.Summary == "" {
+		t.Error("Summary should not be empty")
+	}
+	if len(result.ExecutionPlan) != 3 {
+		t.Errorf("ExecutionPlan len = %d, want 3", len(result.ExecutionPlan))
+	}
+	// Goals and Constraints are optional in simplified format.
+	if len(result.Goals) != 0 {
+		t.Errorf("Goals should be empty in simplified format: %v", result.Goals)
+	}
+}
+
+func TestParseTaskUnderstandingResponse_JSONWithPrefixText(t *testing.T) {
+	// Some models prepend explanation text before the JSON.
+	raw := `以下是我的分析结果：
+{"task_type":"文件处理","summary":"处理桌面文件","execution_plan":["读取文件","处理内容"],"enhanced_instruction":"处理桌面上的文件"}`
+	result, err := parseTaskUnderstandingResponse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.TaskType != "文件处理" {
+		t.Errorf("TaskType = %q, want %q", result.TaskType, "文件处理")
+	}
+}
+
+func TestTaskUnderstandingSimplifiedPrompt_IsShort(t *testing.T) {
+	// Simplified prompt should be significantly shorter than the full prompt
+	// to reduce token usage and improve response time on retry.
+	if len(taskUnderstandingSimplifiedPrompt) >= len(taskUnderstandingSystemPrompt) {
+		t.Errorf("simplified prompt (%d chars) should be shorter than full prompt (%d chars)",
+			len(taskUnderstandingSimplifiedPrompt), len(taskUnderstandingSystemPrompt))
+	}
+	// Should be under 200 chars for minimal token usage.
+	if len(taskUnderstandingSimplifiedPrompt) > 200 {
+		t.Errorf("simplified prompt too long: %d chars (want ≤200)", len(taskUnderstandingSimplifiedPrompt))
+	}
+}

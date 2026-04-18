@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/session"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -323,6 +324,11 @@ func extractFailingSummary(output string) string {
 var downsizeScreenshotBase64 = remote.DownsizeScreenshotBase64
 
 // ── corelib/scheduler aliases ───────────────────────────────────────────────
+
+// Session history type aliases (corelib/session).
+type SessionHistorySummary = session.SessionSummary
+type SessionHistorySearchResult = session.SearchResult
+
 // These replace the former gui/scheduled_task.go and gui/scheduled_task_calendar.go
 // duplicates. The canonical implementation now lives solely in corelib/scheduler.
 

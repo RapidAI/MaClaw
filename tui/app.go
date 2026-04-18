@@ -200,6 +200,13 @@ func (a *TUIApp) Init() tea.Cmd {
 // initKernel 在后台初始化内核。
 func (a *TUIApp) initKernel() tea.Msg {
 	logger := NewTUILogger()
+	// TUI 模式下必须将日志写入文件，避免 stderr 输出渗透到 Bubble Tea alt-screen。
+	dataDir := commands.ResolveDataDir()
+	tuiLogPath := filepath.Join(dataDir, "logs", "maclaw.log")
+	_ = os.MkdirAll(filepath.Dir(tuiLogPath), 0o755)
+	if err := logger.SetLogFile(tuiLogPath); err != nil {
+		// logFile 设置失败时静默降级，不写 stderr
+	}
 	a.logger = logger
 
 	bridge := NewBubbleTeaEventBridge()
@@ -244,7 +251,7 @@ func (a *TUIApp) initKernel() tea.Msg {
 	}
 
 	// --- 新增：安全组件 ---
-	dataDir := commands.ResolveDataDir()
+	dataDir = commands.ResolveDataDir()
 	riskAnalyzer := security.NewRiskAnalyzer()
 	policyEngine := security.NewPolicyEngine()
 	auditLogDir := filepath.Join(dataDir, "audit")

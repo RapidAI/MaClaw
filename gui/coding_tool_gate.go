@@ -80,6 +80,7 @@ var codingToolBlocklist = map[string]bool{
 // deliveryToolAllowlist lists tool names that are never intercepted.
 var deliveryToolAllowlist = map[string]bool{
 	"generate_pdf":  true,
+	"office":        true,
 	"send_file":     true,
 	"memory":        true,
 	"open":          true,

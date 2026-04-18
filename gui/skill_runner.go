@@ -825,8 +825,17 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 		slices.Sort(keys)
 		for _, key := range keys {
 			value := quoteSkillInputForShell(vars[key])
-			command = strings.ReplaceAll(command, "{{"+key+"}}", value)
-			command = strings.ReplaceAll(command, "${"+key+"}", value)
+			for _, placeholder := range []string{"{{" + key + "}}", "${" + key + "}"} {
+				// Replace quoted-placeholder patterns first (e.g. "{{text}}" → value),
+				// then replace any remaining bare placeholders ({{text}} → value).
+				// This avoids double-quoting when SKILL.md authors wrap placeholders
+				// in quotes that quoteSkillInputForShell would also add.
+				doubleQuoted := `"` + placeholder + `"`
+				singleQuoted := `'` + placeholder + `'`
+				command = strings.ReplaceAll(command, doubleQuoted, value)
+				command = strings.ReplaceAll(command, singleQuoted, value)
+				command = strings.ReplaceAll(command, placeholder, value)
+			}
 		}
 	}
 	// Log any remaining unresolved placeholders as warnings before stripping.
@@ -1075,10 +1084,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 	}
 
 	// ── OpenAI Proxy for skills requiring OPENAI_API_KEY ──
-	// If the skill declares OPENAI_API_KEY in required_env and the user hasn't
-	// provided it via extra_env, start a local proxy that forwards requests
+	// If the skill declares OPENAI_API_KEY in required_env, or if the skill's
+	// scripts reference OPENAI_API_KEY/OPENAI_BASE_URL (auto-detection for
+	// ClawHub skills that don't declare requires_env), and the user hasn't
+	// provided them via extra_env, start a local proxy that forwards requests
 	// to the currently configured LLM provider.
-	if corelib.NeedsOpenAIProxy(skill.RequiredEnv, run.extraEnv) {
+	if corelib.NeedsOpenAIProxyAuto(skill.RequiredEnv, run.extraEnv, skill.Steps, skill.SkillDir) {
 		// Build config from current LLM provider
 		var proxyCfg corelib.OpenAIProxyConfig
 		if r.executor != nil && r.executor.app != nil {
@@ -1360,9 +1371,9 @@ func (r *SkillRunner) updateUsageStats(skill *NLSkillEntry, execErr error) {
 	if skill.Source == "file" {
 		return
 	}
-	r.executor.mu.Lock()
-	defer r.executor.mu.Unlock()
+	shouldEmit := false
 
+	r.executor.mu.Lock()
 	skills := r.executor.loadSkills()
 	for i, s := range skills {
 		if s.Name == skill.Name && s.Source != "file" {
@@ -1378,8 +1389,15 @@ func (r *SkillRunner) updateUsageStats(skill *NLSkillEntry, execErr error) {
 			_ = r.executor.saveSkills(skills)
 			log.Printf("[skill-runner] usage stats updated for %q: usage=%d success=%d failure=%d workaround=%d",
 				skill.Name, skills[i].UsageCount, skills[i].SuccessCount, skills[i].FailureCount, skills[i].WorkaroundCount)
+			shouldEmit = true
 			break
 		}
+	}
+	r.executor.mu.Unlock()
+
+	// Notify frontend to refresh skill list with updated stats (outside lock).
+	if shouldEmit && r.executor.app != nil {
+		r.executor.app.emitEvent("skill:usage_updated")
 	}
 }
 
@@ -1391,9 +1409,9 @@ func (r *SkillRunner) RecordSkillOutcome(skillName, outcome, lastError string) {
 	if skillName == "" {
 		return
 	}
-	r.executor.mu.Lock()
-	defer r.executor.mu.Unlock()
+	shouldEmit := false
 
+	r.executor.mu.Lock()
 	skills := r.executor.loadSkills()
 	for i, s := range skills {
 		if s.MatchesName(skillName) && s.Source != "file" {
@@ -1412,6 +1430,7 @@ func (r *SkillRunner) RecordSkillOutcome(skillName, outcome, lastError string) {
 					skills[i].LastError = lastError
 				}
 			default:
+				r.executor.mu.Unlock()
 				return // unknown outcome, skip
 			}
 			skills[i].UsageCount++
@@ -1419,8 +1438,15 @@ func (r *SkillRunner) RecordSkillOutcome(skillName, outcome, lastError string) {
 			_ = r.executor.saveSkills(skills)
 			log.Printf("[skill-runner] outcome recorded for %q: outcome=%s usage=%d success=%d failure=%d workaround=%d",
 				skillName, outcome, skills[i].UsageCount, skills[i].SuccessCount, skills[i].FailureCount, skills[i].WorkaroundCount)
+			shouldEmit = true
 			break
 		}
+	}
+	r.executor.mu.Unlock()
+
+	// Notify frontend to refresh skill list with updated stats (outside lock).
+	if shouldEmit && r.executor.app != nil {
+		r.executor.app.emitEvent("skill:usage_updated")
 	}
 }
 

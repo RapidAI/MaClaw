@@ -12,27 +12,27 @@ import { recentTasks as mockRecentTasks } from './mock/tasks';
 import type { CenterHealthStatus, DiWorkerSettings, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, TaskAttachment, UpstreamProvider } from './types';
 
 const pageMeta: Record<DiWorkerTab, { title: string; subtitle: string }> = {
-  home: { title: '鏂板缓浠诲姟', subtitle: '杈撳叆浠诲姟鍐呭锛屽揩閫熷紑濮嬪鐞嗐€? },
-  colleagues: { title: '鍚屼簨', subtitle: '鎸夊垎绫绘祻瑙堝悓浜嬶紝鍙敜浠栦滑涓轰綘鏈嶅姟銆? },
-  'new-task': { title: '浠诲姟缂栬緫', subtitle: '缂栬緫浠诲姟鍐呭銆佽ˉ鍏呮潗鏂欏苟鎻愪氦澶勭悊銆? },
-  history: { title: '宸ュ叿', subtitle: '璧嬩簣 DiWorker 鏇村己澶х殑鑳藉姏銆? },
-  settings: { title: '閰嶇疆涓績', subtitle: '绠＄悊瑙掕壊淇℃伅銆佷腑蹇冭繛鎺ュ拰涓婃父鏈嶅姟璋冨害銆? },
+  home: { title: '新建任务', subtitle: '输入任务内容，快速开始处理。' },
+  colleagues: { title: '同事', subtitle: '按分类浏览同事，可呼叫他们为你服务。' },
+  'new-task': { title: '任务编辑', subtitle: '编辑任务内容、补充材料并提交处理。' },
+  history: { title: '工具', subtitle: '赋予 DiWorker 更强大的能力。' },
+  settings: { title: '配置中心', subtitle: '管理角色信息、中心连接和上游服务调度。' },
 };
 
 const statusCopy: Record<DiWorkerTab, { focus: string }> = {
-  home: { focus: '鏂板缓浠诲姟' },
-  colleagues: { focus: '鍚屼簨' },
-  'new-task': { focus: '浠诲姟缂栬緫' },
-  history: { focus: '宸ュ叿' },
-  settings: { focus: '涓績涓庤矾鐢遍厤缃? },
+  home: { focus: '新建任务' },
+  colleagues: { focus: '同事' },
+  'new-task': { focus: '任务编辑' },
+  history: { focus: '工具' },
+  settings: { focus: '中心与路由配置' },
 };
 
 const hasWailsBridge = () => typeof window !== 'undefined' && typeof (window as Window & { go?: unknown }).go !== 'undefined';
 
 const defaultSettings: DiWorkerSettings = {
   roleProfile: {
-    name: '灏忚开',
-    description: '浣犵殑鏁板瓧鍔炲叕鍔╃悊锛屾搮闀块€氱煡銆佺邯瑕佷笌姹囨姤鏁寸悊銆?,
+    name: '小迪',
+    description: '你的数字办公助理，擅长通知、纪要与汇报整理。',
   },
   center: {
     enabled: false,
@@ -49,15 +49,15 @@ const defaultSettings: DiWorkerSettings = {
   providers: [
     {
       id: 'office-openai',
-      name: '鍔炲叕鍐欎綔鏈嶅姟',
+      name: '办公写作服务',
       enabled: true,
       protocol: 'openai',
       baseUrl: 'https://office.example.com/v1',
       apiKey: '',
       model: 'gpt-4.1',
       priority: 100,
-      features: ['鍏枃', '绾', '涓枃'],
-      description: '閫傚悎閫氱煡銆佺邯瑕併€佹棩鎶ヤ笌姝ｅ紡鏂囨。銆?,
+      features: ['公文', '纪要', '中文'],
+      description: '适合通知、纪要、日报与正式文档。',
       capabilities: {
         supportsStream: true,
         supportsVision: false,
@@ -66,15 +66,15 @@ const defaultSettings: DiWorkerSettings = {
     },
     {
       id: 'analysis-anthropic',
-      name: '鍒嗘瀽褰掑洜鏈嶅姟',
+      name: '分析归因服务',
       enabled: true,
       protocol: 'anthropic',
       baseUrl: 'https://analysis.example.com',
       apiKey: '',
       model: 'claude-sonnet-4-6',
       priority: 90,
-      features: ['鍒嗘瀽', '褰掑洜', '璐ㄩ噺'],
-      description: '閫傚悎寮傚父璇存槑銆佽川閲忓垎鏋愪笌鏁存敼寤鸿銆?,
+      features: ['分析', '归因', '质量'],
+      description: '适合异常说明、质量分析与整改建议。',
       capabilities: {
         supportsStream: true,
         supportsVision: false,
@@ -225,21 +225,21 @@ const isTextFile = (file: File) => {
 
 const buildAttachmentSummary = (content: string, isText: boolean) => {
   if (!isText) {
-    return '闈炴枃鏈潗鏂欏凡涓婁紶锛屽彲缁撳悎鏂囦欢绫诲瀷鍜屾枃浠跺悕涓€璧峰鐞嗐€?;
+    return '非文本材料已上传，可结合文件类型和文件名一起处理。';
   }
   const normalized = content.replace(/\s+/g, ' ').trim();
   if (!normalized) {
-    return '鏂囨湰鏉愭枡宸蹭笂浼狅紝鍙粨鍚堟枃浠跺唴瀹逛竴璧峰鐞嗐€?;
+    return '文本材料已上传，可结合文件内容一起处理。';
   }
   const excerpt = normalized.slice(0, 80);
   return normalized.length > 80 ? `${excerpt}...` : excerpt;
 };
 
 const buildAttachmentPayload = (item: TaskAttachment, index: number) => {
-  const meta = `${index + 1}. ${item.name}锛?{item.type}锛?{item.sizeLabel}锛塦;
+  const meta = `${index + 1}. ${item.name}（${item.type}，${item.sizeLabel}）`;
   return item.isText
-    ? `${meta}锛?{item.summary}\n${item.content}`
-    : `${meta}锛?{item.summary}`;
+    ? `${meta}：${item.summary}\n${item.content}`
+    : `${meta}：${item.summary}`;
 };
 
 const readFileContent = async (file: File) => {
@@ -249,7 +249,7 @@ const readFileContent = async (file: File) => {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(new Error(`璇诲彇鏉愭枡澶辫触锛?{file.name}`));
+    reader.onerror = () => reject(new Error(`读取材料失败：${file.name}`));
     reader.readAsText(file);
   });
 };
@@ -351,7 +351,7 @@ export default function App() {
         return {
           id: createAttachmentId(index),
           name: file.name,
-          type: file.type || '鏈煡绫诲瀷',
+          type: file.type || '未知类型',
           sizeLabel: formatFileSize(file.size),
           isText: textFile,
           summary: buildAttachmentSummary(content, textFile),
@@ -362,7 +362,7 @@ export default function App() {
       setSubmitError('');
       setSubmitResult(null);
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : '璇诲彇鏉愭枡澶辫触锛岃绋嶅悗鍐嶈瘯');
+      setSubmitError(error instanceof Error ? error.message : '读取材料失败，请稍后再试');
     }
   };
 
@@ -440,11 +440,11 @@ export default function App() {
 
   const handleSubmitTask = async () => {
     const attachmentSummary = attachments.length > 0
-      ? `\n\n琛ュ厖鏉愭枡锛歕n${attachments.map(buildAttachmentPayload).join('\n\n')}`
+      ? `\n\n补充材料：\n${attachments.map(buildAttachmentPayload).join('\n\n')}`
       : '';
     const effectiveDraft = `${draft}${attachmentSummary}`.trim();
     const payload: SubmitTaskRequest = {
-      task_type: selectedTask || '鑷敱杈撳叆',
+      task_type: selectedTask || '自由输入',
       selected_colleague_name: selectedColleagueName,
       draft: effectiveDraft,
       expected_output: expectedOutput,
@@ -461,7 +461,7 @@ export default function App() {
           id: `task-${Date.now()}`,
           title: result.task_type,
           owner: result.colleague_name,
-          status: '宸插畬鎴?,
+          status: '已完成',
           updatedAt: formatTimestamp(),
           description: draft.trim() || result.content.slice(0, 60),
           draft: effectiveDraft,
@@ -476,7 +476,7 @@ export default function App() {
       await persistHistoryTasks(nextHistory);
       setActiveTab('history');
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : '鎻愪氦澶辫触锛岃绋嶅悗鍐嶈瘯');
+      setSubmitError(error instanceof Error ? error.message : '提交失败，请稍后再试');
     } finally {
       setSubmitting(false);
     }
@@ -486,24 +486,24 @@ export default function App() {
     setSettingsError('');
     setSettingsSaveMessage('');
     if (!hasWailsBridge()) {
-      setSettingsSaveMessage('褰撳墠鏈繛鎺?Wails锛岄厤缃粎淇濈暀鍦ㄥ綋鍓嶇晫闈€?);
+      setSettingsSaveMessage('当前未连接 Wails，配置仅保留在当前界面。');
       return;
     }
     setSettingsSaving(true);
     try {
       await SaveDiWorkerSettings(toWailsSettings(settings) as never);
       setSavedSettingsSnapshot(settingsSnapshot(settings));
-      setSettingsSaveMessage('閰嶇疆宸蹭繚瀛?);
+      setSettingsSaveMessage('配置已保存');
       try {
         const status = await CheckCenterHealth();
         setCenterHealthError('');
         setCenterHealthStatus(fromWailsCenterHealth(status as main.CenterHealthStatus, 'auto-after-save'));
       } catch (error) {
         setCenterHealthStatus(null);
-        setCenterHealthError(error instanceof Error ? error.message : '涓績杩炴帴妫€娴嬪け璐?);
+        setCenterHealthError(error instanceof Error ? error.message : '中心连接检测失败');
       }
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : '淇濆瓨閰嶇疆澶辫触');
+      setSettingsError(error instanceof Error ? error.message : '保存配置失败');
     } finally {
       setSettingsSaving(false);
     }
@@ -513,7 +513,7 @@ export default function App() {
     setCenterHealthError('');
     setCenterHealthStatus(null);
     if (!hasWailsBridge()) {
-      setCenterHealthError('褰撳墠鏈繛鎺?Wails锛屾棤娉曟祴璇曚腑蹇冭繛鎺ャ€?);
+      setCenterHealthError('当前未连接 Wails，无法测试中心连接。');
       return;
     }
     setCenterHealthChecking(true);
@@ -521,7 +521,7 @@ export default function App() {
       const status = await CheckCenterHealth();
       setCenterHealthStatus(fromWailsCenterHealth(status as main.CenterHealthStatus, 'manual'));
     } catch (error) {
-      setCenterHealthError(error instanceof Error ? error.message : '涓績杩炴帴妫€娴嬪け璐?);
+      setCenterHealthError(error instanceof Error ? error.message : '中心连接检测失败');
     } finally {
       setCenterHealthChecking(false);
     }
@@ -605,7 +605,7 @@ export default function App() {
             onRoutingDefaultProviderChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, defaultProvider: value } }))}
             onRoutingAllowFallbackChange={(value) => updateSettings((current) => ({ ...current, routing: { ...current.routing, allowFallback: value } }))}
             onProviderChange={updateProvider}
-            onProviderFeaturesChange={(providerId, value) => updateProvider(providerId, { features: value.split(/[锛?]/).map((item) => item.trim()).filter(Boolean) })}
+            onProviderFeaturesChange={(providerId, value) => updateProvider(providerId, { features: value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) })}
             onCheckCenterHealth={handleCheckCenterHealth}
             onSave={handleSaveSettings}
           />
@@ -637,12 +637,12 @@ export default function App() {
                   <div className="dw-topbar-heading-copy dw-topbar-heading-copy-compact">
                     <h1>{meta.title}</h1>
                     <span className="dw-toolbar-meta">{status.focus}</span>
-                    {settings.center.enabled ? <span className="dw-toolbar-meta is-online">涓績璺敱宸插惎鐢?/span> : null}
-                    {hasWailsBridge() ? <span className="dw-toolbar-meta is-online">鏈湴閾捐矾宸茶繛鎺?/span> : <span className="dw-toolbar-meta">绛夊緟 Wails 缁戝畾</span>}
+                    {settings.center.enabled ? <span className="dw-toolbar-meta is-online">中心路由已启用</span> : null}
+                    {hasWailsBridge() ? <span className="dw-toolbar-meta is-online">本地链路已连接</span> : <span className="dw-toolbar-meta">等待 Wails 绑定</span>}
                   </div>
                   <div className="dw-top-actions">
-                    <button type="button" className="secondary" aria-label="鍒囨崲鍚屼簨" onClick={handleSwitchColleague}>鍚屼簨</button>
-                    <button type="button" className="primary" aria-label="寮€濮嬫柊浠诲姟" onClick={handleOpenNewTask}>鏂颁换鍔?/button>
+                    <button type="button" className="secondary" aria-label="切换同事" onClick={handleSwitchColleague}>同事</button>
+                    <button type="button" className="primary" aria-label="开始新任务" onClick={handleOpenNewTask}>新任务</button>
                   </div>
                 </div>
               </div>

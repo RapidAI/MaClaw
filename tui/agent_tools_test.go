@@ -77,8 +77,8 @@ func TestQuoteSkillInputForShell_EscapesQuotes(t *testing.T) {
 	input := "a'b"
 	got := quoteSkillInputForShell(input)
 	if runtime.GOOS == "windows" {
-		if got != "'a''b'" {
-			t.Fatalf("quoteSkillInputForShell() = %q, want %q", got, "'a''b'")
+		if got != `"a'b"` {
+			t.Fatalf("quoteSkillInputForShell() = %q, want %q", got, `"a'b"`)
 		}
 		return
 	}

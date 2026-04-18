@@ -7,11 +7,13 @@ import (
 	"time"
 )
 
-// TUILogger 实现 corelib.Logger 接口，输出到 stderr。
-// TUI 模式下日志写入 stderr 避免干扰 Bubble Tea 渲染。
+// TUILogger 实现 corelib.Logger 接口。
+// TUI 模式下日志写入文件，避免 stderr 输出干扰 Bubble Tea 渲染。
+// 未设置 logFile 且 allowStderr=false 时静默丢弃日志。
 type TUILogger struct {
-	mu      sync.Mutex
-	logFile *os.File // 可选的日志文件
+	mu          sync.Mutex
+	logFile     *os.File // 可选的日志文件
+	allowStderr bool     // 无 logFile 时是否回退到 stderr（daemon 模式 true，TUI 模式 false）
 }
 
 // NewTUILogger 创建 TUI 日志实例。
@@ -19,7 +21,7 @@ func NewTUILogger() *TUILogger {
 	return &TUILogger{}
 }
 
-// SetLogFile 设置日志文件输出（daemon 模式使用）。
+// SetLogFile 设置日志文件输出。
 func (l *TUILogger) SetLogFile(path string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -41,9 +43,10 @@ func (l *TUILogger) log(level, format string, args ...interface{}) {
 
 	if l.logFile != nil {
 		l.logFile.WriteString(line)
-	} else {
+	} else if l.allowStderr {
 		fmt.Fprint(os.Stderr, line)
 	}
+	// TUI 模式下（allowStderr=false）无 logFile 时静默丢弃，避免污染 alt-screen。
 }
 
 func (l *TUILogger) Debug(format string, args ...interface{}) { l.log("DBG", format, args...) }

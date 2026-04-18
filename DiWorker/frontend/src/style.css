@@ -4,6 +4,49 @@
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   line-height: 1.5;
   font-weight: 400;
+  --dw-tools-title: #111827;
+  --dw-tools-subtitle: #9ca3af;
+  --dw-tools-input-border: #e5e7eb;
+  --dw-tools-input-bg: #ffffff;
+  --dw-tools-input-text: #1f2937;
+  --dw-tools-card-bg: #ffffff;
+  --dw-tools-card-border: #e5e7eb;
+  --dw-tools-card-border-hover: #d1d5db;
+  --dw-tools-muted-text: #6b7280;
+  --dw-tools-badge-bg: #dcfce7;
+  --dw-tools-badge-text: #166534;
+  --dw-tools-official-badge-bg: #dbeafe;
+  --dw-tools-official-badge-text: #2563eb;
+  --dw-tools-tab-border: #f3f4f6;
+  --dw-tools-tab-active: #111827;
+  --dw-tools-tab-idle: #6b7280;
+  --dw-tools-row-hover: #f9fafb;
+  --dw-tools-button-text: #374151;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #e5e7eb;
+    background: #0f172a;
+    --dw-tools-title: #f3f4f6;
+    --dw-tools-subtitle: #94a3b8;
+    --dw-tools-input-border: #334155;
+    --dw-tools-input-bg: #111827;
+    --dw-tools-input-text: #e5e7eb;
+    --dw-tools-card-bg: #111827;
+    --dw-tools-card-border: #334155;
+    --dw-tools-card-border-hover: #475569;
+    --dw-tools-muted-text: #94a3b8;
+    --dw-tools-badge-bg: #14532d;
+    --dw-tools-badge-text: #bbf7d0;
+    --dw-tools-official-badge-bg: #1e3a8a;
+    --dw-tools-official-badge-text: #bfdbfe;
+    --dw-tools-tab-border: #1e293b;
+    --dw-tools-tab-active: #f3f4f6;
+    --dw-tools-tab-idle: #94a3b8;
+    --dw-tools-row-hover: #172033;
+    --dw-tools-button-text: #e2e8f0;
+  }
 }
 
 * {
@@ -2041,6 +2084,46 @@ textarea {
   gap: 8px;
   flex-wrap: wrap;
   align-items: flex-start;
+}
+
+@media (prefers-color-scheme: dark) {
+  .dw-provider-card {
+    border-color: #334155;
+    background: #111827;
+  }
+
+  .dw-provider-card.is-expanded {
+    border-color: #475569;
+    background: #172033;
+  }
+
+  .dw-provider-summary-foot span,
+  .dw-provider-card-title p,
+  .dw-settings-kv-item span,
+  .dw-settings-group-head span,
+  .dw-side-panel-block p {
+    color: #94a3b8;
+  }
+
+  .dw-provider-card-badges span,
+  .dw-provider-meta-row span,
+  .dw-provider-feature-row span,
+  .dw-provider-card-head span {
+    background: #1e293b;
+    border-color: #334155;
+    color: #cbd5e1;
+  }
+
+  .dw-provider-form-divider,
+  .dw-settings-kv-item {
+    border-color: #334155;
+    background: transparent;
+  }
+
+  .dw-provider-card-head strong,
+  .dw-settings-kv-item strong {
+    color: #f3f4f6;
+  }
 }
 
 @media (max-width: 1180px) {

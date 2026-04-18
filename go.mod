@@ -1,6 +1,6 @@
 module github.com/RapidAI/CodeClaw
 
-go 1.25.0
+go 1.25.5
 
 require (
 	github.com/UserExistsError/conpty v0.1.4
@@ -35,6 +35,8 @@ require (
 )
 
 require (
+	github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06 // indirect
+	github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

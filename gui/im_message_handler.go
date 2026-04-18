@@ -6580,6 +6580,32 @@ func (d *SteeringWorkflowDetector) interceptToolCall(toolName, argsJSON string, 
 		}
 		d.phaseDocuments[phaseID] = args.MarkdownContent
 		emit(phaseID, args.MarkdownContent)
+
+	case "office":
+		var args struct {
+			Action          string `json:"action"`
+			MarkdownContent string `json:"markdown_content"`
+			Content         string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return
+		}
+		if args.Action != "generate_pdf" {
+			return
+		}
+		content := args.MarkdownContent
+		if content == "" {
+			content = args.Content
+		}
+		if content == "" {
+			return
+		}
+		phaseID := d.matchPhaseID(content)
+		if phaseID == "" {
+			return
+		}
+		d.phaseDocuments[phaseID] = content
+		emit(phaseID, content)
 	}
 }
 

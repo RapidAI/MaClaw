@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,6 +100,205 @@ func TestNeedsOpenAIProxy(t *testing.T) {
 					tt.requiredEnv, tt.extraEnv, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNeedsOpenAIProxyAuto(t *testing.T) {
+	// Create a temp dir with a Python script that references OPENAI_API_KEY
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "translate.py"), []byte(`
+import os
+api_key = os.environ.get("OPENAI_API_KEY", "")
+base_url = os.environ.get("OPENAI_BASE_URL", "")
+`), 0644)
+
+	// Create another temp dir with a script that does NOT reference OpenAI vars
+	tmpDirNoRef := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDirNoRef, "helper.py"), []byte(`
+import os
+print("hello world")
+`), 0644)
+
+	tests := []struct {
+		name        string
+		requiredEnv []string
+		extraEnv    map[string]string
+		steps       []NLSkillStep
+		skillDir    string
+		want        bool
+	}{
+		{
+			name:        "explicit RequiredEnv still works",
+			requiredEnv: []string{"OPENAI_API_KEY"},
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    "",
+			want:        true,
+		},
+		{
+			name:        "user provided key overrides explicit RequiredEnv",
+			requiredEnv: []string{"OPENAI_API_KEY"},
+			extraEnv:    map[string]string{"OPENAI_API_KEY": "sk-user"},
+			steps:       nil,
+			skillDir:    "",
+			want:        false,
+		},
+		{
+			name:        "auto-detect from step command",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps: []NLSkillStep{
+				{Action: "bash", Params: map[string]interface{}{"command": `python translate.py --key "$OPENAI_API_KEY"`}},
+			},
+			skillDir: "",
+			want:     true,
+		},
+		{
+			name:        "auto-detect from step command with OPENAI_BASE_URL",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps: []NLSkillStep{
+				{Action: "bash", Params: map[string]interface{}{"command": `curl $OPENAI_BASE_URL/chat/completions`}},
+			},
+			skillDir: "",
+			want:     true,
+		},
+		{
+			name:        "no detection from non-bash step",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps: []NLSkillStep{
+				{Action: "craft_tool", Params: map[string]interface{}{"command": `OPENAI_API_KEY is needed`}},
+			},
+			skillDir: "",
+			want:     false,
+		},
+		{
+			name:        "auto-detect from script files in skillDir",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    tmpDir,
+			want:        true,
+		},
+		{
+			name:        "no detection when scripts don't reference OpenAI",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    tmpDirNoRef,
+			want:        false,
+		},
+		{
+			name:        "user provided key overrides auto-detection from scripts",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{"OPENAI_API_KEY": "sk-user"},
+			steps:       nil,
+			skillDir:    tmpDir,
+			want:        false,
+		},
+		{
+			name:        "user provided base_url overrides auto-detection",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{"OPENAI_BASE_URL": "https://api.example.com"},
+			steps:       nil,
+			skillDir:    tmpDir,
+			want:        false,
+		},
+		{
+			name:        "empty everything returns false",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    "",
+			want:        false,
+		},
+		{
+			name:        "nonexistent skillDir returns false",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    "/nonexistent/path/12345",
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clear process-level OPENAI_API_KEY to avoid interference
+			prev, had := os.LookupEnv("OPENAI_API_KEY")
+			os.Unsetenv("OPENAI_API_KEY")
+			defer func() {
+				if had {
+					os.Setenv("OPENAI_API_KEY", prev)
+				}
+			}()
+
+			got := NeedsOpenAIProxyAuto(tt.requiredEnv, tt.extraEnv, tt.steps, tt.skillDir)
+			if got != tt.want {
+				t.Errorf("NeedsOpenAIProxyAuto() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNeedsOpenAIProxyAuto_ProcessEnvOverride(t *testing.T) {
+	// When OPENAI_API_KEY is set in process env, auto-detection should return false
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "script.py"), []byte(`os.environ["OPENAI_API_KEY"]`), 0644)
+
+	prev, had := os.LookupEnv("OPENAI_API_KEY")
+	os.Setenv("OPENAI_API_KEY", "sk-from-process-env")
+	defer func() {
+		if had {
+			os.Setenv("OPENAI_API_KEY", prev)
+		} else {
+			os.Unsetenv("OPENAI_API_KEY")
+		}
+	}()
+
+	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, tmpDir)
+	if got != false {
+		t.Errorf("NeedsOpenAIProxyAuto() = true, want false when OPENAI_API_KEY is in process env")
+	}
+}
+
+func TestNeedsOpenAIProxyAuto_SubdirScan(t *testing.T) {
+	// Script in scripts/ subdirectory should be detected
+	tmpDir := t.TempDir()
+	scriptsDir := filepath.Join(tmpDir, "scripts")
+	os.Mkdir(scriptsDir, 0755)
+	os.WriteFile(filepath.Join(scriptsDir, "api_call.py"), []byte(`
+api_key = os.environ.get("OPENAI_API_KEY")
+`), 0644)
+
+	prev, had := os.LookupEnv("OPENAI_API_KEY")
+	os.Unsetenv("OPENAI_API_KEY")
+	defer func() {
+		if had {
+			os.Setenv("OPENAI_API_KEY", prev)
+		}
+	}()
+
+	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, tmpDir)
+	if got != true {
+		t.Errorf("NeedsOpenAIProxyAuto() = false, want true for script in scripts/ subdir")
+	}
+}
+
+func TestNeedsOpenAIProxyAuto_NilExtraEnv(t *testing.T) {
+	// nil extraEnv should not panic (app_nl_skills.go passes nil)
+	prev, had := os.LookupEnv("OPENAI_API_KEY")
+	os.Unsetenv("OPENAI_API_KEY")
+	defer func() {
+		if had {
+			os.Setenv("OPENAI_API_KEY", prev)
+		}
+	}()
+
+	got := NeedsOpenAIProxyAuto([]string{"OPENAI_API_KEY"}, nil, nil, "")
+	if got != true {
+		t.Errorf("NeedsOpenAIProxyAuto() = false, want true with nil extraEnv and explicit RequiredEnv")
 	}
 }
 

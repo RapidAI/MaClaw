@@ -559,7 +559,7 @@ func (e *SkillExecutor) executeSkillSteps(skill *NLSkillEntry) (string, error) {
 	// also needs proxy support, mirroring the async SkillRunner.executeAsync path.
 	// Note: uses os.Setenv because executeBashStep inherits process env.
 	// Save/restore previous values to avoid clobbering user-set env vars.
-	if corelib.NeedsOpenAIProxy(skill.RequiredEnv, nil) {
+	if corelib.NeedsOpenAIProxyAuto(skill.RequiredEnv, nil, skill.Steps, skill.SkillDir) {
 		var proxyCfg corelib.OpenAIProxyConfig
 		if e.app != nil {
 			llmCfg := e.app.GetMaclawLLMConfig()
@@ -710,6 +710,7 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 	if target.Source != "file" {
 		e.mu.Lock()
 		skills := e.loadSkills()
+		shouldEmitUsageEvent := false
 		for i, s := range skills {
 			if s.Name == name && s.Source != "file" {
 				skills[i].UsageCount++
@@ -721,6 +722,7 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 					skills[i].LastError = execErr.Error()
 				}
 				_ = e.saveSkills(skills)
+				shouldEmitUsageEvent = true
 
 				// Auto-rate hub skills after execution.
 				if s.Source == "hub" && s.HubSkillID != "" && e.app.capabilityGapDetector != nil {
@@ -732,6 +734,11 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 			}
 		}
 		e.mu.Unlock()
+
+		// Notify frontend to refresh skill list with updated stats (outside lock).
+		if shouldEmitUsageEvent && e.app != nil {
+			e.app.emitEvent("skill:usage_updated")
+		}
 	}
 
 	if execErr != nil {

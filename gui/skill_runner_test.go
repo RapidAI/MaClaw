@@ -236,3 +236,59 @@ func TestQuoteSkillInputForShell_EscapesQuotes(t *testing.T) {
 		t.Fatalf("quoteSkillInputForShell() = %q, want %q", got, `'a'"'"'b'`)
 	}
 }
+
+// TestSubstituteSkillVariables_DedupsQuotedPlaceholder verifies that when a
+// placeholder is already wrapped in quotes in the template (e.g. "{{text}}"),
+// substituteSkillVariables does not produce double-quoting.
+func TestSubstituteSkillVariables_DedupsQuotedPlaceholder(t *testing.T) {
+	vars := map[string]string{"text": "Hello, how are you today?"}
+	quoted := quoteSkillInputForShell("Hello, how are you today?")
+
+	// Template with placeholder already in double quotes — common in SKILL.md
+	got := substituteSkillVariables(`python translate.py --text "{{text}}"`, vars)
+	want := `python translate.py --text ` + quoted
+	if got != want {
+		t.Fatalf("substituteSkillVariables() double-quoted dedup:\n  got  = %q\n  want = %q", got, want)
+	}
+
+	// Template with placeholder NOT in quotes — should still get quoted
+	got2 := substituteSkillVariables(`python translate.py --text {{text}}`, vars)
+	want2 := `python translate.py --text ` + quoted
+	if got2 != want2 {
+		t.Fatalf("substituteSkillVariables() bare placeholder:\n  got  = %q\n  want = %q", got2, want2)
+	}
+
+	// Template with placeholder in single quotes
+	got3 := substituteSkillVariables(`python translate.py --text '{{text}}'`, vars)
+	want3 := `python translate.py --text ` + quoted
+	if got3 != want3 {
+		t.Fatalf("substituteSkillVariables() single-quoted dedup:\n  got  = %q\n  want = %q", got3, want3)
+	}
+}
+
+// TestSubstituteSkillVariables_DollarBraceDedup verifies dedup also works
+// for ${key} style placeholders.
+func TestSubstituteSkillVariables_DollarBraceDedup(t *testing.T) {
+	vars := map[string]string{"city": "New York"}
+	quoted := quoteSkillInputForShell("New York")
+
+	got := substituteSkillVariables(`curl --data "${city}"`, vars)
+	want := `curl --data ` + quoted
+	if got != want {
+		t.Fatalf("substituteSkillVariables() ${} dedup:\n  got  = %q\n  want = %q", got, want)
+	}
+}
+
+// TestSubstituteSkillVariables_MixedQuotedAndBare verifies that a command
+// containing both quoted and bare occurrences of the same placeholder handles
+// each occurrence correctly.
+func TestSubstituteSkillVariables_MixedQuotedAndBare(t *testing.T) {
+	vars := map[string]string{"text": "hello world"}
+	quoted := quoteSkillInputForShell("hello world")
+
+	got := substituteSkillVariables(`echo "{{text}}" && log {{text}}`, vars)
+	want := `echo ` + quoted + ` && log ` + quoted
+	if got != want {
+		t.Fatalf("substituteSkillVariables() mixed quoted+bare:\n  got  = %q\n  want = %q", got, want)
+	}
+}

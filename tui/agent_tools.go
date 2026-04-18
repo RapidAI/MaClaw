@@ -1456,7 +1456,7 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 	// If the skill declares OPENAI_API_KEY in required_env and the user hasn't
 	// provided it via extra env, start a local proxy that forwards requests
 	// to the currently configured LLM provider.
-	if corelib.NeedsOpenAIProxy(skill.RequiredEnv, extraEnvMap) {
+	if corelib.NeedsOpenAIProxyAuto(skill.RequiredEnv, extraEnvMap, skill.Steps, skill.SkillDir) {
 		// Build config from current LLM provider
 		var proxyCfg corelib.OpenAIProxyConfig
 		currentProvider := cfg.MaclawLLMCurrentProvider
@@ -2121,8 +2121,17 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 	slices.Sort(keys)
 	for _, key := range keys {
 		value := quoteSkillInputForShell(vars[key])
-		command = strings.ReplaceAll(command, "{{"+key+"}}", value)
-		command = strings.ReplaceAll(command, "${"+key+"}", value)
+		for _, placeholder := range []string{"{{" + key + "}}", "${" + key + "}"} {
+			// Replace quoted-placeholder patterns first (e.g. "{{text}}" → value),
+			// then replace any remaining bare placeholders ({{text}} → value).
+			// This avoids double-quoting when SKILL.md authors wrap placeholders
+			// in quotes that quoteSkillInputForShell would also add.
+			doubleQuoted := `"` + placeholder + `"`
+			singleQuoted := `'` + placeholder + `'`
+			command = strings.ReplaceAll(command, doubleQuoted, value)
+			command = strings.ReplaceAll(command, singleQuoted, value)
+			command = strings.ReplaceAll(command, placeholder, value)
+		}
 	}
 	return command
 }

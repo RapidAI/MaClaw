@@ -466,6 +466,13 @@ func (h *TUIAgentHandler) buildSystemPromptWithFirstTurn(_ string, isFirstTurn b
 - 生成 Python 脚本写文件时，始终在 open() 中指定 encoding='utf-8'。
 - ⚠️ 不要因为怀疑编码问题而反复尝试不同方案——write_file 就是 UTF-8，直接写中文即可。
 
+## office 工具
+office 工具：统一文档操作。action 参数：
+- generate_pdf: 生成 PDF（Markdown 降级为本地 .md 文件）
+- read_excel: 读取 XLSX/CSV（file_path 必填，sheet/range 可选）
+- write_excel: 写入 XLSX（file_path + data 必填）
+- read_pptx: 读取 PPTX（file_path 必填，返回结构化 JSON）
+
 🖥️ SSH 远程服务器管理：
 你有 ssh 工具，可以连接远程服务器并交互式执行命令。
 当用户提到"登录"、"服务器"、"远程"、"SSH"、"部署"、"运维"等关键词时，使用 ssh 工具。
@@ -774,6 +781,16 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"title":    map[string]interface{}{"type": "string", "description": "文档标题"},
 			"doc_type": map[string]interface{}{"type": "string", "description": "文档类型: requirements/design/task_plan"},
 		}, []string{"content"}),
+		toolDef("office", "Office 文档操作工具。action: generate_pdf（生成PDF）、read_excel（读取XLSX/CSV）、write_excel（写入XLSX）、read_pptx（读取PPTX）", map[string]interface{}{
+			"action":    map[string]interface{}{"type": "string", "description": "操作类型: generate_pdf/read_excel/write_excel/read_pptx"},
+			"content":   map[string]interface{}{"type": "string", "description": "generate_pdf: Markdown 格式的文档内容"},
+			"title":     map[string]interface{}{"type": "string", "description": "generate_pdf: 文档标题"},
+			"doc_type":  map[string]interface{}{"type": "string", "description": "generate_pdf: 文档类型 requirements/design/task_plan"},
+			"file_path": map[string]interface{}{"type": "string", "description": "read_excel/write_excel/read_pptx: 文件路径"},
+			"sheet":     map[string]interface{}{"type": "string", "description": "read_excel: 工作表名称（可选）"},
+			"range":     map[string]interface{}{"type": "string", "description": "read_excel: A1 表示法范围如 A1:D10（可选）"},
+			"data":      map[string]interface{}{"type": "string", "description": "write_excel: JSON 格式数据 {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
+		}, []string{"action"}),
 		toolDef("open", "用操作系统默认程序打开文件或网址", map[string]interface{}{
 			"target": map[string]interface{}{"type": "string", "description": "要打开的文件路径、目录路径或 URL"},
 		}, []string{"target"}),
@@ -988,7 +1005,10 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 	case "craft_tool":
 		return h.toolCraftTool(args)
 	case "generate_pdf":
-		return h.toolGeneratePDF(args)
+		args["action"] = "generate_pdf"
+		return h.toolOffice(args)
+	case "office":
+		return h.toolOffice(args)
 	case "open":
 		return h.toolOpen(args)
 	case "set_nickname":
