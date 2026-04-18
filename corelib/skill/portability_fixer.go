@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -72,7 +74,7 @@ func AutoFixPortability(skillDir string) ([]PortabilityChange, error) {
 		if yamlChanged {
 			// Create backup first.
 			bakPath := yamlPath + ".bak"
-			if writeErr := os.WriteFile(bakPath, yamlData, 0644); writeErr != nil {
+			if writeErr := fileutil.AtomicWriteFile(bakPath, yamlData, 0644); writeErr != nil {
 				return nil, fmt.Errorf("cannot create backup %s: %w", bakPath, writeErr)
 			}
 
@@ -81,7 +83,7 @@ func AutoFixPortability(skillDir string) ([]PortabilityChange, error) {
 			if fmtErr != nil {
 				return nil, fmt.Errorf("cannot format skill.yaml: %w", fmtErr)
 			}
-			if writeErr := os.WriteFile(yamlPath, newData, 0644); writeErr != nil {
+			if writeErr := fileutil.AtomicWriteFile(yamlPath, newData, 0644); writeErr != nil {
 				return nil, fmt.Errorf("cannot write skill.yaml: %w", writeErr)
 			}
 		}
@@ -453,12 +455,12 @@ func fixSkillMD(mdPath, skillDir string) ([]PortabilityChange, error) {
 
 	// Create backup before modifying.
 	bakPath := mdPath + ".bak"
-	if writeErr := os.WriteFile(bakPath, data, 0644); writeErr != nil {
+	if writeErr := fileutil.AtomicWriteFile(bakPath, data, 0644); writeErr != nil {
 		return nil, fmt.Errorf("cannot create backup %s: %w", bakPath, writeErr)
 	}
 
 	// Write modified SKILL.md.
-	if writeErr := os.WriteFile(mdPath, []byte(newContent), 0644); writeErr != nil {
+	if writeErr := fileutil.AtomicWriteFile(mdPath, []byte(newContent), 0644); writeErr != nil {
 		return nil, fmt.Errorf("cannot write %s: %w", mdPath, writeErr)
 	}
 

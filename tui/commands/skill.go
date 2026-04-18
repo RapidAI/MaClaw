@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -145,7 +146,7 @@ func skillAdd(args []string) error {
 		return fmt.Errorf("format skill.yaml: %w", err)
 	}
 	yamlPath := filepath.Join(skillDir, "skill.yaml")
-	if err := os.WriteFile(yamlPath, data, 0o644); err != nil {
+	if err := fileutil.AtomicWriteFile(yamlPath, data, 0o644); err != nil {
 		return fmt.Errorf("write skill.yaml: %w", err)
 	}
 	fmt.Printf("Skill '%s' created at %s\n", *name, skillDir)

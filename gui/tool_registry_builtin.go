@@ -440,6 +440,25 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolQueryAuditLog(args) })
 
+	// --- Session search tool (cross-session FTS5 full-text search) ---
+	reg("session_search", "搜索历史对话记录。在所有已保存的会话中进行全文搜索，返回匹配的会话片段、时间戳、主题和平台信息。",
+		ToolCategoryBuiltin, []string{"session", "search", "history", "recall", "conversation"},
+		map[string]interface{}{
+			"query":       map[string]string{"type": "string", "description": "搜索关键词"},
+			"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 10）"},
+		}, []string{"query"},
+		func(args map[string]interface{}) string { return h.toolSessionSearch(args) })
+
+	// --- User model management tool (dialectic user modeling) ---
+	reg("manage_user_model", "管理用户画像。查看、修正或重置用户偏好维度。",
+		ToolCategoryBuiltin, []string{"user", "profile", "preference", "model"},
+		map[string]interface{}{
+			"action":    map[string]string{"type": "string", "description": "操作类型: view（查看画像）、correct（修正维度）、reset（重置维度）"},
+			"dimension": map[string]string{"type": "string", "description": "维度名称（correct/reset 时必填）: communication_style, technical_level, preferred_languages, domain_expertise, work_patterns, tool_preferences"},
+			"value":     map[string]string{"type": "string", "description": "新值（correct 时必填）"},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolManageUserModel(args) })
+
 	// --- Web search & fetch tools ---
 	reg("web_search", "搜索互联网内容。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。",
 		ToolCategoryBuiltin, []string{"web", "search", "internet", "google", "query", "network"},

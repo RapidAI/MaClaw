@@ -18,6 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -139,11 +141,38 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	// specific error messages for disabled/needs_setup skills (Bug #3).
 	r.executor.mu.RLock()
 	var target *NLSkillEntry
+	var collisions []NLSkillEntry // track bare name collisions across publishers
+	isQualified := strings.Contains(skillName, ":")
 	for _, s := range r.executor.loadSkills() {
 		if s.MatchesName(skillName) {
-			cp := s
+			if isQualified {
+				// Qualified name: exact match, no collision possible.
+				cp := s
+				target = &cp
+				break
+			}
+			// Bare name: collect all matches to detect collisions.
+			collisions = append(collisions, s)
+		}
+	}
+	// For bare name queries, resolve collisions.
+	if !isQualified {
+		if len(collisions) == 1 {
+			cp := collisions[0]
 			target = &cp
-			break
+		} else if len(collisions) > 1 {
+			// Multiple skills match the bare name — require qualified name.
+			var qualifiedNames []string
+			for _, s := range collisions {
+				if s.Publisher != "" {
+					qualifiedNames = append(qualifiedNames, s.Publisher+":"+s.Name)
+				} else {
+					qualifiedNames = append(qualifiedNames, s.Name+" (local)")
+				}
+			}
+			r.executor.mu.RUnlock()
+			return "", fmt.Errorf("skill name %q is ambiguous — multiple skills match:\n  %s\nPlease use the qualified name (publisher:name) to disambiguate",
+				skillName, strings.Join(qualifiedNames, "\n  "))
 		}
 	}
 	r.executor.mu.RUnlock()
@@ -186,6 +215,17 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	if err := checkFileReferences(target); err != nil {
 		return "", err
 	}
+
+	// ── Credential file pre-check: validate required credential files exist locally ──
+	if len(target.RequiredCredentialFiles) > 0 {
+		missing := remote.ValidateCredentialFiles(target.RequiredCredentialFiles)
+		if len(missing) > 0 {
+			log.Printf("[skill-runner] credential pre-check: %d missing credential file(s)", len(missing))
+			return "", fmt.Errorf("skill %q needs setup: missing credential file(s): %s. Please create the required credential files before running this skill",
+				skillName, strings.Join(missing, ", "))
+		}
+	}
+
 	if len(target.Steps) == 0 {
 		// Bug #5: Better error for skills with no executable steps
 		msg := fmt.Sprintf("skill %q has no executable steps", skillName)
@@ -285,6 +325,10 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	if len(target.RequiredEnv) > 0 {
 		var missing []string
 		for _, env := range target.RequiredEnv {
+			// Skip OPENAI_API_KEY — the proxy will provide it if needed.
+			if env == "OPENAI_API_KEY" {
+				continue
+			}
 			if strings.TrimSpace(os.Getenv(env)) == "" {
 				missing = append(missing, env)
 			}
@@ -1002,6 +1046,69 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 	var execErr error
 	hasFailure := false
 	isAPIWorkflow := strings.EqualFold(skill.Mode, "api_workflow")
+
+	// ── Credential mounting for SSH execution ──
+	// If the skill declares required_credential_files and an SSH session manager
+	// is available, mount credentials to the remote host before step execution.
+	var credentialCleanup func()
+	if len(skill.RequiredCredentialFiles) > 0 {
+		sshMgr := r.executor.ensureSSHManager()
+		if sshMgr != nil {
+			mounter := remote.NewCredentialMounter(sshMgr)
+			// Use the run ID as a pseudo session identifier for credential isolation.
+			cleanup, mountErr := mounter.MountCredentials(run.status.RunID, skill.RequiredCredentialFiles)
+			if mountErr != nil {
+				log.Printf("[skill-runner] credential mount failed: %v", mountErr)
+				// Non-fatal: log warning but continue execution.
+				// The skill may still work if credentials are not needed for this run.
+			} else {
+				credentialCleanup = cleanup
+				log.Printf("[skill-runner] credentials mounted for run %s (%d files)", run.status.RunID, len(skill.RequiredCredentialFiles))
+			}
+		}
+	}
+	if credentialCleanup != nil {
+		defer func() {
+			credentialCleanup()
+			log.Printf("[skill-runner] credentials cleaned up for run %s", run.status.RunID)
+		}()
+	}
+
+	// ── OpenAI Proxy for skills requiring OPENAI_API_KEY ──
+	// If the skill declares OPENAI_API_KEY in required_env and the user hasn't
+	// provided it via extra_env, start a local proxy that forwards requests
+	// to the currently configured LLM provider.
+	if corelib.NeedsOpenAIProxy(skill.RequiredEnv, run.extraEnv) {
+		// Build config from current LLM provider
+		var proxyCfg corelib.OpenAIProxyConfig
+		if r.executor != nil && r.executor.app != nil {
+			llmCfg := r.executor.app.GetMaclawLLMConfig()
+			proxyCfg = corelib.OpenAIProxyConfig{
+				URL:      llmCfg.URL,
+				Key:      llmCfg.Key,
+				Model:    llmCfg.Model,
+				Protocol: llmCfg.Protocol,
+				WireAPI:  llmCfg.WireAPI,
+			}
+		}
+
+		proxy := corelib.NewOpenAIProxy(proxyCfg)
+		port, proxyErr := proxy.Start()
+		if proxyErr != nil {
+			log.Printf("[skill-runner] openai proxy start failed: %v (continuing without proxy)", proxyErr)
+		} else {
+			defer proxy.Stop()
+			// Inject environment variables for the skill
+			if run.extraEnv == nil {
+				run.extraEnv = make(map[string]string)
+			}
+			run.extraEnv["OPENAI_API_KEY"] = "sk-maclaw-local-proxy"
+			run.extraEnv["OPENAI_BASE_URL"] = fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+			run.extraEnv["OPENAI_MODEL"] = proxyCfg.Model
+			log.Printf("[skill-runner] openai proxy started on port %d for skill %q", port, skill.Name)
+		}
+	}
+
 	log.Printf("[skill-runner] ▶ starting skill %q (%d steps, mode=%s, dir=%s)",
 		skill.Name, len(skill.Steps), skill.Mode, skill.SkillDir)
 	if len(skill.RequiredArgs) > 0 {
@@ -1265,9 +1372,53 @@ func (r *SkillRunner) updateUsageStats(skill *NLSkillEntry, execErr error) {
 				skills[i].SuccessCount++
 				skills[i].LastError = ""
 			} else {
+				skills[i].FailureCount++
 				skills[i].LastError = execErr.Error()
 			}
 			_ = r.executor.saveSkills(skills)
+			log.Printf("[skill-runner] usage stats updated for %q: usage=%d success=%d failure=%d workaround=%d",
+				skill.Name, skills[i].UsageCount, skills[i].SuccessCount, skills[i].FailureCount, skills[i].WorkaroundCount)
+			break
+		}
+	}
+}
+
+// RecordSkillOutcome records an execution outcome for a skill by name.
+// outcome must be one of "success", "failure", or "workaround".
+// This is intended to be called from the agent loop (im_message_handler.go)
+// when skill execution results are observed through tool results.
+func (r *SkillRunner) RecordSkillOutcome(skillName, outcome, lastError string) {
+	if skillName == "" {
+		return
+	}
+	r.executor.mu.Lock()
+	defer r.executor.mu.Unlock()
+
+	skills := r.executor.loadSkills()
+	for i, s := range skills {
+		if s.MatchesName(skillName) && s.Source != "file" {
+			switch outcome {
+			case "success":
+				skills[i].SuccessCount++
+				skills[i].LastError = ""
+			case "failure":
+				skills[i].FailureCount++
+				if lastError != "" {
+					skills[i].LastError = lastError
+				}
+			case "workaround":
+				skills[i].WorkaroundCount++
+				if lastError != "" {
+					skills[i].LastError = lastError
+				}
+			default:
+				return // unknown outcome, skip
+			}
+			skills[i].UsageCount++
+			skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
+			_ = r.executor.saveSkills(skills)
+			log.Printf("[skill-runner] outcome recorded for %q: outcome=%s usage=%d success=%d failure=%d workaround=%d",
+				skillName, outcome, skills[i].UsageCount, skills[i].SuccessCount, skills[i].FailureCount, skills[i].WorkaroundCount)
 			break
 		}
 	}

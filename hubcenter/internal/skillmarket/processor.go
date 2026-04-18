@@ -245,7 +245,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 		if p.trialManager == nil {
 			indexStatus = "published"
 		}
-		if err := p.searchSvc.IndexSkill(ctx, skillID, meta.Name, meta.Description, meta.Tags, 0, 0, 0, indexStatus, fmtTime(sub.CreatedAt)); err != nil {
+		if err := p.searchSvc.IndexSkill(ctx, skillID, meta.Name, meta.Description, meta.Tags, 0, 0, 0, indexStatus, fmtTime(sub.CreatedAt), meta.Version, meta.Author); err != nil {
 			log.Printf("[skillmarket] index skill %s error: %v", skillID, err)
 		}
 	}

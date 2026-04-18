@@ -160,7 +160,11 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /hub-registration/confirm", ConfirmHubRegistrationHandler(hubService))
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
 	// Skill Catalog API
-	skillHandlers := NewSkillHandlers(skillStore)
+	var searchRemover skillSearchRemover
+	if smHandlers != nil {
+		searchRemover = smHandlers.SearchService()
+	}
+	skillHandlers := NewSkillHandlers(skillStore, searchRemover)
 	mux.HandleFunc("GET /api/v1/skills/search", skillHandlers.SearchSkills)
 	mux.HandleFunc("GET /api/v1/skills/{id}", skillHandlers.GetSkill)
 	mux.HandleFunc("GET /api/v1/skills/{id}/download", skillHandlers.DownloadSkill)

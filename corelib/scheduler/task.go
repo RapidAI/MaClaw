@@ -131,7 +131,6 @@ func (m *Manager) Start() {
 	}
 
 	go m.loop()
-	fmt.Println("[ScheduledTaskManager] started")
 }
 
 // Stop halts the scheduler.
@@ -141,7 +140,6 @@ func (m *Manager) Stop() {
 	if m.running {
 		close(m.stopCh)
 		m.running = false
-		fmt.Println("[ScheduledTaskManager] stopped")
 	}
 }
 
@@ -205,7 +203,6 @@ func (m *Manager) purgeExpired(now time.Time) bool {
 	if cb != nil {
 		cb()
 	}
-	fmt.Printf("[ScheduledTaskManager] purged %d expired task(s)\n", removed)
 	return true
 }
 
@@ -232,8 +229,6 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 		return
 	}
 
-	fmt.Printf("[ScheduledTaskManager] firing task %s (%s)\n", taskCopy.ID, taskCopy.Name)
-
 	// Execute outside lock (with panic recovery).
 	var result, errStr string
 	if executor != nil {
@@ -251,7 +246,6 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 		}()
 	} else {
 		result = "no executor configured"
-		fmt.Printf("[ScheduledTaskManager] WARNING: no executor for task %s\n", id)
 	}
 
 	// Update state under lock.
@@ -269,7 +263,6 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 		if m.isExpired(&m.tasks[i], now) {
 			// Remove the expired task in-place instead of keeping it around.
 			m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
-			fmt.Printf("[ScheduledTaskManager] auto-deleted expired task %s\n", id)
 		} else {
 			m.tasks[i].NextRunAt = m.calcNext(&m.tasks[i], now)
 		}
@@ -531,8 +524,6 @@ func (m *Manager) fireManual(id string, executor TaskExecutor) {
 		return
 	}
 
-	fmt.Printf("[ScheduledTaskManager] manual trigger task %s (%s)\n", taskCopy.ID, taskCopy.Name)
-
 	var result, errStr string
 	if executor != nil {
 		func() {
@@ -599,8 +590,6 @@ func (m *Manager) detectMissedRuns(now time.Time) []string {
 		// Task never ran, or last run was before the missed slot → missed.
 		// Check if the gap to the next run is large enough to warrant catch-up.
 		if t.NextRunAt != nil && t.NextRunAt.Sub(now) > missedRunCatchUpThreshold {
-			fmt.Printf("[ScheduledTaskManager] process task %s (%s) missed run at %s, scheduling catch-up\n",
-				t.ID, t.Name, missed.Format("2006-01-02 15:04"))
 			ids = append(ids, t.ID)
 		}
 	}

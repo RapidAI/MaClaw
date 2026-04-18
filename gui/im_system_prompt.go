@@ -281,6 +281,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - 用 send_file 通过 IM 通道直接发送文件给用户（支持图片、文档等任意文件类型）。在桌面端默认只保存到本地；如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
 - ⚠️ 发送本地磁盘上的文件/图片给用户时，必须用 send_file 工具——会话内的工具无法直接投递文件到 IM。SDK 会话中产生的截图会自动推送给用户，无需额外操作。
 - ⚠️ 桌面端用户说"发到飞书"、"发到微信"、"发到QQ"、"发到 IM"时，必须在 send_file 中设置 forward_to_im=true，否则文件只会保存到本地而不会发送到 IM 平台。
+- ⚠️ 飞书、微信、QQ 等 IM 平台均已实现完整的文件上传能力（包括 PDF、Office 文档、图片、压缩包等所有文件类型），系统会自动处理上传流程。严禁告诉用户"平台不支持文件上传"或"没有文件上传 API"——直接调用 send_file 即可，无需用户手动操作。
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
 - 创建会话时可用 project_id 参数指定预设项目，或用 project_manage(action="list") 查看可用项目列表
 
@@ -314,6 +315,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - 简单文件/命令操作直接用 bash/read_file/write_file/edit_file/list_directory
 - 截屏**必须**调用 screenshot 工具，禁止用 bash 编写截屏脚本
 - 用 send_file 通过 IM 通道直接发送文件给用户。如果用户要求发到飞书/微信/QQ，需设置 forward_to_im=true
+- ⚠️ 飞书、微信、QQ 等 IM 平台均已实现完整的文件上传能力，系统会自动处理上传流程。严禁告诉用户"平台不支持文件上传"——直接调用 send_file 即可。
 - 用 open 打开文件或网址（PDF、Excel、URL 等）
 
 ## 文件编码与大文件写入
@@ -525,6 +527,21 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 	}
 	h.appendMemorySection(&b, includeMemoryGuide, msg)
 
+	// Inject matched knowledge skills after memory section, before tool definitions.
+	// Requirements: 1.5, 1.6, 8.1, 8.2, 8.3, 8.4
+	h.appendKnowledgeSkillSection(&b, msg)
+
+	// Inject bundle context banner for namespaced skills (Requirement 5.5).
+	h.appendBundleContextBanner(&b)
+
+	// Inject user profile into system prompt (Requirement 7.6).
+	if model := h.getUserModel(); model != nil {
+		if profileSection := model.FormatForPrompt(); profileSection != "" {
+			b.WriteString("\n")
+			b.WriteString(profileSection)
+		}
+	}
+
 	return b.String()
 }
 
@@ -592,7 +609,54 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 //   - Proactive recall of relevant memories based on userMessage (if non-empty)
 //   - A hint that other memories can be recalled via memory(action: recall)
 //   - Full memory management guide only on first turn (isFirstTurn=true)
+//
+// Frozen snapshot caching (Requirement 5.1, 5.2, 5.8):
+// On the first message of a session (per userID), the full memory section is
+// generated and cached as a frozen snapshot. Subsequent calls reuse the cached
+// snapshot instead of regenerating, keeping the LLM's KV cache prefix stable.
+// Mid-session memory writes update persistent storage but do NOT invalidate
+// the cached snapshot (Requirement 5.3).
 func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn bool, userMessage ...string) {
+	if h.memoryStore == nil {
+		return
+	}
+
+	// Determine userID for per-user snapshot keying.
+	userID := h.lastUserID
+	if userID == "" {
+		userID = "desktop-user"
+	}
+
+	// Check if we have a frozen snapshot for this user.
+	// If isFirstTurn is true, always regenerate — this indicates a new session
+	// (e.g., after /new, topic switch, or application restart per Req 5.7).
+	if !isFirstTurn {
+		if initialized, ok := h.snapshotInitialized.Load(userID); ok && initialized.(bool) {
+			if snapshot, ok := h.frozenMemorySnapshots.Load(userID); ok {
+				b.WriteString(snapshot.(string))
+				log.Printf("[frozen_snapshot] reusing cached memory snapshot for user %q", userID)
+				return
+			}
+		}
+	}
+
+	// No cached snapshot — generate the memory section and cache it.
+	var memBuf strings.Builder
+	h.generateMemorySection(&memBuf, isFirstTurn, userMessage...)
+
+	snapshot := memBuf.String()
+	h.frozenMemorySnapshots.Store(userID, snapshot)
+	h.snapshotInitialized.Store(userID, true)
+	log.Printf("[frozen_snapshot] generated and cached memory snapshot for user %q (%d bytes)", userID, len(snapshot))
+
+	b.WriteString(snapshot)
+}
+
+// generateMemorySection builds the full memory section content including
+// user facts, proactive recall, entity supplementary recall, and memory guide.
+// This is the core logic extracted from the original appendMemorySection,
+// used both for initial snapshot generation and for RefreshMemorySnapshot.
+func (h *IMMessageHandler) generateMemorySection(b *strings.Builder, isFirstTurn bool, userMessage ...string) {
 	if h.memoryStore == nil {
 		return
 	}
@@ -709,6 +773,292 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 
 	if isFirstTurn {
 		b.WriteString("\n" + corememory.BuildIMMemoryGuidePrompt() + "\n")
+	}
+}
+
+// RefreshMemorySnapshot regenerates the cached memory snapshot for the given
+// user from current persistent storage. Called when the user issues /new,
+// starts a new topic, or on application restart (first message of new session).
+// (Requirement 5.4, 5.5, 5.7)
+func (h *IMMessageHandler) RefreshMemorySnapshot(userID string) {
+	h.frozenMemorySnapshots.Delete(userID)
+	h.snapshotInitialized.Delete(userID)
+	log.Printf("[frozen_snapshot] refreshed (invalidated) memory snapshot for user %q", userID)
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge Skill Injection (Requirements 1.5, 1.6, 1.7, 1.8, 8.1–8.5)
+// ---------------------------------------------------------------------------
+
+// defaultKnowledgeSkillTokenBudget is the combined token budget for all
+// injected knowledge skills. Configurable via config.json field
+// "knowledge_skill_token_budget". (Requirements 1.7, 8.5)
+const defaultKnowledgeSkillTokenBudget = 2000
+
+// matchedKnowledgeSkill holds a knowledge skill that matched the user message
+// along with its relevance score (number of trigger matches).
+type matchedKnowledgeSkill struct {
+	Name    string
+	Content string
+	Score   int // number of triggers that matched
+}
+
+// appendKnowledgeSkillSection injects matched knowledge skills into the system
+// prompt as a dedicated "## Procedural Knowledge (Skills)" section. Each skill
+// is wrapped with "### Skill: {name}" heading and "---" separator.
+//
+// The section is placed after the memory section and before tool definitions.
+// When no knowledge skills match the current user message, the section is
+// omitted entirely (Requirement 8.4).
+//
+// Token budget enforcement (Requirements 1.7, 1.8, 8.5):
+// A combined token budget limits the total content injected. Tokens are
+// estimated as len(content)/4. If a skill's content would exceed the
+// remaining budget, it is truncated at a smart boundary (paragraph or
+// sentence break) with a "[truncated]" notice appended. Once the budget
+// is fully exhausted, remaining skills are skipped.
+func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userMessage string) {
+	if h.app == nil || h.app.skillExecutor == nil || userMessage == "" {
+		return
+	}
+
+	skills := h.app.skillExecutor.List()
+	if len(skills) == 0 {
+		return
+	}
+
+	msgLower := strings.ToLower(userMessage)
+
+	var matched []matchedKnowledgeSkill
+	for _, s := range skills {
+		if s.Type != "knowledge" || s.Content == "" || s.Status != "active" {
+			continue
+		}
+		if len(s.Triggers) == 0 {
+			continue
+		}
+		score := countTriggerMatches(s.Triggers, msgLower)
+		if score == 0 {
+			continue
+		}
+		matched = append(matched, matchedKnowledgeSkill{
+			Name:    s.Name,
+			Content: s.Content,
+			Score:   score,
+		})
+	}
+
+	if len(matched) == 0 {
+		return
+	}
+
+	// Sort by relevance: higher score first, then alphabetically by name for stability.
+	sortMatchedKnowledgeSkills(matched)
+
+	// Determine token budget from config or use default.
+	tokenBudget := defaultKnowledgeSkillTokenBudget
+	if cfg, err := h.app.LoadConfig(); err == nil && cfg.KnowledgeSkillTokenBudget > 0 {
+		tokenBudget = cfg.KnowledgeSkillTokenBudget
+	}
+
+	totalTokensUsed := 0
+
+	b.WriteString("\n## Procedural Knowledge (Skills)\n")
+	for _, m := range matched {
+		// If the total budget is exhausted, skip remaining skills.
+		if totalTokensUsed >= tokenBudget {
+			log.Printf("[knowledge_skill] token budget exhausted (%d/%d), skipping skill %q", totalTokensUsed, tokenBudget, m.Name)
+			break
+		}
+
+		content := m.Content
+		contentTokens := estimateTokens(content)
+		remaining := tokenBudget - totalTokensUsed
+
+		if contentTokens > remaining {
+			// Truncate content to fit within remaining budget.
+			content = truncateToTokenBudget(content, remaining)
+			contentTokens = estimateTokens(content)
+			log.Printf("[knowledge_skill] truncated skill %q to fit budget (remaining=%d tokens)", m.Name, remaining)
+		}
+
+		totalTokensUsed += contentTokens
+
+		b.WriteString(fmt.Sprintf("\n### Skill: %s\n", m.Name))
+		b.WriteString(content)
+		if !strings.HasSuffix(content, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\n---\n")
+	}
+}
+
+// appendBundleContextBanner injects a bundle context banner into the system
+// prompt when a namespaced skill (one with a Publisher) is currently running.
+// The banner lists sibling skills from the same publisher to provide context.
+// (Requirement 5.5)
+func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
+	if h.app == nil || h.app.skillRunner == nil || h.app.skillExecutor == nil {
+		return
+	}
+
+	// Find the most recent active skill run that has a publisher.
+	runs := h.app.skillRunner.ListRuns()
+	var activePublisher string
+	var activeSkillName string
+	for _, run := range runs {
+		if run.Status != "running" {
+			continue
+		}
+		// Look up the skill to check its publisher.
+		h.app.skillExecutor.mu.RLock()
+		for _, s := range h.app.skillExecutor.loadSkills() {
+			if s.MatchesName(run.Skill) && s.Publisher != "" {
+				activePublisher = s.Publisher
+				activeSkillName = s.Name
+				break
+			}
+		}
+		h.app.skillExecutor.mu.RUnlock()
+		if activePublisher != "" {
+			break
+		}
+	}
+
+	if activePublisher == "" {
+		return
+	}
+
+	// Find sibling skills from the same publisher.
+	h.app.skillExecutor.mu.RLock()
+	var siblings []string
+	for _, s := range h.app.skillExecutor.loadSkills() {
+		if s.Publisher == activePublisher && s.Name != activeSkillName && s.Status == "active" {
+			siblings = append(siblings, s.Name)
+		}
+	}
+	h.app.skillExecutor.mu.RUnlock()
+
+	// Build the banner.
+	b.WriteString(fmt.Sprintf("\n## Bundle Context\nThis skill is part of the '%s' bundle.", activePublisher))
+	if len(siblings) > 0 {
+		b.WriteString(fmt.Sprintf(" Related skills: %s", strings.Join(siblings, ", ")))
+	}
+	b.WriteString("\n")
+}
+
+// estimateTokens returns a rough token count for the given text.
+// Uses rune count (not byte count) for accurate CJK estimation.
+// Approximation: 1 token ≈ 2 runes for CJK-heavy text, ≈ 4 chars for Latin.
+// We use a middle-ground of 1 token ≈ 3 runes which works reasonably for
+// mixed Chinese/English content typical in this codebase.
+func estimateTokens(s string) int {
+	n := len([]rune(s))
+	if n == 0 {
+		return 0
+	}
+	return (n + 2) / 3 // ceiling division by 3
+}
+
+// truncateToTokenBudget truncates content to fit within the given token budget,
+// cutting at a smart boundary (paragraph break "\n\n", or sentence-ending
+// punctuation followed by whitespace/newline). Appends "[truncated]" notice.
+// Uses rune-safe operations to avoid splitting multi-byte UTF-8 characters.
+// (Requirement 1.8)
+func truncateToTokenBudget(content string, tokenBudget int) string {
+	// Convert to runes for safe truncation of multi-byte characters.
+	runes := []rune(content)
+	maxRunes := tokenBudget * 3 // inverse of estimateTokens: 1 token ≈ 3 runes
+	if maxRunes <= 0 {
+		return "[truncated]"
+	}
+	if len(runes) <= maxRunes {
+		return content
+	}
+
+	// Reserve space for the truncation notice.
+	const truncNotice = "\n[truncated]"
+	truncNoticeRunes := len([]rune(truncNotice))
+	cutoff := maxRunes - truncNoticeRunes
+	if cutoff <= 0 {
+		return truncNotice
+	}
+	if cutoff > len(runes) {
+		return content
+	}
+
+	snippet := string(runes[:cutoff])
+
+	// Try to find a smart boundary working backwards from the cutoff point.
+	halfLen := len(snippet) / 2
+
+	// Priority 1: paragraph break ("\n\n")
+	if idx := strings.LastIndex(snippet, "\n\n"); idx > halfLen {
+		return snippet[:idx] + truncNotice
+	}
+
+	// Priority 2: sentence-ending punctuation (., 。, !, ?, ！, ？) followed
+	// by whitespace or newline, or at end of snippet.
+	bestSentEnd := -1
+	for i := len(snippet) - 1; i > halfLen; i-- {
+		ch := snippet[i]
+		if ch == '.' || ch == '!' || ch == '?' {
+			// Check that the next char (if any) is whitespace/newline or end of snippet.
+			if i+1 >= len(snippet) || snippet[i+1] == ' ' || snippet[i+1] == '\n' || snippet[i+1] == '\r' || snippet[i+1] == '\t' {
+				bestSentEnd = i + 1
+				break
+			}
+		}
+		// Handle multi-byte sentence-ending punctuation (。！？).
+		// These are 3-byte UTF-8 sequences.
+		if i >= 2 {
+			triple := snippet[i-2 : i+1]
+			if triple == "。" || triple == "！" || triple == "？" {
+				bestSentEnd = i + 1
+				break
+			}
+		}
+	}
+	if bestSentEnd > 0 {
+		return snippet[:bestSentEnd] + truncNotice
+	}
+
+	// Priority 3: newline break
+	if idx := strings.LastIndex(snippet, "\n"); idx > halfLen {
+		return snippet[:idx] + truncNotice
+	}
+
+	// Fallback: hard cut (already rune-safe from the runes[:cutoff] above).
+	return snippet + truncNotice
+}
+
+// countTriggerMatches counts how many of the skill's triggers match the user
+// message via case-insensitive substring matching. Returns 0 if none match.
+func countTriggerMatches(triggers []string, msgLower string) int {
+	count := 0
+	for _, t := range triggers {
+		if t == "" {
+			continue
+		}
+		if strings.Contains(msgLower, strings.ToLower(t)) {
+			count++
+		}
+	}
+	return count
+}
+
+// sortMatchedKnowledgeSkills sorts matched skills by descending relevance
+// score, with alphabetical name as tiebreaker for deterministic ordering.
+func sortMatchedKnowledgeSkills(matched []matchedKnowledgeSkill) {
+	for i := 1; i < len(matched); i++ {
+		for j := i; j > 0; j-- {
+			if matched[j].Score > matched[j-1].Score ||
+				(matched[j].Score == matched[j-1].Score && matched[j].Name < matched[j-1].Name) {
+				matched[j], matched[j-1] = matched[j-1], matched[j]
+			} else {
+				break
+			}
+		}
 	}
 }
 

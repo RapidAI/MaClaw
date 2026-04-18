@@ -244,6 +244,7 @@ var BuiltinToolNames = map[string]bool{
 	"manage_template":          true,
 	"manage_schedule":          true,
 	"query_audit_log":          true,
+	"session_search":           true,
 	// Browser automation tools (browser agent session + legacy CDP helpers).
 	"browser_session_start": true, "browser_session_stop": true, "browser_observe": true,
 	"browser_navigate": true, "browser_click": true, "browser_type": true,
@@ -283,6 +284,12 @@ type SkillSummary struct {
 	Name        string
 	Triggers    []string
 	Description string
+
+	// Tool availability conditions (from NLSkillEntry).
+	RequiresTools       []string
+	FallbackForTools    []string
+	RequiresToolsets    []string
+	FallbackForToolsets []string
 }
 
 // SkillProvider abstracts access to active skills for routing decisions.
@@ -385,6 +392,52 @@ func (r *Router) skillMatchScore(userMessage string) (float64, []string) {
 		names[i] = sorted[i].name
 	}
 	return normBest, names
+}
+
+// buildAvailableToolsMap constructs a set of available tool names from the
+// given tool definitions. Used for evaluating skill tool availability conditions.
+func buildAvailableToolsMap(allTools []map[string]interface{}) map[string]bool {
+	available := make(map[string]bool, len(allTools))
+	for _, t := range allTools {
+		name := ExtractToolName(t)
+		if name != "" {
+			available[name] = true
+		}
+	}
+	return available
+}
+
+// filterSkillsByConditions filters matched skill names through tool availability
+// conditions. Only skills whose conditions are satisfied (or have no conditions)
+// are retained. This implements the AND logic: keyword match AND conditions met.
+func (r *Router) filterSkillsByConditions(matchedSkills []string, availableTools map[string]bool) []string {
+	if r.skillProvider == nil {
+		return matchedSkills
+	}
+	// Build a lookup of skill conditions by name.
+	skills := r.skillProvider.ListActiveSkills()
+	condByName := make(map[string]*SkillSummary, len(skills))
+	for i := range skills {
+		condByName[skills[i].Name] = &skills[i]
+	}
+
+	filtered := make([]string, 0, len(matchedSkills))
+	for _, name := range matchedSkills {
+		s, ok := condByName[name]
+		if !ok {
+			// Skill not found in provider — include it (defensive).
+			filtered = append(filtered, name)
+			continue
+		}
+		if EvaluateToolConditionsForSkill(
+			s.RequiresTools, s.FallbackForTools,
+			s.RequiresToolsets, s.FallbackForToolsets,
+			availableTools,
+		) {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
 }
 
 // SetRegistry sets the Registry used for dynamic builtin detection and tag-based scoring.
@@ -802,6 +855,17 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	var matchedSkills []string
 	if r.skillProvider != nil {
 		skillScore, matchedSkills = r.skillMatchScore(userMessage)
+
+		// Filter matched skills through tool availability conditions (AND logic).
+		// Build availableTools set from the current tool list.
+		if len(matchedSkills) > 0 {
+			availableTools := buildAvailableToolsMap(allTools)
+			matchedSkills = r.filterSkillsByConditions(matchedSkills, availableTools)
+			// If all matched skills were filtered out, reset skill score.
+			if len(matchedSkills) == 0 {
+				skillScore = 0
+			}
+		}
 	}
 
 	type scored struct {

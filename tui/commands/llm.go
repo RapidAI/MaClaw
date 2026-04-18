@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
@@ -15,9 +16,11 @@ import (
 // RunLLM 执行 llm 子命令。
 func RunLLM(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui llm <test|ping|providers|status|set-provider|set-max-iterations|get-max-iterations|login|usage>")
+		return NewUsageError("usage: maclaw llm <setup|test|ping|providers|status|set-provider|login|usage>")
 	}
 	switch args[0] {
+	case "setup":
+		return llmSetup(args[1:])
 	case "test":
 		return llmTest(args[1:])
 	case "ping":
@@ -65,6 +68,204 @@ func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 		}
 	}
 	return llm, nil
+}
+
+// presetProvider 定义一个预置 LLM 服务商（与 GUI defaultMaclawLLMProviders 对齐）。
+type presetProvider struct {
+	Name          string
+	URL           string
+	Model         string
+	Protocol      string
+	ContextLength int
+	TimeoutSec    int
+	AuthType      string // "apikey", "oauth", "sso", "none"
+	AgentType     string
+	Hint          string // 显示给用户的说明
+}
+
+// presetProviders 返回 TUI 可用的预置服务商列表。
+// 排除"免费"（需要 GUI 代理）和 OAuth 类型（需要浏览器），
+// 只保留填 API Key 即可使用的服务商。
+func presetProviders() []presetProvider {
+	return []presetProvider{
+		{
+			Name: "智谱 GLM (龙虾)", URL: "https://open.bigmodel.cn/api/coding/paas/v4",
+			Model: "glm-5-turbo", ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "apikey", Hint: "open.bigmodel.cn 获取 API Key",
+		},
+		{
+			Name: "智谱 GLM (Coding)", URL: "https://open.bigmodel.cn/api/anthropic",
+			Model: "glm-5.1", Protocol: "anthropic", AgentType: "claude-code/2.0.0",
+			ContextLength: 180000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "apikey", Hint: "open.bigmodel.cn 获取 API Key（Anthropic 协议）",
+		},
+		{
+			Name: "MiniMax", URL: "https://api.minimaxi.com/v1",
+			Model: "MiniMax-M2.7", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "apikey", Hint: "platform.minimaxi.com 获取 API Key",
+		},
+		{
+			Name: "Kimi", URL: "https://api.kimi.com/coding/v1",
+			Model: "kimi-for-coding", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "apikey", AgentType: "claude-code/2.0.0", Hint: "platform.moonshot.cn 获取 API Key",
+		},
+		{
+			Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+			Model: "astron-code-latest", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "apikey", Hint: "training.xfyun.cn 获取 API Key",
+		},
+		{
+			Name: "OpenAI (API Key)", URL: "https://api.openai.com/v1",
+			Model: "gpt-4o", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "apikey", Hint: "platform.openai.com 获取 API Key",
+		},
+		{
+			Name: "Anthropic", URL: "https://api.anthropic.com",
+			Model: "claude-sonnet-4-20250514", Protocol: "anthropic", AgentType: "claude-code/2.0.0",
+			ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "apikey", Hint: "console.anthropic.com 获取 API Key",
+		},
+		{
+			Name: "自定义", URL: "", Model: "",
+			AuthType: "apikey", Hint: "手动输入 URL、Model、API Key",
+		},
+	}
+}
+
+// llmSetup 交互式 LLM 配置向导。
+func llmSetup(args []string) error {
+	providers := presetProviders()
+
+	fmt.Println()
+	fmt.Println("  ╭─────────────────────────────────────╮")
+	fmt.Println("  │       MaClaw LLM 配置向导           │")
+	fmt.Println("  ╰─────────────────────────────────────╯")
+	fmt.Println()
+	fmt.Println("  选择 LLM 服务商：")
+	fmt.Println()
+	for i, p := range providers {
+		fmt.Printf("    %d. %-20s %s\n", i+1, p.Name, p.Hint)
+	}
+	fmt.Println()
+	if brand.Current().ID == "qianxin" {
+		fmt.Printf("    另外：maclaw llm login openai   — OpenAI Codex 订阅（OAuth）\n")
+		fmt.Printf("          maclaw llm login codegen  — CodeGen 企业 SSO\n")
+	} else {
+		fmt.Printf("    另外：maclaw llm login openai   — OpenAI Codex 订阅（OAuth）\n")
+	}
+	fmt.Println()
+	fmt.Print("  请输入编号 (1-" + fmt.Sprintf("%d", len(providers)) + "): ")
+
+	var choice int
+	fmt.Scanln(&choice)
+	if choice < 1 || choice > len(providers) {
+		return fmt.Errorf("无效选择")
+	}
+
+	selected := providers[choice-1]
+	apiURL := selected.URL
+	model := selected.Model
+	protocol := selected.Protocol
+	agentType := selected.AgentType
+	contextLength := selected.ContextLength
+
+	// 自定义服务商需要输入 URL 和 Model
+	if selected.Name == "自定义" {
+		fmt.Print("  API URL: ")
+		fmt.Scanln(&apiURL)
+		apiURL = strings.TrimSpace(apiURL)
+		if apiURL == "" {
+			return fmt.Errorf("URL 不能为空")
+		}
+
+		fmt.Print("  模型名称: ")
+		fmt.Scanln(&model)
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return fmt.Errorf("模型名称不能为空")
+		}
+
+		fmt.Print("  协议 (openai/anthropic，默认 openai): ")
+		var proto string
+		fmt.Scanln(&proto)
+		proto = strings.TrimSpace(proto)
+		if proto == "anthropic" {
+			protocol = "anthropic"
+		}
+	}
+
+	// 输入 API Key
+	fmt.Print("  API Key: ")
+	var apiKey string
+	fmt.Scanln(&apiKey)
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return fmt.Errorf("API Key 不能为空")
+	}
+
+	// 保存到配置
+	store := NewFileConfigStore(ResolveDataDir())
+	appCfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	providerName := selected.Name
+	if providerName == "自定义" {
+		providerName = "Custom1"
+	}
+
+	// 更新或创建 provider
+	found := false
+	for i, p := range appCfg.MaclawLLMProviders {
+		if p.Name == providerName {
+			appCfg.MaclawLLMProviders[i].URL = apiURL
+			appCfg.MaclawLLMProviders[i].Key = apiKey
+			appCfg.MaclawLLMProviders[i].Model = model
+			appCfg.MaclawLLMProviders[i].Protocol = protocol
+			appCfg.MaclawLLMProviders[i].AgentType = agentType
+			if contextLength > 0 {
+				appCfg.MaclawLLMProviders[i].ContextLength = contextLength
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		p := corelib.MaclawLLMProvider{
+			Name:          providerName,
+			URL:           apiURL,
+			Key:           apiKey,
+			Model:         model,
+			Protocol:      protocol,
+			AgentType:     agentType,
+			ContextLength: contextLength,
+			TimeoutSec:    selected.TimeoutSec,
+			IsCustom:      selected.Name == "自定义",
+		}
+		appCfg.MaclawLLMProviders = append(appCfg.MaclawLLMProviders, p)
+	}
+
+	// 设为当前 provider 并同步 legacy 字段
+	appCfg.MaclawLLMCurrentProvider = providerName
+	appCfg.MaclawLLMUrl = strings.TrimRight(apiURL, "/")
+	appCfg.MaclawLLMKey = apiKey
+	appCfg.MaclawLLMModel = model
+	appCfg.MaclawLLMProtocol = protocol
+	appCfg.MaclawLLMContextLength = contextLength
+
+	if err := store.SaveConfig(appCfg); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Printf("  ✓ 已配置 %s\n", providerName)
+	fmt.Printf("    模型: %s\n", model)
+	fmt.Printf("    URL:  %s\n", apiURL)
+	fmt.Printf("    Key:  %s****\n", apiKey[:min(4, len(apiKey))])
+	fmt.Println()
+	fmt.Println("  运行 maclaw llm test 验证配置是否正确。")
+	return nil
 }
 
 func llmStatus(args []string) error {
@@ -390,16 +591,65 @@ func llmGetMaxIterations(args []string) error {
 }
 
 func llmLogin(args []string) error {
-	if len(args) == 0 || args[0] != "openai" {
+	if len(args) == 0 {
+		if brand.Current().ID == "qianxin" {
+			return NewUsageError("usage: llm login <openai|codegen>")
+		}
 		return NewUsageError("usage: llm login openai")
 	}
 
-	fmt.Println("正在启动 OpenAI OAuth 登录，请在浏览器中完成授权...")
+	switch args[0] {
+	case "openai":
+		return llmLoginOpenAI(args[1:])
+	case "codegen":
+		if brand.Current().ID != "qianxin" {
+			return fmt.Errorf("CodeGen SSO 仅在企业版（TigerClaw）中可用")
+		}
+		return llmLoginCodeGen(args[1:])
+	default:
+		return NewUsageError("usage: llm login <openai|codegen>")
+	}
+}
+
+func llmLoginOpenAI(args []string) error {
+	fmt.Println("╭──────────────────────────────────────────────────────╮")
+	fmt.Println("│         OpenAI OAuth 登录（Codex 订阅）             │")
+	fmt.Println("├──────────────────────────────────────────────────────┤")
+	fmt.Println("│                                                      │")
+	fmt.Println("│  1. 在任意浏览器中打开以下链接                       │")
+	fmt.Println("│  2. 完成 OpenAI 登录授权                             │")
+	fmt.Println("│  3. 浏览器会跳转到一个打不开的页面（正常）           │")
+	fmt.Println("│  4. 复制浏览器地址栏中的完整 URL 粘贴到下方          │")
+	fmt.Println("│                                                      │")
+	fmt.Println("╰──────────────────────────────────────────────────────╯")
+	fmt.Println()
 
 	cfg := oauth.DefaultConfig()
-	result, err := oauth.RunOAuthFlow(cfg)
+	params, err := oauth.PrepareHeadlessOAuth(cfg)
 	if err != nil {
-		return fmt.Errorf("OAuth 登录失败: %w", err)
+		return fmt.Errorf("准备 OAuth 参数失败: %w", err)
+	}
+
+	fmt.Println("请在浏览器中打开:")
+	fmt.Println()
+	fmt.Println("  " + params.AuthURL)
+	fmt.Println()
+	fmt.Println("授权完成后，浏览器会跳转到 http://localhost:... 页面（无法打开是正常的）。")
+	fmt.Println("请复制浏览器地址栏中的完整 URL，粘贴到下方：")
+	fmt.Println()
+	fmt.Print("回调 URL: ")
+
+	var callbackURL string
+	fmt.Scanln(&callbackURL)
+	callbackURL = strings.TrimSpace(callbackURL)
+	if callbackURL == "" {
+		return fmt.Errorf("未输入回调 URL，登录取消")
+	}
+
+	fmt.Println("正在完成认证...")
+	result, err := oauth.CompleteHeadlessOAuth(cfg, params, callbackURL)
+	if err != nil {
+		return fmt.Errorf("OAuth 认证失败: %w", err)
 	}
 
 	store := NewFileConfigStore(ResolveDataDir())
@@ -443,7 +693,101 @@ func llmLogin(args []string) error {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
+	fmt.Println()
 	fmt.Println("✓ OpenAI OAuth 登录成功，已设为当前 LLM 提供商")
+	return nil
+}
+
+// llmLoginCodeGen 实现无头环境下的 CodeGen SSO 登录。
+// 显示 SSO URL 让用户在任意浏览器中打开，完成后粘贴 token。
+func llmLoginCodeGen(args []string) error {
+	loginURL := oauth.HeadlessSSOLoginURL()
+
+	fmt.Println("╭──────────────────────────────────────────────────────╮")
+	fmt.Println("│           CodeGen SSO 登录（无头模式）               │")
+	fmt.Println("├──────────────────────────────────────────────────────┤")
+	fmt.Println("│                                                      │")
+	fmt.Println("│  1. 在任意浏览器中打开以下链接:                      │")
+	fmt.Printf("│     %s\n", loginURL)
+	fmt.Println("│                                                      │")
+	fmt.Println("│  2. 完成扫码/登录后，页面会显示 Token                │")
+	fmt.Println("│                                                      │")
+	fmt.Println("│  3. 复制 Token 粘贴到下方                            │")
+	fmt.Println("│                                                      │")
+	fmt.Println("╰──────────────────────────────────────────────────────╯")
+	fmt.Println()
+	fmt.Print("请粘贴 Token: ")
+
+	var token string
+	fmt.Scanln(&token)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("未输入 Token，登录取消")
+	}
+
+	fmt.Println("正在验证 Token...")
+	result, err := oauth.ValidateAndBuildCodeGenResult(token)
+	if err != nil {
+		return fmt.Errorf("Token 验证失败: %w", err)
+	}
+
+	// 保存到配置
+	store := NewFileConfigStore(ResolveDataDir())
+	appCfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	// 更新或创建 CodeGen provider
+	found := false
+	for i, p := range appCfg.MaclawLLMProviders {
+		if p.Name == "CodeGen" {
+			appCfg.MaclawLLMProviders[i].Key = result.AccessToken
+			appCfg.MaclawLLMProviders[i].URL = result.BaseURL
+			appCfg.MaclawLLMProviders[i].Model = result.ModelID
+			appCfg.MaclawLLMProviders[i].AuthType = "sso"
+			appCfg.MaclawLLMProviders[i].Protocol = "openai"
+			if result.ContextLength > 0 {
+				appCfg.MaclawLLMProviders[i].ContextLength = result.ContextLength
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		p := corelib.MaclawLLMProvider{
+			Name:          "CodeGen",
+			URL:           result.BaseURL,
+			Key:           result.AccessToken,
+			Model:         result.ModelID,
+			Protocol:      "openai",
+			AuthType:      "sso",
+			ContextLength: result.ContextLength,
+		}
+		appCfg.MaclawLLMProviders = append(appCfg.MaclawLLMProviders, p)
+	}
+
+	// 设为当前 provider 并同步 legacy 字段
+	appCfg.MaclawLLMCurrentProvider = "CodeGen"
+	appCfg.MaclawLLMUrl = result.BaseURL
+	appCfg.MaclawLLMKey = result.AccessToken
+	appCfg.MaclawLLMModel = result.ModelID
+	appCfg.MaclawLLMProtocol = "openai"
+	if result.ContextLength > 0 {
+		appCfg.MaclawLLMContextLength = result.ContextLength
+	}
+
+	if err := store.SaveConfig(appCfg); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("✓ CodeGen SSO 登录成功")
+	if result.Email != "" {
+		fmt.Printf("  用户: %s\n", result.Email)
+	}
+	fmt.Printf("  模型: %s\n", result.ModelID)
+	fmt.Printf("  API:  %s\n", result.BaseURL)
 	return nil
 }
 

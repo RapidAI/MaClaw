@@ -242,6 +242,45 @@ func ValidateCodeGenToken(token string) bool {
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
+// ValidateAndBuildCodeGenResult 验证粘贴的 token 并获取模型列表和用户信息。
+// 用于无头环境（TUI）中用户手动粘贴 token 的场景。
+func ValidateAndBuildCodeGenResult(token string) (CodeGenSSOResult, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return CodeGenSSOResult{}, fmt.Errorf("token 为空")
+	}
+
+	// 从 JWT 提取 email（可选，失败不阻断）
+	email, _ := ExtractEmailFromJWT(token)
+
+	// 用 token 获取模型列表（同时验证 token 有效性）
+	models, baseURL, err := fetchCodeGenModels(token)
+	if err != nil {
+		return CodeGenSSOResult{}, fmt.Errorf("token 无效或已过期: %w", err)
+	}
+
+	defaultModel := ""
+	contextLength := 0
+	if len(models) > 0 {
+		defaultModel = models[0].ID
+		contextLength = models[0].ContextWindow
+	}
+
+	return CodeGenSSOResult{
+		AccessToken:   token,
+		BaseURL:       baseURL,
+		ModelID:       defaultModel,
+		ContextLength: contextLength,
+		Email:         email,
+	}, nil
+}
+
+// HeadlessSSOLoginURL 返回用户在任意浏览器中打开的 SSO 登录 URL。
+// 登录完成后页面会显示 token，用户复制回 TUI 粘贴。
+func HeadlessSSOLoginURL() string {
+	return CodeGenSSOLoginURL
+}
+
 // codeGenRefreshRequest 是 /api/v1/auth/refresh 的请求体。
 type codeGenRefreshRequest struct {
 	RefreshToken string `json:"refresh_token"`

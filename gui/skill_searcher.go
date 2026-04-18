@@ -26,6 +26,9 @@ type SkillSearchResult struct {
 	InstallRef    string   `json:"install_ref,omitempty"`
 	AvgRating     float64  `json:"avg_rating"`
 	DownloadCount int      `json:"download_count"`
+	Version       string   `json:"version,omitempty"`
+	Author        string   `json:"author,omitempty"`
+	CreatedAt     string   `json:"created_at,omitempty"`
 }
 
 // MixedSkillSearchResult is the GUI-facing unified search result model.
@@ -39,6 +42,8 @@ type MixedSkillSearchResult struct {
 	InstallRef    string   `json:"install_ref,omitempty"`
 	FilePath      string   `json:"file_path,omitempty"`
 	Version       string   `json:"version,omitempty"`
+	Author        string   `json:"author,omitempty"`
+	CreatedAt     string   `json:"created_at,omitempty"`
 	TrustLevel    string   `json:"trust_level,omitempty"`
 	AvgRating     float64  `json:"avg_rating"`
 	RatingCount   int      `json:"rating_count"`
@@ -202,6 +207,9 @@ func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkill
 		Downloads:   r.DownloadCount,
 		Score:       r.Score,
 		Price:       r.Price,
+		Version:     r.Version,
+		Author:      r.Author,
+		CreatedAt:   r.CreatedAt,
 	}
 }
 

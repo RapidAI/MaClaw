@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
 // LLMChatCaller abstracts the LLM chat call needed by the compressor for
@@ -876,7 +877,7 @@ func (mc *Compressor) createBackup() (string, error) {
 	}
 	name := fmt.Sprintf("memories_backup_%s.json", time.Now().Format("20060102_150405"))
 	dst := filepath.Join(dir, name)
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
+	if err := fileutil.AtomicWriteFile(dst, data, 0o644); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
 	}
 	return name, nil
@@ -960,7 +961,7 @@ func (mc *Compressor) RestoreBackup(backupName string) error {
 	if err := json.Unmarshal(data, &restored); err != nil {
 		return fmt.Errorf("parse backup: %w", err)
 	}
-	if err := os.WriteFile(mc.store.path, data, 0o644); err != nil {
+	if err := fileutil.AtomicWriteFile(mc.store.path, data, 0o644); err != nil {
 		return fmt.Errorf("write memory file: %w", err)
 	}
 	mc.store.mu.Lock()

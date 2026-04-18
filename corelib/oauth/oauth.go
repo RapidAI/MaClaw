@@ -315,6 +315,88 @@ func RunOAuthFlow(cfg Config) (*TokenResult, error) {
 	return RunOAuthFlowCtx(ctx, cfg)
 }
 
+// HeadlessOAuthParams 包含无头环境下 OAuth 流程所需的参数。
+// TUI 显示 AuthURL 让用户在其他设备浏览器中打开，完成授权后
+// 浏览器会重定向到 RedirectURI（打不开），用户复制地址栏中的
+// 完整 URL 粘贴回 TUI，TUI 从中提取 code 完成 token exchange。
+type HeadlessOAuthParams struct {
+	AuthURL     string // 用户在浏览器中打开的授权 URL
+	RedirectURI string // 回调 URL（用于 token exchange 时匹配）
+	Verifier    string // PKCE code_verifier（用于 token exchange）
+}
+
+// PrepareHeadlessOAuth 生成无头环境下 OAuth 流程所需的参数。
+// 返回的 AuthURL 供用户在任意浏览器中打开。
+func PrepareHeadlessOAuth(cfg Config) (*HeadlessOAuthParams, error) {
+	verifier, err := GenerateCodeVerifier()
+	if err != nil {
+		return nil, fmt.Errorf("oauth: failed to generate code verifier: %w", err)
+	}
+	challenge := GenerateCodeChallenge(verifier)
+
+	// 使用固定的 localhost redirect_uri（与 Codex CLI 一致）
+	redirectURI := fmt.Sprintf("http://localhost:%d%s", DefaultCallbackPort, cfg.CallbackPath)
+	state := generateState()
+	authURL := BuildAuthURL(cfg, challenge, redirectURI, state)
+
+	return &HeadlessOAuthParams{
+		AuthURL:     authURL,
+		RedirectURI: redirectURI,
+		Verifier:    verifier,
+	}, nil
+}
+
+// CompleteHeadlessOAuth 用用户粘贴的回调 URL 完成 token exchange。
+// callbackURL 是浏览器地址栏中的完整 URL，包含 ?code=xxx 参数。
+func CompleteHeadlessOAuth(cfg Config, params *HeadlessOAuthParams, callbackURL string) (*TokenResult, error) {
+	// 从 URL 中提取 code 参数
+	callbackURL = strings.TrimSpace(callbackURL)
+	code := extractCodeFromURL(callbackURL)
+	if code == "" {
+		return nil, fmt.Errorf("无法从 URL 中提取授权码（code 参数），请确认复制了完整的地址栏 URL")
+	}
+
+	// 用 code 换取 token
+	exchanged, err := exchangeCodeInternal(cfg, code, params.Verifier, params.RedirectURI)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange 失败: %w", err)
+	}
+
+	// 尝试 token exchange 获取 sk-... API key
+	apiKey := exchanged.AccessToken
+	if exchanged.IDToken != "" {
+		key, exchangeErr := ExchangeForAPIKey(cfg, exchanged.IDToken)
+		if exchangeErr == nil {
+			apiKey = key
+		}
+	}
+
+	return &TokenResult{
+		AccessToken:    apiKey,
+		RawAccessToken: exchanged.AccessToken,
+		RefreshToken:   exchanged.RefreshToken,
+		ExpiresIn:      exchanged.ExpiresIn,
+	}, nil
+}
+
+// extractCodeFromURL 从回调 URL 中提取 code 查询参数。
+// 支持完整 URL（http://localhost:1455/auth/callback?code=xxx&state=yyy）
+// 和纯 code 值。
+func extractCodeFromURL(raw string) string {
+	// 尝试解析为 URL
+	if u, err := url.Parse(raw); err == nil {
+		if code := u.Query().Get("code"); code != "" {
+			return code
+		}
+	}
+	// 如果不是 URL，可能用户直接粘贴了 code 值
+	raw = strings.TrimSpace(raw)
+	if len(raw) > 10 && !strings.Contains(raw, " ") && !strings.Contains(raw, "://") {
+		return raw
+	}
+	return ""
+}
+
 // RunOAuthFlowCtx 执行完整的 OAuth PKCE 流程，支持 context 取消：
 //  1. 生成 code_verifier 和 code_challenge
 //  2. 启动 CallbackServer

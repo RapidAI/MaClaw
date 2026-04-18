@@ -46,8 +46,10 @@ type RootModel struct {
 // NewRootModel 创建根 Model。
 func NewRootModel(lang string) RootModel {
 	lang = i18n.NormalizeLang(lang)
+	chat := NewChatModel(lang)
+	chat.FocusInput() // 启动后直接聚焦输入框
 	return RootModel{
-		tab:       TabSessions,
+		tab:       TabChat,
 		lang:      lang,
 		Sessions:  NewSessionListModel(lang),
 		Tools:     NewToolStatusModel(lang),
@@ -56,7 +58,7 @@ func NewRootModel(lang string) RootModel {
 		Audit:     NewAuditModel(lang),
 		AgentNet:  NewAgentNetModel(lang),
 		Config:    NewConfigModel(lang),
-		Chat:      NewChatModel(lang),
+		Chat:      chat,
 		StatusBar: NewStatusBarModel(lang),
 		Help:      NewHelpModel(lang),
 	}
@@ -289,4 +291,11 @@ func (m RootModel) renderTabs() string {
 // ActiveTab 返回当前活跃的 Tab 索引。
 func (m RootModel) ActiveTab() int {
 	return m.tab
+}
+
+// SetTab 切换到指定 Tab。
+func (m *RootModel) SetTab(tab int) {
+	if tab >= 0 && tab < TabCount {
+		m.tab = tab
+	}
 }

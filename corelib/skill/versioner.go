@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
 // Versioner manages skill version history within a skill directory.
@@ -27,7 +29,7 @@ func (v *Versioner) BackupCurrent(skillDir string) (int, error) {
 
 	nextVer := v.LatestVersion(skillDir) + 1
 	dst := filepath.Join(skillDir, fmt.Sprintf("skill.yaml.v%d", nextVer))
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
+	if err := fileutil.AtomicWriteFile(dst, data, 0o644); err != nil {
 		return 0, fmt.Errorf("write backup %s: %w", dst, err)
 	}
 

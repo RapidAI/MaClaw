@@ -63,6 +63,14 @@ func DefaultToolWriters(params ToolConfigParams) []ToolWriter {
 			Name: "Gemini",
 			Fn:   func() error { return WriteGeminiConfig(params.Token, params.BaseURL, params.ModelID) },
 		},
+		{
+			Name: "IFlow",
+			Fn:   func() error { return WriteIFlowConfig(params.Token, params.BaseURL, params.ModelID) },
+		},
+		{
+			Name: "Kilo",
+			Fn:   func() error { return WriteKiloConfig(params.Token, params.BaseURL, params.ModelID) },
+		},
 	}
 }
 

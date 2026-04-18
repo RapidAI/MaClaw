@@ -81,6 +81,8 @@ interface MixedSkillSearchResult {
     install_ref?: string;
     file_path?: string;
     version?: string;
+    author?: string;
+    created_at?: string;
     trust_level?: string;
     avg_rating: number;
     rating_count: number;
@@ -169,7 +171,7 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
     };
 }
 
-const LEARNED_SOURCES = new Set(["learned", "crafted", "auto_hub", "auto_github", "auto_clawhub"]);
+const LEARNED_SOURCES = new Set(["learned", "crafted"]);
 function isLearnedSource(source: string): boolean {
     return LEARNED_SOURCES.has(source);
 }
@@ -177,7 +179,6 @@ function isLearnedSource(source: string): boolean {
 function learnedSourceIcon(source: string): string {
     if (source === "learned") return "📖";
     if (source === "crafted") return "🔧";
-    if (source.startsWith("auto_")) return "🤖";
     return "📁";
 }
 
@@ -204,9 +205,6 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const learnedSourceTooltip = (source: string): string => {
         if (source === "learned") return localizeText("Experience learned", "经验学习", "經驗學習");
         if (source === "crafted") return localizeText("Tool crafted", "工具制作", "工具製作");
-        if (source === "auto_hub") return localizeText("Auto-installed from SkillHub", "自动安装自 SkillHub", "自動安裝自 SkillHub");
-        if (source === "auto_github") return localizeText("Auto-installed from GitHub", "自动安装自 GitHub", "自動安裝自 GitHub");
-        if (source === "auto_clawhub") return localizeText("Auto-installed from ClawHub", "自动安装自 ClawHub", "自動安裝自 ClawHub");
         return source;
     };
 
@@ -1071,6 +1069,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <span key={i} style={tagStyle}>{tag}</span>
                                                 ))}
                                                 <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                                    {skill.author && (
+                                                        <span>{skill.author}</span>
+                                                    )}
                                                     {skill.rating_count > 0 && (
                                                         <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
                                                             <span style={{ color: colors.warning }}>{renderStars(skill.avg_rating)}</span>
@@ -1082,6 +1083,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     )}
                                                     {skill.price > 0 && (
                                                         <span>{localizeText(`Price ${skill.price}`, `价格 ${skill.price}`, `價格 ${skill.price}`)}</span>
+                                                    )}
+                                                    {skill.created_at && (
+                                                        <span>{formatDate(skill.created_at)}</span>
                                                     )}
                                                 </span>
                                             </div>
@@ -1673,6 +1677,17 @@ function formatDownloads(n: number): string {
     if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, "") + "w";
     if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
     return String(n);
+}
+
+function formatDate(dateStr: string): string {
+    if (!dateStr) return "";
+    try {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return "";
+        return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    } catch {
+        return "";
+    }
 }
 
 function renderStars(avg: number): string {

@@ -1,0 +1,144 @@
+/**
+ * FileTabBar — file name tab bar displayed at the top of the Code Preview Panel.
+ *
+ * Renders one tab per file in the files map. Each tab shows:
+ *   - File name only as label (extracted from full path)
+ *   - Full file path as tooltip (title attribute)
+ *   - Visual indicator for opType: ✏️ (modify) or ➕ (create)
+ *   - Active tab highlighted with distinct theme colors
+ *
+ * Supports horizontal scrolling via overflow-x: auto when tabs overflow.
+ * Uses inline styles based on theme props (no CSS modules).
+ */
+import React, { useState } from 'react';
+import type { CodeFile } from './useCodePreviewState';
+
+// ── Theme Interface ──
+
+/**
+ * CodePreviewTheme — theme colors for the code preview panel.
+ * Will be consolidated in Task 9; defined here as the canonical source.
+ */
+export interface CodePreviewTheme {
+    bg: string;
+    text: string;
+    textMuted: string;
+    border: string;
+    lineNumBg: string;
+    lineNumText: string;
+    tabBg: string;
+    tabActiveBg: string;
+    tabActiveText: string;
+    tabHoverBg: string;
+    diffAddBg: string;
+    diffAddText: string;
+    diffDeleteBg: string;
+    diffDeleteText: string;
+    // Syntax highlighting colors
+    syntaxKeyword: string;
+    syntaxString: string;
+    syntaxComment: string;
+    syntaxNumber: string;
+    syntaxFunction: string;
+    syntaxType: string;
+    syntaxOperator: string;
+}
+
+// ── Pure Helper Functions (exported for testing) ──
+
+/**
+ * Extract the file name from a file path.
+ *
+ * Handles both Unix (/) and Windows (\) separators.
+ * For paths with no separator, returns the entire string.
+ *
+ * @param filePath - Full file path string
+ * @returns The last path segment (file name)
+ */
+export function extractFileName(filePath: string): string {
+    const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+    if (lastSlash === -1) {
+        return filePath;
+    }
+    return filePath.substring(lastSlash + 1);
+}
+
+/**
+ * Get the visual indicator for a file's operation type.
+ *
+ * @param opType - 'modify' or 'create'
+ * @returns Indicator string: "✏️" for modify, "➕" for create
+ */
+export function getOpTypeIndicator(opType: 'create' | 'modify'): string {
+    return opType === 'modify' ? '✏️' : '➕';
+}
+
+// ── Component Props ──
+
+export interface FileTabBarProps {
+    files: Map<string, CodeFile>;
+    activeFilePath: string;
+    onSelectFile: (filePath: string) => void;
+    theme: CodePreviewTheme;
+}
+
+// ── Component ──
+
+export function FileTabBar({ files, activeFilePath, onSelectFile, theme }: FileTabBarProps) {
+    const [hoveredPath, setHoveredPath] = useState<string | null>(null);
+
+    return (
+        <div
+            style={{
+                display: 'flex',
+                overflowX: 'auto',
+                backgroundColor: theme.tabBg,
+                borderBottom: `1px solid ${theme.border}`,
+                minHeight: 36,
+                alignItems: 'stretch',
+            }}
+        >
+            {Array.from(files.entries()).map(([filePath, file]) => {
+                const isActive = filePath === activeFilePath;
+                const isHovered = filePath === hoveredPath;
+                const indicator = getOpTypeIndicator(file.opType);
+                const fileName = extractFileName(filePath);
+
+                let backgroundColor = theme.tabBg;
+                if (isActive) {
+                    backgroundColor = theme.tabActiveBg;
+                } else if (isHovered) {
+                    backgroundColor = theme.tabHoverBg;
+                }
+
+                return (
+                    <button
+                        key={filePath}
+                        title={filePath}
+                        onClick={() => onSelectFile(filePath)}
+                        onMouseEnter={() => setHoveredPath(filePath)}
+                        onMouseLeave={() => setHoveredPath(null)}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '4px 12px',
+                            border: 'none',
+                            borderRight: `1px solid ${theme.border}`,
+                            backgroundColor,
+                            color: isActive ? theme.tabActiveText : theme.text,
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                            fontSize: 13,
+                            fontFamily: 'inherit',
+                            lineHeight: '28px',
+                        }}
+                    >
+                        <span style={{ fontSize: 12 }}>{indicator}</span>
+                        <span>{fileName}</span>
+                    </button>
+                );
+            })}
+        </div>
+    );
+}

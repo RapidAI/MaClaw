@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
 // Store provides persistent long-term memory storage.
@@ -1985,7 +1986,7 @@ func (s *Store) flush() error {
 	if err != nil {
 		return fmt.Errorf("memory_store: marshal: %w", err)
 	}
-	if err := os.WriteFile(s.path, data, 0o644); err != nil {
+	if err := fileutil.AtomicWriteFile(s.path, data, 0o644); err != nil {
 		return fmt.Errorf("memory_store: write file: %w", err)
 	}
 	s.mu.Lock()

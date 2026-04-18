@@ -196,6 +196,15 @@ type SkillYAMLFile struct {
 	RequiredEnv      []string             `yaml:"required_env,omitempty"`      // required environment variables
 	PreferredShell   string               `yaml:"shell,omitempty"`             // "bash" or "cmd"; empty = auto-detect
 	Operations       []SkillYAMLOperation `yaml:"operations,omitempty"`        // named operations for api_workflow mode
+	Type             string               `yaml:"type,omitempty"`              // "executable" (default) | "knowledge"
+	Content          string               `yaml:"content,omitempty"`           // Markdown content for knowledge-type skills
+	// Tool availability conditions
+	RequiresTools          []string `yaml:"requires_tools,omitempty"`
+	FallbackForTools       []string `yaml:"fallback_for_tools,omitempty"`
+	RequiresToolsets       []string `yaml:"requires_toolsets,omitempty"`
+	FallbackForToolsets    []string `yaml:"fallback_for_toolsets,omitempty"`
+	// Credential file mounting
+	RequiredCredentialFiles []string `yaml:"required_credential_files,omitempty"`
 	Extra            map[string]any       `yaml:"-"`
 }
 
@@ -244,6 +253,10 @@ func ParseSkillYAMLFile(data []byte) (*SkillYAMLFile, error) {
 		"status": true, "platforms": true, "requires_gui": true,
 		"produces_artifact": true, "required_args": true, "required_env": true,
 		"shell": true, "mode": true, "operations": true,
+		"type": true, "content": true,
+		"requires_tools": true, "fallback_for_tools": true,
+		"requires_toolsets": true, "fallback_for_toolsets": true,
+		"required_credential_files": true,
 	}
 	extra := make(map[string]any)
 	for k, v := range raw {
@@ -350,6 +363,30 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			}
 			steps = append(steps, step)
 		}
+
+		// Handle YAML-declared knowledge skills: type: knowledge with content field.
+		if sf.Type == "knowledge" && sf.Content != "" {
+			return &corelib.NLSkillEntry{
+				Name:        name,
+				DirName:     fallbackName,
+				Description: sf.Description,
+				Triggers:    sf.Triggers,
+				Status:      status,
+				Source:      "file",
+				Platforms:   sf.Platforms,
+				RequiresGUI: sf.RequiresGUI,
+				SkillDir:    skillDir,
+				CreatedAt:   fileModTime(yamlPath),
+				Type:        "knowledge",
+				Content:     sf.Content,
+				RequiresTools:          sf.RequiresTools,
+				FallbackForTools:       sf.FallbackForTools,
+				RequiresToolsets:       sf.RequiresToolsets,
+				FallbackForToolsets:    sf.FallbackForToolsets,
+				RequiredCredentialFiles: sf.RequiredCredentialFiles,
+			}, yamlPath, nil
+		}
+
 		if len(steps) == 0 {
 			producesArtifact := true
 			if sf.ProducesArtifact != nil && !*sf.ProducesArtifact {
@@ -385,10 +422,30 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				if sf.PreferredShell != "" {
 					parsed.PreferredShell = sf.PreferredShell
 				}
+				if len(sf.RequiresTools) > 0 {
+					parsed.RequiresTools = sf.RequiresTools
+				}
+				if len(sf.FallbackForTools) > 0 {
+					parsed.FallbackForTools = sf.FallbackForTools
+				}
+				if len(sf.RequiresToolsets) > 0 {
+					parsed.RequiresToolsets = sf.RequiresToolsets
+				}
+				if len(sf.FallbackForToolsets) > 0 {
+					parsed.FallbackForToolsets = sf.FallbackForToolsets
+				}
+				if len(sf.RequiredCredentialFiles) > 0 {
+					parsed.RequiredCredentialFiles = sf.RequiredCredentialFiles
+				}
 				if mdPath, mdErr := skillMarkdownPath(skillDir); mdErr == nil {
 					return parsed, mdPath, nil
 				}
 				return parsed, yamlPath, nil
+			}
+
+			// No SKILL.md found — check for KNOWLEDGE.md to create a knowledge skill.
+			if knowledgeEntry, knowledgePath, knowledgeErr := loadKnowledgeSkill(skillDir, name, fallbackName, sf.Description, sf.Triggers, status, sf.Platforms, sf.RequiresGUI, yamlPath); knowledgeErr == nil {
+				return knowledgeEntry, knowledgePath, nil
 			}
 		}
 		// Convert YAML operations to runtime operations.
@@ -425,6 +482,11 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			RequiredArgs:   sf.RequiredArgs,
 			RequiredEnv:    sf.RequiredEnv,
 			PreferredShell: sf.PreferredShell,
+			RequiresTools:          sf.RequiresTools,
+			FallbackForTools:       sf.FallbackForTools,
+			RequiresToolsets:       sf.RequiresToolsets,
+			FallbackForToolsets:    sf.FallbackForToolsets,
+			RequiredCredentialFiles: sf.RequiredCredentialFiles,
 		}, yamlPath, nil
 	}
 
@@ -466,6 +528,12 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				}
 			}
 		}
+
+		// Last resort before giving up: check for KNOWLEDGE.md (no skill.yaml present).
+		if knowledgeEntry, knowledgePath, knowledgeErr := loadKnowledgeSkill(skillDir, fallbackName, fallbackName, "", nil, "active", nil, false, ""); knowledgeErr == nil {
+			return knowledgeEntry, knowledgePath, nil
+		}
+
 		return nil, "", err
 	}
 	// Set DirName when SKILL.md name differs from directory name
@@ -476,6 +544,43 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 		return parsed, mdPath, nil
 	}
 	return parsed, "", nil
+}
+
+// loadKnowledgeSkill checks for a KNOWLEDGE.md file in the skill directory and
+// returns a knowledge-type NLSkillEntry if found. This enables skills that contain
+// procedural knowledge (Markdown instructions) rather than executable steps.
+// The yamlPath parameter is used for CreatedAt when a skill.yaml exists alongside
+// KNOWLEDGE.md; pass empty string when no YAML is present.
+func loadKnowledgeSkill(skillDir, name, fallbackName, description string, triggers []string, status string, platforms []string, requiresGUI bool, yamlPath string) (*corelib.NLSkillEntry, string, error) {
+	knowledgePath := filepath.Join(skillDir, "KNOWLEDGE.md")
+	data, err := os.ReadFile(knowledgePath)
+	if err != nil {
+		return nil, "", err
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return nil, "", fmt.Errorf("KNOWLEDGE.md is empty")
+	}
+
+	createdAt := fileModTime(knowledgePath)
+	if yamlPath != "" {
+		createdAt = fileModTime(yamlPath)
+	}
+
+	return &corelib.NLSkillEntry{
+		Name:        name,
+		DirName:     fallbackName,
+		Description: description,
+		Triggers:    triggers,
+		Status:      status,
+		Source:      "file",
+		Platforms:   platforms,
+		RequiresGUI: requiresGUI,
+		SkillDir:    skillDir,
+		CreatedAt:   createdAt,
+		Type:        "knowledge",
+		Content:     content,
+	}, knowledgePath, nil
 }
 
 // buildCraftToolFallback creates an NLSkillEntry that delegates the entire
@@ -548,6 +653,39 @@ type uploadStatusFile struct {
 	SubmissionID string `json:"submission_id"`
 }
 
+// mapGOOSToPlatform maps runtime.GOOS values to the platform strings
+// used in skill YAML definitions.
+func mapGOOSToPlatform(goos string) string {
+	switch goos {
+	case "darwin":
+		return "macos"
+	case "windows":
+		return "windows"
+	case "linux":
+		return "linux"
+	default:
+		return goos
+	}
+}
+
+// currentPlatform returns the platform string for the current OS.
+var currentPlatform = mapGOOSToPlatform(runtime.GOOS)
+
+// isSkillCompatibleWithPlatform checks whether a skill should be included
+// based on its Platforms field and the given platform string.
+// If Platforms is empty, the skill is compatible with all platforms (backward compatible).
+func isSkillCompatibleWithPlatform(platforms []string, platform string) bool {
+	if len(platforms) == 0 {
+		return true
+	}
+	for _, p := range platforms {
+		if strings.EqualFold(p, platform) {
+			return true
+		}
+	}
+	return false
+}
+
 // ScanSkillDir scans a single directory for skill.yaml / skill.md files
 // in immediate subdirectories and returns parsed NLSkillEntry list.
 // Permission errors and symlink issues are logged and skipped gracefully.
@@ -593,6 +731,13 @@ func ScanSkillDir(root string) []corelib.NLSkillEntry {
 		if defPath != "" {
 			parsed.CreatedAt = fileModTime(defPath)
 		}
+
+		// Platform filtering: skip skills incompatible with the current OS.
+		if !isSkillCompatibleWithPlatform(parsed.Platforms, currentPlatform) {
+			log.Printf("[skill-scanner] skip %s: incompatible platform (skill=%v, current=%s)", parsed.Name, parsed.Platforms, currentPlatform)
+			continue
+		}
+
 		result = append(result, *parsed)
 	}
 	return result

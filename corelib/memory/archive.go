@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
 // ArchiveStore manages cold storage for evicted memory entries.
@@ -216,7 +218,7 @@ func (a *ArchiveStore) flush() error {
 	if err != nil {
 		return fmt.Errorf("archive_store: marshal: %w", err)
 	}
-	if err := os.WriteFile(a.path, data, 0o644); err != nil {
+	if err := fileutil.AtomicWriteFile(a.path, data, 0o644); err != nil {
 		return fmt.Errorf("archive_store: write file: %w", err)
 	}
 	a.mu.Lock()

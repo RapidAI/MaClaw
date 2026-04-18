@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -67,6 +68,9 @@ type TUIApp struct {
 
 	// Tool usage tracker (outcome learning)
 	usageTracker *tool.UsageTracker
+
+	// Bubble Tea program reference for sending async messages
+	program *tea.Program
 
 	root  views.RootModel
 	ready bool
@@ -482,6 +486,15 @@ func (a *TUIApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUIToolStatusRefreshed, a.root.Lang()))
 
 	case views.ChatSendMsg:
+		// 检查 LLM 是否已配置
+		if _, err := loadLLMConfig(); err != nil {
+			// LLM 未配置：在聊天中显示提示，切换到配置 Tab
+			a.root.Chat.AppendSystemMessage(i18n.T(i18n.MsgTUILLMNotConfiguredHint, a.root.Lang()))
+			a.root.SetTab(views.TabConfig)
+			a.root.Config.FocusLLMConfig()
+			a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUILLMNotConfiguredHint, a.root.Lang()))
+			return a, nil
+		}
 		a.root.StatusBar.SetMessage(i18n.T(i18n.MsgTUIAIThinking, a.root.Lang()))
 		if msg.AgentMode {
 			return a, a.sendAgentMessage(msg.Text)
@@ -570,8 +583,20 @@ func (a *TUIApp) View() string {
 
 // runTUI 启动 TUI 交互模式。
 func runTUI() {
+	// Redirect Go standard log output to a log file so that library messages
+	// (gse dictionary loading, workflow init, etc.) don't bleed into the
+	// Bubble Tea alt-screen UI.
+	dataDir := commands.ResolveDataDir()
+	logPath := filepath.Join(dataDir, "logs", "tui.log")
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		log.SetOutput(lf)
+		defer lf.Close()
+	}
+
 	app := NewTUIApp()
 	p := tea.NewProgram(app, tea.WithAltScreen())
+	app.program = p
 
 	// 绑定 Program 到 config watcher（initKernel 后才有 configWatcher）
 	go func() {
@@ -664,6 +689,8 @@ func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 		})
 	}
 
+	prog := a.program // capture for goroutine
+
 	return func() tea.Msg {
 		handler := NewTUIAgentHandler(a.sessionMgr,
 			WithFirewall(a.firewall),
@@ -678,6 +705,18 @@ func (a *TUIApp) sendAgentMessage(text string) tea.Cmd {
 			WithWorkflowEngine(a.workflowEngine),
 			WithUsageTracker(a.usageTracker),
 		)
+
+		// 设置流式回调：工具调用时推送中间状态到 UI
+		if prog != nil {
+			handler.SetStreamCallback(func(msgType, toolName, content string) {
+				prog.Send(views.ChatStreamMsg{
+					Type:    msgType,
+					Tool:    toolName,
+					Content: content,
+				})
+			})
+		}
+
 		resp := handler.RunAgentLoop(text, conversation)
 		if resp.Error != "" {
 			return views.ChatResponseMsg{Error: resp.Error}

@@ -5,6 +5,8 @@ package bm25
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -34,7 +36,11 @@ func PrewarmDict() {
 
 func initSeg() {
 	segOnce.Do(func() {
+		// Suppress gse's verbose "Load the gse dictionary" log output.
+		origOutput := log.Writer()
+		log.SetOutput(io.Discard)
 		seg.LoadDict()
+		log.SetOutput(origOutput)
 		close(segDone)
 	})
 }

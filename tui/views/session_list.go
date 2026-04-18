@@ -102,7 +102,7 @@ func (m SessionListModel) View() string {
 		return "  " + i18n.T(i18n.MsgTUISessionLoading, m.lang)
 	}
 	if len(m.sessions) == 0 {
-		return "  " + strings.ReplaceAll(i18n.T(i18n.MsgTUISessionEmpty, m.lang), "\n", "\n  ")
+		return m.renderWelcome()
 	}
 
 	headerStyle := lipgloss.NewStyle().
@@ -159,4 +159,30 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-3] + "..."
+}
+
+// renderWelcome renders the ASCII art logo and welcome message.
+func (m SessionListModel) renderWelcome() string {
+	logoStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("39")). // bright cyan
+		Bold(true)
+
+	hintStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("245")) // dim gray
+
+	logo := "" +
+		"  ███╗   ███╗ █████╗  ██████╗██╗      █████╗ ██╗    ██╗\n" +
+		"  ████╗ ████║██╔══██╗██╔════╝██║     ██╔══██╗██║    ██║\n" +
+		"  ██╔████╔██║███████║██║     ██║     ███████║██║ █╗ ██║\n" +
+		"  ██║╚██╔╝██║██╔══██║██║     ██║     ██╔══██║██║███╗██║\n" +
+		"  ██║ ╚═╝ ██║██║  ██║╚██████╗███████╗██║  ██║╚███╔███╔╝\n" +
+		"  ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝"
+
+	hint := i18n.T(i18n.MsgTUISessionEmpty, m.lang)
+
+	var b strings.Builder
+	b.WriteString(logoStyle.Render(logo))
+	b.WriteString("\n\n")
+	b.WriteString("  " + hintStyle.Render(strings.ReplaceAll(hint, "\n", "\n  ")))
+	return b.String()
 }

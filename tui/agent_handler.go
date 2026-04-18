@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -22,11 +23,14 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/nudge"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/session"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/user"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/tui/commands"
@@ -70,6 +74,29 @@ type TUIAgentHandler struct {
 	// lastScreenshotAt records the time of the last successful screenshot
 	// to enforce a cooldown period and prevent accidental rapid-fire captures.
 	lastScreenshotAt time.Time
+
+	// streamCallback is called during the agent loop to push intermediate
+	// updates (tool calls, results) to the UI. Set via SetStreamCallback.
+	streamCallback func(msgType, toolName, content string)
+
+	// nudgeTracker manages the post-use skill nudge system per session.
+	// It tracks cooldown timing, deduplication, and iteration thresholds
+	// to inject low-priority system messages encouraging skill creation
+	// or improvement after complex tasks, skill failures, or user corrections.
+	// Lazily initialized on first use via ensureNudgeTracker().
+	nudgeTracker *nudge.NudgeTracker
+
+	// Session search store (FTS5 full-text search across historical conversations).
+	sessionSearchStore *session.Store
+	sessionStoreMu     sync.Once
+
+	// User model (dialectic user modeling with confidence-scored dimensions).
+	userModel   *user.Model
+	userModelMu sync.Once
+
+	// Evidence collector for async user profile signal analysis.
+	evidenceCollector   *user.Collector
+	evidenceCollectorMu sync.Once
 }
 
 // NewTUIAgentHandler 创建 Agent 处理器。
@@ -164,6 +191,18 @@ type AgentResponse struct {
 	Error string
 }
 
+// SetStreamCallback 设置流式回调，用于在 Agent 循环中推送中间状态到 UI。
+func (h *TUIAgentHandler) SetStreamCallback(cb func(msgType, toolName, content string)) {
+	h.streamCallback = cb
+}
+
+// stream 发送流式更新到 UI（如果回调已设置）。
+func (h *TUIAgentHandler) stream(msgType, toolName, content string) {
+	if h.streamCallback != nil {
+		h.streamCallback(msgType, toolName, content)
+	}
+}
+
 // RunAgentLoop 执行完整的 Agent 循环：LLM 调用 → 工具执行 → 反馈 → 循环。
 func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]string) AgentResponse {
 	cfg, err := commands.LoadLLMConfig()
@@ -172,6 +211,14 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 	}
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return AgentResponse{Error: i18n.T(i18n.MsgTUILLMNotConfiguredHint, i18n.NormalizeLang(""))}
+	}
+
+	// --- /compress slash command ---
+	if strings.TrimSpace(userText) == "/compress" {
+		compressed, msg := h.handleCompressCommand(history)
+		// Persist the compressed transcript to FTS5 store.
+		h.persistSessionTranscriptTUI(compressed)
+		return AgentResponse{Text: msg}
 	}
 
 	// --- Workflow engine interception ---
@@ -212,7 +259,21 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 	}
 	conversation = append(conversation, map[string]string{"role": "user", "content": userText})
 
+	// Skill outcome tracking: track failed skill name/error for workaround
+	// detection. When a skill fails but the LLM resolves the task through
+	// alternative tool calls, we classify the outcome as "workaround".
+	var failedSkillName string
+	var failedSkillError string
+
+	// totalToolCallsInLoop tracks the cumulative number of tool calls across
+	// all iterations in this agent loop. Used by the nudge system to detect
+	// complex tasks (≥5 tool calls).
+	totalToolCallsInLoop := 0
+
 	for iteration := 0; iteration < h.maxIterations; iteration++ {
+		// Auto-compress conversation if approaching context window limit.
+		conversation = h.autoCompressConversationTUI(conversation)
+
 		resp, err := h.doLLMRequestWithTools(cfg, conversation, tools)
 		// Retry once on timeout / temporary network errors.
 		if err != nil && isRetryableLLMErrorTUI(err) {
@@ -245,13 +306,37 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 		if len(choice.Message.ToolCalls) == 0 {
 			finalText := agent.StripThinkingTags(tuiContent)
 			h.captureWorkflowOutput(finalText)
+
+			// Workaround detection: if a skill failed earlier in this loop
+			// and the LLM has now produced a final response (resolved the
+			// task through alternative tool calls), classify the original
+			// skill failure as a "workaround" outcome.
+			if failedSkillName != "" {
+				h.recordSkillOutcome(failedSkillName, "workaround", failedSkillError)
+				log.Printf("[skill-workaround] skill %q failure classified as workaround — LLM resolved task via alternative tools", failedSkillName)
+			}
+
+			// Nudge injection: append nudge system messages to conversation
+			// AFTER the current response. They will be visible to the LLM
+			// in the next conversation turn, not the current one.
+			conversation = h.injectNudgeMessagesTUI(conversation, iteration, totalToolCallsInLoop, failedSkillName, userText)
+
 			h.ensureUsageTrackerSaved()
+			// Persist session transcript to FTS5 store (non-blocking).
+			h.persistSessionTranscriptTUI(history)
+			// Evidence collection: async user profile signal analysis (Req 7.7, 11.2).
+			h.runEvidenceCollectionTUI(userText)
 			return AgentResponse{Text: finalText}
 		}
 
 		// 执行工具调用
+		var toolResults []string
+		totalToolCallsInLoop += len(choice.Message.ToolCalls)
 		for _, tc := range choice.Message.ToolCalls {
+			h.stream("tool_call", tc.Function.Name, "")
 			result := h.executeTool(tc.Function.Name, tc.Function.Arguments)
+			h.stream("tool_result", tc.Function.Name, "")
+			toolResults = append(toolResults, result)
 
 			// Record tool outcome for usage tracking (Tool Outcome Learning).
 			toolSuccess := !strings.HasPrefix(result, "未知工具") &&
@@ -282,9 +367,29 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 				"content":      result,
 			})
 		}
+
+		// Skill outcome tracking: detect failed run_skill / manage_skill(action=run)
+		// calls and record the immediate failure. Track the failed skill name so
+		// that if the LLM resolves the task through alternative tools later in
+		// this loop, we classify as "workaround" at loop exit.
+		if sn, se := extractFailedSkillInfoTUI(choice.Message.ToolCalls, toolResults); sn != "" {
+			failedSkillName = sn
+			failedSkillError = se
+			log.Printf("[skill-workaround] skill %q failed, marking as pending workaround: %s", sn, truncateForLog(se, 120))
+
+			// Record the immediate failure outcome.
+			h.recordSkillOutcome(sn, "failure", se)
+		}
 	}
 
+	// Nudge injection at max-rounds exit.
+	_ = h.injectNudgeMessagesTUI(conversation, h.maxIterations-1, totalToolCallsInLoop, failedSkillName, userText)
+
 	h.ensureUsageTrackerSaved()
+	// Persist session transcript to FTS5 store (non-blocking).
+	h.persistSessionTranscriptTUI(history)
+	// Evidence collection: async user profile signal analysis (Req 7.7, 11.2).
+	h.runEvidenceCollectionTUI(userText)
 	return AgentResponse{Text: i18n.T(i18n.MsgTUIAgentMaxRoundsReached, i18n.NormalizeLang(""))}
 }
 
@@ -414,6 +519,13 @@ exec_background 通过 nohup 在服务器端后台运行，SSH 断连不影响�
 	// 注入主动记忆指令 — 引导 Agent 在首轮会话中主动保存非显而易见的技术发现
 	if h.memoryStore != nil && isFirstTurn {
 		prompt += "\n\n" + memory.BuildTUIProactiveMemoryPrompt()
+	}
+
+	// Inject user profile into system prompt (Requirement 7.6, 7.11).
+	if model := h.getUserModel(); model != nil {
+		if profileSection := model.FormatForPrompt(); profileSection != "" {
+			prompt += "\n\n" + profileSection
+		}
 	}
 
 	return prompt
@@ -814,6 +926,12 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 	// --- 子 Agent 委派 ---
 	case "delegate_task":
 		return h.toolDelegateTask(args)
+	// --- 会话搜索 ---
+	case "session_search":
+		return h.toolSessionSearch(args)
+	// --- 用户画像管理 ---
+	case "manage_user_model":
+		return h.toolManageUserModel(args)
 	// --- 工具发现 ---
 	case "discover_tool":
 		return h.toolDiscoverTool(args)

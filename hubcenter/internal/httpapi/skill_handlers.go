@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,11 +13,18 @@ import (
 )
 
 type SkillHandlers struct {
-	store *skill.SkillStore
+	store     *skill.SkillStore
+	searchSvc skillSearchRemover
 }
 
-func NewSkillHandlers(store *skill.SkillStore) *SkillHandlers {
-	return &SkillHandlers{store: store}
+// skillSearchRemover is the subset of SearchService needed by SkillHandlers.
+type skillSearchRemover interface {
+	RemoveSkill(ctx context.Context, id string) error
+	ReIndexSkill(ctx context.Context, id string) error
+}
+
+func NewSkillHandlers(store *skill.SkillStore, searchSvc skillSearchRemover) *SkillHandlers {
+	return &SkillHandlers{store: store, searchSvc: searchSvc}
 }
 
 func skillError(w http.ResponseWriter, status int, msg string) {
@@ -151,6 +159,14 @@ func (h *SkillHandlers) AdminSetVisibility(w http.ResponseWriter, r *http.Reques
 		skillError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	// 设为不可见时从搜索索引中移除，设为可见时重新索引
+	if h.searchSvc != nil {
+		if !req.Visible {
+			_ = h.searchSvc.RemoveSkill(r.Context(), req.ID)
+		} else {
+			_ = h.searchSvc.ReIndexSkill(r.Context(), req.ID)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -163,6 +179,10 @@ func (h *SkillHandlers) AdminDeleteSkill(w http.ResponseWriter, r *http.Request)
 	if err := h.store.DeleteSkill(id); err != nil {
 		skillError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	// 从搜索索引中移除，防止已删除的 Skill 仍出现在搜索结果中
+	if h.searchSvc != nil {
+		_ = h.searchSvc.RemoveSkill(r.Context(), id)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

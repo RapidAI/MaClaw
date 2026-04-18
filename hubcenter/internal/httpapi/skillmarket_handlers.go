@@ -82,6 +82,12 @@ func NewSkillMarketHandlers(cfg SkillMarketConfig) *SkillMarketHandlers {
 	}
 }
 
+// SearchService returns the underlying SearchService for use by other handlers
+// that need to keep the search index in sync (e.g. SkillHandlers admin operations).
+func (h *SkillMarketHandlers) SearchService() *skillmarket.SearchService {
+	return h.searchSvc
+}
+
 // ── Upload Submit ───────────────────────────────────────────────────────
 
 // SubmitSkill handles POST /api/v1/skills/submit (multipart/form-data).
@@ -627,11 +633,19 @@ func (h *SkillMarketHandlers) RateSkill(w http.ResponseWriter, r *http.Request) 
 	// -2 评分触发紧急下架
 	if takedown {
 		_ = h.trialMgr.EmergencyTakedown(r.Context(), skillID)
+		// 从搜索索引中移除，防止已下架的 Skill 仍出现在搜索结果中
+		if h.searchSvc != nil {
+			_ = h.searchSvc.RemoveSkill(r.Context(), skillID)
+		}
 	}
 	// 检查是否满足自动上架条件
 	autoPublish, _ := h.trialMgr.CheckAutoPublish(r.Context(), skillID)
 	if autoPublish {
 		_ = h.trialMgr.AdminApprove(r.Context(), skillID)
+		// 自动上架后重新索引，确保搜索可见
+		if h.searchSvc != nil {
+			_ = h.searchSvc.ReIndexSkill(r.Context(), skillID)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"emergency_takedown": takedown,
@@ -675,6 +689,10 @@ func (h *SkillMarketHandlers) AdminApproveSkill(w http.ResponseWriter, r *http.R
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 批准后重新索引，确保搜索可见
+	if h.searchSvc != nil {
+		_ = h.searchSvc.ReIndexSkill(r.Context(), skillID)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "approved"})
 }
 
@@ -688,6 +706,10 @@ func (h *SkillMarketHandlers) AdminRejectSkill(w http.ResponseWriter, r *http.Re
 	if err := h.trialMgr.AdminReject(r.Context(), skillID); err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// 从搜索索引中移除，防止已拒绝的 Skill 仍出现在搜索结果中
+	if h.searchSvc != nil {
+		_ = h.searchSvc.RemoveSkill(r.Context(), skillID)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }
@@ -761,6 +783,10 @@ func (h *SkillMarketHandlers) WithdrawSkill(w http.ResponseWriter, r *http.Reque
 	if err := h.skillStore.SetVisibility(skillID, false); err != nil {
 		smError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// 从搜索索引中移除，防止已下架的 Skill 仍出现在搜索结果中
+	if h.searchSvc != nil {
+		_ = h.searchSvc.RemoveSkill(r.Context(), skillID)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "withdrawn"})
 }

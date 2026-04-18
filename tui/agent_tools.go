@@ -16,12 +16,14 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	configPkg "github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/project"
@@ -33,6 +35,7 @@ import (
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/tui/commands"
+	"gopkg.in/yaml.v3"
 )
 
 // ===================== 会话管理扩展 =====================
@@ -1080,13 +1083,82 @@ func (h *TUIAgentHandler) toolListSkills() string {
 	if len(cfg.NLSkills) == 0 {
 		return "无已安装技能"
 	}
+
 	var sb strings.Builder
+
+	// Group skills by publisher namespace (Requirement 5.4, 5.10).
+	type nsGroup struct {
+		publisher string
+		skills    []corelib.NLSkillEntry
+	}
+	groupMap := make(map[string]*nsGroup)
+	var groupOrder []string
 	for _, sk := range cfg.NLSkills {
-		status := sk.Status
-		if status == "" {
-			status = "active"
+		key := sk.Publisher
+		if key == "" {
+			key = "__local__"
 		}
-		sb.WriteString(fmt.Sprintf("  %s: %s [%s]\n", sk.Name, sk.Description, status))
+		if _, ok := groupMap[key]; !ok {
+			groupMap[key] = &nsGroup{publisher: sk.Publisher}
+			groupOrder = append(groupOrder, key)
+		}
+		groupMap[key].skills = append(groupMap[key].skills, sk)
+	}
+
+	// Sort: local skills first, then namespaced groups alphabetically.
+	sort.SliceStable(groupOrder, func(i, j int) bool {
+		if groupOrder[i] == "__local__" {
+			return true
+		}
+		if groupOrder[j] == "__local__" {
+			return false
+		}
+		return groupOrder[i] < groupOrder[j]
+	})
+
+	sb.WriteString("=== 本地已注册 Skill ===\n")
+	for _, key := range groupOrder {
+		g := groupMap[key]
+		if key == "__local__" {
+			sb.WriteString("\n[Local]\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("\n[%s]\n", g.publisher))
+		}
+		for _, sk := range g.skills {
+			status := sk.Status
+			if status == "" {
+				status = "active"
+			}
+			// Show qualified name for namespaced skills
+			line := fmt.Sprintf("- %s", sk.Name)
+			if sk.Publisher != "" {
+				line = fmt.Sprintf("- %s:%s", sk.Publisher, sk.Name)
+			}
+			// Show directory name alias if different from display name
+			if sk.DirName != "" && sk.DirName != sk.Name {
+				line += fmt.Sprintf(" (alias: %s)", sk.DirName)
+			}
+			// Show [knowledge] type indicator for knowledge skills
+			if sk.Type == "knowledge" {
+				line += " [knowledge]"
+			}
+			line += fmt.Sprintf(": %s [%s]", sk.Description, status)
+			if sk.UsageCount > 0 {
+				successRate := float64(sk.SuccessCount) / float64(sk.UsageCount) * 100
+				line += fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", sk.UsageCount, successRate)
+				// Flag skills needing improvement: failure rate > 30% with at least 10 usages
+				if sk.UsageCount >= 10 {
+					failureRate := float64(sk.FailureCount) / float64(sk.UsageCount)
+					if failureRate > 0.30 {
+						line += " [needs_improvement]"
+					}
+				}
+			}
+			if sk.LastError != "" {
+				line += fmt.Sprintf(" (最近错误: %s)", sk.LastError)
+			}
+			sb.WriteString(line + "\n")
+		}
 	}
 	return sb.String()
 }
@@ -1177,10 +1249,35 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 	}
 
 	var skill *corelib.NLSkillEntry
+	var collisions []corelib.NLSkillEntry // track bare name collisions across publishers
+	isQualified := strings.Contains(skillName, ":")
 	for i := range cfg.NLSkills {
 		if cfg.NLSkills[i].MatchesName(skillName) {
-			skill = &cfg.NLSkills[i]
-			break
+			if isQualified {
+				// Qualified name: exact match, no collision possible.
+				skill = &cfg.NLSkills[i]
+				break
+			}
+			// Bare name: collect all matches to detect collisions.
+			collisions = append(collisions, cfg.NLSkills[i])
+		}
+	}
+	// For bare name queries, resolve collisions (Requirement 5.7).
+	if !isQualified {
+		if len(collisions) == 1 {
+			skill = &collisions[0]
+		} else if len(collisions) > 1 {
+			// Multiple skills match the bare name — require qualified name.
+			var qualifiedNames []string
+			for _, s := range collisions {
+				if s.Publisher != "" {
+					qualifiedNames = append(qualifiedNames, s.Publisher+":"+s.Name)
+				} else {
+					qualifiedNames = append(qualifiedNames, s.Name+" (local)")
+				}
+			}
+			return fmt.Sprintf("技能名 %q 存在歧义——多个技能匹配:\n  %s\n请使用完整限定名 (publisher:name) 来消除歧义",
+				skillName, strings.Join(qualifiedNames, "\n  "))
 		}
 	}
 	if skill == nil {
@@ -1256,6 +1353,10 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		var missing []string
 		for _, env := range skill.RequiredEnv {
 			if strings.TrimSpace(os.Getenv(env)) == "" {
+				// Skip OPENAI_API_KEY if the proxy will provide it
+				if env == "OPENAI_API_KEY" {
+					continue
+				}
 				missing = append(missing, env)
 			}
 		}
@@ -1306,8 +1407,87 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		}
 	}
 
+	// ── Credential file pre-check: validate required credential files exist locally ──
+	if len(skill.RequiredCredentialFiles) > 0 {
+		missing := remote.ValidateCredentialFiles(skill.RequiredCredentialFiles)
+		if len(missing) > 0 {
+			return fmt.Sprintf("技能 %s 需要配置: 缺少凭证文件: %s。请创建所需的凭证文件后再运行此技能",
+				skill.Name, strings.Join(missing, ", "))
+		}
+	}
+
 	// BUG-004: Generate a unique Run ID for tracking and status queries
 	runID := fmt.Sprintf("run-%d-%d", time.Now().UnixMilli(), skill.UsageCount+1)
+
+	// ── Credential mounting for SSH execution ──
+	// If the skill declares required_credential_files and an SSH session manager
+	// is available, mount credentials to the remote host before step execution.
+	var credentialCleanup func()
+	if len(skill.RequiredCredentialFiles) > 0 && h.sshMgr != nil {
+		mounter := remote.NewCredentialMounter(h.sshMgr)
+		cleanup, mountErr := mounter.MountCredentials(runID, skill.RequiredCredentialFiles)
+		if mountErr != nil {
+			log.Printf("[tui-skill-runner] credential mount failed: %v", mountErr)
+			// Non-fatal: log warning but continue execution.
+		} else {
+			credentialCleanup = cleanup
+			log.Printf("[tui-skill-runner] credentials mounted for run %s (%d files)", runID, len(skill.RequiredCredentialFiles))
+		}
+	}
+	if credentialCleanup != nil {
+		defer func() {
+			credentialCleanup()
+			log.Printf("[tui-skill-runner] credentials cleaned up for run %s", runID)
+		}()
+	}
+
+	// ── Extract extra env vars from args["env"] (mirrors GUI run.extraEnv) ──
+	var extraEnvMap map[string]string
+	if envRaw, ok := args["env"].(map[string]interface{}); ok && len(envRaw) > 0 {
+		extraEnvMap = make(map[string]string, len(envRaw))
+		for k, v := range envRaw {
+			if s, ok := v.(string); ok {
+				extraEnvMap[k] = s
+			}
+		}
+	}
+
+	// ── OpenAI Proxy for skills requiring OPENAI_API_KEY ──
+	// If the skill declares OPENAI_API_KEY in required_env and the user hasn't
+	// provided it via extra env, start a local proxy that forwards requests
+	// to the currently configured LLM provider.
+	if corelib.NeedsOpenAIProxy(skill.RequiredEnv, extraEnvMap) {
+		// Build config from current LLM provider
+		var proxyCfg corelib.OpenAIProxyConfig
+		currentProvider := cfg.MaclawLLMCurrentProvider
+		for _, p := range cfg.MaclawLLMProviders {
+			if p.Name == currentProvider {
+				proxyCfg = corelib.OpenAIProxyConfig{
+					URL:      p.URL,
+					Key:      p.Key,
+					Model:    p.Model,
+					Protocol: p.Protocol,
+					WireAPI:  p.WireAPI,
+				}
+				break
+			}
+		}
+
+		proxy := corelib.NewOpenAIProxy(proxyCfg)
+		port, proxyErr := proxy.Start()
+		if proxyErr != nil {
+			log.Printf("[tui-skill] openai proxy start failed: %v (continuing without proxy)", proxyErr)
+		} else {
+			defer proxy.Stop()
+			if extraEnvMap == nil {
+				extraEnvMap = make(map[string]string)
+			}
+			extraEnvMap["OPENAI_API_KEY"] = "sk-maclaw-local-proxy"
+			extraEnvMap["OPENAI_BASE_URL"] = fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+			extraEnvMap["OPENAI_MODEL"] = proxyCfg.Model
+			log.Printf("[tui-skill] openai proxy started on port %d for skill %q", port, skill.Name)
+		}
+	}
 
 	// Operation-based routing for api_workflow mode skills.
 	var selectedLabels []string
@@ -1364,7 +1544,40 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		// Resolve step params with captured variables from previous steps
 		resolvedStep := resolveSkillStepTUI(step, vars, skill.SkillDir)
 
+		// Inject proxy/caller-supplied extra env vars into step subprocess.
+		if len(extraEnvMap) > 0 && resolvedStep.Action == "bash" {
+			if resolvedStep.Params == nil {
+				resolvedStep.Params = map[string]interface{}{}
+			}
+			extra := make(map[string]interface{}, len(extraEnvMap))
+			for k, v := range extraEnvMap {
+				extra[k] = v
+			}
+			resolvedStep.Params["extra_env"] = extra
+		}
+		// For non-bash steps (craft_tool, etc.), temporarily set os env vars
+		// so that any subprocess spawned during execution inherits them.
+		var envRestore []func()
+		if resolvedStep.Action != "bash" && len(extraEnvMap) > 0 {
+			for k, v := range extraEnvMap {
+				prev, hadPrev := os.LookupEnv(k)
+				os.Setenv(k, v)
+				k, prev, hadPrev := k, prev, hadPrev
+				envRestore = append(envRestore, func() {
+					if hadPrev {
+						os.Setenv(k, prev)
+					} else {
+						os.Unsetenv(k)
+					}
+				})
+			}
+		}
+
 		output, execErr := runSkillStepWithPollTUI(resolvedStep, skill.SkillDir, vars)
+		// Restore env vars after non-bash step execution.
+		for _, restore := range envRestore {
+			restore()
+		}
 		elapsed := time.Since(stepStart).Truncate(time.Millisecond)
 
 		if execErr != nil {
@@ -2413,9 +2626,232 @@ func (h *TUIAgentHandler) toolManageSkill(args map[string]interface{}) string {
 		return h.toolUploadSkill(args)
 	case "validate":
 		return h.toolValidateSkill(args)
+	case "patch":
+		return h.toolPatchSkill(args)
+	case "history":
+		return h.toolSkillPatchHistory(args)
 	default:
-		return fmt.Sprintf("未知 manage_skill action: %s（支持: list/search/install/run/status/upload/validate）", action)
+		return fmt.Sprintf("未知 manage_skill action: %s（支持: list/search/install/run/status/upload/validate/patch/history）", action)
 	}
+}
+
+// patchRecordTUI represents a single patch applied to a skill definition file.
+type patchRecordTUI struct {
+	Timestamp string `json:"timestamp"`
+	Find      string `json:"find"`
+	Replace   string `json:"replace"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// toolPatchSkill performs a targeted find-and-replace on a skill's YAML/JSON
+// definition file. It validates the result before saving and appends an audit
+// record to .patches.json in the skill directory.
+func (h *TUIAgentHandler) toolPatchSkill(args map[string]interface{}) string {
+	skillName := stringArg(args, "skill_name")
+	if skillName == "" {
+		return "缺少 skill_name 参数"
+	}
+	find := stringArg(args, "find")
+	if find == "" {
+		return "缺少 find 参数"
+	}
+	replace, hasReplace := args["replace"]
+	if !hasReplace {
+		return "缺少 replace 参数"
+	}
+	replaceStr, _ := replace.(string) // empty string is valid (deletion)
+	reason := stringArg(args, "reason")
+
+	// Load skills from config to find the target skill.
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Sprintf("加载配置失败: %v", err)
+	}
+
+	var target *corelib.NLSkillEntry
+	for i := range cfg.NLSkills {
+		if cfg.NLSkills[i].MatchesName(skillName) {
+			target = &cfg.NLSkills[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Sprintf("未找到 Skill「%s」", skillName)
+	}
+	if target.SkillDir == "" {
+		return fmt.Sprintf("Skill「%s」没有关联的目录，无法执行 patch", skillName)
+	}
+
+	// Locate the skill definition file (skill.yaml or skill.json).
+	defPath, defFormat := findSkillDefinitionFileTUI(target.SkillDir)
+	if defPath == "" {
+		return fmt.Sprintf("在 Skill 目录中未找到 skill.yaml 或 skill.json: %s", target.SkillDir)
+	}
+
+	// Read the file content.
+	content, err := os.ReadFile(defPath)
+	if err != nil {
+		return fmt.Sprintf("读取 Skill 定义文件失败: %s", err.Error())
+	}
+
+	// Count occurrences of the find string.
+	count := strings.Count(string(content), find)
+	if count == 0 {
+		return fmt.Sprintf("no match found: 在 Skill 定义文件中未找到「%s」", find)
+	}
+	if count > 1 {
+		return fmt.Sprintf("ambiguous match, provide more context: 找到 %d 处匹配「%s」，请提供更多上下文以精确定位", count, find)
+	}
+
+	// Exactly one match — perform replacement.
+	modified := strings.Replace(string(content), find, replaceStr, 1)
+
+	// Validate the modified content is still valid YAML/JSON.
+	if validationErr := validateSkillFileContentTUI([]byte(modified), defFormat); validationErr != "" {
+		return fmt.Sprintf("patch 后的文件格式无效，已拒绝保存: %s", validationErr)
+	}
+
+	// Save using AtomicWriteFile.
+	if err := fileutil.AtomicWriteFile(defPath, []byte(modified), 0644); err != nil {
+		return fmt.Sprintf("保存 Skill 定义文件失败: %s", err.Error())
+	}
+
+	// Re-scan: loadSkills() always re-reads from disk, so the next call will pick up changes.
+	log.Printf("[skill-patch] patched %s in %s", skillName, defPath)
+
+	// Append patch record to .patches.json audit trail.
+	if auditErr := appendPatchRecordTUI(target.SkillDir, patchRecordTUI{
+		Timestamp: time.Now().Format(time.RFC3339),
+		Find:      find,
+		Replace:   replaceStr,
+		Reason:    reason,
+	}); auditErr != nil {
+		log.Printf("[skill-patch] warning: failed to write audit trail: %v", auditErr)
+	}
+
+	return fmt.Sprintf("✅ Skill「%s」已成功 patch（替换了 1 处匹配）", skillName)
+}
+
+// toolSkillPatchHistory returns the patch history for a given skill in reverse
+// chronological order.
+func (h *TUIAgentHandler) toolSkillPatchHistory(args map[string]interface{}) string {
+	skillName := stringArg(args, "skill_name")
+	if skillName == "" {
+		return "缺少 skill_name 参数"
+	}
+
+	// Load skills from config to find the target skill.
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Sprintf("加载配置失败: %v", err)
+	}
+
+	var target *corelib.NLSkillEntry
+	for i := range cfg.NLSkills {
+		if cfg.NLSkills[i].MatchesName(skillName) {
+			target = &cfg.NLSkills[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Sprintf("未找到 Skill「%s」", skillName)
+	}
+	if target.SkillDir == "" {
+		return fmt.Sprintf("Skill「%s」没有关联的目录", skillName)
+	}
+
+	patchesPath := filepath.Join(target.SkillDir, ".patches.json")
+	data, err := os.ReadFile(patchesPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Sprintf("Skill「%s」没有 patch 历史记录", skillName)
+		}
+		return fmt.Sprintf("读取 patch 历史失败: %s", err.Error())
+	}
+
+	var records []patchRecordTUI
+	if err := json.Unmarshal(data, &records); err != nil {
+		return fmt.Sprintf("解析 patch 历史失败: %s", err.Error())
+	}
+
+	if len(records) == 0 {
+		return fmt.Sprintf("Skill「%s」没有 patch 历史记录", skillName)
+	}
+
+	// Return in reverse chronological order.
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("=== Skill「%s」Patch 历史（共 %d 条）===\n", skillName, len(records)))
+	for i := len(records) - 1; i >= 0; i-- {
+		r := records[i]
+		b.WriteString(fmt.Sprintf("\n[%s]\n", r.Timestamp))
+		b.WriteString(fmt.Sprintf("  find:    %s\n", r.Find))
+		b.WriteString(fmt.Sprintf("  replace: %s\n", r.Replace))
+		if r.Reason != "" {
+			b.WriteString(fmt.Sprintf("  reason:  %s\n", r.Reason))
+		}
+	}
+	return b.String()
+}
+
+// findSkillDefinitionFileTUI locates the skill definition file in a skill directory.
+// Returns the path and format ("yaml" or "json"), or empty strings if not found.
+func findSkillDefinitionFileTUI(skillDir string) (string, string) {
+	yamlPath := filepath.Join(skillDir, "skill.yaml")
+	if _, err := os.Stat(yamlPath); err == nil {
+		return yamlPath, "yaml"
+	}
+	jsonPath := filepath.Join(skillDir, "skill.json")
+	if _, err := os.Stat(jsonPath); err == nil {
+		return jsonPath, "json"
+	}
+	return "", ""
+}
+
+// validateSkillFileContentTUI checks that the given content is valid YAML or JSON
+// depending on the format. Returns an empty string on success, or an error
+// description on failure.
+func validateSkillFileContentTUI(data []byte, format string) string {
+	switch format {
+	case "yaml":
+		var m map[string]interface{}
+		if err := yaml.Unmarshal(data, &m); err != nil {
+			return fmt.Sprintf("YAML 验证失败: %s", err.Error())
+		}
+	case "json":
+		if !json.Valid(data) {
+			return "JSON 验证失败: 内容不是有效的 JSON"
+		}
+	default:
+		return fmt.Sprintf("未知文件格式: %s", format)
+	}
+	return ""
+}
+
+// appendPatchRecordTUI appends a patch record to the .patches.json audit trail
+// in the skill directory.
+func appendPatchRecordTUI(skillDir string, record patchRecordTUI) error {
+	patchesPath := filepath.Join(skillDir, ".patches.json")
+
+	var records []patchRecordTUI
+	if data, err := os.ReadFile(patchesPath); err == nil {
+		// File exists — parse existing records.
+		if jsonErr := json.Unmarshal(data, &records); jsonErr != nil {
+			// Corrupted file — start fresh but log the issue.
+			log.Printf("[skill-patch] warning: corrupted .patches.json, starting fresh: %v", jsonErr)
+			records = nil
+		}
+	}
+
+	records = append(records, record)
+
+	data, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal patch records: %w", err)
+	}
+
+	return fileutil.AtomicWriteFile(patchesPath, data, 0644)
 }
 
 // toolValidateSkill validates a skill for portability issues and optionally auto-fixes them.

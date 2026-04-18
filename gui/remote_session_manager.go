@@ -1193,6 +1193,9 @@ func (m *RemoteSessionManager) runOutputLoop(s *RemoteSession) {
 		m.syncTraceFromOutputResult(s, result)
 		syncOutputResult(m.hubClient, result)
 
+		// Emit code file events for the code preview panel.
+		m.emitCodeFileEvents(s, result.Events)
+
 		m.app.refreshPowerOptimizationState()
 		m.app.emitRemoteStateChanged()
 	}
@@ -1707,6 +1710,9 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				}
 			}
 
+			// Emit code file events for the code preview panel.
+			m.emitCodeFileEvents(s, eventsToSync)
+
 			// Stall detector integration (outside s.mu lock — StallDetector has its own lock)
 			switch msg.Type {
 			case "assistant":
@@ -1931,6 +1937,9 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 		m.syncTraceFromOutputResult(s, result)
 		syncOutputResult(m.hubClient, result)
 
+		// Emit code file events for the code preview panel.
+		m.emitCodeFileEvents(s, result.Events)
+
 		m.app.refreshPowerOptimizationState()
 		m.app.emitRemoteStateChanged()
 	}
@@ -2100,6 +2109,9 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 
 		m.syncTraceFromOutputResult(s, result)
 		syncOutputResult(m.hubClient, result)
+
+		// Emit code file events for the code preview panel.
+		m.emitCodeFileEvents(s, result.Events)
 
 		m.app.refreshPowerOptimizationState()
 		m.app.emitRemoteStateChanged()
@@ -2443,6 +2455,12 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 		s.workspaceRelease()
 		s.workspaceRelease = nil
 	}
+
+	// Emit code:session_end event for the code preview panel.
+	if m.app != nil && m.app.codeEventEmitter != nil {
+		m.app.codeEventEmitter.EmitSessionEnd(s.ID)
+	}
+
 	m.app.refreshPowerOptimizationState()
 	m.app.emitRemoteStateChanged()
 }

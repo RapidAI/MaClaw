@@ -10,9 +10,6 @@ func TestIsLearnedSource(t *testing.T) {
 		// Learned sources — should return true
 		{"learned", true},
 		{"crafted", true},
-		{"auto_hub", true},
-		{"auto_github", true},
-		{"auto_clawhub", true},
 
 		// Non-learned sources — should return false
 		{"manual", false},
@@ -21,6 +18,9 @@ func TestIsLearnedSource(t *testing.T) {
 		{"zip_import", false},
 		{"github", false},
 		{"clawhub", false},
+		{"auto_hub", false},
+		{"auto_github", false},
+		{"auto_clawhub", false},
 
 		// Unknown / empty — should return false
 		{"", false},

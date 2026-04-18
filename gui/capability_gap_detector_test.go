@@ -211,18 +211,21 @@ func TestCapabilityGapDetector_GitHubPath_SetsAutoGitHubSource(t *testing.T) {
 	}
 }
 
-// TestCapabilityGapDetector_AutoSourcesAreLearnedSources verifies that the
-// auto_ prefixed sources are recognized as learned sources by IsLearnedSource.
-func TestCapabilityGapDetector_AutoSourcesAreLearnedSources(t *testing.T) {
+// TestCapabilityGapDetector_AutoSourcesAreNotLearnedSources verifies that the
+// auto_ prefixed sources are NOT recognized as learned sources by IsLearnedSource.
+// Auto-installed skills come from external hubs, not from Maclaw's own learning.
+func TestCapabilityGapDetector_AutoSourcesAreNotLearnedSources(t *testing.T) {
 	tests := []struct {
 		source string
 		want   bool
 	}{
-		{"auto_hub", true},
-		{"auto_github", true},
-		{"auto_clawhub", true},
+		{"auto_hub", false},
+		{"auto_github", false},
+		{"auto_clawhub", false},
 		{"hub", false},
 		{"github", false},
+		{"learned", true},
+		{"crafted", true},
 	}
 	for _, tt := range tests {
 		got := corelib.IsLearnedSource(tt.source)

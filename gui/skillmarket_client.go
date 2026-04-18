@@ -154,7 +154,14 @@ func (c *SkillMarketClient) DownloadEncrypted(ctx context.Context, skillID, emai
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("download failed (%d): %s", resp.StatusCode, string(body))
+		switch resp.StatusCode {
+		case http.StatusNotFound:
+			return nil, fmt.Errorf("skill %s 已从市场中移除，无法下载", skillID)
+		case http.StatusForbidden:
+			return nil, fmt.Errorf("skill %s 已下架，无法下载", skillID)
+		default:
+			return nil, fmt.Errorf("download failed (%d): %s", resp.StatusCode, string(body))
+		}
 	}
 	return io.ReadAll(resp.Body)
 }

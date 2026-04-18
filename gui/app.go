@@ -28,8 +28,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/session"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/user"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -130,6 +132,19 @@ type App struct {
 	aiAssistantFirstChatLogged atomic.Bool
 	docGenerator               *swarm.SwarmDocGenerator // cached PDF doc generator
 	workflowEngine             *workflow.WorkflowEngine // maclaw agent workflow engine (corelib/workflow)
+	codeEventEmitter           *CodeEventEmitter        // emits code file events to frontend for code preview panel
+
+	// Session search store (FTS5 full-text search across historical conversations).
+	sessionSearchStore *session.Store
+	sessionStoreMu     sync.Once
+
+	// User model (dialectic user modeling with confidence-scored dimensions).
+	userModel   *user.Model
+	userModelMu sync.Once
+
+	// Evidence collector for user modeling (lazily initialized).
+	evidenceCollector   *user.Collector
+	evidenceCollectorMu sync.Once
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -1035,6 +1050,8 @@ func (a *App) IsToolBeingInstalled(toolName string) bool {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// Initialize code event emitter for code preview panel.
+	a.codeEventEmitter = NewCodeEventEmitter(a)
 	// Migrate legacy ~/.cceasy data to ~/.maclaw/data on first launch.
 	a.MigrateDataDir()
 	// Platform specific initialization
@@ -1471,6 +1488,11 @@ func (a *App) buildOpencodeLaunchEnv(
 			env["OPENCODE_MODEL"] = selectedModel.ModelId
 		}
 		a.backupToolNativeConfig("opencode")
+		// Write ~/.config/opencode/opencode.json for persistence across subprocess restarts.
+		// Env vars alone don't populate the model selector in OpenCode's UI.
+		if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName); err != nil {
+			log.Printf("[opencode-config] failed to write config: %v", err)
+		}
 	} else {
 		// Restore native config so Opencode can use its own auth.
 		a.restoreToolNativeConfig("opencode")
@@ -1505,6 +1527,11 @@ func (a *App) buildIFlowLaunchEnv(
 			env["IFLOW_MODEL"] = selectedModel.ModelId
 		}
 		a.backupToolNativeConfig("iflow")
+		// Write ~/.iflow/settings.json for persistence across subprocess restarts.
+		// Without this config file, iFlow CLI prompts the user to configure provider URL.
+		if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+			log.Printf("[iflow-config] failed to write config: %v", err)
+		}
 	} else {
 		// Restore native config so iFlow can use its own auth.
 		a.restoreToolNativeConfig("iflow")
@@ -1539,6 +1566,11 @@ func (a *App) buildKiloLaunchEnv(
 			env["KILO_MODEL"] = selectedModel.ModelId
 		}
 		a.backupToolNativeConfig("kilo")
+		// Write ~/.kilocode/cli/config.json for persistence across subprocess restarts.
+		// Env vars alone don't populate the model selector in Kilo Code's UI.
+		if err := configfile.WriteKiloConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+			log.Printf("[kilo-config] failed to write config: %v", err)
+		}
 	} else {
 		// Restore native config so Kilo can use its own auth.
 		a.restoreToolNativeConfig("kilo")
@@ -1940,6 +1972,16 @@ func (a *App) GetUserHomeDir() string {
 // survives uninstalls and is easy to back up / transfer.
 func (a *App) GetDataDir() string {
 	return filepath.Join(a.GetUserHomeDir(), ".maclaw", "data")
+}
+
+// sessionSearchDBPath returns the path to the session search FTS5 database.
+func (a *App) sessionSearchDBPath() string {
+	return filepath.Join(a.GetDataDir(), "session_search.db")
+}
+
+// userModelPath returns the path to the user model JSON file.
+func (a *App) userModelPath() string {
+	return filepath.Join(a.GetDataDir(), "user_model.json")
 }
 
 // GetTempDir returns ~/.maclaw/temp — the temporary directory for maclaw.
@@ -3252,6 +3294,10 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			// Opencode needs config file - use instanceID for isolation
 			a.backupToolNativeConfig("opencode")
 			a.syncToOpencodeSettings(config, projectDir, instanceID)
+			// Also write to ~/.config/opencode/opencode.json so the tool can find the provider
+			if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName); err != nil {
+				log.Printf("Opencode: failed to write home config: %v", err)
+			}
 		case "codebuddy":
 			// CodeBuddy may need config file
 			// a.syncToCodeBuddySettings(config, projectDir, instanceID)
@@ -3264,10 +3310,18 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 			a.backupToolNativeConfig("iflow")
 			a.syncToIFlowSettings(config, projectDir, instanceID)
+			// Also write to ~/.iflow/settings.json so the tool can find the provider
+			if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+				log.Printf("iFlow: failed to write home config: %v", err)
+			}
 		case "kilo":
 			// Kilo needs config file - use instanceID for isolation
 			a.backupToolNativeConfig("kilo")
 			a.syncToKiloSettings(config, projectDir, instanceID)
+			// Also write to ~/.kilocode/cli/config.json so the tool can find the provider
+			if err := configfile.WriteKiloConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
+				log.Printf("Kilo: failed to write home config: %v", err)
+			}
 		default:
 			// OEM extra tools: if EnvBuilderFunc is set, merge its output into env
 			if et := findExtraTool(strings.ToLower(toolName)); et != nil && et.EnvBuilderFunc != nil {

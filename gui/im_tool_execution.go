@@ -24,7 +24,13 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress Progres
 		// frequently return malformed JSON that fails json.Unmarshal.
 		cleaned := coretool.CleanToolArguments(argsJSON)
 		if err := json.Unmarshal([]byte(cleaned), &args); err != nil {
-			return fmt.Sprintf("参数解析失败: %s", err.Error())
+			errMsg := fmt.Sprintf("参数解析失败: %s", err.Error())
+			// When JSON is truncated (common with large write_file content),
+			// provide actionable guidance to the LLM.
+			if strings.Contains(err.Error(), "unexpected end of JSON input") && len(argsJSON) > 8000 {
+				errMsg += "\n\n⚠️ 参数内容过长导致 JSON 被截断。请将内容拆分为多次调用：先用 write_file 写入前半部分，再用 write_file(mode=\"append\") 追加后半部分。单次 content 建议不超过 6000 字符。"
+			}
+			return errMsg
 		}
 	}
 	if args == nil {

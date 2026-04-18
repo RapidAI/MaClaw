@@ -284,6 +284,12 @@ func buildIFlowEnv(m *corelib.ModelConfig) map[string]string {
 	if m.ModelId != "" {
 		env["IFLOW_MODEL"] = m.ModelId
 	}
+	// Write ~/.iflow/settings.json for persistence across subprocess restarts.
+	if !m.IsBuiltin && m.ApiKey != "" {
+		if err := configfile.WriteIFlowConfig(m.ApiKey, m.ModelUrl, m.ModelId); err != nil {
+			fmt.Fprintf(os.Stderr, "[iflow-config] failed to write config: %v\n", err)
+		}
+	}
 	return env
 }
 
@@ -299,6 +305,12 @@ func buildKiloEnv(m *corelib.ModelConfig) map[string]string {
 	}
 	if m.ModelId != "" {
 		env["KILO_MODEL"] = m.ModelId
+	}
+	// Write ~/.kilocode/cli/config.json for persistence across subprocess restarts.
+	if !m.IsBuiltin && m.ApiKey != "" {
+		if err := configfile.WriteKiloConfig(m.ApiKey, m.ModelUrl, m.ModelId); err != nil {
+			fmt.Fprintf(os.Stderr, "[kilo-config] failed to write config: %v\n", err)
+		}
 	}
 	return env
 }

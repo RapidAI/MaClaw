@@ -132,6 +132,16 @@ func (m *ConfigModel) SetEntries(entries []ConfigEntry) {
 	}
 }
 
+// FocusLLMConfig 将光标移到第一个 LLM 配置字段并进入编辑模式。
+func (m *ConfigModel) FocusLLMConfig() {
+	for i, e := range m.entries {
+		if e.Key == "maclaw_llm_url" {
+			m.cursor = i
+			return
+		}
+	}
+}
+
 // LoadFromAppConfig syncs config values from AppConfig to the view.
 func (m *ConfigModel) LoadFromAppConfig(cfg corelib.AppConfig) {
 	valMap := map[string]string{

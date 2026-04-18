@@ -154,10 +154,17 @@ type AppConfig struct {
 	UIZoomFactor float64 `json:"ui_zoom_factor,omitempty"`
 	// SSH — 预配置的远程主机列表
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
+	// Knowledge Skill token budget — combined token budget for all injected
+	// knowledge skills in the system prompt. 0 means use default (2000).
+	KnowledgeSkillTokenBudget int `json:"knowledge_skill_token_budget,omitempty"`
 	// AuxiliaryLLM — lightweight LLM for background tasks (compression,
 	// skill repair, session search summarization). When configured, used
 	// in preference to the main LLM to reduce cost and latency.
 	AuxiliaryLLM AuxiliaryLLMConfig `json:"auxiliary_llm,omitempty"`
+	// NudgeDisabled — when true, the post-use skill nudge system is
+	// completely disabled. No nudge messages will be injected into the
+	// conversation after complex tasks, skill failures, or user corrections.
+	NudgeDisabled bool `json:"nudge_disabled,omitempty"`
 }
 
 func (c AppConfig) MarshalJSON() ([]byte, error) {

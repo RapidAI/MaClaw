@@ -23,6 +23,9 @@ type SearchResult struct {
 	Status        string   `json:"status"`
 	AvgRating     float64  `json:"avg_rating"`
 	DownloadCount int      `json:"download_count"`
+	Version       string   `json:"version,omitempty"`
+	Author        string   `json:"author,omitempty"`
+	CreatedAt     string   `json:"created_at,omitempty"`
 }
 
 // SearchService 提供 FTS5 全文搜索。
@@ -68,11 +71,18 @@ func (s *SearchService) migrate() error {
 			return fmt.Errorf("search migrate %q: %w", stmt[:min(len(stmt), 60)], err)
 		}
 	}
+	// 增量迁移：为已有表添加新列（ALTER TABLE ADD COLUMN 在列已存在时会报错，忽略即可）
+	for _, alter := range []string{
+		`ALTER TABLE sm_skill_index ADD COLUMN version TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sm_skill_index ADD COLUMN author TEXT NOT NULL DEFAULT ''`,
+	} {
+		_, _ = s.store.db.Exec(alter) // 列已存在时静默忽略
+	}
 	return nil
 }
 
 // IndexSkill 将 Skill 索引到 FTS5（发布/更新时调用）。
-func (s *SearchService) IndexSkill(ctx context.Context, id, name, description string, tags []string, avgRating float64, downloads int, price int64, status, createdAt string) error {
+func (s *SearchService) IndexSkill(ctx context.Context, id, name, description string, tags []string, avgRating float64, downloads int, price int64, status, createdAt, version, author string) error {
 	tagsStr := strings.Join(tags, " ")
 	tx, err := s.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -82,8 +92,8 @@ func (s *SearchService) IndexSkill(ctx context.Context, id, name, description st
 
 	// Upsert 索引元数据
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sm_skill_index (skill_id, name, description, tags, avg_rating, downloads, price, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		INSERT INTO sm_skill_index (skill_id, name, description, tags, avg_rating, downloads, price, status, created_at, updated_at, version, author)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
 		ON CONFLICT(skill_id) DO UPDATE SET
 			name = excluded.name,
 			description = excluded.description,
@@ -92,8 +102,10 @@ func (s *SearchService) IndexSkill(ctx context.Context, id, name, description st
 			downloads = excluded.downloads,
 			price = excluded.price,
 			status = excluded.status,
+			version = excluded.version,
+			author = excluded.author,
 			updated_at = datetime('now')`,
-		id, name, description, tagsStr, avgRating, downloads, price, status, createdAt)
+		id, name, description, tagsStr, avgRating, downloads, price, status, createdAt, version, author)
 	if err != nil {
 		return err
 	}
@@ -113,6 +125,21 @@ func (s *SearchService) RemoveSkill(ctx context.Context, id string) error {
 	_, _ = s.store.db.ExecContext(ctx, `DELETE FROM sm_skill_fts WHERE skill_id = ?`, id)
 	_, err := s.store.db.ExecContext(ctx, `DELETE FROM sm_skill_index WHERE skill_id = ?`, id)
 	return err
+}
+
+// ReIndexSkill 从 SkillStore 重新读取 Skill 元数据并更新搜索索引。
+// 用于 Skill 重新上架（SetVisibility(true) / AdminApprove）后恢复搜索可见性。
+func (s *SearchService) ReIndexSkill(ctx context.Context, id string) error {
+	if s.skillStore == nil {
+		return nil
+	}
+	meta := s.skillStore.GetByID(id)
+	if meta == nil || !meta.Visible {
+		return nil
+	}
+	return s.IndexSkill(ctx, meta.ID, meta.Name, meta.Description, meta.Tags,
+		meta.AvgRating, meta.Downloads, int64(meta.Price), meta.Status, meta.CreatedAt,
+		meta.Version, meta.Author)
 }
 
 // sanitizeFTS5Query 将用户输入转换为安全的 FTS5 前缀查询。
@@ -158,11 +185,12 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 
 	var rows *sql.Rows
 	var err error
+	var ftsQueryUsed bool
 
 	if trimmedQuery == "" && len(tags) == 0 {
 		// 无搜索词：按 downloads 降序
 		rows, err = s.store.readDB.QueryContext(ctx, `
-			SELECT skill_id, name, description, tags, avg_rating, downloads, price, status
+			SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at
 			FROM sm_skill_index
 			WHERE status IN ('trial', 'published')
 			ORDER BY downloads DESC
@@ -177,7 +205,7 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 		}
 		args = append(args, topN)
 		rows, err = s.store.readDB.QueryContext(ctx, `
-			SELECT skill_id, name, description, tags, avg_rating, downloads, price, status
+			SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at
 			FROM sm_skill_index
 			WHERE status IN ('trial', 'published') AND `+strings.Join(tagClauses, " AND ")+`
 			ORDER BY downloads DESC
@@ -189,7 +217,7 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 		if ftsQuery == "" {
 			// 输入全是特殊字符，回退到 LIKE 模糊搜索
 			baseQuery := `
-				SELECT skill_id, name, description, tags, avg_rating, downloads, price, status
+				SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at
 				FROM sm_skill_index
 				WHERE status IN ('trial', 'published')
 				  AND (name LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR tags LIKE ? ESCAPE '\')`
@@ -205,15 +233,16 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 			rows, err = s.store.readDB.QueryContext(ctx, baseQuery, args...)
 		} else {
 			// FTS5 前缀搜索 + LIKE 兜底（UNION 去重）
+			ftsQueryUsed = true
 			baseQuery := `
-				SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, rank
+				SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, rank
 				FROM (
-					SELECT i.skill_id, i.name, i.description, i.tags, i.avg_rating, i.downloads, i.price, i.status, f.rank
+					SELECT i.skill_id, i.name, i.description, i.tags, i.avg_rating, i.downloads, i.price, i.status, i.version, i.author, i.created_at, f.rank
 					FROM sm_skill_fts f
 					JOIN sm_skill_index i ON i.skill_id = f.skill_id
 					WHERE sm_skill_fts MATCH ? AND i.status IN ('trial', 'published')
 				  UNION
-					SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, 0 as rank
+					SELECT skill_id, name, description, tags, avg_rating, downloads, price, status, version, author, created_at, 0 as rank
 					FROM sm_skill_index
 					WHERE status IN ('trial', 'published')
 					  AND (name LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\' OR tags LIKE ? ESCAPE '\')
@@ -241,7 +270,10 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 	defer rows.Close()
 
 	var results []SearchResult
-	hasRankCol := trimmedQuery != ""
+	// hasRankCol is true only for the FTS5 UNION query path which appends a rank column.
+	// The LIKE-only fallback (ftsQuery == "") does NOT have a rank column even when
+	// trimmedQuery is non-empty, so we cannot simply use trimmedQuery != "".
+	hasRankCol := trimmedQuery != "" && ftsQueryUsed
 
 	for rows.Next() {
 		var r SearchResult
@@ -249,11 +281,11 @@ func (s *SearchService) Search(ctx context.Context, query string, tags []string,
 		var ftsRank float64
 
 		if hasRankCol {
-			if err := rows.Scan(&r.ID, &r.Name, &r.Description, &tagsStr, &r.AvgRating, &r.DownloadCount, &r.Price, &r.Status, &ftsRank); err != nil {
+			if err := rows.Scan(&r.ID, &r.Name, &r.Description, &tagsStr, &r.AvgRating, &r.DownloadCount, &r.Price, &r.Status, &r.Version, &r.Author, &r.CreatedAt, &ftsRank); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := rows.Scan(&r.ID, &r.Name, &r.Description, &tagsStr, &r.AvgRating, &r.DownloadCount, &r.Price, &r.Status); err != nil {
+			if err := rows.Scan(&r.ID, &r.Name, &r.Description, &tagsStr, &r.AvgRating, &r.DownloadCount, &r.Price, &r.Status, &r.Version, &r.Author, &r.CreatedAt); err != nil {
 				return nil, err
 			}
 		}
@@ -294,7 +326,7 @@ func (s *SearchService) RebuildIndex(ctx context.Context) error {
 			break
 		}
 		for _, m := range result.Skills {
-			if err := s.IndexSkill(ctx, m.ID, m.Name, m.Description, m.Tags, m.AvgRating, m.Downloads, 0, "published", m.CreatedAt); err != nil {
+			if err := s.IndexSkill(ctx, m.ID, m.Name, m.Description, m.Tags, m.AvgRating, m.Downloads, 0, "published", m.CreatedAt, m.Version, m.Author); err != nil {
 				log.Printf("[skillmarket] rebuild index: skill %s error: %v", m.ID, err)
 			}
 		}

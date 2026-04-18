@@ -6,6 +6,8 @@ import type { ChatMessage, CancelAIAssistantResult, ChatAction, AIAssistantInitS
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti } from "./useAIAssistant";
 import { useWorkflowState } from "./useWorkflowState";
 import { WorkflowDocPreview, type DocPreviewTheme } from "./WorkflowDocPreview";
+import { useCodePreviewState } from "./useCodePreviewState";
+import { CodePreviewPanel, darkCodePreviewTheme, lightCodePreviewTheme } from "./CodePreviewPanel";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { BufferQueuePanel } from "./BufferQueuePanel";
@@ -957,6 +959,14 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     // Workflow split-pane state
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, dismissDocsBar } = useWorkflowState();
 
+    // Code preview split-pane state (mutual exclusion with workflow preview)
+    const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState(workflowState.splitMode);
+
+    // Determine which split-pane is active: workflow preview takes priority
+    const showWorkflowPreview = workflowState.splitMode;
+    const showCodePreview = !showWorkflowPreview && codePreviewState.active;
+    const anySplitActive = showWorkflowPreview || showCodePreview;
+
     const title = localizeText(lang, "AI Assistant", "AI 助手");
     const thinkingText = localizeText(lang, "Thinking... (you can type ahead)", "正在思考...（可预输入）");
     const processingText = localizeText(lang, "Running tools... (you can type ahead)", "执行中...（可预输入）");
@@ -1395,7 +1405,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
 
     return (
         <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden", ...(maximized ? { position: "fixed" as const, inset: 0, zIndex: 12000, background: t.bg, boxShadow: "0 0 40px rgba(0,0,0,0.12)" } : {}) }}>
-        <div data-testid="ai-panel-root" style={{...containerStyle, width: workflowState.splitMode ? `${workflowState.splitRatio * 100}%` : "100%", flex: workflowState.splitMode ? "none" : 1}}>
+        <div data-testid="ai-panel-root" style={{...containerStyle, width: anySplitActive ? `${workflowState.splitRatio * 100}%` : "100%", flex: anySplitActive ? "none" : 1}}>
             {/* ── Drag overlay (inline mode) ── */}
             {inline && !maximized && (
                 <div style={{
@@ -2196,7 +2206,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
             </div>
         </div>
         </div>
-        {workflowState.splitMode && (
+        {showWorkflowPreview && (
             <div style={{ flex: 1, minWidth: 0, height: "100%" }}>
                 <WorkflowDocPreview
                     phaseDocuments={workflowState.phaseDocuments}
@@ -2240,6 +2250,17 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                         document.addEventListener("mousemove", onMouseMove);
                         document.addEventListener("mouseup", onMouseUp);
                     }}
+                />
+            </div>
+        )}
+        {showCodePreview && (
+            <div style={{ flex: 1, minWidth: 0, height: "100%" }}>
+                <CodePreviewPanel
+                    files={codePreviewState.files}
+                    activeFilePath={codePreviewState.activeFilePath}
+                    onSelectFile={selectCodeFile}
+                    onClose={closeCodePreview}
+                    theme={themeMode === 'dark' ? darkCodePreviewTheme : lightCodePreviewTheme}
                 />
             </div>
         )}

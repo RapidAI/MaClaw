@@ -39,6 +39,45 @@ const (
 	guiMaxToolArgumentsBytes = 180 * 1024
 )
 
+// filterTruncatedToolCalls checks for tool calls with invalid JSON arguments
+// when the model hit its output token limit (finish_reason="length"). Truncated
+// tool calls are removed and a hint is appended to msg.Content so the LLM
+// learns to produce shorter arguments on the next iteration.
+// Returns the (possibly modified) finishReason.
+func filterTruncatedToolCalls(msg *llmMessage, finishReason string) string {
+	if finishReason != "length" || len(msg.ToolCalls) == 0 {
+		return finishReason
+	}
+	var validCalls []llmToolCall
+	var truncatedNames []string
+	for _, tc := range msg.ToolCalls {
+		args := strings.TrimSpace(tc.Function.Arguments)
+		if args == "" {
+			truncatedNames = append(truncatedNames, tc.Function.Name)
+			continue
+		}
+		var tmp interface{}
+		if err := json.Unmarshal([]byte(args), &tmp); err != nil {
+			truncatedNames = append(truncatedNames, tc.Function.Name)
+			log.Printf("[LLM Stream] truncated tool call detected: %s args=%d bytes (finish_reason=length)", tc.Function.Name, len(args))
+		} else {
+			validCalls = append(validCalls, tc)
+		}
+	}
+	if len(truncatedNames) == 0 {
+		return finishReason
+	}
+	msg.ToolCalls = validCalls
+	hint := fmt.Sprintf("\n\n[系统提示] 模型输出长度超限（finish_reason=length），以下工具调用的参数被截断：%s。"+
+		"请将大文件内容拆分为多次写入（每次不超过 5000 字符），或使用 bash 工具通过脚本写入。",
+		strings.Join(truncatedNames, ", "))
+	msg.Content += hint
+	if len(msg.ToolCalls) == 0 {
+		return "stop"
+	}
+	return finishReason
+}
+
 // classifyOpenAIHTTPError 解析 OpenAI API 错误响应，返回友好的中文提示。
 func classifyOpenAIHTTPError(statusCode int, body []byte) string {
 	// 尝试解析 OpenAI 标准错误格式
@@ -686,6 +725,9 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	}
 
 	if finishReason == "" { finishReason = "stop" }
+
+	// Detect and filter truncated tool calls caused by output token limit.
+	finishReason = filterTruncatedToolCalls(&msg, finishReason)
 
 	return &llmResponse{
 		Choices: []llmChoice{{Message: msg, FinishReason: finishReason}},

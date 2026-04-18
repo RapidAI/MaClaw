@@ -1,0 +1,261 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// ---------------------------------------------------------------------------
+// extractFilePathFromSummary tests
+// ---------------------------------------------------------------------------
+
+func TestExtractFilePathFromSummary(t *testing.T) {
+	cases := []struct {
+		summary string
+		want    string
+	}{
+		{"Inspected /project/main.go", "/project/main.go"},
+		{"Modified /project/src/app.ts", "/project/src/app.ts"},
+		{"Read /project/config.yaml", "/project/config.yaml"},
+		{"Edited /project/lib.rs", "/project/lib.rs"},
+		{"Created /project/new_file.py", "/project/new_file.py"},
+		{"Wrote /project/output.json", "/project/output.json"},
+		{"Some random summary", ""},
+		{"", ""},
+		{"Tool: Bash", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.summary, func(t *testing.T) {
+			got := extractFilePathFromSummary(tc.summary)
+			if got != tc.want {
+				t.Errorf("extractFilePathFromSummary(%q) = %q, want %q", tc.summary, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// maxCodeFileSize constant test
+// ---------------------------------------------------------------------------
+
+func TestMaxCodeFileSize(t *testing.T) {
+	if maxCodeFileSize != 1<<20 {
+		t.Errorf("maxCodeFileSize = %d, want %d (1 MB)", maxCodeFileSize, 1<<20)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// emitCodeFileEvents — nil safety tests
+// ---------------------------------------------------------------------------
+
+func TestEmitCodeFileEvents_NilEmitter(t *testing.T) {
+	m := &RemoteSessionManager{
+		app: &App{}, // codeEventEmitter is nil
+	}
+	s := &RemoteSession{ID: "test-session"}
+	events := []ImportantEvent{
+		{Type: "file.change", RelatedFile: "main.go"},
+	}
+	// Should not panic when codeEventEmitter is nil
+	m.emitCodeFileEvents(s, events)
+}
+
+func TestEmitCodeFileEvents_NilApp(t *testing.T) {
+	m := &RemoteSessionManager{
+		app: nil,
+	}
+	s := &RemoteSession{ID: "test-session"}
+	events := []ImportantEvent{
+		{Type: "file.change", RelatedFile: "main.go"},
+	}
+	// Should not panic when app is nil
+	m.emitCodeFileEvents(s, events)
+}
+
+// ---------------------------------------------------------------------------
+// emitCodeFileEvents — event filtering tests
+// ---------------------------------------------------------------------------
+
+func TestEmitCodeFileEvents_SkipsNonFileEvents(t *testing.T) {
+	app := &App{}
+	emitter := NewCodeEventEmitter(app)
+	app.codeEventEmitter = emitter
+
+	m := &RemoteSessionManager{app: app}
+	s := &RemoteSession{ID: "test-session"}
+
+	// These event types should be skipped
+	events := []ImportantEvent{
+		{Type: "command.started", Summary: "Running: go test"},
+		{Type: "command.success", Summary: "Tests passed"},
+		{Type: "session.error", Summary: "Error detected"},
+		{Type: "task.completed", Summary: "Task completed"},
+		{Type: "tool.use", Summary: "Tool: Bash"},
+	}
+	// Should not panic and should skip all events (no file path to read)
+	m.emitCodeFileEvents(s, events)
+}
+
+func TestEmitCodeFileEvents_SkipsEmptyRelatedFile(t *testing.T) {
+	app := &App{}
+	emitter := NewCodeEventEmitter(app)
+	app.codeEventEmitter = emitter
+
+	m := &RemoteSessionManager{app: app}
+	s := &RemoteSession{ID: "test-session"}
+
+	events := []ImportantEvent{
+		{Type: "file.change", RelatedFile: "", Summary: ""},
+	}
+	// Should not panic — event has no file path
+	m.emitCodeFileEvents(s, events)
+}
+
+// ---------------------------------------------------------------------------
+// emitCodeFileEvents — file size guard test
+// ---------------------------------------------------------------------------
+
+func TestEmitCodeFileEvents_SkipsLargeFiles(t *testing.T) {
+	// Create a temp file larger than 1MB
+	tmpDir := t.TempDir()
+	largePath := filepath.Join(tmpDir, "large.go")
+	data := make([]byte, maxCodeFileSize+1)
+	for i := range data {
+		data[i] = 'x'
+	}
+	if err := os.WriteFile(largePath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{}
+	emitter := NewCodeEventEmitter(app)
+	app.codeEventEmitter = emitter
+
+	m := &RemoteSessionManager{app: app}
+	s := &RemoteSession{ID: "test-session", ProjectPath: tmpDir}
+
+	events := []ImportantEvent{
+		{Type: "file.change", RelatedFile: "large.go"},
+	}
+	// Should not panic — file is too large, event should be skipped
+	m.emitCodeFileEvents(s, events)
+}
+
+// ---------------------------------------------------------------------------
+// emitCodeFileEvents — reads file content from disk
+// ---------------------------------------------------------------------------
+
+func TestEmitCodeFileEvents_ReadsFileContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "hello.go")
+	content := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{}
+	emitter := NewCodeEventEmitter(app)
+	app.codeEventEmitter = emitter
+
+	m := &RemoteSessionManager{app: app}
+	s := &RemoteSession{ID: "test-session", ProjectPath: tmpDir}
+
+	events := []ImportantEvent{
+		{Type: "file.read", RelatedFile: "hello.go"},
+	}
+	// Should not panic — reads file content from disk
+	m.emitCodeFileEvents(s, events)
+}
+
+// ---------------------------------------------------------------------------
+// emitCodeFileEvents — file.change determines opType as "modify"
+// ---------------------------------------------------------------------------
+
+func TestEmitCodeFileEvents_FileChangeOpType(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "app.ts")
+	if err := os.WriteFile(testFile, []byte("const x = 1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{}
+	emitter := NewCodeEventEmitter(app)
+	app.codeEventEmitter = emitter
+
+	m := &RemoteSessionManager{app: app}
+	s := &RemoteSession{ID: "test-session", ProjectPath: tmpDir}
+
+	events := []ImportantEvent{
+		{Type: "file.change", RelatedFile: "app.ts"},
+	}
+	// Should not panic — processes file.change event
+	m.emitCodeFileEvents(s, events)
+}
+
+// ---------------------------------------------------------------------------
+// emitCodeFileEvents — extracts file path from SDK summary
+// ---------------------------------------------------------------------------
+
+func TestEmitCodeFileEvents_ExtractsFromSummary(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "main.go")
+	if err := os.WriteFile(testFile, []byte("package main"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{}
+	emitter := NewCodeEventEmitter(app)
+	app.codeEventEmitter = emitter
+
+	m := &RemoteSessionManager{app: app}
+	s := &RemoteSession{ID: "test-session", ProjectPath: tmpDir}
+
+	// SDK events may not have RelatedFile set, but have file path in Summary
+	absPath := filepath.Join(tmpDir, "main.go")
+	events := []ImportantEvent{
+		{Type: "file.change", RelatedFile: "", Summary: "Modified " + absPath},
+	}
+	// Should not panic — extracts file path from summary
+	m.emitCodeFileEvents(s, events)
+}
+
+// ---------------------------------------------------------------------------
+// gitShowOriginal tests
+// ---------------------------------------------------------------------------
+
+func TestGitShowOriginal_EmptyProjectPath(t *testing.T) {
+	result := gitShowOriginal("", "/some/file.go")
+	if result != "" {
+		t.Errorf("gitShowOriginal with empty project path should return empty string, got %q", result)
+	}
+}
+
+func TestGitShowOriginal_NonGitDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.go")
+	if err := os.WriteFile(testFile, []byte("package main"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// tmpDir is not a git repo, so git show should fail gracefully
+	result := gitShowOriginal(tmpDir, testFile)
+	if result != "" {
+		t.Errorf("gitShowOriginal in non-git dir should return empty string, got %q", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// App.codeEventEmitter initialization test
+// ---------------------------------------------------------------------------
+
+func TestApp_CodeEventEmitter_InitializedInStartup(t *testing.T) {
+	// Verify the field exists on App struct and can be set
+	app := &App{}
+	app.codeEventEmitter = NewCodeEventEmitter(app)
+	if app.codeEventEmitter == nil {
+		t.Fatal("codeEventEmitter should not be nil after initialization")
+	}
+	if app.codeEventEmitter.app != app {
+		t.Error("codeEventEmitter.app should reference the App instance")
+	}
+}

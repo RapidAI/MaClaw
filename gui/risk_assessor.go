@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 // RiskLevel, RiskAssessment,
@@ -196,12 +198,17 @@ func buildReason(level RiskLevel, factors []string) string {
 }
 
 // AssessSkill evaluates the risk level of an entire Skill by scanning all
-// steps and taking the highest risk level. Trust level adjustments:
-// - official: medium → low
-// - unknown: low → medium
+// steps and taking the highest risk level. Trust level hierarchy:
+// - builtin: cap maximum risk at low
+// - trusted: cap maximum risk at medium
+// - agent-created: standard assessment (no modification)
+// - community: escalate assessed risk by one step
+// Backward compatibility: "official" → "trusted", "unknown" → "community".
 // Safe-tool category: skills whose name matches a safe category (pdf, qr,
 // pptx, etc.) are downgraded from critical/high to medium at most, since
 // they perform common utility operations that are not inherently dangerous.
+// Enhanced with 12 threat pattern categories and prompt injection detection.
+// Requirements: 4.1, 4.2, 4.3, 4.7, 4.8, 4.9, 4.10
 func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskAssessment {
 	maxRisk := RiskLow
 	var factors []string
@@ -214,6 +221,35 @@ func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskA
 		if riskLevelOrder[stepAssessment.Level] > riskLevelOrder[maxRisk] {
 			maxRisk = stepAssessment.Level
 			factors = append(factors, stepAssessment.Factors...)
+		}
+
+		// Scan step commands/params against threat pattern categories
+		argStr := flattenArgs(step.Params)
+		threatMatches := security.ScanThreatPatterns(argStr)
+		for _, tm := range threatMatches {
+			if riskLevelOrder[maxRisk] < riskLevelOrder[RiskHigh] {
+				maxRisk = RiskHigh
+			}
+			factors = append(factors, fmt.Sprintf("threat pattern [%s]: %q matched", tm.Category, tm.Pattern))
+		}
+
+		// Scan for prompt injection patterns
+		injectionMatches := security.ScanPromptInjection(argStr)
+		for _, tm := range injectionMatches {
+			if riskLevelOrder[maxRisk] < riskLevelOrder[RiskCritical] {
+				maxRisk = RiskCritical
+			}
+			factors = append(factors, fmt.Sprintf("prompt injection detected: %q matched", tm.Pattern))
+		}
+
+		// Scan for invisible Unicode characters, RTL overrides, and homoglyphs
+		// Requirements: 4.4
+		unicodeMatches := security.ScanUnicodeAnomalies(argStr)
+		if len(unicodeMatches) > 0 {
+			maxRisk = escalateRiskLevel(maxRisk)
+			for _, tm := range unicodeMatches {
+				factors = append(factors, fmt.Sprintf("unicode anomaly: %s", tm.Pattern))
+			}
 		}
 	}
 
@@ -231,14 +267,42 @@ func (a *RiskAssessor) AssessSkill(skill *NLSkillEntry, trustLevel string) RiskA
 		}
 	}
 
-	// Trust-level adjustments
-	if trustLevel == "official" && maxRisk == RiskMedium {
-		maxRisk = RiskLow
-		factors = append(factors, "official trust level: medium downgraded to low")
+	// Structural checks on skill directory
+	// Requirements: 4.5, 4.6
+	if skill.SkillDir != "" {
+		structuralMatches := security.ScanDirectoryStructure(skill.SkillDir)
+		if len(structuralMatches) > 0 {
+			maxRisk = escalateRiskLevel(maxRisk)
+			for _, tm := range structuralMatches {
+				factors = append(factors, fmt.Sprintf("structural anomaly: %s", tm.Pattern))
+			}
+		}
 	}
-	if trustLevel == "unknown" && maxRisk == RiskLow {
-		maxRisk = RiskMedium
-		factors = append(factors, "unknown trust level: low upgraded to medium")
+
+	// 4-tier trust level hierarchy: builtin > trusted > agent-created > community
+	// Normalize legacy values: "official" → "trusted", "unknown" → "community"
+	normalized := security.NormalizeTrustLevel(trustLevel)
+	switch normalized {
+	case security.TrustLevelBuiltin:
+		// Cap maximum risk at low regardless of pattern matches
+		if riskLevelOrder[maxRisk] > riskLevelOrder[RiskLow] {
+			factors = append(factors, fmt.Sprintf("builtin trust level: %s capped to low", maxRisk))
+			maxRisk = RiskLow
+		}
+	case security.TrustLevelTrusted:
+		// Cap maximum risk at medium
+		if riskLevelOrder[maxRisk] > riskLevelOrder[RiskMedium] {
+			factors = append(factors, fmt.Sprintf("trusted trust level: %s capped to medium", maxRisk))
+			maxRisk = RiskMedium
+		}
+	case security.TrustLevelCommunity:
+		// Escalate assessed risk by one step
+		escalated := escalateRiskLevel(maxRisk)
+		if escalated != maxRisk {
+			factors = append(factors, fmt.Sprintf("community trust level: %s escalated to %s", maxRisk, escalated))
+			maxRisk = escalated
+		}
+	// agent-created and any other value: standard assessment (no modification)
 	}
 
 	return RiskAssessment{

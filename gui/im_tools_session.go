@@ -424,6 +424,11 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		})
 	}
 
+	// Emit code:session_start event for the code preview panel.
+	if h.app != nil && h.app.codeEventEmitter != nil {
+		h.app.codeEventEmitter.EmitSessionStart(view.ID)
+	}
+
 	var b strings.Builder
 	for _, hint := range hints {
 		b.WriteString(hint)

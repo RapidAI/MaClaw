@@ -49,8 +49,12 @@ type NLSkillDefinition struct {
 	HubSkillID     string        `json:"hub_skill_id,omitempty"`
 	HubVersion     string        `json:"hub_version,omitempty"`
 	TrustLevel     string        `json:"trust_level,omitempty"`
+	Type           string        `json:"type,omitempty"`           // "executable" (default) | "knowledge"
+	Content        string        `json:"content,omitempty"`        // Markdown content for knowledge-type skills
+	Publisher      string        `json:"publisher,omitempty"`      // Plugin namespace publisher
 	UsageCount     int           `json:"usage_count"`
 	SuccessCount   int           `json:"success_count"`
+	FailureCount   int           `json:"failure_count"`
 	SuccessRate    float64       `json:"success_rate"` // computed: SuccessCount / UsageCount
 	LastUsedAt     *time.Time    `json:"last_used_at,omitempty"`
 	LastError      string        `json:"last_error,omitempty"`
@@ -449,8 +453,12 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			HubSkillID:     s.HubSkillID,
 			HubVersion:     s.HubVersion,
 			TrustLevel:     s.TrustLevel,
+			Type:           s.Type,
+			Content:        s.Content,
+			Publisher:      s.Publisher,
 			UsageCount:     s.UsageCount,
 			SuccessCount:   s.SuccessCount,
+			FailureCount:   s.FailureCount,
 			LastError:      s.LastError,
 		}
 		if s.UsageCount > 0 {
@@ -545,6 +553,58 @@ func (e *SkillExecutor) executeSkillSteps(skill *NLSkillEntry) (string, error) {
 	// templateVars. This allows bash steps that output sessionId (e.g. via
 	// Python scripts) to propagate state to subsequent steps.
 	vars := make(map[string]string)
+
+	// ── OpenAI Proxy for skills requiring OPENAI_API_KEY ──
+	// This synchronous path (used by capability_gap_detector and auto-install)
+	// also needs proxy support, mirroring the async SkillRunner.executeAsync path.
+	// Note: uses os.Setenv because executeBashStep inherits process env.
+	// Save/restore previous values to avoid clobbering user-set env vars.
+	if corelib.NeedsOpenAIProxy(skill.RequiredEnv, nil) {
+		var proxyCfg corelib.OpenAIProxyConfig
+		if e.app != nil {
+			llmCfg := e.app.GetMaclawLLMConfig()
+			proxyCfg = corelib.OpenAIProxyConfig{
+				URL:      llmCfg.URL,
+				Key:      llmCfg.Key,
+				Model:    llmCfg.Model,
+				Protocol: llmCfg.Protocol,
+				WireAPI:  llmCfg.WireAPI,
+			}
+		}
+		proxy := corelib.NewOpenAIProxy(proxyCfg)
+		port, proxyErr := proxy.Start()
+		if proxyErr != nil {
+			log.Printf("[skill-executor] openai proxy start failed: %v (continuing without proxy)", proxyErr)
+		} else {
+			defer proxy.Stop()
+			// Save previous values for restore
+			prevKey, hadKey := os.LookupEnv("OPENAI_API_KEY")
+			prevURL, hadURL := os.LookupEnv("OPENAI_BASE_URL")
+			prevModel, hadModel := os.LookupEnv("OPENAI_MODEL")
+			os.Setenv("OPENAI_API_KEY", "sk-maclaw-local-proxy")
+			os.Setenv("OPENAI_BASE_URL", fmt.Sprintf("http://127.0.0.1:%d/v1", port))
+			os.Setenv("OPENAI_MODEL", proxyCfg.Model)
+			defer func() {
+				if hadKey {
+					os.Setenv("OPENAI_API_KEY", prevKey)
+				} else {
+					os.Unsetenv("OPENAI_API_KEY")
+				}
+				if hadURL {
+					os.Setenv("OPENAI_BASE_URL", prevURL)
+				} else {
+					os.Unsetenv("OPENAI_BASE_URL")
+				}
+				if hadModel {
+					os.Setenv("OPENAI_MODEL", prevModel)
+				} else {
+					os.Unsetenv("OPENAI_MODEL")
+				}
+			}()
+			log.Printf("[skill-executor] openai proxy started on port %d for skill %q", port, skill.Name)
+		}
+	}
+
 	for i, step := range skill.Steps {
 		stepCopy := step
 		if stepCopy.Action == "send_input" || stepCopy.Action == "send_and_observe" {
@@ -1568,7 +1628,7 @@ func (e *SkillExecutor) CleanupStaleSkills() []string {
 		if s.Status != "active" {
 			continue
 		}
-		// Only auto-cleanup learned/auto-installed skills; manual and hub skills are user-managed.
+		// Only auto-cleanup learned/crafted skills; manual, hub, and auto-installed skills are user-managed.
 		if !corelib.IsLearnedSource(s.Source) {
 			continue
 		}

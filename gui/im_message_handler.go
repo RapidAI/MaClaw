@@ -21,7 +21,9 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/nudge"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/session"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -126,6 +128,17 @@ type IMAgentResponse struct {
 
 const stalledNoToolRecoverThreshold = 2
 
+// maxConsecutiveEmptyResponses is the hard limit for consecutive empty LLM
+// responses. When the model returns empty content this many times in a row,
+// the loop force-returns the best available result instead of injecting more
+// Recover prompts (which inflate context and worsen the problem).
+const maxConsecutiveEmptyResponses = 3
+
+// maxTotalRecoverInjections caps the total number of Recover prompt injections
+// per agent loop. This prevents context bloat when the model is stuck in a
+// recover-empty-recover cycle.
+const maxTotalRecoverInjections = 8
+
 type agentLoopStage string
 
 type skillPreferenceMode string
@@ -146,9 +159,11 @@ const (
 )
 
 type agentLoopPhase struct {
-	Stage                   agentLoopStage
-	ConsecutiveNoTool       int
-	DeliverableRecoverCount int
+	Stage                      agentLoopStage
+	ConsecutiveNoTool          int
+	ConsecutiveEmptyResponses  int // tracks consecutive empty LLM responses for hard exit
+	TotalRecoverInjections     int // total recover prompt injections in this loop
+	DeliverableRecoverCount    int
 	ForceSkillPreference    bool
 	SkillMode               skillPreferenceMode
 	PreferredSkillName      string
@@ -160,6 +175,13 @@ type agentLoopPhase struct {
 	RemoteSearchExhausted   bool
 	RecoverReason           string
 	RecoverPrompt           string
+
+	// Workaround detection: when a skill execution fails, we record the
+	// skill name and error. If the LLM subsequently resolves the task
+	// through alternative tool calls (the loop ends successfully without
+	// the skill), we classify the outcome as "workaround".
+	FailedSkillName  string // set when a run_skill/manage_skill(action=run) call fails
+	FailedSkillError string // the error message from the failed skill execution
 }
 
 func shouldPreferSkillForTask(text string) bool {
@@ -309,6 +331,7 @@ func enterRecoverPhase(phase *agentLoopPhase, reason, prompt string) {
 	phase.Stage = agentStageRecover
 	phase.RecoverReason = strings.TrimSpace(reason)
 	phase.RecoverPrompt = prompt
+	phase.TotalRecoverInjections++
 }
 
 func buildSkillProgressGuidance(skillName, runID string) string {
@@ -382,6 +405,29 @@ func buildEmptyResultRecoverPrompt() string {
 	return "[Recover 阶段]\n检测到上一轮没有返回任何可展示结果，当前进入 Recover 阶段。不要空结束，也不要只重复解释。请立即二选一：1) 直接给出可展示结果；2) 明确说明失败原因和当前状态。若还需要继续执行，必须立即调用真实工具。\n[/Recover 阶段]"
 }
 
+// findLastAssistantContent scans conversation history backwards and returns
+// the content of the last non-empty assistant message. This is used as a
+// fallback when the loop must hard-exit due to consecutive empty responses.
+func findLastAssistantContent(history []conversationEntry) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
+		if entry.Role == "assistant" {
+			var content string
+			switch v := entry.Content.(type) {
+			case string:
+				content = v
+			default:
+				continue
+			}
+			content = strings.TrimSpace(content)
+			if content != "" && len([]rune(content)) > 10 {
+				return content
+			}
+		}
+	}
+	return ""
+}
+
 func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []string) string {
 	var b strings.Builder
 	b.WriteString("[Recover 阶段]\n上一轮真实工具执行已出现失败，当前进入 Recover 阶段。请先根据失败结果调整计划，不要原样重复已经失败的尝试。")
@@ -440,6 +486,56 @@ func didSkillToolFail(toolCalls []llmToolCall, toolResults []string) bool {
 		}
 	}
 	return false
+}
+
+// extractFailedSkillInfo extracts the skill name and error message from a
+// failed run_skill or manage_skill(action=run) tool call. Returns ("", "")
+// if no skill failure is found. This is used for workaround detection:
+// when a skill fails but the LLM resolves the task through alternative
+// tool calls, the outcome is classified as "workaround".
+func extractFailedSkillInfo(toolCalls []llmToolCall, toolResults []string) (skillName, lastError string) {
+	if len(toolCalls) == 0 || len(toolCalls) != len(toolResults) {
+		return "", ""
+	}
+	for i, tc := range toolCalls {
+		name := strings.TrimSpace(tc.Function.Name)
+		if name != "run_skill" && name != "manage_skill" {
+			continue
+		}
+		// For manage_skill, only consider action=run
+		if name == "manage_skill" {
+			var parsed map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err != nil {
+				continue
+			}
+			action, _ := parsed["action"].(string)
+			if action != "run" {
+				continue
+			}
+		}
+		if classifyToolOutcome(name, toolResults[i]) != "failed" {
+			continue
+		}
+		// Extract skill name from the tool call arguments.
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err != nil {
+			continue
+		}
+		sn, _ := parsed["name"].(string)
+		if sn == "" {
+			sn, _ = parsed["skill_name"].(string)
+		}
+		if sn == "" {
+			continue
+		}
+		// Use the tool result as the error message (truncated).
+		errMsg := strings.TrimSpace(toolResults[i])
+		if len(errMsg) > 300 {
+			errMsg = errMsg[:300]
+		}
+		return sn, errMsg
+	}
+	return "", ""
 }
 
 func userFacingToolProgressText(toolName string) string {
@@ -1791,11 +1887,31 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is *pendingCapabilityGapResult.
 	pendingCapabilityGap sync.Map
 
+	// frozenMemorySnapshots caches the memory section of the system prompt
+	// per user. On the first message of a session, the memory section is
+	// generated via appendMemorySection and cached. Subsequent system prompt
+	// constructions reuse the cached snapshot instead of regenerating,
+	// keeping the LLM's KV cache prefix stable.
+	// Keyed by userID, value is string (the cached memory section text).
+	frozenMemorySnapshots sync.Map
+
+	// snapshotInitialized tracks whether a frozen memory snapshot has been
+	// generated for a given user in the current session.
+	// Keyed by userID, value is bool.
+	snapshotInitialized sync.Map
+
 	// taskOrchestrator manages per-task execution during the coding
 	// workflow's Execution Phase. When active, it injects per-task system
 	// messages and constructs focused prompts for send_and_observe instead
 	// of letting the LLM dump the entire project description at once.
 	taskOrchestrator *TaskExecutionOrchestrator
+
+	// nudgeTracker manages the post-use skill nudge system per session.
+	// It tracks cooldown timing, deduplication, and iteration thresholds
+	// to inject low-priority system messages encouraging skill creation
+	// or improvement after complex tasks, skill failures, or user corrections.
+	// Lazily initialized on first use via ensureNudgeTracker().
+	nudgeTracker *nudge.NudgeTracker
 }
 
 // NewIMMessageHandler creates a new handler.
@@ -1864,7 +1980,174 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	// Initialize task execution orchestrator for per-task coding workflow.
 	h.taskOrchestrator = NewTaskExecutionOrchestrator()
 
+	// Initialize the nudge tracker for post-use skill nudge system.
+	h.nudgeTracker = nudge.NewNudgeTracker()
+
 	return h
+}
+
+// ensureNudgeTracker returns the existing NudgeTracker or creates a new one
+// if it hasn't been initialized yet (defensive lazy init).
+func (h *IMMessageHandler) ensureNudgeTracker() *nudge.NudgeTracker {
+	if h.nudgeTracker == nil {
+		h.nudgeTracker = nudge.NewNudgeTracker()
+	}
+	return h.nudgeTracker
+}
+
+// isNudgeDisabled checks whether the nudge system is disabled via config.
+// Returns true if nudges should be suppressed.
+func (h *IMMessageHandler) isNudgeDisabled() bool {
+	if h.app == nil {
+		return false
+	}
+	cfg, err := h.app.LoadConfig()
+	if err != nil {
+		return false
+	}
+	return cfg.NudgeDisabled
+}
+
+// userCorrectionKeywords are keywords that indicate the user is correcting
+// the LLM's approach. Used for user correction nudge detection.
+var userCorrectionKeywords = []string{
+	// English
+	"instead", "not like that", "wrong", "incorrect", "no,", "actually",
+	"should be", "use this", "try this", "do it this way", "that's wrong",
+	"fix", "correct",
+	// Chinese
+	"不对", "错了", "应该", "不是这样", "换一种", "改成", "用这个", "试试这个",
+	"这样做", "纠正", "修正",
+}
+
+// containsCorrectionKeywords checks if the user message contains any
+// correction keywords that suggest the user is correcting the LLM's approach.
+func containsCorrectionKeywords(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	for _, kw := range userCorrectionKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRecentFailedToolCall checks if the conversation history has a failed
+// tool call in the recent entries (last 6 entries). A failed tool call is
+// identified by error-like content in a tool result message.
+func hasRecentFailedToolCall(history []conversationEntry) bool {
+	// Scan the last 6 entries for a tool result that looks like a failure.
+	start := len(history) - 6
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(history); i++ {
+		entry := history[i]
+		if entry.Role != "tool" {
+			continue
+		}
+		content, ok := entry.Content.(string)
+		if !ok {
+			continue
+		}
+		lower := strings.ToLower(content)
+		if strings.Contains(lower, "error") || strings.Contains(lower, "failed") ||
+			strings.Contains(lower, "失败") || strings.Contains(lower, "错误") {
+			return true
+		}
+	}
+	return false
+}
+
+// injectNudgeMessages checks nudge conditions and appends appropriate system
+// messages to the conversation history. Nudges are injected AFTER the current
+// response is delivered — they go into the conversation history for the NEXT
+// LLM call, not the current one.
+//
+// Parameters:
+//   - history: the conversation history to append nudge messages to
+//   - iteration: the current agent loop iteration count
+//   - totalToolCallsInLoop: total number of tool calls across all iterations
+//   - phase: the current agent loop phase (for workaround detection)
+//   - userText: the current user message text (for correction detection)
+//
+// Returns the (possibly extended) history.
+func (h *IMMessageHandler) injectNudgeMessages(
+	history []conversationEntry,
+	iteration int,
+	totalToolCallsInLoop int,
+	phase agentLoopPhase,
+	userText string,
+) []conversationEntry {
+	if h.isNudgeDisabled() {
+		return history
+	}
+	tracker := h.ensureNudgeTracker()
+
+	// 1. Complex task nudge: ≥5 tool calls in this loop.
+	if totalToolCallsInLoop >= 5 {
+		event := nudge.NudgeEvent{
+			Type:           nudge.ComplexTask,
+			ToolCallCount:  totalToolCallsInLoop,
+			IterationCount: iteration,
+		}
+		if tracker.ShouldNudge(event) {
+			msg := nudge.NudgeMessage(event)
+			if msg != "" {
+				history = append(history, conversationEntry{
+					Role:    "system",
+					Content: msg,
+				})
+				tracker.RecordNudge(event)
+				log.Printf("[nudge] injected ComplexTask nudge: toolCalls=%d iteration=%d", totalToolCallsInLoop, iteration)
+			}
+		}
+	}
+
+	// 2. Skill failure workaround nudge: skill failed + LLM resolved via alternative tools.
+	if phase.FailedSkillName != "" {
+		event := nudge.NudgeEvent{
+			Type:           nudge.SkillFailureWorkaround,
+			SkillName:      phase.FailedSkillName,
+			IterationCount: iteration,
+		}
+		if tracker.ShouldNudge(event) {
+			msg := nudge.NudgeMessage(event)
+			if msg != "" {
+				history = append(history, conversationEntry{
+					Role:    "system",
+					Content: msg,
+				})
+				tracker.RecordNudge(event)
+				log.Printf("[nudge] injected SkillFailureWorkaround nudge: skill=%q iteration=%d", phase.FailedSkillName, iteration)
+			}
+		}
+	}
+
+	// 3. User correction nudge: user message following a failed tool call
+	//    with correction keywords.
+	if containsCorrectionKeywords(userText) && hasRecentFailedToolCall(history) {
+		event := nudge.NudgeEvent{
+			Type:           nudge.UserCorrection,
+			IterationCount: iteration,
+		}
+		if tracker.ShouldNudge(event) {
+			msg := nudge.NudgeMessage(event)
+			if msg != "" {
+				history = append(history, conversationEntry{
+					Role:    "system",
+					Content: msg,
+				})
+				tracker.RecordNudge(event)
+				log.Printf("[nudge] injected UserCorrection nudge: iteration=%d", iteration)
+			}
+		}
+	}
+
+	return history
 }
 
 // SetToolRegistry replaces the tool registry (for testing or late reconfiguration).
@@ -2636,6 +2919,133 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
 	}
+
+	// Persist transcript to FTS5 session search store (non-blocking).
+	h.persistSessionTranscriptAsync(userID, history)
+}
+
+// persistSessionTranscriptAsync converts the conversation history to a
+// session.TranscriptEntry slice, serializes it, extracts a topic, and
+// persists the document to the FTS5 session search store. Runs in a
+// goroutine to avoid blocking the agent loop. Errors are logged but
+// do not fail the main flow.
+func (h *IMMessageHandler) persistSessionTranscriptAsync(userID string, history []conversationEntry) {
+	if len(history) == 0 {
+		return
+	}
+	store := h.getSessionStore()
+	if store == nil {
+		return
+	}
+
+	// Copy history to avoid data races with the caller.
+	historyCopy := make([]conversationEntry, len(history))
+	copy(historyCopy, history)
+
+	go func() {
+		entries := conversationToTranscriptEntries(historyCopy)
+		if len(entries) == 0 {
+			return
+		}
+
+		fullText := session.Serialize(entries)
+		if strings.TrimSpace(fullText) == "" {
+			return
+		}
+
+		topic := session.ExtractTopic(fullText)
+
+		// Derive session ID from userID + current timestamp.
+		sessionID := fmt.Sprintf("%s_%d", userID, time.Now().UnixNano())
+
+		doc := session.SessionDocument{
+			SessionID: sessionID,
+			Timestamp: time.Now(),
+			Platform:  "gui",
+			Topic:     topic,
+			FullText:  fullText,
+		}
+
+		if err := store.Persist(doc); err != nil {
+			log.Printf("[session_search] persist failed: %v", err)
+		}
+	}()
+}
+
+// conversationToTranscriptEntries converts GUI conversation entries to the
+// corelib session.TranscriptEntry format for serialization and FTS5 indexing.
+func conversationToTranscriptEntries(history []conversationEntry) []session.TranscriptEntry {
+	var entries []session.TranscriptEntry
+	for _, e := range history {
+		te := session.TranscriptEntry{
+			Role: e.Role,
+		}
+
+		// Extract content string.
+		switch v := e.Content.(type) {
+		case string:
+			te.Content = v
+		default:
+			// For non-string content (e.g. multimodal arrays), marshal to JSON.
+			if v != nil {
+				b, err := json.Marshal(v)
+				if err == nil {
+					te.Content = string(b)
+				}
+			}
+		}
+
+		// Extract tool call metadata.
+		if e.ToolCalls != nil {
+			te.ToolCalls = extractToolCallMeta(e.ToolCalls)
+		}
+
+		// Set tool call ID for tool result entries.
+		if e.ToolCallID != "" {
+			te.ToolCallID = e.ToolCallID
+		}
+
+		entries = append(entries, te)
+	}
+	return entries
+}
+
+// extractToolCallMeta converts the raw ToolCalls interface (typically
+// []interface{} from JSON) into []session.ToolCallMeta for serialization.
+func extractToolCallMeta(raw interface{}) []session.ToolCallMeta {
+	if raw == nil {
+		return nil
+	}
+
+	// Try as []interface{} (common from JSON unmarshaling).
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+
+	var metas []session.ToolCallMeta
+	for _, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tc := session.ToolCallMeta{}
+		if id, ok := m["id"].(string); ok {
+			tc.ID = id
+		}
+		if fn, ok := m["function"].(map[string]interface{}); ok {
+			if name, ok := fn["name"].(string); ok {
+				tc.Name = name
+			}
+			if args, ok := fn["arguments"].(string); ok {
+				tc.Args = args
+			}
+		}
+		if tc.ID != "" || tc.Name != "" {
+			metas = append(metas, tc)
+		}
+	}
+	return metas
 }
 
 func (h *IMMessageHandler) appendTraceEvent(ctx *LoopContext, kind, severity, title, summary, relatedFile, command string) {
@@ -2932,9 +3342,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.pendingCapabilityGap.Delete(msg.UserID)
 		h.sessionDriftReplanCount.Delete(msg.UserID)
 		h.sessionDriftTool.Delete(msg.UserID)
+		h.RefreshMemorySnapshot(msg.UserID)
 		if h.confirmationStore != nil {
 			h.confirmationStore.clear(msg.UserID)
 		}
+		// Flush evidence batch and reset session on conversation reset.
+		h.flushEvidenceOnSessionEnd(msg.UserID)
 		// Clean up workflow and understanding state.
 		h.cancelWorkflowForUser(msg.UserID)
 		resp := &IMAgentResponse{Text: "对话已重置。"}
@@ -2958,9 +3371,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if trimmed == "/sessions" || trimmed == "/status" {
 		return h.handleSessionsCommand()
 	}
+	if trimmed == "/compress" {
+		return h.handleCompressCommand(msg.UserID)
+	}
 	if trimmed == "/help" {
 		return &IMAgentResponse{Text: "📖 可用命令:\n" +
 			"/new /reset — 重置对话\n" +
+			"/compress — 压缩当前对话历史\n" +
 			"/cancel /取消 — 取消当前正在执行的任务\n" +
 			"/exit /quit — 终止所有会话，退出编程模式\n" +
 			"/sessions — 查看当前会话状态\n" +
@@ -3087,6 +3504,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.pendingCapabilityGap.Delete(msg.UserID)
 		h.sessionDriftReplanCount.Delete(msg.UserID)
 		h.sessionDriftTool.Delete(msg.UserID)
+		h.RefreshMemorySnapshot(msg.UserID)
 		EntriesBeforeClear = nil
 		unfinishedSlot = nil
 		freshTask = true
@@ -3101,6 +3519,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			h.pendingCapabilityGap.Delete(msg.UserID)
 			h.sessionDriftReplanCount.Delete(msg.UserID)
 			h.sessionDriftTool.Delete(msg.UserID)
+			h.RefreshMemorySnapshot(msg.UserID)
 			log.Printf("[IMMessageHandler] auto-cleared unfinished task context for user %s", msg.UserID)
 			EntriesBeforeClear = nil
 			unfinishedSlot = nil
@@ -3167,6 +3586,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			h.pendingCapabilityGap.Delete(msg.UserID)
 			h.sessionDriftReplanCount.Delete(msg.UserID)
 			h.sessionDriftTool.Delete(msg.UserID)
+			h.RefreshMemorySnapshot(msg.UserID)
 			log.Printf("[TopicDetector] auto-cleared context for user %s", msg.UserID)
 		}
 	}
@@ -3216,6 +3636,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 
 		result := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, msg.Text, msg.Attachments, onProgress, nil, nil, nil, msg.MinIterations, msg.Platform)
+
+		// --- Evidence collection hook (background loop path) ---
+		h.runEvidenceCollection(msg.UserID, msg.Text)
 
 		// Mark loop as completed/failed and dequeue next.
 		if result != nil && result.Error != "" {
@@ -3397,6 +3820,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		resp = &IMAgentResponse{}
 	}
 
+	// --- Evidence collection hook: async user profile signal analysis ---
+	// Must not block the agent loop response. All work runs in goroutines.
+	h.runEvidenceCollection(msg.UserID, msg.Text)
+
 	// --- Workflow doc capture: store phase output and emit to frontend ---
 	// Only capture when the agent loop was explicitly triggered by the workflow
 	// engine (RunAgentLoop=true). This prevents unrelated messages (weather
@@ -3450,6 +3877,9 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 	h.pendingCapabilityGap.Delete(userID)
 	h.sessionDriftReplanCount.Delete(userID)
 	h.sessionDriftTool.Delete(userID)
+	h.RefreshMemorySnapshot(userID)
+	// Flush evidence batch and reset session on exit.
+	h.flushEvidenceOnSessionEnd(userID)
 	// Reset workflow working directory and suggest_maximize dedup flag.
 	if h.app != nil && h.app.workflowEngine != nil {
 		if adapter, ok := h.app.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
@@ -4268,6 +4698,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 	}
 
+	// consecutiveJSONTruncations tracks consecutive write_file calls that fail
+	// with "unexpected end of JSON input" (truncated output from the model).
+	// After 2 consecutive failures, a system message is injected to guide the
+	// model to use mode=append for chunked writing.
+	consecutiveJSONTruncations := 0
+
+	// totalToolCallsInLoop tracks the cumulative number of tool calls across
+	// all iterations in this agent loop. Used by the nudge system to detect
+	// complex tasks (≥5 tool calls).
+	totalToolCallsInLoop := 0
+
 	for iteration := 0; ; iteration++ {
 		ctx.SetIteration(iteration)
 
@@ -4396,6 +4837,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 		}
 		iterationPrepStartedAt := time.Now()
+		conversation = autoCompressConversation(conversation, cfg, httpClient)
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
 
 		// --- Harness: inject GoalAnchor content ---
@@ -4832,7 +5274,23 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// deliver" and forcing another round that re-outputs the content.
 			needsConfirmFromEngine := false
 			if h.app != nil && h.app.workflowEngine != nil {
-				needsConfirmFromEngine = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+				// When the semantic classifier says the user's message is
+				// maintenance/bug_fix (not a workflow phase request), skip
+				// the engine's NeedsConfirm gate. This prevents maintenance
+				// tasks from being force-returned as phase documents.
+				semanticBypass := false
+				if !gateConfig.active && gateConfig.intent == intentCoding {
+					semanticBypass = true // maintenance or bug_fix
+				}
+				if gateConfig.bugFix {
+					semanticBypass = true
+				}
+				if !semanticBypass {
+					needsConfirmFromEngine = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+				} else {
+					log.Printf("[workflow-gate] NeedsConfirm no-tool engine bypassed: semantic intent=%v active=%v bugFix=%v",
+						gateConfig.intent, gateConfig.active, gateConfig.bugFix)
+				}
 			}
 			// Steering-based coding workflow: when the coding tool gate is
 			// active (intentCoding, no skip signal) and the LLM has produced
@@ -4874,6 +5332,23 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 			if engineGateActive || needsConfirmFromSteering {
 				trimmedForGate := strings.TrimSpace(stripThinkingTags(msgContent))
+
+				// Self-confirmation detection: detect when the LLM both requests
+				// confirmation AND self-answers it in the same response.
+				// Truncate at the confirmation request boundary to prevent the
+				// self-answer from being returned to the user.
+				if containsSelfConfirmationPattern(trimmedForGate) {
+					originalLen := len(trimmedForGate)
+					trimmedForGate = truncateAtConfirmationBoundary(trimmedForGate)
+					msgContent = trimmedForGate
+					log.Printf("NeedsConfirm gate: detected self-confirmation pattern, truncated at confirmation boundary (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedForGate))
+					if h.traceService != nil && ctx.RunID != "" {
+						h.appendTraceEvent(ctx, "gate.self_confirm_truncated", "warn",
+							fmt.Sprintf("Self-confirmation detected and truncated (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedForGate)),
+							truncateTraceText(trimmedForGate, 220), "", "")
+					}
+				}
+
 				if trimmedForGate != "" &&
 					!looksLikeNoToolStallReply(msgContent) &&
 					isSubstantivePhaseDocument(trimmedForGate) {
@@ -4973,9 +5448,33 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				continue
 			}
 			if emptyVisibleResult {
+				phase.ConsecutiveEmptyResponses++
+
+				// Hard exit: if the model has returned empty content too many
+				// times in a row, or total recover injections exceeded the cap,
+				// stop the loop. Continuing only inflates context and worsens
+				// the empty-response problem (common with glm-5.1 at >100K tokens).
+				if phase.ConsecutiveEmptyResponses >= maxConsecutiveEmptyResponses ||
+					phase.TotalRecoverInjections >= maxTotalRecoverInjections {
+					log.Printf("[agent-loop] hard exit: %d consecutive empty responses, %d total recovers — returning best available result",
+						phase.ConsecutiveEmptyResponses, phase.TotalRecoverInjections)
+					phase.Stage = agentStageFinalize
+					// Try to return the last non-empty assistant message from history.
+					fallbackText := findLastAssistantContent(history)
+					if fallbackText == "" {
+						fallbackText = "抱歉，模型多次返回空响应，无法继续处理。请尝试简化请求或重新发送。"
+					}
+					finalResp := &IMAgentResponse{Text: fallbackText}
+					attachLLMTelemetry(finalResp)
+					h.saveConversationHistoryTimed(userID, history, finalResp)
+					return finalResp
+				}
+
 				enterRecoverPhase(&phase, "empty_final_response", buildEmptyResultRecoverPrompt())
 				continue
 			}
+			// Reset consecutive empty counter on non-empty response.
+			phase.ConsecutiveEmptyResponses = 0
 			if promiseOnlyDeliverable {
 				phase.DeliverableRecoverCount++
 				if phase.DeliverableRecoverCount >= effectiveNoToolRecoverThreshold {
@@ -5070,6 +5569,21 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					handlerPostStreamResponseElapsed += time.Since(handlerPostStreamResponseStartedAt)
 				}()
 			}
+
+			// Workaround detection: if a skill failed earlier in this loop
+			// and the LLM has now produced a final response (resolved the
+			// task through alternative tool calls), classify the original
+			// skill failure as a "workaround" outcome.
+			if phase.FailedSkillName != "" && h.app != nil && h.app.skillRunner != nil {
+				h.app.skillRunner.RecordSkillOutcome(phase.FailedSkillName, "workaround", phase.FailedSkillError)
+				log.Printf("[skill-workaround] skill %q failure classified as workaround — LLM resolved task via alternative tools", phase.FailedSkillName)
+			}
+
+			// Nudge injection: append nudge system messages to history
+			// AFTER the current response. They will be visible to the LLM
+			// in the next conversation turn, not the current one.
+			history = h.injectNudgeMessages(history, iteration, totalToolCallsInLoop, phase, userText)
+
 			attachLLMTelemetry(finalResp)
 			h.saveConversationHistoryTimed(userID, history, finalResp)
 			return finalResp
@@ -5108,6 +5622,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		var pendingFiles []pendingFile
 		screenshotAlreadySent := false
 		toolResults := make([]string, 0, len(choice.Message.ToolCalls))
+		totalToolCallsInLoop += len(choice.Message.ToolCalls)
 		for _, tc := range choice.Message.ToolCalls {
 			// Check cancellation between tool calls so we don't keep
 			// executing tools after the user clicked cancel.
@@ -5347,6 +5862,26 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				Role: "tool", Content: truncated, ToolCallID: tc.ID,
 			})
 
+			// --- Detect consecutive JSON truncation failures for write_file ---
+			// When the model generates content too long for a single JSON argument,
+			// the output gets truncated and parsing fails. After 2 consecutive
+			// failures, inject a system message guiding the model to chunk writes.
+			if strings.Contains(truncated, "参数解析失败") && strings.Contains(truncated, "unexpected end of JSON input") {
+				consecutiveJSONTruncations++
+				if consecutiveJSONTruncations >= 2 {
+					jsonHint := "[系统提示] 连续 " + fmt.Sprintf("%d", consecutiveJSONTruncations) + " 次 write_file 因内容过长导致 JSON 截断失败。" +
+						"请将文件内容拆分为多次写入：第一次用 write_file 写入前半部分（不超过 5000 字符），后续用 write_file(mode=\"append\") 逐块追加。" +
+						"或者改用 bash 工具通过 Python 脚本写入大文件。"
+					conversation = append(conversation, map[string]string{
+						"role":    "system",
+						"content": jsonHint,
+					})
+					log.Printf("[agent-loop] injected JSON truncation hint after %d consecutive failures", consecutiveJSONTruncations)
+				}
+			} else {
+				consecutiveJSONTruncations = 0
+			}
+
 			// --- Harness: DriftDetector — record tool_call and check for drift ---
 			if loopDriftDetector != nil {
 				argsHash := fmt.Sprintf("%x", sha256.Sum256([]byte(tc.Function.Arguments)))
@@ -5400,6 +5935,21 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				phase.RemoteSearchExhausted = true
 				phase.ForceSkillPreference = false
 				phase.SkillMode = skillPreferenceFallbackAllowed
+
+				// Workaround detection: record the failed skill name and error
+				// so that if the LLM resolves the task through alternative
+				// tool calls later in this loop, we classify as "workaround".
+				if sn, se := extractFailedSkillInfo(choice.Message.ToolCalls, toolResults); sn != "" {
+					phase.FailedSkillName = sn
+					phase.FailedSkillError = se
+					log.Printf("[skill-workaround] skill %q failed, marking as pending workaround: %s", sn, truncateRunes(se, 120))
+
+					// Record the immediate failure outcome.
+					if h.app != nil && h.app.skillRunner != nil {
+						h.app.skillRunner.RecordSkillOutcome(sn, "failure", se)
+					}
+				}
+
 				enterRecoverPhase(&phase, "skill_failed", buildSkillRecoverPrompt(phase.PreferredSkillName, phase.PreferredSkillRunID))
 			} else if shouldRestrictToSkillSearch(phase) && hasSearchTool {
 				phase.ForceSkillPreference = false
@@ -5593,8 +6143,31 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// activate the gate. IsPhaseNeedsConfirm internally checks ws != nil
 		// && ws.Status == WorkflowActive, so if it returns true here,
 		// GetActiveWorkflow below will also return non-nil.
+		//
+		// EXCEPTION: When the semantic intent classifier has determined the
+		// user's message is maintenance/bug_fix/continuation (not a workflow
+		// phase document), skip the engine gate. This prevents "改进优化下这个
+		// 技能？" from being force-returned as a phase document when a
+		// presentation_design workflow happens to be active.
 		if !needsConfirmToolBranch && iteration > 0 && h.app != nil && h.app.workflowEngine != nil {
-			needsConfirmToolBranch = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+			semanticBypass := false
+			switch gateConfig.intent {
+			case intentCoding:
+				// maintenance or bug_fix — gateConfig.active is false but intent is coding.
+				// The user is doing maintenance work, not generating a workflow phase doc.
+				if !gateConfig.active {
+					semanticBypass = true
+				}
+			}
+			if gateConfig.bugFix {
+				semanticBypass = true
+			}
+			if !semanticBypass {
+				needsConfirmToolBranch = h.app.workflowEngine.IsPhaseNeedsConfirm(userID)
+			} else {
+				log.Printf("[workflow-gate] NeedsConfirm tool-branch fallback bypassed: semantic intent=%v active=%v bugFix=%v reason=%q",
+					gateConfig.intent, gateConfig.active, gateConfig.bugFix, gateConfig.reason)
+			}
 		}
 		// Engine-State-Aware Gate: when the engine path sets needsConfirmToolBranch=true,
 		// additionally check HasPhaseOutput. On first execution (hasOutput=false), skip
@@ -5609,6 +6182,22 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 		if needsConfirmToolBranch {
 			trimmedAfterTools := strings.TrimSpace(stripThinkingTags(msgContent))
+
+			// Self-confirmation detection (tool branch): same logic as no-tool branch.
+			// Detect when the LLM both requests confirmation AND self-answers it in the
+			// same response, then truncate at the confirmation request boundary.
+			if containsSelfConfirmationPattern(trimmedAfterTools) {
+				originalLen := len(trimmedAfterTools)
+				trimmedAfterTools = truncateAtConfirmationBoundary(trimmedAfterTools)
+				msgContent = trimmedAfterTools
+				log.Printf("NeedsConfirm gate (tool branch): detected self-confirmation pattern, truncated at confirmation boundary (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedAfterTools))
+				if h.traceService != nil && ctx.RunID != "" {
+					h.appendTraceEvent(ctx, "gate.self_confirm_truncated", "warn",
+						fmt.Sprintf("Self-confirmation detected and truncated in tool branch (originalLen=%d truncatedLen=%d)", originalLen, len(trimmedAfterTools)),
+						truncateTraceText(trimmedAfterTools, 220), "", "")
+				}
+			}
+
 			if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) && isSubstantivePhaseDocument(trimmedAfterTools) {
 				log.Printf("[workflow-gate] NeedsConfirm (tool branch): force-returning after tool execution for user confirmation (iteration=%d len=%d)", iteration, len(trimmedAfterTools))
 				phase.Stage = agentStageFinalize
@@ -5663,6 +6252,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		sendProgress("⏳ 推理轮次已用完，但编程会话仍在运行，正在检查状态…")
 
 		// Run one bonus iteration to let the agent observe current session state.
+		conversation = autoCompressConversation(conversation, cfg, httpClient)
 		conversation = trimConversation(conversation, cfg.EffectiveContextTokens(), toolsTokenBudget, makeSummarizer(cfg, httpClient))
 		if onNewRound != nil {
 			onNewRound()
@@ -5798,6 +6388,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	resp := &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
 	attachLLMTelemetry(resp)
+	// Nudge injection at max-rounds exit.
+	history = h.injectNudgeMessages(history, finalIteration, totalToolCallsInLoop, phase, userText)
 	h.saveConversationHistoryTimed(userID, history, resp)
 	return resp
 }
