@@ -19,6 +19,10 @@ type SSHManagedSession struct {
 	CreatedAt    time.Time
 	ExitCode     *int
 	LastOutputAt time.Time
+
+	// consecutiveExecFailures 记录连续 exec 失败次数（无输出或错误）。
+	// 达到阈值时上层应自动关闭并重建会话，避免 LLM 在死会话上无限重试。
+	consecutiveExecFailures int
 }
 
 // PreviewTail 返回最后 n 行预览输出。
@@ -248,6 +252,7 @@ func (m *SSHSessionManager) reconnectSession(s *SSHManagedSession) error {
 	s.Summary.Status = string(SessionRunning)
 	s.Summary.UpdatedAt = time.Now().Unix()
 	s.ExitCode = nil
+	s.consecutiveExecFailures = 0
 	// 清空旧输出，避免重连后行号错乱
 	s.PreviewLines = s.PreviewLines[:0]
 	s.mu.Unlock()
@@ -268,10 +273,94 @@ func (m *SSHSessionManager) ReconnectByID(sessionID string) error {
 	return m.reconnectSession(s)
 }
 
+// CheckShellResponsive 验证 SSH 会话的 shell 是否真正可响应命令。
+// 与 IsAlive() 不同：IsAlive 只检查 SSH 连接级别的心跳，
+// CheckShellResponsive 实际发送一个 echo 命令并等待输出，
+// 能检测到 shell 被 sqlite3/vim/less 等交互式程序锁住的情况，
+// 以及 PTY stdout 管道断裂的情况。
+//
+// 如果 shell 无响应，会先发送 Ctrl+C 尝试中断当前命令，
+// 然后再次检测。如果仍无响应，返回 false。
+func (m *SSHSessionManager) CheckShellResponsive(sessionID string) bool {
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return false
+	}
+	if s.Handle == nil {
+		return false
+	}
+
+	// 先检查连接级别是否存活
+	if !s.Handle.IsAlive() {
+		return false
+	}
+
+	marker := fmt.Sprintf("__mclw_%d__", time.Now().UnixNano()%1000000)
+
+	// 第一次探测
+	if m.probeShell(s, marker) {
+		return true
+	}
+
+	// Shell 无响应，尝试发送 Ctrl+C 中断可能挂起的命令
+	_ = s.Handle.Interrupt()
+	time.Sleep(500 * time.Millisecond)
+
+	// 第二次探测
+	return m.probeShell(s, marker)
+}
+
+// probeShell 发送一个带标记的 echo 命令并等待输出。
+func (m *SSHSessionManager) probeShell(s *SSHManagedSession, marker string) bool {
+	probe := fmt.Sprintf("echo %s", marker)
+	linesBefore := s.LineCount()
+	if err := s.Handle.Write([]byte(probe + "\n")); err != nil {
+		return false
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(300 * time.Millisecond)
+		newLines, _ := s.NewLinesSince(linesBefore)
+		for _, line := range newLines {
+			if strings.Contains(line, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RecordExecSuccess 记录一次成功的 exec 操作，重置连续失败计数。
+func (m *SSHSessionManager) RecordExecSuccess(sessionID string) {
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	s.consecutiveExecFailures = 0
+	s.mu.Unlock()
+}
+
+// RecordExecFailure 记录一次失败的 exec 操作。
+// 返回当前连续失败次数。上层可据此决定是否自动重建会话。
+func (m *SSHSessionManager) RecordExecFailure(sessionID string) int {
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return 0
+	}
+	s.mu.Lock()
+	s.consecutiveExecFailures++
+	count := s.consecutiveExecFailures
+	s.mu.Unlock()
+	return count
+}
+
 // WaitForOutput 智能等待命令输出完成。
 // 不再盲等固定秒数，而是检测输出是否稳定（连续 stableRounds 次轮询无新输出即认为完成）。
 // 对于长时间运行的命令（如 du、find），使用更宽松的稳定阈值避免误判。
 // maxWait 是最大等待时间上限。
+// 超时后自动发送 Ctrl+C 中断可能挂起的命令，防止 shell 被锁住。
 func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWait time.Duration) ([]string, SessionStatus) {
 	s, ok := m.Get(sessionID)
 	if !ok {
@@ -290,6 +379,7 @@ func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWa
 	deadline := time.Now().Add(maxWait)
 	stableCount := 0
 	lastLineCount := afterLine
+	exitedByBreak := false
 
 	for time.Now().Before(deadline) {
 		time.Sleep(pollInterval)
@@ -314,17 +404,34 @@ func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWa
 			if stableCount >= stableThreshold {
 				// 额外检查：如果最后一行看起来像 shell prompt，说明命令确实结束了
 				if looksLikeShellPrompt(s.PreviewTail(1)) {
+					exitedByBreak = true
 					break
 				}
 				// 不像 prompt，可能命令还在跑但暂时没输出，再多等几轮
 				if stableCount >= stableThreshold+4 {
+					exitedByBreak = true
 					break
 				}
 			}
 		}
 	}
 
-	return s.NewLinesSince(afterLine)
+	// 超时检测：如果循环因 deadline 到期退出（非 break），
+	// 且最后一行不像 shell prompt，说明命令可能挂起了
+	// （如 sqlite3 锁、交互式程序等）。
+	// 发送 Ctrl+C 尝试中断，防止 shell 被锁住影响后续命令。
+	timedOut := !exitedByBreak && !looksLikeShellPrompt(s.PreviewTail(1))
+	if timedOut && s.Handle != nil {
+		_ = s.Handle.Interrupt()
+		// 等待 Ctrl+C 生效并收集中断输出
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	lines, status := s.NewLinesSince(afterLine)
+	if timedOut && len(lines) > 0 {
+		lines = append(lines, "[maclaw] ⚠️ 命令执行超时，已发送 Ctrl+C 中断")
+	}
+	return lines, status
 }
 
 // looksLikeShellPrompt 简单判断最后一行是否像 shell prompt。

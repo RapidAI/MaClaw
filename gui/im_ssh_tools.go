@@ -123,30 +123,38 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 			// connection could be dead (e.g. network interruption, server
 			// restart, docker compose down).
 			if existing.Handle != nil && existing.Handle.IsAlive() {
-				summary := existing.GetSummary()
-				result := fmt.Sprintf("♻️ 复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
-					existing.ID, summary.HostID, summary.Status)
-				if summary.LastOutput != "" {
-					result += "\n\n最近输出: " + summary.LastOutput
+				// Connection is alive, but shell might be stuck (e.g. sqlite3 lock,
+				// interactive program). Verify shell responsiveness.
+				if mgr.CheckShellResponsive(existing.ID) {
+					summary := existing.GetSummary()
+					result := fmt.Sprintf("♻️ 复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
+						existing.ID, summary.HostID, summary.Status)
+					if summary.LastOutput != "" {
+						result += "\n\n最近输出: " + summary.LastOutput
+					}
+					return result
 				}
-				return result
-			}
-			// Connection is dead. Try to reconnect the existing session.
-			if err := mgr.ReconnectByID(existing.ID); err == nil {
-				// Wait for shell init after reconnect.
-				time.Sleep(2 * time.Second)
-				preview := strings.Join(existing.PreviewTail(10), "\n")
-				result := fmt.Sprintf("♻️ 复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
-					existing.ID, targetID)
-				if preview != "" {
-					result += "\n\n--- 重连后输出 ---\n" + preview
+				// Shell is unresponsive (stuck process). Close and recreate.
+				mgr.RemoveSession(existing.ID)
+				h.completeSSHBackgroundLoop(existing.ID)
+			} else {
+				// Connection is dead. Try to reconnect the existing session.
+				if err := mgr.ReconnectByID(existing.ID); err == nil {
+					// Wait for shell init after reconnect.
+					time.Sleep(2 * time.Second)
+					preview := strings.Join(existing.PreviewTail(10), "\n")
+					result := fmt.Sprintf("♻️ 复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
+						existing.ID, targetID)
+					if preview != "" {
+						result += "\n\n--- 重连后输出 ---\n" + preview
+					}
+					return result
 				}
-				return result
+				// Reconnection failed. Close the dead session so we can create
+				// a fresh one below instead of looping on the same dead session.
+				mgr.RemoveSession(existing.ID)
+				h.completeSSHBackgroundLoop(existing.ID)
 			}
-			// Reconnection failed. Close the dead session so we can create
-			// a fresh one below instead of looping on the same dead session.
-			mgr.RemoveSession(existing.ID)
-			h.completeSSHBackgroundLoop(existing.ID)
 		}
 	}
 
@@ -244,7 +252,7 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 
 	if sessionDead {
 		if err := mgr.ReconnectByID(sessionID); err != nil {
-			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
+			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v\n\n💡 建议使用 ssh(action=close, session_id=%s) 关闭此会话，然后重新 connect", err, sessionID)
 		}
 		reconnectNote = "⚠️ 连接已断开并自动重连\n"
 		time.Sleep(2 * time.Second)
@@ -276,6 +284,39 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 	newLines, status := mgr.WaitForOutput(sessionID, linesBefore, maxWait)
 
 	output := strings.Join(newLines, "\n")
+
+	// 判断 exec 是否有效产出（排除 maclaw 系统消息）
+	hasOutput := false
+	for _, line := range newLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "[maclaw]") {
+			hasOutput = true
+			break
+		}
+	}
+	if hasOutput {
+		mgr.RecordExecSuccess(sessionID)
+	} else {
+		failCount := mgr.RecordExecFailure(sessionID)
+		// 连续 3 次无输出，shell 可能被锁住。
+		// 尝试发送 Ctrl+C 中断 + 验证 shell 响应性。
+		if failCount >= 3 {
+			responsive := mgr.CheckShellResponsive(sessionID)
+			if !responsive {
+				// Shell 无响应，自动关闭并提示重建
+				mgr.RemoveSession(sessionID)
+				h.completeSSHBackgroundLoop(sessionID)
+				return fmt.Sprintf("⚠️ SSH 会话 %s 连续 %d 次执行无响应，shell 可能被挂起的进程锁住。\n"+
+					"已自动关闭此会话。请使用 ssh(action=connect, ...) 重新建立连接。\n\n"+
+					"💡 如果远程服务器上有挂起的进程（如 sqlite3），重连后可用 `kill` 命令清理",
+					sessionID, failCount)
+			}
+			// Ctrl+C 恢复了 shell，重置计数
+			mgr.RecordExecSuccess(sessionID)
+			output = "(前几次命令无响应，已发送 Ctrl+C 恢复 shell。请重新执行命令)"
+		}
+	}
+
 	if output == "" {
 		output = "(无新输出)"
 	}
@@ -501,9 +542,12 @@ func (h *IMMessageHandler) sshClose(args map[string]interface{}) string {
 		return "错误: close 需要 session_id 参数"
 	}
 
-	if err := h.sshMgr.Kill(sessionID); err != nil {
-		return fmt.Sprintf("关闭失败: %v", err)
-	}
+	// 先尝试发送 SIGKILL 终止远程进程（忽略错误，会话可能已断开）
+	_ = h.sshMgr.Kill(sessionID)
+
+	// 从 sessions map 中移除会话并关闭 handle，
+	// 确保后续 sshConnect 不会复用这个已关闭的会话。
+	h.sshMgr.RemoveSession(sessionID)
 
 	// Complete the corresponding background loop.
 	h.completeSSHBackgroundLoop(sessionID)
@@ -527,18 +571,12 @@ func (h *IMMessageHandler) sshCloseAll() string {
 	if len(running) == 0 {
 		return "当前无运行中的 SSH 会话"
 	}
-	var errs []string
 	for _, s := range running {
-		if err := h.sshMgr.Kill(s.ID); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", s.ID, err))
-		}
+		_ = h.sshMgr.Kill(s.ID)
+		h.sshMgr.RemoveSession(s.ID)
 		h.completeSSHBackgroundLoop(s.ID)
 	}
-	result := fmt.Sprintf("✅ 已关闭 %d 个 SSH 会话", len(running))
-	if len(errs) > 0 {
-		result += fmt.Sprintf("\n⚠️ 部分关闭失败:\n%s", strings.Join(errs, "\n"))
-	}
-	return result
+	return fmt.Sprintf("✅ 已关闭 %d 个 SSH 会话", len(running))
 }
 
 // ---------------------------------------------------------------------------

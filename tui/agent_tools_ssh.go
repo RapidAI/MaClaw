@@ -172,7 +172,7 @@ func (h *TUIAgentHandler) sshExec(args map[string]interface{}) string {
 
 	if sessionDead {
 		if err := h.sshMgr.ReconnectByID(sessionID); err != nil {
-			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
+			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v\n\n💡 建议使用 ssh(action=close, session_id=%s) 关闭此会话，然后重新 connect", err, sessionID)
 		}
 		reconnectNote = "⚠️ 连接已断开并自动重连\n"
 		time.Sleep(2 * time.Second)
@@ -207,6 +207,38 @@ func (h *TUIAgentHandler) sshExec(args map[string]interface{}) string {
 	newLines, status := h.sshMgr.WaitForOutput(sessionID, linesBefore, maxWait)
 
 	output := strings.Join(newLines, "\n")
+
+	// 判断 exec 是否有效产出（排除 maclaw 系统消息）
+	hasOutput := false
+	for _, line := range newLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "[maclaw]") {
+			hasOutput = true
+			break
+		}
+	}
+	if hasOutput {
+		h.sshMgr.RecordExecSuccess(sessionID)
+	} else {
+		failCount := h.sshMgr.RecordExecFailure(sessionID)
+		// 连续 3 次无输出，shell 可能被锁住。
+		// 尝试发送 Ctrl+C 中断 + 验证 shell 响应性。
+		if failCount >= 3 {
+			responsive := h.sshMgr.CheckShellResponsive(sessionID)
+			if !responsive {
+				// Shell 无响应，自动关闭并提示重建
+				h.sshMgr.RemoveSession(sessionID)
+				return fmt.Sprintf("⚠️ SSH 会话 %s 连续 %d 次执行无响应，shell 可能被挂起的进程锁住。\n"+
+					"已自动关闭此会话。请使用 ssh(action=connect, ...) 重新建立连接。\n\n"+
+					"💡 如果远程服务器上有挂起的进程（如 sqlite3），重连后可用 `kill` 命令清理",
+					sessionID, failCount)
+			}
+			// Ctrl+C 恢复了 shell，重置计数
+			h.sshMgr.RecordExecSuccess(sessionID)
+			output = "(前几次命令无响应，已发送 Ctrl+C 恢复 shell。请重新执行命令)"
+		}
+	}
+
 	if output == "" {
 		output = "(无新输出)"
 	}
@@ -435,9 +467,13 @@ func (h *TUIAgentHandler) sshClose(args map[string]interface{}) string {
 		return "错误: close 需要 session_id 参数"
 	}
 
-	if err := h.sshMgr.Kill(sessionID); err != nil {
-		return fmt.Sprintf("关闭失败: %v", err)
-	}
+	// 先尝试发送 SIGKILL 终止远程进程（忽略错误，会话可能已断开）
+	_ = h.sshMgr.Kill(sessionID)
+
+	// 从 sessions map 中移除会话并关闭 handle，
+	// 确保后续 sshConnect 不会复用这个已关闭的会话。
+	h.sshMgr.RemoveSession(sessionID)
+
 	return fmt.Sprintf("✅ SSH 会话 %s 已关闭", sessionID)
 }
 

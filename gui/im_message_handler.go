@@ -1179,8 +1179,12 @@ func looksLikeNoToolStallReply(text string) bool {
 		"需要登录", "需要扫码", "需要验证", "需要授权", "需要审批", "等待登录", "等待扫码",
 		"requires login", "needs login", "need to log in", "waiting for approval",
 	}
+	// These hints indicate the LLM intends to work on a different subtask.
+	// Deliberately excludes bare "继续" — it often appears in blocker context
+	// ("需要登录才能继续") rather than indicating a parallel work track.
 	continueHints := []string{
-		"同时", "先处理", "先做", "先准备", "先开始", "继续", "与此同时", "另一方面",
+		"同时开始", "同时准备", "同时处理", "先处理其他", "先做其他", "先准备", "先开始",
+		"与此同时", "另一方面", "另外先",
 		"meanwhile", "in the meantime", "continue with", "proceed with", "at the same time",
 	}
 	hasBlocker := false
@@ -6040,11 +6044,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		// If a direct screenshot was captured, return it immediately as an image response.
 		// However, if the screenshot was part of a multi-tool call (LLM called screenshot
-		// alongside other tools) or the agent has been actively working (iteration > 0),
-		// the screenshot is an intermediate step — let the loop continue so the LLM can
-		// proceed with the remaining task. The screenshot result is already in the
-		// conversation as a tool_result ("截图已成功捕获...").
-		if pendingImageKey != "" && len(choice.Message.ToolCalls) <= 1 && iteration == 0 {
+		// alongside other tools) or the agent has been actively working (prior tool calls
+		// in earlier iterations), the screenshot is an intermediate step — let the loop
+		// continue so the LLM can proceed with the remaining task. The screenshot result
+		// is already in the conversation as a tool_result ("截图已成功捕获...").
+		//
+		// We use totalToolCallsInLoop <= 1 instead of iteration == 0 because the LLM
+		// might output a preamble ("好的，我来截屏") in iteration 0 and call screenshot
+		// in iteration 1. As long as screenshot is the ONLY tool call so far, it's a
+		// pure screenshot request and should return immediately.
+		screenshotIsOnlyAction := len(choice.Message.ToolCalls) <= 1 && totalToolCallsInLoop <= 1
+		if pendingImageKey != "" && screenshotIsOnlyAction {
 			resp := &IMAgentResponse{}
 			if !streamDoneAt.IsZero() {
 				postStreamLastReturnPrepAt = time.Now()
@@ -6080,6 +6090,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				if filePath, err := h.saveScreenshotToFile(pendingImageKey); err == nil {
 					log.Printf("[screenshot] intermediate screenshot saved to %s, loop continues (iteration=%d toolCalls=%d)", filePath, iteration, len(choice.Message.ToolCalls))
 				}
+			} else {
+				// Non-desktop (IM): save to file so the path is available in
+				// the tool result text. The LLM already received "截图已成功捕获"
+				// as tool_result and can reference the screenshot in its response.
+				if filePath, err := h.saveScreenshotToFile(pendingImageKey); err == nil {
+					log.Printf("[screenshot] intermediate screenshot (IM) saved to %s, loop continues (iteration=%d toolCalls=%d)", filePath, iteration, len(choice.Message.ToolCalls))
+				}
 			}
 		}
 
@@ -6088,13 +6105,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// step in a larger task. When the LLM called multiple tools in this
 		// iteration or has been actively working (iteration > 0), the screenshot
 		// is just a "check the screen" step and the LLM should continue.
-		if screenshotAlreadySent && len(choice.Message.ToolCalls) <= 1 && iteration == 0 {
+		if screenshotAlreadySent && screenshotIsOnlyAction {
 			resp := &IMAgentResponse{Text: "📷 截图已发送"}
 			attachLLMTelemetry(resp)
 			h.saveConversationHistoryTimed(userID, history, resp)
 			return resp
 		} else if screenshotAlreadySent {
-			log.Printf("[screenshot] intermediate screenshot via session.image, loop continues (iteration=%d toolCalls=%d)", iteration, len(choice.Message.ToolCalls))
+			log.Printf("[screenshot] intermediate screenshot via session.image, loop continues (iteration=%d totalToolCalls=%d)", iteration, totalToolCallsInLoop)
 		}
 
 		// If file(s) were prepared, return them for delivery.
