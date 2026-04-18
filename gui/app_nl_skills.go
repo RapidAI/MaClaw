@@ -559,7 +559,10 @@ func (e *SkillExecutor) executeSkillSteps(skill *NLSkillEntry) (string, error) {
 	// also needs proxy support, mirroring the async SkillRunner.executeAsync path.
 	// Note: uses os.Setenv because executeBashStep inherits process env.
 	// Save/restore previous values to avoid clobbering user-set env vars.
-	if corelib.NeedsOpenAIProxyAuto(skill.RequiredEnv, nil, skill.Steps, skill.SkillDir) {
+	needsProxy := corelib.NeedsOpenAIProxyAuto(skill.RequiredEnv, nil, skill.Steps, skill.SkillDir)
+	log.Printf("[skill-executor] openai proxy check: needsProxy=%v required_env=%v processEnv_OPENAI_API_KEY=%q",
+		needsProxy, skill.RequiredEnv, truncateEnvForLog(os.Getenv("OPENAI_API_KEY")))
+	if needsProxy {
 		var proxyCfg corelib.OpenAIProxyConfig
 		if e.app != nil {
 			llmCfg := e.app.GetMaclawLLMConfig()
@@ -719,6 +722,7 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 					skills[i].SuccessCount++
 					skills[i].LastError = ""
 				} else {
+					skills[i].FailureCount++
 					skills[i].LastError = execErr.Error()
 				}
 				_ = e.saveSkills(skills)

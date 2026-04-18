@@ -302,6 +302,71 @@ func TestNeedsOpenAIProxyAuto_NilExtraEnv(t *testing.T) {
 	}
 }
 
+func TestNeedsOpenAIProxyAuto_StaleProxyKey(t *testing.T) {
+	// When process env has the stale maclaw proxy sentinel key
+	// ("sk-maclaw-local-proxy") and the skill explicitly requires
+	// OPENAI_API_KEY, the proxy should still start (return true).
+	// This prevents the bug where a previous proxy session's os.Setenv
+	// leaks and blocks subsequent proxy startups.
+	prev, had := os.LookupEnv("OPENAI_API_KEY")
+	os.Setenv("OPENAI_API_KEY", "sk-maclaw-local-proxy")
+	defer func() {
+		if had {
+			os.Setenv("OPENAI_API_KEY", prev)
+		} else {
+			os.Unsetenv("OPENAI_API_KEY")
+		}
+	}()
+
+	// Explicit RequiredEnv + stale proxy key → should start proxy
+	got := NeedsOpenAIProxyAuto([]string{"OPENAI_API_KEY"}, map[string]string{}, nil, "")
+	if got != true {
+		t.Errorf("NeedsOpenAIProxyAuto() = false, want true when process env has stale proxy key and skill explicitly requires OPENAI_API_KEY")
+	}
+}
+
+func TestNeedsOpenAIProxyAuto_StaleProxyKeyAutoDetect(t *testing.T) {
+	// When process env has the stale proxy key and the skill doesn't
+	// explicitly declare RequiredEnv but scripts reference OPENAI_API_KEY,
+	// the proxy should still start.
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "script.py"), []byte(`os.environ["OPENAI_API_KEY"]`), 0644)
+
+	prev, had := os.LookupEnv("OPENAI_API_KEY")
+	os.Setenv("OPENAI_API_KEY", "sk-maclaw-local-proxy")
+	defer func() {
+		if had {
+			os.Setenv("OPENAI_API_KEY", prev)
+		} else {
+			os.Unsetenv("OPENAI_API_KEY")
+		}
+	}()
+
+	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, tmpDir)
+	if got != true {
+		t.Errorf("NeedsOpenAIProxyAuto() = false, want true when process env has stale proxy key and scripts reference OPENAI_API_KEY")
+	}
+}
+
+func TestNeedsOpenAIProxyAuto_RealKeyInProcessEnv(t *testing.T) {
+	// When process env has a real (non-proxy) OPENAI_API_KEY,
+	// the proxy should NOT start even if skill explicitly requires it.
+	prev, had := os.LookupEnv("OPENAI_API_KEY")
+	os.Setenv("OPENAI_API_KEY", "sk-real-user-provided-key-12345")
+	defer func() {
+		if had {
+			os.Setenv("OPENAI_API_KEY", prev)
+		} else {
+			os.Unsetenv("OPENAI_API_KEY")
+		}
+	}()
+
+	got := NeedsOpenAIProxyAuto([]string{"OPENAI_API_KEY"}, map[string]string{}, nil, "")
+	if got != false {
+		t.Errorf("NeedsOpenAIProxyAuto() = true, want false when process env has real OPENAI_API_KEY")
+	}
+}
+
 func TestRouteProtocol(t *testing.T) {
 	tests := []struct {
 		name     string

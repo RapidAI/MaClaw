@@ -1170,6 +1170,33 @@ func looksLikeNoToolStallReply(text string) bool {
 			return true
 		}
 	}
+	// Detect "blocked on one track but intending to continue another" pattern.
+	// When the LLM reports a blocker (login required, waiting for approval, etc.)
+	// AND also mentions continuing with other work, it should not finalize —
+	// the agent loop should force another round so the LLM can proceed with
+	// the unblocked subtask via tool calls.
+	blockerHints := []string{
+		"需要登录", "需要扫码", "需要验证", "需要授权", "需要审批", "等待登录", "等待扫码",
+		"requires login", "needs login", "need to log in", "waiting for approval",
+	}
+	continueHints := []string{
+		"同时", "先处理", "先做", "先准备", "先开始", "继续", "与此同时", "另一方面",
+		"meanwhile", "in the meantime", "continue with", "proceed with", "at the same time",
+	}
+	hasBlocker := false
+	for _, hint := range blockerHints {
+		if strings.Contains(lower, hint) {
+			hasBlocker = true
+			break
+		}
+	}
+	if hasBlocker {
+		for _, hint := range continueHints {
+			if strings.Contains(lower, hint) {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -5575,7 +5602,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// task through alternative tool calls), classify the original
 			// skill failure as a "workaround" outcome.
 			if phase.FailedSkillName != "" && h.app != nil && h.app.skillRunner != nil {
-				h.app.skillRunner.RecordSkillOutcome(phase.FailedSkillName, "workaround", phase.FailedSkillError)
+				h.app.skillRunner.RecordWorkaround(phase.FailedSkillName, phase.FailedSkillError)
 				log.Printf("[skill-workaround] skill %q failure classified as workaround — LLM resolved task via alternative tools", phase.FailedSkillName)
 			}
 
@@ -5943,11 +5970,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					phase.FailedSkillName = sn
 					phase.FailedSkillError = se
 					log.Printf("[skill-workaround] skill %q failed, marking as pending workaround: %s", sn, truncateRunes(se, 120))
-
-					// Record the immediate failure outcome.
-					if h.app != nil && h.app.skillRunner != nil {
-						h.app.skillRunner.RecordSkillOutcome(sn, "failure", se)
-					}
+					// Note: failure stats (UsageCount, FailureCount) are already
+					// recorded by SkillRunner.updateUsageStats() inside executeAsync().
+					// We do NOT call RecordSkillOutcome("failure") here to avoid
+					// double-counting.
 				}
 
 				enterRecoverPhase(&phase, "skill_failed", buildSkillRecoverPrompt(phase.PreferredSkillName, phase.PreferredSkillRunID))
@@ -6013,7 +6039,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		// If a direct screenshot was captured, return it immediately as an image response.
-		if pendingImageKey != "" {
+		// However, if the screenshot was part of a multi-tool call (LLM called screenshot
+		// alongside other tools) or the agent has been actively working (iteration > 0),
+		// the screenshot is an intermediate step — let the loop continue so the LLM can
+		// proceed with the remaining task. The screenshot result is already in the
+		// conversation as a tool_result ("截图已成功捕获...").
+		if pendingImageKey != "" && len(choice.Message.ToolCalls) <= 1 && iteration == 0 {
 			resp := &IMAgentResponse{}
 			if !streamDoneAt.IsZero() {
 				postStreamLastReturnPrepAt = time.Now()
@@ -6042,15 +6073,28 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			resp.Text = ""
 			resp.ImageKey = pendingImageKey
 			return resp
+		} else if pendingImageKey != "" {
+			// Screenshot is an intermediate step — save the file but don't
+			// stop the loop. The LLM will continue with the next step.
+			if platform == "desktop" {
+				if filePath, err := h.saveScreenshotToFile(pendingImageKey); err == nil {
+					log.Printf("[screenshot] intermediate screenshot saved to %s, loop continues (iteration=%d toolCalls=%d)", filePath, iteration, len(choice.Message.ToolCalls))
+				}
+			}
 		}
 
 		// If screenshot was already delivered via session.image channel,
-		// stop the loop immediately — no further agent reasoning needed.
-		if screenshotAlreadySent {
+		// stop the loop immediately — UNLESS the screenshot is an intermediate
+		// step in a larger task. When the LLM called multiple tools in this
+		// iteration or has been actively working (iteration > 0), the screenshot
+		// is just a "check the screen" step and the LLM should continue.
+		if screenshotAlreadySent && len(choice.Message.ToolCalls) <= 1 && iteration == 0 {
 			resp := &IMAgentResponse{Text: "📷 截图已发送"}
 			attachLLMTelemetry(resp)
 			h.saveConversationHistoryTimed(userID, history, resp)
 			return resp
+		} else if screenshotAlreadySent {
+			log.Printf("[screenshot] intermediate screenshot via session.image, loop continues (iteration=%d toolCalls=%d)", iteration, len(choice.Message.ToolCalls))
 		}
 
 		// If file(s) were prepared, return them for delivery.

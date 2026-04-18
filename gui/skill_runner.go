@@ -899,6 +899,30 @@ func truncateSkillRunSnippet(text string) string {
 	return text
 }
 
+// mapKeys returns the keys of a string map for diagnostic logging.
+func mapKeys(m map[string]string) []string {
+	if m == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// truncateEnvForLog masks an environment variable value for safe logging.
+// Shows first 6 chars + "..." for non-empty values.
+func truncateEnvForLog(v string) string {
+	if v == "" {
+		return "(empty)"
+	}
+	if len(v) <= 6 {
+		return v
+	}
+	return v[:6] + "..."
+}
+
 func isInstructionOnlySkillEntry(skill *NLSkillEntry) bool {
 	if skill == nil || len(skill.Steps) != 1 {
 		return false
@@ -1089,7 +1113,10 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 	// ClawHub skills that don't declare requires_env), and the user hasn't
 	// provided them via extra_env, start a local proxy that forwards requests
 	// to the currently configured LLM provider.
-	if corelib.NeedsOpenAIProxyAuto(skill.RequiredEnv, run.extraEnv, skill.Steps, skill.SkillDir) {
+	needsProxy := corelib.NeedsOpenAIProxyAuto(skill.RequiredEnv, run.extraEnv, skill.Steps, skill.SkillDir)
+	log.Printf("[skill-runner] openai proxy check: needsProxy=%v required_env=%v extraEnv_keys=%v processEnv_OPENAI_API_KEY=%q",
+		needsProxy, skill.RequiredEnv, mapKeys(run.extraEnv), truncateEnvForLog(os.Getenv("OPENAI_API_KEY")))
+	if needsProxy {
 		// Build config from current LLM provider
 		var proxyCfg corelib.OpenAIProxyConfig
 		if r.executor != nil && r.executor.app != nil {
@@ -1403,8 +1430,11 @@ func (r *SkillRunner) updateUsageStats(skill *NLSkillEntry, execErr error) {
 
 // RecordSkillOutcome records an execution outcome for a skill by name.
 // outcome must be one of "success", "failure", or "workaround".
-// This is intended to be called from the agent loop (im_message_handler.go)
-// when skill execution results are observed through tool results.
+//
+// NOTE: This method is no longer called from the agent loop to avoid
+// double-counting with updateUsageStats(). For workaround recording,
+// use RecordWorkaround() instead. Retained for backward compatibility
+// and potential external callers.
 func (r *SkillRunner) RecordSkillOutcome(skillName, outcome, lastError string) {
 	if skillName == "" {
 		return
@@ -1445,6 +1475,39 @@ func (r *SkillRunner) RecordSkillOutcome(skillName, outcome, lastError string) {
 	r.executor.mu.Unlock()
 
 	// Notify frontend to refresh skill list with updated stats (outside lock).
+	if shouldEmit && r.executor.app != nil {
+		r.executor.app.emitEvent("skill:usage_updated")
+	}
+}
+
+// RecordWorkaround records a workaround outcome for a skill without
+// incrementing UsageCount. This is called from the agent loop when a skill
+// failed but the LLM resolved the task through alternative tools. The
+// UsageCount and FailureCount were already incremented by updateUsageStats()
+// when the skill execution completed, so we only need to bump WorkaroundCount.
+func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
+	if skillName == "" {
+		return
+	}
+	shouldEmit := false
+
+	r.executor.mu.Lock()
+	skills := r.executor.loadSkills()
+	for i, s := range skills {
+		if s.MatchesName(skillName) && s.Source != "file" {
+			skills[i].WorkaroundCount++
+			if lastError != "" {
+				skills[i].LastError = lastError
+			}
+			_ = r.executor.saveSkills(skills)
+			log.Printf("[skill-runner] workaround recorded for %q: workaround=%d (usage unchanged at %d)",
+				skillName, skills[i].WorkaroundCount, skills[i].UsageCount)
+			shouldEmit = true
+			break
+		}
+	}
+	r.executor.mu.Unlock()
+
 	if shouldEmit && r.executor.app != nil {
 		r.executor.app.emitEvent("skill:usage_updated")
 	}

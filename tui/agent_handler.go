@@ -312,7 +312,7 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 			// task through alternative tool calls), classify the original
 			// skill failure as a "workaround" outcome.
 			if failedSkillName != "" {
-				h.recordSkillOutcome(failedSkillName, "workaround", failedSkillError)
+				h.recordSkillWorkaround(failedSkillName, failedSkillError)
 				log.Printf("[skill-workaround] skill %q failure classified as workaround — LLM resolved task via alternative tools", failedSkillName)
 			}
 
@@ -369,16 +369,16 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 		}
 
 		// Skill outcome tracking: detect failed run_skill / manage_skill(action=run)
-		// calls and record the immediate failure. Track the failed skill name so
-		// that if the LLM resolves the task through alternative tools later in
-		// this loop, we classify as "workaround" at loop exit.
+		// calls and record the failed skill name so that if the LLM resolves the
+		// task through alternative tools later in this loop, we classify as
+		// "workaround" at loop exit.
 		if sn, se := extractFailedSkillInfoTUI(choice.Message.ToolCalls, toolResults); sn != "" {
 			failedSkillName = sn
 			failedSkillError = se
 			log.Printf("[skill-workaround] skill %q failed, marking as pending workaround: %s", sn, truncateForLog(se, 120))
-
-			// Record the immediate failure outcome.
-			h.recordSkillOutcome(sn, "failure", se)
+			// Note: failure stats (UsageCount, FailureCount) are already
+			// recorded by toolRunSkill() directly. We do NOT call
+			// recordSkillOutcome("failure") here to avoid double-counting.
 		}
 	}
 

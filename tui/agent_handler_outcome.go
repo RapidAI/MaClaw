@@ -88,8 +88,10 @@ func isSkillResultFailedTUI(result string) bool {
 
 // recordSkillOutcome records an execution outcome for a skill by name.
 // outcome must be one of "success", "failure", or "workaround".
-// This mirrors the GUI's SkillRunner.RecordSkillOutcome — it loads skills
-// from the config store, updates the counters, and persists to disk.
+//
+// NOTE: This method is no longer called from the agent loop to avoid
+// double-counting with toolRunSkill(). For workaround recording,
+// use recordSkillWorkaround() instead. Retained for backward compatibility.
 func (h *TUIAgentHandler) recordSkillOutcome(skillName, outcome, lastError string) {
 	if skillName == "" {
 		return
@@ -128,6 +130,38 @@ func (h *TUIAgentHandler) recordSkillOutcome(skillName, outcome, lastError strin
 			log.Printf("[skill-outcome] outcome recorded for %q: outcome=%s usage=%d success=%d failure=%d workaround=%d",
 				skillName, outcome, cfg.NLSkills[i].UsageCount, cfg.NLSkills[i].SuccessCount,
 				cfg.NLSkills[i].FailureCount, cfg.NLSkills[i].WorkaroundCount)
+			break
+		}
+	}
+}
+
+// recordSkillWorkaround records a workaround outcome for a skill without
+// incrementing UsageCount. This is called from the agent loop when a skill
+// failed but the LLM resolved the task through alternative tools. The
+// UsageCount and FailureCount were already incremented by toolRunSkill()
+// when the skill execution completed, so we only need to bump WorkaroundCount.
+func (h *TUIAgentHandler) recordSkillWorkaround(skillName, lastError string) {
+	if skillName == "" {
+		return
+	}
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		log.Printf("[skill-outcome] failed to load config for workaround recording: %v", err)
+		return
+	}
+	for i, s := range cfg.NLSkills {
+		if s.MatchesName(skillName) && s.Source != "file" {
+			cfg.NLSkills[i].WorkaroundCount++
+			if lastError != "" {
+				cfg.NLSkills[i].LastError = lastError
+			}
+			if saveErr := store.SaveConfig(cfg); saveErr != nil {
+				log.Printf("[skill-outcome] failed to save config after workaround recording: %v", saveErr)
+				return
+			}
+			log.Printf("[skill-outcome] workaround recorded for %q: workaround=%d (usage unchanged at %d)",
+				skillName, cfg.NLSkills[i].WorkaroundCount, cfg.NLSkills[i].UsageCount)
 			break
 		}
 	}

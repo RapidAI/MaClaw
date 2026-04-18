@@ -126,20 +126,38 @@ func NeedsOpenAIProxyAuto(requiredEnv []string, extraEnv map[string]string, step
 		return false
 	}
 
-	// Check process-level env: if OPENAI_API_KEY is set globally and
-	// extraEnv doesn't explicitly override it (e.g. with empty string),
-	// the skill can use the existing key directly — no proxy needed.
-	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
-		if _, explicitlyCleared := extraEnv["OPENAI_API_KEY"]; !explicitlyCleared {
-			return false
+	// Check if skill explicitly declares OPENAI_API_KEY requirement.
+	// Checked before the process-level env so that a stale
+	// "sk-maclaw-local-proxy" sentinel in os env doesn't prevent
+	// proxy startup for skills that genuinely need it.
+	explicitlyRequired := false
+	for _, env := range requiredEnv {
+		if env == "OPENAI_API_KEY" {
+			explicitlyRequired = true
+			break
 		}
 	}
 
-	// Layer 1: explicit RequiredEnv declaration
-	for _, env := range requiredEnv {
-		if env == "OPENAI_API_KEY" {
-			return true
+	// Check process-level env: if OPENAI_API_KEY is set globally and
+	// extraEnv doesn't explicitly override it (e.g. with empty string),
+	// the skill can use the existing key directly — no proxy needed.
+	// However, ignore the maclaw-internal proxy sentinel ("sk-maclaw-local-proxy")
+	// because it points to a proxy that may no longer be running.
+	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		if _, explicitlyCleared := extraEnv["OPENAI_API_KEY"]; !explicitlyCleared {
+			if v == "sk-maclaw-local-proxy" {
+				// Stale leftover from a previous proxy session — ignore it
+				// and fall through so a fresh proxy is started.
+				log.Printf("[openai-proxy] ignoring stale process env OPENAI_API_KEY=sk-maclaw-local-proxy")
+			} else {
+				// Real user-provided key in process env — use it directly.
+				return false
+			}
 		}
+	}
+
+	if explicitlyRequired {
+		return true
 	}
 
 	// Layer 2: scan step commands for env var references

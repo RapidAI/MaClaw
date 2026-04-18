@@ -1634,6 +1634,7 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 		skill.SuccessCount++
 		skill.LastError = ""
 	} else {
+		skill.FailureCount++
 		skill.LastError = "执行失败，详见输出"
 	}
 	_ = store.SaveConfig(cfg)
