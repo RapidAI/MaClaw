@@ -8,6 +8,19 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 )
 
+// SecurityGroupsRootHandler returns only the root node for lazy tree loading.
+// GET /api/admin/security/groups/root
+func SecurityGroupsRootHandler(svc *security.SecurityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		node, err := svc.GetRootGroupNode(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "TREE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"root": node})
+	}
+}
+
 // SecurityGroupsHandler returns the complete group tree.
 // GET /api/admin/security/groups
 func SecurityGroupsHandler(svc *security.SecurityService) http.HandlerFunc {
@@ -340,7 +353,7 @@ func EnrollGroupTreeHandler(svc *security.SecurityService) http.HandlerFunc {
 		if !settings.OrgStructureEnabled {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"org_structure_enabled": false,
-				"groups":               []any{},
+				"groups":                []any{},
 			})
 			return
 		}

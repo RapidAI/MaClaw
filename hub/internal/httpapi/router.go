@@ -187,6 +187,7 @@ func NewRouter(
 	// Security management
 	if securitySvc != nil {
 		mux.HandleFunc("GET /api/admin/security/groups", RequireAdmin(admins, SecurityGroupsHandler(securitySvc)))
+		mux.HandleFunc("GET /api/admin/security/groups/root", RequireAdmin(admins, SecurityGroupsRootHandler(securitySvc)))
 		mux.HandleFunc("POST /api/admin/security/groups", RequireAdmin(admins, CreateSecurityGroupHandler(securitySvc)))
 		mux.HandleFunc("PUT /api/admin/security/groups/{id}", RequireAdmin(admins, UpdateSecurityGroupHandler(securitySvc)))
 		mux.HandleFunc("DELETE /api/admin/security/groups/{id}", RequireAdmin(admins, DeleteSecurityGroupHandler(securitySvc)))

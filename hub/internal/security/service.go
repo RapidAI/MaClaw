@@ -218,6 +218,35 @@ func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, err
 	return cloned, nil
 }
 
+func (s *SecurityService) GetRootGroupNode(ctx context.Context) (*GroupTreeNode, error) {
+	root, err := s.store.GetRootGroup(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get root group: %w", err)
+	}
+	if root == nil {
+		return nil, nil
+	}
+	count, err := s.store.CountGroupMembers(ctx, root.ID)
+	if err != nil {
+		return nil, fmt.Errorf("count root members: %w", err)
+	}
+	if s.users != nil {
+		count += s.countUnassignedUsers(ctx)
+	}
+	children, err := s.GetGroupChildren(ctx, root.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &GroupTreeNode{
+		ID:          root.ID,
+		Name:        root.Name,
+		ParentID:    root.ParentID,
+		MemberCount: count,
+		HasChildren: len(children) > 0,
+		Children:    []*GroupTreeNode{},
+	}, nil
+}
+
 func cloneGroupTreeNode(node *GroupTreeNode) *GroupTreeNode {
 	if node == nil {
 		return nil
