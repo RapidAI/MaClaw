@@ -841,54 +841,54 @@
 
       <!-- Tab: Security -->
       <section id="tab-security" class="panel card">
-        <div class="head"><div><h3 id="secTitle"></h3><div class="desc" id="secDesc"></div></div><button class="btn-ghost" onclick="loadSecurityTab()">Reload</button></div>
+        <div class="head"><div><h3 id="secTitle"></h3><div class="desc" id="secDesc"></div></div><button class="btn-ghost" onclick="loadSecurityTab()" id="secReloadBtn">Reload</button></div>
         <!-- Top: switches -->
         <div id="secTopBar" style="display:grid;grid-template-columns:320px 1fr;gap:18px;align-items:start;margin-bottom:18px">
           <div style="display:grid;gap:10px">
             <div class="item" style="min-height:auto;padding:14px">
               <div style="display:flex;align-items:center;justify-content:space-between">
-                <div><div class="item-title" style="font-size:14px">Centralized Policy</div><div class="item-meta" id="secCentralizedHint"></div></div>
+                <div><div class="item-title" style="font-size:14px" id="secCentralizedTitle">Centralized Policy</div><div class="item-meta" id="secCentralizedHint"></div></div>
                 <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secCentralizedToggle" onchange="toggleSecCentralized(this.checked)"></label>
               </div>
             </div>
             <div class="item" style="min-height:auto;padding:14px">
               <div style="display:flex;align-items:center;justify-content:space-between">
-                <div><div class="item-title" style="font-size:14px">Org Structure</div><div class="item-meta" id="secOrgHint"></div></div>
+                <div><div class="item-title" style="font-size:14px" id="secOrgTitle">Org Structure</div><div class="item-meta" id="secOrgHint"></div></div>
                 <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secOrgToggle" onchange="toggleSecOrg(this.checked)"></label>
               </div>
             </div>
           </div>
           <div class="item" style="min-height:auto;padding:14px">
             <div style="display:flex;align-items:center;justify-content:space-between">
-              <div><div class="item-title" style="font-size:14px">Default Group</div><div class="item-meta" id="secDefaultGroupHint">Default group for new users</div></div>
-              <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="showSetDefaultGroup()">Set</button>
+              <div><div class="item-title" style="font-size:14px" id="secDefaultGroupTitle">Default Group</div><div class="item-meta" id="secDefaultGroupHint">Default group for new users</div></div>
+              <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="showSetDefaultGroup()" id="secDefaultGroupSetBtn">Set</button>
             </div>
           </div>
         </div>
         <!-- Main: left tree + right policy -->
         <div style="display:grid;grid-template-columns:320px 1fr;gap:18px;align-items:start">
           <div class="item" style="min-height:400px;position:relative">
-            <div class="item-title" style="margin-bottom:12px">Group Tree</div>
+            <div class="item-title" style="margin-bottom:12px" id="secGroupTreeTitle">Group Tree</div>
             <div id="secGroupTree" style="font-size:13px;line-height:1.8"></div>
             <div id="secContextMenu" class="hidden" style="position:fixed;z-index:9999;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);padding:6px 0;min-width:160px">
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('create')">Create</div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('rename')">Rename</div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('assign')">Assign Users</div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--danger)" onmousedown="secCtxAction('delete')">Delete</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('create')" id="secCtxCreate">Create</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('rename')" id="secCtxRename">Rename</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('assign')" id="secCtxAssign">Assign Users</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--danger)" onmousedown="secCtxAction('delete')" id="secCtxDelete">Delete</div>
             </div>
           </div>
           <div class="item" style="min-height:400px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
               <div><div class="item-title" id="secPolicyTitle"></div><div class="item-meta" id="secPolicySubtitle"></div></div>
               <div id="secPolicyActions" class="hidden" style="display:flex;gap:8px">
-                <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecPolicy()">Save</button>
+                <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecPolicy()" id="secPolicySaveBtn">Save</button>
               </div>
             </div>
             <div id="secPolicyPanel"></div>
             <div id="secGroupMembers" class="hidden" style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-                <div class="item-title" style="font-size:14px">Members</div>
-                <button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="loadSecGroupMembers()">Reload</button>
+                <div class="item-title" style="font-size:14px" id="secMembersTitle">Members</div>
+                <button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="loadSecGroupMembers()" id="secMembersReloadBtn">Reload</button>
               </div>
               <div id="secMembersList"></div>
             </div>

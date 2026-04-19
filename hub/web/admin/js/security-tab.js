@@ -42,6 +42,26 @@
     return '<div class="hint" style="color:var(--danger)">' + escapeHtml(message || '') + '</div>';
   }
 
+  function applySecurityI18n() {
+    _s('navSecurity', 'textContent', text('\u5b89\u5168\u7ba1\u7406', 'Security'));
+    _s('navSecurityDesc', 'textContent', text('\u7528\u6237\u7ec4\u3001\u7b56\u7565\u4e0e\u7ec4\u7ec7\u67b6\u6784', 'Security Management'));
+    _s('secTitle', 'textContent', text('\u5b89\u5168\u7ba1\u7406', 'Security'));
+    _s('secDesc', 'textContent', text('\u7ba1\u7406\u7528\u6237\u7ec4\u3001\u7b56\u7565\u548c\u7ec4\u7ec7\u67b6\u6784\u3002', 'Manage groups, policies, and organization structure.'));
+    _s('secReloadBtn', 'textContent', text('\u5237\u65b0', 'Reload'));
+    _s('secCentralizedTitle', 'textContent', text('\u96c6\u4e2d\u7b56\u7565', 'Centralized Policy'));
+    _s('secOrgTitle', 'textContent', text('\u7ec4\u7ec7\u67b6\u6784', 'Org Structure'));
+    _s('secDefaultGroupTitle', 'textContent', text('\u9ed8\u8ba4\u7ec4', 'Default Group'));
+    _s('secDefaultGroupSetBtn', 'textContent', text('\u8bbe\u7f6e', 'Set'));
+    _s('secGroupTreeTitle', 'textContent', text('\u7ec4\u7ec7\u6811', 'Group Tree'));
+    _s('secCtxCreate', 'textContent', text('\u521b\u5efa\u5b50\u90e8\u95e8', 'Create'));
+    _s('secCtxRename', 'textContent', text('\u91cd\u547d\u540d', 'Rename'));
+    _s('secCtxAssign', 'textContent', text('\u79fb\u5165\u7528\u6237', 'Assign Users'));
+    _s('secCtxDelete', 'textContent', text('\u5220\u9664', 'Delete'));
+    _s('secPolicySaveBtn', 'textContent', text('\u4fdd\u5b58', 'Save'));
+    _s('secMembersTitle', 'textContent', text('\u6210\u5458', 'Members'));
+    _s('secMembersReloadBtn', 'textContent', text('\u5237\u65b0', 'Reload'));
+  }
+
   function renderTreeNodes(nodes, container, depth) {
     const sec = state();
     if (!container) return;
@@ -104,6 +124,7 @@
   }
 
   global.loadSecurityTab = async function loadSecurityTab() {
+    applySecurityI18n();
     try {
       await loadSettings();
     } catch (err) {
@@ -395,6 +416,13 @@
   };
 
   global.filterAssignUsers = function filterAssignUsers() {};
+
+  applySecurityI18n();
+  if (global.AdminTabRegistry && typeof global.AdminTabRegistry.onLanguageChange === 'function') {
+    global.AdminTabRegistry.onLanguageChange(function() {
+      applySecurityI18n();
+    });
+  }
 
   global.confirmAssignUsers = async function confirmAssignUsers() {
     const sec = state();
