@@ -9,6 +9,8 @@ type HubLLMConfig struct {
 	APIKey                 string `json:"api_key"`
 	Model                  string `json:"model"`
 	Protocol               string `json:"protocol"`                  // "openai" (default) or "anthropic"
+	WireAPI                string `json:"wire_api,omitempty"`        // "chat" (default), "responses", or "responses-ws"
+	AgentType              string `json:"agent_type,omitempty"`      // custom User-Agent value for upstream LLM requests
 	SmartRouteSingleDevice bool   `json:"smart_route_single_device"` // default false
 	MaxConcurrent          int    `json:"max_concurrent"`            // max concurrent LLM calls; 0 = default (5)
 	MaxConcurrentGUI       int    `json:"max_concurrent_gui"`        // max concurrent LLM calls from GUI; 0 = default (3)
@@ -58,10 +60,12 @@ func (c *HubLLMConfig) ToMaclawLLMConfig() corelib.MaclawLLMConfig {
 		proto = "openai"
 	}
 	return corelib.MaclawLLMConfig{
-		URL:      c.APIURL,
-		Key:      c.APIKey,
-		Model:    c.Model,
-		Protocol: proto,
+		URL:       c.APIURL,
+		Key:       c.APIKey,
+		Model:     c.Model,
+		Protocol:  proto,
+		WireAPI:   c.WireAPI,
+		AgentType: c.AgentType,
 	}
 }
 
