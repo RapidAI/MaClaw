@@ -622,3 +622,7 @@ export function DownloadASRModel():Promise<void>;
 export function QuerySecurityEvents(arg1:number):Promise<Array<any>>;
 
 export function ReadErrorLog():Promise<Array<string>>;
+
+export function GetHubLLMServiceStatus():Promise<any>;
+export function RedeemHubLLMService(arg1:string):Promise<any>;
+export function HideFloatingButton():Promise<void>;

@@ -349,6 +349,7 @@ func (a *App) GetMaclawLLMConfig() MaclawLLMConfig {
 				SupportsVision: p.SupportsVision,
 				AgentType:      p.AgentType,
 				WireAPI:        wireAPI,
+				ProviderName:   p.Name,
 			}
 		}
 	}

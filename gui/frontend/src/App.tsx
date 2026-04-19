@@ -32,6 +32,7 @@ import { EmbeddingConfigPanel } from './components/remote/EmbeddingConfigPanel';
 import { ASRConfigPanel } from './components/remote/ASRConfigPanel';
 import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
+import { HubServiceRedeemPanel } from './components/remote/HubServiceRedeemPanel';
 import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
 import { AgentNetPanel } from './components/remote/AgentNetPanel';
 import { AgentNetTabContainer } from './components/remote/AgentNetTabContainer';
@@ -1784,7 +1785,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'search' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'security' | 'im' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'serviceRedeem' | 'search' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'security' | 'im' | 'system'>('general');
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
@@ -3566,73 +3567,78 @@ ${instruction}`;
     const settingsTabOptions = [
         {
             id: 'general' as const,
-            label: lang === 'zh-Hans' ? '通用设置' : lang === 'zh-Hant' ? '通用設置' : 'General',
-            desc: lang === 'zh-Hans' ? '语言、项目与环境' : lang === 'zh-Hant' ? '語言、項目與環境' : 'Language, projects, and environment',
+            label: lang === 'zh-Hans' ? '通用设置' : lang === 'zh-Hant' ? '通用設定' : 'General',
+            desc: lang === 'zh-Hans' ? '语言、项目与运行环境' : lang === 'zh-Hant' ? '語言、專案與執行環境' : 'Language, projects, and environment',
         },
         {
             id: 'proxy' as const,
-            label: lang === 'zh-Hans' ? '代理设置' : lang === 'zh-Hant' ? '代理設置' : 'Proxy',
-            desc: lang === 'zh-Hans' ? '全局网络代理配置' : lang === 'zh-Hant' ? '全局網路代理配置' : 'Global network proxy configuration',
+            label: lang === 'zh-Hans' ? '代理设置' : lang === 'zh-Hant' ? '代理設定' : 'Proxy',
+            desc: lang === 'zh-Hans' ? '全局网络代理配置' : lang === 'zh-Hant' ? '全域網路代理配置' : 'Global network proxy configuration',
         },
         {
             id: 'ui' as const,
-            label: lang === 'zh-Hans' ? 'UI配置' : lang === 'zh-Hant' ? 'UI配置' : 'UI Config',
-            desc: lang === 'zh-Hans' ? '界面缩放与整体显示行为' : lang === 'zh-Hant' ? '介面縮放與整體顯示行為' : 'UI scaling and display behavior',
+            label: lang === 'zh-Hans' ? '界面设置' : lang === 'zh-Hant' ? '介面設定' : 'UI Config',
+            desc: lang === 'zh-Hans' ? '界面缩放与显示行为' : lang === 'zh-Hant' ? '介面縮放與顯示行為' : 'UI scaling and display behavior',
         },
         {
             id: 'display' as const,
-            label: lang === 'zh-Hans' ? '编程工具' : lang === 'zh-Hant' ? '編程工具' : 'Dev CLI',
-            desc: lang === 'zh-Hans' ? '工具显示与启动页行为' : lang === 'zh-Hant' ? '工具顯示與啟動頁行為' : 'Tool visibility and startup behavior',
+            label: lang === 'zh-Hans' ? '开发工具' : lang === 'zh-Hant' ? '開發工具' : 'Dev CLI',
+            desc: lang === 'zh-Hans' ? '工具显示与启动行为' : lang === 'zh-Hant' ? '工具顯示與啟動行為' : 'Tool visibility and startup behavior',
         },
         {
             id: 'remote' as const,
-            label: lang === 'zh-Hans' ? '移动端注册' : lang === 'zh-Hant' ? '行動端註冊' : 'Remote',
-            desc: lang === 'zh-Hans' ? '仅配置远程服务器地址' : lang === 'zh-Hant' ? '僅配置遠端伺服器位址' : 'Server addresses only',
+            label: lang === 'zh-Hans' ? '远程连接' : lang === 'zh-Hant' ? '遠端連線' : 'Remote',
+            desc: lang === 'zh-Hans' ? '远程服务器地址与连接入口' : lang === 'zh-Hant' ? '遠端伺服器位址與連線入口' : 'Server addresses only',
         },
         {
             id: 'llm' as const,
             label: lang === 'zh-Hans' ? 'LLM 配置' : lang === 'zh-Hant' ? 'LLM 配置' : 'LLM Config',
-            desc: lang === 'zh-Hans' ? '配置 MaClaw 代理使用的 LLM' : lang === 'zh-Hant' ? '配置 MaClaw 代理使用的 LLM' : 'Configure LLM for MaClaw agent',
+            desc: lang === 'zh-Hans' ? '配置 MaClaw 使用的大模型服务' : lang === 'zh-Hant' ? '配置 MaClaw 使用的大模型服務' : 'Configure LLM for MaClaw agent',
+        },
+        {
+            id: 'serviceRedeem' as const,
+            label: lang === 'zh-Hans' ? '服务兑换' : lang === 'zh-Hant' ? '服務兌換' : 'Service Redeem',
+            desc: lang === 'zh-Hans' ? '兑换充值卡并查看 Hub 模型服务授权' : lang === 'zh-Hant' ? '兌換儲值卡並查看 Hub 模型服務授權' : 'Redeem service cards and view Hub model service grants',
         },
         {
             id: 'search' as const,
             label: lang === 'zh-Hans' ? '搜索引擎' : lang === 'zh-Hant' ? '搜尋引擎' : 'Search Engine',
-            desc: lang === 'zh-Hans' ? '配置网页搜索 provider 与 API Key' : lang === 'zh-Hant' ? '配置網頁搜尋 provider 與 API Key' : 'Configure web search providers and API keys',
+            desc: lang === 'zh-Hans' ? '配置搜索服务商与 API Key' : lang === 'zh-Hant' ? '配置搜尋服務商與 API Key' : 'Configure web search providers and API keys',
         },
         {
             id: 'role' as const,
             label: lang === 'zh-Hans' ? 'MaClaw 角色' : lang === 'zh-Hant' ? 'MaClaw 角色' : 'MaClaw Role',
-            desc: lang === 'zh-Hans' ? '自定义 MaClaw Agent 的名字与角色描述' : lang === 'zh-Hant' ? '自訂 MaClaw Agent 的名字與角色描述' : 'Customize MaClaw Agent name and role description',
+            desc: lang === 'zh-Hans' ? '自定义 MaClaw Agent 名称与角色描述' : lang === 'zh-Hant' ? '自訂 MaClaw Agent 名稱與角色描述' : 'Customize MaClaw Agent name and role description',
         },
         {
             id: 'memory' as const,
             label: lang === 'zh-Hans' ? '记忆管理' : lang === 'zh-Hant' ? '記憶管理' : 'Memory',
-            desc: lang === 'zh-Hans' ? '查看、编辑和管理 MaClaw 的长期记忆' : lang === 'zh-Hant' ? '查看、編輯和管理 MaClaw 的長期記憶' : 'View, edit and manage MaClaw long-term memory',
+            desc: lang === 'zh-Hans' ? '查看、编辑和管理 MaClaw 长期记忆' : lang === 'zh-Hant' ? '查看、編輯和管理 MaClaw 長期記憶' : 'View, edit and manage MaClaw long-term memory',
         },
         {
             id: 'embedding' as const,
-            label: lang === 'zh-Hans' ? 'AI模型' : lang === 'zh-Hant' ? 'AI模型' : 'AI Model',
-            desc: lang === 'zh-Hans' ? '向量搜索与嵌入模型管理' : lang === 'zh-Hant' ? '向量搜索與嵌入模型管理' : 'Vector search and embedding model management',
+            label: lang === 'zh-Hans' ? '嵌入模型' : lang === 'zh-Hant' ? '嵌入模型' : 'AI Model',
+            desc: lang === 'zh-Hans' ? '向量检索与嵌入模型管理' : lang === 'zh-Hant' ? '向量檢索與嵌入模型管理' : 'Vector search and embedding model management',
         },
         {
             id: 'agentnet' as const,
-            label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet',
-            desc: lang === 'zh-Hans' ? 'AgentNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'AgentNet P2P 去中心化 Agent 網路' : 'AgentNet decentralized P2P agent network',
+            label: lang === 'zh-Hans' ? 'AgentNet' : lang === 'zh-Hant' ? 'AgentNet' : 'AgentNet',
+            desc: lang === 'zh-Hans' ? 'AgentNet 去中心化 P2P Agent 网络' : lang === 'zh-Hant' ? 'AgentNet 去中心化 P2P Agent 網路' : 'AgentNet decentralized P2P agent network',
         },
         {
             id: 'im' as const,
             label: 'IM',
-            desc: lang === 'zh-Hans' ? '配置 QQ 机器人、Telegram Bot、微信等即时通讯接入' : lang === 'zh-Hant' ? '配置 QQ 機器人、Telegram Bot、微信等即時通訊接入' : 'Configure QQ Bot, Telegram Bot, WeChat and other IM integrations',
+            desc: lang === 'zh-Hans' ? '配置 QQ Bot、Telegram Bot、微信等 IM 集成' : lang === 'zh-Hant' ? '配置 QQ Bot、Telegram Bot、微信等 IM 整合' : 'Configure QQ Bot, Telegram Bot, WeChat and other IM integrations',
         },
         {
             id: 'security' as const,
-            label: lang === 'zh-Hans' ? '安全策略' : lang === 'zh-Hant' ? '安全策略' : 'Security',
-            desc: lang === 'zh-Hans' ? '安全策略模式与审计日志' : lang === 'zh-Hant' ? '安全策略模式與審計日誌' : 'Security policy mode and audit log',
+            label: lang === 'zh-Hans' ? '安全管理' : lang === 'zh-Hant' ? '安全管理' : 'Security',
+            desc: lang === 'zh-Hans' ? '安全策略模式与审计日志' : lang === 'zh-Hant' ? '安全策略模式與稽核日誌' : 'Security policy mode and audit log',
         },
         {
             id: 'system' as const,
-            label: lang === 'zh-Hans' ? '系统' : lang === 'zh-Hant' ? '系統' : 'System',
-            desc: lang === 'zh-Hans' ? '心跳、熄屏等系统级设置' : lang === 'zh-Hant' ? '心跳、熄屏等系統級設置' : 'Heartbeat, screen dimming and other system settings',
+            label: lang === 'zh-Hans' ? '系统设置' : lang === 'zh-Hant' ? '系統設定' : 'System',
+            desc: lang === 'zh-Hans' ? '心跳、熄屏等系统行为设置' : lang === 'zh-Hant' ? '心跳、熄屏等系統行為設定' : 'Heartbeat, screen dimming and other system settings',
         },
     ];
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
@@ -4729,6 +4735,17 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'llm' ? 'block' : 'none' }}>
                                 <LLMConfigPanel lang={lang} codexModels={config?.codex?.models} onStatusChange={(online, configured) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }} />
+                            </div>
+
+                            <div className="settings-panel" style={{ display: settingsTab === 'serviceRedeem' ? 'block' : 'none' }}>
+                                <HubServiceRedeemPanel
+                                    lang={lang}
+                                    onStatusChange={(serviceStatus) => {
+                                        const active = !!serviceStatus?.active;
+                                        setMaclawLLMConfigured(active);
+                                        setMaclawLLMOnline(active);
+                                    }}
+                                />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'search' ? 'block' : 'none' }}>
@@ -6357,7 +6374,7 @@ ${instruction}`;
                             const imConnected = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected';
                             const anyImConfigured = !!(config as any)?.qqbot_enabled || !!(config as any)?.telegram_enabled || !!(config as any)?.weixin_enabled;
                             const showImWarning = anyImConfigured && !imConnected;
-                            if ((!maclawLLMOnline || !remoteActivationStatus?.activated || !agentNetRunning || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm')) {
+                            if ((!maclawLLMOnline || !remoteActivationStatus?.activated || !agentNetRunning || showImWarning) && !(navTab === 'settings' && (settingsTab === 'llm' || settingsTab === 'serviceRedeem'))) {
                                 const isImIssue = maclawLLMOnline && !!remoteActivationStatus?.activated && agentNetRunning && showImWarning;
                                 return (
                             <span

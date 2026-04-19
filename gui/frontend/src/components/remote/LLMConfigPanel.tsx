@@ -21,6 +21,7 @@ import {
     SetFreeProxyModel,
     FetchCodeGenModels,
     SaveCodeGenModelChoice,
+    GetHubLLMServiceStatus,
 } from "../../../wailsjs/go/main/App";
 import { colors } from "./styles";
 import { UsageDisplay } from "./UsageDisplay";
@@ -95,6 +96,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
     });
 }
 
+interface HubLLMServiceStatus {
+    active?: boolean;
+    skip_llm_config?: boolean;
+    hub_llm_base_url?: string;
+    available_models?: string[];
+    default_model?: string;
+}
+
 interface Props {
     lang?: string;
     codexModels?: unknown[];
@@ -107,6 +116,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const [currentName, setCurrentName] = useState(NONE_PROVIDER);
     const [loading, setLoading] = useState(false);
     const [maxIter, setMaxIter] = useState(0);
+    const [hubServiceStatus, setHubServiceStatus] = useState<HubLLMServiceStatus | null>(null);
 
     // Dialog state — track selected provider by index (stable across renames)
     const [dlgOpen, setDlgOpen] = useState(false);
@@ -134,6 +144,15 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
 
+    const loadHubServiceStatus = useCallback(async () => {
+        try {
+            const status = await GetHubLLMServiceStatus() as HubLLMServiceStatus;
+            setHubServiceStatus(status || null);
+        } catch {
+            setHubServiceStatus(null);
+        }
+    }, []);
+
     /** Shared OAuth login handler for both first-login and re-login scenarios. */
     const handleOAuthLogin = useCallback(async () => {
         setOauthBusy(true);
@@ -146,6 +165,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setDlgProviders(fresh);
                 setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
                 setCurrentName(data.current || NONE_PROVIDER);
+                loadHubServiceStatus().catch(() => {});
                 // Re-select the OAuth provider by name to keep dlgSelectedIdx stable
                 const oaIdx = fresh.findIndex((p: LLMProvider) => p.auth_type === "oauth");
                 if (oaIdx >= 0) setDlgSelectedIdx(oaIdx);
@@ -158,7 +178,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             setDlgTestResult({ ok: false, msg: String(e) });
         }
         setOauthBusy(false);
-    }, [t, onStatusChange]);
+    }, [t, onStatusChange, loadHubServiceStatus]);
 
     const loadProviders = useCallback(async () => {
         const loadSeq = ++loadSeqRef.current;
@@ -179,6 +199,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 if (data?.providers) {
                     setProviders(data.providers);
                     setCurrentName(data.current || NONE_PROVIDER);
+                    loadHubServiceStatus().catch(() => {});
                 } else {
                     setProviders([]);
                     setCurrentName(NONE_PROVIDER);
@@ -210,11 +231,14 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 setLoading(false);
             }
         }
-    }, [t]);
+    }, [t, loadHubServiceStatus]);
 
     useEffect(() => { loadProviders(); }, [loadProviders]);
+    useEffect(() => { loadHubServiceStatus(); }, [loadHubServiceStatus]);
 
     const isNone = currentName === NONE_PROVIDER;
+    const hasHubManagedService = !!hubServiceStatus?.active && !!hubServiceStatus?.skip_llm_config;
+    const hubAvailableModels = (hubServiceStatus?.available_models || []).filter(Boolean);
 
     /* ── Dialog helpers ── */
 
@@ -474,11 +498,40 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
     return (
         <div style={{ padding: "0 4px" }}>
+            {hasHubManagedService && (
+                <div style={{
+                    marginBottom: 16,
+                    padding: "12px 16px",
+                    borderRadius: 8,
+                    border: `1px solid ${colors.success}`,
+                    background: colors.successBg,
+                }}>
+                    <div style={{ fontSize: "0.82rem", fontWeight: 700, color: colors.success, marginBottom: 8 }}>
+                        {t("MaClaw Model Service", "MaClaw 模型服务")}
+                    </div>
+                    <div style={{ fontSize: "0.74rem", color: colors.textSecondary, lineHeight: 1.6 }}>
+                        {t(
+                            "This account already has Hub-managed MaClaw model service access. Tools can use the exposed OpenAI-compatible endpoint directly.",
+                            "当前账号已开通 Hub 托管的 MaClaw 模型服务，可直接使用对外暴露的 OpenAI 兼容接口。"
+                        )}
+                    </div>
+                    <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                        <div>
+                            <label style={labelStyle}>{t("Exposed API URL", "对外 API 地址")}</label>
+                            <div style={{ ...readonlyStyle, minHeight: 36, display: "flex", alignItems: "center" }}>{hubServiceStatus?.hub_llm_base_url || "-"}</div>
+                        </div>
+                        <div>
+                            <label style={labelStyle}>{t("Available Models", "可用模型名")}</label>
+                            <div style={{ fontSize: "0.8rem", color: colors.text }}>{hubAvailableModels.length ? hubAvailableModels.join(", ") : (hubServiceStatus?.default_model || "auto")}</div>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                 <p style={{ fontSize: "0.72rem", color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
                     {t(
-                        "选择 LLM 服务商（支持 OpenAI / Anthropic 协议）",
-                        "Select LLM provider (OpenAI / Anthropic supported)"
+                        "Select LLM provider (OpenAI / Anthropic supported)",
+                        "选择 LLM 服务商（支持 OpenAI / Anthropic 协议）"
                     )}
                 </p>
                 <button onClick={openDialog} style={{
@@ -499,7 +552,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                     {t("Provider", "当前服务商")}
                 </span>
                 <span style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? colors.danger : colors.text }}>
-                    {isNone ? t("None", "暂不配置") : currentName}
+                    {isNone ? t("None", "未配置") : currentName}
                 </span>
             </div>
 
@@ -526,7 +579,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                     <label style={{ ...labelStyle, marginBottom: 0 }}>
                         {t("Agent Max Iterations", "Agent 最大推理轮数")}
                         <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400, marginLeft: 6 }}>
-                            {t("0=unlimited, default 12", "0=不限制，默认12")}
+                            {t("0=unlimited, default 12", "0=不限制，默认 12")}
                         </span>
                     </label>
                 </div>
@@ -543,12 +596,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 </div>
             </div>
 
-            {isNone && (
+            {isNone && !hasHubManagedService && (
                 <div style={{
                     padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
                     background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: colors.danger,
                 }}>
-                    ⚠️ {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
+                    提示 {t("Without a provider, MaClaw remote will be disabled.", "未配置服务商时，MaClaw 远程能力将不可用。")}
                 </div>
             )}
 
@@ -683,7 +736,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                             {(dlgProvider.protocol || "openai") === "anthropic"
                                                 ? t("Uses Anthropic Messages API (x-api-key auth)", "使用 Anthropic Messages API（x-api-key 鉴权）")
-                                                : t("Uses OpenAI-compatible API (Bearer token auth)", "使用 OpenAI 兼容接口（Bearer Token 鉴权）")}
+                                                : t("Uses OpenAI-compatible API (Bearer token auth)", "使用 OpenAI 兼容 API（Bearer Token 鉴权）")}
                                         </p>
                                     </div>
                                 )}
@@ -709,8 +762,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     </div>
                                     <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                         {(dlgProvider.agent_type || "openclaw") === "claude-code/2.0.0"
-                                            ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi)", "Kimi 等需要 Claude Coding Plan 身份的服务商")
-                                            : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "智谱龙虾等大多数服务商使用 OpenClaw 身份")}
+                                            ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi)", "适用于需要 Claude Coding Plan 身份的服务商（如 Kimi）")
+                                            : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "大多数服务商使用 OpenClaw 身份（如智谱龙虾）")}
                                     </p>
                                 </div>
 
@@ -761,7 +814,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         )}
                                         {dlgProvider.auth_type === "sso" && (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
-                                                {codegenModelsFetching ? t("(loading models...)", "（加载模型列表...）") : t("(select model)", "（选择模型）")}
+                                                {codegenModelsFetching ? t("(loading models...)", "（加载模型中...）") : t("(select model)", "（选择模型）")}
                                             </span>
                                         )}
                                     </label>
@@ -808,7 +861,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                 background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
                                             }}>
                                                 <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
-                                                    ✅ {t("OAuth authenticated", "已通过 OAuth 认证")}
+                                                    已认证 {t("OAuth authenticated", "OAuth 已认证")}
                                                 </span>
                                                 <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                     fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
@@ -1101,15 +1154,15 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                             </button>
                                         </div>
                                         <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "6px 0 0 0", lineHeight: 1.4 }}>
-                                            🆓 {t(
-                                                "通过当贝 AI 免费使用多种大模型，无需 API 密钥。",
-                                                "Use multiple LLMs for free via Dangbei AI, no API key needed."
+                                            提示 {t(
+                                                "Use multiple LLMs for free via Dangbei AI, no API key needed.",
+                                                "通过当贝 AI 免费使用多种大模型，无需 API Key。"
                                             )}
                                         </p>
                                     </div>
                                 ) : (
                                     <div>
-                                        <label style={labelStyle}>{t("API Key", "API 密钥")} <span style={{ color: colors.danger }}>*</span></label>
+                                        <label style={labelStyle}>{t("API Key", "API Key")} <span style={{ color: colors.danger }}>*</span></label>
                                         <input style={inputStyle} type="password" value={dlgProvider.key}
                                             onChange={e => dlgUpdateField("key", e.target.value)}
                                             placeholder={((dlgProvider.name === "智谱龙虾" || dlgProvider.name === "智谱编程") || (dlgProvider.protocol || "openai") === "anthropic") ? "xxxxxxxx.yyyyyyyy" : "sk-..."}
@@ -1127,8 +1180,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         placeholder="128000" />
                                     <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
                                         {t(
-                                            "模型支持的最大上下文长度。智谱龙虾/智谱编程 GLM 为 180000，留空默认 128000。",
-                                            "Max context window of the model. GLM supports 180000. Defaults to 128000 if empty."
+                                            "Max context window of the model. GLM supports 180000. Defaults to 128000 if empty.",
+                                            "模型支持的最大上下文长度。GLM 可支持 180000，留空默认 128000。"
                                         )}
                                     </p>
                                 </div>
@@ -1140,17 +1193,17 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 }}>
                                     <div style={{ flex: 1 }}>
                                         <label style={{ ...labelStyle, marginBottom: 2 }}>
-                                            {t("Vision Support", "图片理解")}
+                                            {t("Vision Support", "视觉支持")}
                                         </label>
                                         <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: 0, lineHeight: 1.4 }}>
                                             {dlgProvider.supports_vision
-                                                ? t("✅ Supports image input (WeChat images understood by model)", "✅ 支持图片输入（微信发图可被模型理解）")
-                                                : t("❌ No vision (images saved as files, not sent to model)", "❌ 不支持图片（发图将保存为文件而非发送给模型）")}
+                                                ? t("Supports image input (WeChat images understood by model)", "支持图片输入（微信发图可被模型理解）")
+                                                : t("No vision (images saved as files, not sent to model)", "不支持视觉（图片会保存为文件，不发送给模型）")}
                                         </p>
                                         <p style={{ fontSize: "0.64rem", color: colors.textMuted, margin: "2px 0 0 0", lineHeight: 1.4 }}>
                                             {t(
-                                                "首次测试并保存时会自动检测图片能力；如结果不准，可手动修改后保存",
-                                                "Vision support is auto-detected during the initial test-and-save. If inaccurate, you can adjust it manually and save again."
+                                                "Vision support is auto-detected during the initial test-and-save. If inaccurate, you can adjust it manually and save again.",
+                                                "首次测试并保存时会自动检测视觉能力；如果不准确，可手动调整后再保存。"
                                             )}
                                         </p>
                                     </div>

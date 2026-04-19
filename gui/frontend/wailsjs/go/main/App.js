@@ -1346,3 +1346,15 @@ export function QuerySecurityEvents(arg1) {
 export function ReadErrorLog() {
   return window['go']['main']['App']['ReadErrorLog']();
 }
+
+export function GetHubLLMServiceStatus() {
+  return window['go']['main']['App']['GetHubLLMServiceStatus']();
+}
+
+export function RedeemHubLLMService(arg1) {
+  return window['go']['main']['App']['RedeemHubLLMService'](arg1);
+}
+
+export function HideFloatingButton() {
+  return window['go']['main']['App']['HideFloatingButton']();
+}
