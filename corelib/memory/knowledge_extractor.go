@@ -18,11 +18,19 @@ type ConversationMessage struct {
 // KnowledgeExtractor extracts knowledge points from conversation history
 // after a session ends and saves them to the memory store.
 type KnowledgeExtractor struct {
-	store       *Store
-	llm         LLMChatCaller
-	cooldown    time.Duration
-	lastExtract time.Time
-	mu          sync.Mutex
+	store        *Store
+	llm          LLMChatCaller
+	cooldown     time.Duration
+	lastExtract  time.Time
+	mu           sync.Mutex
+	consolidator *Consolidator
+}
+
+// SetConsolidator wires an optional TiMem consolidator for online L1 segment creation.
+func (ke *KnowledgeExtractor) SetConsolidator(c *Consolidator) {
+	ke.mu.Lock()
+	defer ke.mu.Unlock()
+	ke.consolidator = c
 }
 
 // HasRecentMemoryWrites checks if the conversation contains assistant messages
@@ -182,6 +190,18 @@ func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMess
 
 	if strings.TrimSpace(conversationText) == "" {
 		return nil
+	}
+
+	// Online L1 segment consolidation: create TMT segment nodes per turn pair.
+	ke.mu.Lock()
+	cons := ke.consolidator
+	ke.mu.Unlock()
+	if cons != nil {
+		for i := 0; i+1 < len(filtered); i += 2 {
+			if filtered[i].Role == "user" && filtered[i+1].Role == "assistant" {
+				_, _ = cons.ConsolidateSegment(ctx, filtered[i].Content, filtered[i+1].Content, time.Now())
+			}
+		}
 	}
 
 	// LLM extraction call.

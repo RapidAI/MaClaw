@@ -7,8 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/fsnotify/fsnotify"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"io"
 	"log"
 	"net/http"
@@ -20,6 +18,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
@@ -37,9 +38,12 @@ import (
 
 // App struct
 type App struct {
-	ctx               context.Context
-	CurrentLanguage   string
-	watcher           *fsnotify.Watcher
+	ctx             context.Context
+	CurrentLanguage string
+	watcher         *fsnotify.Watcher
+
+	// Managers to reduce struct complexity
+	managers          *AppManagers
 	testHomeDir       string // For testing purposes
 	downloadCancelers map[string]context.CancelFunc
 	downloadMutex     sync.Mutex
@@ -106,7 +110,7 @@ type App struct {
 	remoteInfraOnce            sync.Once   // guards ensureRemoteInfra initialization
 	remoteInfraReady           atomic.Bool // fast-path check for ensureRemoteInfra
 	warmupDone                 atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
-	agentNetClient              *AgentNetClient
+	agentNetClient             *AgentNetClient
 	mcpAutoDiscovery           *MCPAutoDiscovery
 	securityFirewall           *SecurityFirewall
 	securityRiskAnalyzer       *SecurityRiskAnalyzer
@@ -133,6 +137,7 @@ type App struct {
 	docGenerator               *swarm.SwarmDocGenerator // cached PDF doc generator
 	workflowEngine             *workflow.WorkflowEngine // maclaw agent workflow engine (corelib/workflow)
 	codeEventEmitter           *CodeEventEmitter        // emits code file events to frontend for code preview panel
+	floatingAssistant          *FloatingAssistantManager
 
 	// Session search store (FTS5 full-text search across historical conversations).
 	sessionSearchStore *session.Store
@@ -165,10 +170,14 @@ var FlashAndBeep func() = func() {}
 
 // NewApp creates a new App application struct
 func NewApp() *App {
+	ctx := context.Background()
 	return &App{
+		ctx:               ctx,
 		downloadCancelers: make(map[string]context.CancelFunc),
 		nodeInstallDone:   make(chan bool, 1), // Buffered channel to signal Node.js installation completion
 		toolInstallLocks:  make(map[string]bool),
+		floatingAssistant: nil,
+		managers:          NewAppManagers(ctx),
 	}
 }
 
@@ -383,8 +392,20 @@ func (a *App) ensureMemoryStore() {
 	}
 	if ms != nil {
 		a.memoryStore = ms
-		comparator := memory.NewCompressor(ms, nil, nil)
-		a.memPipeline = memory.NewPipeline(ms, comparator, nil, nil, nil)
+		// Wire up all pipeline components. LLM-dependent components (promoter,
+		// reflector, consolidator) gracefully skip when LLM is nil/unconfigured.
+		// Step 0 (decay/dormant marking) always runs regardless.
+		compressor := memory.NewCompressor(ms, nil, nil)
+		promoter := memory.NewPromoter(ms, nil)
+		reflector := memory.NewReflector(ms, nil)
+		a.memPipeline = memory.NewPipeline(ms, compressor, promoter, reflector, nil)
+		// Attach TiMem consolidators.
+		consolidator := memory.NewConsolidator(ms, ms.TMT(), nil)
+		profiler := memory.NewProfileConsolidator(ms, ms.TMT(), nil)
+		a.memPipeline.SetConsolidator(consolidator, profiler)
+		// Attach TiMem recall gating for post-retrieval LLM filtering.
+		ms.SetRecallGating(memory.NewRecallGating(nil))
+		a.memPipeline.Start()
 		// Load embedding model asynchronously so it doesn't block the first
 		// AI assistant message. Vector search will become available once
 		// the model finishes loading in the background. Tool embedding
@@ -5635,8 +5656,8 @@ func (a *App) validateSkillZip(path string) error {
 	defer r.Close()
 
 	type zipSkillLayout struct {
-		hasMarkdown  bool
-		hasLegacyMD  bool
+		hasMarkdown   bool
+		hasLegacyMD   bool
 		hasLegacyMeta bool
 	}
 

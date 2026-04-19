@@ -281,6 +281,46 @@ func extractChineseNouns(msg string) []string {
 	return results
 }
 
+// ClassifyComplexity determines how deep into the temporal hierarchy a recall
+// should go based on query length, entity count, and reasoning signal keywords.
+// Pure rule-based, no LLM dependency.
+func ClassifyComplexity(query string, entities []string, _ []Entry) QueryComplexity {
+	runeLen := len([]rune(query))
+	entityCount := len(entities)
+
+	complexKeywords := []string{
+		"为什么", "对比", "分析", "趋势", "历史", "变化", "演变", "总结", "比较",
+		"why", "compare", "analyze", "trend", "history", "evolve", "summarize", "pattern",
+	}
+	habitKeywords := []string{
+		"usually", "always", "often", "typically", "习惯", "一般", "经常", "通常", "偏好",
+	}
+	lq := strings.ToLower(query)
+	signalCount := 0
+	for _, kw := range complexKeywords {
+		if strings.Contains(lq, kw) {
+			signalCount++
+		}
+	}
+	habitCount := 0
+	for _, kw := range habitKeywords {
+		if strings.Contains(lq, kw) {
+			habitCount++
+		}
+	}
+
+	if runeLen >= 40 && entityCount >= 3 && signalCount >= 2 {
+		return ComplexityComplex
+	}
+	if runeLen <= 20 && entityCount <= 1 && signalCount == 0 && habitCount == 0 {
+		return ComplexitySimple
+	}
+	if signalCount >= 1 || entityCount >= 2 || habitCount >= 1 {
+		return ComplexityHybrid
+	}
+	return ComplexitySimple
+}
+
 // splitOnChineseStopwords splits a Chinese string by removing stopword
 // characters from the boundaries and splitting on internal stopwords.
 func splitOnChineseStopwords(s string) []string {
@@ -319,5 +359,3 @@ func splitOnChineseStopwords(s string) []string {
 	}
 	return results
 }
-
-

@@ -11,11 +11,13 @@ import (
 
 // PipelineResult holds the combined outcome of a full maintenance cycle.
 type PipelineResult struct {
-	Compress *CompressResult `json:"compress,omitempty"`
-	Promote  *PromoteResult  `json:"promote,omitempty"`
-	Reflect  *ReflectResult  `json:"reflect,omitempty"`
-	Dormant  int             `json:"dormant_marked"`
-	Duration string          `json:"duration"`
+	Compress      *CompressResult       `json:"compress,omitempty"`
+	Promote       *PromoteResult        `json:"promote,omitempty"`
+	Reflect       *ReflectResult        `json:"reflect,omitempty"`
+	Consolidation []ConsolidationResult `json:"consolidation,omitempty"`
+	Profile       *ConsolidationResult  `json:"profile,omitempty"`
+	Dormant       int                   `json:"dormant_marked"`
+	Duration      string                `json:"duration"`
 }
 
 // Pipeline orchestrates the background memory maintenance cycle:
@@ -24,16 +26,18 @@ type PipelineResult struct {
 //
 // It runs every 6 hours when started.
 type Pipeline struct {
-	store      *Store
-	compressor *Compressor
-	promoter   *Promoter
-	reflector  *Reflector
-	emitter    corelib.EventEmitter
+	store        *Store
+	compressor   *Compressor
+	promoter     *Promoter
+	reflector    *Reflector
+	consolidator *Consolidator
+	profiler     *ProfileConsolidator
+	emitter      corelib.EventEmitter
 
-	mu       sync.Mutex
-	running  bool
-	cancelFn context.CancelFunc
-	lastRun  time.Time
+	mu         sync.Mutex
+	running    bool
+	cancelFn   context.CancelFunc
+	lastRun    time.Time
 	lastResult *PipelineResult
 }
 
@@ -85,6 +89,22 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		rr, err := p.reflector.Reflect(ctx)
 		if err == nil {
 			result.Reflect = rr
+		}
+	}
+
+	// Step 4: Stratified consolidation (L2-L5).
+	if p.consolidator != nil && ctx.Err() == nil {
+		cr := p.consolidator.RunScheduledConsolidation(ctx, time.Now())
+		if len(cr) > 0 {
+			result.Consolidation = cr
+		}
+	}
+
+	// Step 5: Profile consolidation (L5 persona).
+	if p.profiler != nil && ctx.Err() == nil {
+		pr, err := p.profiler.Consolidate(ctx)
+		if err == nil && pr != nil && pr.NodesCreated > 0 {
+			result.Profile = pr
 		}
 	}
 
@@ -147,4 +167,12 @@ func (p *Pipeline) Status() (running bool, lastRun time.Time, lastResult *Pipeli
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.running, p.lastRun, p.lastResult
+}
+
+// SetConsolidator wires optional TiMem consolidation components into the pipeline.
+func (p *Pipeline) SetConsolidator(consolidator *Consolidator, profiler *ProfileConsolidator) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.consolidator = consolidator
+	p.profiler = profiler
 }

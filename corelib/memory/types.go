@@ -13,6 +13,7 @@ const (
 	CategoryInstruction         Category = "instruction"
 	CategoryConversationSummary Category = "conversation_summary"
 	CategorySessionCheckpoint   Category = "session_checkpoint"
+	CategoryProfile             Category = "profile"
 
 	// Claude-style four-type taxonomy (inspired by Claude Code memdir).
 	// These map to the original categories but provide a cleaner semantic model:
@@ -114,17 +115,104 @@ func (c Category) Tier() MemoryTier {
 type LinkType string
 
 const (
-	LinkRelated    LinkType = ""           // default — generic relatedness
-	LinkReferences LinkType = "references" // A references B
-	LinkSupersedes LinkType = "supersedes" // A supersedes B
+	LinkRelated     LinkType = ""             // default — generic relatedness
+	LinkReferences  LinkType = "references"   // A references B
+	LinkSupersedes  LinkType = "supersedes"   // A supersedes B
 	LinkDerivedFrom LinkType = "derived_from" // A was derived from B
-	LinkConflicts  LinkType = "conflicts"  // A conflicts with B
+	LinkConflicts   LinkType = "conflicts"    // A conflicts with B
 )
 
 // VersionSnapshot records a previous version of an entry's content.
 type VersionSnapshot struct {
 	Content   string    `json:"content"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// TemporalLevel represents the hierarchy level in the temporal memory tree.
+type TemporalLevel int
+
+const (
+	LevelNone TemporalLevel = iota
+	LevelSegment
+	LevelSession
+	LevelDay
+	LevelWeek
+	LevelProfile
+)
+
+func (l TemporalLevel) String() string {
+	switch l {
+	case LevelSegment:
+		return "segment"
+	case LevelSession:
+		return "session"
+	case LevelDay:
+		return "day"
+	case LevelWeek:
+		return "week"
+	case LevelProfile:
+		return "profile"
+	default:
+		return "none"
+	}
+}
+
+// TimeInterval describes a closed time range for consolidated memories.
+type TimeInterval struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
+func (ti TimeInterval) Contains(other TimeInterval) bool {
+	return !other.Start.Before(ti.Start) && !other.End.After(ti.End)
+}
+
+func (ti TimeInterval) Overlaps(other TimeInterval) bool {
+	return !ti.End.Before(other.Start) && !other.End.Before(ti.Start)
+}
+
+// QueryComplexity classifies a user query for hierarchical recall depth.
+type QueryComplexity int
+
+const (
+	ComplexitySimple  QueryComplexity = iota // factual lookup → L1-L3
+	ComplexityHybrid                         // moderate reasoning → L1-L4
+	ComplexityComplex                        // deep analysis → L1-L5
+)
+
+func (c QueryComplexity) String() string {
+	switch c {
+	case ComplexitySimple:
+		return "simple"
+	case ComplexityHybrid:
+		return "hybrid"
+	case ComplexityComplex:
+		return "complex"
+	default:
+		return "unknown"
+	}
+}
+
+// RecallLevels returns which temporal levels should be searched for this complexity.
+func (c QueryComplexity) RecallLevels() []TemporalLevel {
+	switch c {
+	case ComplexitySimple:
+		return []TemporalLevel{LevelSegment, LevelSession, LevelDay}
+	case ComplexityHybrid:
+		return []TemporalLevel{LevelSegment, LevelSession, LevelDay, LevelWeek}
+	case ComplexityComplex:
+		return []TemporalLevel{LevelSegment, LevelSession, LevelDay, LevelWeek, LevelProfile}
+	default:
+		return []TemporalLevel{LevelSegment, LevelSession, LevelDay}
+	}
+}
+
+// ConsolidationResult summarizes a consolidation run.
+type ConsolidationResult struct {
+	Level          TemporalLevel `json:"level"`
+	NodesCreated   int           `json:"nodes_created"`
+	ChildrenMerged int           `json:"children_merged"`
+	Duration       string        `json:"duration,omitempty"`
 }
 
 // Entry represents a single memory record.
@@ -150,6 +238,11 @@ type Entry struct {
 	Pinned bool `json:"pinned,omitempty"`
 	// --- Compact form for context injection ---
 	CompactForm string `json:"compact_form,omitempty"`
+	// --- Temporal memory tree metadata ---
+	Level    TemporalLevel `json:"level,omitempty"`
+	Interval *TimeInterval `json:"interval,omitempty"`
+	ParentID string        `json:"parent_id,omitempty"`
+	ChildIDs []string      `json:"child_ids,omitempty"`
 	// --- Source provenance (inspired by GBrain) ---
 	SourceURL  string `json:"source_url,omitempty"`
 	SourceType string `json:"source_type,omitempty"` // e.g. "conversation", "web", "meeting", "manual"
@@ -228,14 +321,14 @@ type HealthReport struct {
 	CapacityPercent  float64        `json:"capacity_percent"`
 	ArchivedEntries  int            `json:"archived_entries"`
 	StaleEntries     int            `json:"stale_entries"`
-	OrphanEntries    int            `json:"orphan_entries"`    // no graph edges
-	NoEmbedding      int            `json:"no_embedding"`      // missing vector
-	NoHash           int            `json:"no_hash"`           // missing content hash
+	OrphanEntries    int            `json:"orphan_entries"` // no graph edges
+	NoEmbedding      int            `json:"no_embedding"`   // missing vector
+	NoHash           int            `json:"no_hash"`        // missing content hash
 	PinnedEntries    int            `json:"pinned_entries"`
 	EmbedderActive   bool           `json:"embedder_active"`
 	CategoryCounts   map[string]int `json:"category_counts"`
 	AvgAccessCount   float64        `json:"avg_access_count"`
-	OldestEntry      string         `json:"oldest_entry,omitempty"`      // RFC3339
-	NewestEntry      string         `json:"newest_entry,omitempty"`      // RFC3339
-	VersionedEntries int            `json:"versioned_entries"` // entries with version history
+	OldestEntry      string         `json:"oldest_entry,omitempty"` // RFC3339
+	NewestEntry      string         `json:"newest_entry,omitempty"` // RFC3339
+	VersionedEntries int            `json:"versioned_entries"`      // entries with version history
 }

@@ -34,6 +34,8 @@ type Store struct {
 	graph    *memoryGraph
 	embedder embedding.Embedder // nil until SetEmbedder is called
 	archive  *ArchiveStore      // cold storage for evicted entries
+	tmt      *TemporalTree
+	gating   *RecallGating
 }
 
 // NewStore creates a Store that persists to the given path.
@@ -52,6 +54,7 @@ func NewStore(path string) (*Store, error) {
 		bm25:     newBM25Index(),
 		vecIndex: newVectorIndex(),
 		graph:    newMemoryGraph(),
+		tmt:      NewTemporalTree(),
 	}
 
 	if err := s.load(); err != nil {
@@ -62,6 +65,9 @@ func NewStore(path string) (*Store, error) {
 	s.bm25.rebuild(s.entries)
 	s.vecIndex.rebuild(s.entries)
 	s.graph.rebuild(s.entries)
+	if s.tmt != nil {
+		s.tmt.Rebuild(s.entries)
+	}
 
 	// Initialize archive store in the same directory.
 	archivePath := filepath.Join(filepath.Dir(absPath), "archive.json")
@@ -282,7 +288,7 @@ func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
 	vecScores := s.vecIndex.score(s.queryEmbeddingCached(userMessage))
 
 	// Hold RLock for the scoring/assembly phase, then release before TouchAccess.
-	result := s.recallForProjectLocked(bm25Scores, vecScores, expanded.QueryTokens, projectPath)
+	result := s.recallForProjectLocked(userMessage, bm25Scores, vecScores, expanded.QueryTokens, projectPath)
 
 	// Touch access counts outside the lock to avoid RLock→Lock deadlock.
 	if len(result) > 0 {
@@ -298,7 +304,7 @@ func (s *Store) RecallForProject(userMessage, projectPath string) []Entry {
 
 // recallForProjectLocked performs the scoring and assembly phase of RecallForProject.
 // Caller must NOT hold any lock — this method acquires RLock internally.
-func (s *Store) recallForProjectLocked(bm25Scores map[string]float64, vecScores map[string]float64, queryTokens []string, projectPath string) []Entry {
+func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float64, vecScores map[string]float64, queryTokens []string, projectPath string) []Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -398,6 +404,11 @@ func (s *Store) recallForProjectLocked(bm25Scores map[string]float64, vecScores 
 
 	// 1-hop graph expansion: expand top candidates to discover related entries.
 	others = s.graphExpand(others, graphExpandSeeds)
+
+	// Recall gating: LLM-based post-retrieval filtering.
+	if s.gating != nil {
+		others = s.gating.Filter(query, others)
+	}
 
 	// === Phase 5: Type-quota assembly ===
 	var result []Entry
@@ -930,6 +941,11 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 
 	// 1-hop graph expansion: expand top candidates to discover related entries.
 	candidates = s.graphExpand(candidates, graphExpandSeeds)
+
+	// Recall gating: LLM-based post-retrieval filtering.
+	if s.gating != nil {
+		candidates = s.gating.Filter(query, candidates)
+	}
 
 	var result []Entry
 	tokenBudget := maxTokens
@@ -1720,7 +1736,6 @@ func (s *Store) GraphNeighbors(id string) map[string]float64 {
 	return s.graph.neighborsOf(id)
 }
 
-
 // PinEntry sets Pinned=true for the entry with the given ID.
 func (s *Store) PinEntry(id string) error {
 	s.mu.Lock()
@@ -2183,4 +2198,16 @@ func (s *Store) RecallSmart(userMessage, projectPath string, llmFilter LLMReleva
 	}
 
 	return result
+}
+
+// SetRecallGating wires an optional TiMem recall-gating filter into the store.
+func (s *Store) SetRecallGating(rg *RecallGating) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gating = rg
+}
+
+// TMT returns the store's temporal memory tree instance.
+func (s *Store) TMT() *TemporalTree {
+	return s.tmt
 }

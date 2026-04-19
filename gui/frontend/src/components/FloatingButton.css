@@ -1,0 +1,95 @@
+/* FloatingButton.css — Styles for the floating assistant button (second window).
+ * Requirements: 6.1, 6.3, 6.4
+ */
+
+/* Reset for the floating window — no margin, no scrollbars, transparent background. */
+html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: transparent;
+    width: 64px;
+    height: 64px;
+}
+
+/* Container: 56×56px circular, centered in the 64×64 window to leave room for the halo. */
+.floating-assistant-container {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    position: relative;
+    cursor: pointer;
+    user-select: none;
+    -webkit-app-region: no-drag;
+    margin: 4px;
+}
+
+/* Halo: pulsing glow ring around the button, GPU-accelerated. */
+.floating-assistant-halo {
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    border: 2px solid rgba(99, 102, 241, 0.6);
+    animation: halo-pulse 2s ease-in-out infinite;
+    pointer-events: none;
+    will-change: box-shadow, opacity;
+}
+
+@keyframes halo-pulse {
+    0%, 100% {
+        box-shadow:
+            0 0 8px rgba(99, 102, 241, 0.4),
+            0 0 16px rgba(99, 102, 241, 0.2);
+        opacity: 1;
+    }
+    50% {
+        box-shadow:
+            0 0 16px rgba(99, 102, 241, 0.6),
+            0 0 32px rgba(99, 102, 241, 0.3);
+        opacity: 0.8;
+    }
+}
+
+/* Logo image: 56×56px circular, covers the container. */
+.floating-assistant-logo {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    object-fit: cover;
+    position: relative;
+    z-index: 1;
+    pointer-events: none;
+    -webkit-user-drag: none;
+}
+
+/* Custom right-click context menu. */
+.floating-context-menu {
+    position: fixed;
+    z-index: 9999;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    padding: 4px 0;
+    min-width: 80px;
+}
+
+.floating-context-menu-item {
+    padding: 6px 16px;
+    font-size: 13px;
+    color: #374151;
+    cursor: pointer;
+    white-space: nowrap;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.floating-context-menu-item:hover {
+    background: #f3f4f6;
+    color: #111827;
+}
+
+.floating-context-menu-separator {
+    height: 1px;
+    background: #e5e7eb;
+    margin: 4px 0;
+}
