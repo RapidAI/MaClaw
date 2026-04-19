@@ -428,7 +428,7 @@ func buildTUIIdentityPrompt(memoryStore *memory.Store, roleTitle string, withToo
 	return fmt.Sprintf("你是 MaClaw %s，运行在 TUI 终端中。请用简洁的中文回答用户问题。", roleTitle)
 }
 
-func (h *TUIAgentHandler) buildSystemPromptWithFirstTurn(_ string, isFirstTurn bool) string {
+func (h *TUIAgentHandler) buildSystemPromptWithFirstTurn(userText string, isFirstTurn bool) string {
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
 	workspaceDir := corelib.WorkspaceDir()
@@ -526,6 +526,77 @@ exec_background 通过 nohup 在服务器端后台运行，SSH 断连不影响�
 	// 注入主动记忆指令 — 引导 Agent 在首轮会话中主动保存非显而易见的技术发现
 	if h.memoryStore != nil && isFirstTurn {
 		prompt += "\n\n" + memory.BuildTUIProactiveMemoryPrompt()
+	}
+
+	// --- 主动记忆召回 (Proactive Recall) ---
+	// Automatically recall relevant memories based on the user message and
+	// inject them into the system prompt, mirroring GUI's appendMemorySection.
+	if h.memoryStore != nil && userText != "" {
+		// User fact summary.
+		if summary := h.memoryStore.UserFactSummary(400); summary != "" {
+			prompt += fmt.Sprintf("\n\n## 用户记忆\n用户信息: %s\n", summary)
+		}
+
+		// Primary recall via RecallDynamic (BM25 + vector + RRF fusion).
+		recalled := h.memoryStore.RecallDynamic(userText, "", "")
+
+		// Supplementary entity-based recall when primary returns few results.
+		expanded := memory.ExpandQuery(userText)
+		if len(expanded.Entities) > 0 && len(recalled) < 8 {
+			seen := make(map[string]bool, len(recalled))
+			for _, e := range recalled {
+				seen[e.ID] = true
+			}
+			entities := expanded.Entities
+			if len(entities) > 3 {
+				entities = entities[:3]
+			}
+			for _, entity := range entities {
+				extra := h.memoryStore.RecallDynamic(entity, "", "")
+				for _, e := range extra {
+					if !seen[e.ID] {
+						seen[e.ID] = true
+						recalled = append(recalled, e)
+					}
+				}
+			}
+		}
+
+		// Filter out user_fact, self_identity, session_checkpoint.
+		var relevant []memory.Entry
+		for _, e := range recalled {
+			canonical := memory.MapToCanonical(e.Category)
+			if canonical == memory.CategoryUserFact || canonical == memory.CategorySelfIdentity {
+				continue
+			}
+			if e.Category == memory.CategorySessionCheckpoint || e.Category == memory.CategoryConversationSummary {
+				continue
+			}
+			relevant = append(relevant, e)
+		}
+
+		const maxProactiveRecall = 12
+		if len(relevant) > maxProactiveRecall {
+			relevant = relevant[:maxProactiveRecall]
+		}
+
+		if len(relevant) > 0 {
+			prompt += "\n相关记忆（自动召回）:\n"
+			for _, e := range relevant {
+				text := e.CompactForm
+				if text == "" {
+					text = e.Content
+				}
+				runes := []rune(text)
+				if len(runes) > 200 {
+					text = string(runes[:200]) + "…"
+				}
+				prompt += fmt.Sprintf("- [%s] %s\n", e.Category, text)
+			}
+			prompt += "（⚠️ 以上记忆是根据当前消息实时召回的最新结果。请直接使用以上信息。）\n"
+		}
+
+		prompt += "如需更多记忆，可通过 memory(action: recall, query: \"关键词\") 召回。\n"
 	}
 
 	// Inject user profile into system prompt (Requirement 7.6, 7.11).
@@ -647,8 +718,9 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"updates": map[string]interface{}{"type": "object", "description": "要更新的字段"},
 		}, []string{"task_id", "updates"}),
 		// --- 记忆 ---
-		toolDef("memory", "记忆管理（save/list/search/delete/pin/unpin/list_archive/restore）", map[string]interface{}{
-			"action":   map[string]interface{}{"type": "string", "description": "操作: save/list/search/delete/pin/unpin/list_archive/restore"},
+		toolDef("memory", "记忆管理（recall/save/list/search/delete/pin/unpin/list_archive/restore）", map[string]interface{}{
+			"action":   map[string]interface{}{"type": "string", "description": "操作: recall/save/list/search/delete/pin/unpin/list_archive/restore"},
+			"query":    map[string]interface{}{"type": "string", "description": "召回查询（recall 时必填，使用 BM25+向量+RRF 融合召回）"},
 			"content":  map[string]interface{}{"type": "string", "description": "记忆内容（save 时必填）"},
 			"category": map[string]interface{}{"type": "string", "description": "分类: user_fact/preference/project_knowledge/instruction"},
 			"tags":     map[string]interface{}{"type": "array", "description": "标签列表", "items": map[string]interface{}{"type": "string"}},

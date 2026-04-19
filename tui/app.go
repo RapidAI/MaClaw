@@ -32,14 +32,14 @@ import (
 
 // TUIApp 是 Bubble Tea 的顶层 Model，持有 Kernel 和 UI 状态。
 type TUIApp struct {
-	kernel     *corelib.Kernel
-	bridge     *BubbleTeaEventBridge
-	logger     *TUILogger
-	qqBotMgr   *tuiQQBotManager
-	telegramMgr *tuiTelegramManager
-	loopMgr    *agent.BackgroundLoopManager
+	kernel        *corelib.Kernel
+	bridge        *BubbleTeaEventBridge
+	logger        *TUILogger
+	qqBotMgr      *tuiQQBotManager
+	telegramMgr   *tuiTelegramManager
+	loopMgr       *agent.BackgroundLoopManager
 	configWatcher *ConfigWatcher
-	sessionMgr *TUISessionManager
+	sessionMgr    *TUISessionManager
 
 	// 安全与路由组件
 	firewall       *security.Firewall
@@ -53,7 +53,7 @@ type TUIApp struct {
 	memoryStore    *memory.Store
 	memPipeline    *memory.Pipeline
 	schedulerMgr   *scheduler.Manager
-	AgentNetClient  *agentnet.Client
+	AgentNetClient *agentnet.Client
 	memShotMgr     *memoryshot.Manager
 
 	// AI 助手聊天
@@ -302,14 +302,20 @@ func (a *TUIApp) initKernel() tea.Msg {
 		memStore.SetEmbedder(emb)
 	}
 
-	// --- Memory Pipeline (compress → promote → reflect) ---
+	// --- Memory Pipeline (compress → promote → reflect → consolidate) ---
 	if memStore != nil {
-		pipeline := memory.NewPipeline(memStore, nil, nil, nil, nil)
-		a.memPipeline = pipeline
-		// Pipeline will be started after LLM config is available.
-		// For now, just decay+compress (no LLM components).
 		compressor := memory.NewCompressor(memStore, nil, nil)
-		a.memPipeline = memory.NewPipeline(memStore, compressor, nil, nil, nil)
+		// Wire up all pipeline components. LLM-dependent components gracefully
+		// skip when LLM is nil/unconfigured. Step 0 (decay) always runs.
+		promoter := memory.NewPromoter(memStore, nil)
+		reflector := memory.NewReflector(memStore, nil)
+		a.memPipeline = memory.NewPipeline(memStore, compressor, promoter, reflector, nil)
+		// Attach TiMem consolidators.
+		consolidator := memory.NewConsolidator(memStore, memStore.TMT(), nil)
+		profiler := memory.NewProfileConsolidator(memStore, memStore.TMT(), nil)
+		a.memPipeline.SetConsolidator(consolidator, profiler)
+		// Attach TiMem recall gating for post-retrieval LLM filtering.
+		memStore.SetRecallGating(memory.NewRecallGating(nil))
 		a.memPipeline.Start()
 	}
 

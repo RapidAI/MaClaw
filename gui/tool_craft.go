@@ -210,6 +210,8 @@ func executeCraftToolCore(app *App, client *http.Client, args map[string]interfa
 		return "", fmt.Errorf("app not initialized")
 	}
 	cfg := app.GetMaclawLLMConfig()
+	providerName := cfg.ProviderName
+	providerURL := cfg.URL
 	requestTimeout := time.Duration(cfg.EffectiveTimeoutSec()) * time.Second
 	if requestTimeout <= 0 {
 		requestTimeout = 60 * time.Second
@@ -231,7 +233,7 @@ func executeCraftToolCore(app *App, client *http.Client, args map[string]interfa
 			Language:            request.Language,
 			VerificationStatus:  craftVerificationRuntimeMissing,
 			VerificationMessage: "未找到可用脚本运行时，请显式指定 language 或安装 python/node/bash/powershell。",
-		})
+		}, providerName, providerURL)
 		return result, fmt.Errorf("no runtime available for craft_tool")
 	}
 
@@ -291,7 +293,7 @@ func executeCraftToolCore(app *App, client *http.Client, args map[string]interfa
 		}
 	}
 
-	result := buildCraftFailureResult(request, lastAttempt)
+	result := buildCraftFailureResult(request, lastAttempt, providerName, providerURL)
 	return result, fmt.Errorf("%s", firstNonEmptyCraftText(lastAttempt.VerificationMessage, "craft_tool execution failed"))
 }
 
@@ -393,12 +395,18 @@ func generateScript(cfg MaclawLLMConfig, request craftToolRequest, runtimes craf
 	const maxRetries = 3
 	backoff := 2 * time.Second
 	var lastErr error
+	isCode1234 := false
 	for retry := 0; retry <= maxRetries; retry++ {
 		if retry > 0 {
-			log.Printf("[craft_tool] HTTP 429 rate limit, retrying in %v (attempt %d/%d)", backoff, retry+1, maxRetries+1)
+			if isCode1234 {
+				log.Printf("[craft_tool] 智谱 code:1234 网络错误, retrying in %v (attempt %d/%d)", backoff, retry+1, maxRetries+1)
+			} else {
+				log.Printf("[craft_tool] HTTP 429 rate limit, retrying in %v (attempt %d/%d)", backoff, retry+1, maxRetries+1)
+			}
 			time.Sleep(backoff)
 			backoff *= 2 // exponential backoff: 2s, 4s, 8s
 		}
+		isCode1234 = false // reset on each iteration
 		result, err := doSimpleLLMRequest(context.Background(), cfg, messages, client, requestTimeout)
 		if err != nil {
 			errMsg := err.Error()
@@ -406,7 +414,13 @@ func generateScript(cfg MaclawLLMConfig, request craftToolRequest, runtimes craf
 				lastErr = err
 				continue // retry on 429
 			}
-			return "", err // non-429 error, fail immediately
+			// 智谱 API code:1234 transient "网络错误" — retryable
+			if (strings.Contains(errMsg, `"code":"1234"`) || strings.Contains(errMsg, `"code": "1234"`)) && strings.Contains(errMsg, "网络错误") {
+				isCode1234 = true
+				lastErr = err
+				continue // retry on 智谱 code:1234
+			}
+			return "", err // non-retryable error, fail immediately
 		}
 		if result.Content == "" {
 			return "", fmt.Errorf("LLM 未返回内容")
@@ -415,6 +429,9 @@ func generateScript(cfg MaclawLLMConfig, request craftToolRequest, runtimes craf
 		return script, nil
 	}
 	// All retries exhausted
+	if isCode1234 {
+		return "", fmt.Errorf("智谱 API 服务端临时故障（code:1234），已重试 %d 次仍失败。请稍后再试。", maxRetries)
+	}
 	return "", fmt.Errorf("API 调用过于频繁 (HTTP 429)，已重试 %d 次仍失败。请稍后再试。原始错误: %v", maxRetries, lastErr)
 }
 
@@ -554,7 +571,28 @@ func buildCraftSuccessResult(app *App, request craftToolRequest, attempt craftAt
 	return result.String()
 }
 
-func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResult) string {
+// humanizeCraftAPIError replaces raw JSON API error patterns in a message
+// with human-readable Chinese summaries. If no pattern matches, the original
+// message is returned unchanged.
+func humanizeCraftAPIError(message string) string {
+	// Rule 1: code:1234 server-side transient error
+	if strings.Contains(message, `"code":"1234"`) || strings.Contains(message, `"code": "1234"`) {
+		return "API 服务端临时故障（code:1234），请稍后重试"
+	}
+	// Rule 2: generic API error response
+	if strings.Contains(message, `"type":"error"`) || strings.Contains(message, `"type": "error"`) {
+		return "API 返回错误响应，请检查配置或稍后重试"
+	}
+	// Rule 3: rate limiting (case insensitive)
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "http 429") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") {
+		return "API 调用频率超限，请稍后重试"
+	}
+	// Rule 4: no match, return original
+	return message
+}
+
+func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResult, providerName string, providerURL string) string {
 	var result strings.Builder
 	language := firstNonEmptyCraftText(attempt.Language, request.RuntimeLanguage, request.Language)
 	if language != "" {
@@ -568,6 +606,15 @@ func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResul
 	}
 	status := firstNonEmptyCraftText(attempt.VerificationStatus, craftVerificationExecutionFailed)
 	result.WriteString(fmt.Sprintf("verification: %s\n", status))
+	if providerName != "" || providerURL != "" {
+		if providerName != "" && providerURL != "" {
+			result.WriteString(fmt.Sprintf("provider: %s (%s)\n", providerName, providerURL))
+		} else if providerName != "" {
+			result.WriteString(fmt.Sprintf("provider: %s\n", providerName))
+		} else {
+			result.WriteString(fmt.Sprintf("provider: %s\n", providerURL))
+		}
+	}
 	category, advice := classifyCraftFailure(request, attempt)
 	result.WriteString(fmt.Sprintf("failure_category: %s\n", category))
 	if category == craftFailureCategoryArtifact && attempt.ArtifactPath != "" {
@@ -580,6 +627,7 @@ func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResul
 		result.WriteString(fmt.Sprintf("\n--- 执行输出 ---\n%s\n", output))
 	}
 	message := strings.TrimSpace(firstNonEmptyCraftText(attempt.VerificationMessage, errorText(attempt.ExecErr), "脚本执行失败"))
+	message = humanizeCraftAPIError(message)
 	if message != "" {
 		result.WriteString("\n⚠️ ")
 		result.WriteString(message)

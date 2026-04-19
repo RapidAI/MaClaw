@@ -61,6 +61,7 @@ type AppConfig struct {
 	RemoteUserID       string `json:"remote_user_id"`
 	RemoteMachineID    string `json:"remote_machine_id"`
 	RemoteMachineToken string `json:"remote_machine_token"`
+	RemoteViewerToken  string `json:"remote_viewer_token,omitempty"`
 	RemoteHeartbeatSec int    `json:"remote_heartbeat_sec"`
 	RemoteNickname     string `json:"remote_nickname,omitempty"`
 	RemoteClientID     string `json:"remote_client_id"`
@@ -106,6 +107,9 @@ type AppConfig struct {
 	ImageOutboundEnabled bool   `json:"image_outbound_enabled"`  // default true
 	MaclawDebugToolCalls bool   `json:"maclaw_debug_tool_calls,omitempty"`
 	ShowAITraceEntry     bool   `json:"show_ai_trace_entry,omitempty"`
+	ShowAssistantEntry   bool   `json:"show_assistant_entry,omitempty"`
+	FloatingBtnX         int    `json:"floating_btn_x,omitempty"`
+	FloatingBtnY         int    `json:"floating_btn_y,omitempty"`
 	LogDetailEnabled     bool   `json:"log_detail_enabled,omitempty"`
 	// IM — per-user QQ Bot (client-side gateway)
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`

@@ -755,6 +755,27 @@ func (h *TUIAgentHandler) toolMemory(args map[string]interface{}) string {
 	}
 	action := stringArg(args, "action")
 	switch action {
+	case "recall":
+		query := stringArg(args, "query")
+		if query == "" {
+			return "错误: 缺少 query 参数"
+		}
+		cat := memory.Category(stringArg(args, "category"))
+		entries := h.memoryStore.RecallDynamic(query, cat, "")
+		if len(entries) == 0 {
+			return "没有找到相关记忆。"
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("召回 %d 条相关记忆:\n", len(entries)))
+		for _, e := range entries {
+			sb.WriteString(fmt.Sprintf("- [%s] %s\n", string(e.Category), e.Content))
+		}
+		ids := make([]string, len(entries))
+		for i, e := range entries {
+			ids[i] = e.ID
+		}
+		h.memoryStore.TouchAccess(ids)
+		return sb.String()
 	case "save":
 		content := stringArg(args, "content")
 		if content == "" {
@@ -762,7 +783,7 @@ func (h *TUIAgentHandler) toolMemory(args map[string]interface{}) string {
 		}
 		cat := memory.Category(stringArg(args, "category"))
 		if cat == "" {
-			cat = memory.CategoryProjectKnowledge
+			cat = memory.CategoryUserFact
 		}
 		var tags []string
 		if rawTags, ok := args["tags"]; ok {
@@ -855,7 +876,7 @@ func (h *TUIAgentHandler) toolMemory(args map[string]interface{}) string {
 		}
 		return fmt.Sprintf("已从归档恢复记忆 %s", id)
 	default:
-		return "错误: action 必须是 save/list/search/delete/pin/unpin/list_archive/restore"
+		return "错误: action 必须是 recall/save/list/search/delete/pin/unpin/list_archive/restore"
 	}
 }
 

@@ -114,9 +114,9 @@ func NeedsOpenAIProxy(requiredEnv []string, extraEnv map[string]string) bool {
 // but don't declare requires_env in their metadata.
 //
 // Detection order:
-//  1. RequiredEnv explicitly declares OPENAI_API_KEY → use proxy
-//  2. Step commands reference OPENAI_API_KEY/OPENAI_BASE_URL → use proxy
-//  3. Script files (.py, .js, .ts, .sh) in skillDir reference them → use proxy
+//  1. RequiredEnv explicitly declares OPENAI_API_KEY 閳?use proxy
+//  2. Step commands reference OPENAI_API_KEY/OPENAI_BASE_URL 閳?use proxy
+//  3. Script files (.py, .js, .ts, .sh) in skillDir reference them 閳?use proxy
 //
 // In all cases, if the user has already provided the env vars via extraEnv
 // or the process environment, the proxy is not started.
@@ -140,17 +140,17 @@ func NeedsOpenAIProxyAuto(requiredEnv []string, extraEnv map[string]string, step
 
 	// Check process-level env: if OPENAI_API_KEY is set globally and
 	// extraEnv doesn't explicitly override it (e.g. with empty string),
-	// the skill can use the existing key directly — no proxy needed.
+	// the skill can use the existing key directly 閳?no proxy needed.
 	// However, ignore the maclaw-internal proxy sentinel ("sk-maclaw-local-proxy")
 	// because it points to a proxy that may no longer be running.
 	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 		if _, explicitlyCleared := extraEnv["OPENAI_API_KEY"]; !explicitlyCleared {
 			if v == "sk-maclaw-local-proxy" {
-				// Stale leftover from a previous proxy session — ignore it
+				// Stale leftover from a previous proxy session 閳?ignore it
 				// and fall through so a fresh proxy is started.
 				log.Printf("[openai-proxy] ignoring stale process env OPENAI_API_KEY=sk-maclaw-local-proxy")
 			} else {
-				// Real user-provided key in process env — use it directly.
+				// Real user-provided key in process env 閳?use it directly.
 				return false
 			}
 		}
@@ -616,97 +616,6 @@ func (p *OpenAIProxy) forwardAnthropic(body map[string]interface{}) ([]byte, int
 	}
 
 	return data, http.StatusOK, nil
-}
-
-// openaiToResponses converts an OpenAI Chat Completions request body
-// to a Responses API request body.
-func openaiToResponses(body map[string]interface{}, model string) map[string]interface{} {
-	responsesReq := map[string]interface{}{
-		"model":  model,
-		"stream": false,
-	}
-
-	// Extract messages array and map to input field
-	messages, _ := body["messages"].([]interface{})
-	if messages == nil {
-		responsesReq["input"] = []interface{}{}
-	} else {
-		responsesReq["input"] = messages
-	}
-
-	return responsesReq
-}
-
-// responsesToOpenAI converts a Responses API response body
-// to an OpenAI Chat Completions response body.
-func responsesToOpenAI(resp map[string]interface{}, model string) map[string]interface{} {
-	// Extract and concatenate text content from output items
-	var contentBuilder strings.Builder
-	if outputArr, ok := resp["output"].([]interface{}); ok {
-		for _, item := range outputArr {
-			itemMap, ok := item.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			itemType, _ := itemMap["type"].(string)
-			if itemType != "message" {
-				continue
-			}
-			// Extract content array from message item
-			contentArr, ok := itemMap["content"].([]interface{})
-			if !ok {
-				continue
-			}
-			for _, block := range contentArr {
-				blockMap, ok := block.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				blockType, _ := blockMap["type"].(string)
-				if blockType == "output_text" {
-					text, _ := blockMap["text"].(string)
-					contentBuilder.WriteString(text)
-				}
-			}
-		}
-	}
-	contentText := contentBuilder.String()
-
-	// Map usage fields
-	var promptTokens, completionTokens float64
-	if usage, ok := resp["usage"].(map[string]interface{}); ok {
-		promptTokens, _ = usage["input_tokens"].(float64)
-		completionTokens, _ = usage["output_tokens"].(float64)
-	}
-	totalTokens := promptTokens + completionTokens
-
-	// Extract ID or use default
-	id, _ := resp["id"].(string)
-	if id == "" {
-		id = "chatcmpl-proxy"
-	}
-
-	// Build OpenAI response
-	return map[string]interface{}{
-		"id":     id,
-		"object": "chat.completion",
-		"model":  model,
-		"choices": []interface{}{
-			map[string]interface{}{
-				"index": 0,
-				"message": map[string]interface{}{
-					"role":    "assistant",
-					"content": contentText,
-				},
-				"finish_reason": "stop",
-			},
-		},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     promptTokens,
-			"completion_tokens": completionTokens,
-			"total_tokens":      totalTokens,
-		},
-	}
 }
 
 // forwardResponses converts OpenAI request to Responses API format, sends it,

@@ -110,6 +110,11 @@ func (e *SkillExecutor) loadSkills() []NLSkillEntry {
 				if strings.TrimSpace(configSkill.Description) == "" {
 					configSkill.Description = fs.Description
 				}
+				// Stats-only stubs (source == "file") have empty Status;
+				// inherit from the on-disk YAML so the skill is usable.
+				if configSkill.Status == "" && fs.Status != "" {
+					configSkill.Status = fs.Status
+				}
 			}
 			continue
 		}
@@ -149,7 +154,10 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []NLSkillEntry {
 type skillYAMLFile = skill.SkillYAMLFile
 
 // saveSkills persists skill entries to config.
-// File-based skills (source == "file") are excluded to avoid polluting config.json.
+// File-based skills (source == "file") are saved as stats-only stubs so that
+// usage statistics survive across restarts. The full definition (steps,
+// triggers, description, etc.) is always loaded from the YAML file at runtime
+// via loadSkills → scanSkillYAMLFiles → shouldHydrateSkillFromFile.
 func (e *SkillExecutor) saveSkills(skills []NLSkillEntry) error {
 	cfg, err := e.app.LoadConfig()
 	if err != nil {
@@ -157,9 +165,24 @@ func (e *SkillExecutor) saveSkills(skills []NLSkillEntry) error {
 	}
 	filtered := make([]NLSkillEntry, 0, len(skills))
 	for _, s := range skills {
-		if s.Source != "file" {
-			filtered = append(filtered, s)
+		if s.Source == "file" {
+			// Only persist the stats overlay — strip definition data so
+			// config.json is not polluted with YAML-managed content.
+			if s.UsageCount > 0 || s.SuccessCount > 0 || s.FailureCount > 0 || s.WorkaroundCount > 0 {
+				filtered = append(filtered, NLSkillEntry{
+					Name:            s.Name,
+					Source:          "file",
+					UsageCount:      s.UsageCount,
+					SuccessCount:    s.SuccessCount,
+					FailureCount:    s.FailureCount,
+					WorkaroundCount: s.WorkaroundCount,
+					LastUsedAt:      s.LastUsedAt,
+					LastError:       s.LastError,
+				})
+			}
+			continue
 		}
+		filtered = append(filtered, s)
 	}
 	cfg.NLSkills = filtered
 	return e.app.SaveConfig(cfg)
@@ -709,40 +732,37 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 	output, execErr := e.executeSkillSteps(target)
 
 	// Update usage statistics under write lock.
-	// Skip for file-based skills since stats can't be persisted back to YAML.
-	if target.Source != "file" {
-		e.mu.Lock()
-		skills := e.loadSkills()
-		shouldEmitUsageEvent := false
-		for i, s := range skills {
-			if s.Name == name && s.Source != "file" {
-				skills[i].UsageCount++
-				skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
-				if execErr == nil {
-					skills[i].SuccessCount++
-					skills[i].LastError = ""
-				} else {
-					skills[i].FailureCount++
-					skills[i].LastError = execErr.Error()
-				}
-				_ = e.saveSkills(skills)
-				shouldEmitUsageEvent = true
-
-				// Auto-rate hub skills after execution.
-				if s.Source == "hub" && s.HubSkillID != "" && e.app.capabilityGapDetector != nil {
-					go e.app.capabilityGapDetector.autoRate(
-						context.Background(), s.HubSkillID, output, execErr,
-					)
-				}
-				break
+	e.mu.Lock()
+	skills := e.loadSkills()
+	shouldEmitUsageEvent := false
+	for i, s := range skills {
+		if s.Name == name {
+			skills[i].UsageCount++
+			skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
+			if execErr == nil {
+				skills[i].SuccessCount++
+				skills[i].LastError = ""
+			} else {
+				skills[i].FailureCount++
+				skills[i].LastError = execErr.Error()
 			}
-		}
-		e.mu.Unlock()
+			_ = e.saveSkills(skills)
+			shouldEmitUsageEvent = true
 
-		// Notify frontend to refresh skill list with updated stats (outside lock).
-		if shouldEmitUsageEvent && e.app != nil {
-			e.app.emitEvent("skill:usage_updated")
+			// Auto-rate hub skills after execution.
+			if s.Source == "hub" && s.HubSkillID != "" && e.app.capabilityGapDetector != nil {
+				go e.app.capabilityGapDetector.autoRate(
+					context.Background(), s.HubSkillID, output, execErr,
+				)
+			}
+			break
 		}
+	}
+	e.mu.Unlock()
+
+	// Notify frontend to refresh skill list with updated stats (outside lock).
+	if shouldEmitUsageEvent && e.app != nil {
+		e.app.emitEvent("skill:usage_updated")
 	}
 
 	if execErr != nil {
@@ -1297,7 +1317,17 @@ func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
 		yamlPath := filepath.Join(dirPath, "skill.yaml")
 		data, err := os.ReadFile(yamlPath)
 		if err != nil {
-			result = append(result, SkillDiagEntry{Dir: dirName, Reason: "找不到 skill.yaml"})
+			// No skill.yaml — try SKILL.md / skill.md fallback (mirrors loadSkillFromDir logic).
+			name, diagReason := diagTryMarkdownFallback(dirPath, dirName)
+			if diagReason != "" {
+				result = append(result, SkillDiagEntry{Dir: dirName, Reason: diagReason})
+				continue
+			}
+			if configNames[name] {
+				result = append(result, SkillDiagEntry{Dir: dirName, Name: name, OK: false, Reason: "与配置中同名 Skill 冲突，被去重跳过"})
+				continue
+			}
+			result = append(result, SkillDiagEntry{Dir: dirName, Name: name, OK: true})
 			continue
 		}
 		var sf skillYAMLFile
@@ -1316,6 +1346,58 @@ func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
 		result = append(result, SkillDiagEntry{Dir: dirName, Name: name, OK: true})
 	}
 	return result
+}
+
+// diagTryMarkdownFallback attempts to load a skill from SKILL.md / skill.md
+// when skill.yaml is absent. Returns (name, "") on success or ("", reason) on
+// failure. This mirrors the fallback chain in corelib/skill/scanner.go's
+// loadSkillFromDir so that the diagnostic result matches actual load behavior.
+func diagTryMarkdownFallback(dirPath, dirName string) (string, string) {
+	// Try standard SKILL.md / skill.md import.
+	parsed, err := skill.ImportMarkdownSkillDir(dirPath, skill.MarkdownSkillOptions{
+		NameFallback: dirName,
+		Source:       "file",
+		SkillDir:     dirPath,
+	})
+	if err == nil && parsed != nil {
+		name := strings.TrimSpace(parsed.Name)
+		if name == "" {
+			name = dirName
+		}
+		return name, ""
+	}
+
+	// Try Claude SKILL.md format (YAML frontmatter with allowed-tools).
+	for _, candidate := range []string{"skill.md", "SKILL.md"} {
+		mdPath := filepath.Join(dirPath, candidate)
+		data, readErr := os.ReadFile(mdPath)
+		if readErr != nil {
+			continue
+		}
+		if skill.IsClaudeSKILLMD(data) {
+			claudeEntry, claudeErr := skill.ParseClaudeSKILLMD(dirPath, data)
+			if claudeErr == nil && claudeEntry != nil {
+				name := strings.TrimSpace(claudeEntry.Name)
+				if name == "" {
+					name = dirName
+				}
+				return name, ""
+			}
+		}
+		// Has a markdown file but couldn't parse it — still a valid skill
+		// candidate (craft_tool LLM fallback would handle it at runtime).
+		return dirName, ""
+	}
+
+	// Check for KNOWLEDGE.md
+	for _, candidate := range []string{"KNOWLEDGE.md", "knowledge.md"} {
+		knPath := filepath.Join(dirPath, candidate)
+		if _, statErr := os.Stat(knPath); statErr == nil {
+			return dirName, ""
+		}
+	}
+
+	return "", "找不到 skill.yaml 或 SKILL.md"
 }
 
 // ---------------------------------------------------------------------------

@@ -1395,15 +1395,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *NL
 }
 
 func (r *SkillRunner) updateUsageStats(skill *NLSkillEntry, execErr error) {
-	if skill.Source == "file" {
-		return
-	}
 	shouldEmit := false
 
 	r.executor.mu.Lock()
 	skills := r.executor.loadSkills()
 	for i, s := range skills {
-		if s.Name == skill.Name && s.Source != "file" {
+		if s.Name == skill.Name {
 			skills[i].UsageCount++
 			skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
 			if execErr == nil {
@@ -1444,7 +1441,7 @@ func (r *SkillRunner) RecordSkillOutcome(skillName, outcome, lastError string) {
 	r.executor.mu.Lock()
 	skills := r.executor.loadSkills()
 	for i, s := range skills {
-		if s.MatchesName(skillName) && s.Source != "file" {
+		if s.MatchesName(skillName) {
 			switch outcome {
 			case "success":
 				skills[i].SuccessCount++
@@ -1494,7 +1491,7 @@ func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
 	r.executor.mu.Lock()
 	skills := r.executor.loadSkills()
 	for i, s := range skills {
-		if s.MatchesName(skillName) && s.Source != "file" {
+		if s.MatchesName(skillName) {
 			skills[i].WorkaroundCount++
 			if lastError != "" {
 				skills[i].LastError = lastError

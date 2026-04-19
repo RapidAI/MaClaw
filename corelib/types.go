@@ -282,8 +282,9 @@ type MaclawLLMConfig struct {
 	ContextLength  int    `json:"context_length,omitempty"`
 	TimeoutSec     int    `json:"timeout_sec,omitempty"`
 	SupportsVision bool   `json:"supports_vision"`
-	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
-	WireAPI        string `json:"wire_api,omitempty"`   // "chat" or "responses"; empty defaults to "chat"
+	AgentType      string `json:"agent_type,omitempty"`    // "openclaw" (default) or "claude" → controls User-Agent header
+	WireAPI        string `json:"wire_api,omitempty"`      // "chat" or "responses"; empty defaults to "chat"
+	ProviderName   string `json:"provider_name,omitempty"` // human-readable provider name (e.g. "智谱编程")
 }
 
 // IsResponsesAPI reports whether this config targets the OpenAI Responses API.

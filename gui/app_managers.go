@@ -32,7 +32,12 @@ type AppManagers struct {
 // NewAppManagers creates a new AppManagers instance
 func NewAppManagers(ctx context.Context) *AppManagers {
 	return &AppManagers{
-		ctx: ctx,
+		ctx:        ctx,
+		core:       NewCoreManager(ctx),
+		sessions:   NewSessionManager(ctx),
+		security:   NewSecurityManager(ctx),
+		networking: NewNetworkingManager(ctx),
+		ui:         NewUIManager(ctx),
 	}
 }
 
@@ -56,28 +61,62 @@ func (am *AppManagers) Initialize() error {
 }
 
 // GetCoreManager returns the core manager
-func (am *AppManagers) GetCoreManager() *CoreManager {
+func (am *AppManagers) GetCoreManager() CoreManagerInterface {
 	return am.core
 }
 
 // GetSessionManager returns the session manager
-func (am *AppManagers) GetSessionManager() *SessionManager {
+func (am *AppManagers) GetSessionManager() SessionManagerInterface {
 	return am.sessions
 }
 
 // GetSecurityManager returns the security manager
-func (am *AppManagers) GetSecurityManager() *SecurityManager {
+func (am *AppManagers) GetSecurityManager() SecurityManagerInterface {
 	return am.security
 }
 
 // GetNetworkingManager returns the networking manager
-func (am *AppManagers) GetNetworkingManager() *NetworkingManager {
+func (am *AppManagers) GetNetworkingManager() NetworkManagerInterface {
 	return am.networking
 }
 
 // GetUIManager returns the UI manager
-func (am *AppManagers) GetUIManager() *UIManager {
+func (am *AppManagers) GetUIManager() UIManagerInterface {
 	return am.ui
+}
+
+// InitializeAll initializes all managers
+func (am *AppManagers) InitializeAll() error {
+	if err := am.core.Initialize(); err != nil {
+		return err
+	}
+	if err := am.sessions.Initialize(); err != nil {
+		return err
+	}
+	if err := am.security.Initialize(); err != nil {
+		return err
+	}
+	if err := am.networking.Initialize(); err != nil {
+		return err
+	}
+	return am.ui.Initialize()
+}
+
+// Shutdown shuts down all managers
+func (am *AppManagers) Shutdown() error {
+	// TODO: Implement proper shutdown logic
+	return nil
+}
+
+// HealthCheck performs health checks on all managers
+func (am *AppManagers) HealthCheck() map[string]bool {
+	return map[string]bool{
+		"core":       am.core.IsReady(),
+		"sessions":   true, // TODO: Add health check for sessions
+		"security":   true, // TODO: Add health check for security
+		"networking": true, // TODO: Add health check for networking
+		"ui":         true, // TODO: Add health check for UI
+	}
 }
 
 // CoreManager manages core infrastructure components
@@ -277,6 +316,66 @@ func (sm *SessionManager) SetBrowserSessions(sessions interface{}) {
 	sm.browserSessions = sessions
 }
 
+// GetSessionStarter returns the session starter
+func (sm *SessionManager) GetSessionStarter() interface{} {
+	return sm.sessionStarter
+}
+
+// SetSessionStarter sets the session starter
+func (sm *SessionManager) SetSessionStarter(starter interface{}) {
+	sm.sessionStarter = starter
+}
+
+// GetSessionPrecheck returns the session precheck
+func (sm *SessionManager) GetSessionPrecheck() interface{} {
+	return sm.sessionPrecheck
+}
+
+// SetSessionPrecheck sets the session precheck
+func (sm *SessionManager) SetSessionPrecheck(precheck interface{}) {
+	sm.sessionPrecheck = precheck
+}
+
+// GetSessionCheckpointer returns the session checkpointer
+func (sm *SessionManager) GetSessionCheckpointer() interface{} {
+	return sm.sessionCheckpointer
+}
+
+// SetSessionCheckpointer sets the session checkpointer
+func (sm *SessionManager) SetSessionCheckpointer(checkpointer interface{}) {
+	sm.sessionCheckpointer = checkpointer
+}
+
+// GetStartupFeedback returns the startup feedback
+func (sm *SessionManager) GetStartupFeedback() interface{} {
+	return sm.startupFeedback
+}
+
+// SetStartupFeedback sets the startup feedback
+func (sm *SessionManager) SetStartupFeedback(feedback interface{}) {
+	sm.startupFeedback = feedback
+}
+
+// GetIORelay returns the I/O relay
+func (sm *SessionManager) GetIORelay() interface{} {
+	return sm.ioRelay
+}
+
+// SetIORelay sets the I/O relay
+func (sm *SessionManager) SetIORelay(relay interface{}) {
+	sm.ioRelay = relay
+}
+
+// GetConversationArchiver returns the conversation archiver
+func (sm *SessionManager) GetConversationArchiver() interface{} {
+	return sm.conversationArchiver
+}
+
+// SetConversationArchiver sets the conversation archiver
+func (sm *SessionManager) SetConversationArchiver(archiver interface{}) {
+	sm.conversationArchiver = archiver
+}
+
 // SecurityManager manages security-related components
 type SecurityManager struct {
 	ctx context.Context
@@ -341,6 +440,16 @@ func (sm *SecurityManager) SetLLMSecurityReview(review interface{}) {
 	sm.llmSecurityReview = review
 }
 
+// GetSecurityFirewall returns the security firewall
+func (sm *SecurityManager) GetSecurityFirewall() interface{} {
+	return sm.securityFirewall
+}
+
+// SetSecurityFirewall sets the security firewall
+func (sm *SecurityManager) SetSecurityFirewall(firewall interface{}) {
+	sm.securityFirewall = firewall
+}
+
 // NetworkingManager manages networking-related components
 type NetworkingManager struct {
 	ctx context.Context
@@ -387,6 +496,46 @@ func (nm *NetworkingManager) SetProjectScanner(scanner interface{}) {
 	nm.projectScanner = scanner
 }
 
+// GetGossipClient returns the gossip client
+func (nm *NetworkingManager) GetGossipClient() interface{} {
+	return nm.gossipClient
+}
+
+// SetGossipClient sets the gossip client
+func (nm *NetworkingManager) SetGossipClient(client interface{}) {
+	nm.gossipClient = client
+}
+
+// GetSkillHubClient returns the skill hub client
+func (nm *NetworkingManager) GetSkillHubClient() interface{} {
+	return nm.skillHubClient
+}
+
+// SetSkillHubClient sets the skill hub client
+func (nm *NetworkingManager) SetSkillHubClient(client interface{}) {
+	nm.skillHubClient = client
+}
+
+// GetAutoUploadTrigger returns the auto upload trigger
+func (nm *NetworkingManager) GetAutoUploadTrigger() interface{} {
+	return nm.autoUploadTrigger
+}
+
+// SetAutoUploadTrigger sets the auto upload trigger
+func (nm *NetworkingManager) SetAutoUploadTrigger(trigger interface{}) {
+	nm.autoUploadTrigger = trigger
+}
+
+// GetGossipAutoPublish returns the gossip auto publish
+func (nm *NetworkingManager) GetGossipAutoPublish() interface{} {
+	return nm.gossipAutoPublish
+}
+
+// SetGossipAutoPublish sets the gossip auto publish
+func (nm *NetworkingManager) SetGossipAutoPublish(publish interface{}) {
+	nm.gossipAutoPublish = publish
+}
+
 // UIManager manages UI-related components
 type UIManager struct {
 	ctx context.Context
@@ -418,4 +567,34 @@ func (um *UIManager) GetFloatingAssistant() interface{} {
 // SetFloatingAssistant sets the floating assistant
 func (um *UIManager) SetFloatingAssistant(assistant interface{}) {
 	um.floatingAssistant = assistant
+}
+
+// GetPowerStateProcess returns the power state process
+func (um *UIManager) GetPowerStateProcess() interface{} {
+	return um.powerStateProcess
+}
+
+// SetPowerStateProcess sets the power state process
+func (um *UIManager) SetPowerStateProcess(process interface{}) {
+	um.powerStateProcess = process
+}
+
+// GetScreenDimCancel returns the screen dim cancel
+func (um *UIManager) GetScreenDimCancel() interface{} {
+	return um.screenDimCancel
+}
+
+// SetScreenDimCancel sets the screen dim cancel
+func (um *UIManager) SetScreenDimCancel(cancel interface{}) {
+	um.screenDimCancel = cancel
+}
+
+// GetWorkstationCancel returns the workstation cancel
+func (um *UIManager) GetWorkstationCancel() interface{} {
+	return um.workstationCancel
+}
+
+// SetWorkstationCancel sets the workstation cancel
+func (um *UIManager) SetWorkstationCancel(cancel interface{}) {
+	um.workstationCancel = cancel
 }

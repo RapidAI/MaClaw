@@ -31,6 +31,8 @@ func NewConversationArchiver(memoryStore *MemoryStore, app *App) *ConversationAr
 	// Initialize KnowledgeExtractor with a GUI LLM adapter.
 	llmAdapter := &archiverLLMCaller{app: app}
 	ca.knowledgeExtractor = memory.NewKnowledgeExtractor(memoryStore, llmAdapter)
+	// Wire TiMem online L1 segment consolidation into knowledge extraction.
+	ca.knowledgeExtractor.SetConsolidator(memory.NewConsolidator(memoryStore, memoryStore.TMT(), llmAdapter))
 	return ca
 }
 

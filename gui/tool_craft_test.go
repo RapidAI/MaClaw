@@ -417,7 +417,7 @@ func TestBuildCraftFailureResultIncludesCategoryAndAdvice(t *testing.T) {
 		VerificationMessage: "permission denied while writing file",
 		ScriptPath:          "/tmp/tool.py",
 		Attempts:            1,
-	})
+	}, "", "")
 	if !strings.Contains(result, "failure_category: permission") {
 		t.Fatalf("expected permission category in result, got %s", result)
 	}
@@ -430,7 +430,7 @@ func TestBuildCraftFailureResultIncludesCategoryAndAdvice(t *testing.T) {
 		VerificationStatus:  craftVerificationArtifactMissing,
 		VerificationMessage: "脚本未报告产物路径，且预期产物不存在：/tmp/out.pdf",
 		ArtifactPath:        "/tmp/out.pdf",
-	})
+	}, "", "")
 	if !strings.Contains(artifactResult, "failure_category: artifact") {
 		t.Fatalf("expected artifact category in result, got %s", artifactResult)
 	}
@@ -467,5 +467,137 @@ func TestRegisterCraftedSkillEntry(t *testing.T) {
 	}
 	if len(last.Steps) != 1 || last.Steps[0].Action != "bash" {
 		t.Fatalf("unexpected crafted steps: %#v", last.Steps)
+	}
+}
+
+func TestBuildCraftFailureResult_WithProviderInfo(t *testing.T) {
+	result := buildCraftFailureResult(craftToolRequest{}, craftAttemptResult{
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: "script execution failed",
+	}, "智谱编程", "https://open.bigmodel.cn/api/anthropic")
+
+	want := "provider: 智谱编程 (https://open.bigmodel.cn/api/anthropic)"
+	if !strings.Contains(result, want) {
+		t.Fatalf("expected result to contain %q, got:\n%s", want, result)
+	}
+}
+
+func TestBuildCraftFailureResult_WithoutProviderInfo(t *testing.T) {
+	result := buildCraftFailureResult(craftToolRequest{}, craftAttemptResult{
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: "script execution failed",
+	}, "", "")
+
+	if strings.Contains(result, "provider:") {
+		t.Fatalf("expected result to NOT contain 'provider:', got:\n%s", result)
+	}
+}
+
+func TestBuildCraftFailureResult_HumanizesAPIError(t *testing.T) {
+	result := buildCraftFailureResult(craftToolRequest{}, craftAttemptResult{
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: `HTTP 400: {"type":"error","error":{"message":"网络错误，错误id：20250715，请稍后重试","code":"1234"}}`,
+	}, "", "")
+
+	// The ⚠️ line should contain the humanized message.
+	if !strings.Contains(result, "API 服务端临时故障（code:1234）") {
+		t.Fatalf("expected humanized message in result, got:\n%s", result)
+	}
+	// The ⚠️ line should NOT contain the raw JSON.
+	if strings.Contains(result, `"type":"error"`) {
+		t.Fatalf("expected raw JSON to be replaced, but found '\"type\":\"error\"' in result:\n%s", result)
+	}
+}
+
+func TestBuildCraftFailureResult_ProviderNameOnly(t *testing.T) {
+	result := buildCraftFailureResult(craftToolRequest{}, craftAttemptResult{
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: "script execution failed",
+	}, "智谱编程", "")
+
+	if !strings.Contains(result, "provider: 智谱编程") {
+		t.Fatalf("expected provider name in result, got:\n%s", result)
+	}
+	// Should NOT have parenthesized URL
+	if strings.Contains(result, "(") {
+		t.Fatalf("expected no URL in parentheses, got:\n%s", result)
+	}
+}
+
+func TestBuildCraftFailureResult_ProviderURLOnly(t *testing.T) {
+	result := buildCraftFailureResult(craftToolRequest{}, craftAttemptResult{
+		VerificationStatus:  craftVerificationExecutionFailed,
+		VerificationMessage: "script execution failed",
+	}, "", "https://open.bigmodel.cn/api/anthropic")
+
+	if !strings.Contains(result, "provider: https://open.bigmodel.cn/api/anthropic") {
+		t.Fatalf("expected provider URL in result, got:\n%s", result)
+	}
+}
+
+func TestHumanizeCraftAPIError(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		changed bool // true if the message should be replaced
+	}{
+		{
+			name:    "code:1234 compact",
+			input:   `HTTP 400: {"type":"error","error":{"message":"网络错误","code":"1234"}}`,
+			want:    "API 服务端临时故障（code:1234），请稍后重试",
+			changed: true,
+		},
+		{
+			name:    "code:1234 spaced",
+			input:   `HTTP 400: {"error":{"code": "1234", "message": "网络错误"}}`,
+			want:    "API 服务端临时故障（code:1234），请稍后重试",
+			changed: true,
+		},
+		{
+			name:    "type:error without code:1234",
+			input:   `HTTP 400: {"type":"error","error":{"message":"invalid request"}}`,
+			want:    "API 返回错误响应，请检查配置或稍后重试",
+			changed: true,
+		},
+		{
+			name:    "HTTP 429",
+			input:   "HTTP 429: Too Many Requests",
+			want:    "API 调用频率超限，请稍后重试",
+			changed: true,
+		},
+		{
+			name:    "rate limit lowercase",
+			input:   "rate limit exceeded",
+			want:    "API 调用频率超限，请稍后重试",
+			changed: true,
+		},
+		{
+			name:    "too many requests",
+			input:   "Too Many Requests",
+			want:    "API 调用频率超限，请稍后重试",
+			changed: true,
+		},
+		{
+			name:    "script error unchanged",
+			input:   "permission denied while writing file",
+			want:    "permission denied while writing file",
+			changed: false,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			want:    "",
+			changed: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := humanizeCraftAPIError(tt.input)
+			if got != tt.want {
+				t.Errorf("humanizeCraftAPIError(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
