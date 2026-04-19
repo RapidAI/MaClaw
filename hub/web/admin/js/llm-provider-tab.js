@@ -1,0 +1,235 @@
+/*
+ * LLM provider admin extension.
+ * ASCII only. Chinese text must use \uXXXX escapes.
+ */
+const LLM_PROVIDER_I18N = {
+  en: {
+    navLabel: 'LLM Providers', navDesc: 'Multi-provider routing and API', tabTitle: 'LLM Providers', tabSubtitle: 'Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.', reload: 'Reload', enabled: 'Enable unified LLM service', smartRoute: 'Smart route single-device LLM', defaultProvider: 'Default provider', exposeTitle: 'Unified OpenAI v1 Endpoint', exposeDesc: 'Select provider by `model`, `X-LLM-Provider`, or `?provider=`.', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: 'Available Models', authLabel: 'Authentication', hints: 'Hints', editorTitle: 'Provider Editor', editorDesc: 'Create or update provider credentials and model mapping.', listTitle: 'Configured Providers', listDesc: 'Token usage accumulates from calls sent through the unified OpenAI v1 endpoint.', providerId: 'Provider ID', providerName: 'Display Name', apiUrl: 'API Base URL', apiKey: 'API Key', model: 'Upstream Model', protocol: 'Protocol', wireApi: 'Wire API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / Agent Type', agentTypeHint: 'Examples: openclaw, claude-code/2.0.0, cline', maxConcurrency: 'Allowed Concurrency', concurrencyUnlimited: 'Unlimited', inFlight: 'In Flight', queueWaiters: 'Queued', add: 'Add Provider', remove: 'Remove', save: 'Save All', test: 'Test Connection', noSelection: 'No provider selected', selected: 'Selected', defaultBadge: 'Default', hasKey: 'API key saved', noKey: 'No API key', usageInput: 'Input', usageOutput: 'Output', usageTotal: 'Total', saveDone: 'LLM provider registry saved.', saveFailed: 'Save LLM providers failed: {error}', loadFailed: 'Load LLM providers failed: {error}', addDone: 'Provider draft added.', removeDone: 'Provider removed.', removeConfirm: 'Remove provider {id}?', providerRequired: 'Add a provider first.', duplicateId: 'Provider ID already exists: {id}', apiKeyKeep: 'Configured (leave empty to keep)', apiKeyEnter: 'Enter API key', testRunning: 'Testing...', testOk: 'Connection ok ({ms}ms): {reply}', testFail: 'Connection failed: {error}', emptyList: 'No providers configured yet.', hintEmpty: 'Use model=<provider id> to select a provider on the unified endpoint.', authEmpty: 'Use Authorization: Bearer <viewer access token> from hub email sign-in.', modelsEmpty: '-'
+  },
+  zh: {
+    navLabel: '\u004c\u004c\u004d\u670d\u52a1\u5546', navDesc: '\u591a\u670d\u52a1\u5546\u8def\u7531\u4e0e API \u66b4\u9732', tabTitle: '\u004c\u004c\u004d\u670d\u52a1\u5546', tabSubtitle: '\u914d\u7f6e\u4e0a\u6e38\u5382\u5546\u3001token \u7528\u91cf\u3001\u8fde\u63a5\u6d4b\u8bd5\u4e0e\u7edf\u4e00 OpenAI v1 \u63a5\u53e3\u3002', reload: '\u91cd\u65b0\u52a0\u8f7d', enabled: '\u542f\u7528\u7edf\u4e00 LLM \u670d\u52a1', smartRoute: '\u5355\u8bbe\u5907\u667a\u80fd\u8def\u7531 LLM', defaultProvider: '\u9ed8\u8ba4\u670d\u52a1\u5546', exposeTitle: '\u7edf\u4e00 OpenAI v1 \u5bf9\u5916\u63a5\u53e3', exposeDesc: '\u53ef\u901a\u8fc7 `model`\u3001`X-LLM-Provider` \u6216 `?provider=` \u9009\u62e9\u670d\u52a1\u5546\u3002', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: '\u53ef\u7528\u6a21\u578b', authLabel: '\u9274\u6743\u65b9\u5f0f', hints: '\u63d0\u793a', editorTitle: '\u670d\u52a1\u5546\u7f16\u8f91\u5668', editorDesc: '\u521b\u5efa\u6216\u66f4\u65b0\u670d\u52a1\u5546\u914d\u7f6e\u3001\u5bc6\u94a5\u548c\u6a21\u578b\u6620\u5c04\u3002', listTitle: '\u5df2\u914d\u7f6e\u670d\u52a1\u5546', listDesc: 'token \u7528\u91cf\u4ece\u7edf\u4e00 OpenAI v1 \u7aef\u70b9\u7684\u8bf7\u6c42\u4e2d\u7d2f\u79ef\u7edf\u8ba1\u3002', providerId: '\u670d\u52a1\u5546 ID', providerName: '\u663e\u793a\u540d\u79f0', apiUrl: 'API \u57fa\u5730\u5740', apiKey: 'API Key', model: '\u4e0a\u6e38\u6a21\u578b', protocol: '\u534f\u8bae', wireApi: '\u4f20\u8f93 API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / \u5ba2\u6237\u7aef\u7c7b\u578b', agentTypeHint: '\u793a\u4f8b\uff1aopenclaw\u3001claude-code/2.0.0\u3001cline', maxConcurrency: '\u5141\u8bb8\u5e76\u53d1\u6570', concurrencyUnlimited: '\u4e0d\u9650\u5236', inFlight: '\u6267\u884c\u4e2d', queueWaiters: '\u6392\u961f\u4e2d', add: '\u65b0\u589e\u670d\u52a1\u5546', remove: '\u5220\u9664', save: '\u4fdd\u5b58\u5168\u90e8', test: '\u6d4b\u8bd5\u8fde\u63a5', noSelection: '\u672a\u9009\u62e9\u670d\u52a1\u5546', selected: '\u5df2\u9009\u4e2d', defaultBadge: '\u9ed8\u8ba4', hasKey: '\u5df2\u4fdd\u5b58 API Key', noKey: '\u672a\u914d\u7f6e API Key', usageInput: '\u8f93\u5165', usageOutput: '\u8f93\u51fa', usageTotal: '\u603b\u8ba1', saveDone: 'LLM \u670d\u52a1\u5546\u914d\u7f6e\u5df2\u4fdd\u5b58\u3002', saveFailed: '\u4fdd\u5b58 LLM \u670d\u52a1\u5546\u5931\u8d25: {error}', loadFailed: '\u52a0\u8f7d LLM \u670d\u52a1\u5546\u5931\u8d25: {error}', addDone: '\u5df2\u65b0\u589e\u670d\u52a1\u5546\u8349\u7a3f\u3002', removeDone: '\u670d\u52a1\u5546\u5df2\u5220\u9664\u3002', removeConfirm: '\u786e\u8ba4\u5220\u9664\u670d\u52a1\u5546 {id} \u5417\uff1f', providerRequired: '\u8bf7\u5148\u65b0\u589e\u670d\u52a1\u5546\u3002', duplicateId: '\u670d\u52a1\u5546 ID \u5df2\u5b58\u5728: {id}', apiKeyKeep: '\u5df2\u914d\u7f6e\uff08\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8\uff09', apiKeyEnter: '\u8bf7\u8f93\u5165 API Key', testRunning: '\u6d4b\u8bd5\u4e2d...', testOk: '\u8fde\u63a5\u6210\u529f ({ms}ms): {reply}', testFail: '\u8fde\u63a5\u5931\u8d25: {error}', emptyList: '\u6682\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002', hintEmpty: '\u53ef\u4f7f\u7528 model=<provider id> \u5728\u7edf\u4e00\u7aef\u70b9\u9009\u62e9\u670d\u52a1\u5546\u3002', authEmpty: '\u4f7f\u7528 HUB \u90ae\u7bb1\u767b\u5f55\u540e\u8fd4\u56de\u7684 viewer access token\uff0c\u901a\u8fc7 Authorization: Bearer <token> \u8c03\u7528\u3002', modelsEmpty: '-'
+  }
+};
+const lp = (key, vars = {}) => ((LLM_PROVIDER_I18N[currentLang] || LLM_PROVIDER_I18N.en)[key] || LLM_PROVIDER_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+let llmProviderRegistryCache = null;
+let llmProviderSelectedId = '';
+function lpUsage(usage) { return { input_tokens: Number(usage && usage.input_tokens || 0), output_tokens: Number(usage && usage.output_tokens || 0), total_tokens: Number(usage && usage.total_tokens || 0) }; }
+function lpClone(provider) { return { id: provider && provider.id || '', name: provider && provider.name || '', api_url: provider && provider.api_url || '', api_key: provider && provider.api_key || '', has_api_key: !!(provider && provider.has_api_key), model: provider && provider.model || '', protocol: provider && provider.protocol || 'openai', wire_api: provider && provider.wire_api || 'chat', agent_type: provider && provider.agent_type || '', max_concurrency: Number(provider && provider.max_concurrency || 0), in_flight: Number(provider && provider.in_flight || 0), queue_waiters: Number(provider && provider.queue_waiters || 0), usage: lpUsage(provider && provider.usage) }; }
+function lpById(id) { return (llmProviderRegistryCache && llmProviderRegistryCache.providers || []).find(function(p) { return p.id === id; }) || null; }
+function lpNormalizeId(value) { return String(value || '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''); }
+function lpNextId() { const used = new Set((llmProviderRegistryCache && llmProviderRegistryCache.providers || []).map(function(p) { return p.id; })); let i = 1; while (used.has('provider-' + i)) i++; return 'provider-' + i; }
+function lpEnsureSelection() { const providers = llmProviderRegistryCache && llmProviderRegistryCache.providers || []; if (!providers.length) { llmProviderSelectedId = ''; return; } if (!lpById(llmProviderSelectedId)) llmProviderSelectedId = llmProviderRegistryCache.current_provider_id || providers[0].id; if (!llmProviderRegistryCache.current_provider_id || !lpById(llmProviderRegistryCache.current_provider_id)) llmProviderRegistryCache.current_provider_id = llmProviderSelectedId; }
+function lpApiKeyPlaceholder(provider) { return provider && provider.has_api_key ? lp('apiKeyKeep') : lp('apiKeyEnter'); }
+function applyLLMProvidersI18n() {
+  _s('navLLMProviders', 'textContent', lp('navLabel'));
+  _s('navLLMProvidersDesc', 'textContent', lp('navDesc'));
+  _s('llmProvidersTabTitle', 'textContent', lp('tabTitle'));
+  _s('llmProvidersTabSubtitle', 'textContent', lp('tabSubtitle'));
+  _s('llmProvidersReloadBtn', 'textContent', lp('reload'));
+  _s('llmProvidersEnabledLabel', 'textContent', lp('enabled'));
+  _s('llmProvidersSmartRouteSingleLabel', 'textContent', lp('smartRoute'));
+  _s('llmProvidersCurrentLabel', 'textContent', lp('defaultProvider'));
+  _s('llmProvidersExposeTitle', 'textContent', lp('exposeTitle'));
+  _s('llmProvidersExposeDesc', 'textContent', lp('exposeDesc'));
+  _s('llmProvidersAPIBaseURLLabel', 'textContent', lp('apiBaseUrl'));
+  _s('llmProvidersExposeURLLabel', 'textContent', lp('exposeUrl'));
+  _s('llmProvidersModelsURLLabel', 'textContent', lp('modelsUrl'));
+  _s('llmProvidersAvailableModelsLabel', 'textContent', lp('availableModels'));
+  _s('llmProvidersAuthLabel', 'textContent', lp('authLabel'));
+  _s('llmProvidersHintsLabel', 'textContent', lp('hints'));
+  _s('llmProviderEditorTitle', 'textContent', lp('editorTitle'));
+  _s('llmProviderEditorDesc', 'textContent', lp('editorDesc'));
+  _s('llmProviderListTitle', 'textContent', lp('listTitle'));
+  _s('llmProviderListDesc', 'textContent', lp('listDesc'));
+  _s('llmProviderIdLabel', 'textContent', lp('providerId'));
+  _s('llmProviderNameLabel', 'textContent', lp('providerName'));
+  _s('llmProviderApiUrlLabel', 'textContent', lp('apiUrl'));
+  _s('llmProviderApiKeyLabel', 'textContent', lp('apiKey'));
+  _s('llmProviderModelLabel', 'textContent', lp('model'));
+  _s('llmProviderProtocolLabel', 'textContent', lp('protocol'));
+  _s('llmProviderWireApiLabel', 'textContent', lp('wireApi'));
+  _s('llmProviderAgentTypeLabel', 'textContent', lp('agentType'));
+  _s('llmProviderAgentTypeHint', 'textContent', lp('agentTypeHint'));
+  _s('llmProviderWireApiChat', 'textContent', lp('wireChat'));
+  _s('llmProviderWireApiResponses', 'textContent', lp('wireResponses'));
+  _s('llmProviderWireApiResponsesWS', 'textContent', lp('wireResponsesWS'));
+  _s('llmProviderMaxConcurrencyLabel', 'textContent', lp('maxConcurrency'));
+  _s('llmProviderAddBtn', 'textContent', lp('add'));
+  _s('llmProviderRemoveBtn', 'textContent', lp('remove'));
+  _s('llmProviderSaveBtn', 'textContent', lp('save'));
+  _s('llmProviderTestBtn', 'textContent', lp('test'));
+  renderLLMProviders();
+}
+function renderLLMProviders() {
+  if (!document.getElementById('llmProviderList')) return;
+  if (!llmProviderRegistryCache) {
+    _s('llmProviderList', 'innerHTML', '<div class="hint">' + lp('emptyList') + '</div>');
+    _s('llmProviderSelectionBadge', 'textContent', lp('noSelection'));
+    return;
+  }
+  lpEnsureSelection();
+  const providers = llmProviderRegistryCache.providers || [];
+  const selected = lpById(llmProviderSelectedId);
+  _s('llmProvidersEnabled', 'checked', !!llmProviderRegistryCache.enabled);
+  _s('llmProvidersSmartRouteSingle', 'checked', !!llmProviderRegistryCache.smart_route_single_device);
+  const currentEl = document.getElementById('llmProvidersCurrent');
+  if (currentEl) currentEl.innerHTML = providers.length ? providers.map(function(p) { return '<option value="' + escapeHtml(p.id) + '"' + (p.id === llmProviderRegistryCache.current_provider_id ? ' selected' : '') + '>' + escapeHtml((p.name || p.id) + ' (' + p.id + ')') + '</option>'; }).join('') : '<option value="">-</option>';
+  _s('llmProvidersAPIBaseURL', 'textContent', llmProviderRegistryCache.expose_api_base_url || '-');
+  _s('llmProvidersExposeURL', 'textContent', llmProviderRegistryCache.expose_base_url || '-');
+  _s('llmProvidersModelsURL', 'textContent', llmProviderRegistryCache.expose_models_url || '-');
+  _s('llmProvidersAvailableModels', 'textContent', (llmProviderRegistryCache.available_models || []).length ? llmProviderRegistryCache.available_models.join(', ') : lp('modelsEmpty'));
+  _s('llmProvidersAuthHint', 'textContent', llmProviderRegistryCache.auth_hint || lp('authEmpty'));
+  const hints = llmProviderRegistryCache.hints && llmProviderRegistryCache.hints.length ? llmProviderRegistryCache.hints : [lp('hintEmpty')];
+  _s('llmProvidersHints', 'innerHTML', hints.map(function(h) { return '<div>' + escapeHtml(h) + '</div>'; }).join(''));
+  _s('llmProviderSelectionBadge', 'textContent', selected ? (lp('selected') + ': ' + (selected.name || selected.id)) : lp('noSelection'));
+  _s('llmProviderId', 'value', selected ? selected.id : '');
+  _s('llmProviderName', 'value', selected ? selected.name : '');
+  _s('llmProviderApiUrl', 'value', selected ? selected.api_url : '');
+  _s('llmProviderModel', 'value', selected ? selected.model : '');
+  _s('llmProviderApiKey', 'value', '');
+  _s('llmProviderApiKey', 'placeholder', lpApiKeyPlaceholder(selected));
+  _s('llmProviderProtocol', 'value', selected ? selected.protocol : 'openai');
+  _s('llmProviderWireApi', 'value', selected ? selected.wire_api : 'chat');
+  _s('llmProviderAgentType', 'value', selected ? selected.agent_type : '');
+  _s('llmProviderMaxConcurrency', 'value', selected ? String(Number(selected.max_concurrency || 0)) : '0');
+  const root = document.getElementById('llmProviderList');
+  if (!providers.length) {
+    root.innerHTML = '<div class="hint">' + lp('emptyList') + '</div>';
+    return;
+  }
+  root.innerHTML = providers.map(function(p) {
+    const usage = lpUsage(p.usage);
+    const isSelected = p.id === llmProviderSelectedId;
+    const isDefault = p.id === llmProviderRegistryCache.current_provider_id;
+    const keyBadge = p.has_api_key ? '<span class="badge ok" style="font-size:11px">' + lp('hasKey') + '</span>' : '<span class="badge warn" style="font-size:11px">' + lp('noKey') + '</span>';
+    const defaultBadge = isDefault ? '<span class="badge info" style="font-size:11px">' + lp('defaultBadge') + '</span>' : '';
+    const concurrency = Number(p.max_concurrency || 0);
+    const concurrencyText = concurrency > 0 ? String(concurrency) : lp('concurrencyUnlimited');
+    return '<div class="item" style="margin-bottom:12px;cursor:pointer;border:' + (isSelected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + '" onclick="selectLLMProvider(\'' + String(p.id).replace(/'/g, "\\'") + '\')"><div class="item-head"><div><div class="item-title">' + escapeHtml(p.name || p.id) + '</div><div class="item-meta mono">' + escapeHtml(p.id) + ' | ' + escapeHtml(p.protocol || 'openai') + ' | ' + escapeHtml(p.wire_api || 'chat') + ' | ' + escapeHtml(p.model || '-') + '</div><div class="item-meta mono">' + escapeHtml(p.api_url || '-') + '</div><div class="item-meta mono">UA: ' + escapeHtml(p.agent_type || 'openclaw') + '</div><div class="item-meta">' + escapeHtml(lp('maxConcurrency')) + ': ' + escapeHtml(concurrencyText) + ' | ' + escapeHtml(lp('inFlight')) + ': ' + String(Number(p.in_flight || 0)) + ' | ' + escapeHtml(lp('queueWaiters')) + ': ' + String(Number(p.queue_waiters || 0)) + '</div></div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' + defaultBadge + keyBadge + '</div></div><div class="grid3" style="margin-top:12px"><div><label>' + lp('usageInput') + '</label><div class="mono">' + String(usage.input_tokens || 0) + '</div></div><div><label>' + lp('usageOutput') + '</label><div class="mono">' + String(usage.output_tokens || 0) + '</div></div><div><label>' + lp('usageTotal') + '</label><div class="mono">' + String(usage.total_tokens || 0) + '</div></div></div></div>';
+  }).join('');
+}
+function readSelectedLLMProviderForm() {
+  return { id: lpNormalizeId(document.getElementById('llmProviderId') && document.getElementById('llmProviderId').value || ''), name: (document.getElementById('llmProviderName') && document.getElementById('llmProviderName').value || '').trim(), api_url: (document.getElementById('llmProviderApiUrl') && document.getElementById('llmProviderApiUrl').value || '').trim(), api_key: document.getElementById('llmProviderApiKey') && document.getElementById('llmProviderApiKey').value || '', model: (document.getElementById('llmProviderModel') && document.getElementById('llmProviderModel').value || '').trim(), protocol: (document.getElementById('llmProviderProtocol') && document.getElementById('llmProviderProtocol').value || 'openai').trim(), wire_api: (document.getElementById('llmProviderWireApi') && document.getElementById('llmProviderWireApi').value || 'chat').trim(), agent_type: (document.getElementById('llmProviderAgentType') && document.getElementById('llmProviderAgentType').value || '').trim(), max_concurrency: Math.max(0, Number(document.getElementById('llmProviderMaxConcurrency') && document.getElementById('llmProviderMaxConcurrency').value || 0) || 0) };
+}
+function syncSelectedLLMProviderFromForm() {
+  if (!llmProviderRegistryCache || !llmProviderSelectedId) return true;
+  const idx = (llmProviderRegistryCache.providers || []).findIndex(function(p) { return p.id === llmProviderSelectedId; });
+  if (idx < 0) return true;
+  const prev = llmProviderRegistryCache.providers[idx];
+  const next = readSelectedLLMProviderForm();
+  next.id = next.id || prev.id;
+  const duplicate = (llmProviderRegistryCache.providers || []).find(function(p, i) { return i !== idx && p.id === next.id; });
+  if (duplicate) { const msg = lp('duplicateId', { id: next.id }); setOutput(msg); showToast(msg, 'error'); return false; }
+  next.name = next.name || next.id;
+  next.has_api_key = prev.has_api_key || !!next.api_key;
+  next.usage = lpUsage(prev.usage);
+  next.in_flight = Number(prev.in_flight || 0);
+  next.queue_waiters = Number(prev.queue_waiters || 0);
+  llmProviderRegistryCache.providers[idx] = next;
+  if (llmProviderRegistryCache.current_provider_id === llmProviderSelectedId) llmProviderRegistryCache.current_provider_id = next.id;
+  llmProviderSelectedId = next.id;
+  return true;
+}
+function buildLLMProviderPayload() {
+  return { enabled: !!(document.getElementById('llmProvidersEnabled') && document.getElementById('llmProvidersEnabled').checked), current_provider_id: document.getElementById('llmProvidersCurrent') && document.getElementById('llmProvidersCurrent').value || llmProviderRegistryCache.current_provider_id || '', smart_route_single_device: !!(document.getElementById('llmProvidersSmartRouteSingle') && document.getElementById('llmProvidersSmartRouteSingle').checked), providers: (llmProviderRegistryCache.providers || []).map(function(p) { return { id: p.id, name: p.name || p.id, api_url: p.api_url || '', api_key: p.api_key || '', model: p.model || '', protocol: p.protocol || 'openai', wire_api: p.wire_api || 'chat', agent_type: p.agent_type || '', max_concurrency: Math.max(0, Number(p.max_concurrency || 0)) }; }) };
+}
+async function loadLLMProviders() {
+  if (typeof token === 'function' && !token()) return;
+  try {
+    const data = await api('/api/admin/llm/providers');
+    llmProviderRegistryCache = { enabled: !!data.enabled, current_provider_id: data.current_provider_id || '', smart_route_single_device: !!data.smart_route_single_device, providers: (data.providers || []).map(lpClone), expose_api_base_url: data.expose_api_base_url || '', expose_base_url: data.expose_base_url || '', expose_models_url: data.expose_models_url || '', available_models: data.available_models || [], auth_mode: data.auth_mode || '', auth_hint: data.auth_hint || '', hints: data.hints || [] };
+    lpEnsureSelection();
+    renderLLMProviders();
+  } catch (err) {
+    const msg = lp('loadFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
+function selectLLMProvider(id) { if (!syncSelectedLLMProviderFromForm()) return; llmProviderSelectedId = id; renderLLMProviders(); }
+function setCurrentLLMProvider(id) { if (!llmProviderRegistryCache) return; llmProviderRegistryCache.current_provider_id = id || ''; renderLLMProviders(); }
+function addLLMProvider() {
+  if (!llmProviderRegistryCache) llmProviderRegistryCache = { enabled: false, current_provider_id: '', smart_route_single_device: false, providers: [], expose_api_base_url: '', expose_base_url: '', expose_models_url: '', available_models: [], auth_mode: '', auth_hint: '', hints: [] };
+  if (!syncSelectedLLMProviderFromForm()) return;
+  const id = lpNextId();
+  const provider = { id: id, name: 'Provider ' + id.split('-').pop(), api_url: '', api_key: '', has_api_key: false, model: '', protocol: 'openai', wire_api: 'chat', agent_type: '', max_concurrency: 0, in_flight: 0, queue_waiters: 0, usage: lpUsage() };
+  llmProviderRegistryCache.providers.push(provider);
+  llmProviderSelectedId = provider.id;
+  if (!llmProviderRegistryCache.current_provider_id) llmProviderRegistryCache.current_provider_id = provider.id;
+  renderLLMProviders();
+  showToast(lp('addDone'), 'success');
+}
+function removeSelectedLLMProvider() {
+  if (!llmProviderRegistryCache || !llmProviderSelectedId) { showToast(lp('providerRequired'), 'info'); return; }
+  if (!confirm(lp('removeConfirm', { id: llmProviderSelectedId }))) return;
+  llmProviderRegistryCache.providers = (llmProviderRegistryCache.providers || []).filter(function(p) { return p.id !== llmProviderSelectedId; });
+  if (llmProviderRegistryCache.current_provider_id === llmProviderSelectedId) llmProviderRegistryCache.current_provider_id = llmProviderRegistryCache.providers[0] && llmProviderRegistryCache.providers[0].id || '';
+  llmProviderSelectedId = llmProviderRegistryCache.providers[0] && llmProviderRegistryCache.providers[0].id || '';
+  renderLLMProviders();
+  showToast(lp('removeDone'), 'success');
+}
+async function saveLLMProviders() {
+  if (!llmProviderRegistryCache) { showToast(lp('providerRequired'), 'info'); return; }
+  if (!syncSelectedLLMProviderFromForm()) return;
+  try {
+    const data = await api('/api/admin/llm/providers', { method: 'PUT', body: JSON.stringify(buildLLMProviderPayload()) });
+    llmProviderRegistryCache = { enabled: !!data.enabled, current_provider_id: data.current_provider_id || '', smart_route_single_device: !!data.smart_route_single_device, providers: (data.providers || []).map(lpClone), expose_api_base_url: data.expose_api_base_url || '', expose_base_url: data.expose_base_url || '', expose_models_url: data.expose_models_url || '', available_models: data.available_models || [], auth_mode: data.auth_mode || '', auth_hint: data.auth_hint || '', hints: data.hints || [] };
+    lpEnsureSelection();
+    renderLLMProviders();
+    setOutput(lp('saveDone'));
+    showToast(lp('saveDone'), 'success');
+  } catch (err) {
+    const msg = lp('saveFailed', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
+  }
+}
+async function testSelectedLLMProvider() {
+  if (!llmProviderRegistryCache || !llmProviderSelectedId) { showToast(lp('providerRequired'), 'info'); return; }
+  if (!syncSelectedLLMProviderFromForm()) return;
+  const provider = lpById(llmProviderSelectedId);
+  const btn = document.getElementById('llmProviderTestBtn');
+  const result = document.getElementById('llmProviderTestResult');
+  if (btn) { btn.disabled = true; btn.textContent = lp('testRunning'); }
+  try {
+    const data = await api('/api/admin/llm/providers/test', { method: 'POST', body: JSON.stringify({ id: provider.id, name: provider.name, api_url: provider.api_url, api_key: provider.api_key || '', model: provider.model, protocol: provider.protocol, wire_api: provider.wire_api || 'chat', agent_type: provider.agent_type || '' }) });
+    const msg = data.success ? lp('testOk', { ms: String(data.latency_ms || 0), reply: data.reply || '' }) : lp('testFail', { error: data.error || 'unknown' });
+    if (result) { result.classList.remove('hidden'); result.textContent = msg; }
+    setOutput(msg);
+    showToast(msg, data.success ? 'success' : 'error');
+  } catch (err) {
+    const msg = lp('testFail', { error: err.message });
+    if (result) { result.classList.remove('hidden'); result.textContent = msg; }
+    setOutput(msg);
+    showToast(msg, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = lp('test'); }
+  }
+}
+function registerLLMProviderTab() {
+  if (!window.AdminTabRegistry || typeof window.AdminTabRegistry.registerTab !== 'function') return;
+  window.AdminTabRegistry.registerTab({
+    id: 'llmproviders',
+    title: function() { return lp('tabTitle'); },
+    subtitle: function() { return lp('tabSubtitle'); },
+    onOpen: function() { loadLLMProviders(); }
+  });
+}
+if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange === 'function') {
+  window.AdminTabRegistry.onLanguageChange(function() {
+    applyLLMProvidersI18n();
+  });
+}
+const baseRefreshAll = typeof refreshAll === 'function' ? refreshAll : null;
+if (baseRefreshAll) {
+  refreshAll = async function() {
+    await baseRefreshAll();
+    await loadLLMProviders();
+    await loadLLMServiceAdmin();
+  };
+}
+registerLLMProviderTab();
+applyLLMProvidersI18n();
+if (typeof token === 'function' && token() && localStorage.getItem(activeTabKey) === 'llmproviders') {
+  openTab('llmproviders');
+}
