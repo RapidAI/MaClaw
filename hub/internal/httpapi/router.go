@@ -1,4 +1,4 @@
-﻿package httpapi
+package httpapi
 
 import (
 	"net/http"
@@ -12,14 +12,14 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
-	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
-	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
-	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/mail"
+	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
+	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
@@ -153,6 +153,18 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/admin/hub_llm_config", RequireAdmin(admins, UpdateHubLLMConfigHandler(system)))
 	mux.HandleFunc("POST /api/admin/hub_llm_test", RequireAdmin(admins, TestHubLLMHandler(system)))
 	mux.HandleFunc("GET /api/admin/hub_llm_status", RequireAdmin(admins, HubLLMStatusHandler(hubLLMStatusFn)))
+	mux.HandleFunc("GET /api/admin/llm/services/diagnose", RequireAdmin(admins, GetLLMServiceEntitlementDiagnosticHandler(system, securitySvc)))
+	mux.HandleFunc("GET /api/admin/llm/providers", RequireAdmin(admins, GetLLMProvidersHandler(system)))
+	mux.HandleFunc("PUT /api/admin/llm/providers", RequireAdmin(admins, UpdateLLMProvidersHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/providers/test", RequireAdmin(admins, TestLLMProviderHandler(system)))
+	mux.HandleFunc("GET /api/admin/llm/services", RequireAdmin(admins, GetLLMServicesAdminHandler(system)))
+	mux.HandleFunc("PUT /api/admin/llm/services", RequireAdmin(admins, UpdateLLMServicesAdminHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/service-cards", RequireAdmin(admins, CreateLLMServiceCardHandler(system)))
+	mux.HandleFunc("GET /api/admin/llm/usage-report", RequireAdmin(admins, GetLLMUsageReportHandler(system, securitySvc)))
+	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
+	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
+	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
+	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc))
 	// Content audit configuration
 	mux.HandleFunc("GET /api/admin/content_audit/config", RequireAdmin(admins, GetContentAuditConfigHandler(system)))
 	mux.HandleFunc("PUT /api/admin/content_audit/config", RequireAdmin(admins, UpdateContentAuditConfigHandler(system)))
