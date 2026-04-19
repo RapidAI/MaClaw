@@ -146,6 +146,7 @@ interface WorkflowDocPreviewProps {
     onClose: () => void;
     theme: DocPreviewTheme;
     onResizeStart?: () => void;
+    onToggleMaximize?: () => void;
 }
 
 const phaseLabels: Record<string, string> = {
@@ -494,6 +495,7 @@ export function WorkflowDocPreview({
     onClose,
     theme,
     onResizeStart,
+    onToggleMaximize,
 }: WorkflowDocPreviewProps) {
     const [viewingPhaseID, setViewingPhaseID] = useState(currentPhaseID);
 
@@ -540,7 +542,9 @@ export function WorkflowDocPreview({
                 color: theme.text,
             }}>
                 {/* Header: phase tabs + close button — draggable for window move */}
-                <div style={{
+                <div
+                    onDoubleClick={() => onToggleMaximize?.()}
+                    style={{
                     display: "flex",
                     alignItems: "center",
                     padding: "8px 14px",

@@ -2213,6 +2213,7 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                     currentPhaseID={workflowState.currentPhaseID}
                     gateResults={workflowState.gateResults}
                     onClose={closeDocPreview}
+                    onToggleMaximize={inline ? onToggleMaximize : undefined}
                     theme={{
                         bg: t.bg,
                         text: t.text,

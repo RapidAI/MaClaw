@@ -848,9 +848,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     </div>
                     <div style={{ fontSize: "0.74rem", color: colors.textMuted }}>
                         {localizeText(
-                            "OpenClaw skill zips usually contain SKILL.md or skill.md; skill.yaml / skill.yml and skill.json are also supported.",
-                            "标准 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml 和 skill.json。",
-                            "標準 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml 和 skill.json。",
+                            "OpenClaw skill zips usually contain SKILL.md or skill.md; skill.yaml / skill.yml are also supported.",
+                            "标准 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml。",
+                            "標準 OpenClaw Skill ZIP 通常包含 SKILL.md 或 skill.md；也兼容 skill.yaml / skill.yml。",
                         )}
                     </div>
 
@@ -898,7 +898,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                         <th style={thStyle}>{localizeText("Name", "名称", "名稱")}</th>
                                         <th style={thStyle}>{localizeText("Description", "描述", "描述")}</th>
                                         <th style={{ ...thStyle, width: "120px" }}>{localizeText("Type", "类型", "類型")}</th>
-                                        <th style={thStyle}>{localizeText("Triggers", "触发短语", "觸發短語")}</th>
+                                        <th style={{ ...thStyle, width: "80px" }}>{localizeText("Version", "版本", "版本")}</th>
                                         <th style={thStyle}>{localizeText("Usage", "使用统计", "使用統計")}</th>
                                         <th style={thStyle}>{localizeText("Status", "状态", "狀態")}</th>
                                         <th style={{ ...thStyle, width: "100px" }}>{localizeText("Actions", "操作", "操作")}</th>
@@ -921,11 +921,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 )}
                                             </td>
                                             <td style={tdStyle}>
-                                                <div style={{ display: "flex", flexWrap: "wrap", gap: "3px" }}>
-                                                    {(s.triggers || []).map((t, i) => (
-                                                        <span key={i} style={tagStyle}>{t}</span>
-                                                    ))}
-                                                </div>
+                                                <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>{s.hub_version || "—"}</span>
                                             </td>
                                             <td style={tdStyle}>
                                                 {(s.usage_count ?? 0) > 0 ? (
