@@ -5,6 +5,7 @@ import (
     "net/http/httptest"
     "os"
     "path/filepath"
+    "strings"
     "testing"
 )
 
@@ -69,9 +70,12 @@ func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
     if indexRec.Code != http.StatusOK {
         t.Fatalf("index status = %d", indexRec.Code)
     }
-    // Default brand is MaClaw, so content should be served as-is (no replacement needed).
-    if body := indexRec.Body.String(); body != "<title>MaClaw Hub Admin</title>" {
-        t.Fatalf("index body = %q", body)
+    body := indexRec.Body.String()
+    if !strings.Contains(body, "<title>MaClaw Hub Admin</title>") {
+        t.Fatalf("index body missing title: %q", body)
+    }
+    if !strings.Contains(body, "console.log('admin');") {
+        t.Fatalf("index body missing injected admin js: %q", body)
     }
 
     assetReq := httptest.NewRequest(http.MethodGet, "/admin/admin.js", nil)
@@ -90,7 +94,11 @@ func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
     if spaRec.Code != http.StatusOK {
         t.Fatalf("spa fallback status = %d", spaRec.Code)
     }
-    if body := spaRec.Body.String(); body != "<title>MaClaw Hub Admin</title>" {
-        t.Fatalf("spa fallback body = %q", body)
+    body = spaRec.Body.String()
+    if !strings.Contains(body, "<title>MaClaw Hub Admin</title>") {
+        t.Fatalf("spa fallback body missing title: %q", body)
+    }
+    if !strings.Contains(body, "console.log('admin');") {
+        t.Fatalf("spa fallback body missing injected admin js: %q", body)
     }
 }

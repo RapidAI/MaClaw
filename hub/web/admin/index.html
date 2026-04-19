@@ -959,42 +959,6 @@
         <div class="head"><div><h3 id="usageStatsTabTitle">Usage Stats</h3><div class="desc" id="usageStatsTabSubtitle">View token usage by user or security group, with daily 24-hour trends.</div></div><button class="btn-ghost" onclick="loadUsageStats()" id="usageStatsReloadBtn">Reload</button></div>
       </section>
 
-      <!-- Tab: Voiceprint -->
-      <section id="tab-voiceprint" class="panel card">
-        <div class="head"><div><h3 id="vpTitle"></h3><div class="desc" id="vpDesc">1:N speaker verification via RapidSpeech</div></div></div>
-        <div class="grid2">
-          <div class="item">
-            <div class="item-title" id="vpConfigTitle"></div>
-            <div class="item-meta" style="margin-bottom:12px">RapidSpeech server configuration</div>
-            <div><label>Enable <input type="checkbox" id="vpEnabled"></label></div>
-            <div style="margin-top:8px"><label>Server URL</label><input id="vpServerUrl" placeholder="http://localhost:8080"></div>
-            <div style="margin-top:8px"><label>Threshold (0-1)</label><input id="vpThreshold" type="number" step="0.05" min="0" max="1" value="0.6" style="max-width:160px"></div>
-            <div class="actions" style="margin-top:12px"><button class="btn-primary" onclick="saveVpConfig()">Save</button></div>
-          </div>
-          <div class="item">
-            <div class="item-title" id="vpEnrollTitle"></div>
-            <div class="item-meta" style="margin-bottom:12px">Upload WAV to enroll speaker</div>
-            <div><label>Email</label><input id="vpEnrollEmail" placeholder="user@example.com"></div>
-            <div style="margin-top:8px"><label>Label</label><input id="vpEnrollLabel" placeholder="default" value="default"></div>
-            <div style="margin-top:8px"><label>WAV File</label><input type="file" id="vpEnrollFile" accept=".wav,audio/wav"></div>
-            <div class="actions" style="margin-top:12px"><button class="btn-primary" onclick="vpEnroll()">Enroll</button></div>
-          </div>
-        </div>
-        <div class="item" style="margin-top:18px">
-          <div class="item-title">1:N Identification</div>
-          <div class="item-meta" style="margin-bottom:12px">Upload WAV to identify speaker</div>
-          <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
-            <div><label>WAV File</label><input type="file" id="vpIdentifyFile" accept=".wav,audio/wav"></div>
-            <button class="btn-primary" onclick="vpIdentify()">Identify</button>
-          </div>
-          <div id="vpIdentifyResult" style="margin-top:12px"></div>
-        </div>
-        <div class="item" style="margin-top:18px">
-          <div class="head" style="margin-bottom:12px"><div><div class="item-title">Enrolled Speakers</div><div class="item-meta">Registered voiceprints</div></div><button class="btn-ghost" onclick="loadVoiceprints()">Reload</button></div>
-          <div id="vpList"><div class="hint">No voiceprints loaded.</div></div>
-        </div>
-      </section>
-
       <!-- Tab: Console -->
       <section id="tab-console" class="panel card">
         <div class="head"><div><h3 data-i18n="consoleTitle"></h3><div class="desc" data-i18n="consoleDesc"></div></div><button class="btn-ghost" onclick="clearConsole()" data-i18n="clear"></button></div>
@@ -1016,7 +980,6 @@
 <script src="invitation-tab.js"></script>
 <script src="pwa-tab.js"></script>
 <script src="system-tab.js"></script>
-<script src="voiceprint-tab.js"></script>
 <script src="compute-tab.js"></script>
 <script src="llm-provider-tab.js"></script>
 <script src="llm-service-tabs.js"></script>

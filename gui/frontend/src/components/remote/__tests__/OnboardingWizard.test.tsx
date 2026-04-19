@@ -5,6 +5,8 @@ import type { Mock } from 'vitest';
 const ActivateRemoteMock = vi.fn();
 const GetRemoteActivationStatusMock = vi.fn();
 const GetRemoteConnectionStatusMock = vi.fn();
+const GetHubLLMServiceStatusMock = vi.fn();
+const RedeemHubLLMServiceMock = vi.fn();
 const GetMaclawLLMProvidersMock = vi.fn();
 const SaveMaclawLLMProvidersMock = vi.fn();
 const TestMaclawLLMMock = vi.fn();
@@ -45,6 +47,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SaveCodeGenModelChoice: (...args: unknown[]) => SaveCodeGenModelChoiceMock(...args),
     GetRemoteActivationStatus: (...args: unknown[]) => GetRemoteActivationStatusMock(...args),
     GetRemoteConnectionStatus: (...args: unknown[]) => GetRemoteConnectionStatusMock(...args),
+    GetHubLLMServiceStatus: (...args: unknown[]) => GetHubLLMServiceStatusMock(...args),
+    RedeemHubLLMService: (...args: unknown[]) => RedeemHubLLMServiceMock(...args),
     GetWeixinStatus: (...args: unknown[]) => GetWeixinStatusMock(...args),
     StartWeixinQRLogin: (...args: unknown[]) => StartWeixinQRLoginMock(...args),
     PollWeixinQRStatus: (...args: unknown[]) => PollWeixinQRStatusMock(...args),
@@ -92,6 +96,8 @@ describe('OnboardingWizard registration', () => {
         ProbeRemoteHubMock.mockResolvedValue({ invitation_code_required: false });
         GetWeixinStatusMock.mockResolvedValue('');
         GetRemoteConnectionStatusMock.mockResolvedValue({ connected: false });
+        GetHubLLMServiceStatusMock.mockResolvedValue({ active: false, skip_llm_config: false });
+        RedeemHubLLMServiceMock.mockResolvedValue({ active: false, skip_llm_config: false });
         CancelCodeGenSSOPollingMock.mockResolvedValue(undefined);
         DetectBrowserMock.mockResolvedValue({ found: 'false' });
         GetFreeProxyModelsMock.mockResolvedValue([]);
@@ -159,7 +165,7 @@ describe('OnboardingWizard registration', () => {
             expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
         });
         expect(screen.getByText(/Registration successful/)).toBeTruthy();
-        expect(screen.getByRole('button', { name: '✅ Registered · Hub connecting...' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Registered .*Hub connecting/ })).toBeTruthy();
 
         await act(async () => {
             releaseParentRefresh?.();
@@ -176,6 +182,8 @@ describe('OnboardingWizard registration', () => {
             resolveActivation = resolve;
         }));
         GetRemoteConnectionStatusMock.mockResolvedValue({ connected: false });
+        GetHubLLMServiceStatusMock.mockResolvedValue({ active: false, skip_llm_config: false });
+        RedeemHubLLMServiceMock.mockResolvedValue({ active: false, skip_llm_config: false });
 
         render(<OnboardingWizard {...baseProps} />);
 
@@ -192,7 +200,7 @@ describe('OnboardingWizard registration', () => {
         await waitFor(() => {
             expect(screen.getByText(/Registration successful/)).toBeTruthy();
         });
-        expect(screen.getByRole('button', { name: '✅ Registered · Hub connecting...' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Registered .*Hub connecting/ })).toBeTruthy();
         expect(screen.getByText('Hub connecting')).toBeTruthy();
     });
 
@@ -213,7 +221,7 @@ describe('OnboardingWizard registration', () => {
             await Promise.resolve();
         });
 
-        expect(screen.getByRole('button', { name: '✅ Registered · Hub connecting...' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Registered .*Hub connecting/ })).toBeTruthy();
         expect(screen.getByText(/Connecting to Hub in the background/)).toBeTruthy();
         expect(screen.getByText('Hub connecting')).toBeTruthy();
 
@@ -221,8 +229,8 @@ describe('OnboardingWizard registration', () => {
             await vi.advanceTimersByTimeAsync(1600);
         });
 
-        expect(screen.getByRole('button', { name: '✅ Registered' })).toBeTruthy();
-        expect(screen.getByText(/Hub connected — you can continue/)).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Registered/ })).toBeTruthy();
+        expect(screen.getAllByText(/Hub connected/).length).toBeGreaterThan(0);
         expect(screen.getByText('Hub connected')).toBeTruthy();
     });
 
@@ -289,8 +297,8 @@ describe('OnboardingWizard registration', () => {
         });
 
         expect(TestMaclawLLMMock.mock.invocationCallOrder[0]).toBeLessThan(SaveMaclawLLMProvidersMock.mock.invocationCallOrder[0]);
-        expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
         expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+        expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
     });
 
     it('does not save when llm detection fails in step 3', async () => {

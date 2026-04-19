@@ -21,7 +21,6 @@ const expectedScripts = [
   'invitation-tab.js',
   'pwa-tab.js',
   'system-tab.js',
-  'voiceprint-tab.js',
   'compute-tab.js',
   'llm-provider-tab.js',
   'llm-service-tabs.js',

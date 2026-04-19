@@ -29,9 +29,16 @@ import {
     GetFreeProxyModel,
     SetFreeProxyModel,
     GetRemoteConnectionStatus,
+    GetHubLLMServiceStatus,
+    RedeemHubLLMService,
 } from "../../../wailsjs/go/main/App";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { HubRegisterButtonContent, HubStatusBadge } from "./HubConnectionStatus";
+
+interface HubLLMServiceStatus {
+    active?: boolean;
+    skip_llm_config?: boolean;
+}
 
 interface LLMProvider {
     name: string;
@@ -95,6 +102,7 @@ const TOTAL_STEPS = 4;
 
 export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
+    const hubT = useCallback((en: string, zhHans: string, zhHant?: string) => localizeText(lang, en, zhHans, zhHant ?? zhHans), [lang]);
 
     // 是否为 TigerClaw 品牌（oem_qianxin）
     const isTigerclaw = brandId === 'qianxin';
@@ -115,6 +123,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     const [invError, setInvError] = useState("");
     const [showConfirm, setShowConfirm] = useState(false);
     const [vipFlag, setVipFlag] = useState(false);
+    const [redeemCode, setRedeemCode] = useState("");
     const [regResult, setRegResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
     // ── SSO（TigerClaw Step 1）+ 注册状态（共用）──
@@ -194,9 +203,32 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
     }, [regDone, modeDone, llmDone, wxCompleted, isTigerclaw]);
 
     // Navigation guards
+    const getPrevStep = useCallback((currentStep: number) => {
+        if (!isTigerclaw && llmDone && currentStep === 4) return 2;
+        return Math.max(1, currentStep - 1);
+    }, [isTigerclaw, llmDone]);
+
+    const getNextStep = useCallback((currentStep: number) => {
+        if (!isTigerclaw && llmDone && currentStep === 2) return 4;
+        return Math.min(totalSteps, currentStep + 1);
+    }, [isTigerclaw, llmDone, totalSteps]);
+
     const canNext = step < totalSteps && stepDone[step];
     const canPrev = step > 1;
     const isLastStep = step === totalSteps;
+
+    const applyHubServiceStatus = useCallback((status?: HubLLMServiceStatus | null) => {
+        const shouldSkipLLM = !!status?.active && !!status?.skip_llm_config;
+        if (shouldSkipLLM) {
+            setLlmDone(true);
+            setLlmResult({
+                ok: true,
+                msg: t("???? MaClaw ???????????? LLM ?????", "MaClaw model service is authorized. The LLM binding step has been skipped automatically."),
+            });
+            onLLMConfigured();
+        }
+        return shouldSkipLLM;
+    }, [onLLMConfigured, t]);
 
     // Load providers on mount
     useEffect(() => {
@@ -220,6 +252,19 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
             if (s === "connected" || s === "confirmed") setWxDone(true);
         }).catch(() => {});
     }, []);
+
+    useEffect(() => {
+        if (isTigerclaw) return;
+        GetHubLLMServiceStatus().then(status => {
+            applyHubServiceStatus(status);
+        }).catch(() => {});
+    }, [applyHubServiceStatus, isTigerclaw]);
+
+    useEffect(() => {
+        if (!isTigerclaw && llmDone && step === 3) {
+            setStep(4);
+        }
+    }, [isTigerclaw, llmDone, step]);
 
     useEffect(() => {
         if (!regDone || !hubConnecting) return;
@@ -911,6 +956,17 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     {invError && <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: 4 }}>{invError}</div>}
                                 </div>
                             )}
+                            <div style={{ marginBottom: 10 }}>
+                                <label style={labelStyle}>
+                                    {t("?????", "Recharge Card")} {" "}
+                                    <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("??", "optional")})</span>
+                                </label>
+                                <input style={inputStyle}
+                                    value={redeemCode}
+                                    onChange={e => setRedeemCode(e.target.value.trim().toUpperCase())}
+                                    placeholder={t("????????????????", "Enter a recharge card to redeem model service access immediately")}
+                                    spellCheck={false} />
+                            </div>
                             <button onClick={handleRegisterClick} disabled={regBusy || regDone} style={{
                                 width: "100%", padding: "8px 0", fontSize: "0.8rem", fontWeight: 600,
                                 background: regBusy ? colors.primaryLight : regDone ? (hubConnecting ? "var(--theme-primary-soft)" : colors.successBg) : colors.primary,
@@ -918,7 +974,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                 cursor: regBusy || regDone ? "default" : "pointer",
                                 display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                             }}>
-                                <HubRegisterButtonContent regBusy={regBusy} regDone={regDone} hubConnecting={hubConnecting} t={t} />
+                                <HubRegisterButtonContent regBusy={regBusy} regDone={regDone} hubConnecting={hubConnecting} t={hubT} />
                             </button>
                             {regResult && (
                                 <div style={{
@@ -931,7 +987,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                                     {regResult.ok ? `✅ ${regResult.msg}` : `❌ ${regResult.msg}`}
                                     {regResult.ok && (
                                         <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, fontSize: "0.68rem", color: hubConnecting ? colors.primary : colors.success }}>
-                                            <HubStatusBadge connecting={hubConnecting} t={t} />
+                                            <HubStatusBadge connecting={hubConnecting} t={hubT} />
                                         </div>
                                     )}
                                 </div>
@@ -1262,7 +1318,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                     padding: "12px 18px 14px", borderTop: `1px solid ${colors.border}`, flexShrink: 0,
                 }}>
                     <button
-                        onClick={() => setStep(s => Math.max(1, s - 1))}
+                        onClick={() => setStep(s => getPrevStep(s))}
                         disabled={!canPrev}
                         style={{
                             padding: "7px 20px", fontSize: "0.8rem", borderRadius: 6,
@@ -1314,7 +1370,7 @@ export function OnboardingWizard({ lang, hubUrl, email, uiMode, brandId, brandDi
                         </div>
                     ) : (
                         <button
-                            onClick={() => setStep(s => Math.min(totalSteps, s + 1))}
+                            onClick={() => setStep(s => getNextStep(s))}
                             disabled={!canNext}
                             style={{
                                 padding: "7px 20px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,
