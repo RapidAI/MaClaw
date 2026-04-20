@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -21,9 +22,11 @@ type FloatingAssistantManager struct {
 
 // NewFloatingAssistantManager creates a new FloatingAssistantManager.
 func NewFloatingAssistantManager(app *App) *FloatingAssistantManager {
-	return &FloatingAssistantManager{
+	m := &FloatingAssistantManager{
 		app: app,
 	}
+	m.window = newFloatingWindow(app)
+	return m
 }
 
 // ShowFloatingButton creates and shows the floating assistant window.
@@ -66,27 +69,25 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 	log.Printf("[floating-assistant] ShowFloatingButton: pos=(%d,%d) window=%v", m.posX, m.posY, m.window != nil)
 
 	// Create platform-specific floating window.
-	if m.window != nil {
-		winSize := 72 // must match floatWinSize on Windows
-		log.Printf("[floating-assistant] ShowFloatingButton: calling window.Create(%d,%d,%d,%d)", m.posX, m.posY, winSize, winSize)
-		if err := m.window.Create(m.posX, m.posY, winSize, winSize); err != nil {
-			log.Printf("[floating-assistant] ShowFloatingButton: window.Create FAILED: %v", err)
-			m.visible = false
-			return
-		}
-		log.Printf("[floating-assistant] ShowFloatingButton: window.Create succeeded, calling Show()")
-		m.window.Show()
-		log.Printf("[floating-assistant] ShowFloatingButton: window shown successfully")
-	} else {
+	if m.window == nil {
 		log.Printf("[floating-assistant] ShowFloatingButton: window is nil, cannot show")
+		return
 	}
+
+	winSize := 72 // must match floatWinSize on Windows
+	log.Printf("[floating-assistant] ShowFloatingButton: calling window.Create(%d,%d,%d,%d)", m.posX, m.posY, winSize, winSize)
+	if err := m.window.Create(m.posX, m.posY, winSize, winSize); err != nil {
+		log.Printf("[floating-assistant] ShowFloatingButton: window.Create FAILED: %v", err)
+		return
+	}
+	log.Printf("[floating-assistant] ShowFloatingButton: window.Create succeeded, calling Show()")
+	m.window.Show()
 
 	m.visible = true
 	log.Printf("[floating-assistant] ShowFloatingButton: done, visible=true")
 }
 
 // HideFloatingButton hides and destroys the floating assistant window.
-// Also updates config so the settings checkbox stays in sync.
 func (m *FloatingAssistantManager) HideFloatingButton() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -95,21 +96,6 @@ func (m *FloatingAssistantManager) HideFloatingButton() {
 		m.window.Destroy()
 	}
 	m.visible = false
-
-	// Update config so the settings checkbox reflects the hidden state.
-	go func() {
-		if m.app == nil {
-			return
-		}
-		config, err := m.app.LoadConfig()
-		if err != nil {
-			return
-		}
-		if config.ShowAssistantEntry {
-			config.ShowAssistantEntry = false
-			_ = m.app.SaveConfig(config)
-		}
-	}()
 }
 
 // IsVisible returns whether the floating button is currently shown.
@@ -190,9 +176,12 @@ func (m *FloatingAssistantManager) loadOrDefaultPosition(config AppConfig) (int,
 }
 
 // OnFloatingButtonClicked handles a left-click on the floating button.
-// It shows the main window and brings it to front, switching to the AI panel.
-// The floating button remains visible (always-on-top, like Doubao).
+// It shows the main window, switches to the AI panel, and hides the
+// floating button (mutual exclusivity — Requirement 7).
 func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
+	// Hide floating button first (Requirement 7: never simultaneously visible).
+	m.HideFloatingButton()
+
 	// Show main window and bring to front.
 	runtime.WindowShow(m.app.ctx)
 	runtime.WindowSetAlwaysOnTop(m.app.ctx, true)
@@ -253,10 +242,15 @@ func (m *FloatingAssistantManager) QuitApp() {
 	// Quit on a separate goroutine — runtime.Quit triggers the Wails
 	// shutdown sequence which must not run on the WebView's JS callback
 	// goroutine (same pattern as the system tray quit handler).
+	// After runtime.Quit, also call quitSystray() to terminate the
+	// systray event loop — otherwise the process stays alive in the
+	// background even though the Wails window is gone.
 	go func() {
 		if m.app != nil && m.app.ctx != nil {
 			runtime.Quit(m.app.ctx)
 		}
+		time.Sleep(500 * time.Millisecond)
+		quitSystray()
 	}()
 }
 
@@ -267,6 +261,11 @@ func (m *FloatingAssistantManager) QuitApp() {
 
 var platformGetScreenWidth func() int
 var platformGetScreenHeight func() int
+
+// quitSystray terminates the system tray event loop. Set by platform-specific
+// tray setup code (e.g. tray_windows.go). Without this, the process stays
+// alive in the background after runtime.Quit because the systray loop blocks.
+var quitSystray func() = func() {}
 
 func getScreenWidth() int {
 	if platformGetScreenWidth != nil {

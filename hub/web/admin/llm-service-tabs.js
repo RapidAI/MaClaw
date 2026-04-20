@@ -668,6 +668,8 @@ if (window.AdminTabRegistry && typeof window.AdminTabRegistry.onLanguageChange =
     }
   });
 }
+window.loadLlmServiceGroups = loadLLMServiceAdmin;
+window.openLlmServiceGroupTab = function() { if (typeof openTab === 'function') openTab('modelservices'); };
 registerLLMServiceTabs();
 ensureLLMServiceCardsTab();
 applyLLMServiceTabI18n();

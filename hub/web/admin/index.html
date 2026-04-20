@@ -107,7 +107,7 @@
   <!-- Session modal -->
   <div id="sessionModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeSessionModal()">
     <div class="session-modal">
-      <button class="close-btn" onclick="closeSessionModal()" aria-label="Close">&times;</button>
+      <button class="close-btn" id="sessionModalCloseBtn" onclick="closeSessionModal()" aria-label="Close">&times;</button>
       <h3 id="sessionModalTitle"></h3>
       <div id="sessionModalContent"></div>
     </div>
@@ -116,7 +116,7 @@
   <!-- Default group modal -->
   <div id="defaultGroupModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeDefaultGroupModal()">
     <div class="session-modal" style="width:min(420px,calc(100% - 48px))">
-      <button class="close-btn" onclick="closeDefaultGroupModal()" aria-label="Close">&times;</button>
+      <button class="close-btn" id="defaultGroupModalCloseBtn" onclick="closeDefaultGroupModal()" aria-label="Close">&times;</button>
       <h3 id="defaultGroupModalTitle" data-i18n="securityDefaultGroup">Default Group</h3>
       <div id="defaultGroupModalDesc" style="color:var(--muted);font-size:13px;margin-bottom:14px"></div>
       <div id="defaultGroupTreePicker" style="font-size:13px;line-height:1.8;max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:8px"></div>
@@ -130,7 +130,7 @@
   <!-- Assign users modal -->
   <div id="assignUsersModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeAssignUsersModal()">
     <div class="session-modal" style="width:min(520px,calc(100% - 48px))">
-      <button class="close-btn" onclick="closeAssignUsersModal()" aria-label="Close">&times;</button>
+      <button class="close-btn" id="assignUsersModalCloseBtn" onclick="closeAssignUsersModal()" aria-label="Close">&times;</button>
       <h3 id="assignUsersModalTitle"></h3>
       <div id="assignUsersModalDesc" style="color:var(--muted);font-size:13px;margin-bottom:10px"></div>
       <div style="margin-bottom:10px"><input id="assignUsersSearch" placeholder="..." oninput="filterAssignUsers()" style="width:100%;max-width:100%"></div>
@@ -148,7 +148,7 @@
   <!-- Setup gate -->
   <div id="setupGate" class="hidden" style="position:fixed;top:16px;right:16px;z-index:9998;width:min(480px,calc(100% - 32px))">
     <div class="card" style="padding:20px;position:relative">
-      <button type="button" onclick="dismissSetupGate()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;height:auto;padding:0;line-height:1" aria-label="Close">&times;</button>
+      <button type="button" id="setupGateCloseBtn" onclick="dismissSetupGate()" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;height:auto;padding:0;line-height:1" aria-label="Close">&times;</button>
       <div class="mini" data-gate="title"></div>
       <h2 id="setupGateHeading" style="margin:10px 0 6px;font-size:18px"></h2>
       <p class="subtle" id="setupGateDesc" style="font-size:13px"></p>
@@ -378,7 +378,7 @@
             <div><div class="item-title" data-i18n="invitesTitle"></div><div class="item-meta" data-i18n="invitesDesc"></div></div>
             <button class="btn-ghost" onclick="loadInvites()" data-i18n="reload"></button>
           </div>
-          <div id="invites"><div class="hint">Loading...</div></div>
+          <div id="invites"><div class="hint" data-i18n="loading">Loading...</div></div>
         </div>
       </section>
 
@@ -435,25 +435,25 @@
         <!-- TLS config -->
         <div class="item" style="margin-top:18px">
           <div class="head" style="margin-bottom:12px">
-            <div><div class="item-title">TLS / HTTPS</div><div class="item-meta">Configure HTTPS and WebSocket encryption</div></div>
-            <button class="btn-ghost" onclick="loadTlsConfig()">Reload</button>
+            <div><div class="item-title" id="tlsTitle">TLS / HTTPS</div><div class="item-meta" id="tlsDesc">Configure HTTPS and WebSocket encryption</div></div>
+            <button class="btn-ghost" onclick="loadTlsConfig()" id="tlsReloadBtn">Reload</button>
           </div>
           <div class="grid2">
-            <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="tlsEnabled"> Enable TLS</label></div>
+            <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="tlsEnabled"> <span id="tlsEnabledLabel">Enable TLS</span></label></div>
             <div><span id="tlsCertBadge" class="badge info" style="font-size:12px">Unknown</span></div>
           </div>
           <div class="grid2" style="margin-top:12px">
-            <div><label>Certificate File</label><div class="mono" id="tlsCertFile">-</div></div>
-            <div><label>Key File</label><div class="mono" id="tlsKeyFile">-</div></div>
+            <div><label id="tlsCertFileLabel">Certificate File</label><div class="mono" id="tlsCertFile">-</div></div>
+            <div><label id="tlsKeyFileLabel">Key File</label><div class="mono" id="tlsKeyFile">-</div></div>
           </div>
           <div id="tlsCertInfo" style="margin-top:12px"></div>
           <div class="actions" style="margin-top:14px"><button class="btn-primary" onclick="saveTlsConfig()" id="tlsSaveBtn">Save TLS</button></div>
           <div class="hint" style="margin-top:14px">
-            <div style="font-weight:700;margin-bottom:8px">TLS Guide</div>
-            <div style="font-size:13px;line-height:1.8">Hub listens on port 9399 for HTTPS/WSS when TLS is enabled.<br>Recommended: ECDSA P-256 certificate.<br>Use https:// and wss:// after enabling.<br>Alternatively, use nginx as a reverse proxy.</div>
+            <div style="font-weight:700;margin-bottom:8px" id="tlsGuideTitle">TLS Guide</div>
+            <div style="font-size:13px;line-height:1.8" id="tlsGuideContent">Hub listens on port 9399 for HTTPS/WSS when TLS is enabled.<br>Recommended: ECDSA P-256 certificate.<br>Use https:// and wss:// after enabling.<br>Alternatively, use nginx as a reverse proxy.</div>
           </div>
           <div class="hint" style="margin-top:10px">
-            <div style="font-weight:700;margin-bottom:8px">Nginx Example</div>
+            <div style="font-weight:700;margin-bottom:8px" id="tlsNginxTitle">Nginx Example</div>
             <div style="font-size:12px;line-height:1.8;font-family:Consolas,monospace">server {<br>&nbsp;&nbsp;listen 443 ssl;<br>&nbsp;&nbsp;ssl_certificate /path/to/cert.pem;<br>&nbsp;&nbsp;ssl_certificate_key /path/to/key.pem;<br>&nbsp;&nbsp;location / {<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_pass http://127.0.0.1:9399;<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_http_version 1.1;<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_set_header Upgrade $http_upgrade;<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_set_header Connection "upgrade";<br>&nbsp;&nbsp;&nbsp;&nbsp;proxy_read_timeout 3600s;<br>&nbsp;&nbsp;}<br>}</div>
           </div>
         </div>
@@ -469,8 +469,8 @@
             <button data-imsub="qqbot" onclick="openImSub('qqbot')"><span id="imSubQQBotNav"></span><small id="imSubQQBotNavDesc"></small></button>
             <button data-imsub="wecom" onclick="openImSub('wecom')"><span id="imSubWeComNav"></span><small id="imSubWeComNavDesc">WeCom Bot</small></button>
             <button data-imsub="dingtalk" onclick="openImSub('dingtalk')"><span id="imSubDingTalkNav"></span><small id="imSubDingTalkNavDesc">DingTalk Bot</small></button>
-            <button data-imsub="hubllm" onclick="openImSub('hubllm')"><span>Hub LLM</span><small></small></button>
-            <button data-imsub="contentaudit" onclick="openImSub('contentaudit')"><span>Content Audit</span><small>Content Audit</small></button>
+            <button data-imsub="hubllm" onclick="openImSub('hubllm')"><span id="imSubHubLlmNav">Hub LLM</span><small id="imSubHubLlmNavDesc"></small></button>
+            <button data-imsub="contentaudit" onclick="openImSub('contentaudit')"><span id="imSubContentAuditNav">Content Audit</span><small id="imSubContentAuditNavDesc">Content Audit</small></button>
           </div>
           <div class="im-content">
             <!-- Feishu pane -->
@@ -601,27 +601,27 @@
               <div class="item">
                 <div class="head" style="margin-bottom:12px">
                   <div><div class="item-title" id="wecomConfigTitle">WeCom Bot</div><div class="item-meta" id="wecomConfigDesc">Configure WeCom bot integration</div></div>
-                  <button class="btn-ghost" onclick="loadWeComConfig()">Reload</button>
+                  <button class="btn-ghost" onclick="loadWeComConfig()" id="wecomReloadBtn">Reload</button>
                 </div>
                 <div class="grid2">
-                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="wecomEnabled"> Enable</label></div>
+                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="wecomEnabled"> <span id="wecomEnabledLabel">Enable</span></label></div>
                   <div></div>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="wecomBotId">Bot ID</label><input id="wecomBotId" placeholder=""></div>
-                  <div><label for="wecomSecret">Secret</label><input id="wecomSecret" type="password" placeholder=""></div>
+                  <div><label for="wecomBotId" id="wecomBotIdLabel">Bot ID</label><input id="wecomBotId" placeholder=""></div>
+                  <div><label for="wecomSecret" id="wecomSecretLabel">Secret</label><input id="wecomSecret" type="password" placeholder=""></div>
                 </div>
-                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveWeComConfig()">Save</button></div>
+                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveWeComConfig()" id="wecomSaveBtn">Save</button></div>
                 <div class="hint" style="margin-top:14px">
-                  <div style="font-weight:700;margin-bottom:8px">WeCom Setup Guide</div>
-                  <div style="font-size:13px;line-height:1.8">Create a WeCom bot application.<br>Fill in Bot ID and Secret.<br>Hub connects via WebSocket.<br>Supports Markdown messages.<br><br><b>Note:</b><br>After Hub restarts, the bot reconnects within 6 seconds automatically.</div>
+                  <div style="font-weight:700;margin-bottom:8px" id="wecomGuideTitle">WeCom Setup Guide</div>
+                  <div style="font-size:13px;line-height:1.8" id="wecomGuideContent">Create a WeCom bot application.<br>Fill in Bot ID and Secret.<br>Hub connects via WebSocket.<br>Supports Markdown messages.<br><br><b>Note:</b><br>After Hub restarts, the bot reconnects within 6 seconds automatically.</div>
                 </div>
                 <div style="margin-top:14px">
                   <div class="head" style="margin-bottom:12px">
-                    <div><div class="item-title">Bindings</div><div class="item-meta">WeCom user bindings</div></div>
-                    <button class="btn-ghost" onclick="loadWeComBindings()">Reload</button>
+                    <div><div class="item-title" id="wecomBindingsTitle">Bindings</div><div class="item-meta" id="wecomBindingsDesc">WeCom user bindings</div></div>
+                    <button class="btn-ghost" onclick="loadWeComBindings()" id="wecomBindingsReloadBtn">Reload</button>
                   </div>
-                  <div id="wecomBindingsList"><div class="hint">No bindings loaded yet.</div></div>
+                  <div id="wecomBindingsList"><div class="hint" data-i18n="loading">Loading...</div></div>
                 </div>
               </div>
             </div>
@@ -631,27 +631,27 @@
               <div class="item">
                 <div class="head" style="margin-bottom:12px">
                   <div><div class="item-title" id="dingtalkConfigTitle">DingTalk Bot</div><div class="item-meta" id="dingtalkConfigDesc">Configure DingTalk bot integration</div></div>
-                  <button class="btn-ghost" onclick="loadDingTalkConfig()">Reload</button>
+                  <button class="btn-ghost" onclick="loadDingTalkConfig()" id="dingtalkReloadBtn">Reload</button>
                 </div>
                 <div class="grid2">
-                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="dingtalkEnabled"> Enable</label></div>
+                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="dingtalkEnabled"> <span id="dingtalkEnabledLabel">Enable</span></label></div>
                   <div></div>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="dingtalkClientId">Client ID (AppKey)</label><input id="dingtalkClientId" placeholder=""></div>
-                  <div><label for="dingtalkClientSecret">Client Secret (AppSecret)</label><input id="dingtalkClientSecret" type="password" placeholder=""></div>
+                  <div><label for="dingtalkClientId" id="dingtalkClientIdLabel">Client ID (AppKey)</label><input id="dingtalkClientId" placeholder=""></div>
+                  <div><label for="dingtalkClientSecret" id="dingtalkClientSecretLabel">Client Secret (AppSecret)</label><input id="dingtalkClientSecret" type="password" placeholder=""></div>
                 </div>
-                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveDingTalkConfig()">Save</button></div>
+                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveDingTalkConfig()" id="dingtalkSaveBtn">Save</button></div>
                 <div class="hint" style="margin-top:14px">
-                  <div style="font-weight:700;margin-bottom:8px">DingTalk Setup Guide</div>
-                  <div style="font-size:13px;line-height:1.8">Visit <a href="https://open-dev.dingtalk.com" target="_blank">DingTalk Open Platform</a>.<br>Fill in AppKey (Client ID) and AppSecret (Client Secret).<br>Webhook: <code>{hub_url}/api/dingtalk/webhook</code><br>Enable Stream mode.<br><br><b>Note:</b><br>After Hub restarts, the bot reconnects within 6 seconds automatically.</div>
+                  <div style="font-weight:700;margin-bottom:8px" id="dingtalkGuideTitle">DingTalk Setup Guide</div>
+                  <div style="font-size:13px;line-height:1.8" id="dingtalkGuideContent">Visit <a href="https://open-dev.dingtalk.com" target="_blank">DingTalk Open Platform</a>.<br>Fill in AppKey (Client ID) and AppSecret (Client Secret).<br>Webhook: <code>{hub_url}/api/dingtalk/webhook</code><br>Enable Stream mode.<br><br><b>Note:</b><br>After Hub restarts, the bot reconnects within 6 seconds automatically.</div>
                 </div>
                 <div style="margin-top:14px">
                   <div class="head" style="margin-bottom:12px">
-                    <div><div class="item-title">Bindings</div><div class="item-meta">DingTalk user bindings</div></div>
-                    <button class="btn-ghost" onclick="loadDingTalkBindings()">Reload</button>
+                    <div><div class="item-title" id="dingtalkBindingsTitle">Bindings</div><div class="item-meta" id="dingtalkBindingsDesc">DingTalk user bindings</div></div>
+                    <button class="btn-ghost" onclick="loadDingTalkBindings()" id="dingtalkBindingsReloadBtn">Reload</button>
                   </div>
-                  <div id="dingtalkBindingsList"><div class="hint">No bindings loaded yet.</div></div>
+                  <div id="dingtalkBindingsList"><div class="hint" data-i18n="loading">Loading...</div></div>
                 </div>
               </div>
             </div>
@@ -660,29 +660,29 @@
             <div id="im-pane-hubllm" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:12px">
-                  <div><div class="item-title">Hub LLM Configuration</div><div class="item-meta">Configure Hub-level LLM provider</div></div>
+                  <div><div class="item-title" id="hubLlmPaneTitle">Hub LLM Configuration</div><div class="item-meta" id="hubLlmPaneDesc">Configure Hub-level LLM provider</div></div>
                 </div>
                 <div class="grid2">
-                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmEnabled"> Enable Hub LLM</label></div>
-                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmSmartRouteSingle"> Smart route single-device LLM</label></div>
+                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmEnabled"> <span id="hubLlmEnabledLabel">Enable Hub LLM</span></label></div>
+                  <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="hubLlmSmartRouteSingle"> <span id="hubLlmSmartRouteSingleLabel">Smart route single-device LLM</span></label></div>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="hubLlmApiUrl">API Base URL</label><input id="hubLlmApiUrl" placeholder="https://api.deepseek.com/v1"></div>
-                  <div><label for="hubLlmApiKey">API Key</label><input id="hubLlmApiKey" type="password" placeholder="sk-..."></div>
+                  <div><label for="hubLlmApiUrl" id="hubLlmApiUrlLabel">API Base URL</label><input id="hubLlmApiUrl" placeholder="https://api.deepseek.com/v1"></div>
+                  <div><label for="hubLlmApiKey" id="hubLlmApiKeyLabel">API Key</label><input id="hubLlmApiKey" type="password" placeholder="sk-..."></div>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="hubLlmModel">Model</label><input id="hubLlmModel" placeholder="deepseek-chat"></div>
-                  <div><label for="hubLlmProtocol">Protocol</label><select id="hubLlmProtocol"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></div>
+                  <div><label for="hubLlmModel" id="hubLlmModelLabel">Model</label><input id="hubLlmModel" placeholder="deepseek-chat"></div>
+                  <div><label for="hubLlmProtocol" id="hubLlmProtocolLabel">Protocol</label><select id="hubLlmProtocol"><option value="openai" id="hubLlmProtocolOpenAI">OpenAI</option><option value="anthropic" id="hubLlmProtocolAnthropic">Anthropic</option></select></div>
                 </div>
                 <div class="actions" style="margin-top:14px">
-                  <button class="btn-secondary" onclick="saveHubLlmConfig()">Save</button>
+                  <button class="btn-secondary" onclick="saveHubLlmConfig()" id="hubLlmSaveBtn">Save</button>
                   <button class="btn-primary" onclick="testHubLlm()" id="hubLlmTestBtn">Test</button>
                   <span id="hubLlmStatusBadge" class="badge info" style="font-size:12px">Unknown</span>
                 </div>
                 <div id="hubLlmTestResult" class="hint hidden" style="margin-top:14px"></div>
                 <div class="hint" style="margin-top:14px">
-                  <div style="font-weight:700;margin-bottom:8px">Hub LLM Guide</div>
-                  <div style="font-size:13px;line-height:1.8">Supports DeepSeek V3, OpenAI compatible APIs.<br>User-Agent: OpenClaw/1.0<br>Used for intent classification and smart routing.<br>Fallback to keyword matching when disabled.<br>Smart route single-device LLM routes to local LLM when only one device is online.</div>
+                  <div style="font-weight:700;margin-bottom:8px" id="hubLlmGuideTitle">Hub LLM Guide</div>
+                  <div style="font-size:13px;line-height:1.8" id="hubLlmGuideContent">Supports DeepSeek V3, OpenAI compatible APIs.<br>User-Agent: OpenClaw/1.0<br>Used for intent classification and smart routing.<br>Fallback to keyword matching when disabled.<br>Smart route single-device LLM routes to local LLM when only one device is online.</div>
                 </div>
               </div>
             </div>
@@ -691,25 +691,25 @@
             <div id="im-pane-contentaudit" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:12px">
-                  <div><div class="item-title">Content Audit</div><div class="item-meta">Configure IM content audit</div></div>
-                  <button class="btn-ghost" onclick="loadContentAuditConfig()">Reload</button>
+                  <div><div class="item-title" id="contentAuditTitle">Content Audit</div><div class="item-meta" id="contentAuditDesc">Configure IM content audit</div></div>
+                  <button class="btn-ghost" onclick="loadContentAuditConfig()" id="contentAuditReloadBtn">Reload</button>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="caProgPath">Program Path</label><input id="caProgPath" placeholder="./audit_program"></div>
-                  <div><label for="caTimeoutSec">Timeout (seconds)</label><input id="caTimeoutSec" type="number" min="1" max="300" placeholder="30"></div>
+                  <div><label for="caProgPath" id="caProgPathLabel">Program Path</label><input id="caProgPath" placeholder="./audit_program"></div>
+                  <div><label for="caTimeoutSec" id="caTimeoutSecLabel">Timeout (seconds)</label><input id="caTimeoutSec" type="number" min="1" max="300" placeholder="30"></div>
                 </div>
                 <div class="grid2" style="margin-top:12px">
-                  <div><label for="caTimeoutPolicy">Timeout Policy</label><select id="caTimeoutPolicy"><option value="block">block</option><option value="pass">pass</option></select></div>
+                  <div><label for="caTimeoutPolicy" id="caTimeoutPolicyLabel">Timeout Policy</label><select id="caTimeoutPolicy"><option value="block" id="caTimeoutPolicyBlock">block</option><option value="pass" id="caTimeoutPolicyPass">pass</option></select></div>
                   <div></div>
                 </div>
                 <div style="margin-top:12px">
-                  <label for="caKeywords">Keywords</label>
+                  <label for="caKeywords" id="caKeywordsLabel">Keywords</label>
                   <textarea id="caKeywords" rows="8" style="width:100%;font-family:Consolas,monospace;font-size:13px;padding:10px;border:1px solid var(--line);border-radius:10px;resize:vertical" placeholder="one keyword per line"></textarea>
                 </div>
-                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveContentAuditConfig()">Save</button></div>
+                <div class="actions" style="margin-top:14px"><button class="btn-secondary" onclick="saveContentAuditConfig()" id="contentAuditSaveBtn">Save</button></div>
                 <div class="hint" style="margin-top:14px">
-                  <div style="font-weight:700;margin-bottom:8px">Content Audit Guide</div>
-                  <div style="font-size:13px;line-height:1.8">External audit program integration.<br>See hub/cmd/audit_program/ for reference.<br>Keyword-based filtering.<br>Stdin JSON input, stdout JSON output.</div>
+                  <div style="font-weight:700;margin-bottom:8px" id="contentAuditGuideTitle">Content Audit Guide</div>
+                  <div style="font-size:13px;line-height:1.8" id="contentAuditGuideContent">External audit program integration.<br>See hub/cmd/audit_program/ for reference.<br>Keyword-based filtering.<br>Stdin JSON input, stdout JSON output.</div>
                 </div>
               </div>
             </div>
@@ -828,14 +828,14 @@
             <div><div class="item-title" id="pendingLoginsTitle"></div><div class="item-meta" id="pendingLoginsDesc"></div></div>
             <button class="btn-ghost" id="pendingLoginsReloadBtn" onclick="loadPendingLogins()"></button>
           </div>
-          <div id="pendingLoginsList"><div class="hint">No pending email confirmations.</div></div>
+          <div id="pendingLoginsList"><div class="hint" data-i18n="loading">Loading...</div></div>
         </div>
         <div class="item">
           <div class="head" style="margin-bottom:12px">
             <div><div class="item-title" id="pwaListTitle"></div><div class="item-meta" id="pwaListDesc"></div></div>
             <button class="btn-ghost" id="pwaReloadBtn" onclick="loadPwaEnrollments()"></button>
           </div>
-          <div id="pwaEnrollmentList"><div class="hint">No pending enrollment requests.</div></div>
+          <div id="pwaEnrollmentList"><div class="hint" data-i18n="loading">Loading...</div></div>
         </div>
       </section>
 

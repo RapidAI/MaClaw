@@ -33,6 +33,10 @@ func setupTray(app *App, appOptions *options.App) {
 		stdruntime.LockOSThread()
 
 		systray.Run(func() {
+			// Wire quitSystray so FloatingAssistantManager.QuitApp can
+			// terminate the systray event loop (same as the tray quit handler).
+			quitSystray = systray.Quit
+
 			systray.SetIcon(icon)
 			systray.SetTitle(brand.Current().DisplayName)
 			systray.SetTooltip(brand.Current().TrayTooltip)

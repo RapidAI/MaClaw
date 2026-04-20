@@ -128,10 +128,10 @@
     _s('secDefaultGroupTitle', 'textContent', text('\u9ed8\u8ba4\u7ec4', 'Default Group'));
     _s('secDefaultGroupSetBtn', 'textContent', text('\u8bbe\u7f6e', 'Set'));
     _s('secGroupTreeTitle', 'textContent', text('\u7ec4\u7ec7\u6811', 'Group Tree'));
-    _s('secCtxCreate', 'textContent', text('\u521b\u5efa\u5b50\u90e8\u95e8', 'Create'));
-    _s('secCtxRename', 'textContent', text('\u91cd\u547d\u540d', 'Rename'));
+    _s('secCtxCreate', 'textContent', text('\u521b\u5efa\u5b50\u90e8\u95e8', 'Create Sub-department'));
+    _s('secCtxRename', 'textContent', text('\u91cd\u547d\u540d\u90e8\u95e8', 'Rename Department'));
     _s('secCtxAssign', 'textContent', text('\u79fb\u5165\u7528\u6237', 'Move Users Here'));
-    _s('secCtxDelete', 'textContent', text('\u5220\u9664', 'Delete'));
+    _s('secCtxDelete', 'textContent', text('\u5220\u9664\u90e8\u95e8', 'Delete Department'));
     _s('secPolicySaveBtn', 'textContent', text('\u4fdd\u5b58', 'Save'));
     _s('secMembersTitle', 'textContent', text('\u6210\u5458', 'Members'));
     _s('secMembersReloadBtn', 'textContent', text('\u5237\u65b0', 'Reload'));
@@ -488,7 +488,7 @@
     if (!sec.selectedGroupId) return;
     var container = document.getElementById('secMembersList');
     if (!container) return;
-    container.innerHTML = hint(text('\\u6b63\\u5728\\u52a0\\u8f7d\\u6210\\u5458...', 'Loading members...'));
+    container.innerHTML = hint(text('\u6b63\u5728\u52a0\u8f7d\u6210\u5458...', 'Loading members...'));
     try {
       var data = await api('/api/admin/security/groups/' + encodeURIComponent(sec.selectedGroupId) + '/members');
       replaceGroupChildren(sec.groupTree, sec.selectedGroupId, data.children || []);
@@ -667,7 +667,7 @@
       sec.contextGroupName = groupName;
       sec.selectedAssignEmail = '';
       global._secAssignGroupId = groupID;
-      _s('assignUsersModalTitle', 'textContent', text('\u79fb\u5165\u7528\u6237\u5230: ', 'Move users to: ') + groupName);
+      _s('assignUsersModalTitle', 'textContent', text('\u79fb\u5165\u7528\u6237\u5230\u90e8\u95e8: ', 'Move users to department: ') + groupName);
       _s('assignUsersSearch', 'value', '');
       _s('assignUsersCount', 'textContent', text('\u6b63\u5728\u52a0\u8f7d...', 'Loading...'));
       document.getElementById('assignUsersTree').innerHTML = hint(text('\u6b63\u5728\u52a0\u8f7d\u7528\u6237\u5217\u8868...', 'Loading users...'));

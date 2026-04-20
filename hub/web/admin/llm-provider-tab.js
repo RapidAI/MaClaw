@@ -4,15 +4,18 @@
  */
 const LLM_PROVIDER_I18N = {
   en: {
-    navLabel: 'LLM Providers', navDesc: 'Multi-provider routing and API', tabTitle: 'LLM Providers', tabSubtitle: 'Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.', reload: 'Reload', enabled: 'Enable unified LLM service', smartRoute: 'Smart route single-device LLM', defaultProvider: 'Default provider', exposeTitle: 'Unified OpenAI v1 Endpoint', exposeDesc: 'Select provider by `model`, `X-LLM-Provider`, or `?provider=`.', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: 'Available Models', authLabel: 'Authentication', hints: 'Hints', editorTitle: 'Provider Editor', editorDesc: 'Create or update provider credentials and model mapping.', listTitle: 'Configured Providers', listDesc: 'Token usage accumulates from calls sent through the unified OpenAI v1 endpoint.', providerId: 'Provider ID', providerName: 'Display Name', apiUrl: 'API Base URL', apiKey: 'API Key', model: 'Upstream Model', protocol: 'Protocol', wireApi: 'Wire API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / Agent Type', agentTypeHint: 'Examples: openclaw, claude-code/2.0.0, cline', maxConcurrency: 'Allowed Concurrency', concurrencyUnlimited: 'Unlimited', inFlight: 'In Flight', queueWaiters: 'Queued', add: 'New Provider', remove: 'Remove', save: 'Save', test: 'Test Connection', noSelection: 'No provider selected', selected: 'Selected', defaultBadge: 'Default', hasKey: 'API key saved', noKey: 'No API key', usageInput: 'Input', usageOutput: 'Output', usageTotal: 'Total', saveDone: 'LLM provider registry saved.', saveDoneEmpty: 'Global LLM settings saved. No provider is configured yet.', edit: 'Edit', providerDraftMissing: 'Enter provider ID and display name before saving.', providerDraftSaved: 'Provider draft prepared.', saveFailed: 'Save LLM providers failed: {error}', loadFailed: 'Load LLM providers failed: {error}', addDone: 'Provider draft added.', removeDone: 'Provider removed.', removeConfirm: 'Remove provider {id}?', providerRequired: 'Add a provider first.', duplicateId: 'Provider ID already exists: {id}', apiKeyKeep: 'Configured (leave empty to keep)', apiKeyEnter: 'Enter API key', testRunning: 'Testing...', testOk: 'Connection ok ({ms}ms): {reply}', testFail: 'Connection failed: {error}', emptyList: 'No providers configured yet.', hintEmpty: 'Use model=<provider id> to select a provider on the unified endpoint.', authEmpty: 'Use Authorization: Bearer <viewer access token> from hub email sign-in.', modelsEmpty: '-'
+    navLabel: 'LLM Providers', navDesc: 'Multi-provider routing and API', tabTitle: 'LLM Providers', tabSubtitle: 'Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.', reload: 'Reload', enabled: 'Enable unified LLM service', smartRoute: 'Smart route single-device LLM', defaultProvider: 'Default provider', exposeTitle: 'Unified OpenAI v1 Endpoint', exposeDesc: 'Select provider by `model`, `X-LLM-Provider`, or `?provider=`.', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: 'Available Models', authLabel: 'Authentication', hints: 'Hints', editorTitle: 'Provider Editor', editorDesc: 'Create or update provider credentials and model mapping.', listTitle: 'Configured Providers', listDesc: 'Token usage accumulates from calls sent through the unified OpenAI v1 endpoint.', providerId: 'Provider ID', providerName: 'Display Name', apiUrl: 'API Base URL', apiKey: 'API Key', model: 'Upstream Model', protocol: 'Protocol', wireApi: 'Wire API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / Agent Type', agentTypeHint: 'Examples: openclaw, claude-code/2.0.0, cline', maxConcurrency: 'Allowed Concurrency', concurrencyUnlimited: 'Unlimited', inFlight: 'In Flight', queueWaiters: 'Queued', add: 'New Provider', remove: 'Remove', save: 'Save', test: 'Test Connection', cancel: 'Cancel', createTitle: 'New Provider', editTitle: 'Edit Provider', createDone: 'Provider created.', updateDone: 'Provider updated.', noSelection: 'No provider selected', selected: 'Selected', defaultBadge: 'Default', hasKey: 'API key saved', noKey: 'No API key', usageInput: 'Input', usageOutput: 'Output', usageTotal: 'Total', saveDone: 'LLM provider registry saved.', saveDoneEmpty: 'Global LLM settings saved. No provider is configured yet.', edit: 'Edit', providerDraftMissing: 'Enter provider ID and display name before saving.', providerDraftSaved: 'Provider draft prepared.', saveFailed: 'Save LLM providers failed: {error}', loadFailed: 'Load LLM providers failed: {error}', addDone: 'Provider draft added.', removeDone: 'Provider removed.', removeConfirm: 'Remove provider {id}?', providerRequired: 'Add a provider first.', duplicateId: 'Provider ID already exists: {id}', apiKeyKeep: 'Configured (leave empty to keep)', apiKeyEnter: 'Enter API key', testRunning: 'Testing...', testOk: 'Connection ok ({ms}ms): {reply}', testFail: 'Connection failed: {error}', emptyList: 'No providers configured yet.', hintEmpty: 'Use model=<provider id> to select a provider on the unified endpoint.', authEmpty: 'Use Authorization: Bearer <viewer access token> from hub email sign-in.', modelsEmpty: '-'
   },
   zh: {
-    navLabel: '\u004c\u004c\u004d\u670d\u52a1\u5546', navDesc: '\u591a\u670d\u52a1\u5546\u8def\u7531\u4e0e API \u66b4\u9732', tabTitle: '\u004c\u004c\u004d\u670d\u52a1\u5546', tabSubtitle: '\u914d\u7f6e\u4e0a\u6e38\u5382\u5546\u3001token \u7528\u91cf\u3001\u8fde\u63a5\u6d4b\u8bd5\u4e0e\u7edf\u4e00 OpenAI v1 \u63a5\u53e3\u3002', reload: '\u91cd\u65b0\u52a0\u8f7d', enabled: '\u542f\u7528\u7edf\u4e00 LLM \u670d\u52a1', smartRoute: '\u5355\u8bbe\u5907\u667a\u80fd\u8def\u7531 LLM', defaultProvider: '\u9ed8\u8ba4\u670d\u52a1\u5546', exposeTitle: '\u7edf\u4e00 OpenAI v1 \u5bf9\u5916\u63a5\u53e3', exposeDesc: '\u53ef\u901a\u8fc7 `model`\u3001`X-LLM-Provider` \u6216 `?provider=` \u9009\u62e9\u670d\u52a1\u5546\u3002', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: '\u53ef\u7528\u6a21\u578b', authLabel: '\u9274\u6743\u65b9\u5f0f', hints: '\u63d0\u793a', editorTitle: '\u670d\u52a1\u5546\u7f16\u8f91\u5668', editorDesc: '\u521b\u5efa\u6216\u66f4\u65b0\u670d\u52a1\u5546\u914d\u7f6e\u3001\u5bc6\u94a5\u548c\u6a21\u578b\u6620\u5c04\u3002', listTitle: '\u5df2\u914d\u7f6e\u670d\u52a1\u5546', listDesc: 'token \u7528\u91cf\u4ece\u7edf\u4e00 OpenAI v1 \u7aef\u70b9\u7684\u8bf7\u6c42\u4e2d\u7d2f\u79ef\u7edf\u8ba1\u3002', providerId: '\u670d\u52a1\u5546 ID', providerName: '\u663e\u793a\u540d\u79f0', apiUrl: 'API \u57fa\u5730\u5740', apiKey: 'API Key', model: '\u4e0a\u6e38\u6a21\u578b', protocol: '\u534f\u8bae', wireApi: '\u4f20\u8f93 API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / \u5ba2\u6237\u7aef\u7c7b\u578b', agentTypeHint: '\u793a\u4f8b\uff1aopenclaw\u3001claude-code/2.0.0\u3001cline', maxConcurrency: '\u5141\u8bb8\u5e76\u53d1\u6570', concurrencyUnlimited: '\u4e0d\u9650\u5236', inFlight: '\u6267\u884c\u4e2d', queueWaiters: '\u6392\u961f\u4e2d', add: '\u65b0\u5efa\u670d\u52a1\u5546', remove: '\u5220\u9664', save: '\u4fdd\u5b58', test: '\u6d4b\u8bd5\u8fde\u63a5', noSelection: '\u672a\u9009\u62e9\u670d\u52a1\u5546', selected: '\u5df2\u9009\u4e2d', defaultBadge: '\u9ed8\u8ba4', hasKey: '\u5df2\u4fdd\u5b58 API Key', noKey: '\u672a\u914d\u7f6e API Key', usageInput: '\u8f93\u5165', usageOutput: '\u8f93\u51fa', usageTotal: '\u603b\u8ba1', saveDone: 'LLM \u670d\u52a1\u5546\u914d\u7f6e\u5df2\u4fdd\u5b58\u3002', saveDoneEmpty: '\u5df2\u4fdd\u5b58 LLM \u5168\u5c40\u8bbe\u7f6e\uff0c\u4f46\u5f53\u524d\u8fd8\u6ca1\u6709\u914d\u7f6e\u670d\u52a1\u5546\u3002', edit: '\u4fee\u6539', providerDraftMissing: '\u4fdd\u5b58\u524d\u8bf7\u5148\u586b\u5199\u670d\u52a1\u5546 ID \u548c\u663e\u793a\u540d\u79f0\u3002', providerDraftSaved: '\u5f53\u524d\u670d\u52a1\u5546\u8349\u7a3f\u5df2\u5199\u5165\u3002', saveFailed: '\u4fdd\u5b58 LLM \u670d\u52a1\u5546\u5931\u8d25: {error}', loadFailed: '\u52a0\u8f7d LLM \u670d\u52a1\u5546\u5931\u8d25: {error}', addDone: '\u5df2\u65b0\u589e\u670d\u52a1\u5546\u8349\u7a3f\u3002', removeDone: '\u670d\u52a1\u5546\u5df2\u5220\u9664\u3002', removeConfirm: '\u786e\u8ba4\u5220\u9664\u670d\u52a1\u5546 {id} \u5417\uff1f', providerRequired: '\u8bf7\u5148\u65b0\u589e\u670d\u52a1\u5546\u3002', duplicateId: '\u670d\u52a1\u5546 ID \u5df2\u5b58\u5728: {id}', apiKeyKeep: '\u5df2\u914d\u7f6e\uff08\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8\uff09', apiKeyEnter: '\u8bf7\u8f93\u5165 API Key', testRunning: '\u6d4b\u8bd5\u4e2d...', testOk: '\u8fde\u63a5\u6210\u529f ({ms}ms): {reply}', testFail: '\u8fde\u63a5\u5931\u8d25: {error}', emptyList: '\u6682\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002', hintEmpty: '\u53ef\u4f7f\u7528 model=<provider id> \u5728\u7edf\u4e00\u7aef\u70b9\u9009\u62e9\u670d\u52a1\u5546\u3002', authEmpty: '\u4f7f\u7528 HUB \u90ae\u7bb1\u767b\u5f55\u540e\u8fd4\u56de\u7684 viewer access token\uff0c\u901a\u8fc7 Authorization: Bearer <token> \u8c03\u7528\u3002', modelsEmpty: '-'
+    navLabel: '\u004c\u004c\u004d\u670d\u52a1\u5546', navDesc: '\u591a\u670d\u52a1\u5546\u8def\u7531\u4e0e API \u66b4\u9732', tabTitle: '\u004c\u004c\u004d\u670d\u52a1\u5546', tabSubtitle: '\u914d\u7f6e\u4e0a\u6e38\u5382\u5546\u3001token \u7528\u91cf\u3001\u8fde\u63a5\u6d4b\u8bd5\u4e0e\u7edf\u4e00 OpenAI v1 \u63a5\u53e3\u3002', reload: '\u91cd\u65b0\u52a0\u8f7d', enabled: '\u542f\u7528\u7edf\u4e00 LLM \u670d\u52a1', smartRoute: '\u5355\u8bbe\u5907\u667a\u80fd\u8def\u7531 LLM', defaultProvider: '\u9ed8\u8ba4\u670d\u52a1\u5546', exposeTitle: '\u7edf\u4e00 OpenAI v1 \u5bf9\u5916\u63a5\u53e3', exposeDesc: '\u53ef\u901a\u8fc7 `model`\u3001`X-LLM-Provider` \u6216 `?provider=` \u9009\u62e9\u670d\u52a1\u5546\u3002', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: '\u53ef\u7528\u6a21\u578b', authLabel: '\u9274\u6743\u65b9\u5f0f', hints: '\u63d0\u793a', editorTitle: '\u670d\u52a1\u5546\u7f16\u8f91\u5668', editorDesc: '\u521b\u5efa\u6216\u66f4\u65b0\u670d\u52a1\u5546\u914d\u7f6e\u3001\u5bc6\u94a5\u548c\u6a21\u578b\u6620\u5c04\u3002', listTitle: '\u5df2\u914d\u7f6e\u670d\u52a1\u5546', listDesc: 'token \u7528\u91cf\u4ece\u7edf\u4e00 OpenAI v1 \u7aef\u70b9\u7684\u8bf7\u6c42\u4e2d\u7d2f\u79ef\u7edf\u8ba1\u3002', providerId: '\u670d\u52a1\u5546 ID', providerName: '\u663e\u793a\u540d\u79f0', apiUrl: 'API \u57fa\u5730\u5740', apiKey: 'API Key', model: '\u4e0a\u6e38\u6a21\u578b', protocol: '\u534f\u8bae', wireApi: '\u4f20\u8f93 API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / \u5ba2\u6237\u7aef\u7c7b\u578b', agentTypeHint: '\u793a\u4f8b\uff1aopenclaw\u3001claude-code/2.0.0\u3001cline', maxConcurrency: '\u5141\u8bb8\u5e76\u53d1\u6570', concurrencyUnlimited: '\u4e0d\u9650\u5236', inFlight: '\u6267\u884c\u4e2d', queueWaiters: '\u6392\u961f\u4e2d', add: '\u65b0\u5efa\u670d\u52a1\u5546', remove: '\u5220\u9664', save: '\u4fdd\u5b58', test: '\u6d4b\u8bd5\u8fde\u63a5', cancel: '\u53d6\u6d88', createTitle: '\u65b0\u5efa\u670d\u52a1\u5546', editTitle: '\u7f16\u8f91\u670d\u52a1\u5546', createDone: '\u670d\u52a1\u5546\u5df2\u65b0\u5efa\u3002', updateDone: '\u670d\u52a1\u5546\u5df2\u66f4\u65b0\u3002', noSelection: '\u672a\u9009\u62e9\u670d\u52a1\u5546', selected: '\u5df2\u9009\u4e2d', defaultBadge: '\u9ed8\u8ba4', hasKey: '\u5df2\u4fdd\u5b58 API Key', noKey: '\u672a\u914d\u7f6e API Key', usageInput: '\u8f93\u5165', usageOutput: '\u8f93\u51fa', usageTotal: '\u603b\u8ba1', saveDone: 'LLM \u670d\u52a1\u5546\u914d\u7f6e\u5df2\u4fdd\u5b58\u3002', saveDoneEmpty: '\u5df2\u4fdd\u5b58 LLM \u5168\u5c40\u8bbe\u7f6e\uff0c\u4f46\u5f53\u524d\u8fd8\u6ca1\u6709\u914d\u7f6e\u670d\u52a1\u5546\u3002', edit: '\u4fee\u6539', providerDraftMissing: '\u4fdd\u5b58\u524d\u8bf7\u5148\u586b\u5199\u670d\u52a1\u5546 ID \u548c\u663e\u793a\u540d\u79f0\u3002', providerDraftSaved: '\u5f53\u524d\u670d\u52a1\u5546\u8349\u7a3f\u5df2\u5199\u5165\u3002', saveFailed: '\u4fdd\u5b58 LLM \u670d\u52a1\u5546\u5931\u8d25: {error}', loadFailed: '\u52a0\u8f7d LLM \u670d\u52a1\u5546\u5931\u8d25: {error}', addDone: '\u5df2\u65b0\u589e\u670d\u52a1\u5546\u8349\u7a3f\u3002', removeDone: '\u670d\u52a1\u5546\u5df2\u5220\u9664\u3002', removeConfirm: '\u786e\u8ba4\u5220\u9664\u670d\u52a1\u5546 {id} \u5417\uff1f', providerRequired: '\u8bf7\u5148\u65b0\u589e\u670d\u52a1\u5546\u3002', duplicateId: '\u670d\u52a1\u5546 ID \u5df2\u5b58\u5728: {id}', apiKeyKeep: '\u5df2\u914d\u7f6e\uff08\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8\uff09', apiKeyEnter: '\u8bf7\u8f93\u5165 API Key', testRunning: '\u6d4b\u8bd5\u4e2d...', testOk: '\u8fde\u63a5\u6210\u529f ({ms}ms): {reply}', testFail: '\u8fde\u63a5\u5931\u8d25: {error}', emptyList: '\u6682\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002', hintEmpty: '\u53ef\u4f7f\u7528 model=<provider id> \u5728\u7edf\u4e00\u7aef\u70b9\u9009\u62e9\u670d\u52a1\u5546\u3002', authEmpty: '\u4f7f\u7528 HUB \u90ae\u7bb1\u767b\u5f55\u540e\u8fd4\u56de\u7684 viewer access token\uff0c\u901a\u8fc7 Authorization: Bearer <token> \u8c03\u7528\u3002', modelsEmpty: '-'
   }
 };
 const lp = (key, vars = {}) => ((LLM_PROVIDER_I18N[currentLang] || LLM_PROVIDER_I18N.en)[key] || LLM_PROVIDER_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 let llmProviderRegistryCache = null;
 let llmProviderSelectedId = '';
+let llmProviderDialogMode = 'create';
+let llmProviderIdManuallyEdited = false;
+let llmProviderLastSuggestedId = '';
 function lpUsage(usage) { return { input_tokens: Number(usage && usage.input_tokens || 0), output_tokens: Number(usage && usage.output_tokens || 0), total_tokens: Number(usage && usage.total_tokens || 0) }; }
 function lpClone(provider) { return { id: provider && provider.id || '', name: provider && provider.name || '', api_url: provider && provider.api_url || '', api_key: provider && provider.api_key || '', has_api_key: !!(provider && provider.has_api_key), model: provider && provider.model || '', protocol: provider && provider.protocol || 'openai', wire_api: provider && provider.wire_api || 'chat', agent_type: provider && provider.agent_type || '', max_concurrency: Number(provider && provider.max_concurrency || 0), in_flight: Number(provider && provider.in_flight || 0), queue_waiters: Number(provider && provider.queue_waiters || 0), usage: lpUsage(provider && provider.usage) }; }
 function lpById(id) { return (llmProviderRegistryCache && llmProviderRegistryCache.providers || []).find(function(p) { return p.id === id; }) || null; }
@@ -20,11 +23,161 @@ function lpNormalizeId(value) { return String(value || '').trim().toLowerCase().
 function lpNextId() { const used = new Set((llmProviderRegistryCache && llmProviderRegistryCache.providers || []).map(function(p) { return p.id; })); let i = 1; while (used.has('provider-' + i)) i++; return 'provider-' + i; }
 function lpEnsureSelection() { const providers = llmProviderRegistryCache && llmProviderRegistryCache.providers || []; if (!providers.length) { llmProviderSelectedId = ''; return; } if (!lpById(llmProviderSelectedId)) llmProviderSelectedId = llmProviderRegistryCache.current_provider_id || providers[0].id; if (!llmProviderRegistryCache.current_provider_id || !lpById(llmProviderRegistryCache.current_provider_id)) llmProviderRegistryCache.current_provider_id = llmProviderSelectedId; }
 function lpApiKeyPlaceholder(provider) { return provider && provider.has_api_key ? lp('apiKeyKeep') : lp('apiKeyEnter'); }
+function lpSuggestIdFromName(name) {
+  const normalized = lpNormalizeId(name || '');
+  return normalized || lpNextId();
+}
+function resetLLMProviderIdSuggestionState() {
+  llmProviderIdManuallyEdited = false;
+  llmProviderLastSuggestedId = '';
+}
+function syncLLMProviderIdSuggestion() {
+  if (llmProviderDialogMode !== 'create') return;
+  const idInput = document.getElementById('llmProviderId');
+  const nameInput = document.getElementById('llmProviderName');
+  if (!idInput || !nameInput) return;
+  const currentId = String(idInput.value || '').trim();
+  if (llmProviderIdManuallyEdited && currentId && currentId !== llmProviderLastSuggestedId) return;
+  const suggested = lpSuggestIdFromName(nameInput.value);
+  llmProviderLastSuggestedId = suggested;
+  idInput.value = suggested;
+}
+function initLLMProviderFormBindings() {
+  if (initLLMProviderFormBindings.done) return;
+  initLLMProviderFormBindings.done = true;
+  const idInput = document.getElementById('llmProviderId');
+  const nameInput = document.getElementById('llmProviderName');
+  if (nameInput) {
+    nameInput.addEventListener('input', function() {
+      syncLLMProviderIdSuggestion();
+    });
+  }
+  if (idInput) {
+    idInput.addEventListener('input', function() {
+      if (llmProviderDialogMode !== 'create') return;
+      const currentId = lpNormalizeId(idInput.value);
+      if (!currentId || currentId === llmProviderLastSuggestedId) {
+        llmProviderIdManuallyEdited = false;
+        if (currentId) llmProviderLastSuggestedId = currentId;
+        return;
+      }
+      llmProviderIdManuallyEdited = true;
+    });
+  }
+}
+initLLMProviderFormBindings.done = false;
+function validateLLMProvider(provider, opts) {
+  const requireKey = !!(opts && opts.requireKey);
+  if (!provider || !provider.id || !provider.name || !provider.api_url || !provider.model) return { ok: false, message: lp('providerDraftMissing') };
+  if (requireKey && !String(provider.api_key || '').trim()) return { ok: false, message: lp('apiKeyEnter') };
+  return { ok: true, message: '' };
+}
+function scrollLLMProviderCardIntoView(id) {
+  if (!id) return;
+  const card = document.querySelector('[data-provider-id="' + String(id).replace(/"/g, '\\"') + '"]');
+  if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
 function applyLLMProviderScopeUI() {
   var enabled = document.getElementById('llmProvidersEnabled');
   if (enabled && enabled.parentElement && enabled.parentElement.parentElement) enabled.parentElement.parentElement.style.display = 'none';
   var smart = document.getElementById('llmProvidersSmartRouteSingle');
   if (smart && smart.parentElement && smart.parentElement.parentElement) smart.parentElement.parentElement.style.display = 'none';
+}
+function ensureLLMProviderModalUI() {
+  if (document.getElementById('llmProviderModalOverlay')) return;
+  var tab = document.getElementById('tab-llmproviders');
+  var head = tab ? tab.querySelector('.head') : null;
+  var reloadBtn = document.getElementById('llmProvidersReloadBtn');
+  if (head) {
+    var actions = head.querySelector('.actions');
+    if (!actions) {
+      actions = document.createElement('div');
+      actions.className = 'actions';
+      if (reloadBtn && reloadBtn.parentElement === head) head.removeChild(reloadBtn);
+      head.appendChild(actions);
+    }
+    if (!document.getElementById('llmProviderCreateBtn')) {
+      var createBtn = document.createElement('button');
+      createBtn.id = 'llmProviderCreateBtn';
+      createBtn.className = 'btn-primary';
+      createBtn.onclick = function() { addLLMProvider(); };
+      actions.insertBefore(createBtn, actions.firstChild || null);
+    }
+    if (reloadBtn && reloadBtn.parentElement !== actions) actions.appendChild(reloadBtn);
+  }
+  var editorTitle = document.getElementById('llmProviderEditorTitle');
+  var editorCard = editorTitle && typeof editorTitle.closest === 'function' ? editorTitle.closest('.item') : null;
+  if (!editorCard) return;
+  editorCard.id = 'llmProviderEditorCard';
+  editorCard.style.marginTop = '0';
+  var overlay = document.createElement('div');
+  overlay.id = 'llmProviderModalOverlay';
+  overlay.className = 'session-modal-overlay';
+  overlay.onclick = function(event) { if (event.target === overlay) closeLLMProviderDialog(); };
+  var modal = document.createElement('div');
+  modal.className = 'session-modal';
+  modal.style.width = 'min(760px,calc(100% - 48px))';
+  var closeBtn = document.createElement('button');
+  closeBtn.id = 'llmProviderModalCloseBtn';
+  closeBtn.className = 'close-btn';
+  closeBtn.innerHTML = '&times;';
+  closeBtn.onclick = function() { closeLLMProviderDialog(); };
+  modal.appendChild(closeBtn);
+  if (editorCard.parentElement) editorCard.parentElement.removeChild(editorCard);
+  modal.appendChild(editorCard);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  var removeBtn = document.getElementById('llmProviderRemoveBtn');
+  if (removeBtn) removeBtn.style.display = 'none';
+  var legacyAddBtn = document.getElementById('llmProviderAddBtn');
+  if (legacyAddBtn) legacyAddBtn.style.display = 'none';
+  var testResult = document.getElementById('llmProviderTestResult');
+  if (testResult) testResult.classList.add('hidden');
+  if (!document.getElementById('llmProviderCancelBtn')) {
+    var actionsRow = document.getElementById('llmProviderSaveBtn') && document.getElementById('llmProviderSaveBtn').parentElement;
+    if (actionsRow) {
+      var cancelBtn = document.createElement('button');
+      cancelBtn.id = 'llmProviderCancelBtn';
+      cancelBtn.className = 'btn-ghost';
+      cancelBtn.onclick = function() { closeLLMProviderDialog(); };
+      actionsRow.insertBefore(cancelBtn, actionsRow.firstChild || null);
+    }
+  }
+  initLLMProviderFormBindings();
+}
+function updateLLMProviderEditorCopy(mode) {
+  _s('llmProviderEditorTitle', 'textContent', mode === 'edit' ? lp('editTitle') : lp('createTitle'));
+  _s('llmProviderEditorDesc', 'textContent', lp('editorDesc'));
+}
+function applyLLMProviderEditorMode() {
+  var idInput = document.getElementById('llmProviderId');
+  if (idInput) idInput.readOnly = llmProviderDialogMode === 'edit';
+}
+function openLLMProviderDialog(mode) {
+  ensureLLMProviderModalUI();
+  llmProviderDialogMode = mode === 'edit' ? 'edit' : 'create';
+  if (llmProviderDialogMode === 'edit') {
+    llmProviderIdManuallyEdited = true;
+    llmProviderLastSuggestedId = document.getElementById('llmProviderId') && document.getElementById('llmProviderId').value || '';
+  }
+  updateLLMProviderEditorCopy(llmProviderDialogMode);
+  applyLLMProviderEditorMode();
+  var overlay = document.getElementById('llmProviderModalOverlay');
+  if (overlay) overlay.classList.add('show');
+  var testResult = document.getElementById('llmProviderTestResult');
+  if (testResult) { testResult.classList.add('hidden'); testResult.textContent = ''; }
+  var first = document.getElementById('llmProviderId');
+  if (first && typeof first.focus === 'function') first.focus();
+}
+function llmProviderDialogOpen() {
+  var overlay = document.getElementById('llmProviderModalOverlay');
+  return !!(overlay && overlay.classList.contains('show'));
+}
+function closeLLMProviderDialog() {
+  var overlay = document.getElementById('llmProviderModalOverlay');
+  if (overlay) overlay.classList.remove('show');
+  var testResult = document.getElementById('llmProviderTestResult');
+  if (testResult) { testResult.classList.add('hidden'); testResult.textContent = ''; }
 }
 function applyLLMProvidersI18n() {
   _s('navLLMProviders', 'textContent', lp('navLabel'));
@@ -61,10 +214,17 @@ function applyLLMProvidersI18n() {
   _s('llmProviderWireApiResponsesWS', 'textContent', lp('wireResponsesWS'));
   _s('llmProviderMaxConcurrencyLabel', 'textContent', lp('maxConcurrency'));
   _s('llmProviderAddBtn', 'textContent', lp('add'));
+  _s('llmProviderCreateBtn', 'textContent', lp('add'));
   _s('llmProviderSaveBtn', 'textContent', lp('save'));
   _s('llmProviderTestBtn', 'textContent', lp('test'));
+  _s('llmProviderCancelBtn', 'textContent', lp('cancel'));
+  _s('llmProviderModalCloseBtn', 'ariaLabel', tr('closeDialog'));
+  updateLLMProviderEditorCopy(llmProviderDialogMode === 'edit' ? 'edit' : 'create');
+  applyLLMProviderEditorMode();
   const removeBtn = document.getElementById('llmProviderRemoveBtn');
   if (removeBtn) removeBtn.style.display = 'none';
+  const legacyAddBtn = document.getElementById('llmProviderAddBtn');
+  if (legacyAddBtn) legacyAddBtn.style.display = 'none';
   applyLLMProviderScopeUI();
   renderLLMProviders();
 }
@@ -114,10 +274,11 @@ function renderLLMProviders() {
     const concurrency = Number(p.max_concurrency || 0);
     const concurrencyText = concurrency > 0 ? String(concurrency) : lp('concurrencyUnlimited');
     const escapedID = String(p.id).replace(/'/g, "\\'");
-    return '<div class="item" style="margin-bottom:12px;cursor:pointer;border:' + (isSelected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + '" onclick="selectLLMProvider(\'' + escapedID + '\')"><div class="item-head"><div><div class="item-title">' + escapeHtml(p.name || p.id) + '</div><div class="item-meta mono">' + escapeHtml(p.id) + ' | ' + escapeHtml(p.protocol || 'openai') + ' | ' + escapeHtml(p.wire_api || 'chat') + ' | ' + escapeHtml(p.model || '-') + '</div><div class="item-meta mono">' + escapeHtml(p.api_url || '-') + '</div><div class="item-meta mono">UA: ' + escapeHtml(p.agent_type || 'openclaw') + '</div><div class="item-meta">' + escapeHtml(lp('maxConcurrency')) + ': ' + escapeHtml(concurrencyText) + ' | ' + escapeHtml(lp('inFlight')) + ': ' + String(Number(p.in_flight || 0)) + ' | ' + escapeHtml(lp('queueWaiters')) + ': ' + String(Number(p.queue_waiters || 0)) + '</div></div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' + defaultBadge + keyBadge + '<button class="btn-ghost" style="height:28px;font-size:12px;padding:0 10px" onclick="event.stopPropagation(); editLLMProvider(\'' + escapedID + '\')">' + escapeHtml(lp('edit')) + '</button><button class="btn-danger" style="height:28px;font-size:12px;padding:0 10px" onclick="event.stopPropagation(); removeLLMProviderById(\'' + escapedID + '\')">' + escapeHtml(lp('remove')) + '</button></div></div><div class="grid3" style="margin-top:12px"><div><label>' + lp('usageInput') + '</label><div class="mono">' + String(usage.input_tokens || 0) + '</div></div><div><label>' + lp('usageOutput') + '</label><div class="mono">' + String(usage.output_tokens || 0) + '</div></div><div><label>' + lp('usageTotal') + '</label><div class="mono">' + String(usage.total_tokens || 0) + '</div></div></div></div>';
+    return '<div class="item" data-provider-id="' + escapeHtml(p.id) + '" style="margin-bottom:12px;cursor:pointer;border:' + (isSelected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + '" onclick="selectLLMProvider(\'' + escapedID + '\')"><div class="item-head"><div><div class="item-title">' + escapeHtml(p.name || p.id) + '</div><div class="item-meta mono">' + escapeHtml(p.id) + ' | ' + escapeHtml(p.protocol || 'openai') + ' | ' + escapeHtml(p.wire_api || 'chat') + ' | ' + escapeHtml(p.model || '-') + '</div><div class="item-meta mono">' + escapeHtml(p.api_url || '-') + '</div><div class="item-meta mono">UA: ' + escapeHtml(p.agent_type || 'openclaw') + '</div><div class="item-meta">' + escapeHtml(lp('maxConcurrency')) + ': ' + escapeHtml(concurrencyText) + ' | ' + escapeHtml(lp('inFlight')) + ': ' + String(Number(p.in_flight || 0)) + ' | ' + escapeHtml(lp('queueWaiters')) + ': ' + String(Number(p.queue_waiters || 0)) + '</div></div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' + defaultBadge + keyBadge + '<button class="btn-ghost" style="height:28px;font-size:12px;padding:0 10px" onclick="event.stopPropagation(); editLLMProvider(\'' + escapedID + '\')">' + escapeHtml(lp('edit')) + '</button><button class="btn-danger" style="height:28px;font-size:12px;padding:0 10px" onclick="event.stopPropagation(); removeLLMProviderById(\'' + escapedID + '\')">' + escapeHtml(lp('remove')) + '</button></div></div><div class="grid3" style="margin-top:12px"><div><label>' + lp('usageInput') + '</label><div class="mono">' + String(usage.input_tokens || 0) + '</div></div><div><label>' + lp('usageOutput') + '</label><div class="mono">' + String(usage.output_tokens || 0) + '</div></div><div><label>' + lp('usageTotal') + '</label><div class="mono">' + String(usage.total_tokens || 0) + '</div></div></div></div>';
   }).join('');
 }
 function clearLLMProviderForm() {
+  resetLLMProviderIdSuggestionState();
   _s('llmProviderId', 'value', '');
   _s('llmProviderName', 'value', '');
   _s('llmProviderApiUrl', 'value', '');
@@ -207,32 +368,38 @@ async function loadLLMProviders() {
     showToast(msg, 'error');
   }
 }
-function selectLLMProvider(id) { if (!syncSelectedLLMProviderFromForm()) return; llmProviderSelectedId = id; renderLLMProviders(); }
+function selectLLMProvider(id) { if (llmProviderDialogOpen() && !syncSelectedLLMProviderFromForm()) return; llmProviderSelectedId = id; renderLLMProviders(); }
 function editLLMProvider(id) {
-  selectLLMProvider(id);
-  const first = document.getElementById('llmProviderId');
-  if (first && typeof first.focus === 'function') first.focus();
+  llmProviderSelectedId = id;
+  llmProviderDialogMode = 'edit';
+  renderLLMProviders();
+  llmProviderIdManuallyEdited = true;
+  llmProviderLastSuggestedId = id || '';
+  openLLMProviderDialog('edit');
 }
 function setCurrentLLMProvider(id) { if (!llmProviderRegistryCache) return; llmProviderRegistryCache.current_provider_id = id || ''; renderLLMProviders(); }
 function addLLMProvider() {
   if (!llmProviderRegistryCache) llmProviderRegistryCache = { enabled: false, current_provider_id: '', smart_route_single_device: false, providers: [], expose_api_base_url: '', expose_base_url: '', expose_models_url: '', available_models: [], auth_mode: '', auth_hint: '', hints: [] };
-  if (!syncSelectedLLMProviderFromForm()) return;
   llmProviderSelectedId = '';
-  renderLLMProviders();
+  llmProviderDialogMode = 'create';
   clearLLMProviderForm();
   const suggestedID = lpNextId();
   _s('llmProviderId', 'value', suggestedID);
   _s('llmProviderName', 'value', 'Provider ' + suggestedID.split('-').pop());
-  const first = document.getElementById('llmProviderId');
-  if (first && typeof first.focus === 'function') first.focus();
-  showToast(lp('addDone'), 'success');
+  llmProviderLastSuggestedId = suggestedID;
+  openLLMProviderDialog('create');
 }
 function removeLLMProviderById(id) {
   if (!llmProviderRegistryCache || !id) { showToast(lp('providerRequired'), 'info'); return; }
   if (!confirm(lp('removeConfirm', { id: id }))) return;
   llmProviderRegistryCache.providers = (llmProviderRegistryCache.providers || []).filter(function(p) { return p.id !== id; });
   if (llmProviderRegistryCache.current_provider_id === id) llmProviderRegistryCache.current_provider_id = llmProviderRegistryCache.providers[0] && llmProviderRegistryCache.providers[0].id || '';
-  if (llmProviderSelectedId === id) llmProviderSelectedId = llmProviderRegistryCache.providers[0] && llmProviderRegistryCache.providers[0].id || '';
+  if (llmProviderSelectedId === id) {
+    llmProviderSelectedId = llmProviderRegistryCache.providers[0] && llmProviderRegistryCache.providers[0].id || '';
+    llmProviderDialogMode = 'create';
+    closeLLMProviderDialog();
+    clearLLMProviderForm();
+  }
   renderLLMProviders();
   showToast(lp('removeDone'), 'success');
 }
@@ -242,7 +409,18 @@ function removeSelectedLLMProvider() {
 }
 
 async function saveLLMProviders() {
+  const wasEditing = llmProviderDialogMode === 'edit' && !!llmProviderSelectedId;
+  const createMode = llmProviderDialogMode === 'create';
   if (!llmProviderRegistryCache) llmProviderRegistryCache = { enabled: false, current_provider_id: '', smart_route_single_device: false, providers: [], expose_api_base_url: '', expose_base_url: '', expose_models_url: '', available_models: [], auth_mode: '', auth_hint: '', hints: [] };
+  const draft = readSelectedLLMProviderForm();
+  if (formHasLLMProviderDraft()) {
+    const validation = validateLLMProvider(draft, { requireKey: false });
+    if (!validation.ok) {
+      setOutput(validation.message);
+      showToast(validation.message, 'info');
+      return;
+    }
+  }
   if (llmProviderSelectedId) {
     if (!syncSelectedLLMProviderFromForm()) return;
   } else if (formHasLLMProviderDraft()) {
@@ -253,9 +431,12 @@ async function saveLLMProviders() {
     llmProviderRegistryCache = { enabled: !!data.enabled, current_provider_id: data.current_provider_id || '', smart_route_single_device: !!data.smart_route_single_device, providers: (data.providers || []).map(lpClone), expose_api_base_url: data.expose_api_base_url || '', expose_base_url: data.expose_base_url || '', expose_models_url: data.expose_models_url || '', available_models: data.available_models || [], auth_mode: data.auth_mode || '', auth_hint: data.auth_hint || '', hints: data.hints || [] };
     lpEnsureSelection();
     renderLLMProviders();
-    const saveMsg = (llmProviderRegistryCache.providers || []).length ? lp('saveDone') : lp('saveDoneEmpty');
+    if (llmProviderSelectedId) scrollLLMProviderCardIntoView(llmProviderSelectedId);
+    const saveMsg = (llmProviderRegistryCache.providers || []).length ? (wasEditing ? lp('updateDone') : lp('createDone')) : lp('saveDoneEmpty');
     setOutput(saveMsg);
     showToast(saveMsg, 'success');
+    closeLLMProviderDialog();
+    if (createMode) resetLLMProviderIdSuggestionState();
   } catch (err) {
     const msg = lp('saveFailed', { error: err.message });
     setOutput(msg);
@@ -263,9 +444,20 @@ async function saveLLMProviders() {
   }
 }
 async function testSelectedLLMProvider() {
-  if (!llmProviderRegistryCache || !llmProviderSelectedId) { showToast(lp('providerRequired'), 'info'); return; }
-  if (!syncSelectedLLMProviderFromForm()) return;
-  const provider = lpById(llmProviderSelectedId);
+  let provider = null;
+  if (llmProviderSelectedId) {
+    if (!syncSelectedLLMProviderFromForm()) return;
+    provider = lpById(llmProviderSelectedId);
+  } else if (formHasLLMProviderDraft()) {
+    provider = readSelectedLLMProviderForm();
+  }
+  if (!provider) { showToast(lp('providerRequired'), 'info'); return; }
+  const validation = validateLLMProvider(provider, { requireKey: !(provider.has_api_key || provider.api_key) });
+  if (!validation.ok) {
+    setOutput(validation.message);
+    showToast(validation.message, 'info');
+    return;
+  }
   const btn = document.getElementById('llmProviderTestBtn');
   const result = document.getElementById('llmProviderTestResult');
   if (btn) { btn.disabled = true; btn.textContent = lp('testRunning'); }
@@ -306,6 +498,8 @@ if (baseRefreshAll) {
     await loadLLMServiceAdmin();
   };
 }
+window.loadLlmProviders = loadLLMProviders;
+window.openLlmProviderTab = function() { if (typeof openTab === 'function') openTab('llmproviders'); };
 registerLLMProviderTab();
 applyLLMProvidersI18n();
 if (typeof token === 'function' && token() && localStorage.getItem(activeTabKey) === 'llmproviders') {
