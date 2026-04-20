@@ -14,11 +14,11 @@ This folder now uses a thin-shell structure.
 - admin-tabs.js: tab registry
 - admin-ui.js: shared UI helpers
 
-## Legacy mirror tree
+## Removed Mirror Tree
 
-- js/: legacy mirror/source-side snapshot only; it is not served by the live hub admin page.
+- The old `hub/web/admin/js/` mirror tree has been deleted.
 - The live runtime loads only top-level assets from `hub/web/admin/*.js`.
-- Do not assume edits under `hub/web/admin/js/` will affect the running admin UI.
+- If a file seems to exist only in notes or history under `hub/web/admin/js/`, treat it as obsolete.
 
 ## Domain modules
 
@@ -44,7 +44,7 @@ When adding or changing admin behavior:
 1. Prefer editing the owning module instead of admin.js.
 2. Keep admin.js as a compatibility shell only.
 3. Treat `hub/web/admin/*.js` as the runtime source of truth.
-4. Keep the legacy `hub/web/admin/js/` tree read-only unless you are intentionally maintaining that mirror.
+4. Do not recreate the removed `hub/web/admin/js/` mirror tree.
 5. Keep script load order in index.html aligned with module dependencies.
 6. Run syntax and ASCII checks after edits.
 7. Run `node hub/web/admin/validate-admin-modules.js` after structural changes.

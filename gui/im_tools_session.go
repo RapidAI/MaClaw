@@ -1018,7 +1018,6 @@ func (h *IMMessageHandler) toolControlSession(args map[string]interface{}) strin
 const screenshotCooldown = 30 * time.Second
 
 func hasSelectedLocalImagePath(userText string) bool {
-	const filePathPromptPrefix = "[用户选择的本地文件路径]"
 	lower := strings.ToLower(userText)
 	idx := strings.Index(lower, strings.ToLower(filePathPromptPrefix))
 	if idx < 0 {

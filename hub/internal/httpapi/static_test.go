@@ -122,6 +122,13 @@ func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
 	}
 }
 
+func TestAdminLegacyMirrorTreeRemoved(t *testing.T) {
+	legacyDir := filepath.Join("..", "..", "web", "admin", "js")
+	if _, err := os.Stat(legacyDir); !os.IsNotExist(err) {
+		t.Fatalf("legacy admin mirror directory should stay deleted: %v", err)
+	}
+}
+
 func TestAdminIndexScriptRefsExist(t *testing.T) {
 	indexPath := filepath.Join("..", "..", "web", "admin", "index.html")
 	body, err := os.ReadFile(indexPath)

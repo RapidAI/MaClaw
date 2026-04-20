@@ -825,7 +825,10 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 		slices.Sort(keys)
 		for _, key := range keys {
 			value := quoteSkillInputForShell(vars[key])
-			for _, placeholder := range []string{"{{" + key + "}}", "${" + key + "}"} {
+			// Order matters: replace {{key}} and ${key} first, then {key} last.
+			// If {key} were replaced first, it would partially consume {{key}}
+			// leaving stray braces.
+			for _, placeholder := range []string{"{{" + key + "}}", "${" + key + "}", "{" + key + "}"} {
 				// Replace quoted-placeholder patterns first (e.g. "{{text}}" → value),
 				// then replace any remaining bare placeholders ({{text}} → value).
 				// This avoids double-quoting when SKILL.md authors wrap placeholders
@@ -851,7 +854,7 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 	return result
 }
 
-var unresolvedSkillPlaceholderPattern = regexp.MustCompile(`\{\{[^{}]+\}\}|\$\{[^{}]+\}`)
+var unresolvedSkillPlaceholderPattern = regexp.MustCompile(`\{\{[^{}]+\}\}|\$\{[^{}]+\}|\{[a-zA-Z_][a-zA-Z0-9_]*\}`)
 
 func stripUnresolvedSkillPlaceholders(text string) string {
 	if text == "" {

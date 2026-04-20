@@ -26,7 +26,6 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     StartAIAssistantBackgroundTask: vi.fn(async () => ({ accepted: true, session_id: 'session-test' })),
     ListRemoteSessions: vi.fn(async () => []),
     FetchNews: vi.fn(async () => []),
-    SelectAIAssistantFile: vi.fn(async () => ''),
     SelectAIAssistantFiles: vi.fn(async () => []),
 }));
 
@@ -40,7 +39,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
-import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFile, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions } from '../../../../wailsjs/go/main/App';
+import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook() {
     return renderHook(() => useAIAssistant());
@@ -105,8 +104,6 @@ function resetAppMocks() {
     (ListRemoteSessions as any).mockImplementation(async () => []);
     (FetchNews as any).mockReset();
     (FetchNews as any).mockImplementation(async () => []);
-    (SelectAIAssistantFile as any).mockReset();
-    (SelectAIAssistantFile as any).mockImplementation(async () => '');
     (SelectAIAssistantFiles as any).mockReset();
     (SelectAIAssistantFiles as any).mockImplementation(async () => []);
 }

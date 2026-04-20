@@ -42,6 +42,29 @@ func TestSubstituteSkillVariables_LeavesCommandUnchangedWithoutPlaceholder(t *te
 	}
 }
 
+// TestSubstituteSkillVariables_SingleBracePlaceholder verifies that {key}
+// single-brace placeholders are also replaced (bug fix for manage_skill path).
+func TestSubstituteSkillVariables_SingleBracePlaceholder(t *testing.T) {
+	vars := map[string]string{"input": "/path/to/image.png", "output": "/path/to/out.pdf"}
+	got := substituteSkillVariables("python convert.py {input} {output}", vars)
+	want := "python convert.py " + quoteSkillInputForShell(vars["input"]) + " " + quoteSkillInputForShell(vars["output"])
+	if got != want {
+		t.Fatalf("substituteSkillVariables() single-brace:\n  got  = %q\n  want = %q", got, want)
+	}
+}
+
+// TestSubstituteSkillVariables_SingleBraceDoesNotBreakDoubleBrace verifies
+// that {{key}} is still correctly replaced when {key} support is present.
+func TestSubstituteSkillVariables_SingleBraceDoesNotBreakDoubleBrace(t *testing.T) {
+	vars := map[string]string{"input": "test.png"}
+	got := substituteSkillVariables("echo {{input}} && echo {input}", vars)
+	quoted := quoteSkillInputForShell("test.png")
+	want := "echo " + quoted + " && echo " + quoted
+	if got != want {
+		t.Fatalf("substituteSkillVariables() mixed double+single brace:\n  got  = %q\n  want = %q", got, want)
+	}
+}
+
 func TestNormalizeRunSkillVars_ArgsOverrideLegacy(t *testing.T) {
 	got := normalizeRunSkillVars(map[string]interface{}{
 		"args":   map[string]interface{}{"input": "new-in", "output": "new-out"},

@@ -194,5 +194,139 @@ func isImageMime(mime string) bool {
 }
 
 // ---------------------------------------------------------------------------
+// History image stripping
+// ---------------------------------------------------------------------------
+
+// filePathPromptPrefix is the marker used by the frontend to embed local file
+// paths into the user message text.
+const filePathPromptPrefix = "[用户选择的本地文件路径]"
+
+// filePathPromptPrefixHistorical replaces filePathPromptPrefix in older
+// conversation entries so the LLM does not confuse previous uploads with
+// the current one.
+const filePathPromptPrefixHistorical = "[之前选择的本地文件路径（仅供参考，非本次上传）]"
+
+// stripHistoryAttachments processes a conversation message from history and
+// removes base64 image data from multimodal content blocks, replacing them
+// with a lightweight text placeholder. It also annotates the
+// "[用户选择的本地文件路径]" section and IM-channel attachment descriptions
+// so the LLM knows those files are from a previous turn, not the current
+// upload.
+//
+// This prevents the LLM from treating images/files uploaded in earlier turns
+// as part of the current request.
+func stripHistoryAttachments(msg interface{}) interface{} {
+	mm, ok := msg.(map[string]interface{})
+	if !ok {
+		return msg
+	}
+	role, _ := mm["role"].(string)
+	if role != "user" {
+		return msg
+	}
+
+	// Case 1: multimodal content ([]interface{} with image blocks).
+	if blocks, ok := mm["content"].([]interface{}); ok {
+		changed := false
+		imageCount := 0
+		newBlocks := make([]interface{}, 0, len(blocks))
+		for _, block := range blocks {
+			bm, ok := block.(map[string]interface{})
+			if !ok {
+				newBlocks = append(newBlocks, block)
+				continue
+			}
+			blockType, _ := bm["type"].(string)
+			if blockType == "image_url" || blockType == "image" {
+				// Count images; a single merged placeholder is emitted below.
+				imageCount++
+				changed = true
+			} else if blockType == "text" {
+				if text, ok := bm["text"].(string); ok {
+					if annotated := annotateHistoryAttachmentText(text); annotated != text {
+						cp := make(map[string]interface{}, len(bm))
+						for k, v := range bm {
+							cp[k] = v
+						}
+						cp["text"] = annotated
+						newBlocks = append(newBlocks, cp)
+						changed = true
+					} else {
+						newBlocks = append(newBlocks, block)
+					}
+				} else {
+					newBlocks = append(newBlocks, block)
+				}
+			} else {
+				newBlocks = append(newBlocks, block)
+			}
+		}
+		// Emit a single merged placeholder for all stripped images.
+		if imageCount > 0 {
+			placeholder := fmt.Sprintf("[之前上传了 %d 张图片]", imageCount)
+			newBlocks = append(newBlocks, map[string]interface{}{
+				"type": "text",
+				"text": placeholder,
+			})
+		}
+		if changed {
+			cp := make(map[string]interface{}, len(mm))
+			for k, v := range mm {
+				cp[k] = v
+			}
+			cp["content"] = newBlocks
+			return cp
+		}
+		return msg
+	}
+
+	// Case 2: plain text content.
+	if text, ok := mm["content"].(string); ok {
+		if annotated := annotateHistoryAttachmentText(text); annotated != text {
+			cp := make(map[string]interface{}, len(mm))
+			for k, v := range mm {
+				cp[k] = v
+			}
+			cp["content"] = annotated
+			return cp
+		}
+	}
+
+	return msg
+}
+
+// annotateHistoryAttachmentText rewrites attachment-related markers in a
+// historical user message so the LLM does not confuse them with the current
+// upload. It handles:
+//   - [用户选择的本地文件路径]  (desktop panel file picker)
+//   - [附件: xxx → 已保存到 yyy]  (IM channel non-image files)
+//   - [用户发送了图片 xxx，已保存到 yyy ...] (IM channel images when vision unsupported)
+//
+// Returns the original string unchanged if no markers are found.
+func annotateHistoryAttachmentText(text string) string {
+	// 1. Desktop file picker section.
+	if strings.Contains(text, filePathPromptPrefix) {
+		text = strings.Replace(text, filePathPromptPrefix, filePathPromptPrefixHistorical, 1)
+	}
+
+	// 2. IM-channel attachment descriptions: [附件: xxx → 已保存到 yyy]
+	if strings.Contains(text, "[附件:") {
+		text = strings.ReplaceAll(text, "[附件:", "[之前的附件:")
+	}
+
+	// 3. IM-channel image fallback: [用户发送了图片 xxx，已保存到 yyy]
+	if strings.Contains(text, "[用户发送了图片") {
+		text = strings.ReplaceAll(text, "[用户发送了图片", "[之前发送的图片")
+	}
+
+	// 4. IM-channel voice: [语音: xxx → 已转换为WAV并保存到 yyy]
+	if strings.Contains(text, "[语音:") {
+		text = strings.ReplaceAll(text, "[语音:", "[之前的语音:")
+	}
+
+	return text
+}
+
+// ---------------------------------------------------------------------------
 // System Prompt
 // ---------------------------------------------------------------------------

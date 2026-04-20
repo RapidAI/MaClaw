@@ -1890,12 +1890,14 @@ func resolveSkillStepTUI(step corelib.NLSkillStep, vars map[string]string, skill
 	return resolved
 }
 
-// substituteSkillVariablesRaw replaces {{key}} and ${key} placeholders without
+// substituteSkillVariablesRaw replaces {{key}}, ${key}, and {key} placeholders without
 // shell quoting. Used for non-command params where quoting would be incorrect.
 func substituteSkillVariablesRaw(text string, vars map[string]string) string {
 	for key, value := range vars {
+		// Order matters: {{key}} and ${key} before {key} to avoid partial consumption.
 		text = strings.ReplaceAll(text, "{{"+key+"}}", value)
 		text = strings.ReplaceAll(text, "${"+key+"}", value)
+		text = strings.ReplaceAll(text, "{"+key+"}", value)
 	}
 	return text
 }
@@ -2145,7 +2147,10 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 	slices.Sort(keys)
 	for _, key := range keys {
 		value := quoteSkillInputForShell(vars[key])
-		for _, placeholder := range []string{"{{" + key + "}}", "${" + key + "}"} {
+		// Order matters: replace {{key}} and ${key} first, then {key} last.
+		// If {key} were replaced first, it would partially consume {{key}}
+		// leaving stray braces.
+		for _, placeholder := range []string{"{{" + key + "}}", "${" + key + "}", "{" + key + "}"} {
 			// Replace quoted-placeholder patterns first (e.g. "{{text}}" → value),
 			// then replace any remaining bare placeholders ({{text}} → value).
 			// This avoids double-quoting when SKILL.md authors wrap placeholders

@@ -4,6 +4,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const root = __dirname;
 const indexPath = path.join(root, 'index.html');
@@ -62,6 +63,18 @@ function assertExists(name) {
   }
 }
 
+function assertJavaScriptSyntax(name) {
+  if (!name.endsWith('.js')) {
+    return;
+  }
+  const content = read(name);
+  try {
+    new vm.Script(content, { filename: name });
+  } catch (err) {
+    fail(name + ' has invalid JavaScript syntax: ' + err.message);
+  }
+}
+
 function assertMissing(name) {
   const full = path.join(root, name);
   if (fs.existsSync(full)) {
@@ -97,11 +110,20 @@ function assertHealthHook() {
   }
 }
 
+function assertLegacyMirrorRemoved() {
+  const legacyDir = path.join(root, 'js');
+  if (fs.existsSync(legacyDir)) {
+    fail('Legacy mirror directory should stay deleted: js/');
+  }
+}
+
 expectedScripts.concat(['MODULES.md']).forEach(assertExists);
+expectedScripts.forEach(assertJavaScriptSyntax);
 expectedScripts.concat(['MODULES.md', 'validate-admin-modules.js']).forEach(assertAscii);
 removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();
+assertLegacyMirrorRemoved();
 
 if (!process.exitCode) {
   console.log('Admin module validation passed.');

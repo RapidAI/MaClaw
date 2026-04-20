@@ -292,3 +292,52 @@ func TestSubstituteSkillVariables_MixedQuotedAndBare(t *testing.T) {
 		t.Fatalf("substituteSkillVariables() mixed quoted+bare:\n  got  = %q\n  want = %q", got, want)
 	}
 }
+
+// TestSubstituteSkillVariables_SingleBracePlaceholder verifies that {key}
+// single-brace placeholders are also replaced (bug fix for manage_skill path).
+func TestSubstituteSkillVariables_SingleBracePlaceholder(t *testing.T) {
+	vars := map[string]string{"input": "/path/to/image.png", "output": "/path/to/out.pdf"}
+	got := substituteSkillVariables("python convert.py {input} {output}", vars)
+	quoted1 := quoteSkillInputForShell(vars["input"])
+	quoted2 := quoteSkillInputForShell(vars["output"])
+	want := "python convert.py " + quoted1 + " " + quoted2
+	if got != want {
+		t.Fatalf("substituteSkillVariables() single-brace:\n  got  = %q\n  want = %q", got, want)
+	}
+}
+
+// TestSubstituteSkillVariables_SingleBraceDoesNotBreakDoubleBrace verifies
+// that {{key}} is still correctly replaced when {key} support is present.
+func TestSubstituteSkillVariables_SingleBraceDoesNotBreakDoubleBrace(t *testing.T) {
+	vars := map[string]string{"input": "test.png"}
+	got := substituteSkillVariables("echo {{input}} && echo {input}", vars)
+	quoted := quoteSkillInputForShell("test.png")
+	want := "echo " + quoted + " && echo " + quoted
+	if got != want {
+		t.Fatalf("substituteSkillVariables() mixed double+single brace:\n  got  = %q\n  want = %q", got, want)
+	}
+}
+
+// TestSubstituteSkillVariables_SingleBraceQuotedDedup verifies that quoted
+// single-brace placeholders like "{input}" are handled without double-quoting.
+func TestSubstituteSkillVariables_SingleBraceQuotedDedup(t *testing.T) {
+	vars := map[string]string{"input": "/tmp/my file.png"}
+	quoted := quoteSkillInputForShell(vars["input"])
+
+	got := substituteSkillVariables(`python convert.py "{input}"`, vars)
+	want := `python convert.py ` + quoted
+	if got != want {
+		t.Fatalf("substituteSkillVariables() single-brace quoted dedup:\n  got  = %q\n  want = %q", got, want)
+	}
+}
+
+// TestUnresolvedSkillPlaceholderPattern_MatchesSingleBrace verifies that the
+// unresolved placeholder regex also catches single-brace patterns.
+func TestUnresolvedSkillPlaceholderPattern_MatchesSingleBrace(t *testing.T) {
+	// Known vars don't include "missing", so it should be detected as unresolved.
+	got := substituteSkillVariables("echo {missing}", map[string]string{"input": "ignored"})
+	// GUI version strips unresolved placeholders.
+	if got != "echo " {
+		t.Fatalf("substituteSkillVariables() unresolved single-brace:\n  got  = %q\n  want = %q", got, "echo ")
+	}
+}

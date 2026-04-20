@@ -4652,7 +4652,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	var conversation []interface{}
 	conversation = append(conversation, map[string]string{"role": "system", "content": systemPrompt})
 	for _, entry := range history {
-		conversation = append(conversation, entry.toMessage())
+		// Strip base64 image data and annotate file/attachment sections from
+		// previous user messages so the LLM does not confuse earlier
+		// uploads with the current one. See bugfix #image-history-leak.
+		conversation = append(conversation, stripHistoryAttachments(entry.toMessage()))
 	}
 
 	// Build user message — multimodal if attachments contain images.
