@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+ï»¿import { useCallback, useEffect, useMemo, useState } from "react";
 import { GetHubLLMServiceStatus, RedeemHubLLMService } from "../../../wailsjs/go/main/App";
 import { colors, radius } from "./styles";
 
@@ -173,7 +173,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     const handleRedeem = useCallback(async () => {
         const code = redeemCode.trim();
         if (!code) {
-            setRedeemResult({ ok: false, msg: t("Please enter a redeem code", "ÇëÊäÈë¶Ò»»Âë") });
+            setRedeemResult({ ok: false, msg: t("Please enter a redeem code", "è¯·è¾“å…¥å…‘æ¢ç ") });
             return;
         }
         setRedeeming(true);
@@ -183,7 +183,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             setStatus(next);
             setRedeemCode("");
             onStatusChange?.(next);
-            setRedeemResult({ ok: true, msg: t("Redeem successful", "¶Ò»»³É¹¦") });
+            setRedeemResult({ ok: true, msg: t("Redeem successful", "å…‘æ¢æˆåŠŸ") });
         } catch (error) {
             setRedeemResult({ ok: false, msg: String(error) });
         } finally {
@@ -192,7 +192,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     }, [redeemCode, onStatusChange, t]);
 
     if (loading) {
-        return <div style={{ padding: 16, color: colors.textMuted }}>{t("Loading service status...", "ÕıÔÚ¼ÓÔØ·şÎñ×´Ì¬...")}</div>;
+        return <div style={{ padding: 16, color: colors.textMuted }}>{t("Loading service status...", "æ­£åœ¨åŠ è½½æœåŠ¡çŠ¶æ€...")}</div>;
     }
 
     return (
@@ -200,36 +200,36 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             <div style={cardStyle}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
                     <div>
-                        <h3 style={sectionTitleStyle}>{t("Service Redeem", "·şÎñ¶Ò»»")}</h3>
+                        <h3 style={sectionTitleStyle}>{t("Service Redeem", "æœåŠ¡å…‘æ¢")}</h3>
                         <div style={{ ...valueStyle, color: colors.textSecondary, marginTop: 4 }}>
                             {t(
                                 "Redeem a service card to activate MaClaw model service permissions on this account.",
-                                "ÊäÈë·şÎñ¶Ò»»Âë£¬Îªµ±Ç°ÕËºÅ¿ªÍ¨ MaClaw Ä£ĞÍ·şÎñÈ¨ÏŞ¡£"
+                                "å…‘æ¢æœåŠ¡å¡åï¼Œå¯ä¸ºå½“å‰è´¦å·å¼€é€š MaClaw æ¨¡å‹æœåŠ¡æƒé™ã€‚"
                             )}
                         </div>
                     </div>
                     <button type="button" onClick={() => loadStatus(true)} disabled={refreshing} style={secondaryButtonStyle}>
-                        {refreshing ? t("Refreshing...", "Ë¢ĞÂÖĞ...") : t("Refresh", "Ë¢ĞÂ")}
+                        {refreshing ? t("Refreshing...", "åˆ·æ–°ä¸­...") : t("Refresh", "åˆ·æ–°")}
                     </button>
                 </div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
                     <div style={mutedCardStyle}>
-                        <div style={labelStyle}>{t("Service Status", "·şÎñ×´Ì¬")}</div>
+                        <div style={labelStyle}>{t("Service Status", "æœåŠ¡çŠ¶æ€")}</div>
                         <div style={{ ...chipStyle, background: status?.active ? colors.successBg : colors.warningBg, color: status?.active ? colors.success : colors.warning, borderColor: status?.active ? colors.success : colors.warning }}>
-                            {status?.active ? t("Active", "ÒÑ¿ªÍ¨") : t("Not Active", "Î´¿ªÍ¨")}
+                            {status?.active ? t("Active", "å·²å¼€é€š") : t("Not Active", "æœªå¼€é€š")}
                         </div>
                     </div>
                     <div style={mutedCardStyle}>
-                        <div style={labelStyle}>{t("Authorized Groups", "ÒÑÊÚÈ¨·şÎñ×é")}</div>
+                        <div style={labelStyle}>{t("Authorized Groups", "å·²æˆæƒæœåŠ¡ç»„")}</div>
                         <div style={valueStyle}>{activeGroupNames.length ? activeGroupNames.join(", ") : "-"}</div>
                     </div>
                     <div style={mutedCardStyle}>
-                        <div style={labelStyle}>{t("Nearest Expiry", "×î½üµ½ÆÚÊ±¼ä")}</div>
+                        <div style={labelStyle}>{t("Nearest Expiry", "æœ€è¿‘åˆ°æœŸæ—¶é—´")}</div>
                         <div style={valueStyle}>{formatTime(status?.nearest_expires_at, lang)}</div>
                     </div>
                     <div style={mutedCardStyle}>
-                        <div style={labelStyle}>{t("Default Model", "Ä¬ÈÏÄ£ĞÍ")}</div>
+                        <div style={labelStyle}>{t("Default Model", "é»˜è®¤æ¨¡å‹")}</div>
                         <div style={valueStyle}>{status?.default_model || "auto"}</div>
                     </div>
                 </div>
@@ -243,11 +243,11 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
             <div style={cardStyle}>
                 <div style={{ marginBottom: 12 }}>
-                    <label style={labelStyle}>{t("Redeem Code", "¶Ò»»Âë")}</label>
+                    <label style={labelStyle}>{t("Redeem Code", "å…‘æ¢ç ")}</label>
                     <input
                         value={redeemCode}
                         onChange={(e) => setRedeemCode(e.target.value)}
-                        placeholder={t("Enter service card code", "ÊäÈë·şÎñ¶Ò»»Âë")}
+                        placeholder={t("Enter service card code", "è¯·è¾“å…¥æœåŠ¡å¡å…‘æ¢ç ")}
                         style={inputStyle}
                     />
                 </div>
@@ -255,11 +255,11 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                     <div style={{ ...valueStyle, color: colors.textSecondary, flex: 1, minWidth: 220 }}>
                         {t(
                             "After successful redeem, Hub-managed MaClaw model service will be enabled automatically if your account becomes authorized.",
-                            "¶Ò»»³É¹¦ºó£¬Èç¹ûµ±Ç°ÕËºÅ»ñµÃÊÚÈ¨£¬ÏµÍ³»á×Ô¶¯ÆôÓÃ Hub ÍĞ¹ÜµÄ MaClaw Ä£ĞÍ·şÎñ¡£"
+                            "å…‘æ¢æˆåŠŸåï¼Œå¦‚æœå½“å‰è´¦å·è·å¾—æˆæƒï¼ŒHub æ‰˜ç®¡çš„ MaClaw æ¨¡å‹æœåŠ¡ä¼šè‡ªåŠ¨å¯ç”¨ã€‚"
                         )}
                     </div>
                     <button type="button" onClick={handleRedeem} disabled={redeeming} style={primaryButtonStyle}>
-                        {redeeming ? t("Redeeming...", "¶Ò»»ÖĞ...") : t("Redeem Now", "Á¢¼´¶Ò»»")}
+                        {redeeming ? t("Redeeming...", "å…‘æ¢ä¸­...") : t("Redeem Now", "ç«‹å³å…‘æ¢")}
                     </button>
                 </div>
                 {redeemResult && (
@@ -270,46 +270,46 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             </div>
 
             <div style={cardStyle}>
-                <h3 style={{ ...sectionTitleStyle, marginBottom: 12 }}>{t("Current Authorization Details", "µ±Ç°ÊÚÈ¨ÏêÇé")}</h3>
+                <h3 style={{ ...sectionTitleStyle, marginBottom: 12 }}>{t("Current Authorization Details", "å½“å‰æˆæƒè¯¦æƒ…")}</h3>
                 <div style={{ display: "grid", gap: 12 }}>
                     <div>
-                        <div style={labelStyle}>{t("Exposed API URL", "¶ÔÍâ API µØÖ·")}</div>
+                        <div style={labelStyle}>{t("Exposed API URL", "å¯¹å¤– API åœ°å€")}</div>
                         <div style={valueStyle}>{status?.hub_llm_base_url || "-"}</div>
                     </div>
                     <div>
-                        <div style={labelStyle}>{t("Available Models", "¿ÉÓÃÄ£ĞÍÃû")}</div>
+                        <div style={labelStyle}>{t("Available Models", "å¯ç”¨æ¨¡å‹åˆ—è¡¨")}</div>
                         <div style={valueStyle}>{availableModels.length ? availableModels.join(", ") : "auto"}</div>
                     </div>
                     <div>
-                        <div style={labelStyle}>{t("Active Grants", "ÉúĞ§ÖĞµÄÊÚÈ¨")}</div>
+                        <div style={labelStyle}>{t("Active Grants", "ç”Ÿæ•ˆä¸­çš„æˆæƒ")}</div>
                         <div style={{ display: "grid", gap: 8 }}>
                             {(status?.active_grants || []).length ? (status?.active_grants || []).map((grant, index) => (
                                 <div key={`${grant.service_group_id}-${index}`} style={mutedCardStyle}>
                                     <div style={{ ...valueStyle, fontWeight: 600 }}>{grant.service_group_id || "-"}</div>
                                     <div style={{ ...valueStyle, color: colors.textSecondary }}>
-                                        {t("Source", "À´Ô´")}: {grant.source || "-"}
+                                        {t("Source", "æ¥æº")}: {grant.source || "-"}
                                     </div>
                                     <div style={{ ...valueStyle, color: colors.textSecondary }}>
-                                        {t("Expires At", "µ½ÆÚÊ±¼ä")}: {formatTime(grant.expires_at, lang)}
+                                        {t("Expires At", "åˆ°æœŸæ—¶é—´")}: {formatTime(grant.expires_at, lang)}
                                     </div>
                                 </div>
                             )) : (
-                                <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No active grants", "ÔİÎŞÓĞĞ§ÊÚÈ¨")}</div>
+                                <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No active grants", "æš‚æ— ç”Ÿæ•ˆæˆæƒ")}</div>
                             )}
                         </div>
                     </div>
                     <div>
-                        <div style={labelStyle}>{t("Authorized Models", "ÊÚÈ¨Ä£ĞÍÇåµ¥")}</div>
+                        <div style={labelStyle}>{t("Authorized Models", "æˆæƒæ¨¡å‹åˆ—è¡¨")}</div>
                         <div style={{ display: "grid", gap: 8 }}>
                             {(status?.authorized_models || []).length ? (status?.authorized_models || []).map((model) => (
                                 <div key={model.name} style={mutedCardStyle}>
                                     <div style={{ ...valueStyle, fontWeight: 600 }}>{model.name}</div>
                                     <div style={{ ...valueStyle, color: colors.textSecondary }}>
-                                        {t("Service Groups", "·şÎñ×é")}: {(model.service_group_ids || []).join(", ") || "-"}
+                                        {t("Service Groups", "æœåŠ¡ç»„")}: {(model.service_group_ids || []).join(", ") || "-"}
                                     </div>
                                 </div>
                             )) : (
-                                <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No model permissions yet", "µ±Ç°»¹Ã»ÓĞÄ£ĞÍÈ¨ÏŞ")}</div>
+                                <div style={{ ...valueStyle, color: colors.textMuted }}>{t("No model permissions yet", "å½“å‰è¿˜æ²¡æœ‰æ¨¡å‹æƒé™")}</div>
                             )}
                         </div>
                     </div>
@@ -318,3 +318,4 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         </div>
     );
 }
+

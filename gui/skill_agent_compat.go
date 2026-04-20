@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -21,6 +22,16 @@ func ImportAgentSkill(skillDir string) (*NLSkillEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	for i := range entry.Steps {
+		if entry.Steps[i].Action != "bash" {
+			continue
+		}
+		cmd, _ := entry.Steps[i].Params["command"].(string)
+		if cmd == "" {
+			continue
+		}
+		entry.Steps[i].Params["command"] = normalizeImportedAgentSkillCommand(cmd)
+	}
 	entry.Source = "agent_skill"
 	if entry.CreatedAt == "" {
 		entry.CreatedAt = time.Now().Format(time.RFC3339)
@@ -28,11 +39,30 @@ func ImportAgentSkill(skillDir string) (*NLSkillEntry, error) {
 	return entry, nil
 }
 
+func normalizeImportedAgentSkillCommand(cmd string) string {
+	trimmed := strings.TrimSpace(cmd)
+	for _, prefix := range []string{"bash ", "node "} {
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		if len(rest) >= 2 && strings.HasPrefix(rest, "\"") && strings.HasSuffix(rest, "\"") {
+			pathPart := strings.TrimSuffix(strings.TrimPrefix(rest, "\""), "\"")
+			if runtime.GOOS == "windows" {
+				pathPart = filepath.Clean(filepath.FromSlash(pathPart))
+			}
+			pathPart = strings.ReplaceAll(pathPart, "\"", `\\"`)
+			return prefix + `"` + pathPart + `"`
+		}
+	}
+	return cmd
+}
+
 // ExportAgentSkill converts an NLSkillEntry to Anthropic Agent Skills format,
 // writing SKILL.md and scripts/ to outputDir.
 func ExportAgentSkill(entry NLSkillEntry, outputDir string) error {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return fmt.Errorf("创建输出目录失败: %v", err)
+		return fmt.Errorf("鍒涘缓杈撳嚭鐩綍澶辫触: %v", err)
 	}
 
 	// Build YAML frontmatter.
@@ -90,7 +120,7 @@ func ExportAgentSkill(entry NLSkillEntry, outputDir string) error {
 	content := fm.String() + body.String()
 	mdPath := filepath.Join(outputDir, "SKILL.md")
 	if err := os.WriteFile(mdPath, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("写入 SKILL.md 失败: %v", err)
+		return fmt.Errorf("鍐欏叆 SKILL.md 澶辫触: %v", err)
 	}
 
 	return nil

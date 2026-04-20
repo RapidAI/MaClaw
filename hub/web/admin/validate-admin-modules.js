@@ -71,9 +71,12 @@ function assertMissing(name) {
 
 function assertScriptOrder() {
   const html = fs.readFileSync(indexPath, 'utf8');
+  if (html.includes('/admin/js/')) {
+    fail('index.html must not reference legacy /admin/js/ assets.');
+  }
   let lastIndex = -1;
   expectedScripts.forEach(function(name) {
-    const needle = 'src="' + name + '"';
+    const needle = 'src="/admin/' + name + '"';
     const idx = html.indexOf(needle);
     if (idx === -1) {
       fail('index.html is missing script tag for ' + name);

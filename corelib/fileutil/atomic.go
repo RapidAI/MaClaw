@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 )
 
 // AtomicWriteFile writes data to a file atomically by first writing to a
@@ -65,7 +66,7 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	}
 
 	// Attempt atomic rename.
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renameAtomicFile(tmpPath, path); err != nil {
 		if isCrossDeviceError(err) {
 			// Fall back to copy-and-rename for cross-device scenarios.
 			if copyErr := crossDeviceFallback(tmpPath, path, perm); copyErr != nil {
@@ -79,6 +80,72 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 
 	success = true
 	return nil
+}
+
+func renameAtomicFile(tmpPath, targetPath string) error {
+	if runtime.GOOS != "windows" {
+		return os.Rename(tmpPath, targetPath)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 6; attempt++ {
+		if err := os.Rename(tmpPath, targetPath); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			if !isRetryableWindowsRenameError(err) {
+				return err
+			}
+		}
+
+		removeErr := os.Remove(targetPath)
+		if removeErr != nil && !os.IsNotExist(removeErr) && !isRetryableWindowsRemoveError(removeErr) {
+			return lastErr
+		}
+
+		if err := os.Rename(tmpPath, targetPath); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			if !isRetryableWindowsRenameError(err) {
+				return err
+			}
+		}
+
+		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+	}
+
+	return lastErr
+}
+
+func isRetryableWindowsRenameError(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		var errno syscall.Errno
+		if errors.As(linkErr.Err, &errno) {
+			return errno == 5 || errno == 32
+		}
+	}
+	return false
+}
+
+func isRetryableWindowsRemoveError(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		var errno syscall.Errno
+		if errors.As(pathErr.Err, &errno) {
+			return errno == 5 || errno == 32
+		}
+	}
+	return false
 }
 
 // isCrossDeviceError checks whether an error is a cross-device link error

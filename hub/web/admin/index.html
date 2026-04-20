@@ -7,7 +7,7 @@
   2. Non-ASCII characters in HTML will produce garbled bytes that create
      phantom <textarea>/<select> tags, breaking the browser's HTML parser
      and preventing <script> from executing.
-  3. JS is loaded via external <script src="admin.js"> at the end of <body>.
+  3. JS is loaded via external <script src="/admin/admin.js"> at the end of <body>.
      Do NOT inline JS into this HTML file.
   4. After any edit, verify: node -e "for(let c of require('fs').readFileSync('hub/web/admin/index.html','utf8'))if(c.charCodeAt(0)>127)throw 'NON-ASCII FOUND'"
   5. Always sync: cp hub/web/admin/index.html build/deploy/stage/hub/web/admin/index.html
@@ -117,12 +117,12 @@
   <div id="defaultGroupModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeDefaultGroupModal()">
     <div class="session-modal" style="width:min(420px,calc(100% - 48px))">
       <button class="close-btn" onclick="closeDefaultGroupModal()" aria-label="Close">&times;</button>
-      <h3>Default Group</h3>
-      <div style="color:var(--muted);font-size:13px;margin-bottom:14px"></div>
+      <h3 id="defaultGroupModalTitle" data-i18n="securityDefaultGroup">Default Group</h3>
+      <div id="defaultGroupModalDesc" style="color:var(--muted);font-size:13px;margin-bottom:14px"></div>
       <div id="defaultGroupTreePicker" style="font-size:13px;line-height:1.8;max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:8px"></div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
-        <button class="btn-ghost" onclick="closeDefaultGroupModal()">Cancel</button>
-        <button class="btn-primary" id="defaultGroupConfirmBtn" onclick="confirmDefaultGroup()">Confirm</button>
+        <button class="btn-ghost" id="defaultGroupCancelBtn" onclick="closeDefaultGroupModal()" data-i18n="securityCancel">Cancel</button>
+        <button class="btn-primary" id="defaultGroupConfirmBtn" onclick="confirmDefaultGroup()" data-i18n="securityConfirm">Confirm</button>
       </div>
     </div>
   </div>
@@ -132,14 +132,14 @@
     <div class="session-modal" style="width:min(520px,calc(100% - 48px))">
       <button class="close-btn" onclick="closeAssignUsersModal()" aria-label="Close">&times;</button>
       <h3 id="assignUsersModalTitle"></h3>
-      <div style="color:var(--muted);font-size:13px;margin-bottom:10px"></div>
+      <div id="assignUsersModalDesc" style="color:var(--muted);font-size:13px;margin-bottom:10px"></div>
       <div style="margin-bottom:10px"><input id="assignUsersSearch" placeholder="..." oninput="filterAssignUsers()" style="width:100%;max-width:100%"></div>
       <div id="assignUsersTree" style="font-size:13px;line-height:1.6;max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:8px"></div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
         <span id="assignUsersCount" style="font-size:12px;color:var(--muted)"> 0 </span>
         <div style="display:flex;gap:8px">
-          <button class="btn-ghost" onclick="closeAssignUsersModal()">Cancel</button>
-          <button class="btn-primary" onclick="confirmAssignUsers()">Confirm</button>
+          <button class="btn-ghost" id="assignUsersCancelBtn" onclick="closeAssignUsersModal()" data-i18n="securityCancel">Cancel</button>
+          <button class="btn-primary" id="assignUsersConfirmBtn" onclick="confirmAssignUsers()" data-i18n="securityConfirm">Confirm</button>
         </div>
       </div>
     </div>
@@ -240,11 +240,11 @@
         <button data-tab="invitationcodes" onclick="openTab('invitationcodes')"><span id="navInvitationCodes"></span><small id="navInvitationCodesDesc"></small></button>
         <button data-tab="pwarequests" onclick="openTab('pwarequests')"><span id="navPwaRequests"></span><small id="navPwaRequestsDesc"></small></button>
         <button data-tab="console" onclick="openTab('console')"><span data-i18n="navConsole"></span><small data-i18n="navConsoleDesc"></small></button>
-        <button data-tab="security" onclick="openTab('security')"><span id="navSecurity">Security</span><small id="navSecurityDesc">Security Management</small></button>
-        <button data-tab="llmproviders" onclick="openTab('llmproviders')"><span id="navLLMProviders">LLM Providers</span><small id="navLLMProvidersDesc">Multi-provider routing and API</small></button>
-        <button data-tab="usagestats" onclick="openTab('usagestats')"><span id="navUsageStats">Usage Stats</span><small id="navUsageStatsDesc">Daily and monthly LLM usage analytics</small></button>
-        <button data-tab="modelservices" onclick="openTab('modelservices')"><span id="navModelServices">Model Services</span><small id="navModelServicesDesc">Model service groups and grants</small></button>
-        <button data-tab="servicecards" onclick="openTab('servicecards')"><span id="navServiceCards">Service Cards</span><small id="navServiceCardsDesc">Issue and review redeem cards</small></button>
+        <button data-tab="security" onclick="openTab('security')"><span id="navSecurity" data-i18n="navSecurity">Security</span><small id="navSecurityDesc" data-i18n="navSecurityDesc">Security Management</small></button>
+        <button data-tab="llmproviders" onclick="openTab('llmproviders')"><span id="navLLMProviders" data-i18n="llmProvidersTabTitle">LLM Providers</span><small id="navLLMProvidersDesc" data-i18n="llmProvidersTabSubtitle">Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.</small></button>
+        <button data-tab="usagestats" onclick="openTab('usagestats')"><span id="navUsageStats" data-i18n="usageStatsTabTitle">Usage Stats</span><small id="navUsageStatsDesc" data-i18n="usageStatsNavDesc">Daily and monthly LLM usage analytics</small></button>
+        <button data-tab="modelservices" onclick="openTab('modelservices')"><span id="navModelServices" data-i18n="modelServicesTabTitle">Model Services</span><small id="navModelServicesDesc" data-i18n="modelServicesTabSubtitle">Model service groups, bindings, and active grants.</small></button>
+        <button data-tab="servicecards" onclick="openTab('servicecards')"><span id="navServiceCards" data-i18n="serviceCardsTabTitle">Service Cards</span><small id="navServiceCardsDesc" data-i18n="serviceCardsTabSubtitle">Issue cards and review redemption status.</small></button>
       </nav>
       <div class="side-note"><span data-i18n="defaultCenter"></span><br><span class="mono">http://hubs.mypapers.top:9388</span><br><br><span data-i18n="deployHint"></span></div>
     </aside>
@@ -841,54 +841,54 @@
 
       <!-- Tab: Security -->
       <section id="tab-security" class="panel card">
-        <div class="head"><div><h3 id="secTitle"></h3><div class="desc" id="secDesc"></div></div><button class="btn-ghost" onclick="loadSecurityTab()" id="secReloadBtn">Reload</button></div>
+        <div class="head"><div><h3 id="secTitle" data-i18n="securityTabTitle"></h3><div class="desc" id="secDesc" data-i18n="securityTabSubtitle"></div></div><button class="btn-ghost" onclick="loadSecurityTab()" id="secReloadBtn" data-i18n="reload">Reload</button></div>
         <!-- Top: switches -->
         <div id="secTopBar" style="display:grid;grid-template-columns:320px 1fr;gap:18px;align-items:start;margin-bottom:18px">
           <div style="display:grid;gap:10px">
             <div class="item" style="min-height:auto;padding:14px">
               <div style="display:flex;align-items:center;justify-content:space-between">
-                <div><div class="item-title" style="font-size:14px" id="secCentralizedTitle">Centralized Policy</div><div class="item-meta" id="secCentralizedHint"></div></div>
+                <div><div class="item-title" style="font-size:14px" id="secCentralizedTitle" data-i18n="securityCentralizedPolicy">Centralized Policy</div><div class="item-meta" id="secCentralizedHint"></div></div>
                 <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secCentralizedToggle" onchange="toggleSecCentralized(this.checked)"></label>
               </div>
             </div>
             <div class="item" style="min-height:auto;padding:14px">
               <div style="display:flex;align-items:center;justify-content:space-between">
-                <div><div class="item-title" style="font-size:14px" id="secOrgTitle">Org Structure</div><div class="item-meta" id="secOrgHint"></div></div>
+                <div><div class="item-title" style="font-size:14px" id="secOrgTitle" data-i18n="securityOrgStructure">Org Structure</div><div class="item-meta" id="secOrgHint"></div></div>
                 <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secOrgToggle" onchange="toggleSecOrg(this.checked)"></label>
               </div>
             </div>
           </div>
           <div class="item" style="min-height:auto;padding:14px">
             <div style="display:flex;align-items:center;justify-content:space-between">
-              <div><div class="item-title" style="font-size:14px" id="secDefaultGroupTitle">Default Group</div><div class="item-meta" id="secDefaultGroupHint">Default group for new users</div></div>
-              <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="showSetDefaultGroup()" id="secDefaultGroupSetBtn">Set</button>
+              <div><div class="item-title" style="font-size:14px" id="secDefaultGroupTitle" data-i18n="securityDefaultGroup">Default Group</div><div class="item-meta" id="secDefaultGroupHint" data-i18n="securityDefaultGroupHint">Default group for new users</div></div>
+              <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="showSetDefaultGroup()" id="secDefaultGroupSetBtn" data-i18n="securitySet">Set</button>
             </div>
           </div>
         </div>
         <!-- Main: left tree + right policy -->
         <div style="display:grid;grid-template-columns:320px 1fr;gap:18px;align-items:start">
           <div class="item" style="min-height:400px;position:relative">
-            <div class="item-title" style="margin-bottom:12px" id="secGroupTreeTitle">Group Tree</div>
+            <div class="item-title" style="margin-bottom:12px" id="secGroupTreeTitle" data-i18n="securityGroupTree">Group Tree</div>
             <div id="secGroupTree" style="font-size:13px;line-height:1.8"></div>
             <div id="secContextMenu" class="hidden" style="position:fixed;z-index:9999;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);padding:6px 0;min-width:160px">
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('create')" id="secCtxCreate">Create</div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('rename')" id="secCtxRename">Rename</div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('assign')" id="secCtxAssign">Assign Users</div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--danger)" onmousedown="secCtxAction('delete')" id="secCtxDelete">Delete</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('create')" id="secCtxCreate" data-i18n="securityCreateSubDepartment">Create</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('rename')" id="secCtxRename" data-i18n="securityRenameDepartment">Rename</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('assign')" id="secCtxAssign" data-i18n="securityMoveUsers">Move Users Here</div>
+              <div style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--danger)" onmousedown="secCtxAction('delete')" id="secCtxDelete" data-i18n="securityDeleteDepartment">Delete</div>
             </div>
           </div>
           <div class="item" style="min-height:400px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
               <div><div class="item-title" id="secPolicyTitle"></div><div class="item-meta" id="secPolicySubtitle"></div></div>
               <div id="secPolicyActions" class="hidden" style="display:flex;gap:8px">
-                <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecPolicy()" id="secPolicySaveBtn">Save</button>
+                <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecPolicy()" id="secPolicySaveBtn" data-i18n="securitySave">Save</button>
               </div>
             </div>
             <div id="secPolicyPanel"></div>
             <div id="secGroupMembers" class="hidden" style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-                <div class="item-title" style="font-size:14px" id="secMembersTitle">Members</div>
-                <button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="loadSecGroupMembers()" id="secMembersReloadBtn">Reload</button>
+                <div class="item-title" style="font-size:14px" id="secMembersTitle" data-i18n="securityMembers">Members</div>
+                <button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="loadSecGroupMembers()" id="secMembersReloadBtn" data-i18n="reload">Reload</button>
               </div>
               <div id="secMembersList"></div>
             </div>
@@ -898,7 +898,7 @@
 
       <!-- Tab: LLM Providers -->
       <section id="tab-llmproviders" class="panel card">
-        <div class="head"><div><h3 id="llmProvidersTabTitle">LLM Providers</h3><div class="desc" id="llmProvidersTabSubtitle">Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.</div></div><button class="btn-ghost" onclick="loadLLMProviders()" id="llmProvidersReloadBtn">Reload</button></div>
+        <div class="head"><div><h3 id="llmProvidersTabTitle" data-i18n="llmProvidersTabTitle">LLM Providers</h3><div class="desc" id="llmProvidersTabSubtitle" data-i18n="llmProvidersTabSubtitle">Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.</div></div><button class="btn-ghost" onclick="loadLLMProviders()" id="llmProvidersReloadBtn" data-i18n="reload">Reload</button></div>
         <div class="grid2">
           <div class="item">
             <div class="item-head"><div><div class="item-title" id="llmProvidersExposeTitle">Unified OpenAI v1 Endpoint</div><div class="item-meta" id="llmProvidersExposeDesc">Select provider by `model`, `X-LLM-Provider`, or `?provider=`.</div></div><span class="badge info" id="llmProviderSelectionBadge">No provider selected</span></div>
@@ -946,17 +946,17 @@
 
       <!-- Tab: Model Services -->
       <section id="tab-modelservices" class="panel card">
-        <div class="head"><div><h3 id="modelServicesTabTitle">Model Services</h3><div class="desc" id="modelServicesTabSubtitle">Model service groups, bindings, and active grants</div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="modelServicesReloadBtn">Reload</button></div>
+        <div class="head"><div><h3 id="modelServicesTabTitle" data-i18n="modelServicesTabTitle">Model Services</h3><div class="desc" id="modelServicesTabSubtitle" data-i18n="modelServicesTabSubtitle">Model service groups, bindings, and active grants.</div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="modelServicesReloadBtn" data-i18n="reload">Reload</button></div>
       </section>
 
       <!-- Tab: Service Cards -->
       <section id="tab-servicecards" class="panel card">
-        <div class="head"><div><h3 id="serviceCardsTabTitle">Service Cards</h3><div class="desc" id="serviceCardsTabSubtitle">Issue cards and review redemption status</div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="serviceCardsReloadBtn">Reload</button></div>
+        <div class="head"><div><h3 id="serviceCardsTabTitle" data-i18n="serviceCardsTabTitle">Service Cards</h3><div class="desc" id="serviceCardsTabSubtitle" data-i18n="serviceCardsTabSubtitle">Issue cards and review redemption status.</div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="serviceCardsReloadBtn" data-i18n="reload">Reload</button></div>
       </section>
 
       <!-- Tab: Usage Stats -->
       <section id="tab-usagestats" class="panel card">
-        <div class="head"><div><h3 id="usageStatsTabTitle">Usage Stats</h3><div class="desc" id="usageStatsTabSubtitle">View token usage by user or security group, with daily 24-hour trends.</div></div><button class="btn-ghost" onclick="loadUsageStats()" id="usageStatsReloadBtn">Reload</button></div>
+        <div class="head"><div><h3 id="usageStatsTabTitle" data-i18n="usageStatsTabTitle">Usage Stats</h3><div class="desc" id="usageStatsTabSubtitle" data-i18n="usageStatsTabSubtitle">View token usage by user or security group, with daily 24-hour trends.</div></div><button class="btn-ghost" onclick="loadUsageStats()" id="usageStatsReloadBtn" data-i18n="reload">Reload</button></div>
       </section>
 
       <!-- Tab: Console -->
@@ -967,26 +967,27 @@
 
     </main>
   </div>
-<script src="admin.js"></script>
-<script src="admin-tabs.js"></script>
-<script src="admin-ui.js"></script>
-<script src="center-tab.js"></script>
-<script src="governance-tab.js"></script>
-<script src="security-tab.js"></script>
-<script src="machines-tab.js"></script>
-<script src="im-tab.js"></script>
-<script src="hub-llm-tab.js"></script>
-<script src="feishu-tab.js"></script>
-<script src="invitation-tab.js"></script>
-<script src="pwa-tab.js"></script>
-<script src="system-tab.js"></script>
-<script src="compute-tab.js"></script>
-<script src="llm-provider-tab.js"></script>
-<script src="llm-service-tabs.js"></script>
-<script src="usage-stats-tab.js"></script>
-<script src="admin-module-health.js"></script>
-<script src="admin-bootstrap.js"></script>
+<script src="/admin/admin.js"></script>
+<script src="/admin/admin-tabs.js"></script>
+<script src="/admin/admin-ui.js"></script>
+<script src="/admin/center-tab.js"></script>
+<script src="/admin/governance-tab.js"></script>
+<script src="/admin/security-tab.js"></script>
+<script src="/admin/machines-tab.js"></script>
+<script src="/admin/im-tab.js"></script>
+<script src="/admin/hub-llm-tab.js"></script>
+<script src="/admin/feishu-tab.js"></script>
+<script src="/admin/invitation-tab.js"></script>
+<script src="/admin/pwa-tab.js"></script>
+<script src="/admin/system-tab.js"></script>
+<script src="/admin/compute-tab.js"></script>
+<script src="/admin/llm-provider-tab.js"></script>
+<script src="/admin/llm-service-tabs.js"></script>
+<script src="/admin/usage-stats-tab.js"></script>
+<script src="/admin/admin-module-health.js"></script>
+<script src="/admin/admin-bootstrap.js"></script>
 </body>
 </html>
+
 
 

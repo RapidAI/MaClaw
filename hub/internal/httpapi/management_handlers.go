@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
@@ -176,10 +177,19 @@ func ListUsersHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 		out := make([]BoundUserView, 0, len(items))
+		seenEmails := make(map[string]struct{}, len(items))
 		for _, user := range items {
 			if user == nil {
 				continue
 			}
+			emailKey := strings.TrimSpace(strings.ToLower(user.Email))
+			if emailKey == "" {
+				continue
+			}
+			if _, exists := seenEmails[emailKey]; exists {
+				continue
+			}
+			seenEmails[emailKey] = struct{}{}
 			out = append(out, BoundUserView{
 				ID:               user.ID,
 				Email:            user.Email,

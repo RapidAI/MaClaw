@@ -389,3 +389,126 @@ func TestToolRunSkill_RealXhMdToPdfVerifiesArtifact(t *testing.T) {
 		t.Fatalf("expected output pdf to exist: %v", err)
 	}
 }
+
+func TestAppendSkillRunSummary_IncludesStepOutput(t *testing.T) {
+	var b strings.Builder
+	appendSkillRunSummary(&b, &SkillRunStatus{
+		Skill:  "weather-query",
+		Status: "success",
+		Steps: []StepResult{
+			{Index: 0, Action: "bash", Status: "success", Output: "=== 北京 当前天气 ===\n天气：☀️ 晴  气温：26.9℃", DurationMs: 1200},
+			{Index: 1, Action: "bash", Status: "success", Output: "=== 北京 逐小时预报 ===\n14:00 ☀️ 27℃", DurationMs: 800},
+			{Index: 2, Action: "bash", Status: "success", Output: "=== 北京 一周预报 ===\n周一 晴 20~28℃", DurationMs: 900},
+		},
+	}, "run-weather-1")
+	got := b.String()
+
+	// Step outputs must be present in the summary so the LLM can see actual results.
+	if !strings.Contains(got, "=== 北京 当前天气 ===") {
+		t.Fatalf("expected step 1 output in summary, got %s", got)
+	}
+	if !strings.Contains(got, "=== 北京 逐小时预报 ===") {
+		t.Fatalf("expected step 2 output in summary, got %s", got)
+	}
+	if !strings.Contains(got, "=== 北京 一周预报 ===") {
+		t.Fatalf("expected step 3 output in summary, got %s", got)
+	}
+	// Completed skill should tell LLM to use the output directly.
+	if !strings.Contains(got, "步骤输出已在上方显示") {
+		t.Fatalf("expected direct-use guidance for completed skill, got %s", got)
+	}
+	// Should NOT mention session_ready for completed non-session skills.
+	if strings.Contains(got, "session_ready") {
+		t.Fatalf("completed non-session skill should not emit session_ready, got %s", got)
+	}
+}
+
+func TestAppendSkillRunSummary_TruncatesLongOutput(t *testing.T) {
+	longOutput := strings.Repeat("x", 3000)
+	var b strings.Builder
+	appendSkillRunSummary(&b, &SkillRunStatus{
+		Skill:  "demo",
+		Status: "success",
+		Steps: []StepResult{
+			{Index: 0, Action: "bash", Status: "success", Output: longOutput},
+		},
+	}, "run-trunc-1")
+	got := b.String()
+	if !strings.Contains(got, "... (truncated)") {
+		t.Fatalf("expected truncation marker for long output, got len=%d", len(got))
+	}
+	// Output should be capped at maxStepOutputLen (2048 runes), not the full 3000.
+	if strings.Contains(got, strings.Repeat("x", 2100)) {
+		t.Fatalf("output was not truncated")
+	}
+}
+
+func TestAppendSkillRunSummary_TotalOutputBudget(t *testing.T) {
+	// 3 steps each with 2000 chars — total 6000 exceeds maxTotalOutputLen (4096).
+	// Later steps should be truncated or omitted.
+	stepOutput := strings.Repeat("a", 2000)
+	var b strings.Builder
+	appendSkillRunSummary(&b, &SkillRunStatus{
+		Skill:  "demo",
+		Status: "success",
+		Steps: []StepResult{
+			{Index: 0, Action: "bash", Status: "success", Output: stepOutput},
+			{Index: 1, Action: "bash", Status: "success", Output: stepOutput},
+			{Index: 2, Action: "bash", Status: "success", Output: stepOutput},
+		},
+	}, "run-budget-1")
+	got := b.String()
+	// All 3 step status lines should be present.
+	if !strings.Contains(got, "step 3: bash") {
+		t.Fatalf("expected all step status lines, got %s", got)
+	}
+	// Total output should be capped — step 3's full output should not appear.
+	count := strings.Count(got, strings.Repeat("a", 2000))
+	if count >= 3 {
+		t.Fatalf("expected total output budget to cap later steps, but all 3 full outputs present")
+	}
+}
+
+func TestAppendSkillRunSummary_UTF8SafeTruncation(t *testing.T) {
+	// Chinese characters are multi-byte; truncation must not split them.
+	chineseOutput := strings.Repeat("天气晴朗温度适宜", 400) // 3200 runes
+	var b strings.Builder
+	appendSkillRunSummary(&b, &SkillRunStatus{
+		Skill:  "weather",
+		Status: "success",
+		Steps: []StepResult{
+			{Index: 0, Action: "bash", Status: "success", Output: chineseOutput},
+		},
+	}, "run-utf8-1")
+	got := b.String()
+	if !strings.Contains(got, "... (truncated)") {
+		t.Fatalf("expected truncation for long Chinese output")
+	}
+	// Verify no invalid UTF-8 sequences in output.
+	for i, r := range got {
+		if r == '\uFFFD' {
+			t.Fatalf("found replacement character at position %d — UTF-8 truncation is broken", i)
+		}
+	}
+}
+
+func TestAppendSkillRunSummary_RunningSkillStillShowsPollingGuidance(t *testing.T) {
+	var b strings.Builder
+	appendSkillRunSummary(&b, &SkillRunStatus{
+		Skill:  "demo",
+		Status: "running",
+		Steps: []StepResult{
+			{Index: 0, Action: "bash", Status: "success", Output: "step 1 done"},
+			{Index: 1, Action: "bash", Status: "running"},
+		},
+	}, "run-poll-1")
+	got := b.String()
+	// Running skill should still suggest polling.
+	if !strings.Contains(got, "get_skill_run") {
+		t.Fatalf("expected polling guidance for running skill, got %s", got)
+	}
+	// But completed step output should still be visible.
+	if !strings.Contains(got, "step 1 done") {
+		t.Fatalf("expected completed step output even while running, got %s", got)
+	}
+}

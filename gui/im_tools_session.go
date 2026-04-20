@@ -812,7 +812,7 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 				b.WriteString(fmt.Sprintf("\n🛑 会话遇到不可恢复的错误退出（退出码 %d）。", *exitCodeVal))
 				b.WriteString(fmt.Sprintf("\n请立即将错误信息告知用户，并建议检查 %s 的安装和配置。", sessionTool))
 			} else {
-				b.WriteString(fmt.Sprintf("\n⚠️ 会话异常退出（退出码 %d），可能是临时错误。", *exitCodeVal))
+				b.WriteString(fmt.Sprintf("\n🛑 会话已失败退出（退出码 %d），可能是临时错误。", *exitCodeVal))
 				b.WriteString("\n📌 建议创建新会话重试。如果连续失败，请将错误信息告知用户。")
 			}
 		}

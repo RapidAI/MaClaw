@@ -30,9 +30,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/session"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/user"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
-	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
 
@@ -61,7 +61,7 @@ type TUIAgentHandler struct {
 	sshMgr           *remote.SSHSessionManager
 	bgTaskMgr        *remote.SSHBackgroundTaskManager
 	maxIterations    int
-	codingToolHealth *codingToolHealthCache // 编程工具健康状态缓存
+	codingToolHealth *codingToolHealthCache   // 编程工具健康状态缓存
 	workflowEngine   *workflow.WorkflowEngine // maclaw agent workflow engine
 	taskStore        *task.Store              // lightweight task tracker
 	usageTracker     *tool.UsageTracker       // tool outcome learning tracker
@@ -106,8 +106,8 @@ func NewTUIAgentHandler(sessionMgr *TUISessionManager, opts ...AgentHandlerOptio
 		responseHeaderTimeout = time.Duration(cfg.EffectiveTimeoutSec()) * time.Second
 	}
 	h := &TUIAgentHandler{
-		sessionMgr:       sessionMgr,
-		httpClient:       &http.Client{Transport: &http.Transport{
+		sessionMgr: sessionMgr,
+		httpClient: &http.Client{Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
 				Timeout:   30 * time.Second,
@@ -392,7 +392,6 @@ func (h *TUIAgentHandler) RunAgentLoop(userText string, history []map[string]str
 	h.runEvidenceCollectionTUI(userText)
 	return AgentResponse{Text: i18n.T(i18n.MsgTUIAgentMaxRoundsReached, i18n.NormalizeLang(""))}
 }
-
 
 func (h *TUIAgentHandler) buildSystemPrompt() string {
 	return h.buildSystemPromptWithHistory("", nil)
@@ -847,13 +846,7 @@ func (h *TUIAgentHandler) buildBuiltinToolDefinitions() []map[string]interface{}
 			"language":    map[string]interface{}{"type": "string", "description": "脚本语言: python/bash/powershell/node（可选）"},
 			"working_dir": map[string]interface{}{"type": "string", "description": "脚本执行工作目录（可选）"},
 			"timeout":     map[string]interface{}{"type": "integer", "description": "执行超时秒数（默认 60，最大 300）"},
-		}, []string{"task"}),
-		toolDef("generate_pdf", "生成 PDF 文档。仅用于编程流程的需求/设计/任务文档", map[string]interface{}{
-			"content":  map[string]interface{}{"type": "string", "description": "Markdown 格式的文档内容"},
-			"title":    map[string]interface{}{"type": "string", "description": "文档标题"},
-			"doc_type": map[string]interface{}{"type": "string", "description": "文档类型: requirements/design/task_plan"},
-		}, []string{"content"}),
-		toolDef("office", "Office 文档操作工具。action: generate_pdf（生成PDF）、read_excel（读取XLSX/CSV）、write_excel（写入XLSX）、read_pptx（读取PPTX）", map[string]interface{}{
+		}, []string{"task"}), toolDef("office", "Office 文档操作工具。action: generate_pdf（生成PDF）、read_excel（读取XLSX/CSV）、write_excel（写入XLSX）、read_pptx（读取PPTX）", map[string]interface{}{
 			"action":    map[string]interface{}{"type": "string", "description": "操作类型: generate_pdf/read_excel/write_excel/read_pptx"},
 			"content":   map[string]interface{}{"type": "string", "description": "generate_pdf: Markdown 格式的文档内容"},
 			"title":     map[string]interface{}{"type": "string", "description": "generate_pdf: 文档标题"},
@@ -1077,8 +1070,7 @@ func (h *TUIAgentHandler) dispatchTool(name string, args map[string]interface{})
 	case "craft_tool":
 		return h.toolCraftTool(args)
 	case "generate_pdf":
-		args["action"] = "generate_pdf"
-		return h.toolOffice(args)
+		return fmt.Sprintf("未知工具: %s", name)
 	case "office":
 		return h.toolOffice(args)
 	case "open":

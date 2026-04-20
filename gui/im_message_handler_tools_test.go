@@ -142,7 +142,7 @@ func TestClassifyToolOutcome_RunSkillAndStatusSnapshots(t *testing.T) {
 		{
 			name:     "run skill running is uncertain",
 			toolName: "run_skill",
-			result:   "✅ Skill 已启动\n## 运行信息\n- run_id: run-1\n- status: running\n- session_ready: false\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度，等待 session_ready=true。",
+			result:   "✅ Skill 已启动\n## 运行信息\n- run_id: run-1\n- status: running\n- session_ready: false\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。",
 			want:     "uncertain",
 		},
 		{

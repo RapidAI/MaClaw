@@ -13,7 +13,12 @@ This folder now uses a thin-shell structure.
 
 - admin-tabs.js: tab registry
 - admin-ui.js: shared UI helpers
-- js/core.js: source-side core mirror
+
+## Legacy mirror tree
+
+- js/: legacy mirror/source-side snapshot only; it is not served by the live hub admin page.
+- The live runtime loads only top-level assets from `hub/web/admin/*.js`.
+- Do not assume edits under `hub/web/admin/js/` will affect the running admin UI.
 
 ## Domain modules
 
@@ -27,7 +32,6 @@ This folder now uses a thin-shell structure.
 - invitation-tab.js: recharge/invitation code management
 - pwa-tab.js: PWA approvals and pending logins
 - system-tab.js: mail, TLS, admin profile/password
-- voiceprint-tab.js: voiceprint management
 - compute-tab.js: compute placeholders
 - llm-provider-tab.js: provider management
 - llm-service-tabs.js: model service groups/cards/defaults
@@ -39,10 +43,11 @@ When adding or changing admin behavior:
 
 1. Prefer editing the owning module instead of admin.js.
 2. Keep admin.js as a compatibility shell only.
-3. Mirror source-side changes into hub/web/admin/js/ when applicable.
-4. Keep script load order in index.html aligned with module dependencies.
-5. Run syntax and ASCII checks after edits.
-6. Run `node hub/web/admin/validate-admin-modules.js` after structural changes.
+3. Treat `hub/web/admin/*.js` as the runtime source of truth.
+4. Keep the legacy `hub/web/admin/js/` tree read-only unless you are intentionally maintaining that mirror.
+5. Keep script load order in index.html aligned with module dependencies.
+6. Run syntax and ASCII checks after edits.
+7. Run `node hub/web/admin/validate-admin-modules.js` after structural changes.
 
 ## Removed legacy files
 

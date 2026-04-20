@@ -363,9 +363,8 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 func TestDefaultMaclawLLMProviders(t *testing.T) {
 	providers := defaultMaclawLLMProviders()
 
-
-	if len(providers) < 7 {
-		t.Fatalf("provider count = %d, want >= 7", len(providers))
+	if len(providers) < 8 {
+		t.Fatalf("provider count = %d, want >= 8", len(providers))
 	}
 
 	first := providers[0]
@@ -433,8 +432,7 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("智谱编程 AgentType = %q, want %q", zhipuCoding.AgentType, "claude-code/2.0.0")
 	}
 
-
-	expectedNames := []string{"免费", "OpenAI", "智谱龙虾", "智谱编程", "MiniMax", "Kimi", "Custom1", "Custom2"}
+	expectedNames := []string{"免费", "OpenAI", "智谱龙虾", "智谱编程", "MiniMax", "Kimi", "讯飞星辰", "Custom1", "Custom2"}
 	for i, want := range expectedNames {
 		if providers[i].Name != want {
 			t.Errorf("providers[%d].Name = %q, want %q", i, providers[i].Name, want)
@@ -444,7 +442,6 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if got := providers[5].AgentType; got != "claude-code/2.0.0" {
 		t.Errorf("Kimi AgentType = %q, want %q", got, "claude-code/2.0.0")
 	}
-
 
 	n := len(providers)
 	if !providers[n-2].IsCustom {

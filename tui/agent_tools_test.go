@@ -44,8 +44,8 @@ func TestSubstituteSkillVariables_LeavesCommandUnchangedWithoutPlaceholder(t *te
 
 func TestNormalizeRunSkillVars_ArgsOverrideLegacy(t *testing.T) {
 	got := normalizeRunSkillVars(map[string]interface{}{
-		"args": map[string]interface{}{"input": "new-in", "output": "new-out"},
-		"input": "old-in",
+		"args":   map[string]interface{}{"input": "new-in", "output": "new-out"},
+		"input":  "old-in",
 		"output": "old-out",
 	})
 	if got["input"] != "new-in" || got["output"] != "new-out" {
@@ -295,21 +295,21 @@ func TestTUIAgentHandlerToolRunSkill_ContinuesOnErrorWithInput(t *testing.T) {
 
 func shellPrintInputCommand(placeholder string) string {
 	if runtime.GOOS == "windows" {
-		return "Write-Output " + placeholder
+		return "cmd /c echo " + placeholder
 	}
 	return "printf '%s\\n' " + placeholder
 }
 
 func shellPrintInputOutputCommand(inputPlaceholder, outputPlaceholder string) string {
 	if runtime.GOOS == "windows" {
-		return "Write-Output " + inputPlaceholder + "; Write-Output " + outputPlaceholder
+		return "cmd /c echo " + inputPlaceholder + " & cmd /c echo " + outputPlaceholder
 	}
 	return "printf '%s\\n' " + inputPlaceholder + " " + outputPlaceholder
 }
 
 func shellFailCommand() string {
 	if runtime.GOOS == "windows" {
-		return "Write-Error 'boom'; exit 1"
+		return "cmd /c exit /b 1"
 	}
 	return "echo boom >&2; exit 1"
 }

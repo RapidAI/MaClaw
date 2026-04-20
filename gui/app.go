@@ -166,18 +166,18 @@ var ShowNotification func(title, message string, iconFlag uint32) = func(string,
 // Set by platform-specific tray setup code.
 var FlashAndBeep func() = func() {}
 
-// AppConfig, SkillHubEntry, Skill — see corelib_aliases.go
+// AppConfig, SkillHubEntry, Skill 闂?see corelib_aliases.go
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	ctx := context.Background()
+	bgCtx := context.Background()
 	return &App{
-		ctx:               ctx,
+		ctx:               nil,
 		downloadCancelers: make(map[string]context.CancelFunc),
 		nodeInstallDone:   make(chan bool, 1), // Buffered channel to signal Node.js installation completion
 		toolInstallLocks:  make(map[string]bool),
 		floatingAssistant: nil,
-		managers:          NewAppManagers(ctx),
+		managers:          NewAppManagers(bgCtx),
 	}
 }
 
@@ -215,7 +215,7 @@ func (a *App) ensureRemoteInfra() {
 }
 
 // initRemoteInfra initializes ALL subsystems (Layer 0 + Layer 1 + Layer 2).
-// Kept for backward compatibility — goes through the proper Once guards.
+// Kept for backward compatibility 闂?goes through the proper Once guards.
 func (a *App) initRemoteInfra() {
 	a.ensureRemoteInfra()
 	a.ensureInteractionInfra()
@@ -223,7 +223,7 @@ func (a *App) initRemoteInfra() {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 0 — Core infrastructure: minimal set needed for Hub connection and
+// Layer 0 闂?Core infrastructure: minimal set needed for Hub connection and
 // basic IM message routing. Initialized at startup.
 // ---------------------------------------------------------------------------
 func (a *App) initCoreInfra() {
@@ -297,7 +297,7 @@ func (a *App) initCoreInfra() {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 1 — Interaction infrastructure: components needed when the user
+// Layer 1 闂?Interaction infrastructure: components needed when the user
 // actually starts interacting (first IM message, first session launch, etc.).
 // Deferred from startup to reduce idle memory.
 // ---------------------------------------------------------------------------
@@ -351,7 +351,7 @@ func (a *App) initDeferredInteractionInfra() {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 2 — On-demand infrastructure: heavy or rarely-used components
+// Layer 2 闂?On-demand infrastructure: heavy or rarely-used components
 // initialized only when the user explicitly accesses the feature.
 // ---------------------------------------------------------------------------
 func (a *App) initOnDemandInfra() {
@@ -771,6 +771,18 @@ func (a *App) ensureStartupFeedback() {
 }
 
 func (a *App) ensureConversationMemory() *conversationMemory {
+	if a.aiConversationMemory != nil {
+		return a.aiConversationMemory
+	}
+	if strings.TrimSpace(a.testHomeDir) != "" {
+		storePath := filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json")
+		if _, err := os.Stat(storePath); err == nil {
+			a.aiConversationMemory = newPersistentConversationMemory(storePath)
+		} else {
+			a.aiConversationMemory = newConversationMemory()
+		}
+		return a.aiConversationMemory
+	}
 	a.ensureRemoteInfra()
 	if a.aiConversationMemory == nil {
 		a.aiConversationMemory = newPersistentConversationMemory(filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
@@ -897,7 +909,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
 		// Reuse the already-loaded embedder if vector search is active.
-		// Do not load a second Gemma model here — that duplicates mmap-backed
+		// Do not load a second Gemma model here 闂?that duplicates mmap-backed
 		// state and causes a large idle memory jump right after Hub connect.
 		if a.memoryStore != nil {
 			emb := a.memoryStore.Embedder()
@@ -927,14 +939,14 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			// Show a quiet notification when the task starts executing.
 			if ShowNotification != nil {
 				ShowNotification(
-					"⏰ 定时任务执行",
+					"????????",
 					fmt.Sprintf("%s: %s", task.Name, truncateStr(task.Action, 100)),
 					1, // info icon
 				)
 			}
 
 			// Progress callback: only log locally, do NOT push intermediate
-			// progress to IM — users find frequent mid-execution notifications
+			// progress to IM 闂?users find frequent mid-execution notifications
 			// annoying. We only notify on start and final result/error.
 			onProgress := func(text string) {
 				fmt.Printf("[ScheduledTask] %s progress: %s\n", task.Name, text)
@@ -942,7 +954,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 
 			// Prepend a hint so the agent knows this is an autonomous task
 			// that must complete in one shot (no user to "continue").
-			actionText := fmt.Sprintf("[自动定时任务 — 请一次性完成，不要等待用户输入]\n%s", task.Action)
+			actionText := fmt.Sprintf("[闂備胶鍘ч〃搴㈢濠婂嫭鍙忛柍鍝勫暊閸嬫挾鎲撮崟顓ф殹濠碉紕鍋涢崐鍦矉閹烘梹瀚氶柟缁樺俯濞?闂?闂佽崵濮村ú鈺併€掗崷顓犲崥闁哄鍨熼弸搴ㄦ煃閳轰礁鏆婇柛瀣崄椤︽煡鏌ｉ敐搴″⒋妤犵偛顑夐獮鍥礈娴ｄ警妲峰┑鐐村灦閹稿摜绮旈悜濮愨偓鍛存晜閸撗団攺婵犮垼娉涢敃锔剧玻閿熺姵鐓熸い顐墮婵′粙鏌涢埡鍌溾姇婵炵厧绻橀獮姗€宕橀幓鎺撹緢]\n%s", task.Action)
 
 			resp := hubClient.ensureIMHandler().HandleIMMessageWithProgress(IMUserMessage{
 				UserID:        "scheduled_task",
@@ -956,7 +968,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			}
 
 			// Push the result to the user's IM channels (Feishu/QQ) via Hub.
-			// Silently ignore send errors — Hub may be temporarily disconnected.
+			// Silently ignore send errors 闂?Hub may be temporarily disconnected.
 			resultText := resp.Text
 			hasError := resp.Error != ""
 
@@ -964,12 +976,12 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			var proactiveMsg string
 			if hasError {
 				if resultText != "" {
-					proactiveMsg = fmt.Sprintf("⏰ 定时任务「%s」执行出错:\n\n%s\n\n错误: %s", task.Name, resultText, resp.Error)
+					proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nResult:\n%s\n\nError: %s", task.Name, resultText, resp.Error)
 				} else {
-					proactiveMsg = fmt.Sprintf("⏰ 定时任务「%s」执行出错:\n\n%s", task.Name, resp.Error)
+					proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nError: %s", task.Name, resp.Error)
 				}
 			} else if resultText != "" {
-				proactiveMsg = fmt.Sprintf("⏰ 定时任务「%s」执行结果:\n\n%s", task.Name, resultText)
+				proactiveMsg = fmt.Sprintf("Task %s completed successfully.\n\nResult:\n%s", task.Name, resultText)
 			}
 
 			if proactiveMsg != "" {
@@ -987,9 +999,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 				if FlashAndBeep != nil {
 					FlashAndBeep()
 				}
-				notifTitle := "⏰ 定时任务完成"
+				notifTitle := "?????"
 				if hasError {
-					notifTitle = "⏰ 定时任务出错"
+					notifTitle = "???????"
 				}
 				if ShowNotification != nil {
 					ShowNotification(
@@ -1102,7 +1114,7 @@ func (a *App) startup(ctx context.Context) {
 		}
 		// Auto-start local MCP servers that are enabled for app launch.
 		a.autoStartLocalMCPServers(config.LocalMCPServers)
-		// Auto-start free proxy if "免费" provider is selected.
+		// Auto-start free proxy if "闂備胶顭堢换鎰矓閻戣棄鍨? provider is selected.
 		go a.ensureFreeProxyIfNeeded()
 		// Do not eagerly preload the embedding model on startup. Loading or
 		// downloading it here causes a large idle RSS spike on first install.
@@ -1124,7 +1136,7 @@ func (a *App) startup(ctx context.Context) {
 		}
 		// CodeGen SSO token validation on startup (qianxin brand only).
 		// After validation (which may refresh the token), start the local
-		// Anthropic→OpenAI proxy so Claude Code can reach CodeGen.
+		// Anthropic闂備焦鍓氶崑鍛櫠缁ㄥ攢nAI proxy so Claude Code can reach CodeGen.
 		go func() {
 			if err := a.ensureCodeGenToken(); err != nil {
 				log.Printf("[CodeGen] startup token check failed: %v", err)
@@ -1159,9 +1171,9 @@ func (a *App) domReady(ctx context.Context) {
 	// IsInitMode and PauseEnvCheck logic is handled inside CheckEnvironment
 	a.CheckEnvironment(false)
 
-	// Background update check — non-blocking, toast notification if new version available.
+	// Background update check 闂?non-blocking, toast notification if new version available.
 	go func() {
-		// Wait for startup to settle — avoid competing with other network
+		// Wait for startup to settle 闂?avoid competing with other network
 		// requests and ensure the UI is fully interactive before showing toast.
 		time.Sleep(60 * time.Second)
 		result, err := a.CheckUpdate(remoteAppVersion())
@@ -1171,7 +1183,7 @@ func (a *App) domReady(ctx context.Context) {
 		}
 		if result.HasUpdate {
 			a.emitEvent("show-toast", map[string]interface{}{
-				"message":  fmt.Sprintf("发现新版本 %s，可通过 关于 → 在线更新 升级", result.LatestVersion),
+				"message":  fmt.Sprintf("??????%s???????????", result.LatestVersion),
 				"type":     "info",
 				"duration": 8000,
 			})
@@ -1188,7 +1200,7 @@ func (a *App) GetUIZoomFactor() float64 {
 	return cfg.UIZoomFactor
 }
 
-// SetUIZoomFactor persists the UI zoom factor (clamped to 0.5–2.0).
+// SetUIZoomFactor persists the UI zoom factor (clamped to 0.5闂?.0).
 func (a *App) SetUIZoomFactor(factor float64) error {
 	if factor < 0.5 {
 		factor = 0.5
@@ -1239,6 +1251,10 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.auditLog != nil {
 		a.auditLog.Close()
+	}
+	if a.sessionSearchStore != nil {
+		_ = a.sessionSearchStore.Close()
+		a.sessionSearchStore = nil
 	}
 	if a.agentNetClient != nil {
 		a.agentNetClient.StopDaemon()
@@ -1343,6 +1359,7 @@ func (a *App) buildClaudeLaunchEnv(
 
 	env := map[string]string{}
 	env["CLAUDE_CODE_USE_COLORS"] = "true"
+	env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
 	env["MAX_THINKING_TOKENS"] = "10000"
 
 	wireAPI := effectiveToolWireAPI("claude", *selectedModel)
@@ -1365,7 +1382,7 @@ func (a *App) buildClaudeLaunchEnv(
 	}
 
 	switch strings.ToLower(selectedModel.ModelName) {
-	case "鐧惧害鍗冨竼", "百度千帆", "qianfan":
+	case "qianfan":
 		modelID := selectedModel.ModelId
 		if modelID == "" {
 			modelID = "qianfan-code-latest"
@@ -1377,7 +1394,7 @@ func (a *App) buildClaudeLaunchEnv(
 	}
 
 	// For all non-builtin (third-party) providers: disable nonessential traffic
-	// and increase API timeout. Third-party Anthropic-compatible APIs (智谱, 百度千帆,
+	// and increase API timeout. Third-party Anthropic-compatible APIs (闂備礁鎼幊妯肩磽濮橆剦娼? 闂備浇鐨崟顐㈠Б闁诲氦顫夋繛濠傜暦閿熺姴绀冮柕濞у奔绱?
 	// DeepSeek, etc.) typically have stricter rate limits than Anthropic's own API.
 	// Claude Code's internal agent loop sends requests very rapidly without human
 	// interaction pauses, which easily triggers 429 rate limits on these providers.
@@ -1418,11 +1435,11 @@ func (a *App) buildClaudeLaunchEnv(
 		}
 
 		// Backward-compat migration: if a pre-fix backup directory exists
-		// (created by the old clearClaudeConfig → backupToolNativeConfig flow),
+		// (created by the old clearClaudeConfig 闂?backupToolNativeConfig flow),
 		// restore it one last time so users don't lose their old state.
 		backupDir := filepath.Join(a.configBackupDir("claude"), ".claude")
 		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-			log.Printf("[LaunchTool] Claude: pre-fix backup found at %s — running one-time migration restore", backupDir)
+			log.Printf("[LaunchTool] Claude: pre-fix backup found at %s 闂?running one-time migration restore", backupDir)
 			a.restoreToolNativeConfig("claude")
 		}
 	}
@@ -1473,11 +1490,11 @@ func (a *App) buildCodexLaunchEnv(
 		}
 
 		// Backward-compat migration: if a pre-fix backup directory exists
-		// (created by the old clearCodexConfig → backupToolNativeConfig flow),
+		// (created by the old clearCodexConfig 闂?backupToolNativeConfig flow),
 		// restore it one last time so users don't lose their old state.
 		backupDir := filepath.Join(a.configBackupDir("codex"), ".codex")
 		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-			log.Printf("[LaunchTool] Codex: pre-fix backup found at %s — running one-time migration restore", backupDir)
+			log.Printf("[LaunchTool] Codex: pre-fix backup found at %s 闂?running one-time migration restore", backupDir)
 			a.restoreToolNativeConfig("codex")
 		}
 	}
@@ -1517,6 +1534,9 @@ func (a *App) buildOpencodeLaunchEnv(
 	} else {
 		// Restore native config so Opencode can use its own auth.
 		a.restoreToolNativeConfig("opencode")
+		if selectedModel.ModelId != "" {
+			env["OPENCODE_MODEL"] = selectedModel.ModelId
+		}
 	}
 
 	a.injectProxyEnv(env, config, projectDir, useProxy)
@@ -1556,6 +1576,9 @@ func (a *App) buildIFlowLaunchEnv(
 	} else {
 		// Restore native config so iFlow can use its own auth.
 		a.restoreToolNativeConfig("iflow")
+		if selectedModel.ModelId != "" {
+			env["IFLOW_MODEL"] = selectedModel.ModelId
+		}
 	}
 
 	a.injectProxyEnv(env, config, projectDir, useProxy)
@@ -1595,6 +1618,9 @@ func (a *App) buildKiloLaunchEnv(
 	} else {
 		// Restore native config so Kilo can use its own auth.
 		a.restoreToolNativeConfig("kilo")
+		if selectedModel.ModelId != "" {
+			env["KILO_MODEL"] = selectedModel.ModelId
+		}
 	}
 
 	a.injectProxyEnv(env, config, projectDir, useProxy)
@@ -1642,11 +1668,11 @@ func (a *App) buildGeminiLaunchEnv(
 		}
 
 		// Backward-compat migration: if a pre-fix backup directory exists
-		// (created by the old clearGeminiConfig → backupToolNativeConfig flow),
+		// (created by the old clearGeminiConfig 闂?backupToolNativeConfig flow),
 		// restore it one last time so users don't lose their old state.
 		backupDir := filepath.Join(a.configBackupDir("gemini"), ".gemini")
 		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-			log.Printf("[LaunchTool] Gemini: pre-fix backup found at %s — running one-time migration restore", backupDir)
+			log.Printf("[LaunchTool] Gemini: pre-fix backup found at %s 闂?running one-time migration restore", backupDir)
 			a.restoreToolNativeConfig("gemini")
 		}
 	}
@@ -1926,11 +1952,11 @@ func (a *App) ResizeWindow(width, height int) {
 	runtime.WindowCenter(a.ctx)
 }
 
-// RestoreWindowGeometry is no longer used — kept as no-op for binding compatibility.
+// RestoreWindowGeometry is no longer used 闂?kept as no-op for binding compatibility.
 func (a *App) RestoreWindowGeometry() {
 }
 
-// MaximiseAndSaveGeometry is no longer used — kept as no-op for binding compatibility.
+// MaximiseAndSaveGeometry is no longer used 闂?kept as no-op for binding compatibility.
 func (a *App) MaximiseAndSaveGeometry() bool {
 	return false
 }
@@ -1939,6 +1965,9 @@ func (a *App) WindowHide() {
 	runtime.WindowHide(a.ctx)
 	if UpdateTrayVisibility != nil {
 		UpdateTrayVisibility(false)
+	}
+	if fa := a.ensureFloatingAssistant(); fa != nil {
+		fa.ShowFloatingButton()
 	}
 }
 func (a *App) SetFullscreen(fullscreen bool) {
@@ -1989,7 +2018,7 @@ func (a *App) GetUserHomeDir() string {
 	return home
 }
 
-// GetDataDir returns ~/.maclaw/data — the persistent data directory that
+// GetDataDir returns ~/.maclaw/data 闂?the persistent data directory that
 // survives uninstalls and is easy to back up / transfer.
 func (a *App) GetDataDir() string {
 	return filepath.Join(a.GetUserHomeDir(), ".maclaw", "data")
@@ -2005,7 +2034,7 @@ func (a *App) userModelPath() string {
 	return filepath.Join(a.GetDataDir(), "user_model.json")
 }
 
-// GetTempDir returns ~/.maclaw/temp — the temporary directory for maclaw.
+// GetTempDir returns ~/.maclaw/temp 闂?the temporary directory for maclaw.
 func (a *App) GetTempDir() string {
 	tmp := filepath.Join(a.GetUserHomeDir(), ".maclaw", "temp")
 	_ = os.MkdirAll(tmp, 0o755)
@@ -2068,9 +2097,9 @@ func (a *App) MigrateDataDir() {
 			continue // destination already exists, skip
 		}
 		if err := os.Rename(src, dst); err != nil {
-			log.Printf("[MigrateDataDir] failed to move %s → %s: %v", src, dst, err)
+			log.Printf("[MigrateDataDir] failed to move %s 闂?%s: %v", src, dst, err)
 		} else {
-			log.Printf("[MigrateDataDir] migrated %s → %s", src, dst)
+			log.Printf("[MigrateDataDir] migrated %s 闂?%s", src, dst)
 		}
 	}
 
@@ -2253,7 +2282,7 @@ func (a *App) backupToolNativeConfig(tool string) {
 	// Only backup if the source directory actually exists and is non-empty.
 	if info, err := os.Stat(srcDir); err == nil && info.IsDir() {
 		backupDirDst := filepath.Join(backupBase, filepath.Base(srcDir))
-		// Don't overwrite an existing backup — it may contain a valid login.
+		// Don't overwrite an existing backup 闂?it may contain a valid login.
 		if _, err := os.Stat(backupDirDst); os.IsNotExist(err) {
 			os.MkdirAll(backupBase, 0755)
 			if err := os.Rename(srcDir, backupDirDst); err != nil {
@@ -2450,7 +2479,7 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_MODEL"] = selectedModel.ModelId
-	case "讯飞星辰", "xfyun":
+	case "xfyun":
 		modelId := selectedModel.ModelId
 		if modelId == "" {
 			modelId = "astron-code-latest"
@@ -2489,7 +2518,7 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
-	case "腾讯云", "tencent", "tencentcloud":
+	case "tencent", "tencentcloud":
 		env["ANTHROPIC_BASE_URL"] = "https://api.lkeap.cloud.tencent.com/coding/anthropic"
 		modelId := selectedModel.ModelId
 		if modelId == "" {
@@ -2499,7 +2528,7 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
-	case "阿里云", "aliyun":
+	case "aliyun":
 		env["ANTHROPIC_BASE_URL"] = "https://coding.dashscope.aliyuncs.com/apps/anthropic"
 		modelId := selectedModel.ModelId
 		if modelId == "" {
@@ -2509,7 +2538,7 @@ func (a *App) syncToClaudeSettings(config AppConfig, projectDir string, instance
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
-	case "百度千帆", "qianfan":
+	case "qianfan":
 		modelId := selectedModel.ModelId
 		if modelId == "" {
 			modelId = "qianfan-code-latest"
@@ -2675,7 +2704,7 @@ func (a *App) syncToOpencodeSettings(config AppConfig, projectDir string, instan
 			if baseUrl == "" {
 				baseUrl = "https://ark.cn-beijing.volces.com/api/coding/v3"
 			}
-		case "讯飞星辰", "xfyun":
+		case "xfyun":
 			modelId = "astron-code-latest"
 			if baseUrl == "" {
 				baseUrl = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
@@ -2690,12 +2719,12 @@ func (a *App) syncToOpencodeSettings(config AppConfig, projectDir string, instan
 			if baseUrl == "" {
 				baseUrl = "https://api.minimaxi.com/v1"
 			}
-		case "阿里云", "aliyun":
+		case "aliyun":
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
 			}
-		case "腾讯云", "tencent", "tencentcloud":
+		case "tencent", "tencentcloud":
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://api.lkeap.cloud.tencent.com/coding/v3"
@@ -2852,12 +2881,12 @@ func (a *App) syncToIFlowSettings(config AppConfig, projectDir string, instanceI
 			if baseUrl == "" {
 				baseUrl = "https://api.minimaxi.com/v1"
 			}
-		case "阿里云", "aliyun":
+		case "aliyun":
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
 			}
-		case "腾讯云", "tencent", "tencentcloud":
+		case "tencent", "tencentcloud":
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://api.lkeap.cloud.tencent.com/coding/v3"
@@ -2948,7 +2977,7 @@ func (a *App) syncToKiloSettings(config AppConfig, projectDir string, instanceID
 			if baseUrl == "" {
 				baseUrl = "https://api.xiaomimimo.com/v1"
 			}
-		case "阿里云", "aliyun":
+		case "aliyun":
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
@@ -3067,7 +3096,7 @@ func getBaseUrl(selectedModel *ModelConfig) string {
 		baseUrl = "https://open.bigmodel.cn/api/anthropic"
 	case "doubao":
 		baseUrl = "https://ark.cn-beijing.volces.com/api/coding"
-	case "讯飞星辰", "xfyun":
+	case "xfyun":
 		baseUrl = "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic"
 	case "minimax":
 		baseUrl = "https://api.minimaxi.com/anthropic"
@@ -3075,7 +3104,7 @@ func getBaseUrl(selectedModel *ModelConfig) string {
 		baseUrl = "https://api.deepseek.com/anthropic"
 	case "gaccode":
 		baseUrl = "https://gaccode.com/claudecode"
-	case "百度千帆", "qianfan":
+	case "qianfan":
 		baseUrl = "https://qianfan.baidubce.com/anthropic/coding"
 	}
 	return baseUrl
@@ -3166,8 +3195,8 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 	}
 	if selectedModel == nil || toolCfg.CurrentModel == "" {
-		title := "提示"
-		message := "请先选择一个服务商。"
+		title := "??"
+		message := "??????????"
 		if a.CurrentLanguage == "en" {
 			title = "Notice"
 			message = "Please select a provider first."
@@ -3267,7 +3296,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 		if strings.ToLower(toolName) == "claude" {
 			switch strings.ToLower(selectedModel.ModelName) {
-			case "百度千帆", "qianfan":
+			case "qianfan":
 				modelId := selectedModel.ModelId
 				if modelId == "" {
 					modelId = "qianfan-code-latest"
@@ -3369,7 +3398,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			// Backward-compat: restore pre-fix backup if it exists (one-time migration).
 			backupDir := filepath.Join(a.configBackupDir("claude"), ".claude")
 			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-				log.Printf("[LaunchTool-desktop] Claude: pre-fix backup found — running one-time migration restore")
+				log.Printf("[LaunchTool-desktop] Claude: pre-fix backup found 闂?running one-time migration restore")
 				a.restoreToolNativeConfig("claude")
 			}
 		case "gemini":
@@ -3378,7 +3407,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 			backupDir := filepath.Join(a.configBackupDir("gemini"), ".gemini")
 			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-				log.Printf("[LaunchTool-desktop] Gemini: pre-fix backup found — running one-time migration restore")
+				log.Printf("[LaunchTool-desktop] Gemini: pre-fix backup found 闂?running one-time migration restore")
 				a.restoreToolNativeConfig("gemini")
 			}
 		case "codex":
@@ -3387,7 +3416,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 			backupDir := filepath.Join(a.configBackupDir("codex"), ".codex")
 			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-				log.Printf("[LaunchTool-desktop] Codex: pre-fix backup found — running one-time migration restore")
+				log.Printf("[LaunchTool-desktop] Codex: pre-fix backup found 闂?running one-time migration restore")
 				a.restoreToolNativeConfig("codex")
 			}
 		default:
@@ -3520,15 +3549,15 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/anthropic", ApiKey: ""},
 		{ModelName: "Kimi", ModelId: "kimi-k2-thinking", ModelUrl: "https://api.kimi.com/coding", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding", ApiKey: ""},
-		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic", ApiKey: "", HasSubscription: true},
+		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic", ApiKey: "", HasSubscription: true},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/anthropic", ApiKey: ""},
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/anthropic", ApiKey: ""},
-		{ModelName: "百度千帆", ModelId: "qianfan-code-latest", ModelUrl: "https://qianfan.baidubce.com/anthropic/coding", ApiKey: "", HasSubscription: true},
+		{ModelName: "Baidu Qianfan", ModelId: "qianfan-code-latest", ModelUrl: "https://qianfan.baidubce.com/anthropic/coding", ApiKey: "", HasSubscription: true},
 		{ModelName: "ChatFire", ModelId: "sonnet", ModelUrl: "https://api.chatfire.cn", ApiKey: ""},
-		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/anthropic", ApiKey: "", HasSubscription: true},
-		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net", ApiKey: "", HasSubscription: true},
-		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", ApiKey: "", HasSubscription: true},
-		{ModelName: "阿里云", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic", ApiKey: "", HasSubscription: true},
+		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/anthropic", ApiKey: "", HasSubscription: true},
+		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net", ApiKey: "", HasSubscription: true},
+		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", ApiKey: "", HasSubscription: true},
+		{ModelName: "Aliyun", ModelId: "glm-5", ModelUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -3552,12 +3581,12 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
-		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
+		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
-		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
-		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
-		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
+		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -3571,12 +3600,12 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
-		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
+		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
-		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
-		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
-		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
+		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -3589,13 +3618,13 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
-		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
+		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
 		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
-		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
-		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
-		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
+		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 	}
@@ -3605,13 +3634,13 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
-		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
+		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
 		{ModelName: "XiaoMi", ModelId: "mimo-v2-flash", ModelUrl: "https://api.xiaomimimo.com/v1", ApiKey: ""},
-		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
-		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
-		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
+		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -3626,12 +3655,12 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
 		{ModelName: "GLM", ModelId: "glm-4.7", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
 		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
-		{ModelName: "讯飞星辰", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
+		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
 		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
 		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
-		{ModelName: "腾讯云", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
-		{ModelName: "摩尔线程", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
-		{ModelName: "快手", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
+		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
+		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
 		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
 		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
@@ -3974,96 +4003,96 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 	ensureModel(&config.Claude.Models, "DeepSeek", "https://api.deepseek.com/anthropic", "deepseek-chat", "anthropic")
 	ensureModel(&config.Claude.Models, "Kimi", "https://api.kimi.com/coding", "kimi-k2-thinking", "anthropic")
 	ensureModel(&config.Claude.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding", "doubao-seed-code-preview-latest", "anthropic")
-	ensureModel(&config.Claude.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic", "astron-code-latest", "anthropic", true)
+	ensureModel(&config.Claude.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic", "astron-code-latest", "anthropic", true)
 	ensureModel(&config.Claude.Models, "GLM", "https://open.bigmodel.cn/api/anthropic", "glm-4.7", "anthropic")
 	ensureModel(&config.Claude.Models, "MiniMax", "https://api.minimaxi.com/anthropic", "MiniMax-M2.1", "anthropic")
-	ensureModel(&config.Claude.Models, "百度千帆", "https://qianfan.baidubce.com/anthropic/coding", "qianfan-code-latest", "anthropic", true)
+	ensureModel(&config.Claude.Models, "Baidu Qianfan", "https://qianfan.baidubce.com/anthropic/coding", "qianfan-code-latest", "anthropic", true)
 	ensureModel(&config.Claude.Models, "XiaoMi", "https://api.xiaomimimo.com/anthropic", "mimo-v2-flash", "anthropic")
-	ensureModel(&config.Claude.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/anthropic", "glm-5", "anthropic", true)
-	ensureModel(&config.Claude.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net", "GLM-4.7", "anthropic", true)
-	ensureModel(&config.Claude.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "anthropic", true)
-	ensureModel(&config.Claude.Models, "阿里云", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "anthropic", true)
+	ensureModel(&config.Claude.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/anthropic", "glm-5", "anthropic", true)
+	ensureModel(&config.Claude.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net", "GLM-4.7", "anthropic", true)
+	ensureModel(&config.Claude.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/kat-coder-pro-v1/claude-code-proxy", "kat-coder-pro-v1", "anthropic", true)
+	ensureModel(&config.Claude.Models, "Aliyun", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "anthropic", true)
 	ensureModel(&config.Gemini.Models, "ChatFire", "https://api.chatfire.cn/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro", "")
 	ensureModel(&config.Codex.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
 	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5-turbo", "")
 	ensureModel(&config.Codex.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
-	ensureModel(&config.Codex.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
+	ensureModel(&config.Codex.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
 	ensureModel(&config.Codex.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.Codex.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.Codex.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
-	ensureModel(&config.Codex.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
-	ensureModel(&config.Codex.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
-	ensureModel(&config.Codex.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
+	ensureModel(&config.Codex.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
+	ensureModel(&config.Codex.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
+	ensureModel(&config.Codex.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.Opencode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Opencode.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Opencode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.Opencode.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
-	ensureModel(&config.Opencode.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
+	ensureModel(&config.Opencode.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.Opencode.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.Opencode.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.Opencode.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
-	ensureModel(&config.Opencode.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
-	ensureModel(&config.Opencode.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
-	ensureModel(&config.Opencode.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
+	ensureModel(&config.Opencode.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
+	ensureModel(&config.Opencode.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
+	ensureModel(&config.Opencode.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.CodeBuddy.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.CodeBuddy.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.CodeBuddy.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
-	ensureModel(&config.CodeBuddy.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
+	ensureModel(&config.CodeBuddy.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.CodeBuddy.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.CodeBuddy.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.CodeBuddy.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
-	ensureModel(&config.CodeBuddy.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
-	ensureModel(&config.CodeBuddy.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
-	ensureModel(&config.CodeBuddy.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
+	ensureModel(&config.CodeBuddy.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
+	ensureModel(&config.CodeBuddy.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
+	ensureModel(&config.CodeBuddy.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.IFlow.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.IFlow.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.IFlow.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
-	ensureModel(&config.IFlow.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
+	ensureModel(&config.IFlow.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.IFlow.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.IFlow.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.IFlow.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
-	ensureModel(&config.IFlow.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
-	ensureModel(&config.IFlow.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
-	ensureModel(&config.IFlow.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
+	ensureModel(&config.IFlow.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
+	ensureModel(&config.IFlow.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
+	ensureModel(&config.IFlow.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	ensureModel(&config.Kilo.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Kilo.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Kilo.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.Kilo.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
-	ensureModel(&config.Kilo.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
+	ensureModel(&config.Kilo.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "", true)
 	ensureModel(&config.Kilo.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.Kilo.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.Kilo.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
-	ensureModel(&config.Kilo.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
-	ensureModel(&config.Kilo.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
-	ensureModel(&config.Kilo.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
+	ensureModel(&config.Kilo.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
+	ensureModel(&config.Kilo.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
+	ensureModel(&config.Kilo.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 	// Cursor Agent uses OpenAI-compatible protocol, same providers as Codex
 	ensureModel(&config.Cursor.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
 	ensureModel(&config.Cursor.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Cursor.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
 	ensureModel(&config.Cursor.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
-	ensureModel(&config.Cursor.Models, "讯飞星辰", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
+	ensureModel(&config.Cursor.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
 	ensureModel(&config.Cursor.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
 	ensureModel(&config.Cursor.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
 	ensureModel(&config.Cursor.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
-	ensureModel(&config.Cursor.Models, "腾讯云", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
-	ensureModel(&config.Cursor.Models, "摩尔线程", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
-	ensureModel(&config.Cursor.Models, "快手", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
+	ensureModel(&config.Cursor.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
+	ensureModel(&config.Cursor.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
+	ensureModel(&config.Cursor.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
 
 	// Purge Aliyun from other tools if it exists
-	removeModel(&config.Gemini.Models, "阿里云")
-	removeModel(&config.Codex.Models, "阿里云")
-	removeModel(&config.Opencode.Models, "阿里云")
-	removeModel(&config.CodeBuddy.Models, "阿里云")
-	removeModel(&config.Gemini.Models, "百度千帆")
-	removeModel(&config.Codex.Models, "百度千帆")
-	removeModel(&config.Opencode.Models, "百度千帆")
-	removeModel(&config.CodeBuddy.Models, "百度千帆")
-	removeModel(&config.IFlow.Models, "百度千帆")
-	removeModel(&config.Kilo.Models, "百度千帆")
-	removeModel(&config.IFlow.Models, "阿里云")
-	removeModel(&config.Kilo.Models, "阿里云")
-	removeModel(&config.Cursor.Models, "阿里云")
+	removeModel(&config.Gemini.Models, "Aliyun")
+	removeModel(&config.Codex.Models, "Aliyun")
+	removeModel(&config.Opencode.Models, "Aliyun")
+	removeModel(&config.CodeBuddy.Models, "Aliyun")
+	removeModel(&config.Gemini.Models, "Baidu Qianfan")
+	removeModel(&config.Codex.Models, "Baidu Qianfan")
+	removeModel(&config.Opencode.Models, "Baidu Qianfan")
+	removeModel(&config.CodeBuddy.Models, "Baidu Qianfan")
+	removeModel(&config.IFlow.Models, "Baidu Qianfan")
+	removeModel(&config.Kilo.Models, "Baidu Qianfan")
+	removeModel(&config.IFlow.Models, "Aliyun")
+	removeModel(&config.Kilo.Models, "Aliyun")
+	removeModel(&config.Cursor.Models, "Aliyun")
 	removeModel(&config.Gemini.Models, "aliyun")
 	removeModel(&config.Codex.Models, "aliyun")
 	removeModel(&config.Opencode.Models, "aliyun")
@@ -4071,7 +4100,7 @@ func (a *App) loadConfigLocked() (AppConfig, error) {
 	removeModel(&config.IFlow.Models, "aliyun")
 	removeModel(&config.Kilo.Models, "aliyun")
 	removeModel(&config.Cursor.Models, "aliyun")
-	removeModel(&config.Cursor.Models, "百度千帆")
+	removeModel(&config.Cursor.Models, "Baidu Qianfan")
 
 	// Ensure 'Original' is always present and first
 	ensureOriginal := func(models *[]ModelConfig) {
@@ -4450,7 +4479,7 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		a.log(a.tr("CheckUpdate: Failed to create request: %v", err))
-		return UpdateResult{LatestVersion: "检查失败", ReleaseUrl: ""}, err
+		return UpdateResult{LatestVersion: "", ReleaseUrl: ""}, err
 	}
 	req.Header.Set("User-Agent", brand.Current().DisplayName)
 	// Add GitHub token for authentication (helps avoid rate limiting)
@@ -4483,7 +4512,7 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	resp, err := client.Do(req)
 	if err != nil {
 		a.log(a.tr("CheckUpdate: Failed to fetch GitHub API: %v", err))
-		return UpdateResult{LatestVersion: "网络错误", ReleaseUrl: ""}, err
+		return UpdateResult{LatestVersion: "fetch_failed", ReleaseUrl: ""}, err
 	}
 	defer resp.Body.Close()
 	a.log(a.tr("CheckUpdate: HTTP Status: %d", resp.StatusCode))
@@ -4503,18 +4532,18 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 			if remaining == "0" {
 				resetTime := resp.Header.Get("X-RateLimit-Reset")
 				a.log(a.tr("CheckUpdate: Rate limit exceeded, resets at: %s", resetTime))
-				return UpdateResult{LatestVersion: "速率限制", ReleaseUrl: ""},
-					fmt.Errorf("github api rate limit exceeded (resets at %s)", resetTime)
+				return UpdateResult{LatestVersion: "rate_limited", ReleaseUrl: ""}, fmt.Errorf("github api rate limit exceeded (resets at %s)", resetTime)
+				fmt.Errorf("github api rate limit exceeded (resets at %s)", resetTime)
 			}
-			return UpdateResult{LatestVersion: "访问受限", ReleaseUrl: ""},
-				fmt.Errorf("github api access forbidden (status 403)")
+			return UpdateResult{LatestVersion: "forbidden", ReleaseUrl: ""}, fmt.Errorf("github api access forbidden (status 403)")
+
 		}
-		return UpdateResult{LatestVersion: "API错误", ReleaseUrl: ""}, fmt.Errorf("github api returned status %d", resp.StatusCode)
+		return UpdateResult{LatestVersion: "api_error", ReleaseUrl: ""}, fmt.Errorf("github api returned status %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		a.log(a.tr("CheckUpdate: Failed to read response body: %v", err))
-		return UpdateResult{LatestVersion: "读取失败", ReleaseUrl: ""}, err
+		return UpdateResult{LatestVersion: "read_failed", ReleaseUrl: ""}, err
 	}
 	// Log raw response for debugging
 	a.log(a.tr("CheckUpdate: Raw response length: %d bytes", len(body)))
@@ -4524,7 +4553,7 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 	if err := json.Unmarshal(body, &release); err != nil {
 		a.log(a.tr("CheckUpdate: Failed to parse JSON: %v", err))
 		a.log(a.tr("CheckUpdate: Response body: %s", string(body[:min(len(body), 500)])))
-		return UpdateResult{LatestVersion: "解析失败", ReleaseUrl: ""}, err
+		return UpdateResult{LatestVersion: "parse_failed", ReleaseUrl: ""}, err
 	}
 	// Log parsed keys
 	a.log(a.tr("CheckUpdate: Parsed keys: %v", getMapKeys(release)))
@@ -4540,7 +4569,7 @@ func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
 		a.log(a.tr("CheckUpdate: Found version in 'name' field: %s", tagName))
 	} else {
 		a.log(a.tr("CheckUpdate: Neither 'name' nor 'tag_name' found. Available: %v", release))
-		return UpdateResult{LatestVersion: "找不到版本号", ReleaseUrl: ""}, fmt.Errorf("no version found in release")
+		return UpdateResult{LatestVersion: "unknown", ReleaseUrl: ""}, fmt.Errorf("no version found in release")
 	}
 	a.log(a.tr("CheckUpdate: Using version: %s", tagName))
 	// Extract release URL
@@ -4696,10 +4725,10 @@ func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("安装包不存在，该版本的安装包可能尚未发布 (HTTP 404)")
+		return "", fmt.Errorf("闂佽娴烽幊鎾凰囬幎鍓垮绻濋崶褏顦遍梺鍛婁緱閸撴盯鎮峰┑瀣€垫繛鎴烆仾椤忓嫸鑰挎い蹇撶墛閺咁剛鈧厜鍋撻柛鎰劤濞堟瑩姊虹紒姗嗘當闁绘锕ら敃銏″鐎涙ê鍓梺鍛婃处閸嬪棝寮抽弮鍫熷仭濞达絽鎲￠崳褰掓倵閸偓鑰跨€规洩缍侀、娑樷攽閸℃绠ｉ梺璇茬箰缁绘垹鍠婂鍜冭€挎い鎾卞灩閻鏌熺€涙绠樻い?(HTTP 404)")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载失败: %s", resp.Status)
+		return "", fmt.Errorf("濠电偞鍨堕幐鎼侇敄閸緷褰掑炊閵娿儳绐為柡澶婄墱閸嬪顤? %s", resp.Status)
 	}
 	// Validation Logic
 	// 1. Check Content-Type
@@ -4878,9 +4907,15 @@ func (a *App) ShowToast(message, typ string) {
 	})
 }
 func (a *App) emitEvent(name string, data ...interface{}) {
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, name, data...)
+	if a.ctx == nil {
+		return
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[wails] emitEvent skipped name=%s err=%v", name, r)
+		}
+	}()
+	runtime.EventsEmit(a.ctx, name, data...)
 }
 func (a *App) ClipboardGetText() (string, error) {
 	// Try Wails runtime first
@@ -5548,8 +5583,8 @@ func (a *App) ListSkills(toolName string) []Skill {
 		Value:       "document-skills@anthropic-agent-skills",
 	})
 	defaultSkills = append(defaultSkills, Skill{
-		Name:        "超能力技能包",
-		Description: "包含各种方便技能，包括头脑风暴等。",
+		Name:        "Superpowers Marketplace",
+		Description: "Superpowers marketplace skill source",
 		Type:        "address",
 		Value:       "superpowers@superpowers-marketplace",
 	})
@@ -5709,7 +5744,7 @@ func (a *App) validateSkillZip(path string) error {
 		return nil
 	}
 	if rootHasLegacyMD || rootHasLegacyMeta {
-		return fmt.Errorf("检测到旧格式技能包（SKILL.md/_meta.json）；请升级为 skill.yaml 或 skill.md")
+		return fmt.Errorf("婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂佺硶鏅涢惌鍌氼嚕椤旀妲奸梺缁橆殘椤牓顢氶敐鍫㈢杸闁哄倽顕冲Δ鍛厾閻庡湱濮甸ˉ澶愭倵閸偓鑰块柡浣哥Ч瀹曠兘鎮扮徊鈧琇L.md/_meta.json闂備焦瀵х粙鎴βㄩ埀顒傜磼鏉堫偂鍚柟椋庡Т閻ｏ繝寮剁捄顭掔处缂傚倷鑳剁€氬繘宕掑┑鍫Ч skill.yaml 闂?skill.md")
 	}
 	if len(layouts) == 0 {
 		if rootFileCount > 0 {
@@ -6065,398 +6100,17 @@ func (a *App) DeleteSkill(name, toolName string) error {
 
 // Translation logic
 var translations = map[string]map[string]string{
-	"Checking Node.js installation...": {
-		"zh-Hans": "正在检查 Node.js 安装...",
-		"zh-Hant": "正在檢查 Node.js 安裝...",
-	},
-	"Initializing...": {
-		"zh-Hans": "初始化中...",
-		"zh-Hant": "初始化中...",
-	},
-	"Skipping environment check and installation.": {
-		"zh-Hans": "跳过环境检测安装。",
-		"zh-Hant": "跳過環境檢測安裝。",
-	},
-	"Manual environment check triggered.": {
-		"zh-Hans": "手动触发环境检测。",
-		"zh-Hant": "手動觸發環境檢測。",
-	},
-	"Detected missing .maclaw/data directory. Forcing environment check...": {
-		"zh-Hans": "检测到缺失 .maclaw/data 目录。正在强制进行环境检测...",
-		"zh-Hant": "檢測到缺失 .maclaw/data 目錄。正在強制進行環境檢測...",
-	},
-	"Init mode: Forcing environment check (ignoring configuration).": {
-		"zh-Hans": "初始化模式：正在强制进行环境检测（忽略配置）。",
-		"zh-Hant": "初始化模式：正在強制進行環境檢測（忽略配置）。",
-	},
-	"Forced environment check triggered (ignoring configuration).": {
-		"zh-Hans": "已触发强制环境检测（忽略配置）。",
-		"zh-Hant": "已觸發強制環境檢測（忽略配置）。",
-	},
-	"Forced environment check triggered.": {
-		"zh-Hans": "已触发强制环境检测。",
-		"zh-Hant": "已觸發強制環境檢測。",
-	},
-	"Node.js not found. Downloading and installing...": {
-		"zh-Hans": "未找到 Node.js。正在下载并安装...",
-		"zh-Hant": "未找到 Node.js。正在下載並安裝...",
-	},
-	"Node.js not found. Attempting manual installation...": {
-		"zh-Hans": "未找到 Node.js。尝试手动安...",
-		"zh-Hant": "未找到 Node.js。嘗試手動安...",
-	},
-	"Node.js installed successfully.": {
-		"zh-Hans": "Node.js 安装成功。",
-		"zh-Hant": "Node.js 安裝成功。",
-	},
-	"Node.js is installed.": {
-		"zh-Hans": "Node.js 已安装。",
-		"zh-Hant": "Node.js 已安裝。",
-	},
-	"Node.js is already installed.": {
-		"zh-Hans": "Node.js 已经安装。",
-		"zh-Hant": "Node.js 已經安裝。",
-	},
-	"Node.js installation already in progress, waiting for completion...": {
-		"zh-Hans": "Node.js 正在安装中，等待完成...",
-		"zh-Hant": "Node.js 正在安裝中，等待完成...",
-	},
-	"Node.js installation completed by another process.": {
-		"zh-Hans": "Node.js 安装已由另一个进程完成。",
-		"zh-Hant": "Node.js 安裝已由另一個進程完成。",
-	},
-	"ERROR: Timeout waiting for Node.js installation to complete.": {
-		"zh-Hans": "错误：等待 Node.js 安装完成超时。",
-		"zh-Hant": "錯誤：等待 Node.js 安裝完成超時。",
-	},
-	"ERROR: Node.js is not available. Cannot proceed with AI tools installation.": {
-		"zh-Hans": "错误：Node.js 不可用。无法继续安装 AI 工具。",
-		"zh-Hant": "錯誤：Node.js 不可用。無法繼續安裝 AI 工具。",
-	},
-	"Retrying npm verification (attempt %d/%d)...": {
-		"zh-Hans": "重试 npm 验证（第 %d/%d 次尝试）...",
-		"zh-Hant": "重試 npm 驗證（第 %d/%d 次嘗試）...",
-	},
-	"npm not found in PATH, updating environment...": {
-		"zh-Hans": "在 PATH 中未找到 npm，正在更新环境...",
-		"zh-Hant": "在 PATH 中未找到 npm，正在更新環境...",
-	},
-	"npm command test failed: %v": {
-		"zh-Hans": "npm 命令测试失败：%v",
-		"zh-Hant": "npm 命令測試失敗：%v",
-	},
-	"ERROR: npm not found after %d attempts. Cannot install AI tools. Please ensure Node.js is properly installed.": {
-		"zh-Hans": "错误：经过 %d 次尝试后仍未找到 npm。无法安装 AI 工具。请确保 Node.js 已正确安装。",
-		"zh-Hant": "錯誤：經過 %d 次嘗試後仍未找到 npm。無法安裝 AI 工具。請確保 Node.js 已正確安裝。",
-	},
-	"Checking Git installation...": {
-		"zh-Hans": "正在检查 Git 安装...",
-		"zh-Hant": "正在檢查 Git 安裝...",
-	},
-	"Git found in standard location.": {
-		"zh-Hans": "在标准位置找到 Git",
-		"zh-Hant": "在標準位置找到 Git",
-	},
-	"Git not found. Downloading and installing...": {
-		"zh-Hans": "未找到 Git。正在下载并安装...",
-		"zh-Hant": "未找到?Git。正在下載並安裝...",
-	},
-	"Git installed successfully.": {
-		"zh-Hans": "Git 安装成功",
-		"zh-Hant": "Git 安裝成功",
-	},
-	"Git is installed.": {
-		"zh-Hans": "Git 已安装",
-		"zh-Hant": "Git 已安裝",
-	},
-	"Environment check complete.": {
-		"zh-Hans": "环境检查完成",
-		"zh-Hant": "環境檢查完成",
-	},
-	"npm not found.": {
-		"zh-Hans": "未找到 npm",
-		"zh-Hant": "未找到 npm",
-	},
-	// Templates
-	"Checking %s...": {
-		"zh-Hans": "正在检查 %s...",
-		"zh-Hant": "正在檢查 %s...",
-	},
-	"%s not found. Attempting automatic installation...": {
-		"zh-Hans": "未找到 %s。尝试自动安装...",
-		"zh-Hant": "未找到?%s。嘗試自動安...",
-	},
-	"ERROR: Failed to install %s: %v": {
-		"zh-Hans": "错误：安装 %s 失败: %v",
-		"zh-Hant": "錯誤：安裝 %s 失敗: %v",
-	},
-	"%s installed successfully.": {
-		"zh-Hans": "%s 安装成功",
-		"zh-Hant": "%s 安裝成功",
-	},
-	"%s found at %s (version: %s).": {
-		"zh-Hans": "发现 %s 位于 %s (版本: %s)",
-		"zh-Hant": "發現 %s 位於 %s (版本: %s)",
-	},
-	"Checking for %s updates...": {
-		"zh-Hans": "正在检查 %s 更新...",
-		"zh-Hant": "正在檢查 %s 更新...",
-	},
-	"New version available for %s: %s (current: %s). Updating...": {
-		"zh-Hans": "%s 有新版本可用: %s (当前: %s)。正在更...",
-		"zh-Hant": "%s 有新版本可用: %s (當前: %s)。正在更...",
-	},
-	"ERROR: Failed to update %s: %v": {
-		"zh-Hans": "错误：更新 %s 失败: %v",
-		"zh-Hant": "錯誤：更新 %s 失敗: %v",
-	},
-	"%s updated successfully to %s.": {
-		"zh-Hans": "%s 成功更新到 %s",
-		"zh-Hant": "%s 成功更新到 %s",
-	},
-	"CheckUpdate: Starting check against %s": {
-		"zh-Hans": "检查更新：正在从 %s 检查...",
-		"zh-Hant": "檢查更新：正在從 %s 檢查...",
-	},
-	"CheckUpdate: Failed to create request: %v": {
-		"zh-Hans": "检查更新：创建请求失败: %v",
-		"zh-Hant": "檢查更新：建立請求失敗: %v",
-	},
-	"CheckUpdate: Failed to decode token at iteration %d: %v": {
-		"zh-Hans": "检查更新：第 %d 次迭代解码令牌失败: %v",
-		"zh-Hant": "檢查更新：第 %d 次迭代解碼令牌失敗: %v",
-	},
-	"CheckUpdate: HTTP Status: %d": {
-		"zh-Hans": "检查更新：HTTP 状态码: %d",
-		"zh-Hant": "檢查更新：HTTP 狀態碼: %d",
-	},
-	"CheckUpdate: Rate Limit: %s/%s, Reset: %s": {
-		"zh-Hans": "检查更新：速率限制: %s/%s, 重置时间: %s",
-		"zh-Hant": "檢查更新：速率限制: %s/%s, 重置時間: %s",
-	},
-	"CheckUpdate: Response: %s": {
-		"zh-Hans": "检查更新：响应内容: %s",
-		"zh-Hant": "檢查更新：響應內容: %s",
-	},
-	"CheckUpdate: Failed to read response body: %v": {
-		"zh-Hans": "检查更新：读取响应体失败: %v",
-		"zh-Hant": "檢查更新：讀取響應體失敗: %v",
-	},
-	"CheckUpdate: Raw response length: %d bytes": {
-		"zh-Hans": "检查更新：原始响应长度: %d 字节",
-		"zh-Hant": "檢查更新：原始響應長�? %d 位元",
-	},
-	"CheckUpdate: Response body: %s": {
-		"zh-Hans": "检查更新：响应体: %s",
-		"zh-Hant": "檢查更新：響應體: %s",
-	},
-	"CheckUpdate: Parsed keys: %v": {
-		"zh-Hans": "检查更新：解析出的键: %v",
-		"zh-Hant": "檢查更新：解析出的鍵: %v",
-	},
-	"CheckUpdate: Found version in 'tag_name' field: %s": {
-		"zh-Hans": "检查更新：在 'tag_name' 字段中找到版本 %s",
-		"zh-Hant": "檢查更新：在 'tag_name' 欄位中找到版�? %s",
-	},
-	"CheckUpdate: Found version in 'name' field: %s": {
-		"zh-Hans": "检查更新：在 'name' 字段中找到版本 %s",
-		"zh-Hant": "檢查更新：在 'name' 欄位中找到版�? %s",
-	},
-	"CheckUpdate: Neither 'name' nor 'tag_name' found. Available: %v": {
-		"zh-Hans": "检查更新：未找到 'name' 或 'tag_name'。可用字段: %v",
-		"zh-Hant": "檢查更新：未找到 'name' �?'tag_name'。可用欄�? %v",
-	},
-	"CheckUpdate: Using version: %s": {
-		"zh-Hans": "检查更新：使用版本: %s",
-		"zh-Hant": "檢查更新：使用版�? %s",
-	},
-	"CheckUpdate: Using built-in GitHub token for authentication": {
-		"zh-Hans": "检查更新：使用内置 GitHub 令牌进行身份验证",
-		"zh-Hant": "檢查更新：使用內�?GitHub 令牌進行身份驗證",
-	},
-	"CheckUpdate: Using custom GitHub token from environment variable": {
-		"zh-Hans": "检查更新：使用环境变量中的自定义 GitHub 令牌",
-		"zh-Hant": "檢查更新：使用環境變數中的自定義 GitHub 令牌",
-	},
-	"CheckUpdate: Already on latest version": {
-		"zh-Hans": "检查更新：已是最新版",
-		"zh-Hant": "檢查更新：已是最新版",
-	},
-	"CheckUpdate: Latest version: %s, Current version: %s, Display version: %s": {
-		"zh-Hans": "检查更新：最新版本 %s, 当前版本: %s, 显示版本: %s",
-		"zh-Hant": "檢查更新：最新版�? %s, 當前版本: %s, 顯示版本: %s",
-	},
-	"CheckUpdate: Update available! %s > %s": {
-		"zh-Hans": "检查更新：发现新版本！ %s > %s",
-		"zh-Hant": "檢查更新：發現新版本�?%s > %s",
-	},
-	"CheckUpdate: Failed to fetch GitHub API: %v": {
-		"zh-Hans": "检查更新：获取 GitHub API 失败: %v",
-		"zh-Hant": "檢查更新：獲�?GitHub API 失敗: %v",
-	},
-	"CheckUpdate: Rate limit exceeded, resets at: %s": {
-		"zh-Hans": "检查更新：超出速率限制，重置时间 %s",
-		"zh-Hant": "檢查更新：超出速率限制，重置時�? %s",
-	},
-	"CheckUpdate: Failed to parse JSON: %v": {
-		"zh-Hans": "检查更新：解析 JSON 失败: %v",
-		"zh-Hant": "檢查更新：解�?JSON 失敗: %v",
-	},
-	"CheckUpdate: GitHub API returned status %d": {
-		"zh-Hans": "检查更新：GitHub API 返回状态 %d",
-		"zh-Hant": "檢查更新：GitHub API 返回狀�?%d",
-	},
-	"Config file modified: ": {
-		"zh-Hans": "配置文件已修改：",
-		"zh-Hant": "配置文件已修改：",
-	},
-	"Updated PATH environment variable: ": {
-		"zh-Hans": "已更新 PATH 环境变量",
-		"zh-Hant": "已更�?PATH 環境變數",
-	},
-	"Updated PATH environment variable for Git.": {
-		"zh-Hans": "已为 Git 更新 PATH 环境变量",
-		"zh-Hant": "已為 Git 更新 PATH 環境變數",
-	},
-	"Installing Node.js (this may take a moment, please grant administrator permission if prompted)...": {
-		"zh-Hans": "正在安装 Node.js (这可能需要一些时间，如果提示请授予管理员权限)...",
-		"zh-Hant": "正在安裝 Node.js (這可能需要一些時間，如果提示請授予管理員權限)...",
-	},
-	"Installing Git (this may take a moment, please grant administrator permission if prompted)...": {
-		"zh-Hans": "正在安装 Git (这可能需要一些时间，如果提示请授予管理员权限)...",
-		"zh-Hant": "正在安裝 Git (這可能需要一些時間，如果提示請授予管理員權限)...",
-	},
-	"Downloading Node.js %s for %s...": {
-		"zh-Hans": "正在下载 Node.js %s (%s)...",
-		"zh-Hant": "正在下載 Node.js %s (%s)...",
-	},
-	"Downloading Node.js v%s from %s...": {
-		"zh-Hans": "正在从 %s 下载 Node.js v%s...",
-		"zh-Hant": "正在�?%s 下載 Node.js v%s...",
-	},
-	"Downloading Git %s...": {
-		"zh-Hans": "正在下载 Git %s...",
-		"zh-Hant": "正在下載 Git %s...",
-	},
-	"Downloading (%.1f%%): %d/%d bytes": {
-		"zh-Hans": "正在下载 (%.1f%%): %d/%d 字节",
-		"zh-Hant": "正在下載 (%.1f%%): %d/%d 字節",
-	},
-	"Node.js installer is not accessible (Status: %s). Please check your internet connection or mirror availability.": {
-		"zh-Hans": "无法访问 Node.js 安装程序 (状态 %s)。请检查您的网络连接或镜像可用性",
-		"zh-Hant": "無法訪問 Node.js 安裝程序 (狀�? %s)。請檢查您的網絡連接或鏡像可用性",
-	},
-	"Failed to install Node.js: ": {
-		"zh-Hans": "安装 Node.js 失败: ",
-		"zh-Hant": "安裝 Node.js 失敗: ",
-	},
-	"Node.js not found. Checking for Homebrew...": {
-		"zh-Hans": "未找到 Node.js。正在检查 Homebrew...",
-		"zh-Hant": "未找到 Node.js。正在檢查?Homebrew...",
-	},
-	"Installing Node.js via Homebrew...": {
-		"zh-Hans": "正在通过 Homebrew 安装 Node.js...",
-		"zh-Hant": "正在通過 Homebrew 安裝 Node.js...",
-	},
-	"Homebrew installation failed.": {
-		"zh-Hans": "Homebrew 安装失败",
-		"zh-Hant": "Homebrew 安裝失敗",
-	},
-	"Node.js installed via Homebrew.": {
-		"zh-Hans": "Node.js 已通过 Homebrew 安装",
-		"zh-Hant": "Node.js 已通過 Homebrew 安裝",
-	},
-	"Homebrew not found. Attempting manual installation...": {
-		"zh-Hans": "未找到 Homebrew。尝试手动安装...",
-		"zh-Hant": "未找到?Homebrew。嘗試手動安...",
-	},
-	"Manual installation failed: ": {
-		"zh-Hans": "手动安装失败: ",
-		"zh-Hant": "手動安裝失敗: ",
-	},
-	"Downloading Node.js from %s": {
-		"zh-Hans": "正在从 %s 下载 Node.js",
-		"zh-Hant": "正在�?%s 下載 Node.js",
-	},
-	"Extracting Node.js (this should be fast)...": {
-		"zh-Hans": "正在解压 Node.js (这应该很....",
-		"zh-Hant": "正在解壓 Node.js (這應該很....",
-	},
-	"Extracting Node.js...": {
-		"zh-Hans": "正在解压 Node.js...",
-		"zh-Hant": "正在解壓 Node.js...",
-	},
-	"Node.js manually installed to ": {
-		"zh-Hans": "Node.js 已手动安装到 ",
-		"zh-Hant": "Node.js 已手動安裝到 ",
-	},
-	"Verifying Node.js installation...": {
-		"zh-Hans": "正在验证 Node.js 安装...",
-		"zh-Hant": "正在驗證 Node.js 安裝...",
-	},
-	"Node.js installation completed but binary not found.": {
-		"zh-Hans": "Node.js 安装完成但未找到二进制文件",
-		"zh-Hant": "Node.js 安裝完成但未找到二進制文件",
-	},
-	"Node.js found at: ": {
-		"zh-Hans": "Node.js 位于: ",
-		"zh-Hant": "Node.js 位於: ",
-	},
-	"Updated PATH: ": {
-		"zh-Hans": "已更新 PATH: ",
-		"zh-Hant": "已更新 PATH: ",
-	},
-	"Running installation: %s %s": {
-		"zh-Hans": "正在运行安装: %s %s",
-		"zh-Hant": "正在運行安裝: %s %s",
-	},
-	"Detected npm cache permission issue. Attempting to clear cache...": {
-		"zh-Hans": "检测到 npm 缓存权限问题。正在尝试清理缓...",
-		"zh-Hant": "檢測�?npm 緩存權限問題。正在嘗試清理緩...",
-	},
-	"Retrying installation after cache clean...": {
-		"zh-Hans": "清理缓存后重试安...",
-		"zh-Hant": "清理緩存後重試安...",
-	},
-	"Running update: %s %s": {
-		"zh-Hans": "正在运行更新: %s %s",
-		"zh-Hant": "正在運行更新: %s %s",
-	},
-	"Warning: Failed to create local npm cache dir: %v": {
-		"zh-Hans": "警告: 创建本地 npm 缓存目录失败: %v",
-		"zh-Hant": "警告: 創建本地 npm 緩存目錄失敗: %v",
-	},
-	"Found conda environment: %s at %s": {
-		"zh-Hans": "发现 conda 环境: %s 位于 %s",
-		"zh-Hant": "發現 conda 環境: %s 位於 %s",
-	},
-	"Using conda command: ": {
-		"zh-Hans": "使用 conda 命令: ",
-		"zh-Hant": "使用 conda 命令: ",
-	},
-	"Note: Unable to list conda environments via command (conda may not be fully initialized): ": {
-		"zh-Hans": "注意：无法通过命令列出 conda 环境（conda 可能未完全初始化）: ",
-		"zh-Hant": "注意：無法通過命令列出 conda 環境（conda 可能未完全初始化）: ",
-	},
-	"Total conda environments found: %d": {
-		"zh-Hans": "共发现 %d 个 conda 环境",
-		"zh-Hant": "共發�?%d �?conda 環境",
-	},
-	"Found conda from CONDA_EXE: ": {
-		"zh-Hans": "从 CONDA_EXE 发现 conda: ",
-		"zh-Hant": "�?CONDA_EXE 發現 conda: ",
-	},
-	"Found conda in PATH: ": {
-		"zh-Hans": "从 PATH 中发现 conda: ",
-		"zh-Hant": "�?PATH 中發�?conda: ",
-	},
-	"Searching for conda in %d common paths...": {
-		"zh-Hans": "正在 %d 个常用路径中搜索 conda...",
-		"zh-Hant": "正在 %d 個常用路徑中搜索 conda...",
-	},
-	"Found conda at: ": {
-		"zh-Hans": "发现 conda 位于: ",
-		"zh-Hant": "發現 conda 位於: ",
+	"Show AI assistant button": {
+		"zh-Hans": "鏄剧ず AI 鍔╂墜鎸夐挳",
+		"zh-Hant": "椤ず AI 鍔╂墜鎸夐垥",
+	},
+	"Service Redeem": {
+		"zh-Hans": "鏈嶅姟鍏戞崲",
+		"zh-Hant": "鏈嶅嫏鍏屾彌",
+	},
+	"Security": {
+		"zh-Hans": "瀹夊叏绠＄悊",
+		"zh-Hant": "瀹夊叏绠＄悊",
 	},
 }
 
@@ -6542,8 +6196,7 @@ func (a *App) PingSkillHub(url string) map[string]interface{} {
 	return result
 }
 
-// ValidateSkillHub 探测给定 URL 的 Hub 类型，返回类型和原因。
-// 返回 map: {"type": "standard"|"clawhub"|"clawhub_mirror"|"unsupported", "reason": "..."}
+// ValidateSkillHub 闂備浇顫夋禍浠嬪垂閾忓湱鐭堥悗闈涙憸绾惧吋绻涢崱妤冪闁?URL 闂?Hub 缂傚倷绶￠崑澶愵敋瑜旈幃妤呮倻閼恒儲娅栭悗鍏夊亾闁告劦浜為澶愭⒑閹肩偛鍔ら柛瀣枔閹噣顢曢敃鈧崹鍌炴倵閿濆簼绨奸悗姘叀閺屾稑螣閻撳孩鐎诲┑鐐插级缁挻淇?// 闂佸搫顦弲婊堝蓟閵娿儍?map: {"type": "standard"|"clawhub"|"clawhub_mirror"|"unsupported", "reason": "..."}
 func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	result := map[string]interface{}{
 		"type":   "unsupported",
@@ -6551,57 +6204,57 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	}
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		result["reason"] = "URL 不能为空"
+		result["reason"] = "URL ????"
 		return result
 	}
 
 	base := strings.TrimRight(rawURL, "/")
 	client := &http.Client{Timeout: 8 * time.Second}
 
-	// 探测 1: ClawSkillHub / skillhub.space 风格 — /api/skills?search=test&limit=1
+	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?1: ClawSkillHub / skillhub.space 濠碉紕鍋涢鍛偓娑掓櫊閹?闂?/api/skills?search=test&limit=1
 	if probeSkillHubSpace(client, base) {
 		result["type"] = "skillhub_space"
-		result["reason"] = "检测到 ClawSkillHub API (skillhub.space 兼容)"
+		result["reason"] = "婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂?ClawSkillHub API (skillhub.space 闂備胶顭堢换鎺楀储瑜旈、?"
 		return result
 	}
 
-	// 探测 2: 标准 Hub API — /api/v1/skills/search?q=test
+	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?2: 闂備礁鎼粔鏉懨洪妶澶婇棷?Hub API 闂?/api/v1/skills/search?q=test
 	if hubType := probeStandardHub(client, base); hubType {
 		result["type"] = "standard"
-		result["reason"] = "检测到标准 SkillHub API"
+		result["reason"] = "婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂佺硶鏅涢惌鍌氼嚕娴犲鐐婄憸宥呪枍?SkillHub API"
 		return result
 	}
 
-	// 探测 3: ClawHub 镜像 (topclawhubskills.com 风格) — /api/stats
+	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?3: ClawHub 闂傚倸鍊甸崑鎾寸節婵犲倸鏆欓柛?(topclawhubskills.com 濠碉紕鍋涢鍛偓娑掓櫊閹? 闂?/api/stats
 	if hubType := probeClawHubMirror(client, base); hubType {
 		result["type"] = "clawhub_mirror"
-		result["reason"] = "检测到 ClawHub 镜像 API (topclawhubskills.com 兼容)"
+		result["reason"] = "婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂?ClawHub 闂傚倸鍊甸崑鎾寸節婵犲倸鏆欓柛?API (topclawhubskills.com 闂備胶顭堢换鎺楀储瑜旈、?"
 		return result
 	}
 
-	// 探测 4: ClawHub (clawhub.ai 风格) — /api/v1/skills
+	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?4: ClawHub (clawhub.ai 濠碉紕鍋涢鍛偓娑掓櫊閹? 闂?/api/v1/skills
 	if hubType := probeClawHub(client, base); hubType {
 		result["type"] = "clawhub"
-		result["reason"] = "检测到 ClawHub API (clawhub.ai 兼容)"
+		result["reason"] = "婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壈闂?ClawHub API (clawhub.ai 闂備胶顭堢换鎺楀储瑜旈、?"
 		return result
 	}
 
-	// 探测 4: 无 API 但可达 — 作为下载镜像使用
+	// 闂備浇顫夋禍浠嬪垂閾忓湱鐭?4: 闂?API 濠电偠鎻徊钘壩涘Δ鍕╀汗闁告瑥顦扮紞?闂?濠电偠鎻徊鍓у垝閸垺瀚婚柣鏂挎憸閳绘棃鎮楅敐搴″箺缂佷椒鍗冲濠氬焵椤掆偓椤劑宕橀妸銉ヮ棝濠电偠鎻紞鈧繛澶嬫礋瀵?
 	if resp, err := client.Get(base); err == nil {
 		resp.Body.Close()
 		if resp.StatusCode < 400 {
 			result["type"] = "mirror"
-			result["reason"] = "该地址可达，将作为下载镜像使用"
+			result["reason"] = "???????????????"
 			return result
 		}
 	}
 
-	result["reason"] = "该地址不可达或不支持"
+	result["reason"] = "???????????"
 	return result
 }
 
-// probeSkillHubSpace 检测 clawskillhub.com / skillhub.space 风格的 API
-// GET /api/skills?search=test&limit=1 应返回 JSON 数组
+// probeSkillHubSpace 婵犵妲呴崑鈧柛瀣尰缁?clawskillhub.com / skillhub.space 濠碉紕鍋涢鍛偓娑掓櫊閹囧箹娴ｇ懓鍓?API
+// GET /api/skills?search=test&limit=1 闂佸湱鍘ч悺銊ノ涙担鐑樺床闁硅揪绠戦悙?JSON 闂備浇妗ㄩ悞锔界珶閸℃瑥鍨?
 func probeSkillHubSpace(client *http.Client, base string) bool {
 	endpoint := base + "/api/skills?search=test&limit=1"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -6617,7 +6270,7 @@ func probeSkillHubSpace(client *http.Client, base string) bool {
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
-	// 应返回 JSON 数组 [{"id":..., "slug":..., "owner":...}, ...]
+	// 闂佸湱鍘ч悺銊ノ涙担鐑樺床闁硅揪绠戦悙?JSON 闂備浇妗ㄩ悞锔界珶閸℃瑥鍨?[{"id":..., "slug":..., "owner":...}, ...]
 	var items []json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		return false
@@ -6625,7 +6278,7 @@ func probeSkillHubSpace(client *http.Client, base string) bool {
 	return true
 }
 
-// probeStandardHub 检测标准 Hub API
+// probeStandardHub 婵犵妲呴崑鈧柛瀣尰缁绘盯寮堕幋顓炲壉闂佺粯鐗紞浣哥暦?Hub API
 func probeStandardHub(client *http.Client, base string) bool {
 	endpoint := base + "/api/v1/skills/search?q=test"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -6641,7 +6294,7 @@ func probeStandardHub(client *http.Client, base string) bool {
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
-	// 检查返回的 JSON 是否包含 "skills" 数组
+	// 婵犵妲呴崑鈧柛瀣崌閺岋紕浠︾拠鎻掑Г缂備胶绮崹鍨暦閸洘鍊烽柛顭戝亞閺?JSON 闂備礁鎼€氱兘宕规导鏉戠畾濞撴埃鍋撶€规洜濞€瀹曘劑顢橀悢宄板 "skills" 闂備浇妗ㄩ悞锔界珶閸℃瑥鍨?
 	var body map[string]json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return false
@@ -6650,7 +6303,7 @@ func probeStandardHub(client *http.Client, base string) bool {
 	return hasSkills
 }
 
-// probeClawHubMirror 检测 topclawhubskills.com 风格的 API
+// probeClawHubMirror 婵犵妲呴崑鈧柛瀣尰缁?topclawhubskills.com 濠碉紕鍋涢鍛偓娑掓櫊閹囧箹娴ｇ懓鍓?API
 func probeClawHubMirror(client *http.Client, base string) bool {
 	endpoint := base + "/api/stats"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -6670,7 +6323,7 @@ func probeClawHubMirror(client *http.Client, base string) bool {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return false
 	}
-	// topclawhubskills.com 返回 {"ok":true, "total_skills":...}
+	// topclawhubskills.com 闂佸搫顦弲婊堝蓟閵娿儍?{"ok":true, "total_skills":...}
 	if ok, _ := body["ok"].(bool); ok {
 		if _, has := body["total_skills"]; has {
 			return true
@@ -6679,7 +6332,7 @@ func probeClawHubMirror(client *http.Client, base string) bool {
 	return false
 }
 
-// probeClawHub 检测 clawhub.ai 风格的 API
+// probeClawHub 婵犵妲呴崑鈧柛瀣尰缁?clawhub.ai 濠碉紕鍋涢鍛偓娑掓櫊閹囧箹娴ｇ懓鍓?API
 func probeClawHub(client *http.Client, base string) bool {
 	endpoint := base + "/api/v1/skills"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -6699,7 +6352,7 @@ func probeClawHub(client *http.Client, base string) bool {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return false
 	}
-	// clawhub.ai 返回 {"items":[...], "nextCursor":...}
+	// clawhub.ai 闂佸搫顦弲婊堝蓟閵娿儍?{"items":[...], "nextCursor":...}
 	_, hasItems := body["items"]
 	return hasItems
 }

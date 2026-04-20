@@ -25,6 +25,7 @@ import (
 	configPkg "github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/project"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -32,7 +33,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
-	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"gopkg.in/yaml.v3"
@@ -1271,6 +1271,7 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 
 	var skill *corelib.NLSkillEntry
 	var collisions []corelib.NLSkillEntry // track bare name collisions across publishers
+	var collisionIndexes []int
 	isQualified := strings.Contains(skillName, ":")
 	for i := range cfg.NLSkills {
 		if cfg.NLSkills[i].MatchesName(skillName) {
@@ -1281,12 +1282,13 @@ func (h *TUIAgentHandler) toolRunSkill(args map[string]interface{}) string {
 			}
 			// Bare name: collect all matches to detect collisions.
 			collisions = append(collisions, cfg.NLSkills[i])
+			collisionIndexes = append(collisionIndexes, i)
 		}
 	}
 	// For bare name queries, resolve collisions (Requirement 5.7).
 	if !isQualified {
 		if len(collisions) == 1 {
-			skill = &collisions[0]
+			skill = &cfg.NLSkills[collisionIndexes[0]]
 		} else if len(collisions) > 1 {
 			// Multiple skills match the bare name — require qualified name.
 			var qualifiedNames []string

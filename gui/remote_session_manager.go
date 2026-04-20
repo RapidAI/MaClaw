@@ -463,8 +463,8 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 			SessionID: sessionID,
 			UpdatedAt: now.Unix(),
 		},
-		workspaceRelease: workspace.Release,
-		configCleanup:    configRestore,
+		workspaceRelease:   workspace.Release,
+		configCleanup:      configRestore,
 		LaunchFP:           LaunchFingerprint(spec),
 		InjectResumePrompt: spec.InjectResumePrompt,
 	}
@@ -2423,9 +2423,13 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 	// same project can resume where this one left off.
 	m.app.ensureSessionCheckpointer()
 	if m.app.sessionCheckpointer != nil {
-		go func() {
+		if strings.TrimSpace(m.app.testHomeDir) != "" {
 			_ = m.app.sessionCheckpointer.SaveCheckpoint(s)
-		}()
+		} else {
+			go func() {
+				_ = m.app.sessionCheckpointer.SaveCheckpoint(s)
+			}()
+		}
 	}
 	if shouldCreatePendingResumeSlot(s) && m.app != nil {
 		mem := m.app.ensureConversationMemory()
@@ -2450,6 +2454,11 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 				UpdatedAt:        time.Now(),
 			})
 		}
+	}
+	if m.app != nil && strings.TrimSpace(m.app.testHomeDir) != "" && m.app.memoryStore != nil {
+		m.app.memoryStore.Stop()
+		m.app.memoryStore = nil
+		m.app.sessionCheckpointer = nil
 	}
 	if s.workspaceRelease != nil {
 		s.workspaceRelease()

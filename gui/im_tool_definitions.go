@@ -222,13 +222,26 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		// --- 合并工具：模板管理 (create/list/launch) ---
 		toolDef("manage_template", "会话模板管理（action: create/list/launch）。create 创建模板，list 列出所有模板，launch 使用模板启动会话。",
 			map[string]interface{}{
-				"action":        map[string]string{"type": "string", "description": "操作: create/list/launch"},
-				"name":          map[string]string{"type": "string", "description": "模板名称（create/launch 时必填）"},
-				"tool":          map[string]string{"type": "string", "description": "工具名称（create 时必填）"},
-				"project_path":  map[string]string{"type": "string", "description": "项目路径（create 时可选）"},
-				"model_config":  map[string]string{"type": "string", "description": "模型配置（create 时可选）"},
-				"yolo_mode":     map[string]string{"type": "boolean", "description": "是否开启 Yolo 模式（create 时可选）"},
+				"action":       map[string]string{"type": "string", "description": "操作: create/list/launch"},
+				"name":         map[string]string{"type": "string", "description": "模板名称（create/launch 时必填）"},
+				"tool":         map[string]string{"type": "string", "description": "工具名称（create 时必填）"},
+				"project_path": map[string]string{"type": "string", "description": "项目路径（create 时可选）"},
+				"model_config": map[string]string{"type": "string", "description": "模型配置（create 时可选）"},
+				"yolo_mode":    map[string]string{"type": "boolean", "description": "是否开启 Yolo 模式（create 时可选）"},
 			}, []string{"action"}),
+		toolDef("create_template", "会话模板别名工具：创建模板。",
+			map[string]interface{}{
+				"name":         map[string]string{"type": "string", "description": "模板名称"},
+				"tool":         map[string]string{"type": "string", "description": "工具名称"},
+				"project_path": map[string]string{"type": "string", "description": "项目路径"},
+				"model_config": map[string]string{"type": "string", "description": "模型配置"},
+				"yolo_mode":    map[string]string{"type": "boolean", "description": "是否启用 Yolo 模式"},
+			}, []string{"name", "tool"}),
+		toolDef("list_templates", "会话模板别名工具：列出模板。", nil, nil),
+		toolDef("launch_template", "会话模板别名工具：启动模板。",
+			map[string]interface{}{
+				"template_name": map[string]string{"type": "string", "description": "模板名称"},
+			}, []string{"template_name"}),
 		// --- 合并工具：配置管理 (get/set/batch/schema/export/import) ---
 		toolDef("manage_config", "配置管理（action: get/set/batch/schema/export/import）。get 获取配置，set 修改单项，batch 批量修改，schema 列出可配置项，export 导出，import 导入。",
 			map[string]interface{}{

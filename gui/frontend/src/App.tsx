@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from 'react';
+﻿import { useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
 import { appVersion, buildNumber } from './version';
 import appIcon from './assets/images/maclaw2.png';
@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/clawnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, WindowHide, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, OpenFileOrShowInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, WaitWeixinQRLogin, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetLansengerStatus, RestartLansenger, StopLansenger, GetLansengerLocalMode, SetLansengerLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetAllLLMTokenUsage, GetMaclawLLMProviders, ListScheduledTasks, ListBackgroundLoops, MaximiseAndSaveGeometry, RestoreWindowGeometry, ListToolProviders, HideFloatingButton } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import ReactMarkdown from 'react-markdown';
@@ -346,6 +346,14 @@ const translations: any = {
         "officialWebsite": "Official Website",
         "dontShowAgain": "Don't show again",
         "showWelcomePage": "Show Welcome Page",
+        "showWelcomePageHint": "When enabled, a welcome popup with tutorial links will be shown at startup.",
+        "showAssistantEntryLabel": "Show AI Assistant Button",
+        "showAssistantEntryHint": "Show the floating AI assistant button when the main window is hidden.",
+        "detailedLogsLabel": "Detailed logs",
+        "detailedLogsHint": "Show more complete runtime logs; when off, only error logs are kept.",
+        "llmTrajectoryLoggingLabel": "Record LLM trajectory",
+        "llmTrajectoryLoggingHint": "Save LLM interaction trajectories for analysis and training.",
+        "maclawDebugHint": "When enabled, tool call progress is shown during remote sessions. When disabled, only final results and errors are displayed.",
         "refreshMessage": "Refresh",
         "refreshing": "🔄 Fetching latest messages...",
         "refreshSuccess": "✅ Refresh successful!",
@@ -853,6 +861,14 @@ const translations: any = {
         "officialWebsite": "官方网站",
         "dontShowAgain": "下次不再显示",
         "showWelcomePage": "显示欢迎页",
+        "showWelcomePageHint": "启用后，程序启动时会显示包含教程链接的欢迎弹窗。",
+        "showAssistantEntryLabel": "显示 AI助手按钮",
+        "showAssistantEntryHint": "主窗口隐藏时显示悬浮 AI助手按钮。",
+        "detailedLogsLabel": "日志详情",
+        "detailedLogsHint": "开启后显示更完整的运行日志；关闭时仅保留错误日志。",
+        "llmTrajectoryLoggingLabel": "记录 LLM 轨迹",
+        "llmTrajectoryLoggingHint": "保存 LLM 交互轨迹，用于分析与训练。",
+        "maclawDebugHint": "启用后，远程会话中会显示工具调用过程；关闭后仅显示最终结果和错误信息。",
         "startupTitle": "欢迎使用码卡龙",
         "showMore": "更多",
         "showLess": "收起",
@@ -1332,6 +1348,14 @@ const translations: any = {
         "officialWebsite": "官方網站",
         "dontShowAgain": "下次不再顯示",
         "showWelcomePage": "顯示歡迎頁",
+        "showWelcomePageHint": "啟用後，程式啟動時會顯示包含教學連結的歡迎彈窗。",
+        "showAssistantEntryLabel": "顯示 AI助手按鈕",
+        "showAssistantEntryHint": "主視窗隱藏時顯示懸浮 AI助手按鈕。",
+        "detailedLogsLabel": "日誌詳情",
+        "detailedLogsHint": "開啟後顯示更完整的執行日誌；關閉時僅保留錯誤日誌。",
+        "llmTrajectoryLoggingLabel": "記錄 LLM 軌跡",
+        "llmTrajectoryLoggingHint": "保存 LLM 互動軌跡，用於分析與訓練。",
+        "maclawDebugHint": "啟用後，遠端會話中會顯示工具呼叫過程；關閉後僅顯示最終結果和錯誤資訊。",
         "startupTitle": "歡迎使用碼卡龍",
         "showMore": "更多",
         "showLess": "收起",
@@ -4570,10 +4594,10 @@ ${instruction}`;
                                             SaveConfig(c);
                                         }}
                                     />
-                                    <span>{lang === 'zh-Hans' ? '日志详情' : lang === 'zh-Hant' ? '日誌詳情' : 'Detailed logs'}</span>
+                                    <span>{t("detailedLogsLabel")}</span>
                                 </label>
                                 <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
-                                    {lang === 'zh-Hans' ? '开启后显示更完整的运行日志；关闭时仅保留错误日志' : lang === 'zh-Hant' ? '開啟後顯示更完整的運行日誌；關閉時僅保留錯誤日誌' : 'Show more complete runtime logs; when off, only error logs are kept'}
+                                    {t("detailedLogsHint")}
                                 </span>
                             </div>
 
@@ -4589,10 +4613,10 @@ ${instruction}`;
                                             SaveConfig(c);
                                         }}
                                     />
-                                    <span>{lang === 'zh-Hans' ? '记录 LLM 轨迹' : lang === 'zh-Hant' ? '記錄 LLM 軌跡' : 'Record LLM trajectory'}</span>
+                                    <span>{t("llmTrajectoryLoggingLabel")}</span>
                                 </label>
                                 <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
-                                    {lang === 'zh-Hans' ? '保存 LLM 交互轨迹，用于分析与训练' : lang === 'zh-Hant' ? '保存 LLM 互動軌跡，用於分析與訓練' : 'Save LLM interaction trajectories for analysis and training'}
+                                    {t("llmTrajectoryLoggingHint")}
                                 </span>
                             </div>
                             </div>
@@ -5761,9 +5785,31 @@ ${instruction}`;
                                     <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>{t("showWelcomePage")}</span>
                                 </label>
                                 <p style={{ fontSize: '0.75rem', color: 'var(--theme-text-muted)', marginLeft: '24px', marginTop: '4px' }}>
-                                    {lang === 'zh-Hans' ? '开启后，程序启动时将显示新手教学和快速入门链接' :
-                                        lang === 'zh-Hant' ? '開啟後，程序啟動時將顯示新手教學和快速入門鏈接' :
-                                            'When enabled, a welcome popup with tutorial links will be shown at startup.'}
+                                    {t("showWelcomePageHint")}
+                                </p>
+                            </div>
+                            
+                            <div className="form-group" style={{ marginTop: '10px', borderTop: '1px solid var(--theme-border-subtle)', paddingTop: '10px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={!!config?.show_assistant_entry}
+                                        onChange={async (e) => {
+                                            if (config) {
+                                                const newConfig = new main.AppConfig({ ...config, show_assistant_entry: e.target.checked });
+                                                setConfig(newConfig);
+                                                await SaveConfig(newConfig);
+                                                if (!e.target.checked) {
+                                                    await HideFloatingButton();
+                                                }
+                                            }
+                                        }}
+                                        style={{ width: '16px', height: '16px' }}
+                                    />
+                                    <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>{t("showAssistantEntryLabel")}</span>
+                                </label>
+                                <p style={{ fontSize: '0.75rem', color: 'var(--theme-text-muted)', marginLeft: '24px', marginTop: '4px' }}>
+                                    {t("showAssistantEntryHint")}
                                 </p>
                             </div>
 
@@ -5849,9 +5895,7 @@ ${instruction}`;
                                     <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>MaClaw Debug</span>
                                 </label>
                                 <p style={{ fontSize: '0.75rem', color: 'var(--theme-text-muted)', marginLeft: '24px', marginTop: '4px' }}>
-                                    {lang === 'zh-Hans' || lang === 'zh' ? '开启后，远程会话中将显示工具调用过程（如"正在执行工具…"）；关闭后仅显示最终结果和错误信息' :
-                                        lang === 'zh-Hant' ? '開啟後，遠端會話中將顯示工具調用過程；關閉後僅顯示最終結果和錯誤信息' :
-                                            'When enabled, tool call progress (e.g. "Executing tool…") is shown during remote sessions. When disabled, only final results and errors are displayed.'}
+                                    {t("maclawDebugHint")}
                                 </p>
                             </div>
                             </div>
@@ -7914,3 +7958,5 @@ ${instruction}`;
 }
 
 export default App;
+
+

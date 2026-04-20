@@ -1,4 +1,4 @@
-﻿export namespace main {
+export namespace main {
 	
 	export class ProjectConfig {
 	    id: string;
@@ -199,6 +199,7 @@
 	    skill_purchase_mode: string;
 	    gossip_auto_publish: boolean;
 	    llm_trajectory_logging: boolean;
+        show_assistant_entry: boolean;
 	    trial_reflect_enabled: boolean;
 	    llm_token_usage: Record<string, any>;
 	    onboarding_done: boolean;
@@ -319,6 +320,7 @@
 	        this.ui_mode = source["ui_mode"];
 	        this.skill_purchase_mode = source["skill_purchase_mode"];
 	        this.gossip_auto_publish = source["gossip_auto_publish"];
+            this.show_assistant_entry = source["show_assistant_entry"];
 	        this.llm_trajectory_logging = source["llm_trajectory_logging"];
 	        this.trial_reflect_enabled = source["trial_reflect_enabled"];
 	        this.llm_token_usage = source["llm_token_usage"];

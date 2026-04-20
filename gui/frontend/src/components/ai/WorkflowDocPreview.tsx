@@ -270,6 +270,76 @@ const phaseLabels: Record<string, string> = {
 
 // ── Lightweight Markdown renderer (no external deps) ──
 
+/** Detect a pipe-delimited table row */
+function isDocTableRow(line: string): boolean {
+    const trimmed = line.trim();
+    return trimmed.startsWith("|") && trimmed.length > 1;
+}
+
+/** Detect a separator row like |---|---| */
+function isDocSeparatorRow(line: string): boolean {
+    const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+    return /^[\s|:\-]+$/.test(trimmed) && trimmed.includes("-");
+}
+
+/** Parse cells from a pipe-delimited row */
+function parseDocTableCells(line: string): string[] {
+    let trimmed = line.trim();
+    if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
+    if (trimmed.endsWith("|")) trimmed = trimmed.slice(0, -1);
+    return trimmed.split("|").map(c => c.trim());
+}
+
+/** Render collected table lines into an HTML table */
+function renderDocTable(tableLines: string[], key: string, theme: DocPreviewTheme): React.ReactNode {
+    const dataRows = tableLines.filter(l => !isDocSeparatorRow(l));
+    if (dataRows.length === 0) return null;
+    if (tableLines.length < 2) return null;
+
+    const headerCells = parseDocTableCells(dataRows[0]);
+    const bodyRows = dataRows.slice(1);
+
+    const cellStyle: React.CSSProperties = {
+        border: `1px solid ${theme.border}`,
+        padding: "6px 10px",
+        textAlign: "left",
+        fontSize: "13px",
+        lineHeight: 1.5,
+    };
+
+    return (
+        <div key={key} style={{ overflowX: "auto", margin: "8px 0" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", color: theme.text }}>
+                <thead>
+                    <tr>
+                        {headerCells.map((cell, ci) => (
+                            <th key={ci} style={{ ...cellStyle, fontWeight: 600, background: theme.headerBg }}>
+                                {renderInline(cell, theme)}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                {bodyRows.length > 0 && (
+                    <tbody>
+                        {bodyRows.map((row, ri) => {
+                            const cells = parseDocTableCells(row);
+                            return (
+                                <tr key={ri}>
+                                    {headerCells.map((_, ci) => (
+                                        <td key={ci} style={cellStyle}>
+                                            {renderInline(cells[ci] || "", theme)}
+                                        </td>
+                                    ))}
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                )}
+            </table>
+        </div>
+    );
+}
+
 function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
     const lines = md.split("\n");
     const nodes: React.ReactNode[] = [];
@@ -423,6 +493,30 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
             flushList();
             nodes.push(<hr key={`hr-${i}`} style={{ border: "none", borderTop: `1px solid ${theme.border}`, margin: "12px 0" }} />);
             i++;
+            continue;
+        }
+
+        // Table: collect consecutive pipe-delimited rows
+        if (isDocTableRow(line)) {
+            flushList();
+            const tblLines: string[] = [];
+            while (i < lines.length && isDocTableRow(lines[i])) {
+                tblLines.push(lines[i]);
+                i++;
+            }
+            const rendered = renderDocTable(tblLines, `tbl-${nodes.length}`, theme);
+            if (rendered) {
+                nodes.push(rendered);
+            } else {
+                // Not a real table (single pipe-line), render as paragraph
+                for (const tl of tblLines) {
+                    nodes.push(
+                        <p key={`p-tbl-${nodes.length}`} style={{ margin: "6px 0", lineHeight: "1.7" }}>
+                            {renderInline(tl, theme)}
+                        </p>
+                    );
+                }
+            }
             continue;
         }
 

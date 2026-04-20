@@ -1,6 +1,6 @@
 package corelib
 
-// AppConfig 是 MaClaw 的完整应用配置。
+// AppConfig is the complete application configuration for MaClaw.
 import (
 	"encoding/json"
 	"strings"
@@ -78,7 +78,7 @@ type AppConfig struct {
 	WebSearchProviders       []WebSearchProvider `json:"web_search_providers,omitempty"`
 	WebSearchCurrentProvider string              `json:"web_search_current_provider,omitempty"`
 	MaclawAgentMaxIterations int                 `json:"maclaw_agent_max_iterations,omitempty"`
-	FreeProxyModel           string              `json:"free_proxy_model,omitempty"` // selected model for 当贝 free proxy
+	FreeProxyModel           string              `json:"free_proxy_model,omitempty"` // selected model for 閻熸粎澧楅幑浣虹矆?free proxy
 	// MaClaw Role configuration
 	MaclawRoleName        string `json:"maclaw_role_name,omitempty"`
 	MaclawRoleDescription string `json:"maclaw_role_description,omitempty"`
@@ -107,65 +107,64 @@ type AppConfig struct {
 	ImageOutboundEnabled bool   `json:"image_outbound_enabled"`  // default true
 	MaclawDebugToolCalls bool   `json:"maclaw_debug_tool_calls,omitempty"`
 	ShowAITraceEntry     bool   `json:"show_ai_trace_entry,omitempty"`
-	ShowAssistantEntry   bool   `json:"show_assistant_entry,omitempty"`
+	ShowAssistantEntry   bool   `json:"show_assistant_entry"`
 	FloatingBtnX         int    `json:"floating_btn_x,omitempty"`
 	FloatingBtnY         int    `json:"floating_btn_y,omitempty"`
 	LogDetailEnabled     bool   `json:"log_detail_enabled,omitempty"`
-	// IM — per-user QQ Bot (client-side gateway)
+	// IM 闂?per-user QQ Bot (client-side gateway)
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`
 	QQBotAppSecret string `json:"qqbot_app_secret,omitempty"`
-	// IM — per-user Telegram Bot (client-side gateway)
+	// IM 闂?per-user Telegram Bot (client-side gateway)
 	TelegramBotEnabled bool   `json:"telegram_bot_enabled,omitempty"`
 	TelegramBotToken   string `json:"telegram_bot_token,omitempty"`
-	// IM — per-user WeChat (client-side gateway via iLink API)
+	// IM 闂?per-user WeChat (client-side gateway via iLink API)
 	WeixinEnabled   bool   `json:"weixin_enabled,omitempty"`
 	WeixinToken     string `json:"weixin_token,omitempty"`
 	WeixinBaseURL   string `json:"weixin_base_url,omitempty"`
 	WeixinCDNURL    string `json:"weixin_cdn_url,omitempty"`
 	WeixinAccountID string `json:"weixin_account_id,omitempty"`
-	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (单机), false = remote/Hub (多机)
-	// IM — Lansenger (蓝信) client-side gateway
-	LansengerEnabled   bool   `json:"lansenger_enabled,omitempty"`
+	WeixinLocalMode *bool  `json:"weixin_local_mode,omitempty"` // nil or true = local (闂佸憡顨嗗ú妯衡攦閳?, false = remote/Hub (婵犮垼鍩栫喊宥呪攦閳?
+	// IM 闂?Lansenger (闂佽棄鍟换鈧ǎ? client-side gateway
+	LansengerEnabled    bool   `json:"lansenger_enabled,omitempty"`
 	LansengerAppID      string `json:"lansenger_app_id,omitempty"`
 	LansengerAppSecret  string `json:"lansenger_app_secret,omitempty"`
 	LansengerGatewayURL string `json:"lansenger_gateway_url,omitempty"` // API gateway base URL, default https://apigw.lx.qianxin.com
-	// IM — local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
-	QQBotLocalMode    *bool `json:"qqbot_local_mode,omitempty"`    // nil = auto-detect, true = local, false = hub
-	TelegramLocalMode *bool `json:"telegram_local_mode,omitempty"` // nil = auto-detect, true = local, false = hub
+	// IM 闂?local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
+	QQBotLocalMode     *bool `json:"qqbot_local_mode,omitempty"`     // nil = auto-detect, true = local, false = hub
+	TelegramLocalMode  *bool `json:"telegram_local_mode,omitempty"`  // nil = auto-detect, true = local, false = hub
 	LansengerLocalMode *bool `json:"lansenger_local_mode,omitempty"` // nil = auto-detect, true = local, false = hub
 	// Extra tool configs for OEM brands (keyed by ExtraToolDef.ConfigKey)
 	ExtraToolConfigs map[string]ToolConfig `json:"extra_tool_configs,omitempty"`
 	// UI mode: "pro" (full coding tools) or "lite" (default, simplified, no coding tools)
 	UIMode string `json:"ui_mode,omitempty"`
-	// SkillMarket — Skill 获取策略
+	// Skill purchase mode.
 	SkillPurchaseMode string `json:"skill_purchase_mode,omitempty"` // "auto" (default) | "free_only"
-	// Gossip — 聊天八卦自动发布（默认开启）
+	// Gossip auto publish setting.
 	GossipAutoPublish bool `json:"gossip_auto_publish"`
-	// LLM Trajectory Logging — 记录所有 LLM 交互用于模型训练
+	// LLM trajectory logging.
 	LLMTrajectoryLogging bool `json:"llm_trajectory_logging,omitempty"`
-	// Trial-and-Reflect — 启用试错并反思工作模式
+	// Trial-and-Reflect setting.
 	TrialReflectEnabled bool `json:"trial_reflect_enabled,omitempty"`
-	// LLM Token Usage — 按服务商累计 token 用量统计
+	// LLM token usage statistics.
 	LLMTokenUsage map[string]*TokenUsageStat `json:"llm_token_usage,omitempty"`
-	// Onboarding — 是否已完成引导流程
+	// Onboarding completion flag.
 	OnboardingDone bool `json:"onboarding_done,omitempty"`
-	// Embedding — 向量搜索开关
+	// Embedding / vector search toggle.
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
-	// ASR — 语音识别开关
+	// ASR toggle.
 	ASREnabled bool `json:"asr_enabled"`
-	// UI Zoom — 界面缩放比例 (0.5 ~ 2.0, 0 = 默认 1.0)
+	// UI zoom factor (0.5 ~ 2.0, 0 = default 1.0).
 	UIZoomFactor float64 `json:"ui_zoom_factor,omitempty"`
-	// SSH — 预配置的远程主机列表
+	// SSH host presets.
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
-	// Knowledge Skill token budget — combined token budget for all injected
-	// knowledge skills in the system prompt. 0 means use default (2000).
+	// Knowledge Skill token budget.
 	KnowledgeSkillTokenBudget int `json:"knowledge_skill_token_budget,omitempty"`
-	// AuxiliaryLLM — lightweight LLM for background tasks (compression,
+	// AuxiliaryLLM 闂?lightweight LLM for background tasks (compression,
 	// skill repair, session search summarization). When configured, used
 	// in preference to the main LLM to reduce cost and latency.
 	AuxiliaryLLM AuxiliaryLLMConfig `json:"auxiliary_llm,omitempty"`
-	// NudgeDisabled — when true, the post-use skill nudge system is
+	// NudgeDisabled 闂?when true, the post-use skill nudge system is
 	// completely disabled. No nudge messages will be injected into the
 	// conversation after complex tasks, skill failures, or user corrections.
 	NudgeDisabled bool `json:"nudge_disabled,omitempty"`
@@ -180,6 +179,7 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	type appConfigAlias AppConfig
 	type rawAppConfig struct {
 		appConfigAlias
+		ShowAssistantEntry          *bool    `json:"show_assistant_entry"`
 		AgentNetEnabled             *bool    `json:"agentnet_enabled"`
 		AgentNetAutoPickerEnabled   *bool    `json:"agentnet_auto_picker_enabled,omitempty"`
 		AgentNetAutoPickerPollMin   *int     `json:"agentnet_auto_picker_poll_min,omitempty"`
@@ -191,6 +191,11 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*c = AppConfig(raw.appConfigAlias)
+	if raw.ShowAssistantEntry == nil {
+		c.ShowAssistantEntry = true
+	} else {
+		c.ShowAssistantEntry = *raw.ShowAssistantEntry
+	}
 	if raw.AgentNetEnabled != nil {
 		c.AgentNetEnabled = *raw.AgentNetEnabled
 	}
@@ -222,20 +227,20 @@ func (c AuxiliaryLLMConfig) IsConfigured() bool {
 	return c.URL != "" && c.Key != ""
 }
 
-// SSHHostEntry 描述一个预配置的 SSH 远程主机。
+// SSHHostEntry describes a preconfigured SSH remote host.
 type SSHHostEntry struct {
-	Label      string `json:"label"`                 // 用户可读标签，如 "prod-web-01"
-	Host       string `json:"host"`                  // IP 或域名
-	Port       int    `json:"port,omitempty"`        // 默认 22
-	User       string `json:"user"`                  // 登录用户名
+	Label      string `json:"label"`                 // Human-readable label, e.g. "prod-web-01"
+	Host       string `json:"host"`                  // Hostname or IP address
+	Port       int    `json:"port,omitempty"`        // Default 22
+	User       string `json:"user"`                  // Login username
 	AuthMethod string `json:"auth_method,omitempty"` // key/password/agent
-	KeyPath    string `json:"key_path,omitempty"`    // 私钥路径
+	KeyPath    string `json:"key_path,omitempty"`    // Private key path
 }
 
 // IsWeixinLocalMode returns the effective WeChat local mode setting.
 // When the field has never been explicitly set (nil):
-//   - If Hub is activated (RemoteMachineID is set), default to Hub/多机 mode (false)
-//   - Otherwise, default to local/单机 mode (true)
+//   - If Hub is activated (RemoteMachineID is set), default to Hub/婵犮垼鍩栫喊宥呪攦閳?mode (false)
+//   - Otherwise, default to local/闂佸憡顨嗗ú妯衡攦閳?mode (true)
 func (c *AppConfig) IsWeixinLocalMode() bool {
 	if c.WeixinLocalMode == nil {
 		// Auto-detect: if Hub is activated, default to Hub mode

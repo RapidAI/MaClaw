@@ -485,6 +485,11 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
         );
     }
 
+    // Horizontal rule: ---, ***, ___ (3+ chars, nothing else on the line)
+    if (/^[-*_]{3,}\s*$/.test(trimmed)) {
+        return <hr key={key} style={{ border: "none", borderTop: `1px solid ${t.divider}`, margin: "8px 0" }} />;
+    }
+
     if (/^[-*]\s/.test(trimmed)) {
         return (
             <div key={key} style={{ paddingLeft: "1em", textIndent: "-0.7em", minHeight: "1.4em", color: t.text }}>
@@ -513,12 +518,90 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
 
 /* ── Structured response rendering ── */
 
+/* ── Table helpers ── */
+
+/** Detect a pipe-delimited table row: must start with | (after trimming) */
+function isTableRow(line: string): boolean {
+    const trimmed = line.trim();
+    // Only match lines that start with | to avoid false positives on prose with pipes
+    return trimmed.startsWith("|") && trimmed.length > 1;
+}
+
+/** Detect a separator row like |---|---| or |:---:|---:| */
+function isSeparatorRow(line: string): boolean {
+    const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+    return /^[\s|:\-]+$/.test(trimmed) && trimmed.includes("-");
+}
+
+/** Parse cells from a pipe-delimited row */
+function parseTableCells(line: string): string[] {
+    let trimmed = line.trim();
+    if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
+    if (trimmed.endsWith("|")) trimmed = trimmed.slice(0, -1);
+    return trimmed.split("|").map(c => c.trim());
+}
+
+/** Render a collected set of table lines into an HTML table element */
+function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNode {
+    // Filter out separator rows, keep data rows
+    const dataRows = tableLines.filter(l => !isSeparatorRow(l));
+    if (dataRows.length === 0) return null;
+
+    // Need at least a header + 1 body row (or header + separator) to be a real table
+    // A single pipe-line is not a table — render nothing and let caller fall back
+    if (tableLines.length < 2) return null;
+
+    const headerCells = parseTableCells(dataRows[0]);
+    const bodyRows = dataRows.slice(1);
+
+    const cellStyle: React.CSSProperties = {
+        border: `1px solid ${t.divider}`,
+        padding: "4px 8px",
+        textAlign: "left",
+        fontSize: "0.9em",
+        lineHeight: 1.5,
+    };
+
+    return (
+        <div key={key} style={{ overflowX: "auto", margin: "4px 0" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", color: t.text }}>
+                <thead>
+                    <tr>
+                        {headerCells.map((cell, ci) => (
+                            <th key={ci} style={{ ...cellStyle, fontWeight: 600, background: t.fieldBg }}>
+                                {renderInlineMarkdown(cell, t)}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                {bodyRows.length > 0 && (
+                    <tbody>
+                        {bodyRows.map((row, ri) => {
+                            const cells = parseTableCells(row);
+                            return (
+                                <tr key={ri}>
+                                    {headerCells.map((_, ci) => (
+                                        <td key={ci} style={cellStyle}>
+                                            {renderInlineMarkdown(cells[ci] || "", t)}
+                                        </td>
+                                    ))}
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                )}
+            </table>
+        </div>
+    );
+}
+
 function renderContentWithCodeBlocks(content: string, t: Theme): React.ReactNode[] {
     const elements: React.ReactNode[] = [];
     const lines = content.split("\n");
     let inCodeBlock = false;
     let codeBlockLines: string[] = [];
     let codeBlockLang = "";
+    let tableLines: string[] = [];
     let lineIdx = 0;
 
     const flushCodeBlock = () => {
@@ -544,8 +627,24 @@ function renderContentWithCodeBlocks(content: string, t: Theme): React.ReactNode
         codeBlockLang = "";
     };
 
+    const flushTable = () => {
+        if (tableLines.length > 0) {
+            const rendered = renderTable(tableLines, `tbl-${elements.length}`, t);
+            if (rendered) {
+                elements.push(rendered);
+            } else {
+                // Not a real table (e.g. single pipe-line), render as normal lines
+                for (const tl of tableLines) {
+                    elements.push(renderMarkdownLine(tl, `md-fallback-${elements.length}`, t));
+                }
+            }
+            tableLines = [];
+        }
+    };
+
     for (const line of lines) {
         if (/^```/.test(line.trimStart())) {
+            flushTable();
             if (inCodeBlock) {
                 flushCodeBlock();
                 inCodeBlock = false;
@@ -555,12 +654,16 @@ function renderContentWithCodeBlocks(content: string, t: Theme): React.ReactNode
             }
         } else if (inCodeBlock) {
             codeBlockLines.push(line);
+        } else if (isTableRow(line)) {
+            tableLines.push(line);
         } else {
+            flushTable();
             elements.push(renderMarkdownLine(line, `md-${lineIdx}`, t));
         }
         lineIdx++;
     }
     if (inCodeBlock) flushCodeBlock();
+    flushTable();
     return elements;
 }
 
@@ -959,6 +1062,17 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
     // Workflow split-pane state
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, dismissDocsBar } = useWorkflowState();
 
+    // Drag-to-resize input area height
+    const [inputAreaHeight, setInputAreaHeight] = useState<number | null>(null);
+    const isDraggingInputRef = useRef(false);
+    const dragHandlePillRef = useRef<HTMLDivElement | null>(null);
+    const dragCleanupRef = useRef<(() => void) | null>(null);
+
+    // Cleanup drag listeners on unmount
+    useEffect(() => {
+        return () => { dragCleanupRef.current?.(); };
+    }, []);
+
     // Code preview split-pane state (mutual exclusion with workflow preview)
     const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState(workflowState.splitMode);
 
@@ -1023,9 +1137,17 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
 
     const resizeInput = useCallback(() => {
         if (!inputRef.current) return;
-        inputRef.current.style.height = "auto";
-        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
-    }, []);
+        const el = inputRef.current;
+        el.style.height = "auto";
+        const contentH = el.scrollHeight;
+        if (inputAreaHeight !== null) {
+            // User has set a height via drag — use it as the floor, content can grow beyond
+            el.style.height = Math.max(contentH, inputAreaHeight) + "px";
+        } else {
+            // Auto-size: grow with content up to 120px
+            el.style.height = Math.min(contentH, 120) + "px";
+        }
+    }, [inputAreaHeight]);
 
     // Sync local draft from parent-owned draft state.
     useEffect(() => {
@@ -1987,6 +2109,73 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                 onReorder={reorderEntry}
             />
 
+            {/* ── Drag handle to resize input area ── */}
+            <div
+                data-testid="ai-input-resize-handle"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize input area"
+                aria-valuenow={inputAreaHeight ?? 36}
+                aria-valuemin={36}
+                aria-valuemax={400}
+                style={{
+                    height: "10px",
+                    flexShrink: 0,
+                    cursor: "row-resize",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    userSelect: "none",
+                    touchAction: "none",
+                }}
+                onMouseEnter={() => {
+                    if (dragHandlePillRef.current) dragHandlePillRef.current.style.opacity = "1";
+                }}
+                onMouseLeave={() => {
+                    if (dragHandlePillRef.current && !isDraggingInputRef.current) dragHandlePillRef.current.style.opacity = "0.45";
+                }}
+                onMouseDown={(e) => {
+                    e.preventDefault();
+                    isDraggingInputRef.current = true;
+                    const startY = e.clientY;
+                    const startH = inputRef.current ? inputRef.current.offsetHeight : 36;
+                    if (dragHandlePillRef.current) dragHandlePillRef.current.style.opacity = "1";
+                    const onMouseMove = (ev: MouseEvent) => {
+                        const delta = startY - ev.clientY;
+                        const newH = Math.max(36, Math.min(400, startH + delta));
+                        setInputAreaHeight(newH);
+                    };
+                    const cleanup = () => {
+                        isDraggingInputRef.current = false;
+                        if (dragHandlePillRef.current) dragHandlePillRef.current.style.opacity = "0.45";
+                        document.removeEventListener("mousemove", onMouseMove);
+                        document.removeEventListener("mouseup", onMouseUp);
+                        document.body.style.cursor = "";
+                        document.body.style.userSelect = "";
+                        dragCleanupRef.current = null;
+                    };
+                    const onMouseUp = () => cleanup();
+                    document.body.style.cursor = "row-resize";
+                    document.body.style.userSelect = "none";
+                    document.addEventListener("mousemove", onMouseMove);
+                    document.addEventListener("mouseup", onMouseUp);
+                    dragCleanupRef.current = cleanup;
+                }}
+                onDoubleClick={() => {
+                    // Double-click to reset to auto-size
+                    setInputAreaHeight(null);
+                }}
+            >
+                <div ref={dragHandlePillRef} style={{
+                    width: "36px",
+                    height: "3px",
+                    borderRadius: "2px",
+                    background: t.divider,
+                    opacity: 0.45,
+                    transition: "opacity 0.15s",
+                }} />
+            </div>
+
             {/* ── Input bar ── */}
             <div data-testid="ai-input-bar" style={{
                 display: "flex",
@@ -2058,7 +2247,8 @@ export function AIAssistantPanel({ onClose, lang, state, actions, window: panelW
                             fontFamily: "Consolas, 'Courier New', monospace",
                             fontSize: "14px", padding: "8px 0",
                             resize: "none", overflow: "auto",
-                            minHeight: "36px", maxHeight: "120px",
+                            minHeight: inputAreaHeight !== null ? `${inputAreaHeight}px` : "36px",
+                            maxHeight: inputAreaHeight !== null ? "400px" : "120px",
                             lineHeight: 1.4,
                             opacity: !ready ? 0.5 : 1,
                             cursor: !ready ? "default" : "text",

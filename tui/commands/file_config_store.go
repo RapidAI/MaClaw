@@ -7,19 +7,20 @@ import (
 	"path/filepath"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
-// FileConfigStore 实现 config.ConfigStore，直接读写本地 JSON 文件。
+// FileConfigStore implements config.ConfigStore with a local JSON file.
 type FileConfigStore struct {
 	path string
 }
 
-// NewFileConfigStore 创建基于文件的 ConfigStore。
+// NewFileConfigStore creates a file-backed ConfigStore.
 func NewFileConfigStore(dataDir string) *FileConfigStore {
 	return &FileConfigStore{path: filepath.Join(dataDir, "config.json")}
 }
 
-// LoadConfig 从文件加载配置。
+// LoadConfig loads config from disk.
 func (s *FileConfigStore) LoadConfig() (corelib.AppConfig, error) {
 	var cfg corelib.AppConfig
 	data, err := os.ReadFile(s.path)
@@ -38,7 +39,7 @@ func (s *FileConfigStore) LoadConfig() (corelib.AppConfig, error) {
 	return cfg, nil
 }
 
-// SaveConfig 将配置写入文件。
+// SaveConfig writes config atomically so Windows updates can replace an existing file.
 func (s *FileConfigStore) SaveConfig(cfg corelib.AppConfig) error {
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -48,9 +49,9 @@ func (s *FileConfigStore) SaveConfig(cfg corelib.AppConfig) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("write config tmp: %w", err)
+	data = append(data, '\n')
+	if err := fileutil.AtomicWriteFile(s.path, data, 0o644); err != nil {
+		return fmt.Errorf("write config: %w", err)
 	}
-	return os.Rename(tmp, s.path)
+	return nil
 }

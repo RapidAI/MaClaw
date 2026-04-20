@@ -69,7 +69,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 			Current   string              `json:"current"`
 		}{Providers: defaults, Current: defaults[0].Name}
 	}
-	providers := cfg.MaclawLLMProviders
+	providers := a.syncedMaclawLLMProviders(cfg)
 	if len(providers) == 0 {
 		providers = defaultMaclawLLMProviders()
 		// Migrate legacy single-config if present
@@ -369,9 +369,9 @@ func (a *App) isMaclawLLMConfigured() bool {
 func (a *App) isProMode() bool {
 	cfg, err := a.LoadConfig()
 	if err != nil {
-		return false
+		return true
 	}
-	return cfg.UIMode == "pro"
+	return cfg.UIMode == "" || cfg.UIMode == "pro"
 }
 
 // SaveMaclawLLMConfig persists the MaClaw LLM configuration.

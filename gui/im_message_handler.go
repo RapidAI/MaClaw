@@ -159,22 +159,22 @@ const (
 )
 
 type agentLoopPhase struct {
-	Stage                      agentLoopStage
-	ConsecutiveNoTool          int
-	ConsecutiveEmptyResponses  int // tracks consecutive empty LLM responses for hard exit
-	TotalRecoverInjections     int // total recover prompt injections in this loop
-	DeliverableRecoverCount    int
-	ForceSkillPreference    bool
-	SkillMode               skillPreferenceMode
-	PreferredSkillName      string
-	PreferredSkillReason    string
-	PreferredSkillRunID     string
-	SkillAttempted          bool
-	SkillFailed             bool
-	RemoteSearchAttempted   bool
-	RemoteSearchExhausted   bool
-	RecoverReason           string
-	RecoverPrompt           string
+	Stage                     agentLoopStage
+	ConsecutiveNoTool         int
+	ConsecutiveEmptyResponses int // tracks consecutive empty LLM responses for hard exit
+	TotalRecoverInjections    int // total recover prompt injections in this loop
+	DeliverableRecoverCount   int
+	ForceSkillPreference      bool
+	SkillMode                 skillPreferenceMode
+	PreferredSkillName        string
+	PreferredSkillReason      string
+	PreferredSkillRunID       string
+	SkillAttempted            bool
+	SkillFailed               bool
+	RemoteSearchAttempted     bool
+	RemoteSearchExhausted     bool
+	RecoverReason             string
+	RecoverPrompt             string
 
 	// Workaround detection: when a skill execution fails, we record the
 	// skill name and error. If the LLM subsequently resolves the task
@@ -1206,9 +1206,9 @@ func looksLikeNoToolStallReply(text string) bool {
 
 // Compiled regexes for isSubstantivePhaseDocument — package-level for performance.
 var (
-	substantiveHeadingRe     = regexp.MustCompile(`(?m)^#{1,6}\s+\S`)
-	substantiveNumberedRe    = regexp.MustCompile(`(?m)^(?:\d+[.、])\s*\S`)
-	substantiveBulletLineRe  = regexp.MustCompile(`(?m)^[-*]\s+\S`)
+	substantiveHeadingRe    = regexp.MustCompile(`(?m)^#{1,6}\s+\S`)
+	substantiveNumberedRe   = regexp.MustCompile(`(?m)^(?:\d+[.、])\s*\S`)
+	substantiveBulletLineRe = regexp.MustCompile(`(?m)^[-*]\s+\S`)
 )
 
 // isSubstantivePhaseDocument checks whether the LLM output constitutes a
@@ -2341,7 +2341,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 			tools = cached
 		} else {
 			// Sync dynamic tools (AgentNet, SkillHub) only on cache rebuild, not every call.
-				h.syncAgentNetTools()
+			h.syncAgentNetTools()
 			h.syncSkillHubTools()
 
 			tools = h.toolBuilder.BuildAll()
@@ -2397,7 +2397,23 @@ func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]
 	if router == nil {
 		return allTools
 	}
-	return router.Route(userMessage, allTools)
+	routed := router.Route(userMessage, allTools)
+	if classifyTaskIntent(userMessage).Intent == intentSSH {
+		return routed
+	}
+	filtered := make([]map[string]interface{}, 0, len(routed))
+	hasSSH := false
+	for _, tool := range routed {
+		if extractToolName(tool) == "ssh" {
+			hasSSH = true
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	if hasSSH && len(filtered) > 0 {
+		return filtered
+	}
+	return routed
 }
 
 // syncSkillHubTools registers the search_and_install_skill tool when a
@@ -2964,16 +2980,22 @@ func (h *IMMessageHandler) persistSessionTranscriptAsync(userID string, history 
 	if len(history) == 0 {
 		return
 	}
-	store := h.getSessionStore()
-	if store == nil {
-		return
-	}
 
 	// Copy history to avoid data races with the caller.
 	historyCopy := make([]conversationEntry, len(history))
 	copy(historyCopy, history)
 
-	go func() {
+	persist := func() {
+		if h == nil || h.app == nil {
+			return
+		}
+		store, err := session.NewStore(h.app.sessionSearchDBPath())
+		if err != nil {
+			log.Printf("[session_search] failed to open store: %v", err)
+			return
+		}
+		defer func() { _ = store.Close() }()
+
 		entries := conversationToTranscriptEntries(historyCopy)
 		if len(entries) == 0 {
 			return
@@ -3000,7 +3022,14 @@ func (h *IMMessageHandler) persistSessionTranscriptAsync(userID string, history 
 		if err := store.Persist(doc); err != nil {
 			log.Printf("[session_search] persist failed: %v", err)
 		}
-	}()
+	}
+
+	if h != nil && h.app != nil && strings.TrimSpace(h.app.testHomeDir) != "" {
+		persist()
+		return
+	}
+
+	go persist()
 }
 
 // conversationToTranscriptEntries converts GUI conversation entries to the
@@ -6524,10 +6553,10 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 // SteeringWorkflowDetector tracks steering-driven coding workflow state
 // within a single agent loop invocation.
 type SteeringWorkflowDetector struct {
-	detected              bool              // whether a coding workflow has been detected
-	suggestMaximizeEmitted bool             // whether suggest_maximize event has been emitted
-	phaseDocuments        map[string]string // detected phase documents (phaseID → content)
-	userID                string            // current user ID
+	detected               bool              // whether a coding workflow has been detected
+	suggestMaximizeEmitted bool              // whether suggest_maximize event has been emitted
+	phaseDocuments         map[string]string // detected phase documents (phaseID → content)
+	userID                 string            // current user ID
 }
 
 // NewSteeringWorkflowDetector creates a new detector for the given user.

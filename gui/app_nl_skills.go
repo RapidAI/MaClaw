@@ -1298,14 +1298,6 @@ func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
 		return []SkillDiagEntry{{Dir: skillsRoot, Reason: "skills 目录为空，没有子目录"}}
 	}
 
-	// Collect config-based skill names to detect dedup conflicts.
-	configNames := make(map[string]bool)
-	if cfg, err := a.LoadConfig(); err == nil {
-		for _, s := range cfg.NLSkills {
-			configNames[s.Name] = true
-		}
-	}
-
 	var result []SkillDiagEntry
 	for _, entry := range entries {
 		dirName := entry.Name()
@@ -1323,10 +1315,6 @@ func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
 				result = append(result, SkillDiagEntry{Dir: dirName, Reason: diagReason})
 				continue
 			}
-			if configNames[name] {
-				result = append(result, SkillDiagEntry{Dir: dirName, Name: name, OK: false, Reason: "与配置中同名 Skill 冲突，被去重跳过"})
-				continue
-			}
 			result = append(result, SkillDiagEntry{Dir: dirName, Name: name, OK: true})
 			continue
 		}
@@ -1338,10 +1326,6 @@ func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
 		name := strings.TrimSpace(sf.Name)
 		if name == "" {
 			name = dirName
-		}
-		if configNames[name] {
-			result = append(result, SkillDiagEntry{Dir: dirName, Name: name, OK: false, Reason: "与配置中同名 Skill 冲突，被去重跳过"})
-			continue
 		}
 		result = append(result, SkillDiagEntry{Dir: dirName, Name: name, OK: true})
 	}

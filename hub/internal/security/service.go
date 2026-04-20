@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -320,7 +321,7 @@ func (s *SecurityService) ListGroupMembers(ctx context.Context, groupID string) 
 		}
 	}
 
-	return members, nil
+	return dedupeEmails(members), nil
 }
 
 // countUnassignedUsers returns the number of active bound users that have no
@@ -346,15 +347,30 @@ func (s *SecurityService) listUnassignedEmails(ctx context.Context) []string {
 	}
 	assigned := make(map[string]struct{}, len(allAssigned))
 	for _, e := range allAssigned {
-		assigned[e] = struct{}{}
+		key := strings.TrimSpace(strings.ToLower(e))
+		if key == "" {
+			continue
+		}
+		assigned[key] = struct{}{}
 	}
+	seen := map[string]struct{}{}
 	var result []string
 	for _, u := range allUsers {
-		if u.Status == "active" {
-			if _, ok := assigned[u.Email]; !ok {
-				result = append(result, u.Email)
-			}
+		if u == nil || u.Status != "active" {
+			continue
 		}
+		key := strings.TrimSpace(strings.ToLower(u.Email))
+		if key == "" {
+			continue
+		}
+		if _, ok := assigned[key]; ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, u.Email)
 	}
 	return result
 }
@@ -623,6 +639,24 @@ func toBool(v interface{}) (bool, bool) {
 		return b != 0, true
 	}
 	return false, false
+}
+
+func dedupeEmails(emails []string) []string {
+	seen := make(map[string]struct{}, len(emails))
+	result := make([]string, 0, len(emails))
+	for _, email := range emails {
+		trimmed := strings.TrimSpace(email)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
 }
 
 // policyToMap converts an EffectivePolicy to a map[string]interface{}.

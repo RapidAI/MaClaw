@@ -90,7 +90,7 @@ func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	// to decompose complex tasks into a TODO list and complete all items
 	// before exiting. This works in tandem with the stop hook installed
 	// by EnsureClaudeOnboarding.
-	// Skip for resume sessions — the previous session already has the
+	// Skip for resume sessions 鈥?the previous session already has the
 	// TODO protocol in its context, and adding it again wastes tokens.
 	if spec.ResumeSessionID == "" {
 		args = append(args, "--append-system-prompt", buildAntiPrematureExitPrompt())
@@ -216,10 +216,9 @@ func (a *ClaudeAdapter) buildCommandEnv(base map[string]string) map[string]strin
 	if env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] == "" {
 		env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] = "1"
 	}
-	// Do NOT set CLAUDE_CODE_MAX_OUTPUT_TOKENS — let Claude Code use its own
-	// default, which is compatible with all providers. Setting a large value
-	// (e.g. 128000) causes 400 errors on providers with lower limits like
-	// Alibaba Bailian (max 65536).
+	if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "" {
+		env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "128000"
+	}
 
 	return env
 }

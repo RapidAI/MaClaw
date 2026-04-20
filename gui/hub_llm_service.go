@@ -66,6 +66,11 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 	return status, nil
 }
 
+func (a *App) syncedMaclawLLMProviders(cfg AppConfig) []MaclawLLMProvider {
+	a.syncHubLLMServiceStatusIntoConfig(&cfg)
+	return append([]MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
+}
+
 func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -116,6 +121,9 @@ func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *AppConfig) {
 	if cfg == nil {
 		return
+	}
+	if cfg.MaclawLLMProviders == nil {
+		cfg.MaclawLLMProviders = []MaclawLLMProvider{}
 	}
 	if strings.TrimSpace(cfg.RemoteViewerToken) == "" || strings.TrimSpace(cfg.RemoteHubURL) == "" {
 		if a.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{}) {

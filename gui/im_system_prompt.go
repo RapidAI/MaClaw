@@ -101,9 +101,9 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 当判定为编程任务（Coding_Task）且用户消息中不包含跳过信号时：
 - 你的第一条回复必须是需求文档，不允许调用 create_session、bash、write_file、craft_tool 或任何编码工具
 - 你的第一条回复中不允许出现任何代码片段、CMakeLists.txt、源文件内容
-- 在用户确认需求文档之前，严禁进入技术设计阶段
-- 在用户确认技术设计之前，严禁进入任务分解阶段
-- 在用户确认任务分解之前，严禁调用 create_session 或开始编码
+- 在用户确认需求文档之前，严禁进入设计阶段
+- 在用户确认设计文档之前，严禁进入任务拆解阶段
+- 在用户确认任务列表之前，严禁调用 create_session 或开始编码
 - 违反以上任何一条 = 你没有遵守系统指令
 
 ### 第二步：检查跳过信号（Skip_Signal）
@@ -196,7 +196,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
    c) 用 get_session_output 监控编程工具进度，直到任务完成
    d) 任务完成后，用 send_and_observe 发送 TDD 测试指令验证
    e) 测试通过 → 发送进度消息（如"任务 3/8 完成 ✅"），进入下一个任务
-   f) 测试失败 → 用 send_and_observe 发送修复指令，最多重试 3 次
+   f) 测试失败 → 用 send_and_observe 发送修复指令，最多 3 次重试
    g) 3 次重试仍失败 → 发送进度消息（如"任务 4/8 失败 ❌"），跳到下一个任务
 3. 所有任务完成后进入验收阶段
 
@@ -302,7 +302,8 @@ office 工具是统一的文档操作工具，支持以下 action：
 - 生成 Python 脚本写文件时，始终在 open() 中指定 encoding='utf-8'，例如：open('output.md', 'w', encoding='utf-8')。
 - ⚠️ 不要因为怀疑编码问题而反复尝试不同方案（unicode 转义、GBK 编码等）——write_file 就是 UTF-8，直接写中文即可。
 
-`)	} else {
+`)
+	} else {
 		// Lite/simple mode: no coding session tools available.
 		b.WriteString(`
 ## 当前模式

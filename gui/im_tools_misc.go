@@ -17,8 +17,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
-	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
@@ -446,9 +446,13 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	}
 	b.WriteString(fmt.Sprintf("- skill: %s\n", status.Skill))
 	b.WriteString(fmt.Sprintf("- status: %s\n", status.Status))
-	// session_ready: explicit signal for callers to know if session_id is available
+	// session_ready: explicit signal for callers to know if session_id is available.
+	// Only emit when the skill actually involves sessions to avoid confusing the
+	// LLM with "session_ready: false" on pure-bash skills like weather-query.
 	sessionReady := status.Session != nil && strings.TrimSpace(status.Session.SessionID) != ""
-	b.WriteString(fmt.Sprintf("- session_ready: %v\n", sessionReady))
+	if sessionReady || status.Status == "running" {
+		b.WriteString(fmt.Sprintf("- session_ready: %v\n", sessionReady))
+	}
 	if status.Summary.CurrentStep != "" {
 		b.WriteString(fmt.Sprintf("- current_step: %s (%s)\n", status.Summary.CurrentStep, firstNonEmptySkillRunStatus(status.Summary.CurrentStepStatus, "running")))
 	}
@@ -481,8 +485,18 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	if status.Summary.LastErrorSnippet != "" {
 		b.WriteString(fmt.Sprintf("- last_error: %s\n", status.Summary.LastErrorSnippet))
 	}
-	// Step-level progress: show each step's status for visibility into
-	// intermediate execution stages (addresses P1-5 from LibTV report).
+	// Step-level progress: show each step's status AND output for visibility
+	// into intermediate execution stages (addresses P1-5 from LibTV report).
+	// Previously only status/duration/error were shown; step.Output was stored
+	// but never returned to the LLM, causing "session_ready: false" confusion
+	// for non-session skills (e.g. weather-query) where the actual result is
+	// in stdout.
+	//
+	// Budget: cap total step output to ~4096 chars to avoid bloating LLM context
+	// when a skill has many steps. Individual steps are capped at 2048 chars.
+	const maxStepOutputLen = 2048
+	const maxTotalOutputLen = 4096
+	totalOutputLen := 0
 	if len(status.Steps) > 0 {
 		b.WriteString(fmt.Sprintf("- total_steps: %d\n", len(status.Steps)))
 		b.WriteString("## 步骤进度\n")
@@ -503,6 +517,27 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 				line += fmt.Sprintf(" [error: %s]", errSnippet)
 			}
 			b.WriteString(line + "\n")
+			// Return step output so the LLM can see actual results (e.g.
+			// weather data, API responses) instead of just "success".
+			if stepOut := strings.TrimSpace(step.Output); stepOut != "" && totalOutputLen < maxTotalOutputLen {
+				remaining := maxTotalOutputLen - totalOutputLen
+				limit := maxStepOutputLen
+				if remaining < limit {
+					limit = remaining
+				}
+				runes := []rune(stepOut)
+				b.WriteString("```\n")
+				if len(runes) > limit {
+					b.WriteString(string(runes[:limit]))
+					b.WriteString("\n... (truncated)\n")
+					totalOutputLen += limit
+				} else {
+					b.WriteString(stepOut)
+					b.WriteString("\n")
+					totalOutputLen += len(runes)
+				}
+				b.WriteString("```\n")
+			}
 		}
 	}
 	if status.Session != nil {
@@ -552,9 +587,13 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	if sessionReady && status.SessionProgress != nil {
 		b.WriteString("- session 内部进度已自动监控，继续调用 get_skill_run(run_id) 即可查看最新状态。\n")
 	} else if sessionReady {
-		b.WriteString("- session_id 已就绪，可直接使用 query_session / send_and_observe 观察会话输出。\n")
+		b.WriteString("- session_id 已就绪；先调用 get_skill_run(run_id) 确认当前状态，再使用 query_session / send_and_observe 观察会话输出。\n")
 	} else if status.Status == "running" {
-		b.WriteString("- 使用 get_skill_run(run_id) 继续观察执行进度，等待 session_ready=true。\n")
+		b.WriteString("- 使用 get_skill_run(run_id) 继续观察执行进度。\n")
+	} else if status.Status == "success" || status.Status == "failed" {
+		// Skill has finished — step outputs are already shown above.
+		// No need to direct the LLM to poll or wait for session_ready.
+		b.WriteString("- Skill 已执行完毕，步骤输出已在上方显示。请直接基于输出内容回复用户。\n")
 	} else {
 		b.WriteString("- 使用 get_skill_run(run_id) 查看最终结果。\n")
 	}

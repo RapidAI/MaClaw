@@ -19,7 +19,10 @@
         loadingChildrenGroupIds: {},
         defaultGroupTree: [],
         assignUsers: [],
-        selectedAssignEmail: ''
+        selectedAssignEmail: '',
+        membersPage: 1,
+        membersPageSize: 50,
+        membersCache: []
       };
     }
     return global.__securityAdminState;
@@ -48,6 +51,72 @@
     return '<div class="hint" style="color:var(--danger)">' + escapeHtml(message || '') + '</div>';
   }
 
+  function normalizeEmailKey(email) {
+    return String(email || '').trim().toLowerCase();
+  }
+
+  function dedupeEmails(emails) {
+    var seen = {};
+    var items = [];
+    (emails || []).forEach(function(email) {
+      var key = normalizeEmailKey(email);
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      items.push(String(email || '').trim());
+    });
+    return items;
+  }
+
+  function dedupeUsersByEmail(users) {
+    var seen = {};
+    var items = [];
+    (users || []).forEach(function(user) {
+      if (!user) return;
+      var key = normalizeEmailKey(user.email);
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      items.push(user);
+    });
+    return items;
+  }
+
+  function renderMembersSection(children, members) {
+    var sec = state();
+    var pageSize = Number(sec.membersPageSize || 50);
+    var totalMembers = members.length;
+    var totalPages = Math.max(1, Math.ceil(totalMembers / pageSize));
+    if (sec.membersPage > totalPages) sec.membersPage = totalPages;
+    if (sec.membersPage < 1) sec.membersPage = 1;
+    var start = (sec.membersPage - 1) * pageSize;
+    var pageMembers = members.slice(start, start + pageSize);
+    var html = '';
+    if (children.length) {
+      html += '<div style="margin-bottom:8px;font-size:12px;color:var(--muted)">' + text('\u5b50\u7ec4:', 'Sub-groups:') + '</div>';
+      children.forEach(function(child) {
+        html += '<div class="item" style="min-height:auto;padding:8px 12px;margin-bottom:4px"><span style="font-weight:600">\ud83d\udcc1 ' + escapeHtml(child.name) + '</span><span style="color:var(--muted);font-size:11px;margin-left:8px">(' + String(Number(child.member_count || 0)) + ')</span></div>';
+      });
+    }
+    if (totalMembers) {
+      html += '<div style="margin:12px 0 10px;font-size:12px;color:var(--muted)">' + (isZh() ? ('\u6210\u5458 (' + totalMembers + '):') : ('Members (' + totalMembers + '):')) + '</div>';
+      html += '<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px" id="secMembersGrid">';
+      pageMembers.forEach(function(email, idx) {
+        var absoluteIndex = start + idx + 1;
+        html += '<div class="item" style="min-height:auto;padding:12px 12px 10px;gap:8px">';
+        html += '<div style="font-weight:600;word-break:break-all;line-height:1.45">' + escapeHtml(email) + '</div>';
+        html += '<div class="item-meta">' + (isZh() ? ('\u7b2c ' + absoluteIndex + ' \u4e2a\u7528\u6237') : ('User #' + absoluteIndex)) + '</div>';
+        html += '<div class="actions" style="margin-top:auto"><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger);width:100%" onclick="removeSecGroupMember(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')">' + text('\u79fb\u9664', 'Remove') + '</button></div>';
+        html += '</div>';
+      });
+      html += '</div>';
+      if (totalPages > 1) {
+        var startIdx = start + 1;
+        var endIdx = Math.min(start + pageMembers.length, totalMembers);
+        html += '<div class="pager" style="margin-top:14px"><div class="pager-meta">' + (isZh() ? ('\u7b2c ' + sec.membersPage + ' / ' + totalPages + ' \u9875\uff0c\u663e\u793a ' + startIdx + '-' + endIdx + ' / ' + totalMembers) : ('Page ' + sec.membersPage + ' / ' + totalPages + ', showing ' + startIdx + '-' + endIdx + ' / ' + totalMembers)) + '</div><div class="pager-actions"><button class="btn-ghost" style="height:32px" onclick="changeSecMembersPage(-1)"' + (sec.membersPage <= 1 ? ' disabled' : '') + '>' + text('\u4e0a\u4e00\u9875', 'Previous') + '</button><button class="btn-ghost" style="height:32px" onclick="changeSecMembersPage(1)"' + (sec.membersPage >= totalPages ? ' disabled' : '') + '>' + text('\u4e0b\u4e00\u9875', 'Next') + '</button></div></div>';
+      }
+    }
+    return html || hint(text('\u65e0\u6210\u5458', 'No members'));
+  }
+
   function applySecurityI18n() {
     _s('navSecurity', 'textContent', text('\u5b89\u5168\u7ba1\u7406', 'Security'));
     _s('navSecurityDesc', 'textContent', text('\u7528\u6237\u7ec4\u3001\u7b56\u7565\u4e0e\u7ec4\u7ec7\u67b6\u6784', 'Security Management'));
@@ -66,7 +135,16 @@
     _s('secPolicySaveBtn', 'textContent', text('\u4fdd\u5b58', 'Save'));
     _s('secMembersTitle', 'textContent', text('\u6210\u5458', 'Members'));
     _s('secMembersReloadBtn', 'textContent', text('\u5237\u65b0', 'Reload'));
+    _s('defaultGroupModalTitle', 'textContent', text('\u9ed8\u8ba4\u7ec4', 'Default Group'));
+    _s('defaultGroupModalDesc', 'textContent', text('\u4e3a\u65b0\u7528\u6237\u9009\u62e9\u9ed8\u8ba4\u6240\u5c5e\u7ec4\u3002', 'Choose the default group for new users.'));
+    _s('defaultGroupCancelBtn', 'textContent', text('\u53d6\u6d88', 'Cancel'));
     _s('defaultGroupConfirmBtn', 'textContent', text('\u786e\u8ba4', 'Confirm'));
+    _s('assignUsersModalTitle', 'textContent', text('\u79fb\u5165\u7528\u6237', 'Move Users'));
+    _s('assignUsersModalDesc', 'textContent', text('\u53ef\u4ee5\u641c\u7d22\u5e76\u5c06\u7528\u6237\u79fb\u5165\u5f53\u524d\u90e8\u95e8\u3002', 'Search and move a user into the selected department.'));
+    _s('assignUsersCancelBtn', 'textContent', text('\u53d6\u6d88', 'Cancel'));
+    _s('assignUsersConfirmBtn', 'textContent', text('\u786e\u8ba4', 'Confirm'));
+    _s('assignUsersSearch', 'placeholder', text('\u641c\u7d22\u90ae\u7bb1\u6216 SN', 'Search email or SN'));
+    _s('secContextMenu', 'title', text('\u90e8\u95e8\u64cd\u4f5c\u83dc\u5355', 'Department actions'));
   }
 
   function normalizeNode(raw) {
@@ -247,7 +325,7 @@
       root.innerHTML = rows.map(function(user) {
         var email = user.email || '';
         var selected = sec.selectedAssignEmail === email;
-        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-weight:600">' + escapeHtml(email) + '</div><div class="item-meta">SN: ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(user.status || '-') + '</div></div><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px">' + escapeHtml(text('\u79fb\u5165', 'Move')) + '</button></div></div>';
+        return '<div class="item" style="min-height:auto;padding:8px 10px;margin-bottom:6px;border:' + (selected ? '1px solid rgba(47,128,237,.38)' : '1px solid var(--line)') + ';background:' + (selected ? 'rgba(47,128,237,.06)' : 'linear-gradient(180deg,rgba(255,255,255,.98) 0%,rgba(247,251,255,.98) 100%)') + ';cursor:pointer" onclick="selectAssignUser(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-weight:600">' + escapeHtml(email) + '</div><div class="item-meta">' + escapeHtml(text('SN', 'SN')) + ': ' + escapeHtml(user.sn || '-') + ' | ' + escapeHtml(text('\u72b6\u6001', 'Status')) + ': ' + escapeHtml(user.status || text('\u672a\u77e5', 'Unknown')) + '</div></div><button class="btn-ghost" style="height:26px;font-size:11px;padding:0 10px">' + escapeHtml(text('\u79fb\u5165', 'Move')) + '</button></div></div>';
       }).join('');
     }
     _s('assignUsersCount', 'textContent', (isZh() ? ('\u663e\u793a ' + rows.length + ' / ' + sec.assignUsers.length + ' \u4e2a\u7528\u6237') : ('Showing ' + rows.length + ' / ' + sec.assignUsers.length + ' users')));
@@ -256,7 +334,7 @@
   async function loadAssignableUsers() {
     var sec = state();
     var data = await api('/api/admin/users');
-    sec.assignUsers = (data.users || []).filter(function(user) { return !!(user && user.email); });
+    sec.assignUsers = dedupeUsersByEmail((data.users || []).filter(function(user) { return !!(user && user.email); }));
     renderAssignUsers();
   }
 
@@ -415,28 +493,28 @@
       replaceGroupChildren(sec.groupTree, sec.selectedGroupId, data.children || []);
       sec.loadedChildrenGroupIds[sec.selectedGroupId] = true;
       global.renderSecGroupTree(sec.groupTree, document.getElementById('secGroupTree'), 0);
-      var members = data.members || [];
+      var members = dedupeEmails(data.members || []);
       var children = data.children || [];
-      var html = '';
-      if (children.length) {
-        html += '<div style="margin-bottom:8px;font-size:12px;color:var(--muted)">' + text('\u5b50\u7ec4:', 'Sub-groups:') + '</div>';
-        children.forEach(function(child) {
-          html += '<div class="item" style="min-height:auto;padding:8px 12px;margin-bottom:4px"><span style="font-weight:600">\ud83d\udcc1 ' + escapeHtml(child.name) + '</span><span style="color:var(--muted);font-size:11px;margin-left:8px">(' + String(Number(child.member_count || 0)) + ')</span></div>';
-        });
-      }
-      if (members.length) {
-        html += '<div style="margin-bottom:8px;font-size:12px;color:var(--muted)">' + (isZh() ? ('\u6210\u5458 (' + members.length + '):') : ('Members (' + members.length + '):')) + '</div>';
-        members.forEach(function(email) {
-          html += '<div class="item" style="min-height:auto;padding:6px 12px;margin-bottom:2px;display:flex;align-items:center;justify-content:space-between">';
-          html += '<span>' + escapeHtml(email) + '</span>';
-          html += '<button class="btn-ghost" style="height:24px;font-size:11px;padding:0 8px;color:var(--danger)" onclick="removeSecGroupMember(\'' + escapeHtml(email).replace(/'/g, "\\'") + '\')">' + text('\u79fb\u9664', 'Remove') + '</button>';
-          html += '</div>';
-        });
-      }
-      container.innerHTML = html || hint(text('\u65e0\u6210\u5458', 'No members'));
+      sec.membersCache = members.slice();
+      sec.membersPage = 1;
+      container.innerHTML = renderMembersSection(children, members);
     } catch (err) {
       container.innerHTML = errorHint(err.message);
     }
+  };
+
+  global.changeSecMembersPage = function changeSecMembersPage(step) {
+    var sec = state();
+    if (!sec.selectedGroupId) return;
+    var total = (sec.membersCache || []).length;
+    var pageSize = Number(sec.membersPageSize || 50);
+    var totalPages = Math.max(1, Math.ceil(total / pageSize));
+    sec.membersPage = Math.max(1, Math.min(totalPages, Number(sec.membersPage || 1) + Number(step || 0)));
+    var container = document.getElementById('secMembersList');
+    if (!container) return;
+    var group = findGroupNode(sec.groupTree, sec.selectedGroupId);
+    var children = group && group.children ? group.children : [];
+    container.innerHTML = renderMembersSection(children, sec.membersCache || []);
   };
 
   global.removeSecGroupMember = async function removeSecGroupMember(email) {
