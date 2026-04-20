@@ -898,7 +898,7 @@
 
       <!-- Tab: LLM Providers -->
       <section id="tab-llmproviders" class="panel card">
-        <div class="head"><div><h3 id="llmProvidersTabTitle" data-i18n="llmProvidersTabTitle">LLM Providers</h3><div class="desc" id="llmProvidersTabSubtitle" data-i18n="llmProvidersTabSubtitle">Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.</div></div><button class="btn-ghost" onclick="loadLLMProviders()" id="llmProvidersReloadBtn" data-i18n="reload">Reload</button></div>
+        <div class="head"><div><h3 id="llmProvidersTabTitle" data-i18n="llmProvidersTabTitle">LLM Providers</h3><div class="desc" id="llmProvidersTabSubtitle" data-i18n="llmProvidersTabSubtitle">Configure upstream vendors, token usage, connection tests, and the unified OpenAI v1 endpoint.</div></div><div class="actions"><button class="btn-primary" onclick="addLLMProvider()" id="llmProviderCreateBtn">New Provider</button><button class="btn-ghost" onclick="loadLLMProviders()" id="llmProvidersReloadBtn" data-i18n="reload">Reload</button></div></div>
         <div class="grid2">
           <div class="item">
             <div class="item-head"><div><div class="item-title" id="llmProvidersExposeTitle">Unified OpenAI v1 Endpoint</div><div class="item-meta" id="llmProvidersExposeDesc">Select provider by `model`, `X-LLM-Provider`, or `?provider=`.</div></div><span class="badge info" id="llmProviderSelectionBadge">No provider selected</span></div>
